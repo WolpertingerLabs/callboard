@@ -475,7 +475,7 @@ describe("ChatTreeList group identity", () => {
     // itself on both counts.
     const [row] = buildRows([makeChat("s", { rootChatId: "s" })]);
     expect(row.isGroup).toBe(true);
-    expect(row.size).toBe(1);
+    expect(row.topLevelCount).toBe(1);
     expect(row.chat.id).toBe("s");
     expect(row.members.map((c) => c.id)).toEqual(["s"]);
 
@@ -709,9 +709,33 @@ describe("buildRows activity roll-up", () => {
   it("files every loaded member on the row, in the order the list had them", () => {
     const rows = buildRows([child("child-2"), child("child-1", {}, "2026-08-01T16:30:00Z"), makeChat("root", {}, ROOT_AT), makeChat("solo", {}, ROOT_AT)]);
     expect(rows[0].members.map((c) => c.id)).toEqual(["child-2", "child-1", "root"]);
-    // `size` is that list's length now, not a counter kept beside it.
-    expect(rows[0].size).toBe(rows[0].members.length);
     expect(rows[1].members.map((c) => c.id)).toEqual(["solo"]);
+  });
+
+  it("counts a group as its top-level chats, not its members", () => {
+    // Root + two children: one thread, one top-level chat.
+    const rows = buildRows([child("child-2"), child("child-1", {}, "2026-08-01T16:30:00Z"), makeChat("root", {}, ROOT_AT), makeChat("solo", {}, ROOT_AT)]);
+    expect(rows.map((r) => [r.rootKey, r.members.length, r.topLevelCount])).toEqual([
+      ["root", 3, 1],
+      ["solo", 1, 1],
+    ]);
+  });
+
+  it("counts every parentless member a group holds, and floors a rootless group at 1", () => {
+    const rows = buildRows([
+      // Detached by hand: no parent pointer, but the stale stamped rootChatId
+      // still folds it into root's group — a second real top-level chat.
+      makeChat("detached", { rootChatId: "root" }, ROOT_AT),
+      makeChat("root", {}, ROOT_AT),
+      child("kid"),
+      // Root not loaded: no parentless member, but still one thread on screen.
+      makeChat("stray", { parentChatId: "gone", rootChatId: "gone" }, ROOT_AT),
+      makeChat("stray-2", { forkedFrom: "stray" }, ROOT_AT),
+    ]);
+    expect(rows.map((r) => [r.rootKey, r.members.length, r.topLevelCount])).toEqual([
+      ["root", 3, 2],
+      ["gone", 2, 1],
+    ]);
   });
 });
 
@@ -957,7 +981,7 @@ describe("pinning a row", () => {
     const onTogglePin = spy();
     renderWithPin([makeChat("child-1", { parentChatId: "root", rootChatId: "root", pinned: true }), makeChat("root")], onTogglePin);
 
-    expect(headers()).toEqual(["Pinned (2)"]);
+    expect(headers()).toEqual(["Pinned (1)"]);
     expect(screen.getByText("chat root")).toBeTruthy();
 
     // And the kebab on that root-fronted row still reaches the child's pin.
@@ -975,9 +999,10 @@ describe("pinning a row", () => {
     const onTogglePin = spy();
     renderWithPin([makeChat("root"), makeChat("child-1", { parentChatId: "root", rootChatId: "root", pinned: true })], onTogglePin);
 
-    expect(headers()).toEqual(["Pinned (2)"]);
-    // Counted whole — both chats, not just the pinned one — because the
-    // section holds the whole group as one row.
+    expect(headers()).toEqual(["Pinned (1)"]);
+    // Counted as its one top-level chat — the root, which does not carry the
+    // pin — because the section holds the whole group as one row and children
+    // are never counted.
     expect(screen.getByText("chat root")).toBeTruthy();
   });
 
@@ -1073,7 +1098,7 @@ describe("sidebar folders", () => {
     expect(rows.map((r) => r.sidebarFolder)).toEqual([undefined, undefined]);
   });
 
-  it("renders Pinned, folders, Recent — and the group counts all its members in its folder", () => {
+  it("renders Pinned, folders, Recent — and a group counts as its one top-level chat in its folder", () => {
     renderFolders([
       makeChat("loose"),
       makeChat("kid", { parentChatId: "root", rootChatId: "root" }),
@@ -1081,7 +1106,21 @@ describe("sidebar folders", () => {
       makeChat("pinned-and-filed", { pinned: true, sidebarFolder: "Work" }),
       makeChat("home", { sidebarFolder: "home" }),
     ]);
-    expect(sectionHeaders()).toEqual(["Pinned (1)", "home (1)", "Work (2)", "Recent (1)"]);
+    expect(sectionHeaders()).toEqual(["Pinned (1)", "home (1)", "Work (1)", "Recent (1)"]);
+  });
+
+  it("does not count children in Pinned, folder or Recent headers", () => {
+    renderFolders([
+      makeChat("pin-kid", { parentChatId: "pinned-root", rootChatId: "pinned-root", pinned: true }),
+      makeChat("pinned-root"),
+      makeChat("work-kid-1", { parentChatId: "work-root", rootChatId: "work-root" }),
+      makeChat("work-kid-2", { parentChatId: "work-kid-1", rootChatId: "work-root" }),
+      makeChat("work-root", { sidebarFolder: "Work" }),
+      makeChat("work-lone", { sidebarFolder: "Work" }),
+      makeChat("recent-kid", { parentChatId: "recent-root", rootChatId: "recent-root" }),
+      makeChat("recent-root"),
+    ]);
+    expect(sectionHeaders()).toEqual(["Pinned (1)", "Work (2)", "Recent (1)"]);
   });
 
   it("renders no headers when nothing is pinned or filed", () => {

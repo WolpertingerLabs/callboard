@@ -206,19 +206,27 @@ export interface Row {
   /** What the row reports about live work anywhere in `members`. */
   activity: RowActivity;
   /**
-   * Chats from the `chats` prop this row stands for — 1 for a lone chat, the
-   * group's size for a group. The section headers count chats, not rows, so a
-   * group has to carry its own weight to the tally.
+   * Top-level chats this row stands for — what the section headers count.
+   * Children are not counted: a subagent or fork is part of its parent's
+   * thread, and a header reading "(12)" over three rows says more about how
+   * busy one thread got than about what is filed there.
    *
-   * Deliberately *not* "chats visible under this row": expanding a group
-   * renders `trees[rootKey]`, the server's authoritative tree, which no client
-   * filter has been applied to — expand a group under "Show triggered chats:
-   * off" and more rows can appear than this counted. Following that would make
-   * the header's number jump on every expand, and jump to a figure the section
-   * above it does not share. The count answers "how many of the chats this
-   * list loaded are filed here", which is stable.
+   * "Top-level" is a member with no parent pointer of either spelling
+   * (`parentChatId`/`forkedFrom`), counted rather than assumed to be 1. A
+   * group usually holds exactly one, but a chat detached from its tree by
+   * hand keeps its stamped `rootChatId` and so still folds into the old
+   * group's row, which then fronts two real top-level chats.
+   *
+   * Floored at 1: a row whose root is not loaded (filtered out, or deleted
+   * and its children orphaned) holds no parentless member, yet still stands
+   * for one thread on screen — counting it 0 would let a section read
+   * "PINNED (0)" over a row.
+   *
+   * Counted over the chats the list LOADED, not "chats visible under this
+   * row": expanding a group renders `trees[rootKey]`, the server's tree with
+   * no client filter applied, and the header must not jump on every expand.
    */
-  size: number;
+  topLevelCount: number;
   /**
    * The loaded chats in this row's group that carry the pin — `[chat]` or `[]`
    * for a lone row, and for a group row every pinned member, not just the one
@@ -282,6 +290,12 @@ const NO_PINNED_MEMBERS: Chat[] = [];
 
 /** Defense cap against corrupt parent-pointer chains (mirrors the server). */
 const MAX_LINEAGE_DEPTH = 50;
+
+/** No parent pointer of either spelling — a thread's own root, not a child of one. See `Row.topLevelCount`. */
+function isTopLevel(chat: Chat): boolean {
+  const meta = chatMeta(chat);
+  return !meta.parentChatId && !meta.forkedFrom;
+}
 
 /**
  * Resolve a chat's lineage group key by walking parent pointers through the
@@ -355,8 +369,7 @@ function lineageOf(chat: Chat, byId: Map<string, Chat>): LineageInfo {
 export function buildRows(chats: Chat[]): Row[] {
   const byId = new Map<string, Chat>(chats.map((c) => [c.id, c]));
   const infoById = new Map<string, LineageInfo>();
-  // The group's membership, in the prop's order. Also the row's size: a
-  // separate counter alongside this list could only ever disagree with it.
+  // The group's membership, in the prop's order.
   const groupMembers = new Map<string, Chat[]>();
   const groupLineage = new Map<string, boolean>();
   // Collected per group, not per chat: a pin set on any member files the
@@ -384,8 +397,7 @@ export function buildRows(chats: Chat[]): Row[] {
     seen.add(rootKey);
     // Always set: this row's own chat filed itself into the bucket above.
     const members = groupMembers.get(rootKey)!;
-    const size = members.length;
-    const isGroup = size > 1 || hasLineage || groupLineage.get(rootKey) === true;
+    const isGroup = members.length > 1 || hasLineage || groupLineage.get(rootKey) === true;
     // `chat` — the first member seen, i.e. the most recently updated one — has
     // already fixed this row's position by being the iteration that created it.
     // Which chat FRONTS it is a separate question, answered by the root when
@@ -406,7 +418,7 @@ export function buildRows(chats: Chat[]): Row[] {
       isGroup,
       members,
       activity: rollUpActivity(members),
-      size,
+      topLevelCount: Math.max(1, members.filter(isTopLevel).length),
       pinnedMembers: groupPinned.get(rootKey) ?? NO_PINNED_MEMBERS,
       canFile,
       sidebarFolder: canFile ? readSidebarFolder(frontMeta) : undefined,
@@ -428,7 +440,7 @@ export function sectionRows(rows: Row[]): ChatSection<Row>[] | null {
   return sectionChatRows(rows, {
     isPinned: (row) => row.pinnedMembers.length > 0,
     folderOf: (row) => row.sidebarFolder,
-    countOf: (row) => row.size,
+    countOf: (row) => row.topLevelCount,
   });
 }
 

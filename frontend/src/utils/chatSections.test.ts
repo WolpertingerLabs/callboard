@@ -73,21 +73,24 @@ describe("sectionByPinned", () => {
     expect(sections.map((s) => s.count)).toEqual([1, 2]);
   });
 
-  it("counts by countOf, so a tree row can speak for its whole group", () => {
-    // A row stands for a whole lineage group. Counting rows would report 1
-    // for a three-chat group — the header must count chats.
+  it("counts by countOf, so a group row counts its top-level chats, not its children", () => {
+    // A row stands for a whole lineage group, but the header counts top-level
+    // chats: a root with two children counts 1, not 3. `topLevel` is what
+    // ChatTreeList's `Row.topLevelCount` supplies.
     const rows = [
-      { chat: chat("loose"), size: 1 },
-      { chat: pinnedChat("group"), size: 3 },
-      { chat: chat("pair"), size: 2 },
+      { chat: chat("loose"), size: 1, topLevel: 1 },
+      { chat: pinnedChat("group"), size: 3, topLevel: 1 },
+      // A group fronting two parentless chats (one detached by hand, still
+      // carrying the old stamped rootChatId) counts both.
+      { chat: chat("pair"), size: 2, topLevel: 2 },
     ];
     const sections = sectionByPinned(
       rows,
       (row) => byPin(row.chat),
-      (row) => row.size,
+      (row) => row.topLevel,
     )!;
     expect(sections.map((s) => [s.key, s.items.length, s.count])).toEqual([
-      ["pinned", 1, 3],
+      ["pinned", 1, 1],
       ["recent", 2, 3],
     ]);
   });
@@ -96,18 +99,19 @@ describe("sectionByPinned", () => {
     // The rule the generic exists for. A group is ONE row: pinning a member
     // that is not the header row cannot pull that member out on its own, and
     // pinning the header row takes the whole group up with it. The count
-    // follows the filing, which is why 4 lands entirely under "pinned".
+    // follows the filing — the group's one top-level chat lands under
+    // "pinned", its three children are not counted anywhere.
     const rows = [
-      { rootKey: "r1", chat: chat("plain"), size: 1 },
-      { rootKey: "r2", chat: pinnedChat("header-of-group"), size: 4 },
+      { rootKey: "r1", chat: chat("plain"), topLevel: 1 },
+      { rootKey: "r2", chat: pinnedChat("header-of-group"), topLevel: 1 },
     ];
     const sections = sectionByPinned(
       rows,
       (row) => byPin(row.chat),
-      (row) => row.size,
+      (row) => row.topLevel,
     )!;
     expect(sections.map((s) => [s.key, s.count])).toEqual([
-      ["pinned", 4],
+      ["pinned", 1],
       ["recent", 1],
     ]);
     // ...and the group appears exactly once, under its header row's section.
@@ -158,11 +162,11 @@ describe("isChatPinned", () => {
 });
 
 describe("sectionChatRows — folders", () => {
-  type Item = { id: string; pinned?: boolean; folder?: string; size?: number };
+  type Item = { id: string; pinned?: boolean; folder?: string; topLevel?: number };
   const opts = {
     isPinned: (i: Item) => i.pinned === true,
     folderOf: (i: Item) => i.folder,
-    countOf: (i: Item) => i.size ?? 1,
+    countOf: (i: Item) => i.topLevel ?? 1,
   };
   const keys = (sections: { key: string }[] | null) => sections?.map((s) => s.key);
 
@@ -208,11 +212,15 @@ describe("sectionChatRows — folders", () => {
     expect(keys(sectionChatRows<Item>([{ id: "both", pinned: true, folder: "F" }, { id: "x" }], opts))).toEqual(["pinned", "recent"]);
   });
 
-  it("counts chats, not rows, per folder", () => {
-    const sections = sectionChatRows<Item>([{ id: "group", folder: "F", size: 4 }, { id: "lone", folder: "F" }, { id: "r" }], opts)!;
+  it("counts by countOf per folder, and per Pinned and Recent alike", () => {
+    const sections = sectionChatRows<Item>(
+      [{ id: "p", pinned: true, topLevel: 2 }, { id: "group", folder: "F", topLevel: 2 }, { id: "lone", folder: "F" }, { id: "r", topLevel: 2 }],
+      opts,
+    )!;
     expect(sections.map((s) => [s.key, s.count])).toEqual([
-      ["folder:F", 5],
-      ["recent", 1],
+      ["pinned", 2],
+      ["folder:F", 3],
+      ["recent", 2],
     ]);
   });
 

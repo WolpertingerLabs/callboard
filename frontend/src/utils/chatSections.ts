@@ -5,7 +5,7 @@
  * one row and its members can disagree about the pin, so it must be filed
  * whole rather than have its members partitioned out from under it. Hence the
  * generic item type and the separate `countOf`: the thing being partitioned
- * and the thing being counted are not the same thing.
+ * (rows) and the thing being counted (top-level chats) are not the same thing.
  *
  * The verdict for a group is the caller's to supply, and `ChatTreeList` gives
  * it as "any member is pinned" — see `Row.pinnedMembers` for why the header
@@ -27,18 +27,17 @@ export interface ChatSection<T> {
   label: string;
   items: T[];
   /**
-   * Chats in this section, which is **not** `items.length`: one row stands for
-   * a whole lineage group, so a group's members are counted where the group is
-   * filed.
+   * Top-level chats in this section — chats with no parent — which is **not**
+   * `items.length` in general: one row stands for a whole lineage group, and
+   * a group can (rarely) front more than one parentless chat. Children are
+   * never counted, so a pinned thread that has spawned ten subagents still
+   * reads "(1)". See `Row.topLevelCount` for the exact rule, including why a
+   * row whose root is not loaded still counts 1.
    *
-   * A lineage group is filed **whole**, so a group with one pinned member
-   * counts all of them under "Pinned". That is the deliberate filing rule, not
-   * a counting bug — a group is one row and cannot be in two sections, and a
-   * count that reported only the pinned members would not match the rows the
-   * section actually holds. The list also requests
-   * `includeLineage`, so group members from outside the pagination window are
-   * on screen (folded into their group) and counted too; totals can therefore
-   * exceed the page size, which is honest about what is being shown.
+   * A lineage group is filed **whole**, so a group pinned through a child
+   * counts its top-level chat under "Pinned"; the count follows the filing, so
+   * it always matches the rows the section actually holds. Recent counts by
+   * the same rule, so every header answers the same question.
    */
   count: number;
 }
@@ -59,7 +58,7 @@ export function isChatPinned(chat: Pick<Chat, "metadata">): boolean {
 export function sectionByPinned<T>(
   items: readonly T[],
   isPinned: (item: T) => boolean,
-  /** Chats one item stands for; a row fronting a lineage group stands for more than one. */
+  /** Chats one item counts for in its section header; see `ChatSection.count`. */
   countOf: (item: T) => number = () => 1,
 ): ChatSection<T>[] | null {
   return sectionChatRows(items, { isPinned, countOf });
@@ -113,7 +112,7 @@ export function sectionChatRows<T>(
     isPinned: (item: T) => boolean;
     /** The sidebar folder an item is filed in, or undefined. Asked only of unpinned items. */
     folderOf?: (item: T) => string | undefined;
-    /** Chats one item stands for; a row fronting a lineage group stands for more than one. */
+    /** Chats one item counts for in its section header; see `ChatSection.count`. */
     countOf?: (item: T) => number;
   },
 ): ChatSection<T>[] | null {
