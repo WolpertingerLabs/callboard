@@ -1,6 +1,9 @@
+import { DEFAULT_SPACE_ID } from "shared";
 import { chatFileService } from "./chat-file-service.js";
-import { buildLineageIndex, getParentChatId } from "./chat-lineage.js";
+import { buildLineageIndex, getParentChatId, walkToRootId } from "./chat-lineage.js";
 import { isNativeRecord } from "./card-membership.js";
+import { withdrawParentOffer } from "./pending-requests.js";
+import { removeCallbacksForChild } from "./session-callbacks.js";
 import { spaceOfChat } from "./space-service.js";
 import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { createLogger } from "../utils/logger.js";
@@ -23,33 +26,68 @@ const log = createLogger("chat-detach");
  *     parent ("subagent", "fork", the message it branched off), which no
  *     longer exists. Clearing `forkedAt` is also what takes the inline fork
  *     marker out of the parent's thread.
+ *   - `card` — card face fields (title, emoji, lifecycle) a member can carry
+ *     from before it was a member, or from a write that was meant for its root
+ *     (see `clearCardFieldsOn`). Nothing read them while the chat was a
+ *     member, so they are stale by construction; left in place, an old title
+ *     or a `closed` lifecycle would become the new card's face and could file
+ *     the chat straight into the board's Archived strip. Absent means "all
+ *     defaults": an open card titled after the chat.
  *
  * What is written:
  *   - `spaceId` — the space the tree lived in. A child has no stamp of its own
  *     that anything reads (the root's wins), so without it the new root would
  *     fall to the default space and vanish from the space the user was in.
- *   - `detachedFrom` — the old parent's id and when, as a breadcrumb. Nothing
- *     reads it; it is there so the split can be understood after the fact.
+ *     The default space is written as an absent key, as space-service's
+ *     `stamp()` does.
+ *   - `detachedFrom` — the old parent's id and when. Read only to make a
+ *     repeated call a no-op rather than a 400 (a double click, a retry after a
+ *     dropped response); otherwise a breadcrumb.
+ *
+ * Live linkage the chat had as a child is cut too, or a split-off chat would
+ * still behave like one while it is running:
+ *   - phone-home callbacks waiting on it (session-callbacks.ts) are removed,
+ *     so its completion no longer resumes the old parent;
+ *   - an open prompt offered to the old parent (`offeredToParent`) is taken
+ *     back, so only the user can answer it. Prompts raised later read the
+ *     parent live from metadata, which no longer has one.
  *
  * Descendants of the detached chat follow it: their stamped `rootChatId`
  * named the old root, and while their parent pointers already resolve to the
  * new root, a stale stamp is what the fallback paths (deleted intermediate
- * parent, client-side grouping of a partial page) key on. They are re-stamped
- * to the detached chat.
+ * parent, client-side grouping of a partial page) key on. Every chat reached
+ * through PARENT POINTERS is re-stamped to the detached chat, including ones
+ * that never carried a stamp at all.
+ *
+ * What does NOT follow, and cannot be made to precisely: chats tied to the
+ * tree by a `rootChatId` stamp alone, with no parent pointer — job-step chats
+ * a run spawned from inside the subtree are the common case. The stamp names
+ * the old root and nothing records which member of the tree started the run,
+ * so they stay with the old tree. The UI's wording says "chats under it", not
+ * "everything it started", for that reason.
  *
  * Every write is quiet (`touch: false`) — reorganising the sidebar is not
  * activity, and must not resurface the chat as unread.
  */
 
 export type DetachResult =
-  | { ok: true; chatId: string; previousParentChatId: string; restampedDescendants: number }
+  | {
+      ok: true;
+      chatId: string;
+      /** False when the chat had already been split off and nothing was written. */
+      changed: boolean;
+      previousParentChatId?: string;
+      /** The old tree's root as it resolved before the split — the card that lost a member. */
+      previousRootChatId?: string;
+      restampedDescendants: number;
+    }
   | { ok: false; status: 400 | 409 | 500; error: string };
 
 /**
  * Detach `chat` — a read-model record as `findChat` returns it, so a native
  * Codex child's inferred parent (never stored) is visible to the checks.
  */
-export function detachChatFromParent(chat: { id: string; metadata?: string | null; _from_filesystem?: boolean }): DetachResult {
+export function detachChatFromParent(chat: { id: string; session_id?: string; metadata?: string | null; _from_filesystem?: boolean }): DetachResult {
   // A native Codex subagent's parent comes from its rollout on every read;
   // clearing a stored pointer would be re-inferred on the next one.
   if (isNativeRecord(chat)) {
@@ -61,12 +99,17 @@ export function detachChatFromParent(chat: { id: string; metadata?: string | nul
   }
   const meta = parseChatMetadata(chat.metadata);
   const parentId = getParentChatId(meta);
-  if (!parentId) return { ok: false, status: 400, error: "This chat has no parent — it is already a standalone chat" };
+  if (!parentId) {
+    // Already split off: answer as the first call did, so a retry is safe.
+    if (meta.detachedFrom && typeof meta.detachedFrom === "object") return { ok: true, chatId: chat.id, changed: false, restampedDescendants: 0 };
+    return { ok: false, status: 400, error: "This chat has no parent — it is already a standalone chat" };
+  }
   // Only native children carry a parent without a stored record, and those
   // were refused above; anything else here has nothing to rewrite.
   if (chat._from_filesystem) return { ok: false, status: 400, error: "This chat has no stored record to update" };
 
   // Resolved BEFORE the write, while the chat still resolves to its old root.
+  const previousRootChatId = walkToRootId(chat.id);
   const spaceId = spaceOfChat(chat.id);
 
   const ok = chatFileService.updateChatMetadata(
@@ -78,12 +121,16 @@ export function detachChatFromParent(chat: { id: string; metadata?: string | nul
       rootChatId: undefined,
       chatRole: undefined,
       forkedAt: undefined,
-      spaceId,
+      card: undefined,
+      spaceId: spaceId === DEFAULT_SPACE_ID ? undefined : spaceId,
       detachedFrom: { parentChatId: parentId, at: new Date().toISOString() },
     },
     { touch: false },
   );
   if (!ok) return { ok: false, status: 500, error: "Could not update this chat's record, so it is still a child of its parent" };
+
+  const callbacks = removeCallbacksForChild(chat.id);
+  const withdrawnFrom = withdrawParentOffer([chat.id, ...(chat.session_id ? [chat.session_id] : [])]);
 
   let restampedDescendants = 0;
   const snapshot = chatFileService.getAllChats();
@@ -101,6 +148,9 @@ export function detachChatFromParent(chat: { id: string; metadata?: string | nul
     else log.warn(`detach ${chat.id}: could not re-stamp rootChatId on descendant ${child.id}`);
   }
 
-  log.info(`Detached chat ${chat.id} from parent ${parentId} (${restampedDescendants} descendant(s) re-stamped)`);
-  return { ok: true, chatId: chat.id, previousParentChatId: parentId, restampedDescendants };
+  log.info(
+    `Detached chat ${chat.id} from parent ${parentId} (${restampedDescendants} descendant(s) re-stamped, ${callbacks.length} callback(s) removed` +
+      `${withdrawnFrom ? `, open prompt withdrawn from ${withdrawnFrom}` : ""})`,
+  );
+  return { ok: true, chatId: chat.id, changed: true, previousParentChatId: parentId, previousRootChatId, restampedDescendants };
 }

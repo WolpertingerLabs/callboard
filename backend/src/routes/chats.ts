@@ -1516,10 +1516,10 @@ chatsRouter.get("/:id/tree", (req, res) => {
 chatsRouter.post("/:id/detach", (req, res) => {
   // #swagger.tags = ['Chats']
   // #swagger.summary = 'Split a child chat off its parent'
-  // #swagger.description = 'Removes the parent link from a child chat so it becomes a standalone, top-level chat with its own sidebar row and board card. Clears metadata parentChatId, forkedFrom, rootChatId, chatRole and forkedAt; stamps spaceId with the space the tree was in and records detachedFrom. Descendants of the chat are re-stamped onto it as their new root. Native Codex subagents are refused, because their parent is read from the Codex rollout. Does not bump updated_at.'
+  // #swagger.description = 'Removes the parent link from a child chat so it becomes a standalone, top-level chat with its own sidebar row and board card. Clears metadata parentChatId, forkedFrom, rootChatId, chatRole, forkedAt and stale card face fields; stamps spaceId with the space the tree was in (absent for the default space) and records detachedFrom. Chats under it by parent pointer are re-stamped onto it as their new root; chats tied to the old tree only by a rootChatId stamp (job steps) stay. Completion callbacks waiting on the chat are removed and an open prompt offered to its old parent is withdrawn. Repeating the call on a chat already split off is a no-op 200. Native Codex subagents are refused, because their parent is read from the Codex rollout. Does not bump updated_at.'
   /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
   /* #swagger.responses[200] = { description: "The updated chat" } */
-  /* #swagger.responses[400] = { description: "The chat has no parent" } */
+  /* #swagger.responses[400] = { description: "The chat has no parent and was never split off, or has no stored record" } */
   /* #swagger.responses[404] = { description: "Chat not found" } */
   /* #swagger.responses[409] = { description: "The chat is a native Codex subagent and cannot be detached" } */
   try {
@@ -1529,8 +1529,21 @@ chatsRouter.post("/:id/detach", (req, res) => {
     // inferred at read time and never stored — see detachChatFromParent.
     const result = detachChatFromParent(chat);
     if (!result.ok) return res.status(result.status).json({ error: result.error });
-    // Row membership changes for two trees at once, so every cached page is wrong.
-    clearListCaches();
+    if (result.changed) {
+      // Row membership changes for two trees at once, so every cached page is wrong.
+      clearListCaches();
+      // Two cards changed: the old tree lost a member (and its rollup), and a
+      // new card exists. The board, CardDrawer and other tabs refetch on these,
+      // as they do for the other card-membership writes in this file. The old
+      // parent is notified too, so an open parent drops its tree indicator and
+      // inline fork marker.
+      const notified = new Set<string>();
+      for (const id of [result.previousRootChatId, result.previousParentChatId, chat.id]) {
+        if (!id || notified.has(id)) continue;
+        notified.add(id);
+        sessionRegistry.notifyMetadata(id, { cardEvent: "updated" });
+      }
+    }
     res.json(findChat(chat.id, false) ?? chat);
   } catch (err: any) {
     log.error(`Error detaching chat ${req.params.id}: ${err}`);
