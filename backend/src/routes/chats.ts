@@ -25,6 +25,7 @@ import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { SessionRoutingError } from "../agents/ports/SessionProvider.js";
 import { readChatSessionMessages, withSessionProvider, withSessionProviderMeta, findChat } from "../utils/chat-lookup.js";
 import { buildChatTree, buildLineageIndex, paginateTreeRows, walkToRootId } from "../services/chat-lineage.js";
+import { detachChatFromParent } from "../services/chat-detach.js";
 import { createSpaceResolver, parseSpaceScope, type SpaceResolver } from "../services/space-membership.js";
 import { spaceOfChat } from "../services/space-service.js";
 import { getSpace } from "../services/space-store.js";
@@ -1508,6 +1509,32 @@ chatsRouter.get("/:id/tree", (req, res) => {
   } catch (err: any) {
     log.error(`Error building chat tree for ${req.params.id}: ${err}`);
     res.status(500).json({ error: "Failed to build chat tree", details: err.message });
+  }
+});
+
+// Split a child chat off its parent so it becomes a standalone root chat
+chatsRouter.post("/:id/detach", (req, res) => {
+  // #swagger.tags = ['Chats']
+  // #swagger.summary = 'Split a child chat off its parent'
+  // #swagger.description = 'Removes the parent link from a child chat so it becomes a standalone, top-level chat with its own sidebar row and board card. Clears metadata parentChatId, forkedFrom, rootChatId, chatRole and forkedAt; stamps spaceId with the space the tree was in and records detachedFrom. Descendants of the chat are re-stamped onto it as their new root. Native Codex subagents are refused, because their parent is read from the Codex rollout. Does not bump updated_at.'
+  /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
+  /* #swagger.responses[200] = { description: "The updated chat" } */
+  /* #swagger.responses[400] = { description: "The chat has no parent" } */
+  /* #swagger.responses[404] = { description: "Chat not found" } */
+  /* #swagger.responses[409] = { description: "The chat is a native Codex subagent and cannot be detached" } */
+  try {
+    const chat = findChat(req.params.id, false) as any;
+    if (!chat) return res.status(404).json({ error: "Chat not found" });
+    // The ENRICHED read model on purpose: a native Codex child's parent is
+    // inferred at read time and never stored — see detachChatFromParent.
+    const result = detachChatFromParent(chat);
+    if (!result.ok) return res.status(result.status).json({ error: result.error });
+    // Row membership changes for two trees at once, so every cached page is wrong.
+    clearListCaches();
+    res.json(findChat(chat.id, false) ?? chat);
+  } catch (err: any) {
+    log.error(`Error detaching chat ${req.params.id}: ${err}`);
+    res.status(500).json({ error: "Failed to split off chat", details: err.message });
   }
 });
 
