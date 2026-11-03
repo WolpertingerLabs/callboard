@@ -89,8 +89,8 @@ async function renderAndExpand(children: ChatTreeNode[] = [makeNode("child", "He
   await screen.findByText(children[0].title!);
 }
 
-/** The tree node row for a title — the element carrying `title={label}`. */
-const nodeRow = (title: string) => screen.getAllByTitle(title).find((el) => el.textContent?.includes(title) && el.style.paddingLeft !== "")!;
+/** An expanded tree's node row, by chat id. */
+const nodeRow = (chatId: string) => screen.getAllByTestId("chat-tree-node").find((el) => el.dataset.chatId === chatId)!;
 
 beforeEach(() => {
   vi.mocked(listCards).mockResolvedValue({ cards: [] });
@@ -109,7 +109,7 @@ describe("ChatList split off — tree node context menu", () => {
     await renderAndExpand();
     const callsBefore = mockListChats.mock.calls.length;
 
-    fireEvent.contextMenu(nodeRow("Helper"), { clientX: 40, clientY: 60 });
+    fireEvent.contextMenu(nodeRow("child"), { clientX: 40, clientY: 60 });
     const entry = await screen.findByText(SPLIT);
     await act(async () => {
       fireEvent.click(entry);
@@ -123,7 +123,7 @@ describe("ChatList split off — tree node context menu", () => {
 
   it("does not offer it on the tree's root node", async () => {
     await renderAndExpand();
-    const root = nodeRow("Root thread");
+    const root = nodeRow("root");
     const event = fireEvent.contextMenu(root);
     expect(screen.queryByText(SPLIT)).toBeNull();
     // Unhandled, so the browser's own menu is left alone.
@@ -137,13 +137,32 @@ describe("ChatList split off — tree node context menu", () => {
         nativeAgent: { parentThreadId: "t", lifecycle: "complete", management: "read-only", controlNote: "read-only" },
       }),
     ]);
-    fireEvent.contextMenu(nodeRow("Helper"));
+    fireEvent.contextMenu(nodeRow("child"));
     expect(screen.queryByText(SPLIT)).toBeNull();
+  });
+
+  it("shows the entry as pending and disabled while the split is in flight, and sends one request", async () => {
+    let finish!: (chat: Chat) => void;
+    mockDetach.mockReturnValue(new Promise<Chat>((resolve) => (finish = resolve)));
+    await renderAndExpand();
+
+    fireEvent.contextMenu(nodeRow("child"));
+    fireEvent.click(await screen.findByText(SPLIT));
+    fireEvent.contextMenu(nodeRow("child"));
+    const pending = (await screen.findByText("Splitting off…")).closest("button")!;
+    expect(pending.disabled).toBe(true);
+    fireEvent.click(pending);
+    expect(mockDetach).toHaveBeenCalledTimes(1);
+
+    await act(async () => finish(CHILD));
+    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.contextMenu(nodeRow("child"));
+    expect((await screen.findByText(SPLIT)).closest("button")!.disabled).toBe(false);
   });
 
   it("closes on Escape without calling the API", async () => {
     await renderAndExpand();
-    fireEvent.contextMenu(nodeRow("Helper"));
+    fireEvent.contextMenu(nodeRow("child"));
     await screen.findByText(SPLIT);
     fireEvent.keyDown(window, { key: "Escape" });
     expect(screen.queryByText(SPLIT)).toBeNull();
@@ -153,7 +172,7 @@ describe("ChatList split off — tree node context menu", () => {
   it("says why when the server refuses", async () => {
     mockDetach.mockRejectedValue(new Error("This chat has no parent — it is already a standalone chat"));
     await renderAndExpand();
-    fireEvent.contextMenu(nodeRow("Helper"));
+    fireEvent.contextMenu(nodeRow("child"));
     await act(async () => {
       fireEvent.click(await screen.findByText(SPLIT));
     });
@@ -171,7 +190,7 @@ describe("ChatList split off — row kebab", () => {
     fireEvent.click(screen.getByTitle("Chat actions"));
   };
 
-  it("offers it on a row fronted by a child whose root is not loaded", async () => {
+  it("offers it on a row fronted by a child whose root is not loaded, naming that chat", async () => {
     mockDetach.mockResolvedValue(CHILD);
     mockListChats.mockResolvedValue(listResponse([CHILD]));
     render(
@@ -181,10 +200,34 @@ describe("ChatList split off — row kebab", () => {
     );
     await screen.findByText("Helper");
     openKebab("Helper");
+    // The group row stands for the whole group, so the entry names the chat.
+    const entry = screen.getByRole("menuitem", { name: /Split off “Helper”/ });
     await act(async () => {
-      fireEvent.click(screen.getByText(SPLIT));
+      fireEvent.click(entry);
     });
     expect(mockDetach).toHaveBeenCalledWith("child");
+  });
+
+  it("does not offer it on a row fronted by a native Codex child", async () => {
+    mockListChats.mockResolvedValue(
+      listResponse([
+        makeChat("native", {
+          title: "Codex helper",
+          provider: "codex",
+          parentChatId: "root",
+          nativeAgent: { parentThreadId: "t", lifecycle: "complete", management: "read-only", controlNote: "read-only" },
+        }),
+      ]),
+    );
+    render(
+      <MemoryRouter>
+        <ChatList onRefresh={() => {}} />
+      </MemoryRouter>,
+    );
+    await screen.findByText("Codex helper");
+    openKebab("Codex helper");
+    expect(screen.getByText("Delete")).toBeTruthy();
+    expect(screen.queryByText(/Split off/)).toBeNull();
   });
 
   it("does not offer it on a standalone chat", async () => {
@@ -197,7 +240,7 @@ describe("ChatList split off — row kebab", () => {
     await screen.findByText("Solo");
     openKebab("Solo");
     expect(screen.getByText("Delete")).toBeTruthy();
-    expect(screen.queryByText(SPLIT)).toBeNull();
+    expect(screen.queryByText(/Split off/)).toBeNull();
   });
 
   it("does not offer it on a group row fronted by its root", async () => {
@@ -209,6 +252,6 @@ describe("ChatList split off — row kebab", () => {
     await screen.findByText("Root thread");
     openKebab("Root thread");
     expect(screen.getByText("Delete")).toBeTruthy();
-    expect(screen.queryByText(SPLIT)).toBeNull();
+    expect(screen.queryByText(/Split off/)).toBeNull();
   });
 });

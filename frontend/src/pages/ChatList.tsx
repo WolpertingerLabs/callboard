@@ -643,13 +643,24 @@ export default function ChatList({
    * chat's descendants move with it — so the list and the card index are
    * simply refetched once it has been written. `load` bumps `listVersion`,
    * which is what refetches the expanded trees the chat just left.
+   *
+   * One request per chat at a time: the ref is the synchronous guard against
+   * a double click, the state is what disables the menu entry meanwhile.
    */
+  const detachingRef = useRef(new Set<string>());
+  const [detachingIds, setDetachingIds] = useState<ReadonlySet<string>>(() => new Set());
   const handleDetach = async (chatId: string, chatName: string) => {
+    if (detachingRef.current.has(chatId)) return;
+    detachingRef.current.add(chatId);
+    setDetachingIds(new Set(detachingRef.current));
     try {
       await detachChat(chatId);
     } catch (err) {
       setBulkError(`"${chatName}" could not be split off: ${(err as Error).message}`);
       return;
+    } finally {
+      detachingRef.current.delete(chatId);
+      setDetachingIds(new Set(detachingRef.current));
     }
     load();
     loadCards();
@@ -1749,6 +1760,7 @@ export default function ChatList({
           onTogglePin={handleTogglePin}
           onEditTitle={handleEditTitle}
           onDetach={handleDetach}
+          detachingIds={detachingIds}
           cardMenuFor={cardMenuFor}
           sessionStatusFor={(chatId) => (activeSessions.has(chatId) ? { active: true, type: activeSessions.get(chatId)!.type } : undefined)}
           isDimmed={isDimmed}

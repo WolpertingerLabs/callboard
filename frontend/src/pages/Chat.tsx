@@ -841,21 +841,35 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // render or message. A fork needs no refetch: runFork navigates to the new
   // chat, and coming back changes the id again. Stored with the id it was
   // fetched for, so a chat switch never shows the previous chat's tree.
+  //
+  // It IS refetched on metadata events, debounced like the sidebar's refetch:
+  // a tree can change under an open chat — a child split off from the sidebar
+  // (POST /detach notifies the old parent and root) must drop out of this
+  // chat's indicator and take its inline fork marker with it. The version is
+  // global, so the debounce keeps a burst of unrelated events to one request.
   const [chatTreeState, setChatTreeState] = useState<{ chatId: string; tree: ChatTreeResponse } | null>(null);
+  const treeFetchedForRef = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (!id) return;
     let cancelled = false;
-    getChatTree(id)
-      .then((tree) => {
-        if (!cancelled && tree?.tree) setChatTreeState({ chatId: id, tree });
-      })
-      .catch(() => {
-        // No stored record / no tree — no indicator, no markers.
-      });
+    const fetchTree = () =>
+      getChatTree(id)
+        .then((tree) => {
+          if (!cancelled && tree?.tree) setChatTreeState({ chatId: id, tree });
+        })
+        .catch(() => {
+          // No stored record / no tree — no indicator, no markers.
+        });
+    // A new chat fetches at once; a metadata bump on the same chat waits.
+    const isNewChat = treeFetchedForRef.current !== id;
+    treeFetchedForRef.current = id;
+    const timer = isNewChat ? undefined : setTimeout(fetchTree, 500);
+    if (isNewChat) fetchTree();
     return () => {
       cancelled = true;
+      if (timer) clearTimeout(timer);
     };
-  }, [id]);
+  }, [id, metadataVersion]);
   const chatTree = chatTreeState && chatTreeState.chatId === id ? chatTreeState.tree : null;
 
   // This chat's direct forks by fork point; the arrays are what the memoized
