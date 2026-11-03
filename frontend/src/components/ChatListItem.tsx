@@ -20,6 +20,7 @@ import {
   Layers,
   FolderInput,
   Copy,
+  Unlink,
 } from "lucide-react";
 import type { Chat } from "../api";
 import { chatMeta } from "../utils/chatMeta";
@@ -32,6 +33,7 @@ import { useSelectionActivation } from "../hooks/useSelectionActivation";
 import ProviderBadge from "./ProviderBadge";
 import FolderPathPill from "./FolderPathPill";
 import MenuRow from "./MenuRow";
+import { SPLIT_OFF_LABEL, SPLIT_OFF_TITLE } from "../utils/splitOffChat";
 import SpaceChip from "./SpaceChip";
 import type { SpaceListItem } from "shared/types/space.js";
 
@@ -131,6 +133,12 @@ interface Props {
   spaceChip?: SpaceListItem;
   /** Opens the list's "Move to space…" picker for this row's whole tree. */
   onMoveToSpace?: () => void;
+  /**
+   * Split this chat off its parent so it becomes a standalone chat. Omit to
+   * leave the entry out — the list passes it only for a row fronted by a chat
+   * that has a parent, which happens when the group's root is not loaded.
+   */
+  onDetach?: () => void;
   sessionStatus?: { active: boolean; type: string };
   /**
    * The list's roll-up of live work across every chat this row stands for:
@@ -231,6 +239,7 @@ export default function ChatListItem({
   cardMenu,
   spaceChip,
   onMoveToSpace,
+  onDetach,
   sessionStatus,
   activity,
   dimmed,
@@ -764,7 +773,7 @@ export default function ChatListItem({
                 const rect = e.currentTarget.getBoundingClientRect();
                 const right = Math.max(8, window.innerWidth - rect.right);
                 // Flip upward when there isn't room below in the viewport.
-                if (rect.bottom + MENU_ESTIMATED_HEIGHT > window.innerHeight) {
+                if (rect.bottom + MENU_ESTIMATED_HEIGHT + (onDetach ? 44 : 0) > window.innerHeight) {
                   setMenuPos({ bottom: window.innerHeight - rect.top + 4, right });
                 } else {
                   setMenuPos({ top: rect.bottom + 4, right });
@@ -888,6 +897,17 @@ export default function ChatListItem({
                       onClick={() => {
                         setMenuPos(null);
                         onMoveToSpace();
+                      }}
+                    />
+                  )}
+                  {onDetach && (
+                    <MenuRow
+                      icon={<Unlink size={16} />}
+                      label={SPLIT_OFF_LABEL}
+                      title={SPLIT_OFF_TITLE}
+                      onClick={() => {
+                        setMenuPos(null);
+                        onDetach();
                       }}
                     />
                   )}

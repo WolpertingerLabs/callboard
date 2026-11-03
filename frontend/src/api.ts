@@ -373,6 +373,16 @@ export async function getChatTree(id: string, space?: string): Promise<ChatTreeR
   return request(`/chats/${seg(id)}/tree${query(params)}`, { error: "Failed to get chat tree" });
 }
 
+/**
+ * Split a child chat off its parent: it becomes a standalone root with its own
+ * sidebar row and card, taking its own descendants with it. The server refuses
+ * a chat with no parent (400) and a native Codex subagent (409), and the
+ * thrown error carries its message.
+ */
+export async function detachChat(id: string): Promise<Chat> {
+  return request(`/chats/${seg(id)}/detach`, { method: "POST", error: "Failed to split off chat" });
+}
+
 export async function searchChatContents(query: string): Promise<{ chatIds: string[] }> {
   const params = new URLSearchParams({ q: query });
   return request(`/chats/search?${params}`, { error: "Failed to search chats" });

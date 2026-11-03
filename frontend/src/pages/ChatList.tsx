@@ -11,6 +11,7 @@ import {
   toggleBookmark,
   togglePin,
   setChatSidebarFolder,
+  detachChat,
   getDrafts,
   deleteDraft,
   listCards,
@@ -634,6 +635,24 @@ export default function ChatList({
       setBulkError(`"${chatName}" could not be deleted: ${(err as Error).message}`);
     }
     load();
+  };
+
+  /**
+   * Split a child chat off its parent so it becomes its own root row (and its
+   * own card). Not optimistic: the regrouping is the server's to decide — the
+   * chat's descendants move with it — so the list and the card index are
+   * simply refetched once it has been written. `load` bumps `listVersion`,
+   * which is what refetches the expanded trees the chat just left.
+   */
+  const handleDetach = async (chatId: string, chatName: string) => {
+    try {
+      await detachChat(chatId);
+    } catch (err) {
+      setBulkError(`"${chatName}" could not be split off: ${(err as Error).message}`);
+      return;
+    }
+    load();
+    loadCards();
   };
 
   /** Open the editor. Nothing is written until the dialog asks for it. */
@@ -1729,6 +1748,7 @@ export default function ChatList({
           onToggleBookmark={handleToggleBookmark}
           onTogglePin={handleTogglePin}
           onEditTitle={handleEditTitle}
+          onDetach={handleDetach}
           cardMenuFor={cardMenuFor}
           sessionStatusFor={(chatId) => (activeSessions.has(chatId) ? { active: true, type: activeSessions.get(chatId)!.type } : undefined)}
           isDimmed={isDimmed}
