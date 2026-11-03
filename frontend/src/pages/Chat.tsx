@@ -279,6 +279,11 @@ function InFlightBubbles({ messages }: { messages: InFlightMessage[] }) {
   );
 }
 
+/** At most one parentage-tree refetch per this long while a chat is open — see the tree effect. */
+const TREE_REFRESH_INTERVAL_MS = 10_000;
+/** Even right after a quiet spell, wait this long so a burst of ticks costs one request. */
+const TREE_REFRESH_MIN_DELAY_MS = 1_000;
+
 export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -841,21 +846,60 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // render or message. A fork needs no refetch: runFork navigates to the new
   // chat, and coming back changes the id again. Stored with the id it was
   // fetched for, so a chat switch never shows the previous chat's tree.
+  //
+  // It IS refetched on metadata events, because a tree can change under an
+  // open chat — a child split off from the sidebar (POST /detach notifies the
+  // old parent and root) must drop out of this chat's indicator and take its
+  // inline fork marker with it. But the poll reports only a global version,
+  // not which chat changed, and it ticks once a second while anything anywhere
+  // is busy, so the refetch is THROTTLED rather than debounced: at most one
+  // tree request per TREE_REFRESH_INTERVAL_MS. A debounce would either cost a
+  // request per tick (short) or never fire while some other chat keeps
+  // ticking (long); the throttle bounds the cost and still lands the change.
   const [chatTreeState, setChatTreeState] = useState<{ chatId: string; tree: ChatTreeResponse } | null>(null);
-  useEffect(() => {
-    if (!id) return;
-    let cancelled = false;
-    getChatTree(id)
+  /** Bumped per request and on chat switch: only the latest response may land. */
+  const treeRequestSeqRef = useRef(0);
+  const treeLastFetchAtRef = useRef(0);
+  const treeRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const treeSeenVersionRef = useRef(metadataVersion);
+  const fetchChatTree = useCallback((chatId: string) => {
+    const seq = ++treeRequestSeqRef.current;
+    treeLastFetchAtRef.current = Date.now();
+    getChatTree(chatId)
       .then((tree) => {
-        if (!cancelled && tree?.tree) setChatTreeState({ chatId: id, tree });
+        if (seq === treeRequestSeqRef.current && tree?.tree) setChatTreeState({ chatId, tree });
       })
       .catch(() => {
         // No stored record / no tree — no indicator, no markers.
       });
+  }, []);
+  // Opening a chat fetches at once; leaving it drops any refresh in flight.
+  useEffect(() => {
+    if (!id) return;
+    fetchChatTree(id);
+    // The ref OBJECTS, not their values: cleanup must act on what they hold
+    // when it runs (a request issued or a refresh scheduled since).
+    const seq = treeRequestSeqRef;
+    const timer = treeRefreshTimerRef;
     return () => {
-      cancelled = true;
+      seq.current++;
+      clearTimeout(timer.current);
+      timer.current = undefined;
     };
-  }, [id]);
+  }, [id, fetchChatTree]);
+  // A metadata event schedules one refresh, no sooner than the interval after
+  // the last fetch. Events while it is pending are already covered by it, so
+  // this effect has no cleanup — a new tick must not reset the clock.
+  useEffect(() => {
+    if (!id || metadataVersion === treeSeenVersionRef.current) return;
+    treeSeenVersionRef.current = metadataVersion;
+    if (treeRefreshTimerRef.current) return;
+    const wait = Math.max(TREE_REFRESH_MIN_DELAY_MS, treeLastFetchAtRef.current + TREE_REFRESH_INTERVAL_MS - Date.now());
+    treeRefreshTimerRef.current = setTimeout(() => {
+      treeRefreshTimerRef.current = undefined;
+      fetchChatTree(id);
+    }, wait);
+  }, [id, metadataVersion, fetchChatTree]);
   const chatTree = chatTreeState && chatTreeState.chatId === id ? chatTreeState.tree : null;
 
   // This chat's direct forks by fork point; the arrays are what the memoized

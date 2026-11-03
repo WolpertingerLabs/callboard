@@ -108,6 +108,26 @@ export function pendingRequestRequiresHuman(chatId: string): boolean {
   return pendingRequests.get(chatId)?.humanOnly === true;
 }
 
+/**
+ * Take back the offer of a chat's open prompt to its parent (`offeredToParent`),
+ * so only the user can answer it from here on. For a chat split off its parent
+ * (chat-detach.ts): the prompt was raised while it was a child, and the old
+ * parent must not keep the authority to approve it. `keys` are the ids the
+ * prompt may be parked under — the chat id and its session id. Returns the
+ * parent the offer was withdrawn from, if there was one.
+ */
+export function withdrawParentOffer(keys: string[]): string | undefined {
+  for (const key of keys) {
+    const pending = pendingRequests.get(key);
+    if (!pending?.offeredToParent) continue;
+    const parent = pending.offeredToParent;
+    delete pending.offeredToParent;
+    log.info(`[PERM-DIAG] withdrew ${pending.toolName} prompt on ${key} from parent ${parent} — chat was split off`);
+    return parent;
+  }
+  return undefined;
+}
+
 export function respondToPermission(
   chatId: string,
   allow: boolean,

@@ -233,6 +233,26 @@ export function removeCallbacks(ids: string[]): void {
   if (store.callbacks.length !== before) writeStore(store);
 }
 
+/**
+ * Drop every callback waiting on (or ready from) a child, whichever chat
+ * registered it. For a chat split off its parent (chat-detach.ts): it is no
+ * longer anyone's child, so its completion must not wake the chat that spawned
+ * or followed it up.
+ *
+ * Takes every id the child may be registered under — its chat id and its
+ * session id: `continue_chat` registers whatever id it was called with, which
+ * can be the session id. Returns the removed registrations.
+ */
+export function removeCallbacksForChild(childIds: string[]): PendingCallback[] {
+  const ids = new Set(childIds);
+  const store = readStore();
+  const removed = store.callbacks.filter((cb) => ids.has(cb.childChatId));
+  if (!removed.length) return removed;
+  store.callbacks = store.callbacks.filter((cb) => !ids.has(cb.childChatId));
+  writeStore(store);
+  return removed;
+}
+
 /** Distinct parent chat ids that currently have at least one "ready" callback. */
 export function parentsWithReadyCallbacks(): string[] {
   const seen = new Set<string>();

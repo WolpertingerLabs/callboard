@@ -1,5 +1,4 @@
-import { useEffect, useState } from "react";
-import { createPortal } from "react-dom";
+import { useEffect, useRef, useState } from "react";
 import {
   Globe,
   Monitor,
@@ -20,6 +19,7 @@ import {
   Layers,
   FolderInput,
   Copy,
+  Unlink,
 } from "lucide-react";
 import type { Chat } from "../api";
 import { chatMeta } from "../utils/chatMeta";
@@ -32,6 +32,8 @@ import { useSelectionActivation } from "../hooks/useSelectionActivation";
 import ProviderBadge from "./ProviderBadge";
 import FolderPathPill from "./FolderPathPill";
 import MenuRow from "./MenuRow";
+import PopupMenu, { placePopupMenu, type PopupMenuPosition } from "./PopupMenu";
+import { splitOffLabelFor, SPLIT_OFF_PENDING_LABEL, SPLIT_OFF_TITLE } from "../utils/splitOffChat";
 import SpaceChip from "./SpaceChip";
 import type { SpaceListItem } from "shared/types/space.js";
 
@@ -131,6 +133,14 @@ interface Props {
   spaceChip?: SpaceListItem;
   /** Opens the list's "Move to space…" picker for this row's whole tree. */
   onMoveToSpace?: () => void;
+  /**
+   * Split this chat off its parent so it becomes a standalone chat. Omit to
+   * leave the entry out — the list passes it only for a row fronted by a chat
+   * that has a parent, which happens when the group's root is not loaded.
+   */
+  onDetach?: () => void;
+  /** A split-off of this chat is in flight: the entry stays, disabled. */
+  detaching?: boolean;
   sessionStatus?: { active: boolean; type: string };
   /**
    * The list's roll-up of live work across every chat this row stands for:
@@ -188,6 +198,8 @@ const stopGesture = {
  * the sidebar precisely when that matters.
  */
 const MENU_ESTIMATED_HEIGHT = 290;
+/** One MenuRow's height (its minHeight), for entries only some rows carry. */
+const MENU_ROW_HEIGHT = 44;
 
 /**
  * The lifecycle entry's tooltip: what is about to happen, and to how much.
@@ -231,6 +243,8 @@ export default function ChatListItem({
   cardMenu,
   spaceChip,
   onMoveToSpace,
+  onDetach,
+  detaching = false,
   sessionStatus,
   activity,
   dimmed,
@@ -243,8 +257,9 @@ export default function ChatListItem({
   const [hovered, setHovered] = useState(false);
   // The kebab popup escapes the sidebar's overflow:auto scroll container via
   // position:fixed, anchored to the button's viewport rect at open time.
-  const [menuPos, setMenuPos] = useState<{ top?: number; bottom?: number; right: number } | null>(null);
+  const [menuPos, setMenuPos] = useState<PopupMenuPosition | null>(null);
   const menuOpen = menuPos !== null;
+  const kebabRef = useRef<HTMLButtonElement>(null);
   const isMobile = useIsMobile();
   // On touch/mobile there is no hover, so keep the row actions visible. Also
   // keep the kebab mounted while its menu is open (hover is lost to the popup).
@@ -263,24 +278,6 @@ export default function ChatListItem({
     if (selectionMode) setMenuPos(null);
   }, [selectionMode]);
 
-  // The menu is anchored to the kebab's viewport rect at open time, so close
-  // it on any scroll (else it detaches from its row) and on Escape — matching
-  // the composer menu's behavior in PromptInput.
-  useEffect(() => {
-    if (!menuOpen) return;
-    const close = () => setMenuPos(null);
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") close();
-    };
-    window.addEventListener("scroll", close, true);
-    window.addEventListener("resize", close);
-    window.addEventListener("keydown", onKeyDown);
-    return () => {
-      window.removeEventListener("scroll", close, true);
-      window.removeEventListener("resize", close);
-      window.removeEventListener("keydown", onKeyDown);
-    };
-  }, [menuOpen]);
   const displayPath = chat.displayFolder || chat.folder;
   const folderName = displayPath?.split("/").pop() || displayPath || "Chat";
   // The group's latest where the list rolled one up — a row sitting at the top
@@ -754,6 +751,7 @@ export default function ChatListItem({
           )}
           {showMenuButton && (
             <button
+              ref={kebabRef}
               {...stopGesture}
               onClick={(e) => {
                 e.stopPropagation();
@@ -762,15 +760,21 @@ export default function ChatListItem({
                   return;
                 }
                 const rect = e.currentTarget.getBoundingClientRect();
-                const right = Math.max(8, window.innerWidth - rect.right);
-                // Flip upward when there isn't room below in the viewport.
-                if (rect.bottom + MENU_ESTIMATED_HEIGHT > window.innerHeight) {
-                  setMenuPos({ bottom: window.innerHeight - rect.top + 4, right });
-                } else {
-                  setMenuPos({ top: rect.bottom + 4, right });
-                }
+                // Hangs off the kebab's right edge; flips upward when there
+                // isn't room below in the viewport.
+                setMenuPos(
+                  placePopupMenu({
+                    x: rect.right,
+                    below: rect.bottom + 4,
+                    above: rect.top - 4,
+                    align: "right",
+                    estimatedHeight: MENU_ESTIMATED_HEIGHT + (onDetach ? MENU_ROW_HEIGHT : 0),
+                  }),
+                );
               }}
               title="Chat actions"
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
               style={{
                 background: "none",
                 color: menuOpen ? "var(--chatlist-icon-active)" : "var(--chatlist-icon)",
@@ -782,158 +786,132 @@ export default function ChatListItem({
               <EllipsisVertical size={14} />
             </button>
           )}
-          {/*
-           * Portaled to the body, not rendered in place. A dimmed row carries
-           * `opacity` (see `faded` above), which both fades every descendant —
-           * `position: fixed` does not opt a child out of its parent's alpha —
-           * and makes the row a stacking context the popup's z-index cannot
-           * escape. React events still bubble through the React tree, so the
-           * stopPropagation calls below keep blocking the row's onClick.
-           */}
-          {menuOpen &&
-            createPortal(
-              <>
-                {/* Click-away overlay — also blocks the row's onClick. */}
-                <div
-                  onClick={(e) => {
-                    e.stopPropagation();
+          {/* Portaled to the body — see PopupMenu for why. */}
+          {menuOpen && (
+            <PopupMenu position={menuPos} onClose={() => setMenuPos(null)} label={`Actions for ${displayName}`} returnFocusTo={kebabRef}>
+              {onToggleBookmark && (
+                <MenuRow
+                  icon={
+                    <Bookmark
+                      size={16}
+                      style={{ color: isBookmarked ? "var(--chatlist-bookmark-icon)" : undefined }}
+                      fill={isBookmarked ? "var(--chatlist-bookmark-icon)" : "none"}
+                    />
+                  }
+                  label={isBookmarked ? "Remove bookmark" : "Bookmark"}
+                  title={isBookmarked ? "Remove bookmark" : "Bookmark this chat"}
+                  onClick={() => {
                     setMenuPos(null);
+                    onToggleBookmark(!isBookmarked);
                   }}
-                  style={{ position: "fixed", inset: 0, zIndex: 50 }}
                 />
-                <div
-                  onClick={(e) => e.stopPropagation()}
-                  style={{
-                    position: "fixed",
-                    top: menuPos.top,
-                    bottom: menuPos.bottom,
-                    right: menuPos.right,
-                    minWidth: 180,
-                    zIndex: 51,
-                    padding: 6,
-                    borderRadius: 10,
-                    background: "var(--surface)",
-                    border: "1px solid var(--border)",
-                    boxShadow: "var(--shadow-md)",
+              )}
+              {onTogglePin && (
+                <MenuRow
+                  icon={isPinned ? <PinOff size={16} /> : <Pin size={16} style={{ color: "var(--chatlist-pin-icon)" }} fill="var(--chatlist-pin-icon)" />}
+                  label={isPinned ? "Unpin" : "Pin"}
+                  // "the row", not "the chat": on a group row this clears
+                  // the pin wherever in the group it was set.
+                  title={isPinned ? "Unpin — the row returns to the list in date order" : "Pin this chat to the top of the sidebar"}
+                  onClick={() => {
+                    setMenuPos(null);
+                    onTogglePin(!isPinned);
                   }}
-                >
-                  {onToggleBookmark && (
-                    <MenuRow
-                      icon={
-                        <Bookmark
-                          size={16}
-                          style={{ color: isBookmarked ? "var(--chatlist-bookmark-icon)" : undefined }}
-                          fill={isBookmarked ? "var(--chatlist-bookmark-icon)" : "none"}
-                        />
-                      }
-                      label={isBookmarked ? "Remove bookmark" : "Bookmark"}
-                      title={isBookmarked ? "Remove bookmark" : "Bookmark this chat"}
-                      onClick={() => {
-                        setMenuPos(null);
-                        onToggleBookmark(!isBookmarked);
-                      }}
-                    />
-                  )}
-                  {onTogglePin && (
-                    <MenuRow
-                      icon={
-                        isPinned ? (
-                          <PinOff size={16} />
-                        ) : (
-                          <Pin size={16} style={{ color: "var(--chatlist-pin-icon)" }} fill="var(--chatlist-pin-icon)" />
-                        )
-                      }
-                      label={isPinned ? "Unpin" : "Pin"}
-                      // "the row", not "the chat": on a group row this clears
-                      // the pin wherever in the group it was set.
-                      title={isPinned ? "Unpin — the row returns to the list in date order" : "Pin this chat to the top of the sidebar"}
-                      onClick={() => {
-                        setMenuPos(null);
-                        onTogglePin(!isPinned);
-                      }}
-                    />
-                  )}
-                  {onMoveToFolder && (
-                    <MenuRow
-                      icon={<FolderInput size={16} />}
-                      label={sidebarFolder ? "Move to folder…" : "Add to folder…"}
-                      // "its tree": a row is filed whole, by its root.
-                      title={
-                        sidebarFolder
-                          ? `In folder "${sidebarFolder}" — move it, with its tree, to another folder or out of folders`
-                          : "File this chat, with its tree, into a sidebar folder"
-                      }
-                      onClick={() => {
-                        setMenuPos(null);
-                        onMoveToFolder();
-                      }}
-                    />
-                  )}
-                  {(cardMenu?.card || cardMenu?.tree) && cardMenu.onToggleLifecycle && (
-                    <MenuRow
-                      icon={!menuArchived ? <Archive size={16} /> : <ArchiveRestore size={16} />}
-                      label={!menuArchived ? "Archive chat" : "Unarchive chat"}
-                      title={cardMenu.card ? cardLifecycleTitle(cardMenu.card) : treeArchiveTitle(displayName, cardMenu.tree!)}
-                      onClick={() => {
-                        setMenuPos(null);
-                        cardMenu.onToggleLifecycle!();
-                      }}
-                    />
-                  )}
-                  {onMoveToSpace && (
-                    <MenuRow
-                      icon={<Layers size={16} />}
-                      label="Move to space…"
-                      title="Move this chat's whole tree to another space"
-                      onClick={() => {
-                        setMenuPos(null);
-                        onMoveToSpace();
-                      }}
-                    />
-                  )}
-                  {onEditTitle && (
-                    <MenuRow
-                      icon={<Pencil size={16} />}
-                      label="Edit title"
-                      title="Rename this chat, or have a title re-derived from what the conversation has become"
-                      onClick={() => {
-                        setMenuPos(null);
-                        onEditTitle();
-                      }}
-                    />
-                  )}
-                  {/*
-                   * The provider's session id (what `claude --resume` takes),
-                   * not `chat.id` — that is Callboard's own id and is already
-                   * in the URL. On a group row `chat` is the chat the row
-                   * opens, so this is that chat's session, not the group's.
-                   * There is no toast to report into and the menu closes on
-                   * click; `copyToClipboard` never rejects, so a failed copy
-                   * is simply a no-op.
-                   */}
-                  <MenuRow
-                    icon={<Copy size={16} />}
-                    label="Copy session ID"
-                    title={`Copy this chat's session ID (${chat.session_id}) to the clipboard`}
-                    onClick={() => {
-                      setMenuPos(null);
-                      void copyToClipboard(chat.session_id);
-                    }}
-                  />
-                  <MenuRow
-                    icon={<X size={16} />}
-                    label="Delete"
-                    title="Delete this chat"
-                    danger
-                    onClick={() => {
-                      setMenuPos(null);
-                      onDelete();
-                    }}
-                  />
-                </div>
-              </>,
-              document.body,
-            )}
+                />
+              )}
+              {onMoveToFolder && (
+                <MenuRow
+                  icon={<FolderInput size={16} />}
+                  label={sidebarFolder ? "Move to folder…" : "Add to folder…"}
+                  // "its tree": a row is filed whole, by its root.
+                  title={
+                    sidebarFolder
+                      ? `In folder "${sidebarFolder}" — move it, with its tree, to another folder or out of folders`
+                      : "File this chat, with its tree, into a sidebar folder"
+                  }
+                  onClick={() => {
+                    setMenuPos(null);
+                    onMoveToFolder();
+                  }}
+                />
+              )}
+              {(cardMenu?.card || cardMenu?.tree) && cardMenu.onToggleLifecycle && (
+                <MenuRow
+                  icon={!menuArchived ? <Archive size={16} /> : <ArchiveRestore size={16} />}
+                  label={!menuArchived ? "Archive chat" : "Unarchive chat"}
+                  title={cardMenu.card ? cardLifecycleTitle(cardMenu.card) : treeArchiveTitle(displayName, cardMenu.tree!)}
+                  onClick={() => {
+                    setMenuPos(null);
+                    cardMenu.onToggleLifecycle!();
+                  }}
+                />
+              )}
+              {onMoveToSpace && (
+                <MenuRow
+                  icon={<Layers size={16} />}
+                  label="Move to space…"
+                  title="Move this chat's whole tree to another space"
+                  onClick={() => {
+                    setMenuPos(null);
+                    onMoveToSpace();
+                  }}
+                />
+              )}
+              {onDetach && (
+                <MenuRow
+                  icon={<Unlink size={16} />}
+                  // Named: this row stands for its whole group, so the
+                  // entry says which chat leaves it.
+                  label={detaching ? SPLIT_OFF_PENDING_LABEL : splitOffLabelFor(displayName)}
+                  title={SPLIT_OFF_TITLE}
+                  disabled={detaching}
+                  onClick={() => {
+                    setMenuPos(null);
+                    onDetach();
+                  }}
+                />
+              )}
+              {onEditTitle && (
+                <MenuRow
+                  icon={<Pencil size={16} />}
+                  label="Edit title"
+                  title="Rename this chat, or have a title re-derived from what the conversation has become"
+                  onClick={() => {
+                    setMenuPos(null);
+                    onEditTitle();
+                  }}
+                />
+              )}
+              {/*
+               * The provider's session id (what `claude --resume` takes),
+               * not `chat.id` — that is Callboard's own id and is already
+               * in the URL. On a group row `chat` is the chat the row
+               * opens, so this is that chat's session, not the group's.
+               * There is no toast to report into and the menu closes on
+               * click; `copyToClipboard` never rejects, so a failed copy
+               * is simply a no-op.
+               */}
+              <MenuRow
+                icon={<Copy size={16} />}
+                label="Copy session ID"
+                title={`Copy this chat's session ID (${chat.session_id}) to the clipboard`}
+                onClick={() => {
+                  setMenuPos(null);
+                  void copyToClipboard(chat.session_id);
+                }}
+              />
+              <MenuRow
+                icon={<X size={16} />}
+                label="Delete"
+                title="Delete this chat"
+                danger
+                onClick={() => {
+                  setMenuPos(null);
+                  onDelete();
+                }}
+              />
+            </PopupMenu>
+          )}
         </div>
       )}
     </div>

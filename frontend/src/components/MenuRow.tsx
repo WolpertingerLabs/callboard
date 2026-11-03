@@ -1,7 +1,18 @@
+import { createContext, useContext } from "react";
+
 /**
  * Shared popup-menu row. Used by the composer hamburger menu (PromptInput)
- * and the chat-sidebar kebab menu (ChatListItem).
+ * and the chat-sidebar menus (ChatListItem's kebab, ChatTreeList's context
+ * menu — both through PopupMenu).
  */
+
+/**
+ * True inside a `role="menu"` container — PopupMenu provides it — so the rows
+ * there announce themselves as menu items. False elsewhere (the composer
+ * menu), where a `menuitem` with no `menu` around it would be a broken role.
+ */
+export const MenuRoleContext = createContext(false);
+
 export interface MenuItem {
   key: string;
   icon: React.ReactNode;
@@ -16,8 +27,10 @@ export interface MenuItem {
 }
 
 export default function MenuRow({ icon, label, onClick, disabled, active, title, danger }: Omit<MenuItem, "key">) {
+  const inMenu = useContext(MenuRoleContext);
   return (
     <button
+      role={inMenu ? "menuitem" : undefined}
       onClick={onClick}
       disabled={disabled}
       title={title}

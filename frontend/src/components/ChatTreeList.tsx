@@ -1,12 +1,16 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ChevronDown, ChevronRight, ListTree, Loader2 } from "lucide-react";
+import { ChevronDown, ChevronRight, ListTree, Loader2, Unlink } from "lucide-react";
 import { getChatTree, type Chat, type ChatTreeNode, type ChatTreeResponse } from "../api";
 import { chatMeta } from "../utils/chatMeta";
 import ChatListItem, { type ChatCardMenu } from "./ChatListItem";
 import ChatSectionHeader from "./ChatSectionHeader";
 import ProviderBadge from "./ProviderBadge";
 import ChatRoleBadge from "./ChatRoleBadge";
+import MenuRow from "./MenuRow";
+import { useLongPress } from "../hooks/useLongPress";
+import PopupMenu, { placePopupMenu, type PopupMenuPosition } from "./PopupMenu";
+import { canSplitOff, SPLIT_OFF_LABEL, SPLIT_OFF_PENDING_LABEL, SPLIT_OFF_TITLE } from "../utils/splitOffChat";
 import { isChatPinned, sectionChatRows, type ChatSection } from "../utils/chatSections";
 import type { ChatSectionKey } from "../utils/localStorage";
 import { useChatSectionExpansion } from "../hooks/useChatSectionExpansion";
@@ -94,6 +98,15 @@ interface Props {
    * see `Row.canFile` — and absent hides the menu entry everywhere.
    */
   onMoveToFolder?: (chat: Chat, currentFolder: string | undefined, pinned: boolean) => void;
+  /**
+   * Split a child chat off its parent, given its id and a name for errors.
+   * Offered from the right-click / long-press menu on an expanded tree's child
+   * nodes, and from the kebab of a group row fronted by a child (its root not
+   * loaded). Absent hides both.
+   */
+  onDetach?: (chatId: string, chatName: string) => void;
+  /** Chats whose split-off is in flight; their entries show as pending and disabled. */
+  detachingIds?: ReadonlySet<string>;
 }
 
 /** What one row is told about the selection it is part of. */
@@ -529,17 +542,45 @@ const STATUS_DOT: Record<ChatTreeNode["status"], string> = {
   stopped: "var(--text-muted)",
 };
 
+/**
+ * What a tree node needs to offer "split off" — one object, so the recursion
+ * passes it down whole.
+ */
+interface TreeSplitOff {
+  onDetach: (chatId: string, chatName: string) => void;
+  /** A split-off of this chat is in flight. */
+  isDetaching: (chatId: string) => boolean;
+  /**
+   * A multi-select is live in the list. The menu acts on one chat, so it is
+   * not offered (and an open one closes) while a gesture aimed at several is
+   * under way — the same rule ChatListItem's kebab follows.
+   */
+  selectionActive: boolean;
+}
+
+/** One row of the MenuRow list plus padding — the tree menu holds one entry. */
+const TREE_MENU_ESTIMATED_HEIGHT = 60;
+const TREE_MENU_WIDTH = 240;
+
 function TreeNodeRow({
   node,
   depth,
   activeChatId,
   onNavigate,
+  splitOff,
 }: {
   node: ChatTreeNode;
   depth: number;
   activeChatId?: string;
   onNavigate: (chatId: string) => void;
+  splitOff?: TreeSplitOff;
 }) {
+  const [menu, setMenu] = useState<{ position: PopupMenuPosition; openedByTouch: boolean } | null>(null);
+  const rowRef = useRef<HTMLDivElement>(null);
+  /** Where a right-click put the pointer; a long press and the keyboard fall back to the row. */
+  const pointerAt = useRef<{ x: number; y: number } | null>(null);
+  /** The kind of the last pointer pressed on the row — a touch-opened menu gets a grace period. */
+  const lastPointerType = useRef<string>("mouse");
   const isActive = node.chatId === activeChatId;
   const time = new Date(node.updatedAt).toLocaleDateString(undefined, {
     month: "short",
@@ -548,12 +589,84 @@ function TreeNodeRow({
     minute: "2-digit",
   });
   const folderName = node.folder?.split("/").pop() || node.folder;
+  const label = node.title || folderName;
+  // A node at depth > 0 is attached by its parent pointer (see buildChatTree),
+  // so it has one; a native Codex subagent's is inferred and cannot be cleared.
+  const splittable = !!splitOff && depth > 0 && !node.nativeAgent && !splitOff.selectionActive;
+  const detaching = !!splitOff?.isDetaching(node.chatId);
+
+  // A selection starting closes an open menu — adjusted during render rather
+  // than in an effect, so the stale menu never paints.
+  if (menu && !splittable) setMenu(null);
+
+  const openMenu = (at: { x: number; y: number } | null) => {
+    const rect = rowRef.current?.getBoundingClientRect();
+    const point = at ?? { x: (rect?.left ?? 0) + 24, y: rect?.bottom ?? 0 };
+    setMenu({
+      position: placePopupMenu({ x: point.x, below: point.y, align: "left", estimatedHeight: TREE_MENU_ESTIMATED_HEIGHT, width: TREE_MENU_WIDTH }),
+      openedByTouch: lastPointerType.current !== "mouse",
+    });
+  };
+  const { handlers: pressHandlers, consumeClickSuppression } = useLongPress({
+    onLongPress: () => {
+      const at = pointerAt.current;
+      pointerAt.current = null;
+      openMenu(at);
+    },
+  });
+  const menuProps = splittable
+    ? {
+        ...pressHandlers,
+        onPointerDownCapture: (e: React.PointerEvent) => {
+          lastPointerType.current = e.pointerType || "mouse";
+          pressHandlers.onPointerDownCapture(e);
+        },
+        onContextMenu: (e: React.MouseEvent) => {
+          // A keyboard-raised contextmenu reports (0, 0): open at the row.
+          pointerAt.current = e.clientX || e.clientY ? { x: e.clientX, y: e.clientY } : null;
+          pressHandlers.onContextMenu(e);
+        },
+        onKeyDown: (e: React.KeyboardEvent) => {
+          // The row's own keys only: the menu is portaled, but its events
+          // still bubble through the React tree to here.
+          if (e.target !== e.currentTarget) return;
+          if (e.key === "ContextMenu" || (e.key === "F10" && e.shiftKey)) {
+            e.preventDefault();
+            lastPointerType.current = "mouse";
+            openMenu(null);
+          }
+        },
+      }
+    : {};
 
   return (
     <>
       <div
-        onClick={() => onNavigate(node.chatId)}
-        title={node.title || folderName}
+        ref={rowRef}
+        data-testid="chat-tree-node"
+        data-chat-id={node.chatId}
+        onClick={() => {
+          // The click a long press or right-click leaves behind opens the
+          // menu, not the chat.
+          if (splittable && consumeClickSuppression()) return;
+          onNavigate(node.chatId);
+        }}
+        {...menuProps}
+        // Focusable so the keyboard can reach the context menu, and so Enter
+        // opens the chat the way a click does. A link, not a treeitem: what
+        // the row does is navigate, and nothing around it is tree markup (the
+        // group header and these rows are plain divs), so a lone treeitem
+        // would announce a structure that is not there. Named by its title —
+        // the badges and timestamp inside would make a noisy computed name.
+        role="link"
+        tabIndex={0}
+        aria-label={node.role ? `${label} (${node.role})` : label}
+        onKeyUp={(e) => {
+          // Not a keyup bubbling out of the (portaled) menu — Enter on its item.
+          if (e.key === "Enter" && e.target === e.currentTarget) onNavigate(node.chatId);
+        }}
+        aria-haspopup={splittable ? "menu" : undefined}
+        title={label}
         style={{
           display: "flex",
           alignItems: "center",
@@ -565,6 +678,11 @@ function TreeNodeRow({
           borderLeft: isActive ? "3px solid var(--chatlist-item-active-border)" : "3px solid transparent",
           borderBottom: "1px solid var(--chatlist-item-border)",
           minWidth: 0,
+          // A long press opens our menu; without these iOS selects the title
+          // and raises its own callout over it. Not `touch-action: none` —
+          // see useLongPress.
+          userSelect: splittable ? "none" : undefined,
+          WebkitTouchCallout: splittable ? "none" : undefined,
         }}
       >
         {depth > 0 && (
@@ -607,8 +725,32 @@ function TreeNodeRow({
         </span>
         <span style={{ fontSize: 10, color: "var(--chatlist-item-time-text)", flexShrink: 0, whiteSpace: "nowrap" }}>{time}</span>
       </div>
+      {/* The context menu: right-click on desktop, long press on touch,
+          Shift+F10 / the Menu key from the keyboard. Its one entry is "split
+          off", so it is wired only on nodes that can be split off. */}
+      {menu && splittable && (
+        <PopupMenu
+          position={menu.position}
+          onClose={() => setMenu(null)}
+          label={`Actions for ${label}`}
+          minWidth={TREE_MENU_WIDTH}
+          openedByTouch={menu.openedByTouch}
+          returnFocusTo={rowRef}
+        >
+          <MenuRow
+            icon={<Unlink size={16} />}
+            label={detaching ? SPLIT_OFF_PENDING_LABEL : SPLIT_OFF_LABEL}
+            title={SPLIT_OFF_TITLE}
+            disabled={detaching}
+            onClick={() => {
+              setMenu(null);
+              splitOff!.onDetach(node.chatId, label);
+            }}
+          />
+        </PopupMenu>
+      )}
       {node.children.map((child) => (
-        <TreeNodeRow key={child.chatId} node={child} depth={depth + 1} activeChatId={activeChatId} onNavigate={onNavigate} />
+        <TreeNodeRow key={child.chatId} node={child} depth={depth + 1} activeChatId={activeChatId} onNavigate={onNavigate} splitOff={splitOff} />
       ))}
     </>
   );
@@ -630,6 +772,8 @@ export default function ChatTreeList({
   spaceChipFor,
   onMoveToSpace,
   onMoveToFolder,
+  onDetach,
+  detachingIds,
 }: Props) {
   const navigate = useNavigate();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -721,6 +865,12 @@ export default function ChatTreeList({
   );
 
   const handleNavigate = useCallback((chatId: string) => navigate(`/chat/${chatId}`), [navigate]);
+
+  // Selection mode is list-wide, so any row's props answer it.
+  const selectionActive = rows.length > 0 && !!selectionFor?.(rows[0].chat).selectionMode;
+  const splitOff: TreeSplitOff | undefined = onDetach
+    ? { onDetach, isDetaching: (chatId) => !!detachingIds?.has(chatId), selectionActive }
+    : undefined;
 
   // Each group is filed as one row — see `sectionRows`. Cheap enough to redo
   // per render; `rows` above is the memoized part.
@@ -846,6 +996,10 @@ export default function ChatTreeList({
               cardMenu={cardMenuFor(chat)}
               spaceChip={spaceChipFor?.(chat)}
               onMoveToSpace={onMoveToSpace && (() => onMoveToSpace(chat))}
+              // Only when the root is not loaded is a group fronted by a child;
+              // that child is then the one row the user can reach it from.
+              onDetach={onDetach && canSplitOff(chatMeta(chat)) ? () => onDetach(chat.id, chatMeta(chat).title || chatMeta(chat).preview || "This chat") : undefined}
+              detaching={!!detachingIds?.has(chat.id)}
               sessionStatus={groupSessionStatus}
               // Identity above is the root's; the live-work signals are the
               // whole group's. See `RowActivity`.
@@ -857,7 +1011,7 @@ export default function ChatTreeList({
         </div>
         {isExpanded && tree && (
           <div style={{ borderBottom: "1px solid var(--chatlist-item-border)" }}>
-            <TreeNodeRow node={tree.tree} depth={0} activeChatId={activeChatId} onNavigate={handleNavigate} />
+            <TreeNodeRow node={tree.tree} depth={0} activeChatId={activeChatId} onNavigate={handleNavigate} splitOff={splitOff} />
           </div>
         )}
       </div>
