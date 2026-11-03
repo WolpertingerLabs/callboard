@@ -1,10 +1,11 @@
 /**
  * The open chat's parentage tree (header indicator + inline fork markers) is
- * fetched when the chat opens and again — debounced — on metadata events, so
+ * fetched when the chat opens and again — throttled — on metadata events, so
  * a child split off from the sidebar drops out of an open parent's tree
- * without a reload. Harness as Chat.nativeParentLink.test.tsx.
+ * without a reload, at no more than one request per 10s however often the
+ * (global) metadata version ticks. Harness as Chat.nativeParentLink.test.tsx.
  */
-import { cleanup, render, waitFor } from "@testing-library/react";
+import { act, cleanup, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import Chat from "./Chat";
@@ -73,18 +74,56 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-it("fetches the tree on open, then once more after a burst of metadata events", async () => {
+/** Bump the global metadata version, as one poll tick reporting a change does. */
+function tick(view: ReturnType<typeof render>) {
+  act(() => {
+    session.metadataVersion += 1;
+    view.rerender(tree());
+  });
+}
+
+it("refreshes the tree after metadata events at most once per 10s, without starving under steady ticks", async () => {
   const view = render(tree());
   await waitFor(() => expect(getChatTree).toHaveBeenCalledTimes(1));
   expect(getChatTree).toHaveBeenLastCalledWith("parent");
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+  try {
+    // A tick a second for 9s — the poll's cadence while anything is busy.
+    for (let s = 0; s < 9; s++) {
+      tick(view);
+      act(() => vi.advanceTimersByTime(1000));
+    }
+    expect(getChatTree).toHaveBeenCalledTimes(1);
+    // Still ticking: the refresh lands anyway, ~10s after the open fetch.
+    tick(view);
+    act(() => vi.advanceTimersByTime(1500));
+    expect(getChatTree).toHaveBeenCalledTimes(2);
 
-  // Three events in quick succession — one refetch, after the debounce.
-  for (let v = 1; v <= 3; v++) {
-    session.metadataVersion = v;
-    view.rerender(tree());
+    // The next one waits its own interval.
+    tick(view);
+    act(() => vi.advanceTimersByTime(9000));
+    expect(getChatTree).toHaveBeenCalledTimes(2);
+    act(() => vi.advanceTimersByTime(1500));
+    expect(getChatTree).toHaveBeenCalledTimes(3);
+
+    // No events, no requests.
+    act(() => vi.advanceTimersByTime(60_000));
+    expect(getChatTree).toHaveBeenCalledTimes(3);
+  } finally {
+    vi.useRealTimers();
   }
-  expect(getChatTree).toHaveBeenCalledTimes(1);
-  await waitFor(() => expect(getChatTree).toHaveBeenCalledTimes(2), { timeout: 2000 });
-  await new Promise((r) => setTimeout(r, 600));
-  expect(getChatTree).toHaveBeenCalledTimes(2);
+});
+
+it("drops a pending refresh when the chat closes", async () => {
+  const view = render(tree());
+  await waitFor(() => expect(getChatTree).toHaveBeenCalledTimes(1));
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+  try {
+    tick(view);
+    view.unmount();
+    act(() => vi.advanceTimersByTime(20_000));
+    expect(getChatTree).toHaveBeenCalledTimes(1);
+  } finally {
+    vi.useRealTimers();
+  }
 });

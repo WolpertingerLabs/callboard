@@ -129,8 +129,10 @@ export function detachChatFromParent(chat: { id: string; session_id?: string; me
   );
   if (!ok) return { ok: false, status: 500, error: "Could not update this chat's record, so it is still a child of its parent" };
 
-  const callbacks = removeCallbacksForChild(chat.id);
-  const withdrawnFrom = withdrawParentOffer([chat.id, ...(chat.session_id ? [chat.session_id] : [])]);
+  // Both ids the chat may be keyed under — its chat id and its session id.
+  const keys = [chat.id, ...(chat.session_id && chat.session_id !== chat.id ? [chat.session_id] : [])];
+  const callbacks = removeCallbacksForChild(keys);
+  const withdrawnFrom = withdrawParentOffer(keys);
 
   let restampedDescendants = 0;
   const snapshot = chatFileService.getAllChats();

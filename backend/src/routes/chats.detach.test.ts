@@ -241,6 +241,18 @@ describe("POST /api/chats/:id/detach", () => {
     removeCallbacks([kept.id!]);
   });
 
+  it("also removes a callback registered under the chat's session id (continue_chat)", async () => {
+    const parent = makeChat();
+    const child = makeChat({ parentChatId: parent.id, rootChatId: parent.id });
+    expect(child.session_id).not.toBe(child.id);
+    expect(registerCompletionCallback({ childChatId: child.session_id, parentChatId: parent.id, kind: "continued" }).registered).toBe(true);
+    expect(listPendingForParent(parent.id)).toHaveLength(1);
+
+    expect((await detach(child.id)).status).toBe(200);
+
+    expect(listPendingForParent(parent.id)).toEqual([]);
+  });
+
   it("withdraws an open prompt offered to the old parent, leaving it for the user", async () => {
     const parent = makeChat();
     const child = makeChat({ parentChatId: parent.id, rootChatId: parent.id, parentAnswers: true });

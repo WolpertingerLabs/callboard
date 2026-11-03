@@ -653,8 +653,14 @@ function TreeNodeRow({
         }}
         {...menuProps}
         // Focusable so the keyboard can reach the context menu, and so Enter
-        // opens the chat the way a click does.
+        // opens the chat the way a click does. A link, not a treeitem: what
+        // the row does is navigate, and nothing around it is tree markup (the
+        // group header and these rows are plain divs), so a lone treeitem
+        // would announce a structure that is not there. Named by its title —
+        // the badges and timestamp inside would make a noisy computed name.
+        role="link"
         tabIndex={0}
+        aria-label={node.role ? `${label} (${node.role})` : label}
         onKeyUp={(e) => {
           // Not a keyup bubbling out of the (portaled) menu — Enter on its item.
           if (e.key === "Enter" && e.target === e.currentTarget) onNavigate(node.chatId);

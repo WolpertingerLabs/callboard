@@ -192,6 +192,12 @@ describe("tree node split-off menu — gestures", () => {
     expect(onDetach).toHaveBeenCalledTimes(1);
   });
 
+  it("exposes each tree row as a named link", async () => {
+    await renderExpanded();
+    expect(screen.getByRole("link", { name: "Helper" })).toBe(nodeRow("child"));
+    expect(screen.getByRole("link", { name: "Root thread" })).toBe(nodeRow("root"));
+  });
+
   it("suppresses the iOS text-selection callout on splittable rows only", async () => {
     await renderExpanded();
     expect(nodeRow("child").style.userSelect).toBe("none");
