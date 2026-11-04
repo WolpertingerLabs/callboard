@@ -8,6 +8,8 @@ import MediaRenderer from "./MediaRenderer";
 import CanvasRenderer from "./CanvasRenderer";
 import ArtifactRenderer from "./ArtifactRenderer";
 import JsonContentView from "./JsonContentView";
+import QuestionsCard from "./QuestionsCard";
+import { parseAskedQuestions } from "./askUserQuestions";
 
 interface ToolCallBubbleProps {
   toolUse: ParsedMessage;
@@ -92,6 +94,11 @@ function ToolCallBubble({ toolUse, toolResult, isRunning, backgroundPending = fa
   // render_file and the canvas tools get below, for the same reason.
   const todoItems = useMemo(() => parseTodoItems(toolUse), [toolUse]);
 
+  // Special case: AskUserQuestion renders as QuestionsCard — the questions,
+  // the options and the answer, so the decision stays findable in the
+  // transcript. Matched by tool name AND a `questions` array.
+  const askedQuestions = useMemo(() => parseAskedQuestions(toolUse), [toolUse]);
+
   // Special case: render_file renders as MediaRenderer. Matched by bare tool
   // name so all providers hit it (Claude: mcp__callboard-tools__render_file,
   // Codex: callboard-tools__render_file, pi: render_file).
@@ -102,6 +109,10 @@ function ToolCallBubble({ toolUse, toolResult, isRunning, backgroundPending = fa
 
   if (todoItems) {
     return <TodoList items={todoItems} />;
+  }
+
+  if (askedQuestions) {
+    return <QuestionsCard questions={askedQuestions} toolUse={toolUse} toolResult={toolResult} isRunning={isRunning} />;
   }
 
   if (renderFileData) {
