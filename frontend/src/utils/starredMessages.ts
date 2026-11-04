@@ -67,3 +67,8 @@ export function resolveStarred(keysByIndex: Map<number, string>, starred: Readon
   }
   return out.sort((a, b) => a.index - b.index);
 }
+
+/** Same starred messages, in the same places. */
+export function sameStarred(a: readonly StarredMessage[], b: readonly StarredMessage[]): boolean {
+  return a.length === b.length && a.every((s, i) => s.index === b[i].index && s.key === b[i].key);
+}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ParsedMessage } from "../api";
-import { isStarrable, resolveStarred, starKeysByIndex } from "./starredMessages";
+import { isStarrable, resolveStarred, sameStarred, starKeysByIndex } from "./starredMessages";
 
 const T1 = "2026-11-04T10:00:00.000Z";
 const T2 = "2026-11-04T10:01:00.000Z";
@@ -54,5 +54,13 @@ describe("resolveStarred", () => {
       { index: 0, key: `user@${T1}#0` },
       { index: 2, key: `assistant@${T2}#0` },
     ]);
+  });
+});
+
+describe("sameStarred", () => {
+  it("compares index and key, in order", () => {
+    expect(sameStarred([{ index: 1, key: "a" }], [{ index: 1, key: "a" }])).toBe(true);
+    expect(sameStarred([{ index: 1, key: "a" }], [{ index: 2, key: "a" }])).toBe(false);
+    expect(sameStarred([{ index: 1, key: "a" }], [])).toBe(false);
   });
 });

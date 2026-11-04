@@ -7,7 +7,7 @@ import type { StarredMessage } from "../utils/starredMessages";
 const setMessageStarred = vi.fn();
 vi.mock("../api", () => ({ setMessageStarred: (...args: unknown[]) => setMessageStarred(...args) }));
 
-const { useStarredMessages, useStarredNavigation } = await import("./useStarredMessages");
+const { useStableStarred, useStarredMessages, useStarredNavigation } = await import("./useStarredMessages");
 
 /** A transcript container holding one row per message, as Chat renders them. */
 function transcript(count: number) {
@@ -145,6 +145,38 @@ describe("useStarredMessages", () => {
 
     rerender({ id: "c2", stars: ["q"] });
     expect(keysOf(result)).toEqual(["q"]);
+  });
+
+  it("adopts a record whose revision went backwards once nothing of ours is recent", async () => {
+    // A hand-edited chat JSON, or a record recreated from older metadata,
+    // starts its revision over. Refusing it forever would freeze this tab.
+    const calls = deferredPatches();
+    const { result, rerender } = renderHook(({ stars, rev }) => useStarredMessages("c1", stars, rev), { initialProps: { stars: [] as string[], rev: 0 } });
+    act(() => result.current.toggleStar("a", true));
+    await act(async () => calls[0].resolve({ starredMessages: ["a"], starredMessagesRev: 7 }));
+
+    // Inside the window it reads as a stale refetch and is ignored...
+    rerender({ stars: ["reset"], rev: 1 });
+    expect(keysOf(result)).toEqual(["a"]);
+    // ...and once it has passed, as the record's own history.
+    act(() => vi.advanceTimersByTime(10_001));
+    rerender({ stars: ["reset", "x"], rev: 1 });
+    expect(keysOf(result)).toEqual(["reset", "x"]);
+  });
+
+  it("adopts a lower revision straight away when this tab never wrote", () => {
+    const { result, rerender } = renderHook(({ stars, rev }) => useStarredMessages("c1", stars, rev), { initialProps: { stars: ["a"] as string[], rev: 9 } });
+    rerender({ stars: ["b"], rev: 2 });
+    expect(keysOf(result)).toEqual(["b"]);
+  });
+
+  it("never adopts a lower revision while a toggle is in flight", () => {
+    deferredPatches();
+    vi.advanceTimersByTime(60_000);
+    const { result, rerender } = renderHook(({ stars, rev }) => useStarredMessages("c1", stars, rev), { initialProps: { stars: ["a"] as string[], rev: 9 } });
+    act(() => result.current.toggleStar("b", true));
+    rerender({ stars: [], rev: 2 });
+    expect(keysOf(result)).toEqual(["a", "b"]);
   });
 
   it("undoes only the failed toggle", async () => {
@@ -299,6 +331,87 @@ describe("useStarredNavigation", () => {
     expect(result.current.current).toBeNull();
   });
 
+  it("lets go when something else scrolls the transcript away (jump-to-bottom, auto-scroll)", () => {
+    // QA repro B: at "1 / 3", the floating jump-to-bottom button scrolled
+    // away but the label stayed and up was disabled with every star above.
+    const container = transcript(6);
+    const view = laidOut(container);
+    const { result } = renderHook(() => useStarredNavigation("c1", stars, { current: container }, latch()));
+    view.scrollTo(0);
+    act(() => result.current.goNext());
+    expect(result.current.current).toBe(0);
+
+    // The jump's smooth scroll settles on the star...
+    view.scrollTo(50);
+    expect(result.current.current).toBe(0);
+    // ...then a programmatic scrollTop change: no wheel, no key, just scroll events.
+    view.scrollTo(900);
+    expect(result.current.current).toBeNull();
+    expect(result.current.canPrev).toBe(true);
+    expect(result.current.canNext).toBe(false);
+    act(() => result.current.goPrev());
+    expect(result.current.current).toBe(2);
+  });
+
+  it("forgets the position on leaving a chat and coming back to it", () => {
+    // QA repro A: ▲ to "3 / 3" in A, open B, Back to A — A reopens at the
+    // bottom and must not still claim 3 / 3.
+    const container = transcript(6);
+    const { result, rerender } = renderHook(({ id }) => useStarredNavigation(id, stars, { current: container }, latch()), { initialProps: { id: "A" } });
+    act(() => result.current.goPrev());
+    expect(result.current.current).toBe(2);
+    rerender({ id: "B" });
+    rerender({ id: "A" });
+    expect(result.current.current).toBeNull();
+  });
+
+  it("holds the target through its own smooth scroll, then applies the out-of-view rule", () => {
+    const container = transcript(6);
+    const view = laidOut(container);
+    const { result } = renderHook(() => useStarredNavigation("c1", stars, { current: container }, latch()));
+    view.scrollTo(900);
+    act(() => result.current.goPrev());
+    expect(result.current.current).toBe(2);
+
+    // Mid-flight: still far from the target, which must not count.
+    view.scrollTo(700);
+    expect(result.current.current).toBe(2);
+    // Arrived.
+    view.scrollTo(450);
+    expect(result.current.current).toBe(2);
+    // Then scrolled away by anything at all.
+    view.scrollTo(900);
+    expect(result.current.current).toBeNull();
+  });
+
+  it("lets go of a jump whose target never arrives", () => {
+    const container = transcript(6);
+    const view = laidOut(container);
+    const { result } = renderHook(() => useStarredNavigation("c1", stars, { current: container }, latch()));
+    view.scrollTo(900);
+    act(() => result.current.goPrev());
+    act(() => vi.advanceTimersByTime(2000));
+    view.scrollTo(900);
+    expect(result.current.current).toBeNull();
+  });
+
+  it("re-measures after a click in the transcript (an expanded tool call shifts the layout)", () => {
+    const container = transcript(6);
+    const view = laidOut(container);
+    const { result } = renderHook(() => useStarredNavigation("c1", stars, { current: container }, latch()));
+    view.scrollTo(900);
+    expect(result.current.canNext).toBe(false);
+
+    // Something above grew by 1000px: every star is now below the viewport.
+    for (const i of [1, 3, 5]) row(container, i).getBoundingClientRect = () => ({ top: i * 100 + 1000 - 5 - 900, height: 10 }) as DOMRect;
+    act(() => {
+      row(container, 1).dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      vi.advanceTimersByTime(50);
+    });
+    expect(result.current.canNext).toBe(true);
+    expect(result.current.canPrev).toBe(false);
+  });
+
   it("keeps its place by key as stars change around it, and lets go when its star is removed", () => {
     const { result, rerender } = renderHook(({ s }) => useStarredNavigation("c1", s, { current: transcript(8) }, latch()), { initialProps: { s: stars } });
     act(() => result.current.goNext());
@@ -310,6 +423,18 @@ describe("useStarredNavigation", () => {
 
     rerender({ s: stars.filter((s) => s.key !== "k3") });
     expect(result.current.current).toBeNull();
+  });
+});
+
+describe("useStableStarred", () => {
+  it("keeps the previous array while the contents are the same, and takes a changed one", () => {
+    const first = [{ index: 1, key: "a" }];
+    const { result, rerender } = renderHook(({ s }) => useStableStarred(s), { initialProps: { s: first } });
+    rerender({ s: [{ index: 1, key: "a" }] });
+    expect(result.current).toBe(first);
+    const moved = [{ index: 2, key: "a" }];
+    rerender({ s: moved });
+    expect(result.current).toBe(moved);
   });
 });
 

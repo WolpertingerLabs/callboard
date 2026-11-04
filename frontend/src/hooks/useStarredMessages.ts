@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type RefObject } from "react";
 import { setMessageStarred } from "../api";
-import type { StarredMessage } from "../utils/starredMessages";
+import { sameStarred, type StarredMessage } from "../utils/starredMessages";
 import { flashMessage, type MessageNavigationLatch } from "./useMessageNavigation";
 
 /** One toggle sent to the server and not yet answered. */
@@ -11,10 +11,18 @@ interface PendingStar {
 }
 
 /**
- * `base` is the newest server list seen — by revision, not by arrival — and
- * `pending` the toggles still in flight, oldest first. What renders is the
- * pending toggles replayed over the base: each is idempotent, so replaying
- * one the base already reflects changes nothing.
+ * How long after this tab's last reply a refetched record with an older
+ * revision is still taken for one fetched before that write landed. Past it,
+ * an older revision means the record itself went back — hand-edited, or
+ * recreated from older metadata — and is the truth to adopt.
+ */
+const STALE_RECORD_WINDOW_MS = 10_000;
+
+/**
+ * `base` is the server list to render from and `pending` the toggles still in
+ * flight, oldest first. What renders is the pending toggles replayed over the
+ * base: each is idempotent, so replaying one the base already reflects
+ * changes nothing.
  */
 interface StarState {
   chatId: string | undefined;
@@ -22,37 +30,57 @@ interface StarState {
   /** Revision of `base`. -1 until a record for this chat has been seen. */
   rev: number;
   pending: readonly PendingStar[];
+  /** Highest request seq answered, and when — replies are ordered by it. */
+  answeredSeq: number;
+  answeredAt: number;
 }
 
 type StarAction =
-  | { type: "server"; chatId: string | undefined; keys: readonly string[]; rev: number }
+  | { type: "server"; chatId: string | undefined; keys: readonly string[]; rev: number; now: number }
   | { type: "queue"; op: PendingStar }
-  | { type: "answered"; chatId: string; seq: number; keys: readonly string[]; rev: number }
+  | { type: "answered"; chatId: string; seq: number; keys: readonly string[]; rev: number; now: number }
   | { type: "failed"; chatId: string; seq: number };
 
 const NO_STARS: readonly string[] = [];
 
 const sameKeys = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((k, i) => k === b[i]);
 
-function starReducer(state: StarState, action: StarAction): StarState {
+const freshState = (chatId: string | undefined, keys: readonly string[], rev: number): StarState => ({
+  chatId,
+  base: keys,
+  rev,
+  pending: [],
+  answeredSeq: 0,
+  answeredAt: -Infinity,
+});
+
+export function starReducer(state: StarState, action: StarAction): StarState {
   switch (action.type) {
-    case "server":
+    case "server": {
       // A different chat starts over: nothing in flight belongs to it.
-      if (action.chatId !== state.chatId) return { chatId: action.chatId, base: action.keys, rev: action.rev, pending: [] };
-      // A record fetched before one of our writes landed carries an older
-      // revision than that write's reply. Keeping the newer is what stops a
-      // slow refetch from reverting a star.
+      if (action.chatId !== state.chatId) return freshState(action.chatId, action.keys, action.rev);
       // The same list again (a re-parse of unchanged metadata) is no change.
-      if (action.rev < state.rev || (action.rev === state.rev && sameKeys(action.keys, state.base))) return state;
+      if (action.rev === state.rev && sameKeys(action.keys, state.base)) return state;
+      if (action.rev < state.rev) {
+        // An older revision just after our own write is a record fetched before
+        // that write landed; adopting it would revert the star. Otherwise the
+        // revision really went backwards, and refusing it would freeze this
+        // tab on its own list for good.
+        const justWrote = state.pending.length > 0 || action.now - state.answeredAt < STALE_RECORD_WINDOW_MS;
+        if (justWrote || action.rev < 0) return state;
+      }
       return { ...state, base: action.keys, rev: action.rev };
+    }
     case "queue":
       return { ...state, pending: [...state.pending, action.op] };
     case "answered": {
       if (action.chatId !== state.chatId) return state;
       // Requests go out in order and the server applies them in order, so this
-      // reply already reflects every toggle sent before it as well.
+      // reply already reflects every toggle sent before it as well — and a
+      // reply to an earlier request arriving after it is older news.
       const pending = state.pending.filter((op) => op.seq > action.seq);
-      return action.rev > state.rev ? { ...state, base: action.keys, rev: action.rev, pending } : { ...state, pending };
+      if (action.seq < state.answeredSeq) return { ...state, pending };
+      return { ...state, base: action.keys, rev: action.rev, pending, answeredSeq: action.seq, answeredAt: action.now };
     }
     case "failed":
       // Drop only this toggle — the ones around it still stand.
@@ -78,7 +106,7 @@ function applyPending(base: readonly string[], pending: readonly PendingStar[]):
  * `serverStars` is undefined while this chat's record has not loaded.
  */
 export function useStarredMessages(chatId: string | undefined, serverStars: readonly string[] | undefined, serverRev: number | undefined) {
-  const [state, dispatch] = useReducer(starReducer, { chatId, base: serverStars ?? NO_STARS, rev: serverStars ? (serverRev ?? 0) : -1, pending: [] });
+  const [state, dispatch] = useReducer(starReducer, freshState(chatId, serverStars ?? NO_STARS, serverStars ? (serverRev ?? 0) : -1));
   // Which chat a reply is for is carried in the action and checked by the
   // reducer, so a reply for the chat the user just left lands nowhere. The ref
   // only tells `toggleStar` (stable, for the memoized bubbles) the current chat.
@@ -87,7 +115,7 @@ export function useStarredMessages(chatId: string | undefined, serverStars: read
 
   useEffect(() => {
     chatIdRef.current = chatId;
-    dispatch({ type: "server", chatId, keys: serverStars ?? NO_STARS, rev: serverStars ? (serverRev ?? 0) : -1 });
+    dispatch({ type: "server", chatId, keys: serverStars ?? NO_STARS, rev: serverStars ? (serverRev ?? 0) : -1, now: Date.now() });
   }, [chatId, serverStars, serverRev]);
 
   const stars = useMemo(() => applyPending(state.base, state.pending), [state.base, state.pending]);
@@ -99,7 +127,7 @@ export function useStarredMessages(chatId: string | undefined, serverStars: read
     const seq = ++seqRef.current;
     dispatch({ type: "queue", op: { seq, key, starred } });
     setMessageStarred(forChat, key, starred)
-      .then((res) => dispatch({ type: "answered", chatId: forChat, seq, keys: res.starredMessages, rev: res.starredMessagesRev ?? 0 }))
+      .then((res) => dispatch({ type: "answered", chatId: forChat, seq, keys: res.starredMessages, rev: res.starredMessagesRev ?? 0, now: Date.now() }))
       .catch((err) => {
         console.error("Failed to update starred message:", err);
         dispatch({ type: "failed", chatId: forChat, seq });
@@ -109,18 +137,45 @@ export function useStarredMessages(chatId: string | undefined, serverStars: read
   return { starredKeys, toggleStar };
 }
 
+/**
+ * `starred`, keeping the previous array while its contents are unchanged. The
+ * transcript is refetched on every stream frame during a run, which rebuilds
+ * the list each time; the navigator's listeners and measurements key on it.
+ */
+export function useStableStarred(starred: readonly StarredMessage[]): readonly StarredMessage[] {
+  const [stable, setStable] = useState(starred);
+  if (stable === starred || sameStarred(stable, starred)) return stable;
+  setStable(starred);
+  return starred;
+}
+
 const SCROLL_KEYS = new Set(["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "]);
+
+/**
+ * How far outside the viewport (as a fraction of its height) the remembered
+ * star may drift before it stops being "here".
+ */
+const NEAR_VIEWPORT = 0.5;
+/** How long a jump has to bring its target near the viewport before the out-of-view rule applies to it. */
+const ARRIVAL_GRACE_MS = 1500;
 
 /**
  * Previous/next over the starred messages. Ends never wrap: there is always a
  * "from here", and an arrow with no star in its direction is disabled.
  *
  * "Here" is the last star navigated to, held by key so new messages or a star
- * added above it don't move it — until the user scrolls by hand (wheel, touch,
- * a scroll key, the scrollbar), which lets go of it. Without a remembered star
+ * added above it don't move it — but only while it is still near the viewport.
+ * Whatever moves the transcript away from it lets go of it: the jump-to-bottom
+ * and jump-to-top buttons, the user-message arrows, auto-scroll following a
+ * run, a chat restored at the bottom. That is checked on every scroll, resize
+ * and click in the transcript rather than by listing scroll sources, which is
+ * the only way the list stays complete. A hand scroll (wheel, touch, a scroll
+ * key, the scrollbar) lets go at once. A chat switch always does: a fork
+ * shares its parent's timestamps, hence its star keys. Without a remembered star
  * it is the middle of the viewport: up goes to the nearest star above it, down
- * to the nearest below. Our own smooth scrolls produce scroll events but none
- * of those inputs, which is how the two are told apart.
+ * to the nearest below. A jump's own smooth scroll starts with its target out
+ * of view, so the out-of-view rule waits until the target has arrived (or
+ * {@link ARRIVAL_GRACE_MS} has passed).
  *
  * With no layout to measure (a hidden or zero-height container) nothing can be
  * placed above or below, so both arrows stay live and start from the ends.
@@ -131,9 +186,23 @@ export function useStarredNavigation(
   containerRef: RefObject<HTMLElement | null>,
   { unlatch, suppressRelatchRef }: Pick<MessageNavigationLatch, "unlatch" | "suppressRelatchRef">,
 ) {
-  // Keyed by chat: a fork shares its parent's timestamps, hence its star keys.
-  const [remembered, setRemembered] = useState<{ chatId: string | undefined; key: string } | null>(null);
-  const currentKey = remembered && remembered.chatId === chatId ? remembered.key : null;
+  const [remembered, setRemembered] = useState<string | null>(null);
+  // Forgotten on a chat switch, during render so the old label never shows.
+  const [navChatId, setNavChatId] = useState(chatId);
+  if (navChatId !== chatId) {
+    setNavChatId(chatId);
+    setRemembered(null);
+  }
+  const currentKey = navChatId === chatId ? remembered : null;
+  // The measuring side of `remembered`: whether its jump has arrived yet.
+  const rememberedRef = useRef<{ key: string; at: number; arrived: boolean } | null>(null);
+  useEffect(() => {
+    rememberedRef.current = null;
+  }, [chatId]);
+  const release = useCallback(() => {
+    rememberedRef.current = null;
+    setRemembered(null);
+  }, []);
   const position = currentKey === null ? -1 : starred.findIndex((s) => s.key === currentKey);
   const current = position >= 0 ? position : null;
 
@@ -166,7 +235,21 @@ export function useStarredNavigation(
     const up = fromScroll(-1);
     const down = fromScroll(1);
     setAround((prev) => (prev.up === up && prev.down === down ? prev : { up, down }));
-  }, [fromScroll]);
+
+    // Is the remembered star still "here"?
+    const mark = rememberedRef.current;
+    const container = containerRef.current;
+    if (!mark || !container) return;
+    const box = container.getBoundingClientRect();
+    if (box.height === 0) return;
+    const target = starred.find((s) => s.key === mark.key);
+    const rect = target && container.querySelector(`[data-message-index="${target.index}"]`)?.getBoundingClientRect();
+    if (!rect) return;
+    const margin = box.height * NEAR_VIEWPORT;
+    const near = rect.top + rect.height > box.top - margin && rect.top < box.top + box.height + margin;
+    if (near) mark.arrived = true;
+    else if (mark.arrived || Date.now() - mark.at > ARRIVAL_GRACE_MS) release();
+  }, [fromScroll, starred, containerRef, release]);
 
   useEffect(() => {
     // First measurement on the next frame, once the rows it reads are laid out.
@@ -176,16 +259,23 @@ export function useStarredNavigation(
     });
     if (starred.length === 0) return () => cancelAnimationFrame(frame);
     const inContainer = (target: EventTarget | null) => target instanceof Node && !!containerRef.current?.contains(target);
-    const release = () => setRemembered(null);
-    // Capture at the document, so a container remounted by a view switch is
-    // still covered without re-subscribing.
-    const onScroll = (e: Event) => {
-      if (e.target !== containerRef.current || frame) return;
+    const schedule = () => {
+      if (frame) return;
       frame = requestAnimationFrame(() => {
         frame = 0;
         measure();
       });
     };
+    // Capture at the document, so a container remounted by a view switch is
+    // still covered without re-subscribing.
+    const onScroll = (e: Event) => {
+      if (e.target === containerRef.current) schedule();
+    };
+    // Layout shifts without a scroll: expanding a tool call or a thinking
+    // block (a click in the transcript), or the viewport itself resizing.
+    const onClick = (e: Event) => inContainer(e.target) && schedule();
+    const resize = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(schedule);
+    if (containerRef.current) resize?.observe(containerRef.current);
     const onWheel = (e: Event) => inContainer(e.target) && release();
     const onKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
@@ -204,25 +294,29 @@ export function useStarredNavigation(
     document.addEventListener("touchmove", onWheel, { capture: true, passive: true });
     document.addEventListener("keydown", onKeyDown, true);
     document.addEventListener("pointerdown", onPointerDown, true);
+    document.addEventListener("click", onClick, true);
     return () => {
       if (frame) cancelAnimationFrame(frame);
+      resize?.disconnect();
+      document.removeEventListener("click", onClick, true);
       document.removeEventListener("scroll", onScroll, true);
       document.removeEventListener("wheel", onWheel, true);
       document.removeEventListener("touchmove", onWheel, true);
       document.removeEventListener("keydown", onKeyDown, true);
       document.removeEventListener("pointerdown", onPointerDown, true);
     };
-  }, [starred, containerRef, measure]);
+  }, [starred, containerRef, measure, release]);
 
   const jumpTo = useCallback(
     (target: StarredMessage | undefined) => {
       if (!target) return;
       suppressRelatchRef.current = true;
       unlatch();
-      setRemembered({ chatId, key: target.key });
+      rememberedRef.current = { key: target.key, at: Date.now(), arrived: false };
+      setRemembered(target.key);
       flashMessage(containerRef.current, target.index);
     },
-    [chatId, unlatch, suppressRelatchRef, containerRef],
+    [unlatch, suppressRelatchRef, containerRef],
   );
 
   const goPrev = useCallback(() => {

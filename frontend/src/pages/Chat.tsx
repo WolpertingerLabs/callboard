@@ -67,7 +67,7 @@ import { assignForkMarkers, forksByTimestamp } from "../utils/forkMarkers";
 import { providerKindOf, useChatMeta } from "../hooks/useChatMeta";
 import { INTERRUPTED_MESSAGE, useStopController } from "../hooks/useStopController";
 import { useMessageNavigation } from "../hooks/useMessageNavigation";
-import { useStarredMessages, useStarredNavigation } from "../hooks/useStarredMessages";
+import { useStableStarred, useStarredMessages, useStarredNavigation } from "../hooks/useStarredMessages";
 import { resolveStarred, starKeysByIndex } from "../utils/starredMessages";
 import StarredMessageNavigator from "../components/StarredMessageNavigator";
 import { useChatCommands } from "../hooks/useChatCommands";
@@ -1034,7 +1034,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     chatIsForRoute ? chatMeta.starredMessagesRev : undefined,
   );
   const starKeys = useMemo(() => starKeysByIndex(messages), [messages]);
-  const starredInTranscript = useMemo(() => resolveStarred(starKeys, starredKeys), [starKeys, starredKeys]);
+  const starredInTranscript = useStableStarred(useMemo(() => resolveStarred(starKeys, starredKeys), [starKeys, starredKeys]));
 
   // Background tasks launched but never reported on. A background shell belongs
   // to the session's subprocess and cannot outlive it, so an unreported task in
