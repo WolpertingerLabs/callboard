@@ -33,48 +33,128 @@ afterEach(() => {
   document.body.innerHTML = "";
 });
 
+/** A controllable PATCH: each call parks until the test answers it. */
+function deferredPatches() {
+  const calls: { args: unknown[]; resolve: (v: { starredMessages: string[]; starredMessagesRev: number }) => void; reject: (e: unknown) => void }[] = [];
+  setMessageStarred.mockImplementation(
+    (...args: unknown[]) =>
+      new Promise((resolve, reject) => {
+        calls.push({ args, resolve, reject });
+      }),
+  );
+  return calls;
+}
+const keysOf = (r: { current: { starredKeys: Set<string> } }) => [...r.current.starredKeys].sort();
+
 describe("useStarredMessages", () => {
   it("starts from the server's list and follows a refetched one", () => {
-    const { result, rerender } = renderHook(({ stars }) => useStarredMessages("c1", stars), { initialProps: { stars: ["a"] as string[] | undefined } });
-    expect([...result.current.starredKeys]).toEqual(["a"]);
-    rerender({ stars: ["a", "b"] });
-    expect([...result.current.starredKeys]).toEqual(["a", "b"]);
+    const { result, rerender } = renderHook(({ stars, rev }) => useStarredMessages("c1", stars, rev), {
+      initialProps: { stars: ["a"] as string[] | undefined, rev: 1 as number | undefined },
+    });
+    expect(keysOf(result)).toEqual(["a"]);
+    rerender({ stars: ["a", "b"], rev: 2 });
+    expect(keysOf(result)).toEqual(["a", "b"]);
   });
 
-  it("applies a toggle optimistically, then adopts the server's answer", async () => {
-    let resolve!: (v: { starredMessages: string[] }) => void;
-    setMessageStarred.mockReturnValue(new Promise((r) => (resolve = r)));
-    const { result } = renderHook(() => useStarredMessages("c1", undefined));
+  it("applies a toggle at once, then adopts the server's answer", async () => {
+    const calls = deferredPatches();
+    const { result } = renderHook(() => useStarredMessages("c1", undefined, undefined));
 
     act(() => result.current.toggleStar("a", true));
     expect(setMessageStarred).toHaveBeenCalledWith("c1", "a", true);
-    expect(result.current.starredKeys.has("a")).toBe(true);
+    expect(keysOf(result)).toEqual(["a"]);
 
-    // Another tab starred "z" meanwhile; the response carries it.
-    await act(async () => resolve({ starredMessages: ["z", "a"] }));
-    expect([...result.current.starredKeys]).toEqual(["z", "a"]);
+    // Another tab starred "z" meanwhile; the reply carries it.
+    await act(async () => calls[0].resolve({ starredMessages: ["z", "a"], starredMessagesRev: 2 }));
+    expect(keysOf(result)).toEqual(["a", "z"]);
   });
 
-  it("ignores a refetched record while a toggle is in flight", async () => {
-    let resolve!: (v: { starredMessages: string[] }) => void;
-    setMessageStarred.mockReturnValue(new Promise((r) => (resolve = r)));
-    const { result, rerender } = renderHook(({ stars }) => useStarredMessages("c1", stars), { initialProps: { stars: [] as string[] } });
+  it("keeps a second toggle shown when the first one's reply lands", async () => {
+    const calls = deferredPatches();
+    const { result } = renderHook(() => useStarredMessages("c1", [], 0));
+    act(() => result.current.toggleStar("a", true));
+    act(() => result.current.toggleStar("b", true));
+
+    // The reply to A predates B: B must not flicker off.
+    await act(async () => calls[0].resolve({ starredMessages: ["a"], starredMessagesRev: 1 }));
+    expect(keysOf(result)).toEqual(["a", "b"]);
+    await act(async () => calls[1].resolve({ starredMessages: ["a", "b"], starredMessagesRev: 2 }));
+    expect(keysOf(result)).toEqual(["a", "b"]);
+  });
+
+  it("does not bring back a message unstarred before its star's reply arrived", async () => {
+    const calls = deferredPatches();
+    const { result } = renderHook(() => useStarredMessages("c1", [], 0));
+    act(() => result.current.toggleStar("x", true));
+    act(() => result.current.toggleStar("x", false));
+    expect(keysOf(result)).toEqual([]);
+
+    await act(async () => calls[0].resolve({ starredMessages: ["x"], starredMessagesRev: 1 }));
+    expect(keysOf(result)).toEqual([]);
+    await act(async () => calls[1].resolve({ starredMessages: [], starredMessagesRev: 2 }));
+    expect(keysOf(result)).toEqual([]);
+  });
+
+  it("settles on the newest revision when replies arrive out of order", async () => {
+    const calls = deferredPatches();
+    const { result } = renderHook(() => useStarredMessages("c1", [], 0));
+    act(() => result.current.toggleStar("x", true));
+    act(() => result.current.toggleStar("x", false));
+
+    // The unstar's reply first: it already covers the star sent before it.
+    await act(async () => calls[1].resolve({ starredMessages: [], starredMessagesRev: 2 }));
+    expect(keysOf(result)).toEqual([]);
+    // The late, older reply must not resurrect the star.
+    await act(async () => calls[0].resolve({ starredMessages: ["x"], starredMessagesRev: 1 }));
+    expect(keysOf(result)).toEqual([]);
+  });
+
+  it("ignores a refetched record older than its own write", async () => {
+    const calls = deferredPatches();
+    const { result, rerender } = renderHook(({ stars, rev }) => useStarredMessages("c1", stars, rev), { initialProps: { stars: [] as string[], rev: 3 } });
 
     act(() => result.current.toggleStar("a", true));
-    // A record read before the write landed must not flick the star off.
-    rerender({ stars: [] });
-    expect(result.current.starredKeys.has("a")).toBe(true);
-
-    await act(async () => resolve({ starredMessages: ["a"] }));
-    expect(result.current.starredKeys.has("a")).toBe(true);
+    await act(async () => calls[0].resolve({ starredMessages: ["a"], starredMessagesRev: 4 }));
+    // A getChat that started before the PATCH and lands after it.
+    rerender({ stars: [], rev: 3 });
+    expect(keysOf(result)).toEqual(["a"]);
+    // A record fetched after it is adopted, other tabs' stars included.
+    rerender({ stars: ["a", "b"], rev: 5 });
+    expect(keysOf(result)).toEqual(["a", "b"]);
   });
 
-  it("undoes the toggle when the write fails", async () => {
+  it("holds a toggle through a refetched record read before it landed", () => {
+    deferredPatches();
+    const { result, rerender } = renderHook(({ stars, rev }) => useStarredMessages("c1", stars, rev), { initialProps: { stars: [] as string[], rev: 1 } });
+    act(() => result.current.toggleStar("a", true));
+    rerender({ stars: [], rev: 1 });
+    expect(keysOf(result)).toEqual(["a"]);
+  });
+
+  it("does not apply a reply to the chat the user has since switched to", async () => {
+    const calls = deferredPatches();
+    const { result, rerender } = renderHook(({ id, stars }) => useStarredMessages(id, stars, 0), {
+      initialProps: { id: "c1", stars: [] as string[] | undefined },
+    });
+    act(() => result.current.toggleStar("a", true));
+
+    rerender({ id: "c2", stars: undefined });
+    expect(keysOf(result)).toEqual([]);
+    await act(async () => calls[0].resolve({ starredMessages: ["a"], starredMessagesRev: 1 }));
+    expect(keysOf(result)).toEqual([]);
+
+    rerender({ id: "c2", stars: ["q"] });
+    expect(keysOf(result)).toEqual(["q"]);
+  });
+
+  it("undoes only the failed toggle", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
-    setMessageStarred.mockRejectedValue(new Error("nope"));
-    const { result } = renderHook(() => useStarredMessages("c1", ["a"]));
-    await act(async () => result.current.toggleStar("a", false));
-    expect(result.current.starredKeys.has("a")).toBe(true);
+    const calls = deferredPatches();
+    const { result } = renderHook(() => useStarredMessages("c1", ["a"], 1));
+    act(() => result.current.toggleStar("a", false));
+    act(() => result.current.toggleStar("b", true));
+    await act(async () => calls[0].reject(new Error("nope")));
+    expect(keysOf(result)).toEqual(["a", "b"]);
   });
 });
 
@@ -86,10 +166,29 @@ describe("useStarredNavigation", () => {
     { index: 5, key: "k5" },
   ];
 
+  /**
+   * A 100px viewport over rows whose centres move with `scroll`: rows 1, 3, 5
+   * sit at 100, 300, 500 in content coordinates.
+   */
+  function laidOut(container: HTMLElement) {
+    const geo = { scroll: 0 };
+    container.getBoundingClientRect = () => ({ top: 0, height: 100 }) as DOMRect;
+    for (const i of [1, 3, 5]) row(container, i).getBoundingClientRect = () => ({ top: i * 100 - 5 - geo.scroll, height: 10 }) as DOMRect;
+    return {
+      scrollTo(y: number) {
+        geo.scroll = y;
+        act(() => {
+          container.dispatchEvent(new Event("scroll"));
+          vi.advanceTimersByTime(50);
+        });
+      },
+    };
+  }
+
   it("walks down and up through the stars, stopping at the ends", () => {
     const container = transcript(6);
     const l = latch();
-    const { result } = renderHook(() => useStarredNavigation(stars, { current: container }, l));
+    const { result } = renderHook(() => useStarredNavigation("c1", stars, { current: container }, l));
     expect(result.current.current).toBeNull();
 
     // No layout in jsdom, so the first "down" starts from the oldest star.
@@ -112,30 +211,96 @@ describe("useStarredNavigation", () => {
     expect(result.current.current).toBe(1);
   });
 
-  it("starts 'up' from the newest star", () => {
-    const { result } = renderHook(() => useStarredNavigation(stars, { current: transcript(6) }, latch()));
+  it("starts 'up' from the newest star when there is no layout", () => {
+    const { result } = renderHook(() => useStarredNavigation("c1", stars, { current: transcript(6) }, latch()));
     act(() => result.current.goPrev());
     expect(result.current.current).toBe(2);
   });
 
-  it("falls back to the scroll position before the first jump", () => {
+  it("goes to the nearest star in each direction from the viewport", () => {
     const container = transcript(6);
-    // Viewport 0-100 (middle 50); rows 1, 3, 5 centred at 10, 60, 210.
-    container.getBoundingClientRect = () => ({ top: 0, height: 100 }) as DOMRect;
-    const centres: Record<number, number> = { 1: 10, 3: 60, 5: 210 };
-    for (const [i, c] of Object.entries(centres)) row(container, Number(i)).getBoundingClientRect = () => ({ top: c - 5, height: 10 }) as DOMRect;
+    const view = laidOut(container);
+    const { result } = renderHook(() => useStarredNavigation("c1", stars, { current: container }, latch()));
+    // Viewport 250-350: middle 300 is on star 3 itself.
+    view.scrollTo(250);
+    act(() => result.current.goNext());
+    expect(result.current.current).toBe(2);
 
-    const down = renderHook(() => useStarredNavigation(stars, { current: container }, latch()));
-    act(() => down.result.current.goNext());
-    expect(down.result.current.current).toBe(1);
-
-    const up = renderHook(() => useStarredNavigation(stars, { current: container }, latch()));
+    const up = renderHook(() => useStarredNavigation("c1", stars, { current: container }, latch()));
     act(() => up.result.current.goPrev());
     expect(up.result.current.current).toBe(0);
   });
 
+  it("does not wrap: below every star, down is disabled; above every star, up is", () => {
+    const container = transcript(6);
+    const view = laidOut(container);
+    const { result } = renderHook(() => useStarredNavigation("c1", stars, { current: container }, latch()));
+
+    view.scrollTo(900);
+    expect(result.current.canNext).toBe(false);
+    expect(result.current.canPrev).toBe(true);
+    act(() => result.current.goNext());
+    expect(result.current.current).toBeNull();
+    expect(row(container, 1).scrollIntoView).not.toHaveBeenCalled();
+
+    view.scrollTo(-200);
+    expect(result.current.canPrev).toBe(false);
+    expect(result.current.canNext).toBe(true);
+    act(() => result.current.goPrev());
+    expect(result.current.current).toBeNull();
+  });
+
+  it("lets go of the remembered star when the user scrolls by hand", () => {
+    const container = transcript(6);
+    const view = laidOut(container);
+    const { result } = renderHook(() => useStarredNavigation("c1", stars, { current: container }, latch()));
+    view.scrollTo(0);
+    act(() => result.current.goNext());
+    expect(result.current.current).toBe(0);
+
+    // Our own smooth scroll fires scroll events and must not count.
+    view.scrollTo(50);
+    expect(result.current.current).toBe(0);
+
+    // The user wheels to the bottom: "up" is now judged from there.
+    act(() => {
+      row(container, 3).dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: 400 }));
+    });
+    view.scrollTo(900);
+    expect(result.current.current).toBeNull();
+    expect(result.current.canPrev).toBe(true);
+    act(() => result.current.goPrev());
+    expect(result.current.current).toBe(2);
+  });
+
+  it("treats scroll keys in the transcript as manual scrolling, but not typing in the composer", () => {
+    const container = transcript(6);
+    const input = document.createElement("textarea");
+    document.body.appendChild(input);
+    const { result } = renderHook(() => useStarredNavigation("c1", stars, { current: container }, latch()));
+    act(() => result.current.goNext());
+    act(() => {
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }));
+    });
+    expect(result.current.current).toBe(0);
+    act(() => {
+      row(container, 1).dispatchEvent(new KeyboardEvent("keydown", { key: "PageDown", bubbles: true }));
+    });
+    expect(result.current.current).toBeNull();
+  });
+
+  it("forgets the position on a chat switch, even when the keys match (a fork)", () => {
+    const container = transcript(6);
+    const { result, rerender } = renderHook(({ id }) => useStarredNavigation(id, stars, { current: container }, latch()), { initialProps: { id: "c1" } });
+    act(() => result.current.goNext());
+    act(() => result.current.goNext());
+    expect(result.current.current).toBe(1);
+    rerender({ id: "fork" });
+    expect(result.current.current).toBeNull();
+  });
+
   it("keeps its place by key as stars change around it, and lets go when its star is removed", () => {
-    const { result, rerender } = renderHook(({ s }) => useStarredNavigation(s, { current: transcript(8) }, latch()), { initialProps: { s: stars } });
+    const { result, rerender } = renderHook(({ s }) => useStarredNavigation("c1", s, { current: transcript(8) }, latch()), { initialProps: { s: stars } });
     act(() => result.current.goNext());
     act(() => result.current.goNext());
     expect(result.current.current).toBe(1);
@@ -161,6 +326,7 @@ describe("StarredMessageNavigator", () => {
     expect(screen.getByTestId("starred-position").textContent).toBe("– / 5");
     rerender(<StarredMessageNavigator {...props} count={5} current={1} />);
     expect(screen.getByTestId("starred-position").textContent).toBe("2 / 5");
+    expect(screen.getByTestId("starred-position").getAttribute("aria-live")).toBe("polite");
   });
 
   it("wires the arrows, and disables them at the ends", () => {

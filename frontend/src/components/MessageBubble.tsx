@@ -203,9 +203,9 @@ function ForkButton({ onFork, currentProvider }: { onFork: (provider?: ForkProvi
 }
 
 /**
- * Star toggle, revealed on hover like copy and fork. A starred message's star
- * stays visible below the bubble instead (see {@link StarredIndicator}), so
- * this one can keep the hover contract without hiding the state.
+ * Star toggle, revealed on hover like copy and fork. A starred message also
+ * gets a mark below the bubble (see {@link StarredIndicator}), so this one can
+ * keep the hover contract without hiding the state.
  */
 function StarButton({ starred, onToggle, right }: { starred: boolean; onToggle: () => void; right: number }) {
   return (
@@ -238,21 +238,18 @@ function StarButton({ starred, onToggle, right }: { starred: boolean; onToggle: 
   );
 }
 
-/** The always-visible mark on a starred message; clicking it unstars. */
-function StarredIndicator({ onUnstar }: { onUnstar: () => void }) {
+/**
+ * The always-visible mark on a starred message. Not a control: unstarring is
+ * the toggle's job, which says "Unstar message" and carries `aria-pressed`, and
+ * a second, glyph-sized tap target that unstars with no undo would be one a
+ * thumb hits by accident. Hidden from assistive tech for the same reason — the
+ * toggle already announces the state.
+ */
+function StarredIndicator() {
   return (
-    <button
-      onClick={(e) => {
-        e.stopPropagation();
-        onUnstar();
-      }}
-      title="Starred — click to unstar"
-      aria-label="Unstar message"
-      data-testid="starred-indicator"
-      style={{ background: "none", border: "none", padding: 0, marginRight: 4, cursor: "pointer", color: "var(--warning)", verticalAlign: "-1px" }}
-    >
+    <span title="Starred" aria-hidden="true" data-testid="starred-indicator" style={{ marginRight: 4, color: "var(--warning)", verticalAlign: "-1px" }}>
       <Star size={10} fill="currentColor" />
-    </button>
+    </span>
   );
 }
 
@@ -978,7 +975,7 @@ function MessageBubble({ message, teamColorMap, onFork, forkCurrentProvider = "c
         {attachedFiles.length > 0 && <AttachedFileChips files={attachedFiles} />}
         {message.imageIds && message.imageIds.length > 0 && <ImageThumbnails imageIds={message.imageIds} />}
       </div>
-      <MessageMetadata message={message} align={isUser ? "right" : "left"} leading={starred && toggleStar ? <StarredIndicator onUnstar={toggleStar} /> : undefined} />
+      <MessageMetadata message={message} align={isUser ? "right" : "left"} leading={starred && toggleStar ? <StarredIndicator /> : undefined} />
       {forks && forks.length > 0 && <ForkPointMarker forks={forks} align={isUser ? "right" : "left"} />}
     </div>
   );

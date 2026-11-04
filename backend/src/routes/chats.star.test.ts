@@ -104,11 +104,11 @@ describe("PATCH /api/chats/:id/star", () => {
   it("stars and unstars a message, round-tripping through the stored record", async () => {
     const set = await star("chat-1", { messageKey: A, starred: true });
     expect(set.status).toBe(200);
-    expect(set.body).toEqual({ starredMessages: [A] });
+    expect(set.body).toEqual({ starredMessages: [A], starredMessagesRev: 1 });
     expect(metaOf("chat-1").starredMessages).toEqual([A]);
 
     const unset = await star("chat-1", { messageKey: A, starred: false });
-    expect(unset.body).toEqual({ starredMessages: [] });
+    expect(unset.body).toEqual({ starredMessages: [], starredMessagesRev: 2 });
     expect(metaOf("chat-1").starredMessages).toEqual([]);
   });
 
@@ -135,7 +135,36 @@ describe("PATCH /api/chats/:id/star", () => {
 
   it("leaves every other metadata key alone", async () => {
     await star("chat-1", { messageKey: A, starred: true });
-    expect(metaOf("chat-1")).toEqual({ title: "Kept", pinned: true, starredMessages: [A] });
+    expect(metaOf("chat-1")).toEqual({ title: "Kept", pinned: true, starredMessages: [A], starredMessagesRev: 1 });
+  });
+
+  it("bumps the revision on every write, unstar and no-op included", async () => {
+    // A client keeps whichever list carries the higher revision, so a chat
+    // record fetched before a write must always read as older than its reply.
+    const revs: number[] = [];
+    for (const body of [
+      { messageKey: A, starred: true },
+      { messageKey: A, starred: true },
+      { messageKey: B, starred: false },
+      { messageKey: A, starred: false },
+    ]) {
+      revs.push((await star("chat-1", body)).body.starredMessagesRev);
+    }
+    expect(revs).toEqual([1, 2, 3, 4]);
+    expect(metaOf("chat-1").starredMessagesRev).toBe(4);
+  });
+
+  it("keeps at most 500 stars, dropping the oldest", async () => {
+    const existing = Array.from({ length: 500 }, (_, i) => `assistant@t${i}#0`);
+    fileChats[0].metadata = JSON.stringify({ starredMessages: existing });
+    const res = await star("chat-1", { messageKey: A, starred: true });
+    expect(res.body.starredMessages).toHaveLength(500);
+    expect(res.body.starredMessages[0]).toBe("assistant@t1#0");
+    expect(res.body.starredMessages.at(-1)).toBe(A);
+    // Re-starring one already kept moves it to the end without dropping another.
+    const again = await star("chat-1", { messageKey: "assistant@t1#0", starred: true });
+    expect(again.body.starredMessages).toHaveLength(500);
+    expect(again.body.starredMessages.at(-1)).toBe("assistant@t1#0");
   });
 
   it("drops malformed stored entries rather than carrying them forward", async () => {

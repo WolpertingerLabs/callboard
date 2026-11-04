@@ -29,6 +29,8 @@ export interface ChatMeta {
   spaceId?: string;
   /** Keys of the starred messages (see utils/starredMessages.ts). Absent when none. */
   starredMessages?: string[];
+  /** Revision of `starredMessages`, bumped on every star write. Absent before the first. */
+  starredMessagesRev?: number;
 }
 
 const NO_META: ChatMeta = { provider: null };
@@ -58,6 +60,7 @@ export function parseChatMeta(metadata: string | null | undefined): ChatMeta {
     review: meta.modelReview === true || meta.parentAnswers === true ? { modelReview: meta.modelReview === true, parentAnswers: meta.parentAnswers === true } : undefined,
     agentAlias: nonEmpty(meta.agentAlias),
     spaceId: nonEmpty(meta.spaceId),
+    starredMessagesRev: Number.isInteger(meta.starredMessagesRev) ? (meta.starredMessagesRev as number) : undefined,
     starredMessages: Array.isArray(meta.starredMessages) ? meta.starredMessages.filter((key): key is string => typeof key === "string") : undefined,
   };
 }

@@ -41,6 +41,7 @@ export default function StarredMessageNavigator({ count, current, canPrev, canNe
       </button>
       <div
         data-testid="starred-position"
+        aria-live="polite"
         title={`${count} starred message${count === 1 ? "" : "s"}`}
         style={{ display: "flex", alignItems: "center", gap: 3, padding: "2px 6px", fontSize: 11, color: "var(--text-muted)", whiteSpace: "nowrap" }}
       >

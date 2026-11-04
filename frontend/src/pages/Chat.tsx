@@ -1028,7 +1028,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // Starred messages: the stored keys (only once this route's record is in, so
   // the previous chat's never apply here), each starrable message's key, and
   // the starred ones in transcript order for the navigator.
-  const { starredKeys, toggleStar } = useStarredMessages(id, chatIsForRoute ? chatMeta.starredMessages : undefined);
+  const { starredKeys, toggleStar } = useStarredMessages(
+    id,
+    chatIsForRoute ? chatMeta.starredMessages : undefined,
+    chatIsForRoute ? chatMeta.starredMessagesRev : undefined,
+  );
   const starKeys = useMemo(() => starKeysByIndex(messages), [messages]);
   const starredInTranscript = useMemo(() => resolveStarred(starKeys, starredKeys), [starKeys, starredKeys]);
 
@@ -2805,7 +2809,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     hasTodoList,
     handleTodoListClick,
   } = useMessageNavigation(messages, chatContainerRef, { latchNow, unlatch, suppressRelatchRef });
-  const starNav = useStarredNavigation(starredInTranscript, chatContainerRef, { unlatch, suppressRelatchRef });
+  const starNav = useStarredNavigation(id, starredInTranscript, chatContainerRef, { unlatch, suppressRelatchRef });
 
   const [draftSuccessCallback, setDraftSuccessCallback] = useState<(() => void) | null>(null);
   const [draftImages, setDraftImages] = useState<File[]>([]);

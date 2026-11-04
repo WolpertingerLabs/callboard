@@ -1702,7 +1702,7 @@ chatsRouter.patch("/:id/star", (req, res) => {
       }
     }
   } */
-  /* #swagger.responses[200] = { description: "{ starredMessages }: every starred key after the change" } */
+  /* #swagger.responses[200] = { description: "{ starredMessages, starredMessagesRev }: every starred key after the change, and the list's revision" } */
   /* #swagger.responses[400] = { description: "Invalid request body" } */
   /* #swagger.responses[404] = { description: "Chat not found" } */
   const { messageKey, starred } = req.body ?? {};
@@ -1720,12 +1720,15 @@ chatsRouter.patch("/:id/star", (req, res) => {
     const meta = parseChatMetadata(chat.metadata);
     const current = readStarredMessages(meta).filter((key) => key !== messageKey);
     const starredMessages = starred ? [...current, messageKey].slice(-MAX_STARRED_MESSAGES) : current;
+    // Bumped on every write, so a client can tell a chat record it fetched
+    // before its own star landed from one fetched after, and keep the newer.
+    const starredMessagesRev = (Number.isInteger(meta.starredMessagesRev) ? meta.starredMessagesRev : 0) + 1;
 
-    if (writeQuietMetadata(chat, { ...meta, starredMessages }) === "unwritten") {
+    if (writeQuietMetadata(chat, { ...meta, starredMessages, starredMessagesRev }) === "unwritten") {
       return res.status(500).json({ error: "Failed to update starred messages" });
     }
 
-    res.json({ starredMessages });
+    res.json({ starredMessages, starredMessagesRev });
   } catch (err: any) {
     log.error(`Error updating starred messages: ${err}`);
     res.status(500).json({ error: "Failed to update starred messages", details: err.message });

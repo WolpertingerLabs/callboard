@@ -35,15 +35,24 @@ describe("MessageBubble star toggle", () => {
     expect(screen.queryByTestId("starred-indicator")).toBeNull();
   });
 
-  it("shows a starred message's mark, and both the toggle and the mark unstar it", () => {
+  it("shows a starred message's mark, and the toggle unstars it", () => {
     const onToggleStar = vi.fn();
     render(<MessageBubble message={message} starKey={KEY} starred onToggleStar={onToggleStar} />);
-    const toggle = screen.getByRole("button", { name: "Unstar message", pressed: true });
-    fireEvent.click(toggle);
-    fireEvent.click(screen.getByTestId("starred-indicator"));
-    expect(onToggleStar).toHaveBeenCalledTimes(2);
-    expect(onToggleStar).toHaveBeenNthCalledWith(1, KEY, false);
-    expect(onToggleStar).toHaveBeenNthCalledWith(2, KEY, false);
+    fireEvent.click(screen.getByRole("button", { name: "Unstar message", pressed: true }));
+    expect(onToggleStar).toHaveBeenCalledWith(KEY, false);
+  });
+
+  it("makes the mark non-interactive and hidden from assistive tech", () => {
+    // The toggle is the one control; a second glyph-sized "Unstar" target
+    // would announce twice and unstar on a stray tap.
+    const onToggleStar = vi.fn();
+    render(<MessageBubble message={message} starKey={KEY} starred onToggleStar={onToggleStar} />);
+    const mark = screen.getByTestId("starred-indicator");
+    expect(mark.tagName).toBe("SPAN");
+    expect(mark.getAttribute("aria-hidden")).toBe("true");
+    fireEvent.click(mark);
+    expect(onToggleStar).not.toHaveBeenCalled();
+    expect(screen.getAllByRole("button", { name: /unstar/i })).toHaveLength(1);
   });
 
   it("offers no star without a key", () => {
