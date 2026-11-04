@@ -67,6 +67,9 @@ import { assignForkMarkers, forksByTimestamp } from "../utils/forkMarkers";
 import { providerKindOf, useChatMeta } from "../hooks/useChatMeta";
 import { INTERRUPTED_MESSAGE, useStopController } from "../hooks/useStopController";
 import { useMessageNavigation } from "../hooks/useMessageNavigation";
+import { useStableStarred, useStarredMessages, useStarredNavigation } from "../hooks/useStarredMessages";
+import { resolveStarred, starKeysByIndex } from "../utils/starredMessages";
+import StarredMessageNavigator from "../components/StarredMessageNavigator";
 import { useChatCommands } from "../hooks/useChatCommands";
 import ThinkingIndicator from "../components/ThinkingIndicator";
 import { useIsSessionActive, useMetadataVersion } from "../contexts/SessionContext";
@@ -1021,6 +1024,17 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
   // Which bubble carries each fork-point marker (the last of a timestamp's).
   const forkMarkers = useMemo(() => assignForkMarkers(displayItems, forksAt), [displayItems, forksAt]);
+
+  // Starred messages: the stored keys (only once this route's record is in, so
+  // the previous chat's never apply here), each starrable message's key, and
+  // the starred ones in transcript order for the navigator.
+  const { starredKeys, toggleStar } = useStarredMessages(
+    id,
+    chatIsForRoute ? chatMeta.starredMessages : undefined,
+    chatIsForRoute ? chatMeta.starredMessagesRev : undefined,
+  );
+  const starKeys = useMemo(() => starKeysByIndex(messages), [messages]);
+  const starredInTranscript = useStableStarred(useMemo(() => resolveStarred(starKeys, starredKeys), [starKeys, starredKeys]));
 
   // Background tasks launched but never reported on. A background shell belongs
   // to the session's subprocess and cannot outlive it, so an unreported task in
@@ -2795,6 +2809,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     hasTodoList,
     handleTodoListClick,
   } = useMessageNavigation(messages, chatContainerRef, { latchNow, unlatch, suppressRelatchRef });
+  const starNav = useStarredNavigation(id, starredInTranscript, chatContainerRef, { unlatch, suppressRelatchRef });
 
   const [draftSuccessCallback, setDraftSuccessCallback] = useState<(() => void) | null>(null);
   const [draftImages, setDraftImages] = useState<File[]>([]);
@@ -3715,6 +3730,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   // the memoized bubble isn't handed a fresh closure per render.
                   const canFork =
                     item.message.type === "text" && !item.message.teamName && !!item.message.timestamp && !!id && forkSourceProvider !== null;
+                  const starKey = id ? starKeys.get(item.originalIndex) : undefined;
                   return (
                     <div key={item.originalIndex} data-message-index={item.originalIndex}>
                       <MessageBubble
@@ -3723,6 +3739,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                         onFork={canFork ? handleFork : undefined}
                         forkCurrentProvider={forkSourceProvider ?? undefined}
                         forks={forkMarkers.get(item.originalIndex)}
+                        starKey={starKey}
+                        starred={!!starKey && starredKeys.has(starKey)}
+                        onToggleStar={starKey ? toggleStar : undefined}
                       />
                     </div>
                   );
@@ -3772,6 +3791,21 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               </>
             )}
           </div>
+        )}
+
+        {/* Starred-message navigator — only once something is starred. Sits
+            over the jump-to-bottom button's corner, lifted clear of it while
+            that button is showing. */}
+        {id && viewMode === "chat" && (
+          <StarredMessageNavigator
+            count={starNav.count}
+            current={starNav.current}
+            canPrev={starNav.canPrev}
+            canNext={starNav.canNext}
+            onPrev={starNav.goPrev}
+            onNext={starNav.goNext}
+            style={{ position: "absolute", right: 20, bottom: autoScroll ? 20 : 72, zIndex: 10 }}
+          />
         )}
 
         {/* Jump-to-bottom button - appears when the user has scrolled up

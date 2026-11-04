@@ -1,5 +1,5 @@
-import { memo, useState, useMemo, useEffect, useRef, type CSSProperties } from "react";
-import { Check, FileText, GitFork, RotateCw, Square, X } from "lucide-react";
+import { memo, useState, useMemo, useEffect, useRef, type CSSProperties, type ReactNode } from "react";
+import { Check, FileText, GitFork, RotateCw, Square, Star, X } from "lucide-react";
 import type { ChatTreeNode, ForkProvider, ParsedMessage } from "../api";
 import { parseTaskList, splitAttachmentBlocks, type AttachedFile, type TaskListItem } from "shared/types/index.js";
 import MarkdownRenderer from "./MarkdownRenderer";
@@ -199,6 +199,57 @@ function ForkButton({ onFork, currentProvider }: { onFork: (provider?: ForkProvi
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * Star toggle, revealed on hover like copy and fork. A starred message also
+ * gets a mark below the bubble (see {@link StarredIndicator}), so this one can
+ * keep the hover contract without hiding the state.
+ */
+function StarButton({ starred, onToggle, right }: { starred: boolean; onToggle: () => void; right: number }) {
+  return (
+    <button
+      className="star-affordance"
+      onClick={(e) => {
+        e.stopPropagation();
+        onToggle();
+      }}
+      title={starred ? "Unstar message" : "Star message"}
+      aria-label={starred ? "Unstar message" : "Star message"}
+      aria-pressed={starred}
+      style={{
+        position: "absolute",
+        top: 6,
+        right,
+        zIndex: 2,
+        padding: 4,
+        background: "var(--surface)",
+        border: "1px solid var(--border)",
+        borderRadius: 6,
+        cursor: "pointer",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+      }}
+    >
+      <Star size={14} fill={starred ? "currentColor" : "none"} style={{ color: starred ? "var(--warning)" : "var(--text-muted)" }} />
+    </button>
+  );
+}
+
+/**
+ * The always-visible mark on a starred message. Not a control: unstarring is
+ * the toggle's job, which says "Unstar message" and carries `aria-pressed`, and
+ * a second, glyph-sized tap target that unstars with no undo would be one a
+ * thumb hits by accident. Hidden from assistive tech for the same reason — the
+ * toggle already announces the state.
+ */
+function StarredIndicator() {
+  return (
+    <span title="Starred" aria-hidden="true" data-testid="starred-indicator" style={{ marginRight: 4, color: "var(--warning)", verticalAlign: "-1px" }}>
+      <Star size={10} fill="currentColor" />
+    </span>
   );
 }
 
@@ -458,6 +509,14 @@ interface Props {
    * under the bubble. Must be identity-stable between renders (see the memo).
    */
   forks?: ChatTreeNode[];
+  /**
+   * The message's star key (utils/starredMessages.ts). With `onToggleStar`,
+   * shows the star toggle; absent for messages that cannot be starred.
+   */
+  starKey?: string;
+  starred?: boolean;
+  /** Called with the key and the new state. Stable for the same reason as `onFork`. */
+  onToggleStar?: (key: string, starred: boolean) => void;
 }
 
 /** Format a millisecond delta as a human-readable duration */
@@ -495,7 +554,7 @@ function formatCost(usd: number): string {
   return `$${usd.toFixed(4)}`;
 }
 
-export function MessageMetadata({ message, align = "right" }: { message: ParsedMessage; align?: "left" | "right" }) {
+export function MessageMetadata({ message, align = "right", leading }: { message: ParsedMessage; align?: "left" | "right"; leading?: ReactNode }) {
   const relativeTime = useRelativeTime(message.timestamp);
   const [detailsExpanded, setDetailsExpanded] = useState(false);
 
@@ -522,6 +581,7 @@ export function MessageMetadata({ message, align = "right" }: { message: ParsedM
       }}
     >
       <span>
+        {leading}
         {relativeTime}
         {displayModel && <span> · {displayModel}</span>}
         {message.speed && message.speed !== "standard" && <span> · {message.speed}</span>}
@@ -599,7 +659,7 @@ export function MessageMetadata({ message, align = "right" }: { message: ParsedM
   );
 }
 
-function MessageBubble({ message, teamColorMap, onFork, forkCurrentProvider = "claude-code", forks }: Props) {
+function MessageBubble({ message, teamColorMap, onFork, forkCurrentProvider = "claude-code", forks, starKey, starred = false, onToggleStar }: Props) {
   const [expanded, setExpanded] = useState(false);
   const isUser = message.role === "user";
   const isTeamMessage = !!message.teamName;
@@ -876,6 +936,8 @@ function MessageBubble({ message, teamColorMap, onFork, forkCurrentProvider = "c
   // typed text, and the files as chips. A slash command is no exception: the
   // blocks arrive inside its arguments.
   const { text: bodyText, files: attachedFiles } = isUser ? splitAttachmentBlocks(message.content) : { text: message.content, files: [] };
+  const canFork = !!onFork && !!message.timestamp;
+  const toggleStar = starKey && onToggleStar ? () => onToggleStar(starKey, !starred) : undefined;
 
   return (
     <div
@@ -906,14 +968,14 @@ function MessageBubble({ message, teamColorMap, onFork, forkCurrentProvider = "c
         }}
       >
         <MessageCopyButton text={bodyText} />
-        {onFork && message.timestamp && (
-          <ForkButton onFork={(provider) => onFork(message.timestamp!, provider)} currentProvider={forkCurrentProvider} />
-        )}
+        {canFork && <ForkButton onFork={(provider) => onFork!(message.timestamp!, provider)} currentProvider={forkCurrentProvider} />}
+        {/* Left of fork when there is one, else where fork would sit. */}
+        {toggleStar && <StarButton starred={starred} onToggle={toggleStar} right={canFork ? 66 : 36} />}
         {message.isBuiltInCommand ? bodyText : bodyText && <MarkdownRenderer content={bodyText} className="message-markdown" />}
         {attachedFiles.length > 0 && <AttachedFileChips files={attachedFiles} />}
         {message.imageIds && message.imageIds.length > 0 && <ImageThumbnails imageIds={message.imageIds} />}
       </div>
-      <MessageMetadata message={message} align={isUser ? "right" : "left"} />
+      <MessageMetadata message={message} align={isUser ? "right" : "left"} leading={starred && toggleStar ? <StarredIndicator /> : undefined} />
       {forks && forks.length > 0 && <ForkPointMarker forks={forks} align={isUser ? "right" : "left"} />}
     </div>
   );

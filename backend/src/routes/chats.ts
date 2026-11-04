@@ -1656,6 +1656,85 @@ chatsRouter.patch("/:id/pin", (req, res) => {
   }
 });
 
+/** Longest message key accepted — the frontend's keys are a timestamp and two short tokens. */
+const MAX_STAR_KEY_LENGTH = 200;
+/** Stars kept per chat. A navigation aid, not a store: past this the oldest are dropped. */
+const MAX_STARRED_MESSAGES = 500;
+
+/** `metadata.starredMessages`, keeping only well-formed keys. */
+function readStarredMessages(meta: Record<string, any>): string[] {
+  const raw = meta.starredMessages;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((key): key is string => typeof key === "string" && key.length > 0 && key.length <= MAX_STAR_KEY_LENGTH);
+}
+
+/**
+ * Star or unstar ONE message.
+ *
+ * A delta, never the whole list: the same chat is routinely open in two tabs
+ * over remote access, and a list PUT from a tab that loaded before the other
+ * one starred something would silently unstar it. The read-modify-write below
+ * runs inside one synchronous handler, so two deltas cannot interleave, and
+ * both are idempotent — a retried request lands in the same state.
+ *
+ * The key is opaque here. It is minted by the frontend from the message's
+ * position in the parsed transcript (see `frontend/src/utils/starredMessages.ts`
+ * for why), and the server only stores it. Quiet, like the pin: a star is
+ * view state, not activity in the chat.
+ */
+chatsRouter.patch("/:id/star", (req, res) => {
+  // #swagger.tags = ['Chats']
+  // #swagger.summary = 'Star or unstar a message in a chat'
+  // #swagger.description = 'Adds or removes one message key in metadata.starredMessages. Idempotent. Creates a file storage record if the chat only exists on the filesystem.'
+  /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
+  /* #swagger.requestBody = {
+    required: true,
+    content: {
+      "application/json": {
+        schema: {
+          type: "object",
+          required: ["messageKey", "starred"],
+          properties: {
+            messageKey: { type: "string", description: "The message's star key" },
+            starred: { type: "boolean", description: "Whether the message should be starred" }
+          }
+        }
+      }
+    }
+  } */
+  /* #swagger.responses[200] = { description: "{ starredMessages, starredMessagesRev }: every starred key after the change, and the list's revision" } */
+  /* #swagger.responses[400] = { description: "Invalid request body" } */
+  /* #swagger.responses[404] = { description: "Chat not found" } */
+  const { messageKey, starred } = req.body ?? {};
+  if (typeof messageKey !== "string" || !messageKey || messageKey.length > MAX_STAR_KEY_LENGTH) {
+    return res.status(400).json({ error: `messageKey must be a non-empty string of at most ${MAX_STAR_KEY_LENGTH} characters` });
+  }
+  if (typeof starred !== "boolean") {
+    return res.status(400).json({ error: "starred must be a boolean" });
+  }
+
+  try {
+    const chat = findChat(req.params.id, false) as any;
+    if (!chat) return res.status(404).json({ error: "Chat not found" });
+
+    const meta = parseChatMetadata(chat.metadata);
+    const current = readStarredMessages(meta).filter((key) => key !== messageKey);
+    const starredMessages = starred ? [...current, messageKey].slice(-MAX_STARRED_MESSAGES) : current;
+    // Bumped on every write, so a client can tell a chat record it fetched
+    // before its own star landed from one fetched after, and keep the newer.
+    const starredMessagesRev = (Number.isInteger(meta.starredMessagesRev) ? meta.starredMessagesRev : 0) + 1;
+
+    if (writeQuietMetadata(chat, { ...meta, starredMessages, starredMessagesRev }) === "unwritten") {
+      return res.status(500).json({ error: "Failed to update starred messages" });
+    }
+
+    res.json({ starredMessages, starredMessagesRev });
+  } catch (err: any) {
+    log.error(`Error updating starred messages: ${err}`);
+    res.status(500).json({ error: "Failed to update starred messages", details: err.message });
+  }
+});
+
 /**
  * File a chat into a sidebar folder, move it to another, or take it out.
  *

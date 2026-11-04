@@ -404,6 +404,15 @@ export async function togglePin(id: string, pinned: boolean): Promise<Chat> {
 }
 
 /**
+ * Star or unstar one message (by its key from utils/starredMessages.ts). A delta
+ * rather than a list write, so a second tab's stars survive this one's; the
+ * response is the full list after the change, and its revision.
+ */
+export async function setMessageStarred(id: string, messageKey: string, starred: boolean): Promise<{ starredMessages: string[]; starredMessagesRev: number }> {
+  return request(`/chats/${seg(id)}/star`, { method: "PATCH", json: { messageKey, starred }, error: "Failed to update starred messages" });
+}
+
+/**
  * File a root chat (and its tree) into a sidebar folder, move it to another,
  * or — with `null` or an empty name — take it out. Stored as
  * `metadata.sidebarFolder`; `chat.folder` is the working directory and is
