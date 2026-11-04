@@ -179,6 +179,36 @@ describe("useStarredMessages", () => {
     expect(keysOf(result)).toEqual(["a", "b"]);
   });
 
+  it("does not paint the previous chat's stars on the first render after a switch", () => {
+    // A fork shares its parent's star keys, so a stale frame would mark its
+    // messages starred. The reset happens during render, not in an effect.
+    const seen: string[][] = [];
+    const { rerender } = renderHook(
+      ({ id, stars }) => {
+        const r = useStarredMessages(id, stars, 1);
+        seen.push([...r.starredKeys]);
+        return r;
+      },
+      { initialProps: { id: "parent", stars: ["a"] as string[] | undefined } },
+    );
+    seen.length = 0;
+    rerender({ id: "fork", stars: undefined });
+    expect(seen.length).toBeGreaterThan(0);
+    for (const keys of seen) expect(keys).toEqual([]);
+  });
+
+  it("does not let its own late reply undo a newer record refetched after the request went out", async () => {
+    vi.advanceTimersByTime(60_000);
+    const calls = deferredPatches();
+    const { result, rerender } = renderHook(({ stars, rev }) => useStarredMessages("c1", stars, rev), { initialProps: { stars: [] as string[], rev: 1 } });
+    act(() => result.current.toggleStar("a", true));
+    // Our write landed (rev 2), then another tab starred "b" (rev 3), and a
+    // refetch carrying both arrives before our reply does.
+    rerender({ stars: ["a", "b"], rev: 3 });
+    await act(async () => calls[0].resolve({ starredMessages: ["a"], starredMessagesRev: 2 }));
+    expect(keysOf(result)).toEqual(["a", "b"]);
+  });
+
   it("undoes only the failed toggle", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     const calls = deferredPatches();
@@ -282,7 +312,9 @@ describe("useStarredNavigation", () => {
     expect(result.current.current).toBeNull();
   });
 
-  it("lets go of the remembered star when the user scrolls by hand", () => {
+  it("lets go of the remembered star once a scroll carries it far out of view, whatever did the scrolling", () => {
+    // No input listeners: a wheel, a key, an overlay scrollbar and a
+    // programmatic scrollTop all arrive here as the same scroll events.
     const container = transcript(6);
     const view = laidOut(container);
     const { result } = renderHook(() => useStarredNavigation("c1", stars, { current: container }, latch()));
@@ -290,14 +322,11 @@ describe("useStarredNavigation", () => {
     act(() => result.current.goNext());
     expect(result.current.current).toBe(0);
 
-    // Our own smooth scroll fires scroll events and must not count.
-    view.scrollTo(50);
+    // Nudged, but still within half a viewport: still "here".
+    view.scrollTo(140);
     expect(result.current.current).toBe(0);
 
-    // The user wheels to the bottom: "up" is now judged from there.
-    act(() => {
-      row(container, 3).dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: 400 }));
-    });
+    // Scrolled to the bottom: "up" is now judged from there.
     view.scrollTo(900);
     expect(result.current.current).toBeNull();
     expect(result.current.canPrev).toBe(true);
@@ -305,20 +334,22 @@ describe("useStarredNavigation", () => {
     expect(result.current.current).toBe(2);
   });
 
-  it("treats scroll keys in the transcript as manual scrolling, but not typing in the composer", () => {
+  it("keeps the remembered star through keyboard and wheel input that does not move it out of view", () => {
+    // The old input-based release dropped the position on any scroll key or
+    // wheel tick; only distance counts now.
     const container = transcript(6);
-    const input = document.createElement("textarea");
-    document.body.appendChild(input);
+    const view = laidOut(container);
     const { result } = renderHook(() => useStarredNavigation("c1", stars, { current: container }, latch()));
-    act(() => result.current.goNext());
-    act(() => {
-      input.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }));
-    });
+    view.scrollTo(250);
+    act(() => result.current.goPrev());
     expect(result.current.current).toBe(0);
+    view.scrollTo(50);
     act(() => {
+      row(container, 1).dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: 10 }));
       row(container, 1).dispatchEvent(new KeyboardEvent("keydown", { key: "PageDown", bubbles: true }));
     });
-    expect(result.current.current).toBeNull();
+    view.scrollTo(60);
+    expect(result.current.current).toBe(0);
   });
 
   it("forgets the position on a chat switch, even when the keys match (a fork)", () => {
@@ -410,6 +441,49 @@ describe("useStarredNavigation", () => {
     });
     expect(result.current.canNext).toBe(true);
     expect(result.current.canPrev).toBe(false);
+  });
+
+  it("moves its resize observer to a remounted transcript container", () => {
+    const observed = new Set<Element>();
+    let fire = () => {};
+    class FakeResizeObserver {
+      constructor(cb: () => void) {
+        fire = cb;
+      }
+      observe(el: Element) {
+        observed.add(el);
+      }
+      unobserve(el: Element) {
+        observed.delete(el);
+      }
+      disconnect() {
+        observed.clear();
+      }
+    }
+    vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+    try {
+      const first = transcript(6);
+      const ref = { current: first as HTMLElement | null };
+      const { result } = renderHook(() => useStarredNavigation("c1", stars, ref, latch()));
+      expect([...observed]).toEqual([first]);
+
+      // A view switch remounts the container with `starred` unchanged.
+      const second = transcript(6);
+      const view = laidOut(second);
+      ref.current = second;
+      view.scrollTo(900);
+      expect([...observed]).toEqual([second]);
+
+      // And a resize of the new one re-measures it.
+      for (const i of [1, 3, 5]) row(second, i).getBoundingClientRect = () => ({ top: i * 100 + 1000 - 5 - 900, height: 10 }) as DOMRect;
+      act(() => {
+        fire();
+        vi.advanceTimersByTime(50);
+      });
+      expect(result.current.canNext).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("keeps its place by key as stars change around it, and lets go when its star is removed", () => {

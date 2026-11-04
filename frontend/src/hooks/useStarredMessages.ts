@@ -33,6 +33,10 @@ interface StarState {
   /** Highest request seq answered, and when — replies are ordered by it. */
   answeredSeq: number;
   answeredAt: number;
+  /** Highest request seq queued. */
+  sentSeq: number;
+  /** The last refetched record adopted: its revision, and `sentSeq` when it arrived. */
+  refetch: { rev: number; afterSeq: number } | null;
 }
 
 type StarAction =
@@ -52,6 +56,8 @@ const freshState = (chatId: string | undefined, keys: readonly string[], rev: nu
   pending: [],
   answeredSeq: 0,
   answeredAt: -Infinity,
+  sentSeq: 0,
+  refetch: null,
 });
 
 export function starReducer(state: StarState, action: StarAction): StarState {
@@ -69,10 +75,10 @@ export function starReducer(state: StarState, action: StarAction): StarState {
         const justWrote = state.pending.length > 0 || action.now - state.answeredAt < STALE_RECORD_WINDOW_MS;
         if (justWrote || action.rev < 0) return state;
       }
-      return { ...state, base: action.keys, rev: action.rev };
+      return { ...state, base: action.keys, rev: action.rev, refetch: { rev: action.rev, afterSeq: state.sentSeq } };
     }
     case "queue":
-      return { ...state, pending: [...state.pending, action.op] };
+      return { ...state, pending: [...state.pending, action.op], sentSeq: action.op.seq };
     case "answered": {
       if (action.chatId !== state.chatId) return state;
       // Requests go out in order and the server applies them in order, so this
@@ -80,6 +86,13 @@ export function starReducer(state: StarState, action: StarAction): StarState {
       // reply to an earlier request arriving after it is older news.
       const pending = state.pending.filter((op) => op.seq > action.seq);
       if (action.seq < state.answeredSeq) return { ...state, pending };
+      // A record refetched after this request went out, at a higher revision,
+      // already reflects it and whatever happened since — another tab's star,
+      // say. The reply is older news. (A lower revision there is the record
+      // being reset, and the reply wins as usual.)
+      if (state.refetch && action.seq <= state.refetch.afterSeq && action.rev < state.refetch.rev) {
+        return { ...state, pending, answeredSeq: action.seq, answeredAt: action.now };
+      }
       return { ...state, base: action.keys, rev: action.rev, pending, answeredSeq: action.seq, answeredAt: action.now };
     }
     case "failed":
@@ -113,12 +126,20 @@ export function useStarredMessages(chatId: string | undefined, serverStars: read
   const chatIdRef = useRef(chatId);
   const seqRef = useRef(0);
 
+  // A chat switch starts over during render, as the navigator's position
+  // does, so a fork (which shares its parent's star keys) never paints the
+  // parent's stars for a frame. `now` is unused on that path.
+  if (state.chatId !== chatId) {
+    dispatch({ type: "server", chatId, keys: serverStars ?? NO_STARS, rev: serverStars ? (serverRev ?? 0) : -1, now: 0 });
+  }
+
   useEffect(() => {
     chatIdRef.current = chatId;
     dispatch({ type: "server", chatId, keys: serverStars ?? NO_STARS, rev: serverStars ? (serverRev ?? 0) : -1, now: Date.now() });
   }, [chatId, serverStars, serverRev]);
 
-  const stars = useMemo(() => applyPending(state.base, state.pending), [state.base, state.pending]);
+  const forThisChat = state.chatId === chatId;
+  const stars = useMemo(() => (forThisChat ? applyPending(state.base, state.pending) : NO_STARS), [forThisChat, state.base, state.pending]);
   const starredKeys = useMemo(() => new Set(stars), [stars]);
 
   const toggleStar = useCallback((key: string, starred: boolean) => {
@@ -149,8 +170,6 @@ export function useStableStarred(starred: readonly StarredMessage[]): readonly S
   return starred;
 }
 
-const SCROLL_KEYS = new Set(["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "]);
-
 /**
  * How far outside the viewport (as a fraction of its height) the remembered
  * star may drift before it stops being "here".
@@ -169,9 +188,9 @@ const ARRIVAL_GRACE_MS = 1500;
  * and jump-to-top buttons, the user-message arrows, auto-scroll following a
  * run, a chat restored at the bottom. That is checked on every scroll, resize
  * and click in the transcript rather than by listing scroll sources, which is
- * the only way the list stays complete. A hand scroll (wheel, touch, a scroll
- * key, the scrollbar) lets go at once. A chat switch always does: a fork
- * shares its parent's timestamps, hence its star keys. Without a remembered star
+ * the only way the list stays complete — a hand scroll is one more source, by
+ * wheel, touch, keys or any kind of scrollbar. A chat switch always lets go: a
+ * fork shares its parent's timestamps, hence its star keys. Without a remembered star
  * it is the middle of the viewport: up goes to the nearest star above it, down
  * to the nearest below. A jump's own smooth scroll starts with its target out
  * of view, so the out-of-view rule waits until the target has arrived (or
@@ -203,6 +222,7 @@ export function useStarredNavigation(
     rememberedRef.current = null;
     setRemembered(null);
   }, []);
+
   const position = currentKey === null ? -1 : starred.findIndex((s) => s.key === currentKey);
   const current = position >= 0 ? position : null;
 
@@ -266,46 +286,39 @@ export function useStarredNavigation(
         measure();
       });
     };
-    // Capture at the document, so a container remounted by a view switch is
-    // still covered without re-subscribing.
-    const onScroll = (e: Event) => {
-      if (e.target === containerRef.current) schedule();
-    };
     // Layout shifts without a scroll: expanding a tool call or a thinking
     // block (a click in the transcript), or the viewport itself resizing.
-    const onClick = (e: Event) => inContainer(e.target) && schedule();
     const resize = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(schedule);
-    if (containerRef.current) resize?.observe(containerRef.current);
-    const onWheel = (e: Event) => inContainer(e.target) && release();
-    const onKeyDown = (e: KeyboardEvent) => {
-      const target = e.target as HTMLElement | null;
-      if (!SCROLL_KEYS.has(e.key) || !target) return;
-      const tag = target.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target.isContentEditable) return;
-      if (target === document.body || inContainer(target)) release();
+    let observed: HTMLElement | null = null;
+    const watch = (el: HTMLElement | null) => {
+      if (!resize || el === observed) return;
+      if (observed) resize.unobserve(observed);
+      if (el) resize.observe(el);
+      observed = el;
     };
-    // A press on the scrollbar lands outside the client area.
-    const onPointerDown = (e: PointerEvent) => {
-      const container = containerRef.current;
-      if (container && e.target === container && e.offsetX >= container.clientWidth) release();
+    watch(containerRef.current);
+    // Capture at the document, so a container remounted by a view switch is
+    // still covered without re-subscribing — and is the one the resize
+    // observer moves to, rather than the detached node it started on.
+    const onScroll = (e: Event) => {
+      if (e.target !== containerRef.current) return;
+      watch(containerRef.current);
+      schedule();
+    };
+    const onClick = (e: Event) => {
+      if (!inContainer(e.target)) return;
+      watch(containerRef.current);
+      schedule();
     };
     document.addEventListener("scroll", onScroll, true);
-    document.addEventListener("wheel", onWheel, { capture: true, passive: true });
-    document.addEventListener("touchmove", onWheel, { capture: true, passive: true });
-    document.addEventListener("keydown", onKeyDown, true);
-    document.addEventListener("pointerdown", onPointerDown, true);
     document.addEventListener("click", onClick, true);
     return () => {
       if (frame) cancelAnimationFrame(frame);
       resize?.disconnect();
       document.removeEventListener("click", onClick, true);
       document.removeEventListener("scroll", onScroll, true);
-      document.removeEventListener("wheel", onWheel, true);
-      document.removeEventListener("touchmove", onWheel, true);
-      document.removeEventListener("keydown", onKeyDown, true);
-      document.removeEventListener("pointerdown", onPointerDown, true);
     };
-  }, [starred, containerRef, measure, release]);
+  }, [starred, containerRef, measure]);
 
   const jumpTo = useCallback(
     (target: StarredMessage | undefined) => {
