@@ -1,4 +1,4 @@
-import { memo, useMemo } from "react";
+import { memo, useMemo, type CSSProperties } from "react";
 import { Check, Circle, MessageCircleQuestion, Square } from "lucide-react";
 import type { ParsedMessage } from "../api";
 import { MessageMetadata } from "./MessageBubble";
@@ -11,6 +11,19 @@ interface Props {
   isRunning: boolean;
 }
 
+/** Read by screen readers, invisible on screen. */
+const visuallyHidden: CSSProperties = {
+  position: "absolute",
+  width: 1,
+  height: 1,
+  padding: 0,
+  margin: -1,
+  overflow: "hidden",
+  clip: "rect(0 0 0 0)",
+  whiteSpace: "nowrap",
+  border: 0,
+};
+
 /**
  * An `AskUserQuestion` call as it reads in the transcript: what was asked,
  * what was offered, and what came back — so the point in a chat where a
@@ -20,6 +33,12 @@ interface Props {
 function QuestionsCard({ questions, toolUse, toolResult, isRunning }: Props) {
   const outcome = useMemo(() => parseQuestionsOutcome(questions, toolResult), [questions, toolResult]);
   const count = questions.length;
+  const answers = "answers" in outcome ? outcome.answers : null;
+  // "No answer" under a question only means something beside one that *was*
+  // answered; a result that answered none says so once, below.
+  const partial = answers?.some((a) => a !== null) ?? false;
+  const footer = outcome.status === "declined" || outcome.status === "timed_out" ? outcome.reason : undefined;
+  const response = "response" in outcome ? outcome.response : undefined;
 
   return (
     <div style={{ margin: "4px 0" }}>
@@ -53,17 +72,18 @@ function QuestionsCard({ questions, toolUse, toolResult, isRunning }: Props) {
         </div>
 
         {questions.map((q, qi) => (
-          <QuestionBlock
-            key={qi}
-            question={q}
-            first={qi === 0}
-            settled={outcome.status === "answered"}
-            answer={outcome.status === "answered" ? outcome.answers[qi] : null}
-          />
+          <QuestionBlock key={qi} question={q} first={qi === 0} answer={answers?.[qi] ?? null} showMissing={partial} />
         ))}
 
-        {outcome.status === "declined" && outcome.reason && (
+        {response && (
+          <div style={{ padding: "0 14px 10px" }}>
+            <QuoteBlock label={outcome.status === "follow_up" ? "They also wrote" : "Your response"} text={response} />
+          </div>
+        )}
+
+        {footer && (
           <div
+            data-testid="questions-card-footer"
             style={{
               padding: "8px 14px",
               borderTop: "1px solid var(--border)",
@@ -74,9 +94,9 @@ function QuestionsCard({ questions, toolUse, toolResult, isRunning }: Props) {
               WebkitBoxOrient: "vertical",
               overflow: "hidden",
             }}
-            title={outcome.reason}
+            title={footer}
           >
-            {outcome.reason}
+            {footer}
           </div>
         )}
       </div>
@@ -89,22 +109,55 @@ function QuestionsCard({ questions, toolUse, toolResult, isRunning }: Props) {
 function StatusLabel({ outcome, isRunning }: { outcome: QuestionsOutcome; isRunning: boolean }) {
   let text: string;
   let color = "var(--text-muted)";
-  if (outcome.status === "answered") {
-    text = "Answered";
-    color = "var(--success)";
-  } else if (outcome.status === "declined") {
-    text = "Not answered";
-    color = "var(--warning)";
-  } else {
-    // No result and not running: the turn ended (interrupt, crash) before the
-    // question was answered, and nothing will answer it now.
-    text = isRunning ? "Waiting for your answer" : "No answer recorded";
+  switch (outcome.status) {
+    case "answered":
+      text = "Answered";
+      color = "var(--success)";
+      break;
+    case "follow_up":
+      text = "Asked for more questions";
+      color = "var(--accent-text)";
+      break;
+    case "timed_out":
+      text = "Timed out";
+      color = "var(--warning)";
+      break;
+    case "declined":
+      text = "Not answered";
+      color = "var(--warning)";
+      break;
+    default:
+      // No result and not running: the turn ended (interrupt, crash) before
+      // the question was answered, and nothing will answer it now.
+      text = isRunning ? "Waiting for your answer" : "No answer recorded";
   }
   return <span style={{ flexShrink: 0, fontSize: 12, color, fontStyle: outcome.status === "pending" ? "italic" : undefined }}>{text}</span>;
 }
 
-function QuestionBlock({ question, first, settled, answer }: { question: AskedQuestion; first: boolean; settled: boolean; answer: QuestionAnswer | null }) {
+function QuoteBlock({ label, text, quoted = true }: { label: string; text: string; quoted?: boolean }) {
+  return (
+    <div
+      style={{
+        marginTop: 7,
+        padding: "5px 10px",
+        borderLeft: "2px solid var(--accent)",
+        background: "var(--accent-bg)",
+        borderRadius: "0 6px 6px 0",
+        fontSize: 13,
+        lineHeight: 1.45,
+      }}
+    >
+      <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 1 }}>{label}</div>
+      <div style={{ whiteSpace: "pre-wrap" }}>{quoted ? `“${text}”` : text}</div>
+    </div>
+  );
+}
+
+function QuestionBlock({ question, first, answer, showMissing }: { question: AskedQuestion; first: boolean; answer: QuestionAnswer | null; showMissing: boolean }) {
   const chosen = new Set(answer?.selected ?? []);
+  // Once this question is answered, what wasn't chosen recedes; before that
+  // every option is still live and reads at full weight.
+  const decided = chosen.size > 0 || !!answer?.other;
   return (
     <div style={{ padding: "10px 14px", borderTop: first ? undefined : "1px solid var(--border)" }}>
       {(question.header || question.multiSelect) && (
@@ -137,7 +190,6 @@ function QuestionBlock({ question, first, settled, answer }: { question: AskedQu
               <li
                 key={oi}
                 data-chosen={picked || undefined}
-                aria-label={picked ? `${opt.label} (chosen)` : undefined}
                 style={{
                   display: "flex",
                   alignItems: "flex-start",
@@ -145,9 +197,6 @@ function QuestionBlock({ question, first, settled, answer }: { question: AskedQu
                   padding: "4px 8px",
                   borderRadius: 6,
                   background: picked ? "var(--accent-bg)" : undefined,
-                  // Once answered, what wasn't chosen recedes; before that every
-                  // option is still live and reads at full weight.
-                  opacity: settled && !picked ? 0.55 : 1,
                 }}
               >
                 <Marker
@@ -156,7 +205,20 @@ function QuestionBlock({ question, first, settled, answer }: { question: AskedQu
                   style={{ flexShrink: 0, marginTop: picked ? 2 : 3, color: picked ? "var(--accent-text)" : "var(--text-muted)" }}
                 />
                 <div style={{ minWidth: 0, flex: 1 }}>
-                  <div style={{ fontSize: 13, lineHeight: 1.4, fontWeight: picked ? 600 : 400, color: picked ? "var(--accent-text)" : undefined }}>{opt.label}</div>
+                  <div
+                    data-testid="question-option-label"
+                    style={{
+                      fontSize: 13,
+                      lineHeight: 1.4,
+                      fontWeight: picked ? 600 : 400,
+                      // Receding is a colour step, not opacity: --text-muted is
+                      // already the faintest ink that passes contrast.
+                      color: picked ? "var(--accent-text)" : decided ? "var(--text-muted)" : undefined,
+                    }}
+                  >
+                    {opt.label}
+                    {picked && <span style={visuallyHidden}> (chosen)</span>}
+                  </div>
                   {opt.description && (
                     <div
                       title={opt.description}
@@ -180,24 +242,10 @@ function QuestionBlock({ question, first, settled, answer }: { question: AskedQu
         </ul>
       )}
 
-      {answer?.other && (
-        <div
-          style={{
-            marginTop: 7,
-            padding: "5px 10px",
-            borderLeft: "2px solid var(--accent)",
-            background: "var(--accent-bg)",
-            borderRadius: "0 6px 6px 0",
-            fontSize: 13,
-            lineHeight: 1.45,
-          }}
-        >
-          <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 1 }}>Your answer</div>
-          <div style={{ whiteSpace: "pre-wrap" }}>“{answer.other}”</div>
-        </div>
-      )}
+      {answer?.other && <QuoteBlock label="Your answer" text={answer.other} />}
+      {answer?.notes && <QuoteBlock label="Your note" text={answer.notes} quoted={false} />}
 
-      {settled && !answer && <div style={{ marginTop: 6, fontSize: 12, fontStyle: "italic", color: "var(--text-muted)" }}>No answer</div>}
+      {showMissing && !answer && <div style={{ marginTop: 6, fontSize: 12, fontStyle: "italic", color: "var(--text-muted)" }}>No answer</div>}
     </div>
   );
 }
