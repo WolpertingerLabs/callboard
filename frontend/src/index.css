@@ -966,7 +966,8 @@ pre {
 }
 
 .msg-bubble > .copy-btn,
-.msg-bubble > .fork-affordance {
+.msg-bubble > .fork-affordance,
+.msg-bubble > .star-affordance {
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.15s ease;
@@ -977,7 +978,9 @@ pre {
    cursor. */
 .msg-bubble:hover > .copy-btn,
 .msg-bubble:hover > .fork-affordance,
-.msg-bubble > .fork-affordance.is-open {
+.msg-bubble > .fork-affordance.is-open,
+.msg-bubble:hover > .star-affordance,
+.msg-bubble > .star-affordance:focus-visible {
   opacity: 1;
   pointer-events: auto;
 }

@@ -27,6 +27,8 @@ export interface ChatMeta {
   agentAlias?: string;
   /** The chat's own space stamp (absent = General). Moving the tree rewrites it. */
   spaceId?: string;
+  /** Keys of the starred messages (see utils/starredMessages.ts). Absent when none. */
+  starredMessages?: string[];
 }
 
 const NO_META: ChatMeta = { provider: null };
@@ -56,6 +58,7 @@ export function parseChatMeta(metadata: string | null | undefined): ChatMeta {
     review: meta.modelReview === true || meta.parentAnswers === true ? { modelReview: meta.modelReview === true, parentAnswers: meta.parentAnswers === true } : undefined,
     agentAlias: nonEmpty(meta.agentAlias),
     spaceId: nonEmpty(meta.spaceId),
+    starredMessages: Array.isArray(meta.starredMessages) ? meta.starredMessages.filter((key): key is string => typeof key === "string") : undefined,
   };
 }
 
