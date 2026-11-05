@@ -25,8 +25,10 @@
  *  - the child still has `parentAnswers` on (re-read live, so turning it off
  *    takes effect for prompts already open);
  *  - the caller IS the child's direct parent (`offeredToParent`, the child's
- *    `parentChatId` when the prompt was raised). Not a grandparent: the
- *    setting is "parent can answer", and the user chose that parent;
+ *    `parentChatId` when the prompt was raised — or, when that parent was
+ *    superseded, the chat that took its place: superseded-parent.ts). Not a
+ *    grandparent: the setting is "parent can answer", and the user chose that
+ *    parent;
  *  - to APPROVE, the caller itself holds `allow` on the call's axis
  *    (`parentApprovalRefusal`, permission-ceiling.ts). Denying is always open.
  *
