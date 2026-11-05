@@ -27,8 +27,8 @@ import { readChatSessionMessages, withSessionProvider, withSessionProviderMeta, 
 import { buildChatTree, buildLineageIndex, getParentChatId, paginateTreeRows, walkToRootId } from "../services/chat-lineage.js";
 import { detachChatFromParent } from "../services/chat-detach.js";
 import { inheritedChatFields, resolveForkSource, UnsupportedForkError, writeCompressedSession, writeForkedSession, type ForkSource } from "../services/chat-fork.js";
-import { checkSupersedable, supersedeChat, type SupersedeKind, type SupersedeResult } from "../services/chat-supersede.js";
-import { assertCompressible, CompressionInputError, summariseForCompression } from "../services/chat-summary.js";
+import { checkSupersedable, supersedeChat, SupersedeRefusedError, type SupersedeKind, type SupersedeResult } from "../services/chat-supersede.js";
+import { assertCompressible, CompressionInputError, spanFingerprint, summariseForCompression } from "../services/chat-summary.js";
 import { isCompressDirection, type CompressDirection } from "../agents/compression.js";
 import { createSpaceResolver, parseSpaceScope, type SpaceResolver } from "../services/space-membership.js";
 import { spaceOfChat } from "../services/space-service.js";
@@ -1463,6 +1463,16 @@ function resolveSupersedeRequest(req: Request, verb: string): { ok: true; chat: 
   if (!source.ok) return source;
   const check = checkSupersedable(chat);
   if (!check.ok) return check;
+  // Optional precondition: the parent the client saw. Two tabs committing at
+  // once would otherwise nest the second new chat under the first (N1 → N2 →
+  // C), because by the time the second request runs C is already N1's child.
+  if (req.body && "expectedParentChatId" in req.body) {
+    const expected = req.body.expectedParentChatId;
+    if (expected !== null && typeof expected !== "string") return { ok: false, status: 400, error: "expectedParentChatId must be a string or null" };
+    if ((getParentChatId(source.meta) ?? null) !== (expected || null)) {
+      return { ok: false, status: 409, error: "This chat was moved in the chat tree since you opened it (another tab may have continued or compressed it). Reload and try again." };
+    }
+  }
   return { ok: true, chat, source, timestamp };
 }
 
@@ -1474,7 +1484,20 @@ function continuationMeta(source: ForkSource): Record<string, unknown> {
     ...(meta.model && { model: meta.model }),
     ...(meta.effort && { effort: meta.effort }),
     ...inheritedChatFields(meta),
+    // Unlike a fork — a child of C, whose parent C is not an answerer the user
+    // chose — N sits in C's own slot under C's parent, so the parent C was
+    // allowed to answer for is the parent N answers to.
+    ...(meta.parentAnswers === true && { parentAnswers: true }),
   };
+}
+
+/** Remove a session written for a supersede that was then refused, so it does not linger as an orphan log. */
+function discardSession(source: ForkSource, sessionId: string): void {
+  try {
+    source.provider.deleteSessionFiles(sessionId);
+  } catch (error) {
+    log.warn(`Could not remove the unused session ${sessionId}: ${error}`);
+  }
 }
 
 /** List caches and every open view of the trees a supersede touched. */
@@ -1502,7 +1525,8 @@ chatsRouter.post("/:id/continue-from", (req, res) => {
           type: "object",
           required: ["timestamp"],
           properties: {
-            timestamp: { type: "string", description: "ISO timestamp of the message to continue from (history up to and including it is kept)" }
+            timestamp: { type: "string", description: "ISO timestamp of the message to continue from (history up to and including it is kept)" },
+            expectedParentChatId: { type: "string", nullable: true, description: "Optional precondition: the chat's parent as the client saw it (null for a root). 409 when it no longer matches." }
           }
         }
       }
@@ -1511,7 +1535,7 @@ chatsRouter.post("/:id/continue-from", (req, res) => {
   /* #swagger.responses[201] = { description: "{ chat, original }: the new chat and the original as rewritten" } */
   /* #swagger.responses[400] = { description: "Missing timestamp, no messages at or before it, or the provider cannot be continued (ACP, retired)" } */
   /* #swagger.responses[404] = { description: "Chat not found" } */
-  /* #swagger.responses[409] = { description: "The chat is running, waiting on a prompt, or a native Codex subagent" } */
+  /* #swagger.responses[409] = { description: "The chat is running, waiting on a prompt, a native Codex subagent, or moved in the tree (expectedParentChatId)" } */
   const resolved = resolveSupersedeRequest(req, "continued");
   if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
   const { chat, source, timestamp } = resolved;
@@ -1532,6 +1556,10 @@ chatsRouter.post("/:id/continue-from", (req, res) => {
     announceSupersede(result, chat, source);
     res.status(201).json({ chat: result.chat, original: result.original });
   } catch (error: any) {
+    if (error instanceof SupersedeRefusedError) {
+      discardSession(source, newSessionId);
+      return res.status(error.status).json({ error: error.message });
+    }
     log.error(`Failed to supersede ${chat.id}: ${error}`);
     res.status(500).json({ error: error.message });
   }
@@ -1561,7 +1589,7 @@ chatsRouter.post("/:id/compress/preview", async (req, res) => {
       }
     }
   } */
-  /* #swagger.responses[200] = { description: "{ summary, chunks, provider, model }" } */
+  /* #swagger.responses[200] = { description: "{ summary, chunks, fingerprint, provider, model }: pass fingerprint back to /compress" } */
   /* #swagger.responses[400] = { description: "Bad timestamp/direction, or nothing on one side of the cutoff" } */
   /* #swagger.responses[404] = { description: "Chat not found" } */
   /* #swagger.responses[409] = { description: "The chat is running, waiting on a prompt, or a native Codex subagent" } */
@@ -1578,7 +1606,7 @@ chatsRouter.post("/:id/compress/preview", async (req, res) => {
   });
   try {
     const messages = readChatSessionMessages(chat, source.sessionIds);
-    const { summary, chunks } = await summariseForCompression({
+    const { summary, chunks, fingerprint } = await summariseForCompression({
       messages,
       timestamp,
       direction,
@@ -1587,9 +1615,15 @@ chatsRouter.post("/:id/compress/preview", async (req, res) => {
       effort: source.meta.effort,
       signal: abort.signal,
     });
-    res.json({ summary, chunks, provider: source.providerKind, ...(source.meta.model && { model: source.meta.model }) });
+    res.json({ summary, chunks, fingerprint, provider: source.providerKind, ...(source.meta.model && { model: source.meta.model }) });
   } catch (error: any) {
     if (error instanceof CompressionInputError) return res.status(400).json({ error: error.message });
+    // The client went away (dialog closed, proxy timed out): the run was
+    // aborted with it, and there is nobody to answer.
+    if (abort.signal.aborted) {
+      log.info(`Compression summary for ${chat.id} cancelled by the client`);
+      return;
+    }
     log.error(`Compression summary for ${chat.id} failed: ${error}`);
     if (!res.headersSent) res.status(502).json({ error: `Could not generate a summary: ${error.message}` });
   }
@@ -1611,7 +1645,9 @@ chatsRouter.post("/:id/compress", (req, res) => {
           properties: {
             timestamp: { type: "string", description: "ISO timestamp of the message the compression is anchored at" },
             direction: { type: "string", enum: ["before", "after"] },
-            summary: { type: "string", description: "The summary to put in place of the compressed messages — typically from /compress/preview, possibly edited" }
+            summary: { type: "string", description: "The summary to put in place of the compressed messages — typically from /compress/preview, possibly edited" },
+            fingerprint: { type: "string", description: "The fingerprint /compress/preview returned with the summary. 409 (code summary_stale) when the summarised span has changed since." },
+            expectedParentChatId: { type: "string", nullable: true, description: "Optional precondition: the chat's parent as the client saw it (null for a root). 409 when it no longer matches." }
           }
         }
       }
@@ -1620,18 +1656,26 @@ chatsRouter.post("/:id/compress", (req, res) => {
   /* #swagger.responses[201] = { description: "{ chat, original }: the new chat and the original as rewritten" } */
   /* #swagger.responses[400] = { description: "Bad timestamp/direction/summary, nothing on one side of the cutoff, or the provider cannot be compressed" } */
   /* #swagger.responses[404] = { description: "Chat not found" } */
-  /* #swagger.responses[409] = { description: "The chat is running, waiting on a prompt, or a native Codex subagent" } */
+  /* #swagger.responses[409] = { description: "The chat is running, waiting on a prompt, a native Codex subagent, moved in the tree (expectedParentChatId), or its summarised span changed (code summary_stale)" } */
   if (!isCompressDirection(req.body?.direction)) return res.status(400).json({ error: 'direction must be "before" or "after"' });
   const direction: CompressDirection = req.body.direction;
   const summary = typeof req.body.summary === "string" ? req.body.summary.trim() : "";
   if (!summary) return res.status(400).json({ error: "summary is required" });
   if (summary.length > MAX_COMPRESSION_SUMMARY_CHARS) return res.status(400).json({ error: `summary is longer than ${MAX_COMPRESSION_SUMMARY_CHARS} characters` });
+  const fingerprint = typeof req.body.fingerprint === "string" ? req.body.fingerprint : "";
+  if (!fingerprint) return res.status(400).json({ error: "fingerprint is required — pass the one /compress/preview returned with the summary" });
   const resolved = resolveSupersedeRequest(req, "compressed");
   if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
   const { chat, source, timestamp } = resolved;
 
   try {
-    assertCompressible(readChatSessionMessages(chat, source.sessionIds), timestamp, direction);
+    const { summarised } = assertCompressible(readChatSessionMessages(chat, source.sessionIds), timestamp, direction);
+    // The span the summary describes must be the span being replaced: a
+    // compress-later preview followed by more conversation would otherwise drop
+    // the new messages without a trace.
+    if (spanFingerprint(summarised) !== fingerprint) {
+      return res.status(409).json({ error: "The conversation changed since the summary was generated. Regenerate the summary and try again.", code: "summary_stale" });
+    }
   } catch (error: any) {
     if (error instanceof CompressionInputError) return res.status(400).json({ error: error.message });
     return res.status(500).json({ error: error.message });
@@ -1654,6 +1698,10 @@ chatsRouter.post("/:id/compress", (req, res) => {
     announceSupersede(result, chat, source);
     res.status(201).json({ chat: result.chat, original: result.original });
   } catch (error: any) {
+    if (error instanceof SupersedeRefusedError) {
+      discardSession(source, newSessionId);
+      return res.status(error.status).json({ error: error.message });
+    }
     log.error(`Failed to supersede ${chat.id}: ${error}`);
     res.status(500).json({ error: error.message });
   }

@@ -16,6 +16,7 @@ import type { ParsedMessage } from "shared/types/index.js";
 import type { EffortLevel } from "shared/types/index.js";
 import type { InternalProviderKind } from "../agents/ports/AgentProvider.js";
 import { compressionSpans, hasConversation, transcriptBlocksForSummary, type CompressDirection } from "../agents/compression.js";
+import { createHash } from "node:crypto";
 import { runChatModelCompletion } from "./chat-model-completion.js";
 
 /** Per-call transcript budget, in characters (~4 chars per token). */
@@ -121,9 +122,24 @@ export function assertCompressible(
   return spans;
 }
 
+/**
+ * A fingerprint of the span a summary was made from, so a commit can tell the
+ * span has changed since its preview — most often a compress-later preview
+ * followed by more conversation, where committing would silently drop the new
+ * messages. Hashes each message's position-relevant identity (role, type,
+ * timestamp, content length) rather than its text: cheap, and any message
+ * added, removed or rewritten changes it.
+ */
+export function spanFingerprint(messages: ParsedMessage[]): string {
+  const hash = createHash("sha256");
+  for (const m of messages) hash.update(`${m.role}|${m.type}|${m.timestamp ?? ""}|${m.content?.length ?? 0}\n`);
+  return `${messages.length}:${hash.digest("hex").slice(0, 16)}`;
+}
+
 /** Generate the summary for a compression. */
-export async function summariseForCompression(opts: SummariseOptions): Promise<{ summary: string; chunks: number }> {
+export async function summariseForCompression(opts: SummariseOptions): Promise<{ summary: string; chunks: number; fingerprint: string }> {
   const { summarised } = assertCompressible(opts.messages, opts.timestamp, opts.direction);
+  const fingerprint = spanFingerprint(summarised);
   const chunks = chunkBlocks(transcriptBlocksForSummary(summarised));
   if (chunks.length > MAX_CHUNKS) {
     throw new CompressionInputError(
@@ -140,7 +156,7 @@ export async function summariseForCompression(opts: SummariseOptions): Promise<{
       signal: opts.signal,
     });
 
-  if (chunks.length === 1) return { summary: await run(summaryPrompt(opts.direction, chunks[0]!)), chunks: 1 };
+  if (chunks.length === 1) return { summary: await run(summaryPrompt(opts.direction, chunks[0]!)), chunks: 1, fingerprint };
   // Sequential on purpose: each call is a full model run on the user's
   // account, and fanning out N of them at once is a burst of spend and rate
   // limit for a dialog the user is waiting on anyway.
@@ -148,5 +164,5 @@ export async function summariseForCompression(opts: SummariseOptions): Promise<{
   for (let i = 0; i < chunks.length; i++) {
     partials.push(await run(summaryPrompt(opts.direction, chunks[i]!, { index: i + 1, total: chunks.length })));
   }
-  return { summary: await run(mergePrompt(opts.direction, partials)), chunks: chunks.length };
+  return { summary: await run(mergePrompt(opts.direction, partials)), chunks: chunks.length, fingerprint };
 }

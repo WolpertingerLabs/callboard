@@ -1,7 +1,8 @@
 import { chatFileService, type Chat } from "./chat-file-service.js";
 import { buildLineageIndex, getParentChatId, walkToRootId } from "./chat-lineage.js";
 import { isNativeRecord } from "./card-membership.js";
-import { hasPendingRequest } from "./pending-requests.js";
+import { hasPendingRequest, repointParentOffers } from "./pending-requests.js";
+import { repointCallbacksForParent } from "./session-callbacks.js";
 import { sessionRegistry } from "./session-registry.js";
 import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { createLogger } from "../utils/logger.js";
@@ -64,14 +65,35 @@ const log = createLogger("chat-supersede");
  * nothing records which message they came from, and C is the conversation that
  * spawned them.
  *
+ * ## Live linkage
+ *
+ * N is where the user works now, so what was waiting on C as a PARENT follows
+ * N: pending phone-home callbacks with C as their parent are re-pointed to N
+ * (a child finishing later re-invokes N, not the hidden original), C's
+ * callback-chain depth goes with them, and open permission prompts a child
+ * offered to C (`parentAnswers`) are re-addressed to N. Later prompts from a
+ * child left under C still read their parent live from metadata and are
+ * offered to C — re-parenting those children is the tree rule above, not this.
+ * C's own callbacks as a CHILD stay keyed on C: C is idle (supersede refuses a
+ * running chat), and nothing will complete it until the user reopens it.
+ *
  * ## What is NOT moved
  *
- * Phone-home callbacks and open prompts stay keyed on C, which spawned them;
- * C is idle (supersede refuses a running chat), and its children's completion
- * still reports to whoever was waiting on them. Things keyed by chat id
- * elsewhere — a board card's id (it is the root's chat id), job-run step
- * records, artifacts — still name C. The card follows N because card identity
- * is lineage-root identity, so a card id cached by an open tab goes stale.
+ * Things keyed by chat id elsewhere — a board card's id (it is the root's chat
+ * id), job-run step records, artifacts — still name C. The card follows N
+ * because card identity is lineage-root identity, so a card id cached by an
+ * open tab goes stale.
+ *
+ * ## The running check
+ *
+ * `checkSupersedable` runs when the request arrives and again right before C
+ * is rewritten (after the new session is written), so a run that registered in
+ * between is caught and the write refused ({@link SupersedeRefusedError}). What
+ * no check here can see is a message POSTed to C that is still inside its
+ * pre-registration awaits (effort/route probes, a few seconds at most): there
+ * is no "starting" registry to consult. Such a run proceeds on C — the
+ * original, now a child — and appends to C's own session; nothing is corrupted,
+ * but its reply lands in the original rather than in N.
  *
  * ## Ordering
  *
@@ -155,6 +177,10 @@ export interface SupersedeResult {
   previousRootChatId: string;
   movedChildren: string[];
   restamped: number;
+  /** Pending phone-home callbacks with C as their parent, now N's. */
+  repointedCallbacks: number;
+  /** Open child prompts offered to C, now offered to N. */
+  repointedOffers: number;
 }
 
 /** Whether a fork point still exists verbatim in the new chat. */
@@ -199,8 +225,22 @@ function prefixedTitle(kind: SupersedeKind, title: string | null): string {
   return `${prefix}${base}`;
 }
 
+/** Thrown by {@link supersedeChat} when the late re-check refuses; nothing was written. */
+export class SupersedeRefusedError extends Error {
+  constructor(
+    readonly status: 400 | 409,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
 export function supersedeChat(opts: SupersedeOptions): SupersedeResult {
   const { chat, kind, timestamp, newSessionId } = opts;
+  // Again, now that the session is written: the request-time check may be
+  // seconds (or, after a slow write, longer) old.
+  const late = checkSupersedable(chat);
+  if (!late.ok) throw new SupersedeRefusedError(late.status, late.error);
   const cutoffMs = new Date(timestamp).getTime();
   const meta: Record<string, any> = parseChatMetadata(chat.metadata);
 
@@ -278,6 +318,11 @@ export function supersedeChat(opts: SupersedeOptions): SupersedeResult {
     }
   }
 
+  // ── 4. What waited on C as a parent now waits on N ─────────────────
+  const parentKeys = [chat.id, ...(chat.session_id && chat.session_id !== chat.id ? [chat.session_id] : [])];
+  const repointedCallbacks = rewritten ? repointCallbacksForParent(parentKeys, created.id).length : 0;
+  const repointedOffers = rewritten ? repointParentOffers(parentKeys, created.id).length : 0;
+
   let restamped = 0;
   if (wasRoot && rewritten) {
     for (const other of snapshot) {
@@ -294,7 +339,7 @@ export function supersedeChat(opts: SupersedeOptions): SupersedeResult {
 
   log.info(
     `Superseded chat ${chat.id} by ${created.id} (${kind} at ${timestamp}; ${wasRoot ? "root" : `child of ${parentId ?? previousRootChatId}`}; ` +
-      `${movedChildren.length} child(ren) moved, ${restamped} re-stamped)`,
+      `${movedChildren.length} child(ren) moved, ${restamped} re-stamped, ${repointedCallbacks} callback(s) and ${repointedOffers} prompt offer(s) re-pointed)`,
   );
-  return { chat: created, original: chatFileService.getChat(chat.id), previousRootChatId, movedChildren, restamped };
+  return { chat: created, original: chatFileService.getChat(chat.id), previousRootChatId, movedChildren, restamped, repointedCallbacks, repointedOffers };
 }

@@ -253,6 +253,27 @@ export function removeCallbacksForChild(childIds: string[]): PendingCallback[] {
   return removed;
 }
 
+/**
+ * Hand every registration waiting to re-invoke a parent over to another chat,
+ * for a parent that was superseded (chat-supersede.ts): the chat that took its
+ * place is where the conversation continues, so a child finishing later must
+ * report there rather than to the hidden original. `fromIds` are every id the
+ * old parent may be registered under (chat id and session id). The old
+ * parent's callback-chain depth goes with it, so the depth cap still counts the
+ * chain. Returns the re-pointed registrations.
+ */
+export function repointCallbacksForParent(fromIds: string[], toChatId: string): PendingCallback[] {
+  const ids = new Set(fromIds);
+  const store = readStore();
+  const moved = store.callbacks.filter((cb) => ids.has(cb.parentChatId));
+  const depth = fromIds.map((id) => store.chatDepths[id]).find((d) => typeof d === "number");
+  if (!moved.length && depth === undefined) return moved;
+  for (const cb of moved) cb.parentChatId = toChatId;
+  if (depth !== undefined && store.chatDepths[toChatId] === undefined) store.chatDepths[toChatId] = depth;
+  writeStore(store);
+  return moved;
+}
+
 /** Distinct parent chat ids that currently have at least one "ready" callback. */
 export function parentsWithReadyCallbacks(): string[] {
   const seen = new Set<string>();

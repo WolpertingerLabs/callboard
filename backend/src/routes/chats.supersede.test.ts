@@ -28,7 +28,7 @@ vi.mock("../services/chat-model-completion.js", () => ({
 }));
 
 const t = (s: number) => new Date(Date.UTC(2026, 0, 1, 10, 0, s)).toISOString();
-const history = [
+const history: Record<string, unknown>[] = [
   { role: "user", type: "text", content: "q1", timestamp: t(0) },
   { role: "assistant", type: "text", content: "a1", timestamp: t(1) },
   { role: "user", type: "text", content: "q2", timestamp: t(10) },
@@ -57,6 +57,13 @@ vi.mock("../agents/factory.js", () => ({
 const { chatsRouter } = await import("./chats.js");
 const { chatFileService } = await import("../services/chat-file-service.js");
 const { buildChatTree } = await import("../services/chat-lineage.js");
+
+/** The fingerprint a preview at this point would return — what a client sends back on commit. */
+async function previewFingerprint(id: string, timestamp: string, direction: "before" | "after"): Promise<string> {
+  const res = await call("/:id/compress/preview", id, { timestamp, direction });
+  expect(res.status).toBe(200);
+  return res.body.fingerprint;
+}
 
 afterAll(() => rmSync(tmpRoot, { recursive: true, force: true }));
 
@@ -160,7 +167,8 @@ describe("POST /:id/compress/preview", () => {
 describe("POST /:id/compress", () => {
   it("writes natively on Claude Code and supersedes with the pre-compression role", async () => {
     const chat = makeChat({ title: "Long one" });
-    const res = await call("/:id/compress", chat.id, { timestamp: t(10), direction: "before", summary: "  edited summary  " });
+    const fingerprint = await previewFingerprint(chat.id, t(10), "before");
+    const res = await call("/:id/compress", chat.id, { timestamp: t(10), direction: "before", summary: "  edited summary  ", fingerprint });
     expect(res.status).toBe(201);
     expect(calls.compress[0]![1]).toMatchObject({ cutoffTimestamp: t(10), direction: "before", summary: "edited summary" });
     expect(metaOf(res.body.chat.id)).toMatchObject({ title: "Long one", supersedes: { chatId: chat.id, kind: "compress-before" } });
@@ -169,7 +177,8 @@ describe("POST /:id/compress", () => {
 
   it("seeds flattened turns on a harness without a native writer", async () => {
     const chat = makeChat({ provider: "codex" });
-    const res = await call("/:id/compress", chat.id, { timestamp: t(1), direction: "after", summary: "what happened later" });
+    const fingerprint = await previewFingerprint(chat.id, t(1), "after");
+    const res = await call("/:id/compress", chat.id, { timestamp: t(1), direction: "after", summary: "what happened later", fingerprint });
     expect(res.status).toBe(201);
     const turns = calls.seed[0]![0] as { role: string; text: string }[];
     expect(turns.map((x) => x.role)).toEqual(["user", "assistant", "user", "assistant"]);
@@ -179,8 +188,57 @@ describe("POST /:id/compress", () => {
 
   it("requires a summary and refuses an empty side", async () => {
     const chat = makeChat({});
-    expect((await call("/:id/compress", chat.id, { timestamp: t(1), direction: "after", summary: "   " })).status).toBe(400);
-    expect((await call("/:id/compress", chat.id, { timestamp: t(11), direction: "after", summary: "x" })).status).toBe(400);
+    expect((await call("/:id/compress", chat.id, { timestamp: t(1), direction: "after", summary: "   ", fingerprint: "f" })).status).toBe(400);
+    expect((await call("/:id/compress", chat.id, { timestamp: t(1), direction: "after", summary: "x" })).status).toBe(400);
+    expect((await call("/:id/compress", chat.id, { timestamp: t(11), direction: "after", summary: "x", fingerprint: "f" })).status).toBe(400);
     expect(calls.compress).toHaveLength(0);
+  });
+
+  it.each(["after", "before"] as const)("409s (summary_stale) when the %s span changed since the preview", async (direction) => {
+    const chat = makeChat({});
+    const at = direction === "after" ? t(1) : t(10);
+    const fingerprint = await previewFingerprint(chat.id, at, direction);
+    // More conversation (after), or a rewritten earlier message (before).
+    const change =
+      direction === "after"
+        ? () => history.push({ role: "user", type: "text", content: "q3", timestamp: t(20) })
+        : () => (history[0] = { ...history[0], content: "q1, edited" });
+    const saved = history.map((m) => ({ ...m }));
+    change();
+    try {
+      const res = await call("/:id/compress", chat.id, { timestamp: at, direction, summary: "s", fingerprint });
+      expect(res.status).toBe(409);
+      expect(res.body.code).toBe("summary_stale");
+      expect(calls.compress).toHaveLength(0);
+    } finally {
+      history.splice(0, history.length, ...saved);
+    }
+  });
+});
+
+describe("expectedParentChatId precondition", () => {
+  it("409s when the chat moved since the client saw it, so two tabs cannot nest N1 → N2 → C", async () => {
+    const chat = makeChat({ title: "Work" });
+    const first = await call("/:id/continue-from", chat.id, { timestamp: t(1), expectedParentChatId: null });
+    expect(first.status).toBe(201);
+    // The second tab still believes the chat is a root.
+    const second = await call("/:id/continue-from", chat.id, { timestamp: t(1), expectedParentChatId: null });
+    expect(second.status).toBe(409);
+    const fingerprint = await previewFingerprint(chat.id, t(1), "after");
+    expect((await call("/:id/compress", chat.id, { timestamp: t(1), direction: "after", summary: "s", fingerprint, expectedParentChatId: null })).status).toBe(
+      409,
+    );
+    expect(calls.fork).toHaveLength(1);
+    // The current parent passes.
+    expect((await call("/:id/continue-from", chat.id, { timestamp: t(1), expectedParentChatId: first.body.chat.id })).status).toBe(201);
+  });
+});
+
+describe("parentAnswers", () => {
+  it("carries over to the chat that takes the original's slot", async () => {
+    const parent = makeChat({});
+    const chat = makeChat({ parentChatId: parent.id, rootChatId: parent.id, chatRole: "subagent", parentAnswers: true });
+    const res = await call("/:id/continue-from", chat.id, { timestamp: t(1) });
+    expect(metaOf(res.body.chat.id)).toMatchObject({ parentChatId: parent.id, parentAnswers: true });
   });
 });

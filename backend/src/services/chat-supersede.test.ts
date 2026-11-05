@@ -13,14 +13,19 @@ const tmpRoot = mkdtempSync(join(tmpdir(), "callboard-supersede-"));
 process.env.CALLBOARD_DATA_DIR = tmpRoot;
 
 const running = vi.hoisted(() => new Set<string>());
-const pending = vi.hoisted(() => new Set<string>());
 vi.mock("./claude.js", () => ({ getActiveSession: () => null, hasPendingRequest: () => false, getPendingRequest: () => null }));
 vi.mock("./session-registry.js", () => ({ sessionRegistry: { has: (id: string) => running.has(id), notifyMetadata: () => {} } }));
-vi.mock("./pending-requests.js", () => ({ hasPendingRequest: (id: string) => pending.has(id) }));
 
 const { chatFileService } = await import("./chat-file-service.js");
 const { walkToRootId, buildChatTree } = await import("./chat-lineage.js");
-const { checkSupersedable, keptStars, supersedeChat } = await import("./chat-supersede.js");
+const { checkSupersedable, keptStars, supersedeChat, SupersedeRefusedError } = await import("./chat-supersede.js");
+const { pendingRequests } = await import("./pending-requests.js");
+const { registerCompletionCallback, listPendingForParent, removeCallbacks } = await import("./session-callbacks.js");
+
+/** A minimal open prompt, as pending-requests stores one. */
+function openPrompt(key: string, offeredToParent?: string) {
+  pendingRequests.set(key, { eventType: "permission_request", toolName: "Bash", ...(offeredToParent && { offeredToParent }) } as any);
+}
 
 afterAll(() => rmSync(tmpRoot, { recursive: true, force: true }));
 
@@ -45,7 +50,7 @@ function supersede(chat: ReturnType<typeof makeChat>, kind: "continue" | "compre
 afterEach(() => {
   for (const sessionId of created.splice(0)) chatFileService.deleteChat(sessionId);
   running.clear();
-  pending.clear();
+  pendingRequests.clear();
 });
 
 describe("supersedeChat — root", () => {
@@ -160,10 +165,41 @@ describe("checkSupersedable", () => {
     running.add(chat.id);
     expect(checkSupersedable(chat)).toMatchObject({ ok: false, status: 409 });
     running.clear();
-    pending.add(chat.session_id);
+    openPrompt(chat.session_id);
     expect(checkSupersedable(chat)).toMatchObject({ ok: false, status: 409 });
     expect(checkSupersedable(makeChat({ provider: "acp", acpProviderId: "opencode" }))).toMatchObject({ ok: false, status: 400 });
     expect(checkSupersedable(makeChat({ provider: "codex", nativeAgent: { parentThreadId: "x" } }))).toMatchObject({ ok: false, status: 409 });
+  });
+});
+
+describe("supersedeChat — live linkage", () => {
+  it("re-points callbacks waiting on the original as a parent, and prompts offered to it, to the new chat", () => {
+    const root = makeChat({ title: "Parent" });
+    const child = makeChat({ parentChatId: root.id, rootChatId: root.id, chatRole: "subagent", parentAnswers: true });
+    const unrelated = makeChat({});
+    const cb = registerCompletionCallback({ childChatId: child.id, parentChatId: root.id, kind: "spawned" });
+    const other = registerCompletionCallback({ childChatId: child.id, parentChatId: unrelated.id, kind: "spawned" });
+    openPrompt(child.id, root.id);
+    openPrompt(`${child.id}-2`, unrelated.id);
+    try {
+      const result = supersede(root);
+      expect(result).toMatchObject({ repointedCallbacks: 1, repointedOffers: 1 });
+      expect(listPendingForParent(root.id)).toEqual([]);
+      expect(listPendingForParent(result.chat.id).map((c) => c.childChatId)).toEqual([child.id]);
+      expect(listPendingForParent(unrelated.id)).toHaveLength(1);
+      expect(pendingRequests.get(child.id)?.offeredToParent).toBe(result.chat.id);
+      expect(pendingRequests.get(`${child.id}-2`)?.offeredToParent).toBe(unrelated.id);
+    } finally {
+      removeCallbacks([cb.id, other.id].filter(Boolean) as string[]);
+    }
+  });
+
+  it("refuses at the late re-check, before writing anything, when a run started in between", () => {
+    const chat = makeChat({ title: "Busy" });
+    running.add(chat.session_id);
+    expect(() => supersede(chat)).toThrow(SupersedeRefusedError);
+    expect(chatFileService.getAllChats().filter((c) => c.folder === "/repos/supersede")).toHaveLength(1);
+    expect(metaOf(chat.id)).toEqual({ title: "Busy" });
   });
 });
 
