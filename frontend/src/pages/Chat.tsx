@@ -47,6 +47,7 @@ import {
   deleteDraft,
   fetchDraftImages,
   forkChat,
+  continueChatFrom,
   getCard,
   getChatTree,
   handshakeHeaders,
@@ -98,6 +99,8 @@ import SessionInfoNav from "../components/SessionInfoNav";
 import { useResolvedFavorites } from "../hooks/useResolvedFavorites";
 import ChatPermissionsModal from "../components/ChatPermissionsModal";
 import ForkHandoffModal from "../components/ForkHandoffModal";
+import CompressChatModal from "../components/CompressChatModal";
+import type { ChatRewriteAction } from "../utils/chatRewrite";
 import BranchSelector from "../components/BranchSelector";
 import GitDiffView from "../components/GitDiffView";
 import ChatDebugPanel from "../components/ChatDebugPanel";
@@ -945,6 +948,38 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       void runFork(timestamp);
     },
     [runFork],
+  );
+
+  // The in-place actions (continue from here, compress earlier/later). Each
+  // makes a NEW chat that takes this one's place — its row, card and slot in
+  // the tree — and keeps this one as its child, then navigates there. Continue
+  // asks for a plain confirmation; compress opens a dialog that fetches the
+  // summary from this chat's own model and lets the user edit it.
+  const [pendingRewrite, setPendingRewrite] = useState<{ timestamp: string; action: ChatRewriteAction } | null>(null);
+  const handleRewrite = useCallback((timestamp: string, action: ChatRewriteAction) => setPendingRewrite({ timestamp, action }), []);
+  const finishRewrite = useCallback(
+    (newChatId: string) => {
+      setPendingRewrite(null);
+      onChatListRefresh?.();
+      navigate(`/chat/${newChatId}`);
+    },
+    [navigate, onChatListRefresh],
+  );
+  const runContinueFrom = useCallback(
+    async (timestamp: string) => {
+      if (!id || forkingRef.current) return;
+      forkingRef.current = true;
+      try {
+        const { chat } = await continueChatFrom(id, timestamp);
+        finishRewrite(chat.id);
+      } catch (err) {
+        console.error("Failed to continue chat:", err);
+        window.alert(errorMessage(err, "Failed to continue chat"));
+      } finally {
+        forkingRef.current = false;
+      }
+    },
+    [id, finishRewrite],
   );
 
   // Current per-chat model (from metadata). Empty string = no override,
@@ -3738,6 +3773,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                         teamColorMap={teamColorMap}
                         onFork={canFork ? handleFork : undefined}
                         forkCurrentProvider={forkSourceProvider ?? undefined}
+                        // Not while a run is in flight: the backend refuses a
+                        // chat that is streaming, and the transcript is still
+                        // growing under the message the user would pick.
+                        onRewrite={canFork && !streaming ? handleRewrite : undefined}
                         forks={forkMarkers.get(item.originalIndex)}
                         starKey={starKey}
                         starred={!!starKey && starredKeys.has(starKey)}
@@ -4129,6 +4168,30 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           if (handoff) void runFork(handoff.timestamp, { provider: handoff.provider, ...(model && { model }) });
         }}
       />
+
+      <ConfirmModal
+        isOpen={pendingRewrite?.action === "continue"}
+        onClose={() => setPendingRewrite(null)}
+        onConfirm={() => {
+          const pending = pendingRewrite;
+          if (pending) void runContinueFrom(pending.timestamp);
+        }}
+        title="Continue from this message"
+        message="A new chat with the history up to and including this message takes this chat's place in the sidebar and on the board. This chat is kept, unchanged, as its child."
+        confirmText="Continue from here"
+      />
+
+      {id && pendingRewrite && pendingRewrite.action !== "continue" && (
+        <CompressChatModal
+          // Remounted per request, so a second compression starts from a fresh summary.
+          key={`${pendingRewrite.action}@${pendingRewrite.timestamp}`}
+          chatId={id}
+          timestamp={pendingRewrite.timestamp}
+          direction={pendingRewrite.action === "compress-before" ? "before" : "after"}
+          onCancel={() => setPendingRewrite(null)}
+          onDone={({ chat }) => finishRewrite(chat.id)}
+        />
+      )}
 
       <ConfirmModal
         isOpen={branchChangeConfirm.isOpen}

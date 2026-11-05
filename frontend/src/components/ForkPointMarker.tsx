@@ -4,6 +4,7 @@ import { GitFork } from "lucide-react";
 import type { ChatTreeNode } from "../api";
 import ProviderBadge from "./ProviderBadge";
 import { STATUS_DOT } from "./ChatTreeIndicator";
+import { PRE_COMPRESSION_ROLE, SUPERSEDED_ROLE } from "../utils/chatRewrite";
 
 /**
  * Inline marker under a message that one or more forks branched off: a
@@ -13,6 +14,16 @@ import { STATUS_DOT } from "./ChatTreeIndicator";
  * title). Keyboard: Arrow keys move between rows, Escape closes and returns
  * focus to the chip.
  */
+/**
+ * The chip's text. A lone original that this chat replaced is named for what
+ * it is — it is not a fork the user made — and anything else counts forks.
+ */
+export function markerLabel(forks: ChatTreeNode[]): string {
+  if (forks.length === 1 && forks[0]!.role === SUPERSEDED_ROLE) return "Original continues";
+  if (forks.length === 1 && forks[0]!.role === PRE_COMPRESSION_ROLE) return "Uncompressed original";
+  return `${forks.length} fork${forks.length === 1 ? "" : "s"}`;
+}
+
 export default function ForkPointMarker({ forks, align }: { forks: ChatTreeNode[]; align: "left" | "right" }) {
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
@@ -49,7 +60,7 @@ export default function ForkPointMarker({ forks, align }: { forks: ChatTreeNode[
     }
   };
 
-  const label = `${forks.length} fork${forks.length === 1 ? "" : "s"}`;
+  const label = markerLabel(forks);
 
   return (
     <div ref={wrapRef} style={{ position: "relative", marginTop: 4 }}>
@@ -58,7 +69,7 @@ export default function ForkPointMarker({ forks, align }: { forks: ChatTreeNode[
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="menu"
         aria-expanded={open}
-        title={`${label} branched off here`}
+        title={`Branched off this message: ${label}`}
         style={{
           display: "inline-flex",
           alignItems: "center",

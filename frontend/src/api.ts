@@ -659,6 +659,42 @@ export async function forkChat(id: string, timestamp: string, opts?: { provider?
   });
 }
 
+/**
+ * The result of continue-from / compress: a NEW chat that took the original's
+ * place in the tree, and the original as rewritten (now the new chat's child).
+ */
+export interface SupersedeResponse {
+  chat: Chat;
+  original: Chat | null;
+}
+
+/** Which side of the picked message a compression summarises. */
+export type CompressDirection = "before" | "after";
+
+/**
+ * Continue a chat from a message, in its place: a new chat whose history is
+ * this one up to and including `timestamp` takes over the original's row and
+ * card, and the original is kept as its child.
+ */
+export async function continueChatFrom(id: string, timestamp: string): Promise<SupersedeResponse> {
+  return request(`/chats/${seg(id)}/continue-from`, { method: "POST", json: { timestamp }, error: "Failed to continue chat" });
+}
+
+/** Generate (without applying) the summary a compression would use. Runs on the chat's own model; can take minutes. */
+export async function previewChatCompression(
+  id: string,
+  timestamp: string,
+  direction: CompressDirection,
+  signal?: AbortSignal,
+): Promise<{ summary: string; chunks: number; provider: string; model?: string }> {
+  return request(`/chats/${seg(id)}/compress/preview`, { method: "POST", json: { timestamp, direction }, signal, error: "Failed to generate a summary" });
+}
+
+/** Compress the messages before/after `timestamp` into `summary`, in the chat's place. */
+export async function compressChat(id: string, timestamp: string, direction: CompressDirection, summary: string): Promise<SupersedeResponse> {
+  return request(`/chats/${seg(id)}/compress`, { method: "POST", json: { timestamp, direction, summary }, error: "Failed to compress chat" });
+}
+
 export async function deleteChat(id: string): Promise<void> {
   // The 409 for a native Codex child carries a code in `error` and the
   // explanation in `message`; the sidebar shows this, and `assertOk` prefers the words.

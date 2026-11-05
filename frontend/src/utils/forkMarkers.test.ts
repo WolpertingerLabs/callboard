@@ -37,6 +37,15 @@ describe("forksByTimestamp", () => {
     expect(map.get(T2)).toEqual([f3]);
   });
 
+  it("includes an original this chat replaced, but not other child roles", () => {
+    const original = node("orig", { role: "superseded", forkedAt: T1 });
+    const uncompressed = node("raw", { role: "pre-compression", forkedAt: T2 });
+    const subagent = node("sub", { role: "subagent", forkedAt: T2 });
+    const map = forksByTimestamp(tree(node("me", { children: [original, uncompressed, subagent] })));
+    expect(map.get(T1)).toEqual([original]);
+    expect(map.get(T2)).toEqual([uncompressed]);
+  });
+
   it("finds the target chat anywhere in the tree, and ignores grandchildren", () => {
     const grandchild = node("gc", { role: "fork", forkedAt: T2 });
     const mine = node("f1", { role: "fork", forkedAt: T1, children: [grandchild] });

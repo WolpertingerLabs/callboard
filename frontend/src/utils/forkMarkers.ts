@@ -6,6 +6,7 @@
  */
 import type { ChatTreeNode, ChatTreeResponse, ParsedMessage } from "../api";
 import type { DisplayItem } from "./toolGrouping";
+import { BRANCH_ROLES } from "./chatRewrite";
 
 function findNode(node: ChatTreeNode, chatId: string): ChatTreeNode | null {
   if (node.chatId === chatId) return node;
@@ -17,7 +18,9 @@ function findNode(node: ChatTreeNode, chatId: string): ChatTreeNode | null {
 }
 
 /**
- * The tree's target chat's DIRECT forks (role `fork` or `engine-switch`),
+ * The tree's target chat's DIRECT forks (role `fork` or `engine-switch`, or an
+ * original this chat replaced — `superseded` / `pre-compression`, see
+ * utils/chatRewrite.ts),
  * grouped by the message timestamp they branched off. Forks made before
  * `forkedAt` was recorded carry none and are left out — they just get no marker.
  *
@@ -28,7 +31,7 @@ export function forksByTimestamp(tree: ChatTreeResponse | null): Map<string, Cha
   const map = new Map<string, ChatTreeNode[]>();
   if (!tree) return map;
   for (const child of findNode(tree.tree, tree.targetChatId)?.children ?? []) {
-    if ((child.role !== "fork" && child.role !== "engine-switch") || !child.forkedAt) continue;
+    if (!child.role || !BRANCH_ROLES.has(child.role) || !child.forkedAt) continue;
     const list = map.get(child.forkedAt);
     if (list) list.push(child);
     else map.set(child.forkedAt, [child]);
