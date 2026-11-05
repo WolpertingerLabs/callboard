@@ -1,6 +1,7 @@
 import { memo, useState, useMemo, useEffect, useRef, type CSSProperties, type ReactNode } from "react";
 import { Check, FileText, GitFork, RotateCw, Square, Star, X } from "lucide-react";
 import type { ChatTreeNode, ForkProvider, ParsedMessage } from "../api";
+import type { ChatRewriteAction } from "../utils/chatRewrite";
 import { parseTaskList, splitAttachmentBlocks, type AttachedFile, type TaskListItem } from "shared/types/index.js";
 import MarkdownRenderer from "./MarkdownRenderer";
 import CopyButton from "./CopyButton";
@@ -107,15 +108,34 @@ const FORK_TARGETS: { kind: ForkProvider; label: string }[] = [
   { kind: "pi", label: "pi" },
 ];
 
+/** The in-place actions, in menu order. Each makes a new chat that takes this one's place. */
+const REWRITE_ACTIONS: { action: ChatRewriteAction; label: string; title: string }[] = [
+  { action: "continue", label: "Continue from here", title: "Replace this chat with one that ends at this message; the original is kept as its child" },
+  { action: "compress-before", label: "Compress earlier messages", title: "Summarise everything before this message; the original is kept as a child" },
+  { action: "compress-after", label: "Compress later messages", title: "Summarise everything after this message; the original is kept as a child" },
+];
+
 /**
- * Fork affordance: forks in place on click, or opens a harness picker so the
- * conversation can be continued on a different engine.
+ * Fork affordance: opens a menu to fork (here, or into another harness) or to
+ * rewrite this chat in place from this message.
  *
- * The same-harness entry is listed first and separately because it is the
+ * The same-harness fork is listed first and separately because it is the
  * higher-fidelity path — the backend copies the native session log rather than
  * replaying a flattened transcript.
+ *
+ * The "This chat" section appears only when `onRewrite` is given: those
+ * actions replace the open chat in the sidebar and the board rather than adding
+ * a branch beside it, so the caller decides when they are on offer.
  */
-function ForkButton({ onFork, currentProvider }: { onFork: (provider?: ForkProvider) => void; currentProvider: ForkProvider }) {
+function ForkButton({
+  onFork,
+  currentProvider,
+  onRewrite,
+}: {
+  onFork: (provider?: ForkProvider) => void;
+  currentProvider: ForkProvider;
+  onRewrite?: (action: ChatRewriteAction) => void;
+}) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
 
@@ -180,22 +200,31 @@ function ForkButton({ onFork, currentProvider }: { onFork: (provider?: ForkProvi
             Fork here
           </button>
           <div style={{ height: 1, background: "var(--border)" }} />
-          <div
-            style={{
-              padding: "6px 10px 2px",
-              fontSize: 10,
-              textTransform: "uppercase",
-              letterSpacing: 0.4,
-              color: "var(--text-muted)",
-            }}
-          >
-            Continue in
-          </div>
+          <div style={forkMenuHeaderStyle}>Continue in</div>
           {FORK_TARGETS.filter((t) => t.kind !== currentProvider).map((t) => (
             <button key={t.kind} onClick={() => choose(t.kind)} style={forkMenuItemStyle}>
               {t.label}
             </button>
           ))}
+          {onRewrite && (
+            <>
+              <div style={{ height: 1, background: "var(--border)" }} />
+              <div style={forkMenuHeaderStyle}>This chat</div>
+              {REWRITE_ACTIONS.map((a) => (
+                <button
+                  key={a.action}
+                  title={a.title}
+                  onClick={() => {
+                    setOpen(false);
+                    onRewrite(a.action);
+                  }}
+                  style={forkMenuItemStyle}
+                >
+                  {a.label}
+                </button>
+              ))}
+            </>
+          )}
         </div>
       )}
     </div>
@@ -263,6 +292,14 @@ const forkMenuItemStyle: CSSProperties = {
   color: "var(--text)",
   fontSize: 13,
   cursor: "pointer",
+};
+
+const forkMenuHeaderStyle: CSSProperties = {
+  padding: "6px 10px 2px",
+  fontSize: 10,
+  textTransform: "uppercase",
+  letterSpacing: 0.4,
+  color: "var(--text-muted)",
 };
 
 export function TodoList({ items }: { items: TaskListItem[] }) {
@@ -505,6 +542,12 @@ interface Props {
   /** The harness this chat runs on — omitted from the "continue in" choices. */
   forkCurrentProvider?: ForkProvider;
   /**
+   * When set alongside `onFork`, the fork menu also offers the in-place
+   * actions (continue from here, compress earlier/later). Called with the
+   * message's timestamp; stable for the same reason as `onFork`.
+   */
+  onRewrite?: (timestamp: string, action: ChatRewriteAction) => void;
+  /**
    * Forks of this chat that branched off at this message, shown as a chip
    * under the bubble. Must be identity-stable between renders (see the memo).
    */
@@ -659,7 +702,7 @@ export function MessageMetadata({ message, align = "right", leading }: { message
   );
 }
 
-function MessageBubble({ message, teamColorMap, onFork, forkCurrentProvider = "claude-code", forks, starKey, starred = false, onToggleStar }: Props) {
+function MessageBubble({ message, teamColorMap, onFork, forkCurrentProvider = "claude-code", onRewrite, forks, starKey, starred = false, onToggleStar }: Props) {
   const [expanded, setExpanded] = useState(false);
   const isUser = message.role === "user";
   const isTeamMessage = !!message.teamName;
@@ -968,7 +1011,13 @@ function MessageBubble({ message, teamColorMap, onFork, forkCurrentProvider = "c
         }}
       >
         <MessageCopyButton text={bodyText} />
-        {canFork && <ForkButton onFork={(provider) => onFork!(message.timestamp!, provider)} currentProvider={forkCurrentProvider} />}
+        {canFork && (
+          <ForkButton
+            onFork={(provider) => onFork!(message.timestamp!, provider)}
+            currentProvider={forkCurrentProvider}
+            onRewrite={onRewrite ? (action) => onRewrite(message.timestamp!, action) : undefined}
+          />
+        )}
         {/* Left of fork when there is one, else where fork would sit. */}
         {toggleStar && <StarButton starred={starred} onToggle={toggleStar} right={canFork ? 66 : 36} />}
         {message.isBuiltInCommand ? bodyText : bodyText && <MarkdownRenderer content={bodyText} className="message-markdown" />}

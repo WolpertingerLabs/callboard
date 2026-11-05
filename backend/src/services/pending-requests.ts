@@ -116,6 +116,26 @@ export function pendingRequestRequiresHuman(chatId: string): boolean {
  * prompt may be parked under — the chat id and its session id. Returns the
  * parent the offer was withdrawn from, if there was one.
  */
+/**
+ * Re-address every open prompt offered to `fromIds` (a parent's chat/session
+ * ids) to `toChatId` instead — for a parent superseded by a chat that took its
+ * place (chat-supersede.ts). Only the offer moves: the prompt stays the child's,
+ * the user can still answer it, and the new parent answers within its own
+ * permissions exactly as the old one would have. Returns the re-addressed
+ * prompts' keys.
+ */
+export function repointParentOffers(fromIds: string[], toChatId: string): string[] {
+  const ids = new Set(fromIds);
+  const moved: string[] = [];
+  for (const [key, pending] of pendingRequests) {
+    if (!pending.offeredToParent || !ids.has(pending.offeredToParent)) continue;
+    pending.offeredToParent = toChatId;
+    moved.push(key);
+    log.info(`[PERM-DIAG] re-addressed ${pending.toolName} prompt on ${key} to parent ${toChatId} — its parent was superseded`);
+  }
+  return moved;
+}
+
 export function withdrawParentOffer(keys: string[]): string | undefined {
   for (const key of keys) {
     const pending = pendingRequests.get(key);

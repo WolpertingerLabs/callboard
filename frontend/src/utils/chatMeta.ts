@@ -33,6 +33,8 @@ export interface SidebarChatMeta {
   rootChatId?: string;
   parentChatId?: string;
   forkedFrom?: string;
+  /** Free-form relationship to the parent ("fork", "subagent", "superseded", …). */
+  chatRole?: string;
 }
 
 const EMPTY: Readonly<SidebarChatMeta> = Object.freeze({});

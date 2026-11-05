@@ -61,6 +61,7 @@ import { detectHardStop, isReviewableTool, reviewerNotesFor, reviewToolCall, typ
 import { startReviewAudit, type PermissionAuditHooks, type ReviewAuditResult, type ReviewAuditTrace } from "./permission-review-audit.js";
 import { notifyParentOfChildPrompt } from "./parent-answers.js";
 import { resolveParentage, walkToRootId } from "./chat-lineage.js";
+import { answeringParentFor } from "./superseded-parent.js";
 import { readChat, resolveNewChatSpace, spaceInstructionsPrompt, spaceOfChat, spaceRecord } from "./space-service.js";
 import { spaceForFolder, touchSpaceRecentDirectory } from "./space-store.js";
 import { DEFAULT_SPACE_ID } from "shared";
@@ -1520,7 +1521,12 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     getSettings: () => normalizeReviewSettings(readLiveMetadataStrict()),
     getParentChatId: () => {
       const parent = readLiveMetadata().parentChatId;
-      return typeof parent === "string" && parent ? parent : undefined;
+      if (typeof parent !== "string" || !parent) return undefined;
+      // A superseded parent is answered for by the chat that took its place.
+      // Called only when a prompt is about to be offered to the parent, so the
+      // lookups here are per prompt, not per tool call.
+      const childCreatedAt = trackingId.startsWith("new-") ? undefined : chatFileService.getChatBySessionId(trackingId)?.created_at;
+      return answeringParentFor(parent, childCreatedAt);
     },
     cwd: folder,
     getTaskExcerpt: () => {

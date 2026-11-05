@@ -211,4 +211,28 @@ export interface SessionProvider {
    * session could not be written.
    */
   seedSession?(turns: HandoffTurn[], opts: { folder: string; newSessionId: string }): { logPath: string } | null;
+
+  /**
+   * Write a NEW native session that is the given one with part of its history
+   * replaced by `summary`:
+   *
+   *  - `direction: "before"` — everything strictly before the message at
+   *    `cutoffTimestamp` is replaced; that message onward is kept verbatim.
+   *  - `direction: "after"` — everything through that message is kept
+   *    verbatim (extended through any tool_result the cutoff line's tool_use
+   *    is waiting on, as {@link SessionProvider.forkSession} does); what came
+   *    after is replaced.
+   *
+   * The native, high-fidelity path: the kept part keeps the engine's own tool
+   * calls, reasoning and ids. Optional — providers without it are compressed
+   * through the neutral turns path (`buildCompressedTurns` + `seedSession`),
+   * which flattens the kept part's tool traffic to text.
+   *
+   * Returns the new session's log path, or null when the source is missing or
+   * either side of the cutoff is empty.
+   */
+  compressSession?(
+    sessionIds: string[],
+    opts: { cutoffTimestamp: string; direction: "before" | "after"; summary: string; newSessionId: string },
+  ): { logPath: string } | null;
 }

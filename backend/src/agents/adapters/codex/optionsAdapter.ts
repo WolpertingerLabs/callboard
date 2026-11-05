@@ -124,7 +124,46 @@ export interface CodexOptionsExtras {
   reasoningEffort?: EffortLevel;
   /** Effective wire route, including ambient configuration without injection. */
   reasoningRoute?: "openrouter" | "native" | "unknown";
+  /**
+   * A one-shot, tool-less run (compression summaries). Overrides every
+   * user-level setting that could give the model a tool: the sandbox is forced
+   * to `read-only` with `approvalPolicy: "never"` whatever `sandboxMode` or
+   * `permissions` say, the built-in tools are switched off by feature flag
+   * ({@link LOCKDOWN_FEATURES}), web search is disabled, and every MCP server
+   * the effective config defines is disabled by name. `mcpServerNames` comes
+   * from the CLI's own config/read (codex-execution-route.ts); a name that is
+   * not a bare TOML key cannot be addressed by `-c`, so it throws rather than
+   * run with that server live.
+   */
+  lockdown?: { mcpServerNames: string[] };
 }
+
+/**
+ * Feature flags that carry a model-callable tool, all forced off by
+ * {@link CodexOptionsExtras.lockdown}. Checked against codex-cli 0.153.4
+ * (`codex features list`); with these off a probe asking the model to run a
+ * shell command got a refusal, without them it ran one. `unified_exec` is
+ * listed although 0.153.4 keeps it on regardless — the sandbox is the backstop.
+ */
+export const LOCKDOWN_FEATURES = [
+  "shell_tool",
+  "unified_exec",
+  "apps",
+  "plugins",
+  "multi_agent",
+  "browser_use",
+  "browser_use_external",
+  "computer_use",
+  "in_app_browser",
+  "image_generation",
+  "view_image",
+  "tool_suggest",
+  "goals",
+  "hooks",
+  "skill_mcp_dependency_install",
+] as const;
+
+const BARE_TOML_KEY = /^[A-Za-z0-9_-]+$/;
 
 /**
  * Loose typing of the Claude-SDK-shaped options blob — narrows the fields the
@@ -519,10 +558,24 @@ export function translateCodexOptions(options: Record<string, unknown>): CodexTr
     codexOpts.config = { ...codexOpts.config, model_instructions_file: instructionsFilePath };
   }
 
+  // ── lockdown (one-shot, tool-less runs) ──────────────────────────
+  if (extras.lockdown) {
+    const unaddressable = extras.lockdown.mcpServerNames.filter((name) => !BARE_TOML_KEY.test(name));
+    if (unaddressable.length > 0) {
+      throw new Error(`Cannot disable Codex MCP server(s) ${unaddressable.map((n) => JSON.stringify(n)).join(", ")} for a tool-less run; no Codex turn was started.`);
+    }
+    codexOpts.config = {
+      ...codexOpts.config,
+      ...Object.fromEntries(LOCKDOWN_FEATURES.map((feature) => [`features.${feature}`, false])),
+      web_search: "disabled",
+    };
+    codexOpts.configOverrides = [...(codexOpts.configOverrides ?? []), ...extras.lockdown.mcpServerNames.map((name) => `mcp_servers.${name}.enabled=false`)];
+  }
+
   // ── thread options (cwd, model, sandbox/approval) ────────────────
   // `skipGitRepoCheck` is always on so Codex runs in non-repo dirs like the
   // other providers (spike §2.1: it's a ThreadOption, not a CodexOption).
-  const { sandboxMode, approvalPolicy } = resolveSandboxAndApproval(extras);
+  const { sandboxMode, approvalPolicy } = extras.lockdown ? { sandboxMode: "read-only" as const, approvalPolicy: "never" as const } : resolveSandboxAndApproval(extras);
   // `none` isn't a Codex effort tier (it only governs summary visibility above);
   // every other EffortLevel maps 1:1 onto Codex's ModelReasoningEffort.
   const modelReasoningEffort = reasoningEffort && reasoningEffort !== "none" ? (reasoningEffort as ModelReasoningEffort) : undefined;

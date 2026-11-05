@@ -168,3 +168,13 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
   expect(result.model).toBeUndefined();
   expect(result.defaultModel).toBeUndefined();
 });
+
+describe("codexMcpServerNames", () => {
+  it("lists every configured server, [] for none, undefined for an unknown shape", async () => {
+    const { codexMcpServerNames } = await import("./codex-execution-route.js");
+    expect(codexMcpServerNames({ mcp_servers: { github: {}, db: { enabled: false } } })).toEqual(["github", "db"]);
+    expect(codexMcpServerNames({})).toEqual([]);
+    expect(codexMcpServerNames({ mcp_servers: ["x"] })).toBeUndefined();
+    expect(codexMcpServerNames(null)).toBeUndefined();
+  });
+});

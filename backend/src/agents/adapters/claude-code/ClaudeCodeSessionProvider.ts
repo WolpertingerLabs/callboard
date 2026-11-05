@@ -24,6 +24,7 @@ import type {
 } from "../../ports/SessionProvider.js";
 import { readJsonlFile, getFirstUserMessage, isConversationEntry, parseMessages, parseSubagentMessages, buildSubagentMap } from "./sessionParser.js";
 import type { HandoffTurn } from "../../handoff.js";
+import { compressionAckText, compressionSummaryText, isoPlus } from "../../compression.js";
 import {
   CLAUDE_PROJECTS_DIR,
   folderToProjectDir,
@@ -340,11 +341,51 @@ export class ClaudeCodeSessionProvider implements SessionProvider {
    * session in its own right.
    */
   forkSession(sessionIds: string[], cutoffTimestamp: string, newSessionId: string): { logPath: string } | null {
-    const cutoffMs = new Date(cutoffTimestamp).getTime();
-    if (isNaN(cutoffMs)) return null;
+    const source = this._gatherLines(sessionIds);
+    if (!source) return null;
+    const copied = truncateLinesAt(source.lines, cutoffTimestamp);
+    if (!copied) return null;
+    return this._writeSessionLines(source, copied, newSessionId);
+  }
 
-    // Gather raw lines from all session files in order (multi-session
-    // chats concatenate chronologically, matching parseSessionMessages).
+  // ── Compression ─────────────────────────────────────────────────────
+
+  /**
+   * Write a compressed copy of a session — see {@link SessionProvider.compressSession}.
+   *
+   * `"after"` is a fork at the cutoff plus a summary exchange appended to the
+   * chain: a user line carrying the summary and a short assistant
+   * acknowledgement, so the next real user message still follows an assistant
+   * turn.
+   *
+   * `"before"` is the shape the CLI itself writes when it compacts: a
+   * `compact_boundary` system line with a null `parentUuid` (the CLI's chain
+   * walk stops there, so nothing before it is ever sent again), an
+   * `isCompactSummary` user line carrying the summary, then the kept lines
+   * verbatim. The first kept line is re-chained onto the summary; a
+   * tool_result whose tool_use was summarised away is dropped (the API rejects
+   * a tool_result with no matching tool_use), and a line left with no content
+   * by that is dropped with its children re-chained past it.
+   */
+  compressSession(
+    sessionIds: string[],
+    opts: { cutoffTimestamp: string; direction: "before" | "after"; summary: string; newSessionId: string },
+  ): { logPath: string } | null {
+    const source = this._gatherLines(sessionIds);
+    if (!source) return null;
+    const lines =
+      opts.direction === "after"
+        ? compressAfterLines(source.lines, opts.cutoffTimestamp, opts.summary)
+        : compressBeforeLines(source.lines, opts.cutoffTimestamp, opts.summary);
+    if (!lines) return null;
+    return this._writeSessionLines(source, lines, opts.newSessionId);
+  }
+
+  /**
+   * Raw lines from all of a chat's session files, in order (multi-session
+   * chats concatenate chronologically, matching parseSessionMessages).
+   */
+  private _gatherLines(sessionIds: string[]): { lines: any[]; destDir: string; foundSessionIds: string[] } | null {
     const lines: any[] = [];
     let destDir: string | null = null;
     const foundSessionIds: string[] = [];
@@ -356,73 +397,23 @@ export class ClaudeCodeSessionProvider implements SessionProvider {
       lines.push(...readJsonlFile(logPath));
     }
     if (!destDir || lines.length === 0) return null;
+    return { lines, destDir, foundSessionIds };
+  }
 
-    // Positional cutoff: everything up to and including the last line
-    // whose timestamp is at or before the fork point. Untimestamped lines
-    // (summary, queue-operation) ride along with their neighbors.
-    let cutoffIdx = -1;
-    for (let i = 0; i < lines.length; i++) {
-      if (!lines[i].timestamp) continue;
-      const ts = new Date(lines[i].timestamp).getTime();
-      if (!isNaN(ts) && ts <= cutoffMs) cutoffIdx = i;
-    }
-    if (cutoffIdx === -1) return null;
-    const copied = lines.slice(0, cutoffIdx + 1);
-
-    // The cutoff line may carry tool_use blocks whose tool_result lines sit
-    // just past the cutoff — a resumed session must not have dangling
-    // tool_use, so extend forward through consecutive resolving lines.
-    // Only conversation lines take part: an api-request-blob can repeat
-    // tool_use blocks after their results, and would leave them "unresolved"
-    // (the blobs are still copied, just not scanned).
-    const unresolved = new Set<string>();
-    const scanLine = (line: any) => {
-      if (!isConversationEntry(line)) return;
-      const content = line.message?.content;
-      if (!Array.isArray(content)) return;
-      for (const block of content) {
-        if (block.type === "tool_use" && block.id) unresolved.add(block.id);
-        else if (block.type === "tool_result" && block.tool_use_id) unresolved.delete(block.tool_use_id);
-      }
-    };
-    for (const line of copied) scanLine(line);
-    for (let j = cutoffIdx + 1; unresolved.size > 0 && j < lines.length; j++) {
-      const content = isConversationEntry(lines[j]) ? lines[j].message?.content : undefined;
-      const resolves = Array.isArray(content) && content.some((b: any) => b.type === "tool_result" && unresolved.has(b.tool_use_id));
-      if (!resolves) break;
-      copied.push(lines[j]);
-      scanLine(lines[j]);
-    }
-
-    // Anything still unresolved (e.g. the original session was aborted
-    // mid-tool) gets a synthetic interrupted tool_result, mirroring what
-    // the SDK itself writes when a user interrupts a running tool.
-    let prevUuid: string | null = copied[copied.length - 1]?.uuid ?? null;
-    for (const toolUseId of unresolved) {
-      const uuid = randomUUID();
-      copied.push({
-        parentUuid: prevUuid,
-        isSidechain: false,
-        type: "user",
-        message: {
-          role: "user",
-          content: [{ type: "tool_result", tool_use_id: toolUseId, content: "[Request interrupted by user]", is_error: true }],
-        },
-        uuid,
-        timestamp: cutoffTimestamp,
-      });
-      prevUuid = uuid;
-    }
-
-    // Write the forked log with every line re-keyed to the new session ID.
+  /**
+   * Write `lines` as a new session, every line re-keyed to `newSessionId`, and
+   * copy the subagent transcripts they reference.
+   */
+  private _writeSessionLines(source: { destDir: string; foundSessionIds: string[] }, lines: any[], newSessionId: string): { logPath: string } {
+    const { destDir, foundSessionIds } = source;
     const destPath = join(destDir, `${newSessionId}.jsonl`);
-    writeFileSync(destPath, copied.map((l) => JSON.stringify({ ...l, sessionId: newSessionId })).join("\n") + "\n");
+    writeFileSync(destPath, lines.map((l) => JSON.stringify({ ...l, sessionId: newSessionId })).join("\n") + "\n");
 
     // Copy subagent transcripts referenced by the copied lines so Task
-    // bubbles in the forked chat still expand. Display-only — the SDK
+    // bubbles in the new chat still expand. Display-only — the SDK
     // doesn't read these on resume.
     const referencedAgents = new Set<string>();
-    for (const line of copied) {
+    for (const line of lines) {
       if (line.toolUseResult?.agentId) referencedAgents.add(line.toolUseResult.agentId);
     }
     if (referencedAgents.size > 0) {
@@ -537,4 +528,256 @@ function userContent(turn: HandoffTurn): unknown {
       source: { type: "base64", media_type: img.mimeType, data: img.base64 },
     })),
   ];
+}
+
+// ── Line surgery (fork / compress) ──────────────────────────────────
+
+function lineMs(line: any): number {
+  return line?.timestamp ? new Date(line.timestamp).getTime() : NaN;
+}
+
+/** tool_use ids a conversation line opens and tool_result ids it closes. */
+function toolIdsOf(line: any): { uses: string[]; results: string[] } {
+  const uses: string[] = [];
+  const results: string[] = [];
+  if (!isConversationEntry(line)) return { uses, results };
+  const content = line.message?.content;
+  if (!Array.isArray(content)) return { uses, results };
+  for (const block of content) {
+    if (block?.type === "tool_use" && block.id) uses.push(block.id);
+    else if (block?.type === "tool_result" && block.tool_use_id) results.push(block.tool_use_id);
+  }
+  return { uses, results };
+}
+
+/**
+ * Everything up to and including the last line at or before the cutoff,
+ * extended so no tool_use is left without its tool_result. Null when no line
+ * falls at or before the cutoff.
+ */
+function truncateLinesAt(lines: any[], cutoffTimestamp: string): any[] | null {
+  const cutoffMs = new Date(cutoffTimestamp).getTime();
+  if (isNaN(cutoffMs)) return null;
+
+  // Positional cutoff: everything up to and including the last line
+  // whose timestamp is at or before the fork point. Untimestamped lines
+  // (summary, queue-operation) ride along with their neighbors.
+  let cutoffIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const ts = lineMs(lines[i]);
+    if (!isNaN(ts) && ts <= cutoffMs) cutoffIdx = i;
+  }
+  if (cutoffIdx === -1) return null;
+  const copied = lines.slice(0, cutoffIdx + 1);
+
+  // The cutoff line may carry tool_use blocks whose tool_result lines sit
+  // just past the cutoff — a resumed session must not have dangling
+  // tool_use, so extend forward through consecutive resolving lines.
+  // Only conversation lines take part: an api-request-blob can repeat
+  // tool_use blocks after their results, and would leave them "unresolved"
+  // (the blobs are still copied, just not scanned).
+  const unresolved = new Set<string>();
+  const scanLine = (line: any) => {
+    const { uses, results } = toolIdsOf(line);
+    for (const id of uses) unresolved.add(id);
+    for (const id of results) unresolved.delete(id);
+  };
+  for (const line of copied) scanLine(line);
+  for (let j = cutoffIdx + 1; unresolved.size > 0 && j < lines.length; j++) {
+    const resolves = toolIdsOf(lines[j]).results.some((id) => unresolved.has(id));
+    if (!resolves) break;
+    copied.push(lines[j]);
+    scanLine(lines[j]);
+  }
+
+  // Anything still unresolved (e.g. the original session was aborted
+  // mid-tool) gets a synthetic interrupted tool_result, mirroring what
+  // the SDK itself writes when a user interrupts a running tool.
+  let prevUuid: string | null = lastUuid(copied);
+  for (const toolUseId of unresolved) {
+    const uuid = randomUUID();
+    copied.push({
+      parentUuid: prevUuid,
+      isSidechain: false,
+      type: "user",
+      message: {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: toolUseId, content: "[Request interrupted by user]", is_error: true }],
+      },
+      uuid,
+      timestamp: cutoffTimestamp,
+    });
+    prevUuid = uuid;
+  }
+  return copied;
+}
+
+/** The uuid of the last line that has one — the leaf a new line chains onto. */
+function lastUuid(lines: any[]): string | null {
+  for (let i = lines.length - 1; i >= 0; i--) if (typeof lines[i]?.uuid === "string") return lines[i].uuid;
+  return null;
+}
+
+/** `cwd`/`version`/`gitBranch` off the nearest line that has them, for synthetic lines. */
+function envelopeFrom(lines: any[]): Record<string, unknown> {
+  const line = lines.find((l) => isConversationEntry(l) && l.cwd) ?? lines.find((l) => l.cwd);
+  return {
+    isSidechain: false,
+    userType: "external",
+    ...(line?.cwd && { cwd: line.cwd }),
+    ...(line?.version && { version: line.version }),
+    ...(line?.gitBranch && { gitBranch: line.gitBranch }),
+  };
+}
+
+/** A hand-written assistant text line, in the minimal shape seedSession writes. */
+function assistantTextLine(envelope: Record<string, unknown>, parentUuid: string | null, text: string, timestamp: string): any {
+  return {
+    parentUuid,
+    ...envelope,
+    type: "assistant",
+    message: { role: "assistant", content: [{ type: "text", text }] },
+    uuid: randomUUID(),
+    timestamp,
+  };
+}
+
+/** Max timestamp across lines, as ISO; falls back to the cutoff. */
+function latestTimestamp(lines: any[], fallback: string): string {
+  let best = NaN;
+  for (const line of lines) {
+    const ms = lineMs(line);
+    if (!isNaN(ms) && (isNaN(best) || ms > best)) best = ms;
+  }
+  return isNaN(best) ? fallback : new Date(best).toISOString();
+}
+
+/** Fork at the cutoff, then append the summary exchange. Null when nothing is after the cutoff. */
+function compressAfterLines(lines: any[], cutoffTimestamp: string, summary: string): any[] | null {
+  const copied = truncateLinesAt(lines, cutoffTimestamp);
+  if (!copied) return null;
+  // Nothing past what the fork kept is nothing to compress.
+  const lastKeptMs = new Date(latestTimestamp(copied, cutoffTimestamp)).getTime();
+  const hasLater = lines.some((l) => isConversationEntry(l) && lineMs(l) > lastKeptMs);
+  if (!hasLater) return null;
+
+  const envelope = envelopeFrom(copied);
+  const at = isoPlus(latestTimestamp(copied, cutoffTimestamp), 1);
+  const summaryLine = {
+    parentUuid: lastUuid(copied),
+    ...envelope,
+    type: "user",
+    message: { role: "user", content: compressionSummaryText("after", summary) },
+    uuid: randomUUID(),
+    timestamp: at,
+  };
+  const ack = assistantTextLine(envelope, summaryLine.uuid, compressionAckText("after"), isoPlus(at, 1));
+  return [...copied, summaryLine, ack];
+}
+
+/**
+ * Summary + the cutoff message onward. Null when there is nothing before the
+ * cutoff to summarise, or nothing at/after it to keep.
+ */
+function compressBeforeLines(lines: any[], cutoffTimestamp: string, summary: string): any[] | null {
+  const cutoffMs = new Date(cutoffTimestamp).getTime();
+  if (isNaN(cutoffMs)) return null;
+
+  // The first conversation line at or after the cutoff…
+  let start = lines.findIndex((l) => isConversationEntry(l) && lineMs(l) >= cutoffMs);
+  if (start === -1) return null;
+  // …snapped back to the start of its API message. The CLI writes one line per
+  // content block, all sharing `message.id`; keeping a tail of a message would
+  // split a thinking block from the text it signed, or a text block from the
+  // tool_use the same response made.
+  const messageId = (l: any) => (l?.type === "assistant" ? l.message?.id : undefined);
+  for (let j = start - 1; j >= 0; j--) {
+    if (!isConversationEntry(lines[j])) continue;
+    if (messageId(lines[j]) && messageId(lines[j]) === messageId(lines[start])) start = j;
+    else break;
+  }
+  const earlier = lines.slice(0, start);
+  if (!earlier.some(isConversationEntry)) return null;
+
+  // tool_use ids the kept part opens; a tool_result naming any other id
+  // answers a call that is now inside the summary.
+  const kept = lines.slice(start);
+  const keptUses = new Set(kept.flatMap((l) => toolIdsOf(l).uses));
+
+  const envelope = envelopeFrom(kept);
+  const summaryAt = latestTimestamp(earlier, isoPlus(cutoffTimestamp, -1));
+  const boundary = {
+    parentUuid: null,
+    logicalParentUuid: lastUuid(earlier),
+    ...envelope,
+    type: "system",
+    subtype: "compact_boundary",
+    content: "Earlier messages compressed",
+    isMeta: false,
+    level: "info",
+    compactMetadata: { trigger: "manual" },
+    uuid: randomUUID(),
+    timestamp: summaryAt,
+  };
+  const summaryLine = {
+    parentUuid: boundary.uuid,
+    ...envelope,
+    type: "user",
+    isCompactSummary: true,
+    message: { role: "user", content: compressionSummaryText("before", summary) },
+    uuid: randomUUID(),
+    timestamp: summaryAt,
+  };
+  // Orphan tool_results out first: whether the kept part opens with a user
+  // turn (and so needs an ack) is decided by what survives.
+  // Dropped line uuid → the uuid its children should chain onto instead.
+  const remap = new Map<string, string | null>();
+  const filtered: any[] = [];
+  for (const raw of kept) {
+    if (isConversationEntry(raw) && Array.isArray(raw.message?.content)) {
+      const content = raw.message.content.filter((b: any) => !(b?.type === "tool_result" && b.tool_use_id && !keptUses.has(b.tool_use_id)));
+      if (content.length !== raw.message.content.length) {
+        if (content.length === 0) {
+          if (typeof raw.uuid === "string") remap.set(raw.uuid, raw.parentUuid ?? null);
+          continue;
+        }
+        const line = { ...raw, message: { ...raw.message, content } };
+        // The structured result belongs to the block just removed.
+        delete line.toolUseResult;
+        filtered.push(line);
+        continue;
+      }
+    }
+    filtered.push(raw);
+  }
+  const firstKept = filtered.find(isConversationEntry);
+  if (!firstKept) return null;
+
+  const header: any[] = [boundary, summaryLine];
+  // A kept part that opens with a user turn gets an ack between it and the
+  // summary, so the history still alternates.
+  if (firstKept.type === "user") header.push(assistantTextLine(envelope, summaryLine.uuid, compressionAckText("before"), summaryAt));
+  const tail = header[header.length - 1].uuid as string;
+
+  const keptUuids = new Set<string>();
+  const out: any[] = [];
+  let sawConversation = false;
+  for (let line of filtered) {
+    let parent: string | null = line.parentUuid ?? null;
+    const seen = new Set<string>();
+    while (parent && remap.has(parent) && !seen.has(parent)) {
+      seen.add(parent);
+      parent = remap.get(parent) ?? null;
+    }
+    // The first conversation line always chains onto the summary; anything
+    // else whose parent was summarised away (or dropped) does too.
+    if (!sawConversation && isConversationEntry(line)) parent = tail;
+    else if (line.parentUuid && (!parent || !keptUuids.has(parent))) parent = tail;
+    if (isConversationEntry(line)) sawConversation = true;
+
+    if (parent !== (line.parentUuid ?? null)) line = { ...line, parentUuid: parent };
+    if (typeof line.uuid === "string") keptUuids.add(line.uuid);
+    out.push(line);
+  }
+  return [...header, ...out];
 }

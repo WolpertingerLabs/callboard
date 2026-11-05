@@ -30,6 +30,7 @@ import type { RowActivity } from "./ChatTreeList";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { useSelectionActivation } from "../hooks/useSelectionActivation";
 import ProviderBadge from "./ProviderBadge";
+import ChatRoleBadge, { isIconRole } from "./ChatRoleBadge";
 import FolderPathPill from "./FolderPathPill";
 import MenuRow from "./MenuRow";
 import PopupMenu, { placePopupMenu, type PopupMenuPosition } from "./PopupMenu";
@@ -308,6 +309,11 @@ export default function ChatListItem({
   // Set by the list route on the run's representative row only — a run owns
   // every chat it ever opened, so the status alone would flag all of them.
   const jobNeedsYou = meta.jobRunNeedsYou === true;
+  // A fork (or engine switch, or an original a continuation/compression
+  // replaced) shown as a row of its own — outside its tree, or because its
+  // tree was not folded — says so with the same icon its tree row carries.
+  // Word-only roles ("subagent", …) are left to the tree view.
+  const roleIcon = isIconRole(meta.chatRole) ? meta.chatRole : undefined;
 
   /** The list's verdict where it has one; this chat's own flag otherwise. */
   const isPinned = pinned ?? ownPinned;
@@ -508,6 +514,7 @@ export default function ChatListItem({
           {displayPath && <FolderPathPill path={displayPath} />}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 2 }}>
+          {roleIcon && <ChatRoleBadge role={roleIcon} />}
           {/* Before the bookmark, and kept even inside the Pinned section: the
               section says where the row is filed, this says why, and the two
               are not the same thing once a section is collapsed or the list is
