@@ -56,7 +56,13 @@ const user = (uuid: string, s: number, content: any) => chain({ type: "user", me
 const assistant = (uuid: string, s: number, blocks: any[], id?: string) =>
   chain({ type: "assistant", message: { role: "assistant", ...(id && { id }), content: blocks }, uuid, timestamp: ts(s) });
 const toolResult = (uuid: string, s: number, toolUseId: string, extra: Record<string, unknown> = {}) =>
-  chain({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: toolUseId, content: "result" }] }, uuid, timestamp: ts(s), ...extra });
+  chain({
+    type: "user",
+    message: { role: "user", content: [{ type: "tool_result", tool_use_id: toolUseId, content: "result" }] },
+    uuid,
+    timestamp: ts(s),
+    ...extra,
+  });
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
 /**
@@ -169,8 +175,12 @@ describe("compressSession — before", () => {
     expect(a1b.parentUuid).toBe(summary.uuid);
     expect(lines.filter((l) => l.type === "assistant" && !l.message.id)).toHaveLength(0);
     // No tool_result anywhere names a tool_use that is not in the file.
-    const uses = new Set(lines.flatMap((l) => (Array.isArray(l.message?.content) ? l.message.content.filter((b: any) => b.type === "tool_use").map((b: any) => b.id) : [])));
-    const results = lines.flatMap((l) => (Array.isArray(l.message?.content) ? l.message.content.filter((b: any) => b.type === "tool_result").map((b: any) => b.tool_use_id) : []));
+    const uses = new Set(
+      lines.flatMap((l) => (Array.isArray(l.message?.content) ? l.message.content.filter((b: any) => b.type === "tool_use").map((b: any) => b.id) : [])),
+    );
+    const results = lines.flatMap((l) =>
+      Array.isArray(l.message?.content) ? l.message.content.filter((b: any) => b.type === "tool_result").map((b: any) => b.tool_use_id) : [],
+    );
     expect(results.every((id) => uses.has(id))).toBe(true);
   });
 
@@ -184,7 +194,13 @@ describe("compressSession — before", () => {
         uuid: "mixed",
         timestamp: ts(5),
         toolUseResult: { agentId: "x" },
-        message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "r" }, { type: "text", text: "and also this" }] },
+        message: {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: "t1", content: "r" },
+            { type: "text", text: "and also this" },
+          ],
+        },
       }),
       assistant("a2", 6, [{ type: "text", text: "ok" }]),
     ]);

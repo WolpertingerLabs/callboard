@@ -61,7 +61,10 @@ const { buildChatTree } = await import("../services/chat-lineage.js");
 afterAll(() => rmSync(tmpRoot, { recursive: true, force: true }));
 
 function handler(path: string) {
-  return (chatsRouter as any).stack.find((l: any) => l.route?.path === path && l.route.methods.post).route.stack[0].handle as (req: Request, res: Response) => unknown;
+  return (chatsRouter as any).stack.find((l: any) => l.route?.path === path && l.route.methods.post).route.stack[0].handle as (
+    req: Request,
+    res: Response,
+  ) => unknown;
 }
 function call(path: string, id: string, body: unknown): Promise<{ status: number; body: any }> {
   return new Promise((resolve) => {

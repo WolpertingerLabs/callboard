@@ -30,7 +30,10 @@ export type ForkSourceResult = ({ ok: true } & ForkSource) | { ok: false; status
  * Resolve the chat's own provider for reading/writing its history. `verb`
  * names the action in the refusal ("forked", "compressed").
  */
-export function resolveForkSource(chat: { metadata?: string | null; session_id: string; _provider_resolution_error?: string }, verb = "forked"): ForkSourceResult {
+export function resolveForkSource(
+  chat: { metadata?: string | null; session_id: string; _provider_resolution_error?: string },
+  verb = "forked",
+): ForkSourceResult {
   if (chat._provider_resolution_error) return { ok: false, status: 409, error: chat._provider_resolution_error };
   const meta: Record<string, any> = parseChatMetadata(chat.metadata);
 

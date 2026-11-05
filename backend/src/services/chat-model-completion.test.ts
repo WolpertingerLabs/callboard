@@ -38,7 +38,11 @@ afterEach(() => {
 
 describe("runChatModelCompletion", () => {
   it("runs Claude Code with no tools, no persistence and the chat's resolved model", async () => {
-    script.events = [{ type: "text", content: "part one" }, { type: "text", content: "part two" }, { type: "result", status: "success" }];
+    script.events = [
+      { type: "text", content: "part one" },
+      { type: "text", content: "part two" },
+      { type: "result", status: "success" },
+    ];
     const text = await runChatModelCompletion({ provider: "claude-code", model: "planner", prompt: "summarise" });
     expect(text).toBe("part one\n\npart two");
     const { kind, req } = queries[0]!;
@@ -51,7 +55,10 @@ describe("runChatModelCompletion", () => {
   });
 
   it("runs Codex with deny-all permissions and deletes the session it persisted", async () => {
-    script.events = [{ type: "session_started", sessionId: "rollout-1" }, { type: "text", content: "summary" }];
+    script.events = [
+      { type: "session_started", sessionId: "rollout-1" },
+      { type: "text", content: "summary" },
+    ];
     await runChatModelCompletion({ provider: "codex", model: "gpt-5.5", prompt: "p" });
     expect(queries[0]!.req.options.codex).toMatchObject({ model: "gpt-5.5", permissions: { fileRead: "deny", codeExecution: "deny" } });
     expect(deleted).toEqual(["rollout-1"]);

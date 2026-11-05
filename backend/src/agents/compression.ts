@@ -76,7 +76,11 @@ export function splitBeforeCutoff(messages: ParsedMessage[], cutoffTimestamp: st
  * The span a compression summarises and the span it keeps, for either
  * direction. The summarised span is what the summary prompt is built from.
  */
-export function compressionSpans(messages: ParsedMessage[], cutoffTimestamp: string, direction: CompressDirection): { summarised: ParsedMessage[]; kept: ParsedMessage[] } {
+export function compressionSpans(
+  messages: ParsedMessage[],
+  cutoffTimestamp: string,
+  direction: CompressDirection,
+): { summarised: ParsedMessage[]; kept: ParsedMessage[] } {
   if (direction === "before") {
     const { earlier, kept } = splitBeforeCutoff(messages, cutoffTimestamp);
     return { summarised: earlier, kept };
@@ -159,7 +163,10 @@ export function isoPlus(ts: string | undefined, ms: number): string {
  * Turns for a compressed session on a harness without a native writer.
  * Returns [] when the kept span flattens to nothing.
  */
-export function buildCompressedTurns(messages: ParsedMessage[], opts: { cutoffTimestamp: string; direction: CompressDirection; summary: string }): HandoffTurn[] {
+export function buildCompressedTurns(
+  messages: ParsedMessage[],
+  opts: { cutoffTimestamp: string; direction: CompressDirection; summary: string },
+): HandoffTurn[] {
   const { summarised, kept } = compressionSpans(messages, opts.cutoffTimestamp, opts.direction);
   const keptTurns = flattenForHandoff(kept).turns;
   if (keptTurns.length === 0) return [];

@@ -116,7 +116,11 @@ export type SupersedeCheck = { ok: true } | { ok: false; status: 400 | 409; erro
  */
 export function checkSupersedable(chat: ChatRecord): SupersedeCheck {
   if (isNativeRecord(chat)) {
-    return { ok: false, status: 409, error: "This is a native Codex subagent — its history belongs to the Codex session that ran it, so it cannot be rewritten here" };
+    return {
+      ok: false,
+      status: 409,
+      error: "This is a native Codex subagent — its history belongs to the Codex session that ran it, so it cannot be rewritten here",
+    };
   }
   const meta = parseChatMetadata(chat.metadata);
   if (meta.provider === "acp") {

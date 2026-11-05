@@ -55,13 +55,29 @@ describe("supersedeChat — root", () => {
     const { chat: n, original } = supersede(root);
 
     const nMeta = metaOf(n.id);
-    expect(nMeta).toMatchObject({ title: "Work", card, sidebarFolder: "Projects", spaceId: "space-1", pinned: true, model: "opus", supersedes: { chatId: root.id, kind: "continue" } });
+    expect(nMeta).toMatchObject({
+      title: "Work",
+      card,
+      sidebarFolder: "Projects",
+      spaceId: "space-1",
+      pinned: true,
+      model: "opus",
+      supersedes: { chatId: root.id, kind: "continue" },
+    });
     expect(nMeta).not.toHaveProperty("parentChatId");
     expect(n.workspaceId).toBe("ws-1");
     expect(n.folder).toBe(root.folder);
 
     const cMeta = metaOf(root.id);
-    expect(cMeta).toMatchObject({ parentChatId: n.id, forkedFrom: n.id, rootChatId: n.id, chatRole: "superseded", forkedAt: T, title: "Original: Work", bookmarked: true });
+    expect(cMeta).toMatchObject({
+      parentChatId: n.id,
+      forkedFrom: n.id,
+      rootChatId: n.id,
+      chatRole: "superseded",
+      forkedAt: T,
+      title: "Original: Work",
+      bookmarked: true,
+    });
     for (const key of ["card", "sidebarFolder", "spaceId", "pinned"]) expect(cMeta).not.toHaveProperty(key);
     expect(original?.id).toBe(root.id);
 

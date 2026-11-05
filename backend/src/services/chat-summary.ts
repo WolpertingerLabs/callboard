@@ -103,7 +103,11 @@ export interface SummariseOptions {
  * Check a compression has something on both sides of its cutoff. Throws
  * {@link CompressionInputError} with a user-facing reason otherwise.
  */
-export function assertCompressible(messages: ParsedMessage[], timestamp: string, direction: CompressDirection): { summarised: ParsedMessage[]; kept: ParsedMessage[] } {
+export function assertCompressible(
+  messages: ParsedMessage[],
+  timestamp: string,
+  direction: CompressDirection,
+): { summarised: ParsedMessage[]; kept: ParsedMessage[] } {
   const spans = compressionSpans(messages, timestamp, direction);
   if (!hasConversation(spans.summarised)) {
     throw new CompressionInputError(direction === "before" ? "There are no earlier messages to compress" : "There are no later messages to compress");
@@ -117,7 +121,9 @@ export async function summariseForCompression(opts: SummariseOptions): Promise<{
   const { summarised } = assertCompressible(opts.messages, opts.timestamp, opts.direction);
   const chunks = chunkBlocks(transcriptBlocksForSummary(summarised));
   if (chunks.length > MAX_CHUNKS) {
-    throw new CompressionInputError(`That part of the conversation is too long to summarise (${chunks.length} chunks; the limit is ${MAX_CHUNKS}). Pick a cutoff closer to the end.`);
+    throw new CompressionInputError(
+      `That part of the conversation is too long to summarise (${chunks.length} chunks; the limit is ${MAX_CHUNKS}). Pick a cutoff closer to the end.`,
+    );
   }
   const run = (prompt: string) => runChatModelCompletion({ provider: opts.provider, model: opts.model, effort: opts.effort, prompt, signal: opts.signal });
 
