@@ -43,12 +43,12 @@ describe("runChatModelCompletion", () => {
       { type: "text", content: "part two" },
       { type: "result", status: "success" },
     ];
-    const text = await runChatModelCompletion({ provider: "claude-code", model: "planner", prompt: "summarise" });
+    const text = await runChatModelCompletion({ provider: "claude-code", model: "planner", prompt: "summarise", systemPrompt: "You summarise." });
     expect(text).toBe("part one\n\npart two");
     const { kind, req } = queries[0]!;
     expect(kind).toBe("claude-code");
     expect(req.prompt).toBe("summarise");
-    expect(req.options).toMatchObject({ model: "claude-opus-5", tools: [], settingSources: [], persistSession: false, maxTurns: 1 });
+    expect(req.options).toMatchObject({ model: "claude-opus-5", tools: [], settingSources: [], persistSession: false, maxTurns: 1, systemPrompt: "You summarise." });
     expect(await req.options.canUseTool()).toMatchObject({ behavior: "deny" });
     // The throwaway cwd is gone afterwards.
     expect(existsSync(req.options.cwd)).toBe(false);

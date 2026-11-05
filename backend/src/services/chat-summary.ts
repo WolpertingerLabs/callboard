@@ -48,8 +48,13 @@ const GUIDANCE: Record<CompressDirection, string> = {
 
 const FORMAT = [
   "Answer with the summary only — no preamble, no closing remarks. Use short headings or bullet points where they help.",
+  "Summarise only what is in the transcript. Do not describe your own environment (working directory, platform, tools) — it is not the conversation's.",
   "Do not call any tools; everything you need is in the transcript.",
 ].join("\n");
+
+/** Replaces the harness's agent prompt for the summary run (see runChatModelCompletion). */
+const SUMMARISER_SYSTEM_PROMPT =
+  "You summarise transcripts of conversations between a user and an AI coding assistant, so the assistant can continue the conversation from your summary. You have no tools. Answer in plain text.";
 
 function summaryPrompt(direction: CompressDirection, transcript: string, part?: { index: number; total: number }): string {
   return [
@@ -125,7 +130,15 @@ export async function summariseForCompression(opts: SummariseOptions): Promise<{
       `That part of the conversation is too long to summarise (${chunks.length} chunks; the limit is ${MAX_CHUNKS}). Pick a cutoff closer to the end.`,
     );
   }
-  const run = (prompt: string) => runChatModelCompletion({ provider: opts.provider, model: opts.model, effort: opts.effort, prompt, signal: opts.signal });
+  const run = (prompt: string) =>
+    runChatModelCompletion({
+      provider: opts.provider,
+      model: opts.model,
+      effort: opts.effort,
+      prompt,
+      systemPrompt: SUMMARISER_SYSTEM_PROMPT,
+      signal: opts.signal,
+    });
 
   if (chunks.length === 1) return { summary: await run(summaryPrompt(opts.direction, chunks[0]!)), chunks: 1 };
   // Sequential on purpose: each call is a full model run on the user's

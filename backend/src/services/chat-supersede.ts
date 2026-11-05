@@ -177,11 +177,26 @@ export function keptStars(kind: SupersedeKind, stars: unknown, cutoffMs: number)
   });
 }
 
+/**
+ * The original's new title. Any prefix an earlier supersede added is taken off
+ * first, so a chat continued and then compressed reads "Before compression:
+ * X", not "Before compression: Original: X" — the tree row's role icon already
+ * says what each one is.
+ */
 function prefixedTitle(kind: SupersedeKind, title: string | null): string {
   const prefix = TITLE_PREFIX[kind];
-  const base = (title ?? "").replace(/\s+/g, " ").trim();
+  let base = (title ?? "").replace(/\s+/g, " ").trim();
+  for (let stripped = true; stripped; ) {
+    stripped = false;
+    for (const p of new Set(Object.values(TITLE_PREFIX))) {
+      if (base.startsWith(p)) {
+        base = base.slice(p.length).trim();
+        stripped = true;
+      }
+    }
+  }
   if (!base) return prefix.replace(/:\s*$/, "");
-  return base.startsWith(prefix) ? base : `${prefix}${base}`;
+  return `${prefix}${base}`;
 }
 
 export function supersedeChat(opts: SupersedeOptions): SupersedeResult {

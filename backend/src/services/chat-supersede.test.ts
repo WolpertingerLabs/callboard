@@ -147,6 +147,9 @@ describe("supersedeChat — child", () => {
     supersede(again);
     expect(metaOf(root.id).title).toBe("Original: Work");
     expect(metaOf(first.chat.id).title).toBe("Work");
+    // A different action swaps the prefix rather than stacking it.
+    supersede(chatFileService.getChat(root.id)!, "compress-after");
+    expect(metaOf(root.id).title).toBe("Before compression: Work");
   });
 });
 

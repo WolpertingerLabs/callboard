@@ -20,8 +20,13 @@
  *  - every permission axis set to `deny` and a `canUseTool` that denies, so a
  *    harness that keeps its built-in tools (Codex, Cline, pi) cannot use them;
  *    Claude Code additionally gets `tools: []` and no settings sources;
- *  - no resume, and the instructions carried in the prompt itself, so it does
- *    not depend on each harness's system-prompt plumbing.
+ *  - no resume, and the instructions carried in the prompt itself, so the
+ *    answer does not depend on each harness's system-prompt plumbing. A
+ *    `systemPrompt`, when given, REPLACES the harness's agent prompt where the
+ *    harness takes one (Claude Code, Codex, Cline) — without it Claude Code's
+ *    default prompt describes the throwaway cwd and platform, and the model
+ *    dutifully repeats that into its answer. pi has no system-prompt option,
+ *    so it gets the prompt alone.
  *
  * Fallbacks, per harness:
  *  - claude-code: `persistSession: false` — nothing is written.
@@ -58,6 +63,8 @@ export interface ChatModelCompletionOptions {
   /** The chat's `metadata.effort`, for the reasoning-capable harnesses. */
   effort?: EffortLevel;
   prompt: string;
+  /** Replaces the harness's own agent system prompt where it accepts one. */
+  systemPrompt?: string;
   signal?: AbortSignal;
   timeoutMs?: number;
 }
@@ -87,6 +94,7 @@ export async function runChatModelCompletion(opts: ChatModelCompletionOptions): 
       CLAUDECODE: undefined,
     },
     canUseTool: async () => ({ behavior: "deny", message: "No tools are available for this request — answer in text." }),
+    ...(opts.systemPrompt && { systemPrompt: opts.systemPrompt }),
   };
 
   if (provider === "claude-code") {
@@ -111,7 +119,7 @@ export async function runChatModelCompletion(opts: ChatModelCompletionOptions): 
       trackingId: "chat-model-completion",
     };
     if (provider === "codex") options.codex = await buildCodexExtras({ ...ctx, codexRoute: undefined });
-    if (provider === "cline") options.cline = await buildClineExtras(ctx);
+    if (provider === "cline") options.cline = { ...(await buildClineExtras(ctx)), ...(opts.systemPrompt && { systemPrompt: opts.systemPrompt }) };
     if (provider === "pi") options.pi = await buildPiExtras({ ...ctx, resumeSessionId: undefined, chatId: undefined });
   }
 
