@@ -30,12 +30,20 @@ describe("parseChatMeta", () => {
       jobRunId: "run-1",
       nativeAgent: NATIVE,
       parentChatId: "chat-explicit",
+      treeParentChatId: "chat-explicit",
       acpProviderId: "opencode",
       model: "gpt-5",
       effort: "high",
       defaultPermissions: { fileRead: "allow" },
       agentAlias: "forge",
     });
+  });
+
+  it("falls back to the legacy forkedFrom for the tree parent, as the server's getParentChatId does", () => {
+    const legacy = parseChatMeta(JSON.stringify({ forkedFrom: "old-parent" }));
+    expect(legacy.parentChatId).toBeUndefined();
+    expect(legacy.treeParentChatId).toBe("old-parent");
+    expect(parseChatMeta(JSON.stringify({ parentChatId: "p", forkedFrom: "f" })).treeParentChatId).toBe("p");
   });
 
   it.each([

@@ -970,7 +970,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       if (!id || forkingRef.current) return;
       forkingRef.current = true;
       try {
-        const { chat } = await continueChatFrom(id, timestamp);
+        const { chat } = await continueChatFrom(id, timestamp, { expectedParentChatId: chatMeta.treeParentChatId ?? null });
         finishRewrite(chat.id);
       } catch (err) {
         console.error("Failed to continue chat:", err);
@@ -979,7 +979,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         forkingRef.current = false;
       }
     },
-    [id, finishRewrite],
+    [id, finishRewrite, chatMeta.treeParentChatId],
   );
 
   // Current per-chat model (from metadata). Empty string = no override,
@@ -4188,6 +4188,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           chatId={id}
           timestamp={pendingRewrite.timestamp}
           direction={pendingRewrite.action === "compress-before" ? "before" : "after"}
+          precondition={{ expectedParentChatId: chatMeta.treeParentChatId ?? null }}
           onCancel={() => setPendingRewrite(null)}
           onDone={({ chat }) => finishRewrite(chat.id)}
         />

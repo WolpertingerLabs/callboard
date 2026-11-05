@@ -672,27 +672,66 @@ export interface SupersedeResponse {
 export type CompressDirection = "before" | "after";
 
 /**
+ * The tree position the client saw: the chat's parent, or null for a root.
+ * Sent as a precondition so a second tab cannot nest a second continuation
+ * under the first — the server answers 409 when it no longer matches.
+ */
+export interface SupersedePrecondition {
+  expectedParentChatId: string | null;
+}
+
+/**
  * Continue a chat from a message, in its place: a new chat whose history is
  * this one up to and including `timestamp` takes over the original's row and
  * card, and the original is kept as its child.
  */
-export async function continueChatFrom(id: string, timestamp: string): Promise<SupersedeResponse> {
-  return request(`/chats/${seg(id)}/continue-from`, { method: "POST", json: { timestamp }, error: "Failed to continue chat" });
+export async function continueChatFrom(id: string, timestamp: string, precondition?: SupersedePrecondition): Promise<SupersedeResponse> {
+  return request(`/chats/${seg(id)}/continue-from`, { method: "POST", json: { timestamp, ...precondition }, error: "Failed to continue chat" });
 }
 
-/** Generate (without applying) the summary a compression would use. Runs on the chat's own model; can take minutes. */
+/**
+ * Generate (without applying) the summary a compression would use. Runs on the
+ * chat's own model; can take minutes. `fingerprint` identifies the span it
+ * summarised and must be passed back to {@link compressChat}.
+ */
 export async function previewChatCompression(
   id: string,
   timestamp: string,
   direction: CompressDirection,
   signal?: AbortSignal,
-): Promise<{ summary: string; chunks: number; provider: string; model?: string }> {
+): Promise<{ summary: string; chunks: number; fingerprint: string; provider: string; model?: string }> {
   return request(`/chats/${seg(id)}/compress/preview`, { method: "POST", json: { timestamp, direction }, signal, error: "Failed to generate a summary" });
 }
 
-/** Compress the messages before/after `timestamp` into `summary`, in the chat's place. */
-export async function compressChat(id: string, timestamp: string, direction: CompressDirection, summary: string): Promise<SupersedeResponse> {
-  return request(`/chats/${seg(id)}/compress`, { method: "POST", json: { timestamp, direction, summary }, error: "Failed to compress chat" });
+/** A compression refused because the conversation changed since its summary was generated. */
+export class StaleSummaryError extends Error {}
+
+/**
+ * Compress the messages before/after `timestamp` into `summary`, in the chat's
+ * place. Throws {@link StaleSummaryError} when the summarised span changed
+ * since the preview that produced `fingerprint`.
+ */
+export async function compressChat(
+  id: string,
+  timestamp: string,
+  direction: CompressDirection,
+  summary: string,
+  fingerprint: string,
+  precondition?: SupersedePrecondition,
+): Promise<SupersedeResponse> {
+  const res = await fetch(`${BASE}/chats/${seg(id)}/compress`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ timestamp, direction, summary, fingerprint, ...precondition }),
+  });
+  if (res.status === 409) {
+    const body = await res.json().catch(() => ({}));
+    const message = errorBodyMessage(body, "Failed to compress chat");
+    throw body?.code === "summary_stale" ? new StaleSummaryError(message) : new Error(message);
+  }
+  await assertOk(res, "Failed to compress chat");
+  return res.json();
 }
 
 export async function deleteChat(id: string): Promise<void> {

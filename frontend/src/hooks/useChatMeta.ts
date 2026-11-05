@@ -16,6 +16,12 @@ export interface ChatMeta {
   nativeAgent?: NativeCodexAgent;
   /** Explicit Callboard parentage, when a non-empty string. */
   parentChatId?: string;
+  /**
+   * The parent the server's tree reads: `parentChatId`, else the legacy
+   * `forkedFrom` (backend `getParentChatId`). What a supersede precondition
+   * compares against.
+   */
+  treeParentChatId?: string;
   acpProviderId?: string;
   model?: string;
   effort?: EffortLevel;
@@ -53,6 +59,7 @@ export function parseChatMeta(metadata: string | null | undefined): ChatMeta {
     jobRunId: str(meta.jobRunId),
     nativeAgent: (meta.nativeAgent || undefined) as NativeCodexAgent | undefined,
     parentChatId: nonEmpty(meta.parentChatId),
+    treeParentChatId: nonEmpty(meta.parentChatId) ?? nonEmpty(meta.forkedFrom),
     acpProviderId: str(meta.acpProviderId),
     model: str(meta.model),
     effort: str(meta.effort) as EffortLevel | undefined,
