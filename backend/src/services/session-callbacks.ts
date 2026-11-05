@@ -260,12 +260,13 @@ export function removeCallbacksForChild(childIds: string[]): PendingCallback[] {
  * report there rather than to the hidden original. `fromIds` are every id the
  * old parent may be registered under (chat id and session id). The old
  * parent's callback-chain depth goes with it, so the depth cap still counts the
- * chain. Returns the re-pointed registrations.
+ * chain. `include` narrows which registrations move (default: all). Returns
+ * the re-pointed registrations.
  */
-export function repointCallbacksForParent(fromIds: string[], toChatId: string): PendingCallback[] {
+export function repointCallbacksForParent(fromIds: string[], toChatId: string, include: (cb: PendingCallback) => boolean = () => true): PendingCallback[] {
   const ids = new Set(fromIds);
   const store = readStore();
-  const moved = store.callbacks.filter((cb) => ids.has(cb.parentChatId));
+  const moved = store.callbacks.filter((cb) => ids.has(cb.parentChatId) && include(cb));
   const depth = fromIds.map((id) => store.chatDepths[id]).find((d) => typeof d === "number");
   if (!moved.length && depth === undefined) return moved;
   for (const cb of moved) cb.parentChatId = toChatId;

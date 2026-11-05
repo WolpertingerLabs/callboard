@@ -71,9 +71,17 @@ const log = createLogger("chat-supersede");
  * N: pending phone-home callbacks with C as their parent are re-pointed to N
  * (a child finishing later re-invokes N, not the hidden original), C's
  * callback-chain depth goes with them, and open permission prompts a child
- * offered to C (`parentAnswers`) are re-addressed to N. Later prompts from a
- * child left under C still read their parent live from metadata and are
- * offered to C — re-parenting those children is the tree rule above, not this.
+ * offered to C (`parentAnswers`) are re-addressed to N.
+ *
+ * For continue-from, only callbacks registered at or before the cutoff move:
+ * N's history ends at the cutoff, so a child C started (or followed up) after
+ * it belongs to the branch that went on — C — and its report would make no
+ * sense in N. A compression keeps the whole conversation (part of it as a
+ * summary), so every callback moves.
+ *
+ * Prompts raised LATER by a child still under C read their parent live, and
+ * are offered to the chat that superseded it by the same rule — see
+ * superseded-parent.ts.
  * C's own callbacks as a CHILD stay keyed on C: C is idle (supersede refuses a
  * running chat), and nothing will complete it until the user reopens it.
  *
@@ -86,14 +94,18 @@ const log = createLogger("chat-supersede");
  *
  * ## The running check
  *
- * `checkSupersedable` runs when the request arrives and again right before C
- * is rewritten (after the new session is written), so a run that registered in
- * between is caught and the write refused ({@link SupersedeRefusedError}). What
- * no check here can see is a message POSTed to C that is still inside its
+ * `checkSupersedable` runs when the request arrives and again at the top of
+ * {@link supersedeChat}. The routes are synchronous from the first check to
+ * the second (the session write is sync too), so today nothing can register
+ * in between and the second check cannot fire; it is defence-in-depth, for a
+ * caller that awaits between them in future. On a refusal there, nothing has
+ * been written to the chat store ({@link SupersedeRefusedError}).
+ *
+ * What neither check can see is a message POSTed to C that is still inside its
  * pre-registration awaits (effort/route probes, a few seconds at most): there
  * is no "starting" registry to consult. Such a run proceeds on C — the
- * original, now a child — and appends to C's own session; nothing is corrupted,
- * but its reply lands in the original rather than in N.
+ * original, now a child — and appends to C's own session; nothing is
+ * corrupted, but its reply lands in the original rather than in N.
  *
  * ## Ordering
  *
@@ -237,8 +249,8 @@ export class SupersedeRefusedError extends Error {
 
 export function supersedeChat(opts: SupersedeOptions): SupersedeResult {
   const { chat, kind, timestamp, newSessionId } = opts;
-  // Again, now that the session is written: the request-time check may be
-  // seconds (or, after a slow write, longer) old.
+  // Again, as defence-in-depth — see "The running check" above: the routes
+  // reach here synchronously from their own check, so this cannot fire today.
   const late = checkSupersedable(chat);
   if (!late.ok) throw new SupersedeRefusedError(late.status, late.error);
   const cutoffMs = new Date(timestamp).getTime();
@@ -320,7 +332,8 @@ export function supersedeChat(opts: SupersedeOptions): SupersedeResult {
 
   // ── 4. What waited on C as a parent now waits on N ─────────────────
   const parentKeys = [chat.id, ...(chat.session_id && chat.session_id !== chat.id ? [chat.session_id] : [])];
-  const repointedCallbacks = rewritten ? repointCallbacksForParent(parentKeys, created.id).length : 0;
+  const includeCallback = kind === "continue" ? (cb: { createdAt: number }) => cb.createdAt <= cutoffMs : undefined;
+  const repointedCallbacks = rewritten ? repointCallbacksForParent(parentKeys, created.id, includeCallback).length : 0;
   const repointedOffers = rewritten ? repointParentOffers(parentKeys, created.id).length : 0;
 
   let restamped = 0;

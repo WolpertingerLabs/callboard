@@ -173,7 +173,7 @@ describe("checkSupersedable", () => {
 });
 
 describe("supersedeChat — live linkage", () => {
-  it("re-points callbacks waiting on the original as a parent, and prompts offered to it, to the new chat", () => {
+  it("a compression re-points every callback waiting on the original as a parent, and prompts offered to it, to the new chat", () => {
     const root = makeChat({ title: "Parent" });
     const child = makeChat({ parentChatId: root.id, rootChatId: root.id, chatRole: "subagent", parentAnswers: true });
     const unrelated = makeChat({});
@@ -182,7 +182,8 @@ describe("supersedeChat — live linkage", () => {
     openPrompt(child.id, root.id);
     openPrompt(`${child.id}-2`, unrelated.id);
     try {
-      const result = supersede(root);
+      // Registered now, i.e. after the cutoff T: a compression moves it anyway.
+      const result = supersede(root, "compress-after");
       expect(result).toMatchObject({ repointedCallbacks: 1, repointedOffers: 1 });
       expect(listPendingForParent(root.id)).toEqual([]);
       expect(listPendingForParent(result.chat.id).map((c) => c.childChatId)).toEqual([child.id]);
@@ -191,6 +192,27 @@ describe("supersedeChat — live linkage", () => {
       expect(pendingRequests.get(`${child.id}-2`)?.offeredToParent).toBe(unrelated.id);
     } finally {
       removeCallbacks([cb.id, other.id].filter(Boolean) as string[]);
+    }
+  });
+
+  it("continue-from moves only callbacks registered at or before the cutoff", () => {
+    const root = makeChat({ title: "Parent" });
+    const early = makeChat({ parentChatId: root.id, rootChatId: root.id, chatRole: "subagent" });
+    const late = makeChat({ parentChatId: root.id, rootChatId: root.id, chatRole: "subagent" });
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(before));
+    const earlyCb = registerCompletionCallback({ childChatId: early.id, parentChatId: root.id, kind: "spawned" });
+    vi.setSystemTime(new Date(after));
+    const lateCb = registerCompletionCallback({ childChatId: late.id, parentChatId: root.id, kind: "spawned" });
+    vi.useRealTimers();
+    try {
+      const result = supersede(root, "continue");
+      expect(result.repointedCallbacks).toBe(1);
+      expect(listPendingForParent(result.chat.id).map((c) => c.childChatId)).toEqual([early.id]);
+      // The later child belongs to the branch that went on past the cutoff.
+      expect(listPendingForParent(root.id).map((c) => c.childChatId)).toEqual([late.id]);
+    } finally {
+      removeCallbacks([earlyCb.id, lateCb.id].filter(Boolean) as string[]);
     }
   });
 
