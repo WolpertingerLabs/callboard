@@ -29,6 +29,8 @@ export interface CodexExecutionRoute {
   /** No effective config for the identities being split/overridden. */
   directUiPolicy?: "unconfigured";
   uiAliasPresence?: CodexUiAliasPresence;
+  /** Names of every MCP server the effective config defines (names only — never transports). Undefined when unreadable. */
+  mcpServerNames?: string[];
 }
 interface RouteConfig {
   model_provider?: unknown;
@@ -133,6 +135,8 @@ export async function resolveCodexExecutionRoute(settings: AgentSettings, cwd?: 
               resolvedRoute = routeFromCodexConfig(response.result.config, env);
               const uiAliasPresence = codexUiAliasPresence(response.result.config);
               if (uiAliasPresence) resolvedRoute.uiAliasPresence = uiAliasPresence;
+              const mcpServerNames = codexMcpServerNames(response.result.config);
+              if (mcpServerNames) resolvedRoute.mcpServerNames = mcpServerNames;
               if (resolvedRoute.route === "codex") {
                 const namespaces = directUiNamespacesFromConfig(cliUserAgent, response.result.config);
                 if (namespaces && canSplitCodexUiTools(response.result.config)) {
@@ -174,6 +178,7 @@ export async function resolveCodexExecutionRoute(settings: AgentSettings, cwd?: 
       endpoint,
       injectedOpenRouter,
       ...(resolved.uiAliasPresence && { uiAliasPresence: resolved.uiAliasPresence }),
+      ...(resolved.mcpServerNames && { mcpServerNames: resolved.mcpServerNames }),
     };
   }
   return { ...resolved, injectedOpenRouter };
@@ -232,6 +237,15 @@ export function canSplitCodexUiTools(config: unknown): boolean {
     }
   }
   return true;
+}
+
+/** The effective config's MCP server names, for disabling them all. Undefined when the shape is unknown. */
+export function codexMcpServerNames(config: unknown): string[] | undefined {
+  if (!config || typeof config !== "object" || Array.isArray(config)) return undefined;
+  const servers = (config as { mcp_servers?: unknown }).mcp_servers;
+  if (servers === undefined || servers === null) return [];
+  if (typeof servers !== "object" || Array.isArray(servers)) return undefined;
+  return Object.keys(servers);
 }
 
 /** config/read's effective map tells us whether an enabled-only override has

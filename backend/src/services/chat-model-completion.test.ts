@@ -21,10 +21,12 @@ vi.mock("./agent-settings.js", () => ({
   getApiEnvOverrides: () => ({}),
   resolveModelAlias: (v: string) => (v === "planner" ? "claude-opus-5" : v),
 }));
+const route = vi.hoisted(() => ({ value: { route: "codex", injectedOpenRouter: false, mcpServerNames: ["github"] } as any }));
+vi.mock("./codex-execution-route.js", () => ({ resolveCodexExecutionRoute: async () => route.value }));
 vi.mock("./claude-binary.js", () => ({ getClaudeCodeExecutablePath: async () => undefined }));
 vi.mock("./provider-session-options.js", () => ({
-  buildCodexExtras: async (ctx: any) => ({ model: ctx.chatModel, permissions: ctx.getDefaultPermissions() }),
-  buildClineExtras: async () => ({}),
+  buildCodexExtras: async (ctx: any) => ({ model: ctx.chatModel, permissions: ctx.getDefaultPermissions(), sandboxMode: "danger-full-access" }),
+  buildClineExtras: async () => ({ maxIterations: 50 }),
   buildPiExtras: async () => ({}),
 }));
 
@@ -48,7 +50,14 @@ describe("runChatModelCompletion", () => {
     const { kind, req } = queries[0]!;
     expect(kind).toBe("claude-code");
     expect(req.prompt).toBe("summarise");
-    expect(req.options).toMatchObject({ model: "claude-opus-5", tools: [], settingSources: [], persistSession: false, maxTurns: 1, systemPrompt: "You summarise." });
+    expect(req.options).toMatchObject({
+      model: "claude-opus-5",
+      tools: [],
+      settingSources: [],
+      persistSession: false,
+      maxTurns: 1,
+      systemPrompt: "You summarise.",
+    });
     expect(await req.options.canUseTool()).toMatchObject({ behavior: "deny" });
     // The throwaway cwd is gone afterwards.
     expect(existsSync(req.options.cwd)).toBe(false);
@@ -60,8 +69,24 @@ describe("runChatModelCompletion", () => {
       { type: "text", content: "summary" },
     ];
     await runChatModelCompletion({ provider: "codex", model: "gpt-5.5", prompt: "p" });
-    expect(queries[0]!.req.options.codex).toMatchObject({ model: "gpt-5.5", permissions: { fileRead: "deny", codeExecution: "deny" } });
+    const codex = queries[0]!.req.options.codex;
+    expect(codex).toMatchObject({ model: "gpt-5.5", permissions: { fileRead: "deny", codeExecution: "deny" }, lockdown: { mcpServerNames: ["github"] } });
+    // A global sandbox setting never reaches the tool-less run.
+    expect(codex).not.toHaveProperty("sandboxMode");
     expect(deleted).toEqual(["rollout-1"]);
+  });
+
+  it("refuses a Codex run whose MCP servers it cannot enumerate", async () => {
+    route.value = { route: "unknown", injectedOpenRouter: false };
+    await expect(runChatModelCompletion({ provider: "codex", prompt: "p" })).rejects.toThrow(/MCP servers/);
+    expect(queries).toHaveLength(0);
+    route.value = { route: "codex", injectedOpenRouter: false, mcpServerNames: ["github"] };
+  });
+
+  it("caps Cline's iterations and replaces its system prompt", async () => {
+    script.events = [{ type: "text", content: "s" }];
+    await runChatModelCompletion({ provider: "cline", prompt: "p", systemPrompt: "You summarise." });
+    expect(queries[0]!.req.options.cline).toMatchObject({ maxIterations: 3, systemPrompt: "You summarise." });
   });
 
   it("fails with the provider's reason when no text comes back", async () => {

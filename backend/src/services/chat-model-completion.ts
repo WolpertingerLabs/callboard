@@ -17,9 +17,8 @@
  *  - a throwaway working directory (removed afterwards), so no tool the model
  *    reaches for can touch the chat's project and the run is not discovered as
  *    a chat in that folder;
- *  - every permission axis set to `deny` and a `canUseTool` that denies, so a
- *    harness that keeps its built-in tools (Codex, Cline, pi) cannot use them;
- *    Claude Code additionally gets `tools: []` and no settings sources;
+ *  - no tools the model can use, by whatever means each harness offers — see
+ *    "Lockdown, per harness" below;
  *  - no resume, and the instructions carried in the prompt itself, so the
  *    answer does not depend on each harness's system-prompt plumbing. A
  *    `systemPrompt`, when given, REPLACES the harness's agent prompt where the
@@ -27,6 +26,28 @@
  *    default prompt describes the throwaway cwd and platform, and the model
  *    dutifully repeats that into its answer. pi has no system-prompt option,
  *    so it gets the prompt alone.
+ *
+ * Lockdown, per harness. Every harness also gets every permission axis set to
+ * `deny` and a `canUseTool` that denies; what that achieves differs:
+ *  - claude-code: no tools at all (`tools: []`, no allowed tools, no settings
+ *    sources, so no user MCP servers, hooks or plugins).
+ *  - codex: Codex has no per-call hook, so permissions only pick a sandbox at
+ *    thread start — and a global `codexSandboxMode` setting would override
+ *    them. The run uses the adapter's `lockdown` mode instead: sandbox forced
+ *    to `read-only` with approval `never` regardless of settings, the
+ *    tool-carrying feature flags off (shell, apps, plugins, multi-agent,
+ *    browser/computer use, …), web search disabled, and every MCP server in
+ *    the user's effective config disabled by name. Its server list comes from
+ *    the CLI's config/read; when that cannot be read the run is refused rather
+ *    than started with servers live. Verified against codex-cli 0.153.4: asked
+ *    to run a shell command, the locked-down model had no tool to do it with.
+ *  - cline: every tool call goes through `requestToolApproval`, which reads
+ *    the deny-all axes and refuses; tools stay in the model's list but every
+ *    call is refused. `maxIterations` is capped so a model that keeps trying
+ *    cannot loop.
+ *  - pi: deny-all removes every built-in tool from the session
+ *    (`buildToolFilters`), and the per-call gate refuses anything else
+ *    (extension tools included).
  *
  * Fallbacks, per harness:
  *  - claude-code: `persistSession: false` — nothing is written.
@@ -40,13 +61,14 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { DefaultPermissions, EffortLevel } from "shared/types/index.js";
+import type { AgentSettings, DefaultPermissions, EffortLevel } from "shared/types/index.js";
 import { getAgentProvider, getSessionProvider } from "../agents/factory.js";
 import type { InternalProviderKind } from "../agents/ports/AgentProvider.js";
 import { sanitizeInheritedAgentEnv } from "../agents/agentEnvPolicy.js";
 import { getAgentSettings, getApiEnvOverrides, resolveModelAlias } from "./agent-settings.js";
 import { getClaudeCodeExecutablePath } from "./claude-binary.js";
 import { buildClineExtras, buildCodexExtras, buildPiExtras, type ProviderOptionsContext } from "./provider-session-options.js";
+import { resolveCodexExecutionRoute } from "./codex-execution-route.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("chat-model-completion");
@@ -97,36 +119,11 @@ export async function runChatModelCompletion(opts: ChatModelCompletionOptions): 
     ...(opts.systemPrompt && { systemPrompt: opts.systemPrompt }),
   };
 
-  if (provider === "claude-code") {
-    const model = opts.model?.trim() ? resolveModelAlias(opts.model.trim(), "claude-code", agentSettings) : undefined;
-    const claudeExecutable = await getClaudeCodeExecutablePath();
-    Object.assign(options, {
-      ...(model && { model }),
-      ...(claudeExecutable && { pathToClaudeCodeExecutable: claudeExecutable }),
-      tools: [],
-      allowedTools: [],
-      settingSources: [],
-      persistSession: false,
-      permissionMode: "default",
-    });
-  } else {
-    const ctx: ProviderOptionsContext = {
-      agentSettings,
-      folder: workDir,
-      chatModel: opts.model,
-      chatEffort: opts.effort,
-      getDefaultPermissions: () => DENY_ALL,
-      trackingId: "chat-model-completion",
-    };
-    if (provider === "codex") options.codex = await buildCodexExtras({ ...ctx, codexRoute: undefined });
-    if (provider === "cline") options.cline = { ...(await buildClineExtras(ctx)), ...(opts.systemPrompt && { systemPrompt: opts.systemPrompt }) };
-    if (provider === "pi") options.pi = await buildPiExtras({ ...ctx, resumeSessionId: undefined, chatId: undefined });
-  }
-
   const texts: string[] = [];
   let sessionId: string | null = null;
   let failure: string | undefined;
   try {
+    await addHarnessOptions(options, opts, agentSettings, workDir);
     const conversation = getAgentProvider(provider).query({ prompt: opts.prompt, options });
     for await (const event of conversation) {
       if (event.type === "session_started") sessionId = event.sessionId;
@@ -152,4 +149,55 @@ export async function runChatModelCompletion(opts: ChatModelCompletionOptions): 
   const text = texts.join("\n\n").trim();
   if (!text) throw new ChatModelCompletionError(failure ? `The model did not answer: ${failure}` : "The model returned no text");
   return text;
+}
+
+/** Iteration cap for a Cline summary run: one answer, with room for a refused tool call or two. */
+const CLINE_MAX_ITERATIONS = 3;
+
+/** The per-harness half of the options, locked down as the header describes. */
+async function addHarnessOptions(
+  options: Record<string, unknown>,
+  opts: ChatModelCompletionOptions,
+  agentSettings: AgentSettings,
+  workDir: string,
+): Promise<void> {
+  const { provider } = opts;
+  if (provider === "claude-code") {
+    const model = opts.model?.trim() ? resolveModelAlias(opts.model.trim(), "claude-code", agentSettings) : undefined;
+    const claudeExecutable = await getClaudeCodeExecutablePath();
+    Object.assign(options, {
+      ...(model && { model }),
+      ...(claudeExecutable && { pathToClaudeCodeExecutable: claudeExecutable }),
+      tools: [],
+      allowedTools: [],
+      settingSources: [],
+      persistSession: false,
+      permissionMode: "default",
+    });
+    return;
+  }
+  const ctx: ProviderOptionsContext = {
+    agentSettings,
+    folder: workDir,
+    chatModel: opts.model,
+    chatEffort: opts.effort,
+    getDefaultPermissions: () => DENY_ALL,
+    trackingId: "chat-model-completion",
+  };
+  if (provider === "codex") {
+    const codexRoute = await resolveCodexExecutionRoute(agentSettings, workDir);
+    if (!codexRoute.mcpServerNames) {
+      throw new ChatModelCompletionError("Could not read the Codex configuration, so its MCP servers could not be switched off for the summary run");
+    }
+    const codex = await buildCodexExtras({ ...ctx, codexRoute });
+    // The global sandbox setting must not reach a tool-less run; lockdown
+    // forces read-only/never in the adapter, and the explicit tier is dropped
+    // here too so nothing downstream reads it.
+    delete codex.sandboxMode;
+    options.codex = { ...codex, permissions: DENY_ALL, lockdown: { mcpServerNames: codexRoute.mcpServerNames } };
+  }
+  if (provider === "cline") {
+    options.cline = { ...(await buildClineExtras(ctx)), maxIterations: CLINE_MAX_ITERATIONS, ...(opts.systemPrompt && { systemPrompt: opts.systemPrompt }) };
+  }
+  if (provider === "pi") options.pi = await buildPiExtras({ ...ctx, resumeSessionId: undefined, chatId: undefined });
 }
