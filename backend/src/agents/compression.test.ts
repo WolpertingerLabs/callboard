@@ -49,10 +49,18 @@ describe("buildCompressedTurns", () => {
     expect(turns[2]!.text).toBe("q2");
   });
 
-  it("before: an assistant-first kept part folds into the ack", () => {
+  it("before: an assistant-first kept part follows the summary directly, keeping X's timestamp", () => {
     const turns = buildCompressedTurns(history, { cutoffTimestamp: t(11), direction: "before", summary: "SUM" });
     expect(turns.map((x) => x.role)).toEqual(["user", "assistant"]);
-    expect(turns[1]!.text).toMatch(/a2$/);
+    expect(turns[1]).toMatchObject({ text: "a2", timestamp: t(11) });
+  });
+
+  it.each([
+    ["user-first", 10],
+    ["assistant-first", 11],
+  ])("before (%s): the new session has a message at X's timestamp", (_label, s) => {
+    const turns = buildCompressedTurns(history, { cutoffTimestamp: t(s), direction: "before", summary: "SUM" });
+    expect(turns.some((x) => x.timestamp === t(s))).toBe(true);
   });
 
   it("after: kept part, then the summary exchange stamped after it", () => {

@@ -175,9 +175,14 @@ export function buildCompressedTurns(
     // Stamped with the last summarised message's time, so the summary sorts
     // before everything kept and never collides with a kept message's star key.
     const at = lastTimestamp(summarised) ?? isoPlus(kept.find((m) => m.timestamp)?.timestamp, -1);
+    // The ack only when the kept part opens with a user turn. An assistant-first
+    // kept part follows the summary directly: an ack before it would be merged
+    // with it, and the merged turn would carry the ACK's timestamp — losing
+    // message X's, which the inline marker, moved children and copied stars all
+    // key on.
     return mergeAdjacent([
       { role: "user", text: summaryText, timestamp: at },
-      { role: "assistant", text: compressionAckText("before"), timestamp: at },
+      ...(keptTurns[0]!.role === "user" ? [{ role: "assistant" as const, text: compressionAckText("before"), timestamp: at }] : []),
       ...keptTurns,
     ]);
   }
