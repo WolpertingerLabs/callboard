@@ -24,8 +24,12 @@ import { getGitInfo, resolveWorktreeToMainRepoCached, type GitInfo } from "../ut
 import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { SessionRoutingError } from "../agents/ports/SessionProvider.js";
 import { readChatSessionMessages, withSessionProvider, withSessionProviderMeta, findChat } from "../utils/chat-lookup.js";
-import { buildChatTree, buildLineageIndex, paginateTreeRows, walkToRootId } from "../services/chat-lineage.js";
+import { buildChatTree, buildLineageIndex, getParentChatId, paginateTreeRows, walkToRootId } from "../services/chat-lineage.js";
 import { detachChatFromParent } from "../services/chat-detach.js";
+import { inheritedChatFields, resolveForkSource, UnsupportedForkError, writeCompressedSession, writeForkedSession, type ForkSource } from "../services/chat-fork.js";
+import { checkSupersedable, supersedeChat, type SupersedeKind, type SupersedeResult } from "../services/chat-supersede.js";
+import { assertCompressible, CompressionInputError, summariseForCompression } from "../services/chat-summary.js";
+import { isCompressDirection, type CompressDirection } from "../agents/compression.js";
 import { createSpaceResolver, parseSpaceScope, type SpaceResolver } from "../services/space-membership.js";
 import { spaceOfChat } from "../services/space-service.js";
 import { getSpace } from "../services/space-store.js";
@@ -33,8 +37,8 @@ import { getRun, latestRunChatId } from "../services/job-store.js";
 import { hasParkedApprovals } from "../services/job-approval-signal.js";
 import { sessionRegistry } from "../services/session-registry.js";
 import { getSessionProviders } from "../agents/factory.js";
-import { isInternalProvider, isRetiredProvider, isRoutableProvider, type InternalProviderKind } from "../agents/ports/AgentProvider.js";
-import { buildHandoffTurns, providerLabel, truncateAtCutoff } from "../agents/handoff.js";
+import { isRetiredProvider, isRoutableProvider, type InternalProviderKind } from "../agents/ports/AgentProvider.js";
+import { providerLabel } from "../agents/handoff.js";
 import { generateChatTitleFromTranscript } from "../services/quick-completion.js";
 import { ALL_SPACES, normalizePermissions, isSidebarFolderEligible, parseSidebarFolder, readSidebarFolder, sameSidebarFolder, type ParsedMessage, type Chat as SharedChat, type SpaceAgentScope } from "shared/types/index.js";
 import { createLogger } from "../utils/logger.js";
@@ -1316,26 +1320,10 @@ chatsRouter.post("/:id/fork", async (req, res) => {
 
   const chat = findChat(req.params.id, false) as any;
   if (!chat) return res.status(404).json({ error: "Chat not found" });
-  if (chat._provider_resolution_error) return res.status(409).json({ error: chat._provider_resolution_error });
 
-  const meta: Record<string, any> = parseChatMetadata(chat.metadata);
-
-  // Chats stamped with a removed harness are refused by name before the guard
-  // below can silently call them claude-code chats — 155 records name the
-  // OpenRouter one, and the fallback would send the fork looking for a session
-  // log nothing can read. An explicit 400 beats a fork that appears to work.
-  if (isRetiredProvider(meta.provider)) {
-    return res.status(400).json({ error: "This chat ran on the OpenRouter agent harness, which has been removed. It cannot be forked." });
-  }
-
-  // The SOURCE kind comes off persisted metadata, so it is read with the
-  // internal guard rather than the routable one: a kind that is implemented but
-  // not yet offered must still be forkable out of.
-  const providerKind: InternalProviderKind = isInternalProvider(meta.provider) ? meta.provider : "claude-code";
-  const provider = getSessionProviders().find((p) => p.kind === providerKind);
-  if (!provider) {
-    return res.status(400).json({ error: "Forking is not supported for this chat's provider" });
-  }
+  const source = resolveForkSource(chat);
+  if (!source.ok) return res.status(source.status).json({ error: source.error });
+  const { meta, providerKind } = source;
 
   // Target harness. Omitted (the common case) means "same harness", which
   // keeps the high-fidelity same-provider fork path below.
@@ -1390,28 +1378,12 @@ chatsRouter.post("/:id/fork", async (req, res) => {
     return res.status(400).json({ error: (error as Error).message });
   }
 
-  const sessionIds: string[] = meta.session_ids || [];
-  if (!sessionIds.includes(chat.session_id)) sessionIds.push(chat.session_id);
-
   const newSessionId = randomUUID();
   let forked: { logPath: string } | null = null;
   try {
-    if (!isHandoff && provider.forkSession) {
-      // Same harness: copy the native session log. Preserves everything the
-      // engine wrote — real tool_use blocks, reasoning, ids — which the
-      // neutral turn projection below necessarily drops.
-      forked = provider.forkSession(sessionIds, timestamp, newSessionId);
-    } else if (targetProvider.seedSession) {
-      // Cross-harness (or a same-harness provider with no native fork): read
-      // the history through the SOURCE provider's parser, then write it into
-      // the TARGET's native format as conversational turns.
-      const history = truncateAtCutoff(readChatSessionMessages(chat, sessionIds), timestamp);
-      const turns = buildHandoffTurns(history, providerKind, targetKind);
-      forked = turns.length > 0 ? targetProvider.seedSession(turns, { folder: chat.folder, newSessionId }) : null;
-    } else {
-      return res.status(400).json({ error: `Forking into ${providerLabel(targetKind)} is not supported` });
-    }
+    forked = writeForkedSession({ chat, source, targetKind, targetProvider, timestamp, newSessionId });
   } catch (error) {
+    if (error instanceof UnsupportedForkError) return res.status(400).json({ error: `Forking into ${providerLabel(targetKind)} is not supported` });
     log.error(`Failed to fork session (${providerKind} → ${targetKind}): ${error}`);
   }
   if (!forked) {
@@ -1460,16 +1432,7 @@ chatsRouter.post("/:id/fork", async (req, res) => {
     // sendMessage's *new-chat* block guards which kinds may carry a model —
     // that guard doesn't apply here, since this route writes metadata itself.
     ...(model && { model }),
-    // No card field is inherited: the fork is a child in the parentage tree
-    // (parentChatId/rootChatId above), so its card membership — the root's
-    // card — is derived from the tree by every reader.
-    ...(meta.defaultPermissions && { defaultPermissions: meta.defaultPermissions }),
-    // The reviewer screen carries over like the permissions it guards. Not
-    // parentAnswers: a fork's parent is the original chat, which the user
-    // never chose as an answerer.
-    ...(meta.modelReview === true && { modelReview: true }),
-    ...(meta.agentAlias && { agentAlias: meta.agentAlias }),
-    ...(meta.lastBranch && { lastBranch: meta.lastBranch }),
+    ...inheritedChatFields(meta),
   };
 
   try {
@@ -1482,6 +1445,216 @@ chatsRouter.post("/:id/fork", async (req, res) => {
     clearListCaches();
     res.status(201).json(newChat);
   } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Shared front half of the supersede routes (continue-from, compress): parse
+ * the cutoff, resolve the chat and its provider, and refuse what cannot be
+ * superseded — all before anything is written or a model is called.
+ */
+function resolveSupersedeRequest(req: Request, verb: string): { ok: true; chat: any; source: ForkSource; timestamp: string } | { ok: false; status: number; error: string } {
+  const { timestamp } = req.body ?? {};
+  if (!timestamp || typeof timestamp !== "string" || isNaN(new Date(timestamp).getTime())) return { ok: false, status: 400, error: "timestamp is required" };
+  const chat = findChat(req.params.id as string, false) as any;
+  if (!chat) return { ok: false, status: 404, error: "Chat not found" };
+  const source = resolveForkSource(chat, verb);
+  if (!source.ok) return source;
+  const check = checkSupersedable(chat);
+  if (!check.ok) return check;
+  return { ok: true, chat, source, timestamp };
+}
+
+/** Metadata the chat that takes the original's place carries over from it: same harness, model and effort. */
+function continuationMeta(source: ForkSource): Record<string, unknown> {
+  const { meta, providerKind } = source;
+  return {
+    ...(providerKind !== "claude-code" && { provider: providerKind }),
+    ...(meta.model && { model: meta.model }),
+    ...(meta.effort && { effort: meta.effort }),
+    ...inheritedChatFields(meta),
+  };
+}
+
+/** List caches and every open view of the trees a supersede touched. */
+function announceSupersede(result: SupersedeResult, chat: any, source: ForkSource): void {
+  clearListCaches();
+  const notified = new Set<string>();
+  for (const id of [result.previousRootChatId, getParentChatId(source.meta), chat.id, result.chat.id]) {
+    if (!id || notified.has(id)) continue;
+    notified.add(id);
+    sessionRegistry.notifyMetadata(id, { cardEvent: "updated" });
+  }
+}
+
+// Continue a chat from a message: a new chat takes its place, the original becomes its child
+chatsRouter.post("/:id/continue-from", (req, res) => {
+  // #swagger.tags = ['Chats']
+  // #swagger.summary = 'Continue a chat from a message, in its place'
+  // #swagger.description = 'Creates a new chat whose history is this chat up to and including the message at the given timestamp (a same-harness fork), and puts it in this chat\'s place: it inherits the parent link, role, fork point, sidebar folder, space, pin and card face fields. The original chat is kept as a child of the new one with chatRole "superseded", forkedAt set to the timestamp and its title prefixed "Original: ". Children of the original whose fork point is at or before the timestamp move to the new chat; the rest, and children with no fork point, stay. When the original was a root, every chat stamped with it as rootChatId is re-stamped to the new chat. Starred messages at or before the timestamp are copied. Refused while the chat is running or waiting on a prompt, for ACP chats and for native Codex subagents.'
+  /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
+  /* #swagger.requestBody = {
+    required: true,
+    content: {
+      "application/json": {
+        schema: {
+          type: "object",
+          required: ["timestamp"],
+          properties: {
+            timestamp: { type: "string", description: "ISO timestamp of the message to continue from (history up to and including it is kept)" }
+          }
+        }
+      }
+    }
+  } */
+  /* #swagger.responses[201] = { description: "{ chat, original }: the new chat and the original as rewritten" } */
+  /* #swagger.responses[400] = { description: "Missing timestamp, no messages at or before it, or the provider cannot be continued (ACP, retired)" } */
+  /* #swagger.responses[404] = { description: "Chat not found" } */
+  /* #swagger.responses[409] = { description: "The chat is running, waiting on a prompt, or a native Codex subagent" } */
+  const resolved = resolveSupersedeRequest(req, "continued");
+  if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
+  const { chat, source, timestamp } = resolved;
+
+  const newSessionId = randomUUID();
+  let written: { logPath: string } | null = null;
+  try {
+    written = writeForkedSession({ chat, source, targetKind: source.providerKind, targetProvider: source.provider, timestamp, newSessionId });
+  } catch (error) {
+    if (error instanceof UnsupportedForkError) return res.status(400).json({ error: `${providerLabel(source.providerKind)} chats cannot be continued from a message` });
+    log.error(`Failed to write continuation of ${chat.id}: ${error}`);
+  }
+  if (!written) return res.status(400).json({ error: "Could not continue: no messages found at or before that point" });
+
+  try {
+    const fallbackTitle = chat.session_log_path ? getFirstUserMessage(chat.session_log_path, 60, source.providerKind) : null;
+    const result = supersedeChat({ chat, kind: "continue", timestamp, newSessionId, newChatMeta: continuationMeta(source), fallbackTitle });
+    announceSupersede(result, chat, source);
+    res.status(201).json({ chat: result.chat, original: result.original });
+  } catch (error: any) {
+    log.error(`Failed to supersede ${chat.id}: ${error}`);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/** Longest summary accepted on commit — far past anything a model writes, short of a pasted transcript. */
+const MAX_COMPRESSION_SUMMARY_CHARS = 200_000;
+
+// Generate (but do not apply) the summary for compressing part of a chat
+chatsRouter.post("/:id/compress/preview", async (req, res) => {
+  // #swagger.tags = ['Chats']
+  // #swagger.summary = 'Preview a compression summary'
+  // #swagger.description = 'Summarises the messages strictly before (direction "before") or after (direction "after") the message at the given timestamp, on the chat\'s own harness and model, and returns the summary without changing anything. The user may edit it and pass it to POST /chats/:id/compress. Long spans are summarised in chunks and merged. Can take minutes; cancelled if the client disconnects.'
+  /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
+  /* #swagger.requestBody = {
+    required: true,
+    content: {
+      "application/json": {
+        schema: {
+          type: "object",
+          required: ["timestamp", "direction"],
+          properties: {
+            timestamp: { type: "string", description: "ISO timestamp of the message the compression is anchored at" },
+            direction: { type: "string", enum: ["before", "after"], description: "before: summarise everything strictly before the message; after: everything after it" }
+          }
+        }
+      }
+    }
+  } */
+  /* #swagger.responses[200] = { description: "{ summary, chunks, provider, model }" } */
+  /* #swagger.responses[400] = { description: "Bad timestamp/direction, or nothing on one side of the cutoff" } */
+  /* #swagger.responses[404] = { description: "Chat not found" } */
+  /* #swagger.responses[409] = { description: "The chat is running, waiting on a prompt, or a native Codex subagent" } */
+  /* #swagger.responses[502] = { description: "The chat's model failed to produce a summary" } */
+  if (!isCompressDirection(req.body?.direction)) return res.status(400).json({ error: 'direction must be "before" or "after"' });
+  const direction: CompressDirection = req.body.direction;
+  const resolved = resolveSupersedeRequest(req, "compressed");
+  if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
+  const { chat, source, timestamp } = resolved;
+
+  const abort = new AbortController();
+  res.on("close", () => {
+    if (!res.writableEnded) abort.abort();
+  });
+  try {
+    const messages = readChatSessionMessages(chat, source.sessionIds);
+    const { summary, chunks } = await summariseForCompression({
+      messages,
+      timestamp,
+      direction,
+      provider: source.providerKind,
+      model: typeof source.meta.model === "string" ? source.meta.model : undefined,
+      effort: source.meta.effort,
+      signal: abort.signal,
+    });
+    res.json({ summary, chunks, provider: source.providerKind, ...(source.meta.model && { model: source.meta.model }) });
+  } catch (error: any) {
+    if (error instanceof CompressionInputError) return res.status(400).json({ error: error.message });
+    log.error(`Compression summary for ${chat.id} failed: ${error}`);
+    if (!res.headersSent) res.status(502).json({ error: `Could not generate a summary: ${error.message}` });
+  }
+});
+
+// Compress part of a chat: a new chat with that part summarised takes its place
+chatsRouter.post("/:id/compress", (req, res) => {
+  // #swagger.tags = ['Chats']
+  // #swagger.summary = 'Compress part of a chat, in its place'
+  // #swagger.description = 'Creates a new chat whose history is this chat with the messages strictly before (direction "before") or after (direction "after") the message at the given timestamp replaced by the given summary, and puts it in this chat\'s place exactly as POST /chats/:id/continue-from does. The original is kept as a child with chatRole "pre-compression" and its title prefixed "Before compression: ", so the compression can be undone. Claude Code chats keep the verbatim part as native session lines (a compact_boundary plus summary for "before"); other harnesses flatten the kept part\'s tool calls to text. Children of the original whose fork point is kept verbatim move to the new chat; starred messages on kept messages are copied.'
+  /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
+  /* #swagger.requestBody = {
+    required: true,
+    content: {
+      "application/json": {
+        schema: {
+          type: "object",
+          required: ["timestamp", "direction", "summary"],
+          properties: {
+            timestamp: { type: "string", description: "ISO timestamp of the message the compression is anchored at" },
+            direction: { type: "string", enum: ["before", "after"] },
+            summary: { type: "string", description: "The summary to put in place of the compressed messages — typically from /compress/preview, possibly edited" }
+          }
+        }
+      }
+    }
+  } */
+  /* #swagger.responses[201] = { description: "{ chat, original }: the new chat and the original as rewritten" } */
+  /* #swagger.responses[400] = { description: "Bad timestamp/direction/summary, nothing on one side of the cutoff, or the provider cannot be compressed" } */
+  /* #swagger.responses[404] = { description: "Chat not found" } */
+  /* #swagger.responses[409] = { description: "The chat is running, waiting on a prompt, or a native Codex subagent" } */
+  if (!isCompressDirection(req.body?.direction)) return res.status(400).json({ error: 'direction must be "before" or "after"' });
+  const direction: CompressDirection = req.body.direction;
+  const summary = typeof req.body.summary === "string" ? req.body.summary.trim() : "";
+  if (!summary) return res.status(400).json({ error: "summary is required" });
+  if (summary.length > MAX_COMPRESSION_SUMMARY_CHARS) return res.status(400).json({ error: `summary is longer than ${MAX_COMPRESSION_SUMMARY_CHARS} characters` });
+  const resolved = resolveSupersedeRequest(req, "compressed");
+  if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
+  const { chat, source, timestamp } = resolved;
+
+  try {
+    assertCompressible(readChatSessionMessages(chat, source.sessionIds), timestamp, direction);
+  } catch (error: any) {
+    if (error instanceof CompressionInputError) return res.status(400).json({ error: error.message });
+    return res.status(500).json({ error: error.message });
+  }
+
+  const newSessionId = randomUUID();
+  let written: { logPath: string } | null = null;
+  try {
+    written = writeCompressedSession({ chat, source, timestamp, direction, summary, newSessionId });
+  } catch (error) {
+    if (error instanceof UnsupportedForkError) return res.status(400).json({ error: `${providerLabel(source.providerKind)} chats cannot be compressed` });
+    log.error(`Failed to write compressed session of ${chat.id}: ${error}`);
+  }
+  if (!written) return res.status(400).json({ error: "Could not compress: nothing to keep or nothing to summarise at that point" });
+
+  try {
+    const fallbackTitle = chat.session_log_path ? getFirstUserMessage(chat.session_log_path, 60, source.providerKind) : null;
+    const kind: SupersedeKind = direction === "before" ? "compress-before" : "compress-after";
+    const result = supersedeChat({ chat, kind, timestamp, newSessionId, newChatMeta: continuationMeta(source), fallbackTitle });
+    announceSupersede(result, chat, source);
+    res.status(201).json({ chat: result.chat, original: result.original });
+  } catch (error: any) {
+    log.error(`Failed to supersede ${chat.id}: ${error}`);
     res.status(500).json({ error: error.message });
   }
 });
