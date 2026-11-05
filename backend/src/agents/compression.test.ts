@@ -71,6 +71,17 @@ describe("buildCompressedTurns", () => {
     expect(turns[2]!.timestamp! > t(2)).toBe(true);
   });
 
+  it("after, cut at a user turn: a placeholder reply closes X so the summary stays its own turn", () => {
+    const turns = buildCompressedTurns(history, { cutoffTimestamp: t(10), direction: "after", summary: "SUM" });
+    expect(turns.map((x) => x.role)).toEqual(["user", "assistant", "user", "assistant", "user", "assistant"]);
+    // X keeps its own text and timestamp — nothing merged into it.
+    expect(turns[2]).toMatchObject({ text: "q2", timestamp: t(10) });
+    expect(turns[3]).toMatchObject({ text: "(Reply summarised in the next message.)" });
+    expect(turns[3]!.timestamp! > t(10)).toBe(true);
+    expect(turns[4]!.text).toMatch(/^\[Summary of the later conversation/);
+    expect(turns[4]!.timestamp! > turns[3]!.timestamp!).toBe(true);
+  });
+
   it("returns [] when the kept part is empty", () => {
     expect(buildCompressedTurns(history, { cutoffTimestamp: t(30), direction: "before", summary: "SUM" })).toEqual([]);
   });

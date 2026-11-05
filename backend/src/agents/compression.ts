@@ -119,6 +119,9 @@ export function compressionSummaryText(direction: CompressDirection, summary: st
   ].join("\n");
 }
 
+/** Stands in for the reply to X when a compress-later cut lands on a user turn. */
+export const COMPRESSED_REPLY_PLACEHOLDER = "(Reply summarised in the next message.)";
+
 /** The assistant acknowledgement that keeps roles alternating after a summary turn. */
 export function compressionAckText(direction: CompressDirection): string {
   return direction === "before"
@@ -187,10 +190,15 @@ export function buildCompressedTurns(
     ]);
   }
   const after = lastTimestamp(kept);
+  // Cut at a user turn: the summary must not merge into X's message — a later
+  // continue-from or compress-before at X in the new chat would carry it — so a
+  // placeholder reply closes X's turn and the summary stays a turn of its own.
+  const endsWithUser = keptTurns[keptTurns.length - 1]!.role === "user";
   return mergeAdjacent([
     ...keptTurns,
-    { role: "user", text: summaryText, timestamp: isoPlus(after, 1) },
-    { role: "assistant", text: compressionAckText("after"), timestamp: isoPlus(after, 2) },
+    ...(endsWithUser ? [{ role: "assistant" as const, text: COMPRESSED_REPLY_PLACEHOLDER, timestamp: isoPlus(after, 1) }] : []),
+    { role: "user", text: summaryText, timestamp: isoPlus(after, endsWithUser ? 2 : 1) },
+    { role: "assistant", text: compressionAckText("after"), timestamp: isoPlus(after, endsWithUser ? 3 : 2) },
   ]);
 }
 
