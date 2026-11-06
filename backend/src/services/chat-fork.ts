@@ -171,5 +171,8 @@ export function inheritedChatFields(meta: Record<string, any>): Record<string, u
     ...(meta.modelReview === true && { modelReview: true }),
     ...(meta.agentAlias && { agentAlias: meta.agentAlias }),
     ...(meta.lastBranch && { lastBranch: meta.lastBranch }),
+    // No gitTrail: a fork is a new child conversation and starts its own trail
+    // with its first turn. (A supersede — compress, rerun, continue — carries
+    // it instead; see continuationMeta in routes/chats.ts.)
   };
 }

@@ -16,7 +16,7 @@
  * trail is still shown with one.
  */
 import { basename } from "path";
-import type { CardPr, CardPrSource, ChatPr, ChatPrsResponse, FolderPrs, GitTrailEntry } from "shared";
+import type { CardPr, CardPrSource, Chat, ChatPr, ChatPrsResponse, FolderPrs, GitTrailEntry } from "shared";
 import { createCardContext } from "./card-context.js";
 import { chatFileService } from "./chat-file-service.js";
 import { listChatsSnapshot } from "./chats-snapshot.js";
@@ -47,8 +47,7 @@ const trailOfRecord = (metadata: string | null | undefined): GitTrailEntry[] => 
  * members for this one card only. Hidden and archived cards count: the chat
  * is still on them. Members' trails come from the same snapshot.
  */
-export function cardOfChat(chatId: string): ChatCard | null {
-  const stored = listChatsSnapshot();
+export function cardOfChat(chatId: string, stored: Chat[] = listChatsSnapshot()): ChatCard | null {
   const context = createCardContext(stored);
   const resolved = context.resolve(chatId);
   if (!resolved) return null;
@@ -64,9 +63,15 @@ export function cardOfChat(chatId: string): ChatCard | null {
   };
 }
 
-/** Chat `chatId`'s own git trail. `getChat` reads `<id>.json` directly on the common path. */
-export function trailOfChat(chatId: string): GitTrailEntry[] {
-  return trailOfRecord(chatFileService.getChat(chatId)?.metadata);
+/**
+ * Chat `chatId`'s own git trail: one file read when the record is filed under
+ * that id, else from the snapshot — never `getChat`'s scan of every record,
+ * which this route would otherwise pay on every poll of the PRs tab.
+ */
+export function trailOfChat(chatId: string, snapshot: () => Chat[] = listChatsSnapshot): GitTrailEntry[] {
+  const direct = chatFileService.getChatBySessionId(chatId);
+  if (direct && (direct.id === chatId || direct.session_id === chatId)) return trailOfRecord(direct.metadata);
+  return trailOfRecord(snapshot().find((chat) => chat.id === chatId)?.metadata);
 }
 
 export interface ChatPrsDeps extends PlacementDeps {
@@ -76,7 +81,17 @@ export interface ChatPrsDeps extends PlacementDeps {
   trailOf?: (chatId: string) => GitTrailEntry[];
 }
 
-const DEFAULT_DEPS: ChatPrsDeps = { ...DEFAULT_PLACEMENT_DEPS, pullsFor: getRepoPulls, cardOf: cardOfChat, trailOf: trailOfChat };
+/** Production deps: the card and the trail share one chat snapshot per request, taken only if needed. */
+function defaultDeps(): ChatPrsDeps {
+  let stored: Chat[] | undefined;
+  const snapshot = () => (stored ??= listChatsSnapshot());
+  return {
+    ...DEFAULT_PLACEMENT_DEPS,
+    pullsFor: getRepoPulls,
+    cardOf: (chatId) => cardOfChat(chatId, snapshot()),
+    trailOf: (chatId) => trailOfChat(chatId, snapshot),
+  };
+}
 
 /** One directory's PR, or the reason it has none. */
 function folderPrs(folder: string, placement: FolderPlacement | undefined, pulls: RepoPulls | undefined): FolderPrs {
@@ -110,7 +125,7 @@ const entryKey = (entry: GitTrailEntry) => `${entry.cwd}\0${entry.branch}`;
  * `chatId`, its trail and its card. `force` is the refresh button, with the
  * forced-refresh semantics of {@link getRepoPulls}.
  */
-export async function buildChatPrs(opts: { folder: string; chatId?: string; force?: boolean }, deps: ChatPrsDeps = DEFAULT_DEPS): Promise<ChatPrsResponse> {
+export async function buildChatPrs(opts: { folder: string; chatId?: string; force?: boolean }, deps: ChatPrsDeps = defaultDeps()): Promise<ChatPrsResponse> {
   const card = opts.chatId ? deps.cardOf(opts.chatId) : null;
   const ownTrail = opts.chatId && deps.trailOf ? deps.trailOf(opts.chatId) : [];
   const placements = await placeFolders(new Set([opts.folder, ...(card?.members.map((m) => m.folder) ?? [])]), deps);
@@ -153,10 +168,12 @@ export async function buildChatPrs(opts: { folder: string; chatId?: string; forc
   if (own.size > 0) currentPrs.prs = [...own.values()].sort(byOpenThenUpdated);
 
   // The card's other PRs — members' live folders and their trails — one per
-  // URL, never repeating one of this chat's own.
+  // URL. Only this chat's live PR is left out, as it always was; a PR that is
+  // also in this chat's trail stays here too, so it keeps the chats it came
+  // from. This chat's own trail is "This chat"'s list, not a card source.
   const byUrl = new Map<string, CardPr>();
   const addCardPr = (pr: ChatPr, repoName: string, branch: string, member: ChatCardMember) => {
-    if (own.has(pr.url)) return;
+    if (pr.url === currentPrs.pr?.url || member.chatId === opts.chatId) return;
     const entry = byUrl.get(pr.url) ?? { pr, repoName, branch, sources: [] };
     if (!entry.sources.some((s) => s.chatId === member.chatId)) entry.sources.push({ chatId: member.chatId, title: member.title, folder: member.folder });
     byUrl.set(pr.url, entry);

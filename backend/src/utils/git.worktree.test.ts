@@ -19,6 +19,7 @@ import {
   getGitWorktrees,
   getGitWorktreesAsync,
   getRemoteUrlAsync,
+  readCheckoutHead,
   tryGetGitWorktreesAsync,
   hasUncommittedChanges,
   resolveBranch,
@@ -795,5 +796,21 @@ describe("getDefaultBranchAsync", () => {
     const clone = join(dirname(source), "clone");
     execFileSync("git", ["clone", "-q", source, clone], { stdio: "pipe" });
     expect(await getDefaultBranchAsync(clone)).toBe("main");
+  });
+});
+
+describe("readCheckoutHead", () => {
+  it("reads branch and commit, and gives no answer for a reftable repository", () => {
+    const dir = makeRepo("checkout-head");
+    expect(readCheckoutHead(dir)).toEqual({ branch: "main", head: revParse(dir, "HEAD") });
+
+    // A reftable repo: placeholder HEAD, refs in .git/reftable.
+    const reftable = makeRepo("checkout-head-reftable");
+    writeFileSync(join(reftable, ".git", "HEAD"), "ref: refs/heads/.invalid\n");
+    expect(readCheckoutHead(reftable)).toBeUndefined();
+
+    const tableDir = makeRepo("checkout-head-tabledir");
+    execFileSync("mkdir", [join(tableDir, ".git", "reftable")]);
+    expect(readCheckoutHead(tableDir)).toBeUndefined();
   });
 });

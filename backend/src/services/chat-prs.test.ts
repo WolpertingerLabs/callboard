@@ -326,6 +326,32 @@ describe("buildChatPrs — the git trail", () => {
     ]);
   });
 
+  it("keeps a member's PR in the card section, with its source, when it is also in this chat's trail", async () => {
+    // c1 lives on feat/b (#11). This chat was on feat/b earlier, so #11 is in
+    // its own list too — but c1's attribution must not disappear.
+    const card: ChatCard = { cardId: "root", title: "t", members: [member("root", "/src/app.feat-a"), member("c1", "/src/app.feat-b")] };
+    const { current, card: section } = await buildChatPrs(
+      { folder: "/src/app.feat-a", chatId: "root" },
+      withTrail([entry("/src/app.feat-a", "feat/b")], {}, card),
+    );
+    expect(current.prs?.map((p) => p.number)).toEqual([10, 11]);
+    expect(section?.prs.map((p) => [p.pr.number, p.sources.map((s) => s.chatId)])).toEqual([[11, ["c1"]]]);
+  });
+
+  it("never lists this chat's live PR, nor this chat as a source of its own trail, in the card section", async () => {
+    const card: ChatCard = {
+      cardId: "root",
+      title: "t",
+      members: [{ ...member("root", "/src/app.feat-a"), trail: [entry("/src/app.feat-old", "feat/old")] }, member("c4", "/src/app.feat-a/sub")],
+    };
+    const { current, card: section } = await buildChatPrs(
+      { folder: "/src/app.feat-a", chatId: "root" },
+      withTrail([entry("/src/app.feat-old", "feat/old")], {}, card),
+    );
+    expect(current.prs?.map((p) => p.number)).toEqual([10, 5]);
+    expect(section).toBeUndefined();
+  });
+
   it("shows the card section for trail PRs even when every member now works in this directory", async () => {
     const card: ChatCard = { cardId: "root", title: "t", members: [{ ...member("c1", "/src/app.feat-a"), trail: [entry("/src/app.feat-old", "feat/old")] }] };
     const { card: section } = await buildChatPrs({ folder: "/src/app.feat-a", chatId: "root" }, withTrail([], {}, card));

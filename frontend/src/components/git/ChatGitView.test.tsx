@@ -58,7 +58,7 @@ describe("ChatGitView", () => {
 
   it("says the folder is gone on Changes, without mounting the diff, and keeps PRs working", () => {
     render(<ChatGitView folder="/repo.gone" chatId="c1" folderGone />);
-    expect(screen.getByTestId("folder-gone").textContent).toBe("This folder no longer exists.");
+    expect(screen.getByTestId("folder-gone").textContent).toBe("This folder is no longer a git checkout.");
     expect(screen.queryByTestId("diff")).toBeNull();
     fireEvent.click(toggle("PRs"));
     expect(screen.getByTestId("prs").textContent).toBe("prs of /repo.gone for c1");

@@ -71,7 +71,7 @@ export default function ChatGitView({ folder, chatId, folderGone }: ChatGitViewP
             style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, color: "var(--text-muted)", fontSize: 14 }}
           >
             <FolderX size={18} />
-            This folder no longer exists.
+            This folder is no longer a git checkout.
           </div>
         ) : (
           <GitDiffView folder={folder} />

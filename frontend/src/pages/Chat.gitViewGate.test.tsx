@@ -94,7 +94,7 @@ it("offers it for a deleted worktree with a git trail: Changes says the folder i
   fixture.metadata = TRAIL;
   mount();
   fireEvent.click((await gitButton())!);
-  expect(await screen.findByText("This folder no longer exists.")).toBeDefined();
+  expect(await screen.findByText("This folder is no longer a git checkout.")).toBeDefined();
   expect(screen.queryByText("Git diff view")).toBeNull();
 
   fireEvent.click(screen.getByRole("button", { name: "PRs" }));
@@ -107,5 +107,5 @@ it("shows the diff as usual for a live checkout that has a trail", async () => {
   mount();
   fireEvent.click((await gitButton())!);
   expect(await screen.findByText("Git diff view")).toBeDefined();
-  expect(screen.queryByText("This folder no longer exists.")).toBeNull();
+  expect(screen.queryByText("This folder is no longer a git checkout.")).toBeNull();
 });

@@ -203,7 +203,6 @@ export function readCheckoutHead(root: string): { branch: string | null; head?: 
   const branch = branchFromHead(headHome);
   if (branch === undefined) return undefined;
   try {
-    if (branch === null) return { branch, head: readFileSync(join(headHome, "HEAD"), "utf-8").trim() };
     let common = headHome;
     try {
       const pointer = readFileSync(join(headHome, "commondir"), "utf-8").replace(/[\n\r]+$/, "");
@@ -211,6 +210,11 @@ export function readCheckoutHead(root: string): { branch: string | null; head?: 
     } catch {
       // No commondir: this directory is its own common directory.
     }
+    // A reftable repository keeps a placeholder HEAD (`ref: refs/heads/.invalid`)
+    // and its real refs in a format this does not read: no answer, rather than
+    // a branch named ".invalid".
+    if (branch === ".invalid" || existsSync(join(common, "reftable"))) return undefined;
+    if (branch === null) return { branch, head: readFileSync(join(headHome, "HEAD"), "utf-8").trim() };
     const ref = `refs/heads/${branch}`;
     const isSha = (value: string) => /^[0-9a-f]{40}$|^[0-9a-f]{64}$/.test(value);
     try {
