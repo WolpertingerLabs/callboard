@@ -22,6 +22,7 @@ import { chatFileService } from "./chat-file-service.js";
 import { listChatsSnapshot } from "./chats-snapshot.js";
 import { DEFAULT_PLACEMENT_DEPS, placeFolders, type FolderPlacement, type PlacementDeps } from "./git-overview.js";
 import { parseGitTrail } from "./git-trail.js";
+import { requestBackfill, type BackfillRequest } from "./git-trail-backfill.js";
 import { getRepoPulls, matchPull, pullForTrailBranch, toChatPr, type RepoPulls } from "./github-prs.js";
 import { parseChatMetadata } from "../utils/chat-metadata.js";
 
@@ -79,6 +80,11 @@ export interface ChatPrsDeps extends PlacementDeps {
   cardOf: (chatId: string) => ChatCard | null;
   /** Defaults to no trail, so callers predating the trail see today's answer. */
   trailOf?: (chatId: string) => GitTrailEntry[];
+  /**
+   * Queue a one-time history backfill of a chat's trail. Must return at once:
+   * this response answers from the trail as it is, the next poll sees more.
+   */
+  requestBackfill?: (request: BackfillRequest) => void;
 }
 
 /** Production deps: the card and the trail share one chat snapshot per request, taken only if needed. */
@@ -90,6 +96,7 @@ function defaultDeps(): ChatPrsDeps {
     pullsFor: getRepoPulls,
     cardOf: (chatId) => cardOfChat(chatId, snapshot()),
     trailOf: (chatId) => trailOfChat(chatId, snapshot),
+    requestBackfill: (request) => requestBackfill(request),
   };
 }
 
@@ -153,6 +160,14 @@ export async function buildChatPrs(opts: { folder: string; chatId?: string; forc
   for (const { placement } of elsewhere) repoPaths.add(placement.repo.repoPath);
   for (const entry of ownEntries) repoPaths.add(entry.repoPath);
   for (const { entries } of memberEntries) for (const entry of entries) repoPaths.add(entry.repoPath);
+  // Chats that predate the live trail get theirs from their history, once, in
+  // the background — never awaited here. The repositories already in view
+  // help it match a Codex rollout's repository_url.
+  if (opts.chatId && deps.requestBackfill) {
+    const knownRepos = [...repoPaths];
+    deps.requestBackfill({ chatId: opts.chatId, knownRepos });
+    for (const member of card?.members ?? []) deps.requestBackfill({ chatId: member.chatId, knownRepos });
+  }
   const pullsByRepo = new Map<string, RepoPulls>();
   await Promise.all([...repoPaths].map(async (repoPath) => pullsByRepo.set(repoPath, await deps.pullsFor(repoPath, opts.force === true))));
 

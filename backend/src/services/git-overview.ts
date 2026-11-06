@@ -19,10 +19,11 @@
  */
 import { existsSync } from "fs";
 import { basename, sep } from "path";
-import type { BranchPr, BranchRepo, BranchRow, GitOverviewResponse, GitTrailEntry } from "shared";
+import type { BranchPr, BranchRepo, BranchRow, Chat, GitOverviewResponse, GitTrailEntry } from "shared";
 import { createCardContext } from "./card-context.js";
 import { listChatsSnapshot } from "./chats-snapshot.js";
 import { parseGitTrail } from "./git-trail.js";
+import { needsBackfill, requestBackfill } from "./git-trail-backfill.js";
 import { byOpenThenUpdated, getRepoPulls, matchPull, pullForTrailBranch, toBranchPr, type PullSummary, type RepoPulls } from "./github-prs.js";
 import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { resolveWorktreeToMainRepoCached, tryGetGitWorktreesAsync, type WorktreeInfo } from "../utils/git.js";
@@ -38,22 +39,26 @@ export interface CardTrailEntry {
  * Card ids by member-chat folder over every open, visible card — and the git
  * trails of those same member chats, read from the same snapshot.
  */
-export function activeCardData(): { folders: Map<string, Set<string>>; trails: CardTrailEntry[] } {
+export function activeCardData(): { folders: Map<string, Set<string>>; trails: CardTrailEntry[]; unbackfilled: Chat[] } {
   const stored = listChatsSnapshot();
   const byId = new Map(stored.map((chat) => [chat.id, chat]));
   const folders = new Map<string, Set<string>>();
   const trails: CardTrailEntry[] = [];
+  const unbackfilled: Chat[] = [];
   // Runs carry no folder, so there is no reason to load them.
   for (const card of createCardContext(stored).summaries([], false, undefined, "open")) {
     for (const member of card.memberChats) {
-      for (const entry of parseGitTrail(parseChatMetadata(byId.get(member.chatId)?.metadata).gitTrail)) trails.push({ cardId: card.id, entry });
+      const record = byId.get(member.chatId);
+      const meta = parseChatMetadata(record?.metadata);
+      for (const entry of parseGitTrail(meta.gitTrail)) trails.push({ cardId: card.id, entry });
+      if (record && needsBackfill(meta)) unbackfilled.push(record);
       if (!member.folder) continue;
       const ids = folders.get(member.folder) ?? new Set<string>();
       ids.add(card.id);
       folders.set(member.folder, ids);
     }
   }
-  return { folders, trails };
+  return { folders, trails, unbackfilled };
 }
 
 /** Card ids by member-chat folder, over every open, visible card. */
@@ -136,7 +141,15 @@ export const DEFAULT_PLACEMENT_DEPS: PlacementDeps = {
 /** Production deps, reading folders and trails from one card snapshot per request. */
 function defaultDeps(): OverviewDeps {
   let active: ReturnType<typeof activeCardData> | undefined;
-  const load = () => (active ??= activeCardData());
+  const load = () => {
+    if (!active) {
+      active = activeCardData();
+      // Open cards' chats that predate the live trail: backfill from history in
+      // the background; a later poll of the Board shows what it found.
+      for (const chat of active.unbackfilled) requestBackfill({ chatId: chat.id, chat });
+    }
+    return active;
+  };
   return { ...DEFAULT_PLACEMENT_DEPS, folders: () => load().folders, trails: () => load().trails, pullsFor: getRepoPulls };
 }
 
