@@ -36,7 +36,6 @@ vi.mock("../api", async (importOriginal) => ({
   getMcpTools: vi.fn(async () => ({ tools: [], servers: [] })),
   listKeywords: vi.fn(async () => ({ keywords: [] })),
   getNewChatInfo: vi.fn(async () => ({ folder: "/tmp", slash_commands: [], plugins: [] })),
-  getCard: vi.fn(async () => ({ card: null })),
   respondToChat: vi.fn(() => new Promise(() => {})),
   stopChat: vi.fn(async () => ({ stopped: true })),
   rerunChatFrom: vi.fn(async () => ({ chat: { id: "replacement" }, original: null, prompt: Q1 })),

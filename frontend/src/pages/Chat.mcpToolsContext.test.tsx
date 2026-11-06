@@ -50,9 +50,6 @@ vi.mock("../api", async (importOriginal) => ({
   getMcpTools: vi.fn(async (context?: string) => (context === "agent" ? AGENT_TOOLS : CHAT_TOOLS)),
   listKeywords: vi.fn(async () => []),
   getNewChatInfo: vi.fn(async (folder: string) => ({ folder, is_git_repo: false, slash_commands: [], plugins: [] })),
-  getCard: vi.fn(async () => {
-    throw new Error("no card");
-  }),
 }));
 vi.mock("../contexts/SessionContext", () => ({ useIsSessionActive: () => null, useMetadataVersion: () => 0 }));
 vi.mock("../hooks/useResolvedFavorites", () => ({
