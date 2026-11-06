@@ -43,30 +43,28 @@ describe("MessageBubble in-place actions", () => {
 describe("MessageBubble rerun", () => {
   it("is absent without onRerun (e.g. while a run is streaming)", () => {
     render(<MessageBubble message={message} onFork={vi.fn()} forkCurrentProvider="claude-code" onRewrite={vi.fn()} />);
-    expect(screen.queryByRole("button", { name: "Rerun from here" })).toBeNull();
     open();
     expect(screen.queryByText("Rerun from here")).toBeNull();
   });
 
-  it.each(["user", "assistant"] as const)("the hover button calls onRerun with a %s message's timestamp and role", (role) => {
-    const onRerun = vi.fn();
-    render(<MessageBubble message={{ ...message, role }} onFork={vi.fn()} forkCurrentProvider="claude-code" onRerun={onRerun} />);
-    fireEvent.click(screen.getByRole("button", { name: "Rerun from here" }));
-    expect(onRerun).toHaveBeenCalledWith(message.timestamp, role);
+  it("has no hover button of its own", () => {
+    render(<MessageBubble message={message} onFork={vi.fn()} forkCurrentProvider="claude-code" onRerun={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: "Rerun from here" })).toBeNull();
   });
 
-  it("is also a fork-menu entry in the This chat section", () => {
+  it.each(["user", "assistant"] as const)("is a fork-menu entry in the This chat section, called with a %s message's timestamp and role", (role) => {
     const onRerun = vi.fn();
-    render(<MessageBubble message={message} onFork={vi.fn()} forkCurrentProvider="claude-code" onRerun={onRerun} />);
+    render(<MessageBubble message={{ ...message, role }} onFork={vi.fn()} forkCurrentProvider="claude-code" onRerun={onRerun} />);
     open();
     expect(screen.getByText("This chat")).toBeTruthy();
-    fireEvent.click(screen.getByText("Rerun from here", { selector: "button" }));
-    expect(onRerun).toHaveBeenCalledWith(message.timestamp, "assistant");
+    fireEvent.click(screen.getByRole("button", { name: "Rerun from here" }));
+    expect(onRerun).toHaveBeenCalledWith(message.timestamp, role);
     expect(screen.queryByText("This chat")).toBeNull();
   });
 
   it("needs a forkable message", () => {
     render(<MessageBubble message={{ ...message, timestamp: undefined }} onFork={vi.fn()} onRerun={vi.fn()} />);
+    expect(screen.queryByTitle("Fork conversation from here")).toBeNull();
     expect(screen.queryByRole("button", { name: "Rerun from here" })).toBeNull();
   });
 });
@@ -79,9 +77,8 @@ describe("MessageBubble hover actions on a narrow reply", () => {
     const { container } = render(
       <MessageBubble message={short} onFork={vi.fn()} forkCurrentProvider="claude-code" onRerun={vi.fn()} starKey="k" onToggleStar={vi.fn()} />,
     );
-    // copy, copy formatted, fork, star, rerun: the rerun button's left edge is 126 + 24 = 150px in from the right.
-    expect(container.querySelector<HTMLElement>(`[title^="Send this prompt again"]`)!.style.right).toBe("126px");
-    expect(bubbleOf(container).style.minWidth).toBe("156px");
+    // copy, copy formatted, fork, star: the star's left edge is 96 + 24 = 120px in from the right.
+    expect(bubbleOf(container).style.minWidth).toBe("126px");
     cleanup();
     const { container: fewer } = render(<MessageBubble message={short} onFork={vi.fn()} forkCurrentProvider="claude-code" />);
     expect(bubbleOf(fewer).style.minWidth).toBe("96px");
