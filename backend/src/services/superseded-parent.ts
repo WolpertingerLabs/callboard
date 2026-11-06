@@ -36,12 +36,14 @@ export function answeringParentFor(parentId: string, childCreatedAt: string | un
     const record = chatFileService.getChat(current);
     if (!record) return current;
     const meta = parseChatMetadataRecord(record.metadata);
-    const by = meta.supersededBy as { chatId?: unknown; kind?: unknown } | undefined;
+    const by = meta.supersededBy as { chatId?: unknown; kind?: unknown; cutoff?: unknown } | undefined;
     const next = typeof by?.chatId === "string" ? by.chatId : undefined;
     if (!next || seen.has(next) || !chatFileService.getChat(next)) return current;
     if (by?.kind === "continue" || by?.kind === "rerun") {
-      // C's forkedAt is the cutoff N ends at.
-      const cutoffMs = typeof meta.forkedAt === "string" ? new Date(meta.forkedAt).getTime() : NaN;
+      // N ends at the recorded cutoff (a rerun's: just before its prompt),
+      // else at C's forkedAt.
+      const cutoff = typeof by.cutoff === "string" ? by.cutoff : meta.forkedAt;
+      const cutoffMs = typeof cutoff === "string" ? new Date(cutoff).getTime() : NaN;
       if (!isNaN(childMs) && !isNaN(cutoffMs) && childMs > cutoffMs) return current;
     }
     seen.add(next);

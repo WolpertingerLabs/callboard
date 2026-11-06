@@ -519,3 +519,24 @@ describe("parseMessages — a user turn that is only images", () => {
     expect(parsed).toEqual([expect.objectContaining({ role: "user", type: "text", content: "", imageIds: ["img-png-12"] })]);
   });
 });
+
+describe("parseMessages — compaction summaries", () => {
+  it("flags the summary line after a compact_boundary, and only that line", () => {
+    const parsed = parseMessages([
+      { type: "system", subtype: "compact_boundary", content: "Conversation compacted", timestamp: "2026-01-01T00:00:00.000Z", uuid: "b" },
+      {
+        type: "user",
+        isCompactSummary: true,
+        message: { role: "user", content: "This session is being continued from a previous conversation…" },
+        timestamp: "2026-01-01T00:00:00.000Z",
+        uuid: "s",
+      },
+      { type: "user", message: { role: "user", content: "a real question" }, timestamp: "2026-01-01T00:00:01.000Z", uuid: "u" },
+    ]);
+    const users = parsed.filter((m) => m.role === "user");
+    expect(users.map((m) => [m.content.slice(0, 15), m.isCompactSummary])).toEqual([
+      ["This session is", true],
+      ["a real question", undefined],
+    ]);
+  });
+});

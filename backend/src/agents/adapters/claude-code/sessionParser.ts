@@ -592,6 +592,9 @@ export function parseMessages(rawMessages: any[]): ParsedMessage[] {
       ...(requestId && { requestId }),
       ...(serverToolUse && { serverToolUse }),
       ...(cacheCreation && { cacheCreation }),
+      // The summary a compaction carries the earlier conversation in, on the
+      // user line right after its compact_boundary — not something the user typed.
+      ...(msg.isCompactSummary === true && role === "user" && { isCompactSummary: true }),
     };
 
     // Shape 3: a slash command, recorded as its envelope rather than as the

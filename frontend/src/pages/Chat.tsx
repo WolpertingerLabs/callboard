@@ -49,6 +49,7 @@ import {
   forkChat,
   continueChatFrom,
   rerunChatFrom,
+  RerunError,
   getCard,
   getChatTree,
   handshakeHeaders,
@@ -111,6 +112,7 @@ import {
   getMaxTurns,
   getDefaultPermissions as getLocalDefaultPermissions,
   NEW_CHAT_DRAFT_KEY,
+  saveComposerDraft,
   type AgentProviderKind,
   type EffortLevel,
 } from "../utils/localStorage";
@@ -122,6 +124,8 @@ import { errorMessage } from "../utils/errorMessage";
 import { useSpaces } from "../contexts/SpaceContext";
 import { ALL_SPACES, DEFAULT_SPACE_ID } from "shared/types/space.js";
 import { isImageAttachmentType } from "shared/types/attachment.js";
+import { isRerunPrompt } from "shared/types/rerun.js";
+import ModalOverlay from "../components/ModalOverlay";
 import { writesBrowserFallback } from "../utils/spaceDefaults";
 
 /**
@@ -986,23 +990,33 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // Rerun: the same in-place replacement, from just BEFORE the prompt (for an
   // assistant message, the prompt it answers), which the server then sends to
   // the new chat. Confirmed first like continue; the new chat is running when
-  // it opens, so it connects to the stream on arrival.
+  // it opens, so it connects to the stream on arrival. Rerunning the opening
+  // prompt waits for a fresh session to start — seconds, sometimes more — so a
+  // pending overlay holds the page until the server answers.
   const [pendingRerun, setPendingRerun] = useState<{ timestamp: string; role: ParsedMessage["role"] } | null>(null);
+  const [rerunInFlight, setRerunInFlight] = useState(false);
   const handleRerun = useCallback((timestamp: string, role: ParsedMessage["role"]) => setPendingRerun({ timestamp, role }), []);
   const runRerun = useCallback(
     async (timestamp: string, role: ParsedMessage["role"]) => {
       if (!id || forkingRef.current) return;
       forkingRef.current = true;
+      setRerunInFlight(true);
       try {
-        const { chat, runError } = await rerunChatFrom(id, timestamp, role, { expectedParentChatId: chatMeta.treeParentChatId ?? null });
+        const { chat, runError, promptText } = await rerunChatFrom(id, timestamp, role, { expectedParentChatId: chatMeta.treeParentChatId ?? null });
+        // The new chat is in place either way. A prompt that could not be sent
+        // goes back in its composer, so resending is one click.
+        if (runError && promptText) saveComposerDraft(chat.id, promptText);
         finishRewrite(chat.id);
-        // The new chat is in place either way; say why it is not answering.
         if (runError) window.alert(`The chat was replaced, but the prompt could not be sent: ${runError}`);
       } catch (err) {
         console.error("Failed to rerun:", err);
         window.alert(errorMessage(err, "Failed to rerun"));
+        // A rerun of the opening prompt that started its chat before being
+        // refused: that chat runs on by itself, so go to it.
+        if (err instanceof RerunError && err.chatId) finishRewrite(err.chatId);
       } finally {
         forkingRef.current = false;
+        setRerunInFlight(false);
       }
     },
     [id, finishRewrite, chatMeta.treeParentChatId],
@@ -3803,7 +3817,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                         // chat that is streaming, and the transcript is still
                         // growing under the message the user would pick.
                         onRewrite={canFork && !streaming ? handleRewrite : undefined}
-                        onRerun={canFork && !streaming ? handleRerun : undefined}
+                        // Where a rerun can start from: any reply (the server finds its
+                        // prompt), and a user message only if it can be sent again —
+                        // not a slash command or a compaction summary.
+                        onRerun={canFork && !streaming && (item.message.role === "assistant" || isRerunPrompt(item.message)) ? handleRerun : undefined}
                         forks={forkMarkers.get(item.originalIndex)}
                         starKey={starKey}
                         starred={!!starKey && starredKeys.has(starKey)}
@@ -4223,6 +4240,29 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         }
         confirmText="Rerun"
       />
+
+      {rerunInFlight && (
+        <ModalOverlay onClose={() => {}}>
+          <div
+            role="status"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              padding: "14px 18px",
+              background: "var(--bg)",
+              border: "1px solid var(--border)",
+              borderRadius: 8,
+              boxShadow: "var(--shadow-md)",
+              color: "var(--text)",
+              fontSize: 14,
+            }}
+          >
+            <Loader2 size={16} style={{ animation: "spin 1s linear infinite", color: "var(--text-muted)" }} />
+            Starting the rerun…
+          </div>
+        </ModalOverlay>
+      )}
 
       {id && pendingRewrite && pendingRewrite.action !== "continue" && (
         <CompressChatModal

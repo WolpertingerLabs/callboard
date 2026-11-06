@@ -701,20 +701,43 @@ export interface RerunResponse extends SupersedeResponse {
   prompt?: string;
   /** Set when the new chat is in place but its run could not be started. */
   runError?: string;
+  /** With `runError`: the prompt's text, to put back in the new chat's composer. */
+  promptText?: string;
+}
+
+/**
+ * A refused or failed rerun. `chatId` is set when a chat was started anyway —
+ * a rerun of the opening prompt whose original changed while it was starting
+ * runs on as a chat of its own, and the client should take the user there.
+ */
+export class RerunError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly chatId?: string,
+  ) {
+    super(message);
+  }
 }
 
 /**
  * Rerun a prompt, in the chat's place: a new chat with the history strictly
  * before the prompt at `timestamp` — or, for an assistant message, the prompt
  * it answers — takes over the original's row and card, and the prompt is sent
- * to it again. The original is kept as its child.
+ * to it again. The original is kept as its child. Throws {@link RerunError}.
  */
 export async function rerunChatFrom(id: string, timestamp: string, role: ParsedMessage["role"], precondition?: SupersedePrecondition): Promise<RerunResponse> {
-  return request(`/chats/${seg(id)}/rerun`, {
+  const res = await fetch(`${BASE}/chats/${seg(id)}/rerun`, {
     method: "POST",
-    json: { timestamp, ...(role !== "system" && { role }), ...precondition },
-    error: "Failed to rerun",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ timestamp, ...(role !== "system" && { role }), ...precondition }),
   });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new RerunError(errorBodyMessage(body, "Failed to rerun"), res.status, typeof body?.chatId === "string" ? body.chatId : undefined);
+  }
+  return res.json();
 }
 
 /**

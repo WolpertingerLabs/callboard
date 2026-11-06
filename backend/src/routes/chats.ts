@@ -29,7 +29,7 @@ import { detachChatFromParent } from "../services/chat-detach.js";
 import { inheritedChatFields, resolveForkSource, UnsupportedForkError, writeCompressedSession, writeForkedSession, type ForkSource } from "../services/chat-fork.js";
 import { checkSupersedable, supersedeChat, SupersedeRefusedError, type SupersedeKind, type SupersedeResult } from "../services/chat-supersede.js";
 import { planRerun } from "../services/chat-rerun.js";
-import { sendMessage } from "../services/claude.js";
+import { sendMessage, stopSession, type SendMessageOptions } from "../services/claude.js";
 import { loadImageBuffers } from "../services/image-storage.js";
 import { assertCompressible, CompressionInputError, spanFingerprint, summariseForCompression } from "../services/chat-summary.js";
 import { isCompressDirection, type CompressDirection } from "../agents/compression.js";
@@ -1491,6 +1491,30 @@ function continuationMeta(source: ForkSource): Record<string, unknown> {
     // chose — N sits in C's own slot under C's parent, so the parent C was
     // allowed to answer for is the parent N answers to.
     ...(meta.parentAnswers === true && { parentAnswers: true }),
+    // A chat setting like the permissions: the nudge-until-objective_complete
+    // loop keeps applying to the conversation that continues.
+    ...(meta.requireExplicitCompletion === true && { requireExplicitCompletion: true }),
+  };
+}
+
+/**
+ * {@link continuationMeta} as new-chat options for `sendMessage`, for a
+ * supersede whose new chat is started fresh rather than written (a rerun of
+ * the opening prompt). Every field continuationMeta carries maps here, so the
+ * two paths cannot drift; the supersede then writes continuationMeta itself
+ * over the fresh record as well.
+ */
+function continuationSendOptions(source: ForkSource): Partial<SendMessageOptions> {
+  const carried = continuationMeta(source) as Record<string, any>;
+  return {
+    provider: source.providerKind as SendMessageOptions["provider"],
+    ...(carried.model && { model: carried.model }),
+    ...(carried.effort && { effort: carried.effort }),
+    ...(carried.defaultPermissions && { defaultPermissions: carried.defaultPermissions }),
+    ...(carried.modelReview === true && { modelReview: true }),
+    ...(carried.agentAlias && { agentAlias: carried.agentAlias }),
+    ...(carried.parentAnswers === true && { parentAnswers: true }),
+    ...(carried.requireExplicitCompletion === true && { requireExplicitCompletion: true }),
   };
 }
 
@@ -1568,17 +1592,19 @@ chatsRouter.post("/:id/continue-from", (req, res) => {
   }
 });
 
-/** How long a rerun of the opening prompt waits for its fresh chat to report a session before answering. */
+/** How long a rerun of the opening prompt waits for its fresh chat to report a session before giving up on it. */
 const RERUN_START_TIMEOUT_MS = 120_000;
 
+type FreshStart = { ok: true; chatId: string } | { ok: false; error: string; timedOut?: boolean };
+
 /**
- * Start a fresh chat for a rerun of the opening prompt and resolve once it has
- * a record (`chat_created`) — or with the error the run ended on first. The
- * run goes on after this resolves; nothing here waits for it.
+ * Wait until a fresh rerun chat has a record (`chat_created`) — or the run
+ * ends first, or the timeout passes. The run goes on after a success; nothing
+ * here waits for it.
  */
-function startFreshRerunChat(emitter: import("events").EventEmitter): Promise<{ ok: true; chatId: string } | { ok: false; error: string }> {
+function awaitFreshRerunChat(emitter: import("events").EventEmitter, timeoutMs: number): Promise<FreshStart> {
   return new Promise((resolve) => {
-    const done = (result: { ok: true; chatId: string } | { ok: false; error: string }) => {
+    const done = (result: FreshStart) => {
       clearTimeout(timer);
       emitter.removeListener("event", onEvent);
       resolve(result);
@@ -1588,16 +1614,29 @@ function startFreshRerunChat(emitter: import("events").EventEmitter): Promise<{ 
       else if (event.type === "error") done({ ok: false, error: event.content || "The run failed to start" });
       else if (event.type === "done") done({ ok: false, error: "The run ended before it started a session" });
     };
-    const timer = setTimeout(() => done({ ok: false, error: "The new chat did not start in time" }), RERUN_START_TIMEOUT_MS);
+    const timer = setTimeout(() => done({ ok: false, error: "The new chat did not start in time", timedOut: true }), timeoutMs);
     emitter.on("event", onEvent);
   });
 }
+
+/** The parent precondition and the running check, against `chat` as it is now. */
+function recheckSupersedable(chat: any, expectedParent: string | null): { ok: true } | { ok: false; status: number; error: string } {
+  const check = checkSupersedable(chat);
+  if (!check.ok) return check;
+  if ((getParentChatId(parseChatMetadata(chat.metadata)) ?? null) !== expectedParent) {
+    return { ok: false, status: 409, error: "This chat was moved in the chat tree while the rerun was starting (another tab may have continued or compressed it)" };
+  }
+  return { ok: true };
+}
+
+/** Test seam: the fresh-start wait's timeout. */
+export const rerunTiming = { startTimeoutMs: RERUN_START_TIMEOUT_MS };
 
 // Rerun a user prompt: a new chat with the history before it takes this chat's place and sends it again
 chatsRouter.post("/:id/rerun", async (req, res) => {
   // #swagger.tags = ['Chats']
   // #swagger.summary = 'Rerun a prompt, in the chat\'s place'
-  // #swagger.description = 'Resolves the user prompt at the given timestamp — or, for an assistant message, the nearest user prompt before it — and creates a new chat whose history is this chat strictly before that prompt, put in this chat\'s place exactly as POST /chats/:id/continue-from does (the original becomes a "superseded" child, titled "Original: …"). The prompt\'s text and stored image attachments are then sent to the new chat as a fresh turn; connect to GET /chats/{newId}/stream to watch it. Rerunning a chat\'s opening prompt starts a fresh session on the same harness, model and settings. Refused while the chat is running or waiting on a prompt, for ACP chats and for native Codex subagents.'
+  // #swagger.description = 'Resolves the user prompt at the given timestamp — or, for an assistant message, the user turn it replies to — and creates a new chat whose history is this chat strictly before that prompt, put in this chat\'s place exactly as POST /chats/:id/continue-from does (the original becomes a "superseded" child, titled "Original: …"). The prompt\'s text (all of its blocks) and image attachments are then sent to the new chat as a fresh turn; connect to GET /chats/{newId}/stream to watch it. Rerunning a chat\'s opening prompt starts a fresh session on the same harness, model and settings. Slash commands, compaction summaries and team messages cannot be rerun. Refused while the chat is running or waiting on a prompt, for ACP chats and for native Codex subagents.'
   /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
   /* #swagger.requestBody = {
     required: true,
@@ -1615,25 +1654,33 @@ chatsRouter.post("/:id/rerun", async (req, res) => {
       }
     }
   } */
-  /* #swagger.responses[201] = { description: "{ chat, original, prompt, runError? }: the new chat (running), the original as rewritten, and the prompt timestamp rerun. runError is set when the new chat is in place but its run could not be started." } */
-  /* #swagger.responses[400] = { description: "Missing timestamp, no rerunnable prompt at or before it, or the provider cannot be continued (ACP, retired)" } */
+  /* #swagger.responses[201] = { description: "{ chat, original, prompt, runError?, promptText? }: the new chat (running), the original as rewritten, and the prompt timestamp rerun. runError (with promptText, so a client can restore it as a draft) is set when the new chat is in place but its run could not be started." } */
+  /* #swagger.responses[400] = { description: "Missing timestamp, no rerunnable prompt at or before it, an attachment no longer stored, or the provider cannot be continued (ACP, retired)" } */
   /* #swagger.responses[404] = { description: "Chat not found" } */
-  /* #swagger.responses[409] = { description: "The chat is running, waiting on a prompt, a native Codex subagent, or moved in the tree (expectedParentChatId)" } */
-  /* #swagger.responses[502] = { description: "Rerunning the opening prompt: the fresh chat failed to start" } */
+  /* #swagger.responses[409] = { description: "The chat is running, waiting on a prompt, a native Codex subagent, or moved in the tree (expectedParentChatId). When a rerun of the opening prompt had already started its fresh chat, chatId names it: it runs on as a chat of its own." } */
+  /* #swagger.responses[502] = { description: "Rerunning the opening prompt: the fresh chat failed to start. chatId is set if it exists anyway." } */
+  /* #swagger.responses[504] = { description: "Rerunning the opening prompt: the fresh chat did not start in time; its run was stopped" } */
   const role = req.body?.role;
   if (role !== undefined && role !== "user" && role !== "assistant") return res.status(400).json({ error: 'role must be "user" or "assistant"' });
   const resolved = resolveSupersedeRequest(req, "rerun");
   if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
   const { chat, source, timestamp } = resolved;
+  const parentAtStart = getParentChatId(source.meta) ?? null;
 
   const plan = planRerun(readChatSessionMessages(chat, source.sessionIds), timestamp, role);
   if (!plan.ok) return res.status(400).json({ error: plan.error });
-  const prompt = plan.prompt.content;
-  // Images ride as content blocks and are re-attached while their upload is
-  // still stored. Other files were inlined into the prompt's text when it was
-  // sent, so they come back with it and are not attached a second time.
-  const images = plan.prompt.imageIds?.length ? loadImageBuffers(plan.prompt.imageIds).filter((u) => u.name === undefined) : [];
-  if (!prompt.trim() && images.length === 0) return res.status(400).json({ error: "That message's attachments are no longer stored, so it cannot be rerun" });
+  const prompt = plan.text;
+  // Images ride as content blocks and are re-attached from their stored
+  // upload. Other files were inlined into the prompt's text when it was sent,
+  // so they come back with it. A missing image is refused rather than dropped:
+  // the rerun would silently ask something else.
+  const loaded = plan.imageIds.length > 0 ? loadImageBuffers(plan.imageIds) : [];
+  if (loaded.length < plan.imageIds.length) {
+    const missing = plan.imageIds.length - loaded.length;
+    return res.status(400).json({ error: `${missing} of this message's ${plan.imageIds.length} image(s) are no longer stored, so it cannot be rerun as it was sent` });
+  }
+  const images = loaded.filter((u) => u.name === undefined);
+  if (!prompt.trim() && images.length === 0) return res.status(400).json({ error: "That message has nothing left to send" });
 
   const fallbackTitle = chat.session_log_path ? getFirstUserMessage(chat.session_log_path, 60, source.providerKind) : null;
   // A rerun is a send: the branch it runs on is the current one, as the
@@ -1641,14 +1688,15 @@ chatsRouter.post("/:id/rerun", async (req, res) => {
   const branch = getGitInfo(chat.folder).branch;
   const newChatMeta = { ...continuationMeta(source), ...(branch && { lastBranch: branch }) };
   const send = { prompt, ...(images.length > 0 && { imageMetadata: images }) };
+  const supersedeAt = { kind: "rerun" as const, timestamp: plan.markerAt, keepThrough: plan.keepThrough, newChatMeta, fallbackTitle };
   const respond = (result: SupersedeResult, runError?: string) =>
-    res.status(201).json({ chat: result.chat, original: result.original, prompt: plan.prompt.timestamp, ...(runError && { runError }) });
+    res.status(201).json({ chat: result.chat, original: result.original, prompt: plan.promptAt, ...(runError && { runError, promptText: prompt }) });
 
-  if (plan.forkCutoff) {
+  if (plan.hasHistory) {
     const newSessionId = randomUUID();
     let written: { logPath: string } | null = null;
     try {
-      written = writeForkedSession({ chat, source, targetKind: source.providerKind, targetProvider: source.provider, timestamp: plan.forkCutoff, newSessionId });
+      written = writeForkedSession({ chat, source, targetKind: source.providerKind, targetProvider: source.provider, timestamp: plan.keepThrough, newSessionId });
     } catch (error) {
       if (error instanceof UnsupportedForkError) return res.status(400).json({ error: `${providerLabel(source.providerKind)} chats cannot be rerun from a message` });
       log.error(`Failed to write rerun of ${chat.id}: ${error}`);
@@ -1657,7 +1705,7 @@ chatsRouter.post("/:id/rerun", async (req, res) => {
 
     let result: SupersedeResult;
     try {
-      result = supersedeChat({ chat, kind: "rerun", timestamp: plan.supersedeAt, newSessionId, newChatMeta, fallbackTitle });
+      result = supersedeChat({ chat, newSessionId, ...supersedeAt });
       announceSupersede(result, chat, source);
     } catch (error: any) {
       if (error instanceof SupersedeRefusedError) {
@@ -1668,7 +1716,7 @@ chatsRouter.post("/:id/rerun", async (req, res) => {
       return res.status(500).json({ error: error.message });
     }
     // The new chat is in place either way; a run that cannot start is
-    // reported beside it so the client can still open the chat and resend.
+    // reported beside it, with the prompt, so the client can restore it.
     try {
       await sendMessage({ chatId: result.chat.id, ...send });
       respond(result);
@@ -1681,40 +1729,52 @@ chatsRouter.post("/:id/rerun", async (req, res) => {
 
   // The opening prompt: no history to fork, so the rerun is a fresh chat on the
   // same harness and settings, moved into C's place once it has a record.
-  const { meta, providerKind } = source;
-  const title = (typeof meta.title === "string" && meta.title.trim()) || null;
+  const title = (typeof source.meta.title === "string" && source.meta.title.trim()) || null;
+  // Addressable before the record exists, so a start that times out can be stopped.
+  const trackingId = `new-rerun-${randomUUID()}`;
   let emitter: import("events").EventEmitter;
   try {
     emitter = await sendMessage({
       ...send,
+      ...continuationSendOptions(source),
       folder: chat.folder,
       ...(chat.workspaceId && { workspaceId: chat.workspaceId }),
-      provider: providerKind,
-      ...(meta.model && { model: meta.model }),
-      ...(meta.effort && { effort: meta.effort }),
-      ...(meta.defaultPermissions && { defaultPermissions: meta.defaultPermissions }),
-      ...(meta.modelReview === true && { modelReview: true }),
-      ...(meta.agentAlias && { agentAlias: meta.agentAlias }),
-      ...(meta.requireExplicitCompletion === true && { requireExplicitCompletion: true }),
       // Filed under C's parent from the start, so it lands in that tree's space.
-      ...(getParentChatId(meta) && { parentChatId: getParentChatId(meta)! }),
+      ...(parentAtStart && { parentChatId: parentAtStart }),
       ...(title && { chatTitle: title, skipTitleGeneration: true }),
+      clientTrackingId: trackingId,
     });
   } catch (error: any) {
     log.error(`Rerun of ${chat.id}: could not start a fresh chat: ${error.message}`);
     return res.status(502).json({ error: `Could not start the rerun: ${error.message}` });
   }
-  const started = await startFreshRerunChat(emitter);
-  if (!started.ok) return res.status(502).json({ error: `Could not start the rerun: ${started.error}` });
+  const started = await awaitFreshRerunChat(emitter, rerunTiming.startTimeoutMs);
+  if (!started.ok) {
+    if (started.timedOut) {
+      // Nothing is waiting for it any more: stop it rather than leave a chat
+      // nobody asked for running on its own.
+      stopSession(trackingId);
+      log.warn(`Rerun of ${chat.id}: the fresh chat did not start in ${rerunTiming.startTimeoutMs}ms; stopped`);
+      return res.status(504).json({ error: "Could not start the rerun: the new chat did not start in time" });
+    }
+    return res.status(502).json({ error: `Could not start the rerun: ${started.error}` });
+  }
   const fresh = chatFileService.getChat(started.chatId);
-  if (!fresh) return res.status(500).json({ error: "The rerun started but its chat record is missing" });
+  if (!fresh) return res.status(500).json({ error: "The rerun started but its chat record is missing", chatId: started.chatId });
+
+  // The await above can be long. C may have started running, been continued
+  // or compressed from another tab, or moved in the tree since the request's
+  // checks: re-read it, check again, and supersede the record as it is now.
+  const current = findChat(chat.id, false) as any;
+  const recheck = current ? recheckSupersedable(current, parentAtStart) : { ok: false as const, status: 404, error: "The chat was deleted while the rerun was starting" };
+  if (!recheck.ok) {
+    return res.status(recheck.status).json({ error: `${recheck.error}. The rerun is running as a separate chat.`, chatId: fresh.id });
+  }
   try {
-    const result = supersedeChat({ chat, kind: "rerun", timestamp: plan.supersedeAt, newSessionId: fresh.session_id, newChatMeta, fallbackTitle, adopt: fresh });
-    announceSupersede(result, chat, source);
+    const result = supersedeChat({ chat: current, newSessionId: fresh.session_id, adopt: fresh, ...supersedeAt });
+    announceSupersede(result, current, source);
     respond(result);
   } catch (error: any) {
-    // C started running while the fresh chat was starting. The rerun goes on,
-    // as a chat of its own beside C.
     if (error instanceof SupersedeRefusedError) {
       return res.status(error.status).json({ error: `${error.message}. The rerun is running as a separate chat.`, chatId: fresh.id });
     }

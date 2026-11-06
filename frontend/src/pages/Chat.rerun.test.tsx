@@ -8,7 +8,8 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes, useParams } from "react-router-dom";
 import Chat from "./Chat";
-import { rerunChatFrom } from "../api";
+import { getMessages, rerunChatFrom, RerunError, type ParsedMessage } from "../api";
+import { getComposerDraft } from "../utils/localStorage";
 
 const Q1 = "2026-01-01T10:00:00.000Z";
 const A1 = "2026-01-01T10:00:01.000Z";
@@ -80,6 +81,8 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
+  localStorage.clear();
+  vi.restoreAllMocks();
   vi.clearAllMocks();
   vi.unstubAllGlobals();
 });
@@ -106,4 +109,67 @@ it("sends nothing when the confirmation is cancelled", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
   expect(screen.queryByText(/This message is sent again/)).toBeNull();
   expect(rerunChatFrom).not.toHaveBeenCalled();
+});
+
+it("offers no Rerun on a slash command or a compaction summary, but does on the replies", async () => {
+  vi.mocked(getMessages).mockResolvedValueOnce([
+    { role: "user", type: "text", content: "/review", isBuiltInCommand: true, timestamp: Q1 },
+    { role: "assistant", type: "text", content: "reviewed", timestamp: A1 },
+    { role: "user", type: "text", content: "Summary of earlier", isCompactSummary: true, timestamp: "2026-01-01T10:00:05.000Z" },
+  ] as ParsedMessage[]);
+  render(tree());
+  await screen.findByText("reviewed");
+  expect(screen.getAllByRole("button", { name: "Rerun from here" })).toHaveLength(1);
+});
+
+it("holds the page with a pending indicator until the server answers", async () => {
+  let answer!: (value: Awaited<ReturnType<typeof rerunChatFrom>>) => void;
+  vi.mocked(rerunChatFrom).mockReturnValueOnce(new Promise((resolve) => (answer = resolve)));
+  render(tree());
+  await screen.findByText("first answer");
+  fireEvent.click(screen.getAllByRole("button", { name: "Rerun from here" })[0]!);
+  fireEvent.click(screen.getByRole("button", { name: "Rerun" }));
+  expect(await screen.findByText("Starting the rerun…")).toBeTruthy();
+  answer({ chat: { id: "replacement" } as never, original: null });
+  expect(await screen.findByText("landed on replacement")).toBeTruthy();
+});
+
+it("on a run that could not start: puts the prompt back in the new chat's composer and says why", async () => {
+  const alert = vi.spyOn(window, "alert").mockImplementation(() => {});
+  vi.mocked(rerunChatFrom).mockResolvedValueOnce({
+    chat: { id: "replacement" } as never,
+    original: null,
+    runError: "effort not supported",
+    promptText: "first question",
+  });
+  render(tree());
+  await screen.findByText("first question");
+  fireEvent.click(screen.getAllByRole("button", { name: "Rerun from here" })[0]!);
+  fireEvent.click(screen.getByRole("button", { name: "Rerun" }));
+  expect(await screen.findByText("landed on replacement")).toBeTruthy();
+  expect(getComposerDraft("replacement")).toBe("first question");
+  expect(alert).toHaveBeenCalledWith(expect.stringContaining("effort not supported"));
+});
+
+it("on a refusal that left a fresh chat running: says so and opens that chat", async () => {
+  const alert = vi.spyOn(window, "alert").mockImplementation(() => {});
+  vi.mocked(rerunChatFrom).mockRejectedValueOnce(new RerunError("moved. The rerun is running as a separate chat.", 409, "stray"));
+  render(tree());
+  await screen.findByText("first question");
+  fireEvent.click(screen.getAllByRole("button", { name: "Rerun from here" })[0]!);
+  fireEvent.click(screen.getByRole("button", { name: "Rerun" }));
+  expect(await screen.findByText("landed on stray")).toBeTruthy();
+  expect(alert).toHaveBeenCalledWith(expect.stringContaining("separate chat"));
+});
+
+it("on a plain refusal: says so and stays", async () => {
+  const alert = vi.spyOn(window, "alert").mockImplementation(() => {});
+  vi.mocked(rerunChatFrom).mockRejectedValueOnce(new RerunError("This chat is still running", 409));
+  render(tree());
+  await screen.findByText("first question");
+  fireEvent.click(screen.getAllByRole("button", { name: "Rerun from here" })[0]!);
+  fireEvent.click(screen.getByRole("button", { name: "Rerun" }));
+  await waitFor(() => expect(alert).toHaveBeenCalledWith(expect.stringContaining("still running")));
+  expect(screen.getByText("first question")).toBeTruthy();
+  expect(screen.queryByText(/landed on/)).toBeNull();
 });

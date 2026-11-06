@@ -27,6 +27,14 @@ export interface ParsedMessage {
    */
   toolSource?: "local" | "openrouter_server";
   isBuiltInCommand?: boolean;
+  /**
+   * On a user-role text message the user did not type: the summary a
+   * compaction carries the earlier conversation in (the CLI's `/compact` and
+   * auto-compact, or callboard's "Compress earlier messages"). Set by parsers
+   * that can tell; seeded harnesses carry the summary as plain text, which
+   * {@link isCompressionSummaryText} recognises. Absent ⇒ an ordinary message.
+   */
+  isCompactSummary?: boolean;
   timestamp?: string;
   teamName?: string;
   /**

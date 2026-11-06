@@ -100,11 +100,16 @@ const log = createLogger("chat-supersede");
  * ## The running check
  *
  * `checkSupersedable` runs when the request arrives and again at the top of
- * {@link supersedeChat}. The routes are synchronous from the first check to
- * the second (the session write is sync too), so today nothing can register
- * in between and the second check cannot fire; it is defence-in-depth, for a
- * caller that awaits between them in future. On a refusal there, nothing has
- * been written to the chat store ({@link SupersedeRefusedError}).
+ * {@link supersedeChat}. Continue-from, compress and a rerun with history are
+ * synchronous from the first check to the second (the session write is sync
+ * too), so nothing can register in between and the second check is
+ * defence-in-depth there. A rerun of the opening prompt is not: it awaits a
+ * fresh chat's startup (seconds, up to its timeout) before superseding, so in
+ * that window C may start running, be continued or compressed from another tab,
+ * or move in the tree. That route therefore re-reads C after the await,
+ * re-checks it and its parent, and passes the FRESH record here — the late
+ * check is a real gate on that path. On a refusal there, nothing has been
+ * written to the chat store ({@link SupersedeRefusedError}).
  *
  * What neither check can see is a message POSTed to C that is still inside its
  * pre-registration awaits (effort/route probes, a few seconds at most): there
@@ -179,8 +184,17 @@ export interface SupersedeOptions {
   /** The original chat, as `findChat` returns it. */
   chat: ChatRecord;
   kind: SupersedeKind;
-  /** The message X the action was taken at. */
+  /** The message X the action was taken at — C's `forkedAt`, where N's thread shows the marker. */
   timestamp: string;
+  /**
+   * The last instant N's history holds, when that is not X. A rerun's X is the
+   * last kept message that can carry a marker, but N keeps everything up to
+   * one millisecond before the prompt — tool traffic after X included — so
+   * stars, children and callbacks are measured against this instead. Recorded
+   * on both records as `cutoff` so superseded-parent.ts measures the same way.
+   * Ignored for compress-before, whose kept side is the one AFTER X.
+   */
+  keepThrough?: string;
   /** The new, already-written session N resumes. */
   newSessionId: string;
   /**
@@ -268,7 +282,8 @@ export function supersedeChat(opts: SupersedeOptions): SupersedeResult {
   // reach here synchronously from their own check, so this cannot fire today.
   const late = checkSupersedable(chat);
   if (!late.ok) throw new SupersedeRefusedError(late.status, late.error);
-  const cutoffMs = new Date(timestamp).getTime();
+  const cutoff = kind !== "compress-before" && opts.keepThrough ? opts.keepThrough : timestamp;
+  const cutoffMs = new Date(cutoff).getTime();
   const meta: Record<string, any> = parseChatMetadata(chat.metadata);
 
   // A chat known only from its session log gets a record first: everything
@@ -310,7 +325,7 @@ export function supersedeChat(opts: SupersedeOptions): SupersedeResult {
     ...(title && { title }),
     ...position,
     ...(stars.length > 0 && { starredMessages: stars, starredMessagesRev: 1 }),
-    supersedes: { chatId: chat.id, kind, at: timestamp },
+    supersedes: { chatId: chat.id, kind, at: timestamp, ...(cutoff !== timestamp && { cutoff }) },
   };
   let created: Chat;
   if (opts.adopt) {
@@ -334,7 +349,7 @@ export function supersedeChat(opts: SupersedeOptions): SupersedeResult {
       chatRole: SUPERSEDED_ROLE[kind],
       forkedAt: timestamp,
       title: prefixedTitle(kind, title),
-      supersededBy: { chatId: created.id, kind, at: new Date().toISOString() },
+      supersededBy: { chatId: created.id, kind, at: new Date().toISOString(), ...(cutoff !== timestamp && { cutoff }) },
     },
     { touch: false },
   );

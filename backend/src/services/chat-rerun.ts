@@ -7,38 +7,43 @@
  * first time.
  *
  * Picked on an assistant message, the prompt is the one that message answers:
- * the nearest user turn before it. Tool results are not user turns — they are
- * `type: "tool_result"` in the parsed transcript — and neither are a team
- * member's messages.
+ * the nearest user turn before it. Tool results are not user turns (they are
+ * `type: "tool_result"` in the parsed transcript), and neither are a team
+ * member's messages. The walk stops at the first user turn it meets and at a
+ * compact boundary: a reply to a slash command or to a compaction summary
+ * answers that, not an earlier prompt, so it is refused rather than mapped to
+ * a prompt from before.
  *
  * Pure: messages in, a plan out. The route writes the session and starts the
  * run.
  */
-import type { ParsedMessage } from "shared/types/index.js";
+import { isRerunPrompt, isSummaryTurn, type ParsedMessage } from "shared/types/index.js";
 
-/** A user turn a rerun can send again. */
-export function isRerunPrompt(message: ParsedMessage): boolean {
-  if (message.role !== "user" || message.type !== "text" || message.teamName || !message.timestamp) return false;
-  return message.content.trim().length > 0 || (message.imageIds?.length ?? 0) > 0;
-}
+export { isRerunPrompt };
 
 export interface RerunPlan {
-  /** The user turn being sent again. */
-  prompt: ParsedMessage;
+  /** Timestamp of the user turn being sent again (every block of it shares it). */
+  promptAt: string;
+  /** The prompt's text: every text block of that user turn, in order. */
+  text: string;
+  /** Images attached to the prompt, across its blocks. */
+  imageIds: string[];
   /**
-   * The session-write cutoff: one millisecond before the prompt, so the forked
-   * history is everything strictly before it (the providers' cutoffs are
-   * "at or before", in ms). Null when nothing precedes the prompt — a rerun of
-   * the opening message starts a fresh session instead of forking one.
+   * The cutoff N's history keeps through: one millisecond before the prompt,
+   * so the forked history is everything strictly before it (the providers'
+   * cutoffs are "at or before", in ms). Also what stars, children and
+   * callbacks are measured against — N holds exactly this much.
    */
-  forkCutoff: string | null;
+  keepThrough: string;
+  /** False when nothing precedes the prompt — the opening prompt starts a fresh session instead of forking one. */
+  hasHistory: boolean;
   /**
-   * The supersede point X: the timestamp of the last message the new chat
-   * keeps, verbatim, so the inline "original continues" marker lands under it
-   * (markers match by exact timestamp string). One ms before the prompt when
-   * nothing kept carries a marker slot.
+   * The supersede point X recorded on the original (`forkedAt`): the
+   * timestamp of the last message N keeps that can carry the inline "original
+   * continues" marker (markers match by exact timestamp string). `keepThrough`
+   * when no kept message can.
    */
-  supersedeAt: string;
+  markerAt: string;
 }
 
 export type RerunPlanResult = ({ ok: true } & RerunPlan) | { ok: false; error: string };
@@ -46,6 +51,10 @@ export type RerunPlanResult = ({ ok: true } & RerunPlan) | { ok: false; error: s
 function ms(ts: string | undefined): number {
   return ts ? new Date(ts).getTime() : NaN;
 }
+
+const isBoundary = (m: ParsedMessage) => m.type === "system" && m.subtype === "compact_boundary";
+/** A message of the user's own turn-taking: user-role text not from a team member. */
+const isUserTurn = (m: ParsedMessage) => m.role === "user" && m.type === "text" && !m.teamName;
 
 /**
  * Resolve what a rerun picked at `timestamp` sends, and where it forks.
@@ -64,31 +73,45 @@ export function planRerun(messages: readonly ParsedMessage[], timestamp: string,
 
   let promptIndex = at.find((i) => isRerunPrompt(messages[i]!)) ?? -1;
   if (promptIndex === -1) {
-    if (role === "user") return { ok: false, error: "That message cannot be rerun" };
+    if (at.some((i) => isUserTurn(messages[i]!))) return { ok: false, error: "That message cannot be rerun" };
     // An assistant message: the prompt it answers is the nearest user turn
-    // before it.
+    // before it — which must itself be rerunnable.
     for (let i = at[0]! - 1; i >= 0; i--) {
-      if (isRerunPrompt(messages[i]!)) {
-        promptIndex = i;
-        break;
-      }
+      const m = messages[i]!;
+      if (isBoundary(m) || isSummaryTurn(m)) return { ok: false, error: "This reply follows a compaction, not a prompt that can be rerun" };
+      if (!isUserTurn(m)) continue;
+      if (!isRerunPrompt(m)) return { ok: false, error: "The message this replies to cannot be rerun" };
+      promptIndex = i;
+      break;
     }
     if (promptIndex === -1) return { ok: false, error: "No user message before this one to rerun" };
   }
 
-  const prompt = messages[promptIndex]!;
-  const promptMs = ms(prompt.timestamp);
-  const before = new Date(promptMs - 1).toISOString();
-  const kept = messages.filter((m) => ms(m.timestamp) < promptMs);
-  if (kept.length === 0) return { ok: true, prompt, forkCutoff: null, supersedeAt: before };
+  const promptAt = messages[promptIndex]!.timestamp!;
+  const promptMs = ms(promptAt);
+  // One user turn with several content blocks parses as several messages at
+  // one timestamp, its images on the last of them.
+  const blocks = messages.filter((m) => isUserTurn(m) && ms(m.timestamp) === promptMs);
+  const text = blocks
+    .map((m) => m.content)
+    .filter((c) => c.trim())
+    .join("\n\n");
+  const imageIds = [...new Set(blocks.flatMap((m) => m.imageIds ?? []))];
 
-  let supersedeAt = before;
+  // Everything strictly before the prompt, by ms. A message stamped in the
+  // same millisecond as the prompt is treated as part of it (dropped from the
+  // kept history) — the providers' cutoffs work in ms too, so nothing finer
+  // could be honoured, and an engine writing a reply in the prompt's own
+  // millisecond does not happen in practice.
+  const keepThrough = new Date(promptMs - 1).toISOString();
+  const kept = messages.filter((m) => ms(m.timestamp) < promptMs);
+  let markerAt = keepThrough;
   for (let i = kept.length - 1; i >= 0; i--) {
     const m = kept[i]!;
     if (m.type === "text" && !m.teamName && m.timestamp) {
-      supersedeAt = m.timestamp;
+      markerAt = m.timestamp;
       break;
     }
   }
-  return { ok: true, prompt, forkCutoff: before, supersedeAt };
+  return { ok: true, promptAt, text, imageIds, keepThrough, hasHistory: kept.length > 0, markerAt };
 }

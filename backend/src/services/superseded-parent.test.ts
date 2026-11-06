@@ -46,6 +46,14 @@ describe("answeringParentFor", () => {
     expect(answeringParentFor(c.id, undefined)).toBe(n.id);
   });
 
+  it("measures a rerun against its recorded cutoff, not the marker in forkedAt", () => {
+    const n = makeChat({});
+    // Marker at BEFORE, but N holds everything up to CUT (tool traffic after the marker).
+    const c = makeChat({ supersededBy: { chatId: n.id, kind: "rerun", cutoff: CUT }, forkedAt: BEFORE });
+    expect(answeringParentFor(c.id, "2026-01-01T10:00:07.000Z")).toBe(n.id);
+    expect(answeringParentFor(c.id, AFTER)).toBe(c.id);
+  });
+
   it("follows a chain of supersedes and survives a cycle", () => {
     const n2 = makeChat({});
     const n1 = makeChat({ supersededBy: { chatId: n2.id, kind: "compress-after" } });

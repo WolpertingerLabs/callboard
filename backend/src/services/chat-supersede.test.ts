@@ -216,6 +216,26 @@ describe("supersedeChat — live linkage", () => {
     }
   });
 
+  it("a rerun measures callbacks against keepThrough, past the marker X", () => {
+    const root = makeChat({ title: "Parent" });
+    const child = makeChat({ parentChatId: root.id, rootChatId: root.id, chatRole: "subagent" });
+    // Registered after X (T) but before the prompt the rerun keeps through.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(new Date(T).getTime() + 3000));
+    const cb = registerCompletionCallback({ childChatId: child.id, parentChatId: root.id, kind: "spawned" });
+    vi.useRealTimers();
+    try {
+      const keepThrough = new Date(new Date(T).getTime() + 5000).toISOString();
+      const result = supersedeChat({ chat: root, kind: "rerun", timestamp: T, keepThrough, newSessionId: "n-rerun", newChatMeta: {} });
+      created.push(result.chat.session_id);
+      expect(result.repointedCallbacks).toBe(1);
+      expect(metaOf(result.chat.id).supersedes).toEqual({ chatId: root.id, kind: "rerun", at: T, cutoff: keepThrough });
+      expect(metaOf(root.id)).toMatchObject({ forkedAt: T, supersededBy: { kind: "rerun", cutoff: keepThrough } });
+    } finally {
+      removeCallbacks([cb.id].filter(Boolean) as string[]);
+    }
+  });
+
   it("refuses at the late re-check, before writing anything, when a run started in between", () => {
     const chat = makeChat({ title: "Busy" });
     running.add(chat.session_id);
