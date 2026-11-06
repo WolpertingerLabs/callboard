@@ -519,3 +519,44 @@ describe("parseMessages — a user turn that is only images", () => {
     expect(parsed).toEqual([expect.objectContaining({ role: "user", type: "text", content: "", imageIds: ["img-png-12"] })]);
   });
 });
+
+describe("parseMessages — compaction summaries", () => {
+  it("flags the summary line after a compact_boundary, and only that line", () => {
+    const parsed = parseMessages([
+      { type: "system", subtype: "compact_boundary", content: "Conversation compacted", timestamp: "2026-01-01T00:00:00.000Z", uuid: "b" },
+      {
+        type: "user",
+        isCompactSummary: true,
+        message: { role: "user", content: "This session is being continued from a previous conversation…" },
+        timestamp: "2026-01-01T00:00:00.000Z",
+        uuid: "s",
+      },
+      { type: "user", message: { role: "user", content: "a real question" }, timestamp: "2026-01-01T00:00:01.000Z", uuid: "u" },
+    ]);
+    const users = parsed.filter((m) => m.role === "user");
+    expect(users.map((m) => [m.content.slice(0, 15), m.isCompactSummary])).toEqual([
+      ["This session is", true],
+      ["a real question", undefined],
+    ]);
+  });
+});
+
+describe("parseMessages — local command output", () => {
+  it("flags a local command's stdout row, not the command it follows nor a real message", () => {
+    const parsed = parseMessages([
+      { type: "user", message: { role: "user", content: "<command-name>/compact</command-name>" }, timestamp: "2026-01-01T00:00:00.000Z", uuid: "c" },
+      {
+        type: "user",
+        message: { role: "user", content: "<local-command-stdout>Compacted </local-command-stdout>" },
+        timestamp: "2026-01-01T00:00:01.000Z",
+        uuid: "o",
+      },
+      { type: "user", message: { role: "user", content: "what does <local-command-stdout> mean?" }, timestamp: "2026-01-01T00:00:02.000Z", uuid: "u" },
+    ]);
+    expect(parsed.map((m) => [m.content.slice(0, 12), m.isBuiltInCommand, m.isCommandOutput])).toEqual([
+      ["/compact", true, undefined],
+      ["<local-comma", undefined, true],
+      ["what does <l", undefined, undefined],
+    ]);
+  });
+});

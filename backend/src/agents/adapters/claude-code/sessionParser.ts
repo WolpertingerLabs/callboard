@@ -12,7 +12,7 @@
  */
 import { readFileSync } from "fs";
 import type { ParsedMessage } from "shared/types/index.js";
-import { attachmentPreviewText } from "shared/types/index.js";
+import { attachmentPreviewText, isLocalCommandText } from "shared/types/index.js";
 import { storeBase64Image } from "../../../services/image-storage.js";
 import { scanJsonlLines } from "../../../utils/jsonl-scan.js";
 
@@ -592,6 +592,14 @@ export function parseMessages(rawMessages: any[]): ParsedMessage[] {
       ...(requestId && { requestId }),
       ...(serverToolUse && { serverToolUse }),
       ...(cacheCreation && { cacheCreation }),
+      // The summary a compaction carries the earlier conversation in, on the
+      // user line right after its compact_boundary — not something the user typed.
+      ...(msg.isCompactSummary === true && role === "user" && { isCompactSummary: true }),
+      // What a local slash command printed (`<local-command-stdout>Compacted
+      // </local-command-stdout>` after /compact), written as a user line.
+      // A well-formed command envelope is projected to `/name args` below and
+      // flagged as a command instead.
+      ...(role === "user" && isTextOnly(content) && isLocalCommandText(contentText(content)) && !projectCommandEntry(content) && { isCommandOutput: true }),
     };
 
     // Shape 3: a slash command, recorded as its envelope rather than as the

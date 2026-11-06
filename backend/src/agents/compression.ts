@@ -24,7 +24,7 @@
  * a message belongs to the "through X" side when its timestamp is at or
  * before the cutoff. Untimestamped messages ride with the message before them.
  */
-import type { ParsedMessage } from "shared/types/index.js";
+import { COMPRESSION_SUMMARY_HEADINGS, type ParsedMessage } from "shared/types/index.js";
 import { flattenForHandoff, type HandoffTurn } from "./handoff.js";
 
 export type CompressDirection = "before" | "after";
@@ -105,14 +105,14 @@ export function compressionSummaryText(direction: CompressDirection, summary: st
   const body = summary.trim();
   if (direction === "before") {
     return [
-      "[Summary of the earlier conversation, compressed by the user]",
+      COMPRESSION_SUMMARY_HEADINGS.before,
       "This session continues an earlier conversation. The user compressed the part before this point into the summary below; the messages after it are verbatim.",
       "",
       body,
     ].join("\n");
   }
   return [
-    "[Summary of the later conversation, compressed by the user]",
+    COMPRESSION_SUMMARY_HEADINGS.after,
     "The conversation continued past the previous message. The user compressed that later part into the summary below. Treat it as what happened; the working tree may reflect it.",
     "",
     body,

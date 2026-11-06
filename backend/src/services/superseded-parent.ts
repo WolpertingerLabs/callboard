@@ -9,8 +9,8 @@
  * than C, which nobody is looking at.
  *
  * The rule mirrors how supersede moves pending callbacks: a compression keeps
- * the whole conversation, so its N always answers; a continue-from's N ends at
- * the cutoff, so it answers only for children that existed by then — a child
+ * the whole conversation, so its N always answers; a continue-from's (or a
+ * rerun's) N ends at the cutoff, so it answers only for children that existed by then — a child
  * started later belongs to the branch that went on, which is C.
  *
  * Deliberately standalone — chatFileService only — so claude.ts can import it
@@ -36,12 +36,14 @@ export function answeringParentFor(parentId: string, childCreatedAt: string | un
     const record = chatFileService.getChat(current);
     if (!record) return current;
     const meta = parseChatMetadataRecord(record.metadata);
-    const by = meta.supersededBy as { chatId?: unknown; kind?: unknown } | undefined;
+    const by = meta.supersededBy as { chatId?: unknown; kind?: unknown; cutoff?: unknown } | undefined;
     const next = typeof by?.chatId === "string" ? by.chatId : undefined;
     if (!next || seen.has(next) || !chatFileService.getChat(next)) return current;
-    if (by?.kind === "continue") {
-      // C's forkedAt is the cutoff N ends at.
-      const cutoffMs = typeof meta.forkedAt === "string" ? new Date(meta.forkedAt).getTime() : NaN;
+    if (by?.kind === "continue" || by?.kind === "rerun") {
+      // N ends at the recorded cutoff (a rerun's: just before its prompt),
+      // else at C's forkedAt.
+      const cutoff = typeof by.cutoff === "string" ? by.cutoff : meta.forkedAt;
+      const cutoffMs = typeof cutoff === "string" ? new Date(cutoff).getTime() : NaN;
       if (!isNaN(childMs) && !isNaN(cutoffMs) && childMs > cutoffMs) return current;
     }
     seen.add(next);
