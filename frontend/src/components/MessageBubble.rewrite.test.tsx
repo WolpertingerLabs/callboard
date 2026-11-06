@@ -77,18 +77,11 @@ describe("MessageBubble hover actions on a narrow reply", () => {
     const { container } = render(
       <MessageBubble message={short} onFork={vi.fn()} forkCurrentProvider="claude-code" onRerun={vi.fn()} starKey="k" onToggleStar={vi.fn()} />,
     );
-    // copy, copy formatted, fork, star: the star's left edge is 96 + 24 = 120px in from the right.
-    expect(bubbleOf(container).style.minWidth).toBe("126px");
+    // copy, fork, star: the star's left edge is 66 + 24 = 90px in from the right.
+    expect(bubbleOf(container).style.minWidth).toBe("96px");
     cleanup();
     const { container: fewer } = render(<MessageBubble message={short} onFork={vi.fn()} forkCurrentProvider="claude-code" />);
-    expect(bubbleOf(fewer).style.minWidth).toBe("96px");
-  });
-
-  it("a team message is left-aligned too, so it is never narrower than its two copy buttons", () => {
-    const team = { ...message, content: "ok", teamName: "alpha" } as ParsedMessage;
-    const { container } = render(<MessageBubble message={team} teamColorMap={new Map([["alpha", 0]])} />);
-    expect(screen.getByTitle(/^Copy formatted/)).toBeTruthy();
-    expect(bubbleOf(container).style.minWidth).toBe("66px");
+    expect(bubbleOf(fewer).style.minWidth).toBe("66px");
   });
 
   it("a user bubble is right-aligned, so it keeps its natural width", () => {

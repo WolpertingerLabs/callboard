@@ -56,7 +56,8 @@ describe("MessageBubble with file attachments", () => {
 
   it("copies only the typed text when copying formatted, too", async () => {
     render(<MessageBubble message={message} />);
-    fireEvent.click(screen.getByTitle(/Copy formatted/));
+    fireEvent.click(screen.getByTitle("Copy message"));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Copy formatted/ }));
     await waitFor(() => expect(copyRichToClipboard).toHaveBeenCalledWith("<p>please review these</p>", "please review these"));
   });
 

@@ -1,5 +1,5 @@
 import { memo, useState, useMemo, useEffect, useRef, type CSSProperties, type ReactNode } from "react";
-import { Check, ClipboardType, FileText, GitFork, RotateCw, Square, Star, X } from "lucide-react";
+import { Check, ClipboardType, Copy, FileText, GitFork, RotateCw, Square, Star, X } from "lucide-react";
 import type { ChatTreeNode, ForkProvider, ParsedMessage } from "../api";
 import type { ChatRewriteAction } from "../utils/chatRewrite";
 import { parseTaskList, splitAttachmentBlocks, type AttachedFile, type TaskListItem } from "shared/types/index.js";
@@ -7,6 +7,7 @@ import MarkdownRenderer from "./MarkdownRenderer";
 import CopyButton from "./CopyButton";
 import ForkPointMarker from "./ForkPointMarker";
 import JsonContentView from "./JsonContentView";
+import { useCopy } from "../hooks/useCopy";
 import { useRelativeTime } from "../hooks/useRelativeTime";
 import { copyToClipboard } from "../utils/clipboard";
 import { markdownToHtml } from "../utils/markdownToHtml";
@@ -97,32 +98,169 @@ const StatusIcon = ({ status }: { status: string }) => {
 };
 
 /**
- * The message-level copy affordances, revealed on `.msg-bubble:hover`: raw
- * markdown in the corner, and — for a bubble that renders as markdown — a
- * "copy formatted" one beside it that also writes HTML, so pasting into Slack
- * or a doc keeps the bold, lists, links and code blocks. Occupies hover slots 0
- * and 1 (just 0 without `formatted`).
+ * The message-level copy affordance in hover slot 0, revealed on
+ * `.msg-bubble:hover`. A click copies the raw markdown straight away, as it
+ * always has; for a bubble that renders as markdown it also opens a menu
+ * offering "Copy formatted", which writes HTML alongside the markdown so pasting
+ * into Slack or a doc keeps the bold, lists, links and code blocks.
  *
- * Returned as a fragment: the hover rule matches `.copy-btn` as a DIRECT child
- * of the bubble.
+ * Without `formatted` (a built-in command, shown literally) it is a plain
+ * `.copy-btn`, no menu.
  */
 function MessageCopyButton({ text, formatted = true }: { text: string; formatted?: boolean }) {
+  if (!formatted) {
+    return <CopyButton text={text} title="Copy message" className="copy-btn" style={{ position: "absolute", top: 6, right: slotRight(0) }} />;
+  }
+  return <MessageCopyMenu text={text} />;
+}
+
+function MessageCopyMenu({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  const [rawCopied, copyRaw] = useCopy();
+  const [richCopied, copyRich] = useCopy();
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const formattedRef = useRef<HTMLButtonElement>(null);
+
+  // Same dismissal as ForkButton, plus Escape from anywhere — the menu is
+  // opened by a copy, so focus may never have entered it.
+  useEffect(() => {
+    if (!open) return;
+    // Raw is already on the clipboard, so the useful next keypress is "formatted".
+    formattedRef.current?.focus();
+    const onDocClick = (e: MouseEvent) => {
+      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      setOpen(false);
+      triggerRef.current?.focus();
+    };
+    document.addEventListener("mousedown", onDocClick);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDocClick);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const onMenuKeyDown = (e: React.KeyboardEvent) => {
+    const items = [...(menuRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [])];
+    const index = items.indexOf(document.activeElement as HTMLElement);
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      items[(index + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length]?.focus();
+    } else if (e.key === "Tab") {
+      setOpen(false);
+    }
+  };
+
+  const copied = rawCopied !== null || richCopied !== null;
+
   return (
-    <>
-      <CopyButton text={text} title="Copy message" className="copy-btn" style={{ position: "absolute", top: 6, right: slotRight(0) }} />
-      {formatted && (
-        <CopyButton
-          text={text}
-          html={() => markdownToHtml(text)}
-          icon={ClipboardType}
-          title="Copy formatted (for Slack, docs, email)"
-          className="copy-btn"
-          style={{ position: "absolute", top: 6, right: slotRight(1) }}
-        />
+    // Like `.fork-affordance`: the hover-reveal class sits on this wrapper, a
+    // DIRECT child of .msg-bubble, and `is-open` holds it visible while the
+    // menu is up.
+    <div ref={wrapRef} className={`copy-affordance${open ? " is-open" : ""}`} style={{ position: "absolute", top: 6, right: slotRight(0), zIndex: 2 }}>
+      <button
+        ref={triggerRef}
+        onClick={(e) => {
+          e.stopPropagation();
+          void copyRaw(text);
+          setOpen((v) => !v);
+        }}
+        title="Copy message"
+        aria-label="Copy message"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        style={{
+          padding: 4,
+          background: "var(--surface)",
+          border: "1px solid var(--border)",
+          borderRadius: 6,
+          cursor: "pointer",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        {copied ? <Check size={14} style={{ color: "var(--success)" }} /> : <Copy size={14} style={{ color: "var(--text-muted)" }} />}
+      </button>
+
+      {open && (
+        <div
+          ref={menuRef}
+          role="menu"
+          aria-label="Copy options"
+          onKeyDown={onMenuKeyDown}
+          style={{
+            position: "absolute",
+            top: "calc(100% + 4px)",
+            right: 0,
+            minWidth: 210,
+            background: "var(--surface)",
+            border: "1px solid var(--border)",
+            borderRadius: 8,
+            boxShadow: "var(--shadow-md)",
+            overflow: "hidden",
+          }}
+        >
+          <button
+            role="menuitem"
+            tabIndex={-1}
+            className="fork-point-menu-item"
+            title="Copy the raw markdown"
+            onClick={(e) => {
+              e.stopPropagation();
+              setOpen(false);
+              void copyRaw(text);
+            }}
+            style={copyMenuItemStyle}
+          >
+            {rawCopied !== null ? <Check size={14} style={{ color: "var(--success)" }} /> : <Copy size={14} style={{ color: "var(--text-muted)" }} />}
+            {rawCopied !== null ? "Copied raw" : "Copy raw"}
+          </button>
+          <button
+            ref={formattedRef}
+            role="menuitem"
+            tabIndex={-1}
+            className="fork-point-menu-item"
+            title="Copy with formatting, for Slack, docs, email"
+            onClick={(e) => {
+              e.stopPropagation();
+              setOpen(false);
+              // Rendered here, synchronously, so the clipboard write still runs
+              // inside the click — Safari refuses one outside a user gesture.
+              void copyRich(text, markdownToHtml(text));
+            }}
+            style={copyMenuItemStyle}
+          >
+            <ClipboardType size={14} style={{ color: "var(--text-muted)" }} />
+            Copy formatted
+            <span style={{ marginLeft: "auto", paddingLeft: 12, fontSize: 11, color: "var(--text-muted)" }}>Slack, docs, email</span>
+          </button>
+        </div>
       )}
-    </>
+    </div>
   );
 }
+
+/** A row in the copy menu. Background is left to `.fork-point-menu-item` so its :hover / :focus-visible rules apply. */
+const copyMenuItemStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  width: "100%",
+  textAlign: "left",
+  padding: "7px 10px",
+  border: "none",
+  color: "var(--text)",
+  fontSize: 13,
+  cursor: "pointer",
+  whiteSpace: "nowrap",
+};
 
 /** The harnesses a conversation can be forked into, in menu order. */
 const FORK_TARGETS: { kind: ForkProvider; label: string }[] = [
@@ -1024,9 +1162,6 @@ function MessageBubble({
           className="msg-bubble"
           style={{
             maxWidth: "85%",
-            // Left-aligned like a reply, so never narrower than its two copy
-            // buttons (see the reply bubble's actionsMinWidth below).
-            minWidth: HOVER_ACTION_EDGE + 2 * HOVER_ACTION_PITCH,
             padding: "10px 14px",
             borderRadius: "var(--radius)",
             background: "var(--assistant-bg)",
@@ -1056,15 +1191,12 @@ function MessageBubble({
   const toggleStar = starKey && onToggleStar ? () => onToggleStar(starKey, !starred) : undefined;
   const rerun = canFork && onRerun ? () => onRerun(message.timestamp!, message.role) : undefined;
   // The hover actions line up right-to-left from the bubble's right edge: copy,
-  // copy formatted (not on a built-in command, which shows literally), fork,
-  // star — each present one taking the next slot. On a bubble narrower
+  // fork, star — each present one taking the next slot. On a bubble narrower
   // than the row they stick out past its LEFT edge — for a left-aligned reply,
   // out of the message column and under the sidebar, where they cannot be
   // clicked. A reply is therefore never narrower than its actions. User bubbles
   // are right-aligned, so their overflow lands in the column and needs nothing.
-  const formattedCopy = !message.isBuiltInCommand;
-  const forkSlot = formattedCopy ? 2 : 1;
-  const starSlot = forkSlot + (canFork ? 1 : 0);
+  const starSlot = canFork ? 2 : 1;
   const actionSlots = starSlot + (toggleStar ? 1 : 0);
   const actionsMinWidth = isUser ? undefined : HOVER_ACTION_EDGE + actionSlots * HOVER_ACTION_PITCH;
 
@@ -1097,10 +1229,10 @@ function MessageBubble({
           }),
         }}
       >
-        <MessageCopyButton text={bodyText} formatted={formattedCopy} />
+        <MessageCopyButton text={bodyText} formatted={!message.isBuiltInCommand} />
         {canFork && (
           <ForkButton
-            right={slotRight(forkSlot)}
+            right={slotRight(1)}
             onFork={(provider) => onFork!(message.timestamp!, provider)}
             currentProvider={forkCurrentProvider}
             onRewrite={onRewrite ? (action) => onRewrite(message.timestamp!, action) : undefined}
