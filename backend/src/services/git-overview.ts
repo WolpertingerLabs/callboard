@@ -17,12 +17,13 @@
  * (two `gh api` calls per {@link PR_CACHE_TTL_MS}, refreshed in the
  * background — see github-prs.ts).
  */
-import { existsSync, realpathSync } from "fs";
-import { basename, dirname, join, resolve, sep } from "path";
+import { existsSync } from "fs";
+import { basename, sep } from "path";
 import type { BranchRepo, BranchRow, GitOverviewResponse } from "shared";
 import { createCardContext } from "./card-context.js";
 import { getRepoPulls, matchPull, toBranchPr, type RepoPulls } from "./github-prs.js";
 import { resolveWorktreeToMainRepoCached, tryGetGitWorktreesAsync, type WorktreeInfo } from "../utils/git.js";
+import { findGitRoot, normalizeDir } from "../utils/git-root.js";
 
 /** Card ids by member-chat folder, over every open, visible card. */
 export function activeCardFolders(): Map<string, Set<string>> {
@@ -39,30 +40,10 @@ export function activeCardFolders(): Map<string, Set<string>> {
   return byFolder;
 }
 
-/** An absolute path with symlinks resolved where possible and no trailing separator. */
-export function normalizeDir(dir: string): string {
-  let out = resolve(dir);
-  try {
-    out = realpathSync.native(out);
-  } catch {
-    // A directory that no longer exists keeps its lexical form.
-  }
-  return out.length > 1 && out.endsWith(sep) ? out.slice(0, -1) : out;
-}
-
-/**
- * The nearest directory at or above `dir` holding a `.git` (directory, or the
- * file a linked worktree or submodule has), or null when there is none. A
- * filesystem walk, not a spawn — it is what lets a folder in a nested repo or
- * submodule count as its own repository rather than a subdirectory of the
- * worktree around it.
- */
-export function findGitRoot(dir: string, exists: (path: string) => boolean = existsSync): string | null {
-  for (let current = dir; ; current = dirname(current)) {
-    if (exists(join(current, ".git"))) return current;
-    if (dirname(current) === current) return null;
-  }
-}
+// Re-exported from their new home beside the other filesystem-only git
+// helpers, so the per-turn git trail can use them without importing this
+// module (and the card context it pulls in).
+export { findGitRoot, normalizeDir };
 
 /** True when `dir` is `root` or lies inside it. */
 function isWithin(dir: string, root: string): boolean {

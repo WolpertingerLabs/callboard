@@ -183,6 +183,56 @@ export function validateFolderPath(folder: string): string {
   return resolved;
 }
 
+/**
+ * The branch and commit checked out at a checkout root, read from the files
+ * git keeps them in — never spawned for. For the per-turn git trail, which
+ * runs on every turn start and end and so must not cost a process.
+ *
+ * `branch` is null for a detached HEAD. `head` is the commit: the detached
+ * HEAD itself, or the branch's ref followed through the loose ref and then
+ * `packed-refs` in the repository's common directory (a linked worktree's
+ * `commondir`). Absent when the ref could not be read that way — a fresh
+ * branch with no commit, or a ref store this does not parse.
+ *
+ * Undefined when HEAD itself has no answer here (no `.git`, an unreadable or
+ * unusual HEAD): the caller records nothing rather than ask git.
+ */
+export function readCheckoutHead(root: string): { branch: string | null; head?: string } | undefined {
+  const headHome = resolveHeadHome(root);
+  if (!headHome) return undefined;
+  const branch = branchFromHead(headHome);
+  if (branch === undefined) return undefined;
+  try {
+    if (branch === null) return { branch, head: readFileSync(join(headHome, "HEAD"), "utf-8").trim() };
+    let common = headHome;
+    try {
+      const pointer = readFileSync(join(headHome, "commondir"), "utf-8").replace(/[\n\r]+$/, "");
+      if (pointer) common = resolve(headHome, pointer);
+    } catch {
+      // No commondir: this directory is its own common directory.
+    }
+    const ref = `refs/heads/${branch}`;
+    const isSha = (value: string) => /^[0-9a-f]{40}$|^[0-9a-f]{64}$/.test(value);
+    try {
+      const loose = readFileSync(join(common, ref), "utf-8").trim();
+      if (isSha(loose)) return { branch, head: loose };
+    } catch {
+      // Not loose — try packed-refs.
+    }
+    try {
+      for (const line of readFileSync(join(common, "packed-refs"), "utf-8").split("\n")) {
+        const [sha, name] = line.trim().split(" ");
+        if (name === ref && isSha(sha)) return { branch, head: sha };
+      }
+    } catch {
+      // No packed-refs.
+    }
+    return { branch };
+  } catch {
+    return { branch };
+  }
+}
+
 export interface GitInfo {
   isGitRepo: boolean;
   branch?: string;

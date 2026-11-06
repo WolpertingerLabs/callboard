@@ -98,13 +98,39 @@ export interface FolderPrs {
   /** The branch checked out there; null for a detached HEAD. Absent outside a repository. */
   branch?: string | null;
   status: FolderPrStatus;
+  /** The PR matched to the live branch (`status: "found"`). */
   pr?: ChatPr;
+  /**
+   * Every PR of this chat's own history: `pr` (when found) plus the PRs of
+   * branches its git trail recorded it on earlier — worktrees since deleted
+   * included — deduplicated by URL, open first, then most recently updated.
+   * Present on the chat PRs route; absent when there are none.
+   */
+  prs?: ChatPr[];
   /**
    * Why PR data is missing or may be stale. With `status: "error"` there is no
    * PR; alongside `found` it means a refresh failed and the PR shown is the
    * last good answer.
    */
   prError?: string;
+}
+
+/**
+ * One (directory, branch) a chat's folder was seen on — the chat's git trail,
+ * stored as `metadata.gitTrail` and recorded at every turn's start and end.
+ * One entry per distinct (`cwd`, `branch`); detached HEADs are not recorded.
+ */
+export interface GitTrailEntry {
+  /** The checkout root the chat's folder resolved to (a worktree, or the main checkout). */
+  cwd: string;
+  /** Its repository's main checkout — still a repository after `cwd` is deleted. */
+  repoPath: string;
+  branch: string;
+  /** The commit checked out at the last recorded sighting. Absent when it could not be read without git. */
+  head?: string;
+  /** ISO timestamps of the first and the last recorded sighting. */
+  firstSeen: string;
+  lastSeen: string;
 }
 
 /** One chat on the card that a {@link CardPr} was found through. */

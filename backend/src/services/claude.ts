@@ -2627,6 +2627,11 @@ setExecutorMessageSender(sendMessage);
 import { initSessionCompletionHandler } from "./session-completion-handler.js";
 initSessionCompletionHandler({ sendMessage, getActiveSession });
 
+// Record each chat's git trail (the branches its folder was on) at every turn's
+// start and end — on the same registry seam, so every engine and send path.
+import { initGitTrailRecorder } from "./git-trail.js";
+initGitTrailRecorder();
+
 // Register dependencies for the job runner (deterministic multi-step jobs).
 import { setJobRunnerDeps } from "./job-runner.js";
 setJobRunnerDeps({ sendMessage, stopSession, getActiveSession });
