@@ -20,6 +20,7 @@ import type {
   ValidateResult,
   FolderSuggestion,
   GitDiffResponse,
+  GitOverviewResponse,
   AppPluginsData,
   ScanResult,
   AgentConfig,
@@ -92,6 +93,11 @@ export type {
   ValidateResult,
   FolderSuggestion,
   GitDiffResponse,
+  GitOverviewResponse,
+  BranchRepo,
+  BranchRow,
+  BranchPr,
+  BranchPrState,
   AppPlugin,
   McpServerConfig,
   PluginScanRoot,
@@ -1066,6 +1072,15 @@ export interface CheckedOutBranch {
  */
 export async function getGitBranches(folder: string): Promise<{ branches: string[]; checkedOut?: CheckedOutBranch[] }> {
   return request(`/git/branches?folder=${encodeURIComponent(folder)}`, { error: "Failed to list branches" });
+}
+
+/**
+ * Worktrees, branches and PRs of every repo an unarchived card works in — the
+ * Board's Branches view. `refresh` asks the daemon to refetch PR data its
+ * cache would otherwise serve.
+ */
+export async function getGitOverview(refresh = false): Promise<GitOverviewResponse> {
+  return request(`/git/overview${refresh ? "?refresh=true" : ""}`, { error: "Failed to load branches" });
 }
 
 export async function getGitDiff(folder: string): Promise<GitDiffResponse> {

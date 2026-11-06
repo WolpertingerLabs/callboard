@@ -18,10 +18,11 @@ import CardTile from "../components/board/CardTile";
 import CardRow from "../components/board/CardRow";
 import SelectionBar from "../components/SelectionBar";
 import CardDrawer from "../components/board/CardDrawer";
+import BranchesView from "../components/board/BranchesView";
 import MoveToSpaceModal from "../components/MoveToSpaceModal";
 import { useSpaces } from "../contexts/SpaceContext";
 import { ALL_SPACES, DEFAULT_SPACE_ID } from "shared/types/space.js";
-import { ChevronRight, ChevronDown, ChevronLeft, ChevronsUpDown, LayoutGrid, List, Folder } from "lucide-react";
+import { ChevronRight, ChevronDown, ChevronLeft, ChevronsUpDown, LayoutGrid, List, Folder, GitBranch } from "lucide-react";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { usePolling } from "../hooks/usePolling";
 import { errorMessage } from "../utils/errorMessage";
@@ -377,7 +378,11 @@ export default function Board() {
   const selectedIds = new Set([...rawSelectedIds].filter((id) => cards.some((c) => c.id === id && c.lifecycle === selectionLifecycle)));
   // Losing every selected card to that reconciliation also leaves selection
   // mode — an action bar over an empty selection has nothing to act on.
-  const selectionMode = selectionLifecycle !== null && selectedIds.size > 0;
+  // The Branches view has no selection at all: its rows are directories, not
+  // cards, and its chips are links into the drawer. Deriving it here (rather
+  // than only clearing on the switch) is what keeps the bar and the keyboard
+  // shortcuts out of that view whatever state the other views left behind.
+  const selectionMode = viewMode !== "branches" && selectionLifecycle !== null && selectedIds.size > 0;
   const selectionScopeCount = cards.filter((c) => c.lifecycle === selectionLifecycle).length;
 
   const exitSelection = useCallback(() => {
@@ -601,6 +606,7 @@ export default function Board() {
           [
             { mode: "cards", icon: <LayoutGrid size={14} />, text: "Cards" },
             { mode: "list", icon: <List size={14} />, text: "List" },
+            { mode: "branches", icon: <GitBranch size={14} />, text: "Branches" },
           ] as const
         ).map((option, i) => (
           <button
@@ -611,6 +617,7 @@ export default function Board() {
             onClick={() => {
               setViewMode(option.mode);
               saveBoardViewMode(option.mode);
+              if (option.mode === "branches") exitSelection();
             }}
             style={{
               display: "flex",
@@ -621,7 +628,7 @@ export default function Board() {
               background: viewMode === option.mode ? "var(--accent)" : "var(--surface)",
               color: viewMode === option.mode ? "var(--text-on-accent)" : "var(--text)",
               border: "none",
-              borderRight: i === 0 ? "1px solid var(--border)" : "none",
+              borderRight: i < 2 ? "1px solid var(--border)" : "none",
               cursor: "pointer",
             }}
           >
@@ -631,31 +638,34 @@ export default function Board() {
           </button>
         ))}
       </div>
-      <button
-        aria-pressed={showPaths}
-        aria-label="Show folders"
-        title="Show folders"
-        onClick={() => {
-          const next = !showPaths;
-          setShowPaths(next);
-          saveBoardShowPaths(next);
-        }}
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 5,
-          padding: isMobile ? "6px 8px" : "5px 9px",
-          fontSize: 12,
-          borderRadius: 6,
-          background: showPaths ? "var(--accent)" : "var(--surface)",
-          color: showPaths ? "var(--text-on-accent)" : "var(--text)",
-          border: "1px solid var(--border)",
-          cursor: "pointer",
-        }}
-      >
-        <Folder size={14} />
-        {!isMobile && "Folders"}
-      </button>
+      {/* The Branches view is made of paths already; the toggle would control nothing there. */}
+      {viewMode !== "branches" && (
+        <button
+          aria-pressed={showPaths}
+          aria-label="Show folders"
+          title="Show folders"
+          onClick={() => {
+            const next = !showPaths;
+            setShowPaths(next);
+            saveBoardShowPaths(next);
+          }}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 5,
+            padding: isMobile ? "6px 8px" : "5px 9px",
+            fontSize: 12,
+            borderRadius: 6,
+            background: showPaths ? "var(--accent)" : "var(--surface)",
+            color: showPaths ? "var(--text-on-accent)" : "var(--text)",
+            border: "1px solid var(--border)",
+            cursor: "pointer",
+          }}
+        >
+          <Folder size={14} />
+          {!isMobile && "Folders"}
+        </button>
+      )}
       {/* Only in list mode with paths on: everywhere else it controls nothing,
           and a control that does nothing is worse than an absent one. */}
       {viewMode === "list" && showPaths && (
@@ -703,7 +713,7 @@ export default function Board() {
           between the title column and the time column. */}
       <div
         style={{
-          maxWidth: viewMode === "list" ? 1400 : 1100,
+          maxWidth: viewMode === "cards" ? 1100 : 1400,
           margin: "0 auto",
           padding: isMobile ? `14px 12px ${selectionMode ? 120 : 48}px` : `24px 24px ${selectionMode ? 132 : 60}px`,
         }}
@@ -751,6 +761,8 @@ export default function Board() {
 
         {!loaded ? (
           <div style={{ color: "var(--text-muted)", fontSize: 14 }}>Loading…</div>
+        ) : viewMode === "branches" ? (
+          <BranchesView cards={cards} onOpenCard={(cardId) => openDrawer(cardId)} />
         ) : (
           <>
             {open.length === 0 && (
