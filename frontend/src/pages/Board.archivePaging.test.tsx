@@ -10,7 +10,7 @@ import { MemoryRouter } from "react-router-dom";
 import type { CardPatch, CardSummary } from "../api";
 import { listCards, updateCard } from "../api";
 import { saveBoardClosedExpanded } from "../utils/localStorage";
-import Board from "./Board";
+import Board, { ARCHIVE_PAGE_SIZE as PAGE } from "./Board";
 
 vi.mock("../api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../api")>()),
@@ -56,7 +56,11 @@ function closedCard(i: number): CardSummary {
   };
 }
 
-const TOTAL = 120;
+/** Two full pages and a short last one. */
+const TAIL = 5;
+const TOTAL = 2 * PAGE + TAIL;
+const label = (i: number) => `Archived ${String(i).padStart(3, "0")}`;
+const showMore = (n: number, of: number) => ({ name: `Show ${n} more of ${of}` });
 /** The daemon's archive. Tests archive and unarchive "elsewhere" by editing it. */
 let archive: CardSummary[];
 const mockList = vi.mocked(listCards);
@@ -103,71 +107,82 @@ const lastWindow = () => mockList.mock.lastCall?.[1];
 const header = () => screen.getByRole("button", { name: /^Archived\s*\d+$/ });
 
 describe("Board archive paging", () => {
+  it("pages the archive 10 cards at a time", async () => {
+    mount();
+    expect(await screen.findByText("Archived 009")).toBeTruthy();
+    expect(screen.queryByText("Archived 010")).toBeNull();
+    expect(mockList).toHaveBeenCalledWith(false, { closedLimit: 10, closedSince: undefined });
+    fireEvent.click(screen.getByRole("button", { name: `Show 10 more of ${TOTAL - 10}` }));
+    expect(await screen.findByText("Archived 019")).toBeTruthy();
+    expect(screen.queryByText("Archived 020")).toBeNull();
+    expect(lastWindow()).toEqual({ closedLimit: 20, closedSince: closedCard(9).closedAt });
+  });
+
   it("asks for one page, renders it, and counts the whole archive", async () => {
     mount();
-    expect(await screen.findByText("Archived 049")).toBeTruthy();
-    expect(screen.queryByText("Archived 050")).toBeNull();
-    expect(mockList).toHaveBeenCalledWith(false, { closedLimit: 50, closedSince: undefined });
-    expect(header().textContent).toMatch(/120/);
+    expect(await screen.findByText(label(PAGE - 1))).toBeTruthy();
+    expect(screen.queryByText(label(PAGE))).toBeNull();
+    expect(mockList).toHaveBeenCalledWith(false, { closedLimit: PAGE, closedSince: undefined });
+    expect(header().textContent).toMatch(new RegExp(String(TOTAL)));
   });
 
   it("refetches by cursor once a page is loaded, not by count", async () => {
     mount();
-    await screen.findByText("Archived 049");
+    await screen.findByText(label(PAGE - 1));
     refetch();
     await waitFor(() => expect(mockList).toHaveBeenCalledTimes(2));
-    expect(lastWindow()).toEqual({ closedLimit: undefined, closedSince: closedCard(49).closedAt });
+    expect(lastWindow()).toEqual({ closedLimit: undefined, closedSince: closedCard(PAGE - 1).closedAt });
   });
 
   it("a card archived elsewhere adds on top and keeps the oldest loaded card, and its open drawer", async () => {
     mount();
-    fireEvent.click(await screen.findByRole("button", { name: /Archived 049/ }));
-    expect(screen.getByTestId("drawer").textContent).toContain("Archived 049");
+    fireEvent.click(await screen.findByRole("button", { name: new RegExp(label(PAGE - 1)) }));
+    expect(screen.getByTestId("drawer").textContent).toContain(label(PAGE - 1));
 
     archive.push({ ...closedCard(-1), title: "Just archived" });
     refetch();
     expect(await screen.findByText("Just archived")).toBeTruthy();
-    expect(screen.getByRole("button", { name: /Archived 049/ })).toBeTruthy();
-    expect(screen.getByTestId("drawer").textContent).toContain("Archived 049");
-    expect(header().textContent).toMatch(/121/);
+    expect(screen.getByRole("button", { name: new RegExp(label(PAGE - 1)) })).toBeTruthy();
+    expect(screen.getByTestId("drawer").textContent).toContain(label(PAGE - 1));
+    expect(header().textContent).toMatch(new RegExp(String(TOTAL + 1)));
   });
 
   it("unarchiving the oldest loaded card elsewhere moves the cursor to the next one", async () => {
     mount();
-    await screen.findByText("Archived 049");
-    archive = archive.filter((c) => c.id !== "c49");
+    await screen.findByText(label(PAGE - 1));
+    archive = archive.filter((c) => c.id !== `c${PAGE - 1}`);
     refetch();
-    await waitFor(() => expect(screen.queryByText("Archived 049")).toBeNull());
-    // The window shrank by that one card; it did not reach for card 50 or beyond.
-    expect(screen.getByText("Archived 048")).toBeTruthy();
-    expect(screen.queryByText("Archived 050")).toBeNull();
+    await waitFor(() => expect(screen.queryByText(label(PAGE - 1))).toBeNull());
+    // The window shrank by that one card; it did not reach for card PAGE or beyond.
+    expect(screen.getByText(label(PAGE - 2))).toBeTruthy();
+    expect(screen.queryByText(label(PAGE))).toBeNull();
 
     const calls = mockList.mock.calls.length;
     refetch();
     await waitFor(() => expect(mockList.mock.calls.length).toBe(calls + 1));
-    expect(lastWindow()).toEqual({ closedLimit: undefined, closedSince: closedCard(48).closedAt });
+    expect(lastWindow()).toEqual({ closedLimit: undefined, closedSince: closedCard(PAGE - 2).closedAt });
   });
 
   it("a window emptied elsewhere falls back to a fresh first page, not the whole archive", async () => {
     mount();
-    await screen.findByText("Archived 049");
-    archive = archive.filter((c) => Number(c.id.slice(1)) >= 50);
+    await screen.findByText(label(PAGE - 1));
+    archive = archive.filter((c) => Number(c.id.slice(1)) >= PAGE);
     refetch();
-    await waitFor(() => expect(screen.queryByText("Archived 049")).toBeNull());
+    await waitFor(() => expect(screen.queryByText(label(PAGE - 1))).toBeNull());
     refetch();
-    expect(await screen.findByText("Archived 099")).toBeTruthy();
-    expect(lastWindow()).toEqual({ closedLimit: 50, closedSince: undefined });
-    expect(screen.queryByText("Archived 100")).toBeNull();
+    expect(await screen.findByText(label(2 * PAGE - 1))).toBeTruthy();
+    expect(lastWindow()).toEqual({ closedLimit: PAGE, closedSince: undefined });
+    expect(screen.queryByText(label(2 * PAGE))).toBeNull();
   });
 
   it("Show more fetches the next page, and the last page offers only what is left", async () => {
     mount();
-    fireEvent.click(await screen.findByRole("button", { name: "Show 50 more of 70" }));
-    expect(await screen.findByText("Archived 099")).toBeTruthy();
-    expect(lastWindow()).toEqual({ closedLimit: 100, closedSince: closedCard(49).closedAt });
+    fireEvent.click(await screen.findByRole("button", showMore(PAGE, TOTAL - PAGE)));
+    expect(await screen.findByText(label(2 * PAGE - 1))).toBeTruthy();
+    expect(lastWindow()).toEqual({ closedLimit: 2 * PAGE, closedSince: closedCard(PAGE - 1).closedAt });
 
-    fireEvent.click(screen.getByRole("button", { name: "Show 20 more of 20" }));
-    expect(await screen.findByText("Archived 119")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", showMore(TAIL, TAIL)));
+    expect(await screen.findByText(label(TOTAL - 1))).toBeTruthy();
     await waitFor(() => expect(screen.queryByRole("button", { name: /^Show \d+ more/ })).toBeNull());
   });
 
@@ -179,8 +194,8 @@ describe("Board archive paging", () => {
     // Mount = the initial fetch + the debounced metadata refetch. Wait for both
     // rather than sleeping, so a slow runner cannot leave one in flight.
     await waitFor(() => expect(mockList).toHaveBeenCalledTimes(2), { timeout: 5_000 });
-    fireEvent.click(await screen.findByRole("button", { name: "Show 50 more of 70" }));
-    expect(await screen.findByText("Archived 099")).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", showMore(PAGE, TOTAL - PAGE)));
+    expect(await screen.findByText(label(2 * PAGE - 1))).toBeTruthy();
     // A re-armed debounce (300 ms) is scheduled before this timer, so it fires
     // first however slow the runner: timers run in deadline order.
     await new Promise((resolve) => setTimeout(resolve, 1_000));
@@ -198,27 +213,27 @@ describe("Board archive paging", () => {
     mount();
     await waitFor(() => expect(mockList).toHaveBeenCalledTimes(1));
     refetch();
-    expect(await screen.findByText("Archived 049")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Show 50 more of 70" }));
-    expect(await screen.findByText("Archived 099")).toBeTruthy();
+    expect(await screen.findByText(label(PAGE - 1))).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", showMore(PAGE, TOTAL - PAGE)));
+    expect(await screen.findByText(label(2 * PAGE - 1))).toBeTruthy();
     releaseFirst();
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(screen.getByText("Archived 099")).toBeTruthy();
+    expect(screen.getByText(label(2 * PAGE - 1))).toBeTruthy();
   });
 
   it("unarchiving a loaded card moves the count with it, before the next fetch", async () => {
     vi.mocked(updateCard).mockImplementation(async (id) => ({ card: { ...archive.find((c) => c.id === id)!, lifecycle: "open" } }));
     mount();
-    fireEvent.click(await screen.findByRole("button", { name: /Archived 049/ }));
+    fireEvent.click(await screen.findByRole("button", { name: new RegExp(label(PAGE - 1)) }));
     const fetches = mockList.mock.calls.length;
     fireEvent.click(screen.getByRole("button", { name: "drawer-unarchive" }));
-    await waitFor(() => expect(header().textContent).toMatch(/119/));
+    await waitFor(() => expect(header().textContent).toMatch(new RegExp(String(TOTAL - 1))));
     expect(mockList.mock.calls.length).toBe(fetches);
   });
 
   it("a refetch that overtakes a slow Show more carries its page instead of discarding it", async () => {
     mount();
-    await screen.findByText("Archived 049");
+    await screen.findByText(label(PAGE - 1));
     let releaseShowMore!: () => void;
     mockList.mockImplementationOnce(
       (hidden, window) =>
@@ -226,18 +241,18 @@ describe("Board archive paging", () => {
           releaseShowMore = () => resolve(daemon(hidden, window));
         }),
     );
-    fireEvent.click(screen.getByRole("button", { name: "Show 50 more of 70" }));
-    await waitFor(() => expect(lastWindow()).toEqual({ closedLimit: 100, closedSince: closedCard(49).closedAt }));
+    fireEvent.click(screen.getByRole("button", showMore(PAGE, TOTAL - PAGE)));
+    await waitFor(() => expect(lastWindow()).toEqual({ closedLimit: 2 * PAGE, closedSince: closedCard(PAGE - 1).closedAt }));
     // The poll takes a newer sequence number, so only it may land — and it
     // must ask for the click's page too.
     refetch();
-    await waitFor(() => expect(mockList.mock.calls.at(-1)?.[1]).toEqual({ closedLimit: 100, closedSince: closedCard(49).closedAt }));
-    expect(await screen.findByText("Archived 099")).toBeTruthy();
+    await waitFor(() => expect(mockList.mock.calls.at(-1)?.[1]).toEqual({ closedLimit: 2 * PAGE, closedSince: closedCard(PAGE - 1).closedAt }));
+    expect(await screen.findByText(label(2 * PAGE - 1))).toBeTruthy();
     releaseShowMore();
-    expect(await screen.findByRole("button", { name: "Show 20 more of 20" })).toBeTruthy();
+    expect(await screen.findByRole("button", showMore(TAIL, TAIL))).toBeTruthy();
     // Landed, so the next poll is back to the cursor alone.
     refetch();
-    await waitFor(() => expect(lastWindow()).toEqual({ closedLimit: undefined, closedSince: closedCard(99).closedAt }));
+    await waitFor(() => expect(lastWindow()).toEqual({ closedLimit: undefined, closedSince: closedCard(2 * PAGE - 1).closedAt }));
   });
 
   it("picks the cursor by time and skips a key that does not parse", async () => {
@@ -256,7 +271,7 @@ describe("Board archive paging", () => {
     await screen.findByText("Archived 000");
     refetch();
     await waitFor(() => expect(mockList).toHaveBeenCalledTimes(2));
-    expect(lastWindow()).toEqual({ closedLimit: 50, closedSince: undefined });
+    expect(lastWindow()).toEqual({ closedLimit: PAGE, closedSince: undefined });
   });
 
   it("an unarchive a mid-request refetch already counted is not counted again", async () => {
@@ -268,17 +283,17 @@ describe("Board archive paging", () => {
         }),
     );
     mount();
-    fireEvent.click(await screen.findByRole("button", { name: /Archived 049/ }));
+    fireEvent.click(await screen.findByRole("button", { name: new RegExp(label(PAGE - 1)) }));
     fireEvent.click(screen.getByRole("button", { name: "drawer-unarchive" }));
     // The server applies it and a refetch lands before the PATCH resolves:
-    // c49 comes back as an open card, already out of the archive count.
-    archive = archive.map((c) => (c.id === "c49" ? { ...c, lifecycle: "open" } : c));
+    // the card comes back as an open card, already out of the archive count.
+    archive = archive.map((c) => (c.id === `c${PAGE - 1}` ? { ...c, lifecycle: "open" } : c));
     refetch();
-    await waitFor(() => expect(header().textContent).toMatch(/119/));
-    expect(screen.getByTestId("drawer").textContent).toContain("Archived 049");
+    await waitFor(() => expect(header().textContent).toMatch(new RegExp(String(TOTAL - 1))));
+    expect(screen.getByTestId("drawer").textContent).toContain(label(PAGE - 1));
     releasePatch();
     await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(header().textContent).toMatch(/119/);
+    expect(header().textContent).toMatch(new RegExp(String(TOTAL - 1)));
   });
 
   it("falls back to the loaded cards when an older daemon sends no closedTotal", async () => {
