@@ -43,7 +43,6 @@ vi.mock("../api", async (importOriginal) => ({
 }));
 vi.mock("../contexts/SessionContext", () => ({ useIsSessionActive: () => null, useMetadataVersion: () => 0 }));
 vi.mock("../components/PromptInput", () => ({ default: () => <textarea aria-label="Composer" /> }));
-vi.mock("../components/ChatTreeIndicator", () => ({ default: () => null }));
 vi.mock("../components/GitDiffView", () => ({ default: () => <div /> }));
 vi.mock("../components/ChatDebugPanel", () => ({ default: () => <div /> }));
 

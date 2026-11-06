@@ -49,7 +49,6 @@ export interface ChatRouteState {
   spaceId?: string;
   /** Parentage-tree linkage, forwarded to the new-chat request. */
   parentChatId?: string;
-  chatRole?: string;
   /**
    * Optimistic user messages carried across the /chat/new → /chat/:id
    * redirect. A history entry written before this was a list holds a bare

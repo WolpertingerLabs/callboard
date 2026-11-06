@@ -50,10 +50,8 @@ import {
   continueChatFrom,
   rerunChatFrom,
   RerunError,
-  getCard,
   getChatTree,
   handshakeHeaders,
-  type CardSummary,
   type ChatActivityResponse,
   type ChatTreeResponse,
   type Chat as ChatType,
@@ -88,7 +86,6 @@ import {
 } from "../utils/inFlightMessages";
 import MessageBubble, { AttachedFileChips, TEAM_COLORS } from "../components/MessageBubble";
 import ProviderBadge from "../components/ProviderBadge";
-import ChatTreeIndicator from "../components/ChatTreeIndicator";
 import ToolCallBubble from "../components/ToolCallBubble";
 import PromptInput, { parseLeadingCommand, type ComposerValueUpdate } from "../components/PromptInput";
 import FeedbackPanel, { type PendingAction } from "../components/FeedbackPanel";
@@ -327,11 +324,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // honored on creation; the chat's permissions modal edits it afterwards.
   const newChatModelReview = routeState.modelReview;
   const newChatParentAnswers = routeState.parentAnswers;
-  // Parentage-tree linkage for new chats spawned from an existing chat
-  // (e.g. the "New linked chat" action in ChatTreeIndicator). Forwarded to
-  // the new-chat request so the backend stamps parentChatId/rootChatId.
+  // Parentage-tree linkage for new chats spawned from an existing chat or
+  // card (e.g. the board's card drawer). Forwarded to the new-chat request so
+  // the backend stamps parentChatId/rootChatId.
   const newChatParentId = routeState.parentChatId;
-  const newChatRole = routeState.chatRole;
   // The space a new chat goes into: the panel's pick, else this tab's active
   // space ("all" picks none, and the server's folder rules decide).
   const { enabled: spacesEnabled, activeSpaceId, spaces } = useSpaces();
@@ -731,39 +727,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // enables the "Job" view-mode tab showing the run's progress.
   const chatJobRunId = id ? chatMeta.jobRunId : undefined;
 
-  // GET /cards/:id accepts any member chat id and resolves the full lineage
-  // server-side. Pass the current id rather than reimplementing that walk from
-  // one metadata record — legacy multi-level forkedFrom trees cannot be
-  // resolved correctly without the other records.
-  const chatCardId = id && chat ? id : undefined;
-
-  // The card record itself — needed for its lifecycle (the chat's metadata
-  // only stores the id). Refetched on every metadata event so a close/reopen
-  // done on the board shows up here too. Null while loading or when the fetch
-  // fails; the menu then falls back to membership-only actions rather than
-  // rendering a guessed lifecycle.
-  const [chatCard, setChatCard] = useState<CardSummary | null>(null);
   const metadataVersion = useMetadataVersion();
-
-  useEffect(() => {
-    if (!chatCardId) {
-      setChatCard(null);
-      return;
-    }
-    let cancelled = false;
-    getCard(chatCardId)
-      .then((res) => {
-        if (!cancelled) setChatCard(res.card);
-      })
-      .catch(() => {
-        // A deleted card leaves a dangling id behind — drop it rather than
-        // showing a stale pill.
-        if (!cancelled) setChatCard(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [chatCardId, metadataVersion]);
 
   // Every kind a chat can actually be on. `cline` and `pi` were missing until
   // Phase 4 of the pi landing, which meant both fell through to `"claude-code"`
@@ -852,21 +816,21 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               (acpLabels[acpProviderId] ?? "The agent")
             : "Claude";
 
-  // The chat's parentage tree, shared by the header's ChatTreeIndicator and
-  // the inline fork-point markers so it is fetched once per chat, never per
-  // render or message. A fork needs no refetch: runFork navigates to the new
-  // chat, and coming back changes the id again. Stored with the id it was
-  // fetched for, so a chat switch never shows the previous chat's tree.
+  // The chat's parentage tree, which feeds the inline fork-point markers. It
+  // is fetched once per chat, never per render or message. A fork needs no
+  // refetch: runFork navigates to the new chat, and coming back changes the id
+  // again. Stored with the id it was fetched for, so a chat switch never shows
+  // the previous chat's tree.
   //
   // It IS refetched on metadata events, because a tree can change under an
   // open chat — a child split off from the sidebar (POST /detach notifies the
-  // old parent and root) must drop out of this chat's indicator and take its
-  // inline fork marker with it. But the poll reports only a global version,
-  // not which chat changed, and it ticks once a second while anything anywhere
-  // is busy, so the refetch is THROTTLED rather than debounced: at most one
-  // tree request per TREE_REFRESH_INTERVAL_MS. A debounce would either cost a
-  // request per tick (short) or never fire while some other chat keeps
-  // ticking (long); the throttle bounds the cost and still lands the change.
+  // old parent and root) must take its inline fork marker with it. But the
+  // poll reports only a global version, not which chat changed, and it ticks
+  // once a second while anything anywhere is busy, so the refetch is
+  // THROTTLED rather than debounced: at most one tree request per
+  // TREE_REFRESH_INTERVAL_MS. A debounce would either cost a request per tick
+  // (short) or never fire while some other chat keeps ticking (long); the
+  // throttle bounds the cost and still lands the change.
   const [chatTreeState, setChatTreeState] = useState<{ chatId: string; tree: ChatTreeResponse } | null>(null);
   /** Bumped per request and on chat switch: only the latest response may land. */
   const treeRequestSeqRef = useRef(0);
@@ -881,7 +845,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         if (seq === treeRequestSeqRef.current && tree?.tree) setChatTreeState({ chatId, tree });
       })
       .catch(() => {
-        // No stored record / no tree — no indicator, no markers.
+        // No stored record / no tree — no fork markers.
       });
   }, []);
   // Opening a chat fetches at once; leaving it drops any refresh in flight.
@@ -2568,9 +2532,6 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           }
           if (newChatParentId) {
             requestBody.parentChatId = newChatParentId;
-            if (newChatRole) {
-              requestBody.chatRole = newChatRole;
-            }
             if (newChatParentAnswers === true) {
               requestBody.parentAnswers = true;
             }
@@ -3137,45 +3098,6 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 the composer's hamburger menu (see PromptInput's `menuItems`
                 prop below). */}
             <ProviderBadge provider={rawChatProvider ?? chatProvider} acpProviderId={acpProviderId} />
-            {/* Parentage-tree indicator — parent breadcrumb + tree dropdown
-                for chats linked into a cross-engine chat tree. Renders
-                nothing when the chat has no lineage and no descendants. */}
-            {id && <ChatTreeIndicator key={id} chatId={id} tree={chatTree} folder={chat?.folder} compact={isMobile} />}
-            {/* Card pill — which ticket this chat sits on, and whether it's
-                still open. Archiving/unarchiving lives in the sidebar row's
-                menu; this is what makes that state visible without opening it. */}
-            {id && chatCard && !chatCard.hidden && (
-              <div
-                onClick={() => navigate("/board")}
-                style={{
-                  fontSize: 11,
-                  padding: "2px 6px",
-                  borderRadius: 4,
-                  background: "var(--surface)",
-                  border: "1px solid var(--border)",
-                  color: chatCard.lifecycle === "closed" ? "var(--text-muted)" : "var(--text)",
-                  fontWeight: 500,
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 3,
-                  flexShrink: 0,
-                  maxWidth: isMobile ? 90 : 200,
-                  overflow: "hidden",
-                  whiteSpace: "nowrap",
-                  textOverflow: "ellipsis",
-                  cursor: "pointer",
-                  ...(chatCard.lifecycle === "closed" && { textDecoration: "line-through" }),
-                }}
-                title={
-                  chatCard.lifecycle === "closed"
-                    ? `On the archived card "${chatCard.title}". Click to open the board.`
-                    : `On the card "${chatCard.title}". Click to open the board.`
-                }
-              >
-                <span>{chatCard.emoji}</span>
-                <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{chatCard.title}</span>
-              </div>
-            )}
           </div>
           <div
             title={!id ? folder : chat?.folder}

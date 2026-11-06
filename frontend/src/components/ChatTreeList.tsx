@@ -536,7 +536,7 @@ function rollUpActivity(members: Chat[]): RowActivity {
   return { updatedAt, hasUnread, summon, summonChatId, jobAwaitingApproval, jobRunId, jobStepId, chatStatus, chatStatusEmoji };
 }
 
-const STATUS_DOT: Record<ChatTreeNode["status"], string> = {
+export const STATUS_DOT: Record<ChatTreeNode["status"], string> = {
   ongoing: "var(--status-active)",
   waiting: "var(--warning)",
   stopped: "var(--text-muted)",

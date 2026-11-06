@@ -42,7 +42,6 @@ vi.mock("../api", async (importOriginal) => ({
   stopChat: vi.fn(async () => ({ stopped: true })),
 }));
 vi.mock("../contexts/SessionContext", () => ({ useIsSessionActive: () => null, useMetadataVersion: () => 0 }));
-vi.mock("../components/ChatTreeIndicator", () => ({ default: () => null }));
 vi.mock("../components/GitDiffView", () => ({ default: () => <div>Git diff view</div> }));
 vi.mock("../components/ChatDebugPanel", () => ({ default: () => <div>Debug view</div> }));
 vi.mock("./ChatList", () => ({ default: () => <div>chat list</div> }));
