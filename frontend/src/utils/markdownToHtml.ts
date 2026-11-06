@@ -1,5 +1,6 @@
 import type { Nodes as HastNodes, Properties } from "hast";
 import { find, html as htmlSchema } from "property-information";
+import { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkParse from "remark-parse";
 import remarkRehype from "remark-rehype";
@@ -13,8 +14,9 @@ import { unified } from "unified";
  * pasted into Slack or a doc. Bare semantic tags (`<strong>`, `<ul>`, `<pre>`,
  * `<a>`, `<table>`) are what rich-paste targets map to their own formatting.
  *
- * Same parse as on screen (remark + GFM, raw HTML in the markdown dropped), but
- * serialized here rather than through `react-dom/server` or
+ * Same parse as on screen (remark + GFM, raw HTML in the markdown dropped, URLs
+ * through react-markdown's `defaultUrlTransform` so `javascript:` links are
+ * stripped), but serialized here rather than through `react-dom/server` or
  * `hast-util-to-html`: every package below already ships in the bundle via
  * react-markdown, and the alternatives added ~23 kB gzipped for one button.
  */
@@ -25,12 +27,18 @@ export function markdownToHtml(markdown: string): string {
 }
 
 const VOID = new Set(["br", "hr", "img", "input"]);
+const URL_PROPS = new Set(["href", "src"]);
 
 function serialize(node: HastNodes): string {
   switch (node.type) {
     case "root":
       return node.children.map(serialize).join("");
     case "element": {
+      // Footnotes' visually hidden "Footnotes" heading and ↩ backlinks: CSS
+      // hides them on screen, but a paste target has no `.sr-only` rule.
+      const className = node.properties.className;
+      if (Array.isArray(className) && className.includes("sr-only")) return "";
+      if (node.tagName === "a" && node.properties.dataFootnoteBackref !== undefined) return "";
       const open = `<${node.tagName}${attributes(node.properties)}>`;
       return VOID.has(node.tagName) ? open : `${open}${node.children.map(serialize).join("")}</${node.tagName}>`;
     }
@@ -52,7 +60,12 @@ function attributes(props: Properties): string {
       out += ` ${info.attribute}`;
       continue;
     }
-    const text = Array.isArray(value) ? value.join(info.commaSeparated ? ", " : " ") : String(value);
+    let text = Array.isArray(value) ? value.join(info.commaSeparated ? ", " : " ") : String(value);
+    if (URL_PROPS.has(key)) {
+      // Unsafe protocols come back as "" — drop the attribute rather than emit an empty link.
+      text = defaultUrlTransform(text);
+      if (!text) continue;
+    }
     out += ` ${info.attribute}="${escape(text)}"`;
   }
   return out;

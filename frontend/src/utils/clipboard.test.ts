@@ -36,7 +36,11 @@ describe("copyRichToClipboard", () => {
   it("falls back to a copy event that sets both types when the Clipboard API is missing", async () => {
     vi.stubGlobal("navigator", {});
     const set: Record<string, string> = {};
+    let selected = "";
     document.execCommand = vi.fn(() => {
+      // Safari only fires `copy` with something selected.
+      const textarea = document.querySelector("textarea")!;
+      selected = textarea.value.slice(textarea.selectionStart, textarea.selectionEnd);
       const e = new Event("copy") as ClipboardEvent;
       Object.defineProperty(e, "clipboardData", { value: { setData: (t: string, v: string) => (set[t] = v) } });
       document.dispatchEvent(e);
@@ -45,6 +49,8 @@ describe("copyRichToClipboard", () => {
 
     expect(await copyRichToClipboard("<b>hi</b>", "**hi**")).toBe(true);
     expect(set).toEqual({ "text/html": "<b>hi</b>", "text/plain": "**hi**" });
+    expect(selected).toBe("**hi**");
+    expect(document.querySelector("textarea")).toBeNull();
   });
 
   it("reports failure when nothing filled the clipboard", async () => {

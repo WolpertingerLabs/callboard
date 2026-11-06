@@ -26,4 +26,26 @@ describe("markdownToHtml", () => {
     expect(html).not.toContain("<img");
     expect(html).not.toContain("<script");
   });
+
+  it("strips unsafe URLs from links, images and autolinks", () => {
+    // The autolink keeps its text; only the attribute goes.
+    expect(markdownToHtml("[c](javascript:alert(1)) ![i](javascript:x) <javascript:alert(2)>")).toBe(
+      '<p><a>c</a> <img alt="i"> <a>javascript:alert(2)</a></p>',
+    );
+  });
+
+  it("keeps ordinary https, mailto and relative URLs", () => {
+    expect(markdownToHtml("[a](https://x.dev) [b](mailto:a@b.c) [c](./docs/x.md#y) ![d](/img.png)")).toBe(
+      '<p><a href="https://x.dev">a</a> <a href="mailto:a@b.c">b</a> <a href="./docs/x.md#y">c</a> <img src="/img.png" alt="d"></p>',
+    );
+  });
+
+  it("drops the footnotes' screen-reader heading and backref links", () => {
+    const html = markdownToHtml("See[^1].\n\n[^1]: The note.");
+    expect(html).toContain("The note.");
+    expect(html).not.toContain("sr-only");
+    expect(html).not.toContain("Footnotes");
+    expect(html).not.toContain("data-footnote-backref");
+    expect(html).not.toContain("↩");
+  });
 });

@@ -43,9 +43,9 @@ export async function copyToClipboard(text: string): Promise<boolean> {
  * Docs, email) pastes the formatting and a plain one (a terminal, a code
  * editor) still gets readable text.
  *
- * The fallback is the same `execCommand("copy")` route as above, but instead of
- * selecting a textarea it fills the clipboard from a one-shot `copy` listener —
- * the only way to set more than one type without the async Clipboard API.
+ * The fallback is the same `execCommand("copy")` route as above, with a one-shot
+ * `copy` listener that overrides what lands on the clipboard — the only way to
+ * set more than one type without the async Clipboard API.
  */
 export async function copyRichToClipboard(html: string, text: string): Promise<boolean> {
   if (navigator.clipboard?.write && typeof ClipboardItem !== "undefined") {
@@ -75,9 +75,9 @@ function copyViaCopyEvent(html: string, text: string): boolean {
   };
   document.addEventListener("copy", onCopy);
   try {
-    return document.execCommand("copy") && filled;
-  } catch {
-    return false;
+    // Copy from a selected textarea even though the listener replaces its
+    // contents: Safari doesn't fire `copy` without a non-empty selection.
+    return copyViaTextarea(text) && filled;
   } finally {
     document.removeEventListener("copy", onCopy);
   }
