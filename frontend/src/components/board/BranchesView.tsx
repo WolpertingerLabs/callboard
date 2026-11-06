@@ -100,7 +100,7 @@ export default function BranchesView({ cards, onOpenCard }: BranchesViewProps) {
     });
 
   const prBadge = (row: BranchRow) => {
-    if (!row.pr) return <span style={{ fontSize: 11, color: "var(--text-muted)" }}>no PR</span>;
+    if (!row.pr) return <span style={{ fontSize: 11, color: "var(--text-muted)", whiteSpace: "nowrap", flexShrink: 0 }}>no PR</span>;
     const style = PR_STYLES[row.pr.state];
     return (
       <a
@@ -118,6 +118,7 @@ export default function BranchesView({ cards, onOpenCard }: BranchesViewProps) {
           fontSize: 11,
           fontWeight: 600,
           whiteSpace: "nowrap",
+          flexShrink: 0,
           textDecoration: "none",
           ...style,
         }}
