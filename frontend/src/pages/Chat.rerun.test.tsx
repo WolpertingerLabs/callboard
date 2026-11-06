@@ -1,5 +1,5 @@
 /**
- * Rerun from a message: the bubble's hover button opens a confirmation, and
+ * Rerun from a message: the fork menu's entry opens a confirmation, and
  * confirming asks the server to rerun (with the picked message's role and the
  * tree-parent precondition) and opens the chat that took this one's place.
  * Harness as Chat.treeRefetch.test.tsx.
@@ -61,6 +61,23 @@ const tree = () => (
   </MemoryRouter>
 );
 
+/** Opens bubble `i`'s fork menu and picks "Rerun from here". */
+function rerunFrom(i: number) {
+  fireEvent.click(screen.getAllByTitle("Fork conversation from here")[i]!);
+  fireEvent.click(screen.getByRole("button", { name: "Rerun from here" }));
+}
+
+/** How many bubbles' fork menus offer Rerun — each menu opened and closed in turn. */
+function rerunnableCount() {
+  let n = 0;
+  for (const fork of screen.queryAllByTitle("Fork conversation from here")) {
+    fireEvent.click(fork);
+    n += screen.queryAllByRole("button", { name: "Rerun from here" }).length;
+    fireEvent.click(fork);
+  }
+  return n;
+}
+
 beforeEach(() => {
   Object.defineProperty(window, "innerWidth", { value: 1200, configurable: true });
   Element.prototype.scrollTo = vi.fn();
@@ -90,10 +107,9 @@ afterEach(() => {
 it("reruns an assistant message's prompt after confirming, then opens the chat that replaced this one", async () => {
   render(tree());
   await screen.findByText("first answer");
-  const buttons = screen.getAllByRole("button", { name: "Rerun from here" });
   // One per bubble: the user prompt and the reply.
-  expect(buttons).toHaveLength(2);
-  fireEvent.click(buttons[1]!);
+  expect(rerunnableCount()).toBe(2);
+  rerunFrom(1);
   expect(await screen.findByText(/The prompt this reply answers is sent again/)).toBeTruthy();
   expect(rerunChatFrom).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: "Rerun" }));
@@ -104,7 +120,7 @@ it("reruns an assistant message's prompt after confirming, then opens the chat t
 it("sends nothing when the confirmation is cancelled", async () => {
   render(tree());
   await screen.findByText("first question");
-  fireEvent.click(screen.getAllByRole("button", { name: "Rerun from here" })[0]!);
+  rerunFrom(0);
   expect(await screen.findByText(/This message is sent again/)).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
   expect(screen.queryByText(/This message is sent again/)).toBeNull();
@@ -120,7 +136,7 @@ it("offers no Rerun on a slash command or a compaction summary", async () => {
   render(tree());
   await screen.findByText("reviewed");
   // The command and the summary have none; nor does the reply to the command.
-  expect(screen.queryAllByRole("button", { name: "Rerun from here" })).toHaveLength(0);
+  expect(rerunnableCount()).toBe(0);
 });
 
 it("offers no Rerun on a reply to a slash command or a compaction, where the server would refuse", async () => {
@@ -136,7 +152,7 @@ it("offers no Rerun on a reply to a slash command or a compaction, where the ser
   render(tree());
   await screen.findByText("real answer");
   // Only "real question" and "real answer".
-  expect(screen.getAllByRole("button", { name: "Rerun from here" })).toHaveLength(2);
+  expect(rerunnableCount()).toBe(2);
 });
 
 it("offers no Rerun on a command's output, a handoff preamble, or the replies right after them", async () => {
@@ -153,7 +169,7 @@ it("offers no Rerun on a command's output, a handoff preamble, or the replies ri
   ] as ParsedMessage[]);
   render(tree());
   await screen.findByText("Understood");
-  expect(screen.queryAllByRole("button", { name: "Rerun from here" })).toHaveLength(0);
+  expect(rerunnableCount()).toBe(0);
 });
 
 it("holds the page with a pending indicator until the server answers", async () => {
@@ -161,7 +177,7 @@ it("holds the page with a pending indicator until the server answers", async () 
   vi.mocked(rerunChatFrom).mockReturnValueOnce(new Promise((resolve) => (answer = resolve)));
   render(tree());
   await screen.findByText("first answer");
-  fireEvent.click(screen.getAllByRole("button", { name: "Rerun from here" })[0]!);
+  rerunFrom(0);
   fireEvent.click(screen.getByRole("button", { name: "Rerun" }));
   expect(await screen.findByText("Starting the rerun…")).toBeTruthy();
   answer({ chat: { id: "replacement" } as never, original: null });
@@ -178,7 +194,7 @@ it("on a run that could not start: puts the prompt back in the new chat's compos
   });
   render(tree());
   await screen.findByText("first question");
-  fireEvent.click(screen.getAllByRole("button", { name: "Rerun from here" })[0]!);
+  rerunFrom(0);
   fireEvent.click(screen.getByRole("button", { name: "Rerun" }));
   expect(await screen.findByText("landed on replacement")).toBeTruthy();
   expect(getComposerDraft("replacement")).toBe("first question");
@@ -190,7 +206,7 @@ it("on a refusal that left a fresh chat running: says so and opens that chat", a
   vi.mocked(rerunChatFrom).mockRejectedValueOnce(new RerunError("moved. The rerun is running as a separate chat.", 409, "stray"));
   render(tree());
   await screen.findByText("first question");
-  fireEvent.click(screen.getAllByRole("button", { name: "Rerun from here" })[0]!);
+  rerunFrom(0);
   fireEvent.click(screen.getByRole("button", { name: "Rerun" }));
   expect(await screen.findByText("landed on stray")).toBeTruthy();
   expect(alert).toHaveBeenCalledWith(expect.stringContaining("separate chat"));
@@ -201,7 +217,7 @@ it("on a plain refusal: says so and stays", async () => {
   vi.mocked(rerunChatFrom).mockRejectedValueOnce(new RerunError("This chat is still running", 409));
   render(tree());
   await screen.findByText("first question");
-  fireEvent.click(screen.getAllByRole("button", { name: "Rerun from here" })[0]!);
+  rerunFrom(0);
   fireEvent.click(screen.getByRole("button", { name: "Rerun" }));
   await waitFor(() => expect(alert).toHaveBeenCalledWith(expect.stringContaining("still running")));
   expect(screen.getByText("first question")).toBeTruthy();

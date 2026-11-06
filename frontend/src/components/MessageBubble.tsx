@@ -1,5 +1,5 @@
 import { memo, useState, useMemo, useEffect, useRef, type CSSProperties, type ReactNode } from "react";
-import { Check, ClipboardType, FileText, GitFork, RotateCcw, RotateCw, Square, Star, X } from "lucide-react";
+import { Check, ClipboardType, FileText, GitFork, RotateCw, Square, Star, X } from "lucide-react";
 import type { ChatTreeNode, ForkProvider, ParsedMessage } from "../api";
 import type { ChatRewriteAction } from "../utils/chatRewrite";
 import { parseTaskList, splitAttachmentBlocks, type AttachedFile, type TaskListItem } from "shared/types/index.js";
@@ -283,40 +283,6 @@ function slotRight(slot: number): number {
 }
 
 const RERUN_TITLE = "Send this prompt again (for a reply, the prompt it answers) in a new chat that takes this one's place; the original is kept as its child";
-
-/**
- * Rerun shortcut, revealed on hover like copy and fork — the same action as the
- * fork menu's "Rerun from here", one click closer because it is the common one.
- */
-function RerunButton({ onRerun, right }: { onRerun: () => void; right: number }) {
-  return (
-    <button
-      className="rerun-affordance"
-      onClick={(e) => {
-        e.stopPropagation();
-        onRerun();
-      }}
-      title={RERUN_TITLE}
-      aria-label="Rerun from here"
-      style={{
-        position: "absolute",
-        top: 6,
-        right,
-        zIndex: 2,
-        padding: 4,
-        background: "var(--surface)",
-        border: "1px solid var(--border)",
-        borderRadius: 6,
-        cursor: "pointer",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-      }}
-    >
-      <RotateCcw size={14} style={{ color: "var(--text-muted)" }} />
-    </button>
-  );
-}
 
 /**
  * Star toggle, revealed on hover like copy and fork. A starred message also
@@ -635,9 +601,9 @@ interface Props {
    */
   onRewrite?: (timestamp: string, action: ChatRewriteAction) => void;
   /**
-   * When set alongside `onFork`, the bubble offers Rerun — a hover button and a
-   * fork-menu entry — called with the message's timestamp and role. Stable for
-   * the same reason as `onFork`.
+   * When set alongside `onFork`, the bubble's fork menu offers Rerun, called
+   * with the message's timestamp and role. Stable for the same reason as
+   * `onFork`.
    */
   onRerun?: (timestamp: string, role: ParsedMessage["role"]) => void;
   /**
@@ -1091,7 +1057,7 @@ function MessageBubble({
   const rerun = canFork && onRerun ? () => onRerun(message.timestamp!, message.role) : undefined;
   // The hover actions line up right-to-left from the bubble's right edge: copy,
   // copy formatted (not on a built-in command, which shows literally), fork,
-  // star, rerun — each present one taking the next slot. On a bubble narrower
+  // star — each present one taking the next slot. On a bubble narrower
   // than the row they stick out past its LEFT edge — for a left-aligned reply,
   // out of the message column and under the sidebar, where they cannot be
   // clicked. A reply is therefore never narrower than its actions. User bubbles
@@ -1099,8 +1065,7 @@ function MessageBubble({
   const formattedCopy = !message.isBuiltInCommand;
   const forkSlot = formattedCopy ? 2 : 1;
   const starSlot = forkSlot + (canFork ? 1 : 0);
-  const rerunSlot = starSlot + (toggleStar ? 1 : 0);
-  const actionSlots = rerunSlot + (rerun ? 1 : 0);
+  const actionSlots = starSlot + (toggleStar ? 1 : 0);
   const actionsMinWidth = isUser ? undefined : HOVER_ACTION_EDGE + actionSlots * HOVER_ACTION_PITCH;
 
   return (
@@ -1143,7 +1108,6 @@ function MessageBubble({
           />
         )}
         {toggleStar && <StarButton starred={starred} onToggle={toggleStar} right={slotRight(starSlot)} />}
-        {rerun && <RerunButton onRerun={rerun} right={slotRight(rerunSlot)} />}
         {message.isBuiltInCommand ? bodyText : bodyText && <MarkdownRenderer content={bodyText} className="message-markdown" />}
         {attachedFiles.length > 0 && <AttachedFileChips files={attachedFiles} />}
         {message.imageIds && message.imageIds.length > 0 && <ImageThumbnails imageIds={message.imageIds} />}
