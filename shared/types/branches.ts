@@ -53,3 +53,91 @@ export interface GitOverviewResponse {
   /** ISO timestamp the response was assembled at. */
   generatedAt: string;
 }
+
+/**
+ * A pull request with the detail the chat's PRs tab shows. Every field comes
+ * from the same REST listing the overview's {@link BranchPr} is cut from — no
+ * per-PR calls.
+ */
+export interface ChatPr extends BranchPr {
+  /** The PR's head branch. */
+  headRef: string;
+  /** The branch it targets. */
+  baseRef: string;
+  /** The author's GitHub login; null when GitHub did not say (a deleted account). */
+  author: string | null;
+  /** ISO timestamps. */
+  createdAt: string;
+  updatedAt: string;
+  /** Set once merged. */
+  mergedAt?: string;
+  /** Set once closed (merged or not). */
+  closedAt?: string;
+}
+
+/**
+ * What one directory's branch has, and why when it has nothing:
+ * - `found` — `pr` is set.
+ * - `not_git` — the directory is not in a git repository (or no longer exists).
+ * - `not_github` — the repository's `origin` is not on github.com.
+ * - `detached` — no branch is checked out.
+ * - `default_branch` — the repository's default branch, which has no PR by design.
+ * - `no_pr` — GitHub has no PR this branch matches.
+ * - `error` — the lookup failed; `prError` says why.
+ */
+export type FolderPrStatus = "found" | "not_git" | "not_github" | "detached" | "default_branch" | "no_pr" | "error";
+
+/** A directory's PR, keyed on the directory (see "Workspace keying" in .claude/CLAUDE.md). */
+export interface FolderPrs {
+  /** The directory asked about. */
+  folder: string;
+  /** The worktree containing it, when it is in a repository. */
+  cwd?: string;
+  /** Display name of the repository — its main checkout's directory name. */
+  repoName?: string;
+  /** The branch checked out there; null for a detached HEAD. Absent outside a repository. */
+  branch?: string | null;
+  status: FolderPrStatus;
+  pr?: ChatPr;
+  /**
+   * Why PR data is missing or may be stale. With `status: "error"` there is no
+   * PR; alongside `found` it means a refresh failed and the PR shown is the
+   * last good answer.
+   */
+  prError?: string;
+}
+
+/** One chat on the card that a {@link CardPr} was found through. */
+export interface CardPrSource {
+  chatId: string;
+  title: string | null;
+  folder: string;
+}
+
+/** A PR another chat on the same card is working on, deduplicated across chats. */
+export interface CardPr {
+  pr: ChatPr;
+  repoName: string;
+  branch: string;
+  /** The chats whose directories this PR was matched from. */
+  sources: CardPrSource[];
+}
+
+/**
+ * `GET /api/git/prs?folder=…[&chatId=…]` — the PRs tab of a chat's git view.
+ *
+ * `current` is the PR of the chat's own directory. `card` lists the PRs of
+ * the card's other directories — member chats working elsewhere — and is
+ * absent without a `chatId`, when the chat is on no card, or when no other
+ * member chat works in another directory.
+ */
+export interface ChatPrsResponse {
+  current: FolderPrs;
+  card?: {
+    cardId: string;
+    title: string;
+    prs: CardPr[];
+  };
+  /** ISO timestamp the response was assembled at. */
+  generatedAt: string;
+}

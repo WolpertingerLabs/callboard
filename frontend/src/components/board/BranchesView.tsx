@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, GitPullRequest, RefreshCw } from "lucide-react";
-import type { BranchPrState, BranchRepo, BranchRow, CardSummary, GitOverviewResponse } from "../../api";
+import { AlertTriangle, RefreshCw } from "lucide-react";
+import type { BranchRepo, BranchRow, CardSummary, GitOverviewResponse } from "../../api";
 import { getGitOverview } from "../../api";
 import { useIsMobile } from "../../hooks/useIsMobile";
 import { usePolling } from "../../hooks/usePolling";
@@ -8,6 +8,7 @@ import { errorMessage } from "../../utils/errorMessage";
 import { formatShortAgo } from "../../utils/dateFormat";
 import { ROLLUP_COLORS } from "./cardFace";
 import CardPathLabel from "./CardPathLabel";
+import PrBadge from "../git/PrBadge";
 
 interface BranchesViewProps {
   /**
@@ -21,13 +22,6 @@ interface BranchesViewProps {
 
 /** Chips shown on a row before the rest fold behind "+N more". */
 const CHIP_LIMIT = 4;
-
-const PR_STYLES: Record<BranchPrState, { color: string; background: string }> = {
-  open: { color: "var(--success)", background: "var(--success-bg)" },
-  draft: { color: "var(--text-muted)", background: "var(--bg-secondary)" },
-  merged: { color: "var(--badge-trigger)", background: "color-mix(in srgb, var(--badge-trigger) 15%, transparent)" },
-  closed: { color: "var(--danger)", background: "var(--danger-bg)" },
-};
 
 /** `parent/` of the repo, so rows read `callboard.feat-x` rather than the whole path. */
 function parentPrefix(repoPath: string): string {
@@ -100,42 +94,8 @@ export default function BranchesView({ cards, onOpenCard }: BranchesViewProps) {
       return next;
     });
 
-  const prBadge = (row: BranchRow) => {
-    if (!row.pr) return <span style={{ fontSize: 11, color: "var(--text-muted)", whiteSpace: "nowrap", flexShrink: 0 }}>no PR</span>;
-    const badgeStyle: React.CSSProperties = {
-      display: "inline-flex",
-      alignItems: "center",
-      gap: 4,
-      padding: "1px 7px",
-      borderRadius: 10,
-      fontSize: 11,
-      fontWeight: 600,
-      whiteSpace: "nowrap",
-      flexShrink: 0,
-      textDecoration: "none",
-      ...PR_STYLES[row.pr.state],
-    };
-    const label = `PR #${row.pr.number} ${row.pr.state}: ${row.pr.title}`;
-    const content = (
-      <>
-        <GitPullRequest size={11} />#{row.pr.number} {row.pr.state}
-      </>
-    );
-    // The URL arrives from GitHub's API by way of the daemon; only ever link
-    // where a PR link can legitimately point.
-    if (!row.pr.url.startsWith("https://github.com/")) {
-      return (
-        <span title={row.pr.title} aria-label={label} style={badgeStyle}>
-          {content}
-        </span>
-      );
-    }
-    return (
-      <a href={row.pr.url} target="_blank" rel="noreferrer" title={row.pr.title} aria-label={label} style={badgeStyle}>
-        {content}
-      </a>
-    );
-  };
+  const prBadge = (row: BranchRow) =>
+    row.pr ? <PrBadge pr={row.pr} /> : <span style={{ fontSize: 11, color: "var(--text-muted)", whiteSpace: "nowrap", flexShrink: 0 }}>no PR</span>;
 
   const chipList = (row: BranchRow, chips: CardSummary[]) => {
     const expanded = expandedRows.has(row.cwd);

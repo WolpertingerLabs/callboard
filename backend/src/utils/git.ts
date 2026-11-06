@@ -682,6 +682,20 @@ export async function tryGetGitWorktreesAsync(directory: string): Promise<Worktr
   }
 }
 
+/**
+ * The default branch `origin` advertises, from the local remote-tracking HEAD
+ * (`refs/remotes/origin/HEAD`, set by clone or `git remote set-head`) — no
+ * network. Null when it is not set.
+ */
+export async function getDefaultBranchAsync(directory: string): Promise<string | null> {
+  try {
+    const ref = (await gitAsync(directory, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], { timeout: 5000 })).trim();
+    return ref.startsWith("origin/") ? ref.slice("origin/".length) || null : null;
+  } catch {
+    return null;
+  }
+}
+
 /** The fetch URL of `remote`, or null when there is no such remote (or no repository). */
 export async function getRemoteUrlAsync(directory: string, remote = "origin"): Promise<string | null> {
   try {

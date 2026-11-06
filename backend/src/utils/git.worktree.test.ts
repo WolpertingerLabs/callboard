@@ -14,6 +14,7 @@ import { dirname, join } from "node:path";
 import {
   ensureWorktreeDetailed,
   fallbackBranchName,
+  getDefaultBranchAsync,
   getGitInfo,
   getGitWorktrees,
   getGitWorktreesAsync,
@@ -784,5 +785,15 @@ describe("getRemoteUrlAsync", () => {
     expect(await getRemoteUrlAsync(dir)).toBeNull();
     git(["remote", "add", "origin", "git@github.com:acme/app.git"], dir);
     expect(await getRemoteUrlAsync(dir)).toBe("git@github.com:acme/app.git");
+  });
+});
+
+describe("getDefaultBranchAsync", () => {
+  it("reads origin/HEAD from a clone, and null without one", async () => {
+    const source = makeRepo("default-branch-src");
+    expect(await getDefaultBranchAsync(source)).toBeNull();
+    const clone = join(dirname(source), "clone");
+    execFileSync("git", ["clone", "-q", source, clone], { stdio: "pipe" });
+    expect(await getDefaultBranchAsync(clone)).toBe("main");
   });
 });

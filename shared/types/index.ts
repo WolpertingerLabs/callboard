@@ -137,7 +137,19 @@ export type { SlashCommand, SlashCommandContent } from "./slashCommand.js";
 
 export type { BranchConfig, DiffFileType, DiffFileEntry, GitDiffResponse } from "./git.js";
 export { worktreeDirName } from "./git.js";
-export type { BranchPrState, BranchPr, BranchRow, BranchRepo, GitOverviewResponse } from "./branches.js";
+export type {
+  BranchPrState,
+  BranchPr,
+  BranchRow,
+  BranchRepo,
+  GitOverviewResponse,
+  ChatPr,
+  FolderPrStatus,
+  FolderPrs,
+  CardPrSource,
+  CardPr,
+  ChatPrsResponse,
+} from "./branches.js";
 
 export type { BuildIdFile } from "./build.js";
 export { DEV_BUILD_ID, UNKNOWN_BUILD_ID, BUILD_ID_FILENAME } from "./build.js";

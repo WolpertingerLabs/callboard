@@ -16,8 +16,8 @@
  * fail the overview it feeds.
  */
 import { execFile } from "child_process";
-import type { BranchPr, BranchPrState } from "shared";
-import { getRemoteUrlAsync } from "../utils/git.js";
+import type { BranchPr, BranchPrState, ChatPr } from "shared";
+import { getDefaultBranchAsync, getRemoteUrlAsync } from "../utils/git.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("github-prs");
@@ -71,6 +71,12 @@ export interface PullSummary {
   /** Null when the head repository has been deleted. */
   headOwner: string | null;
   updatedAt: string;
+  /** Display-only fields for the chat's PRs tab, cut from the same listing. */
+  baseRef: string;
+  author: string | null;
+  createdAt: string;
+  mergedAt?: string;
+  closedAt?: string;
 }
 
 /** Narrow one REST pull object, or null when it is missing a field the match needs. */
@@ -81,6 +87,9 @@ export function toPullSummary(raw: any): PullSummary | null {
   if (typeof headRef !== "string" || typeof headSha !== "string") return null;
   const state: BranchPrState = raw.state === "open" ? (raw.draft ? "draft" : "open") : raw.merged_at ? "merged" : "closed";
   const headOwner = raw.head?.repo?.owner?.login;
+  const str = (value: unknown): string | undefined => (typeof value === "string" && value ? value : undefined);
+  const mergedAt = str(raw.merged_at);
+  const closedAt = str(raw.closed_at);
   return {
     number: raw.number,
     url: raw.html_url,
@@ -90,6 +99,11 @@ export function toPullSummary(raw: any): PullSummary | null {
     headSha,
     headOwner: typeof headOwner === "string" ? headOwner : null,
     updatedAt: typeof raw.updated_at === "string" ? raw.updated_at : "",
+    baseRef: str(raw.base?.ref) ?? "",
+    author: str(raw.user?.login) ?? null,
+    createdAt: str(raw.created_at) ?? "",
+    ...(mergedAt && { mergedAt }),
+    ...(closedAt && { closedAt }),
   };
 }
 
@@ -138,9 +152,30 @@ export function toBranchPr(pr: PullSummary): BranchPr {
   return { number: pr.number, url: pr.url, state: pr.state, title: pr.title };
 }
 
+export function toChatPr(pr: PullSummary): ChatPr {
+  return {
+    ...toBranchPr(pr),
+    headRef: pr.headRef,
+    baseRef: pr.baseRef,
+    author: pr.author,
+    createdAt: pr.createdAt,
+    updatedAt: pr.updatedAt,
+    ...(pr.mergedAt && { mergedAt: pr.mergedAt }),
+    ...(pr.closedAt && { closedAt: pr.closedAt }),
+  };
+}
+
 /** What one repo's lookup produced: its PRs by branch, or why there are none. */
 export interface RepoPulls {
   byBranch: Map<string, PullSummary[]>;
+  /** The GitHub repository `origin` names. Absent when it is not on GitHub — nothing was looked up. */
+  github?: GitHubRepoRef;
+  /**
+   * The repository's default branch, which never has a PR of its own: from
+   * the listing when it carried any PR, else from the local
+   * `refs/remotes/origin/HEAD`. Absent when neither knew.
+   */
+  defaultBranch?: string;
   /**
    * Set when the lookup failed. `byBranch` then holds whatever did arrive:
    * nothing when the first (open) listing failed, the open PRs when only the
@@ -212,7 +247,16 @@ export async function fetchRepoPulls(repoPath: string): Promise<RepoPulls> {
       break;
     }
   }
-  return { byBranch: indexPullsByBranch(pulls, ref.owner, defaultBranch), ...(error !== undefined && { error }) };
+  // A repo with no PRs at all says nothing about its default branch; the
+  // remote-tracking HEAD is the cheap local answer, and it is cached with the
+  // rest of the entry.
+  defaultBranch ??= await getDefaultBranchAsync(repoPath);
+  return {
+    byBranch: indexPullsByBranch(pulls, ref.owner, defaultBranch),
+    github: ref,
+    ...(defaultBranch !== null && { defaultBranch }),
+    ...(error !== undefined && { error }),
+  };
 }
 
 interface CacheEntry {

@@ -96,19 +96,18 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promis
   return out;
 }
 
-type ListedWorktree = WorktreeInfo & { normPath: string };
+export type ListedWorktree = WorktreeInfo & { normPath: string };
 
-interface RepoListing {
+export interface RepoListing {
   repoPath: string;
   worktrees: ListedWorktree[];
 }
 
-export interface OverviewDeps {
-  folders: () => Map<string, Set<string>>;
+/** How the overview — and the chat's PRs tab — reach git and the filesystem. */
+export interface PlacementDeps {
   /** `[]` when git refused the directory, `null` when no verdict came (timeout, spawn failure). */
   listWorktrees: (dir: string) => Promise<WorktreeInfo[] | null>;
   mainRepoOf: (dir: string) => string;
-  pullsFor: (repoPath: string, force: boolean) => Promise<RepoPulls>;
   normalize: (dir: string) => string;
   exists: (dir: string) => boolean;
   /** Defaults to {@link findGitRoot} over `exists`. */
@@ -118,13 +117,22 @@ export interface OverviewDeps {
   now?: () => number;
 }
 
-const DEFAULT_DEPS: OverviewDeps = {
-  folders: activeCardFolders,
+export interface OverviewDeps extends PlacementDeps {
+  folders: () => Map<string, Set<string>>;
+  pullsFor: (repoPath: string, force: boolean) => Promise<RepoPulls>;
+}
+
+export const DEFAULT_PLACEMENT_DEPS: PlacementDeps = {
   listWorktrees: tryGetGitWorktreesAsync,
   mainRepoOf: (dir) => resolveWorktreeToMainRepoCached(dir).mainRepoPath,
-  pullsFor: getRepoPulls,
   normalize: normalizeDir,
   exists: existsSync,
+};
+
+const DEFAULT_DEPS: OverviewDeps = {
+  ...DEFAULT_PLACEMENT_DEPS,
+  folders: activeCardFolders,
+  pullsFor: getRepoPulls,
 };
 
 /** The worktree with the longest path containing `dir`, if any. */
@@ -137,21 +145,34 @@ function owningWorktree(dir: string, repo: RepoListing): ListedWorktree | undefi
 }
 
 /**
- * Assemble the overview. `force` (the refresh button) refetches PR data that
- * the cache would otherwise have served.
+ * Where one folder sits:
+ * - `placed` — in `worktree` of `repo`.
+ * - `not_git` — gone, outside every repository, known not to list, or inside a
+ *   repository's tree but in none of its worktrees (a pruned one).
+ * - `no_verdict` — git did not answer for its repository this time.
  */
-export async function buildGitOverview(opts: { force?: boolean } = {}, deps: OverviewDeps = DEFAULT_DEPS): Promise<GitOverviewResponse> {
+export type FolderPlacement = { kind: "placed"; repo: RepoListing; worktree: ListedWorktree } | { kind: "not_git" } | { kind: "no_verdict" };
+
+/**
+ * Place each folder in its repository's worktree: the repository from the
+ * filesystem (nearest `.git`, then its main checkout), the worktree from one
+ * `git worktree list` per repository, at most {@link LISTING_CONCURRENCY} at
+ * a time. A folder in a nested repository or submodule is placed in that
+ * repository, not the worktree around it.
+ */
+export async function placeFolders(folders: Iterable<string>, deps: PlacementDeps = DEFAULT_PLACEMENT_DEPS): Promise<Map<string, FolderPlacement>> {
   const gitRootOf = deps.gitRootOf ?? ((dir: string) => findGitRoot(dir, deps.exists));
   const notRepos = deps.notRepos ?? notRepoCache;
   const now = (deps.now ?? Date.now)();
-  const folders = deps.folders();
+  const placements = new Map<string, FolderPlacement>();
 
   // 1. Folder → repository candidate, from the filesystem alone. The
   //    candidate is the main checkout of the nearest enclosing `.git`, so every
   //    folder of one repository — worktree roots and subdirectories alike —
   //    lands on one candidate and one listing.
   const foldersByCandidate = new Map<string, Array<{ folder: string; norm: string }>>();
-  for (const folder of folders.keys()) {
+  for (const folder of folders) {
+    placements.set(folder, { kind: "not_git" });
     const norm = deps.normalize(folder);
     if (!deps.exists(norm)) continue;
     const root = gitRootOf(norm);
@@ -168,15 +189,17 @@ export async function buildGitOverview(opts: { force?: boolean } = {}, deps: Ove
   const candidates = [...foldersByCandidate.keys()];
   const listed = await mapLimit(candidates, LISTING_CONCURRENCY, (candidate) => deps.listWorktrees(candidate));
 
-  // 3. Merge listings into repositories and attach each folder to the deepest
+  // 3. Merge listings into repositories and place each folder in the deepest
   //    worktree of ITS repository containing it.
   const repos = new Map<string, RepoListing>();
-  const cardsByCwd = new Map<string, Set<string>>();
   candidates.forEach((candidate, i) => {
     const worktrees = listed[i];
-    // No verdict (a timeout on a slow disk, say): this response goes without
-    // the repo, but it is not remembered as a non-repo — the next poll asks again.
-    if (worktrees === null) return;
+    // No verdict (a timeout on a slow disk, say): this request goes without
+    // the repo, but it is not remembered as a non-repo — the next asks again.
+    if (worktrees === null) {
+      for (const { folder } of foldersByCandidate.get(candidate)!) placements.set(folder, { kind: "no_verdict" });
+      return;
+    }
     const usable = worktrees.filter((wt) => !wt.isBare);
     if (usable.length === 0) {
       notRepos.set(candidate, now + NOT_A_REPO_TTL_MS);
@@ -197,14 +220,31 @@ export async function buildGitOverview(opts: { force?: boolean } = {}, deps: Ove
     }
     for (const { folder, norm } of foldersByCandidate.get(candidate)!) {
       // In the repository's directory tree but not inside any listed worktree
-      // (a pruned one, say) — nothing to attach to.
-      const wt = owningWorktree(norm, repo);
-      if (!wt) continue;
-      const ids = cardsByCwd.get(wt.normPath) ?? new Set<string>();
-      for (const id of folders.get(folder) ?? []) ids.add(id);
-      cardsByCwd.set(wt.normPath, ids);
+      // (a pruned one, say) — nothing to place it in.
+      const worktree = owningWorktree(norm, repo);
+      if (worktree) placements.set(folder, { kind: "placed", repo, worktree });
     }
   });
+  return placements;
+}
+
+/**
+ * Assemble the overview. `force` (the refresh button) refetches PR data that
+ * the cache would otherwise have served.
+ */
+export async function buildGitOverview(opts: { force?: boolean } = {}, deps: OverviewDeps = DEFAULT_DEPS): Promise<GitOverviewResponse> {
+  const folders = deps.folders();
+  const placements = await placeFolders(folders.keys(), deps);
+
+  const repos = new Map<string, RepoListing>();
+  const cardsByCwd = new Map<string, Set<string>>();
+  for (const [folder, placement] of placements) {
+    if (placement.kind !== "placed") continue;
+    repos.set(placement.repo.repoPath, placement.repo);
+    const ids = cardsByCwd.get(placement.worktree.normPath) ?? new Set<string>();
+    for (const id of folders.get(folder) ?? []) ids.add(id);
+    cardsByCwd.set(placement.worktree.normPath, ids);
+  }
 
   // 4. Only worktrees an open card is working in are rows; a repository left
   //    with none (its folders all sat in pruned worktrees, say) is dropped

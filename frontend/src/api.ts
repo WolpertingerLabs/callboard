@@ -21,6 +21,7 @@ import type {
   FolderSuggestion,
   GitDiffResponse,
   GitOverviewResponse,
+  ChatPrsResponse,
   AppPluginsData,
   ScanResult,
   AgentConfig,
@@ -94,6 +95,12 @@ export type {
   FolderSuggestion,
   GitDiffResponse,
   GitOverviewResponse,
+  ChatPr,
+  ChatPrsResponse,
+  FolderPrs,
+  FolderPrStatus,
+  CardPr,
+  CardPrSource,
   BranchRepo,
   BranchRow,
   BranchPr,
@@ -1113,6 +1120,18 @@ export interface CheckedOutBranch {
  */
 export async function getGitBranches(folder: string): Promise<{ branches: string[]; checkedOut?: CheckedOutBranch[] }> {
   return request(`/git/branches?folder=${encodeURIComponent(folder)}`, { error: "Failed to list branches" });
+}
+
+/**
+ * The PR of `folder`'s branch and, with a `chatId`, those of the chat's card's
+ * other directories — the PRs half of a chat's git view. `refresh` asks the
+ * daemon to refetch PR data its cache would otherwise serve.
+ */
+export async function getChatPrs(folder: string, chatId?: string, refresh = false): Promise<ChatPrsResponse> {
+  const params = new URLSearchParams({ folder });
+  if (chatId) params.set("chatId", chatId);
+  if (refresh) params.set("refresh", "true");
+  return request(`/git/prs?${params}`, { error: "Failed to load PRs" });
 }
 
 /**

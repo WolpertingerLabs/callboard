@@ -101,7 +101,7 @@ import ForkHandoffModal from "../components/ForkHandoffModal";
 import CompressChatModal from "../components/CompressChatModal";
 import type { ChatRewriteAction } from "../utils/chatRewrite";
 import BranchSelector from "../components/BranchSelector";
-import GitDiffView from "../components/GitDiffView";
+import ChatGitView from "../components/git/ChatGitView";
 import ChatDebugPanel from "../components/ChatDebugPanel";
 import JobRunPanel from "../components/JobRunPanel";
 import {
@@ -3575,7 +3575,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             />
           )
         ) : viewMode === "diff" ? (
-          <GitDiffView folder={!id ? folder : chat?.folder || folder} />
+          <ChatGitView folder={!id ? folder : chat?.folder || folder} chatId={id} />
         ) : viewMode === "debug" ? (
           <ChatDebugPanel messages={messages} />
         ) : viewMode === "job" && chatJobRunId ? (
