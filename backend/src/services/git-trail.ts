@@ -84,7 +84,9 @@ export function mergeSighting(trail: GitTrailEntry[], sighting: GitTrailSighting
 /**
  * Two trails as one: an entry per (cwd, branch) found in either, with the
  * earliest `firstSeen` and — from whichever sighting is more recent —
- * `lastSeen`, `head` and `repoPath`. `a`'s order first, then what only `b`
+ * `lastSeen`, `head` and `repoPath`. A newer sighting with no `head` (one
+ * that could not read the commit, or a source that never has it) keeps the
+ * known one rather than dropping it. `a`'s order first, then what only `b`
  * has. For a supersede whose successor has already recorded its own turn.
  */
 export function mergeTrails(a: GitTrailEntry[], b: GitTrailEntry[]): GitTrailEntry[] {
@@ -96,11 +98,12 @@ export function mergeTrails(a: GitTrailEntry[], b: GitTrailEntry[]): GitTrailEnt
       continue;
     }
     const known = out[index];
-    const latest = entry.lastSeen >= known.lastSeen ? entry : known;
+    const [latest, older] = entry.lastSeen >= known.lastSeen ? [entry, known] : [known, entry];
     const { head: _head, ...rest } = latest;
+    const head = latest.head ?? older.head;
     out[index] = {
       ...rest,
-      ...(latest.head !== undefined && { head: latest.head }),
+      ...(head !== undefined && { head }),
       firstSeen: entry.firstSeen < known.firstSeen ? entry.firstSeen : known.firstSeen,
     };
   }

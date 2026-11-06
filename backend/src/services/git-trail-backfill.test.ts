@@ -26,6 +26,7 @@ const {
   claudeObservations,
   codexObservations,
   requestBackfill,
+  isSafeSessionId,
   resetBackfillQueue,
   resolveRepoPath,
 } = backfill;
@@ -194,6 +195,15 @@ describe("resolveRepoPath", () => {
     expect(await resolveRepoPath(obs(gone, "feat/other"), "/elsewhere", [], deps())).toBeNull();
   });
 
+  it("does not mistake a prefix-named repository for the main checkout", async () => {
+    makeRepo("call");
+    const gone = join(tmp, "callboard.feat-x");
+    // ~/call exists, ~/callboard does not: no guess.
+    expect(await resolveRepoPath(obs(gone, "feat/x"), "/elsewhere", [], deps())).toBeNull();
+    const real = makeRepo("callboard");
+    expect(await resolveRepoPath(obs(gone, "feat/x"), "/elsewhere", [], deps())).toEqual({ cwd: gone, repoPath: real });
+  });
+
   it("skips what nothing resolves — a wrong repository is worse than none", async () => {
     expect(await resolveRepoPath(obs("/gone/anon", "feat/q"), "/gone/anon", [], deps())).toBeNull();
   });
@@ -213,6 +223,17 @@ describe("backfillChat", () => {
     ]);
     expect(metaOf(chat.id).gitTrailBackfilled).toBe(GIT_TRAIL_BACKFILL_VERSION);
     expect(chatFileService.getChat(chat.id)!.updated_at).toBe("2026-06-01T00:00:00.000Z");
+  });
+
+  it("resolves a Codex rollout's deleted cwd outside the chat folder through repository_url", async () => {
+    const repo = makeRepo("app-codex-url");
+    const goneElsewhere = join(tmp, "somewhere-else", "codex-gone");
+    const rollout = writeJsonl("codex-outside.jsonl", [
+      sessionMeta(goneElsewhere, "feat/elsewhere", "2026-02-01T00:00:00Z", { repository_url: "https://github.com/acme/app-codex-url" }),
+    ]);
+    const chat = makeChat(repo, { provider: "codex" });
+    await backfillChat(chat, { deps: deps([rollout]) });
+    expect(trailOf(chat.id)).toEqual([expect.objectContaining({ cwd: goneElsewhere, repoPath: repo, branch: "feat/elsewhere", head: "a".repeat(40) })]);
   });
 
   it("reads every session the chat has had", async () => {
@@ -289,6 +310,15 @@ describe("backfillChat", () => {
   });
 });
 
+describe("isSafeSessionId", () => {
+  it.each(["01a0ab38-6d21-72b3-9de2-005b06f56912", "ee101d16-136d-48c0-b10b-6677a6b46ca2", "abc_123"])("accepts %s", (id) => {
+    expect(isSafeSessionId(id)).toBe(true);
+  });
+  it.each(["", "../etc/passwd", "a/b", "a.b", ".hidden", "-x", "a b", "x".repeat(200)])("refuses %j", (id) => {
+    expect(isSafeSessionId(id)).toBe(false);
+  });
+});
+
 describe("the queue", () => {
   it("returns at once, runs once per chat, dedupes in-flight requests and runs one at a time", async () => {
     const repo = makeRepo("app-queue");
@@ -336,6 +366,42 @@ describe("the queue", () => {
     requestBackfill({ chatId: chats[0].id, chat: chats[0] }, held);
     await backfillIdle();
     expect(logPaths).toHaveBeenCalledTimes(3);
+  });
+
+  it("puts a priority request ahead of the waiting backlog, moving it up if already waiting, never running it twice", async () => {
+    const repo = makeRepo("app-priority");
+    const rollout = writeJsonl("priority.jsonl", [sessionMeta(join(tmp, "priority-gone"), "feat/p", "2026-02-01T00:00:00Z")]);
+    const [first, a, b, c] = [0, 1, 2, 3].map(() => makeChat(repo, { provider: "codex" }));
+    const order: string[] = [];
+    const releases: Array<() => void> = [];
+    const held = (id: string): BackfillDeps =>
+      deps([], {
+        logPaths: () => (order.push(id), [rollout]),
+        remoteUrl: () => new Promise((resolve) => releases.push(() => resolve(null))),
+      });
+    requestBackfill({ chatId: first.id, chat: first }, held("first")); // starts at once and holds
+    requestBackfill({ chatId: a.id, chat: a }, held("a"));
+    requestBackfill({ chatId: b.id, chat: b }, held("b"));
+    requestBackfill({ chatId: c.id, chat: c, priority: true }, held("c")); // new, to the front
+    requestBackfill({ chatId: b.id, chat: b, priority: true }, held("b")); // already waiting: moves up
+    requestBackfill({ chatId: first.id, chat: first, priority: true }, held("first")); // running: left alone
+    while (order.length < 4 || releases.length > 0) {
+      await new Promise((r) => setTimeout(r, 5));
+      releases.shift()?.();
+    }
+    await backfillIdle();
+    expect(order).toEqual(["first", "b", "c", "a"]);
+  });
+
+  it("does not re-queue a chat that has no stored record", async () => {
+    const lookups = vi.spyOn(chatFileService, "getChatBySessionId");
+    requestBackfill({ chatId: "native-child-without-record" });
+    await backfillIdle();
+    const after = lookups.mock.calls.length;
+    expect(after).toBeGreaterThan(0);
+    requestBackfill({ chatId: "native-child-without-record" });
+    await backfillIdle();
+    expect(lookups.mock.calls.length).toBe(after);
   });
 
   it("retries a chat whose backfill failed transiently, the next time it is asked for", async () => {

@@ -182,11 +182,23 @@ const isDirectory = (path: string) => {
   }
 };
 
+/**
+ * Session ids are spliced into a transcript file name (`<id>.jsonl`): only
+ * UUID-like ids — letters, digits, `-` and `_`, no dots or separators — are
+ * looked up, whatever the metadata says.
+ */
+export function isSafeSessionId(id: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(id);
+}
+
 export const DEFAULT_BACKFILL_DEPS: BackfillDeps = {
   logPaths: (providerKind, sessionIds) => {
     const provider = getSessionProvider(providerKind as never);
     if (!provider) return [];
-    return sessionIds.map((id) => provider.resolveSession(id)?.logPath).filter((p): p is string => typeof p === "string");
+    return sessionIds
+      .filter(isSafeSessionId)
+      .map((id) => provider.resolveSession(id)?.logPath)
+      .filter((p): p is string => typeof p === "string");
   },
   getWorkspace,
   exists: existsSync,
@@ -367,16 +379,17 @@ export const BACKFILL_CONCURRENCY = 1;
 const inFlight = new Set<string>();
 /** Chat ids finished this daemon's lifetime, so repeated polls do not even queue. */
 const finished = new Set<string>();
-const waiting: Array<() => Promise<void>> = [];
+/** Queued, not yet running, in run order. */
+const waiting: Array<{ chatId: string; run: () => Promise<void> }> = [];
 let running = 0;
 /** Settles when the queue drains — for tests. */
 let idleWaiters: Array<() => void> = [];
 
 function pump(): void {
   while (running < BACKFILL_CONCURRENCY && waiting.length > 0) {
-    const task = waiting.shift()!;
+    const { run } = waiting.shift()!;
     running++;
-    void task().finally(() => {
+    void run().finally(() => {
       running--;
       if (running === 0 && waiting.length === 0) {
         for (const resolve of idleWaiters) resolve();
@@ -393,6 +406,12 @@ export interface BackfillRequest {
   /** The record, when the caller already holds one (a snapshot); otherwise looked up in the background. */
   chat?: Chat;
   knownRepos?: string[];
+  /**
+   * Run before everything already waiting — the chat the user is looking at,
+   * which should not sit behind the Board's backlog. A chat already waiting
+   * moves to the front; one already running is left alone.
+   */
+  priority?: boolean;
 }
 
 /** Look a chat up by id without `getChat`'s scan: its own file, else the snapshot. */
@@ -404,29 +423,44 @@ function recordFor(chatId: string): Chat | null {
 
 /**
  * Queue a backfill and return at once. A chat already queued, running or
- * finished is not queued again; one that hit a transient failure is, next
- * time it is asked for.
+ * finished is not queued again (a priority request only moves a waiting one
+ * up); one that hit a transient failure is, next time it is asked for.
  */
 export function requestBackfill(request: BackfillRequest, deps?: BackfillDeps): void {
   const { chatId } = request;
-  if (!chatId || inFlight.has(chatId) || finished.has(chatId)) return;
+  if (!chatId || finished.has(chatId)) return;
+  if (inFlight.has(chatId)) {
+    const at = request.priority ? waiting.findIndex((item) => item.chatId === chatId) : -1;
+    if (at > 0) waiting.unshift(...waiting.splice(at, 1));
+    return;
+  }
   if (request.chat && !needsBackfill(parseChatMetadata(request.chat.metadata))) {
     finished.add(chatId);
     return;
   }
   inFlight.add(chatId);
-  waiting.push(async () => {
-    try {
-      const chat = request.chat ?? recordFor(chatId);
-      if (!chat) return;
-      const outcome = await backfillChat(chat, { knownRepos: request.knownRepos, deps });
-      if (outcome !== "transient") finished.add(chatId);
-    } catch (err) {
-      log.warn(`Git trail backfill of ${chatId} failed: ${err instanceof Error ? err.message : err}`);
-    } finally {
-      inFlight.delete(chatId);
-    }
-  });
+  const item = {
+    chatId,
+    run: async () => {
+      try {
+        const chat = request.chat ?? recordFor(chatId);
+        // No stored record (a filesystem-only native child, say): nothing to
+        // write a trail to, now or on the next poll.
+        if (!chat) {
+          finished.add(chatId);
+          return;
+        }
+        const outcome = await backfillChat(chat, { knownRepos: request.knownRepos, deps });
+        if (outcome !== "transient") finished.add(chatId);
+      } catch (err) {
+        log.warn(`Git trail backfill of ${chatId} failed: ${err instanceof Error ? err.message : err}`);
+      } finally {
+        inFlight.delete(chatId);
+      }
+    },
+  };
+  if (request.priority) waiting.unshift(item);
+  else waiting.push(item);
   pump();
 }
 

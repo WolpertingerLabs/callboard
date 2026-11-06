@@ -158,6 +158,24 @@ describe("buildChatPrs — status precedence: not GitHub → detached → defaul
   });
 });
 
+describe("buildChatPrs — backfill requests", () => {
+  it("queues the chat ahead of the backlog and its card's members behind it, with the repositories in view", async () => {
+    const requestBackfill = vi.fn();
+    const card: ChatCard = { cardId: "root", title: "t", members: [member("root", "/src/app.feat-a"), member("c1", "/src/lib")] };
+    await buildChatPrs({ folder: "/src/app.feat-a", chatId: "root" }, deps({ requestBackfill }, card));
+    expect(requestBackfill.mock.calls.map(([r]) => [r.chatId, r.priority ?? false, [...r.knownRepos].sort()])).toEqual([
+      ["root", true, ["/src/app", "/src/lib"]],
+      ["c1", false, ["/src/app", "/src/lib"]],
+    ]);
+  });
+
+  it("queues nothing for a chat not yet created", async () => {
+    const requestBackfill = vi.fn();
+    await buildChatPrs({ folder: "/src/app" }, deps({ requestBackfill }));
+    expect(requestBackfill).not.toHaveBeenCalled();
+  });
+});
+
 describe("buildChatPrs — the card's other chats", () => {
   const CARD: ChatCard = {
     cardId: "root",

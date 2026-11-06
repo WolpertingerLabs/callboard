@@ -165,8 +165,9 @@ export async function buildChatPrs(opts: { folder: string; chatId?: string; forc
   // help it match a Codex rollout's repository_url.
   if (opts.chatId && deps.requestBackfill) {
     const knownRepos = [...repoPaths];
-    deps.requestBackfill({ chatId: opts.chatId, knownRepos });
-    for (const member of card?.members ?? []) deps.requestBackfill({ chatId: member.chatId, knownRepos });
+    // The chat on screen goes ahead of the Board's backlog.
+    deps.requestBackfill({ chatId: opts.chatId, knownRepos, priority: true });
+    for (const member of card?.members ?? []) if (member.chatId !== opts.chatId) deps.requestBackfill({ chatId: member.chatId, knownRepos });
   }
   const pullsByRepo = new Map<string, RepoPulls>();
   await Promise.all([...repoPaths].map(async (repoPath) => pullsByRepo.set(repoPath, await deps.pullsFor(repoPath, opts.force === true))));
