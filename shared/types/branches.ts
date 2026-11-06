@@ -2,10 +2,11 @@
  * `GET /api/git/overview` — the Board's Branches view.
  *
  * Organised around **directories**, not cards: one row per worktree (checkout)
- * of every repository an unarchived card is working in, keyed on `cwd` (see
- * "Workspace keying" in .claude/CLAUDE.md). Cards are attached to the row whose
- * directory contains their member chats' folders; a worktree no active card is
- * in still gets a row, with no `cardIds`.
+ * an unarchived card is working in, keyed on `cwd` (see "Workspace keying" in
+ * .claude/CLAUDE.md), grouped by repository. Cards are attached to the row
+ * whose directory contains their member chats' folders. Only worktrees with at
+ * least one such card are rows — the main checkout included — so `cardIds` is
+ * never empty, and a repository with no rows is not listed.
  *
  * An HTTP response, not part of the stream wire surface.
  */
@@ -29,7 +30,7 @@ export interface BranchRow {
   isMain: boolean;
   /** The pull request for this branch, when the repo is on GitHub and one matched. */
   pr?: BranchPr;
-  /** Unarchived cards with a member chat in this directory (or below it). */
+  /** Unarchived cards with a member chat in this directory (or below it). Never empty. */
   cardIds: string[];
 }
 

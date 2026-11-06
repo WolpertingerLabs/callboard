@@ -206,15 +206,15 @@ gitRouter.post("/generate-branch-name", async (req, res) => {
 });
 
 /**
- * Every worktree of every repository an unarchived card works in, with the
+ * Every worktree an unarchived card works in, grouped by repository, with the
  * cards attached to their directory and each branch's GitHub PR — the Board's
- * Branches view. PR data degrades to absent (with a per-repo `prError`) rather
+ * Branches view. Idle worktrees are not listed. PR data degrades to absent (with a per-repo `prError`) rather
  * than failing the response.
  */
 gitRouter.get("/overview", async (req, res) => {
   // #swagger.tags = ['Git']
   // #swagger.summary = 'Worktrees, branches and PRs of active cards'
-  // #swagger.description = 'One row per worktree (keyed on its directory) of every repository an unarchived card has a member chat in, grouped by repository. Each row lists the open cards working in that directory and, for GitHub remotes, the branch\'s pull request.'
+  // #swagger.description = 'One row per worktree (keyed on its directory) that an unarchived card has a member chat in, grouped by repository; worktrees with no such chat, the main checkout included, are omitted. Each row lists the open cards working in that directory and, for GitHub remotes, the branch\'s pull request.'
   /* #swagger.parameters['refresh'] = { in: 'query', type: 'string', description: 'When "true", refetch PR data the 90s cache would otherwise serve (entries younger than 10s are still reused).' } */
   /* #swagger.responses[200] = { description: "{ repos: [{ repoPath, name, rows: [{ cwd, branch, isMain, pr?, cardIds }], prError? }], generatedAt }" } */
   try {

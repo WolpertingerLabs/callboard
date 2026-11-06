@@ -36,8 +36,8 @@ function parentPrefix(repoPath: string): string {
 }
 
 /**
- * The Board's Branches view: one row per worktree, grouped by repository, with
- * the open cards working in each directory attached as chips. Read-only —
+ * The Board's Branches view: one row per worktree that open cards are working
+ * in, grouped by repository, with those cards attached as chips. Read-only —
  * selection, archiving and clean-up all live in the other two views.
  */
 export default function BranchesView({ cards, onOpenCard }: BranchesViewProps) {
@@ -79,17 +79,18 @@ export default function BranchesView({ cards, onOpenCard }: BranchesViewProps) {
   const openCards = new Map(cards.filter((c) => c.lifecycle === "open").map((c) => [c.id, c]));
   const chipsOf = (row: BranchRow) => row.cardIds.map((id) => openCards.get(id)).filter((c): c is CardSummary => c !== undefined);
 
-  // A repo is shown when at least one of its rows has a card the board shows;
-  // its other worktrees come along, dimmed, as the "what else is here" view.
+  // The daemon only sends worktrees with open cards in them; a row is shown
+  // when at least one of those is a card the board shows (not, say, one from
+  // another space), and a repo when any of its rows is. Main checkout first.
   const repos = (data?.repos ?? [])
     .map((repo) => ({
       repo,
       rows: repo.rows
         .map((row) => ({ row, chips: chipsOf(row) }))
-        // Main checkout first, then the worktrees in use, then the idle ones.
-        .sort((a, b) => Number(b.row.isMain) - Number(a.row.isMain) || Number(b.chips.length > 0) - Number(a.chips.length > 0)),
+        .filter(({ chips }) => chips.length > 0)
+        .sort((a, b) => Number(b.row.isMain) - Number(a.row.isMain)),
     }))
-    .filter(({ rows }) => rows.some((r) => r.chips.length > 0));
+    .filter(({ rows }) => rows.length > 0);
 
   const toggleRow = (cwd: string) =>
     setExpandedRows((prev) => {
@@ -137,7 +138,6 @@ export default function BranchesView({ cards, onOpenCard }: BranchesViewProps) {
   };
 
   const chipList = (row: BranchRow, chips: CardSummary[]) => {
-    if (chips.length === 0) return <span style={{ fontSize: 11, color: "var(--text-muted)" }}>no active chats</span>;
     const expanded = expandedRows.has(row.cwd);
     const shown = expanded ? chips : chips.slice(0, CHIP_LIMIT);
     return (
@@ -178,7 +178,6 @@ export default function BranchesView({ cards, onOpenCard }: BranchesViewProps) {
   };
 
   const rowView = (repo: BranchRepo, row: BranchRow, chips: CardSummary[]) => {
-    const dimmed = chips.length === 0;
     const branch = (
       <span
         title={row.isMain ? `${row.branch ?? "detached HEAD"} (main checkout)` : (row.branch ?? "detached HEAD")}
@@ -201,9 +200,7 @@ export default function BranchesView({ cards, onOpenCard }: BranchesViewProps) {
       <div
         key={row.cwd}
         data-testid="branch-row"
-        data-dimmed={dimmed || undefined}
         style={{
-          opacity: dimmed ? 0.55 : 1,
           padding: "7px 10px",
           borderRadius: 6,
           background: "var(--surface)",
