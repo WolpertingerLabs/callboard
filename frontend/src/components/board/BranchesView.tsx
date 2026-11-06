@@ -38,15 +38,21 @@ export default function BranchesView({ cards, onOpenCard }: BranchesViewProps) {
   const isMobile = useIsMobile();
   const [data, setData] = useState<GitOverviewResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [refreshing, setRefreshing] = useState(false);
+  // The mount request is a forced refresh, so the button starts disabled.
+  const [refreshing, setRefreshing] = useState(true);
   const [now, setNow] = useState(() => Date.now());
   const [expandedRows, setExpandedRows] = useState<Set<string>>(() => new Set());
   // Only the newest request may land: a slow poll must not overwrite a refresh.
   const seq = useRef(0);
+  // The seq of the newest forced refresh still in flight; 0 when none is.
+  const refreshInFlight = useRef(0);
 
   const load = useCallback(async (refresh = false) => {
     const mine = ++seq.current;
-    if (refresh) setRefreshing(true);
+    if (refresh) {
+      refreshInFlight.current = mine;
+      setRefreshing(true);
+    }
     try {
       const res = await getGitOverview(refresh);
       if (mine !== seq.current) return;
@@ -56,17 +62,28 @@ export default function BranchesView({ cards, onOpenCard }: BranchesViewProps) {
       if (mine !== seq.current) return;
       setError(errorMessage(err, "Failed to load branches"));
     } finally {
-      if (mine === seq.current) setRefreshing(false);
+      // Only the newest forced request re-enables the button — a poll never
+      // does (polls do not even start while a refresh is in flight).
+      if (refresh && refreshInFlight.current === mine) {
+        refreshInFlight.current = 0;
+        setRefreshing(false);
+      }
       setNow(Date.now());
     }
   }, []);
 
+  // The one request a mount makes is forced — the same request as the refresh
+  // button, which the daemon bounds (a fresh-enough cache is reused; a slow
+  // GitHub is waited on briefly). Switching to this tab remounts it.
   useEffect(() => {
-    void load();
+    void load(true);
   }, [load]);
 
-  // Branches and PRs move slowly; the refresh button covers the impatient.
-  usePolling(() => load(), 60_000);
+  // Branches and PRs move slowly: background polls are not forced, and do not
+  // start while a refresh is in flight.
+  usePolling(() => {
+    if (refreshInFlight.current === 0) void load();
+  }, 60_000);
   // Keeps "updated Xs ago" honest between polls.
   usePolling(() => setNow(Date.now()), 10_000, { catchUp: false });
 
@@ -246,6 +263,7 @@ export default function BranchesView({ cards, onOpenCard }: BranchesViewProps) {
           aria-label="Refresh branches"
           title="Refresh branches and PRs"
           disabled={refreshing}
+          aria-busy={refreshing}
           onClick={() => void load(true)}
           style={{
             display: "flex",
@@ -258,7 +276,7 @@ export default function BranchesView({ cards, onOpenCard }: BranchesViewProps) {
             cursor: refreshing ? "default" : "pointer",
           }}
         >
-          <RefreshCw size={13} style={{ opacity: refreshing ? 0.5 : 1 }} />
+          <RefreshCw size={13} style={{ opacity: refreshing ? 0.5 : 1, animation: refreshing ? "spin 1s linear infinite" : undefined }} />
         </button>
       </div>
 

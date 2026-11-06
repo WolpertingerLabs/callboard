@@ -280,10 +280,11 @@ describe("BranchesView", () => {
 
   it("refetches with refresh=true from the refresh button", async () => {
     await mount();
-    expect(mockOverview).toHaveBeenLastCalledWith(false);
+    expect(mockOverview).toHaveBeenCalledWith(true);
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Refresh branches" }));
     });
+    expect(mockOverview).toHaveBeenCalledTimes(2);
     expect(mockOverview).toHaveBeenLastCalledWith(true);
   });
 
@@ -303,5 +304,94 @@ describe("BranchesView", () => {
     render(<BranchesView cards={CARDS} onOpenCard={vi.fn()} />);
     expect(await screen.findByText("boom")).toBeDefined();
     expect(screen.queryAllByTestId("branch-row")).toHaveLength(0);
+  });
+});
+
+describe("BranchesView: refresh on load", () => {
+  /** A response the test settles by hand. */
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+  const button = () => screen.getByRole("button", { name: "Refresh branches" }) as HTMLButtonElement;
+  const settle = () => act(async () => {});
+
+  it("makes exactly one request on mount, forced, with the button busy until it settles", async () => {
+    const first = deferred<Awaited<ReturnType<typeof mockOverview>>>();
+    mockOverview.mockReturnValueOnce(first.promise);
+    render(<BranchesView cards={CARDS} onOpenCard={vi.fn()} />);
+    expect(mockOverview).toHaveBeenCalledTimes(1);
+    expect(mockOverview).toHaveBeenCalledWith(true);
+    expect(button().disabled).toBe(true);
+    expect(button().getAttribute("aria-busy")).toBe("true");
+    await act(async () => first.resolve(OVERVIEW));
+    expect(button().disabled).toBe(false);
+    expect(button().getAttribute("aria-busy")).toBe("false");
+    expect(mockOverview).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-enables the button when the forced request fails", async () => {
+    const first = deferred<Awaited<ReturnType<typeof mockOverview>>>();
+    mockOverview.mockReturnValueOnce(first.promise);
+    render(<BranchesView cards={CARDS} onOpenCard={vi.fn()} />);
+    expect(button().disabled).toBe(true);
+    await act(async () => first.reject(new Error("offline")));
+    expect(screen.getByText("offline")).toBeDefined();
+    expect(button().disabled).toBe(false);
+  });
+
+  it("keeps the button busy through a manual refresh as well", async () => {
+    render(<BranchesView cards={CARDS} onOpenCard={vi.fn()} />);
+    await settle();
+    const manual = deferred<Awaited<ReturnType<typeof mockOverview>>>();
+    mockOverview.mockReturnValueOnce(manual.promise);
+    await act(async () => {
+      fireEvent.click(button());
+    });
+    expect(mockOverview).toHaveBeenLastCalledWith(true);
+    expect(button().disabled).toBe(true);
+    expect(button().getAttribute("aria-busy")).toBe("true");
+    await act(async () => manual.resolve(OVERVIEW));
+    expect(button().disabled).toBe(false);
+  });
+
+  it("polls unforced, and not while a refresh is in flight", async () => {
+    vi.useRealTimers();
+    vi.useFakeTimers();
+    render(<BranchesView cards={CARDS} onOpenCard={vi.fn()} />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(mockOverview).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(mockOverview).toHaveBeenCalledTimes(2);
+    expect(mockOverview).toHaveBeenLastCalledWith(false);
+
+    // A manual refresh that hangs: the next poll tick must not fire, nor
+    // land and re-enable the button early.
+    const manual = deferred<Awaited<ReturnType<typeof mockOverview>>>();
+    mockOverview.mockReturnValueOnce(manual.promise);
+    await act(async () => {
+      fireEvent.click(button());
+    });
+    expect(mockOverview).toHaveBeenCalledTimes(3);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(mockOverview).toHaveBeenCalledTimes(3);
+    expect(button().disabled).toBe(true);
+    await act(async () => {
+      manual.resolve(OVERVIEW);
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(button().disabled).toBe(false);
+    vi.useRealTimers();
   });
 });

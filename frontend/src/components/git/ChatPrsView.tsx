@@ -54,16 +54,22 @@ const panel: React.CSSProperties = {
 export default function ChatPrsView({ folder, chatId }: ChatPrsViewProps) {
   const [data, setData] = useState<ChatPrsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [refreshing, setRefreshing] = useState(false);
+  // The mount request is a forced refresh, so the button starts disabled.
+  const [refreshing, setRefreshing] = useState(true);
   const [now, setNow] = useState(() => Date.now());
   // Only the newest request may land: a slow poll must not overwrite a refresh,
   // nor a previous chat's answer a new one's.
   const seq = useRef(0);
+  // The seq of the newest forced refresh still in flight; 0 when none is.
+  const refreshInFlight = useRef(0);
 
   const load = useCallback(
     async (refresh = false) => {
       const mine = ++seq.current;
-      if (refresh) setRefreshing(true);
+      if (refresh) {
+        refreshInFlight.current = mine;
+        setRefreshing(true);
+      }
       try {
         const res = await getChatPrs(folder, chatId, refresh);
         if (mine !== seq.current) return;
@@ -73,7 +79,12 @@ export default function ChatPrsView({ folder, chatId }: ChatPrsViewProps) {
         if (mine !== seq.current) return;
         setError(errorMessage(err, "Failed to load PRs"));
       } finally {
-        if (mine === seq.current) setRefreshing(false);
+        // Only the newest forced request re-enables the button — a poll never
+        // does (polls do not even start while a refresh is in flight).
+        if (refresh && refreshInFlight.current === mine) {
+          refreshInFlight.current = 0;
+          setRefreshing(false);
+        }
         setNow(Date.now());
       }
     },
@@ -81,15 +92,19 @@ export default function ChatPrsView({ folder, chatId }: ChatPrsViewProps) {
   );
 
   // A different chat or folder remounts this view (ChatGitView keys it), so
-  // there is no previous answer to clear here.
+  // there is no previous answer to clear here. The one request a mount makes
+  // is forced — the same request as the refresh button, which the daemon
+  // bounds (a fresh-enough cache is reused; a slow GitHub is waited on briefly).
   useEffect(() => {
-    void load();
+    void load(true);
   }, [load]);
 
   // PRs move slowly; the refresh button covers the impatient. usePolling skips
   // ticks while the document is hidden, and this component is only mounted
   // while the PRs tab is the one showing.
-  usePolling(() => load(), 60_000);
+  usePolling(() => {
+    if (refreshInFlight.current === 0) void load();
+  }, 60_000);
   usePolling(() => setNow(Date.now()), 10_000, { catchUp: false });
 
   const prCard = (pr: ChatPr) => {
@@ -142,6 +157,7 @@ export default function ChatPrsView({ folder, chatId }: ChatPrsViewProps) {
           aria-label="Refresh PRs"
           title="Refresh PRs"
           disabled={refreshing}
+          aria-busy={refreshing}
           onClick={() => void load(true)}
           style={{
             display: "flex",
@@ -154,7 +170,7 @@ export default function ChatPrsView({ folder, chatId }: ChatPrsViewProps) {
             cursor: refreshing ? "default" : "pointer",
           }}
         >
-          <RefreshCw size={13} style={{ opacity: refreshing ? 0.5 : 1 }} />
+          <RefreshCw size={13} style={{ opacity: refreshing ? 0.5 : 1, animation: refreshing ? "spin 1s linear infinite" : undefined }} />
         </button>
       </div>
 
@@ -193,7 +209,7 @@ export default function ChatPrsView({ folder, chatId }: ChatPrsViewProps) {
             {current.pr && current.prError && (
               <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6, fontSize: 12, color: "var(--warning)" }}>
                 <AlertTriangle size={12} />
-                Last known PR — refreshing failed: {current.prError}
+                PR data may be stale — refreshing failed: {current.prError}
               </div>
             )}
           </>
