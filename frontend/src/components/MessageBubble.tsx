@@ -122,11 +122,22 @@ function MessageCopyMenu({ text }: { text: string }) {
   const menuRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const formattedRef = useRef<HTMLButtonElement>(null);
+  // Set by a successful "Copy formatted": the menu stays up showing "Copied
+  // formatted", then closes when that feedback clears. Any other close drops
+  // it, so a menu the user has closed and reopened is left alone.
+  const closeWhenRichClears = useRef(false);
+
+  useEffect(() => {
+    if (richCopied === null && closeWhenRichClears.current) setOpen(false);
+  }, [richCopied]);
 
   // Same dismissal as ForkButton, plus Escape from anywhere — the menu is
   // opened by a copy, so focus may never have entered it.
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      closeWhenRichClears.current = false;
+      return;
+    }
     // Raw is already on the clipboard, so the useful next keypress is "formatted".
     formattedRef.current?.focus();
     const onDocClick = (e: MouseEvent) => {
@@ -230,15 +241,19 @@ function MessageCopyMenu({ text }: { text: string }) {
             title="Copy with formatting, for Slack, docs, email"
             onClick={(e) => {
               e.stopPropagation();
-              setOpen(false);
               // Rendered here, synchronously, so the clipboard write still runs
               // inside the click — Safari refuses one outside a user gesture.
-              void copyRich(text, markdownToHtml(text));
+              // The menu stays open either way: on success to show "Copied
+              // formatted" (it may hang outside the bubble, where the button's
+              // check is out of sight), on failure so raw can be picked instead.
+              void copyRich(text, markdownToHtml(text)).then((ok) => {
+                if (ok && menuRef.current) closeWhenRichClears.current = true;
+              });
             }}
             style={copyMenuItemStyle}
           >
-            <ClipboardType size={14} style={{ color: "var(--text-muted)" }} />
-            Copy formatted
+            {richCopied !== null ? <Check size={14} style={{ color: "var(--success)" }} /> : <ClipboardType size={14} style={{ color: "var(--text-muted)" }} />}
+            {richCopied !== null ? "Copied formatted" : "Copy formatted"}
             <span style={{ marginLeft: "auto", paddingLeft: 12, fontSize: 11, color: "var(--text-muted)" }}>Slack, docs, email</span>
           </button>
         </div>

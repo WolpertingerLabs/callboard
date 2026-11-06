@@ -7,7 +7,7 @@
  * index.css matches only that.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ParsedMessage } from "../api";
 import MessageBubble from "./MessageBubble";
 
@@ -43,11 +43,13 @@ describe("MessageBubble copy menu", () => {
     await waitFor(() => expect(screen.getByRole("menuitem", { name: /Copied raw/ })).toBeTruthy());
   });
 
-  it("Copy formatted writes clean HTML alongside the raw markdown, then closes", async () => {
+  it("Copy formatted writes clean HTML alongside the raw markdown", async () => {
     render(<MessageBubble message={message} />);
     fireEvent.click(trigger());
     copyToClipboard.mockClear();
-    fireEvent.click(screen.getByRole("menuitem", { name: /Copy formatted/ }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("menuitem", { name: /Copy formatted/ }));
+    });
     expect(copyRichToClipboard).toHaveBeenCalledTimes(1);
     const [html, text] = copyRichToClipboard.mock.calls[0];
     expect(text).toBe(markdown);
@@ -60,7 +62,112 @@ describe("MessageBubble copy menu", () => {
     expect(html).not.toContain("hljs");
     expect(html).not.toContain("<button");
     expect(copyToClipboard).not.toHaveBeenCalled();
-    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  describe("Copy formatted feedback", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    // Only the timers useCopy uses; the clipboard mocks resolve as microtasks,
+    // flushed by the async act around each click.
+    const fakeTimers = () => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const formattedItem = () => screen.getByRole("menuitem", { name: /formatted/ });
+    const clickFormatted = () =>
+      act(async () => {
+        fireEvent.click(formattedItem());
+      });
+
+    it("keeps the menu open reading 'Copied formatted', then closes when the feedback clears", async () => {
+      fakeTimers();
+      render(<MessageBubble message={message} />);
+      fireEvent.click(trigger());
+      await clickFormatted();
+      expect(screen.getByRole("menu")).toBeTruthy();
+      expect(formattedItem().textContent).toContain("Copied formatted");
+
+      act(() => vi.advanceTimersByTime(1499));
+      expect(screen.getByRole("menu")).toBeTruthy();
+      act(() => vi.advanceTimersByTime(1));
+      expect(screen.queryByRole("menu")).toBeNull();
+      expect(trigger().getAttribute("aria-expanded")).toBe("false");
+    });
+
+    it("does not close a menu the user closed and reopened during the feedback", async () => {
+      fakeTimers();
+      render(<MessageBubble message={message} />);
+      fireEvent.click(trigger());
+      await clickFormatted();
+      fireEvent.keyDown(document, { key: "Escape" });
+      expect(screen.queryByRole("menu")).toBeNull();
+      await act(async () => {
+        fireEvent.click(trigger());
+      });
+      expect(screen.getByRole("menu")).toBeTruthy();
+
+      act(() => vi.advanceTimersByTime(5000));
+      expect(screen.getByRole("menu")).toBeTruthy();
+    });
+
+    it("clears its timers on unmount", async () => {
+      fakeTimers();
+      // The relative-time ticker can outlive a bubble; only the copy's timers must go.
+      render(<MessageBubble message={message} />).unmount();
+      const baseline = vi.getTimerCount();
+      const { unmount } = render(<MessageBubble message={message} />);
+      fireEvent.click(trigger());
+      await clickFormatted();
+      // Flush jsdom's 0ms "selectionchange" from the focus move.
+      act(() => vi.advanceTimersByTime(0));
+      expect(vi.getTimerCount()).toBeGreaterThan(baseline);
+      unmount();
+      expect(vi.getTimerCount()).toBe(baseline);
+    });
+
+    it("on failure shows no 'Copied formatted' and leaves the menu open to retry or copy raw", async () => {
+      copyRichToClipboard.mockResolvedValueOnce(false);
+      render(<MessageBubble message={message} />);
+      fireEvent.click(trigger());
+      await clickFormatted();
+      expect(screen.getByRole("menu")).toBeTruthy();
+      expect(formattedItem().textContent).toContain("Copy formatted");
+      expect(formattedItem().textContent).not.toContain("Copied formatted");
+
+      // Retry succeeds.
+      await clickFormatted();
+      expect(copyRichToClipboard).toHaveBeenCalledTimes(2);
+      expect(formattedItem().textContent).toContain("Copied formatted");
+    });
+
+    it("on failure the raw row still works", async () => {
+      copyRichToClipboard.mockResolvedValueOnce(false);
+      render(<MessageBubble message={message} />);
+      fireEvent.click(trigger());
+      await clickFormatted();
+      copyToClipboard.mockClear();
+      fireEvent.click(screen.getByRole("menuitem", { name: /raw/ }));
+      expect(copyToClipboard).toHaveBeenCalledWith(markdown);
+      expect(screen.queryByRole("menu")).toBeNull();
+    });
+  });
+
+  it("opening a second bubble's menu closes the first", () => {
+    render(
+      <>
+        <MessageBubble message={message} />
+        <MessageBubble message={{ ...message, content: "second" }} />
+      </>,
+    );
+    const [first, second] = screen.getAllByRole("button", { name: "Copy message" });
+    fireEvent.mouseDown(first);
+    fireEvent.click(first);
+    expect(screen.getAllByRole("menu")).toHaveLength(1);
+    // A real click is a mousedown first, which is what dismisses the open menu.
+    fireEvent.mouseDown(second);
+    fireEvent.click(second);
+    expect(screen.getAllByRole("menu")).toHaveLength(1);
+    expect(first.getAttribute("aria-expanded")).toBe("false");
+    expect(second.getAttribute("aria-expanded")).toBe("true");
   });
 
   it("Copy raw copies the markdown again and closes", () => {
