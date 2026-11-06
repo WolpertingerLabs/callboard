@@ -38,9 +38,9 @@ describe("answeringParentFor", () => {
     expect(answeringParentFor(c.id, AFTER)).toBe(n.id);
   });
 
-  it("follows a continue-from only for children that existed at the cutoff", () => {
+  it.each(["continue", "rerun"])("follows a %s only for children that existed at the cutoff", (kind) => {
     const n = makeChat({});
-    const c = makeChat({ supersededBy: { chatId: n.id, kind: "continue" }, forkedAt: CUT });
+    const c = makeChat({ supersededBy: { chatId: n.id, kind }, forkedAt: CUT });
     expect(answeringParentFor(c.id, BEFORE)).toBe(n.id);
     expect(answeringParentFor(c.id, AFTER)).toBe(c.id);
     expect(answeringParentFor(c.id, undefined)).toBe(n.id);

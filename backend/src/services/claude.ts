@@ -922,6 +922,12 @@ export interface SendMessageOptions {
    */
   chatTitle?: string;
   /**
+   * Skip the LLM title generated for a new manual chat. Set when the caller
+   * already has the title it wants — a rerun of a chat's opening prompt keeps
+   * the chat's own title rather than having it overwritten moments later.
+   */
+  skipTitleGeneration?: boolean;
+  /**
    * Caller-supplied tracking id for a NEW chat, used as the session registry
    * key until the real session id arrives. Without it the key is a
    * server-generated `new-<ts>` the client never learns, so a new chat is
@@ -2220,7 +2226,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
                 }
 
                 // Generate a title for new manual (non-triggered) chats
-                if (!opts.triggered) {
+                if (!opts.triggered && !opts.skipTitleGeneration) {
                   const titleSource =
                     typeof prompt === "string"
                       ? titleSourceFor(

@@ -9,8 +9,8 @@
  * than C, which nobody is looking at.
  *
  * The rule mirrors how supersede moves pending callbacks: a compression keeps
- * the whole conversation, so its N always answers; a continue-from's N ends at
- * the cutoff, so it answers only for children that existed by then — a child
+ * the whole conversation, so its N always answers; a continue-from's (or a
+ * rerun's) N ends at the cutoff, so it answers only for children that existed by then — a child
  * started later belongs to the branch that went on, which is C.
  *
  * Deliberately standalone — chatFileService only — so claude.ts can import it
@@ -39,7 +39,7 @@ export function answeringParentFor(parentId: string, childCreatedAt: string | un
     const by = meta.supersededBy as { chatId?: unknown; kind?: unknown } | undefined;
     const next = typeof by?.chatId === "string" ? by.chatId : undefined;
     if (!next || seen.has(next) || !chatFileService.getChat(next)) return current;
-    if (by?.kind === "continue") {
+    if (by?.kind === "continue" || by?.kind === "rerun") {
       // C's forkedAt is the cutoff N ends at.
       const cutoffMs = typeof meta.forkedAt === "string" ? new Date(meta.forkedAt).getTime() : NaN;
       if (!isNaN(childMs) && !isNaN(cutoffMs) && childMs > cutoffMs) return current;
