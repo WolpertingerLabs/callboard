@@ -682,8 +682,8 @@ export const PAIRINGS: Pairing[] = [
   },
 
   // ── Non-text indicators (3:1) ──
-  { id: "status-active-dot", where: "ChatTreeIndicator ongoing dot", fg: v("status-active"), bg: v("bg-sidebar"), backdrop: v("bg-sidebar"), kind: "nonText" },
-  { id: "warning-waiting-dot", where: "ChatTreeIndicator waiting dot", fg: v("warning"), bg: v("bg-sidebar"), backdrop: v("bg-sidebar"), kind: "nonText" },
+  { id: "status-active-dot", where: "ChatTreeList ongoing dot", fg: v("status-active"), bg: v("bg-sidebar"), backdrop: v("bg-sidebar"), kind: "nonText" },
+  { id: "warning-waiting-dot", where: "ChatTreeList waiting dot", fg: v("warning"), bg: v("bg-sidebar"), backdrop: v("bg-sidebar"), kind: "nonText" },
   { id: "toggle-knob-on-accent", where: "toggle switch knob, on", fg: v("toggle-knob"), bg: v("accent"), backdrop: v("surface"), kind: "nonText" },
 ];
 

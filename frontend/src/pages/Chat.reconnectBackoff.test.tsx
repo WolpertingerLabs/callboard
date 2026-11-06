@@ -65,7 +65,6 @@ vi.mock("../contexts/SessionContext", () => ({
   useIsSessionActive: (id: string) => useSyncExternalStore(registry.subscribe, () => registry.get(id)),
   useMetadataVersion: () => 0,
 }));
-vi.mock("../components/ChatTreeIndicator", () => ({ default: () => null }));
 vi.mock("../components/PromptInput", () => ({
   default: ({ onSend }: { onSend: (prompt: string) => void }) => (
     <button type="button" onClick={() => onSend("hi")}>

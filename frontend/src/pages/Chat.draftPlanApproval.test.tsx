@@ -49,7 +49,6 @@ vi.mock("../api", async (importOriginal) => ({
   respondToChat: vi.fn(async () => ({ ok: true, toolName: "ExitPlanMode" })),
 }));
 vi.mock("../contexts/SessionContext", () => ({ useIsSessionActive: () => null, useMetadataVersion: () => 0 }));
-vi.mock("../components/ChatTreeIndicator", () => ({ default: () => null }));
 vi.mock("../components/PromptInput", () => {
   function PromptInputStub({
     onSend,

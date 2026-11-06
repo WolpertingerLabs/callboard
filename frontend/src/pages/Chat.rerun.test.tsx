@@ -36,14 +36,12 @@ vi.mock("../api", async (importOriginal) => ({
   getMcpTools: vi.fn(async () => ({ tools: [], servers: [] })),
   listKeywords: vi.fn(async () => ({ keywords: [] })),
   getNewChatInfo: vi.fn(async () => ({ folder: "/tmp", slash_commands: [], plugins: [] })),
-  getCard: vi.fn(async () => ({ card: null })),
   respondToChat: vi.fn(() => new Promise(() => {})),
   stopChat: vi.fn(async () => ({ stopped: true })),
   rerunChatFrom: vi.fn(async () => ({ chat: { id: "replacement" }, original: null, prompt: Q1 })),
 }));
 vi.mock("../contexts/SessionContext", () => ({ useIsSessionActive: () => null, useMetadataVersion: () => 0 }));
 vi.mock("../components/PromptInput", () => ({ default: () => <textarea aria-label="Composer" /> }));
-vi.mock("../components/ChatTreeIndicator", () => ({ default: () => null }));
 vi.mock("../components/GitDiffView", () => ({ default: () => <div /> }));
 vi.mock("../components/ChatDebugPanel", () => ({ default: () => <div /> }));
 

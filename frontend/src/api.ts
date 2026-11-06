@@ -495,10 +495,6 @@ export async function listCards(
   return request(`/cards${query ? `?${query}` : ""}`, { error: "Failed to list cards" });
 }
 
-export async function getCard(id: string): Promise<CardResponse> {
-  return request(`/cards/${seg(id)}`, { error: "Failed to get card" });
-}
-
 export async function updateCard(id: string, patch: CardPatch): Promise<CardResponse> {
   return request(`/cards/${seg(id)}`, { method: "PATCH", json: patch, error: "Failed to update card" });
 }

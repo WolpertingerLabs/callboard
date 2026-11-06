@@ -1,5 +1,5 @@
 /**
- * The open chat's parentage tree (header indicator + inline fork markers) is
+ * The open chat's parentage tree (which feeds the inline fork markers) is
  * fetched when the chat opens and again — throttled — on metadata events, so
  * a child split off from the sidebar drops out of an open parent's tree
  * without a reload, at no more than one request per 10s however often the
@@ -31,13 +31,11 @@ vi.mock("../api", async (importOriginal) => ({
   getMcpTools: vi.fn(async () => ({ tools: [], servers: [] })),
   listKeywords: vi.fn(async () => ({ keywords: [] })),
   getNewChatInfo: vi.fn(async () => ({ folder: "/tmp", slash_commands: [], plugins: [] })),
-  getCard: vi.fn(async () => ({ card: null })),
   respondToChat: vi.fn(() => new Promise(() => {})),
   stopChat: vi.fn(async () => ({ stopped: true })),
 }));
 vi.mock("../contexts/SessionContext", () => ({ useIsSessionActive: () => null, useMetadataVersion: () => session.metadataVersion }));
 vi.mock("../components/PromptInput", () => ({ default: () => <textarea aria-label="Composer" /> }));
-vi.mock("../components/ChatTreeIndicator", () => ({ default: () => null }));
 vi.mock("../components/GitDiffView", () => ({ default: () => <div /> }));
 vi.mock("../components/ChatDebugPanel", () => ({ default: () => <div /> }));
 

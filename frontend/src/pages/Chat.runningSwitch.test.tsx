@@ -65,7 +65,6 @@ vi.mock("../contexts/SessionContext", () => ({
     useSyncExternalStore(registry.subscribe, () => registry.get(id)),
   useMetadataVersion: () => 0,
 }));
-vi.mock("../components/ChatTreeIndicator", () => ({ default: () => null }));
 vi.mock("../components/PromptInput", () => ({ default: () => null }));
 
 const OPEN_WATCH: ChatActivityResponse = {

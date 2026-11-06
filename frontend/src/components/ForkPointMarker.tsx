@@ -3,14 +3,14 @@ import { useNavigate } from "react-router-dom";
 import { GitFork } from "lucide-react";
 import type { ChatTreeNode } from "../api";
 import ProviderBadge from "./ProviderBadge";
-import { STATUS_DOT } from "./ChatTreeIndicator";
+import { STATUS_DOT } from "./ChatTreeList";
 import { PRE_COMPRESSION_ROLE, SUPERSEDED_ROLE } from "../utils/chatRewrite";
 
 /**
  * Inline marker under a message that one or more forks branched off: a
  * "N forks" chip opening a menu of those forks, each navigating to its chat.
  *
- * Rows mirror ChatTreeIndicator's dropdown (status dot, provider badge,
+ * Rows mirror the sidebar's ChatTreeList (status dot, provider badge,
  * title). Keyboard: Arrow keys move between rows, Escape closes and returns
  * focus to the chip.
  */

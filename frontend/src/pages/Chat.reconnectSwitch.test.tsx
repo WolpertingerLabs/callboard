@@ -32,7 +32,6 @@ vi.mock("../contexts/SessionContext", () => ({
   useMetadataVersion: () => 0,
 }));
 vi.mock("../components/PromptInput", () => ({ default: ({ disabled }: { disabled: boolean }) => <textarea aria-label="Composer" disabled={disabled} /> }));
-vi.mock("../components/ChatTreeIndicator", () => ({ default: () => null }));
 vi.mock("../components/GitDiffView", () => ({ default: () => <div>Git diff view</div> }));
 vi.mock("../components/ChatDebugPanel", () => ({ default: () => <div>Debug view</div> }));
 
