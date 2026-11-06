@@ -46,4 +46,31 @@ describe("ChatSectionHeader", () => {
     expect(countSpan.style.flexShrink).toBe("0");
     expect(button.getAttribute("title")).toBe(`Folder: ${LONG}`);
   });
+
+  it("shows no running indicator at zero (the default)", () => {
+    render(<ChatSectionHeader label="Work" count={2} runningCount={0} expanded onToggle={() => {}} isFolder />);
+    expect(screen.getByRole("button", { name: "Work (2)" })).toBeTruthy();
+    expect(screen.queryByTestId("section-running")).toBeNull();
+  });
+
+  it("shows a dot and the running count, named and titled 'n running'", () => {
+    render(<ChatSectionHeader label="Work" count={12} runningCount={3} expanded onToggle={() => {}} isFolder />);
+    expect(screen.getByRole("button", { name: "Work (12) 3 running" })).toBeTruthy();
+    const indicator = screen.getByTestId("section-running");
+    expect(indicator.getAttribute("title")).toBe("3 running");
+    expect(indicator.style.color).toBe("var(--status-active)");
+    const [dot, number] = [...indicator.children] as HTMLElement[];
+    expect(dot.getAttribute("aria-hidden")).toBe("true");
+    expect(dot.style.background).toBe("var(--status-active)");
+    expect(dot.style.width).toBe("7px");
+    expect(number.textContent).toBe("3");
+  });
+
+  it("never shrinks the running indicator beside a long, ellipsizing label", () => {
+    render(<ChatSectionHeader label={LONG} count={12} runningCount={2} expanded onToggle={() => {}} isFolder />);
+    const button = screen.getByRole("button");
+    const label = [...button.querySelectorAll("span")].find((el) => el.textContent === LONG)!;
+    expect(label.style.textOverflow).toBe("ellipsis");
+    expect(screen.getByTestId("section-running").style.flexShrink).toBe("0");
+  });
 });

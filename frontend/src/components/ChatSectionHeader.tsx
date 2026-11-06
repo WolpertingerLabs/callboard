@@ -12,18 +12,40 @@
  * another row. `--chatlist-section-header-bg` exists for that; the sidebar's
  * own `--chatlist-header-bg` is transparent in both themes.
  *
- * The count is chats, passed in rather than derived from the rows below: the
- * list renders one row per lineage group, so counting what it renders would
- * under-report every group with more than one member.
+ * The count is threads — one per row, child chats never counted (see
+ * `ChatSection.count`) — and is passed in rather than derived here.
  *
  * A sidebar folder's header carries a folder glyph — the only thing that tells
  * a folder the user named "Pinned" or "Recent" from the built-in sections — and
  * its label is the user's own text, up to 64 characters with no guarantee of a
  * space in it. So the label ellipsizes in its own shrinkable span, the count
  * sits beside it in one that never shrinks, and the full name is the tooltip.
+ *
+ * The running indicator — a dot and a number, shown only while at least one
+ * chat in the section has a live session — is the Board's "Active" rollup
+ * mark (7px `--status-active` dot with a glow of its own colour, number in the
+ * same colour) rather than a new look. Unlike the count it is CHATS, every
+ * running member of every group: a tree with three agents working in it is
+ * three running, which is the number the user wants when deciding whether a
+ * folder still has work in flight. Like the count it never shrinks, so a long
+ * label ellipsizes before the indicator clips.
  */
 
+import type { CSSProperties } from "react";
 import { ChevronDown, ChevronRight, Folder } from "lucide-react";
+
+/** Read by screen readers, invisible on screen. */
+const visuallyHidden: CSSProperties = {
+  position: "absolute",
+  width: 1,
+  height: 1,
+  padding: 0,
+  margin: -1,
+  overflow: "hidden",
+  clip: "rect(0 0 0 0)",
+  whiteSpace: "nowrap",
+  border: 0,
+};
 
 export default function ChatSectionHeader({
   label,
@@ -31,6 +53,7 @@ export default function ChatSectionHeader({
   expanded,
   onToggle,
   isFolder = false,
+  runningCount = 0,
 }: {
   label: string;
   count: number;
@@ -38,6 +61,8 @@ export default function ChatSectionHeader({
   onToggle: () => void;
   /** A sidebar folder rather than Pinned/Recent: adds the folder glyph. */
   isFolder?: boolean;
+  /** Chats in this section with a live session; the indicator shows only when > 0. */
+  runningCount?: number;
 }) {
   return (
     <button
@@ -71,6 +96,21 @@ export default function ChatSectionHeader({
       <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
       {/* The leading space keeps the accessible name "Label (n)"; the flex gap does the visual spacing. */}
       <span style={{ flexShrink: 0 }}> ({count})</span>
+      {runningCount > 0 && (
+        <span
+          data-testid="section-running"
+          title={`${runningCount} running`}
+          style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0, marginLeft: 2, color: "var(--status-active)" }}
+        >
+          <span
+            aria-hidden
+            style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--status-active)", boxShadow: "0 0 5px var(--status-active)" }}
+          />
+          <span aria-hidden>{runningCount}</span>
+          {/* The dot is colour alone, so the name spells it out: "Label (n) 2 running". */}
+          <span style={visuallyHidden}>{runningCount} running</span>
+        </span>
+      )}
     </button>
   );
 }
