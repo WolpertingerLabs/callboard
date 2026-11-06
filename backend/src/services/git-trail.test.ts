@@ -130,8 +130,14 @@ describe("mergeTrails", () => {
     ]);
   });
 
-  it("does not invent a head when the latest sighting had none", () => {
-    expect(mergeTrails([e("b", "t1", "t2", { head: "h" })], [e("b", "t1", "t3")])).toEqual([e("b", "t1", "t3")]);
+  it("keeps the known head when the latest sighting has none, rather than dropping it", () => {
+    expect(mergeTrails([e("b", "t1", "t2", { head: "h" })], [e("b", "t1", "t3")])).toEqual([e("b", "t1", "t3", { head: "h" })]);
+    // Either side may be the one that knows it.
+    expect(mergeTrails([e("b", "t1", "t3")], [e("b", "t1", "t2", { head: "h" })])).toEqual([e("b", "t1", "t3", { head: "h" })]);
+  });
+
+  it("still takes the newer head when both have one", () => {
+    expect(mergeTrails([e("b", "t1", "t2", { head: "old" })], [e("b", "t1", "t3", { head: "new" })])).toEqual([e("b", "t1", "t3", { head: "new" })]);
   });
 });
 
