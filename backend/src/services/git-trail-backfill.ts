@@ -100,7 +100,10 @@ function fold(into: Map<string, Observation>, obs: Observation): void {
  * reads give the event loop back between chunks. Rejects with
  * {@link TransientBackfillError} on a read failure.
  */
-async function scanLines(path: string, needle: string, onLine: (entry: any) => void): Promise<void> {
+type JsonObject = Record<string, unknown>;
+const asObject = (value: unknown): JsonObject => (value && typeof value === "object" ? (value as JsonObject) : {});
+
+async function scanLines(path: string, needle: string, onLine: (entry: JsonObject) => void): Promise<void> {
   const stream = createReadStream(path, { encoding: "utf8" });
   const lines = createInterface({ input: stream, crlfDelay: Infinity });
   try {
@@ -112,7 +115,7 @@ async function scanLines(path: string, needle: string, onLine: (entry: any) => v
       } catch {
         continue; // A torn last line, mid-write.
       }
-      onLine(entry);
+      onLine(asObject(entry));
     }
   } catch (err) {
     throw new TransientBackfillError(`reading ${path}: ${err instanceof Error ? err.message : err}`);
@@ -127,7 +130,7 @@ export async function claudeObservations(paths: string[]): Promise<Observation[]
   const found = new Map<string, Observation>();
   for (const path of paths) {
     await scanLines(path, '"gitBranch"', (entry) => {
-      if (!entry || typeof entry.cwd !== "string" || !isRealBranch(entry.gitBranch) || typeof entry.timestamp !== "string") return;
+      if (typeof entry.cwd !== "string" || !isRealBranch(entry.gitBranch) || typeof entry.timestamp !== "string") return;
       fold(found, { cwd: entry.cwd, branch: entry.gitBranch, firstSeen: entry.timestamp, lastSeen: entry.timestamp });
     });
   }
@@ -139,9 +142,9 @@ export async function codexObservations(paths: string[]): Promise<Observation[]>
   const found = new Map<string, Observation>();
   for (const path of paths) {
     await scanLines(path, '"session_meta"', (entry) => {
-      if (entry?.type !== "session_meta") return;
-      const payload = entry.payload ?? {};
-      const git = payload.git ?? {};
+      if (entry.type !== "session_meta") return;
+      const payload = asObject(entry.payload);
+      const git = asObject(payload.git);
       const at = typeof entry.timestamp === "string" ? entry.timestamp : typeof payload.timestamp === "string" ? payload.timestamp : null;
       if (typeof payload.cwd !== "string" || !isRealBranch(git.branch) || !at) return;
       fold(found, {
@@ -252,9 +255,13 @@ export async function resolveRepoPath(
 }
 
 /** Every observation a chat's history and Callboard's own records give. */
-async function observationsOf(chat: Chat, meta: Record<string, any>, deps: BackfillDeps): Promise<Observation[]> {
+async function observationsOf(chat: Chat, meta: Record<string, unknown>, deps: BackfillDeps): Promise<Observation[]> {
   const providerKind = typeof meta.provider === "string" && meta.provider ? meta.provider : "claude-code";
-  const sessionIds = [...new Set([...(Array.isArray(meta.session_ids) ? meta.session_ids : []), chat.session_id].filter((id) => typeof id === "string" && id))];
+  const sessionIds = [
+    ...new Set(
+      [...(Array.isArray(meta.session_ids) ? meta.session_ids : []), chat.session_id].filter((id): id is string => typeof id === "string" && id !== ""),
+    ),
+  ];
   const observations: Observation[] = [];
 
   if (providerKind === "claude-code" || providerKind === "codex") {
