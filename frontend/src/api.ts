@@ -695,6 +695,28 @@ export async function continueChatFrom(id: string, timestamp: string, preconditi
   return request(`/chats/${seg(id)}/continue-from`, { method: "POST", json: { timestamp, ...precondition }, error: "Failed to continue chat" });
 }
 
+/** The result of a rerun: the supersede, plus the prompt rerun and a run that could not start. */
+export interface RerunResponse extends SupersedeResponse {
+  /** Timestamp of the user prompt that was sent again (for an assistant pick, the prompt it answers). */
+  prompt?: string;
+  /** Set when the new chat is in place but its run could not be started. */
+  runError?: string;
+}
+
+/**
+ * Rerun a prompt, in the chat's place: a new chat with the history strictly
+ * before the prompt at `timestamp` — or, for an assistant message, the prompt
+ * it answers — takes over the original's row and card, and the prompt is sent
+ * to it again. The original is kept as its child.
+ */
+export async function rerunChatFrom(id: string, timestamp: string, role: ParsedMessage["role"], precondition?: SupersedePrecondition): Promise<RerunResponse> {
+  return request(`/chats/${seg(id)}/rerun`, {
+    method: "POST",
+    json: { timestamp, ...(role !== "system" && { role }), ...precondition },
+    error: "Failed to rerun",
+  });
+}
+
 /**
  * Generate (without applying) the summary a compression would use. Runs on the
  * chat's own model; can take minutes. `fingerprint` identifies the span it

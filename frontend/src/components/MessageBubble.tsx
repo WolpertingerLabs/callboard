@@ -1,5 +1,5 @@
 import { memo, useState, useMemo, useEffect, useRef, type CSSProperties, type ReactNode } from "react";
-import { Check, FileText, GitFork, RotateCw, Square, Star, X } from "lucide-react";
+import { Check, FileText, GitFork, RotateCcw, RotateCw, Square, Star, X } from "lucide-react";
 import type { ChatTreeNode, ForkProvider, ParsedMessage } from "../api";
 import type { ChatRewriteAction } from "../utils/chatRewrite";
 import { parseTaskList, splitAttachmentBlocks, type AttachedFile, type TaskListItem } from "shared/types/index.js";
@@ -123,18 +123,21 @@ const REWRITE_ACTIONS: { action: ChatRewriteAction; label: string; title: string
  * higher-fidelity path — the backend copies the native session log rather than
  * replaying a flattened transcript.
  *
- * The "This chat" section appears only when `onRewrite` is given: those
- * actions replace the open chat in the sidebar and the board rather than adding
- * a branch beside it, so the caller decides when they are on offer.
+ * The "This chat" section appears only when `onRewrite` or `onRerun` is
+ * given: those actions replace the open chat in the sidebar and the board
+ * rather than adding a branch beside it, so the caller decides when they are on
+ * offer.
  */
 function ForkButton({
   onFork,
   currentProvider,
   onRewrite,
+  onRerun,
 }: {
   onFork: (provider?: ForkProvider) => void;
   currentProvider: ForkProvider;
   onRewrite?: (action: ChatRewriteAction) => void;
+  onRerun?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -206,28 +209,77 @@ function ForkButton({
               {t.label}
             </button>
           ))}
-          {onRewrite && (
+          {(onRewrite || onRerun) && (
             <>
               <div style={{ height: 1, background: "var(--border)" }} />
               <div style={forkMenuHeaderStyle}>This chat</div>
-              {REWRITE_ACTIONS.map((a) => (
+              {onRerun && (
                 <button
-                  key={a.action}
-                  title={a.title}
+                  title={RERUN_TITLE}
                   onClick={() => {
                     setOpen(false);
-                    onRewrite(a.action);
+                    onRerun();
                   }}
                   style={forkMenuItemStyle}
                 >
-                  {a.label}
+                  Rerun from here
                 </button>
-              ))}
+              )}
+              {onRewrite &&
+                REWRITE_ACTIONS.map((a) => (
+                  <button
+                    key={a.action}
+                    title={a.title}
+                    onClick={() => {
+                      setOpen(false);
+                      onRewrite(a.action);
+                    }}
+                    style={forkMenuItemStyle}
+                  >
+                    {a.label}
+                  </button>
+                ))}
             </>
           )}
         </div>
       )}
     </div>
+  );
+}
+
+const RERUN_TITLE = "Send this prompt again (for a reply, the prompt it answers) in a new chat that takes this one's place; the original is kept as its child";
+
+/**
+ * Rerun shortcut, revealed on hover like copy and fork — the same action as the
+ * fork menu's "Rerun from here", one click closer because it is the common one.
+ */
+function RerunButton({ onRerun, right }: { onRerun: () => void; right: number }) {
+  return (
+    <button
+      className="rerun-affordance"
+      onClick={(e) => {
+        e.stopPropagation();
+        onRerun();
+      }}
+      title={RERUN_TITLE}
+      aria-label="Rerun from here"
+      style={{
+        position: "absolute",
+        top: 6,
+        right,
+        zIndex: 2,
+        padding: 4,
+        background: "var(--surface)",
+        border: "1px solid var(--border)",
+        borderRadius: 6,
+        cursor: "pointer",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+      }}
+    >
+      <RotateCcw size={14} style={{ color: "var(--text-muted)" }} />
+    </button>
   );
 }
 
@@ -548,6 +600,12 @@ interface Props {
    */
   onRewrite?: (timestamp: string, action: ChatRewriteAction) => void;
   /**
+   * When set alongside `onFork`, the bubble offers Rerun — a hover button and a
+   * fork-menu entry — called with the message's timestamp and role. Stable for
+   * the same reason as `onFork`.
+   */
+  onRerun?: (timestamp: string, role: ParsedMessage["role"]) => void;
+  /**
    * Forks of this chat that branched off at this message, shown as a chip
    * under the bubble. Must be identity-stable between renders (see the memo).
    */
@@ -702,7 +760,18 @@ export function MessageMetadata({ message, align = "right", leading }: { message
   );
 }
 
-function MessageBubble({ message, teamColorMap, onFork, forkCurrentProvider = "claude-code", onRewrite, forks, starKey, starred = false, onToggleStar }: Props) {
+function MessageBubble({
+  message,
+  teamColorMap,
+  onFork,
+  forkCurrentProvider = "claude-code",
+  onRewrite,
+  onRerun,
+  forks,
+  starKey,
+  starred = false,
+  onToggleStar,
+}: Props) {
   const [expanded, setExpanded] = useState(false);
   const isUser = message.role === "user";
   const isTeamMessage = !!message.teamName;
@@ -981,6 +1050,7 @@ function MessageBubble({ message, teamColorMap, onFork, forkCurrentProvider = "c
   const { text: bodyText, files: attachedFiles } = isUser ? splitAttachmentBlocks(message.content) : { text: message.content, files: [] };
   const canFork = !!onFork && !!message.timestamp;
   const toggleStar = starKey && onToggleStar ? () => onToggleStar(starKey, !starred) : undefined;
+  const rerun = canFork && onRerun ? () => onRerun(message.timestamp!, message.role) : undefined;
 
   return (
     <div
@@ -1016,10 +1086,13 @@ function MessageBubble({ message, teamColorMap, onFork, forkCurrentProvider = "c
             onFork={(provider) => onFork!(message.timestamp!, provider)}
             currentProvider={forkCurrentProvider}
             onRewrite={onRewrite ? (action) => onRewrite(message.timestamp!, action) : undefined}
+            onRerun={rerun}
           />
         )}
         {/* Left of fork when there is one, else where fork would sit. */}
         {toggleStar && <StarButton starred={starred} onToggle={toggleStar} right={canFork ? 66 : 36} />}
+        {/* Rerun implies fork; left of star when there is one. */}
+        {rerun && <RerunButton onRerun={rerun} right={toggleStar ? 96 : 66} />}
         {message.isBuiltInCommand ? bodyText : bodyText && <MarkdownRenderer content={bodyText} className="message-markdown" />}
         {attachedFiles.length > 0 && <AttachedFileChips files={attachedFiles} />}
         {message.imageIds && message.imageIds.length > 0 && <ImageThumbnails imageIds={message.imageIds} />}

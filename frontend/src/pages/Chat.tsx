@@ -48,6 +48,7 @@ import {
   fetchDraftImages,
   forkChat,
   continueChatFrom,
+  rerunChatFrom,
   getCard,
   getChatTree,
   handshakeHeaders,
@@ -975,6 +976,31 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       } catch (err) {
         console.error("Failed to continue chat:", err);
         window.alert(errorMessage(err, "Failed to continue chat"));
+      } finally {
+        forkingRef.current = false;
+      }
+    },
+    [id, finishRewrite, chatMeta.treeParentChatId],
+  );
+
+  // Rerun: the same in-place replacement, from just BEFORE the prompt (for an
+  // assistant message, the prompt it answers), which the server then sends to
+  // the new chat. Confirmed first like continue; the new chat is running when
+  // it opens, so it connects to the stream on arrival.
+  const [pendingRerun, setPendingRerun] = useState<{ timestamp: string; role: ParsedMessage["role"] } | null>(null);
+  const handleRerun = useCallback((timestamp: string, role: ParsedMessage["role"]) => setPendingRerun({ timestamp, role }), []);
+  const runRerun = useCallback(
+    async (timestamp: string, role: ParsedMessage["role"]) => {
+      if (!id || forkingRef.current) return;
+      forkingRef.current = true;
+      try {
+        const { chat, runError } = await rerunChatFrom(id, timestamp, role, { expectedParentChatId: chatMeta.treeParentChatId ?? null });
+        finishRewrite(chat.id);
+        // The new chat is in place either way; say why it is not answering.
+        if (runError) window.alert(`The chat was replaced, but the prompt could not be sent: ${runError}`);
+      } catch (err) {
+        console.error("Failed to rerun:", err);
+        window.alert(errorMessage(err, "Failed to rerun"));
       } finally {
         forkingRef.current = false;
       }
@@ -3777,6 +3803,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                         // chat that is streaming, and the transcript is still
                         // growing under the message the user would pick.
                         onRewrite={canFork && !streaming ? handleRewrite : undefined}
+                        onRerun={canFork && !streaming ? handleRerun : undefined}
                         forks={forkMarkers.get(item.originalIndex)}
                         starKey={starKey}
                         starred={!!starKey && starredKeys.has(starKey)}
@@ -4179,6 +4206,22 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         title="Continue from this message"
         message="A new chat with the history up to and including this message takes this chat's place in the sidebar and on the board. This chat is kept, unchanged, as its child."
         confirmText="Continue from here"
+      />
+
+      <ConfirmModal
+        isOpen={!!pendingRerun}
+        onClose={() => setPendingRerun(null)}
+        onConfirm={() => {
+          const pending = pendingRerun;
+          if (pending) void runRerun(pending.timestamp, pending.role);
+        }}
+        title="Rerun from here"
+        message={
+          pendingRerun?.role === "assistant"
+            ? "The prompt this reply answers is sent again, in a new chat with the history before that prompt. It takes this chat's place in the sidebar and on the board; this chat is kept, unchanged, as its child."
+            : "This message is sent again, in a new chat with the history before it. It takes this chat's place in the sidebar and on the board; this chat is kept, unchanged, as its child."
+        }
+        confirmText="Rerun"
       />
 
       {id && pendingRewrite && pendingRewrite.action !== "continue" && (
