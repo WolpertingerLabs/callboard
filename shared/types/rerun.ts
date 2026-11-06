@@ -36,3 +36,41 @@ export function isRerunPrompt(message: ParsedMessage): boolean {
   if (message.isBuiltInCommand || isSummaryTurn(message)) return false;
   return message.content.trim().length > 0 || (message.imageIds?.length ?? 0) > 0;
 }
+
+const isBoundary = (m: ParsedMessage) => m.type === "system" && m.subtype === "compact_boundary";
+/** A message of the user's own turn-taking: user-role text not from a team member. */
+export const isUserTurn = (m: ParsedMessage) => m.role === "user" && m.type === "text" && !m.teamName;
+
+/**
+ * The prompt a reply at `index` answers: walking back, the first user turn —
+ * which must itself be rerunnable — before any compact boundary or summary.
+ * `{ index }` of that prompt, or why there is none. The server's rule; see
+ * {@link rerunnableReplies} for the same answer for a whole transcript.
+ */
+export function findReplyPrompt(messages: readonly ParsedMessage[], index: number): { index: number } | { error: string } {
+  for (let i = index - 1; i >= 0; i--) {
+    const m = messages[i]!;
+    if (isBoundary(m) || isSummaryTurn(m)) return { error: "This reply follows a compaction, not a prompt that can be rerun" };
+    if (!isUserTurn(m)) continue;
+    if (!isRerunPrompt(m)) return { error: "The message this replies to cannot be rerun" };
+    return { index: i };
+  }
+  return { error: "No user message before this one to rerun" };
+}
+
+/**
+ * For every index, whether {@link findReplyPrompt} would find a prompt from
+ * there — one pass, so the UI can decide per reply bubble without walking back
+ * from each of them.
+ */
+export function rerunnableReplies(messages: readonly ParsedMessage[]): boolean[] {
+  const out: boolean[] = new Array(messages.length);
+  let reachable = false;
+  for (let i = 0; i < messages.length; i++) {
+    out[i] = reachable;
+    const m = messages[i]!;
+    if (isBoundary(m) || isSummaryTurn(m)) reachable = false;
+    else if (isUserTurn(m)) reachable = isRerunPrompt(m);
+  }
+  return out;
+}

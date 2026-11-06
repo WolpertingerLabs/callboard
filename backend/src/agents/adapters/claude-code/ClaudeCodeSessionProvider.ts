@@ -348,6 +348,20 @@ export class ClaudeCodeSessionProvider implements SessionProvider {
     return this._writeSessionLines(source, copied, newSessionId);
   }
 
+  /**
+   * Fork to just before a user prompt — see {@link SessionProvider.forkSessionBefore}.
+   * The prompt's own line, everything after it in the file (whatever its
+   * stamp), and the bookkeeping lines the CLI writes for it right before it
+   * are left out.
+   */
+  forkSessionBefore(sessionIds: string[], promptTimestamp: string, newSessionId: string): { logPath: string } | null {
+    const source = this._gatherLines(sessionIds);
+    if (!source) return null;
+    const copied = truncateLinesBefore(source.lines, promptTimestamp);
+    if (!copied) return null;
+    return this._writeSessionLines(source, copied, newSessionId);
+  }
+
   // ── Compression ─────────────────────────────────────────────────────
 
   /**
@@ -570,9 +584,17 @@ function truncateLinesAt(lines: any[], cutoffTimestamp: string): any[] | null {
   if (cutoffIdx === -1) return null;
   const copied = lines.slice(0, cutoffIdx + 1);
 
-  // The cutoff line may carry tool_use blocks whose tool_result lines sit
-  // just past the cutoff — a resumed session must not have dangling
-  // tool_use, so extend forward through consecutive resolving lines.
+  return closeToolUses(copied, lines.slice(cutoffIdx + 1), cutoffTimestamp);
+}
+
+/**
+ * Leave no tool_use in `copied` without its tool_result: first by pulling in
+ * the consecutive resolving lines from `following` (the cutoff line may carry
+ * tool_use blocks whose results sit just past it), then with a synthetic
+ * interrupted tool_result for anything still open — what the SDK itself writes
+ * when a user interrupts a running tool. Mutates and returns `copied`.
+ */
+function closeToolUses(copied: any[], following: any[], stamp: string): any[] {
   // Only conversation lines take part: an api-request-blob can repeat
   // tool_use blocks after their results, and would leave them "unresolved"
   // (the blobs are still copied, just not scanned).
@@ -583,16 +605,13 @@ function truncateLinesAt(lines: any[], cutoffTimestamp: string): any[] | null {
     for (const id of results) unresolved.delete(id);
   };
   for (const line of copied) scanLine(line);
-  for (let j = cutoffIdx + 1; unresolved.size > 0 && j < lines.length; j++) {
-    const resolves = toolIdsOf(lines[j]).results.some((id) => unresolved.has(id));
+  for (let j = 0; unresolved.size > 0 && j < following.length; j++) {
+    const resolves = toolIdsOf(following[j]).results.some((id) => unresolved.has(id));
     if (!resolves) break;
-    copied.push(lines[j]);
-    scanLine(lines[j]);
+    copied.push(following[j]);
+    scanLine(following[j]);
   }
 
-  // Anything still unresolved (e.g. the original session was aborted
-  // mid-tool) gets a synthetic interrupted tool_result, mirroring what
-  // the SDK itself writes when a user interrupts a running tool.
   let prevUuid: string | null = lastUuid(copied);
   for (const toolUseId of unresolved) {
     const uuid = randomUUID();
@@ -605,11 +624,45 @@ function truncateLinesAt(lines: any[], cutoffTimestamp: string): any[] | null {
         content: [{ type: "tool_result", tool_use_id: toolUseId, content: "[Request interrupted by user]", is_error: true }],
       },
       uuid,
-      timestamp: cutoffTimestamp,
+      timestamp: stamp,
     });
     prevUuid = uuid;
   }
   return copied;
+}
+
+/** Lines the CLI writes as bookkeeping for the prompt that follows them (its queue entry, its file-history snapshot). */
+const PROMPT_BOOKKEEPING_TYPES: ReadonlySet<string> = new Set(["queue-operation", "file-history-snapshot"]);
+
+/** Whether a raw line is a prompt the user typed: a user turn that is not meta, a compaction summary or only tool results. */
+function isPromptLine(line: any): boolean {
+  if (!isConversationEntry(line) || line.type !== "user" || line.isMeta || line.isCompactSummary) return false;
+  const content = line.message?.content;
+  if (typeof content === "string") return content.length > 0;
+  return Array.isArray(content) && content.some((b: any) => b?.type === "text" || b?.type === "image");
+}
+
+/**
+ * Everything strictly before the prompt stamped `promptTimestamp`, cut by
+ * POSITION: the prompt's line and every line after it go, whatever their
+ * stamps. (The CLI stamps the attachment lines that follow a prompt 1–2 ms
+ * before it, so a timestamp cutoff "just before the prompt" lands on them and
+ * keeps the prompt — the resumed CLI then answers it with "No response
+ * requested.") The contiguous bookkeeping lines right before the prompt are
+ * its own and go with it. Null when there is no such prompt or nothing
+ * conversational precedes it.
+ */
+function truncateLinesBefore(lines: any[], promptTimestamp: string): any[] | null {
+  const promptMs = new Date(promptTimestamp).getTime();
+  if (isNaN(promptMs)) return null;
+  const promptIdx = lines.findIndex((l) => isPromptLine(l) && lineMs(l) === promptMs);
+  if (promptIdx === -1) return null;
+  let end = promptIdx;
+  while (end > 0 && PROMPT_BOOKKEEPING_TYPES.has(lines[end - 1]?.type)) end--;
+  const copied = lines.slice(0, end);
+  if (!copied.some(isConversationEntry)) return null;
+  // Nothing after the cut is pulled in: past it is the prompt's own turn.
+  return closeToolUses(copied, [], new Date(promptMs - 1).toISOString());
 }
 
 /** The uuid of the last line that has one — the leaf a new line chains onto. */

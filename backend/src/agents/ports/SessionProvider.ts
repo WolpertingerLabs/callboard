@@ -187,6 +187,24 @@ export interface SessionProvider {
   forkSession?(sessionIds: string[], cutoffTimestamp: string, newSessionId: string): { logPath: string } | null;
 
   /**
+   * Fork a session to just BEFORE a user prompt, cutting by the prompt's
+   * position in the log rather than by a timestamp. Used by rerun.
+   *
+   * Exists because a timestamp cannot say "strictly before message X" in every
+   * log: the Claude CLI writes `attachment` lines AFTER a prompt but stamps
+   * them 1–2 ms EARLIER, so `forkSession(promptTs - 1ms)` lands on an
+   * attachment and keeps the prompt. Optional — a provider whose
+   * `forkSession` drops each entry stamped after the cutoff (pi, Cline) gets
+   * the same result from `forkSession(promptTs - 1ms)`, and callers fall back
+   * to that.
+   *
+   * `promptTimestamp` names the prompt: the first user turn the user typed
+   * (not a tool result, meta line or compaction summary) stamped in that
+   * millisecond. Null when no such line exists or nothing precedes it.
+   */
+  forkSessionBefore?(sessionIds: string[], promptTimestamp: string, newSessionId: string): { logPath: string } | null;
+
+  /**
    * Write a NEW native session for this provider whose history is `turns`,
    * so the provider's engine can resume it as if it had produced that
    * conversation itself.

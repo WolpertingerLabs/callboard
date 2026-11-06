@@ -124,7 +124,7 @@ import { errorMessage } from "../utils/errorMessage";
 import { useSpaces } from "../contexts/SpaceContext";
 import { ALL_SPACES, DEFAULT_SPACE_ID } from "shared/types/space.js";
 import { isImageAttachmentType } from "shared/types/attachment.js";
-import { isRerunPrompt } from "shared/types/rerun.js";
+import { isRerunPrompt, rerunnableReplies } from "shared/types/rerun.js";
 import ModalOverlay from "../components/ModalOverlay";
 import { writesBrowserFallback } from "../utils/spaceDefaults";
 
@@ -1109,6 +1109,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     chatIsForRoute ? chatMeta.starredMessagesRev : undefined,
   );
   const starKeys = useMemo(() => starKeysByIndex(messages), [messages]);
+  // Per message: whether a rerun picked on that reply finds a prompt — the
+  // server's own walk-back rule (shared), so a reply to a slash command or a
+  // compaction summary gets no Rerun to click and be refused.
+  const replyRerunnable = useMemo(() => rerunnableReplies(messages), [messages]);
   const starredInTranscript = useStableStarred(useMemo(() => resolveStarred(starKeys, starredKeys), [starKeys, starredKeys]));
 
   // Background tasks launched but never reported on. A background shell belongs
@@ -3817,10 +3821,16 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                         // chat that is streaming, and the transcript is still
                         // growing under the message the user would pick.
                         onRewrite={canFork && !streaming ? handleRewrite : undefined}
-                        // Where a rerun can start from: any reply (the server finds its
-                        // prompt), and a user message only if it can be sent again —
-                        // not a slash command or a compaction summary.
-                        onRerun={canFork && !streaming && (item.message.role === "assistant" || isRerunPrompt(item.message)) ? handleRerun : undefined}
+                        // Where a rerun can start from: a user message that can be sent
+                        // again (not a slash command or a compaction summary), or a
+                        // reply whose prompt is one.
+                        onRerun={
+                          canFork &&
+                          !streaming &&
+                          (item.message.role === "assistant" ? replyRerunnable[item.originalIndex] : isRerunPrompt(item.message))
+                            ? handleRerun
+                            : undefined
+                        }
                         forks={forkMarkers.get(item.originalIndex)}
                         starKey={starKey}
                         starred={!!starKey && starredKeys.has(starKey)}

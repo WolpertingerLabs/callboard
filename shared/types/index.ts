@@ -80,7 +80,7 @@ export type {
 } from "./workspace.js";
 
 export type { ParsedMessage } from "./message.js";
-export { COMPRESSION_SUMMARY_HEADINGS, isCompressionSummaryText, isSummaryTurn, isRerunPrompt } from "./rerun.js";
+export { COMPRESSION_SUMMARY_HEADINGS, isCompressionSummaryText, isSummaryTurn, isRerunPrompt, isUserTurn, findReplyPrompt, rerunnableReplies } from "./rerun.js";
 
 export type { TaskListItem } from "./taskList.js";
 export { TASK_LIST_TOOLS, parseTaskList, isTaskListTool } from "./taskList.js";

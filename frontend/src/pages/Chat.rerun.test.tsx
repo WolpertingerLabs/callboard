@@ -111,7 +111,7 @@ it("sends nothing when the confirmation is cancelled", async () => {
   expect(rerunChatFrom).not.toHaveBeenCalled();
 });
 
-it("offers no Rerun on a slash command or a compaction summary, but does on the replies", async () => {
+it("offers no Rerun on a slash command or a compaction summary", async () => {
   vi.mocked(getMessages).mockResolvedValueOnce([
     { role: "user", type: "text", content: "/review", isBuiltInCommand: true, timestamp: Q1 },
     { role: "assistant", type: "text", content: "reviewed", timestamp: A1 },
@@ -119,7 +119,24 @@ it("offers no Rerun on a slash command or a compaction summary, but does on the 
   ] as ParsedMessage[]);
   render(tree());
   await screen.findByText("reviewed");
-  expect(screen.getAllByRole("button", { name: "Rerun from here" })).toHaveLength(1);
+  // The command and the summary have none; nor does the reply to the command.
+  expect(screen.queryAllByRole("button", { name: "Rerun from here" })).toHaveLength(0);
+});
+
+it("offers no Rerun on a reply to a slash command or a compaction, where the server would refuse", async () => {
+  vi.mocked(getMessages).mockResolvedValueOnce([
+    { role: "user", type: "text", content: "/review", isBuiltInCommand: true, timestamp: Q1 },
+    { role: "assistant", type: "text", content: "reviewed", timestamp: A1 },
+    { role: "system", type: "system", subtype: "compact_boundary", content: "Conversation compacted", timestamp: "2026-01-01T10:00:04.000Z" },
+    { role: "user", type: "text", content: "Summary", isCompactSummary: true, timestamp: "2026-01-01T10:00:04.000Z" },
+    { role: "assistant", type: "text", content: "ack", timestamp: "2026-01-01T10:00:05.000Z" },
+    { role: "user", type: "text", content: "real question", timestamp: "2026-01-01T10:00:06.000Z" },
+    { role: "assistant", type: "text", content: "real answer", timestamp: "2026-01-01T10:00:07.000Z" },
+  ] as ParsedMessage[]);
+  render(tree());
+  await screen.findByText("real answer");
+  // Only "real question" and "real answer".
+  expect(screen.getAllByRole("button", { name: "Rerun from here" })).toHaveLength(2);
 });
 
 it("holds the page with a pending indicator until the server answers", async () => {

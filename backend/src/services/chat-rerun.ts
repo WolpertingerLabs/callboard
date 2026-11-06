@@ -17,7 +17,7 @@
  * Pure: messages in, a plan out. The route writes the session and starts the
  * run.
  */
-import { isRerunPrompt, isSummaryTurn, type ParsedMessage } from "shared/types/index.js";
+import { findReplyPrompt, isRerunPrompt, isUserTurn, type ParsedMessage } from "shared/types/index.js";
 
 export { isRerunPrompt };
 
@@ -52,10 +52,6 @@ function ms(ts: string | undefined): number {
   return ts ? new Date(ts).getTime() : NaN;
 }
 
-const isBoundary = (m: ParsedMessage) => m.type === "system" && m.subtype === "compact_boundary";
-/** A message of the user's own turn-taking: user-role text not from a team member. */
-const isUserTurn = (m: ParsedMessage) => m.role === "user" && m.type === "text" && !m.teamName;
-
 /**
  * Resolve what a rerun picked at `timestamp` sends, and where it forks.
  * `role` narrows the pick when a user and an assistant message share the
@@ -75,16 +71,10 @@ export function planRerun(messages: readonly ParsedMessage[], timestamp: string,
   if (promptIndex === -1) {
     if (at.some((i) => isUserTurn(messages[i]!))) return { ok: false, error: "That message cannot be rerun" };
     // An assistant message: the prompt it answers is the nearest user turn
-    // before it — which must itself be rerunnable.
-    for (let i = at[0]! - 1; i >= 0; i--) {
-      const m = messages[i]!;
-      if (isBoundary(m) || isSummaryTurn(m)) return { ok: false, error: "This reply follows a compaction, not a prompt that can be rerun" };
-      if (!isUserTurn(m)) continue;
-      if (!isRerunPrompt(m)) return { ok: false, error: "The message this replies to cannot be rerun" };
-      promptIndex = i;
-      break;
-    }
-    if (promptIndex === -1) return { ok: false, error: "No user message before this one to rerun" };
+    // before it — which must itself be rerunnable (shared with the UI).
+    const found = findReplyPrompt(messages, at[0]!);
+    if ("error" in found) return { ok: false, error: found.error };
+    promptIndex = found.index;
   }
 
   const promptAt = messages[promptIndex]!.timestamp!;

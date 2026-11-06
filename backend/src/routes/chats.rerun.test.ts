@@ -14,7 +14,14 @@ const tmpRoot = mkdtempSync(join(tmpdir(), "callboard-rerun-route-"));
 process.env.CALLBOARD_DATA_DIR = tmpRoot;
 
 const running = vi.hoisted(() => new Set<string>());
-const calls = vi.hoisted(() => ({ fork: [] as unknown[][], seed: [] as unknown[][], send: [] as any[], deleted: [] as string[], stopped: [] as string[] }));
+const calls = vi.hoisted(() => ({
+  fork: [] as unknown[][],
+  forkBefore: [] as unknown[][],
+  seed: [] as unknown[][],
+  send: [] as any[],
+  deleted: [] as string[],
+  stopped: [] as string[],
+}));
 const sendBehaviour = vi.hoisted(() => ({
   throwOnExisting: null as Error | null,
   freshEvent: "chat_created" as "chat_created" | "error" | "never",
@@ -85,9 +92,18 @@ vi.mock("../agents/factory.js", () => ({
     {
       kind: "claude-code",
       forkSession: (...args: unknown[]) => (calls.fork.push(args), { logPath: "/tmp/x.jsonl" }),
+      forkSessionBefore: (...args: unknown[]) => (calls.forkBefore.push(args), { logPath: "/tmp/x.jsonl" }),
       parseSessionMessages: () => history,
       getSessionPreview: () => "preview",
       deleteSessionFiles: (sid: string) => calls.deleted.push(sid),
+    },
+    {
+      // A forkSession that drops entries stamped after the cutoff, and no positional writer.
+      kind: "pi",
+      forkSession: (...args: unknown[]) => (calls.fork.push(args), { logPath: "/tmp/p.jsonl" }),
+      parseSessionMessages: () => history,
+      getSessionPreview: () => "preview",
+      deleteSessionFiles: () => {},
     },
     {
       // No native fork: the history goes through flattened turns + seedSession.
@@ -141,7 +157,7 @@ const metaOf = (id: string) => JSON.parse(chatFileService.getChat(id)!.metadata)
 afterEach(() => {
   for (const chat of chatFileService.getAllChats()) chatFileService.deleteChat(chat.session_id);
   running.clear();
-  calls.fork.length = calls.seed.length = calls.send.length = calls.deleted.length = calls.stopped.length = 0;
+  calls.fork.length = calls.forkBefore.length = calls.seed.length = calls.send.length = calls.deleted.length = calls.stopped.length = 0;
   sendBehaviour.throwOnExisting = null;
   sendBehaviour.freshEvent = "chat_created";
   sendBehaviour.beforeCreated = null;
@@ -162,9 +178,10 @@ describe("POST /:id/rerun", () => {
     const n = res.body.chat;
     expect(res.body.prompt).toBe(t(10));
     expect(res.body.runError).toBeUndefined();
-    // History strictly before q2: the providers' cutoff is inclusive, in ms.
-    expect(calls.fork).toHaveLength(1);
-    expect(calls.fork[0]![1]).toBe(t(9, 999));
+    // History strictly before q2, cut at the prompt's position (not by timestamp).
+    expect(calls.fork).toHaveLength(0);
+    expect(calls.forkBefore).toHaveLength(1);
+    expect(calls.forkBefore[0]![1]).toBe(t(10));
     expect(calls.send).toEqual([{ chatId: n.id, prompt: "q2" }]);
     // In the original's place; the original is a superseded child forked at the last kept message.
     expect(metaOf(n.id)).toMatchObject({
@@ -252,6 +269,24 @@ describe("POST /:id/rerun", () => {
     const turns = calls.seed[0]![0] as { role: string; text: string }[];
     expect(turns.map((x) => x.text).slice(-2)).toEqual(["q1", "a1"]);
     expect(metaOf(res.body.chat.id)).toMatchObject({ provider: "codex", model: "gpt-5.5" });
+  });
+
+  it("falls back to forkSession one ms before the prompt on a provider without a positional writer", async () => {
+    const res = await rerun(makeChat({ provider: "pi" }).id, { timestamp: t(13), role: "assistant" });
+    expect(res.status).toBe(201);
+    expect(calls.forkBefore).toHaveLength(0);
+    expect(calls.fork[0]![1]).toBe(t(9, 999));
+  });
+
+  it("seeds a Codex fork with the parsed history cut at the prompt's position, not its timestamp", async () => {
+    // A message after the prompt but stamped before it (the Claude CLI's
+    // attachment shape): a timestamp cutoff would keep the prompt with it.
+    setHistory([...baseHistory.slice(0, 3), { role: "assistant", type: "text", content: "early-stamped", timestamp: t(9, 999) }, ...baseHistory.slice(3)]);
+    const res = await rerun(makeChat({ provider: "codex" }).id, { timestamp: t(10) });
+    expect(res.status).toBe(201);
+    const texts = (calls.seed[0]![0] as { text: string }[]).map((x) => x.text);
+    expect(texts.slice(-2)).toEqual(["q1", "a1"]);
+    expect(texts.join("\n")).not.toContain("q2");
   });
 
   it("keeps the child's slot under its parent", async () => {
@@ -354,7 +389,10 @@ describe("POST /:id/rerun", () => {
   it("validates and refuses while streaming, for an invalid message, or a moved chat", async () => {
     const chat = makeChat({});
     expect((await rerun(chat.id, {})).status).toBe(400);
-    expect((await rerun(chat.id, { timestamp: "not a date" })).status).toBe(400);
+    const garbage = await rerun(chat.id, { timestamp: "garbage" });
+    expect(garbage.status).toBe(400);
+    expect(garbage.body.error).toBe("timestamp is not a valid date");
+    expect((await rerun(chat.id, {})).body.error).toBe("timestamp is required");
     expect((await rerun(chat.id, { timestamp: t(10), role: "system" })).status).toBe(400);
     expect((await rerun("nope", { timestamp: t(10) })).status).toBe(404);
     // No message there, and a tool result is not a prompt.

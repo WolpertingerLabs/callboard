@@ -15,6 +15,7 @@ import { buildHandoffTurns, truncateAtCutoff } from "../agents/handoff.js";
 import { buildCompressedTurns, type CompressDirection } from "../agents/compression.js";
 import { readChatSessionMessages } from "../utils/chat-lookup.js";
 import { parseChatMetadata } from "../utils/chat-metadata.js";
+import type { ParsedMessage } from "shared/types/index.js";
 
 export interface ForkSource {
   meta: Record<string, any>;
@@ -62,6 +63,16 @@ export function resolveForkSource(
  * same harness and it has one, otherwise the neutral turns projection seeded
  * into the target. Null when nothing falls at or before the cutoff. Throws
  * `UnsupportedForkError` when the target can be written neither way.
+ *
+ * With `before` (a user prompt's timestamp) the fork is everything strictly
+ * before that prompt, cut by POSITION — `timestamp` is then ignored. A
+ * timestamp cannot express "strictly before the prompt" in every log (the
+ * Claude CLI stamps the lines after a prompt earlier than the prompt), so:
+ * a provider with `forkSessionBefore` cuts at the prompt's line; one whose
+ * `forkSession` drops every entry stamped after the cutoff (pi, Cline) is
+ * forked one millisecond before the prompt, which drops the prompt's own
+ * entry by construction; the seeded path slices the parsed history at the
+ * prompt's index.
  */
 export function writeForkedSession(opts: {
   chat: { folder: string; metadata?: string | null; session_id?: string };
@@ -70,10 +81,15 @@ export function writeForkedSession(opts: {
   targetProvider: SessionProvider;
   timestamp: string;
   newSessionId: string;
+  before?: string;
 }): { logPath: string } | null {
-  const { chat, source, targetKind, targetProvider, timestamp, newSessionId } = opts;
+  const { chat, source, targetKind, targetProvider, timestamp, newSessionId, before } = opts;
   const isHandoff = targetKind !== source.providerKind;
+  if (!isHandoff && before && source.provider.forkSessionBefore) {
+    return source.provider.forkSessionBefore(source.sessionIds, before, newSessionId);
+  }
   if (!isHandoff && source.provider.forkSession) {
+    if (before) return source.provider.forkSession(source.sessionIds, new Date(new Date(before).getTime() - 1).toISOString(), newSessionId);
     // Same harness: copy the native session log. Preserves everything the
     // engine wrote — real tool_use blocks, reasoning, ids — which the
     // neutral turn projection below necessarily drops.
@@ -83,11 +99,19 @@ export function writeForkedSession(opts: {
     // Cross-harness (or a same-harness provider with no native fork): read
     // the history through the SOURCE provider's parser, then write it into
     // the TARGET's native format as conversational turns.
-    const history = truncateAtCutoff(readChatSessionMessages(chat, source.sessionIds), timestamp);
+    const messages = readChatSessionMessages(chat, source.sessionIds);
+    const history = before ? historyBeforePrompt(messages, before) : truncateAtCutoff(messages, timestamp);
     const turns = buildHandoffTurns(history, source.providerKind, targetKind);
     return turns.length > 0 ? targetProvider.seedSession(turns, { folder: chat.folder, newSessionId }) : null;
   }
   throw new UnsupportedForkError();
+}
+
+/** The parsed history strictly before the prompt stamped `promptTimestamp`, by position. Empty when there is no such prompt. */
+export function historyBeforePrompt(messages: ParsedMessage[], promptTimestamp: string): ParsedMessage[] {
+  const promptMs = new Date(promptTimestamp).getTime();
+  const idx = messages.findIndex((m) => m.role === "user" && m.type === "text" && !m.teamName && !!m.timestamp && new Date(m.timestamp).getTime() === promptMs);
+  return idx === -1 ? [] : messages.slice(0, idx);
 }
 
 export class UnsupportedForkError extends Error {

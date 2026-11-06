@@ -70,3 +70,24 @@ describe("MessageBubble rerun", () => {
     expect(screen.queryByRole("button", { name: "Rerun from here" })).toBeNull();
   });
 });
+
+describe("MessageBubble hover actions on a narrow reply", () => {
+  const bubbleOf = (container: HTMLElement) => container.querySelector(".msg-bubble") as HTMLElement;
+
+  it("a reply is never narrower than its hover actions, so none sticks out past its left edge", () => {
+    const short = { ...message, content: "CAT" };
+    const { container } = render(
+      <MessageBubble message={short} onFork={vi.fn()} forkCurrentProvider="claude-code" onRerun={vi.fn()} starKey="k" onToggleStar={vi.fn()} />,
+    );
+    // copy, fork, star, rerun: the rerun button's left edge is 96 + 24 = 120px in from the right.
+    expect(bubbleOf(container).style.minWidth).toBe("126px");
+    cleanup();
+    const { container: fewer } = render(<MessageBubble message={short} onFork={vi.fn()} forkCurrentProvider="claude-code" />);
+    expect(bubbleOf(fewer).style.minWidth).toBe("66px");
+  });
+
+  it("a user bubble is right-aligned, so it keeps its natural width", () => {
+    const { container } = render(<MessageBubble message={{ ...message, role: "user" }} onFork={vi.fn()} forkCurrentProvider="claude-code" onRerun={vi.fn()} />);
+    expect(bubbleOf(container).style.minWidth).toBe("");
+  });
+});

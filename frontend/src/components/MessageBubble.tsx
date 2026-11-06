@@ -247,6 +247,10 @@ function ForkButton({
   );
 }
 
+/** Hover-action geometry: the first sits 6px in from the bubble's right edge, then one every 30px (24px button + 6px gap). */
+const HOVER_ACTION_EDGE = 6;
+const HOVER_ACTION_PITCH = 30;
+
 const RERUN_TITLE = "Send this prompt again (for a reply, the prompt it answers) in a new chat that takes this one's place; the original is kept as its child";
 
 /**
@@ -1051,6 +1055,14 @@ function MessageBubble({
   const canFork = !!onFork && !!message.timestamp;
   const toggleStar = starKey && onToggleStar ? () => onToggleStar(starKey, !starred) : undefined;
   const rerun = canFork && onRerun ? () => onRerun(message.timestamp!, message.role) : undefined;
+  // The hover actions sit at fixed offsets from the bubble's right edge (copy
+  // 6, fork 36, star 66, rerun 96; each 24px wide). On a bubble narrower than
+  // the row they stick out past its LEFT edge — for a left-aligned reply, out
+  // of the message column and under the sidebar, where they cannot be clicked.
+  // A reply is therefore never narrower than its actions. User bubbles are
+  // right-aligned, so their overflow lands in the column and needs nothing.
+  const actionSlots = 1 + (canFork ? 1 : 0) + (toggleStar ? 1 : 0) + (rerun ? 1 : 0);
+  const actionsMinWidth = isUser ? undefined : HOVER_ACTION_EDGE + actionSlots * HOVER_ACTION_PITCH;
 
   return (
     <div
@@ -1065,6 +1077,7 @@ function MessageBubble({
         className="msg-bubble"
         style={{
           maxWidth: "85%",
+          ...(actionsMinWidth && { minWidth: actionsMinWidth }),
           padding: "10px 14px",
           borderRadius: "var(--radius)",
           background: getBackgroundColor(),

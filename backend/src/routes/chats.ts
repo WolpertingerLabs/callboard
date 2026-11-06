@@ -1459,7 +1459,8 @@ chatsRouter.post("/:id/fork", async (req, res) => {
  */
 function resolveSupersedeRequest(req: Request, verb: string): { ok: true; chat: any; source: ForkSource; timestamp: string } | { ok: false; status: number; error: string } {
   const { timestamp } = req.body ?? {};
-  if (!timestamp || typeof timestamp !== "string" || isNaN(new Date(timestamp).getTime())) return { ok: false, status: 400, error: "timestamp is required" };
+  if (!timestamp || typeof timestamp !== "string") return { ok: false, status: 400, error: "timestamp is required" };
+  if (isNaN(new Date(timestamp).getTime())) return { ok: false, status: 400, error: "timestamp is not a valid date" };
   const chat = findChat(req.params.id as string, false) as any;
   if (!chat) return { ok: false, status: 404, error: "Chat not found" };
   const source = resolveForkSource(chat, verb);
@@ -1696,7 +1697,16 @@ chatsRouter.post("/:id/rerun", async (req, res) => {
     const newSessionId = randomUUID();
     let written: { logPath: string } | null = null;
     try {
-      written = writeForkedSession({ chat, source, targetKind: source.providerKind, targetProvider: source.provider, timestamp: plan.keepThrough, newSessionId });
+      // Cut at the prompt's position, not by timestamp — see writeForkedSession.
+      written = writeForkedSession({
+        chat,
+        source,
+        targetKind: source.providerKind,
+        targetProvider: source.provider,
+        timestamp: plan.keepThrough,
+        before: plan.promptAt,
+        newSessionId,
+      });
     } catch (error) {
       if (error instanceof UnsupportedForkError) return res.status(400).json({ error: `${providerLabel(source.providerKind)} chats cannot be rerun from a message` });
       log.error(`Failed to write rerun of ${chat.id}: ${error}`);
