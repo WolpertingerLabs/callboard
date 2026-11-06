@@ -8,6 +8,11 @@
  * least one such card are rows — the main checkout included — so `cardIds` is
  * never empty, and a repository with no rows is not listed.
  *
+ * The open cards' git trails add to that, never replace it: a live row lists
+ * the PRs of branches its chats were on earlier in that directory beside its
+ * live one (`prs`), and a worktree a trail recorded that has since been
+ * deleted gets a `removed` row of its own — when it has a PR to show.
+ *
  * An HTTP response, not part of the stream wire surface.
  */
 
@@ -30,7 +35,20 @@ export interface BranchRow {
   isMain: boolean;
   /** The pull request for this branch, when the repo is on GitHub and one matched. */
   pr?: BranchPr;
-  /** Unarchived cards with a member chat in this directory (or below it). Never empty. */
+  /**
+   * Every PR to badge on this row when the git trail adds any: `pr` first (when
+   * there is one), then the PRs of branches this directory's chats were on
+   * earlier — open first, then most recently updated — one per URL. Absent when
+   * the trail adds nothing, so a row then reads exactly as `pr` alone.
+   */
+  prs?: BranchPr[];
+  /**
+   * A worktree the git trail recorded that no longer exists. `branch` is the
+   * last one recorded there, `prs` holds its PRs, and there is no `pr` (no
+   * live branch to match). Absent on every live row.
+   */
+  removed?: true;
+  /** Unarchived cards with a member chat in this directory (or below it), or — on a removed row — whose chats' trails recorded it. Never empty. */
   cardIds: string[];
 }
 

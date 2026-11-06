@@ -240,6 +240,125 @@ describe("buildGitOverview", () => {
   });
 });
 
+describe("buildGitOverview — the git trail", () => {
+  const at = (pr: PullSummary, updatedAt: string): PullSummary => ({ ...pr, updatedAt });
+  const entry = (cwd: string, branch: string, lastSeen = "t1", repoPath = "/src/app") => ({ cwd, repoPath, branch, firstSeen: "t0", lastSeen });
+  const APP: RepoPulls = {
+    github: { owner: "acme", repo: "app" },
+    defaultBranch: "main",
+    byBranch: new Map([
+      ["feat/x", [at(pull(12, "feat/x", "open"), "2026-11-01T00:00:00Z")]],
+      ["feat/old", [at(pull(5, "feat/old", "merged", "not-local"), "2026-11-05T00:00:00Z")]],
+      ["feat/older", [at(pull(7, "feat/older", "open"), "2026-10-01T00:00:00Z")]],
+      ["feat/gone", [at(pull(6, "feat/gone", "closed"), "2026-11-04T00:00:00Z")]],
+      ["feat/gone2", [at(pull(8, "feat/gone2", "merged"), "2026-11-02T00:00:00Z")]],
+      ["main", [pull(1, "main", "open")]],
+    ]),
+  };
+  const pullsFor = vi.fn(async (repo: string) => (repo === "/src/app" ? APP : { byBranch: new Map() }));
+  const gone = (dir: string) => !dir.startsWith("/src/app.gone") && !dir.startsWith("/src/other.gone");
+  const rowOf = (repos: Awaited<ReturnType<typeof buildGitOverview>>["repos"], cwd: string) => repos.flatMap((r) => r.rows).find((row) => row.cwd === cwd);
+
+  it("badges a live row with the PRs of its chats' earlier branches: current first, then open, then most recent", async () => {
+    const trails = [
+      { cardId: "c1", entry: entry("/src/app.feat-x", "feat/old") },
+      { cardId: "c1", entry: entry("/src/app.feat-x", "feat/older") },
+      { cardId: "c1", entry: entry("/src/app.feat-x", "feat/x") },
+    ];
+    const { repos } = await buildGitOverview({}, deps({ "/src/app.feat-x": ["c1"] }, { pullsFor, trails: () => trails }));
+    const row = rowOf(repos, "/src/app.feat-x")!;
+    expect(row.pr?.number).toBe(12);
+    // #5 is merged with a head that is not the local tip: no SHA check for trail branches.
+    expect(row.prs?.map((p) => p.number)).toEqual([12, 7, 5]);
+    expect(repos[0].rows).toHaveLength(1);
+  });
+
+  it("lists a PR once per row however many chats recorded its branch", async () => {
+    const trails = [
+      { cardId: "c1", entry: entry("/src/app.feat-x", "feat/old") },
+      { cardId: "c2", entry: entry("/src/app.feat-x", "feat/old") },
+    ];
+    const { repos } = await buildGitOverview({}, deps({ "/src/app.feat-x": ["c1", "c2"] }, { pullsFor, trails: () => trails }));
+    expect(rowOf(repos, "/src/app.feat-x")!.prs?.map((p) => p.number)).toEqual([12, 5]);
+  });
+
+  it("skips the default branch, and adds no prs when the trail adds nothing", async () => {
+    const { repos } = await buildGitOverview(
+      {},
+      deps({ "/src/app.feat-x": ["c1"] }, { pullsFor, trails: () => [{ cardId: "c1", entry: entry("/src/app.feat-x", "main") }] }),
+    );
+    expect(rowOf(repos, "/src/app.feat-x")).toEqual({
+      cwd: "/src/app.feat-x",
+      branch: "feat/x",
+      isMain: false,
+      pr: expect.objectContaining({ number: 12 }),
+      cardIds: ["c1"],
+    });
+  });
+
+  it("only takes trail entries from the row's own cards", async () => {
+    const trails = [{ cardId: "elsewhere", entry: entry("/src/app.feat-x", "feat/old") }];
+    const { repos } = await buildGitOverview({}, deps({ "/src/app.feat-x": ["c1"] }, { pullsFor, trails: () => trails }));
+    expect(rowOf(repos, "/src/app.feat-x")!.prs).toBeUndefined();
+  });
+
+  it("gives a removed worktree one row with every PR it carried, marked removed", async () => {
+    const trails = [
+      { cardId: "c1", entry: entry("/src/app.gone", "feat/gone", "t1") },
+      { cardId: "c2", entry: entry("/src/app.gone", "feat/gone2", "t2") },
+      { cardId: "c1", entry: entry("/src/app.gone", "main", "t0") },
+    ];
+    const { repos } = await buildGitOverview({}, deps({ "/src/app": ["c3"] }, { pullsFor, trails: () => trails, exists: gone }));
+    expect(repos[0].rows.map((r) => r.cwd)).toEqual(["/src/app", "/src/app.gone"]);
+    expect(rowOf(repos, "/src/app.gone")).toEqual({
+      cwd: "/src/app.gone",
+      branch: "feat/gone2",
+      isMain: false,
+      removed: true,
+      prs: [expect.objectContaining({ number: 6 }), expect.objectContaining({ number: 8 })],
+      cardIds: ["c1", "c2"],
+    });
+  });
+
+  it("shows no removed row without a PR, nor one whose repository is gone too", async () => {
+    const trails = [
+      { cardId: "c1", entry: entry("/src/app.gone", "main") },
+      { cardId: "c1", entry: entry("/src/app.gone-nopr", "feat/none") },
+      { cardId: "c1", entry: entry("/src/other.gone", "feat/gone", "t1", "/src/other.gone-repo") },
+    ];
+    const { repos } = await buildGitOverview({}, deps({ "/src/app": ["c3"] }, { pullsFor, trails: () => trails, exists: gone }));
+    expect(repos.flatMap((r) => r.rows).filter((r) => r.removed)).toEqual([]);
+  });
+
+  it("lists a repository reachable only through a trail", async () => {
+    const trails = [{ cardId: "c1", entry: entry("/src/app.gone", "feat/gone") }];
+    const { repos } = await buildGitOverview({}, deps({ "/src/lib": ["c2"] }, { pullsFor, trails: () => trails, exists: gone }));
+    expect(repos.map((r) => [r.name, r.rows.map((row) => [row.cwd, row.removed ?? false])])).toEqual([
+      ["app", [["/src/app.gone", true]]],
+      ["lib", [["/src/lib", false]]],
+    ]);
+  });
+
+  it("is a strict superset: without trails the answer is today's, and trails never change a live field", async () => {
+    const folders = { "/src/app.feat-x": ["c1"], "/src/app": ["c2"], "/src/lib": ["c3"] };
+    const strip = (r: Awaited<ReturnType<typeof buildGitOverview>>) => r.repos;
+    const today = strip(await buildGitOverview({}, deps(folders, { pullsFor })));
+    expect(strip(await buildGitOverview({}, deps(folders, { pullsFor, trails: () => [] })))).toEqual(today);
+
+    const trails = [
+      { cardId: "c1", entry: entry("/src/app.feat-x", "feat/old") },
+      { cardId: "c2", entry: entry("/src/app.gone", "feat/gone") },
+    ];
+    const withTrail = strip(await buildGitOverview({}, deps(folders, { pullsFor, trails: () => trails, exists: gone })));
+    for (const repo of today) {
+      for (const row of repo.rows) {
+        const { prs: _prs, ...live } = rowOf(withTrail, row.cwd)!;
+        expect(live).toEqual(row);
+      }
+    }
+  });
+});
+
 describe("the real filesystem helpers", () => {
   const tmp = realpathSync(mkdtempSync(join(tmpdir(), "callboard-git-overview-")));
   afterAll(() => rmSync(tmp, { recursive: true, force: true }));

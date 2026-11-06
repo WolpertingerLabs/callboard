@@ -15,7 +15,7 @@ const tmp = realpathSync(mkdtempSync(join(tmpdir(), "callboard-git-trail-")));
 
 const { chatFileService } = await import("./chat-file-service.js");
 const { sessionRegistry } = await import("./session-registry.js");
-const { initGitTrailRecorder, mergeSighting, parseGitTrail, recordGitTrail, sightFolder } = await import("./git-trail.js");
+const { initGitTrailRecorder, mergeSighting, noteChatSession, parseGitTrail, recordGitTrail, sightFolder } = await import("./git-trail.js");
 
 afterAll(() => {
   rmSync(tmp, { recursive: true, force: true });
@@ -167,10 +167,31 @@ describe("recordGitTrail", () => {
       model: "opus",
       gitTrail: [{ cwd: "/elsewhere", repoPath: "/elsewhere", branch: "x", firstSeen: "t0", lastSeen: "t0" }],
     });
-    vi.spyOn(chatFileService, "getChat").mockReturnValueOnce(stale);
+    // The recorder's first read returns the stale copy; its re-read must not.
+    vi.spyOn(chatFileService, "getChatBySessionId").mockReturnValueOnce(stale);
     expect(recordGitTrail(chat.id)).toBe(true);
     expect(metaOf(chat.id).model).toBe("opus");
     expect(trailOf(chat.id).map((e) => e.branch)).toEqual(["x", "main"]);
+  });
+
+  it("finds a chat filed under another session id without scanning, once sendMessage noted it", () => {
+    const repo = makeRepo();
+    const chat = chatFileService.upsertChat("trail-id-differs", repo, "trail-session-xyz", { metadata: "{}" });
+    noteChatSession(chat.id, chat.session_id);
+    const scan = vi.spyOn(chatFileService, "getChat");
+    expect(recordGitTrail(chat.id)).toBe(true);
+    expect(scan).not.toHaveBeenCalled();
+    expect(parseGitTrail(JSON.parse(chatFileService.getChatBySessionId("trail-session-xyz")!.metadata).gitTrail)).toHaveLength(1);
+  });
+
+  it("scans at most once for an id it was not told about, then remembers", () => {
+    const repo = makeRepo();
+    const chat = chatFileService.upsertChat("trail-id-unnoted", repo, "trail-session-unnoted", { metadata: "{}" });
+    const scan = vi.spyOn(chatFileService, "getChat");
+    recordGitTrail(chat.id);
+    git(repo, "commit", "-q", "--allow-empty", "-m", "more");
+    recordGitTrail(chat.id);
+    expect(scan).toHaveBeenCalledTimes(1);
   });
 
   it("swallows a failure rather than reaching the turn", () => {

@@ -22,7 +22,7 @@ import { chatFileService } from "./chat-file-service.js";
 import { listChatsSnapshot } from "./chats-snapshot.js";
 import { DEFAULT_PLACEMENT_DEPS, placeFolders, type FolderPlacement, type PlacementDeps } from "./git-overview.js";
 import { parseGitTrail } from "./git-trail.js";
-import { getRepoPulls, matchPull, toChatPr, type PullSummary, type RepoPulls } from "./github-prs.js";
+import { getRepoPulls, matchPull, pullForTrailBranch, toChatPr, type RepoPulls } from "./github-prs.js";
 import { parseChatMetadata } from "../utils/chat-metadata.js";
 
 /** A member chat of a card, with its recorded git trail. */
@@ -96,17 +96,6 @@ function folderPrs(folder: string, placement: FolderPlacement | undefined, pulls
   return { ...base, status: "no_pr" };
 }
 
-/**
- * The PR of a branch a chat's trail recorded it on: by branch name, with no
- * SHA check — the chat worked on that branch, so whatever PR it carried is
- * one of the chat's — preferring an open PR, else the most recently updated
- * (the order the listing's index already keeps). Never the default branch.
- */
-function trailPull(entry: GitTrailEntry, pulls: RepoPulls | undefined): PullSummary | undefined {
-  if (!pulls?.github || entry.branch === pulls.defaultBranch) return undefined;
-  return pulls.byBranch.get(entry.branch)?.[0];
-}
-
 const isOpen = (pr: ChatPr) => pr.state === "open" || pr.state === "draft";
 /** Open work first, then most recently updated. */
 const byOpenThenUpdated = (a: ChatPr, b: ChatPr) => Number(isOpen(b)) - Number(isOpen(a)) || b.updatedAt.localeCompare(a.updatedAt);
@@ -158,7 +147,7 @@ export async function buildChatPrs(opts: { folder: string; chatId?: string; forc
   const own = new Map<string, ChatPr>();
   if (currentPrs.pr) own.set(currentPrs.pr.url, currentPrs.pr);
   for (const entry of ownEntries) {
-    const pull = trailPull(entry, pullsByRepo.get(entry.repoPath));
+    const pull = pullForTrailBranch(pullsByRepo.get(entry.repoPath), entry.branch);
     if (pull && !own.has(pull.url)) own.set(pull.url, toChatPr(pull));
   }
   if (own.size > 0) currentPrs.prs = [...own.values()].sort(byOpenThenUpdated);
@@ -178,7 +167,7 @@ export async function buildChatPrs(opts: { folder: string; chatId?: string; forc
   }
   for (const { member, entries } of memberEntries) {
     for (const entry of entries) {
-      const pull = trailPull(entry, pullsByRepo.get(entry.repoPath));
+      const pull = pullForTrailBranch(pullsByRepo.get(entry.repoPath), entry.branch);
       if (pull) addCardPr(toChatPr(pull), basename(entry.repoPath), entry.branch, member);
     }
   }

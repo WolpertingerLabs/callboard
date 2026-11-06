@@ -19,25 +19,46 @@
  */
 import { existsSync } from "fs";
 import { basename, sep } from "path";
-import type { BranchRepo, BranchRow, GitOverviewResponse } from "shared";
+import type { BranchPr, BranchRepo, BranchRow, GitOverviewResponse, GitTrailEntry } from "shared";
 import { createCardContext } from "./card-context.js";
-import { getRepoPulls, matchPull, toBranchPr, type RepoPulls } from "./github-prs.js";
+import { listChatsSnapshot } from "./chats-snapshot.js";
+import { parseGitTrail } from "./git-trail.js";
+import { byOpenThenUpdated, getRepoPulls, matchPull, pullForTrailBranch, toBranchPr, type PullSummary, type RepoPulls } from "./github-prs.js";
+import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { resolveWorktreeToMainRepoCached, tryGetGitWorktreesAsync, type WorktreeInfo } from "../utils/git.js";
 import { findGitRoot, normalizeDir } from "../utils/git-root.js";
 
-/** Card ids by member-chat folder, over every open, visible card. */
-export function activeCardFolders(): Map<string, Set<string>> {
-  const byFolder = new Map<string, Set<string>>();
+/** One git-trail entry of an open card's member chat. */
+export interface CardTrailEntry {
+  cardId: string;
+  entry: GitTrailEntry;
+}
+
+/**
+ * Card ids by member-chat folder over every open, visible card — and the git
+ * trails of those same member chats, read from the same snapshot.
+ */
+export function activeCardData(): { folders: Map<string, Set<string>>; trails: CardTrailEntry[] } {
+  const stored = listChatsSnapshot();
+  const byId = new Map(stored.map((chat) => [chat.id, chat]));
+  const folders = new Map<string, Set<string>>();
+  const trails: CardTrailEntry[] = [];
   // Runs carry no folder, so there is no reason to load them.
-  for (const card of createCardContext().summaries([], false, undefined, "open")) {
+  for (const card of createCardContext(stored).summaries([], false, undefined, "open")) {
     for (const member of card.memberChats) {
+      for (const entry of parseGitTrail(parseChatMetadata(byId.get(member.chatId)?.metadata).gitTrail)) trails.push({ cardId: card.id, entry });
       if (!member.folder) continue;
-      const ids = byFolder.get(member.folder) ?? new Set<string>();
+      const ids = folders.get(member.folder) ?? new Set<string>();
       ids.add(card.id);
-      byFolder.set(member.folder, ids);
+      folders.set(member.folder, ids);
     }
   }
-  return byFolder;
+  return { folders, trails };
+}
+
+/** Card ids by member-chat folder, over every open, visible card. */
+export function activeCardFolders(): Map<string, Set<string>> {
+  return activeCardData().folders;
 }
 
 // Re-exported from their new home beside the other filesystem-only git
@@ -100,6 +121,8 @@ export interface PlacementDeps {
 
 export interface OverviewDeps extends PlacementDeps {
   folders: () => Map<string, Set<string>>;
+  /** The open cards' member chats' git trails. Absent = none, which is the overview without trails. */
+  trails?: () => CardTrailEntry[];
   pullsFor: (repoPath: string, force: boolean) => Promise<RepoPulls>;
 }
 
@@ -110,11 +133,12 @@ export const DEFAULT_PLACEMENT_DEPS: PlacementDeps = {
   exists: existsSync,
 };
 
-const DEFAULT_DEPS: OverviewDeps = {
-  ...DEFAULT_PLACEMENT_DEPS,
-  folders: activeCardFolders,
-  pullsFor: getRepoPulls,
-};
+/** Production deps, reading folders and trails from one card snapshot per request. */
+function defaultDeps(): OverviewDeps {
+  let active: ReturnType<typeof activeCardData> | undefined;
+  const load = () => (active ??= activeCardData());
+  return { ...DEFAULT_PLACEMENT_DEPS, folders: () => load().folders, trails: () => load().trails, pullsFor: getRepoPulls };
+}
 
 /** The worktree with the longest path containing `dir`, if any. */
 function owningWorktree(dir: string, repo: RepoListing): ListedWorktree | undefined {
@@ -213,7 +237,7 @@ export async function placeFolders(folders: Iterable<string>, deps: PlacementDep
  * Assemble the overview. `force` (the refresh button) refetches PR data that
  * the cache would otherwise have served.
  */
-export async function buildGitOverview(opts: { force?: boolean } = {}, deps: OverviewDeps = DEFAULT_DEPS): Promise<GitOverviewResponse> {
+export async function buildGitOverview(opts: { force?: boolean } = {}, deps: OverviewDeps = defaultDeps()): Promise<GitOverviewResponse> {
   const folders = deps.folders();
   const placements = await placeFolders(folders.keys(), deps);
 
@@ -233,23 +257,83 @@ export async function buildGitOverview(opts: { force?: boolean } = {}, deps: Ove
   const listings = [...repos.values()]
     .map((repo) => ({ ...repo, worktrees: repo.worktrees.filter((wt) => cardsByCwd.has(wt.normPath)) }))
     .filter((repo) => repo.worktrees.length > 0);
-  const pulls = await Promise.all(listings.map((repo) => deps.pullsFor(repo.repoPath, opts.force === true)));
 
-  const out: BranchRepo[] = listings.map((repo, i) => {
-    const repoPulls = pulls[i];
-    const rows: BranchRow[] = repo.worktrees.map((wt) => {
+  // 5. The git trails, sorted onto the rows they belong to. An entry on a
+  //    live row's directory, from one of that row's cards, adds an earlier
+  //    branch to it. An entry whose directory is gone — while its repository
+  //    is not — is a removed worktree. Anything else (a directory that still
+  //    exists but no open card works in) is not active work, and not a row.
+  const earlierByCwd = new Map<string, Set<string>>();
+  const removedByRepo = new Map<string, Map<string, { entries: GitTrailEntry[]; cardIds: Set<string> }>>();
+  for (const { cardId, entry } of deps.trails?.() ?? []) {
+    const cwd = deps.normalize(entry.cwd);
+    const repoPath = deps.normalize(entry.repoPath);
+    if (cardsByCwd.has(cwd)) {
+      if (!cardsByCwd.get(cwd)!.has(cardId)) continue;
+      const branches = earlierByCwd.get(cwd) ?? new Set<string>();
+      branches.add(entry.branch);
+      earlierByCwd.set(cwd, branches);
+    } else if (!deps.exists(cwd) && deps.exists(repoPath)) {
+      const byCwd = removedByRepo.get(repoPath) ?? new Map();
+      const removed = byCwd.get(cwd) ?? { entries: [], cardIds: new Set<string>() };
+      removed.entries.push(entry);
+      removed.cardIds.add(cardId);
+      byCwd.set(cwd, removed);
+      removedByRepo.set(repoPath, byCwd);
+    }
+  }
+
+  // One lookup per repository — live or reachable only through a trail.
+  const repoPaths = [...new Set([...listings.map((repo) => repo.repoPath), ...removedByRepo.keys()])];
+  const pulls = new Map<string, RepoPulls>();
+  await Promise.all(repoPaths.map(async (repoPath) => pulls.set(repoPath, await deps.pullsFor(repoPath, opts.force === true))));
+
+  /** `first` (when there is one), then `others` — open first, most recently updated — one per URL. */
+  const badges = (first: PullSummary | undefined, others: PullSummary[]): BranchPr[] => {
+    const seen = new Set(first ? [first.url] : []);
+    const rest = others.filter((pr) => !seen.has(pr.url) && seen.add(pr.url)).sort(byOpenThenUpdated);
+    return [...(first ? [first] : []), ...rest].map(toBranchPr);
+  };
+  const listingByPath = new Map(listings.map((repo) => [repo.repoPath, repo]));
+
+  const out: BranchRepo[] = [];
+  for (const repoPath of repoPaths) {
+    const repoPulls = pulls.get(repoPath)!;
+    const rows: BranchRow[] = (listingByPath.get(repoPath)?.worktrees ?? []).map((wt) => {
       const pr = wt.branch ? matchPull(repoPulls.byBranch.get(wt.branch), wt.head) : undefined;
+      // Earlier branches by name alone; the live branch keeps its SHA rule above.
+      const earlier = [...(earlierByCwd.get(wt.normPath) ?? [])]
+        .filter((branch) => branch !== wt.branch)
+        .map((branch) => pullForTrailBranch(repoPulls, branch))
+        .filter((found): found is PullSummary => found !== undefined && found.url !== pr?.url);
       return {
         cwd: wt.normPath,
         branch: wt.branch,
         isMain: wt.isMainWorktree,
         ...(pr && { pr: toBranchPr(pr) }),
+        ...(earlier.length > 0 && { prs: badges(pr, earlier) }),
         cardIds: [...cardsByCwd.get(wt.normPath)!].sort(),
       };
     });
-    rows.sort((a, b) => Number(b.isMain) - Number(a.isMain) || (a.branch ?? "￿").localeCompare(b.branch ?? "￿") || a.cwd.localeCompare(b.cwd));
-    return { repoPath: repo.repoPath, name: basename(repo.repoPath), rows, ...(repoPulls.error && { prError: repoPulls.error }) };
-  });
+    // Removed worktrees: one row per directory, its entries' PRs as badges.
+    // Only those with a PR are shown — a deleted worktree with nothing to
+    // link to is history, and a long-lived repo has dozens of them.
+    for (const [cwd, removed] of removedByRepo.get(repoPath) ?? []) {
+      const found = removed.entries.map((entry) => pullForTrailBranch(repoPulls, entry.branch)).filter((pr): pr is PullSummary => pr !== undefined);
+      if (found.length === 0) continue;
+      const last = removed.entries.reduce((a, b) => (b.lastSeen > a.lastSeen ? b : a));
+      rows.push({ cwd, branch: last.branch, isMain: false, removed: true, prs: badges(undefined, found), cardIds: [...removed.cardIds].sort() });
+    }
+    if (rows.length === 0) continue;
+    rows.sort(
+      (a, b) =>
+        Number(b.isMain) - Number(a.isMain) ||
+        Number(!!a.removed) - Number(!!b.removed) ||
+        (a.branch ?? "\uffff").localeCompare(b.branch ?? "\uffff") ||
+        a.cwd.localeCompare(b.cwd),
+    );
+    out.push({ repoPath, name: basename(repoPath), rows, ...(repoPulls.error && { prError: repoPulls.error }) });
+  }
   out.sort((a, b) => a.name.localeCompare(b.name) || a.repoPath.localeCompare(b.repoPath));
 
   return { repos: out, generatedAt: new Date().toISOString() };

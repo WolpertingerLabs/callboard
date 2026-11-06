@@ -73,11 +73,40 @@ export function mergeSighting(trail: GitTrailEntry[], sighting: GitTrailSighting
   const index = trail.findIndex((e) => e.cwd === sighting.cwd && e.branch === sighting.branch);
   if (index === -1) return [...trail, { ...sighting, firstSeen: now, lastSeen: now }];
   const known = trail[index];
+  // A sighting with no readable commit (reftable, an unborn branch) never moves the entry: only lastSeen would change.
   const headMoved = sighting.head !== undefined && sighting.head !== known.head;
   if (!headMoved && known.repoPath === sighting.repoPath) return null;
   const next = [...trail];
   next[index] = { ...known, ...sighting, firstSeen: known.firstSeen, lastSeen: now };
   return next;
+}
+
+/**
+ * Registry id → the session id its record is filed under. An existing chat
+ * registers under its chat id, which is not always its filename; `getChat` on
+ * such an id falls back to scanning every record. `sendMessage` notes the
+ * session id it already holds, and a slow lookup remembers its answer, so a
+ * turn's start and end each cost one file read.
+ */
+const sessionIdOf = new Map<string, string>();
+
+/** Note the session id chat `id`'s record is filed under. Called by `sendMessage`, which already holds it. */
+export function noteChatSession(id: string, sessionId: string): void {
+  if (id && sessionId && id !== sessionId) sessionIdOf.set(id, sessionId);
+}
+
+/** The record for registry id `id`: by its noted session id, by filename, then by the scan. */
+function chatForRegistryId(id: string) {
+  const noted = sessionIdOf.get(id);
+  if (noted) {
+    const chat = chatFileService.getChatBySessionId(noted);
+    // A rotated session refiles the record; fall through to find it again.
+    if (chat?.id === id) return chat;
+    sessionIdOf.delete(id);
+  }
+  const chat = chatFileService.getChatBySessionId(id) ?? chatFileService.getChat(id);
+  if (chat) noteChatSession(id, chat.session_id);
+  return chat;
 }
 
 /**
@@ -90,7 +119,7 @@ export function recordGitTrail(id: string, now = new Date().toISOString()): bool
     // A new chat registers under a temporary id before its record exists; it
     // is recorded when it migrates to its real one.
     if (!id || id.startsWith("new-")) return false;
-    const chat = chatFileService.getChat(id);
+    const chat = chatForRegistryId(id);
     if (!chat?.folder) return false;
     const sighting = sightFolder(chat.folder);
     if (!sighting) return false;

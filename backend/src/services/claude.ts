@@ -1070,6 +1070,9 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     if (!chat) throw new Error("Chat not found");
     folder = chat.folder;
     resumeSessionId = chat.session_id;
+    // The git trail looks this chat up by id at turn start and end; hand it the
+    // filename so neither lookup falls back to scanning every record.
+    noteChatSession(opts.chatId, chat.session_id);
     // Legacy stored records also need resolver provenance before resuming. Reads
     // remain immutable; only this write path pins inferred routing.
     const storedMetadata = parseChatMetadata(chat.metadata);
@@ -2629,7 +2632,7 @@ initSessionCompletionHandler({ sendMessage, getActiveSession });
 
 // Record each chat's git trail (the branches its folder was on) at every turn's
 // start and end — on the same registry seam, so every engine and send path.
-import { initGitTrailRecorder } from "./git-trail.js";
+import { initGitTrailRecorder, noteChatSession } from "./git-trail.js";
 initGitTrailRecorder();
 
 // Register dependencies for the job runner (deterministic multi-step jobs).
