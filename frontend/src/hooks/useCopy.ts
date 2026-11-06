@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { copyToClipboard } from "../utils/clipboard";
+import { copyRichToClipboard, copyToClipboard } from "../utils/clipboard";
 
 /**
  * Copy-to-clipboard with "Copied" feedback, built on `copyToClipboard` so it
@@ -10,22 +10,23 @@ import { copyToClipboard } from "../utils/clipboard";
  * - `copied` is the text most recently copied, or `null`. Most callers only
  *   test `copied !== null`; a list of copy buttons compares it to its row's
  *   text to light up just that one.
- * - `copy(text)` resolves to whether the text landed. Feedback is shown only
- *   on success.
+ * - `copy(text, html?)` resolves to whether the text landed. Feedback is shown
+ *   only on success. With `html`, both are written — rich targets paste the
+ *   HTML, plain ones the text.
  * - `reset()` clears the feedback early.
  *
  * Feedback clears after `resetMs` (1.5s by default). Pass `null` to keep it
  * until `reset()` — for a one-time secret whose "Copied" should persist.
  */
-export function useCopy(resetMs: number | null = 1500): [copied: string | null, copy: (text: string) => Promise<boolean>, reset: () => void] {
+export function useCopy(resetMs: number | null = 1500): [copied: string | null, copy: (text: string, html?: string) => Promise<boolean>, reset: () => void] {
   const [copied, setCopied] = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => () => clearTimer(timer), []);
 
   const copy = useCallback(
-    async (text: string) => {
-      const ok = await copyToClipboard(text);
+    async (text: string, html?: string) => {
+      const ok = html === undefined ? await copyToClipboard(text) : await copyRichToClipboard(html, text);
       if (ok) {
         clearTimer(timer);
         setCopied(text);

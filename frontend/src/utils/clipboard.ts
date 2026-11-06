@@ -37,3 +37,48 @@ export async function copyToClipboard(text: string): Promise<boolean> {
   }
   return copyViaTextarea(text);
 }
+
+/**
+ * Puts `html` and `text` on the clipboard together, so a rich target (Slack,
+ * Docs, email) pastes the formatting and a plain one (a terminal, a code
+ * editor) still gets readable text.
+ *
+ * The fallback is the same `execCommand("copy")` route as above, with a one-shot
+ * `copy` listener that overrides what lands on the clipboard — the only way to
+ * set more than one type without the async Clipboard API.
+ */
+export async function copyRichToClipboard(html: string, text: string): Promise<boolean> {
+  if (navigator.clipboard?.write && typeof ClipboardItem !== "undefined") {
+    try {
+      await navigator.clipboard.write([
+        new ClipboardItem({
+          "text/html": new Blob([html], { type: "text/html" }),
+          "text/plain": new Blob([text], { type: "text/plain" }),
+        }),
+      ]);
+      return true;
+    } catch {
+      // Fall through to the copy-event route.
+    }
+  }
+  return copyViaCopyEvent(html, text);
+}
+
+function copyViaCopyEvent(html: string, text: string): boolean {
+  let filled = false;
+  const onCopy = (e: ClipboardEvent) => {
+    if (!e.clipboardData) return;
+    e.clipboardData.setData("text/html", html);
+    e.clipboardData.setData("text/plain", text);
+    e.preventDefault();
+    filled = true;
+  };
+  document.addEventListener("copy", onCopy);
+  try {
+    // Copy from a selected textarea even though the listener replaces its
+    // contents: Safari doesn't fire `copy` without a non-empty selection.
+    return copyViaTextarea(text) && filled;
+  } finally {
+    document.removeEventListener("copy", onCopy);
+  }
+}

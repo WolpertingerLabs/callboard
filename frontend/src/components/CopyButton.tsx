@@ -1,10 +1,18 @@
 import { useCallback } from "react";
-import { Check, Copy } from "lucide-react";
+import { Check, Copy, type LucideIcon } from "lucide-react";
 import { useCopy } from "../hooks/useCopy";
 
 interface Props {
   /** Text placed on the clipboard when the button is pressed. */
   text: string;
+  /**
+   * When given, an HTML rendering written alongside `text` so rich targets
+   * (Slack, Docs) paste formatting. A getter, not a string: rendering happens
+   * on click rather than on every render of every bubble.
+   */
+  html?: () => string;
+  /** Idle icon; defaults to the copy glyph. */
+  icon?: LucideIcon;
   /** Tooltip and accessible name — "Copy message", "Copy code", … */
   title: string;
   /**
@@ -25,7 +33,7 @@ interface Props {
  * one in MarkdownRenderer, so both behave identically — including the fallback
  * for non-secure contexts in utils/clipboard.
  */
-export default function CopyButton({ text, title, className, style, size = 14 }: Props) {
+export default function CopyButton({ text, html, icon: Icon = Copy, title, className, style, size = 14 }: Props) {
   const [copied, copy] = useCopy();
 
   const handleCopy = useCallback(
@@ -33,9 +41,9 @@ export default function CopyButton({ text, title, className, style, size = 14 }:
       // A code block sits inside a message bubble that has its own click
       // handlers; copying must not also select or fork the message.
       e.stopPropagation();
-      await copy(text);
+      await copy(text, html?.());
     },
-    [text, copy],
+    [text, html, copy],
   );
 
   return (
@@ -57,7 +65,7 @@ export default function CopyButton({ text, title, className, style, size = 14 }:
         ...style,
       }}
     >
-      {copied !== null ? <Check size={size} style={{ color: "var(--success)" }} /> : <Copy size={size} style={{ color: "var(--text-muted)" }} />}
+      {copied !== null ? <Check size={size} style={{ color: "var(--success)" }} /> : <Icon size={size} style={{ color: "var(--text-muted)" }} />}
     </button>
   );
 }

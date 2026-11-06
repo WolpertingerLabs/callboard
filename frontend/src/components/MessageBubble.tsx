@@ -1,5 +1,5 @@
 import { memo, useState, useMemo, useEffect, useRef, type CSSProperties, type ReactNode } from "react";
-import { Check, FileText, GitFork, RotateCcw, RotateCw, Square, Star, X } from "lucide-react";
+import { Check, ClipboardType, FileText, GitFork, RotateCcw, RotateCw, Square, Star, X } from "lucide-react";
 import type { ChatTreeNode, ForkProvider, ParsedMessage } from "../api";
 import type { ChatRewriteAction } from "../utils/chatRewrite";
 import { parseTaskList, splitAttachmentBlocks, type AttachedFile, type TaskListItem } from "shared/types/index.js";
@@ -9,6 +9,7 @@ import ForkPointMarker from "./ForkPointMarker";
 import JsonContentView from "./JsonContentView";
 import { useRelativeTime } from "../hooks/useRelativeTime";
 import { copyToClipboard } from "../utils/clipboard";
+import { markdownToHtml } from "../utils/markdownToHtml";
 import { formatBytes } from "../utils/formatBytes";
 import { getToolSummary, getToolDisplayName } from "./toolFormatting";
 
@@ -95,9 +96,32 @@ const StatusIcon = ({ status }: { status: string }) => {
   }
 };
 
-/** The message-level copy affordance, revealed on `.msg-bubble:hover`. */
-function MessageCopyButton({ text }: { text: string }) {
-  return <CopyButton text={text} title="Copy message" className="copy-btn" style={{ position: "absolute", top: 6, right: 6 }} />;
+/**
+ * The message-level copy affordances, revealed on `.msg-bubble:hover`: raw
+ * markdown in the corner, and — for a bubble that renders as markdown — a
+ * "copy formatted" one beside it that also writes HTML, so pasting into Slack
+ * or a doc keeps the bold, lists, links and code blocks. Occupies hover slots 0
+ * and 1 (just 0 without `formatted`).
+ *
+ * Returned as a fragment: the hover rule matches `.copy-btn` as a DIRECT child
+ * of the bubble.
+ */
+function MessageCopyButton({ text, formatted = true }: { text: string; formatted?: boolean }) {
+  return (
+    <>
+      <CopyButton text={text} title="Copy message" className="copy-btn" style={{ position: "absolute", top: 6, right: slotRight(0) }} />
+      {formatted && (
+        <CopyButton
+          text={text}
+          html={() => markdownToHtml(text)}
+          icon={ClipboardType}
+          title="Copy formatted (for Slack, docs, email)"
+          className="copy-btn"
+          style={{ position: "absolute", top: 6, right: slotRight(1) }}
+        />
+      )}
+    </>
+  );
 }
 
 /** The harnesses a conversation can be forked into, in menu order. */
@@ -133,7 +157,9 @@ function ForkButton({
   currentProvider,
   onRewrite,
   onRerun,
+  right,
 }: {
+  right: number;
   onFork: (provider?: ForkProvider) => void;
   currentProvider: ForkProvider;
   onRewrite?: (action: ChatRewriteAction) => void;
@@ -164,7 +190,7 @@ function ForkButton({
     // level deeper now that it shares a positioning context with the menu.
     // `is-open` keeps the affordance visible while the menu is open, so the
     // menu doesn't vanish when the pointer leaves the bubble to reach it.
-    <div ref={wrapRef} className={`fork-affordance${open ? " is-open" : ""}`} style={{ position: "absolute", top: 6, right: 36, zIndex: 2 }}>
+    <div ref={wrapRef} className={`fork-affordance${open ? " is-open" : ""}`} style={{ position: "absolute", top: 6, right, zIndex: 2 }}>
       <button
         onClick={(e) => {
           e.stopPropagation();
@@ -250,6 +276,11 @@ function ForkButton({
 /** Hover-action geometry: the first sits 6px in from the bubble's right edge, then one every 30px (24px button + 6px gap). */
 const HOVER_ACTION_EDGE = 6;
 const HOVER_ACTION_PITCH = 30;
+
+/** `right` offset of the hover action in slot `slot` (0 = the corner). */
+function slotRight(slot: number): number {
+  return HOVER_ACTION_EDGE + slot * HOVER_ACTION_PITCH;
+}
 
 const RERUN_TITLE = "Send this prompt again (for a reply, the prompt it answers) in a new chat that takes this one's place; the original is kept as its child";
 
@@ -1027,6 +1058,9 @@ function MessageBubble({
           className="msg-bubble"
           style={{
             maxWidth: "85%",
+            // Left-aligned like a reply, so never narrower than its two copy
+            // buttons (see the reply bubble's actionsMinWidth below).
+            minWidth: HOVER_ACTION_EDGE + 2 * HOVER_ACTION_PITCH,
             padding: "10px 14px",
             borderRadius: "var(--radius)",
             background: "var(--assistant-bg)",
@@ -1055,13 +1089,18 @@ function MessageBubble({
   const canFork = !!onFork && !!message.timestamp;
   const toggleStar = starKey && onToggleStar ? () => onToggleStar(starKey, !starred) : undefined;
   const rerun = canFork && onRerun ? () => onRerun(message.timestamp!, message.role) : undefined;
-  // The hover actions sit at fixed offsets from the bubble's right edge (copy
-  // 6, fork 36, star 66, rerun 96; each 24px wide). On a bubble narrower than
-  // the row they stick out past its LEFT edge — for a left-aligned reply, out
-  // of the message column and under the sidebar, where they cannot be clicked.
-  // A reply is therefore never narrower than its actions. User bubbles are
-  // right-aligned, so their overflow lands in the column and needs nothing.
-  const actionSlots = 1 + (canFork ? 1 : 0) + (toggleStar ? 1 : 0) + (rerun ? 1 : 0);
+  // The hover actions line up right-to-left from the bubble's right edge: copy,
+  // copy formatted (not on a built-in command, which shows literally), fork,
+  // star, rerun — each present one taking the next slot. On a bubble narrower
+  // than the row they stick out past its LEFT edge — for a left-aligned reply,
+  // out of the message column and under the sidebar, where they cannot be
+  // clicked. A reply is therefore never narrower than its actions. User bubbles
+  // are right-aligned, so their overflow lands in the column and needs nothing.
+  const formattedCopy = !message.isBuiltInCommand;
+  const forkSlot = formattedCopy ? 2 : 1;
+  const starSlot = forkSlot + (canFork ? 1 : 0);
+  const rerunSlot = starSlot + (toggleStar ? 1 : 0);
+  const actionSlots = rerunSlot + (rerun ? 1 : 0);
   const actionsMinWidth = isUser ? undefined : HOVER_ACTION_EDGE + actionSlots * HOVER_ACTION_PITCH;
 
   return (
@@ -1093,19 +1132,18 @@ function MessageBubble({
           }),
         }}
       >
-        <MessageCopyButton text={bodyText} />
+        <MessageCopyButton text={bodyText} formatted={formattedCopy} />
         {canFork && (
           <ForkButton
+            right={slotRight(forkSlot)}
             onFork={(provider) => onFork!(message.timestamp!, provider)}
             currentProvider={forkCurrentProvider}
             onRewrite={onRewrite ? (action) => onRewrite(message.timestamp!, action) : undefined}
             onRerun={rerun}
           />
         )}
-        {/* Left of fork when there is one, else where fork would sit. */}
-        {toggleStar && <StarButton starred={starred} onToggle={toggleStar} right={canFork ? 66 : 36} />}
-        {/* Rerun implies fork; left of star when there is one. */}
-        {rerun && <RerunButton onRerun={rerun} right={toggleStar ? 96 : 66} />}
+        {toggleStar && <StarButton starred={starred} onToggle={toggleStar} right={slotRight(starSlot)} />}
+        {rerun && <RerunButton onRerun={rerun} right={slotRight(rerunSlot)} />}
         {message.isBuiltInCommand ? bodyText : bodyText && <MarkdownRenderer content={bodyText} className="message-markdown" />}
         {attachedFiles.length > 0 && <AttachedFileChips files={attachedFiles} />}
         {message.imageIds && message.imageIds.length > 0 && <ImageThumbnails imageIds={message.imageIds} />}
