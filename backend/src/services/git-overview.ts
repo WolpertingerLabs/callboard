@@ -1,7 +1,9 @@
 /**
- * The Board's Branches view: every worktree of every repository an unarchived
- * card is working in, with the cards attached to the directory they work in
- * and, where GitHub knows of one, the branch's pull request.
+ * The Board's Branches view: every worktree (main checkout included) that an
+ * unarchived card is working in, grouped by repository, with those cards
+ * attached and, where GitHub knows of one, the branch's pull request. Idle
+ * worktrees are not listed — on a long-lived repo they outnumber the active
+ * ones by a hundred to a handful.
  *
  * Rows key on the directory (`cwd`), never on a workspace id — this is a
  * listing of directories, and two workspaces on one checkout are one row (see
@@ -204,7 +206,12 @@ export async function buildGitOverview(opts: { force?: boolean } = {}, deps: Ove
     }
   });
 
-  const listings = [...repos.values()];
+  // 4. Only worktrees an open card is working in are rows; a repository left
+  //    with none (its folders all sat in pruned worktrees, say) is dropped
+  //    BEFORE the PR lookup, so it costs no `gh` call.
+  const listings = [...repos.values()]
+    .map((repo) => ({ ...repo, worktrees: repo.worktrees.filter((wt) => cardsByCwd.has(wt.normPath)) }))
+    .filter((repo) => repo.worktrees.length > 0);
   const pulls = await Promise.all(listings.map((repo) => deps.pullsFor(repo.repoPath, opts.force === true)));
 
   const out: BranchRepo[] = listings.map((repo, i) => {
@@ -216,7 +223,7 @@ export async function buildGitOverview(opts: { force?: boolean } = {}, deps: Ove
         branch: wt.branch,
         isMain: wt.isMainWorktree,
         ...(pr && { pr: toBranchPr(pr) }),
-        cardIds: [...(cardsByCwd.get(wt.normPath) ?? [])].sort(),
+        cardIds: [...cardsByCwd.get(wt.normPath)!].sort(),
       };
     });
     rows.sort((a, b) => Number(b.isMain) - Number(a.isMain) || (a.branch ?? "￿").localeCompare(b.branch ?? "￿") || a.cwd.localeCompare(b.cwd));

@@ -33,6 +33,7 @@ const CARDS = [
   card("c1", "PR tracking"),
   card("c2", "Scroll latch", { rollup: "needs_you" }),
   card("c3", "Lib work"),
+  card("c4", "Main work"),
   card("gone", "Archived", { lifecycle: "closed" }),
 ];
 
@@ -42,9 +43,11 @@ const OVERVIEW: GitOverviewResponse = {
     {
       repoPath: "/home/u/callboard",
       name: "callboard",
+      // The daemon only sends rows with open cards — but in ANY space, so a
+      // row can still hold nothing the board shows (old-spike). Main is last
+      // here to prove the view orders it first.
       rows: [
-        { cwd: "/home/u/callboard", branch: "main", isMain: true, cardIds: [] },
-        { cwd: "/home/u/callboard.old-spike", branch: "old-spike", isMain: false, cardIds: [] },
+        { cwd: "/home/u/callboard.old-spike", branch: "old-spike", isMain: false, cardIds: ["other-space"] },
         {
           cwd: "/home/u/callboard.feat-pr-track",
           branch: "feat/pr-track",
@@ -60,6 +63,7 @@ const OVERVIEW: GitOverviewResponse = {
           cardIds: ["c2", "gone"],
           pr: { number: 519, url: "https://github.com/acme/callboard/pull/519", state: "merged", title: "Fix scroll" },
         },
+        { cwd: "/home/u/callboard", branch: "main", isMain: true, cardIds: ["c4"] },
       ],
     },
     {
@@ -95,16 +99,22 @@ describe("BranchesView", () => {
     await mount();
     expect(screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent)).toEqual(["callboard", "drawlatch"]);
     const callboard = screen.getByRole("region", { name: "callboard" });
-    expect(within(callboard).getAllByTestId("branch-row")).toHaveLength(4);
+    expect(within(callboard).getAllByTestId("branch-row")).toHaveLength(3);
   });
 
-  it("orders the main checkout first, then the worktrees in use, then the idle ones", async () => {
+  it("counts the rows it shows beside the repo name", async () => {
+    await mount();
+    const heading = screen.getByRole("heading", { level: 2, name: "callboard" });
+    expect(heading.nextElementSibling!.textContent).toBe("3");
+  });
+
+  it("orders the main checkout first", async () => {
     await mount();
     const callboard = screen.getByRole("region", { name: "callboard" });
     const branches = within(callboard)
       .getAllByTestId("branch-row")
       .map((el) => el.querySelector("span")!.textContent);
-    expect(branches).toEqual(["main", "feat/pr-track", "fix/scroll", "old-spike"]);
+    expect(branches).toEqual(["main", "feat/pr-track", "fix/scroll"]);
   });
 
   it("attaches chips for open cards only, and opens the drawer from one", async () => {
@@ -120,12 +130,16 @@ describe("BranchesView", () => {
     expect(onOpenCard).toHaveBeenCalledWith("c1");
   });
 
-  it("dims rows with no active chats", async () => {
+  it("hides a row none of whose cards the board shows", async () => {
     await mount();
-    expect(row("/home/u/callboard.old-spike").dataset.dimmed).toBe("true");
-    expect(row("/home/u/callboard").dataset.dimmed).toBe("true");
-    expect(row("/home/u/callboard.feat-pr-track").dataset.dimmed).toBeUndefined();
-    expect(within(row("/home/u/callboard.old-spike")).getByText("no active chats")).toBeDefined();
+    expect(screen.queryByTitle("/home/u/callboard.old-spike")).toBeNull();
+  });
+
+  it("copes with a repo that arrives with no rows, and with nothing to show at all", async () => {
+    mockOverview.mockResolvedValue({ generatedAt: OVERVIEW.generatedAt, repos: [{ repoPath: "/r", name: "r", rows: [] }] });
+    render(<BranchesView cards={CARDS} onOpenCard={vi.fn()} />);
+    expect(await screen.findByText("No open card is working in a git repository.")).toBeDefined();
+    expect(screen.queryByRole("heading", { level: 2 })).toBeNull();
   });
 
   it("links the PR badge with its number and state", async () => {
@@ -134,7 +148,7 @@ describe("BranchesView", () => {
     expect(open.getAttribute("href")).toBe("https://github.com/acme/callboard/pull/525");
     expect(open.textContent).toContain("#525 open");
     expect(within(row("/home/u/callboard.fix-scroll")).getByRole("link").textContent).toContain("#519 merged");
-    expect(within(row("/home/u/callboard.old-spike")).getByText("no PR")).toBeDefined();
+    expect(within(row("/home/u/callboard")).getByText("no PR")).toBeDefined();
   });
 
   it("renders the badge without a link when the URL is not a github.com PR", async () => {

@@ -68,10 +68,33 @@ describe("buildGitOverview", () => {
     expect(repos[0].rows).toEqual([
       { cwd: "/src/app", branch: "main", isMain: true, cardIds: ["c2", "c3"] },
       { cwd: "/src/app.feat-x", branch: "feat/x", isMain: false, cardIds: ["c1"] },
-      // A worktree no active card works in still gets a row.
-      { cwd: "/src/app.old", branch: "old", isMain: false, cardIds: [] },
+      // `/src/app.old` is a worktree too, but no open card works in it: no row.
     ]);
     expect(repos[1].rows).toEqual([{ cwd: "/src/lib", branch: "main", isMain: true, cardIds: ["c4"] }]);
+  });
+
+  it("lists only worktrees with active chats — the main checkout included", async () => {
+    const d = deps({ "/src/app.feat-x": ["c1"] });
+    const { repos } = await buildGitOverview({}, d);
+    expect(repos.map((r) => r.rows.map((row) => row.cwd))).toEqual([["/src/app.feat-x"]]);
+    expect(repos.flatMap((r) => r.rows).every((row) => row.cardIds.length > 0)).toBe(true);
+  });
+
+  it("drops a repository left with no rows, and spends no PR lookup on it", async () => {
+    // The folder is inside the repository but in no listed worktree (a pruned
+    // one), so nothing attaches anywhere in it.
+    const pullsFor = vi.fn(async () => ({ byBranch: new Map() }));
+    const d = deps({ "/src/app.pruned": ["c1"], "/src/lib": ["c2"] }, { pullsFor });
+    GIT_ROOTS.add("/src/app.pruned");
+    WORKTREE_OF["/src/app.pruned"] = "/src/app";
+    try {
+      const { repos } = await buildGitOverview({}, d);
+      expect(repos.map((r) => r.repoPath)).toEqual(["/src/lib"]);
+      expect(pullsFor.mock.calls).toEqual([["/src/lib", false]]);
+    } finally {
+      GIT_ROOTS.delete("/src/app.pruned");
+      delete WORKTREE_OF["/src/app.pruned"];
+    }
   });
 
   it("lists each repository once, however many of its folders are in use", async () => {
@@ -85,9 +108,7 @@ describe("buildGitOverview", () => {
     const { repos } = await buildGitOverview({}, d);
     // Resolved through the worktree's .git to the main repo — one listing.
     expect(d.listWorktrees).toHaveBeenCalledWith("/src/app");
-    const rows = repos[0].rows;
-    expect(rows.find((r) => r.cwd === "/src/app.feat-x")?.cardIds).toEqual(["c1"]);
-    expect(rows.find((r) => r.cwd === "/src/app")?.cardIds).toEqual([]);
+    expect(repos[0].rows.map((r) => [r.cwd, r.cardIds])).toEqual([["/src/app.feat-x", ["c1"]]]);
   });
 
   it("dedupes a card with several chats in one directory", async () => {
@@ -138,14 +159,7 @@ describe("buildGitOverview", () => {
       const d = deps({ "/src/app": ["c1"], "/src/app/vendor/sub/src": ["c2"] });
       const { repos } = await buildGitOverview({}, d);
       expect(repos.map((r) => [r.repoPath, r.rows.map((row) => [row.cwd, row.cardIds])])).toEqual([
-        [
-          "/src/app",
-          [
-            ["/src/app", ["c1"]],
-            ["/src/app.feat-x", []],
-            ["/src/app.old", []],
-          ],
-        ],
+        ["/src/app", [["/src/app", ["c1"]]]],
         ["/src/app/vendor/sub", [["/src/app/vendor/sub", ["c2"]]]],
       ]);
     } finally {
@@ -172,7 +186,8 @@ describe("buildGitOverview", () => {
   });
 
   it("drops linked worktrees whose directory is gone", async () => {
-    const d = deps({ "/src/app": ["c1"] }, { exists: (dir) => dir !== "/src/app.old" });
+    // A chat still recorded in the deleted directory has nowhere to attach.
+    const d = deps({ "/src/app": ["c1"], "/src/app.feat-x": ["c2"], "/src/app.old": ["c3"] }, { exists: (dir) => dir !== "/src/app.old" });
     const { repos } = await buildGitOverview({}, d);
     expect(repos[0].rows.map((r) => r.cwd)).toEqual(["/src/app", "/src/app.feat-x"]);
   });
@@ -182,7 +197,10 @@ describe("buildGitOverview", () => {
       ["feat/x", [pull(12, "feat/x", "open")]],
       ["old", [pull(3, "old", "merged", "not-o1")]],
     ]);
-    const d = deps({ "/src/app": ["c1"] }, { pullsFor: async (repo) => (repo === "/src/app" ? { byBranch } : { byBranch: new Map() }) });
+    const d = deps(
+      { "/src/app": ["c1"], "/src/app.feat-x": ["c2"], "/src/app.old": ["c3"] },
+      { pullsFor: async (repo) => (repo === "/src/app" ? { byBranch } : { byBranch: new Map() }) },
+    );
     const { repos } = await buildGitOverview({}, d);
     const rows = repos[0].rows;
     expect(rows.find((r) => r.branch === "feat/x")?.pr).toEqual({ number: 12, url: "https://github.com/acme/app/pull/12", state: "open", title: "PR 12" });
@@ -205,10 +223,17 @@ describe("buildGitOverview", () => {
   });
 
   it("keeps a detached HEAD as a row with no branch and no PR", async () => {
-    const d = deps({ "/src/app": ["c1"] });
+    const d = deps({ "/src/app": ["c1"], "/src/app.bisect": ["c2"] });
+    GIT_ROOTS.add("/src/app.bisect");
+    WORKTREE_OF["/src/app.bisect"] = "/src/app";
     d.listWorktrees.mockResolvedValue([wt("/src/app", "main", true), wt("/src/app.bisect", null, false, "d1")]);
-    const { repos } = await buildGitOverview({}, d);
-    expect(repos[0].rows[1]).toEqual({ cwd: "/src/app.bisect", branch: null, isMain: false, cardIds: [] });
+    try {
+      const { repos } = await buildGitOverview({}, d);
+      expect(repos[0].rows[1]).toEqual({ cwd: "/src/app.bisect", branch: null, isMain: false, cardIds: ["c2"] });
+    } finally {
+      GIT_ROOTS.delete("/src/app.bisect");
+      delete WORKTREE_OF["/src/app.bisect"];
+    }
   });
 });
 
