@@ -23,6 +23,9 @@ const pull = (number: number, headRef: string, state: PullSummary["state"], head
   headSha,
   headOwner: "acme",
   updatedAt: "2026-11-01T00:00:00Z",
+  baseRef: "main",
+  author: "dev",
+  createdAt: "2026-10-01T00:00:00Z",
 });
 
 /** Two repos as git would list them: `app` with two linked worktrees, `lib` alone. */

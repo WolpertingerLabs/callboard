@@ -7,7 +7,8 @@ vi.mock("child_process", async (importOriginal) => ({
 }));
 
 const remoteUrl = vi.fn<(dir: string) => Promise<string | null>>();
-vi.mock("../utils/git.js", () => ({ getRemoteUrlAsync: (dir: string) => remoteUrl(dir) }));
+const defaultBranch = vi.fn<(dir: string) => Promise<string | null>>();
+vi.mock("../utils/git.js", () => ({ getRemoteUrlAsync: (dir: string) => remoteUrl(dir), getDefaultBranchAsync: (dir: string) => defaultBranch(dir) }));
 
 import {
   clearRepoPullsCache,
@@ -18,6 +19,7 @@ import {
   parseGitHubRemote,
   PR_CACHE_TTL_MS,
   PR_FORCE_WAIT_MS,
+  toChatPr,
   toPullSummary,
   type PullSummary,
 } from "./github-prs.js";
@@ -30,6 +32,9 @@ function pr(overrides: Partial<PullSummary> & Pick<PullSummary, "number" | "head
     headSha: `sha${overrides.number}`,
     headOwner: "acme",
     updatedAt: "2026-11-01T00:00:00Z",
+    baseRef: "main",
+    author: "dev",
+    createdAt: "2026-10-01T00:00:00Z",
     ...overrides,
   };
 }
@@ -64,6 +69,8 @@ function ghAnswers(result: { stdout?: string; error?: Error & { code?: string; k
 beforeEach(() => {
   execFileMock.mockReset();
   remoteUrl.mockReset();
+  defaultBranch.mockReset();
+  defaultBranch.mockResolvedValue(null);
   clearRepoPullsCache();
 });
 
@@ -109,6 +116,35 @@ describe("parseGitHubRemote", () => {
 });
 
 describe("toPullSummary", () => {
+  it("keeps the display fields the chat's PRs tab shows, from the same listing", () => {
+    const raw = {
+      ...rawPull(7, "feat/x", { state: "closed", merged: true }),
+      user: { login: "octo" },
+      created_at: "2026-10-01T00:00:00Z",
+      closed_at: "2026-11-01T00:00:00Z",
+    };
+    const summary = toPullSummary(raw)!;
+    expect(toChatPr(summary)).toEqual({
+      number: 7,
+      url: "https://github.com/acme/app/pull/7",
+      title: "PR 7",
+      state: "merged",
+      headRef: "feat/x",
+      baseRef: "main",
+      author: "octo",
+      createdAt: "2026-10-01T00:00:00Z",
+      updatedAt: "2026-11-01T00:00:00Z",
+      mergedAt: "2026-11-01T00:00:00Z",
+      closedAt: "2026-11-01T00:00:00Z",
+    });
+  });
+
+  it("leaves the optional timestamps off an open PR, and author null when GitHub has none", () => {
+    const pr = toChatPr(toPullSummary({ ...rawPull(8, "feat/y"), user: null })!);
+    expect(pr.author).toBeNull();
+    expect("mergedAt" in pr || "closedAt" in pr).toBe(false);
+  });
+
   it("derives the four states", () => {
     expect(toPullSummary(rawPull(1, "a"))?.state).toBe("open");
     expect(toPullSummary(rawPull(2, "a", { draft: true }))?.state).toBe("draft");
@@ -224,6 +260,28 @@ describe("fetchRepoPulls", () => {
     expect(matchPull(result.byBranch.get("fix/old"), undefined)?.number).toBe(337);
   });
 
+  it("names the GitHub repo and the default branch the listing carries", async () => {
+    remoteUrl.mockResolvedValue("https://github.com/acme/app");
+    ghServes({ open: [rawPull(1, "feat/x")], closed: [] });
+    const result = await fetchRepoPulls("/r");
+    expect(result.github).toEqual({ owner: "acme", repo: "app" });
+    expect(result.defaultBranch).toBe("main");
+    expect(defaultBranch).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the local origin/HEAD for the default branch when there are no PRs", async () => {
+    remoteUrl.mockResolvedValue("https://github.com/acme/app");
+    defaultBranch.mockResolvedValue("trunk");
+    ghServes({ open: [], closed: [] });
+    expect((await fetchRepoPulls("/r")).defaultBranch).toBe("trunk");
+  });
+
+  it("omits the default branch when nothing knows it", async () => {
+    remoteUrl.mockResolvedValue("https://github.com/acme/app");
+    ghServes({ open: [], closed: [] });
+    expect("defaultBranch" in (await fetchRepoPulls("/r"))).toBe(false);
+  });
+
   it("does not spawn gh for a non-GitHub remote, and reports no error", async () => {
     remoteUrl.mockResolvedValue("https://gitlab.com/acme/app.git");
     expect(await fetchRepoPulls("/r")).toEqual({ byBranch: new Map() });
@@ -239,7 +297,7 @@ describe("fetchRepoPulls", () => {
   it("degrades to no data when gh is missing, without trying the second listing", async () => {
     remoteUrl.mockResolvedValue("https://github.com/acme/app");
     ghServes({ open: Object.assign(new Error("spawn gh ENOENT"), { code: "ENOENT" }) });
-    expect(await fetchRepoPulls("/r")).toEqual({ byBranch: new Map(), error: "gh is not installed" });
+    expect(await fetchRepoPulls("/r")).toEqual({ byBranch: new Map(), github: { owner: "acme", repo: "app" }, error: "gh is not installed" });
     expect(execFileMock).toHaveBeenCalledTimes(1);
   });
 

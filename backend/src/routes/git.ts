@@ -1,3 +1,4 @@
+import { isAbsolute } from "path";
 import { Router, type Response } from "express";
 import {
   getGitBranches,
@@ -10,6 +11,7 @@ import {
 } from "../utils/git.js";
 import { generateBranchName } from "../services/quick-completion.js";
 import { buildGitOverview } from "../services/git-overview.js";
+import { buildChatPrs } from "../services/chat-prs.js";
 import { setSandboxedContentHeaders } from "../utils/served-content.js";
 
 export const gitRouter = Router();
@@ -221,5 +223,31 @@ gitRouter.get("/overview", async (req, res) => {
     res.json(await buildGitOverview({ force: req.query.refresh === "true" }));
   } catch (err: any) {
     res.status(500).json({ error: "Failed to build git overview", details: err.message });
+  }
+});
+
+/**
+ * The PRs tab of a chat's git view: the PR of `folder`'s branch and, with a
+ * `chatId`, those of the other directories the chat's card works in. The same
+ * cached lookup as the overview; failures degrade to a status and `prError`.
+ */
+gitRouter.get("/prs", async (req, res) => {
+  // #swagger.tags = ['Git']
+  // #swagger.summary = "PRs of a chat's directory and its card"
+  // #swagger.description = "The GitHub PR matched to the branch checked out in folder (open preferred; closed/merged only when its head is the local HEAD), with a status explaining an absence (not_git, not_github, detached, default_branch, no_pr, error). With chatId, also the PRs of the card's other member chats' directories, deduplicated."
+  /* #swagger.parameters['folder'] = { in: 'query', required: true, type: 'string', description: 'Absolute path of the chat directory. A directory that no longer exists answers status not_git rather than 400.' } */
+  /* #swagger.parameters['chatId'] = { in: 'query', type: 'string', description: 'The chat, to include its card\'s other directories. Omitted for a chat not yet created.' } */
+  /* #swagger.parameters['refresh'] = { in: 'query', type: 'string', description: 'When "true", refetch PR data the 90s cache would otherwise serve (entries younger than 10s are reused; waits at most 5s).' } */
+  /* #swagger.responses[200] = { description: "{ current: { folder, cwd?, repoName?, branch?, status, pr?, prError? }, card?: { cardId, title, prs: [{ pr, repoName, branch, sources }] }, generatedAt }" } */
+  /* #swagger.responses[400] = { description: "Missing or relative folder" } */
+  const folder = req.query.folder;
+  if (typeof folder !== "string" || !folder || !isAbsolute(folder) || folder.includes("\0")) {
+    return res.status(400).json({ error: "folder query param must be an absolute path" });
+  }
+  const chatId = typeof req.query.chatId === "string" && req.query.chatId ? req.query.chatId : undefined;
+  try {
+    res.json(await buildChatPrs({ folder, chatId, force: req.query.refresh === "true" }));
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to look up PRs", details: err.message });
   }
 });
