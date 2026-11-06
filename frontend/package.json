@@ -8,16 +8,21 @@
   },
   "dependencies": {
     "lucide-react": "^0.563.0",
+    "property-information": "^7.2.0",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
     "react-markdown": "^10.1.0",
     "react-router-dom": "^6.26.0",
     "rehype-highlight": "^7.0.2",
     "remark-gfm": "^4.0.1",
-    "shared": "*"
+    "remark-parse": "^11.0.0",
+    "remark-rehype": "^11.1.2",
+    "shared": "*",
+    "unified": "^11.0.5"
   },
   "devDependencies": {
     "@testing-library/react": "^16.3.2",
+    "@types/hast": "^3.0.4",
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.0",

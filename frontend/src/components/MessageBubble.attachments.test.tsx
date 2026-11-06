@@ -13,7 +13,11 @@ import MessageBubble from "./MessageBubble";
 
 vi.mock("../api", () => ({}));
 const copyToClipboard = vi.fn(async (_text: string) => true);
-vi.mock("../utils/clipboard", () => ({ copyToClipboard: (text: string) => copyToClipboard(text) }));
+const copyRichToClipboard = vi.fn(async (_html: string, _text: string) => true);
+vi.mock("../utils/clipboard", () => ({
+  copyToClipboard: (text: string) => copyToClipboard(text),
+  copyRichToClipboard: (html: string, text: string) => copyRichToClipboard(html, text),
+}));
 
 afterEach(() => {
   cleanup();
@@ -48,6 +52,12 @@ describe("MessageBubble with file attachments", () => {
     render(<MessageBubble message={message} />);
     fireEvent.click(screen.getByTitle("Copy message"));
     await waitFor(() => expect(copyToClipboard).toHaveBeenCalledWith("please review these"));
+  });
+
+  it("copies only the typed text when copying formatted, too", async () => {
+    render(<MessageBubble message={message} />);
+    fireEvent.click(screen.getByTitle(/Copy formatted/));
+    await waitFor(() => expect(copyRichToClipboard).toHaveBeenCalledWith("<p>please review these</p>", "please review these"));
   });
 
   it("splits a built-in command's blocks out too, showing the command line literally", () => {
