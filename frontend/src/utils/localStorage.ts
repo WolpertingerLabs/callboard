@@ -142,6 +142,8 @@ interface LocalStorageData {
   boardClosedExpanded?: boolean;
   /** Board layout: full-width rows instead of the tile grid. Absent = "cards". */
   boardViewMode?: "cards" | "list" | "branches";
+  /** Which half of a chat's git view shows. Global, not per chat. Absent = changes. */
+  chatGitTab?: "changes" | "prs";
   /** Whether card faces show the folders their chats live in. Absent = hidden. */
   boardShowPaths?: boolean;
   /** List view: whether rows rest expanded. Absent = collapsed. */
@@ -771,6 +773,19 @@ export function getBoardViewMode(): BoardViewMode {
 
 export function saveBoardViewMode(mode: BoardViewMode): void {
   updateStorage({ boardViewMode: mode });
+}
+
+/** The two halves of a chat's git view: the working-tree diff, and the PRs. */
+export type ChatGitTab = "changes" | "prs";
+
+const CHAT_GIT_TABS: readonly ChatGitTab[] = ["changes", "prs"];
+
+export function getChatGitTab(): ChatGitTab {
+  return readEnum(getStorageData().chatGitTab, CHAT_GIT_TABS, "changes");
+}
+
+export function saveChatGitTab(tab: ChatGitTab): void {
+  updateStorage({ chatGitTab: tab });
 }
 
 export function getBoardShowPaths(): boolean {
