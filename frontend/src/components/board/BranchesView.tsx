@@ -94,8 +94,22 @@ export default function BranchesView({ cards, onOpenCard }: BranchesViewProps) {
       return next;
     });
 
-  const prBadge = (row: BranchRow) =>
-    row.pr ? <PrBadge pr={row.pr} /> : <span style={{ fontSize: 11, color: "var(--text-muted)", whiteSpace: "nowrap", flexShrink: 0 }}>no PR</span>;
+  /**
+   * Every PR badge on a row: `prs` when the git trail added earlier branches'
+   * PRs (live one first), else the live `pr` alone — which is all a daemon
+   * predating the trail sends.
+   */
+  const prBadge = (row: BranchRow) => {
+    const prs = row.prs ?? (row.pr ? [row.pr] : []);
+    if (prs.length === 0) return <span style={{ fontSize: 11, color: "var(--text-muted)", whiteSpace: "nowrap", flexShrink: 0 }}>no PR</span>;
+    return (
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+        {prs.map((pr) => (
+          <PrBadge key={pr.url} pr={pr} />
+        ))}
+      </div>
+    );
+  };
 
   const chipList = (row: BranchRow, chips: CardSummary[]) => {
     const expanded = expandedRows.has(row.cwd);
@@ -138,13 +152,15 @@ export default function BranchesView({ cards, onOpenCard }: BranchesViewProps) {
   };
 
   const rowView = (repo: BranchRepo, row: BranchRow, chips: CardSummary[]) => {
-    const branch = (
+    const branchName = (
       <span
-        title={row.isMain ? `${row.branch ?? "detached HEAD"} (main checkout)` : (row.branch ?? "detached HEAD")}
+        title={
+          row.removed ? `${row.branch} (worktree removed)` : row.isMain ? `${row.branch ?? "detached HEAD"} (main checkout)` : (row.branch ?? "detached HEAD")
+        }
         style={{
           fontSize: 13,
           fontWeight: row.isMain ? 600 : 500,
-          color: row.branch ? "var(--text)" : "var(--text-muted)",
+          color: row.branch && !row.removed ? "var(--text)" : "var(--text-muted)",
           fontFamily: "var(--font-mono, monospace)",
           overflow: "hidden",
           textOverflow: "ellipsis",
@@ -155,11 +171,35 @@ export default function BranchesView({ cards, onOpenCard }: BranchesViewProps) {
         {row.branch ?? "(detached)"}
       </span>
     );
+    // A worktree the git trail remembers but that no longer exists: muted, and
+    // labelled so it does not read as a live checkout.
+    const branch = row.removed ? (
+      <span style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+        {branchName}
+        <span
+          style={{
+            flexShrink: 0,
+            fontSize: 10,
+            padding: "0 5px",
+            borderRadius: 4,
+            border: "1px solid var(--border)",
+            color: "var(--text-muted)",
+            textTransform: "uppercase",
+            letterSpacing: 0.4,
+          }}
+        >
+          removed
+        </span>
+      </span>
+    ) : (
+      branchName
+    );
     const path = <CardPathLabel path={row.cwd} prefix={parentPrefix(repo.repoPath)} color="var(--text-muted)" />;
     return (
       <div
         key={row.cwd}
         data-testid="branch-row"
+        data-removed={row.removed || undefined}
         style={{
           padding: "7px 10px",
           borderRadius: 6,
@@ -167,7 +207,12 @@ export default function BranchesView({ cards, onOpenCard }: BranchesViewProps) {
           border: "1px solid var(--border)",
           ...(isMobile
             ? { display: "flex", flexDirection: "column", gap: 4 }
-            : { display: "grid", gridTemplateColumns: "minmax(120px, 220px) minmax(0, 1fr) 140px minmax(0, 1.4fr)", alignItems: "center", gap: 12 }),
+            : {
+                display: "grid",
+                gridTemplateColumns: "minmax(120px, 220px) minmax(0, 1fr) minmax(140px, 200px) minmax(0, 1.4fr)",
+                alignItems: "center",
+                gap: 12,
+              }),
         }}
       >
         {isMobile ? (
