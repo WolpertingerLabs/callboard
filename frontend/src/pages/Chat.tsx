@@ -52,6 +52,7 @@ import {
   RerunError,
   getChatTree,
   handshakeHeaders,
+  stopChat,
   type ChatActivityResponse,
   type ChatTreeResponse,
   type Chat as ChatType,
@@ -102,6 +103,7 @@ import CompressChatModal from "../components/CompressChatModal";
 import type { ChatRewriteAction } from "../utils/chatRewrite";
 import BranchSelector from "../components/BranchSelector";
 import ChatGitView from "../components/git/ChatGitView";
+import WorktreeCreationIndicator from "../components/WorktreeCreationIndicator";
 import ChatDebugPanel from "../components/ChatDebugPanel";
 import JobRunPanel from "../components/JobRunPanel";
 import {
@@ -2384,6 +2386,54 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const DRAFT_RESTORING = "Restoring this draft's images…";
   const composerBlockedReason = sendBlockedReason ?? (draftRestoring ? DRAFT_RESTORING : undefined);
 
+  /**
+   * A new chat's worktree being created: from the POST going out until the
+   * route answers, which it does only once the checkout is done. Keyed on the
+   * request's controller so a later send's bookkeeping never clears it.
+   */
+  const [worktreeCreation, setWorktreeCreation] = useState<{ startedAt: number; controller: AbortController; trackingId: string } | null>(null);
+  /** The send the indicator's Cancel aborted — told apart from every other abort, which keeps nothing. */
+  const cancelledSendRef = useRef<AbortController | null>(null);
+
+  /**
+   * Put a new chat's first message back in the composer after it failed to
+   * become a chat — cancelled, refused, timed out. The composer emptied itself
+   * on send, and the in-flight bubble that showed the text is dropped on
+   * failure, so without this the prompt is simply gone.
+   *
+   * Through the "new" composer slot rather than only the setter: the send
+   * paused that slot, and un-pausing reloads the composer from it, which would
+   * otherwise land after the setter and empty it again. The setter is for the
+   * hold that outlives the send (an opened Staging draft), where nothing
+   * reloads. Images go straight back; the reload leaves them alone.
+   */
+  const restoreNewChatComposer = useCallback(
+    (prompt: string, images?: File[]) => {
+      saveComposerDraft(NEW_CHAT_DRAFT_KEY, prompt);
+      promptInputSetValue?.(prompt);
+      if (images?.length) promptInputAddImages?.(images);
+    },
+    [promptInputSetValue, promptInputAddImages],
+  );
+
+  const cancelWorktreeCreation = useCallback(() => {
+    if (!worktreeCreation) return;
+    const { controller, trackingId } = worktreeCreation;
+    // The stop is what reaches the daemon: it kills git and removes the
+    // half-made worktree. Aborting the request alone would not — the route
+    // deliberately finishes a creation the client merely walked away from.
+    stopChat(trackingId)
+      .then(({ stopped }) => {
+        // Nothing to stop: the checkout finished as the cancel went out, and
+        // the chat started without this tab.
+        if (!stopped) setNetworkError("The worktree finished before the cancel arrived, so the chat may have started anyway — check the sidebar.");
+      })
+      .catch(() => setNetworkError("Could not cancel worktree creation — the chat may still start. Check the sidebar."));
+    cancelledSendRef.current = controller;
+    controller.abort();
+    setWorktreeCreation(null);
+  }, [worktreeCreation]);
+
   const handleSend = useCallback(
     /**
      * `notFromComposer` marks a send that isn't the composer's contents — the
@@ -2428,6 +2478,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       setStreaming(true);
       const controller = new AbortController();
       abortRef.current = controller;
+      // Whether the route has answered. Before it has, a new chat's failure
+      // means no chat exists and the prompt has to go back; after, it is a
+      // stream breaking under a chat that does, which keeps its own copy.
+      let answered = false;
 
       try {
         let res: Response;
@@ -2536,13 +2590,22 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               requestBody.parentAnswers = true;
             }
           }
-          res = await fetch("/api/chats/new/message", {
-            method: "POST",
-            headers: { "Content-Type": "application/json", ...handshakeHeaders() },
-            credentials: "include",
-            body: JSON.stringify({ ...requestBody, chatView: originatingChatView() }),
-            signal: controller.signal,
-          });
+          // The route answers only once the worktree exists, so the wait for
+          // the response *is* the checkout — long enough on a big repository
+          // to need saying, and to need a way out.
+          if (requestBody.branchConfig?.useWorktree) setWorktreeCreation({ startedAt: Date.now(), controller, trackingId: clientTrackingId });
+          try {
+            res = await fetch("/api/chats/new/message", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", ...handshakeHeaders() },
+              credentials: "include",
+              body: JSON.stringify({ ...requestBody, chatView: originatingChatView() }),
+              signal: controller.signal,
+            });
+          } finally {
+            setWorktreeCreation((current) => (current?.controller === controller ? null : current));
+          }
+          answered = true;
         } else {
           // EXISTING CHAT MODE: POST to /api/chats/:id/message
           // Handle image upload first if images are provided
@@ -2641,6 +2704,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             return;
           }
 
+          // A new chat that was refused (a worktree that timed out, a branch
+          // git would not make) never became one: its text goes back.
+          if (!id && !notFromComposer) restoreNewChatComposer(prompt, images);
           setNetworkError(errorData.error || "Failed to send message");
           setStreaming(false);
           clearInFlightMessages();
@@ -2650,9 +2716,15 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         await readSSE(res.body, controller.signal);
       } catch (err: any) {
         if (err.name !== "AbortError") {
+          if (!id && !answered && !notFromComposer) restoreNewChatComposer(prompt, images);
           setNetworkError("network error");
           setStreaming(false);
           clearInFlightMessages(); // Drop optimistic bubbles on error
+        } else if (cancelledSendRef.current === controller) {
+          // The indicator's Cancel. Only before the route answered, so no chat
+          // exists; `finally` below settles streaming and the bubble.
+          cancelledSendRef.current = null;
+          if (!notFromComposer) restoreNewChatComposer(prompt, images);
         }
       } finally {
         // Only stop streaming if this is still the current request
@@ -2690,6 +2762,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       sendBlockedReason,
       draftRestore,
       activeDraftId,
+      restoreNewChatComposer,
     ],
   );
 
@@ -3878,6 +3951,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           <BranchSelector key={folder} folder={folder} spaceId={newChatSpaceId} currentBranch={info.git_branch || "main"} isDetached={info.isDetached} onChange={setBranchConfig} />
         </div>
       )}
+
+      {worktreeCreation && <WorktreeCreationIndicator startedAt={worktreeCreation.startedAt} onCancel={cancelWorktreeCreation} />}
 
       {controlNotice && (
         <div role="status" style={{ padding: 12 }}>
