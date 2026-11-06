@@ -227,18 +227,19 @@ gitRouter.get("/overview", async (req, res) => {
 });
 
 /**
- * The PRs tab of a chat's git view: the PR of `folder`'s branch and, with a
- * `chatId`, those of the other directories the chat's card works in. The same
- * cached lookup as the overview; failures degrade to a status and `prError`.
+ * The PRs tab of a chat's git view: one deduplicated list of the PRs of
+ * `folder`'s branch and — with a `chatId` — the chat's git trail and its
+ * card's other chats, plus the live branch's status. The same cached lookup as
+ * the overview; failures degrade to a status and `prError`.
  */
 gitRouter.get("/prs", async (req, res) => {
   // #swagger.tags = ['Git']
-  // #swagger.summary = "PRs of a chat's directory and its card"
-  // #swagger.description = "The GitHub PR matched to the branch checked out in folder (open preferred; closed/merged only when its head is the local HEAD), with a status explaining an absence (not_git, not_github, detached, default_branch, no_pr, error). With chatId, also the PRs of the card's other member chats' directories, deduplicated."
+  // #swagger.summary = "PRs of a chat and its card, as one list"
+  // #swagger.description = "One deduplicated list (prs; open/draft first, then most recently updated) of every PR from the branch checked out in folder and, with chatId, the chat's git trail and its card's other chats' live branches and trails. current is the status of folder's live branch: its PR (open preferred; closed/merged only when its head is the local HEAD) or the reason it has none (not_git, not_github, detached, default_branch, no_pr, error)."
   /* #swagger.parameters['folder'] = { in: 'query', required: true, type: 'string', description: 'Absolute path of the chat directory. A directory that no longer exists answers status not_git rather than 400.' } */
   /* #swagger.parameters['chatId'] = { in: 'query', type: 'string', description: 'The chat, to include its card\'s other directories. Omitted for a chat not yet created.' } */
   /* #swagger.parameters['refresh'] = { in: 'query', type: 'string', description: 'When "true", refetch PR data the 90s cache would otherwise serve (entries younger than 10s are reused; waits at most 5s).' } */
-  /* #swagger.responses[200] = { description: "{ current: { folder, cwd?, repoName?, branch?, status, pr?, prError? }, card?: { cardId, title, prs: [{ pr, repoName, branch, sources }] }, generatedAt }" } */
+  /* #swagger.responses[200] = { description: "{ current: { folder, cwd?, repoName?, branch?, status, pr?, prError? }, prs: [ChatPr], generatedAt }" } */
   /* #swagger.responses[400] = { description: "Missing or relative folder" } */
   const folder = req.query.folder;
   if (typeof folder !== "string" || !folder || !isAbsolute(folder) || folder.includes("\0")) {

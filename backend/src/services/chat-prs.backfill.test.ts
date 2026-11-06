@@ -61,12 +61,12 @@ describe("buildChatPrs with an unbackfilled chat", () => {
 
     const first = await buildChatPrs({ folder: repo, chatId: chat.id }, deps);
     expect(first.current).toMatchObject({ status: "no_pr", branch: "feat/now" });
-    expect(first.current.prs).toBeUndefined();
+    expect(first.prs).toEqual([]);
     expect(deps.requestBackfill).toHaveBeenCalledWith(expect.objectContaining({ chatId: chat.id }));
 
     await backfillIdle();
     const later = await buildChatPrs({ folder: repo, chatId: chat.id }, deps);
-    expect(later.current.prs?.map((p) => p.number)).toEqual([5]);
+    expect(later.prs.map((p) => p.number)).toEqual([5]);
   });
 
   it("does not wait on a backfill that never finishes", async () => {

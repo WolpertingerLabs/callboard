@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, GitBranch, GitPullRequest, RefreshCw } from "lucide-react";
-import type { CardPrSource, ChatPr, ChatPrsResponse, FolderPrs } from "../../api";
+import type { ChatPr, ChatPrsResponse, FolderPrs } from "../../api";
 import { getChatPrs } from "../../api";
 import { usePolling } from "../../hooks/usePolling";
 import { errorMessage } from "../../utils/errorMessage";
@@ -8,9 +8,9 @@ import { formatShortAgo } from "../../utils/dateFormat";
 import PrBadge from "./PrBadge";
 
 interface ChatPrsViewProps {
-  /** The chat's directory — the PR shown first is this directory's branch's. */
+  /** The chat's directory — its live branch is the status line's subject. */
   folder: string;
-  /** Absent for a chat not yet created: then only the folder's PR is shown. */
+  /** Absent for a chat not yet created: then only the folder's PRs are shown. */
   chatId?: string;
 }
 
@@ -37,18 +37,6 @@ const ago = (iso: string | undefined, now: number) => {
   return Number.isNaN(ms) ? null : formatShortAgo(ms, now).toLowerCase();
 };
 
-/** Source chats listed under a card PR before the rest fold behind "and N more". */
-const SOURCE_LIMIT = 3;
-
-const sectionLabel: React.CSSProperties = {
-  fontSize: 12,
-  fontWeight: 700,
-  color: "var(--board-section-label-text)",
-  textTransform: "uppercase",
-  letterSpacing: 0.6,
-  marginBottom: 8,
-};
-
 const panel: React.CSSProperties = {
   padding: "10px 12px",
   borderRadius: 8,
@@ -57,9 +45,11 @@ const panel: React.CSSProperties = {
 };
 
 /**
- * The PRs half of a chat's git view: the PR of the branch checked out in the
- * chat's directory, then the PRs the card's other chats are working on.
- * Fetched when shown, polled slowly while it stays shown; read-only.
+ * The PRs half of a chat's git view: one list of every PR the chat and its
+ * card's other chats have worked on, as the daemon orders it (open first, then
+ * most recently updated), with the chat's own live branch's status above it
+ * when that branch has no PR of its own. Fetched when shown, polled slowly
+ * while it stays shown; read-only.
  */
 export default function ChatPrsView({ folder, chatId }: ChatPrsViewProps) {
   const [data, setData] = useState<ChatPrsResponse | null>(null);
@@ -69,8 +59,6 @@ export default function ChatPrsView({ folder, chatId }: ChatPrsViewProps) {
   // Only the newest request may land: a slow poll must not overwrite a refresh,
   // nor a previous chat's answer a new one's.
   const seq = useRef(0);
-  // Card PRs (by URL) whose source-chat list the user has expanded.
-  const [expandedSources, setExpandedSources] = useState<Set<string>>(() => new Set());
 
   const load = useCallback(
     async (refresh = false) => {
@@ -104,7 +92,7 @@ export default function ChatPrsView({ folder, chatId }: ChatPrsViewProps) {
   usePolling(() => load(), 60_000);
   usePolling(() => setNow(Date.now()), 10_000, { catchUp: false });
 
-  const prCard = (pr: ChatPr, sources?: CardPrSource[], context?: { repoName: string }) => {
+  const prCard = (pr: ChatPr) => {
     const opened = ago(pr.createdAt, now);
     const updated = ago(pr.updatedAt, now);
     const merged = ago(pr.mergedAt, now);
@@ -132,65 +120,19 @@ export default function ChatPrsView({ folder, chatId }: ChatPrsViewProps) {
           <span style={{ fontFamily: "var(--font-mono, monospace)", overflowWrap: "anywhere" }}>
             {pr.headRef} → {pr.baseRef}
           </span>
-          {context && <span>· {context.repoName}</span>}
         </div>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", fontSize: 12, color: "var(--text-muted)" }}>
           {pr.author && <span>by {pr.author}</span>}
           {opened && <span>opened {opened}</span>}
           {merged ? <span>merged {merged}</span> : closed ? <span>closed {closed}</span> : updated && <span>updated {updated}</span>}
         </div>
-        {sources && sources.length > 0 && (
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              gap: 2,
-              fontSize: 12,
-              color: "var(--text-muted)",
-              borderTop: "1px solid var(--border)",
-              paddingTop: 6,
-            }}
-          >
-            {(expandedSources.has(pr.url) ? sources : sources.slice(0, SOURCE_LIMIT)).map((source) => (
-              <div key={source.chatId} title={source.folder} style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                <span style={{ color: "var(--text)" }}>{source.title ?? "Untitled chat"}</span> · {source.folder}
-              </div>
-            ))}
-            {sources.length > SOURCE_LIMIT && (
-              <button
-                aria-expanded={expandedSources.has(pr.url)}
-                onClick={() =>
-                  setExpandedSources((prev) => {
-                    const next = new Set(prev);
-                    if (next.has(pr.url)) next.delete(pr.url);
-                    else next.add(pr.url);
-                    return next;
-                  })
-                }
-                style={{
-                  alignSelf: "flex-start",
-                  padding: 0,
-                  fontSize: 12,
-                  background: "transparent",
-                  color: "var(--accent-text)",
-                  border: "none",
-                  cursor: "pointer",
-                }}
-              >
-                {expandedSources.has(pr.url) ? "show fewer" : `and ${sources.length - SOURCE_LIMIT} more`}
-              </button>
-            )}
-          </div>
-        )}
       </div>
     );
   };
 
   const generatedAt = data ? Date.parse(data.generatedAt) : NaN;
   const current = data?.current;
-  // The chat's own PRs: the live one and its trail's. A daemon predating the
-  // trail sends only `pr`.
-  const ownPrs = current?.prs ?? (current?.pr ? [current.pr] : []);
+  const prs = data?.prs ?? [];
 
   return (
     <div style={{ height: "100%", overflow: "auto", padding: "12px 16px" }}>
@@ -224,77 +166,54 @@ export default function ChatPrsView({ folder, chatId }: ChatPrsViewProps) {
 
       {!data && !error && <div style={{ color: "var(--text-muted)", fontSize: 14 }}>Loading PRs…</div>}
 
-      {current && (
-        <section aria-label="This chat" style={{ marginBottom: 24 }}>
-          <div role="heading" aria-level={2} style={sectionLabel}>
-            This chat
+      {current &&
+        (prs.length > 0 ? (
+          <>
+            {/* The live branch has no PR of its own (the default branch, say)
+                but the list does: say why compactly, then list them. */}
+            {!current.pr && (
+              <div
+                data-testid="pr-status-line"
+                data-status={current.status}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  marginBottom: 8,
+                  fontSize: 12,
+                  color: current.status === "error" ? "var(--warning)" : "var(--text-muted)",
+                }}
+              >
+                {current.status === "error" ? <AlertTriangle size={12} /> : <GitPullRequest size={12} />}
+                <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>{emptyMessage(current)}</span>
+              </div>
+            )}
+            {/* One list, one card per PR; the state badge tells them apart. */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>{prs.map((pr) => prCard(pr))}</div>
+            {current.pr && current.prError && (
+              <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6, fontSize: 12, color: "var(--warning)" }}>
+                <AlertTriangle size={12} />
+                Last known PR — refreshing failed: {current.prError}
+              </div>
+            )}
+          </>
+        ) : (
+          <div
+            data-testid="pr-empty"
+            data-status={current.status}
+            style={{
+              ...panel,
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              fontSize: 13,
+              color: current.status === "error" ? "var(--warning)" : "var(--text-muted)",
+            }}
+          >
+            {current.status === "error" ? <AlertTriangle size={14} /> : <GitPullRequest size={14} />}
+            <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>{emptyMessage(current)}</span>
           </div>
-          {ownPrs.length > 0 ? (
-            <>
-              {/* The live branch has no PR of its own (the default branch, say)
-                  but the chat's earlier branches do: say why compactly, then
-                  list them. */}
-              {!current.pr && (
-                <div
-                  data-testid="pr-status-line"
-                  data-status={current.status}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 6,
-                    marginBottom: 8,
-                    fontSize: 12,
-                    color: current.status === "error" ? "var(--warning)" : "var(--text-muted)",
-                  }}
-                >
-                  {current.status === "error" ? <AlertTriangle size={12} /> : <GitPullRequest size={12} />}
-                  <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>{emptyMessage(current)}</span>
-                </div>
-              )}
-              {/* One list — the live PR and the chat's earlier ones — open first,
-                  then most recently updated; the state badge tells them apart. */}
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>{ownPrs.map((pr) => prCard(pr))}</div>
-              {current.pr && current.prError && (
-                <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6, fontSize: 12, color: "var(--warning)" }}>
-                  <AlertTriangle size={12} />
-                  Last known PR — refreshing failed: {current.prError}
-                </div>
-              )}
-            </>
-          ) : (
-            <div
-              data-testid="pr-empty"
-              data-status={current.status}
-              style={{
-                ...panel,
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                fontSize: 13,
-                color: current.status === "error" ? "var(--warning)" : "var(--text-muted)",
-              }}
-            >
-              {current.status === "error" ? <AlertTriangle size={14} /> : <GitPullRequest size={14} />}
-              <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>{emptyMessage(current)}</span>
-            </div>
-          )}
-        </section>
-      )}
-
-      {data?.card && (
-        <section aria-label="Other chats on this card">
-          <div role="heading" aria-level={2} style={sectionLabel}>
-            Other chats on this card
-          </div>
-          {data.card.prs.length === 0 ? (
-            <div style={{ fontSize: 13, color: "var(--text-muted)" }}>{"No PRs for the card's other chats."}</div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {data.card.prs.map((entry) => prCard(entry.pr, entry.sources, { repoName: entry.repoName }))}
-            </div>
-          )}
-        </section>
-      )}
+        ))}
     </div>
   );
 }
