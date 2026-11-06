@@ -1335,6 +1335,8 @@ export async function updateAgentSettings(settings: Partial<AgentSettings>): Pro
 export interface FavoriteLists {
   favoriteSkills: string[];
   favoriteJobs: string[];
+  /** Folders starred in "Move to folder". Absent from a daemon that predates them. */
+  starredSidebarFolders?: string[];
 }
 
 export async function getFavorites(): Promise<FavoriteLists> {
@@ -1363,6 +1365,8 @@ export interface IdDelta {
 export interface FavoritesDelta {
   skills?: IdDelta;
   jobs?: IdDelta;
+  /** Sidebar folder names, matched case-insensitively by the daemon. */
+  folders?: IdDelta;
 }
 
 /**

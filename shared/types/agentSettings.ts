@@ -595,6 +595,16 @@ export interface AgentSettings {
   /** Job definition ids, in display order. */
   favoriteJobs?: string[];
 
+  /**
+   * Sidebar folder names the user starred in "Move to folder". A starred
+   * folder sorts first there and stays offered even when no chat names it —
+   * otherwise a folder exists only because a chat does (see
+   * `shared/types/sidebarFolder.ts`). Matched case-insensitively, by
+   * `sameSidebarFolder`; written only through the `folders` side of
+   * `PATCH /api/agent-settings/favorites`.
+   */
+  starredSidebarFolders?: string[];
+
   // ── Session completion callbacks ("phone home") loop-safety ───────
   // Bounds on the onComplete feature (start_chat_session, continue_chat), which
   // automatically re-invokes a parent chat when the session it is waiting on

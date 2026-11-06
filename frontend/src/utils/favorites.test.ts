@@ -360,6 +360,29 @@ describe("useFavorites — writes", () => {
     expect(result.current.favorites).toEqual(["a", "b"]);
   });
 
+  it("reports a failed write only to the kind it touched", async () => {
+    // One cache, three kinds: a failed skill star must not surface in the
+    // "Move to folder" dialog, which only ever touches folders.
+    getFavorites.mockResolvedValue({ ...lists(["a"]), starredSidebarFolders: ["Work"] });
+    patchFavorites.mockRejectedValueOnce(new Error("boom")).mockResolvedValue({ ...lists(["a"]), starredSidebarFolders: [] });
+    const { useFavorites, FAVORITES_WRITE_ERROR } = await loadFavorites();
+
+    const skills = renderHook(() => useFavorites("skills"));
+    const folders = renderHook(() => useFavorites("folders"));
+    await waitFor(() => expect(folders.result.current.ready).toBe(true));
+
+    act(() => skills.result.current.toggle("b"));
+    await waitFor(() => expect(skills.result.current.writeError).toBe(FAVORITES_WRITE_ERROR));
+    expect(folders.result.current.writeError).toBeNull();
+
+    // A folder write — successful — leaves the skill error standing.
+    act(() => folders.result.current.toggle("Work"));
+    await waitFor(() => expect(folders.result.current.favorites).toEqual([]));
+    await waitFor(() => expect(patchFavorites).toHaveBeenCalledTimes(2));
+    expect(folders.result.current.writeError).toBeNull();
+    expect(skills.result.current.writeError).toBe(FAVORITES_WRITE_ERROR);
+  });
+
   it("refetches after a failed write so the UI cannot sit on a guess", async () => {
     getFavorites.mockResolvedValue(lists(["a"]));
     patchFavorites.mockRejectedValue(new Error("boom"));
@@ -454,5 +477,39 @@ describe("orderByFavorites / missingFavorites", () => {
     const items = [{ id: "a" }, { id: "b" }, { id: "c" }];
 
     expect(missingFavorites(items, ["c", "gone", "a", "also-gone"], (i) => i.id)).toEqual(["gone", "also-gone"]);
+  });
+});
+
+describe("useFavorites — starred sidebar folders", () => {
+  it("reads the folders list, and an older daemon's missing field as empty", async () => {
+    getFavorites.mockResolvedValue({ ...lists(["a"]), starredSidebarFolders: ["Work"] });
+    const { useFavorites } = await loadFavorites();
+    const { result } = renderHook(() => useFavorites("folders"));
+    await waitFor(() => expect(result.current.favorites).toEqual(["Work"]));
+
+    getFavorites.mockResolvedValue(lists(["a"]));
+    const fresh = await loadFavorites();
+    const { result: older } = renderHook(() => fresh.useFavorites("folders"));
+    await waitFor(() => expect(older.current.ready).toBe(true));
+    expect(older.current.favorites).toEqual([]);
+  });
+
+  it("toggles by the folder identity rule — any spelling is the same star — and sends a folders delta", async () => {
+    getFavorites.mockResolvedValue({ ...lists(), starredSidebarFolders: ["Work"] });
+    const { useFavorites } = await loadFavorites();
+    const { result } = renderHook(() => useFavorites("folders"));
+    await waitFor(() => expect(result.current.ready).toBe(true));
+    expect(result.current.isFavorite("work")).toBe(true);
+
+    patchFavorites.mockResolvedValue({ ...lists(), starredSidebarFolders: [] });
+    act(() => result.current.toggle("work"));
+    // The optimistic overlay drops the stored spelling, not just an exact match.
+    expect(result.current.favorites).toEqual([]);
+    await waitFor(() => expect(patchFavorites).toHaveBeenLastCalledWith({ folders: { remove: ["work"] } }));
+
+    patchFavorites.mockResolvedValue({ ...lists(), starredSidebarFolders: ["Side"] });
+    act(() => result.current.toggle("Side"));
+    await waitFor(() => expect(patchFavorites).toHaveBeenLastCalledWith({ folders: { add: ["Side"] } }));
+    await waitFor(() => expect(result.current.favorites).toEqual(["Side"]));
   });
 });

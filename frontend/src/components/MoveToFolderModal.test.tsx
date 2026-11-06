@@ -113,4 +113,97 @@ describe("MoveToFolderModal", () => {
     renderModal();
     expect(screen.queryByText(/stays under Pinned/)).toBeNull();
   });
+
+  describe("starred folders", () => {
+    /** The folder rows' names, top to bottom. */
+    const rowNames = () => screen.queryAllByRole("button", { name: /^(Star|Unstar) folder / }).map((b) => b.getAttribute("aria-label")!.replace(/^(Star|Unstar) folder /, ""));
+
+    it("lists starred folders first, each group sorted, and fills their stars", () => {
+      renderModal({ existingFolders: ["work", "Alpha", "beta", "Zed"], starredFolders: ["Zed", "beta"], onToggleStar: vi.fn() });
+
+      expect(rowNames()).toEqual(["beta", "Zed", "Alpha", "work"]);
+      expect(screen.getByRole("button", { name: "Unstar folder Zed" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Star folder Alpha" })).toBeTruthy();
+    });
+
+    it("still offers a starred folder no chat names, and files into it", async () => {
+      const { onSubmit } = renderModal({ existingFolders: ["work"], starredFolders: ["Someday"], onToggleStar: vi.fn() });
+
+      expect(rowNames()).toEqual(["Someday", "work"]);
+      fireEvent.click(screen.getByText("Someday"));
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledWith("Someday"));
+    });
+
+    it("matches a star to a chat's folder case-insensitively, keeping the chat's spelling", async () => {
+      const { onSubmit } = renderModal({ existingFolders: ["work"], starredFolders: ["Work"], onToggleStar: vi.fn() });
+
+      expect(rowNames()).toEqual(["work"]);
+      expect(screen.getByRole("button", { name: "Unstar folder work" })).toBeTruthy();
+      // A typed name matching only the star still files under one spelling.
+      fireEvent.change(input(), { target: { value: "WORK" } });
+      fireEvent.click(screen.getByText("Move"));
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledWith("work"));
+    });
+
+    it("toggles the star without selecting the folder, by click and from the keyboard", () => {
+      const onToggleStar = vi.fn();
+      const { onSubmit, onClose } = renderModal({ starredFolders: ["work"], onToggleStar });
+
+      fireEvent.click(screen.getByRole("button", { name: "Star folder Alpha" }));
+      expect(onToggleStar).toHaveBeenCalledWith("Alpha");
+      const unstar = screen.getByRole("button", { name: "Unstar folder work" }) as HTMLButtonElement;
+      // A real <button>, so it is in the tab order and Enter/Space activate it.
+      expect(unstar.tagName).toBe("BUTTON");
+      expect(unstar.tabIndex).toBe(0);
+      unstar.focus();
+      expect(document.activeElement).toBe(unstar);
+      fireEvent.click(unstar);
+      expect(onToggleStar).toHaveBeenLastCalledWith("work");
+
+      expect(onSubmit).not.toHaveBeenCalled();
+      expect(onClose).not.toHaveBeenCalled();
+    });
+
+    it("stars the current folder too, even though its row cannot be picked", () => {
+      const onToggleStar = vi.fn();
+      renderModal({ currentFolder: "work", onToggleStar });
+      const star = screen.getByRole("button", { name: "Star folder work" }) as HTMLButtonElement;
+      expect(star.disabled).toBe(false);
+      fireEvent.click(star);
+      expect(onToggleStar).toHaveBeenCalledWith("work");
+    });
+
+    it("drops an unstarred folder no chat names", () => {
+      const props = { existingFolders: ["work"], onToggleStar: vi.fn() };
+      const { rerender } = render(<MoveToFolderModal subject="s" starredFolders={["Someday"]} onSubmit={vi.fn()} onClose={vi.fn()} {...props} />);
+      expect(screen.getByText("Someday")).toBeTruthy();
+      rerender(<MoveToFolderModal subject="s" starredFolders={[]} onSubmit={vi.fn()} onClose={vi.fn()} {...props} />);
+      expect(screen.queryByText("Someday")).toBeNull();
+    });
+
+    it("disables the stars until the list is read, with the reason as the tooltip", () => {
+      renderModal({ onToggleStar: vi.fn(), starDisabled: true, starError: "Could not reach the daemon" });
+      const star = screen.getByRole("button", { name: "Star folder Alpha" }) as HTMLButtonElement;
+      expect(star.disabled).toBe(true);
+      expect(star.title).toBe("Could not reach the daemon");
+      // And said where a touch screen can see it, not only in the tooltip.
+      expect(screen.getByRole("status").textContent).toMatch(/Couldn't load starred folders/);
+    });
+
+    it("says nothing while the stars are merely still loading", () => {
+      renderModal({ onToggleStar: vi.fn(), starDisabled: true });
+      expect(screen.queryByRole("status")).toBeNull();
+    });
+
+    it("shows a failed star write", () => {
+      renderModal({ onToggleStar: vi.fn(), starError: "Could not save that change" });
+      expect(screen.getByRole("status").textContent).toMatch(/Could not save/);
+    });
+
+    it("renders no stars without onToggleStar", () => {
+      renderModal({ starredFolders: ["work"] });
+      expect(rowNames()).toEqual([]);
+      expect(screen.getByText("work")).toBeTruthy();
+    });
+  });
 });

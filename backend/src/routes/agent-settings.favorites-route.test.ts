@@ -96,15 +96,15 @@ beforeEach(() => {
 });
 
 describe("GET /api/agent-settings/favorites", () => {
-  it("returns the two lists in the user's order", async () => {
+  it("returns the lists in the user's order", async () => {
     const res = await call("get");
     expect(res.code).toBe(200);
-    expect(res.body).toEqual({ favoriteSkills: ["release-notes", "bug-triage"], favoriteJobs: ["bake-devin-pr"] });
+    expect(res.body).toEqual({ favoriteSkills: ["release-notes", "bug-triage"], favoriteJobs: ["bake-devin-pr"], starredSidebarFolders: [] });
   });
 
-  it("returns ONLY the two lists — no credential rides along", async () => {
+  it("returns ONLY the lists — no credential rides along", async () => {
     const res = await call("get");
-    expect(Object.keys(res.body).sort()).toEqual(["favoriteJobs", "favoriteSkills"]);
+    expect(Object.keys(res.body).sort()).toEqual(["favoriteJobs", "favoriteSkills", "starredSidebarFolders"]);
     for (const secret of ["apiKey", "authToken", "openRouterApiKey", "codexApiKey", "piApiKey"]) {
       expect(secret in res.body).toBe(false);
     }
@@ -116,7 +116,7 @@ describe("GET /api/agent-settings/favorites", () => {
   it("reads an unset list back as an empty array", async () => {
     writeFileSync(SETTINGS_FILE, JSON.stringify({ proxyMode: "local" }));
     const res = await call("get");
-    expect(res.body).toEqual({ favoriteSkills: [], favoriteJobs: [] });
+    expect(res.body).toEqual({ favoriteSkills: [], favoriteJobs: [], starredSidebarFolders: [] });
   });
 });
 
@@ -127,7 +127,7 @@ describe("PUT /api/agent-settings/favorites", () => {
     expect(onDisk().favoriteSkills).toEqual(["bug-triage", "release-notes", "changelog"]);
     // The response is the post-write pair, including the list this request did
     // not touch — it is what the client adopts as authoritative.
-    expect(res.body).toEqual({ favoriteSkills: ["bug-triage", "release-notes", "changelog"], favoriteJobs: ["bake-devin-pr"] });
+    expect(res.body).toEqual({ favoriteSkills: ["bug-triage", "release-notes", "changelog"], favoriteJobs: ["bake-devin-pr"], starredSidebarFolders: [] });
   });
 
   it("normalizes the way the main PUT does, and reports the normalized list", async () => {
@@ -149,7 +149,7 @@ describe("PUT /api/agent-settings/favorites", () => {
     const res = await call("put", { favoriteSkills: null, favoriteJobs: "bake-devin-pr" });
     expect(onDisk().favoriteSkills).toEqual(["release-notes", "bug-triage"]);
     expect(onDisk().favoriteJobs).toEqual(["bake-devin-pr"]);
-    expect(res.body).toEqual({ favoriteSkills: ["release-notes", "bug-triage"], favoriteJobs: ["bake-devin-pr"] });
+    expect(res.body).toEqual({ favoriteSkills: ["release-notes", "bug-triage"], favoriteJobs: ["bake-devin-pr"], starredSidebarFolders: [] });
   });
 
   it("ignores every other settings field in the body", async () => {
@@ -163,14 +163,14 @@ describe("PUT /api/agent-settings/favorites", () => {
 
   it("does not leak credentials in its response either", async () => {
     const res = await call("put", { favoriteSkills: ["changelog"] });
-    expect(Object.keys(res.body).sort()).toEqual(["favoriteJobs", "favoriteSkills"]);
+    expect(Object.keys(res.body).sort()).toEqual(["favoriteJobs", "favoriteSkills", "starredSidebarFolders"]);
     expect(JSON.stringify(res.body)).not.toContain("secret");
   });
 
   it("tolerates an empty body", async () => {
     const res = await call("put", {});
     expect(res.code).toBe(200);
-    expect(res.body).toEqual({ favoriteSkills: ["release-notes", "bug-triage"], favoriteJobs: ["bake-devin-pr"] });
+    expect(res.body).toEqual({ favoriteSkills: ["release-notes", "bug-triage"], favoriteJobs: ["bake-devin-pr"], starredSidebarFolders: [] });
   });
 });
 
@@ -237,7 +237,7 @@ describe("PATCH /api/agent-settings/favorites", () => {
     const res = await call("patch", { jobs: { add: ["nightly"] } });
 
     expect(onDisk().favoriteSkills).toEqual(["release-notes", "bug-triage"]);
-    expect(res.body).toEqual({ favoriteSkills: ["release-notes", "bug-triage"], favoriteJobs: ["bake-devin-pr", "nightly"] });
+    expect(res.body).toEqual({ favoriteSkills: ["release-notes", "bug-triage"], favoriteJobs: ["bake-devin-pr", "nightly"], starredSidebarFolders: [] });
   });
 
   it("handles both sides in one request", async () => {
@@ -245,7 +245,7 @@ describe("PATCH /api/agent-settings/favorites", () => {
     // authoritative answer.
     const res = await call("patch", { skills: { remove: ["release-notes"] }, jobs: { remove: ["bake-devin-pr"] } });
 
-    expect(res.body).toEqual({ favoriteSkills: ["bug-triage"], favoriteJobs: [] });
+    expect(res.body).toEqual({ favoriteSkills: ["bug-triage"], favoriteJobs: [], starredSidebarFolders: [] });
   });
 
   it("clears the setting when the delta empties a list", async () => {
@@ -267,7 +267,7 @@ describe("PATCH /api/agent-settings/favorites", () => {
     for (const body of [{}, { skills: null }, { skills: [] }, { skills: { add: "release-notes" } }, { skills: {} }, undefined]) {
       const res = await call("patch", body);
       expect(res.code).toBe(200);
-      expect(res.body).toEqual({ favoriteSkills: ["release-notes", "bug-triage"], favoriteJobs: ["bake-devin-pr"] });
+      expect(res.body).toEqual({ favoriteSkills: ["release-notes", "bug-triage"], favoriteJobs: ["bake-devin-pr"], starredSidebarFolders: [] });
     }
   });
 
@@ -276,7 +276,70 @@ describe("PATCH /api/agent-settings/favorites", () => {
 
     expect(onDisk().apiKey).toBe("sk-ant-secret");
     expect(onDisk().proxyMode).toBe("local");
-    expect(Object.keys(res.body).sort()).toEqual(["favoriteJobs", "favoriteSkills"]);
+    expect(Object.keys(res.body).sort()).toEqual(["favoriteJobs", "favoriteSkills", "starredSidebarFolders"]);
     expect(JSON.stringify(res.body)).not.toContain("secret");
+  });
+});
+
+/**
+ * The `folders` side: the stars in "Move to folder". Same delta protocol, but
+ * names are sidebar folders, so they are validated and matched by the folder
+ * rules (`parseSidebarFolder`, `sameSidebarFolder`) rather than as ids.
+ */
+describe("PATCH /api/agent-settings/favorites — starred sidebar folders", () => {
+  it("stars a folder against the stored list and answers with what is on disk", async () => {
+    writeFileSync(SETTINGS_FILE, JSON.stringify({ ...STORED, starredSidebarFolders: ["Work"] }));
+
+    const res = await call("patch", { folders: { add: ["Side projects"] } });
+
+    expect(res.code).toBe(200);
+    expect(onDisk().starredSidebarFolders).toEqual(["Work", "Side projects"]);
+    expect(res.body.starredSidebarFolders).toEqual(["Work", "Side projects"]);
+    // The other lists are untouched.
+    expect(res.body.favoriteSkills).toEqual(["release-notes", "bug-triage"]);
+  });
+
+  it("is returned by GET", async () => {
+    writeFileSync(SETTINGS_FILE, JSON.stringify({ ...STORED, starredSidebarFolders: ["Work"] }));
+    expect((await call("get")).body.starredSidebarFolders).toEqual(["Work"]);
+  });
+
+  it("matches case-insensitively: no duplicate spelling on add, any spelling removes", async () => {
+    writeFileSync(SETTINGS_FILE, JSON.stringify({ ...STORED, starredSidebarFolders: ["Work", "Alpha"] }));
+
+    expect((await call("patch", { folders: { add: ["WORK"] } })).body.starredSidebarFolders).toEqual(["Work", "Alpha"]);
+    expect((await call("patch", { folders: { remove: ["work"] } })).body.starredSidebarFolders).toEqual(["Alpha"]);
+  });
+
+  it("trims, and drops names the folder route would refuse", async () => {
+    const res = await call("patch", { folders: { add: ["  Work  ", "bad\u0007name", "x".repeat(65), "", 7] } });
+
+    expect(res.body.starredSidebarFolders).toEqual(["Work"]);
+  });
+
+  it("clears the setting when the last star is removed", async () => {
+    writeFileSync(SETTINGS_FILE, JSON.stringify({ ...STORED, starredSidebarFolders: ["Work"] }));
+
+    const res = await call("patch", { folders: { remove: ["Work"] } });
+
+    expect("starredSidebarFolders" in onDisk()).toBe(false);
+    expect(res.body.starredSidebarFolders).toEqual([]);
+  });
+
+  it("leaves the stars alone on a skills-only delta or a malformed folders side", async () => {
+    writeFileSync(SETTINGS_FILE, JSON.stringify({ ...STORED, starredSidebarFolders: ["Work"] }));
+
+    for (const body of [{ skills: { add: ["changelog"] } }, { folders: null }, { folders: ["Work"] }, { folders: {} }]) {
+      expect((await call("patch", body)).body.starredSidebarFolders).toEqual(["Work"]);
+    }
+    expect(onDisk().starredSidebarFolders).toEqual(["Work"]);
+  });
+
+  it("cannot be written by the PUT", async () => {
+    writeFileSync(SETTINGS_FILE, JSON.stringify({ ...STORED, starredSidebarFolders: ["Work"] }));
+
+    await call("put", { starredSidebarFolders: [] });
+
+    expect(onDisk().starredSidebarFolders).toEqual(["Work"]);
   });
 });

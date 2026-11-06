@@ -62,8 +62,9 @@
  * have been", which put a re-starred favorite back at the end instead of its
  * original index and could leave the UI claiming a failure the disk had already
  * accepted. On failure the overlay is dropped (falling back to the last
- * confirmed `server`), `writeError` is set so the star does not simply un-fill
- * in silence, and a refetch settles the truth.
+ * confirmed `server`), `writeError` is set — for the kinds that write touched —
+ * so the star does not simply un-fill in silence, and a refetch settles the
+ * truth.
  *
  * ## What counts as a stale read
  *
@@ -83,6 +84,14 @@
  * A stale read is discarded and, once no write is outstanding, retried, so the
  * cache converges on the daemon rather than on whatever a write returned.
  *
+ * ## Starred sidebar folders share all of this
+ *
+ * The `"folders"` kind — the stars in "Move to folder" — is the same shape of
+ * data with the same two-tab hazard, so it rides in the same cache and the
+ * same PATCH. The one difference is identity: folder names match
+ * case-insensitively (`sameSidebarFolder`), as the daemon applies them, so the
+ * optimistic overlay uses that rule too.
+ *
  * ## Coming back to a backgrounded tab
  *
  * The cache has no TTL and nothing pushes favorites, so a tab left open while
@@ -92,13 +101,25 @@
  * returning to a tab resyncs it before the user can click anything in it.
  */
 import { useCallback, useEffect, useSyncExternalStore } from "react";
+import { includesSidebarFolder, sameSidebarFolder } from "shared/types/sidebarFolder.js";
 import { getFavorites, patchFavorites, type FavoriteLists, type FavoritesDelta, type IdDelta } from "../api";
 
-export type FavoriteKind = "skills" | "jobs";
+export type FavoriteKind = "skills" | "jobs" | "folders";
 
 type Lists = Record<FavoriteKind, string[]>;
 
-const EMPTY: Lists = { skills: [], jobs: [] };
+const EMPTY: Lists = { skills: [], jobs: [], folders: [] };
+
+const KINDS: readonly FavoriteKind[] = ["skills", "jobs", "folders"];
+
+/** Whether two entries of `kind` are the same entry — see the header on folders. */
+function sameEntry(kind: FavoriteKind, a: string, b: string): boolean {
+  return kind === "folders" ? sameSidebarFolder(a, b) : a === b;
+}
+
+function hasEntry(kind: FavoriteKind, list: readonly string[], id: string): boolean {
+  return kind === "folders" ? includesSidebarFolder(list, id) : list.includes(id);
+}
 
 /** Shown on the disabled star and next to the launchpad's retry. */
 export const FAVORITES_ERROR = "Could not reach the daemon to load your favorites.";
@@ -124,17 +145,23 @@ let error: string | null = null;
  * revalidation clears the read error, and the refetch a failed write kicks off
  * is exactly that — folding the two together would erase the message before
  * the user could see it, leaving a star that un-fills for no stated reason.
- * Cleared when a write succeeds, and when the next one is attempted.
+ *
+ * Scoped by kind: the cache is shared, but a failed skill star is no news to
+ * the "Move to folder" dialog, and showing it there would blame a star the
+ * user never touched. Holds the kinds whose last write failed; a kind is
+ * cleared when a write touching it is attempted, or succeeds.
  */
-let writeError: string | null = null;
+let writeFailedKinds: readonly FavoriteKind[] = [];
+/** Kinds touched by the writes now outstanding — what a failure is about. */
+let batchKinds = new Set<FavoriteKind>();
 
 export interface FavoritesSnapshot {
   lists: Lists;
   /** Have we read the list? Until this is true, a write would be a guess. */
   ready: boolean;
   error: string | null;
-  /** The last write failed and was rolled back. */
-  writeError: string | null;
+  /** Kinds whose last write failed and was rolled back. */
+  writeFailedKinds: readonly FavoriteKind[];
 }
 
 /**
@@ -143,12 +170,12 @@ export interface FavoritesSnapshot {
  * and why the hook below does not have to reach for a setState in an effect to
  * cover the window between its first render and its subscription.
  */
-let snapshot: FavoritesSnapshot = { lists: EMPTY, ready: false, error: null, writeError: null };
+let snapshot: FavoritesSnapshot = { lists: EMPTY, ready: false, error: null, writeFailedKinds: [] };
 
 const subscribers = new Set<() => void>();
 
 function publish(): void {
-  snapshot = { lists: pending ?? server ?? EMPTY, ready: server !== null, error, writeError };
+  snapshot = { lists: pending ?? server ?? EMPTY, ready: server !== null, error, writeFailedKinds };
   for (const fn of subscribers) fn();
 }
 
@@ -156,6 +183,7 @@ function fromWire(wire: FavoriteLists): Lists {
   return {
     skills: Array.isArray(wire.favoriteSkills) ? wire.favoriteSkills : [],
     jobs: Array.isArray(wire.favoriteJobs) ? wire.favoriteJobs : [],
+    folders: Array.isArray(wire.starredSidebarFolders) ? wire.starredSidebarFolders : [],
   };
 }
 
@@ -206,12 +234,14 @@ function settleWrite(confirmed: Lists | null): void {
   // of a list a later click has already moved on from.
   if (outstanding > 0) return;
   pending = null;
+  const touched = batchKinds;
+  batchKinds = new Set();
   if (confirmed) {
     server = confirmed;
     error = null;
-    writeError = null;
+    writeFailedKinds = writeFailedKinds.filter((kind) => !touched.has(kind));
   } else {
-    writeError = FAVORITES_WRITE_ERROR;
+    writeFailedKinds = KINDS.filter((kind) => touched.has(kind) || writeFailedKinds.includes(kind));
   }
   publish();
   if (!confirmed) void fetchFavorites();
@@ -225,8 +255,10 @@ function settleWrite(confirmed: Lists | null): void {
  * the answer will be, and it is thrown away the moment the daemon answers.
  */
 function queueWrite(delta: FavoritesDelta, optimistic: Lists): void {
+  const touched = KINDS.filter((kind) => delta[kind] !== undefined);
   pending = optimistic;
-  writeError = null;
+  for (const kind of touched) batchKinds.add(kind);
+  writeFailedKinds = writeFailedKinds.filter((kind) => !touched.includes(kind));
   publish();
 
   outstanding += 1;
@@ -246,17 +278,17 @@ function toggleFavorite(kind: FavoriteKind, id: string): void {
 
   const base = pending ?? server;
   const before = base[kind];
-  const removing = before.includes(id);
+  const removing = hasEntry(kind, before, id);
   // Append rather than insert — a new favorite joining at the end keeps the
   // positions the user has already learned for the existing ones, and matches
   // what the daemon does with an `add`.
-  const next = removing ? before.filter((v) => v !== id) : [...before, id];
+  const next = removing ? before.filter((v) => !sameEntry(kind, v, id)) : [...before, id];
   const change: IdDelta = removing ? { remove: [id] } : { add: [id] };
   queueWrite({ [kind]: change }, { ...base, [kind]: next });
 }
 
 /**
- * Un-star several ids at once, across both kinds.
+ * Un-star several ids at once, across kinds.
  *
  * The caller for this is the launchpad's "these pinned items no longer exist"
  * note: the skill was renamed, so there is no row left anywhere in Settings
@@ -271,13 +303,13 @@ export function dropFavorites(ids: Partial<Record<FavoriteKind, string[]>>): voi
   const base = pending ?? server;
   const delta: FavoritesDelta = {};
   const optimistic: Lists = { ...base };
-  for (const kind of ["skills", "jobs"] as const) {
-    const remove = ids[kind]?.filter((id) => base[kind].includes(id)) ?? [];
+  for (const kind of KINDS) {
+    const remove = ids[kind]?.filter((id) => hasEntry(kind, base[kind], id)) ?? [];
     if (remove.length === 0) continue;
     delta[kind] = { remove };
-    optimistic[kind] = base[kind].filter((id) => !remove.includes(id));
+    optimistic[kind] = base[kind].filter((id) => !hasEntry(kind, remove, id));
   }
-  if (!delta.skills && !delta.jobs) return;
+  if (!delta.skills && !delta.jobs && !delta.folders) return;
 
   queueWrite(delta, optimistic);
 }
@@ -338,7 +370,7 @@ export function useFavorites(
 
   const favorites = current.lists[kind];
 
-  const isFavorite = useCallback((id: string) => favorites.includes(id), [favorites]);
+  const isFavorite = useCallback((id: string) => hasEntry(kind, favorites, id), [kind, favorites]);
 
   const toggle = useCallback((id: string) => toggleFavorite(kind, id), [kind]);
 
@@ -346,7 +378,9 @@ export function useFavorites(
     void fetchFavorites();
   }, []);
 
-  return { favorites, ready: current.ready, error: current.error, writeError: current.writeError, isFavorite, toggle, retry };
+  const writeError = current.writeFailedKinds.includes(kind) ? FAVORITES_WRITE_ERROR : null;
+
+  return { favorites, ready: current.ready, error: current.error, writeError, isFavorite, toggle, retry };
 }
 
 /**

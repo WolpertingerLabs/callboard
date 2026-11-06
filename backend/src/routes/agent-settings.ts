@@ -3,9 +3,9 @@
  *
  *   GET  /api/agent-settings                  — get current settings
  *   PUT  /api/agent-settings                  — update settings
- *   GET   /api/agent-settings/favorites       — the two favorites lists, and nothing else
+ *   GET   /api/agent-settings/favorites       — the favorites lists and starred folders, and nothing else
  *   PUT   /api/agent-settings/favorites       — replace the two favorites lists
- *   PATCH /api/agent-settings/favorites       — add/remove ids against the stored lists
+ *   PATCH /api/agent-settings/favorites       — add/remove ids (and starred folders) against the stored lists
  *   GET  /api/agent-settings/key-aliases      — discover key aliases from MCP config dir
  *   POST /api/agent-settings/test-connection  — test remote proxy connection
  *   GET  /api/agent-settings/daemon-status    — drawlatch daemon URL/health/enrollment
@@ -20,7 +20,7 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
 import type { AgentSettings, ModelAlias } from "shared/types/index.js";
-import { validateModelAliases, SECRET_SETTING_FIELDS, isMaskedSecret, maskSecret } from "shared/types/index.js";
+import { validateModelAliases, SECRET_SETTING_FIELDS, isMaskedSecret, maskSecret, applyStarredSidebarFolderDelta } from "shared/types/index.js";
 import {
   getAgentSettings,
   updateAgentSettings,
@@ -129,9 +129,16 @@ function applyDelta(current: string[], delta: IdDelta): string[] {
   return next;
 }
 
-/** The favorites pair, always as arrays — an unset list reads back as `[]`. */
-function favoritesOf(settings: { favoriteSkills?: string[]; favoriteJobs?: string[] }): { favoriteSkills: string[]; favoriteJobs: string[] } {
-  return { favoriteSkills: settings.favoriteSkills ?? [], favoriteJobs: settings.favoriteJobs ?? [] };
+/**
+ * The favorites pair plus the starred sidebar folders, always as arrays — an
+ * unset list reads back as `[]`.
+ */
+function favoritesOf(settings: Pick<AgentSettings, "favoriteSkills" | "favoriteJobs" | "starredSidebarFolders">): {
+  favoriteSkills: string[];
+  favoriteJobs: string[];
+  starredSidebarFolders: string[];
+} {
+  return { favoriteSkills: settings.favoriteSkills ?? [], favoriteJobs: settings.favoriteJobs ?? [], starredSidebarFolders: settings.starredSidebarFolders ?? [] };
 }
 
 /**
@@ -649,9 +656,10 @@ agentSettingsRouter.put("/", requireSessionAuth, async (req: Request, res: Respo
 });
 
 /**
- * GET   /api/agent-settings/favorites — the two favorites lists, and nothing else.
- * PUT   /api/agent-settings/favorites — replace one or both of them.
- * PATCH /api/agent-settings/favorites — add/remove ids against what is stored.
+ * GET   /api/agent-settings/favorites — the two favorites lists and the starred
+ *                                       sidebar folders, and nothing else.
+ * PUT   /api/agent-settings/favorites — replace one or both favorites lists.
+ * PATCH /api/agent-settings/favorites — add/remove ids (or starred folders) against what is stored.
  *
  * ## Why this is not just `GET /api/agent-settings`
  *
@@ -689,6 +697,16 @@ agentSettingsRouter.put("/", requireSessionAuth, async (req: Request, res: Respo
  *
  * PUT stays: replacing the list wholesale is a legitimate operation with its
  * own callers and tests. It is just no longer how a single star is toggled.
+ *
+ * ## Starred sidebar folders ride along
+ *
+ * `starredSidebarFolders` — the stars in "Move to folder" — are the same kind
+ * of thing (a per-user list of starred names, edited from more than one tab),
+ * so they share this route and its client cache rather than growing a
+ * parallel one. They are PATCH-only: `{ folders: { add: ["Work"] } }`. Names
+ * are validated and matched by the sidebar-folder rules, not as ids —
+ * `applyStarredSidebarFolderDelta` — so unstarring "work" removes a stored
+ * "Work", and starring "WORK" beside it adds nothing.
  */
 agentSettingsRouter.get("/favorites", (_req: Request, res: Response): void => {
   try {
@@ -715,16 +733,19 @@ agentSettingsRouter.put("/favorites", (req: Request, res: Response): void => {
 });
 
 agentSettingsRouter.patch("/favorites", (req: Request, res: Response): void => {
-  const { skills, jobs } = req.body ?? {};
+  const { skills, jobs, folders } = req.body ?? {};
   const skillsDelta = normalizeDelta(skills);
   const jobsDelta = normalizeDelta(jobs);
+  const foldersDelta = normalizeDelta(folders);
   try {
     const current = favoritesOf(getAgentSettings());
+    const starredFolders = foldersDelta && applyStarredSidebarFolderDelta(current.starredSidebarFolders, foldersDelta);
     const updated = updateAgentSettings({
       // Only the sides this request actually named. An absent (or unusable)
       // delta must not rewrite a list, not even to the same value.
       ...(skillsDelta && { favoriteSkills: normalizeIdList(applyDelta(current.favoriteSkills, skillsDelta)) }),
       ...(jobsDelta && { favoriteJobs: normalizeIdList(applyDelta(current.favoriteJobs, jobsDelta)) }),
+      ...(starredFolders && { starredSidebarFolders: starredFolders.length > 0 ? starredFolders : undefined }),
     });
     res.json(favoritesOf(updated));
   } catch (err: any) {
