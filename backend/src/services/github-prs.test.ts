@@ -308,6 +308,32 @@ describe("getRepoPulls", () => {
     expect(execFileMock).toHaveBeenCalledTimes(4);
   });
 
+  it("keeps the last good PRs, with the error alongside, when a background refresh fails", async () => {
+    remoteUrl.mockResolvedValue("https://github.com/acme/app");
+    ghServes({ open: [rawPull(1, "feat/a")] });
+    await getRepoPulls("/r", false, 0);
+
+    ghServes({
+      open: Object.assign(new Error("exit 1"), { code: 1 as unknown as string }),
+      stderr: "gh: To get started with GitHub CLI, please run: gh auth login",
+    });
+    await getRepoPulls("/r", false, PR_CACHE_TTL_MS); // serves stale, refreshes behind
+    for (let i = 0; i < 5; i++) await flush();
+
+    const after = await getRepoPulls("/r", false, PR_CACHE_TTL_MS + 1);
+    expect(after.byBranch.has("feat/a")).toBe(true);
+    expect(after.error).toBe("gh: To get started with GitHub CLI, please run: gh auth login");
+    // Stamped as a fresh entry: the failure is not retried before the TTL…
+    expect(execFileMock).toHaveBeenCalledTimes(3);
+    // …and the in-flight slot was released, so the next expiry refreshes again.
+    ghServes({ open: [rawPull(2, "feat/b")] });
+    await getRepoPulls("/r", false, 2 * PR_CACHE_TTL_MS);
+    for (let i = 0; i < 5; i++) await flush();
+    const recovered = await getRepoPulls("/r", false, 2 * PR_CACHE_TTL_MS + 1);
+    expect(recovered.byBranch.has("feat/b")).toBe(true);
+    expect(recovered.error).toBeUndefined();
+  });
+
   it("caches a failure too, so a missing gh is not respawned every poll", async () => {
     remoteUrl.mockResolvedValue("https://github.com/acme/app");
     ghServes({ open: Object.assign(new Error("spawn gh ENOENT"), { code: "ENOENT" }) });

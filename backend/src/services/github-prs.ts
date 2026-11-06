@@ -141,7 +141,12 @@ export function toBranchPr(pr: PullSummary): BranchPr {
 /** What one repo's lookup produced: its PRs by branch, or why there are none. */
 export interface RepoPulls {
   byBranch: Map<string, PullSummary[]>;
-  /** Set when the lookup failed; `byBranch` is then empty. */
+  /**
+   * Set when the lookup failed. `byBranch` then holds whatever did arrive:
+   * nothing when the first (open) listing failed, the open PRs when only the
+   * closed listing did, or — for a failed background refresh — the entry it
+   * was meant to replace.
+   */
   error?: string;
 }
 
@@ -242,12 +247,22 @@ function limited<T>(task: () => Promise<T>): Promise<T> {
 /** Start a fetch for `repoPath` unless one is already running; resolves to its result. */
 function refresh(repoPath: string, entry: CacheEntry, now: number): Promise<RepoPulls> {
   if (entry.pending) return entry.pending;
-  const pending = limited(() => fetchRepoPulls(repoPath)).then((value) => {
-    entry.at = now;
-    entry.value = value;
-    entry.pending = undefined;
-    return value;
-  });
+  const pending = limited(() => fetchRepoPulls(repoPath))
+    .then((value) => {
+      // A failed refresh (gh logged out, offline, rate limited) must not wipe
+      // badges that were right a minute ago: keep the last good PRs and carry
+      // the error alongside them. Stamped either way, so the failure is not
+      // retried before the TTL.
+      const previous = entry.value;
+      entry.at = now;
+      entry.value = value.error !== undefined && previous ? { ...previous, error: value.error } : value;
+      return entry.value;
+    })
+    // In a finally, so even a throw cannot leave the entry holding a rejected
+    // promise that every later caller would be handed.
+    .finally(() => {
+      entry.pending = undefined;
+    });
   entry.pending = pending;
   return pending;
 }

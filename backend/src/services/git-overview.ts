@@ -20,7 +20,7 @@ import { basename, dirname, join, resolve, sep } from "path";
 import type { BranchRepo, BranchRow, GitOverviewResponse } from "shared";
 import { createCardContext } from "./card-context.js";
 import { getRepoPulls, matchPull, toBranchPr, type RepoPulls } from "./github-prs.js";
-import { getGitWorktreesAsync, resolveWorktreeToMainRepoCached, type WorktreeInfo } from "../utils/git.js";
+import { resolveWorktreeToMainRepoCached, tryGetGitWorktreesAsync, type WorktreeInfo } from "../utils/git.js";
 
 /** Card ids by member-chat folder, over every open, visible card. */
 export function activeCardFolders(): Map<string, Set<string>> {
@@ -103,7 +103,8 @@ interface RepoListing {
 
 export interface OverviewDeps {
   folders: () => Map<string, Set<string>>;
-  listWorktrees: (dir: string) => Promise<WorktreeInfo[]>;
+  /** `[]` when git refused the directory, `null` when no verdict came (timeout, spawn failure). */
+  listWorktrees: (dir: string) => Promise<WorktreeInfo[] | null>;
   mainRepoOf: (dir: string) => string;
   pullsFor: (repoPath: string, force: boolean) => Promise<RepoPulls>;
   normalize: (dir: string) => string;
@@ -117,7 +118,7 @@ export interface OverviewDeps {
 
 const DEFAULT_DEPS: OverviewDeps = {
   folders: activeCardFolders,
-  listWorktrees: getGitWorktreesAsync,
+  listWorktrees: tryGetGitWorktreesAsync,
   mainRepoOf: (dir) => resolveWorktreeToMainRepoCached(dir).mainRepoPath,
   pullsFor: getRepoPulls,
   normalize: normalizeDir,
@@ -170,7 +171,11 @@ export async function buildGitOverview(opts: { force?: boolean } = {}, deps: Ove
   const repos = new Map<string, RepoListing>();
   const cardsByCwd = new Map<string, Set<string>>();
   candidates.forEach((candidate, i) => {
-    const usable = listed[i].filter((wt) => !wt.isBare);
+    const worktrees = listed[i];
+    // No verdict (a timeout on a slow disk, say): this response goes without
+    // the repo, but it is not remembered as a non-repo — the next poll asks again.
+    if (worktrees === null) return;
+    const usable = worktrees.filter((wt) => !wt.isBare);
     if (usable.length === 0) {
       notRepos.set(candidate, now + NOT_A_REPO_TTL_MS);
       return;

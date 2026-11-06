@@ -659,14 +659,26 @@ export function getGitWorktrees(directory: string): WorktreeInfo[] {
 
 /** {@link getGitWorktrees} without blocking the event loop, for request paths that list several repos. */
 export async function getGitWorktreesAsync(directory: string): Promise<WorktreeInfo[]> {
+  return (await tryGetGitWorktreesAsync(directory)) ?? [];
+}
+
+/**
+ * {@link getGitWorktreesAsync}, telling "git said no" from "no answer came":
+ * `[]` when git ran and refused the directory (a non-zero exit — not a
+ * repository), `null` when there was no verdict at all (a timeout, or git
+ * could not be spawned). A caller that remembers refusals must not remember
+ * a `null` — the directory may be a perfectly good repo on a slow disk.
+ */
+export async function tryGetGitWorktreesAsync(directory: string): Promise<WorktreeInfo[] | null> {
   if (!directory || !existsSync(directory)) {
     return [];
   }
 
   try {
     return parseWorktreePorcelain(await gitAsync(directory, ["worktree", "list", "--porcelain"], { timeout: 5000 }));
-  } catch {
-    return [];
+  } catch (err) {
+    const { code, killed, signal } = err as { code?: unknown; killed?: boolean; signal?: unknown };
+    return typeof code === "number" && !killed && !signal ? [] : null;
   }
 }
 

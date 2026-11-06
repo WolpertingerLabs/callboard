@@ -11,7 +11,18 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { ensureWorktreeDetailed, fallbackBranchName, getGitInfo, getGitWorktrees, getGitWorktreesAsync, getRemoteUrlAsync, hasUncommittedChanges, resolveBranch, uniqueBranchName } from "./git.js";
+import {
+  ensureWorktreeDetailed,
+  fallbackBranchName,
+  getGitInfo,
+  getGitWorktrees,
+  getGitWorktreesAsync,
+  getRemoteUrlAsync,
+  tryGetGitWorktreesAsync,
+  hasUncommittedChanges,
+  resolveBranch,
+  uniqueBranchName,
+} from "./git.js";
 
 // Canonical, not as `tmpdir()` spells it: on macOS that is `/var/folders/...`,
 // a symlink to `/private/var/folders/...`. Worktree resolution reports the real
@@ -760,6 +771,10 @@ describe("getGitWorktreesAsync", () => {
 
   it("answers [] for a directory that is not a repository", async () => {
     expect(await getGitWorktreesAsync(tmpRoot)).toEqual([]);
+  });
+
+  it("reports git's refusal of a non-repository as [], a verdict — not null", async () => {
+    expect(await tryGetGitWorktreesAsync(tmpRoot)).toEqual([]);
   });
 });
 

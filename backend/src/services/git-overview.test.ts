@@ -119,6 +119,18 @@ describe("buildGitOverview", () => {
     }
   });
 
+  it("does not remember a listing that gave no verdict (timeout), and asks again next poll", async () => {
+    const notRepos = new Map<string, number>();
+    const d = deps({ "/src/app": ["c1"] }, { notRepos });
+    d.listWorktrees.mockResolvedValueOnce(null);
+    expect((await buildGitOverview({}, d)).repos).toEqual([]);
+    expect(notRepos.size).toBe(0);
+
+    const { repos } = await buildGitOverview({}, d);
+    expect(repos.map((r) => r.repoPath)).toEqual(["/src/app"]);
+    expect(d.listWorktrees).toHaveBeenCalledTimes(2);
+  });
+
   it("treats a nested repo or submodule inside a worktree as its own repository", async () => {
     GIT_ROOTS.add("/src/app/vendor/sub");
     WORKTREES["/src/app/vendor/sub"] = [wt("/src/app/vendor/sub", "main", true)];
