@@ -656,9 +656,10 @@ agentSettingsRouter.put("/", requireSessionAuth, async (req: Request, res: Respo
 });
 
 /**
- * GET   /api/agent-settings/favorites — the two favorites lists, and nothing else.
- * PUT   /api/agent-settings/favorites — replace one or both of them.
- * PATCH /api/agent-settings/favorites — add/remove ids against what is stored.
+ * GET   /api/agent-settings/favorites — the two favorites lists and the starred
+ *                                       sidebar folders, and nothing else.
+ * PUT   /api/agent-settings/favorites — replace one or both favorites lists.
+ * PATCH /api/agent-settings/favorites — add/remove ids (or starred folders) against what is stored.
  *
  * ## Why this is not just `GET /api/agent-settings`
  *

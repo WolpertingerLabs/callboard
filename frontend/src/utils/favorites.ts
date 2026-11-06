@@ -62,8 +62,9 @@
  * have been", which put a re-starred favorite back at the end instead of its
  * original index and could leave the UI claiming a failure the disk had already
  * accepted. On failure the overlay is dropped (falling back to the last
- * confirmed `server`), `writeError` is set so the star does not simply un-fill
- * in silence, and a refetch settles the truth.
+ * confirmed `server`), `writeError` is set — for the kinds that write touched —
+ * so the star does not simply un-fill in silence, and a refetch settles the
+ * truth.
  *
  * ## What counts as a stale read
  *
@@ -144,17 +145,23 @@ let error: string | null = null;
  * revalidation clears the read error, and the refetch a failed write kicks off
  * is exactly that — folding the two together would erase the message before
  * the user could see it, leaving a star that un-fills for no stated reason.
- * Cleared when a write succeeds, and when the next one is attempted.
+ *
+ * Scoped by kind: the cache is shared, but a failed skill star is no news to
+ * the "Move to folder" dialog, and showing it there would blame a star the
+ * user never touched. Holds the kinds whose last write failed; a kind is
+ * cleared when a write touching it is attempted, or succeeds.
  */
-let writeError: string | null = null;
+let writeFailedKinds: readonly FavoriteKind[] = [];
+/** Kinds touched by the writes now outstanding — what a failure is about. */
+let batchKinds = new Set<FavoriteKind>();
 
 export interface FavoritesSnapshot {
   lists: Lists;
   /** Have we read the list? Until this is true, a write would be a guess. */
   ready: boolean;
   error: string | null;
-  /** The last write failed and was rolled back. */
-  writeError: string | null;
+  /** Kinds whose last write failed and was rolled back. */
+  writeFailedKinds: readonly FavoriteKind[];
 }
 
 /**
@@ -163,12 +170,12 @@ export interface FavoritesSnapshot {
  * and why the hook below does not have to reach for a setState in an effect to
  * cover the window between its first render and its subscription.
  */
-let snapshot: FavoritesSnapshot = { lists: EMPTY, ready: false, error: null, writeError: null };
+let snapshot: FavoritesSnapshot = { lists: EMPTY, ready: false, error: null, writeFailedKinds: [] };
 
 const subscribers = new Set<() => void>();
 
 function publish(): void {
-  snapshot = { lists: pending ?? server ?? EMPTY, ready: server !== null, error, writeError };
+  snapshot = { lists: pending ?? server ?? EMPTY, ready: server !== null, error, writeFailedKinds };
   for (const fn of subscribers) fn();
 }
 
@@ -227,12 +234,14 @@ function settleWrite(confirmed: Lists | null): void {
   // of a list a later click has already moved on from.
   if (outstanding > 0) return;
   pending = null;
+  const touched = batchKinds;
+  batchKinds = new Set();
   if (confirmed) {
     server = confirmed;
     error = null;
-    writeError = null;
+    writeFailedKinds = writeFailedKinds.filter((kind) => !touched.has(kind));
   } else {
-    writeError = FAVORITES_WRITE_ERROR;
+    writeFailedKinds = KINDS.filter((kind) => touched.has(kind) || writeFailedKinds.includes(kind));
   }
   publish();
   if (!confirmed) void fetchFavorites();
@@ -246,8 +255,10 @@ function settleWrite(confirmed: Lists | null): void {
  * the answer will be, and it is thrown away the moment the daemon answers.
  */
 function queueWrite(delta: FavoritesDelta, optimistic: Lists): void {
+  const touched = KINDS.filter((kind) => delta[kind] !== undefined);
   pending = optimistic;
-  writeError = null;
+  for (const kind of touched) batchKinds.add(kind);
+  writeFailedKinds = writeFailedKinds.filter((kind) => !touched.includes(kind));
   publish();
 
   outstanding += 1;
@@ -367,7 +378,9 @@ export function useFavorites(
     void fetchFavorites();
   }, []);
 
-  return { favorites, ready: current.ready, error: current.error, writeError: current.writeError, isFavorite, toggle, retry };
+  const writeError = current.writeFailedKinds.includes(kind) ? FAVORITES_WRITE_ERROR : null;
+
+  return { favorites, ready: current.ready, error: current.error, writeError, isFavorite, toggle, retry };
 }
 
 /**

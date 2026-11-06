@@ -256,9 +256,10 @@ export default function MoveToFolderModal({
             {error}
           </p>
         )}
-        {starError && !starDisabled && (
+        {/* Visible, not only the disabled star's tooltip — a touch screen has no hover. */}
+        {starError && (
           <p role="status" style={{ margin: "12px 0 0", fontSize: 13, color: "var(--danger)" }}>
-            {starError}
+            {starDisabled ? "Couldn't load starred folders." : starError}
           </p>
         )}
 

@@ -360,6 +360,29 @@ describe("useFavorites — writes", () => {
     expect(result.current.favorites).toEqual(["a", "b"]);
   });
 
+  it("reports a failed write only to the kind it touched", async () => {
+    // One cache, three kinds: a failed skill star must not surface in the
+    // "Move to folder" dialog, which only ever touches folders.
+    getFavorites.mockResolvedValue({ ...lists(["a"]), starredSidebarFolders: ["Work"] });
+    patchFavorites.mockRejectedValueOnce(new Error("boom")).mockResolvedValue({ ...lists(["a"]), starredSidebarFolders: [] });
+    const { useFavorites, FAVORITES_WRITE_ERROR } = await loadFavorites();
+
+    const skills = renderHook(() => useFavorites("skills"));
+    const folders = renderHook(() => useFavorites("folders"));
+    await waitFor(() => expect(folders.result.current.ready).toBe(true));
+
+    act(() => skills.result.current.toggle("b"));
+    await waitFor(() => expect(skills.result.current.writeError).toBe(FAVORITES_WRITE_ERROR));
+    expect(folders.result.current.writeError).toBeNull();
+
+    // A folder write — successful — leaves the skill error standing.
+    act(() => folders.result.current.toggle("Work"));
+    await waitFor(() => expect(folders.result.current.favorites).toEqual([]));
+    await waitFor(() => expect(patchFavorites).toHaveBeenCalledTimes(2));
+    expect(folders.result.current.writeError).toBeNull();
+    expect(skills.result.current.writeError).toBe(FAVORITES_WRITE_ERROR);
+  });
+
   it("refetches after a failed write so the UI cannot sit on a guess", async () => {
     getFavorites.mockResolvedValue(lists(["a"]));
     patchFavorites.mockRejectedValue(new Error("boom"));

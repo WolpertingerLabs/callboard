@@ -186,6 +186,13 @@ describe("MoveToFolderModal", () => {
       const star = screen.getByRole("button", { name: "Star folder Alpha" }) as HTMLButtonElement;
       expect(star.disabled).toBe(true);
       expect(star.title).toBe("Could not reach the daemon");
+      // And said where a touch screen can see it, not only in the tooltip.
+      expect(screen.getByRole("status").textContent).toMatch(/Couldn't load starred folders/);
+    });
+
+    it("says nothing while the stars are merely still loading", () => {
+      renderModal({ onToggleStar: vi.fn(), starDisabled: true });
+      expect(screen.queryByRole("status")).toBeNull();
     });
 
     it("shows a failed star write", () => {
