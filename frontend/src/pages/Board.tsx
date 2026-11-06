@@ -55,7 +55,7 @@ function oldestClosedKey(closedCards: CardSummary[]): string | null {
 }
 
 /** Archived cards fetched per page — and per poll, until "Show more" raises it. */
-const ARCHIVE_PAGE_SIZE = 50;
+export const ARCHIVE_PAGE_SIZE = 10;
 
 /** The rollups that are NOT idle — the live half of the board. */
 const LIVE_ROLLUPS: CardSummary["rollup"][] = ["needs_you", "job_running", "active"];
