@@ -79,11 +79,12 @@ describe("MessageBubble hover actions on a narrow reply", () => {
     const { container } = render(
       <MessageBubble message={short} onFork={vi.fn()} forkCurrentProvider="claude-code" onRerun={vi.fn()} starKey="k" onToggleStar={vi.fn()} />,
     );
-    // copy, fork, star, rerun: the rerun button's left edge is 96 + 24 = 120px in from the right.
-    expect(bubbleOf(container).style.minWidth).toBe("126px");
+    // copy, copy formatted, fork, star, rerun: the rerun button's left edge is 126 + 24 = 150px in from the right.
+    expect(container.querySelector<HTMLElement>(`[title^="Send this prompt again"]`)!.style.right).toBe("126px");
+    expect(bubbleOf(container).style.minWidth).toBe("156px");
     cleanup();
     const { container: fewer } = render(<MessageBubble message={short} onFork={vi.fn()} forkCurrentProvider="claude-code" />);
-    expect(bubbleOf(fewer).style.minWidth).toBe("66px");
+    expect(bubbleOf(fewer).style.minWidth).toBe("96px");
   });
 
   it("a user bubble is right-aligned, so it keeps its natural width", () => {
