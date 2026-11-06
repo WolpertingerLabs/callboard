@@ -22,18 +22,53 @@ export function isSummaryTurn(message: ParsedMessage): boolean {
 }
 
 /**
- * A user turn a rerun can send again: one the user typed (not a team member's,
- * not a compaction summary), with text or images. Built-in slash commands are
- * excluded too — `/compact`, `/clear` and the like act on the session rather
- * than ask the model something, and rerunning one in a forked chat would act on
- * the wrong conversation.
+ * Whole-content shapes of the user rows the Claude CLI writes around a local
+ * slash command: its output (`<local-command-stdout>…`, `…-stderr>`), its
+ * caveat, and the command envelope itself (`<command-name>` / `-message>` /
+ * `-args>`) when the parser could not project it to `/name args`. Leading
+ * tag only, closed at the end: prose that merely mentions a tag is a message.
+ */
+const COMMAND_ROW =
+  /^<(local-command-(?:stdout|stderr|caveat)|command-(?:name|message|args))>[\s\S]*<\/(?:local-command-(?:stdout|stderr|caveat)|command-(?:name|message|args))>$/;
+
+/**
+ * Whether `content` is a row a local slash command wrote — its output or its
+ * envelope — rather than anything the user typed. The Claude parser flags
+ * these (`isCommandOutput`); the text check is for transcripts that carry them
+ * as plain turns, such as a Codex chat seeded from a Claude one.
+ */
+export function isLocalCommandText(content: string): boolean {
+  return COMMAND_ROW.test(content.trim());
+}
+
+/** First line of the preamble a seeded (handed-off) session opens with — backend/src/agents/handoff.ts. */
+export const HANDOFF_PREAMBLE_TAG = "<conversation_handoff";
+
+/** Whether `content` is the preamble user turn a seeded session opens with, not a prompt. */
+export function isHandoffPreambleText(content: string): boolean {
+  const trimmed = content.trim();
+  return trimmed.startsWith(`${HANDOFF_PREAMBLE_TAG} `) && trimmed.endsWith("</conversation_handoff>");
+}
+
+/**
+ * A user turn a rerun can send again: one the user typed, with text or
+ * images. Not a team member's, and not a turn callboard or the CLI wrote in the
+ * user's seat: a compaction summary, a handoff preamble, a local command's
+ * output. Built-in slash commands are excluded too — `/compact`, `/clear` and
+ * the like act on the session rather than ask the model something, and
+ * rerunning one in a forked chat would act on the wrong conversation.
+ *
+ * Every excluded kind is still a user turn to {@link findReplyPrompt}: a reply
+ * directly after one answers it, so it is refused rather than mapped to an
+ * older prompt — the slash-command rule, for all of them.
  *
  * The frontend offers Rerun on a user bubble only when this holds, so the two
  * sides agree on what can be picked.
  */
 export function isRerunPrompt(message: ParsedMessage): boolean {
   if (message.role !== "user" || message.type !== "text" || message.teamName || !message.timestamp) return false;
-  if (message.isBuiltInCommand || isSummaryTurn(message)) return false;
+  if (message.isBuiltInCommand || message.isCommandOutput || isSummaryTurn(message)) return false;
+  if (isLocalCommandText(message.content) || isHandoffPreambleText(message.content)) return false;
   return message.content.trim().length > 0 || (message.imageIds?.length ?? 0) > 0;
 }
 

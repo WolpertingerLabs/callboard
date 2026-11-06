@@ -1,6 +1,6 @@
 import { EventEmitter } from "events";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { awaitChatCreated, toPromptIterable, unattendedPermissions } from "./session-spawn.js";
+import { awaitChatCreated, ChatCreatedTimeoutError, toPromptIterable, unattendedPermissions } from "./session-spawn.js";
 
 const opts = { timeoutMs: 1000, timeoutMessage: "timed out", failMessage: "failed to start" };
 
@@ -46,7 +46,22 @@ describe("awaitChatCreated", () => {
     const assertion = expect(pending).rejects.toThrow("timed out");
     vi.advanceTimersByTime(1000);
     await assertion;
+    await expect(pending).rejects.toBeInstanceOf(ChatCreatedTimeoutError);
     expect(emitter.listenerCount("event")).toBe(0);
+  });
+
+  it("ignores done by default; with doneMessage, a done before chat_created rejects and detaches", async () => {
+    const a = new EventEmitter();
+    const ignoring = awaitChatCreated(a, opts);
+    a.emit("event", { type: "done" });
+    a.emit("event", { type: "chat_created", chatId: "late" });
+    await expect(ignoring).resolves.toBe("late");
+
+    const b = new EventEmitter();
+    const strict = awaitChatCreated(b, { ...opts, doneMessage: "ended early" });
+    b.emit("event", { type: "done" });
+    await expect(strict).rejects.toThrow("ended early");
+    expect(b.listenerCount("event")).toBe(0);
   });
 });
 

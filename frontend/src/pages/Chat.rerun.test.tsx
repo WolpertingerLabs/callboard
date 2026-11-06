@@ -139,6 +139,23 @@ it("offers no Rerun on a reply to a slash command or a compaction, where the ser
   expect(screen.getAllByRole("button", { name: "Rerun from here" })).toHaveLength(2);
 });
 
+it("offers no Rerun on a command's output, a handoff preamble, or the replies right after them", async () => {
+  vi.mocked(getMessages).mockResolvedValueOnce([
+    { role: "user", type: "text", content: "<local-command-stdout>Compacted </local-command-stdout>", isCommandOutput: true, timestamp: Q1 },
+    { role: "assistant", type: "text", content: "noted", timestamp: A1 },
+    {
+      role: "user",
+      type: "text",
+      content: '<conversation_handoff from="Claude Code" to="Codex">\nx\n</conversation_handoff>',
+      timestamp: "2026-01-01T10:00:02.000Z",
+    },
+    { role: "assistant", type: "text", content: "Understood", timestamp: "2026-01-01T10:00:02.000Z" },
+  ] as ParsedMessage[]);
+  render(tree());
+  await screen.findByText("Understood");
+  expect(screen.queryAllByRole("button", { name: "Rerun from here" })).toHaveLength(0);
+});
+
 it("holds the page with a pending indicator until the server answers", async () => {
   let answer!: (value: Awaited<ReturnType<typeof rerunChatFrom>>) => void;
   vi.mocked(rerunChatFrom).mockReturnValueOnce(new Promise((resolve) => (answer = resolve)));

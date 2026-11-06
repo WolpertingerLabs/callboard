@@ -354,10 +354,10 @@ export class ClaudeCodeSessionProvider implements SessionProvider {
    * stamp), and the bookkeeping lines the CLI writes for it right before it
    * are left out.
    */
-  forkSessionBefore(sessionIds: string[], promptTimestamp: string, newSessionId: string): { logPath: string } | null {
+  forkSessionBefore(sessionIds: string[], prompt: { timestamp: string; text?: string }, newSessionId: string): { logPath: string } | null {
     const source = this._gatherLines(sessionIds);
     if (!source) return null;
-    const copied = truncateLinesBefore(source.lines, promptTimestamp);
+    const copied = truncateLinesBefore(source.lines, prompt);
     if (!copied) return null;
     return this._writeSessionLines(source, copied, newSessionId);
   }
@@ -631,34 +631,65 @@ function closeToolUses(copied: any[], following: any[], stamp: string): any[] {
   return copied;
 }
 
-/** Lines the CLI writes as bookkeeping for the prompt that follows them (its queue entry, its file-history snapshot). */
-const PROMPT_BOOKKEEPING_TYPES: ReadonlySet<string> = new Set(["queue-operation", "file-history-snapshot"]);
+/**
+ * Whether the line right before a prompt is that prompt's own bookkeeping, and
+ * goes with it: its queue entry (enqueue/dequeue are written just before the
+ * prompt line), or the file-history snapshot the CLI takes FOR it — named by
+ * `messageId`. A snapshot for an earlier prompt (an `isSnapshotUpdate` of the
+ * previous turn can sit there too) belongs to the kept history.
+ */
+function isPromptBookkeeping(line: any, promptUuid: unknown): boolean {
+  if (line?.type === "queue-operation") return true;
+  return line?.type === "file-history-snapshot" && typeof promptUuid === "string" && line.messageId === promptUuid;
+}
 
-/** Whether a raw line is a prompt the user typed: a user turn that is not meta, a compaction summary or only tool results. */
+/**
+ * Whether a raw line is a prompt the user typed: a main-thread user turn that
+ * is not meta, a compaction summary or only tool results. Sidechain lines (a
+ * subagent's prompts) are never the chat's prompt.
+ */
 function isPromptLine(line: any): boolean {
-  if (!isConversationEntry(line) || line.type !== "user" || line.isMeta || line.isCompactSummary) return false;
+  if (!isConversationEntry(line) || line.type !== "user" || line.isMeta || line.isCompactSummary || line.isSidechain) return false;
   const content = line.message?.content;
   if (typeof content === "string") return content.length > 0;
   return Array.isArray(content) && content.some((b: any) => b?.type === "text" || b?.type === "image");
 }
 
+/** A prompt line's text as the parser renders it: a string as-is, the non-empty text blocks joined. */
+function promptLineText(line: any): string {
+  const content = line.message?.content;
+  if (typeof content === "string") return content;
+  return (content as any[])
+    .filter((b) => b?.type === "text" && b.text)
+    .map((b) => b.text)
+    .filter((t: string) => t.trim())
+    .join("\n\n");
+}
+
 /**
- * Everything strictly before the prompt stamped `promptTimestamp`, cut by
+ * Everything strictly before the prompt stamped `prompt.timestamp`, cut by
  * POSITION: the prompt's line and every line after it go, whatever their
  * stamps. (The CLI stamps the attachment lines that follow a prompt 1–2 ms
  * before it, so a timestamp cutoff "just before the prompt" lands on them and
  * keeps the prompt — the resumed CLI then answers it with "No response
- * requested.") The contiguous bookkeeping lines right before the prompt are
- * its own and go with it. Null when there is no such prompt or nothing
- * conversational precedes it.
+ * requested.") The prompt's own bookkeeping right before it goes with it.
+ *
+ * The prompt is the prompt line in that millisecond whose text is
+ * `prompt.text`, when given and one matches; otherwise the first prompt line in
+ * it. Null when there is no such line or nothing conversational precedes it.
  */
-function truncateLinesBefore(lines: any[], promptTimestamp: string): any[] | null {
-  const promptMs = new Date(promptTimestamp).getTime();
+function truncateLinesBefore(lines: any[], prompt: { timestamp: string; text?: string }): any[] | null {
+  const promptMs = new Date(prompt.timestamp).getTime();
   if (isNaN(promptMs)) return null;
-  const promptIdx = lines.findIndex((l) => isPromptLine(l) && lineMs(l) === promptMs);
-  if (promptIdx === -1) return null;
+  const candidates: number[] = [];
+  lines.forEach((l, i) => {
+    if (isPromptLine(l) && lineMs(l) === promptMs) candidates.push(i);
+  });
+  if (candidates.length === 0) return null;
+  const matching = prompt.text === undefined ? undefined : candidates.find((i) => promptLineText(lines[i]) === prompt.text);
+  const promptIdx = matching ?? candidates[0]!;
   let end = promptIdx;
-  while (end > 0 && PROMPT_BOOKKEEPING_TYPES.has(lines[end - 1]?.type)) end--;
+  while (end > 0 && isPromptBookkeeping(lines[end - 1], lines[promptIdx].uuid)) end--;
   const copied = lines.slice(0, end);
   if (!copied.some(isConversationEntry)) return null;
   // Nothing after the cut is pulled in: past it is the prompt's own turn.

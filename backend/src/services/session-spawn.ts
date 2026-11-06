@@ -37,7 +37,16 @@ export interface AwaitChatCreatedOptions {
   timeoutMessage: string;
   /** Rejection message for an `error` event that carries no `content`. */
   failMessage: string;
+  /**
+   * When set, a `done` event before `chat_created` rejects with this message —
+   * the run ended without ever making a chat. Unset (the default), `done` is
+   * ignored and only the timeout ends the wait.
+   */
+  doneMessage?: string;
 }
+
+/** The rejection when no `chat_created` arrives in time — distinguishable, so a caller can stop the run it gave up on. */
+export class ChatCreatedTimeoutError extends Error {}
 
 /**
  * Resolve with the chat id from the session's `chat_created` event; reject on an
@@ -49,7 +58,7 @@ export interface AwaitChatCreatedOptions {
  * caller stopped caring about the moment it had the id — and one spawner that
  * starts many children accumulates one dead listener per child.
  */
-export function awaitChatCreated(emitter: EventEmitter, { timeoutMs, timeoutMessage, failMessage }: AwaitChatCreatedOptions): Promise<string> {
+export function awaitChatCreated(emitter: EventEmitter, { timeoutMs, timeoutMessage, failMessage, doneMessage }: AwaitChatCreatedOptions): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     const onEvent = (event: { type?: string; chatId?: string; content?: string }) => {
       if (event.type === "chat_created" && event.chatId) {
@@ -60,11 +69,15 @@ export function awaitChatCreated(emitter: EventEmitter, { timeoutMs, timeoutMess
         clearTimeout(timeout);
         emitter.off("event", onEvent);
         reject(new Error(event.content || failMessage));
+      } else if (event.type === "done" && doneMessage !== undefined) {
+        clearTimeout(timeout);
+        emitter.off("event", onEvent);
+        reject(new Error(doneMessage));
       }
     };
     const timeout = setTimeout(() => {
       emitter.off("event", onEvent);
-      reject(new Error(timeoutMessage));
+      reject(new ChatCreatedTimeoutError(timeoutMessage));
     }, timeoutMs);
     emitter.on("event", onEvent);
   });

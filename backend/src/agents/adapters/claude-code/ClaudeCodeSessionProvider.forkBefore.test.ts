@@ -79,7 +79,7 @@ const userTexts = (lines: any[]) =>
 describe("forkSessionBefore", () => {
   it("cuts at the prompt's line, though the attachment after it is stamped earlier", () => {
     writeSession("orig", fixture());
-    const forked = provider.forkSessionBefore(["orig"], at(25, 49), "new-id");
+    const forked = provider.forkSessionBefore(["orig"], { timestamp: at(25, 49) }, "new-id");
     expect(forked).not.toBeNull();
     const lines = read(forked!.logPath);
     expect(userTexts(lines)).toEqual(["say the word DOG"]);
@@ -96,17 +96,55 @@ describe("forkSessionBefore", () => {
 
   it("returns null for the opening prompt and for a timestamp that names no prompt", () => {
     writeSession("orig", fixture());
-    expect(provider.forkSessionBefore(["orig"], at(10, 49), "new-id")).toBeNull();
+    expect(provider.forkSessionBefore(["orig"], { timestamp: at(10, 49) }, "new-id")).toBeNull();
     // An attachment's stamp is not a prompt.
-    expect(provider.forkSessionBefore(["orig"], at(25, 48), "new-id")).toBeNull();
-    expect(provider.forkSessionBefore(["orig"], "garbage", "new-id")).toBeNull();
+    expect(provider.forkSessionBefore(["orig"], { timestamp: at(25, 48) }, "new-id")).toBeNull();
+    expect(provider.forkSessionBefore(["orig"], { timestamp: "garbage" }, "new-id")).toBeNull();
+  });
+
+  it("tells two prompt lines in one millisecond apart by text, and never takes a sidechain line", () => {
+    const lines = fixture();
+    // A subagent's prompt, stamped in the CAT prompt's millisecond and written before it.
+    const side = {
+      ...env,
+      type: "user",
+      isSidechain: true,
+      parentUuid: "a1",
+      uuid: "side",
+      timestamp: at(25, 49),
+      message: { role: "user", content: "subagent task" },
+    };
+    lines.splice(6, 0, side);
+    writeSession("orig", lines);
+    const cut = read(provider.forkSessionBefore(["orig"], { timestamp: at(25, 49), text: "now say CAT" }, "new-id")!.logPath);
+    expect(cut.map((l) => l.uuid)).toContain("side");
+    expect(userTexts(cut)).not.toContain("now say CAT");
+    // Without the text, the sidechain line is still skipped.
+    const byStamp = read(provider.forkSessionBefore(["orig"], { timestamp: at(25, 49) }, "new-id-2")!.logPath);
+    expect(byStamp.map((l) => l.uuid)).toContain("side");
+    // A text that matches nothing falls back to the first prompt line in the millisecond.
+    expect(provider.forkSessionBefore(["orig"], { timestamp: at(25, 49), text: "no such text" }, "new-id-3")).not.toBeNull();
+  });
+
+  it("drops only the prompt's own file-history snapshot, not an update for the previous prompt", () => {
+    const lines = fixture();
+    const promptIdx = lines.findIndex((l) => l.uuid === "u2");
+    lines.splice(
+      promptIdx - 2,
+      0,
+      { type: "file-history-snapshot", messageId: "u1", isSnapshotUpdate: true, snapshot: { messageId: "u1" } },
+      { type: "file-history-snapshot", messageId: "u2", isSnapshotUpdate: false, snapshot: { messageId: "u2" } },
+    );
+    writeSession("orig", lines);
+    const cut = read(provider.forkSessionBefore(["orig"], { timestamp: at(25, 49), text: "now say CAT" }, "new-id")!.logPath);
+    expect(cut.filter((l) => l.type === "file-history-snapshot").map((l) => l.messageId)).toEqual(["u1"]);
   });
 
   it("closes a tool_use left open before the prompt with an interrupted result", () => {
     const lines = fixture();
     lines[5] = { ...lines[5], message: { role: "assistant", id: "msg_1", content: [{ type: "tool_use", id: "t1", name: "Bash", input: {} }] } };
     writeSession("orig", lines);
-    const forked = read(provider.forkSessionBefore(["orig"], at(25, 49), "new-id")!.logPath);
+    const forked = read(provider.forkSessionBefore(["orig"], { timestamp: at(25, 49) }, "new-id")!.logPath);
     expect(forked.at(-1)).toMatchObject({ type: "user", parentUuid: "a1", message: { content: [{ type: "tool_result", tool_use_id: "t1", is_error: true }] } });
   });
 });

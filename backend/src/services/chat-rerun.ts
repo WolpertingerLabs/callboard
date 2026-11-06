@@ -53,6 +53,18 @@ function ms(ts: string | undefined): number {
 }
 
 /**
+ * The parsed history strictly before the prompt stamped `promptTimestamp`,
+ * cut at the position of the prompt's first block — never by comparing stamps,
+ * which disagree with file order around a Claude CLI prompt. Empty when there
+ * is no such prompt.
+ */
+export function historyBeforePrompt(messages: readonly ParsedMessage[], promptTimestamp: string): ParsedMessage[] {
+  const promptMs = ms(promptTimestamp);
+  const idx = messages.findIndex((m) => isUserTurn(m) && ms(m.timestamp) === promptMs);
+  return idx === -1 ? [] : messages.slice(0, idx);
+}
+
+/**
  * Resolve what a rerun picked at `timestamp` sends, and where it forks.
  * `role` narrows the pick when a user and an assistant message share the
  * timestamp; omitted, a user prompt at that timestamp wins.
@@ -88,13 +100,16 @@ export function planRerun(messages: readonly ParsedMessage[], timestamp: string,
     .join("\n\n");
   const imageIds = [...new Set(blocks.flatMap((m) => m.imageIds ?? []))];
 
-  // Everything strictly before the prompt, by ms. A message stamped in the
-  // same millisecond as the prompt is treated as part of it (dropped from the
-  // kept history) — the providers' cutoffs work in ms too, so nothing finer
-  // could be honoured, and an engine writing a reply in the prompt's own
-  // millisecond does not happen in practice.
+  // What N keeps is decided by POSITION, as the writers cut it: everything
+  // before the prompt's first block. A message stamped earlier than the prompt
+  // but written after it is not kept — so it cannot make an opening prompt
+  // look like it has history, nor carry the marker. `keepThrough` stays a
+  // timestamp (one ms before the prompt) for stars, children and callbacks,
+  // which only ever name messages and events from before it. A message in the
+  // prompt's own millisecond counts as part of the prompt; the providers' cuts
+  // work in ms too, and an engine replying in that millisecond does not happen.
   const keepThrough = new Date(promptMs - 1).toISOString();
-  const kept = messages.filter((m) => ms(m.timestamp) < promptMs);
+  const kept = historyBeforePrompt(messages, promptAt);
   let markerAt = keepThrough;
   for (let i = kept.length - 1; i >= 0; i--) {
     const m = kept[i]!;

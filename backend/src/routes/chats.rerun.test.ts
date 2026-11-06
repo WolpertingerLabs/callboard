@@ -28,6 +28,7 @@ const sendBehaviour = vi.hoisted(() => ({
   /** Runs after the fresh chat's record exists, before chat_created is emitted — another tab acting meanwhile. */
   beforeCreated: null as (() => void) | null,
 }));
+const writerThrows = vi.hoisted(() => ({ value: false }));
 /** Uploads still on disk, by id. */
 const storedImages = vi.hoisted(() => new Set<string>());
 
@@ -92,7 +93,11 @@ vi.mock("../agents/factory.js", () => ({
     {
       kind: "claude-code",
       forkSession: (...args: unknown[]) => (calls.fork.push(args), { logPath: "/tmp/x.jsonl" }),
-      forkSessionBefore: (...args: unknown[]) => (calls.forkBefore.push(args), { logPath: "/tmp/x.jsonl" }),
+      forkSessionBefore: (...args: unknown[]) => {
+        if (writerThrows.value) throw new Error("disk full");
+        calls.forkBefore.push(args);
+        return { logPath: "/tmp/x.jsonl" };
+      },
       parseSessionMessages: () => history,
       getSessionPreview: () => "preview",
       deleteSessionFiles: (sid: string) => calls.deleted.push(sid),
@@ -181,7 +186,7 @@ describe("POST /:id/rerun", () => {
     // History strictly before q2, cut at the prompt's position (not by timestamp).
     expect(calls.fork).toHaveLength(0);
     expect(calls.forkBefore).toHaveLength(1);
-    expect(calls.forkBefore[0]![1]).toBe(t(10));
+    expect(calls.forkBefore[0]![1]).toEqual({ timestamp: t(10), text: "q2" });
     expect(calls.send).toEqual([{ chatId: n.id, prompt: "q2" }]);
     // In the original's place; the original is a superseded child forked at the last kept message.
     expect(metaOf(n.id)).toMatchObject({
@@ -282,11 +287,75 @@ describe("POST /:id/rerun", () => {
     // A message after the prompt but stamped before it (the Claude CLI's
     // attachment shape): a timestamp cutoff would keep the prompt with it.
     setHistory([...baseHistory.slice(0, 3), { role: "assistant", type: "text", content: "early-stamped", timestamp: t(9, 999) }, ...baseHistory.slice(3)]);
-    const res = await rerun(makeChat({ provider: "codex" }).id, { timestamp: t(10) });
+    const chat = makeChat({ provider: "codex" });
+    const res = await rerun(chat.id, { timestamp: t(10) });
     expect(res.status).toBe(201);
     const texts = (calls.seed[0]![0] as { text: string }[]).map((x) => x.text);
     expect(texts.slice(-2)).toEqual(["q1", "a1"]);
     expect(texts.join("\n")).not.toContain("q2");
+    // The marker names a message N has (a1), not the early-stamped one it does not.
+    expect(metaOf(chat.id)).toMatchObject({ forkedAt: t(1) });
+  });
+
+  it("the opening prompt is still the opening prompt when a later-written message is stamped before it", async () => {
+    setHistory([
+      { role: "user", type: "text", content: "q1", timestamp: t(5) },
+      { role: "assistant", type: "text", content: "early-stamped", timestamp: t(4) },
+      { role: "assistant", type: "text", content: "a1", timestamp: t(6) },
+    ]);
+    const chat = makeChat({});
+    const res = await rerun(chat.id, { timestamp: t(6), role: "assistant" });
+    expect(res.status).toBe(201);
+    // Fresh path: nothing was forked, a new chat was started with the prompt.
+    expect(calls.forkBefore).toHaveLength(0);
+    expect(calls.send[0]).toMatchObject({ folder: "/repos/rerun-route", prompt: "q1" });
+    expect(metaOf(chat.id)).toMatchObject({ forkedAt: t(4, 999) });
+  });
+
+  it("answers a writer that throws with a 500, not 'nothing before the prompt'", async () => {
+    writerThrows.value = true;
+    try {
+      const res = await rerun(makeChat({}).id, { timestamp: t(10) });
+      expect(res.status).toBe(500);
+      expect(res.body.error).toMatch(/disk full/);
+    } finally {
+      writerThrows.value = false;
+    }
+  });
+
+  it("refuses a local command's output row, and a reply right after one", async () => {
+    setHistory([
+      { role: "user", type: "text", content: "q0", timestamp: t(0) },
+      { role: "assistant", type: "text", content: "a0", timestamp: t(1) },
+      { role: "user", type: "text", content: "<local-command-stdout>Compacted </local-command-stdout>", isCommandOutput: true, timestamp: t(4) },
+      { role: "assistant", type: "text", content: "noted", timestamp: t(5) },
+    ]);
+    const chat = makeChat({});
+    expect((await rerun(chat.id, { timestamp: t(4), role: "user" })).status).toBe(400);
+    expect((await rerun(chat.id, { timestamp: t(5), role: "assistant" })).status).toBe(400);
+    expect(calls.send).toHaveLength(0);
+  });
+
+  it("on a seeded Codex chat: the handoff preamble is not a prompt, and a rerun keeps the one preamble instead of stacking another", async () => {
+    const preamble = '<conversation_handoff from="Claude Code" to="Codex">\nThe conversation below…\n</conversation_handoff>';
+    setHistory([
+      { role: "user", type: "text", content: preamble, timestamp: t(0) },
+      { role: "assistant", type: "text", content: "Understood — I have the prior conversation from Claude Code as context…", timestamp: t(0) },
+      { role: "user", type: "text", content: "q1", timestamp: t(2) },
+      { role: "assistant", type: "text", content: "a1", timestamp: t(3) },
+      { role: "user", type: "text", content: "q2", timestamp: t(10) },
+      { role: "assistant", type: "text", content: "a2", timestamp: t(13) },
+    ]);
+    const chat = makeChat({ provider: "codex" });
+    expect((await rerun(chat.id, { timestamp: t(0), role: "user" })).status).toBe(400);
+    expect((await rerun(chat.id, { timestamp: t(0), role: "assistant" })).status).toBe(400);
+    const res = await rerun(chat.id, { timestamp: t(13), role: "assistant" });
+    expect(res.status).toBe(201);
+    const texts = (calls.seed[0]![0] as { text: string }[]).map((x) => x.text);
+    expect(texts.filter((x) => x.includes("<conversation_handoff"))).toHaveLength(1);
+    // The existing one, with its real provenance.
+    expect(texts[0]).toContain('from="Claude Code"');
+    expect(texts.slice(-2)).toEqual(["q1", "a1"]);
   });
 
   it("keeps the child's slot under its parent", async () => {

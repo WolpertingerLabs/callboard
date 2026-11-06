@@ -35,6 +35,13 @@ export interface ParsedMessage {
    * {@link isCompressionSummaryText} recognises. Absent ⇒ an ordinary message.
    */
   isCompactSummary?: boolean;
+  /**
+   * On a user-role text message the CLI wrote for a local slash command — its
+   * `<local-command-stdout>` / `-stderr>` output, or an envelope the parser
+   * could not project — not anything the user typed. Set by the Claude parser; {@link isLocalCommandText} recognises the
+   * same rows elsewhere. Absent ⇒ an ordinary message.
+   */
+  isCommandOutput?: boolean;
   timestamp?: string;
   teamName?: string;
   /**

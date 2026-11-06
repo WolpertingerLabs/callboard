@@ -198,11 +198,12 @@ export interface SessionProvider {
    * the same result from `forkSession(promptTs - 1ms)`, and callers fall back
    * to that.
    *
-   * `promptTimestamp` names the prompt: the first user turn the user typed
-   * (not a tool result, meta line or compaction summary) stamped in that
-   * millisecond. Null when no such line exists or nothing precedes it.
+   * `prompt` names it: a main-thread user turn the user typed (not a tool
+   * result, meta line or compaction summary) stamped in `timestamp`'s
+   * millisecond — the one whose text is `text` when that tells two apart.
+   * Null when no such line exists or nothing precedes it.
    */
-  forkSessionBefore?(sessionIds: string[], promptTimestamp: string, newSessionId: string): { logPath: string } | null;
+  forkSessionBefore?(sessionIds: string[], prompt: { timestamp: string; text?: string }, newSessionId: string): { logPath: string } | null;
 
   /**
    * Write a NEW native session for this provider whose history is `turns`,

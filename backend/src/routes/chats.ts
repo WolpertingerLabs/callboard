@@ -30,6 +30,7 @@ import { inheritedChatFields, resolveForkSource, UnsupportedForkError, writeComp
 import { checkSupersedable, supersedeChat, SupersedeRefusedError, type SupersedeKind, type SupersedeResult } from "../services/chat-supersede.js";
 import { planRerun } from "../services/chat-rerun.js";
 import { sendMessage, stopSession, type SendMessageOptions } from "../services/claude.js";
+import { awaitChatCreated, ChatCreatedTimeoutError } from "../services/session-spawn.js";
 import { loadImageBuffers } from "../services/image-storage.js";
 import { assertCompressible, CompressionInputError, spanFingerprint, summariseForCompression } from "../services/chat-summary.js";
 import { isCompressDirection, type CompressDirection } from "../agents/compression.js";
@@ -1593,32 +1594,13 @@ chatsRouter.post("/:id/continue-from", (req, res) => {
   }
 });
 
-/** How long a rerun of the opening prompt waits for its fresh chat to report a session before giving up on it. */
-const RERUN_START_TIMEOUT_MS = 120_000;
-
-type FreshStart = { ok: true; chatId: string } | { ok: false; error: string; timedOut?: boolean };
-
 /**
- * Wait until a fresh rerun chat has a record (`chat_created`) — or the run
- * ends first, or the timeout passes. The run goes on after a success; nothing
- * here waits for it.
+ * How long a rerun of the opening prompt waits for its fresh chat to report a
+ * session before giving up on it. The route answers as soon as `chat_created`
+ * arrives (a few seconds normally); this bounds only a start that hangs, and
+ * stays under the ~100s a remote-access reverse proxy allows a request.
  */
-function awaitFreshRerunChat(emitter: import("events").EventEmitter, timeoutMs: number): Promise<FreshStart> {
-  return new Promise((resolve) => {
-    const done = (result: FreshStart) => {
-      clearTimeout(timer);
-      emitter.removeListener("event", onEvent);
-      resolve(result);
-    };
-    const onEvent = (event: { type?: string; chatId?: string; content?: string }) => {
-      if (event.type === "chat_created" && event.chatId) done({ ok: true, chatId: event.chatId });
-      else if (event.type === "error") done({ ok: false, error: event.content || "The run failed to start" });
-      else if (event.type === "done") done({ ok: false, error: "The run ended before it started a session" });
-    };
-    const timer = setTimeout(() => done({ ok: false, error: "The new chat did not start in time", timedOut: true }), timeoutMs);
-    emitter.on("event", onEvent);
-  });
-}
+const RERUN_START_TIMEOUT_MS = 90_000;
 
 /** The parent precondition and the running check, against `chat` as it is now. */
 function recheckSupersedable(chat: any, expectedParent: string | null): { ok: true } | { ok: false; status: number; error: string } {
@@ -1628,6 +1610,22 @@ function recheckSupersedable(chat: any, expectedParent: string | null): { ok: tr
     return { ok: false, status: 409, error: "This chat was moved in the chat tree while the rerun was starting (another tab may have continued or compressed it)" };
   }
   return { ok: true };
+}
+
+/**
+ * Stop a fresh rerun chat the route gave up waiting for. The registry keys a
+ * new run by its tracking id until `chat_created`, then by the chat id — and
+ * the two happen together, so the id to stop is the tracking id now, or the
+ * chat id if a record still lands later. The late listener detaches on the
+ * run's end.
+ */
+function stopLateFreshChat(emitter: import("events").EventEmitter, trackingId: string): void {
+  stopSession(trackingId);
+  const onLate = (event: { type?: string; chatId?: string }) => {
+    if (event.type === "chat_created" && event.chatId) stopSession(event.chatId);
+    if (event.type === "chat_created" || event.type === "done" || event.type === "error") emitter.off("event", onLate);
+  };
+  emitter.on("event", onLate);
 }
 
 /** Test seam: the fresh-start wait's timeout. */
@@ -1704,12 +1702,14 @@ chatsRouter.post("/:id/rerun", async (req, res) => {
         targetKind: source.providerKind,
         targetProvider: source.provider,
         timestamp: plan.keepThrough,
-        before: plan.promptAt,
+        before: { timestamp: plan.promptAt, text: plan.text },
         newSessionId,
       });
     } catch (error) {
       if (error instanceof UnsupportedForkError) return res.status(400).json({ error: `${providerLabel(source.providerKind)} chats cannot be rerun from a message` });
+      // A writer that threw is a server fault, not "nothing before the prompt".
       log.error(`Failed to write rerun of ${chat.id}: ${error}`);
+      return res.status(500).json({ error: `Could not write the rerun's session: ${(error as Error).message}` });
     }
     if (!written) return res.status(400).json({ error: "Could not rerun: no messages found before that prompt" });
 
@@ -1758,19 +1758,28 @@ chatsRouter.post("/:id/rerun", async (req, res) => {
     log.error(`Rerun of ${chat.id}: could not start a fresh chat: ${error.message}`);
     return res.status(502).json({ error: `Could not start the rerun: ${error.message}` });
   }
-  const started = await awaitFreshRerunChat(emitter, rerunTiming.startTimeoutMs);
-  if (!started.ok) {
-    if (started.timedOut) {
+  let freshId: string;
+  try {
+    freshId = await awaitChatCreated(emitter, {
+      timeoutMs: rerunTiming.startTimeoutMs,
+      timeoutMessage: "the new chat did not start in time",
+      failMessage: "the run failed to start",
+      doneMessage: "the run ended before it started a session",
+    });
+  } catch (error: any) {
+    if (error instanceof ChatCreatedTimeoutError) {
       // Nothing is waiting for it any more: stop it rather than leave a chat
-      // nobody asked for running on its own.
-      stopSession(trackingId);
+      // nobody asked for running on its own. By the tracking id it is
+      // registered under until it has a record — and, should the record land
+      // after all, by the chat id it then moves to.
+      stopLateFreshChat(emitter, trackingId);
       log.warn(`Rerun of ${chat.id}: the fresh chat did not start in ${rerunTiming.startTimeoutMs}ms; stopped`);
-      return res.status(504).json({ error: "Could not start the rerun: the new chat did not start in time" });
+      return res.status(504).json({ error: `Could not start the rerun: ${error.message}` });
     }
-    return res.status(502).json({ error: `Could not start the rerun: ${started.error}` });
+    return res.status(502).json({ error: `Could not start the rerun: ${error.message}` });
   }
-  const fresh = chatFileService.getChat(started.chatId);
-  if (!fresh) return res.status(500).json({ error: "The rerun started but its chat record is missing", chatId: started.chatId });
+  const fresh = chatFileService.getChat(freshId);
+  if (!fresh) return res.status(500).json({ error: "The rerun started but its chat record is missing", chatId: freshId });
 
   // The await above can be long. C may have started running, been continued
   // or compressed from another tab, or moved in the tree since the request's
