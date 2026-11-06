@@ -58,6 +58,8 @@ function folderPrs(folder: string, placement: FolderPlacement | undefined, pulls
   const base = { folder, cwd: worktree.normPath, repoName: basename(repo.repoPath), branch: worktree.branch };
   if (!pulls?.github) return { ...base, status: "not_github" };
   if (worktree.branch === null) return { ...base, status: "detached" };
+  // Unknown default branch (no PRs in the listing, no local origin/HEAD) means
+  // the default branch reads as "No PR found for <branch>" — a fair answer.
   if (worktree.branch === pulls.defaultBranch) return { ...base, status: "default_branch" };
   const pr = matchPull(pulls.byBranch.get(worktree.branch), worktree.head);
   const prError = pulls.error !== undefined ? { prError: pulls.error } : {};

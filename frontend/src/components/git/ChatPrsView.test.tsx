@@ -133,6 +133,34 @@ describe("ChatPrsView", () => {
     expect(within(card).getByTitle("/src/app.feat-b/docs").textContent).toBe("Untitled chat · /src/app.feat-b/docs");
   });
 
+  it("lists three source chats and folds the rest behind 'and N more'", async () => {
+    const sources = Array.from({ length: 5 }, (_, i) => ({ chatId: `s${i}`, title: `Source ${i}`, folder: `/src/app.feat-b/${i}` }));
+    mockPrs.mockResolvedValue(
+      response({ status: "no_pr", branch: "feat/a" }, { cardId: "root", title: "t", prs: [{ pr: pr(2), repoName: "app", branch: "feat/b", sources }] }),
+    );
+    await mount();
+    const card = screen.getByTestId("pr-card");
+    const shown = () =>
+      within(card)
+        .queryAllByText(/^Source \d$/)
+        .map((el) => el.textContent);
+    expect(shown()).toEqual(["Source 0", "Source 1", "Source 2"]);
+
+    fireEvent.click(within(card).getByRole("button", { name: "and 2 more" }));
+    expect(shown()).toEqual(["Source 0", "Source 1", "Source 2", "Source 3", "Source 4"]);
+    fireEvent.click(within(card).getByRole("button", { name: "show fewer" }));
+    expect(shown()).toHaveLength(3);
+  });
+
+  it("has no toggle for three sources or fewer", async () => {
+    const sources = Array.from({ length: 3 }, (_, i) => ({ chatId: `s${i}`, title: `Source ${i}`, folder: `/f/${i}` }));
+    mockPrs.mockResolvedValue(
+      response({ status: "no_pr", branch: "feat/a" }, { cardId: "root", title: "t", prs: [{ pr: pr(2), repoName: "app", branch: "feat/b", sources }] }),
+    );
+    await mount();
+    expect(within(screen.getByTestId("pr-card")).queryByRole("button")).toBeNull();
+  });
+
   it("says so when the card's other chats have no PRs", async () => {
     mockPrs.mockResolvedValue(response({ status: "no_pr", branch: "feat/a" }, { cardId: "root", title: "t", prs: [] }));
     await mount();

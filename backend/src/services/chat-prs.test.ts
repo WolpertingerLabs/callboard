@@ -120,6 +120,44 @@ describe("buildChatPrs — this chat's directory", () => {
   });
 });
 
+describe("buildChatPrs — status precedence: not GitHub → detached → default branch → PR match", () => {
+  const withPulls = (pulls: RepoPulls) => deps({ pullsFor: vi.fn(async () => pulls) });
+
+  it("calls a detached HEAD in a non-GitHub repo not_github", async () => {
+    expect((await buildChatPrs({ folder: "/src/app.bisect" }, withPulls({ byBranch: new Map() }))).current).toMatchObject({
+      status: "not_github",
+      branch: null,
+    });
+  });
+
+  it("calls a detached HEAD detached even when the default branch is known", async () => {
+    expect((await buildChatPrs({ folder: "/src/app.bisect" }, withPulls(APP_PULLS))).current).toMatchObject({ status: "detached", branch: null });
+  });
+
+  it("calls a non-GitHub default branch not_github, not default_branch", async () => {
+    expect((await buildChatPrs({ folder: "/src/app" }, withPulls({ byBranch: new Map(), defaultBranch: "main" }))).current.status).toBe("not_github");
+  });
+
+  it("puts the default branch ahead of a PR whose head is that branch", async () => {
+    const pulls: RepoPulls = { github: GITHUB, defaultBranch: "main", byBranch: new Map([["main", [pull(99, "main")]]]) };
+    const { current } = await buildChatPrs({ folder: "/src/app" }, withPulls(pulls));
+    expect(current).toMatchObject({ status: "default_branch", branch: "main" });
+    expect(current.pr).toBeUndefined();
+  });
+
+  it("says no_pr for the default branch when nothing knows which branch is default", async () => {
+    expect((await buildChatPrs({ folder: "/src/app" }, withPulls({ github: GITHUB, byBranch: new Map() }))).current).toMatchObject({
+      status: "no_pr",
+      branch: "main",
+    });
+  });
+
+  it("puts default_branch ahead of a lookup error", async () => {
+    const pulls: RepoPulls = { github: GITHUB, defaultBranch: "main", byBranch: new Map(), error: "gh timed out" };
+    expect((await buildChatPrs({ folder: "/src/app" }, withPulls(pulls))).current.status).toBe("default_branch");
+  });
+});
+
 describe("buildChatPrs — the card's other chats", () => {
   const CARD: ChatCard = {
     cardId: "root",

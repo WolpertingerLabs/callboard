@@ -1123,11 +1123,6 @@ export async function getGitBranches(folder: string): Promise<{ branches: string
 }
 
 /**
- * Worktrees, branches and PRs of every repo an unarchived card works in — the
- * Board's Branches view. `refresh` asks the daemon to refetch PR data its
- * cache would otherwise serve.
- */
-/**
  * The PR of `folder`'s branch and, with a `chatId`, those of the chat's card's
  * other directories — the PRs half of a chat's git view. `refresh` asks the
  * daemon to refetch PR data its cache would otherwise serve.
@@ -1139,6 +1134,11 @@ export async function getChatPrs(folder: string, chatId?: string, refresh = fals
   return request(`/git/prs?${params}`, { error: "Failed to load PRs" });
 }
 
+/**
+ * Worktrees, branches and PRs of every repo an unarchived card works in — the
+ * Board's Branches view. `refresh` asks the daemon to refetch PR data its
+ * cache would otherwise serve.
+ */
 export async function getGitOverview(refresh = false): Promise<GitOverviewResponse> {
   return request(`/git/overview${refresh ? "?refresh=true" : ""}`, { error: "Failed to load branches" });
 }

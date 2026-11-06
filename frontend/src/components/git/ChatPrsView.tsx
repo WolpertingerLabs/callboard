@@ -37,6 +37,9 @@ const ago = (iso: string | undefined, now: number) => {
   return Number.isNaN(ms) ? null : formatShortAgo(ms, now).toLowerCase();
 };
 
+/** Source chats listed under a card PR before the rest fold behind "and N more". */
+const SOURCE_LIMIT = 3;
+
 const sectionLabel: React.CSSProperties = {
   fontSize: 12,
   fontWeight: 700,
@@ -66,6 +69,8 @@ export default function ChatPrsView({ folder, chatId }: ChatPrsViewProps) {
   // Only the newest request may land: a slow poll must not overwrite a refresh,
   // nor a previous chat's answer a new one's.
   const seq = useRef(0);
+  // Card PRs (by URL) whose source-chat list the user has expanded.
+  const [expandedSources, setExpandedSources] = useState<Set<string>>(() => new Set());
 
   const load = useCallback(
     async (refresh = false) => {
@@ -146,11 +151,35 @@ export default function ChatPrsView({ folder, chatId }: ChatPrsViewProps) {
               paddingTop: 6,
             }}
           >
-            {sources.map((source) => (
+            {(expandedSources.has(pr.url) ? sources : sources.slice(0, SOURCE_LIMIT)).map((source) => (
               <div key={source.chatId} title={source.folder} style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                 <span style={{ color: "var(--text)" }}>{source.title ?? "Untitled chat"}</span> · {source.folder}
               </div>
             ))}
+            {sources.length > SOURCE_LIMIT && (
+              <button
+                aria-expanded={expandedSources.has(pr.url)}
+                onClick={() =>
+                  setExpandedSources((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(pr.url)) next.delete(pr.url);
+                    else next.add(pr.url);
+                    return next;
+                  })
+                }
+                style={{
+                  alignSelf: "flex-start",
+                  padding: 0,
+                  fontSize: 12,
+                  background: "transparent",
+                  color: "var(--accent-text)",
+                  border: "none",
+                  cursor: "pointer",
+                }}
+              >
+                {expandedSources.has(pr.url) ? "show fewer" : `and ${sources.length - SOURCE_LIMIT} more`}
+              </button>
+            )}
           </div>
         )}
       </div>
