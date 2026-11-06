@@ -4,6 +4,7 @@ import type { BranchRepo, BranchRow, CardSummary, GitOverviewResponse } from "..
 import { getGitOverview } from "../../api";
 import { useIsMobile } from "../../hooks/useIsMobile";
 import { usePolling } from "../../hooks/usePolling";
+import { startTimedRequest, type TimedRequest } from "../git/timedRequest";
 import { errorMessage } from "../../utils/errorMessage";
 import { formatShortAgo } from "../../utils/dateFormat";
 import { ROLLUP_COLORS } from "./cardFace";
@@ -46,6 +47,8 @@ export default function BranchesView({ cards, onOpenCard }: BranchesViewProps) {
   const seq = useRef(0);
   // The seq of the newest forced refresh still in flight; 0 when none is.
   const refreshInFlight = useRef(0);
+  // Requests not yet settled, so an unmount can abort them.
+  const pending = useRef(new Set<TimedRequest>());
 
   const load = useCallback(async (refresh = false) => {
     const mine = ++seq.current;
@@ -53,15 +56,21 @@ export default function BranchesView({ cards, onOpenCard }: BranchesViewProps) {
       refreshInFlight.current = mine;
       setRefreshing(true);
     }
+    // Every request times out, so `finally` always runs: a request left
+    // pending forever would keep the button disabled and polls paused.
+    const timed = startTimedRequest();
+    pending.current.add(timed);
     try {
-      const res = await getGitOverview(refresh);
+      const res = await getGitOverview(refresh, timed.signal);
       if (mine !== seq.current) return;
       setData(res);
       setError(null);
     } catch (err) {
       if (mine !== seq.current) return;
-      setError(errorMessage(err, "Failed to load branches"));
+      setError(timed.timedOut() ? "Timed out loading branches — try refreshing." : errorMessage(err, "Failed to load branches"));
     } finally {
+      timed.done();
+      pending.current.delete(timed);
       // Only the newest forced request re-enables the button — a poll never
       // does (polls do not even start while a refresh is in flight).
       if (refresh && refreshInFlight.current === mine) {
@@ -78,6 +87,16 @@ export default function BranchesView({ cards, onOpenCard }: BranchesViewProps) {
   useEffect(() => {
     void load(true);
   }, [load]);
+
+  // Going away: abort what is in flight, and let nothing that settles land.
+  useEffect(() => {
+    const requests = pending.current;
+    const sequence = seq;
+    return () => {
+      sequence.current++;
+      for (const request of requests) request.abort();
+    };
+  }, []);
 
   // Branches and PRs move slowly: background polls are not forced, and do not
   // start while a refresh is in flight.

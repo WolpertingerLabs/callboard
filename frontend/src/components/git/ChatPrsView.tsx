@@ -3,6 +3,7 @@ import { AlertTriangle, GitBranch, GitPullRequest, RefreshCw } from "lucide-reac
 import type { ChatPr, ChatPrsResponse, FolderPrs } from "../../api";
 import { getChatPrs } from "../../api";
 import { usePolling } from "../../hooks/usePolling";
+import { startTimedRequest, type TimedRequest } from "./timedRequest";
 import { errorMessage } from "../../utils/errorMessage";
 import { formatShortAgo } from "../../utils/dateFormat";
 import PrBadge from "./PrBadge";
@@ -62,6 +63,8 @@ export default function ChatPrsView({ folder, chatId }: ChatPrsViewProps) {
   const seq = useRef(0);
   // The seq of the newest forced refresh still in flight; 0 when none is.
   const refreshInFlight = useRef(0);
+  // Requests not yet settled, so an unmount can abort them.
+  const pending = useRef(new Set<TimedRequest>());
 
   const load = useCallback(
     async (refresh = false) => {
@@ -70,15 +73,21 @@ export default function ChatPrsView({ folder, chatId }: ChatPrsViewProps) {
         refreshInFlight.current = mine;
         setRefreshing(true);
       }
+      // Every request times out, so `finally` always runs: a request left
+      // pending forever would keep the button disabled and polls paused.
+      const timed = startTimedRequest();
+      pending.current.add(timed);
       try {
-        const res = await getChatPrs(folder, chatId, refresh);
+        const res = await getChatPrs(folder, chatId, refresh, timed.signal);
         if (mine !== seq.current) return;
         setData(res);
         setError(null);
       } catch (err) {
         if (mine !== seq.current) return;
-        setError(errorMessage(err, "Failed to load PRs"));
+        setError(timed.timedOut() ? "Timed out loading PRs — try refreshing." : errorMessage(err, "Failed to load PRs"));
       } finally {
+        timed.done();
+        pending.current.delete(timed);
         // Only the newest forced request re-enables the button — a poll never
         // does (polls do not even start while a refresh is in flight).
         if (refresh && refreshInFlight.current === mine) {
@@ -98,6 +107,17 @@ export default function ChatPrsView({ folder, chatId }: ChatPrsViewProps) {
   useEffect(() => {
     void load(true);
   }, [load]);
+
+  // Going away (or a different chat remounting this view): abort what is in
+  // flight, and let nothing that settles land.
+  useEffect(() => {
+    const requests = pending.current;
+    const sequence = seq;
+    return () => {
+      sequence.current++;
+      for (const request of requests) request.abort();
+    };
+  }, []);
 
   // PRs move slowly; the refresh button covers the impatient. usePolling skips
   // ticks while the document is hidden, and this component is only mounted

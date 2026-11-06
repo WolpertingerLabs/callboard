@@ -1127,11 +1127,11 @@ export async function getGitBranches(folder: string): Promise<{ branches: string
  * other directories — the PRs half of a chat's git view. `refresh` asks the
  * daemon to refetch PR data its cache would otherwise serve.
  */
-export async function getChatPrs(folder: string, chatId?: string, refresh = false): Promise<ChatPrsResponse> {
+export async function getChatPrs(folder: string, chatId?: string, refresh = false, signal?: AbortSignal): Promise<ChatPrsResponse> {
   const params = new URLSearchParams({ folder });
   if (chatId) params.set("chatId", chatId);
   if (refresh) params.set("refresh", "true");
-  return request(`/git/prs?${params}`, { error: "Failed to load PRs" });
+  return request(`/git/prs?${params}`, { error: "Failed to load PRs", signal });
 }
 
 /**
@@ -1139,8 +1139,8 @@ export async function getChatPrs(folder: string, chatId?: string, refresh = fals
  * Board's Branches view. `refresh` asks the daemon to refetch PR data its
  * cache would otherwise serve.
  */
-export async function getGitOverview(refresh = false): Promise<GitOverviewResponse> {
-  return request(`/git/overview${refresh ? "?refresh=true" : ""}`, { error: "Failed to load branches" });
+export async function getGitOverview(refresh = false, signal?: AbortSignal): Promise<GitOverviewResponse> {
+  return request(`/git/overview${refresh ? "?refresh=true" : ""}`, { error: "Failed to load branches", signal });
 }
 
 export async function getGitDiff(folder: string): Promise<GitDiffResponse> {

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { PR_REQUEST_TIMEOUT_MS } from "./timedRequest";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import type { ChatPr, ChatPrsResponse, FolderPrs } from "../../api";
 import { getChatPrs } from "../../api";
@@ -53,7 +54,7 @@ describe("ChatPrsView", () => {
   it("shows the PR with its detail, linked to GitHub", async () => {
     mockPrs.mockResolvedValue(response({ status: "found", branch: "feat/a", repoName: "app", pr: pr(42, { title: "Add PR tracking" }) }));
     await mount();
-    expect(mockPrs).toHaveBeenCalledWith("/src/app.feat-a", "c1", true);
+    expect(mockPrs).toHaveBeenCalledWith("/src/app.feat-a", "c1", true, expect.any(AbortSignal));
     const card = screen.getByTestId("pr-card");
     expect(within(card).getByRole("link", { name: "Add PR tracking" }).getAttribute("href")).toBe("https://github.com/acme/app/pull/42");
     expect(within(card).getByLabelText("PR #42 open: Add PR tracking")).toBeDefined();
@@ -136,7 +137,7 @@ describe("ChatPrsView", () => {
   it("asks for the folder alone for a new chat", async () => {
     mockPrs.mockResolvedValue(response({ status: "no_pr", branch: "feat/a" }));
     await mount({});
-    expect(mockPrs).toHaveBeenCalledWith("/src/app.feat-a", undefined, true);
+    expect(mockPrs).toHaveBeenCalledWith("/src/app.feat-a", undefined, true, expect.any(AbortSignal));
   });
 
   it("refetches with refresh=true from the refresh button", async () => {
@@ -145,7 +146,7 @@ describe("ChatPrsView", () => {
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Refresh PRs" }));
     });
-    expect(mockPrs).toHaveBeenLastCalledWith("/src/app.feat-a", "c1", true);
+    expect(mockPrs).toHaveBeenLastCalledWith("/src/app.feat-a", "c1", true, expect.any(AbortSignal));
   });
 
   it("shows a failed request as an error, not an empty state", async () => {
@@ -194,7 +195,7 @@ describe("ChatPrsView: refresh on load", () => {
     mockPrs.mockReturnValueOnce(first.promise);
     render(<ChatPrsView folder="/src/app.feat-a" chatId="c1" />);
     expect(mockPrs).toHaveBeenCalledTimes(1);
-    expect(mockPrs).toHaveBeenCalledWith("/src/app.feat-a", "c1", true);
+    expect(mockPrs).toHaveBeenCalledWith("/src/app.feat-a", "c1", true, expect.any(AbortSignal));
     expect(button().disabled).toBe(true);
     expect(button().getAttribute("aria-busy")).toBe("true");
     await act(async () => first.resolve(response({ status: "no_pr", branch: "feat/a" })));
@@ -221,7 +222,7 @@ describe("ChatPrsView: refresh on load", () => {
     await act(async () => {
       fireEvent.click(button());
     });
-    expect(mockPrs).toHaveBeenLastCalledWith("/src/app.feat-a", "c1", true);
+    expect(mockPrs).toHaveBeenLastCalledWith("/src/app.feat-a", "c1", true, expect.any(AbortSignal));
     expect(button().disabled).toBe(true);
     expect(button().getAttribute("aria-busy")).toBe("true");
     await act(async () => manual.resolve(response({ status: "no_pr", branch: "feat/a" })));
@@ -240,7 +241,7 @@ describe("ChatPrsView: refresh on load", () => {
       await vi.advanceTimersByTimeAsync(60_000);
     });
     expect(mockPrs).toHaveBeenCalledTimes(2);
-    expect(mockPrs).toHaveBeenLastCalledWith("/src/app.feat-a", "c1", false);
+    expect(mockPrs).toHaveBeenLastCalledWith("/src/app.feat-a", "c1", false, expect.any(AbortSignal));
 
     // A manual refresh that hangs: the next poll tick must not fire, nor
     // land and re-enable the button early.
@@ -261,5 +262,60 @@ describe("ChatPrsView: refresh on load", () => {
     });
     expect(button().disabled).toBe(false);
     vi.useRealTimers();
+  });
+});
+
+describe("ChatPrsView: a request that never settles", () => {
+  /** Like fetch on a dead socket: never answers, but rejects once its signal aborts. */
+  const hangUntilAborted = (...args: unknown[]) =>
+    new Promise<never>((_resolve, reject) => {
+      const signal = args[args.length - 1] as AbortSignal;
+      signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+    });
+  const button = () => screen.getByRole("button", { name: "Refresh PRs" }) as HTMLButtonElement;
+
+  it("times out: the button is re-enabled, the timeout is shown as an error, and polls resume", async () => {
+    vi.useRealTimers();
+    vi.useFakeTimers();
+    try {
+      mockPrs.mockImplementationOnce(hangUntilAborted as never);
+      mockPrs.mockResolvedValue(response({ status: "no_pr", branch: "feat/a" }));
+      render(<ChatPrsView folder="/src/app.feat-a" chatId="c1" />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(button().disabled).toBe(true);
+      // Within the timeout no poll starts behind the stuck refresh.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(PR_REQUEST_TIMEOUT_MS - 1);
+      });
+      expect(mockPrs).toHaveBeenCalledTimes(1);
+      expect(button().disabled).toBe(true);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(button().disabled).toBe(false);
+      expect(button().getAttribute("aria-busy")).toBe("false");
+      expect(screen.getByText("Timed out loading PRs — try refreshing.")).toBeDefined();
+
+      // The next poll tick goes out, unforced.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000);
+      });
+      expect(mockPrs.mock.calls.length).toBeGreaterThan(1);
+      expect(mockPrs.mock.calls.at(-1)![2]).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("aborts what is in flight when the view goes away", async () => {
+    mockPrs.mockImplementationOnce(hangUntilAborted as never);
+    const { unmount } = render(<ChatPrsView folder="/src/app.feat-a" chatId="c1" />);
+    const signal = mockPrs.mock.calls[0].at(-1) as AbortSignal;
+    expect(signal.aborted).toBe(false);
+    unmount();
+    expect(signal.aborted).toBe(true);
   });
 });
