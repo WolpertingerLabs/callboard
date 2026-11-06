@@ -146,8 +146,6 @@ export type {
   ChatPr,
   FolderPrStatus,
   FolderPrs,
-  CardPrSource,
-  CardPr,
   ChatPrsResponse,
   GitTrailEntry,
 } from "./branches.js";

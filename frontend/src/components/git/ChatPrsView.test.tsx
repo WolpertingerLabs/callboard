@@ -26,17 +26,17 @@ function pr(number: number, overrides: Partial<ChatPr> = {}): ChatPr {
   };
 }
 
-const response = (current: Partial<FolderPrs>, card?: ChatPrsResponse["card"]): ChatPrsResponse => ({
-  current: { folder: "/src/app.feat-a", status: "no_pr", ...current },
-  ...(card && { card }),
-  generatedAt: new Date(NOW - 30_000).toISOString(),
-});
+/** A response: `current` as given; `prs` defaults to the live PR alone, as the daemon sends it without history. */
+const response = (current: Partial<FolderPrs>, prs?: ChatPr[]): ChatPrsResponse => {
+  const full: FolderPrs = { folder: "/src/app.feat-a", status: "no_pr", ...current };
+  return { current: full, prs: prs ?? (full.pr ? [full.pr] : []), generatedAt: new Date(NOW - 30_000).toISOString() };
+};
 
 const mockPrs = vi.mocked(getChatPrs);
 
 async function mount({ chatId }: { chatId?: string } = { chatId: "c1" }) {
   render(<ChatPrsView folder="/src/app.feat-a" chatId={chatId} />);
-  await screen.findByRole("heading", { level: 2, name: "This chat" });
+  await screen.findByText("updated 30s ago");
 }
 
 beforeEach(() => {
@@ -50,18 +50,17 @@ afterEach(() => {
 });
 
 describe("ChatPrsView", () => {
-  it("shows this chat's PR with its detail, linked to GitHub", async () => {
+  it("shows the PR with its detail, linked to GitHub", async () => {
     mockPrs.mockResolvedValue(response({ status: "found", branch: "feat/a", repoName: "app", pr: pr(42, { title: "Add PR tracking" }) }));
     await mount();
     expect(mockPrs).toHaveBeenCalledWith("/src/app.feat-a", "c1", false);
-    const card = within(screen.getByRole("region", { name: "This chat" })).getByTestId("pr-card");
+    const card = screen.getByTestId("pr-card");
     expect(within(card).getByRole("link", { name: "Add PR tracking" }).getAttribute("href")).toBe("https://github.com/acme/app/pull/42");
     expect(within(card).getByLabelText("PR #42 open: Add PR tracking")).toBeDefined();
     expect(card.textContent).toContain("feat/a → main");
     expect(card.textContent).toContain("by octo");
     expect(card.textContent).toContain("opened 2d ago");
     expect(card.textContent).toContain("updated 2h ago");
-    expect(screen.getByText("updated 30s ago")).toBeDefined();
   });
 
   it("says when it merged rather than when it was updated", async () => {
@@ -97,43 +96,35 @@ describe("ChatPrsView", () => {
     expect(screen.queryByTestId("pr-card")).toBeNull();
   });
 
-  it("lists the chat's earlier PRs in the same list as the live one, in the order sent", async () => {
+  it("renders the one list in the order sent, with no section headings and no source-chat lines", async () => {
     const live = pr(11, { state: "merged", headRef: "feat/b", mergedAt: "2026-11-05T12:00:00.000Z", title: "Live" });
     const earlierOpen = pr(10, { headRef: "feat/a", title: "Earlier open" });
+    const fromCard = pr(3, { state: "draft", headRef: "fix/lib", title: "From the card" });
     const earlierClosed = pr(6, { state: "closed", headRef: "feat/gone", closedAt: "2026-11-01T00:00:00.000Z", title: "Earlier closed" });
-    mockPrs.mockResolvedValue(response({ status: "found", branch: "feat/b", pr: live, prs: [earlierOpen, live, earlierClosed] }));
+    mockPrs.mockResolvedValue(response({ status: "found", branch: "feat/b", pr: live }, [earlierOpen, fromCard, live, earlierClosed]));
     await mount();
-    const section = screen.getByRole("region", { name: "This chat" });
-    const cards = within(section).getAllByTestId("pr-card");
-    expect(cards.map((c) => within(c).getByRole("link", { name: /^(Live|Earlier open|Earlier closed)$/ }).textContent)).toEqual([
+    const cards = screen.getAllByTestId("pr-card");
+    expect(cards.map((c) => within(c).getByRole("link", { name: /^(Live|Earlier open|From the card|Earlier closed)$/ }).textContent)).toEqual([
       "Earlier open",
+      "From the card",
       "Live",
       "Earlier closed",
     ]);
-    expect(cards.map((c) => within(c).getByText(/ → main$/).textContent)).toEqual(["feat/a → main", "feat/b → main", "feat/gone → main"]);
-    // No separate "previously" group, and no status line when the live branch has its PR.
-    expect(screen.queryByText(/previous/i)).toBeNull();
+    expect(screen.queryAllByRole("heading")).toHaveLength(0);
+    expect(screen.queryByText(/This chat|Other chats on this card|Untitled chat|and \d+ more/)).toBeNull();
     expect(screen.queryByTestId("pr-status-line")).toBeNull();
     expect(screen.queryByTestId("pr-empty")).toBeNull();
   });
 
-  it("keeps the live branch's status as a compact line beside earlier PRs", async () => {
-    mockPrs.mockResolvedValue(response({ status: "default_branch", branch: "main", prs: [pr(10, { title: "Earlier" })] }));
+  it("keeps the live branch's status as a compact line above the list when it has no PR of its own", async () => {
+    mockPrs.mockResolvedValue(response({ status: "default_branch", branch: "main" }, [pr(10, { title: "From the trail" })]));
     await mount();
-    const section = screen.getByRole("region", { name: "This chat" });
-    const line = within(section).getByTestId("pr-status-line");
+    const line = screen.getByTestId("pr-status-line");
     expect(line.dataset.status).toBe("default_branch");
     expect(line.textContent).toContain("This is main, the default branch");
-    expect(within(section).getAllByTestId("pr-card")).toHaveLength(1);
-    // The status line comes first, then the list.
-    expect(line.compareDocumentPosition(within(section).getByTestId("pr-card")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(screen.queryByTestId("pr-empty")).toBeNull();
-  });
-
-  it("falls back to the single live PR from a daemon that sends no list", async () => {
-    mockPrs.mockResolvedValue(response({ status: "found", pr: pr(42) }));
-    await mount();
     expect(screen.getAllByTestId("pr-card")).toHaveLength(1);
+    expect(line.compareDocumentPosition(screen.getByTestId("pr-card")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByTestId("pr-empty")).toBeNull();
   });
 
   it("flags a PR shown from a refresh that failed", async () => {
@@ -142,75 +133,10 @@ describe("ChatPrsView", () => {
     expect(screen.getByText(/Last known PR — refreshing failed: gh timed out/)).toBeDefined();
   });
 
-  it("lists the card's other chats' PRs with the chats they came from", async () => {
-    mockPrs.mockResolvedValue(
-      response(
-        { status: "found", pr: pr(1) },
-        {
-          cardId: "root",
-          title: "PR tracking",
-          prs: [
-            {
-              pr: pr(2, { headRef: "feat/b", title: "Second" }),
-              repoName: "app",
-              branch: "feat/b",
-              sources: [
-                { chatId: "c2", title: "Backend work", folder: "/src/app.feat-b" },
-                { chatId: "c3", title: null, folder: "/src/app.feat-b/docs" },
-              ],
-            },
-          ],
-        },
-      ),
-    );
-    await mount();
-    const other = screen.getByRole("region", { name: "Other chats on this card" });
-    const card = within(other).getByTestId("pr-card");
-    expect(card.textContent).toContain("feat/b → main");
-    expect(card.textContent).toContain("· app");
-    expect(within(card).getByTitle("/src/app.feat-b").textContent).toBe("Backend work · /src/app.feat-b");
-    expect(within(card).getByTitle("/src/app.feat-b/docs").textContent).toBe("Untitled chat · /src/app.feat-b/docs");
-  });
-
-  it("lists three source chats and folds the rest behind 'and N more'", async () => {
-    const sources = Array.from({ length: 5 }, (_, i) => ({ chatId: `s${i}`, title: `Source ${i}`, folder: `/src/app.feat-b/${i}` }));
-    mockPrs.mockResolvedValue(
-      response({ status: "no_pr", branch: "feat/a" }, { cardId: "root", title: "t", prs: [{ pr: pr(2), repoName: "app", branch: "feat/b", sources }] }),
-    );
-    await mount();
-    const card = screen.getByTestId("pr-card");
-    const shown = () =>
-      within(card)
-        .queryAllByText(/^Source \d$/)
-        .map((el) => el.textContent);
-    expect(shown()).toEqual(["Source 0", "Source 1", "Source 2"]);
-
-    fireEvent.click(within(card).getByRole("button", { name: "and 2 more" }));
-    expect(shown()).toEqual(["Source 0", "Source 1", "Source 2", "Source 3", "Source 4"]);
-    fireEvent.click(within(card).getByRole("button", { name: "show fewer" }));
-    expect(shown()).toHaveLength(3);
-  });
-
-  it("has no toggle for three sources or fewer", async () => {
-    const sources = Array.from({ length: 3 }, (_, i) => ({ chatId: `s${i}`, title: `Source ${i}`, folder: `/f/${i}` }));
-    mockPrs.mockResolvedValue(
-      response({ status: "no_pr", branch: "feat/a" }, { cardId: "root", title: "t", prs: [{ pr: pr(2), repoName: "app", branch: "feat/b", sources }] }),
-    );
-    await mount();
-    expect(within(screen.getByTestId("pr-card")).queryByRole("button")).toBeNull();
-  });
-
-  it("says so when the card's other chats have no PRs", async () => {
-    mockPrs.mockResolvedValue(response({ status: "no_pr", branch: "feat/a" }, { cardId: "root", title: "t", prs: [] }));
-    await mount();
-    expect(screen.getByText("No PRs for the card's other chats.")).toBeDefined();
-  });
-
-  it("has no card section without a card, and asks for none for a new chat", async () => {
+  it("asks for the folder alone for a new chat", async () => {
     mockPrs.mockResolvedValue(response({ status: "no_pr", branch: "feat/a" }));
     await mount({});
     expect(mockPrs).toHaveBeenCalledWith("/src/app.feat-a", undefined, false);
-    expect(screen.queryByRole("region", { name: "Other chats on this card" })).toBeNull();
   });
 
   it("refetches with refresh=true from the refresh button", async () => {

@@ -99,8 +99,6 @@ export type {
   ChatPrsResponse,
   FolderPrs,
   FolderPrStatus,
-  CardPr,
-  CardPrSource,
   BranchRepo,
   BranchRow,
   BranchPr,

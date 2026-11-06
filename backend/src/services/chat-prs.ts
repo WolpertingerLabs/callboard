@@ -1,6 +1,8 @@
 /**
- * The PRs tab of a chat's git view: the pull request of the chat's own
- * directory, and those of the other directories its card's chats work in.
+ * The PRs tab of a chat's git view: one list of every pull request the chat
+ * and its card's other chats have worked on — their live branches and their
+ * git trails — one entry per URL, open first, then most recently updated,
+ * beside the status of the chat's own live branch.
  *
  * "Which PR does this directory's branch have" is a question about the
  * directory, so it is answered per `cwd` through exactly the path the Board's
@@ -16,7 +18,7 @@
  * trail is still shown with one.
  */
 import { basename } from "path";
-import type { CardPr, CardPrSource, Chat, ChatPr, ChatPrsResponse, FolderPrs, GitTrailEntry } from "shared";
+import type { Chat, ChatPr, ChatPrsResponse, FolderPrs, GitTrailEntry } from "shared";
 import { createCardContext } from "./card-context.js";
 import { chatFileService } from "./chat-file-service.js";
 import { listChatsSnapshot } from "./chats-snapshot.js";
@@ -26,15 +28,15 @@ import { requestBackfill, type BackfillRequest } from "./git-trail-backfill.js";
 import { getRepoPulls, matchPull, pullForTrailBranch, toChatPr, type RepoPulls } from "./github-prs.js";
 import { parseChatMetadata } from "../utils/chat-metadata.js";
 
-/** A member chat of a card, with its recorded git trail. */
-export interface ChatCardMember extends CardPrSource {
+/** A member chat of a card: its directory and its recorded git trail. */
+export interface ChatCardMember {
+  chatId: string;
+  folder: string;
   trail?: GitTrailEntry[];
 }
 
-/** The card a chat is on, with its member chats' directories and trails. */
+/** The card a chat is on, as the PRs tab needs it: its member chats. */
 export interface ChatCard {
-  cardId: string;
-  title: string;
   members: ChatCardMember[];
 }
 
@@ -56,11 +58,9 @@ export function cardOfChat(chatId: string, stored: Chat[] = listChatsSnapshot())
   if (!card) return null;
   const byId = new Map(stored.map((chat) => [chat.id, chat]));
   return {
-    cardId: card.id,
-    title: card.title,
     members: card.memberChats
       .filter((m) => m.folder)
-      .map((m) => ({ chatId: m.chatId, title: m.title, folder: m.folder, trail: trailOfRecord(byId.get(m.chatId)?.metadata) })),
+      .map((m) => ({ chatId: m.chatId, folder: m.folder, trail: trailOfRecord(byId.get(m.chatId)?.metadata) })),
   };
 }
 
@@ -174,42 +174,22 @@ export async function buildChatPrs(opts: { folder: string; chatId?: string; forc
 
   const currentPrs = folderPrs(opts.folder, current, current?.kind === "placed" ? pullsByRepo.get(current.repo.repoPath) : undefined);
 
-  // This chat's own PRs: the live one, then its trail's, one per URL.
-  const own = new Map<string, ChatPr>();
-  if (currentPrs.pr) own.set(currentPrs.pr.url, currentPrs.pr);
-  for (const entry of ownEntries) {
-    const pull = pullForTrailBranch(pullsByRepo.get(entry.repoPath), entry.branch);
-    if (pull && !own.has(pull.url)) own.set(pull.url, toChatPr(pull));
-  }
-  if (own.size > 0) currentPrs.prs = [...own.values()].sort(byOpenThenUpdated);
-
-  // The card's other PRs — members' live folders and their trails — one per
-  // URL. Only this chat's live PR is left out, as it always was; a PR that is
-  // also in this chat's trail stays here too, so it keeps the chats it came
-  // from. This chat's own trail is "This chat"'s list, not a card source.
-  const byUrl = new Map<string, CardPr>();
-  const addCardPr = (pr: ChatPr, repoName: string, branch: string, member: ChatCardMember) => {
-    if (pr.url === currentPrs.pr?.url || member.chatId === opts.chatId) return;
-    const entry = byUrl.get(pr.url) ?? { pr, repoName, branch, sources: [] };
-    if (!entry.sources.some((s) => s.chatId === member.chatId)) entry.sources.push({ chatId: member.chatId, title: member.title, folder: member.folder });
-    byUrl.set(pr.url, entry);
+  // One list, one entry per URL: this chat's live PR and its trail's, then
+  // the card's other chats' live PRs and their trails.
+  const byUrl = new Map<string, ChatPr>();
+  const add = (pr: ChatPr | undefined) => {
+    if (pr && !byUrl.has(pr.url)) byUrl.set(pr.url, pr);
   };
-  for (const { member, placement } of elsewhere) {
-    const found = folderPrs(member.folder, placement, pullsByRepo.get(placement.repo.repoPath));
-    if (found.pr) addCardPr(found.pr, found.repoName!, found.branch!, member);
-  }
-  for (const { member, entries } of memberEntries) {
+  const addTrail = (entries: GitTrailEntry[]) => {
     for (const entry of entries) {
       const pull = pullForTrailBranch(pullsByRepo.get(entry.repoPath), entry.branch);
-      if (pull) addCardPr(toChatPr(pull), basename(entry.repoPath), entry.branch, member);
+      if (pull) add(toChatPr(pull));
     }
-  }
+  };
+  add(currentPrs.pr);
+  addTrail(ownEntries);
+  for (const { member, placement } of elsewhere) add(folderPrs(member.folder, placement, pullsByRepo.get(placement.repo.repoPath)).pr);
+  for (const { entries } of memberEntries) addTrail(entries);
 
-  let cardSection: ChatPrsResponse["card"];
-  if (card && (elsewhere.length > 0 || byUrl.size > 0)) {
-    const prs = [...byUrl.values()].sort((a, b) => byOpenThenUpdated(a.pr, b.pr));
-    cardSection = { cardId: card.cardId, title: card.title, prs };
-  }
-
-  return { current: currentPrs, ...(cardSection && { card: cardSection }), generatedAt: new Date().toISOString() };
+  return { current: currentPrs, prs: [...byUrl.values()].sort(byOpenThenUpdated), generatedAt: new Date().toISOString() };
 }

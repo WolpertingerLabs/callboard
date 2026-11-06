@@ -49,7 +49,7 @@ describe("GET /api/git/prs", () => {
     const { status, body } = await call({ folder: repoDir });
     expect(status).toBe(200);
     expect(body.current).toEqual({ folder: repoDir, cwd: repoDir, repoName: "repo", branch: "main", status: "not_github" });
-    expect(body.card).toBeUndefined();
+    expect(body.prs).toEqual([]);
     expect(typeof body.generatedAt).toBe("string");
   });
 
@@ -60,6 +60,6 @@ describe("GET /api/git/prs", () => {
 
   it("ignores a chatId that names no card", async () => {
     const { body } = await call({ folder: repoDir, chatId: "no-such-chat" });
-    expect(body.card).toBeUndefined();
+    expect(body.prs).toEqual([]);
   });
 });

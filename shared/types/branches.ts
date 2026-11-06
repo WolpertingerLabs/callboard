@@ -119,13 +119,6 @@ export interface FolderPrs {
   /** The PR matched to the live branch (`status: "found"`). */
   pr?: ChatPr;
   /**
-   * Every PR of this chat's own history: `pr` (when found) plus the PRs of
-   * branches its git trail recorded it on earlier — worktrees since deleted
-   * included — deduplicated by URL, open first, then most recently updated.
-   * Present on the chat PRs route; absent when there are none.
-   */
-  prs?: ChatPr[];
-  /**
    * Why PR data is missing or may be stale. With `status: "error"` there is no
    * PR; alongside `found` it means a refresh failed and the PR shown is the
    * last good answer.
@@ -151,37 +144,18 @@ export interface GitTrailEntry {
   lastSeen: string;
 }
 
-/** One chat on the card that a {@link CardPr} was found through. */
-export interface CardPrSource {
-  chatId: string;
-  title: string | null;
-  folder: string;
-}
-
-/** A PR another chat on the same card is working on, deduplicated across chats. */
-export interface CardPr {
-  pr: ChatPr;
-  repoName: string;
-  branch: string;
-  /** The chats whose directories this PR was matched from. */
-  sources: CardPrSource[];
-}
-
 /**
  * `GET /api/git/prs?folder=…[&chatId=…]` — the PRs tab of a chat's git view.
  *
- * `current` is the PR of the chat's own directory. `card` lists the PRs of
- * the card's other directories — member chats working elsewhere — and is
- * absent without a `chatId`, when the chat is on no card, or when no other
- * member chat works in another directory.
+ * `current` is the status of the chat's own live branch (and its PR, when it
+ * has one). `prs` is the one list the tab shows: every PR from the chat's live
+ * branch and git trail and — given a `chatId` — its card's other chats' live
+ * branches and trails, one entry per URL, open/draft first, then most
+ * recently updated.
  */
 export interface ChatPrsResponse {
   current: FolderPrs;
-  card?: {
-    cardId: string;
-    title: string;
-    prs: CardPr[];
-  };
+  prs: ChatPr[];
   /** ISO timestamp the response was assembled at. */
   generatedAt: string;
 }
