@@ -149,6 +149,7 @@ export type {
   CardPrSource,
   CardPr,
   ChatPrsResponse,
+  GitTrailEntry,
 } from "./branches.js";
 
 export type { BuildIdFile } from "./build.js";

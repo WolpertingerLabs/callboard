@@ -56,6 +56,14 @@ describe("ChatGitView", () => {
     expect(toggle("Changes").getAttribute("aria-pressed")).toBe("true");
   });
 
+  it("says the folder is gone on Changes, without mounting the diff, and keeps PRs working", () => {
+    render(<ChatGitView folder="/repo.gone" chatId="c1" folderGone />);
+    expect(screen.getByTestId("folder-gone").textContent).toBe("This folder is no longer a git checkout.");
+    expect(screen.queryByTestId("diff")).toBeNull();
+    fireEvent.click(toggle("PRs"));
+    expect(screen.getByTestId("prs").textContent).toBe("prs of /repo.gone for c1");
+  });
+
   it("serves a new chat (no id) with just the folder", () => {
     localStorage.setItem("claude-code-settings", JSON.stringify({ chatGitTab: "prs" }));
     render(<ChatGitView folder="/repo" />);

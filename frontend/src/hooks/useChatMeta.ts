@@ -37,6 +37,8 @@ export interface ChatMeta {
   starredMessages?: string[];
   /** Revision of `starredMessages`, bumped on every star write. Absent before the first. */
   starredMessagesRev?: number;
+  /** True when the chat's git trail (`metadata.gitTrail`) has recorded any branch. Absent otherwise. */
+  hasGitTrail?: true;
 }
 
 const NO_META: ChatMeta = { provider: null };
@@ -69,6 +71,7 @@ export function parseChatMeta(metadata: string | null | undefined): ChatMeta {
     spaceId: nonEmpty(meta.spaceId),
     starredMessagesRev: Number.isInteger(meta.starredMessagesRev) ? (meta.starredMessagesRev as number) : undefined,
     starredMessages: Array.isArray(meta.starredMessages) ? meta.starredMessages.filter((key): key is string => typeof key === "string") : undefined,
+    hasGitTrail: Array.isArray(meta.gitTrail) && meta.gitTrail.length > 0 ? true : undefined,
   };
 }
 

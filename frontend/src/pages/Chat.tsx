@@ -3052,7 +3052,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const viewModeButtons: { mode: "chat" | "diff" | "debug" | "job" | "computer"; icon: ReactNode; title: string }[] = [
     { mode: "chat", icon: <MessageSquare size={16} />, title: "Show chat" },
   ];
-  if ((!id && info?.is_git_repo) || (id && chat?.is_git_repo)) {
+  // A chat whose folder is gone (its worktree deleted) still has the PRs its
+  // git trail recorded, so the git view stays offered — see ChatGitView.
+  if ((!id && info?.is_git_repo) || (id && (chat?.is_git_repo || chatMeta.hasGitTrail))) {
     viewModeButtons.push({ mode: "diff", icon: <GitBranch size={16} />, title: "Show git diff" });
   }
   if (id) {
@@ -3674,7 +3676,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             />
           )
         ) : viewMode === "diff" ? (
-          <ChatGitView folder={!id ? folder : chat?.folder || folder} chatId={id} />
+          <ChatGitView folder={!id ? folder : chat?.folder || folder} chatId={id} folderGone={!!id && !!chat && !chat.is_git_repo && !!chatMeta.hasGitTrail} />
         ) : viewMode === "debug" ? (
           <ChatDebugPanel messages={messages} />
         ) : viewMode === "job" && chatJobRunId ? (

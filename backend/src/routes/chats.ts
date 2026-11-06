@@ -1496,6 +1496,10 @@ function continuationMeta(source: ForkSource): Record<string, unknown> {
     // A chat setting like the permissions: the nudge-until-objective_complete
     // loop keeps applying to the conversation that continues.
     ...(meta.requireExplicitCompletion === true && { requireExplicitCompletion: true }),
+    // N continues C's conversation in C's folder, so it continues C's git
+    // trail too — without it a chat whose worktree has since been deleted
+    // would lose the PRs it worked on, and with them its git view.
+    ...(Array.isArray(meta.gitTrail) && meta.gitTrail.length > 0 && { gitTrail: meta.gitTrail }),
   };
 }
 

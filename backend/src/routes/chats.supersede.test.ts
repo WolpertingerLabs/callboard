@@ -242,3 +242,27 @@ describe("parentAnswers", () => {
     expect(metaOf(res.body.chat.id)).toMatchObject({ parentChatId: parent.id, parentAnswers: true });
   });
 });
+
+describe("gitTrail", () => {
+  const trail = [{ cwd: "/repos/supersede-route.gone", repoPath: "/repos/supersede-route", branch: "feat/gone", firstSeen: t(0), lastSeen: t(1) }];
+
+  it("carries over to the chat that continues the conversation", async () => {
+    const chat = makeChat({ gitTrail: trail });
+    const res = await call("/:id/continue-from", chat.id, { timestamp: t(1) });
+    expect(metaOf(res.body.chat.id).gitTrail).toEqual(trail);
+  });
+
+  it("carries over through a compress", async () => {
+    const chat = makeChat({ gitTrail: trail });
+    const fingerprint = await previewFingerprint(chat.id, t(10), "before");
+    const res = await call("/:id/compress", chat.id, { timestamp: t(10), direction: "before", summary: "s", fingerprint });
+    expect(res.status).toBe(201);
+    expect(metaOf(res.body.chat.id).gitTrail).toEqual(trail);
+  });
+
+  it("adds none to a chat that had none", async () => {
+    const chat = makeChat({});
+    const res = await call("/:id/continue-from", chat.id, { timestamp: t(1) });
+    expect(metaOf(res.body.chat.id)).not.toHaveProperty("gitTrail");
+  });
+});

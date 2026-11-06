@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { FileDiff, GitPullRequest } from "lucide-react";
+import { FileDiff, FolderX, GitPullRequest } from "lucide-react";
 import GitDiffView from "../GitDiffView";
 import ChatPrsView from "./ChatPrsView";
 import { getChatGitTab, saveChatGitTab, type ChatGitTab } from "../../utils/localStorage";
@@ -8,6 +8,11 @@ interface ChatGitViewProps {
   folder: string;
   /** Absent for a chat not yet created. */
   chatId?: string;
+  /**
+   * The chat's folder is no longer a checkout (its worktree was deleted) but
+   * its git trail is not empty: Changes has nothing to diff, PRs still works.
+   */
+  folderGone?: boolean;
 }
 
 const TABS: { tab: ChatGitTab; text: string; icon: React.ReactNode }[] = [
@@ -21,7 +26,7 @@ const TABS: { tab: ChatGitTab; text: string; icon: React.ReactNode }[] = [
  * remembered globally, not per chat. Only the half on screen is mounted, so
  * the PRs half fetches and polls only while it is showing.
  */
-export default function ChatGitView({ folder, chatId }: ChatGitViewProps) {
+export default function ChatGitView({ folder, chatId, folderGone }: ChatGitViewProps) {
   const [tab, setTab] = useState<ChatGitTab>(() => getChatGitTab());
 
   return (
@@ -58,7 +63,19 @@ export default function ChatGitView({ folder, chatId }: ChatGitViewProps) {
         </div>
       </div>
       <div style={{ flex: 1, minHeight: 0 }}>
-        {tab === "changes" ? <GitDiffView folder={folder} /> : <ChatPrsView key={`${chatId ?? ""}\0${folder}`} folder={folder} chatId={chatId} />}
+        {tab === "prs" ? (
+          <ChatPrsView key={`${chatId ?? ""}\0${folder}`} folder={folder} chatId={chatId} />
+        ) : folderGone ? (
+          <div
+            data-testid="folder-gone"
+            style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, color: "var(--text-muted)", fontSize: 14 }}
+          >
+            <FolderX size={18} />
+            This folder is no longer a git checkout.
+          </div>
+        ) : (
+          <GitDiffView folder={folder} />
+        )}
       </div>
     </div>
   );

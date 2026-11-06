@@ -148,6 +148,23 @@ export function matchPull(candidates: PullSummary[] | undefined, localSha: strin
   return candidates.find((pr) => pr.headSha === localSha);
 }
 
+/**
+ * The PR of a branch a chat's git trail recorded it on, by branch name alone —
+ * no SHA check: the chat worked on that branch, so whatever PR it carried is
+ * one of the chat's. An open PR first, else the most recently updated (the
+ * order {@link indexPullsByBranch} keeps). Never the default branch, and
+ * nothing for a repository that is not on GitHub.
+ */
+export function pullForTrailBranch(pulls: RepoPulls | undefined, branch: string): PullSummary | undefined {
+  if (!pulls?.github || branch === pulls.defaultBranch) return undefined;
+  return pulls.byBranch.get(branch)?.[0];
+}
+
+/** Open work first, then most recently updated. */
+export function byOpenThenUpdated(a: PullSummary, b: PullSummary): number {
+  return Number(isOpen(b)) - Number(isOpen(a)) || b.updatedAt.localeCompare(a.updatedAt);
+}
+
 export function toBranchPr(pr: PullSummary): BranchPr {
   return { number: pr.number, url: pr.url, state: pr.state, title: pr.title };
 }

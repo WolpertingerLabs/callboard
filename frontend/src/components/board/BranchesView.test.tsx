@@ -167,6 +167,94 @@ describe("BranchesView", () => {
     expect(screen.getByLabelText("PR #9 open: x").textContent).toContain("#9 open");
   });
 
+  it("badges a row with every PR the trail added, in the order sent", async () => {
+    const badge = (number: number, state: "open" | "merged" | "closed") => ({
+      number,
+      url: `https://github.com/acme/app/pull/${number}`,
+      state,
+      title: `PR ${number}`,
+    });
+    mockOverview.mockResolvedValue({
+      generatedAt: OVERVIEW.generatedAt,
+      repos: [
+        {
+          repoPath: "/home/u/app",
+          name: "app",
+          rows: [
+            {
+              cwd: "/home/u/app",
+              branch: "feat/now",
+              isMain: true,
+              cardIds: ["c1"],
+              pr: badge(12, "open"),
+              prs: [badge(12, "open"), badge(7, "open"), badge(5, "merged")],
+            },
+          ],
+        },
+      ],
+    });
+    await mount();
+    const links = within(row("/home/u/app")).getAllByRole("link");
+    expect(links.map((l) => l.textContent)).toEqual(["#12 open", "#7 open", "#5 merged"]);
+  });
+
+  it("marks a removed worktree's row, with its PRs and chips", async () => {
+    mockOverview.mockResolvedValue({
+      generatedAt: OVERVIEW.generatedAt,
+      repos: [
+        {
+          repoPath: "/home/u/app",
+          name: "app",
+          rows: [
+            { cwd: "/home/u/app", branch: "main", isMain: true, cardIds: ["c3"] },
+            {
+              cwd: "/home/u/app.gone",
+              branch: "feat/gone",
+              isMain: false,
+              removed: true,
+              cardIds: ["c1"],
+              prs: [{ number: 6, url: "https://github.com/acme/app/pull/6", state: "closed", title: "Gone" }],
+            },
+          ],
+        },
+      ],
+    });
+    await mount();
+    const removed = row("/home/u/app.gone");
+    expect(removed.dataset.removed).toBe("true");
+    expect(within(removed).getByText("removed")).toBeDefined();
+    expect(within(removed).getByTitle("feat/gone (worktree removed)")).toBeDefined();
+    expect(within(removed).getByRole("link").textContent).toBe("#6 closed");
+    expect(within(removed).getByRole("button", { name: "PR tracking" })).toBeDefined();
+    expect(row("/home/u/app").dataset.removed).toBeUndefined();
+    expect(within(row("/home/u/app")).queryByText("removed")).toBeNull();
+  });
+
+  it("hides a removed row whose cards the board does not show", async () => {
+    mockOverview.mockResolvedValue({
+      generatedAt: OVERVIEW.generatedAt,
+      repos: [
+        {
+          repoPath: "/home/u/app",
+          name: "app",
+          rows: [
+            { cwd: "/home/u/app", branch: "main", isMain: true, cardIds: ["c3"] },
+            {
+              cwd: "/home/u/app.gone",
+              branch: "feat/gone",
+              isMain: false,
+              removed: true,
+              cardIds: ["other-space"],
+              prs: [{ number: 6, url: "https://github.com/acme/app/pull/6", state: "closed", title: "Gone" }],
+            },
+          ],
+        },
+      ],
+    });
+    await mount();
+    expect(screen.queryByTitle("/home/u/app.gone")).toBeNull();
+  });
+
   it("flags a repo whose PR lookup failed", async () => {
     await mount();
     expect(screen.getByLabelText("PR data unavailable: gh is not installed")).toBeDefined();

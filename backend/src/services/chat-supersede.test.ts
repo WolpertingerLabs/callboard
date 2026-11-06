@@ -236,6 +236,34 @@ describe("supersedeChat — live linkage", () => {
     }
   });
 
+  it("a rerun of the opening prompt unions C's git trail with the one N already recorded", () => {
+    const entry = (branch: string, firstSeen: string, lastSeen: string, head: string, repoPath = "/repos/supersede") => ({
+      cwd: "/repos/supersede",
+      repoPath,
+      branch,
+      head,
+      firstSeen,
+      lastSeen,
+    });
+    const cTrail = [entry("feat/a", "t1", "t2", "a1"), entry("feat/b", "t1", "t3", "b1", "/repos/old-path")];
+    const chat = makeChat({ title: "Opening", gitTrail: cTrail });
+    // N — the fresh chat the rerun started — recorded its own turn first.
+    const n = makeChat({ gitTrail: [entry("feat/b", "t5", "t6", "b2"), entry("feat/c", "t5", "t5", "c1")] });
+    const keepThrough = new Date(new Date(T).getTime() + 5000).toISOString();
+    const result = supersedeChat({ chat, kind: "rerun", timestamp: T, keepThrough, newSessionId: n.session_id, newChatMeta: { gitTrail: cTrail }, adopt: n });
+    expect(result.chat.id).toBe(n.id);
+    expect(metaOf(n.id).gitTrail).toEqual([entry("feat/a", "t1", "t2", "a1"), entry("feat/b", "t1", "t6", "b2"), entry("feat/c", "t5", "t5", "c1")]);
+  });
+
+  it("an adopted N with no trail of its own takes C's as is", () => {
+    const cTrail = [{ cwd: "/repos/supersede", repoPath: "/repos/supersede", branch: "feat/a", firstSeen: "t1", lastSeen: "t2" }];
+    const chat = makeChat({ gitTrail: cTrail });
+    const n = makeChat({});
+    const keepThrough = new Date(new Date(T).getTime() + 5000).toISOString();
+    supersedeChat({ chat, kind: "rerun", timestamp: T, keepThrough, newSessionId: n.session_id, newChatMeta: { gitTrail: cTrail }, adopt: n });
+    expect(metaOf(n.id).gitTrail).toEqual(cTrail);
+  });
+
   it("refuses at the late re-check, before writing anything, when a run started in between", () => {
     const chat = makeChat({ title: "Busy" });
     running.add(chat.session_id);

@@ -1,6 +1,7 @@
 import { chatFileService, type Chat } from "./chat-file-service.js";
 import { buildLineageIndex, getParentChatId, walkToRootId } from "./chat-lineage.js";
 import { isNativeRecord } from "./card-membership.js";
+import { mergeTrails, parseGitTrail } from "./git-trail.js";
 import { hasPendingRequest, repointParentOffers } from "./pending-requests.js";
 import { repointCallbacksForParent } from "./session-callbacks.js";
 import { sessionRegistry } from "./session-registry.js";
@@ -330,7 +331,14 @@ export function supersedeChat(opts: SupersedeOptions): SupersedeResult {
   let created: Chat;
   if (opts.adopt) {
     const adopted = opts.adopt;
-    if (!chatFileService.updateChatMetadata(adopted.id, newMeta, { touch: false }))
+    // A rerun's N has been running, so it may already have recorded its own
+    // git trail; the shallow merge below would replace that wholesale with
+    // C's. Union the two instead — read and written with no await between,
+    // so nothing can record in the gap.
+    const carriedTrail = parseGitTrail(opts.newChatMeta.gitTrail);
+    const ownTrail = parseGitTrail(parseChatMetadata(chatFileService.getChat(adopted.id)?.metadata).gitTrail);
+    const trail = ownTrail.length > 0 ? { gitTrail: mergeTrails(carriedTrail, ownTrail) } : {};
+    if (!chatFileService.updateChatMetadata(adopted.id, { ...newMeta, ...trail }, { touch: false }))
       throw new Error(`Could not move chat ${adopted.id} into ${chat.id}'s place`);
     created = chatFileService.getChat(adopted.id)!;
   } else {
