@@ -1,5 +1,6 @@
 import { useEffect, useRef, type CSSProperties, type ReactNode } from "react";
 import { X } from "lucide-react";
+import { visuallyHidden } from "../utils/visuallyHidden";
 
 export interface SelectionAction {
   key: string;
@@ -145,6 +146,8 @@ export default function SelectionBar({
           reader gets from a tap that toggles rather than navigates. */}
       <span aria-live="polite" style={{ fontSize: 13, fontWeight: 600, color: "var(--text)", flexShrink: 0 }}>
         {count} {noun}
+        {/* Compact drops the word to save width; a screen reader has width to spare. */}
+        {compact && <span style={visuallyHidden}> selected</span>}
       </span>
 
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto" }}>
@@ -173,7 +176,7 @@ export default function SelectionBar({
           style={{
             display: "flex",
             alignItems: "center",
-            gap: 6,
+            gap: compact ? undefined : 6,
             background: "transparent",
             border: "1px solid var(--border)",
             color: "var(--text)",

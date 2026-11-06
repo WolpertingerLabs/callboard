@@ -1207,7 +1207,7 @@ export default function ChatList({
    * Select two rows, search until neither matches — the bar goes, which reads
    * as "selection gone" — then clear the search: without this, `rawSelectedIds`
    * is still holding both ids, they match the rows again, and the bar comes
-   * back saying "2 chats selected" over rows the user stopped thinking about
+   * back saying "2 chats" over rows the user stopped thinking about
    * minutes ago. The next button press acts on them.
    *
    * `bulkError` is deliberately left alone: a "2 of 5 could not be deleted"

@@ -174,8 +174,15 @@ function row(preview: string) {
   return screen.getByText(preview).closest('div[style*="border-bottom"]') as HTMLElement;
 }
 
+/** The count the bar SHOWS — its visually-hidden " selected" is for screen readers; see `announced`. */
 function count() {
-  return screen.queryByText(/^\d+ chats?$/)?.textContent ?? null;
+  const live = screen.queryByText(/^\d+ chats?$/);
+  return live ? [...live.childNodes].filter((n) => n.nodeType === Node.TEXT_NODE).map((n) => n.textContent).join("") : null;
+}
+
+/** What the bar's live region announces. */
+function announced() {
+  return document.querySelector('[aria-live="polite"]')?.textContent ?? null;
 }
 
 /**
@@ -399,11 +406,22 @@ describe("the archive scope", () => {
     }
   });
 
+  it("shows the bare count but announces it as a selection", async () => {
+    await mount();
+    fireEvent.click(row("chat one"), { metaKey: true });
+
+    expect(count()).toBe("1 chat");
+    expect(announced()).toBe("1 chat selected");
+  });
+
   it("offers Unarchive when the selection started on an archived row", async () => {
     await mount();
     fireEvent.click(row("chat old"), { metaKey: true });
 
     expect(actionLabels()).toEqual(["Unarchive 1 chat", "Delete 1 chat"]);
+    const unarchive = screen.getByRole("button", { name: "Unarchive 1 chat" });
+    expect(unarchive.textContent).toBe("");
+    expect(unarchive.getAttribute("title")).toBe("Unarchive 1 chat");
   });
 
   it("offers Archive for a chat on no card at all", async () => {
@@ -1173,7 +1191,7 @@ describe("a selection whose rows all go away", () => {
     submitSearch("");
     await waitFor(() => expect(screen.getByText("chat one")).toBeTruthy());
     // Derivation alone would have kept both ids in the raw set and put the bar
-    // straight back at "2 chats selected", over rows the user stopped thinking
+    // straight back at "2 chats", over rows the user stopped thinking
     // about — with the action buttons live. The reaper is what forgets them.
     expect(count()).toBeNull();
     expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
