@@ -62,9 +62,9 @@ describe("MessageBubble star toggle", () => {
 
   it("sits left of the fork button when there is one", () => {
     const { container } = render(<MessageBubble message={message} starKey={KEY} onToggleStar={vi.fn()} onFork={vi.fn()} />);
-    expect(container.querySelector<HTMLElement>(".star-affordance")!.style.right).toBe("96px");
+    expect(container.querySelector<HTMLElement>(".star-affordance")!.style.right).toBe("66px");
     cleanup();
     const { container: noFork } = render(<MessageBubble message={message} starKey={KEY} onToggleStar={vi.fn()} />);
-    expect(noFork.querySelector<HTMLElement>(".star-affordance")!.style.right).toBe("66px");
+    expect(noFork.querySelector<HTMLElement>(".star-affordance")!.style.right).toBe("36px");
   });
 });

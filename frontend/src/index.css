@@ -966,6 +966,7 @@ pre {
 }
 
 .msg-bubble > .copy-btn,
+.msg-bubble > .copy-affordance,
 .msg-bubble > .fork-affordance,
 .msg-bubble > .star-affordance {
   opacity: 0;
@@ -973,10 +974,12 @@ pre {
   transition: opacity 0.15s ease;
 }
 
-/* `.is-open` holds the fork menu visible once opened — otherwise moving the
-   pointer off the bubble to reach the menu would fade it out from under the
-   cursor. */
+/* `.is-open` holds the copy and fork menus visible once opened — otherwise
+   moving the pointer off the bubble to reach the menu would fade it out from
+   under the cursor. */
 .msg-bubble:hover > .copy-btn,
+.msg-bubble:hover > .copy-affordance,
+.msg-bubble > .copy-affordance.is-open,
 .msg-bubble:hover > .fork-affordance,
 .msg-bubble > .fork-affordance.is-open,
 .msg-bubble:hover > .star-affordance,
