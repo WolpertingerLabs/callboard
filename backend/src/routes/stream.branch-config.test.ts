@@ -55,7 +55,22 @@ vi.mock("../services/quick-completion.js", async (importActual) => ({
   },
 }));
 
+// `loadImageBuffers` runs after branch resolution and before `sendMessage`, so
+// a hook here is a cancel landing in exactly that window.
+const imageHook = vi.hoisted(() => ({ onLoad: undefined as (() => void) | undefined }));
+vi.mock("../services/image-storage.js", async (importActual) => {
+  const actual = await importActual<typeof import("../services/image-storage.js")>();
+  return {
+    ...actual,
+    loadImageBuffers: (...args: Parameters<typeof actual.loadImageBuffers>) => {
+      imageHook.onLoad?.();
+      return actual.loadImageBuffers(...args);
+    },
+  };
+});
+
 const { streamRouter } = await import("./stream.js");
+const { listWorkspaces } = await import("../services/workspace-store.js");
 
 const newMessageHandler = (streamRouter as any).stack.find((layer: any) => layer.route?.path === "/new/message" && layer.route.methods.post).route
   .stack[0].handle as (req: Request, res: Response) => Promise<void>;
@@ -351,12 +366,13 @@ describe("POST /new/message — cancelled during worktree creation", () => {
     generator.result = null;
     generator.requests = [];
     generator.onRequest = undefined;
+    imageHook.onLoad = undefined;
   });
 
-  /** A repository whose checkout takes ~4s, so there is a window to cancel in. */
+  /** A repository whose checkout takes ~10s, so there is a window to cancel in. */
   function makeSlowRepo(name: string): string {
     const dir = makeRepo(name);
-    for (let i = 0; i < 40; i++) writeFileSync(join(dir, `f${i}.txt`), `${i}\n`);
+    for (let i = 0; i < 100; i++) writeFileSync(join(dir, `f${i}.txt`), `${i}\n`);
     writeFileSync(join(dir, ".gitattributes"), "*.txt filter=slow\n");
     git(["add", "."], dir);
     git(["commit", "-q", "-m", "files"], dir);
@@ -384,9 +400,10 @@ describe("POST /new/message — cancelled during worktree creation", () => {
     );
     clearInterval(poll);
 
-    // Returned on the cancel, not after the full ~4s checkout.
-    expect(Date.now() - started).toBeLessThan(3500);
-    expect(stopAnswer).toEqual({ stopped: true });
+    // Returned on the cancel, not after the full ~10s checkout. Loose, for CI.
+    expect(Date.now() - started).toBeLessThan(6000);
+    // `phase` is what tells the client no chat exists, so it may restore the prompt.
+    expect(stopAnswer).toEqual({ stopped: true, phase: "creation" });
     expect(answered.status).toBe(409);
     expect(answered.body.code).toBe("cancelled");
     expect(lastSendOptions).toBeUndefined();
@@ -418,5 +435,44 @@ describe("POST /new/message — cancelled during worktree creation", () => {
     await postNewMessage(repoDir, { newBranch: "feat/kept", baseBranch: "main", useWorktree: true }, { clientTrackingId: "new-cancel-3" });
     expect(lastSendOptions?.folder).toBe(join(dirname(repoDir), "repo.feat-kept"));
     expect(stop("new-cancel-3")).toEqual({ stopped: false });
+  });
+
+  it("a cancel after the worktree is made but before the chat starts discards it and writes no record", async () => {
+    const { ImageStorageService } = await import("../services/image-storage.js");
+    const { image } = await ImageStorageService.storeImage(Buffer.from("x"), "notes.md", "text/markdown");
+    const repoDir = makeRepo("cancel-after-resolve");
+    const worktree = join(dirname(repoDir), "repo.feat-late-cancel");
+    const workspacesBefore = listWorkspaces().length;
+    let stopAnswer: { stopped?: boolean; phase?: string } = {};
+    imageHook.onLoad = () => {
+      // The checkout is done by now: the worktree exists.
+      expect(existsSync(worktree)).toBe(true);
+      stopAnswer = stop("new-cancel-4");
+    };
+
+    const answered = await postNewMessage(
+      repoDir,
+      { newBranch: "feat/late-cancel", baseBranch: "main", useWorktree: true },
+      { clientTrackingId: "new-cancel-4", imageIds: [image!.id] },
+    );
+
+    expect(stopAnswer).toEqual({ stopped: true, phase: "creation" });
+    expect(answered.status).toBe(409);
+    expect(answered.body.code).toBe("cancelled");
+    expect(lastSendOptions).toBeUndefined();
+    expect(existsSync(worktree)).toBe(false);
+    expect(localBranches(repoDir)).toEqual(["main"]);
+    expect(listWorkspaces().length).toBe(workspacesBefore);
+  });
+
+  it("a refusal after branch resolution ends the creation, so a later stop finds nothing", async () => {
+    const repoDir = makeRepo("refused-after-resolve");
+    const answered = await postNewMessage(
+      repoDir,
+      { newBranch: "feat/refused", baseBranch: "main", useWorktree: true },
+      { clientTrackingId: "new-cancel-5", provider: "acp", acpProviderId: "no-such-vendor" },
+    );
+    expect(answered.status).toBe(400);
+    expect(stop("new-cancel-5")).toEqual({ stopped: false });
   });
 });

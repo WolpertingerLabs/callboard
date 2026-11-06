@@ -2392,8 +2392,12 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
    * request's controller so a later send's bookkeeping never clears it.
    */
   const [worktreeCreation, setWorktreeCreation] = useState<{ startedAt: number; controller: AbortController; trackingId: string } | null>(null);
-  /** The send the indicator's Cancel aborted — told apart from every other abort, which keeps nothing. */
-  const cancelledSendRef = useRef<AbortController | null>(null);
+  /**
+   * The send the indicator's Cancel aborted — told apart from every other
+   * abort, which keeps nothing — and whether the daemon confirmed that it
+   * cancelled a creation, which is the only answer that means no chat exists.
+   */
+  const cancelledSendRef = useRef<{ controller: AbortController; confirmed: Promise<boolean> } | null>(null);
 
   /**
    * Put a new chat's first message back in the composer after it failed to
@@ -2422,14 +2426,26 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     // The stop is what reaches the daemon: it kills git and removes the
     // half-made worktree. Aborting the request alone would not — the route
     // deliberately finishes a creation the client merely walked away from.
-    stopChat(trackingId)
-      .then(({ stopped }) => {
-        // Nothing to stop: the checkout finished as the cancel went out, and
-        // the chat started without this tab.
-        if (!stopped) setNetworkError("The worktree finished before the cancel arrived, so the chat may have started anyway — check the sidebar.");
-      })
-      .catch(() => setNetworkError("Could not cancel worktree creation — the chat may still start. Check the sidebar."));
-    cancelledSendRef.current = controller;
+    const confirmed = stopChat(trackingId).then(
+      ({ stopped, phase }) => {
+        if (stopped && phase === "creation") return true;
+        // Too late. Either the chat's run was stopped (it had started), or there
+        // was nothing left to stop (it started and is running). Either way the
+        // chat exists, and its prompt with it — putting it back here would
+        // invite sending it twice.
+        setNetworkError(
+          stopped
+            ? "The chat had already started, so its run was stopped instead — it is in the sidebar."
+            : "The worktree finished before the cancel arrived, so the chat may have started anyway — check the sidebar.",
+        );
+        return false;
+      },
+      () => {
+        setNetworkError("Could not cancel worktree creation — the chat may still start. Check the sidebar.");
+        return false;
+      },
+    );
+    cancelledSendRef.current = { controller, confirmed };
     controller.abort();
     setWorktreeCreation(null);
   }, [worktreeCreation]);
@@ -2720,11 +2736,14 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           setNetworkError("network error");
           setStreaming(false);
           clearInFlightMessages(); // Drop optimistic bubbles on error
-        } else if (cancelledSendRef.current === controller) {
-          // The indicator's Cancel. Only before the route answered, so no chat
-          // exists; `finally` below settles streaming and the bubble.
+        } else if (cancelledSendRef.current?.controller === controller && !answered) {
+          // The indicator's Cancel, before the route answered. The prompt goes
+          // back only once the daemon confirms it cancelled the creation — a
+          // stop that landed too late means the chat exists. `finally` below
+          // settles streaming and the bubble.
+          const { confirmed } = cancelledSendRef.current;
           cancelledSendRef.current = null;
-          if (!notFromComposer) restoreNewChatComposer(prompt, images);
+          if ((await confirmed) && !notFromComposer) restoreNewChatComposer(prompt, images);
         }
       } finally {
         // Only stop streaming if this is still the current request

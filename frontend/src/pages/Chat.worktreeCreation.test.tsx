@@ -45,6 +45,8 @@ let stops: string[];
 let answerSend: () => Promise<Response>;
 /** Releases a held POST with the response to give it. */
 let releaseSend: ((res: Response) => void) | null;
+/** What `/stop` answers. The default is the daemon confirming it cancelled a creation. */
+let stopAnswer: () => Promise<Response>;
 
 function fakeServer(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
@@ -59,7 +61,7 @@ function fakeServer(input: RequestInfo | URL, init?: RequestInit): Promise<Respo
   }
   if (method === "POST" && url.endsWith("/stop")) {
     stops.push(decodeURIComponent(url.split("/chats/")[1].replace(/\/stop$/, "")));
-    return Promise.resolve(jsonResponse({ stopped: true }));
+    return stopAnswer();
   }
   if (url.includes("/chats/new/info")) {
     return Promise.resolve(jsonResponse({ folder: FOLDER, slash_commands: [], plugins: [], is_git_repo: true, git_branch: "main" }));
@@ -98,6 +100,7 @@ beforeEach(() => {
   sends = [];
   stops = [];
   releaseSend = null;
+  stopAnswer = () => Promise.resolve(jsonResponse({ stopped: true, phase: "creation" }));
   emittedConfig = { baseBranch: "main", newBranch: "feat/parser", useWorktree: true };
   answerSend = () => new Promise<Response>((resolve) => (releaseSend = resolve));
   vi.stubGlobal("fetch", vi.fn(fakeServer));
@@ -179,6 +182,43 @@ describe("creating a new chat's worktree", () => {
     // And the composer is usable again, with the branch box still asking for a worktree.
     expect(textarea().disabled).toBe(false);
     expect(screen.getByTestId("branch-box")).toBeTruthy();
+  });
+
+  /**
+   * A stop that landed after the creation was over means the chat exists — it
+   * started without this tab. Its prompt lives in that chat; putting it back
+   * here as well would invite sending it twice.
+   */
+  it("a cancel that arrived too late (nothing to stop) does not put the prompt back, and says why", async () => {
+    stopAnswer = () => Promise.resolve(jsonResponse({ stopped: false }));
+    renderCompose();
+    await typeAndSend();
+    await waitFor(() => expect(indicator()).toBeTruthy());
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    });
+
+    await screen.findByText(/the chat may have started anyway/);
+    await waitFor(() => expect(textarea().disabled).toBe(false));
+    expect(textarea().value).toBe("");
+    expect(getComposerDraft(NEW_CHAT_DRAFT_KEY)).toBe("");
+  });
+
+  it("a cancel that stopped the chat's run instead of its creation does not put the prompt back", async () => {
+    // `stopped: true` without `phase`: the chat had started, and its run was stopped.
+    stopAnswer = () => Promise.resolve(jsonResponse({ stopped: true }));
+    renderCompose();
+    await typeAndSend();
+    await waitFor(() => expect(indicator()).toBeTruthy());
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    });
+
+    await screen.findByText(/had already started/);
+    await waitFor(() => expect(textarea().disabled).toBe(false));
+    expect(textarea().value).toBe("");
   });
 
   it("a creation that timed out shows the daemon's error and keeps the prompt", async () => {

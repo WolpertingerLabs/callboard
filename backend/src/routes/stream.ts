@@ -16,7 +16,7 @@ import { anyUploadExists, attachmentNamesOf, loadImageBuffers } from "../service
 import { titleSourceFor } from "../services/file-attachments.js";
 import { statSync, existsSync, readdirSync, watchFile, unwatchFile, openSync, readSync, closeSync } from "fs";
 import { join } from "path";
-import { discardCreatedWorktree, fallbackBranchName, getGitInfo, isAbortError, resolveBranch, uniqueBranchName } from "../utils/git.js";
+import { discardCreatedWorktree, fallbackBranchName, getGitInfo, isAbortError, resolveBranch, uniqueBranchName, type ResolveBranchResult } from "../utils/git.js";
 import { chatFileService } from "../services/chat-file-service.js";
 import { findSessionLogPath } from "../utils/session-log.js";
 import { isConversationEntry } from "../agents/adapters/claude-code/sessionParser.js";
@@ -184,18 +184,21 @@ streamRouter.post("/new/message", async (req, res) => {
   // Resolve effective folder based on branch configuration
   let effectiveFolder = folder;
   let workspaceId: string | undefined;
-  if (branchConfig) {
-    // Until `sendMessage` registers a session, the tracking id has nothing to
-    // stop — and this block can spend a minute in a worktree checkout. So it
-    // registers itself: a `/stop` for the id cancels the checkout, kills git
-    // and removes what it had made. Nothing has been written for the chat yet
-    // (its record is made inside `sendMessage`), so a cancel here leaves no
-    // trace of the attempt.
-    const creation = beginPendingCreation(safeClientTrackingId);
-    const cancelled = () => {
-      log.info("POST /new/message — chat creation cancelled during branch resolution; nothing created");
-      return res.status(409).json({ error: "Creating the chat was cancelled.", code: "cancelled" });
-    };
+  // Until `sendMessage` registers a session, the tracking id has nothing to
+  // stop — and the branch block below can spend a minute in a worktree
+  // checkout. So the creation registers itself: a `/stop` for the id cancels
+  // it, kills git and removes what it had made. It stays registered right up
+  // to `sendMessage`, which is checked against it one last time: nothing has
+  // been written for the chat before that (its record is made inside
+  // `sendMessage`), so a cancel at any point up to there leaves no trace.
+  const creation = branchConfig ? beginPendingCreation(safeClientTrackingId) : undefined;
+  /** The resolution whose worktree this request made, kept so a late cancel can undo it. */
+  let resolvedBranch: Extract<ResolveBranchResult, { ok: true }> | undefined;
+  const cancelled = () => {
+    log.info("POST /new/message — chat creation cancelled before the chat started; nothing created");
+    return res.status(409).json({ error: "Creating the chat was cancelled.", code: "cancelled" });
+  };
+  if (branchConfig && creation) {
 
     let { newBranch } = branchConfig;
     const { baseBranch, useWorktree, autoCreateBranch } = branchConfig;
@@ -267,17 +270,6 @@ streamRouter.post("/new/message", async (req, res) => {
         signal: creation.signal,
       });
 
-      // Cancelled in the instant between the checkout finishing and here. The
-      // worktree is complete, but the chat it was for will never exist, so it
-      // is undone like a cancelled one — only what this call created.
-      if (creation.signal.aborted) {
-        if (branchResult.ok && branchResult.worktree?.created) {
-          const made = branchResult.worktree;
-          await discardCreatedWorktree(made.repoPath, branchResult.folder, made.mode === "branch-off" ? made.branch : undefined);
-        }
-        return cancelled();
-      }
-
       if (!branchResult.ok) {
         log.warn(`Blocked branch resolution: ${branchResult.message}`);
         // `uncommitted_changes` is the one refusal the client can do something
@@ -292,10 +284,7 @@ streamRouter.post("/new/message", async (req, res) => {
       }
 
       effectiveFolder = branchResult.folder;
-      // Record why the worktree exists while we still know. Nothing reads this
-      // yet (see plans/workspace-object.md, Phase 1) and it never throws, so a
-      // failure here leaves the chat exactly as it was before.
-      workspaceId = captureWorktreeWorkspace(branchResult);
+      resolvedBranch = branchResult;
     } catch (err: any) {
       // Cancelled: `resolveBranch` has already killed git and removed the
       // half-made worktree.
@@ -308,8 +297,9 @@ streamRouter.post("/new/message", async (req, res) => {
       // on screen; git's own message at least says what went wrong.
       return res.status(500).json({ error: `Could not prepare the branch or worktree: ${err.message}` });
     } finally {
-      // Past cancelling either way: from here the tracking id addresses the session.
-      creation.end();
+      // Refused, failed or cancelled: this request is answered and no chat
+      // follows. A resolution that succeeded stays cancellable until `sendMessage`.
+      if (!resolvedBranch) creation.end();
     }
   }
 
@@ -363,6 +353,23 @@ streamRouter.post("/new/message", async (req, res) => {
     void cardId;
     void createCard;
     void cardCategory;
+
+    // The last moment a cancel can still mean "no chat": a worktree this
+    // request made is undone like a cancelled checkout — only what it created.
+    if (creation?.signal.aborted) {
+      const made = resolvedBranch?.worktree;
+      if (resolvedBranch && made?.created) {
+        await discardCreatedWorktree(made.repoPath, resolvedBranch.folder, made.mode === "branch-off" ? made.branch : undefined);
+      }
+      return cancelled();
+    }
+    // Past cancelling: from here the tracking id addresses the session.
+    creation?.end();
+    // Record why the worktree exists while we still know. Nothing reads this
+    // yet (see plans/workspace-object.md, Phase 1) and it never throws, so a
+    // failure here leaves the chat exactly as it was before. Written only once
+    // the chat is going ahead, so a cancelled one leaves no record of it.
+    if (resolvedBranch) workspaceId = captureWorktreeWorkspace(resolvedBranch);
 
     const emitter = await sendMessage({
       chatView,
@@ -422,6 +429,10 @@ streamRouter.post("/new/message", async (req, res) => {
   } catch (err: any) {
     log.error(`POST /new/message failed: ${err.message}`);
     res.status(500).json({ error: err.message });
+  } finally {
+    // Every way out — a refusal, an error, the chat starting — ends the
+    // creation, so a late stop finds nothing rather than a stale entry.
+    creation?.end();
   }
 });
 
@@ -959,9 +970,11 @@ streamRouter.post("/:id/stop", (req, res) => {
   }
   // A chat still preparing its branch or worktree has no session yet; the
   // creation itself is what there is to stop.
+  // `phase` says which it was, and only a creation guarantees no chat exists —
+  // which is what lets the new-chat screen put the prompt back.
   if (cancelPendingCreation(chatId)) {
     log.info(`Chat creation ${chatId} cancelled by user`);
-    return res.json({ stopped: true });
+    return res.json({ stopped: true, phase: "creation" });
   }
   const stopped = stopSession(chatId);
   // Worth an info line: this is a deliberate user cancellation, and the run's

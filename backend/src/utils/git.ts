@@ -5,6 +5,7 @@ import { readdir, rm, stat } from "fs/promises";
 import { join, dirname, basename, resolve, extname, relative } from "path";
 import { promisify } from "util";
 import { worktreeDirName, WORKTREE_CREATE_TIMEOUT_MS } from "shared/types/index.js";
+import { DETACHED_SPAWN_OPTIONS, killProcessTree } from "./tree-kill.js";
 import type { DiffFileEntry, DiffFileType, WorkspaceCleanliness } from "shared/types/index.js";
 
 const execFileAsync = promisify(execFile);
@@ -49,6 +50,9 @@ async function gitAsync(directory: string, args: string[], opts: { timeout?: num
 /** How long a killed git gets to exit on SIGTERM before it is sent SIGKILL. */
 const GIT_KILL_GRACE_MS = 2000;
 
+/** Budget for undoing a worktree — a `remove` of a half checkout, nowhere near a full one. */
+const WORKTREE_DISCARD_TIMEOUT_MS = 10_000;
+
 /** The error a cancelled {@link gitCancellable} rejects with — the same shape `fetch` and `execFile` use. */
 function abortError(): Error {
   const err = new Error("The operation was aborted");
@@ -62,40 +66,42 @@ export function isAbortError(err: unknown): boolean {
 }
 
 /**
+ * True only when {@link gitCancellable} itself killed git (abort or timeout).
+ * Then git never got to clean up after itself, and whatever it left is ours to
+ * remove. A plain non-zero exit is git's own failure: git has already undone
+ * its half of the work, and the path or branch it complained about may belong
+ * to someone else.
+ */
+function killedByUs(err: unknown): boolean {
+  return (err as { killedByCaller?: unknown } | null)?.killedByCaller === true;
+}
+
+/**
  * `gitAsync` for a command long enough to be worth cancelling — the worktree
  * checkout. Rejects with an `AbortError` when `signal` fires and with a
  * readable timeout error at `timeout`; either way the git process is dead
  * before the promise settles, so a caller cleaning up after it is not racing
  * a checkout still writing into the directory it is removing.
  *
- * Its own process group, and the whole group is killed. `git worktree add`
- * does its slow work in children — LFS and other smudge filters, the
+ * The whole process tree is killed ({@link killProcessTree}). `git worktree
+ * add` does its slow work in children — LFS and other smudge filters, the
  * post-checkout hook — and signalling git alone leaves those running.
  */
 function gitCancellable(directory: string, args: string[], opts: { timeout: number; signal?: AbortSignal }): Promise<string> {
   const { timeout, signal } = opts;
   if (signal?.aborted) return Promise.reject(abortError());
   return new Promise((resolvePromise, reject) => {
-    const child = spawn("git", args, { cwd: directory, stdio: ["ignore", "pipe", "pipe"], detached: true });
+    const child = spawn("git", args, { cwd: directory, stdio: ["ignore", "pipe", "pipe"], windowsHide: true, ...DETACHED_SPAWN_OPTIONS });
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8").on("data", (chunk: string) => (stdout += chunk));
     child.stderr.setEncoding("utf8").on("data", (chunk: string) => (stderr += chunk));
 
     let stopped: "aborted" | "timeout" | null = null;
-    let graceTimer: ReturnType<typeof setTimeout> | undefined;
-    const killGroup = (sig: NodeJS.Signals) => {
-      try {
-        if (child.pid !== undefined) process.kill(-child.pid, sig);
-      } catch {
-        // Already gone.
-      }
-    };
     const stop = (why: "aborted" | "timeout") => {
       if (stopped) return;
       stopped = why;
-      killGroup("SIGTERM");
-      graceTimer = setTimeout(() => killGroup("SIGKILL"), GIT_KILL_GRACE_MS);
+      void killProcessTree(child, GIT_KILL_GRACE_MS);
     };
     const onAbort = () => stop("aborted");
     const timer = setTimeout(() => stop("timeout"), timeout);
@@ -103,7 +109,6 @@ function gitCancellable(directory: string, args: string[], opts: { timeout: numb
 
     const settle = () => {
       clearTimeout(timer);
-      clearTimeout(graceTimer);
       signal?.removeEventListener("abort", onAbort);
     };
     child.on("error", (err) => {
@@ -112,9 +117,10 @@ function gitCancellable(directory: string, args: string[], opts: { timeout: numb
     });
     child.on("close", (code) => {
       settle();
-      if (stopped === "aborted") return reject(abortError());
+      if (stopped === "aborted") return reject(Object.assign(abortError(), { killedByCaller: true }));
       if (stopped === "timeout") {
-        return reject(Object.assign(new Error(`git ${args.slice(0, 2).join(" ")} timed out after ${Math.round(timeout / 1000)}s`), { stdout, stderr, killed: true }));
+        const seconds = Math.round(timeout / 1000);
+        return reject(Object.assign(new Error(`git ${args.slice(0, 2).join(" ")} timed out after ${seconds}s`), { stdout, stderr, killed: true, killedByCaller: true }));
       }
       if (code === 0) return resolvePromise(stdout);
       const message = stderr.trim() || `git ${args.join(" ")} exited with code ${code}`;
@@ -1084,6 +1090,58 @@ export async function ensureWorktreeDetailed(
 
   const worktreePath = worktreePathForBranch(repoDir, branch);
 
+  // One attempt per directory at a time. The look-before-you-leap below was
+  // atomic while the add was synchronous; now that the checkout yields, a
+  // second request for the same branch would otherwise either reuse a
+  // directory that is still half checked out, or fail on "already exists" and
+  // tear down the first request's worktree under it. Waiting it out sends the
+  // second through the reuse rungs once the first is done — or, if the first
+  // was cancelled or failed, lets it try again from a clean slate.
+  for (let inFlight = worktreesInFlight.get(worktreePath); inFlight; inFlight = worktreesInFlight.get(worktreePath)) {
+    await settledOrAborted(inFlight, opts.signal);
+  }
+  // No await between the wait ending and the registration: the attempt runs
+  // synchronously up to its checkout, and is in the map before anything else
+  // can run.
+  const attempt = ensureWorktreeAt(repoDir, worktreePath, branch, createBranch, baseBranch, opts.signal);
+  worktreesInFlight.set(worktreePath, attempt);
+  try {
+    return await attempt;
+  } finally {
+    if (worktreesInFlight.get(worktreePath) === attempt) worktreesInFlight.delete(worktreePath);
+  }
+}
+
+/** Worktree creations under way in this process, by the directory each will occupy. */
+const worktreesInFlight = new Map<string, Promise<EnsuredWorktree>>();
+
+/** Resolve once `pending` settles either way; reject with an `AbortError` if `signal` fires first. */
+function settledOrAborted(pending: Promise<unknown>, signal?: AbortSignal): Promise<void> {
+  const settled = pending.then(
+    () => {},
+    () => {},
+  );
+  if (!signal) return settled;
+  if (signal.aborted) return Promise.reject(abortError());
+  return new Promise((resolvePromise, reject) => {
+    const onAbort = () => reject(abortError());
+    signal.addEventListener("abort", onAbort, { once: true });
+    void settled.then(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolvePromise();
+    });
+  });
+}
+
+/** {@link ensureWorktreeDetailed}'s body, run with no other attempt on `worktreePath` in flight. */
+async function ensureWorktreeAt(
+  repoDir: string,
+  worktreePath: string,
+  branch: string,
+  createBranch: boolean,
+  baseBranch: string | undefined,
+  signal: AbortSignal | undefined,
+): Promise<EnsuredWorktree> {
   // If worktree directory already exists, reuse it
   if (existsSync(worktreePath)) {
     // The derived path is a sibling named after the branch, so it being a main
@@ -1122,14 +1180,18 @@ export async function ensureWorktreeDetailed(
     : // Use an existing branch
       ["worktree", "add", worktreePath, branch];
   try {
-    await gitCancellable(repoDir, args, { timeout: WORKTREE_CREATE_TIMEOUT_MS, signal: opts.signal });
+    await gitCancellable(repoDir, args, { timeout: WORKTREE_CREATE_TIMEOUT_MS, signal });
   } catch (err) {
-    // A killed checkout leaves a half-populated directory registered as a
+    // A checkout we killed leaves a half-populated directory registered as a
     // *locked* worktree ("initializing"), which `git worktree prune` will not
     // touch — and with `-b`, a branch nobody asked to keep. Both are this
     // call's: the directory did not exist and the branch was absent when it
     // started, so removing them takes nothing that was there before.
-    await discardCreatedWorktree(repoDir, worktreePath, branchCreated ? branch : undefined);
+    //
+    // Only then. A git that exited on its own has cleaned up after itself, and
+    // what it refused — a directory that appeared, a branch someone else just
+    // made — is exactly what is not ours to remove.
+    if (killedByUs(err)) await discardCreatedWorktree(repoDir, worktreePath, branchCreated ? branch : undefined);
     throw err;
   }
 
@@ -1152,7 +1214,7 @@ export async function discardCreatedWorktree(repoDir: string, worktreePath: stri
   try {
     // Twice-forced: once for uncommitted (half-checked-out) files, once for the
     // "initializing" lock a killed `worktree add` leaves behind.
-    await gitAsync(repoDir, ["worktree", "remove", "--force", "--force", worktreePath], { timeout: WORKTREE_CREATE_TIMEOUT_MS });
+    await gitAsync(repoDir, ["worktree", "remove", "--force", "--force", worktreePath], { timeout: WORKTREE_DISCARD_TIMEOUT_MS });
   } catch {
     // Not registered (git failed before writing its admin dir), or remove
     // itself refused. Take the directory and the registration apart by hand.
