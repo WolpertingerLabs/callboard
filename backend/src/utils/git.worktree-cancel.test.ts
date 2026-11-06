@@ -125,7 +125,7 @@ describe("worktree creation timeout", () => {
     expect(getGitWorktrees(dir)).toHaveLength(1);
     expect(localBranches(dir)).toEqual(["main"]);
     expect(filterPids(pidFile).filter(alive)).toEqual([]);
-  });
+  }, 15_000); // above vitest's 5s default, so the 6s bound is what fails a slow timeout
 
   it("a checkout inside the budget completes — longer than it takes is not a failure", async () => {
     // ~0.2s, a tenth of the 2s budget — room for a CI machine several times

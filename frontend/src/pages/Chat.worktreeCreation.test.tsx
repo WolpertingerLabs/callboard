@@ -184,6 +184,27 @@ describe("creating a new chat's worktree", () => {
     expect(screen.getByTestId("branch-box")).toBeTruthy();
   });
 
+  it("a confirmed cancel never overwrites text the composer gained while the stop was in flight", async () => {
+    let confirm: (res: Response) => void = () => {};
+    stopAnswer = () => new Promise<Response>((resolve) => (confirm = resolve));
+    renderCompose();
+    await typeAndSend();
+    await waitFor(() => expect(indicator()).toBeTruthy());
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    });
+    // Meanwhile another tab — they share the "new" slot — writes to it.
+    saveComposerDraft(NEW_CHAT_DRAFT_KEY, "written meanwhile");
+    await act(async () => {
+      confirm(jsonResponse({ stopped: true, phase: "creation" }));
+    });
+
+    await waitFor(() => expect(textarea().disabled).toBe(false));
+    expect(textarea().value).toBe("written meanwhile");
+    expect(getComposerDraft(NEW_CHAT_DRAFT_KEY)).toBe("written meanwhile");
+  });
+
   /**
    * A stop that landed after the creation was over means the chat exists — it
    * started without this tab. Its prompt lives in that chat; putting it back

@@ -112,6 +112,7 @@ import {
   getDefaultPermissions as getLocalDefaultPermissions,
   NEW_CHAT_DRAFT_KEY,
   saveComposerDraft,
+  getComposerDraft,
   type AgentProviderKind,
   type EffortLevel,
 } from "../utils/localStorage";
@@ -2743,7 +2744,13 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           // settles streaming and the bubble.
           const { confirmed } = cancelledSendRef.current;
           cancelledSendRef.current = null;
-          if ((await confirmed) && !notFromComposer) restoreNewChatComposer(prompt, images);
+          // The wait for the stop is a round trip, so check again after it: put
+          // back only into the screen this send came from (no navigation, no
+          // newer send has taken `abortRef`), and only into an empty composer —
+          // never over text written meanwhile, by another tab sharing the "new"
+          // slot or anything else.
+          const restorable = (await confirmed) && !notFromComposer && abortRef.current === controller && getComposerDraft(NEW_CHAT_DRAFT_KEY) === "";
+          if (restorable) restoreNewChatComposer(prompt, images);
         }
       } finally {
         // Only stop streaming if this is still the current request
