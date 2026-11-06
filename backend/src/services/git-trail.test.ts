@@ -15,7 +15,7 @@ const tmp = realpathSync(mkdtempSync(join(tmpdir(), "callboard-git-trail-")));
 
 const { chatFileService } = await import("./chat-file-service.js");
 const { sessionRegistry } = await import("./session-registry.js");
-const { initGitTrailRecorder, mergeSighting, noteChatSession, parseGitTrail, recordGitTrail, sightFolder } = await import("./git-trail.js");
+const { initGitTrailRecorder, mergeSighting, mergeTrails, noteChatSession, parseGitTrail, recordGitTrail, sightFolder } = await import("./git-trail.js");
 
 afterAll(() => {
   rmSync(tmp, { recursive: true, force: true });
@@ -105,6 +105,33 @@ describe("mergeSighting", () => {
   it("has no cap", () => {
     const many = Array.from({ length: 500 }, (_, i) => ({ ...entry, branch: `b${i}` }));
     expect(mergeSighting(many, { ...base, branch: "new" }, "t1")).toHaveLength(501);
+  });
+});
+
+describe("mergeTrails", () => {
+  const e = (branch: string, firstSeen: string, lastSeen: string, extra: Record<string, string> = {}) => ({
+    cwd: "/r",
+    repoPath: "/r",
+    branch,
+    firstSeen,
+    lastSeen,
+    ...extra,
+  });
+
+  it("unions by (cwd, branch): earliest firstSeen, and lastSeen/head/repoPath from the latest sighting", () => {
+    const a = [e("a", "t1", "t2", { head: "a1" }), e("b", "t1", "t3", { head: "b-old", repoPath: "/old" })];
+    const b = [e("b", "t2", "t5", { head: "b-new" }), e("c", "t4", "t4")];
+    expect(mergeTrails(a, b)).toEqual([e("a", "t1", "t2", { head: "a1" }), e("b", "t1", "t5", { head: "b-new" }), e("c", "t4", "t4")]);
+  });
+
+  it("keeps the earlier side's head and repoPath when it is the more recent sighting", () => {
+    expect(mergeTrails([e("b", "t3", "t9", { head: "keep", repoPath: "/keep" })], [e("b", "t1", "t2", { head: "older" })])).toEqual([
+      e("b", "t1", "t9", { head: "keep", repoPath: "/keep" }),
+    ]);
+  });
+
+  it("does not invent a head when the latest sighting had none", () => {
+    expect(mergeTrails([e("b", "t1", "t2", { head: "h" })], [e("b", "t1", "t3")])).toEqual([e("b", "t1", "t3")]);
   });
 });
 

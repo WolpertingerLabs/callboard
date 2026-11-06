@@ -82,6 +82,32 @@ export function mergeSighting(trail: GitTrailEntry[], sighting: GitTrailSighting
 }
 
 /**
+ * Two trails as one: an entry per (cwd, branch) found in either, with the
+ * earliest `firstSeen` and — from whichever sighting is more recent —
+ * `lastSeen`, `head` and `repoPath`. `a`'s order first, then what only `b`
+ * has. For a supersede whose successor has already recorded its own turn.
+ */
+export function mergeTrails(a: GitTrailEntry[], b: GitTrailEntry[]): GitTrailEntry[] {
+  const out = [...a];
+  for (const entry of b) {
+    const index = out.findIndex((e) => e.cwd === entry.cwd && e.branch === entry.branch);
+    if (index === -1) {
+      out.push(entry);
+      continue;
+    }
+    const known = out[index];
+    const latest = entry.lastSeen >= known.lastSeen ? entry : known;
+    const { head: _head, ...rest } = latest;
+    out[index] = {
+      ...rest,
+      ...(latest.head !== undefined && { head: latest.head }),
+      firstSeen: entry.firstSeen < known.firstSeen ? entry.firstSeen : known.firstSeen,
+    };
+  }
+  return out;
+}
+
+/**
  * Registry id → the session id its record is filed under. An existing chat
  * registers under its chat id, which is not always its filename; `getChat` on
  * such an id falls back to scanning every record. `sendMessage` notes the
