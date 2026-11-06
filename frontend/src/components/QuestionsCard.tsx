@@ -1,8 +1,9 @@
-import { memo, useMemo, type CSSProperties } from "react";
+import { memo, useMemo } from "react";
 import { Check, Circle, MessageCircleQuestion, Square } from "lucide-react";
 import type { ParsedMessage } from "../api";
 import { MessageMetadata } from "./MessageBubble";
 import { parseQuestionsOutcome, type AskedQuestion, type QuestionAnswer, type QuestionsOutcome } from "./askUserQuestions";
+import { visuallyHidden } from "../utils/visuallyHidden";
 
 interface Props {
   questions: AskedQuestion[];
@@ -10,19 +11,6 @@ interface Props {
   toolResult: ParsedMessage | null;
   isRunning: boolean;
 }
-
-/** Read by screen readers, invisible on screen. */
-const visuallyHidden: CSSProperties = {
-  position: "absolute",
-  width: 1,
-  height: 1,
-  padding: 0,
-  margin: -1,
-  overflow: "hidden",
-  clip: "rect(0 0 0 0)",
-  whiteSpace: "nowrap",
-  border: 0,
-};
 
 /**
  * An `AskUserQuestion` call as it reads in the transcript: what was asked,

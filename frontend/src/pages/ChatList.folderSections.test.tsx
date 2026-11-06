@@ -61,9 +61,9 @@ function listResponse(chats: Chat[]): ChatListResponse {
 
 const headers = () =>
   screen
-    .queryAllByRole("button")
-    .map((el) => el.textContent ?? "")
-    .filter((text) => /\(\d+\)$/.test(text));
+    .queryAllByTestId("section-header")
+    // Without the running indicator, so a header reads "Label (n)" whether or not a chat in it is running.
+    .map((el) => (el.textContent ?? "").replace(el.querySelector('[data-testid="section-running"]')?.textContent ?? "", ""));
 
 function openRowMenu(text: string) {
   const row = screen.getByText(text).closest('div[style*="border-bottom"]')!;

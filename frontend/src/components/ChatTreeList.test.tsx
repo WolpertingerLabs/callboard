@@ -909,9 +909,10 @@ describe("pinning a row", () => {
 
   const headers = () =>
     screen
-      .queryAllByRole("button")
-      .map((el) => el.textContent ?? "")
-      .filter((text) => /^(Pinned|Recent) \(\d+\)$/.test(text));
+      .queryAllByTestId("section-header")
+      // Without the running indicator, so a header reads "Label (n)" whether or not a chat in it is running.
+      .map((el) => (el.textContent ?? "").replace(el.querySelector('[data-testid="section-running"]')?.textContent ?? "", ""))
+      .filter((text) => /^(Pinned|Recent) /.test(text));
 
   it("offers Pin on a GROUP row, not just a lone one", () => {
     // The regression case. GROUP_CHATS is parent + child, so this row goes
@@ -1023,11 +1024,11 @@ describe("pinning a row", () => {
 describe("sidebar folders", () => {
   const sectionHeaders = () =>
     screen
-      .queryAllByRole("button")
-      .map((el) => el.textContent ?? "")
-      .filter((text) => /\(\d+\)$/.test(text));
+      .queryAllByTestId("section-header")
+      // Without the running indicator, so a header reads "Label (n)" whether or not a chat in it is running.
+      .map((el) => (el.textContent ?? "").replace(el.querySelector('[data-testid="section-running"]')?.textContent ?? "", ""));
 
-  function renderFolders(chats: Chat[], onMoveToFolder = vi.fn()) {
+  function renderFolders(chats: Chat[], onMoveToFolder = vi.fn(), sessionStatusFor: (chatId: string) => { active: boolean; type: string } | undefined = () => undefined) {
     render(
       <MemoryRouter>
         <ChatTreeList
@@ -1038,7 +1039,7 @@ describe("sidebar folders", () => {
           onToggleBookmark={() => {}}
           onTogglePin={() => {}}
           cardMenuFor={() => ({})}
-          sessionStatusFor={() => undefined}
+          sessionStatusFor={sessionStatusFor}
           onMoveToFolder={onMoveToFolder}
         />
       </MemoryRouter>,
@@ -1097,6 +1098,29 @@ describe("sidebar folders", () => {
       makeChat("recent-root"),
     ]);
     expect(sectionHeaders()).toEqual(["Pinned (1)", "Work (2)", "Recent (1)"]);
+  });
+
+  it("counts running CHATS across every group member in the header, and shows nothing at zero", () => {
+    const running = new Set(["work-root", "work-kid-1", "work-kid-2", "work-lone"]);
+    renderFolders(
+      [
+        makeChat("work-kid-1", { parentChatId: "work-root", rootChatId: "work-root" }),
+        makeChat("work-kid-2", { parentChatId: "work-kid-1", rootChatId: "work-root" }),
+        makeChat("work-root", { sidebarFolder: "Work" }),
+        makeChat("work-lone", { sidebarFolder: "Work" }),
+        makeChat("idle", { sidebarFolder: "Idle" }),
+        makeChat("recent"),
+      ],
+      vi.fn(),
+      (id) => (running.has(id) ? { active: true, type: "web" } : { active: false, type: "web" }),
+    );
+    // Two rows, four running chats: three in the tree, one alone.
+    expect(screen.getByRole("button", { name: "Work (2) 4 running" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Idle (1)" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Recent (1)" })).toBeTruthy();
+    expect(screen.getAllByTestId("section-running")).toHaveLength(1);
+    // The header helper still finds a running header, as "Label (n)".
+    expect(sectionHeaders()).toEqual(["Idle (1)", "Work (2)", "Recent (1)"]);
   });
 
   it("renders no headers when nothing is pinned or filed", () => {

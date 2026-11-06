@@ -69,9 +69,10 @@ const includePinnedOf = (calls: Parameters<typeof listChats>[]) => calls.map((ar
 /** Section headers as the sidebar renders them, in order. */
 const headers = () =>
   screen
-    .queryAllByRole("button")
-    .map((el) => el.textContent ?? "")
-    .filter((text) => /^(Pinned|Recent) \(\d+\)$/.test(text));
+    .queryAllByTestId("section-header")
+    // Without the running indicator, so a header reads "Label (n)" whether or not a chat in it is running.
+    .map((el) => (el.textContent ?? "").replace(el.querySelector('[data-testid="section-running"]')?.textContent ?? "", ""))
+    .filter((text) => /^(Pinned|Recent) /.test(text));
 
 async function renderList(waitForText = "loose chat") {
   const view = render(

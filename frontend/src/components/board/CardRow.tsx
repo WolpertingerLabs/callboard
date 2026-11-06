@@ -3,6 +3,7 @@ import SpaceChip from "../SpaceChip";
 import type { SpaceListItem } from "shared/types/space.js";
 import type { CardSummary } from "../../api";
 import { formatRelativeTime } from "../../utils/dateFormat";
+import { visuallyHidden } from "../../utils/visuallyHidden";
 import { cardFolderSummary, FOLDER_LIVE_COLORS, ROLLUP_COLORS, statusLine, useCardActivation, useCardCountdown } from "./cardFace";
 import CardFolderLine from "./CardFolderLine";
 import CardPathLabel from "./CardPathLabel";
@@ -103,27 +104,6 @@ const TIME_WIDTH = 44;
 
 /** One text cell: nothing in a row may push the columns apart. */
 const ellipsis: React.CSSProperties = { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
-
-/**
- * Off screen but in the accessibility tree — not `display: none`, which takes
- * it out of both.
- *
- * `clip` for the browsers that want the deprecated one and `clipPath` for the
- * rest; a 1px box rather than a zero one, because a zero-sized element is
- * skipped by some screen readers outright.
- */
-const VISUALLY_HIDDEN: React.CSSProperties = {
-  position: "absolute",
-  width: 1,
-  height: 1,
-  padding: 0,
-  margin: -1,
-  overflow: "hidden",
-  clip: "rect(0 0 0 0)",
-  clipPath: "inset(50%)",
-  whiteSpace: "nowrap",
-  border: 0,
-};
 
 /**
  * Spread onto a control inside the row that owns its own click, so the row's
@@ -343,7 +323,7 @@ export default function CardRow({
           // changed it. This participates in name-from-content, so the row is
           // named "… 3 folders, collapsed …" without any part of it claiming
           // to be the expander.
-          <span style={VISUALLY_HIDDEN}>{`${folders.length} folders, ${expanded ? "expanded" : "collapsed"}`}</span>
+          <span style={visuallyHidden}>{`${folders.length} folders, ${expanded ? "expanded" : "collapsed"}`}</span>
         )}
         {expandable && (
           <span

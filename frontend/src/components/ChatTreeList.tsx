@@ -879,6 +879,17 @@ export default function ChatTreeList({
   /** Collapse state for those headers, persisted via localStorage. */
   const sectionExpansion = useChatSectionExpansion();
 
+  /**
+   * Running CHATS in a section, every LOADED member of every group — not rows,
+   * as `section.count` is. Loaded, the same qualifier as `Row.pinnedMembers`
+   * and `groupSessionStatus`: a member not in the `chats` prop has no row
+   * and is not counted. A group row's badge says only "active somewhere in
+   * here" (`groupSessionStatus` below); the header is where a tree with three
+   * agents working reads as three.
+   */
+  const runningIn = (section: ChatSection<Row>) =>
+    section.items.reduce((n, row) => n + row.members.filter((member) => sessionStatusFor(member.id)?.active).length, 0);
+
   const renderRow = ({ chat, rootKey, isGroup, members, activity, pinnedMembers, canFile, sidebarFolder }: Row) => {
     /**
      * Pin the chat this row is labelled with; unpin every member holding a pin.
@@ -1032,6 +1043,7 @@ export default function ChatTreeList({
               expanded={sectionExpansion.isExpanded(section.key)}
               onToggle={() => sectionExpansion.toggle(section.key)}
               isFolder={section.key.startsWith("folder:")}
+              runningCount={runningIn(section)}
             />
             {sectionExpansion.isExpanded(section.key) && section.items.map(renderRow)}
           </Fragment>
