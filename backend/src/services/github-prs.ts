@@ -1,10 +1,11 @@
 /**
  * Pull requests per branch, for the Board's Branches view.
  *
- * One `gh api` REST call per repository lists its most recently updated PRs;
- * the answer is cached per repo for {@link PR_CACHE_TTL_MS} and matched against
- * local branches on every request (the match needs the branch tips, which move
- * more often than the PR list is refetched).
+ * Two `gh api` REST calls per repository — every open PR, and the most
+ * recently updated closed ones — make one cache entry, kept per repo for
+ * {@link PR_CACHE_TTL_MS} and matched against local branches on every request
+ * (the match needs the branch tips, which move more often than the PR list is
+ * refetched). An expired entry is served while it refreshes in the background.
  *
  * REST, not `gh pr list`: gh's GraphQL-backed commands fail on some repos, and
  * the REST listing carries everything the match needs (head owner, head sha,
@@ -24,6 +25,8 @@ const log = createLogger("github-prs");
 export const PR_CACHE_TTL_MS = 90_000;
 /** The youngest entry a forced refresh will refetch. */
 export const PR_FORCE_MIN_AGE_MS = 10_000;
+/** How long a forced refresh waits for `gh` before serving the stale entry. */
+export const PR_FORCE_WAIT_MS = 5_000;
 /** Spawning more processes than this at once measurably stalls the daemon's event loop. */
 export const PR_FETCH_CONCURRENCY = 2;
 const GH_TIMEOUT_MS = 15_000;
@@ -40,12 +43,21 @@ export interface GitHubRepoRef {
  * the scp-like ssh form `git@github.com:o/r.git`, and `ssh://` / `git://` URLs.
  */
 export function parseGitHubRemote(url: string): GitHubRepoRef | null {
+  // Deliberately unsupported, and answered as "not GitHub": ssh host aliases
+  // (`git@github-work:o/r` — the real host lives in ~/.ssh/config), the
+  // ssh-over-443 host (`ssh://git@ssh.github.com:443/o/r`), and forks whose PRs
+  // are opened against an `upstream` remote — only `origin` is ever read.
   const trimmed = url.trim();
-  const scp = /^[\w.-]+@github\.com:([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/i.exec(trimmed);
-  if (scp) return { owner: scp[1], repo: scp[2] };
-  const full = /^(?:https?|ssh|git):\/\/(?:[^@/\s]+@)?github\.com(?::\d+)?\/([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/i.exec(trimmed);
-  if (full) return { owner: full[1], repo: full[2] };
-  return null;
+  const match =
+    /^[\w.-]+@github\.com:([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/i.exec(trimmed) ??
+    /^(?:https?|ssh|git):\/\/(?:[^@/\s]+@)?github\.com(?::\d+)?\/([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/i.exec(trimmed);
+  if (!match) return null;
+  const [, owner, repo] = match;
+  // Both are spliced into a `gh api` path, so anything GitHub would not accept
+  // as a name — `?`, `#`, `&`, `..` — is refused here rather than escaped.
+  if (!/^[A-Za-z0-9-]{1,39}$/.test(owner)) return null;
+  if (!/^[A-Za-z0-9._-]+$/.test(repo) || repo === "." || repo === "..") return null;
+  return { owner, repo };
 }
 
 /** The subset of a REST pull object this module reads. */
@@ -143,36 +155,67 @@ export function runGh(args: string[], cwd: string): Promise<string> {
       const code = (err as NodeJS.ErrnoException).code;
       if (code === "ENOENT") return reject(new Error("gh is not installed"));
       if ((err as { killed?: boolean }).killed) return reject(new Error("gh timed out"));
-      const firstLine = String(stderr ?? "").trim().split("\n")[0] || err.message;
+      const firstLine =
+        String(stderr ?? "")
+          .trim()
+          .split("\n")[0] || err.message;
       reject(new Error(firstLine.slice(0, 200)));
     });
     child.stdin?.end();
   });
 }
 
-/** Fetch and index one repo's PRs. Never rejects. */
+/** Open PRs fetched per repo: every one, short of a repo with more than this many open. */
+const OPEN_PAGE = 100;
+/** Closed PRs fetched per repo — only the recent ones can still match a live worktree. */
+const CLOSED_PAGE = 50;
+
+/** One REST listing of a repo's pulls, narrowed. */
+async function listPulls(ref: GitHubRepoRef, repoPath: string, query: string): Promise<{ pulls: PullSummary[]; defaultBranch: string | null }> {
+  const raw = JSON.parse(await runGh(["api", `repos/${ref.owner}/${ref.repo}/pulls?${query}`], repoPath));
+  if (!Array.isArray(raw)) throw new Error("Unexpected response from GitHub");
+  const defaultBranch = raw.map((pr: any) => pr?.base?.repo?.default_branch).find((b: unknown): b is string => typeof b === "string") ?? null;
+  return { pulls: raw.map(toPullSummary).filter((pr): pr is PullSummary => pr !== null), defaultBranch };
+}
+
+/**
+ * Fetch and index one repo's PRs. Never rejects.
+ *
+ * Open and closed PRs are two listings, not one `state=all` page: sorted by
+ * update time, a page of everything lets a burst of recently closed PRs push
+ * an old open one off the end — and the open one is the PR a live worktree
+ * most needs. The two run one after the other, so a repo holds one
+ * {@link PR_FETCH_CONCURRENCY} slot for both.
+ */
 export async function fetchRepoPulls(repoPath: string): Promise<RepoPulls> {
   const remote = await getRemoteUrlAsync(repoPath);
   const ref = remote ? parseGitHubRemote(remote) : null;
   // Not on GitHub is not an error — there is simply nothing to look up.
   if (!ref) return EMPTY;
-  try {
-    const out = await runGh(["api", `repos/${ref.owner}/${ref.repo}/pulls?state=all&per_page=50&sort=updated&direction=desc`], repoPath);
-    const raw = JSON.parse(out);
-    if (!Array.isArray(raw)) return { byBranch: new Map(), error: "Unexpected response from GitHub" };
-    const defaultBranch = raw.map((pr: any) => pr?.base?.repo?.default_branch).find((b: unknown): b is string => typeof b === "string") ?? null;
-    const pulls = raw.map(toPullSummary).filter((pr): pr is PullSummary => pr !== null);
-    return { byBranch: indexPullsByBranch(pulls, ref.owner, defaultBranch) };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    log.debug(`PR lookup failed for ${repoPath}: ${message}`);
-    return { byBranch: new Map(), error: message };
+  const pulls: PullSummary[] = [];
+  let defaultBranch: string | null = null;
+  let error: string | undefined;
+  for (const query of [`state=open&per_page=${OPEN_PAGE}`, `state=closed&sort=updated&direction=desc&per_page=${CLOSED_PAGE}`]) {
+    try {
+      const listed = await listPulls(ref, repoPath, query);
+      pulls.push(...listed.pulls);
+      defaultBranch ??= listed.defaultBranch;
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err);
+      log.debug(`PR lookup failed for ${repoPath} (${query}): ${error}`);
+      // Whatever broke the first call (no gh, no auth, offline) breaks the second.
+      break;
+    }
   }
+  return { byBranch: indexPullsByBranch(pulls, ref.owner, defaultBranch), ...(error !== undefined && { error }) };
 }
 
 interface CacheEntry {
-  at: number;
-  pending: Promise<RepoPulls>;
+  /** When `value` was asked for. Absent until the first fetch lands. */
+  at?: number;
+  value?: RepoPulls;
+  /** The fetch in flight, shared by every caller that arrives while it runs. */
+  pending?: Promise<RepoPulls>;
 }
 
 const cache = new Map<string, CacheEntry>();
@@ -196,25 +239,59 @@ function limited<T>(task: () => Promise<T>): Promise<T> {
   });
 }
 
-/**
- * One repo's PRs, from cache when the entry is younger than the TTL.
- * Concurrent callers for one repo share a single in-flight fetch; failures are
- * cached for the same TTL so a missing `gh` is not re-spawned on every poll.
- *
- * `force` (an explicit refresh) refetches an entry older than
- * {@link PR_FORCE_MIN_AGE_MS} — enough to make the button mean something
- * without letting repeated clicks spend the GitHub rate limit.
- */
-export function getRepoPulls(repoPath: string, force = false, now = Date.now()): Promise<RepoPulls> {
-  const hit = cache.get(repoPath);
-  const maxAge = force ? PR_FORCE_MIN_AGE_MS : PR_CACHE_TTL_MS;
-  if (hit && now - hit.at < maxAge) return hit.pending;
-  const pending = limited(() => fetchRepoPulls(repoPath));
-  cache.set(repoPath, { at: now, pending });
+/** Start a fetch for `repoPath` unless one is already running; resolves to its result. */
+function refresh(repoPath: string, entry: CacheEntry, now: number): Promise<RepoPulls> {
+  if (entry.pending) return entry.pending;
+  const pending = limited(() => fetchRepoPulls(repoPath)).then((value) => {
+    entry.at = now;
+    entry.value = value;
+    entry.pending = undefined;
+    return value;
+  });
+  entry.pending = pending;
   return pending;
 }
 
-/** Drop every cached lookup — the refresh button's `force`, and tests. */
+/**
+ * One repo's PRs. Stale-while-revalidate: an entry younger than the TTL is
+ * served as is; an older one is served too, while a background fetch replaces
+ * it — so a poll never waits on `gh` once the repo has been seen. Only a repo
+ * with no entry at all waits (bounded by gh's own timeout). Concurrent callers
+ * share one in-flight fetch, and failures are cached like successes, so a
+ * missing `gh` is not re-spawned on every poll.
+ *
+ * `force` (the refresh button) waits for a fresh fetch of an entry older than
+ * {@link PR_FORCE_MIN_AGE_MS} — enough to make the button mean something
+ * without letting repeated clicks spend the GitHub rate limit — but for no
+ * longer than {@link PR_FORCE_WAIT_MS}: past that the stale entry is served
+ * and the fetch lands in the cache for the next poll, so a hung `gh` cannot
+ * hold the response.
+ */
+export async function getRepoPulls(repoPath: string, force = false, now = Date.now()): Promise<RepoPulls> {
+  let entry = cache.get(repoPath);
+  if (!entry) {
+    entry = {};
+    cache.set(repoPath, entry);
+  }
+  const stale = entry.value;
+  if (!stale) return refresh(repoPath, entry, now);
+  const age = now - (entry.at ?? 0);
+  if (force && age >= PR_FORCE_MIN_AGE_MS) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const capped = new Promise<RepoPulls>((resolvePromise) => {
+      timer = setTimeout(() => resolvePromise(stale), PR_FORCE_WAIT_MS);
+    });
+    try {
+      return await Promise.race([refresh(repoPath, entry, now), capped]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  if (age >= PR_CACHE_TTL_MS) void refresh(repoPath, entry, now);
+  return stale;
+}
+
+/** Drop every cached lookup. For tests; production never needs it. */
 export function clearRepoPullsCache(): void {
   cache.clear();
 }

@@ -1,9 +1,18 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { WorktreeInfo } from "../utils/git.js";
 import type { PullSummary, RepoPulls } from "./github-prs.js";
-import { buildGitOverview, type OverviewDeps } from "./git-overview.js";
+import { buildGitOverview, findGitRoot, NOT_A_REPO_TTL_MS, normalizeDir, type OverviewDeps } from "./git-overview.js";
 
-const wt = (path: string, branch: string | null, isMainWorktree = false, head?: string): WorktreeInfo => ({ path, branch, isMainWorktree, isBare: false, ...(head && { head }) });
+const wt = (path: string, branch: string | null, isMainWorktree = false, head?: string): WorktreeInfo => ({
+  path,
+  branch,
+  isMainWorktree,
+  isBare: false,
+  ...(head && { head }),
+});
 
 const pull = (number: number, headRef: string, state: PullSummary["state"], headSha = "x"): PullSummary => ({
   number,
@@ -22,6 +31,17 @@ const WORKTREES: Record<string, WorktreeInfo[]> = {
   "/src/lib": [wt("/src/lib", "main", true)],
 };
 const WORKTREE_OF: Record<string, string> = { "/src/app.feat-x": "/src/app", "/src/app.old": "/src/app" };
+/** Directories holding a `.git` — what the filesystem walk in findGitRoot looks for. */
+const GIT_ROOTS = new Set(["/src/app", "/src/app.feat-x", "/src/app.old", "/src/lib"]);
+const NON_REPO_GIT_DIRS = new Set<string>();
+
+/** findGitRoot over the fixture: nearest ancestor in GIT_ROOTS. */
+function fakeGitRoot(dir: string): string | null {
+  for (let d = dir; d && d !== "/"; d = d.slice(0, d.lastIndexOf("/")) || "/") {
+    if (GIT_ROOTS.has(d) || NON_REPO_GIT_DIRS.has(d)) return d;
+  }
+  return null;
+}
 
 function deps(folders: Record<string, string[]>, overrides: Partial<OverviewDeps> = {}): OverviewDeps & { listWorktrees: ReturnType<typeof vi.fn> } {
   const listWorktrees = vi.fn(async (dir: string) => WORKTREES[dir] ?? []);
@@ -34,6 +54,8 @@ function deps(folders: Record<string, string[]>, overrides: Partial<OverviewDeps
     pullsFor: async () => ({ byBranch: new Map() }),
     normalize: (dir) => dir.replace(/\/+$/, ""),
     exists: () => true,
+    gitRootOf: fakeGitRoot,
+    notRepos: new Map(),
     ...overrides,
   } as OverviewDeps & { listWorktrees: ReturnType<typeof vi.fn> };
 }
@@ -60,10 +82,9 @@ describe("buildGitOverview", () => {
 
   it("attaches a chat in a subdirectory to the worktree containing it, not a sibling with a common prefix", async () => {
     const d = deps({ "/src/app.feat-x/backend/src": ["c1"] });
-    // The subdirectory is not itself a worktree root, so mainRepoOf hands it
-    // back unchanged — git answers from there for the whole repository.
-    d.listWorktrees.mockImplementation(async (dir: string) => (dir.startsWith("/src/app") ? WORKTREES["/src/app"] : []));
     const { repos } = await buildGitOverview({}, d);
+    // Resolved through the worktree's .git to the main repo — one listing.
+    expect(d.listWorktrees).toHaveBeenCalledWith("/src/app");
     const rows = repos[0].rows;
     expect(rows.find((r) => r.cwd === "/src/app.feat-x")?.cardIds).toEqual(["c1"]);
     expect(rows.find((r) => r.cwd === "/src/app")?.cardIds).toEqual([]);
@@ -75,10 +96,67 @@ describe("buildGitOverview", () => {
     expect(repos[0].rows[0].cardIds).toEqual(["c1"]);
   });
 
-  it("skips folders that are not repositories, or no longer exist", async () => {
+  it("skips folders that are not repositories, or no longer exist, without spawning git", async () => {
     const d = deps({ "/tmp/scratch": ["c1"], "/gone": ["c2"] }, { exists: (dir) => dir !== "/gone" });
     expect((await buildGitOverview({}, d)).repos).toEqual([]);
-    expect(d.listWorktrees).toHaveBeenCalledTimes(1);
+    expect(d.listWorktrees).not.toHaveBeenCalled();
+  });
+
+  it("remembers a .git that would not list across requests, until the TTL runs out", async () => {
+    NON_REPO_GIT_DIRS.add("/src/broken");
+    try {
+      let clock = 1000;
+      const notRepos = new Map<string, number>();
+      const d = deps({ "/src/broken/sub": ["c1"] }, { notRepos, now: () => clock });
+      await buildGitOverview({}, d);
+      await buildGitOverview({}, d);
+      expect(d.listWorktrees).toHaveBeenCalledTimes(1);
+      clock += NOT_A_REPO_TTL_MS;
+      await buildGitOverview({}, d);
+      expect(d.listWorktrees).toHaveBeenCalledTimes(2);
+    } finally {
+      NON_REPO_GIT_DIRS.clear();
+    }
+  });
+
+  it("treats a nested repo or submodule inside a worktree as its own repository", async () => {
+    GIT_ROOTS.add("/src/app/vendor/sub");
+    WORKTREES["/src/app/vendor/sub"] = [wt("/src/app/vendor/sub", "main", true)];
+    try {
+      const d = deps({ "/src/app": ["c1"], "/src/app/vendor/sub/src": ["c2"] });
+      const { repos } = await buildGitOverview({}, d);
+      expect(repos.map((r) => [r.repoPath, r.rows.map((row) => [row.cwd, row.cardIds])])).toEqual([
+        [
+          "/src/app",
+          [
+            ["/src/app", ["c1"]],
+            ["/src/app.feat-x", []],
+            ["/src/app.old", []],
+          ],
+        ],
+        ["/src/app/vendor/sub", [["/src/app/vendor/sub", ["c2"]]]],
+      ]);
+    } finally {
+      GIT_ROOTS.delete("/src/app/vendor/sub");
+      delete WORKTREES["/src/app/vendor/sub"];
+    }
+  });
+
+  it("lists at most two repositories at a time", async () => {
+    const roots = ["/r/a", "/r/b", "/r/c", "/r/d", "/r/e"];
+    let inFlight = 0;
+    let peak = 0;
+    const listWorktrees = vi.fn(async (dir: string) => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, 5));
+      inFlight--;
+      return [wt(dir, "main", true)];
+    });
+    const d = deps(Object.fromEntries(roots.map((r, i) => [r, [`c${i}`]])), { listWorktrees, gitRootOf: (dir) => dir });
+    const { repos } = await buildGitOverview({}, d);
+    expect(repos).toHaveLength(5);
+    expect(peak).toBe(2);
   });
 
   it("drops linked worktrees whose directory is gone", async () => {
@@ -119,5 +197,30 @@ describe("buildGitOverview", () => {
     d.listWorktrees.mockResolvedValue([wt("/src/app", "main", true), wt("/src/app.bisect", null, false, "d1")]);
     const { repos } = await buildGitOverview({}, d);
     expect(repos[0].rows[1]).toEqual({ cwd: "/src/app.bisect", branch: null, isMain: false, cardIds: [] });
+  });
+});
+
+describe("the real filesystem helpers", () => {
+  const tmp = realpathSync(mkdtempSync(join(tmpdir(), "callboard-git-overview-")));
+  afterAll(() => rmSync(tmp, { recursive: true, force: true }));
+
+  it("normalizeDir resolves symlinks and drops a trailing slash", () => {
+    const real = join(tmp, "real");
+    mkdirSync(real);
+    symlinkSync(real, join(tmp, "link"));
+    expect(normalizeDir(join(tmp, "link") + "/")).toBe(real);
+    expect(normalizeDir(real + "/")).toBe(real);
+    // A directory that no longer exists keeps its lexical form.
+    expect(normalizeDir(join(tmp, "gone") + "/")).toBe(join(tmp, "gone"));
+  });
+
+  it("findGitRoot finds the nearest .git, file or directory, and null above every one", () => {
+    const repo = join(tmp, "repo");
+    mkdirSync(join(repo, ".git"), { recursive: true });
+    mkdirSync(join(repo, "vendor", "sub", "src"), { recursive: true });
+    writeFileSync(join(repo, "vendor", "sub", ".git"), "gitdir: ../../.git/modules/sub\n");
+    expect(findGitRoot(join(repo, "vendor"))).toBe(repo);
+    expect(findGitRoot(join(repo, "vendor", "sub", "src"))).toBe(join(repo, "vendor", "sub"));
+    expect(findGitRoot(join(tmp, "repo-less"), () => false)).toBeNull();
   });
 });

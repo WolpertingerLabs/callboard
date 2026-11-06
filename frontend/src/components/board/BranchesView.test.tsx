@@ -29,7 +29,12 @@ function card(id: string, title: string, overrides: Partial<CardSummary> = {}): 
   };
 }
 
-const CARDS = [card("c1", "PR tracking"), card("c2", "Scroll latch", { rollup: "needs_you" }), card("c3", "Lib work"), card("gone", "Archived", { lifecycle: "closed" })];
+const CARDS = [
+  card("c1", "PR tracking"),
+  card("c2", "Scroll latch", { rollup: "needs_you" }),
+  card("c3", "Lib work"),
+  card("gone", "Archived", { lifecycle: "closed" }),
+];
 
 const OVERVIEW: GitOverviewResponse = {
   generatedAt: "2026-11-06T12:00:00.000Z",
@@ -57,7 +62,12 @@ const OVERVIEW: GitOverviewResponse = {
         },
       ],
     },
-    { repoPath: "/home/u/drawlatch", name: "drawlatch", prError: "gh is not installed", rows: [{ cwd: "/home/u/drawlatch", branch: "main", isMain: true, cardIds: ["c3"] }] },
+    {
+      repoPath: "/home/u/drawlatch",
+      name: "drawlatch",
+      prError: "gh is not installed",
+      rows: [{ cwd: "/home/u/drawlatch", branch: "main", isMain: true, cardIds: ["c3"] }],
+    },
     // Only cards the board does not hold: the whole repo stays off screen.
     { repoPath: "/home/u/elsewhere", name: "elsewhere", rows: [{ cwd: "/home/u/elsewhere", branch: "main", isMain: true, cardIds: ["other-space"] }] },
   ],
@@ -100,7 +110,11 @@ describe("BranchesView", () => {
   it("attaches chips for open cards only, and opens the drawer from one", async () => {
     const onOpenCard = await mount();
     const scroll = row("/home/u/callboard.fix-scroll");
-    expect(within(scroll).getAllByRole("button").map((b) => b.textContent)).toEqual(["Scroll latch"]);
+    expect(
+      within(scroll)
+        .getAllByRole("button")
+        .map((b) => b.textContent),
+    ).toEqual(["Scroll latch"]);
 
     fireEvent.click(within(row("/home/u/callboard.feat-pr-track")).getByRole("button", { name: "PR tracking" }));
     expect(onOpenCard).toHaveBeenCalledWith("c1");
@@ -121,6 +135,22 @@ describe("BranchesView", () => {
     expect(open.textContent).toContain("#525 open");
     expect(within(row("/home/u/callboard.fix-scroll")).getByRole("link").textContent).toContain("#519 merged");
     expect(within(row("/home/u/callboard.old-spike")).getByText("no PR")).toBeDefined();
+  });
+
+  it("renders the badge without a link when the URL is not a github.com PR", async () => {
+    mockOverview.mockResolvedValue({
+      generatedAt: OVERVIEW.generatedAt,
+      repos: [
+        {
+          repoPath: "/r",
+          name: "r",
+          rows: [{ cwd: "/r", branch: "feat", isMain: true, cardIds: ["c1"], pr: { number: 9, url: "javascript:alert(1)", state: "open", title: "x" } }],
+        },
+      ],
+    });
+    await mount();
+    expect(screen.queryByRole("link")).toBeNull();
+    expect(screen.getByLabelText("PR #9 open: x").textContent).toContain("#9 open");
   });
 
   it("flags a repo whose PR lookup failed", async () => {

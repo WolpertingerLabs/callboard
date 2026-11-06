@@ -17,6 +17,7 @@ import {
   matchPull,
   parseGitHubRemote,
   PR_CACHE_TTL_MS,
+  PR_FORCE_WAIT_MS,
   toPullSummary,
   type PullSummary,
 } from "./github-prs.js";
@@ -34,7 +35,11 @@ function pr(overrides: Partial<PullSummary> & Pick<PullSummary, "number" | "head
 }
 
 /** A REST pull object as `gh api .../pulls` returns it, trimmed to what we read. */
-function rawPull(n: number, ref: string, opts: { state?: string; draft?: boolean; merged?: boolean; sha?: string; owner?: string | null; updated?: string } = {}) {
+function rawPull(
+  n: number,
+  ref: string,
+  opts: { state?: string; draft?: boolean; merged?: boolean; sha?: string; owner?: string | null; updated?: string } = {},
+) {
   return {
     number: n,
     html_url: `https://github.com/acme/app/pull/${n}`,
@@ -77,6 +82,29 @@ describe("parseGitHubRemote", () => {
 
   it.each(["https://gitlab.com/acme/app.git", "git@bitbucket.org:acme/app.git", "/srv/git/app.git", "https://github.com/acme", ""])("rejects %s", (url) => {
     expect(parseGitHubRemote(url)).toBeNull();
+  });
+
+  // Owner and repo are spliced into a `gh api` path: anything that could
+  // change what that path asks for is refused, not escaped.
+  it.each([
+    "https://github.com/acme/app?x=1",
+    "https://github.com/acme/app#frag",
+    "https://github.com/acme/a&state=open",
+    "https://github.com/acme/..",
+    "https://github.com/acme/.",
+    "git@github.com:..//app.git",
+    "https://github.com/ac_me/app",
+    "https://github.com/acme%2F/app",
+    `https://github.com/${"a".repeat(40)}/app`,
+    // Shapes left unsupported on purpose (see the comment by the regexes).
+    "git@github-work:acme/app.git",
+    "ssh://git@ssh.github.com:443/acme/app.git",
+  ])("refuses %s", (url) => {
+    expect(parseGitHubRemote(url)).toBeNull();
+  });
+
+  it("accepts the full legal alphabet", () => {
+    expect(parseGitHubRemote("https://github.com/a-b-9/x_y.z-1.git")).toEqual({ owner: "a-b-9", repo: "x_y.z-1" });
   });
 });
 
@@ -153,18 +181,47 @@ describe("matchPull", () => {
   });
 });
 
+/**
+ * Answer `gh` by which listing it asks for. `open`/`closed` are the bodies (or
+ * errors) for the two queries; every spawn is recorded in execFileMock.
+ */
+function ghServes(listings: { open?: unknown[] | Error; closed?: unknown[] | Error; stderr?: string }) {
+  execFileMock.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: (err: Error | null, stdout: string, stderr: string) => void) => {
+    const body = args[1].includes("state=open") ? listings.open : listings.closed;
+    queueMicrotask(() => (body instanceof Error ? cb(body, "", listings.stderr ?? "") : cb(null, JSON.stringify(body ?? []), "")));
+    return { stdin: { end() {} } };
+  });
+}
+
 describe("fetchRepoPulls", () => {
-  it("indexes the REST listing for a GitHub remote", async () => {
+  it("lists every open PR and the recent closed ones, as two REST calls", async () => {
     remoteUrl.mockResolvedValue("git@github.com:acme/app.git");
-    ghAnswers({ stdout: JSON.stringify([rawPull(1, "feat/x"), rawPull(2, "main"), rawPull(3, "feat/x", { owner: "fork" })]) });
+    ghServes({
+      open: [rawPull(1, "feat/x"), rawPull(2, "main"), rawPull(3, "feat/x", { owner: "fork" })],
+      closed: [rawPull(4, "fix/y", { state: "closed", merged: true })],
+    });
     const result = await fetchRepoPulls("/r");
     expect(result.error).toBeUndefined();
-    expect([...result.byBranch.keys()]).toEqual(["feat/x"]);
+    expect([...result.byBranch.keys()].sort()).toEqual(["feat/x", "fix/y"]);
     expect(result.byBranch.get("feat/x")?.map((p) => p.number)).toEqual([1]);
-    const [cmd, args, opts] = execFileMock.mock.calls[0];
-    expect(cmd).toBe("gh");
-    expect(args).toEqual(["api", "repos/acme/app/pulls?state=all&per_page=50&sort=updated&direction=desc"]);
-    expect(opts).toMatchObject({ cwd: "/r", timeout: expect.any(Number) });
+    expect(execFileMock.mock.calls.map(([cmd, args]) => [cmd, ...args])).toEqual([
+      ["gh", "api", "repos/acme/app/pulls?state=open&per_page=100"],
+      ["gh", "api", "repos/acme/app/pulls?state=closed&sort=updated&direction=desc&per_page=50"],
+    ]);
+    expect(execFileMock.mock.calls[0][2]).toMatchObject({ cwd: "/r", timeout: expect.any(Number) });
+  });
+
+  /**
+   * The regression: one `state=all&sort=updated` page of 50 let recently
+   * closed PRs push an old open one off the end. Listed separately, the open
+   * PR is there however many closed PRs were updated after it.
+   */
+  it("keeps an old open PR that 50 newer closed ones would push off a state=all page", async () => {
+    remoteUrl.mockResolvedValue("https://github.com/acme/app");
+    const closed = Array.from({ length: 50 }, (_, i) => rawPull(1000 + i, `done/${i}`, { state: "closed", updated: "2026-11-05T00:00:00Z" }));
+    ghServes({ open: [rawPull(337, "fix/old", { updated: "2026-01-01T00:00:00Z" })], closed });
+    const result = await fetchRepoPulls("/r");
+    expect(matchPull(result.byBranch.get("fix/old"), undefined)?.number).toBe(337);
   });
 
   it("does not spawn gh for a non-GitHub remote, and reports no error", async () => {
@@ -179,16 +236,25 @@ describe("fetchRepoPulls", () => {
     expect(execFileMock).not.toHaveBeenCalled();
   });
 
-  it("degrades to no data when gh is missing", async () => {
+  it("degrades to no data when gh is missing, without trying the second listing", async () => {
     remoteUrl.mockResolvedValue("https://github.com/acme/app");
-    ghAnswers({ error: Object.assign(new Error("spawn gh ENOENT"), { code: "ENOENT" }) });
+    ghServes({ open: Object.assign(new Error("spawn gh ENOENT"), { code: "ENOENT" }) });
     expect(await fetchRepoPulls("/r")).toEqual({ byBranch: new Map(), error: "gh is not installed" });
+    expect(execFileMock).toHaveBeenCalledTimes(1);
   });
 
   it("reports the first line of gh's stderr", async () => {
     remoteUrl.mockResolvedValue("https://github.com/acme/app");
-    ghAnswers({ error: Object.assign(new Error("exit 1"), { code: 1 as unknown as string }), stderr: "gh: API rate limit exceeded\nmore detail" });
+    ghServes({ open: Object.assign(new Error("exit 1"), { code: 1 as unknown as string }), stderr: "gh: API rate limit exceeded\nmore detail" });
     expect((await fetchRepoPulls("/r")).error).toBe("gh: API rate limit exceeded");
+  });
+
+  it("keeps the open PRs when only the closed listing fails", async () => {
+    remoteUrl.mockResolvedValue("https://github.com/acme/app");
+    ghServes({ open: [rawPull(1, "feat/x")], closed: Object.assign(new Error("exit 1"), { code: 1 as unknown as string }) });
+    const result = await fetchRepoPulls("/r");
+    expect(result.byBranch.has("feat/x")).toBe(true);
+    expect(result.error).toBeTruthy();
   });
 
   it("degrades on a body that is not JSON", async () => {
@@ -200,35 +266,99 @@ describe("fetchRepoPulls", () => {
   });
 });
 
+/** Settle every queued microtask and zero-delay timer. */
+const flush = () => new Promise((r) => setTimeout(r, 0));
+
 describe("getRepoPulls", () => {
-  it("serves one fetch per repo within the TTL, and refetches after it", async () => {
+  it("serves one fetch per repo within the TTL", async () => {
     remoteUrl.mockResolvedValue("https://github.com/acme/app");
-    ghAnswers({ stdout: "[]" });
-    ghAnswers({ stdout: "[]" });
+    ghServes({ open: [], closed: [] });
     await Promise.all([getRepoPulls("/r", false, 1000), getRepoPulls("/r", false, 1001)]);
     await getRepoPulls("/r", false, 1000 + PR_CACHE_TTL_MS - 1);
-    expect(execFileMock).toHaveBeenCalledTimes(1);
-    await getRepoPulls("/r", false, 1000 + PR_CACHE_TTL_MS);
+    // One fetch = the two listings.
     expect(execFileMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("serves an expired entry at once and refreshes it in the background", async () => {
+    remoteUrl.mockResolvedValue("https://github.com/acme/app");
+    ghServes({ open: [rawPull(1, "feat/old")] });
+    const first = await getRepoPulls("/r", false, 0);
+    expect(first.byBranch.has("feat/old")).toBe(true);
+
+    // gh now hangs: an expired entry must not wait on it.
+    let release!: () => void;
+    execFileMock.mockImplementation((_c: string, args: string[], _o: unknown, cb: (e: null, out: string, err: string) => void) => {
+      const body = args[1].includes("state=open") ? [rawPull(2, "feat/new")] : [];
+      release = () => cb(null, JSON.stringify(body), "");
+      return { stdin: { end() {} } };
+    });
+    const stale = await getRepoPulls("/r", false, PR_CACHE_TTL_MS);
+    expect(stale).toBe(first);
+    // A second poll during the refresh shares it rather than spawning again.
+    expect(await getRepoPulls("/r", false, PR_CACHE_TTL_MS + 1)).toBe(first);
+    await flush();
+    expect(execFileMock).toHaveBeenCalledTimes(3);
+
+    release(); // open listing
+    await flush();
+    release(); // closed listing
+    await flush();
+    const fresh = await getRepoPulls("/r", false, PR_CACHE_TTL_MS + 2);
+    expect(fresh.byBranch.has("feat/new")).toBe(true);
+    expect(execFileMock).toHaveBeenCalledTimes(4);
   });
 
   it("caches a failure too, so a missing gh is not respawned every poll", async () => {
     remoteUrl.mockResolvedValue("https://github.com/acme/app");
-    ghAnswers({ error: Object.assign(new Error("spawn gh ENOENT"), { code: "ENOENT" }) });
+    ghServes({ open: Object.assign(new Error("spawn gh ENOENT"), { code: "ENOENT" }) });
     await getRepoPulls("/r", false, 0);
     await getRepoPulls("/r", false, 5000);
     expect(execFileMock).toHaveBeenCalledTimes(1);
   });
 
-  it("lets a forced refresh through only past the minimum age", async () => {
+  it("lets a forced refresh through only past the minimum age, and waits for it", async () => {
     remoteUrl.mockResolvedValue("https://github.com/acme/app");
-    ghAnswers({ stdout: "[]" });
-    ghAnswers({ stdout: "[]" });
+    ghServes({ open: [rawPull(1, "feat/a")] });
     await getRepoPulls("/r", false, 0);
     await getRepoPulls("/r", true, 2000);
-    expect(execFileMock).toHaveBeenCalledTimes(1);
-    await getRepoPulls("/r", true, 20_000);
     expect(execFileMock).toHaveBeenCalledTimes(2);
+
+    ghServes({ open: [rawPull(2, "feat/b")] });
+    const forced = await getRepoPulls("/r", true, 20_000);
+    expect(execFileMock).toHaveBeenCalledTimes(4);
+    expect(forced.byBranch.has("feat/b")).toBe(true);
+  });
+
+  it("serves the stale entry when a forced refresh outlasts the wait cap", async () => {
+    remoteUrl.mockResolvedValue("https://github.com/acme/app");
+    ghServes({ open: [rawPull(1, "feat/a")] });
+    const first = await getRepoPulls("/r", false, 0);
+    // A gh that does not answer within the cap. (In production execFile's
+    // own timeout kills it; here it is answered at the end, so the fetch does
+    // not keep a limiter slot into the next test.)
+    const hung: Array<() => void> = [];
+    execFileMock.mockImplementation((_c: string, _a: string[], _o: unknown, cb: (e: null, out: string, err: string) => void) => {
+      hung.push(() => cb(null, "[]", ""));
+      return { stdin: { end() {} } };
+    });
+    vi.useFakeTimers();
+    try {
+      const forced = getRepoPulls("/r", true, 20_000);
+      await vi.advanceTimersByTimeAsync(PR_FORCE_WAIT_MS);
+      expect(await forced).toBe(first);
+    } finally {
+      vi.useRealTimers();
+      while (hung.length > 0) {
+        hung.shift()!();
+        await flush();
+      }
+    }
+  });
+
+  it("waits for the first fetch when there is no entry at all", async () => {
+    remoteUrl.mockResolvedValue("https://github.com/acme/app");
+    ghServes({ open: [rawPull(1, "feat/a")] });
+    expect((await getRepoPulls("/r", false, 0)).byBranch.has("feat/a")).toBe(true);
   });
 
   it("runs at most two gh processes at once", async () => {
@@ -246,9 +376,12 @@ describe("getRepoPulls", () => {
       return { stdin: { end() {} } };
     });
     const all = Promise.all(["/a", "/b", "/c", "/d", "/e"].map((repo) => getRepoPulls(repo, false, 0)));
-    // Drain: release whatever is running until every repo has been fetched.
-    for (let released = 0; released < 5; ) {
-      await new Promise((r) => setTimeout(r, 0));
+    // Drain: release whatever is running until every repo's two listings ran.
+    // Several ticks between releases, so every fetch the limiter would admit
+    // has had time to reach gh before one finishes.
+    for (let released = 0; released < 10; ) {
+      for (let i = 0; i < 5; i++) await flush();
+      expect(inFlight).toBeLessThanOrEqual(2);
       const next = callbacks.shift();
       if (next) {
         next();
@@ -256,7 +389,7 @@ describe("getRepoPulls", () => {
       }
     }
     await all;
-    expect(execFileMock).toHaveBeenCalledTimes(5);
+    expect(execFileMock).toHaveBeenCalledTimes(10);
     expect(peak).toBe(2);
   });
 });

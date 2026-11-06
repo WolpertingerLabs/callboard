@@ -101,29 +101,37 @@ export default function BranchesView({ cards, onOpenCard }: BranchesViewProps) {
 
   const prBadge = (row: BranchRow) => {
     if (!row.pr) return <span style={{ fontSize: 11, color: "var(--text-muted)", whiteSpace: "nowrap", flexShrink: 0 }}>no PR</span>;
-    const style = PR_STYLES[row.pr.state];
-    return (
-      <a
-        href={row.pr.url}
-        target="_blank"
-        rel="noreferrer"
-        title={row.pr.title}
-        aria-label={`PR #${row.pr.number} ${row.pr.state}: ${row.pr.title}`}
-        style={{
-          display: "inline-flex",
-          alignItems: "center",
-          gap: 4,
-          padding: "1px 7px",
-          borderRadius: 10,
-          fontSize: 11,
-          fontWeight: 600,
-          whiteSpace: "nowrap",
-          flexShrink: 0,
-          textDecoration: "none",
-          ...style,
-        }}
-      >
+    const badgeStyle: React.CSSProperties = {
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 4,
+      padding: "1px 7px",
+      borderRadius: 10,
+      fontSize: 11,
+      fontWeight: 600,
+      whiteSpace: "nowrap",
+      flexShrink: 0,
+      textDecoration: "none",
+      ...PR_STYLES[row.pr.state],
+    };
+    const label = `PR #${row.pr.number} ${row.pr.state}: ${row.pr.title}`;
+    const content = (
+      <>
         <GitPullRequest size={11} />#{row.pr.number} {row.pr.state}
+      </>
+    );
+    // The URL arrives from GitHub's API by way of the daemon; only ever link
+    // where a PR link can legitimately point.
+    if (!row.pr.url.startsWith("https://github.com/")) {
+      return (
+        <span title={row.pr.title} aria-label={label} style={badgeStyle}>
+          {content}
+        </span>
+      );
+    }
+    return (
+      <a href={row.pr.url} target="_blank" rel="noreferrer" title={row.pr.title} aria-label={label} style={badgeStyle}>
+        {content}
       </a>
     );
   };
