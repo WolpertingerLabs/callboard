@@ -97,6 +97,45 @@ describe("ChatPrsView", () => {
     expect(screen.queryByTestId("pr-card")).toBeNull();
   });
 
+  it("lists the chat's earlier PRs in the same list as the live one, in the order sent", async () => {
+    const live = pr(11, { state: "merged", headRef: "feat/b", mergedAt: "2026-11-05T12:00:00.000Z", title: "Live" });
+    const earlierOpen = pr(10, { headRef: "feat/a", title: "Earlier open" });
+    const earlierClosed = pr(6, { state: "closed", headRef: "feat/gone", closedAt: "2026-11-01T00:00:00.000Z", title: "Earlier closed" });
+    mockPrs.mockResolvedValue(response({ status: "found", branch: "feat/b", pr: live, prs: [earlierOpen, live, earlierClosed] }));
+    await mount();
+    const section = screen.getByRole("region", { name: "This chat" });
+    const cards = within(section).getAllByTestId("pr-card");
+    expect(cards.map((c) => within(c).getByRole("link", { name: /^(Live|Earlier open|Earlier closed)$/ }).textContent)).toEqual([
+      "Earlier open",
+      "Live",
+      "Earlier closed",
+    ]);
+    expect(cards.map((c) => within(c).getByText(/ → main$/).textContent)).toEqual(["feat/a → main", "feat/b → main", "feat/gone → main"]);
+    // No separate "previously" group, and no status line when the live branch has its PR.
+    expect(screen.queryByText(/previous/i)).toBeNull();
+    expect(screen.queryByTestId("pr-status-line")).toBeNull();
+    expect(screen.queryByTestId("pr-empty")).toBeNull();
+  });
+
+  it("keeps the live branch's status as a compact line beside earlier PRs", async () => {
+    mockPrs.mockResolvedValue(response({ status: "default_branch", branch: "main", prs: [pr(10, { title: "Earlier" })] }));
+    await mount();
+    const section = screen.getByRole("region", { name: "This chat" });
+    const line = within(section).getByTestId("pr-status-line");
+    expect(line.dataset.status).toBe("default_branch");
+    expect(line.textContent).toContain("This is main, the default branch");
+    expect(within(section).getAllByTestId("pr-card")).toHaveLength(1);
+    // The status line comes first, then the list.
+    expect(line.compareDocumentPosition(within(section).getByTestId("pr-card")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByTestId("pr-empty")).toBeNull();
+  });
+
+  it("falls back to the single live PR from a daemon that sends no list", async () => {
+    mockPrs.mockResolvedValue(response({ status: "found", pr: pr(42) }));
+    await mount();
+    expect(screen.getAllByTestId("pr-card")).toHaveLength(1);
+  });
+
   it("flags a PR shown from a refresh that failed", async () => {
     mockPrs.mockResolvedValue(response({ status: "found", pr: pr(1), prError: "gh timed out" }));
     await mount();

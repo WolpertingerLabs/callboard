@@ -188,6 +188,9 @@ export default function ChatPrsView({ folder, chatId }: ChatPrsViewProps) {
 
   const generatedAt = data ? Date.parse(data.generatedAt) : NaN;
   const current = data?.current;
+  // The chat's own PRs: the live one and its trail's. A daemon predating the
+  // trail sends only `pr`.
+  const ownPrs = current?.prs ?? (current?.pr ? [current.pr] : []);
 
   return (
     <div style={{ height: "100%", overflow: "auto", padding: "12px 16px" }}>
@@ -226,10 +229,32 @@ export default function ChatPrsView({ folder, chatId }: ChatPrsViewProps) {
           <div role="heading" aria-level={2} style={sectionLabel}>
             This chat
           </div>
-          {current.pr ? (
+          {ownPrs.length > 0 ? (
             <>
-              {prCard(current.pr)}
-              {current.prError && (
+              {/* The live branch has no PR of its own (the default branch, say)
+                  but the chat's earlier branches do: say why compactly, then
+                  list them. */}
+              {!current.pr && (
+                <div
+                  data-testid="pr-status-line"
+                  data-status={current.status}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    marginBottom: 8,
+                    fontSize: 12,
+                    color: current.status === "error" ? "var(--warning)" : "var(--text-muted)",
+                  }}
+                >
+                  {current.status === "error" ? <AlertTriangle size={12} /> : <GitPullRequest size={12} />}
+                  <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>{emptyMessage(current)}</span>
+                </div>
+              )}
+              {/* One list — the live PR and the chat's earlier ones — open first,
+                  then most recently updated; the state badge tells them apart. */}
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>{ownPrs.map((pr) => prCard(pr))}</div>
+              {current.pr && current.prError && (
                 <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6, fontSize: 12, color: "var(--warning)" }}>
                   <AlertTriangle size={12} />
                   Last known PR — refreshing failed: {current.prError}
