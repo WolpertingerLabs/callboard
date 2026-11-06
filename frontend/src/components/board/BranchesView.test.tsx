@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { PR_REQUEST_TIMEOUT_MS } from "../git/timedRequest";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import type { CardSummary, GitOverviewResponse } from "../../api";
 import { getGitOverview } from "../../api";
@@ -280,11 +281,12 @@ describe("BranchesView", () => {
 
   it("refetches with refresh=true from the refresh button", async () => {
     await mount();
-    expect(mockOverview).toHaveBeenLastCalledWith(false);
+    expect(mockOverview).toHaveBeenCalledWith(true, expect.any(AbortSignal));
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Refresh branches" }));
     });
-    expect(mockOverview).toHaveBeenLastCalledWith(true);
+    expect(mockOverview).toHaveBeenCalledTimes(2);
+    expect(mockOverview).toHaveBeenLastCalledWith(true, expect.any(AbortSignal));
   });
 
   it("says how fresh the data is", async () => {
@@ -303,5 +305,149 @@ describe("BranchesView", () => {
     render(<BranchesView cards={CARDS} onOpenCard={vi.fn()} />);
     expect(await screen.findByText("boom")).toBeDefined();
     expect(screen.queryAllByTestId("branch-row")).toHaveLength(0);
+  });
+});
+
+describe("BranchesView: refresh on load", () => {
+  /** A response the test settles by hand. */
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+  const button = () => screen.getByRole("button", { name: "Refresh branches" }) as HTMLButtonElement;
+  const settle = () => act(async () => {});
+
+  it("makes exactly one request on mount, forced, with the button busy until it settles", async () => {
+    const first = deferred<Awaited<ReturnType<typeof mockOverview>>>();
+    mockOverview.mockReturnValueOnce(first.promise);
+    render(<BranchesView cards={CARDS} onOpenCard={vi.fn()} />);
+    expect(mockOverview).toHaveBeenCalledTimes(1);
+    expect(mockOverview).toHaveBeenCalledWith(true, expect.any(AbortSignal));
+    expect(button().disabled).toBe(true);
+    expect(button().getAttribute("aria-busy")).toBe("true");
+    await act(async () => first.resolve(OVERVIEW));
+    expect(button().disabled).toBe(false);
+    expect(button().getAttribute("aria-busy")).toBe("false");
+    expect(mockOverview).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-enables the button when the forced request fails", async () => {
+    const first = deferred<Awaited<ReturnType<typeof mockOverview>>>();
+    mockOverview.mockReturnValueOnce(first.promise);
+    render(<BranchesView cards={CARDS} onOpenCard={vi.fn()} />);
+    expect(button().disabled).toBe(true);
+    await act(async () => first.reject(new Error("offline")));
+    expect(screen.getByText("offline")).toBeDefined();
+    expect(button().disabled).toBe(false);
+  });
+
+  it("keeps the button busy through a manual refresh as well", async () => {
+    render(<BranchesView cards={CARDS} onOpenCard={vi.fn()} />);
+    await settle();
+    const manual = deferred<Awaited<ReturnType<typeof mockOverview>>>();
+    mockOverview.mockReturnValueOnce(manual.promise);
+    await act(async () => {
+      fireEvent.click(button());
+    });
+    expect(mockOverview).toHaveBeenLastCalledWith(true, expect.any(AbortSignal));
+    expect(button().disabled).toBe(true);
+    expect(button().getAttribute("aria-busy")).toBe("true");
+    await act(async () => manual.resolve(OVERVIEW));
+    expect(button().disabled).toBe(false);
+  });
+
+  it("polls unforced, and not while a refresh is in flight", async () => {
+    vi.useRealTimers();
+    vi.useFakeTimers();
+    render(<BranchesView cards={CARDS} onOpenCard={vi.fn()} />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(mockOverview).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(mockOverview).toHaveBeenCalledTimes(2);
+    expect(mockOverview).toHaveBeenLastCalledWith(false, expect.any(AbortSignal));
+
+    // A manual refresh that hangs: the next poll tick must not fire, nor
+    // land and re-enable the button early.
+    const manual = deferred<Awaited<ReturnType<typeof mockOverview>>>();
+    mockOverview.mockReturnValueOnce(manual.promise);
+    await act(async () => {
+      fireEvent.click(button());
+    });
+    expect(mockOverview).toHaveBeenCalledTimes(3);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(mockOverview).toHaveBeenCalledTimes(3);
+    expect(button().disabled).toBe(true);
+    await act(async () => {
+      manual.resolve(OVERVIEW);
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(button().disabled).toBe(false);
+    vi.useRealTimers();
+  });
+});
+
+describe("BranchesView: a request that never settles", () => {
+  /** Like fetch on a dead socket: never answers, but rejects once its signal aborts. */
+  const hangUntilAborted = (...args: unknown[]) =>
+    new Promise<never>((_resolve, reject) => {
+      const signal = args[args.length - 1] as AbortSignal;
+      signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+    });
+  const button = () => screen.getByRole("button", { name: "Refresh branches" }) as HTMLButtonElement;
+
+  it("times out: the button is re-enabled, the timeout is shown as an error, and polls resume", async () => {
+    vi.useRealTimers();
+    vi.useFakeTimers();
+    try {
+      mockOverview.mockImplementationOnce(hangUntilAborted as never);
+      mockOverview.mockResolvedValue(OVERVIEW);
+      render(<BranchesView cards={CARDS} onOpenCard={vi.fn()} />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(button().disabled).toBe(true);
+      // Within the timeout no poll starts behind the stuck refresh.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(PR_REQUEST_TIMEOUT_MS - 1);
+      });
+      expect(mockOverview).toHaveBeenCalledTimes(1);
+      expect(button().disabled).toBe(true);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(button().disabled).toBe(false);
+      expect(button().getAttribute("aria-busy")).toBe("false");
+      expect(screen.getByText("Timed out loading branches — try refreshing.")).toBeDefined();
+
+      // The next poll tick goes out, unforced.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000);
+      });
+      expect(mockOverview.mock.calls.length).toBeGreaterThan(1);
+      expect(mockOverview.mock.calls.at(-1)![0]).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("aborts what is in flight when the view goes away", async () => {
+    mockOverview.mockImplementationOnce(hangUntilAborted as never);
+    const { unmount } = render(<BranchesView cards={CARDS} onOpenCard={vi.fn()} />);
+    const signal = mockOverview.mock.calls[0].at(-1) as AbortSignal;
+    expect(signal.aborted).toBe(false);
+    unmount();
+    expect(signal.aborted).toBe(true);
   });
 });
