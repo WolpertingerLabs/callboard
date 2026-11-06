@@ -87,6 +87,13 @@ describe("MessageBubble hover actions on a narrow reply", () => {
     expect(bubbleOf(fewer).style.minWidth).toBe("96px");
   });
 
+  it("a team message is left-aligned too, so it is never narrower than its two copy buttons", () => {
+    const team = { ...message, content: "ok", teamName: "alpha" } as ParsedMessage;
+    const { container } = render(<MessageBubble message={team} teamColorMap={new Map([["alpha", 0]])} />);
+    expect(screen.getByTitle(/^Copy formatted/)).toBeTruthy();
+    expect(bubbleOf(container).style.minWidth).toBe("66px");
+  });
+
   it("a user bubble is right-aligned, so it keeps its natural width", () => {
     const { container } = render(<MessageBubble message={{ ...message, role: "user" }} onFork={vi.fn()} forkCurrentProvider="claude-code" onRerun={vi.fn()} />);
     expect(bubbleOf(container).style.minWidth).toBe("");

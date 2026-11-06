@@ -1058,6 +1058,9 @@ function MessageBubble({
           className="msg-bubble"
           style={{
             maxWidth: "85%",
+            // Left-aligned like a reply, so never narrower than its two copy
+            // buttons (see the reply bubble's actionsMinWidth below).
+            minWidth: HOVER_ACTION_EDGE + 2 * HOVER_ACTION_PITCH,
             padding: "10px 14px",
             borderRadius: "var(--radius)",
             background: "var(--assistant-bg)",
