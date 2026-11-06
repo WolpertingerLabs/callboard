@@ -31,21 +31,8 @@
  * label ellipsizes before the indicator clips.
  */
 
-import type { CSSProperties } from "react";
 import { ChevronDown, ChevronRight, Folder } from "lucide-react";
-
-/** Read by screen readers, invisible on screen. */
-const visuallyHidden: CSSProperties = {
-  position: "absolute",
-  width: 1,
-  height: 1,
-  padding: 0,
-  margin: -1,
-  overflow: "hidden",
-  clip: "rect(0 0 0 0)",
-  whiteSpace: "nowrap",
-  border: 0,
-};
+import { visuallyHidden } from "../utils/visuallyHidden";
 
 export default function ChatSectionHeader({
   label,
@@ -68,6 +55,7 @@ export default function ChatSectionHeader({
     <button
       onClick={onToggle}
       aria-expanded={expanded}
+      data-testid="section-header"
       title={isFolder ? `Folder: ${label}` : undefined}
       style={{
         width: "100%",

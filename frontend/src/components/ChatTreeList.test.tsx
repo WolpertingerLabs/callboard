@@ -909,9 +909,10 @@ describe("pinning a row", () => {
 
   const headers = () =>
     screen
-      .queryAllByRole("button")
-      .map((el) => el.textContent ?? "")
-      .filter((text) => /^(Pinned|Recent) \(\d+\)$/.test(text));
+      .queryAllByTestId("section-header")
+      // Without the running indicator, so a header reads "Label (n)" whether or not a chat in it is running.
+      .map((el) => (el.textContent ?? "").replace(el.querySelector('[data-testid="section-running"]')?.textContent ?? "", ""))
+      .filter((text) => /^(Pinned|Recent) /.test(text));
 
   it("offers Pin on a GROUP row, not just a lone one", () => {
     // The regression case. GROUP_CHATS is parent + child, so this row goes
@@ -1023,9 +1024,9 @@ describe("pinning a row", () => {
 describe("sidebar folders", () => {
   const sectionHeaders = () =>
     screen
-      .queryAllByRole("button")
-      .map((el) => el.textContent ?? "")
-      .filter((text) => /\(\d+\)$/.test(text));
+      .queryAllByTestId("section-header")
+      // Without the running indicator, so a header reads "Label (n)" whether or not a chat in it is running.
+      .map((el) => (el.textContent ?? "").replace(el.querySelector('[data-testid="section-running"]')?.textContent ?? "", ""));
 
   function renderFolders(chats: Chat[], onMoveToFolder = vi.fn(), sessionStatusFor: (chatId: string) => { active: boolean; type: string } | undefined = () => undefined) {
     render(
@@ -1118,6 +1119,8 @@ describe("sidebar folders", () => {
     expect(screen.getByRole("button", { name: "Idle (1)" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Recent (1)" })).toBeTruthy();
     expect(screen.getAllByTestId("section-running")).toHaveLength(1);
+    // The header helper still finds a running header, as "Label (n)".
+    expect(sectionHeaders()).toEqual(["Idle (1)", "Work (2)", "Recent (1)"]);
   });
 
   it("renders no headers when nothing is pinned or filed", () => {

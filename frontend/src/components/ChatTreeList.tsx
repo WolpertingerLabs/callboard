@@ -880,8 +880,10 @@ export default function ChatTreeList({
   const sectionExpansion = useChatSectionExpansion();
 
   /**
-   * Running CHATS in a section, every member of every group — not rows, as
-   * `section.count` is. A group row's badge says only "active somewhere in
+   * Running CHATS in a section, every LOADED member of every group — not rows,
+   * as `section.count` is. Loaded, the same qualifier as `Row.pinnedMembers`
+   * and `groupSessionStatus`: a member not in the `chats` prop has no row
+   * and is not counted. A group row's badge says only "active somewhere in
    * here" (`groupSessionStatus` below); the header is where a tree with three
    * agents working reads as three.
    */
