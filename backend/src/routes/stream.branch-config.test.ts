@@ -15,7 +15,7 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "events";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { Request, Response } from "express";
@@ -39,25 +39,79 @@ vi.mock("../services/claude.js", () => ({
   hasPendingRequest: () => false,
   getPendingRequest: () => null,
 }));
-vi.mock("../services/session-registry.js", () => ({ sessionRegistry: { notifyMetadata: () => {} } }));
+vi.mock("../services/session-registry.js", () => ({ sessionRegistry: { notifyMetadata: () => {}, get: () => undefined } }));
 // What the stubbed generator returns, per test. `vi.hoisted` because `vi.mock`
 // is hoisted above every other statement in the file and the factory closes
 // over this.
-const generator = vi.hoisted(() => ({ result: null as string | null, requests: [] as string[] }));
+const generator = vi.hoisted(() => ({ result: null as string | null, requests: [] as string[], onRequest: undefined as (() => void) | undefined }));
 // Only the generator is replaced; the rest of the module stays real, since
 // other things in this import graph use it.
 vi.mock("../services/quick-completion.js", async (importActual) => ({
   ...(await importActual<typeof import("../services/quick-completion.js")>()),
   generateBranchName: async (request: string) => {
     generator.requests.push(request);
+    generator.onRequest?.();
     return generator.result;
   },
 }));
 
-const { streamRouter } = await import("./stream.js");
+// `loadImageBuffers` runs synchronously between branch resolution and
+// `sendMessage`. No real `/stop` can land there — nothing in between yields —
+// so a hook here is the only way to exercise the route's pre-`sendMessage`
+// guard, which exists for the day an await is added in that stretch.
+const imageHook = vi.hoisted(() => ({ onLoad: undefined as (() => void) | undefined }));
+vi.mock("../services/image-storage.js", async (importActual) => {
+  const actual = await importActual<typeof import("../services/image-storage.js")>();
+  return {
+    ...actual,
+    loadImageBuffers: (...args: Parameters<typeof actual.loadImageBuffers>) => {
+      imageHook.onLoad?.();
+      return actual.loadImageBuffers(...args);
+    },
+  };
+});
 
-const newMessageHandler = (streamRouter as any).stack.find((layer: any) => layer.route?.path === "/new/message" && layer.route.methods.post).route
-  .stack[0].handle as (req: Request, res: Response) => Promise<void>;
+// The effort probe is the route's first await, and it can spawn a CLI. A hook
+// here is a cancel arriving while it runs.
+const effortHook = vi.hoisted(() => ({ during: undefined as (() => void) | undefined }));
+vi.mock("../services/reasoning-capabilities.js", async (importActual) => {
+  const actual = await importActual<typeof import("../services/reasoning-capabilities.js")>();
+  return {
+    ...actual,
+    assertReasoningEffort: async (...args: Parameters<typeof actual.assertReasoningEffort>) => {
+      effortHook.during?.();
+      return actual.assertReasoningEffort(...args);
+    },
+  };
+});
+
+const { streamRouter } = await import("./stream.js");
+const { listWorkspaces } = await import("../services/workspace-store.js");
+
+const newMessageHandler = (streamRouter as any).stack.find((layer: any) => layer.route?.path === "/new/message" && layer.route.methods.post).route.stack[0]
+  .handle as (req: Request, res: Response) => Promise<void>;
+const stopHandler = (streamRouter as any).stack.find((layer: any) => layer.route?.path === "/:id/stop" && layer.route.methods.post).route.stack[0].handle as (
+  req: Request,
+  res: Response,
+) => void;
+
+/** `POST /:id/stop`, as the new-chat screen's Cancel sends it, and what it answered. */
+function stop(id: string): { stopped?: boolean } {
+  let answered: { stopped?: boolean } = {};
+  stopHandler(
+    { params: { id } } as unknown as Request,
+    {
+      json(body: { stopped?: boolean }) {
+        answered = body;
+        return this;
+      },
+      status() {
+        return this;
+      },
+    } as unknown as Response,
+  );
+  return answered;
+}
 
 function git(args: string[], cwd: string): string {
   return execFileSync("git", ["-c", "user.email=test@example.com", "-c", "user.name=test", ...args], { cwd, encoding: "utf8", stdio: "pipe" });
@@ -319,5 +373,143 @@ describe("POST /new/message — when git refuses", () => {
     // `lastSendOptions` undefined, and a silently-honoured one would have
     // handed back the repository itself.
     expect(lastSendOptions?.folder).not.toBe(detached);
+  });
+});
+
+/**
+ * The new-chat screen's Cancel stops the creation by its tracking id while the
+ * worktree is still checking out. It must leave nothing of the attempt: no git
+ * still running, no worktree, no branch, and — because the chat record is
+ * written inside `sendMessage` — no chat.
+ */
+describe("POST /new/message — cancelled during worktree creation", () => {
+  beforeEach(() => {
+    generator.result = null;
+    generator.requests = [];
+    generator.onRequest = undefined;
+    imageHook.onLoad = undefined;
+    effortHook.during = undefined;
+  });
+
+  /** A repository whose checkout takes ~10s, so there is a window to cancel in. */
+  function makeSlowRepo(name: string): string {
+    const dir = makeRepo(name);
+    for (let i = 0; i < 100; i++) writeFileSync(join(dir, `f${i}.txt`), `${i}\n`);
+    writeFileSync(join(dir, ".gitattributes"), "*.txt filter=slow\n");
+    git(["add", "."], dir);
+    git(["commit", "-q", "-m", "files"], dir);
+    git(["config", "filter.slow.smudge", "sleep 0.1; cat"], dir);
+    return dir;
+  }
+
+  it("kills the checkout, removes the worktree and branch, and never starts the chat", async () => {
+    const repoDir = makeSlowRepo("cancel");
+    const worktree = join(dirname(repoDir), "repo.feat-cancel-me");
+    const started = Date.now();
+    let stopAnswer: { stopped?: boolean } = {};
+    // Stop once the checkout is visibly under way.
+    const poll = setInterval(() => {
+      if (existsSync(worktree) && readdirSync(worktree).length > 2) {
+        clearInterval(poll);
+        stopAnswer = stop("new-cancel-1");
+      }
+    }, 20);
+
+    const answered = await postNewMessage(
+      repoDir,
+      { newBranch: "feat/cancel-me", baseBranch: "main", useWorktree: true },
+      { clientTrackingId: "new-cancel-1" },
+    );
+    clearInterval(poll);
+
+    // Returned on the cancel, not after the full ~10s checkout. Loose, for CI.
+    expect(Date.now() - started).toBeLessThan(6000);
+    // `phase` is what tells the client no chat exists, so it may restore the prompt.
+    expect(stopAnswer).toEqual({ stopped: true, phase: "creation" });
+    expect(answered.status).toBe(409);
+    expect(answered.body.code).toBe("cancelled");
+    expect(lastSendOptions).toBeUndefined();
+    expect(existsSync(worktree)).toBe(false);
+    expect(localBranches(repoDir)).toEqual(["main"]);
+    expect(git(["worktree", "list", "--porcelain"], repoDir).match(/^worktree /gm)).toHaveLength(1);
+    // Past cancelling, the id no longer names a creation.
+    expect(stop("new-cancel-1")).toEqual({ stopped: false });
+  }, 15_000); // above vitest's 5s default, so the 6s bound is what fails a slow cancel
+
+  it("a cancel while the branch name is being generated creates nothing", async () => {
+    const repoDir = makeRepo("cancel-before");
+    generator.result = "feat/never-made";
+    generator.onRequest = () => stop("new-cancel-2");
+
+    const answered = await postNewMessage(repoDir, { autoCreateBranch: true, baseBranch: "main", useWorktree: true }, { clientTrackingId: "new-cancel-2" });
+
+    expect(generator.requests).toHaveLength(1);
+    expect(answered.body?.code).toBe("cancelled");
+    expect(lastSendOptions).toBeUndefined();
+    expect(localBranches(repoDir)).toEqual(["main"]);
+    expect(existsSync(join(dirname(repoDir), "repo.feat-never-made"))).toBe(false);
+  });
+
+  it("the client hanging up is not a cancel — navigating away still starts the chat", async () => {
+    // No stop, and the route has nothing that listens for a hang-up: a
+    // creation completes, as it always has, for a client that left.
+    const repoDir = makeRepo("no-cancel");
+    await postNewMessage(repoDir, { newBranch: "feat/kept", baseBranch: "main", useWorktree: true }, { clientTrackingId: "new-cancel-3" });
+    expect(lastSendOptions?.folder).toBe(join(dirname(repoDir), "repo.feat-kept"));
+    expect(stop("new-cancel-3")).toEqual({ stopped: false });
+  });
+
+  it("the pre-sendMessage guard discards a finished worktree and writes no record (guard only — no real stop can reach it)", async () => {
+    const { ImageStorageService } = await import("../services/image-storage.js");
+    const { image } = await ImageStorageService.storeImage(Buffer.from("x"), "notes.md", "text/markdown");
+    const repoDir = makeRepo("cancel-after-resolve");
+    const worktree = join(dirname(repoDir), "repo.feat-late-cancel");
+    const workspacesBefore = listWorkspaces().length;
+    let stopAnswer: { stopped?: boolean; phase?: string } = {};
+    imageHook.onLoad = () => {
+      // Simulated: called synchronously from inside the route. The checkout
+      // is done by now: the worktree exists.
+      expect(existsSync(worktree)).toBe(true);
+      stopAnswer = stop("new-cancel-4");
+    };
+
+    const answered = await postNewMessage(
+      repoDir,
+      { newBranch: "feat/late-cancel", baseBranch: "main", useWorktree: true },
+      { clientTrackingId: "new-cancel-4", imageIds: [image!.id] },
+    );
+
+    expect(stopAnswer).toEqual({ stopped: true, phase: "creation" });
+    expect(answered.status).toBe(409);
+    expect(answered.body.code).toBe("cancelled");
+    expect(lastSendOptions).toBeUndefined();
+    expect(existsSync(worktree)).toBe(false);
+    expect(localBranches(repoDir)).toEqual(["main"]);
+    expect(listWorkspaces().length).toBe(workspacesBefore);
+  });
+
+  it("a refusal after branch resolution ends the creation, so a later stop finds nothing", async () => {
+    const repoDir = makeRepo("refused-after-resolve");
+    const answered = await postNewMessage(
+      repoDir,
+      { newBranch: "feat/refused", baseBranch: "main", useWorktree: true },
+      { clientTrackingId: "new-cancel-5", provider: "acp", acpProviderId: "no-such-vendor" },
+    );
+    expect(answered.status).toBe(400);
+    expect(stop("new-cancel-5")).toEqual({ stopped: false });
+  });
+
+  it("a cancel during the effort probe is honoured: nothing is created", async () => {
+    const repoDir = makeRepo("cancel-during-effort");
+    let stopAnswer: { stopped?: boolean; phase?: string } = {};
+    effortHook.during = () => (stopAnswer = stop("new-cancel-6"));
+
+    const answered = await postNewMessage(repoDir, { newBranch: "feat/effort", baseBranch: "main", useWorktree: true }, { clientTrackingId: "new-cancel-6" });
+
+    expect(stopAnswer).toEqual({ stopped: true, phase: "creation" });
+    expect(answered.body?.code).toBe("cancelled");
+    expect(lastSendOptions).toBeUndefined();
+    expect(localBranches(repoDir)).toEqual(["main"]);
+    expect(existsSync(join(dirname(repoDir), "repo.feat-effort"))).toBe(false);
   });
 });

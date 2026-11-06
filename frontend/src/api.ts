@@ -922,11 +922,13 @@ export async function releaseActivity(id: string, activityId: string): Promise<{
  * clientTrackingId sent with the first message.
  *
  * Returns `stopped: false` when the server had nothing to cancel (the run
- * already ended, or it's a CLI session the server doesn't control). Throws on
+ * already ended, or it's a CLI session the server doesn't control).
+ * `phase: "creation"` marks a stop that cancelled a chat still being created —
+ * its branch or worktree being prepared — so no chat exists. Throws on
  * transport/HTTP failure so callers can surface "it may still be running"
  * rather than silently pretending the stop landed.
  */
-export async function stopChat(id: string): Promise<{ stopped: boolean }> {
+export async function stopChat(id: string): Promise<{ stopped: boolean; phase?: "creation" }> {
   const res = await fetch(`${BASE}/chats/${seg(id)}/stop`, { method: "POST", credentials: "include" });
   await assertOk(res, `Stop failed (${res.status})`);
   return res.json();

@@ -415,7 +415,7 @@ describe("recordWorktreeWorkspace", () => {
 });
 
 describe("recordWorktreeWorkspace revalidation", () => {
-  it("does not adopt across a gap in existence — removed, then recreated by hand", () => {
+  it("does not adopt across a gap in existence — removed, then recreated by hand", async () => {
     // The reproduced sequence. Callboard makes the worktree and records it as
     // owned; the user removes it behind our back; the user puts their own
     // directory at the same path; a new chat asks for the same worktree.
@@ -423,7 +423,7 @@ describe("recordWorktreeWorkspace revalidation", () => {
     // and Phase 2 removes clean owned worktrees.
     const cwd = worktreePathFor("feat/gap");
 
-    const firstId = captureWorktreeWorkspace(resolveBranch({ folder: repoDir, newBranch: "feat/gap", baseBranch: "main", useWorktree: true }));
+    const firstId = captureWorktreeWorkspace(await resolveBranch({ folder: repoDir, newBranch: "feat/gap", baseBranch: "main", useWorktree: true }));
     expect(getWorkspace(firstId!)?.cwd).toBe(cwd);
     expect(getWorkspace(firstId!)?.worktree?.owned).toBe(true);
 
@@ -438,7 +438,7 @@ describe("recordWorktreeWorkspace revalidation", () => {
 
     // New chat, same request. ensureWorktreeDetailed sees the directory and reuses it,
     // so `created` is false.
-    const resolved = resolveBranch({ folder: repoDir, baseBranch: "feat/gap", useWorktree: true });
+    const resolved = await resolveBranch({ folder: repoDir, baseBranch: "feat/gap", useWorktree: true });
     expect(resolved.ok).toBe(true);
     if (!resolved.ok) return;
     expect(resolved.folder).toBe(cwd);
@@ -493,12 +493,12 @@ describe("recordWorktreeWorkspace revalidation", () => {
     expect(getWorkspace(stale.id)?.status).toBe("archived");
   });
 
-  it("still adopts when the record matches a live worktree", () => {
+  it("still adopts when the record matches a live worktree", async () => {
     // The revalidation must not cost us the property it is bolted onto:
     // a genuine reuse still preserves `owned`.
     const cwd = worktreePathFor("feat/live");
-    const firstId = captureWorktreeWorkspace(resolveBranch({ folder: repoDir, newBranch: "feat/live", baseBranch: "main", useWorktree: true }));
-    const secondId = captureWorktreeWorkspace(resolveBranch({ folder: repoDir, baseBranch: "feat/live", useWorktree: true }));
+    const firstId = captureWorktreeWorkspace(await resolveBranch({ folder: repoDir, newBranch: "feat/live", baseBranch: "main", useWorktree: true }));
+    const secondId = captureWorktreeWorkspace(await resolveBranch({ folder: repoDir, baseBranch: "feat/live", useWorktree: true }));
     expect(secondId).toBe(firstId);
     expect(getWorkspace(firstId!)?.worktree?.owned).toBe(true);
     expect(listWorkspacesByCwd(cwd)).toHaveLength(1);
@@ -553,8 +553,8 @@ describe("captureWorktreeWorkspace on the main checkout", () => {
   // worktree isolation — that is what produced the live record describing
   // /home/cybil/callboard as a worktree of itself.
 
-  it("records local isolation, not a worktree, for a branch already checked out in the main repo", () => {
-    const resolved = resolveBranch({ folder: repoDir, baseBranch: "main", useWorktree: true });
+  it("records local isolation, not a worktree, for a branch already checked out in the main repo", async () => {
+    const resolved = await resolveBranch({ folder: repoDir, baseBranch: "main", useWorktree: true });
     expect(resolved.ok).toBe(true);
     if (!resolved.ok) return;
     // The resolution really did land on the main checkout, and says so.
@@ -572,17 +572,17 @@ describe("captureWorktreeWorkspace on the main checkout", () => {
     expect(ws?.repoPath).toBeUndefined();
   });
 
-  it("reuses the local record rather than stacking one per chat", () => {
-    const first = captureWorktreeWorkspace(resolveBranch({ folder: repoDir, baseBranch: "main", useWorktree: true }));
-    const second = captureWorktreeWorkspace(resolveBranch({ folder: repoDir, baseBranch: "main", useWorktree: true }));
+  it("reuses the local record rather than stacking one per chat", async () => {
+    const first = captureWorktreeWorkspace(await resolveBranch({ folder: repoDir, baseBranch: "main", useWorktree: true }));
+    const second = captureWorktreeWorkspace(await resolveBranch({ folder: repoDir, baseBranch: "main", useWorktree: true }));
     expect(second).toBe(first);
     expect(listWorkspacesByCwd(repoDir)).toHaveLength(1);
   });
 
-  it("leaves a genuine worktree resolution recording worktree isolation", () => {
+  it("leaves a genuine worktree resolution recording worktree isolation", async () => {
     // The fix must not cost the case it is not about.
     const cwd = worktreePathFor("feat/genuine");
-    const id = captureWorktreeWorkspace(resolveBranch({ folder: repoDir, newBranch: "feat/genuine", baseBranch: "main", useWorktree: true }));
+    const id = captureWorktreeWorkspace(await resolveBranch({ folder: repoDir, newBranch: "feat/genuine", baseBranch: "main", useWorktree: true }));
     const ws = getWorkspace(id!);
     expect(ws?.cwd).toBe(cwd);
     expect(ws?.isolation).toBe("worktree");
@@ -592,7 +592,7 @@ describe("captureWorktreeWorkspace on the main checkout", () => {
     git(["worktree", "remove", cwd], repoDir);
   });
 
-  it("does not adopt a legacy worktree record that describes the main checkout", () => {
+  it("does not adopt a legacy worktree record that describes the main checkout", async () => {
     // Records already on disk are not migrated (the read path guards them), so
     // the legacy record stays exactly as it is — and the new chat is stamped
     // with an honest record rather than the old claim.
@@ -603,7 +603,7 @@ describe("captureWorktreeWorkspace on the main checkout", () => {
       worktree: { owned: false, mode: "checkout-branch", branch: "main" },
     });
 
-    const id = captureWorktreeWorkspace(resolveBranch({ folder: repoDir, baseBranch: "main", useWorktree: true }));
+    const id = captureWorktreeWorkspace(await resolveBranch({ folder: repoDir, baseBranch: "main", useWorktree: true }));
     expect(id).not.toBe(legacy.id);
     expect(getWorkspace(id!)?.isolation).toBe("local");
     expect(getWorkspace(legacy.id)?.status).toBe("active");

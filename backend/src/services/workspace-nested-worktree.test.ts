@@ -60,8 +60,8 @@ function blockerCodes(blockers: Array<{ code: string }>): string[] {
  * Ask for a worktree exactly as the chat-start path does: resolve the branch in
  * `from`, then capture whatever that resolution produced as a record.
  */
-function startWorktreeChat(from: string, newBranch: string) {
-  const result = resolveBranch({ folder: from, newBranch, baseBranch: "main", useWorktree: true });
+async function startWorktreeChat(from: string, newBranch: string) {
+  const result = await resolveBranch({ folder: from, newBranch, baseBranch: "main", useWorktree: true });
   if (!result.ok) throw new Error(`resolveBranch refused: ${result.message}`);
   const id = captureWorktreeWorkspace(result);
   if (!id) throw new Error("no workspace was recorded");
@@ -116,8 +116,8 @@ describe("resolveRepoCommonRoot", () => {
 // ── The bug ─────────────────────────────────────────────────────────
 
 describe("a worktree created from inside another worktree", () => {
-  it("records the repository's common dir, not the worktree it was asked from", () => {
-    const { workspace, cwd } = startWorktreeChat(parentWorktree, "nested/records-common-dir");
+  it("records the repository's common dir, not the worktree it was asked from", async () => {
+    const { workspace, cwd } = await startWorktreeChat(parentWorktree, "nested/records-common-dir");
 
     // git registered it against the common dir; so must the record.
     expect(git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd).trim()).toBe(join(repoDir, ".git"));
@@ -125,8 +125,8 @@ describe("a worktree created from inside another worktree", () => {
     expect(workspace.worktree?.owned).toBe(true);
   });
 
-  it("is archivable — the removal gate finds no reason to refuse", () => {
-    const { workspace } = startWorktreeChat(parentWorktree, "nested/archivable");
+  it("is archivable — the removal gate finds no reason to refuse", async () => {
+    const { workspace } = await startWorktreeChat(parentWorktree, "nested/archivable");
 
     const removability = evaluateWorktreeRemoval(workspace);
     expect(blockerCodes(removability.blockers)).toEqual([]);
@@ -135,7 +135,7 @@ describe("a worktree created from inside another worktree", () => {
   });
 
   it("actually quarantines, and unregisters from the repository git knows it by", async () => {
-    const { workspace, cwd } = startWorktreeChat(parentWorktree, "nested/quarantined");
+    const { workspace, cwd } = await startWorktreeChat(parentWorktree, "nested/quarantined");
 
     const result = await archiveWorkspace(workspace.id);
     expect(result?.worktree.blockers).toEqual([]);

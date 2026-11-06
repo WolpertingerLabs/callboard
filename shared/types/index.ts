@@ -136,7 +136,7 @@ export {
 export type { SlashCommand, SlashCommandContent } from "./slashCommand.js";
 
 export type { BranchConfig, DiffFileType, DiffFileEntry, GitDiffResponse } from "./git.js";
-export { worktreeDirName } from "./git.js";
+export { worktreeDirName, WORKTREE_CREATE_TIMEOUT_MS } from "./git.js";
 export type {
   BranchPrState,
   BranchPr,
