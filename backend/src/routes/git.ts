@@ -9,6 +9,7 @@ import {
   validateFolderPath,
 } from "../utils/git.js";
 import { generateBranchName } from "../services/quick-completion.js";
+import { buildGitOverview } from "../services/git-overview.js";
 import { setSandboxedContentHeaders } from "../utils/served-content.js";
 
 export const gitRouter = Router();
@@ -201,5 +202,24 @@ gitRouter.post("/generate-branch-name", async (req, res) => {
     res.json({ branchName });
   } catch (err: any) {
     res.status(500).json({ error: "Failed to generate branch name", details: err.message });
+  }
+});
+
+/**
+ * Every worktree of every repository an unarchived card works in, with the
+ * cards attached to their directory and each branch's GitHub PR — the Board's
+ * Branches view. PR data degrades to absent (with a per-repo `prError`) rather
+ * than failing the response.
+ */
+gitRouter.get("/overview", async (req, res) => {
+  // #swagger.tags = ['Git']
+  // #swagger.summary = 'Worktrees, branches and PRs of active cards'
+  // #swagger.description = 'One row per worktree (keyed on its directory) of every repository an unarchived card has a member chat in, grouped by repository. Each row lists the open cards working in that directory and, for GitHub remotes, the branch\'s pull request.'
+  /* #swagger.parameters['refresh'] = { in: 'query', type: 'string', description: 'When "true", refetch PR data the 90s cache would otherwise serve (entries younger than 10s are still reused).' } */
+  /* #swagger.responses[200] = { description: "{ repos: [{ repoPath, name, rows: [{ cwd, branch, isMain, pr?, cardIds }], prError? }], generatedAt }" } */
+  try {
+    res.json(await buildGitOverview({ force: req.query.refresh === "true" }));
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to build git overview", details: err.message });
   }
 });

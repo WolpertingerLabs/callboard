@@ -141,7 +141,7 @@ interface LocalStorageData {
   /** Whether the board's Closed section is expanded. */
   boardClosedExpanded?: boolean;
   /** Board layout: full-width rows instead of the tile grid. Absent = "cards". */
-  boardViewMode?: "cards" | "list";
+  boardViewMode?: "cards" | "list" | "branches";
   /** Whether card faces show the folders their chats live in. Absent = hidden. */
   boardShowPaths?: boolean;
   /** List view: whether rows rest expanded. Absent = collapsed. */
@@ -757,9 +757,10 @@ export function saveBoardClosedExpanded(expanded: boolean): void {
   updateStorage({ boardClosedExpanded: expanded });
 }
 
-export type BoardViewMode = "cards" | "list";
+/** `branches` is the directory-organised view: worktrees by repo, with cards attached. */
+export type BoardViewMode = "cards" | "list" | "branches";
 
-const BOARD_VIEW_MODES: readonly BoardViewMode[] = ["cards", "list"];
+const BOARD_VIEW_MODES: readonly BoardViewMode[] = ["cards", "list", "branches"];
 
 export function getBoardViewMode(): BoardViewMode {
   // Matched against the known values rather than cast: the store is shared

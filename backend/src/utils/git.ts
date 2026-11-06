@@ -597,6 +597,48 @@ export interface WorktreeInfo {
   branch: string | null; // null for detached HEAD
   isMainWorktree: boolean;
   isBare: boolean;
+  /** The checked-out commit, from the porcelain `HEAD` line. Absent for a bare entry. */
+  head?: string;
+}
+
+/** Parse `git worktree list --porcelain`: blocks separated by blank lines, main worktree first. */
+function parseWorktreePorcelain(output: string): WorktreeInfo[] {
+  const blocks = output.trim().split("\n\n").filter(Boolean);
+  const worktrees: WorktreeInfo[] = [];
+
+  for (let i = 0; i < blocks.length; i++) {
+    const lines = blocks[i].split("\n");
+    let path = "";
+    let branch: string | null = null;
+    let isBare = false;
+    let head: string | undefined;
+
+    for (const line of lines) {
+      if (line.startsWith("worktree ")) {
+        path = line.slice("worktree ".length);
+      } else if (line.startsWith("HEAD ")) {
+        head = line.slice("HEAD ".length);
+      } else if (line.startsWith("branch ")) {
+        // Strip refs/heads/ prefix
+        branch = line.slice("branch ".length).replace(/^refs\/heads\//, "");
+      } else if (line === "bare") {
+        isBare = true;
+      }
+      // 'detached' line means branch stays null
+    }
+
+    if (path) {
+      worktrees.push({
+        path,
+        branch,
+        isMainWorktree: i === 0,
+        isBare,
+        ...(head && { head }),
+      });
+    }
+  }
+
+  return worktrees;
 }
 
 /**
@@ -609,45 +651,43 @@ export function getGitWorktrees(directory: string): WorktreeInfo[] {
   }
 
   try {
-    const output = git(directory, ["worktree", "list", "--porcelain"], { timeout: 5000 }).trim();
-
-    if (!output) return [];
-
-    // Parse porcelain format: blocks separated by blank lines
-    const blocks = output.split("\n\n").filter(Boolean);
-    const worktrees: WorktreeInfo[] = [];
-
-    for (let i = 0; i < blocks.length; i++) {
-      const lines = blocks[i].split("\n");
-      let path = "";
-      let branch: string | null = null;
-      let isBare = false;
-
-      for (const line of lines) {
-        if (line.startsWith("worktree ")) {
-          path = line.slice("worktree ".length);
-        } else if (line.startsWith("branch ")) {
-          // Strip refs/heads/ prefix
-          branch = line.slice("branch ".length).replace(/^refs\/heads\//, "");
-        } else if (line === "bare") {
-          isBare = true;
-        }
-        // 'detached' line means branch stays null
-      }
-
-      if (path) {
-        worktrees.push({
-          path,
-          branch,
-          isMainWorktree: i === 0,
-          isBare,
-        });
-      }
-    }
-
-    return worktrees;
+    return parseWorktreePorcelain(git(directory, ["worktree", "list", "--porcelain"], { timeout: 5000 }));
   } catch {
     return [];
+  }
+}
+
+/** {@link getGitWorktrees} without blocking the event loop, for request paths that list several repos. */
+export async function getGitWorktreesAsync(directory: string): Promise<WorktreeInfo[]> {
+  return (await tryGetGitWorktreesAsync(directory)) ?? [];
+}
+
+/**
+ * {@link getGitWorktreesAsync}, telling "git said no" from "no answer came":
+ * `[]` when git ran and refused the directory (a non-zero exit — not a
+ * repository), `null` when there was no verdict at all (a timeout, or git
+ * could not be spawned). A caller that remembers refusals must not remember
+ * a `null` — the directory may be a perfectly good repo on a slow disk.
+ */
+export async function tryGetGitWorktreesAsync(directory: string): Promise<WorktreeInfo[] | null> {
+  if (!directory || !existsSync(directory)) {
+    return [];
+  }
+
+  try {
+    return parseWorktreePorcelain(await gitAsync(directory, ["worktree", "list", "--porcelain"], { timeout: 5000 }));
+  } catch (err) {
+    const { code, killed, signal } = err as { code?: unknown; killed?: boolean; signal?: unknown };
+    return typeof code === "number" && !killed && !signal ? [] : null;
+  }
+}
+
+/** The fetch URL of `remote`, or null when there is no such remote (or no repository). */
+export async function getRemoteUrlAsync(directory: string, remote = "origin"): Promise<string | null> {
+  try {
+    return (await gitAsync(directory, ["remote", "get-url", remote], { timeout: 5000 })).trim() || null;
+  } catch {
+    return null;
   }
 }
 
