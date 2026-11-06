@@ -11,7 +11,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { ensureWorktreeDetailed, fallbackBranchName, getGitInfo, getGitWorktrees, hasUncommittedChanges, resolveBranch, uniqueBranchName } from "./git.js";
+import { ensureWorktreeDetailed, fallbackBranchName, getGitInfo, getGitWorktrees, getGitWorktreesAsync, getRemoteUrlAsync, hasUncommittedChanges, resolveBranch, uniqueBranchName } from "./git.js";
 
 // Canonical, not as `tmpdir()` spells it: on macOS that is `/var/folders/...`,
 // a symlink to `/private/var/folders/...`. Worktree resolution reports the real
@@ -741,5 +741,33 @@ describe("existing branches and non-repositories", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toBe("not_a_git_repo");
+  });
+});
+
+describe("getGitWorktreesAsync", () => {
+  it("lists the same worktrees as the sync form, each with its checked-out commit", async () => {
+    const dir = makeRepo("worktree-async");
+    ensureWorktreeDetailed(dir, "feat/async", true, "main");
+    git(["commit", "-q", "--allow-empty", "-m", "ahead"], join(dirname(dir), "repo.feat-async"));
+
+    const listed = await getGitWorktreesAsync(dir);
+    expect(listed.map(({ head: _head, ...rest }) => rest)).toEqual(getGitWorktrees(dir).map(({ head: _head, ...rest }) => rest));
+    expect(listed.map((wt) => [wt.branch, wt.head])).toEqual([
+      ["main", revParse(dir, "main")],
+      ["feat/async", revParse(dir, "feat/async")],
+    ]);
+  });
+
+  it("answers [] for a directory that is not a repository", async () => {
+    expect(await getGitWorktreesAsync(tmpRoot)).toEqual([]);
+  });
+});
+
+describe("getRemoteUrlAsync", () => {
+  it("reads origin, and null without one", async () => {
+    const dir = makeRepo("remote-url");
+    expect(await getRemoteUrlAsync(dir)).toBeNull();
+    git(["remote", "add", "origin", "git@github.com:acme/app.git"], dir);
+    expect(await getRemoteUrlAsync(dir)).toBe("git@github.com:acme/app.git");
   });
 });
