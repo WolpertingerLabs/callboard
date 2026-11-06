@@ -64,25 +64,25 @@ afterAll(() => {
 });
 
 describe("ensureWorktreeDetailed", () => {
-  it("reports created=true for a worktree it makes, and false when reusing it", () => {
-    const first = ensureWorktreeDetailed(repoDir, "feat/new", true, "main");
+  it("reports created=true for a worktree it makes, and false when reusing it", async () => {
+    const first = await ensureWorktreeDetailed(repoDir, "feat/new", true, "main");
     expect(first.path).toBe(join(tmpRoot, "repo.feat-new"));
     expect(first.created).toBe(true);
     expect(first.isMainCheckout).toBe(false);
 
     // Same branch again: the directory is already there, so we didn't make it.
-    const second = ensureWorktreeDetailed(repoDir, "feat/new", false);
+    const second = await ensureWorktreeDetailed(repoDir, "feat/new", false);
     expect(second.path).toBe(first.path);
     expect(second.created).toBe(false);
     // Reused, but still a linked worktree — `.git` there is a file.
     expect(second.isMainCheckout).toBe(false);
   });
 
-  it("reports the main checkout as one when the branch is already checked out there", () => {
+  it("reports the main checkout as one when the branch is already checked out there", async () => {
     // `main` lives in the main checkout — ensureWorktreeDetailed hands back that path
     // rather than failing. It is emphatically not ours to remove, and it is not
     // a worktree: a record written from this resolution must say so.
-    const ensured = ensureWorktreeDetailed(repoDir, "main", false);
+    const ensured = await ensureWorktreeDetailed(repoDir, "main", false);
     expect(ensured.path).toBe(repoDir);
     expect(ensured.created).toBe(false);
     expect(ensured.isMainCheckout).toBe(true);
@@ -90,8 +90,8 @@ describe("ensureWorktreeDetailed", () => {
 });
 
 describe("resolveBranch worktree intent", () => {
-  it("reports branch-off with its base for a newly branched worktree", () => {
-    const result = resolveBranch({ folder: repoDir, newBranch: "feat/off", baseBranch: "main", useWorktree: true });
+  it("reports branch-off with its base for a newly branched worktree", async () => {
+    const result = await resolveBranch({ folder: repoDir, newBranch: "feat/off", baseBranch: "main", useWorktree: true });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.folder).toBe(join(tmpRoot, "repo.feat-off"));
@@ -105,9 +105,9 @@ describe("resolveBranch worktree intent", () => {
     });
   });
 
-  it("reports checkout-branch with no base for an existing branch", () => {
+  it("reports checkout-branch with no base for an existing branch", async () => {
     git(["branch", "feat/existing"], repoDir);
-    const result = resolveBranch({ folder: repoDir, baseBranch: "feat/existing", useWorktree: true });
+    const result = await resolveBranch({ folder: repoDir, baseBranch: "feat/existing", useWorktree: true });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.worktree).toEqual({
@@ -119,12 +119,12 @@ describe("resolveBranch worktree intent", () => {
     });
   });
 
-  it("flags a resolution that landed on the main checkout", () => {
+  it("flags a resolution that landed on the main checkout", async () => {
     // The branch is already checked out in the main repo, so the "worktree"
     // that comes back is the repository itself. The intent is still reported —
     // a worktree was asked for — but with the one field that stops a caller
     // recording the main repo as a worktree of itself.
-    const result = resolveBranch({ folder: repoDir, baseBranch: "main", useWorktree: true });
+    const result = await resolveBranch({ folder: repoDir, baseBranch: "main", useWorktree: true });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.folder).toBe(repoDir);
@@ -137,14 +137,14 @@ describe("resolveBranch worktree intent", () => {
     });
   });
 
-  it("reports no worktree when none was asked for", () => {
-    const result = resolveBranch({ folder: repoDir });
+  it("reports no worktree when none was asked for", async () => {
+    const result = await resolveBranch({ folder: repoDir });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.worktree).toBeUndefined();
   });
 
-  it("reports no worktree for an in-place branch switch that lands in one", () => {
+  it("reports no worktree for an in-place branch switch that lands in one", async () => {
     // Stand up the worktree here rather than leaning on one an earlier test
     // left behind — this must hold under `.only` and under any test order.
     const inPlacePath = join(tmpRoot, "repo.feat-inplace");
@@ -153,7 +153,7 @@ describe("resolveBranch worktree intent", () => {
     // The branch already lives in a worktree, so switchBranch returns that
     // path. The user did not ask for isolation, and Callboard did not create
     // anything — deliberately not reported as worktree intent.
-    const result = resolveBranch({ folder: repoDir, baseBranch: "feat/inplace" });
+    const result = await resolveBranch({ folder: repoDir, baseBranch: "feat/inplace" });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.folder).toBe(inPlacePath);
@@ -177,11 +177,11 @@ describe("the dirty-state guard and where the checkout actually lands", () => {
     return dir;
   }
 
-  it("refuses an in-place switch over uncommitted changes", () => {
+  it("refuses an in-place switch over uncommitted changes", async () => {
     const dir = dirtyRepo("dirty-in-place");
     git(["branch", "feat/target"], dir);
 
-    const result = resolveBranch({ folder: dir, baseBranch: "feat/target" });
+    const result = await resolveBranch({ folder: dir, baseBranch: "feat/target" });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toBe("uncommitted_changes");
@@ -190,14 +190,14 @@ describe("the dirty-state guard and where the checkout actually lands", () => {
     expect(result.targetBranch).toBe("feat/target");
   });
 
-  it("allows the same switch when the target branch lives in another worktree", () => {
+  it("allows the same switch when the target branch lives in another worktree", async () => {
     const dir = dirtyRepo("dirty-redirected");
     const elsewhere = join(dirname(dir), "repo.feat-elsewhere");
     git(["worktree", "add", "-q", "-b", "feat/elsewhere", elsewhere, "main"], dir);
 
     // The chat runs in `elsewhere`. Nothing reads or writes `dir`, so its
     // uncommitted changes are not this request's business.
-    const result = resolveBranch({ folder: dir, baseBranch: "feat/elsewhere" });
+    const result = await resolveBranch({ folder: dir, baseBranch: "feat/elsewhere" });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.folder).toBe(elsewhere);
@@ -211,12 +211,12 @@ describe("the dirty-state guard and where the checkout actually lands", () => {
    * worktree. A repo with a worktree on an unrelated branch is still doing an
    * in-place switch and must still be refused.
    */
-  it("still refuses when the other worktree is on a different branch", () => {
+  it("still refuses when the other worktree is on a different branch", async () => {
     const dir = dirtyRepo("dirty-unrelated-worktree");
     git(["worktree", "add", "-q", "-b", "feat/unrelated", join(dirname(dir), "repo.feat-unrelated"), "main"], dir);
     git(["branch", "feat/target"], dir);
 
-    const result = resolveBranch({ folder: dir, baseBranch: "feat/target" });
+    const result = await resolveBranch({ folder: dir, baseBranch: "feat/target" });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toBe("uncommitted_changes");
@@ -226,12 +226,12 @@ describe("the dirty-state guard and where the checkout actually lands", () => {
    * `newBranch` is the target when it is set, so the lookup has to follow it
    * rather than the base — the same precedence `switchBranch` uses.
    */
-  it("follows the typed name rather than the base branch", () => {
+  it("follows the typed name rather than the base branch", async () => {
     const dir = dirtyRepo("dirty-redirected-by-name");
     const elsewhere = join(dirname(dir), "repo.feat-named");
     git(["worktree", "add", "-q", "-b", "feat/named", elsewhere, "main"], dir);
 
-    const result = resolveBranch({ folder: dir, newBranch: "feat/named", baseBranch: "main" });
+    const result = await resolveBranch({ folder: dir, newBranch: "feat/named", baseBranch: "main" });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.folder).toBe(elsewhere);
@@ -247,13 +247,13 @@ describe("the dirty-state guard and where the checkout actually lands", () => {
    * `main` as the target is the whole point. Any other target already differed
    * from the fallback and was already guarded, which is why this went unseen.
    */
-  it("refuses a switch to main from a dirty detached HEAD", () => {
+  it("refuses a switch to main from a dirty detached HEAD", async () => {
     const dir = dirtyRepo("dirty-detached");
     git(["commit", "-q", "--allow-empty", "-m", "second"], dir);
     git(["checkout", "-q", "--detach", "HEAD~1"], dir);
     const detachedAt = revParse(dir, "HEAD");
 
-    const result = resolveBranch({ folder: dir, baseBranch: "main" });
+    const result = await resolveBranch({ folder: dir, baseBranch: "main" });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toBe("uncommitted_changes");
@@ -272,12 +272,12 @@ describe("the dirty-state guard and where the checkout actually lands", () => {
    * The force flag still works from a detached HEAD, and the switch still
    * happens — the guard is a question, not a prohibition.
    */
-  it("still switches from a detached HEAD when forced", () => {
+  it("still switches from a detached HEAD when forced", async () => {
     const dir = dirtyRepo("dirty-detached-forced");
     git(["commit", "-q", "--allow-empty", "-m", "second"], dir);
     git(["checkout", "-q", "--detach", "HEAD~1"], dir);
 
-    const result = resolveBranch({ folder: dir, baseBranch: "main", forceBranchChange: true });
+    const result = await resolveBranch({ folder: dir, baseBranch: "main", forceBranchChange: true });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(getGitInfo(dir).branch).toBe("main");
@@ -285,11 +285,11 @@ describe("the dirty-state guard and where the checkout actually lands", () => {
   });
 
   /** A clean checkout was never blocked, and still is not. */
-  it("leaves a clean in-place switch alone", () => {
+  it("leaves a clean in-place switch alone", async () => {
     const dir = makeRepo("clean-in-place");
     git(["branch", "feat/target"], dir);
 
-    const result = resolveBranch({ folder: dir, baseBranch: "feat/target" });
+    const result = await resolveBranch({ folder: dir, baseBranch: "feat/target" });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.folder).toBe(dir);
@@ -487,14 +487,14 @@ describe("fallbackBranchName", () => {
 });
 
 describe("generated names never share a worktree", () => {
-  it("still reuses one worktree for a name asked for twice", () => {
+  it("still reuses one worktree for a name asked for twice", async () => {
     // The regression guard on uniqueness: it belongs on the generated path in
     // the route, never inside resolveBranch. Two chats on a name the user
     // typed are meant to land in the same place.
     const dir = makeRepo("typed-reuse");
 
-    const first = resolveBranch({ folder: dir, newBranch: "feat/typed", baseBranch: "main", useWorktree: true });
-    const second = resolveBranch({ folder: dir, newBranch: "feat/typed", baseBranch: "main", useWorktree: true });
+    const first = await resolveBranch({ folder: dir, newBranch: "feat/typed", baseBranch: "main", useWorktree: true });
+    const second = await resolveBranch({ folder: dir, newBranch: "feat/typed", baseBranch: "main", useWorktree: true });
     expect(first.ok && second.ok).toBe(true);
     if (!first.ok || !second.ok) return;
 
@@ -512,37 +512,37 @@ describe("generated names never share a worktree", () => {
    * that only shows the fixed name working would still pass if the conflict
    * had never been real.
    */
-  it("survives a ref-tree conflict in place, where raw checkout -b is fatal", () => {
+  it("survives a ref-tree conflict in place, where raw checkout -b is fatal", async () => {
     const dir = makeRepo("ref-conflict-inplace");
     git(["branch", "feat/api/v1"], dir);
 
     // The hazard, unmediated: `git checkout -b feat/api` cannot lock the ref.
-    expect(() => resolveBranch({ folder: dir, newBranch: "feat/api", baseBranch: "main" })).toThrow();
+    await expect(resolveBranch({ folder: dir, newBranch: "feat/api", baseBranch: "main" })).rejects.toThrow();
 
     const unique = uniqueBranchName(dir, "feat/api");
     expect(unique).toBe("feat/api-2");
-    const result = resolveBranch({ folder: dir, newBranch: unique, baseBranch: "main" });
+    const result = await resolveBranch({ folder: dir, newBranch: unique, baseBranch: "main" });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.folder).toBe(dir);
     expect(getGitInfo(dir).branch).toBe("feat/api-2");
   });
 
-  it("survives a ref-tree conflict in a worktree, where raw worktree add -b is fatal", () => {
+  it("survives a ref-tree conflict in a worktree, where raw worktree add -b is fatal", async () => {
     const dir = makeRepo("ref-conflict-worktree");
     git(["branch", "feat/api/v1"], dir);
 
-    expect(() => resolveBranch({ folder: dir, newBranch: "feat/api", baseBranch: "main", useWorktree: true })).toThrow();
+    await expect(resolveBranch({ folder: dir, newBranch: "feat/api", baseBranch: "main", useWorktree: true })).rejects.toThrow();
 
     const unique = uniqueBranchName(dir, "feat/api");
-    const result = resolveBranch({ folder: dir, newBranch: unique, baseBranch: "main", useWorktree: true });
+    const result = await resolveBranch({ folder: dir, newBranch: unique, baseBranch: "main", useWorktree: true });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.folder).toBe(join(dirname(dir), "repo.feat-api-2"));
     expect(result.worktree?.created).toBe(true);
   });
 
-  it("leaves a typed name that matches a remote branch alone", () => {
+  it("leaves a typed name that matches a remote branch alone", async () => {
     // The remote check belongs to `uniqueBranchName` and nothing else. Typing a
     // name that matches `origin/feat/shared` is a choice the user is entitled
     // to make — quietly redirecting them to `feat/shared-2` would be worse than
@@ -550,14 +550,14 @@ describe("generated names never share a worktree", () => {
     const dir = makeRepo("typed-remote");
     git(["update-ref", "refs/remotes/origin/feat/shared", "HEAD"], dir);
 
-    const result = resolveBranch({ folder: dir, newBranch: "feat/shared", baseBranch: "main", useWorktree: true });
+    const result = await resolveBranch({ folder: dir, newBranch: "feat/shared", baseBranch: "main", useWorktree: true });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.folder).toBe(join(dirname(dir), "repo.feat-shared"));
     expect(result.worktree?.branch).toBe("feat/shared");
   });
 
-  it("never lands in the main checkout when generation failed", () => {
+  it("never lands in the main checkout when generation failed", async () => {
     // The route's fallback composition. Before it, a null from
     // `generateBranchName` meant no `newBranch` at all, so `useWorktree` +
     // `baseBranch: "main"` found `main` checked out in the main repo and
@@ -565,7 +565,7 @@ describe("generated names never share a worktree", () => {
     const dir = makeRepo("generation-failed");
 
     const fallback = uniqueBranchName(dir, fallbackBranchName());
-    const result = resolveBranch({ folder: dir, newBranch: fallback, baseBranch: "main", useWorktree: true });
+    const result = await resolveBranch({ folder: dir, newBranch: fallback, baseBranch: "main", useWorktree: true });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
@@ -577,14 +577,14 @@ describe("generated names never share a worktree", () => {
 });
 
 describe("existing branches and non-repositories", () => {
-  it("checks out an existing, unchecked-out branch rather than failing on -b", () => {
+  it("checks out an existing, unchecked-out branch rather than failing on -b", async () => {
     // The branch exists and lives nowhere, so neither reuse path fires and
     // `git worktree add -b` refuses with "a branch named 'x' already exists".
     // The worktree is still what the caller wanted; only `-b` was wrong.
     const dir = makeRepo("existing-branch");
     git(["branch", "feat/orphan"], dir);
 
-    const ensured = ensureWorktreeDetailed(dir, "feat/orphan", true, "main");
+    const ensured = await ensureWorktreeDetailed(dir, "feat/orphan", true, "main");
     expect(ensured.path).toBe(join(dirname(dir), "repo.feat-orphan"));
     expect(ensured.created).toBe(true);
     expect(ensured.branchCreated).toBe(false);
@@ -602,11 +602,11 @@ describe("existing branches and non-repositories", () => {
    * name with the worktree toggle off is an ordinary thing to do, and it is
    * about to become the way the UI offers "switch to this branch".
    */
-  it("checks out an existing, unchecked-out branch in place rather than failing on -b", () => {
+  it("checks out an existing, unchecked-out branch in place rather than failing on -b", async () => {
     const dir = makeRepo("existing-branch-inplace");
     git(["branch", "feat/orphan"], dir);
 
-    const result = resolveBranch({ folder: dir, newBranch: "feat/orphan", baseBranch: "main" });
+    const result = await resolveBranch({ folder: dir, newBranch: "feat/orphan", baseBranch: "main" });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
@@ -622,13 +622,13 @@ describe("existing branches and non-repositories", () => {
    * whenever the checkout would fail" would pass the test above by never
    * branching at all.
    */
-  it("still creates a branch that does not exist, off the given base", () => {
+  it("still creates a branch that does not exist, off the given base", async () => {
     const dir = makeRepo("new-branch-inplace");
     git(["commit", "-q", "--allow-empty", "-m", "second"], dir);
     git(["branch", "feat/base"], dir);
     git(["commit", "-q", "--allow-empty", "-m", "third"], dir);
 
-    const result = resolveBranch({ folder: dir, newBranch: "feat/fresh", baseBranch: "feat/base" });
+    const result = await resolveBranch({ folder: dir, newBranch: "feat/fresh", baseBranch: "feat/base" });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
@@ -638,11 +638,11 @@ describe("existing branches and non-repositories", () => {
     expect(revParse(dir, "feat/fresh")).toBe(revParse(dir, "feat/base"));
   });
 
-  it("reports checkout-branch, with no invented base, for that resolution", () => {
+  it("reports checkout-branch, with no invented base, for that resolution", async () => {
     const dir = makeRepo("existing-branch-resolve");
     git(["branch", "feat/orphan"], dir);
 
-    const result = resolveBranch({ folder: dir, newBranch: "feat/orphan", baseBranch: "main", useWorktree: true });
+    const result = await resolveBranch({ folder: dir, newBranch: "feat/orphan", baseBranch: "main", useWorktree: true });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     // `baseBranch` absent: nothing was branched off `main`, and a workspace
@@ -656,12 +656,12 @@ describe("existing branches and non-repositories", () => {
     });
   });
 
-  it("is a no-op on a folder that is not a repository", () => {
+  it("is a no-op on a folder that is not a repository", async () => {
     // `branchConfig` rides on nearly every new chat now, so a plain directory
     // reaches here routinely. `git checkout` there is a 500.
     const plain = mkdtempSync(join(tmpRoot, "not-a-repo-"));
 
-    const result = resolveBranch({ folder: plain, newBranch: "feat/x", baseBranch: "main" });
+    const result = await resolveBranch({ folder: plain, newBranch: "feat/x", baseBranch: "main" });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.folder).toBe(plain);
@@ -678,10 +678,10 @@ describe("existing branches and non-repositories", () => {
    * `start_chat_session` has no gate, so an agent passing `useWorktree: true`
    * on a plain directory got a chatId, no isolation, and no way to find out.
    */
-  it("refuses a worktree on a folder that is not a repository", () => {
+  it("refuses a worktree on a folder that is not a repository", async () => {
     const plain = mkdtempSync(join(tmpRoot, "not-a-repo-worktree-"));
 
-    const result = resolveBranch({ folder: plain, newBranch: "feat/x", baseBranch: "main", useWorktree: true });
+    const result = await resolveBranch({ folder: plain, newBranch: "feat/x", baseBranch: "main", useWorktree: true });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toBe("not_a_git_repo");
@@ -701,10 +701,10 @@ describe("existing branches and non-repositories", () => {
    * `start_chat_session` is where it is reachable from: all three fields are
    * optional there, and it has no `is_git_repo` gate either.
    */
-  it("refuses a worktree that names no branch at all", () => {
+  it("refuses a worktree that names no branch at all", async () => {
     const dir = makeRepo("worktree-no-branch");
 
-    const result = resolveBranch({ folder: dir, useWorktree: true });
+    const result = await resolveBranch({ folder: dir, useWorktree: true });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toBe("no_branch_for_worktree");
@@ -714,11 +714,11 @@ describe("existing branches and non-repositories", () => {
   });
 
   /** Either field is enough to name a target, and neither is refused. */
-  it("takes a base branch alone as the branch to put in the worktree", () => {
+  it("takes a base branch alone as the branch to put in the worktree", async () => {
     const dir = makeRepo("worktree-base-only");
     git(["branch", "feat/base-only"], dir);
 
-    const result = resolveBranch({ folder: dir, baseBranch: "feat/base-only", useWorktree: true });
+    const result = await resolveBranch({ folder: dir, baseBranch: "feat/base-only", useWorktree: true });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.folder).toBe(join(dirname(dir), "repo.feat-base-only"));
@@ -730,10 +730,10 @@ describe("existing branches and non-repositories", () => {
    * flag, "no branch named" is a chat in the folder you asked for, which is
    * what nearly every chat in the app is.
    */
-  it("leaves a request that named no branch and asked for no worktree alone", () => {
+  it("leaves a request that named no branch and asked for no worktree alone", async () => {
     const dir = makeRepo("no-branch-no-worktree");
 
-    const result = resolveBranch({ folder: dir });
+    const result = await resolveBranch({ folder: dir });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.folder).toBe(dir);
@@ -746,10 +746,10 @@ describe("existing branches and non-repositories", () => {
    * telling the caller to pass a branch name would send them to fix the wrong
    * thing.
    */
-  it("reports the missing repository ahead of the missing branch", () => {
+  it("reports the missing repository ahead of the missing branch", async () => {
     const plain = mkdtempSync(join(tmpRoot, "not-a-repo-no-branch-"));
 
-    const result = resolveBranch({ folder: plain, useWorktree: true });
+    const result = await resolveBranch({ folder: plain, useWorktree: true });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toBe("not_a_git_repo");
@@ -759,7 +759,7 @@ describe("existing branches and non-repositories", () => {
 describe("getGitWorktreesAsync", () => {
   it("lists the same worktrees as the sync form, each with its checked-out commit", async () => {
     const dir = makeRepo("worktree-async");
-    ensureWorktreeDetailed(dir, "feat/async", true, "main");
+    await ensureWorktreeDetailed(dir, "feat/async", true, "main");
     git(["commit", "-q", "--allow-empty", "-m", "ahead"], join(dirname(dir), "repo.feat-async"));
 
     const listed = await getGitWorktreesAsync(dir);

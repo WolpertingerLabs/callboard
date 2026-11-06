@@ -896,7 +896,7 @@ export function buildCallboardToolsSpec(
             }
 
             // Resolve effective folder based on branch configuration
-            const branchResult = resolveBranch({
+            const branchResult = await resolveBranch({
               folder: args.folder,
               baseBranch: args.baseBranch,
               newBranch: args.newBranch,

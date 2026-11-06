@@ -16,7 +16,7 @@ import { anyUploadExists, attachmentNamesOf, loadImageBuffers } from "../service
 import { titleSourceFor } from "../services/file-attachments.js";
 import { statSync, existsSync, readdirSync, watchFile, unwatchFile, openSync, readSync, closeSync } from "fs";
 import { join } from "path";
-import { fallbackBranchName, getGitInfo, resolveBranch, uniqueBranchName } from "../utils/git.js";
+import { discardCreatedWorktree, fallbackBranchName, getGitInfo, isAbortError, resolveBranch, uniqueBranchName } from "../utils/git.js";
 import { chatFileService } from "../services/chat-file-service.js";
 import { findSessionLogPath } from "../utils/session-log.js";
 import { isConversationEntry } from "../agents/adapters/claude-code/sessionParser.js";
@@ -28,6 +28,7 @@ import { beginSSE, requiresPromptReload, humanPromptReloadMessage, sendSSE, crea
 import { createLogger } from "../utils/logger.js";
 import { generateBranchName } from "../services/quick-completion.js";
 import { captureWorktreeWorkspace } from "../services/workspace-store.js";
+import { beginPendingCreation, cancelPendingCreation } from "../services/pending-chat-creations.js";
 import { listActivities, getWatch, releaseActivity } from "../services/chat-activity.js";
 import { listPendingForParent } from "../services/session-callbacks.js";
 import type { ChatActivityResponse } from "shared/types/index.js";
@@ -174,10 +175,28 @@ streamRouter.post("/new/message", async (req, res) => {
     return res.status(400).json({ error: (error as Error).message });
   }
 
+  // Temp session key the client can address /stop with before chat_created
+  // arrives. Namespaced to "new-" so a caller can't claim (and then stop) the
+  // registry slot of a real chat id.
+  const safeClientTrackingId: string | undefined =
+    typeof clientTrackingId === "string" && clientTrackingId.length <= 80 && /^new-[A-Za-z0-9_-]+$/.test(clientTrackingId) ? clientTrackingId : undefined;
+
   // Resolve effective folder based on branch configuration
   let effectiveFolder = folder;
   let workspaceId: string | undefined;
   if (branchConfig) {
+    // Until `sendMessage` registers a session, the tracking id has nothing to
+    // stop — and this block can spend a minute in a worktree checkout. So it
+    // registers itself: a `/stop` for the id cancels the checkout, kills git
+    // and removes what it had made. Nothing has been written for the chat yet
+    // (its record is made inside `sendMessage`), so a cancel here leaves no
+    // trace of the attempt.
+    const creation = beginPendingCreation(safeClientTrackingId);
+    const cancelled = () => {
+      log.info("POST /new/message — chat creation cancelled during branch resolution; nothing created");
+      return res.status(409).json({ error: "Creating the chat was cancelled.", code: "cancelled" });
+    };
+
     let { newBranch } = branchConfig;
     const { baseBranch, useWorktree, autoCreateBranch } = branchConfig;
 
@@ -236,13 +255,28 @@ streamRouter.post("/new/message", async (req, res) => {
         }
       }
 
-      const branchResult = resolveBranch({
+      // Cancelled while the branch name was being generated: nothing made yet.
+      if (creation.signal.aborted) return cancelled();
+
+      const branchResult = await resolveBranch({
         folder,
         baseBranch,
         newBranch,
         useWorktree,
         forceBranchChange: branchConfig.forceBranchChange,
+        signal: creation.signal,
       });
+
+      // Cancelled in the instant between the checkout finishing and here. The
+      // worktree is complete, but the chat it was for will never exist, so it
+      // is undone like a cancelled one — only what this call created.
+      if (creation.signal.aborted) {
+        if (branchResult.ok && branchResult.worktree?.created) {
+          const made = branchResult.worktree;
+          await discardCreatedWorktree(made.repoPath, branchResult.folder, made.mode === "branch-off" ? made.branch : undefined);
+        }
+        return cancelled();
+      }
 
       if (!branchResult.ok) {
         log.warn(`Blocked branch resolution: ${branchResult.message}`);
@@ -263,6 +297,9 @@ streamRouter.post("/new/message", async (req, res) => {
       // failure here leaves the chat exactly as it was before.
       workspaceId = captureWorktreeWorkspace(branchResult);
     } catch (err: any) {
+      // Cancelled: `resolveBranch` has already killed git and removed the
+      // half-made worktree.
+      if (isAbortError(err)) return cancelled();
       log.error(`Branch resolution failed: ${err.message}`);
       // A 500 with a readable string in `error`, because that is what the
       // client can do something with: Chat.tsx intercepts 409 for the two
@@ -270,6 +307,9 @@ streamRouter.post("/new/message", async (req, res) => {
       // verbatim (`setNetworkError`). A machine code there would put the code
       // on screen; git's own message at least says what went wrong.
       return res.status(500).json({ error: `Could not prepare the branch or worktree: ${err.message}` });
+    } finally {
+      // Past cancelling either way: from here the tracking id addresses the session.
+      creation.end();
     }
   }
 
@@ -323,12 +363,6 @@ streamRouter.post("/new/message", async (req, res) => {
     void cardId;
     void createCard;
     void cardCategory;
-
-    // Temp session key the client can address /stop with before chat_created
-    // arrives. Namespaced to "new-" so a caller can't claim (and then stop) the
-    // registry slot of a real chat id.
-    const safeClientTrackingId: string | undefined =
-      typeof clientTrackingId === "string" && clientTrackingId.length <= 80 && /^new-[A-Za-z0-9_-]+$/.test(clientTrackingId) ? clientTrackingId : undefined;
 
     const emitter = await sendMessage({
       chatView,
@@ -922,6 +956,12 @@ streamRouter.post("/:id/stop", (req, res) => {
     assertNativeAgentStoppable(chatId);
   } catch (error) {
     return res.status(409).json({ stopped: false, error: "native_child_read_only", message: (error as Error).message });
+  }
+  // A chat still preparing its branch or worktree has no session yet; the
+  // creation itself is what there is to stop.
+  if (cancelPendingCreation(chatId)) {
+    log.info(`Chat creation ${chatId} cancelled by user`);
+    return res.json({ stopped: true });
   }
   const stopped = stopSession(chatId);
   // Worth an info line: this is a deliberate user cancellation, and the run's

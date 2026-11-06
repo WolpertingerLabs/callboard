@@ -30,6 +30,18 @@ export function worktreeDirName(repoName: string, branch: string): string {
   return `${repoName}.${branch.replace(/\//g, "-")}`;
 }
 
+/**
+ * How long creating a chat's worktree may take before the daemon gives up —
+ * the `git worktree add` checkout, which on a large repository (or one with
+ * LFS smudge filters or checkout hooks) runs well past git's usual 10s budget.
+ *
+ * Shared because two sides have to agree on it: the backend kills the git
+ * process at this mark, and the new-chat screen draws the time remaining
+ * against it. A progress bar measured against a different number than the one
+ * that ends the wait would promise time the user does not have.
+ */
+export const WORKTREE_CREATE_TIMEOUT_MS = 60_000;
+
 export interface BranchConfig {
   baseBranch?: string;
   newBranch?: string;
