@@ -36,8 +36,46 @@ afterAll(() => {
   rmSync(tmp, { recursive: true, force: true });
   rmSync(dataDir, { recursive: true, force: true });
 });
+/**
+ * A point where a backfill parks until the test lets it go. `next()` resolves
+ * when the next one parks — the tests wait on events, never on a clock, so
+ * load cannot reorder them.
+ */
+interface HoldPoint {
+  hold<T>(value: T): Promise<T>;
+  next(): Promise<() => void>;
+  releaseAll(): void;
+}
+const holdPoints: HoldPoint[] = [];
+function holdPoint(): HoldPoint {
+  const parked: Array<() => void> = [];
+  const waiters: Array<() => void> = [];
+  const point: HoldPoint = {
+    hold: (value) =>
+      new Promise((resolve) => {
+        parked.push(() => resolve(value));
+        waiters.shift()?.();
+      }),
+    async next() {
+      while (parked.length === 0) await new Promise<void>((resolve) => waiters.push(resolve));
+      return parked.shift()!;
+    },
+    releaseAll: () => {
+      for (const release of parked.splice(0)) release();
+    },
+  };
+  holdPoints.push(point);
+  return point;
+}
+
 beforeEach(() => resetBackfillQueue());
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  // Whatever a failed test left parked is let go, and the module-level queue
+  // starts over, so one failure cannot hang every test after it.
+  for (const point of holdPoints.splice(0)) point.releaseAll();
+  resetBackfillQueue();
+});
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", ["-c", "user.email=t@example.com", "-c", "user.name=t", ...args], { cwd, encoding: "utf8", stdio: "pipe" }).trim();
@@ -326,9 +364,9 @@ describe("the queue", () => {
     // resolving it asks for the known repository's remote — the hold point.
     const rollout = writeJsonl("queue.jsonl", [sessionMeta(join(tmp, "queue-gone"), "feat/q", "2026-02-01T00:00:00Z")]);
     const chats = [makeChat(repo, { provider: "codex" }), makeChat(repo, { provider: "codex" }), makeChat(repo, { provider: "codex" })];
+    const gate = holdPoint();
     let inFlight = 0;
     let peak = 0;
-    const releases: Array<() => void> = [];
     const logPaths = vi.fn(() => {
       inFlight++;
       peak = Math.max(peak, inFlight);
@@ -336,13 +374,11 @@ describe("the queue", () => {
     });
     const held: BackfillDeps = deps([], {
       logPaths,
-      remoteUrl: () =>
-        new Promise((resolve) =>
-          releases.push(() => {
-            inFlight--;
-            resolve(null);
-          }),
-        ),
+      remoteUrl: async () => {
+        const remote = await gate.hold<string | null>(null);
+        inFlight--;
+        return remote;
+      },
     });
 
     const started = performance.now();
@@ -352,11 +388,8 @@ describe("the queue", () => {
     }
     expect(performance.now() - started).toBeLessThan(50);
 
-    // Release whatever is held until all three have run.
-    while (logPaths.mock.calls.length < 3 || releases.length > 0) {
-      await new Promise((r) => setTimeout(r, 5));
-      releases.shift()?.();
-    }
+    // Each backfill parks in turn; let each go once it has.
+    for (let i = 0; i < chats.length; i++) (await gate.next())();
     await backfillIdle();
     expect(logPaths).toHaveBeenCalledTimes(3);
     expect(peak).toBe(1);
@@ -372,12 +405,12 @@ describe("the queue", () => {
     const repo = makeRepo("app-priority");
     const rollout = writeJsonl("priority.jsonl", [sessionMeta(join(tmp, "priority-gone"), "feat/p", "2026-02-01T00:00:00Z")]);
     const [first, a, b, c] = [0, 1, 2, 3].map(() => makeChat(repo, { provider: "codex" }));
+    const gate = holdPoint();
     const order: string[] = [];
-    const releases: Array<() => void> = [];
     const held = (id: string): BackfillDeps =>
       deps([], {
         logPaths: () => (order.push(id), [rollout]),
-        remoteUrl: () => new Promise((resolve) => releases.push(() => resolve(null))),
+        remoteUrl: () => gate.hold<string | null>(null),
       });
     requestBackfill({ chatId: first.id, chat: first }, held("first")); // starts at once and holds
     requestBackfill({ chatId: a.id, chat: a }, held("a"));
@@ -385,12 +418,56 @@ describe("the queue", () => {
     requestBackfill({ chatId: c.id, chat: c, priority: true }, held("c")); // new, to the front
     requestBackfill({ chatId: b.id, chat: b, priority: true }, held("b")); // already waiting: moves up
     requestBackfill({ chatId: first.id, chat: first, priority: true }, held("first")); // running: left alone
-    while (order.length < 4 || releases.length > 0) {
-      await new Promise((r) => setTimeout(r, 5));
-      releases.shift()?.();
-    }
+    for (let i = 0; i < 4; i++) (await gate.next())();
     await backfillIdle();
     expect(order).toEqual(["first", "b", "c", "a"]);
+  });
+
+  it("starts over on reset, even with a backfill still held — no cascade into later tests", async () => {
+    const repo = makeRepo("app-reset");
+    const rollout = writeJsonl("reset.jsonl", [sessionMeta(join(tmp, "reset-gone"), "feat/r", "2026-02-01T00:00:00Z")]);
+    const [stuck, waiting] = [0, 1].map(() => makeChat(repo, { provider: "codex" }));
+    const gate = holdPoint();
+    const held = deps([rollout], { remoteUrl: () => gate.hold<string | null>(null) });
+    requestBackfill({ chatId: stuck.id, chat: stuck }, held);
+    requestBackfill({ chatId: waiting.id, chat: waiting }, held);
+    const release = await gate.next(); // the first is parked; the second waits behind it
+
+    resetBackfillQueue();
+    await backfillIdle(); // idle at once: nothing counted as running or waiting
+
+    // A fresh request runs straight away instead of queueing behind the held one.
+    const fresh = makeChat(repo);
+    requestBackfill({ chatId: fresh.id, chat: fresh }, deps([]));
+    await backfillIdle();
+    expect(metaOf(fresh.id).gitTrailBackfilled).toBe(GIT_TRAIL_BACKFILL_VERSION);
+
+    // The held one settling later must not disturb the new queue's count —
+    // without the guard it would drive it to -1 and let two run at once.
+    const staleWrote = new Promise<void>((resolve) => {
+      const write = chatFileService.updateChatMetadataForRecord.bind(chatFileService);
+      vi.spyOn(chatFileService, "updateChatMetadataForRecord").mockImplementation((record, fields, opts) => {
+        const result = write(record, fields, opts);
+        if (record.id === stuck.id) resolve();
+        return result;
+      });
+    });
+    release();
+    await staleWrote;
+    await Promise.resolve(); // its queue bookkeeping runs right after
+
+    const next = holdPoint();
+    const started: string[] = [];
+    const [x, y] = [0, 1].map(() => makeChat(repo, { provider: "codex" }));
+    const nextDeps = (id: string) => deps([], { logPaths: () => (started.push(id), [rollout]), remoteUrl: () => next.hold<string | null>(null) });
+    requestBackfill({ chatId: x.id, chat: x }, nextDeps("x"));
+    requestBackfill({ chatId: y.id, chat: y }, nextDeps("y"));
+    const releaseX = await next.next();
+    expect(started).toEqual(["x"]); // y waits: still one at a time
+    releaseX();
+    (await next.next())();
+    await backfillIdle();
+    expect(started).toEqual(["x", "y"]);
   });
 
   it("does not re-queue a chat that has no stored record", async () => {

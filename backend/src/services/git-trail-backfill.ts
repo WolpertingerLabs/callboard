@@ -385,11 +385,19 @@ let running = 0;
 /** Settles when the queue drains — for tests. */
 let idleWaiters: Array<() => void> = [];
 
+/**
+ * Bumped by {@link resetBackfillQueue}. A backfill that settles after a reset
+ * belongs to the queue that was reset, and must not touch the new one's count.
+ */
+let generation = 0;
+
 function pump(): void {
   while (running < BACKFILL_CONCURRENCY && waiting.length > 0) {
     const { run } = waiting.shift()!;
+    const startedIn = generation;
     running++;
     void run().finally(() => {
+      if (startedIn !== generation) return;
       running--;
       if (running === 0 && waiting.length === 0) {
         for (const resolve of idleWaiters) resolve();
@@ -470,7 +478,19 @@ export function backfillIdle(): Promise<void> {
   return new Promise((resolve) => idleWaiters.push(resolve));
 }
 
-/** Forget what has run. For tests. */
+/**
+ * Start the queue over: forget what has run, drop what is waiting, and stop
+ * counting what is still running (it settles into a queue that no longer
+ * exists), then wake anyone waiting for idle. For tests — so a test that
+ * fails while a backfill is held cannot leave the queue busy for the rest of
+ * the file.
+ */
 export function resetBackfillQueue(): void {
+  generation++;
+  running = 0;
+  waiting.length = 0;
+  inFlight.clear();
   finished.clear();
+  for (const resolve of idleWaiters) resolve();
+  idleWaiters = [];
 }
