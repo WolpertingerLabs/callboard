@@ -85,3 +85,48 @@ export function readSidebarFolder(meta: { sidebarFolder?: unknown } | null | und
   const value = raw.trim();
   return value === "" ? undefined : value;
 }
+
+/**
+ * Starred folders — `AgentSettings.starredSidebarFolders`. A star is the one
+ * thing that keeps a folder name offered in "Move to folder" with no chat
+ * naming it; everything else about folders is still "a chat names it".
+ *
+ * Both helpers match by {@link sameSidebarFolder}, the rule the dialog and the
+ * route already file by, so "Work" starred and "work" filed are one folder and
+ * one star.
+ */
+
+/** Whether `list` already holds `name` as a folder (case-insensitively). */
+export function includesSidebarFolder(list: readonly string[], name: string): boolean {
+  return list.some((entry) => sameSidebarFolder(entry, name));
+}
+
+/**
+ * Apply a star/unstar delta to the starred list as it is stored. Each name is
+ * validated with {@link parseSidebarFolder}; an invalid or empty one is
+ * dropped rather than rejected, since a delta only names what it touches.
+ *
+ * Removes first, then adds — so a name in both ends up starred. A remove drops
+ * every spelling it matches; an add is skipped when any spelling is already
+ * there, keeping the stored one. Adds append, so the list is in starring order
+ * (the dialog sorts for display; the order here is just history).
+ */
+export function applyStarredSidebarFolderDelta(current: readonly string[], delta: { add?: readonly unknown[]; remove?: readonly unknown[] }): string[] {
+  const valid = (raw: readonly unknown[] | undefined): string[] =>
+    (raw ?? []).flatMap((entry) => {
+      const parsed = parseSidebarFolder(entry);
+      return parsed.ok && parsed.value !== null ? [parsed.value] : [];
+    });
+  const removed = valid(delta.remove);
+  const next: string[] = [];
+  for (const raw of current) {
+    const parsed = parseSidebarFolder(raw);
+    if (!parsed.ok || parsed.value === null) continue;
+    if (includesSidebarFolder(removed, parsed.value) || includesSidebarFolder(next, parsed.value)) continue;
+    next.push(parsed.value);
+  }
+  for (const name of valid(delta.add)) {
+    if (!includesSidebarFolder(next, name)) next.push(name);
+  }
+  return next;
+}

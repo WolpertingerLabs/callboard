@@ -59,6 +59,7 @@ import {
   saveChatsShowArchived,
 } from "../utils/localStorage";
 import { errorMessage } from "../utils/errorMessage";
+import { useFavorites } from "../utils/favorites";
 import { chatMeta, withChatMeta } from "../utils/chatMeta";
 import type { ChatRouteState } from "../types/chatRouteState";
 
@@ -146,6 +147,9 @@ export default function ChatList({
   const [moveTarget, setMoveTarget] = useState<{ chatIds: string[]; subject: string; currentSpaceId?: string } | null>(null);
   /** The row whose "Move to folder" dialog is open: its root chat, and the folder it is in now. */
   const [folderTarget, setFolderTarget] = useState<{ chatId: string; subject: string; currentFolder?: string; pinned: boolean } | null>(null);
+  // Starred folders for the dialog — fetched only while it is open, since
+  // nothing else on this page draws them.
+  const starredFolders = useFavorites("folders", folderTarget !== null);
   const isMobile = useIsMobile();
   const [chats, setChats] = useState<Chat[]>([]);
   const [hasMore, setHasMore] = useState(false);
@@ -1901,6 +1905,10 @@ export default function ChatList({
           currentFolder={folderTarget.currentFolder}
           pinned={folderTarget.pinned}
           existingFolders={existingSidebarFolders}
+          starredFolders={starredFolders.favorites}
+          onToggleStar={starredFolders.toggle}
+          starDisabled={!starredFolders.ready}
+          starError={starredFolders.ready ? starredFolders.writeError : starredFolders.error}
           onSubmit={(folder) => handleSetFolder(folderTarget.chatId, folder)}
           onClose={() => setFolderTarget(null)}
         />

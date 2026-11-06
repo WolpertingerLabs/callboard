@@ -456,3 +456,37 @@ describe("orderByFavorites / missingFavorites", () => {
     expect(missingFavorites(items, ["c", "gone", "a", "also-gone"], (i) => i.id)).toEqual(["gone", "also-gone"]);
   });
 });
+
+describe("useFavorites — starred sidebar folders", () => {
+  it("reads the folders list, and an older daemon's missing field as empty", async () => {
+    getFavorites.mockResolvedValue({ ...lists(["a"]), starredSidebarFolders: ["Work"] });
+    const { useFavorites } = await loadFavorites();
+    const { result } = renderHook(() => useFavorites("folders"));
+    await waitFor(() => expect(result.current.favorites).toEqual(["Work"]));
+
+    getFavorites.mockResolvedValue(lists(["a"]));
+    const fresh = await loadFavorites();
+    const { result: older } = renderHook(() => fresh.useFavorites("folders"));
+    await waitFor(() => expect(older.current.ready).toBe(true));
+    expect(older.current.favorites).toEqual([]);
+  });
+
+  it("toggles by the folder identity rule — any spelling is the same star — and sends a folders delta", async () => {
+    getFavorites.mockResolvedValue({ ...lists(), starredSidebarFolders: ["Work"] });
+    const { useFavorites } = await loadFavorites();
+    const { result } = renderHook(() => useFavorites("folders"));
+    await waitFor(() => expect(result.current.ready).toBe(true));
+    expect(result.current.isFavorite("work")).toBe(true);
+
+    patchFavorites.mockResolvedValue({ ...lists(), starredSidebarFolders: [] });
+    act(() => result.current.toggle("work"));
+    // The optimistic overlay drops the stored spelling, not just an exact match.
+    expect(result.current.favorites).toEqual([]);
+    await waitFor(() => expect(patchFavorites).toHaveBeenLastCalledWith({ folders: { remove: ["work"] } }));
+
+    patchFavorites.mockResolvedValue({ ...lists(), starredSidebarFolders: ["Side"] });
+    act(() => result.current.toggle("Side"));
+    await waitFor(() => expect(patchFavorites).toHaveBeenLastCalledWith({ folders: { add: ["Side"] } }));
+    await waitFor(() => expect(result.current.favorites).toEqual(["Side"]));
+  });
+});

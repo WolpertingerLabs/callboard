@@ -83,6 +83,14 @@
  * A stale read is discarded and, once no write is outstanding, retried, so the
  * cache converges on the daemon rather than on whatever a write returned.
  *
+ * ## Starred sidebar folders share all of this
+ *
+ * The `"folders"` kind — the stars in "Move to folder" — is the same shape of
+ * data with the same two-tab hazard, so it rides in the same cache and the
+ * same PATCH. The one difference is identity: folder names match
+ * case-insensitively (`sameSidebarFolder`), as the daemon applies them, so the
+ * optimistic overlay uses that rule too.
+ *
  * ## Coming back to a backgrounded tab
  *
  * The cache has no TTL and nothing pushes favorites, so a tab left open while
@@ -92,13 +100,25 @@
  * returning to a tab resyncs it before the user can click anything in it.
  */
 import { useCallback, useEffect, useSyncExternalStore } from "react";
+import { includesSidebarFolder, sameSidebarFolder } from "shared/types/sidebarFolder.js";
 import { getFavorites, patchFavorites, type FavoriteLists, type FavoritesDelta, type IdDelta } from "../api";
 
-export type FavoriteKind = "skills" | "jobs";
+export type FavoriteKind = "skills" | "jobs" | "folders";
 
 type Lists = Record<FavoriteKind, string[]>;
 
-const EMPTY: Lists = { skills: [], jobs: [] };
+const EMPTY: Lists = { skills: [], jobs: [], folders: [] };
+
+const KINDS: readonly FavoriteKind[] = ["skills", "jobs", "folders"];
+
+/** Whether two entries of `kind` are the same entry — see the header on folders. */
+function sameEntry(kind: FavoriteKind, a: string, b: string): boolean {
+  return kind === "folders" ? sameSidebarFolder(a, b) : a === b;
+}
+
+function hasEntry(kind: FavoriteKind, list: readonly string[], id: string): boolean {
+  return kind === "folders" ? includesSidebarFolder(list, id) : list.includes(id);
+}
 
 /** Shown on the disabled star and next to the launchpad's retry. */
 export const FAVORITES_ERROR = "Could not reach the daemon to load your favorites.";
@@ -156,6 +176,7 @@ function fromWire(wire: FavoriteLists): Lists {
   return {
     skills: Array.isArray(wire.favoriteSkills) ? wire.favoriteSkills : [],
     jobs: Array.isArray(wire.favoriteJobs) ? wire.favoriteJobs : [],
+    folders: Array.isArray(wire.starredSidebarFolders) ? wire.starredSidebarFolders : [],
   };
 }
 
@@ -246,17 +267,17 @@ function toggleFavorite(kind: FavoriteKind, id: string): void {
 
   const base = pending ?? server;
   const before = base[kind];
-  const removing = before.includes(id);
+  const removing = hasEntry(kind, before, id);
   // Append rather than insert — a new favorite joining at the end keeps the
   // positions the user has already learned for the existing ones, and matches
   // what the daemon does with an `add`.
-  const next = removing ? before.filter((v) => v !== id) : [...before, id];
+  const next = removing ? before.filter((v) => !sameEntry(kind, v, id)) : [...before, id];
   const change: IdDelta = removing ? { remove: [id] } : { add: [id] };
   queueWrite({ [kind]: change }, { ...base, [kind]: next });
 }
 
 /**
- * Un-star several ids at once, across both kinds.
+ * Un-star several ids at once, across kinds.
  *
  * The caller for this is the launchpad's "these pinned items no longer exist"
  * note: the skill was renamed, so there is no row left anywhere in Settings
@@ -271,13 +292,13 @@ export function dropFavorites(ids: Partial<Record<FavoriteKind, string[]>>): voi
   const base = pending ?? server;
   const delta: FavoritesDelta = {};
   const optimistic: Lists = { ...base };
-  for (const kind of ["skills", "jobs"] as const) {
-    const remove = ids[kind]?.filter((id) => base[kind].includes(id)) ?? [];
+  for (const kind of KINDS) {
+    const remove = ids[kind]?.filter((id) => hasEntry(kind, base[kind], id)) ?? [];
     if (remove.length === 0) continue;
     delta[kind] = { remove };
-    optimistic[kind] = base[kind].filter((id) => !remove.includes(id));
+    optimistic[kind] = base[kind].filter((id) => !hasEntry(kind, remove, id));
   }
-  if (!delta.skills && !delta.jobs) return;
+  if (!delta.skills && !delta.jobs && !delta.folders) return;
 
   queueWrite(delta, optimistic);
 }
@@ -338,7 +359,7 @@ export function useFavorites(
 
   const favorites = current.lists[kind];
 
-  const isFavorite = useCallback((id: string) => favorites.includes(id), [favorites]);
+  const isFavorite = useCallback((id: string) => hasEntry(kind, favorites, id), [kind, favorites]);
 
   const toggle = useCallback((id: string) => toggleFavorite(kind, id), [kind]);
 
