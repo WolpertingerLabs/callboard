@@ -158,6 +158,18 @@ describe("ChatList in a space", () => {
     await waitFor(() => expect(moveToSpace).toHaveBeenCalledWith("default", { chatIds: ["work chat"] }));
   });
 
+  it("offers Move to space… on the selection bar as a named icon button", async () => {
+    renderWith({});
+    const title = await screen.findByText("work chat");
+    fireEvent.click(title, { metaKey: true });
+
+    const button = await screen.findByRole("button", { name: "Move to space…" });
+    expect(button.textContent).toBe("");
+    expect(button.getAttribute("title")).toBe("Move to space…");
+    fireEvent.click(button);
+    expect(await screen.findByRole("dialog", { name: "Move to space" })).toBeTruthy();
+  });
+
   it("starts a new space from one page, however deep the last one was paged", async () => {
     vi.mocked(listChats).mockImplementation(async () => ({ ...listResponse([makeChat("work chat", "sp_work")]), hasMore: true, windowRows: 20 }));
     const ui = (activeSpaceId: string) => (

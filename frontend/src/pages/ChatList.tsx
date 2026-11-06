@@ -2,7 +2,7 @@ import { filterChatRows } from "shared/types/chat-filters.js";
 import { publishChatView, stopChatViewPublisher } from "../utils/chat-view.js";
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { ChevronDown, ChevronRight, FileText } from "lucide-react";
+import { Archive, ArchiveRestore, ChevronDown, ChevronRight, FileText, Layers, Trash2 } from "lucide-react";
 import {
   listChats,
   deleteChat,
@@ -1207,7 +1207,7 @@ export default function ChatList({
    * Select two rows, search until neither matches — the bar goes, which reads
    * as "selection gone" — then clear the search: without this, `rawSelectedIds`
    * is still holding both ids, they match the rows again, and the bar comes
-   * back saying "2 chats selected" over rows the user stopped thinking about
+   * back saying "2 chats" over rows the user stopped thinking about
    * minutes ago. The next button press acts on them.
    *
    * `bulkError` is deliberately left alone: a "2 of 5 could not be deleted"
@@ -1451,6 +1451,7 @@ export default function ChatList({
             key: "lifecycle",
             label: `${selectionScope === "open" ? "Archive" : "Unarchive"} ${selectedIds.size} ${selectedIds.size === 1 ? "chat" : "chats"}`,
             onRun: runBulkArchive,
+            icon: selectionScope === "open" ? <Archive size={16} /> : <ArchiveRestore size={16} />,
           },
         ]
       : []),
@@ -1460,6 +1461,7 @@ export default function ChatList({
             key: "space",
             label: "Move to space…",
             onRun: () => setMoveTarget({ chatIds: [...selectedIds], subject: `${selectedIds.size} ${selectedIds.size === 1 ? "chat" : "chats"}` }),
+            icon: <Layers size={16} />,
           },
         ]
       : []),
@@ -1468,6 +1470,7 @@ export default function ChatList({
       label: `Delete ${selectedIds.size} ${selectedIds.size === 1 ? "chat" : "chats"}`,
       onRun: () => setBulkDeleteConfirm(true),
       danger: true,
+      icon: <Trash2 size={16} />,
     },
   ];
 
@@ -1837,9 +1840,11 @@ export default function ChatList({
         <SelectionBar
           position="absolute"
           count={selectedIds.size}
-          // The count names its unit, like both action labels — see
-          // `bulkActions`.
-          noun={selectedIds.size === 1 ? "chat selected" : "chats selected"}
+          // The count names its unit, like the action labels — see
+          // `bulkActions`. No "selected": the checked rows already say so,
+          // and the sidebar has no width to spare for it.
+          noun={selectedIds.size === 1 ? "chat" : "chats"}
+          compact
           onMeasure={setBarHeight}
           // Mobile has no Ctrl/Cmd+A, so the button is the only way to reach
           // "all of them" there.

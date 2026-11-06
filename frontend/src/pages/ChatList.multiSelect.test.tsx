@@ -174,8 +174,15 @@ function row(preview: string) {
   return screen.getByText(preview).closest('div[style*="border-bottom"]') as HTMLElement;
 }
 
+/** The count the bar SHOWS — its visually-hidden " selected" is for screen readers; see `announced`. */
 function count() {
-  return screen.queryByText(/\d+ chats? selected/)?.textContent ?? null;
+  const live = screen.queryByText(/^\d+ chats?$/);
+  return live ? [...live.childNodes].filter((n) => n.nodeType === Node.TEXT_NODE).map((n) => n.textContent).join("") : null;
+}
+
+/** What the bar's live region announces. */
+function announced() {
+  return document.querySelector('[aria-live="polite"]')?.textContent ?? null;
 }
 
 /**
@@ -197,11 +204,11 @@ function selectedPreviews() {
     .map((box) => box.getAttribute("aria-label")?.replace("Select ", ""));
 }
 
-/** The bar's action buttons, excluding Cancel and Select all. */
+/** The bar's action buttons, excluding Cancel and Select all — by accessible name, since they are icon-only. */
 function actionLabels() {
   return screen
     .getAllByRole("button")
-    .map((b) => b.textContent ?? "")
+    .map((b) => b.getAttribute("aria-label") ?? "")
     .filter((text) => /^(Archive|Unarchive|Delete) /.test(text));
 }
 
@@ -229,7 +236,7 @@ describe("entering selection mode", () => {
     await mount();
     fireEvent.click(row("chat one"), init);
 
-    expect(count()).toBe("1 chat selected");
+    expect(count()).toBe("1 chat");
     expect(selectedPreviews()).toEqual(["chat one"]);
   });
 
@@ -243,12 +250,12 @@ describe("entering selection mode", () => {
   it("right-click enters selection mode, and the click that may follow does not undo it", async () => {
     await mount();
     fireEvent.contextMenu(row("chat one"));
-    expect(count()).toBe("1 chat selected");
+    expect(count()).toBe("1 chat");
 
     // macOS turns Ctrl+click into a synthetic right-click and may deliver BOTH
     // contextmenu and a ctrl-click.
     fireEvent.click(row("chat one"), { ctrlKey: true });
-    expect(count()).toBe("1 chat selected");
+    expect(count()).toBe("1 chat");
   });
 
   it("does not open a chat while selecting", async () => {
@@ -256,7 +263,7 @@ describe("entering selection mode", () => {
     fireEvent.click(row("chat one"), { metaKey: true });
     fireEvent.click(row("chat two"));
 
-    expect(count()).toBe("2 chats selected");
+    expect(count()).toBe("2 chats");
   });
 });
 
@@ -327,7 +334,7 @@ describe("shift+click ranges", () => {
     fireEvent.click(row("chat three"), { shiftKey: true });
 
     expect(selectedPreviews()).toEqual(["chat one", "chat two", "chat three"]);
-    expect(count()).toBe("3 chats selected");
+    expect(count()).toBe("3 chats");
   });
 
   /*
@@ -350,7 +357,7 @@ describe("shift+click ranges", () => {
 
     // `c` sits between b and d by date, but renders in Recent.
     expect(selectedPreviews()).toEqual(["chat b", "chat d"]);
-    expect(count()).toBe("2 chats selected");
+    expect(count()).toBe("2 chats");
   });
 
   it("never sweeps a row folded away under a collapsed folder header", async () => {
@@ -363,7 +370,7 @@ describe("shift+click ranges", () => {
 
     // `b` is between a and c by recency, and hidden: a bulk delete over this
     // selection must not reach it.
-    expect(count()).toBe("2 chats selected");
+    expect(count()).toBe("2 chats");
     expect(selectedPreviews()).toEqual(["chat a", "chat c"]);
   });
 
@@ -373,7 +380,7 @@ describe("shift+click ranges", () => {
     fireEvent.click(row("chat a"), { metaKey: true });
     fireEvent.keyDown(row("chat a"), { key: "a", ctrlKey: true });
 
-    expect(count()).toBe("2 chats selected");
+    expect(count()).toBe("2 chats");
   });
 });
 
@@ -385,11 +392,36 @@ describe("the archive scope", () => {
     expect(actionLabels()).toEqual(["Archive 1 chat", "Delete 1 chat"]);
   });
 
+  it("draws the bar's buttons as icons, each named and titled with its full action", async () => {
+    await mount();
+    fireEvent.click(row("chat one"), { metaKey: true });
+    fireEvent.click(row("chat two"), { metaKey: true });
+
+    // The sidebar is too narrow for the words, so they live in the name and
+    // the tooltip instead — nothing a screen reader or a hover hears is lost.
+    for (const name of ["Archive 2 chats", "Delete 2 chats", "Cancel"]) {
+      const button = screen.getByRole("button", { name });
+      expect(button.textContent).toBe("");
+      expect(button.getAttribute("title")).toBe(name);
+    }
+  });
+
+  it("shows the bare count but announces it as a selection", async () => {
+    await mount();
+    fireEvent.click(row("chat one"), { metaKey: true });
+
+    expect(count()).toBe("1 chat");
+    expect(announced()).toBe("1 chat selected");
+  });
+
   it("offers Unarchive when the selection started on an archived row", async () => {
     await mount();
     fireEvent.click(row("chat old"), { metaKey: true });
 
     expect(actionLabels()).toEqual(["Unarchive 1 chat", "Delete 1 chat"]);
+    const unarchive = screen.getByRole("button", { name: "Unarchive 1 chat" });
+    expect(unarchive.textContent).toBe("");
+    expect(unarchive.getAttribute("title")).toBe("Unarchive 1 chat");
   });
 
   it("offers Archive for a chat on no card at all", async () => {
@@ -418,7 +450,7 @@ describe("the archive scope", () => {
       expect(row(preview).style.opacity).toBe("0.35");
       fireEvent.click(row(preview));
     }
-    expect(count()).toBe("1 chat selected");
+    expect(count()).toBe("1 chat");
     expect(selectedPreviews()).toEqual(["chat one"]);
   });
 
@@ -445,7 +477,7 @@ describe("leaving selection mode", () => {
     fireEvent.click(row("chat one"), { metaKey: true });
     fireEvent.keyDown(screen.getByPlaceholderText(/Search chat contents/), { key: "Escape" });
 
-    expect(count()).toBe("1 chat selected");
+    expect(count()).toBe("1 chat");
   });
 
   it("Cancel exits", async () => {
@@ -488,7 +520,7 @@ describe("Ctrl+A", () => {
     fireEvent.keyDown(screen.getByPlaceholderText(/Search chat contents/), { key: "a", ctrlKey: true });
 
     // Select-all inside a text field is select-all of the TEXT.
-    expect(count()).toBe("1 chat selected");
+    expect(count()).toBe("1 chat");
   });
 });
 
@@ -527,11 +559,11 @@ describe("collapsing a section drops its rows from the selection", () => {
     await mount(CHATS3, []);
     fireEvent.click(row("chat b"), { metaKey: true });
     fireEvent.click(row("chat a"));
-    expect(count()).toBe("2 chats selected");
+    expect(count()).toBe("2 chats");
 
     fireEvent.click(workHeader());
     expect(screen.queryByText("chat b")).toBeNull();
-    expect(count()).toBe("1 chat selected");
+    expect(count()).toBe("1 chat");
 
     mockBulkArchive.mockResolvedValue({ updated: [moved("a", "a", true, false)], failed: [] });
     await act(async () => {
@@ -550,7 +582,7 @@ describe("collapsing a section drops its rows from the selection", () => {
 
     expect(screen.getByText("chat b")).toBeTruthy();
     expect(selectedPreviews()).toEqual(["chat a"]);
-    expect(count()).toBe("1 chat selected");
+    expect(count()).toBe("1 chat");
   });
 
   it("leaves selection mode when the collapse hid everything selected", async () => {
@@ -570,13 +602,13 @@ describe("collapsing a section drops its rows from the selection", () => {
     fireEvent.click(workHeader());
     // That emptied the selection; start again on a visible row.
     fireEvent.contextMenu(row("chat a"));
-    expect(count()).toBe("1 chat selected");
+    expect(count()).toBe("1 chat");
 
     const selectAll = screen.getByRole("button", { name: "Select all" }) as HTMLButtonElement;
     // `c` is visible and unchecked, so "all" has not been reached.
     expect(selectAll.disabled).toBe(false);
     fireEvent.click(selectAll);
-    expect(count()).toBe("2 chats selected");
+    expect(count()).toBe("2 chats");
     expect(selectedPreviews()).toEqual(["chat a", "chat c"]);
     expect(selectAll.disabled).toBe(true);
   });
@@ -588,10 +620,10 @@ describe("collapsing a section drops its rows from the selection", () => {
     fireEvent.click(row("chat b"));
     fireEvent.click(workHeader());
     // `b` left the selection at the collapse, visibly — not at Select all.
-    expect(count()).toBe("1 chat selected");
+    expect(count()).toBe("1 chat");
 
     fireEvent.click(screen.getByRole("button", { name: "Select all" }));
-    expect(count()).toBe("2 chats selected");
+    expect(count()).toBe("2 chats");
     expect(selectedPreviews()).toEqual(["chat a", "chat c"]);
   });
 
@@ -601,7 +633,7 @@ describe("collapsing a section drops its rows from the selection", () => {
     fireEvent.click(row("chat b"));
     fireEvent.click(workHeader());
     fireEvent.keyDown(row("chat a"), { key: "a", ctrlKey: true });
-    expect(count()).toBe("2 chats selected");
+    expect(count()).toBe("2 chats");
 
     mockBulkArchive.mockResolvedValue({ updated: [moved("a", "a", true, false), moved("c", "c", true, false)], failed: [] });
     await act(async () => {
@@ -630,15 +662,15 @@ describe("rows folded away by a refresh or a stored collapse leave the selection
 
     fireEvent.click(row("chat a"), { metaKey: true });
     fireEvent.click(row("chat c"));
-    expect(count()).toBe("2 chats selected");
+    expect(count()).toBe("2 chats");
 
     await refreshWith([before[0], before[1], makeChat("c", "chat c", { sidebarFolder: "Work" })]);
     await waitFor(() => expect(screen.queryByText("chat c")).toBeNull());
-    expect(count()).toBe("1 chat selected");
+    expect(count()).toBe("1 chat");
 
     fireEvent.click(screen.getByRole("button", { name: /^Work \(2\)$/ }));
     expect(screen.getByText("chat c")).toBeTruthy();
-    expect(count()).toBe("1 chat selected");
+    expect(count()).toBe("1 chat");
     expect(selectedPreviews()).toEqual(["chat a"]);
   });
 
@@ -648,17 +680,17 @@ describe("rows folded away by a refresh or a stored collapse leave the selection
     // Flat: nothing pinned or filed, so no headers and the stored fold is moot.
     fireEvent.click(row("chat b"), { metaKey: true });
     fireEvent.click(row("chat c"));
-    expect(count()).toBe("2 chats selected");
+    expect(count()).toBe("2 chats");
 
     // Filing `b` brings the sections in — and Recent, holding `c`, is collapsed.
     await refreshWith([flat[0], makeChat("b", "chat b", { sidebarFolder: "Work" }), flat[2]]);
     await waitFor(() => expect(screen.queryByText("chat c")).toBeNull());
-    expect(count()).toBe("1 chat selected");
+    expect(count()).toBe("1 chat");
 
     // Unfiling it takes the sections away and `c` is back on screen — unchecked.
     await refreshWith(flat);
     await waitFor(() => expect(screen.getByText("chat c")).toBeTruthy());
-    expect(count()).toBe("1 chat selected");
+    expect(count()).toBe("1 chat");
     expect(selectedPreviews()).toEqual(["chat b"]);
   });
 
@@ -667,10 +699,10 @@ describe("rows folded away by a refresh or a stored collapse leave the selection
     await mount(chats, [], { chatSectionsExpanded: { "folder:Work": false } });
     fireEvent.click(row("chat a"), { metaKey: true });
     fireEvent.keyDown(row("chat a"), { key: "a", ctrlKey: true });
-    expect(count()).toBe("2 chats selected");
+    expect(count()).toBe("2 chats");
 
     fireEvent.click(screen.getByRole("button", { name: /^Work \(1\)$/ }));
-    expect(count()).toBe("2 chats selected");
+    expect(count()).toBe("2 chats");
     expect(selectedPreviews()).toEqual(["chat a", "chat c"]);
   });
 
@@ -716,7 +748,7 @@ describe("a filter that re-sections a selected row does not reap it", () => {
     expect(screen.queryByText("chat x")).toBeNull();
     fireEvent.click(row("chat p"), { metaKey: true });
     fireEvent.click(row("chat r"));
-    expect(count()).toBe("2 chats selected");
+    expect(count()).toBe("2 chats");
   }
 
   it("content search", async () => {
@@ -728,12 +760,12 @@ describe("a filter that re-sections a selected row does not reap it", () => {
     // `c` no longer matches, so the r-group reads unpinned and falls into
     // collapsed Recent: hidden from the selection while the search is up.
     await waitFor(() => expect(screen.queryByText("chat r")).toBeNull());
-    expect(count()).toBe("1 chat selected");
+    expect(count()).toBe("1 chat");
 
     fireEvent.change(input, { target: { value: "" } });
     fireEvent.keyDown(input, { key: "Enter" });
     await waitFor(() => expect(screen.getByText("chat r")).toBeTruthy());
-    expect(count()).toBe("2 chats selected");
+    expect(count()).toBe("2 chats");
     expect(selectedPreviews()).toEqual(["chat p", "chat r"]);
   });
 
@@ -750,11 +782,11 @@ describe("a filter that re-sections a selected row does not reap it", () => {
 
     setExclude(true);
     await waitFor(() => expect(screen.queryByText("chat r")).toBeNull());
-    expect(count()).toBe("1 chat selected");
+    expect(count()).toBe("1 chat");
 
     setExclude(false);
     await waitFor(() => expect(screen.getByText("chat r")).toBeTruthy());
-    expect(count()).toBe("2 chats selected");
+    expect(count()).toBe("2 chats");
     expect(selectedPreviews()).toEqual(["chat p", "chat r"]);
   });
 });
@@ -816,7 +848,7 @@ describe("bulk archive", () => {
     fireEvent.click(row("chat three"), { metaKey: true });
     fireEvent.click(row("chat four"));
 
-    expect(count()).toBe("2 chats selected");
+    expect(count()).toBe("2 chats");
     mockBulkArchive.mockResolvedValue({ updated: [moved("three", "c-shared", true), moved("four", "c-shared", true)], failed: [] });
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Archive 2 chats" }));
@@ -900,7 +932,7 @@ describe("bulk archive", () => {
     });
 
     await screen.findByText("network down");
-    expect(count()).toBe("1 chat selected");
+    expect(count()).toBe("1 chat");
   });
 });
 
@@ -995,7 +1027,7 @@ describe("bulk delete", () => {
     fireEvent.click(cancels[cancels.length - 1]);
 
     expect(mockBulkDelete).not.toHaveBeenCalled();
-    expect(count()).toBe("2 chats selected");
+    expect(count()).toBe("2 chats");
   });
 });
 
@@ -1004,7 +1036,7 @@ describe("reconciling against a refresh", () => {
     await mount();
     fireEvent.click(row("chat one"), { metaKey: true });
     fireEvent.click(row("chat two"));
-    expect(count()).toBe("2 chats selected");
+    expect(count()).toBe("2 chats");
 
     // Another client deleted "chat two"; the next refresh no longer returns it.
     mockListChats.mockResolvedValue(listResponse(CHATS.filter((c) => c.id !== "two")));
@@ -1015,7 +1047,7 @@ describe("reconciling against a refresh", () => {
     await waitFor(() => expect(screen.queryByText("chat two")).toBeNull());
     // A count of 2 with one row on screen is a number the user cannot
     // reconcile with what they can see.
-    expect(count()).toBe("1 chat selected");
+    expect(count()).toBe("1 chat");
   });
 
   it("leaves selection mode when every selected chat has vanished", async () => {
@@ -1035,7 +1067,7 @@ describe("reconciling against a refresh", () => {
     await mount();
     fireEvent.click(row("chat one"), { metaKey: true });
     fireEvent.click(row("chat two"));
-    expect(count()).toBe("2 chats selected");
+    expect(count()).toBe("2 chats");
 
     // Someone archived c-two on the board. The row is still here (Archived is
     // on) but it is no longer in this selection's scope, and an archived card
@@ -1045,7 +1077,7 @@ describe("reconciling against a refresh", () => {
       refreshList();
     });
 
-    await waitFor(() => expect(count()).toBe("1 chat selected"));
+    await waitFor(() => expect(count()).toBe("1 chat"));
     expect(selectedPreviews()).toEqual(["chat one"]);
   });
 });
@@ -1128,7 +1160,7 @@ describe("the list's own layout", () => {
     // confines it is the pair: `absolute` on the bar, `relative` on the list
     // root it is a child of. jsdom computes no layout, so the relationship is
     // asserted structurally rather than through offsetParent.
-    const bar = screen.getByText("1 chat selected").parentElement as HTMLElement;
+    const bar = screen.getByText("1 chat").parentElement as HTMLElement;
     expect(bar.style.position).toBe("absolute");
     expect((bar.parentElement as HTMLElement).style.position).toBe("relative");
   });
@@ -1149,7 +1181,7 @@ describe("a selection whose rows all go away", () => {
     await mount();
     fireEvent.click(row("chat one"), { metaKey: true });
     fireEvent.click(row("chat two"));
-    expect(count()).toBe("2 chats selected");
+    expect(count()).toBe("2 chats");
 
     // A search that matches nothing empties the list. The bar goes with it,
     // which the user reads as "the selection is gone".
@@ -1159,7 +1191,7 @@ describe("a selection whose rows all go away", () => {
     submitSearch("");
     await waitFor(() => expect(screen.getByText("chat one")).toBeTruthy());
     // Derivation alone would have kept both ids in the raw set and put the bar
-    // straight back at "2 chats selected", over rows the user stopped thinking
+    // straight back at "2 chats", over rows the user stopped thinking
     // about — with the action buttons live. The reaper is what forgets them.
     expect(count()).toBeNull();
     expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
@@ -1222,7 +1254,7 @@ describe("the shortcuts stay inside the list", () => {
     // Deliberate: the same rule that protects Cmd+A applies to Escape, so an
     // Escape the transcript is handling does not also drop the selection. The
     // bar's Cancel button is always available.
-    expect(count()).toBe("1 chat selected");
+    expect(count()).toBe("1 chat");
   });
 });
 
@@ -1251,6 +1283,6 @@ describe("before the cards land", () => {
     });
 
     fireEvent.click(row("chat one"), { metaKey: true });
-    expect(count()).toBe("1 chat selected");
+    expect(count()).toBe("1 chat");
   });
 });

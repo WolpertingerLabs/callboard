@@ -1,5 +1,6 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type CSSProperties, type ReactNode } from "react";
 import { X } from "lucide-react";
+import { visuallyHidden } from "../utils/visuallyHidden";
 
 export interface SelectionAction {
   key: string;
@@ -7,6 +8,8 @@ export interface SelectionAction {
   onRun: () => void;
   /** Renders in the danger colour — for an action with no inverse gesture. */
   danger?: boolean;
+  /** Shown in place of the label when the bar is `compact`; the label becomes its name and tooltip. */
+  icon?: ReactNode;
 }
 
 interface SelectionBarProps {
@@ -45,7 +48,30 @@ interface SelectionBarProps {
    * failure.
    */
   onMeasure?: (height: number) => void;
+  /**
+   * Icon-only buttons, for a surface too narrow for the words.
+   *
+   * The sidebar is a resizable column: at its narrow end "Archive 1 chat",
+   * "Move to space…" and "Delete 1 chat" wrapped inside their buttons and the
+   * last one ran off the edge. Compact renders Cancel and every action that
+   * has an `icon` as a square icon button whose label is its accessible name
+   * and its tooltip, so nothing is lost but the visible words. Opt-in: the
+   * board's bar spans the viewport and has room to say what it does.
+   */
+  compact?: boolean;
 }
+
+/** The fixed square an icon-only button takes, so a row of them lines up. */
+const ICON_BUTTON: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  width: 30,
+  height: 30,
+  padding: 0,
+  boxSizing: "border-box",
+  flexShrink: 0,
+};
 
 /**
  * The bar that appears while a multi-select gesture is live.
@@ -70,6 +96,7 @@ export default function SelectionBar({
   busy = false,
   position = "fixed",
   onMeasure,
+  compact = false,
 }: SelectionBarProps) {
   const barRef = useRef<HTMLDivElement>(null);
   // What the bar SAYS, as a dependency. The labels carry the counts, so a
@@ -108,8 +135,8 @@ export default function SelectionBar({
         display: "flex",
         alignItems: "center",
         flexWrap: onSelectAll ? "wrap" : "nowrap",
-        gap: 12,
-        padding: "12px 16px",
+        gap: compact ? 8 : 12,
+        padding: compact ? "10px 12px" : "12px 16px",
         background: "var(--surface)",
         borderTop: "1px solid var(--border)",
         boxShadow: "var(--shadow-md)",
@@ -119,6 +146,8 @@ export default function SelectionBar({
           reader gets from a tap that toggles rather than navigates. */}
       <span aria-live="polite" style={{ fontSize: 13, fontWeight: 600, color: "var(--text)", flexShrink: 0 }}>
         {count} {noun}
+        {/* Compact drops the word to save width; a screen reader has width to spare. */}
+        {compact && <span style={visuallyHidden}> selected</span>}
       </span>
 
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto" }}>
@@ -142,10 +171,12 @@ export default function SelectionBar({
         )}
         <button
           onClick={onCancel}
+          aria-label={compact ? "Cancel" : undefined}
+          title={compact ? "Cancel" : undefined}
           style={{
             display: "flex",
             alignItems: "center",
-            gap: 6,
+            gap: compact ? undefined : 6,
             background: "transparent",
             border: "1px solid var(--border)",
             color: "var(--text)",
@@ -153,35 +184,42 @@ export default function SelectionBar({
             borderRadius: 6,
             fontSize: 13,
             cursor: "pointer",
+            ...(compact && ICON_BUTTON),
           }}
         >
-          <X size={13} />
-          Cancel
+          <X size={compact ? 16 : 13} />
+          {!compact && "Cancel"}
         </button>
-        {actions.map((action) => (
-          <button
-            key={action.key}
-            onClick={action.onRun}
-            disabled={busy || count === 0}
-            style={{
-              // The FILL tokens, not the ink ones: --danger is the colour of an
-              // error message and is kept light enough to read on --danger-bg,
-              // which is too light to carry white text as a button. See the
-              // note above --danger-solid in index.css.
-              background: action.danger ? "var(--danger-solid)" : "var(--accent)",
-              color: action.danger ? "var(--text-on-danger)" : "var(--text-on-accent)",
-              border: "none",
-              padding: "7px 14px",
-              borderRadius: 6,
-              fontSize: 13,
-              fontWeight: 600,
-              cursor: busy || count === 0 ? "default" : "pointer",
-              opacity: busy || count === 0 ? 0.6 : 1,
-            }}
-          >
-            {action.label}
-          </button>
-        ))}
+        {actions.map((action) => {
+          const iconOnly = compact && action.icon !== undefined;
+          return (
+            <button
+              key={action.key}
+              onClick={action.onRun}
+              disabled={busy || count === 0}
+              aria-label={iconOnly ? action.label : undefined}
+              title={iconOnly ? action.label : undefined}
+              style={{
+                // The FILL tokens, not the ink ones: --danger is the colour of an
+                // error message and is kept light enough to read on --danger-bg,
+                // which is too light to carry white text as a button. See the
+                // note above --danger-solid in index.css.
+                background: action.danger ? "var(--danger-solid)" : "var(--accent)",
+                color: action.danger ? "var(--text-on-danger)" : "var(--text-on-accent)",
+                border: "none",
+                padding: "7px 14px",
+                borderRadius: 6,
+                fontSize: 13,
+                fontWeight: 600,
+                cursor: busy || count === 0 ? "default" : "pointer",
+                opacity: busy || count === 0 ? 0.6 : 1,
+                ...(iconOnly && ICON_BUTTON),
+              }}
+            >
+              {iconOnly ? action.icon : action.label}
+            </button>
+          );
+        })}
       </div>
     </div>
   );
