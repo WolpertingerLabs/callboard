@@ -134,6 +134,9 @@ function toNode(chat: Chat, meta: ChatMeta, budget?: LifecycleBudget): ChatTreeN
     ...(nativeAgent ? { nativeAgent } : {}),
     ...(typeof meta.chatStatus === "string" && meta.chatStatus && { chatStatus: meta.chatStatus }),
     ...(typeof meta.chatStatusEmoji === "string" && meta.chatStatusEmoji && { chatStatusEmoji: meta.chatStatusEmoji }),
+    // Only on a chat that has a parent: a root is archived through its card,
+    // and a stray flag on one (hand edit, pre-detach record) means nothing.
+    ...(meta.childArchived === true && getParentChatId(meta) && { childArchived: true }),
     folder: chat.folder,
     createdAt: chat.created_at,
     updatedAt: chat.updated_at,

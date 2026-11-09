@@ -122,6 +122,10 @@ export function detachChatFromParent(chat: { id: string; session_id?: string; me
       chatRole: undefined,
       forkedAt: undefined,
       card: undefined,
+      // A root is archived through its card; a per-child flag left behind
+      // would be read by nothing and come back if the chat were re-parented.
+      childArchived: undefined,
+      childArchivedAt: undefined,
       spaceId: spaceId === DEFAULT_SPACE_ID ? undefined : spaceId,
       detachedFrom: { parentChatId: parentId, at: new Date().toISOString() },
     },

@@ -124,6 +124,14 @@ export interface ChatTreeNode {
   status: "ongoing" | "waiting" | "stopped";
   chatStatus?: string;
   chatStatusEmoji?: string;
+  /**
+   * True when this CHILD chat was archived on its own (`metadata.childArchived`,
+   * PATCH /api/chats/:id/child-archive). Never set on the root, whose archive
+   * is its card's. Distinct from `Chat.archived`, which is the whole tree's.
+   * The sidebar hides the node and its subtree unless archived chats are
+   * shown. Absent means not archived — or an older daemon.
+   */
+  childArchived?: boolean;
   folder: string;
   createdAt: string;
   updatedAt: string;
