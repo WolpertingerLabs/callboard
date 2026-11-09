@@ -86,7 +86,7 @@ describe("PATCH /api/chats/:id/child-archive", () => {
     expect(metaOf(sibling.id)).not.toHaveProperty("childArchived");
     expect(clearListCaches).toHaveBeenCalled();
     // Other tabs refetch on it.
-    expect(notifyMetadata).toHaveBeenCalledWith(child.id, { cardEvent: "updated" });
+    expect(notifyMetadata).toHaveBeenCalledWith(child.id, { childArchived: true });
   });
 
   it("reports the flag on the child's tree node, and only there", async () => {

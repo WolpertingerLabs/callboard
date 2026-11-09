@@ -2180,9 +2180,10 @@ chatsRouter.patch("/:id/child-archive", (req, res) => {
         return res.status(500).json({ error: "Failed to update the child's archived flag" });
       }
       // Decides which rows the sidebar keeps, so cached pages are now wrong,
-      // and other tabs refetch on the event — as for the tree archive.
+      // and other tabs refetch on the event (any payload bumps their
+      // metadataVersion). Not a `cardEvent`: a child is not a card.
       clearListCaches();
-      sessionRegistry.notifyMetadata(chat.id, { cardEvent: "updated" });
+      sessionRegistry.notifyMetadata(chat.id, { childArchived: archived });
     }
     res.json(findChat(chat.id, false) ?? chat);
   } catch (err: any) {

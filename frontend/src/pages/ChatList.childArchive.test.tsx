@@ -42,8 +42,10 @@ vi.mock("../components/SidebarHeader", () => ({ default: () => <div /> }));
  * modal behind the real one is not what these tests are about.
  */
 vi.mock("../components/ChatFilterBar", () => ({
-  default: ({ viewOptions, onApply }: { viewOptions: unknown; onApply: (filters: unknown, view: unknown) => void }) => (
-    <button
+  default: ({ filters, viewOptions, onApply }: { filters: unknown; viewOptions: { showArchived: boolean }; onApply: (filters: unknown, view: unknown) => void }) => (
+    <>
+      <button onClick={() => onApply(filters, { ...viewOptions, showArchived: !viewOptions.showArchived })}>toggle show archived</button>
+      <button
       onClick={() =>
         onApply(
           {
@@ -57,7 +59,8 @@ vi.mock("../components/ChatFilterBar", () => ({
       }
     >
       apply date filter
-    </button>
+      </button>
+    </>
   ),
 }));
 vi.mock("../components/NewChatPanel", () => ({ default: () => <div /> }));
@@ -293,6 +296,50 @@ describe("ChatList child archive — optimistic rows and filters", () => {
     });
     expect(await screen.findByTitle(/chat tree$/)).toBeDefined();
     expect((await screen.findByRole("alert")).textContent).toContain("could not be archived");
+  });
+
+  it("a quick Archive → Unarchive: the first write settling does not clear the second one's override", async () => {
+    localStorage.setItem(KEY, JSON.stringify({ chatsShowArchived: true }));
+    const archivedChild = makeChat("child", { title: "Helper", parentChatId: "root", rootChatId: "root", childArchived: true });
+    // Server state, and a gate that holds list fetches until released.
+    let serverChats = [ROOT, CHILD];
+    let gate: Promise<void> | null = null;
+    mockListChats.mockImplementation(async () => {
+      if (gate) await gate;
+      return listResponse(serverChats);
+    });
+    await renderAndExpand(treeWith());
+
+    // Archive: the write lands at once, but the refetch after it is held.
+    let releaseFirstLoad!: () => void;
+    gate = new Promise((resolve) => (releaseFirstLoad = resolve));
+    mockSetChildArchived.mockImplementationOnce(async () => {
+      serverChats = [ROOT, archivedChild];
+      return archivedChild;
+    });
+    fireEvent.contextMenu(nodeRow("child")!);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("menuitem", { name: /^Archive/ }));
+    });
+
+    // Unarchive, whose write stays in flight.
+    mockSetChildArchived.mockReturnValueOnce(new Promise(() => {}));
+    fireEvent.contextMenu(nodeRow("child")!);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("menuitem", { name: /^Unarchive/ }));
+    });
+
+    // The first write's refetch lands (with the server's archived answer), and
+    // archived chats are then hidden: the row must follow the pending Unarchive.
+    gate = null;
+    await act(async () => {
+      releaseFirstLoad();
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText("toggle show archived"));
+    });
+    await waitFor(() => expect(mockListChats.mock.calls.length).toBeGreaterThan(2));
+    expect(screen.getByTitle(/chat tree$/)).toBeDefined();
   });
 
   it("hides the chats under an archived child even when a date filter removes the archived child itself", async () => {

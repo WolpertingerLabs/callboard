@@ -681,11 +681,17 @@ export default function ChatList({
    * refetch after a successful write has landed with the server's own answer.
    */
   const [childArchiveOverrides, setChildArchiveOverrides] = useState<ReadonlyMap<string, boolean>>(() => new Map());
-  const setChildArchiveOverride = (chatId: string, archived: boolean | undefined) =>
+  const setChildArchiveOverride = (chatId: string, archived: boolean) => setChildArchiveOverrides((prev) => new Map(prev).set(chatId, archived));
+  /**
+   * Drop this call's override — only if it is still this call's. A quick
+   * Archive → Unarchive puts a second write in flight; the first one settling
+   * must not clear the override the second one is holding.
+   */
+  const clearChildArchiveOverride = (chatId: string, archived: boolean) =>
     setChildArchiveOverrides((prev) => {
+      if (prev.get(chatId) !== archived) return prev;
       const next = new Map(prev);
-      if (archived === undefined) next.delete(chatId);
-      else next.set(chatId, archived);
+      next.delete(chatId);
       return next;
     });
 
@@ -700,7 +706,7 @@ export default function ChatList({
     try {
       await setChildArchived(chatId, archived);
     } catch (err) {
-      setChildArchiveOverride(chatId, undefined);
+      clearChildArchiveOverride(chatId, archived);
       setBulkError(`"${chatName}" could not be ${archived ? "archived" : "unarchived"}: ${(err as Error).message}`);
       return false;
     }
@@ -719,7 +725,7 @@ export default function ChatList({
             }),
       ),
     );
-    void load().finally(() => setChildArchiveOverride(chatId, undefined));
+    void load().finally(() => clearChildArchiveOverride(chatId, archived));
     return true;
   };
 
