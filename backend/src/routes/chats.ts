@@ -8,6 +8,7 @@ import { isCardEligible } from "../services/card-fields.js";
 import { createCardContext } from "../services/card-context.js";
 import { createPinnedMemberLookup } from "../services/card-archive-unpin.js";
 import { setRootArchived } from "../services/chat-archive.js";
+import { childArchiveFields } from "../services/child-archive.js";
 import { isIgnoredProjectFolder } from "../utils/paths.js";
 import { assertReasoningEffort, assertStoredReasoningEffort } from "../services/reasoning-capabilities.js";
 import { nativeMetadata, refreshNativeMetadata, assertNativeAgentDeletable, createLifecycleBudget } from "../services/codex-native-agents.js";
@@ -2115,6 +2116,76 @@ chatsRouter.patch("/:id/pin", (req, res) => {
   } catch (err: any) {
     log.error(`Error toggling pin: ${err}`);
     res.status(500).json({ error: "Failed to toggle pin", details: err.message });
+  }
+});
+
+/**
+ * Archive or unarchive ONE child chat — not its tree.
+ *
+ * The sidebar's tree archive (`POST /bulk-archive`) acts on a lineage root and
+ * everything under it. This is the per-child gesture offered from an expanded
+ * tree's context menu: the child alone leaves its parent's tree in the sidebar
+ * (its own descendants go with it, client-side), and comes back when "Show
+ * archived" is on. Stored as `metadata.childArchived` + `childArchivedAt` —
+ * see services/child-archive.ts for why it is a new key and not a second
+ * meaning for `treeArchived` or `Chat.archived`.
+ *
+ * Refused on a root (400): a root's archive is the card's, and a flag here
+ * would hide nothing. Refused on a native Codex subagent (409): its parent is
+ * inferred from the rollout and it is read-only in Callboard, the same reason
+ * split-off refuses it. Quiet and idempotent, like the pin.
+ */
+chatsRouter.patch("/:id/child-archive", (req, res) => {
+  // #swagger.tags = ['Chats']
+  // #swagger.summary = 'Archive or unarchive one child chat'
+  // #swagger.description = 'Sets or clears metadata.childArchived (+ childArchivedAt) on a chat that has a parent. The sidebar hides an archived child, and every chat under it, from its parent tree unless archived chats are shown; GET /api/chats/:id/tree reports it as childArchived on the node. Unlike POST /bulk-archive this never touches the tree root or its card. View-only: updated_at is not bumped. Re-archiving keeps the original childArchivedAt.'
+  /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
+  /* #swagger.requestBody = {
+    required: true,
+    content: {
+      "application/json": {
+        schema: {
+          type: "object",
+          required: ["archived"],
+          properties: {
+            archived: { type: "boolean", description: "true to archive the child, false to unarchive it" }
+          }
+        }
+      }
+    }
+  } */
+  /* #swagger.responses[200] = { description: "Updated chat" } */
+  /* #swagger.responses[400] = { description: "Invalid request body, or the chat has no parent (archive a root through its card instead)" } */
+  /* #swagger.responses[404] = { description: "Chat not found" } */
+  /* #swagger.responses[409] = { description: "The chat is a native Codex subagent" } */
+  const { archived } = req.body ?? {};
+  if (typeof archived !== "boolean") {
+    return res.status(400).json({ error: "archived must be a boolean" });
+  }
+
+  try {
+    const chat = findChat(req.params.id, false) as any;
+    if (!chat) return res.status(404).json({ error: "Chat not found" });
+    if (isNativeRecord(chat)) {
+      return res.status(409).json({ error: "This is a native Codex subagent — it is read-only in Callboard and cannot be archived on its own" });
+    }
+    const meta = parseChatMetadata(chat.metadata);
+    if (!getParentChatId(meta)) {
+      return res.status(400).json({ error: "This chat has no parent — archive it from its card instead" });
+    }
+    // Transition-only, like treeArchivedAt: re-archiving keeps the stamp
+    // describing when the child was put away.
+    if ((meta.childArchived === true) !== archived) {
+      if (writeQuietMetadata(chat, childArchiveFields(archived)) === "unwritten") {
+        return res.status(500).json({ error: "Failed to update the child's archived flag" });
+      }
+      // Decides which rows the sidebar keeps, so cached pages are now wrong.
+      clearListCaches();
+    }
+    res.json(findChat(chat.id, false) ?? chat);
+  } catch (err: any) {
+    log.error(`Error toggling child archive: ${err}`);
+    res.status(500).json({ error: "Failed to update the child's archived flag", details: err.message });
   }
 });
 

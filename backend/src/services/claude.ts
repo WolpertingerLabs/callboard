@@ -54,6 +54,7 @@ import { getAgent } from "./agent-file-service.js";
 import { generateChatTitle } from "./quick-completion.js";
 import { patchCardFields, readCardFields } from "./card-fields.js";
 import { archivedAfter, reopenArchivedRoot } from "./chat-archive.js";
+import { reopenArchivedChildChain } from "./child-archive.js";
 import { clearListCaches } from "./list-caches.js";
 import { sessionRegistry } from "./session-registry.js";
 import { pendingRequests, type PendingRequest } from "./pending-requests.js";
@@ -1305,6 +1306,21 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       }
     } catch (err: any) {
       log.error(`Could not unarchive chat tree ${reopenRootId} on a new message: ${err?.message ?? err}`);
+    }
+  }
+  // The same rule one level down: a message to a child archived on its own
+  // (or to anything under one) brings that child back into its parent's tree.
+  // Existing chats only — a new chat cannot be archived yet, and its parent's
+  // own archive is the parent's business until it is messaged itself.
+  if (opts.chatId) {
+    try {
+      const cleared = reopenArchivedChildChain(opts.chatId, { unlessArchivedAfter: runStartedAt });
+      if (cleared.length > 0) {
+        clearListCaches();
+        log.info(`Unarchived child chat(s) ${cleared.join(", ")} because chat ${opts.chatId} received a new message`);
+      }
+    } catch (err: any) {
+      log.error(`Could not unarchive child chats above ${opts.chatId} on a new message: ${err?.message ?? err}`);
     }
   }
   // ── End reopen logic ──────────────────────────────────────
