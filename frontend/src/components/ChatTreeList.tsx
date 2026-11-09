@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ChevronDown, ChevronRight, ListTree, Loader2, Unlink } from "lucide-react";
+import { Archive, ArchiveRestore, ChevronDown, ChevronRight, ListTree, Loader2, Unlink } from "lucide-react";
 import { getChatTree, type Chat, type ChatTreeNode, type ChatTreeResponse } from "../api";
 import { chatMeta } from "../utils/chatMeta";
 import ChatListItem, { type ChatCardMenu } from "./ChatListItem";
@@ -16,6 +16,7 @@ import type { ChatSectionKey } from "../utils/localStorage";
 import { useChatSectionExpansion } from "../hooks/useChatSectionExpansion";
 import type { SpaceListItem } from "shared/types/space.js";
 import { isSidebarFolderEligible, readSidebarFolder } from "shared/types/sidebarFolder.js";
+import { withNodeChildArchived } from "../utils/childArchive";
 
 /**
  * The sidebar chat list.
@@ -107,6 +108,20 @@ interface Props {
   onDetach?: (chatId: string, chatName: string) => void;
   /** Chats whose split-off is in flight; their entries show as pending and disabled. */
   detachingIds?: ReadonlySet<string>;
+  /**
+   * Archive or unarchive ONE child chat of an expanded tree, offered from the
+   * same context menu as split-off. Resolves true once the server has it; the
+   * node is flipped optimistically here and flipped back on false. Absent hides
+   * the entry.
+   */
+  onSetChildArchived?: (chatId: string, archived: boolean, chatName: string) => Promise<boolean>;
+  /**
+   * Whether archived children are shown — the list's "Show archived" verdict
+   * (widened by a search, as `cardLifecycleFor` is). Off, an archived child and
+   * its whole subtree are left out of the expanded tree; on, it renders faded
+   * and marked, and its menu offers Unarchive.
+   */
+  showArchivedChildren?: boolean;
 }
 
 /** What one row is told about the selection it is part of. */
@@ -558,8 +573,21 @@ interface TreeSplitOff {
   selectionActive: boolean;
 }
 
-/** One row of the MenuRow list plus padding — the tree menu holds one entry. */
+/**
+ * What a tree node needs to offer per-child archive. Shaped like
+ * {@link TreeSplitOff}, and for the same reason.
+ */
+interface TreeChildArchive {
+  onSetArchived: (chatId: string, archived: boolean, chatName: string) => void;
+  /** Whether archived children render at all; see `Props.showArchivedChildren`. */
+  showArchived: boolean;
+  /** As for split-off: no single-chat menu while a multi-select is live. */
+  selectionActive: boolean;
+}
+
+/** One MenuRow plus padding — the tree menu's height per entry it holds. */
 const TREE_MENU_ESTIMATED_HEIGHT = 60;
+const TREE_MENU_ROW_HEIGHT = 44;
 const TREE_MENU_WIDTH = 240;
 
 function TreeNodeRow({
@@ -568,12 +596,14 @@ function TreeNodeRow({
   activeChatId,
   onNavigate,
   splitOff,
+  childArchive,
 }: {
   node: ChatTreeNode;
   depth: number;
   activeChatId?: string;
   onNavigate: (chatId: string) => void;
   splitOff?: TreeSplitOff;
+  childArchive?: TreeChildArchive;
 }) {
   const [menu, setMenu] = useState<{ position: PopupMenuPosition; openedByTouch: boolean } | null>(null);
   const rowRef = useRef<HTMLDivElement>(null);
@@ -594,16 +624,27 @@ function TreeNodeRow({
   // so it has one; a native Codex subagent's is inferred and cannot be cleared.
   const splittable = !!splitOff && depth > 0 && !node.nativeAgent && !splitOff.selectionActive;
   const detaching = !!splitOff?.isDetaching(node.chatId);
+  // Children only — a root's archive is its card's, offered on the group row.
+  // Not a native Codex subagent: read-only here, and the server refuses it.
+  const archivedChild = depth > 0 && node.childArchived === true;
+  const archivable = !!childArchive && depth > 0 && !node.nativeAgent && !childArchive.selectionActive;
+  const hasMenu = splittable || archivable;
 
   // A selection starting closes an open menu — adjusted during render rather
   // than in an effect, so the stale menu never paints.
-  if (menu && !splittable) setMenu(null);
+  if (menu && !hasMenu) setMenu(null);
 
   const openMenu = (at: { x: number; y: number } | null) => {
     const rect = rowRef.current?.getBoundingClientRect();
     const point = at ?? { x: (rect?.left ?? 0) + 24, y: rect?.bottom ?? 0 };
     setMenu({
-      position: placePopupMenu({ x: point.x, below: point.y, align: "left", estimatedHeight: TREE_MENU_ESTIMATED_HEIGHT, width: TREE_MENU_WIDTH }),
+      position: placePopupMenu({
+        x: point.x,
+        below: point.y,
+        align: "left",
+        estimatedHeight: TREE_MENU_ESTIMATED_HEIGHT + (splittable && archivable ? TREE_MENU_ROW_HEIGHT : 0),
+        width: TREE_MENU_WIDTH,
+      }),
       openedByTouch: lastPointerType.current !== "mouse",
     });
   };
@@ -614,7 +655,7 @@ function TreeNodeRow({
       openMenu(at);
     },
   });
-  const menuProps = splittable
+  const menuProps = hasMenu
     ? {
         ...pressHandlers,
         onPointerDownCapture: (e: React.PointerEvent) => {
@@ -639,16 +680,24 @@ function TreeNodeRow({
       }
     : {};
 
+  // Hidden archived children take their whole subtree with them: the
+  // recursion below never runs for a node that returns here.
+  if (archivedChild && !childArchive?.showArchived) return null;
+
   return (
     <>
       <div
         ref={rowRef}
         data-testid="chat-tree-node"
         data-chat-id={node.chatId}
+        data-child-archived={archivedChild || undefined}
+        // Faded like an archived row in the list, unless it is the open chat —
+        // the same exemption ChatListItem makes for the open row.
+        className={archivedChild && !isActive ? "chatlist-item-dimmed" : undefined}
         onClick={() => {
           // The click a long press or right-click leaves behind opens the
           // menu, not the chat.
-          if (splittable && consumeClickSuppression()) return;
+          if (hasMenu && consumeClickSuppression()) return;
           onNavigate(node.chatId);
         }}
         {...menuProps}
@@ -660,12 +709,12 @@ function TreeNodeRow({
         // the badges and timestamp inside would make a noisy computed name.
         role="link"
         tabIndex={0}
-        aria-label={node.role ? `${label} (${node.role})` : label}
+        aria-label={`${node.role ? `${label} (${node.role})` : label}${archivedChild ? " — archived" : ""}`}
         onKeyUp={(e) => {
           // Not a keyup bubbling out of the (portaled) menu — Enter on its item.
           if (e.key === "Enter" && e.target === e.currentTarget) onNavigate(node.chatId);
         }}
-        aria-haspopup={splittable ? "menu" : undefined}
+        aria-haspopup={hasMenu ? "menu" : undefined}
         title={label}
         style={{
           display: "flex",
@@ -681,8 +730,8 @@ function TreeNodeRow({
           // A long press opens our menu; without these iOS selects the title
           // and raises its own callout over it. Not `touch-action: none` —
           // see useLongPress.
-          userSelect: splittable ? "none" : undefined,
-          WebkitTouchCallout: splittable ? "none" : undefined,
+          userSelect: hasMenu ? "none" : undefined,
+          WebkitTouchCallout: hasMenu ? "none" : undefined,
         }}
       >
         {depth > 0 && (
@@ -723,12 +772,19 @@ function TreeNodeRow({
           {node.title || folderName}
           {node.nativeAgent && <small title={node.nativeAgent.controlNote}> · {node.nativeAgent.lifecycle} · read-only</small>}
         </span>
+        {/* A glyph as well as the fade — opacity alone is not a state. */}
+        {archivedChild && (
+          <span title="Archived" style={{ display: "flex", flexShrink: 0, color: "var(--chatlist-icon)" }}>
+            <Archive size={11} aria-hidden />
+          </span>
+        )}
         <span style={{ fontSize: 10, color: "var(--chatlist-item-time-text)", flexShrink: 0, whiteSpace: "nowrap" }}>{time}</span>
       </div>
       {/* The context menu: right-click on desktop, long press on touch,
-          Shift+F10 / the Menu key from the keyboard. Its one entry is "split
-          off", so it is wired only on nodes that can be split off. */}
-      {menu && splittable && (
+          Shift+F10 / the Menu key from the keyboard. Its entries are "split
+          off" and per-child archive, so it is wired only on nodes that offer
+          at least one. */}
+      {menu && hasMenu && (
         <PopupMenu
           position={menu.position}
           onClose={() => setMenu(null)}
@@ -737,20 +793,47 @@ function TreeNodeRow({
           openedByTouch={menu.openedByTouch}
           returnFocusTo={rowRef}
         >
-          <MenuRow
-            icon={<Unlink size={16} />}
-            label={detaching ? SPLIT_OFF_PENDING_LABEL : SPLIT_OFF_LABEL}
-            title={SPLIT_OFF_TITLE}
-            disabled={detaching}
-            onClick={() => {
-              setMenu(null);
-              splitOff!.onDetach(node.chatId, label);
-            }}
-          />
+          {archivable && (
+            <MenuRow
+              icon={archivedChild ? <ArchiveRestore size={16} /> : <Archive size={16} />}
+              label={archivedChild ? "Unarchive" : "Archive"}
+              title={
+                archivedChild
+                  ? `Unarchive "${label}" — it returns to this tree`
+                  : node.children.length > 0
+                    ? `Archive "${label}" and the chats under it — they leave this tree until archived chats are shown`
+                    : `Archive "${label}" — it leaves this tree until archived chats are shown`
+              }
+              onClick={() => {
+                setMenu(null);
+                childArchive!.onSetArchived(node.chatId, !archivedChild, label);
+              }}
+            />
+          )}
+          {splittable && (
+            <MenuRow
+              icon={<Unlink size={16} />}
+              label={detaching ? SPLIT_OFF_PENDING_LABEL : SPLIT_OFF_LABEL}
+              title={SPLIT_OFF_TITLE}
+              disabled={detaching}
+              onClick={() => {
+                setMenu(null);
+                splitOff!.onDetach(node.chatId, label);
+              }}
+            />
+          )}
         </PopupMenu>
       )}
       {node.children.map((child) => (
-        <TreeNodeRow key={child.chatId} node={child} depth={depth + 1} activeChatId={activeChatId} onNavigate={onNavigate} splitOff={splitOff} />
+        <TreeNodeRow
+          key={child.chatId}
+          node={child}
+          depth={depth + 1}
+          activeChatId={activeChatId}
+          onNavigate={onNavigate}
+          splitOff={splitOff}
+          childArchive={childArchive}
+        />
       ))}
     </>
   );
@@ -774,6 +857,8 @@ export default function ChatTreeList({
   onMoveToFolder,
   onDetach,
   detachingIds,
+  onSetChildArchived,
+  showArchivedChildren = false,
 }: Props) {
   const navigate = useNavigate();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -870,6 +955,36 @@ export default function ChatTreeList({
   const selectionActive = rows.length > 0 && !!selectionFor?.(rows[0].chat).selectionMode;
   const splitOff: TreeSplitOff | undefined = onDetach
     ? { onDetach, isDetaching: (chatId) => !!detachingIds?.has(chatId), selectionActive }
+    : undefined;
+
+  /**
+   * Flip the node in every fetched tree that holds it, then ask the list to
+   * write it. Optimistic because the alternative is the node sitting there
+   * until the refetch `load` triggers lands; flipped back if the write fails.
+   */
+  const setNodeArchived = useCallback((chatId: string, archived: boolean) => {
+    setTrees((prev) => {
+      let changed = false;
+      const next: Record<string, ChatTreeResponse> = {};
+      for (const [key, tree] of Object.entries(prev)) {
+        const node = withNodeChildArchived(tree.tree, chatId, archived);
+        if (node !== tree.tree) changed = true;
+        next[key] = node === tree.tree ? tree : { ...tree, tree: node };
+      }
+      return changed ? next : prev;
+    });
+  }, []);
+  const childArchive: TreeChildArchive | undefined = onSetChildArchived
+    ? {
+        onSetArchived: (chatId, archived, chatName) => {
+          setNodeArchived(chatId, archived);
+          void onSetChildArchived(chatId, archived, chatName).then((ok) => {
+            if (!ok) setNodeArchived(chatId, !archived);
+          });
+        },
+        showArchived: showArchivedChildren,
+        selectionActive,
+      }
     : undefined;
 
   // Each group is filed as one row — see `sectionRows`. Cheap enough to redo
@@ -1022,7 +1137,14 @@ export default function ChatTreeList({
         </div>
         {isExpanded && tree && (
           <div style={{ borderBottom: "1px solid var(--chatlist-item-border)" }}>
-            <TreeNodeRow node={tree.tree} depth={0} activeChatId={activeChatId} onNavigate={handleNavigate} splitOff={splitOff} />
+            <TreeNodeRow
+              node={tree.tree}
+              depth={0}
+              activeChatId={activeChatId}
+              onNavigate={handleNavigate}
+              splitOff={splitOff}
+              childArchive={childArchive}
+            />
           </div>
         )}
       </div>

@@ -12,6 +12,7 @@ import {
   togglePin,
   setChatSidebarFolder,
   detachChat,
+  setChildArchived,
   getDrafts,
   deleteDraft,
   listCards,
@@ -43,6 +44,7 @@ import ConfirmModal from "../components/ConfirmModal";
 import EditTitleModal from "../components/EditTitleModal";
 import { useChatSearch } from "../hooks/useChatSearch";
 import { chatCardId, isChatDimmed } from "../utils/chatDimming";
+import { withoutArchivedChildren } from "../utils/childArchive";
 import {
   DEFAULT_CHAT_FILTERS,
   DEFAULT_CHAT_VIEW_OPTIONS,
@@ -670,6 +672,39 @@ export default function ChatList({
     loadCards();
   };
 
+  /**
+   * Archive or unarchive one child chat from an expanded tree's context menu.
+   * The tree flips its node optimistically; this mirrors the flag onto the
+   * loaded row too, so the row filter below hides (or restores) it — and the
+   * chats under it — without waiting for the refetch `load` starts. Resolves
+   * false, after reporting why, when the server refused.
+   */
+  const handleSetChildArchived = async (chatId: string, archived: boolean, chatName: string): Promise<boolean> => {
+    try {
+      await setChildArchived(chatId, archived);
+    } catch (err) {
+      setBulkError(`"${chatName}" could not be ${archived ? "archived" : "unarchived"}: ${(err as Error).message}`);
+      return false;
+    }
+    setChats((prev) =>
+      prev.map((c) =>
+        c.id !== chatId
+          ? c
+          : withChatMeta(c, (meta) => {
+              if (archived) {
+                meta.childArchived = true;
+                meta.childArchivedAt = new Date().toISOString();
+              } else {
+                delete meta.childArchived;
+                delete meta.childArchivedAt;
+              }
+            }),
+      ),
+    );
+    load();
+    return true;
+  };
+
   /** Open the editor. Nothing is written until the dialog asks for it. */
   const handleEditTitle = (chat: Chat) => {
     const meta = chatMeta(chat);
@@ -1022,8 +1057,18 @@ export default function ChatList({
 
   // Client-side filtering for advanced filters and content search
   // Note: triggered chat filtering is now handled server-side via excludeTriggered param
+  /**
+   * Whether archived children are shown — the same verdict `cardLifecycleFor`
+   * gives the tree archive: "Show archived", widened by a running search.
+   */
+  const showArchivedChildren = viewOptions.showArchived || searching;
   const filteredChats = useMemo(() => {
     let result = filterChatRows(chats, filters).rows;
+
+    // Children archived on their own, with everything under them. Client-side
+    // because it is a row filter over a page the server has already shaped by
+    // tree: the root stays, so pagination's tree rows are unaffected.
+    if (!showArchivedChildren) result = withoutArchivedChildren(result);
 
     // Content search
     if (matchingChatIds !== null) {
@@ -1031,7 +1076,7 @@ export default function ChatList({
     }
 
     return result;
-  }, [chats, filters, matchingChatIds]);
+  }, [chats, filters, matchingChatIds, showArchivedChildren]);
 
   // ---------------------------------------------------------------------------
   // Multi-select.
@@ -1768,6 +1813,8 @@ export default function ChatList({
           onEditTitle={handleEditTitle}
           onDetach={handleDetach}
           detachingIds={detachingIds}
+          onSetChildArchived={handleSetChildArchived}
+          showArchivedChildren={showArchivedChildren}
           cardMenuFor={cardMenuFor}
           sessionStatusFor={(chatId) => (activeSessions.has(chatId) ? { active: true, type: activeSessions.get(chatId)!.type } : undefined)}
           isDimmed={isDimmed}

@@ -394,6 +394,14 @@ export async function detachChat(id: string): Promise<Chat> {
   return request(`/chats/${seg(id)}/detach`, { method: "POST", error: "Failed to split off chat" });
 }
 
+/**
+ * Archive or unarchive ONE child chat (never its tree — that is
+ * `bulkArchiveChats`). The server refuses a root and a native Codex subagent.
+ */
+export async function setChildArchived(id: string, archived: boolean): Promise<Chat> {
+  return request(`/chats/${seg(id)}/child-archive`, { method: "PATCH", json: { archived }, error: archived ? "Failed to archive chat" : "Failed to unarchive chat" });
+}
+
 export async function searchChatContents(query: string): Promise<{ chatIds: string[] }> {
   const params = new URLSearchParams({ q: query });
   return request(`/chats/search?${params}`, { error: "Failed to search chats" });

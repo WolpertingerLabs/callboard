@@ -35,6 +35,9 @@ export interface SidebarChatMeta {
   forkedFrom?: string;
   /** Free-form relationship to the parent ("fork", "subagent", "superseded", …). */
   chatRole?: string;
+  /** This child archived on its own — see `utils/childArchive`. Meaningless on a root. */
+  childArchived?: boolean;
+  childArchivedAt?: string;
 }
 
 const EMPTY: Readonly<SidebarChatMeta> = Object.freeze({});
