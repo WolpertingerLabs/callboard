@@ -13,10 +13,11 @@ const tmpRoot = mkdtempSync(join(tmpdir(), "callboard-child-archive-route-"));
 process.env.CALLBOARD_DATA_DIR = tmpRoot;
 
 const clearListCaches = vi.fn();
+const notifyMetadata = vi.fn();
 vi.mock("../services/list-caches.js", () => ({ clearListCaches: () => clearListCaches() }));
 vi.mock("../services/claude.js", () => ({ getActiveSession: () => null, hasPendingRequest: () => false, getPendingRequest: () => null }));
 vi.mock("../services/session-registry.js", () => ({
-  sessionRegistry: { has: () => false, notifyMetadata: () => {} },
+  sessionRegistry: { has: () => false, notifyMetadata: (...args: unknown[]) => notifyMetadata(...args) },
 }));
 
 const { chatsRouter } = await import("./chats.js");
@@ -63,6 +64,7 @@ const metaOf = (id: string) => JSON.parse(chatFileService.getChat(id)!.metadata)
 afterEach(() => {
   for (const sessionId of created.splice(0)) chatFileService.deleteChat(sessionId);
   clearListCaches.mockClear();
+  notifyMetadata.mockClear();
 });
 
 describe("PATCH /api/chats/:id/child-archive", () => {
@@ -83,6 +85,8 @@ describe("PATCH /api/chats/:id/child-archive", () => {
     expect(metaOf(root.id)).not.toHaveProperty("childArchived");
     expect(metaOf(sibling.id)).not.toHaveProperty("childArchived");
     expect(clearListCaches).toHaveBeenCalled();
+    // Other tabs refetch on it.
+    expect(notifyMetadata).toHaveBeenCalledWith(child.id, { cardEvent: "updated" });
   });
 
   it("reports the flag on the child's tree node, and only there", async () => {
@@ -119,10 +123,12 @@ describe("PATCH /api/chats/:id/child-archive", () => {
     const stamp = metaOf(child.id).childArchivedAt;
     await new Promise((r) => setTimeout(r, 5));
     clearListCaches.mockClear();
+    notifyMetadata.mockClear();
     expect((await patch(child.id, { archived: true })).status).toBe(200);
     expect(metaOf(child.id).childArchivedAt).toBe(stamp);
-    // Nothing changed, so nothing to invalidate.
+    // Nothing changed, so nothing to invalidate or announce.
     expect(clearListCaches).not.toHaveBeenCalled();
+    expect(notifyMetadata).not.toHaveBeenCalled();
     expect(chatFileService.getChat(child.id)!.updated_at).toBe(before);
   });
 

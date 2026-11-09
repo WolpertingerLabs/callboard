@@ -1317,6 +1317,8 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       const cleared = reopenArchivedChildChain(opts.chatId, { unlessArchivedAfter: runStartedAt });
       if (cleared.length > 0) {
         clearListCaches();
+        // Other tabs refetch on this, as for the tree reopen above.
+        for (const id of cleared) sessionRegistry.notifyMetadata(id, { cardEvent: "updated" });
         log.info(`Unarchived child chat(s) ${cleared.join(", ")} because chat ${opts.chatId} received a new message`);
       }
     } catch (err: any) {

@@ -37,6 +37,29 @@ vi.mock("../contexts/SessionContext", () => ({
 }));
 
 vi.mock("../components/SidebarHeader", () => ({ default: () => <div /> }));
+/**
+ * The filter bar, reduced to one button that applies a `dateMin` filter — the
+ * modal behind the real one is not what these tests are about.
+ */
+vi.mock("../components/ChatFilterBar", () => ({
+  default: ({ viewOptions, onApply }: { viewOptions: unknown; onApply: (filters: unknown, view: unknown) => void }) => (
+    <button
+      onClick={() =>
+        onApply(
+          {
+            directoryInclude: { value: "", active: false },
+            directoryExclude: { value: "", active: false },
+            dateMin: { value: "2026-08-20T10:00:00.000Z", active: true },
+            dateMax: { value: "", active: false },
+          },
+          viewOptions,
+        )
+      }
+    >
+      apply date filter
+    </button>
+  ),
+}));
 vi.mock("../components/NewChatPanel", () => ({ default: () => <div /> }));
 
 const mockListChats = vi.mocked(listChats);
@@ -81,11 +104,11 @@ const ROOT = makeChat("root", { title: "Root thread" });
 const CHILD = makeChat("child", { title: "Helper", parentChatId: "root", rootChatId: "root" });
 const SIBLING = makeChat("sibling", { title: "Sibling", parentChatId: "root", rootChatId: "root" });
 
-async function renderAndExpand(tree: ChatTreeNode) {
+async function renderAndExpand(tree: ChatTreeNode, activeChatId?: string) {
   mockGetChatTree.mockResolvedValue({ targetChatId: "root", rootChatId: "root", ancestors: [], tree });
   render(
     <MemoryRouter>
-      <ChatList onRefresh={() => {}} />
+      <ChatList onRefresh={() => {}} activeChatId={activeChatId} />
     </MemoryRouter>,
   );
   fireEvent.click(await screen.findByTitle("Expand chat tree"));
@@ -187,6 +210,29 @@ describe("ChatList child archive — tree node context menu", () => {
     expect(nodeRow("child")!.dataset.childArchived).toBeUndefined();
   });
 
+  it("keeps an archived child's node while it is the open chat, but not the chats under it", async () => {
+    const archivedChild = makeChat("child", { title: "Helper", parentChatId: "root", rootChatId: "root", childArchived: true });
+    mockListChats.mockResolvedValue(listResponse([ROOT, archivedChild, SIBLING]));
+    await renderAndExpand(treeWith({ childArchived: true }, [makeNode("grandchild", "Grandchild")]), "child");
+
+    const row = nodeRow("child")!;
+    expect(row).toBeDefined();
+    // The open row is never faded, as in the list.
+    expect(row.className).not.toContain("chatlist-item-dimmed");
+    expect(nodeRow("grandchild")).toBeUndefined();
+  });
+
+  it("with Show archived on, fades the chats under an archived child too", async () => {
+    localStorage.setItem(KEY, JSON.stringify({ chatsShowArchived: true }));
+    await renderAndExpand(treeWith({ childArchived: true }, [makeNode("grandchild", "Grandchild")]));
+
+    expect(nodeRow("grandchild")!.className).toContain("chatlist-item-dimmed");
+    // Not itself archived — it is under one.
+    expect(nodeRow("grandchild")!.dataset.childArchived).toBeUndefined();
+    expect(nodeRow("sibling")!.className).not.toContain("chatlist-item-dimmed");
+    expect(nodeRow("root")!.className).not.toContain("chatlist-item-dimmed");
+  });
+
   it("flips the node back and reports the error when the server refuses", async () => {
     mockSetChildArchived.mockRejectedValue(new Error("This chat has no parent"));
     await renderAndExpand(treeWith());
@@ -227,6 +273,49 @@ describe("ChatList child archive — the loaded rows", () => {
   });
 });
 
+describe("ChatList child archive — optimistic rows and filters", () => {
+  it("drops the row as soon as Archive is clicked, and restores it if the server refuses", async () => {
+    mockListChats.mockResolvedValue(listResponse([ROOT, CHILD]));
+    let reject!: (err: Error) => void;
+    mockSetChildArchived.mockReturnValue(new Promise((_resolve, rej) => (reject = rej)));
+    await renderAndExpand(treeWith());
+
+    fireEvent.contextMenu(nodeRow("child")!);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("menuitem", { name: /^Archive/ }));
+    });
+    // Still in flight: the root's only loaded child is gone from the rows, so
+    // it is a plain row already — not after the server answers.
+    expect(screen.queryByTitle(/chat tree$/)).toBeNull();
+
+    await act(async () => {
+      reject(new Error("nope"));
+    });
+    expect(await screen.findByTitle(/chat tree$/)).toBeDefined();
+    expect((await screen.findByRole("alert")).textContent).toContain("could not be archived");
+  });
+
+  it("hides the chats under an archived child even when a date filter removes the archived child itself", async () => {
+    // The archived middle chat is older than the filter's floor; its child is
+    // newer. Filtering first would cut the chain and let the grandchild through.
+    const oldArchived = { ...makeChat("child", { title: "Helper", parentChatId: "root", rootChatId: "root", childArchived: true }), updated_at: "2026-08-20T09:00:00.000Z" };
+    const grandchild = { ...makeChat("grandchild", { title: "Grandchild", parentChatId: "child", rootChatId: "root" }), updated_at: "2026-08-20T12:00:00.000Z" };
+    mockListChats.mockResolvedValue(listResponse([grandchild, ROOT, oldArchived]));
+    render(
+      <MemoryRouter>
+        <ChatList onRefresh={() => {}} />
+      </MemoryRouter>,
+    );
+    await screen.findByText("Root thread");
+    fireEvent.click(screen.getByText("apply date filter"));
+
+    await screen.findByText("Root thread");
+    // The grandchild did not leak back in as a member: the root is a lone row.
+    expect(screen.queryByTitle("Expand chat tree")).toBeNull();
+    expect(screen.queryByText("Grandchild")).toBeNull();
+  });
+});
+
 describe("withoutArchivedChildren — the loaded rows", () => {
   const archivedChild = makeChat("child", { title: "Helper", parentChatId: "root", rootChatId: "root", childArchived: true });
   const grandchild = makeChat("grandchild", { parentChatId: "child", rootChatId: "root" });
@@ -244,6 +333,18 @@ describe("withoutArchivedChildren — the loaded rows", () => {
   it("ignores a stale flag on a root — a root is archived through its card", () => {
     const staleRoot = makeChat("root", { childArchived: true });
     expect(withoutArchivedChildren([staleRoot]).map((c) => c.id)).toEqual(["root"]);
+  });
+
+  it("reads the parent pointer as the daemon does: an empty parentChatId is no parent, forkedFrom notwithstanding", () => {
+    const odd = makeChat("odd", { parentChatId: "", forkedFrom: "root", childArchived: true });
+    expect(withoutArchivedChildren([ROOT, odd]).map((c) => c.id)).toEqual(["root", "odd"]);
+  });
+
+  it("keeps the open chat and its ancestors, but still hides what is under it", () => {
+    const kept = withoutArchivedChildren([ROOT, archivedChild, grandchild, SIBLING], "child");
+    expect(kept.map((c) => c.id)).toEqual(["root", "child", "sibling"]);
+    const fromBelow = withoutArchivedChildren([ROOT, archivedChild, grandchild, SIBLING], "grandchild");
+    expect(fromBelow.map((c) => c.id)).toEqual(["root", "child", "grandchild", "sibling"]);
   });
 
   it("leaves a root whose only children are archived as a plain, ungrouped row", () => {

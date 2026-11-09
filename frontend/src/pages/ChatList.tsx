@@ -44,7 +44,7 @@ import ConfirmModal from "../components/ConfirmModal";
 import EditTitleModal from "../components/EditTitleModal";
 import { useChatSearch } from "../hooks/useChatSearch";
 import { chatCardId, isChatDimmed } from "../utils/chatDimming";
-import { withoutArchivedChildren } from "../utils/childArchive";
+import { isChildArchived, withoutArchivedChildren } from "../utils/childArchive";
 import {
   DEFAULT_CHAT_FILTERS,
   DEFAULT_CHAT_VIEW_OPTIONS,
@@ -673,16 +673,34 @@ export default function ChatList({
   };
 
   /**
+   * Pending per-child archive writes, by chat id → the state being moved to.
+   * Laid over `chats` in `filteredChats`, so the loaded rows change in the
+   * same render as the tree's optimistic node flip, and a poll that lands
+   * while the write is still in flight (carrying the old flag) cannot bring
+   * the row back for a beat. Dropped on failure — the revert — and once the
+   * refetch after a successful write has landed with the server's own answer.
+   */
+  const [childArchiveOverrides, setChildArchiveOverrides] = useState<ReadonlyMap<string, boolean>>(() => new Map());
+  const setChildArchiveOverride = (chatId: string, archived: boolean | undefined) =>
+    setChildArchiveOverrides((prev) => {
+      const next = new Map(prev);
+      if (archived === undefined) next.delete(chatId);
+      else next.set(chatId, archived);
+      return next;
+    });
+
+  /**
    * Archive or unarchive one child chat from an expanded tree's context menu.
-   * The tree flips its node optimistically; this mirrors the flag onto the
-   * loaded row too, so the row filter below hides (or restores) it — and the
-   * chats under it — without waiting for the refetch `load` starts. Resolves
-   * false, after reporting why, when the server refused.
+   * The tree flips its node optimistically and the rows follow through
+   * {@link childArchiveOverrides}; both flip back when the server refuses,
+   * which this reports and resolves false for.
    */
   const handleSetChildArchived = async (chatId: string, archived: boolean, chatName: string): Promise<boolean> => {
+    setChildArchiveOverride(chatId, archived);
     try {
       await setChildArchived(chatId, archived);
     } catch (err) {
+      setChildArchiveOverride(chatId, undefined);
       setBulkError(`"${chatName}" could not be ${archived ? "archived" : "unarchived"}: ${(err as Error).message}`);
       return false;
     }
@@ -701,7 +719,7 @@ export default function ChatList({
             }),
       ),
     );
-    load();
+    void load().finally(() => setChildArchiveOverride(chatId, undefined));
     return true;
   };
 
@@ -1062,13 +1080,30 @@ export default function ChatList({
    * gives the tree archive: "Show archived", widened by a running search.
    */
   const showArchivedChildren = viewOptions.showArchived || searching;
+  /** `chats` with any in-flight per-child archive write applied. */
+  const chatsWithOverrides = useMemo(() => {
+    if (childArchiveOverrides.size === 0) return chats;
+    return chats.map((c) => {
+      const archived = childArchiveOverrides.get(c.id);
+      if (archived === undefined || isChildArchived(c) === archived) return c;
+      return withChatMeta(c, (meta) => {
+        if (archived) meta.childArchived = true;
+        else delete meta.childArchived;
+      });
+    });
+  }, [chats, childArchiveOverrides]);
   const filteredChats = useMemo(() => {
-    let result = filterChatRows(chats, filters).rows;
-
     // Children archived on their own, with everything under them. Client-side
     // because it is a row filter over a page the server has already shaped by
     // tree: the root stays, so pagination's tree rows are unaffected.
-    if (!showArchivedChildren) result = withoutArchivedChildren(result);
+    //
+    // FIRST, before the directory/date filters: the walk from a chat to its
+    // archived ancestor goes through the loaded parent pointers, and a filter
+    // that removed the archived chat would cut that chain and let its
+    // descendants through as rows the tree does not show. The open chat (and
+    // its ancestors) are kept — see `withoutArchivedChildren`.
+    let result = showArchivedChildren ? chatsWithOverrides : withoutArchivedChildren(chatsWithOverrides, activeChatId);
+    result = filterChatRows(result, filters).rows;
 
     // Content search
     if (matchingChatIds !== null) {
@@ -1076,7 +1111,7 @@ export default function ChatList({
     }
 
     return result;
-  }, [chats, filters, matchingChatIds, showArchivedChildren]);
+  }, [chatsWithOverrides, filters, matchingChatIds, showArchivedChildren, activeChatId]);
 
   // ---------------------------------------------------------------------------
   // Multi-select.
@@ -1537,7 +1572,11 @@ export default function ChatList({
    * when a selected row actually fronts a group, because on a selection of
    * lone chats there is nothing to warn about and the sentence would be noise.
    */
-  const selectionFrontsAGroup = rows.some((row) => row.isGroup && selectedIds.has(row.chat.id));
+  // Group-ness from the UNFILTERED chats: a root whose only children are
+  // hidden (archived children, a directory/date filter) renders as a lone row,
+  // but deleting it still leaves those children behind to regroup.
+  const groupFrontIds = useMemo(() => new Set(buildRows(chats).filter((row) => row.isGroup).map((row) => row.chat.id)), [chats]);
+  const selectionFrontsAGroup = rows.some((row) => (row.isGroup || groupFrontIds.has(row.chat.id)) && selectedIds.has(row.chat.id));
   const bulkDeleteMessage = [
     `Are you sure you want to delete ${selectedIds.size === 1 ? "this chat" : `these ${selectedIds.size} chats`}?`,
     selectionFrontsAGroup ? "This deletes the selected chats, not the chats forked from them — those stay, and their group will reappear." : "",

@@ -16,7 +16,7 @@ import type { ChatSectionKey } from "../utils/localStorage";
 import { useChatSectionExpansion } from "../hooks/useChatSectionExpansion";
 import type { SpaceListItem } from "shared/types/space.js";
 import { isSidebarFolderEligible, readSidebarFolder } from "shared/types/sidebarFolder.js";
-import { withNodeChildArchived } from "../utils/childArchive";
+import { treeContains, withNodeChildArchived } from "../utils/childArchive";
 
 /**
  * The sidebar chat list.
@@ -597,6 +597,7 @@ function TreeNodeRow({
   onNavigate,
   splitOff,
   childArchive,
+  underArchived = false,
 }: {
   node: ChatTreeNode;
   depth: number;
@@ -604,6 +605,8 @@ function TreeNodeRow({
   onNavigate: (chatId: string) => void;
   splitOff?: TreeSplitOff;
   childArchive?: TreeChildArchive;
+  /** An ancestor of this node is an archived child: it goes (or fades) with it. */
+  underArchived?: boolean;
 }) {
   const [menu, setMenu] = useState<{ position: PopupMenuPosition; openedByTouch: boolean } | null>(null);
   const rowRef = useRef<HTMLDivElement>(null);
@@ -681,8 +684,17 @@ function TreeNodeRow({
     : {};
 
   // Hidden archived children take their whole subtree with them: the
-  // recursion below never runs for a node that returns here.
-  if (archivedChild && !childArchive?.showArchived) return null;
+  // recursion below never runs for a node that returns here. Except the one
+  // holding the open chat — archiving the chat you are reading must not take
+  // its node out from under you (the dim makes the same exemption). Its other
+  // descendants are still cut below.
+  const holdsActive = archivedChild && treeContains(node, activeChatId);
+  if (archivedChild && !childArchive?.showArchived && !holdsActive) return null;
+  // What its children inherit: they are under an archived child too.
+  const childrenUnderArchived = underArchived || archivedChild;
+  // Faded with an archived ancestor as well as for its own flag, so a shown
+  // archived subtree reads as one archived thing.
+  const faded = (archivedChild || underArchived) && !isActive;
 
   return (
     <>
@@ -693,7 +705,7 @@ function TreeNodeRow({
         data-child-archived={archivedChild || undefined}
         // Faded like an archived row in the list, unless it is the open chat —
         // the same exemption ChatListItem makes for the open row.
-        className={archivedChild && !isActive ? "chatlist-item-dimmed" : undefined}
+        className={faded ? "chatlist-item-dimmed" : undefined}
         onClick={() => {
           // The click a long press or right-click leaves behind opens the
           // menu, not the chat.
@@ -824,17 +836,22 @@ function TreeNodeRow({
           )}
         </PopupMenu>
       )}
-      {node.children.map((child) => (
-        <TreeNodeRow
-          key={child.chatId}
-          node={child}
-          depth={depth + 1}
-          activeChatId={activeChatId}
-          onNavigate={onNavigate}
-          splitOff={splitOff}
-          childArchive={childArchive}
-        />
-      ))}
+      {node.children
+        // Under an archived child that is only showing because it holds the
+        // open chat: its other children stay hidden, as they would be anyway.
+        .filter((child) => childArchive?.showArchived || !childrenUnderArchived || treeContains(child, activeChatId))
+        .map((child) => (
+          <TreeNodeRow
+            key={child.chatId}
+            node={child}
+            depth={depth + 1}
+            activeChatId={activeChatId}
+            onNavigate={onNavigate}
+            splitOff={splitOff}
+            childArchive={childArchive}
+            underArchived={childrenUnderArchived}
+          />
+        ))}
     </>
   );
 }

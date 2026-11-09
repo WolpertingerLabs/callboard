@@ -301,3 +301,35 @@ describe("sendMessage — a job step respects an archive made after its run star
     expect(metaOf(root.id).treeArchived).toBeUndefined();
   });
 });
+
+/**
+ * The per-child archive (`metadata.childArchived`, services/child-archive.ts)
+ * comes back the same way: a message to the archived child, or to anything the
+ * sidebar is hiding with it, clears the flag up the chain — and only there.
+ */
+describe("sendMessage — unarchive an archived child on new message", () => {
+  const metaOf = (id: string) => JSON.parse(chatFileService.getChat(id)!.metadata || "{}");
+  const ARCHIVED = { childArchived: true, childArchivedAt: "2026-01-01T00:00:00.000Z" };
+
+  it("clears the flag when the archived child itself receives a message", async () => {
+    const root = chatFileService.createChat(workDir, "child-flag-1", "{}");
+    const child = chatFileService.createChat(workDir, "child-flag-1-child", JSON.stringify({ parentChatId: root.id, rootChatId: root.id, ...ARCHIVED }));
+
+    await messageChat(child.id);
+
+    expect(metaOf(child.id).childArchived).toBeUndefined();
+    expect(metaOf(child.id).childArchivedAt).toBeUndefined();
+  });
+
+  it("clears an archived ancestor's flag when a chat under it receives a message, leaving siblings archived", async () => {
+    const root = chatFileService.createChat(workDir, "child-flag-2", "{}");
+    const child = chatFileService.createChat(workDir, "child-flag-2-child", JSON.stringify({ parentChatId: root.id, rootChatId: root.id, ...ARCHIVED }));
+    const grandchild = chatFileService.createChat(workDir, "child-flag-2-grandchild", JSON.stringify({ parentChatId: child.id, rootChatId: root.id }));
+    const sibling = chatFileService.createChat(workDir, "child-flag-2-sibling", JSON.stringify({ parentChatId: root.id, rootChatId: root.id, ...ARCHIVED }));
+
+    await messageChat(grandchild.id);
+
+    expect(metaOf(child.id).childArchived).toBeUndefined();
+    expect(metaOf(sibling.id).childArchived).toBe(true);
+  });
+});
