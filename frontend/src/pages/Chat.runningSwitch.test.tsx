@@ -403,3 +403,16 @@ it.each([
   expect(readsOf("a")).toBe(3);
   expect(connects).toHaveLength(2);
 });
+
+it("marks a running chat's header with the sidebar's green dot, and drops it when the run ends", async () => {
+  await mountOn("a");
+  const badge = await screen.findByTestId("chat-header-running");
+  expect(badge.getAttribute("title")).toBe("Active in web");
+  // One label, visible on desktop, so web and CLI read differently and nothing is announced twice.
+  expect(badge.textContent).toBe("Active in web");
+  expect(badge.querySelector('[data-testid="running-dot"]')).toBeTruthy();
+  expect(screen.queryByText("🌐 Active")).toBeNull();
+
+  await act(async () => registry.set("a", null));
+  await waitFor(() => expect(screen.queryByTestId("chat-header-running")).toBeNull());
+});

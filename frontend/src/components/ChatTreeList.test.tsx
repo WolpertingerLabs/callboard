@@ -806,7 +806,7 @@ describe("ChatTreeList group activity rendering", () => {
     // stopped. Reading only the front chat leaves a tree with an agent working
     // in it looking idle.
     const { container } = renderList(BUSY_CHILD, { sessionStatusFor: (id: string) => (id === "child-1" ? { active: true, type: "web" } : undefined) });
-    expect(container.querySelector("svg.lucide-globe")).toBeTruthy();
+    expect(container.querySelector('[data-testid="chat-running"] [data-testid="running-dot"]')).toBeTruthy();
   });
 
   it("keeps a lone row reading its own signals when a livelier chat sits beside it", () => {

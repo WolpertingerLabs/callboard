@@ -63,6 +63,8 @@ describe("ChatSectionHeader", () => {
     expect(dot.getAttribute("aria-hidden")).toBe("true");
     expect(dot.style.background).toBe("var(--status-active)");
     expect(dot.style.width).toBe("7px");
+    // The same dot the chat rows use for a live session.
+    expect(dot.dataset.testid).toBe("running-dot");
     expect(number.textContent).toBe("3");
   });
 

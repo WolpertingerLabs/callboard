@@ -57,10 +57,10 @@ const ALLOWED = new Set(THEME_VARIABLE_NAMES);
  * standard available. A theme inherits every variable it does not define, so a
  * write of two variables is measured against a hundred it never touched — and
  * with the built-in palette failing 24 of its 104 pairings, refusing a write for
- * `session-badge-cli` at the stylesheet's own 2.54:1 would have made *every*
- * partial write impossible, while telling the author to fix a colour they could
- * not reach: both sides of that pairing live in the derived layer, which no
- * theme can name.
+ * the CLI session badge (since removed) at the stylesheet's own 2.54:1 would
+ * have made *every* partial write impossible, while telling the author to fix
+ * a colour they could not reach: both sides of that pairing live in the
+ * derived layer, which no theme can name.
  *
  * The palette pass closed 20 of the 24. The accent pass closed the last four by
  * moving the brand colour, which was the only lever they had. With the
