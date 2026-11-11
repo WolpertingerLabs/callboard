@@ -3166,9 +3166,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 style={{ display: "flex", alignItems: "center", gap: 5, flexShrink: 0, fontSize: 11, fontWeight: 500, color: "var(--text-muted)" }}
               >
                 <RunningDot />
-                {/* The sidebar's dot, spelled out where there is room; the full name either way. */}
-                {!isMobile && <span aria-hidden>Active</span>}
-                <span style={visuallyHidden}>{activeSessionLabel(globalSessionActive.type)}</span>
+                {/* The sidebar's dot, spelled out where there is room; on mobile the words are for screen readers only. */}
+                <span style={isMobile ? visuallyHidden : undefined}>{activeSessionLabel(globalSessionActive.type)}</span>
               </div>
             ) : null}
             {/* Worktree tag */}

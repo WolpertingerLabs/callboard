@@ -408,8 +408,8 @@ it("marks a running chat's header with the sidebar's green dot, and drops it whe
   await mountOn("a");
   const badge = await screen.findByTestId("chat-header-running");
   expect(badge.getAttribute("title")).toBe("Active in web");
-  // Visible "Active" is decorative; the hidden full label carries the name.
-  expect(badge.textContent).toBe("ActiveActive in web");
+  // One label, visible on desktop, so web and CLI read differently and nothing is announced twice.
+  expect(badge.textContent).toBe("Active in web");
   expect(badge.querySelector('[data-testid="running-dot"]')).toBeTruthy();
   expect(screen.queryByText("🌐 Active")).toBeNull();
 

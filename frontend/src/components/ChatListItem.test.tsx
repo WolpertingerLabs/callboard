@@ -408,14 +408,6 @@ describe("ChatListItem dimming", () => {
   });
 });
 
-/**
- * "Needs you" is a property of the run, but a run owns every chat it ever
- * opened — a step per attempt, a chat per parallel branch, plus the approval
- * notifier's. The list route therefore elects one representative row and marks
- * only that one with `jobRunNeedsYou`; every other row of the same run is
- * indistinguishable from it in metadata and must stay an ordinary job badge.
- * These tests pin that the component keys off that flag alone.
- */
 describe("ChatListItem running dot", () => {
   it("shows the sidebar's green dot for a live web session, named and titled", () => {
     render(<ChatListItem chat={makeChat()} onClick={() => {}} onDelete={() => {}} sessionStatus={{ active: true, type: "web" }} />);
@@ -444,6 +436,14 @@ describe("ChatListItem running dot", () => {
   });
 });
 
+/**
+ * "Needs you" is a property of the run, but a run owns every chat it ever
+ * opened — a step per attempt, a chat per parallel branch, plus the approval
+ * notifier's. The list route therefore elects one representative row and marks
+ * only that one with `jobRunNeedsYou`; every other row of the same run is
+ * indistinguishable from it in metadata and must stay an ordinary job badge.
+ * These tests pin that the component keys off that flag alone.
+ */
 describe("ChatListItem job badge", () => {
   it("shows the step id for an ordinary job row", () => {
     render(<ChatListItem chat={jobChat({ needsYou: false })} onClick={() => {}} onDelete={() => {}} />);
