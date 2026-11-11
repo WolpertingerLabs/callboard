@@ -74,6 +74,8 @@ import { resolveStarred, starKeysByIndex } from "../utils/starredMessages";
 import StarredMessageNavigator from "../components/StarredMessageNavigator";
 import { useChatCommands } from "../hooks/useChatCommands";
 import ThinkingIndicator from "../components/ThinkingIndicator";
+import RunningDot, { activeSessionLabel } from "../components/RunningDot";
+import { visuallyHidden } from "../utils/visuallyHidden";
 import { useIsSessionActive, useMetadataVersion } from "../contexts/SessionContext";
 import { newChatTrackingId } from "../utils/ids";
 import {
@@ -3159,16 +3161,14 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               </div>
             ) : globalSessionActive ? (
               <div
-                style={{
-                  fontSize: 11,
-                  padding: "2px 6px",
-                  borderRadius: 4,
-                  background: globalSessionActive.type === "web" ? "var(--chatlist-badge-session-web-bg)" : "var(--chatlist-badge-session-cli-bg)",
-                  color: "var(--chatlist-badge-session-text)",
-                  fontWeight: 500,
-                }}
+                data-testid="chat-header-running"
+                title={activeSessionLabel(globalSessionActive.type)}
+                style={{ display: "flex", alignItems: "center", gap: 5, flexShrink: 0, fontSize: 11, fontWeight: 500, color: "var(--text-muted)" }}
               >
-                {globalSessionActive.type === "web" ? (isMobile ? "🌐" : "🌐 Active") : isMobile ? "💻" : "💻 CLI"}
+                <RunningDot />
+                {/* The sidebar's dot, spelled out where there is room; the full name either way. */}
+                {!isMobile && <span aria-hidden>Active</span>}
+                <span style={visuallyHidden}>{activeSessionLabel(globalSessionActive.type)}</span>
               </div>
             ) : null}
             {/* Worktree tag */}

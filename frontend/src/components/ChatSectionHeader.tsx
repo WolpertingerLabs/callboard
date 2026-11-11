@@ -33,6 +33,7 @@
 
 import { ChevronDown, ChevronRight, Folder } from "lucide-react";
 import { visuallyHidden } from "../utils/visuallyHidden";
+import RunningDot from "./RunningDot";
 
 export default function ChatSectionHeader({
   label,
@@ -90,10 +91,7 @@ export default function ChatSectionHeader({
           title={`${runningCount} running`}
           style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0, marginLeft: 2, color: "var(--status-active)" }}
         >
-          <span
-            aria-hidden
-            style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--status-active)", boxShadow: "0 0 5px var(--status-active)" }}
-          />
+          <RunningDot />
           <span aria-hidden>{runningCount}</span>
           {/* The dot is colour alone, so the name spells it out: "Label (n) 2 running". */}
           <span style={visuallyHidden}>{runningCount} running</span>

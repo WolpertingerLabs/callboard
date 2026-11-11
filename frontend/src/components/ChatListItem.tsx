@@ -1,7 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  Globe,
-  Monitor,
   X,
   Bookmark,
   Bot,
@@ -36,6 +34,8 @@ import MenuRow from "./MenuRow";
 import PopupMenu, { placePopupMenu, type PopupMenuPosition } from "./PopupMenu";
 import { splitOffLabelFor, SPLIT_OFF_PENDING_LABEL, SPLIT_OFF_TITLE } from "../utils/splitOffChat";
 import SpaceChip from "./SpaceChip";
+import RunningDot, { activeSessionLabel } from "./RunningDot";
+import { visuallyHidden } from "../utils/visuallyHidden";
 import type { SpaceListItem } from "shared/types/space.js";
 
 /**
@@ -638,18 +638,15 @@ export default function ChatListItem({
             {displayName}
           </div>
           {sessionStatus?.active && (
-            <div
-              style={{
-                fontSize: 10,
-                padding: "1px 4px",
-                borderRadius: 3,
-                background: sessionStatus.type === "web" ? "var(--chatlist-badge-session-web-bg)" : "var(--chatlist-badge-session-cli-bg)",
-                color: "var(--chatlist-badge-session-text)",
-                fontWeight: 500,
-              }}
+            <span
+              data-testid="chat-running"
+              title={activeSessionLabel(sessionStatus.type)}
+              style={{ display: "flex", alignItems: "center", flexShrink: 0, padding: "0 2px" }}
             >
-              {sessionStatus.type === "web" ? <Globe size={10} /> : <Monitor size={10} />}
-            </div>
+              <RunningDot />
+              {/* The dot is colour alone, so the name spells it out. */}
+              <span style={visuallyHidden}>{activeSessionLabel(sessionStatus.type)}</span>
+            </span>
           )}
         </div>
         {chatStatus && (

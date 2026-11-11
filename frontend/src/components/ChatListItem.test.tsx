@@ -416,6 +416,34 @@ describe("ChatListItem dimming", () => {
  * indistinguishable from it in metadata and must stay an ordinary job badge.
  * These tests pin that the component keys off that flag alone.
  */
+describe("ChatListItem running dot", () => {
+  it("shows the sidebar's green dot for a live web session, named and titled", () => {
+    render(<ChatListItem chat={makeChat()} onClick={() => {}} onDelete={() => {}} sessionStatus={{ active: true, type: "web" }} />);
+    const indicator = screen.getByTestId("chat-running");
+    expect(indicator.getAttribute("title")).toBe("Active in web");
+    // The dot is colour alone; the hidden text is what a screen reader hears.
+    expect(indicator.textContent).toBe("Active in web");
+    const dot = screen.getByTestId("running-dot");
+    expect(dot.getAttribute("aria-hidden")).toBe("true");
+    expect(dot.style.background).toBe("var(--status-active)");
+    expect(dot.style.boxShadow).toBe("0 0 5px var(--status-active)");
+    expect(dot.style.width).toBe("7px");
+    expect(document.querySelector("svg.lucide-globe")).toBeNull();
+  });
+
+  it("uses the same dot for a CLI session, with the difference in the words", () => {
+    render(<ChatListItem chat={makeChat()} onClick={() => {}} onDelete={() => {}} sessionStatus={{ active: true, type: "cli" }} />);
+    expect(screen.getByTestId("chat-running").getAttribute("title")).toBe("Active in CLI");
+    expect(screen.getByTestId("running-dot")).toBeTruthy();
+    expect(document.querySelector("svg.lucide-monitor")).toBeNull();
+  });
+
+  it("shows nothing without an active session", () => {
+    render(<ChatListItem chat={makeChat()} onClick={() => {}} onDelete={() => {}} sessionStatus={{ active: false, type: "web" }} />);
+    expect(screen.queryByTestId("chat-running")).toBeNull();
+  });
+});
+
 describe("ChatListItem job badge", () => {
   it("shows the step id for an ordinary job row", () => {
     render(<ChatListItem chat={jobChat({ needsYou: false })} onClick={() => {}} onDelete={() => {}} />);

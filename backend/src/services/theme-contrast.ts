@@ -663,11 +663,11 @@ export const PAIRINGS: Pairing[] = [
     kind: "text",
   },
   {
-    id: "session-badge-cli",
-    where: "CLI session badge",
-    fg: v("chatlist-badge-session-text"),
-    bg: v("chatlist-badge-session-cli-bg"),
-    backdrop: v("bg-sidebar"),
+    id: "git-badge",
+    where: "New-chat Git badge",
+    fg: v("text-on-accent"),
+    bg: v("status-active-solid"),
+    backdrop: v("bg-secondary"),
     kind: "text",
   },
   { id: "worktree-badge", where: "Chat header worktree badge", fg: v("text-on-accent"), bg: v("badge-worktree"), backdrop: v("bg-sidebar"), kind: "text" },
@@ -1217,7 +1217,7 @@ async function relaxCarrier(name: string, vars: Record<string, string>, original
  * One variable at a time is the wrong shape for two situations, and neither is
  * rare. `--text-on-accent` is painted on five unrelated fills — `--accent`,
  * `--accent-hover`, `--badge-worktree`, `--badge-provider-codex-bg` and (through
- * `--chatlist-badge-session-text`) `--status-active`. Whether it should be
+ * `--status-active-solid`) `--status-active`. Whether it should be
  * near-white or near-black is a single decision binding all five, and the fills
  * have to move to agree with it. Correcting greedily, the search sees only that
  * flipping the text breaks a badge, and that fixing the badge breaks the text.
