@@ -35,7 +35,16 @@ import { listChatsSnapshot } from "./chats-snapshot.js";
 import { DEFAULT_PLACEMENT_DEPS, placeFolders, type FolderPlacement, type PlacementDeps } from "./git-overview.js";
 import { parseGitTrail } from "./git-trail.js";
 import { requestBackfill, type BackfillRequest } from "./git-trail-backfill.js";
-import { getRepoPulls, matchPull, pullsForTrailEntry, resolveLinkedPulls, toChatPr, type PullSummary, type RepoPulls } from "./github-prs.js";
+import {
+  getRepoPulls,
+  matchPull,
+  pullsForTrailEntry,
+  recordedPullForBranch,
+  resolveLinkedPulls,
+  toChatPr,
+  type PullSummary,
+  type RepoPulls,
+} from "./github-prs.js";
 import { parseChatMetadata } from "../utils/chat-metadata.js";
 
 /** A member chat of a card: its directory and its recorded git trail. */
@@ -209,19 +218,20 @@ export async function buildChatPrs(opts: { folder: string; chatId?: string; forc
 
   // One list, one entry per URL: this chat's live PR, links and trail, then
   // the card's other chats' live PRs, links and trails.
+  // Compared in lower case: an `unknown` PR's URL is spelled as the
+  // transcript spelled the repository, a listed one's as GitHub does.
   const byUrl = new Map<string, ChatPr>();
   const add = (pr: PullSummary | ChatPr | undefined) => {
-    if (pr && !byUrl.has(pr.url)) byUrl.set(pr.url, "headSha" in pr ? toChatPr(pr) : pr);
+    const key = pr?.url.toLowerCase();
+    if (pr && !byUrl.has(key!)) byUrl.set(key!, "headSha" in pr ? toChatPr(pr) : pr);
   };
   const trailPulls = (entries: GitTrailEntry[]) => entries.flatMap((entry) => pullsForTrailEntry(pullsByRepo.get(entry.repoPath), entry));
 
   // The live branch's PR, when the SHA rule found none but the chat's own
-  // record did: a PR of this repository headed by the branch checked out here.
+  // record did — chosen as the Board chooses it.
   if (currentPrs.status === "no_pr" && current?.kind === "placed") {
-    const here = pullsByRepo.get(current.repo.repoPath)?.github;
-    const prefix = here ? `https://github.com/${here.owner}/${here.repo}/pull/`.toLowerCase() : null;
     const own = [...trailPulls(ownEntries.filter((entry) => entry.cwd === currentCwd)), ...(opts.chatId ? linkedOf(0) : [])];
-    const pr = own.find((pull) => pull.headRef === current.worktree.branch && prefix !== null && pull.url.toLowerCase().startsWith(prefix));
+    const pr = recordedPullForBranch(own, current.worktree.branch, pullsByRepo.get(current.repo.repoPath));
     if (pr) currentPrs = { ...currentPrs, status: "found", pr: toChatPr(pr) };
   }
 

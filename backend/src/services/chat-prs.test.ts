@@ -252,20 +252,65 @@ describe("buildChatPrs — one list", () => {
       const exists = (dir: string) => dir !== "/src/app.deleted";
       const d = deps({ linksOf, linkedPulls: linkedPulls(table), exists }, card);
       const result = await buildChatPrs({ folder: "/src/app", chatId: "root", force: true }, d);
-      expect(numbers(result).sort()).toEqual([20, 21, 22]);
+      // Open first; then this chat's own before the card's, as they were recorded.
+      expect(numbers(result)).toEqual([21, 20, 22]);
       expect(result.current.status).toBe("default_branch");
       expect(linksOf.mock.calls.map(([id]) => id)).toEqual(["root", "kid"]);
       expect((d.linkedPulls as ReturnType<typeof vi.fn>).mock.calls[0].slice(1)).toEqual([[APP_PULLS], true]);
     });
 
+    /** feat/b checked out at a commit that is no PR's head: the SHA rule finds nothing. */
+    const moved = {
+      listWorktrees: async (dir: string) => (dir === "/src/app" ? [wt("/src/app", "main", true), wt("/src/app.feat-b", "feat/b", false, "later")] : []),
+    };
+
     it("makes a linked PR the live branch's when the SHA rule has none for it", async () => {
-      const moved = {
-        listWorktrees: async (dir: string) => (dir === "/src/app" ? [wt("/src/app", "main", true), wt("/src/app.feat-b", "feat/b", false, "later")] : []),
-      };
       const d = deps({ ...moved, linksOf: async () => [link(11)], linkedPulls: linkedPulls({ 11: pull(11, "feat/b", "merged", "b1") }) });
       const result = await buildChatPrs({ folder: "/src/app.feat-b", chatId: "c" }, d);
       expect(result.current).toMatchObject({ status: "found", pr: expect.objectContaining({ number: 11 }) });
       expect(numbers(result)).toEqual([11]);
+    });
+
+    it("does not make a fork's PR the live branch's, though its head is named the same — and still lists it", async () => {
+      // #70 is a PR against this repository from `stranger:feat/b`.
+      const fork: PullSummary = { ...pull(70, "feat/b", "merged", "b1"), headOwner: "stranger" };
+      const d = deps({ ...moved, linksOf: async () => [link(70)], linkedPulls: linkedPulls({ 70: fork }) });
+      const result = await buildChatPrs({ folder: "/src/app.feat-b", chatId: "c" }, d);
+      expect(result.current.status).toBe("no_pr");
+      expect(result.current.pr).toBeUndefined();
+      expect(numbers(result)).toEqual([70]);
+    });
+
+    it("picks, of two linked PRs on the live branch, the one the Board picks: the most recently updated", async () => {
+      const table = { 5: pull(5, "feat/b", "merged", "old5", "2026-01-10T00:00:00Z"), 9: pull(9, "feat/b", "merged", "old9", "2026-09-10T00:00:00Z") };
+      // Recorded oldest first, as a transcript is read.
+      const d = deps({ ...moved, linksOf: async () => [link(5), link(9)], linkedPulls: linkedPulls(table) });
+      const result = await buildChatPrs({ folder: "/src/app.feat-b", chatId: "c" }, d);
+      expect(result.current).toMatchObject({ status: "found", pr: expect.objectContaining({ number: 9 }) });
+      expect(numbers(result)).toEqual([9, 5]);
+    });
+
+    it("lists a PR the chat made in another repository, without making it the live branch's", async () => {
+      const elsewhere: PullSummary = { ...pull(12, "feat/b", "merged"), url: "https://github.com/other/lib/pull/12" };
+      const d = deps({ ...moved, linksOf: async () => [link(12, "other/lib")], linkedPulls: linkedPulls({ 12: elsewhere }) });
+      const result = await buildChatPrs({ folder: "/src/app.feat-b", chatId: "c" }, d);
+      expect(result.current.status).toBe("no_pr");
+      expect(result.prs.map((p) => p.url)).toEqual(["https://github.com/other/lib/pull/12"]);
+    });
+
+    it("lists a PR once when a failed lookup spells its repository differently than GitHub does", async () => {
+      const spelled = { ...link(10), url: "https://github.com/Acme/App/pull/10" };
+      const unknown: PullSummary = { ...pull(10, "", "unknown"), url: spelled.url, title: "Acme/App#10" };
+      const d = deps({ linksOf: async () => [spelled], linkedPulls: linkedPulls({ 10: unknown }, "gh timed out") });
+      const result = await buildChatPrs({ folder: "/src/app.feat-a", chatId: "c" }, d);
+      expect(result.prs.map((p) => [p.number, p.state])).toEqual([[10, "open"]]);
+    });
+
+    it("reports a failed link lookup beside any status, an empty-handed one included", async () => {
+      const unknown: PullSummary = { ...pull(30, "", "unknown"), title: "acme/app#30" };
+      const d = deps({ linksOf: async () => [link(30)], linkedPulls: linkedPulls({ 30: unknown }, "gh is not installed") });
+      expect((await buildChatPrs({ folder: "/tmp/scratch", chatId: "c" }, d)).current).toEqual({ folder: "/tmp/scratch", status: "not_git", prError: "gh is not installed" });
+      expect((await buildChatPrs({ folder: "/src/app", chatId: "c" }, d)).current).toMatchObject({ status: "default_branch", prError: "gh is not installed" });
     });
 
     it("keeps links whose lookup failed, as unknown PRs, and says the lookup failed", async () => {

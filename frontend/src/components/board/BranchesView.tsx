@@ -191,7 +191,7 @@ export default function BranchesView({ cards, onOpenCard }: BranchesViewProps) {
     const branchName = (
       <span
         title={
-          row.removed ? `${row.branch} (worktree removed)` : row.isMain ? `${row.branch ?? "detached HEAD"} (main checkout)` : (row.branch ?? "detached HEAD")
+          row.removed ? `${row.branch ?? row.cwd} (worktree removed)` : row.isMain ? `${row.branch ?? "detached HEAD"} (main checkout)` : (row.branch ?? "detached HEAD")
         }
         style={{
           fontSize: 13,
@@ -204,7 +204,8 @@ export default function BranchesView({ cards, onOpenCard }: BranchesViewProps) {
           minWidth: 0,
         }}
       >
-        {row.branch ?? "(detached)"}
+        {/* A removed row known only from a PR link has no branch on record: its directory names it. */}
+        {row.branch ?? (row.removed ? row.cwd.slice(row.cwd.lastIndexOf("/") + 1) : "(detached)")}
       </span>
     );
     // A worktree the git trail remembers but that no longer exists: muted, and

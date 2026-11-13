@@ -73,7 +73,31 @@ describe("ChatPrsView", () => {
     expect(within(card).getByLabelText("PR #30: acme/app#30").textContent).toBe("#30");
     expect(card.textContent).not.toContain("→");
     expect(card.textContent).not.toContain("updated");
-    expect(screen.getByText(/refreshing failed: gh is not installed/)).toBeDefined();
+    expect(screen.getByTestId("pr-lookup-warning").textContent).toContain("a GitHub lookup failed: gh is not installed");
+  });
+
+  it("says a lookup failed when the live branch has no PR of its own, under the list", async () => {
+    const unknown = pr(30, { state: "unknown", title: "acme/app#30", headRef: "", baseRef: "", author: null, createdAt: "" });
+    mockPrs.mockResolvedValue(response({ status: "default_branch", branch: "main", prError: "gh is not installed" }, [unknown]));
+    await mount();
+    expect(screen.getByTestId("pr-status-line").textContent).toContain("This is main, the default branch");
+    const warning = screen.getByTestId("pr-lookup-warning");
+    // Never claimed for a by-number lookup: nothing was "refreshed", and nothing shown is "stale".
+    expect(warning.textContent).toBe("PR data may be incomplete or out of date — a GitHub lookup failed: gh is not installed");
+    expect(screen.getByTestId("pr-card").compareDocumentPosition(warning) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("says a lookup failed under an empty list too, but not twice when the failure is the status itself", async () => {
+    mockPrs.mockResolvedValue(response({ status: "not_git", prError: "gh timed out" }));
+    await mount();
+    expect(screen.getByTestId("pr-empty").textContent).toContain("not in a git repository");
+    expect(screen.getByTestId("pr-lookup-warning").textContent).toContain("gh timed out");
+    cleanup();
+
+    mockPrs.mockResolvedValue(response({ status: "error", branch: "feat/a", prError: "gh: API rate limit exceeded" }));
+    await mount();
+    expect(screen.getByTestId("pr-empty").textContent).toContain("Couldn't look up PRs: gh: API rate limit exceeded");
+    expect(screen.queryByTestId("pr-lookup-warning")).toBeNull();
   });
 
   it("says when it merged rather than when it was updated", async () => {
@@ -143,7 +167,7 @@ describe("ChatPrsView", () => {
   it("flags a PR shown from a refresh that failed", async () => {
     mockPrs.mockResolvedValue(response({ status: "found", pr: pr(1), prError: "gh timed out" }));
     await mount();
-    expect(screen.getByText(/PR data may be stale — refreshing failed: gh timed out/)).toBeDefined();
+    expect(screen.getByTestId("pr-lookup-warning").textContent).toContain("a GitHub lookup failed: gh timed out");
   });
 
   it("asks for the folder alone for a new chat", async () => {

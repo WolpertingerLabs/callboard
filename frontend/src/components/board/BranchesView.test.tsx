@@ -231,6 +231,32 @@ describe("BranchesView", () => {
     expect(within(row("/home/u/app")).queryByText("removed")).toBeNull();
   });
 
+  it("names a removed row that only a PR link recorded by its directory, not as a detached HEAD", async () => {
+    mockOverview.mockResolvedValue({
+      generatedAt: OVERVIEW.generatedAt,
+      repos: [
+        {
+          repoPath: "/home/u/app",
+          name: "app",
+          rows: [
+            {
+              cwd: "/home/u/app.gone",
+              branch: null,
+              isMain: false,
+              removed: true,
+              cardIds: ["c1"],
+              prs: [{ number: 6, url: "https://github.com/acme/app/pull/6", state: "merged", title: "Gone" }],
+            },
+          ],
+        },
+      ],
+    });
+    await mount();
+    const removed = row("/home/u/app.gone");
+    expect(within(removed).getByTitle("/home/u/app.gone (worktree removed)").textContent).toBe("app.gone");
+    expect(within(removed).queryByText("(detached)")).toBeNull();
+  });
+
   it("hides a removed row whose cards the board does not show", async () => {
     mockOverview.mockResolvedValue({
       generatedAt: OVERVIEW.generatedAt,

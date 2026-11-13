@@ -47,12 +47,13 @@ export interface BranchRow {
    */
   prs?: BranchPr[];
   /**
-   * A worktree the git trail recorded that no longer exists. `branch` is the
-   * last one recorded there, `prs` holds its PRs, and there is no `pr` (no
-   * live branch to match). Absent on every live row.
+   * A worktree a chat's git trail or PR links recorded that no longer exists.
+   * `branch` is the last one a trail recorded there — null when only a PR
+   * link did — `prs` holds its PRs, and there is no `pr` (no live branch to
+   * match). Absent on every live row.
    */
   removed?: true;
-  /** Unarchived cards with a member chat in this directory (or below it), or — on a removed row — whose chats' trails recorded it. Never empty. */
+  /** Unarchived cards with a member chat in this directory (or below it), or — on a removed row — whose chats' trails recorded it or made a PR shown on it. Never empty. */
   cardIds: string[];
 }
 
@@ -63,9 +64,11 @@ export interface BranchRepo {
   name: string;
   rows: BranchRow[];
   /**
-   * Why there is no PR data for this repo, when looking it up failed (no `gh`,
-   * not authenticated, network, rate limit). Absent when the lookup worked or
-   * was never attempted (no GitHub remote).
+   * Why PR data for this repo is missing or may be stale, when looking it up
+   * failed (no `gh`, not authenticated, network, rate limit): the repo's
+   * listing, or — when a row shows an `unknown` PR — the by-number lookup of a
+   * PR its chats' histories name. Absent when the lookups worked or were never
+   * attempted (no GitHub remote).
    */
   prError?: string;
 }
@@ -123,9 +126,13 @@ export interface FolderPrs {
   /** The PR matched to the live branch (`status: "found"`). */
   pr?: ChatPr;
   /**
-   * Why PR data is missing or may be stale. With `status: "error"` there is no
-   * PR; alongside `found` it means a refresh failed and the PR shown is the
-   * last good answer.
+   * Why PR data is missing or may be stale. With `status: "error"` the
+   * listing of this directory's repository failed and there is no PR. Beside
+   * any other status, a lookup failed without changing that status: a refresh
+   * of the listing (the PRs shown are the last good answer), or the by-number
+   * lookup of a PR the chats' histories name (listed with state `unknown`, or
+   * as last known) — so it can accompany `not_git` or `no_pr` and an empty
+   * `prs` as well as `found`.
    */
   prError?: string;
 }

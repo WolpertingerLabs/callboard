@@ -12,15 +12,18 @@ vi.mock("../utils/git.js", () => ({ getRemoteUrlAsync: (dir: string) => remoteUr
 
 import {
   clearRepoPullsCache,
+  fetchPullsByNumber,
   fetchRepoPulls,
   getRepoPulls,
   indexPullsByBranch,
+  isPullOf,
   matchPull,
   parseGitHubRemote,
   PR_CACHE_TTL_MS,
   PR_FORCE_WAIT_MS,
   PR_STALE_MAX_MS,
   pullsForTrailEntry,
+  recordedPullForBranch,
   resolveLinkedPulls,
   runGh,
   toChatPr,
@@ -233,6 +236,15 @@ function ghServes(listings: { open?: unknown[] | Error; closed?: unknown[] | Err
   });
 }
 
+/**
+ * The filter gh applies to each listing, pinned whole: every field
+ * toPullSummary and the default-branch lookup read has to survive it, and a
+ * dropped one is a PR that silently stops matching.
+ */
+const JQ_FILTER =
+  "[.[] | {number, html_url, title, state, draft, merged_at, closed_at, created_at, updated_at, user: {login: .user.login}, " +
+  "head: {ref: .head.ref, sha: .head.sha, repo: {owner: {login: .head.repo.owner.login}}}, base: {ref: .base.ref, repo: {default_branch: .base.repo.default_branch}}}]";
+
 describe("fetchRepoPulls", () => {
   it("lists every open PR and the recent closed ones, as two REST calls", async () => {
     remoteUrl.mockResolvedValue("git@github.com:acme/app.git");
@@ -245,8 +257,8 @@ describe("fetchRepoPulls", () => {
     expect([...result.byBranch.keys()].sort()).toEqual(["feat/x", "fix/y"]);
     expect(result.byBranch.get("feat/x")?.map((p) => p.number)).toEqual([1]);
     expect(execFileMock.mock.calls.map(([cmd, args]) => [cmd, ...args])).toEqual([
-      ["gh", "api", "repos/acme/app/pulls?state=open&per_page=100", "--jq", expect.stringContaining("head: {ref: .head.ref")],
-      ["gh", "api", "repos/acme/app/pulls?state=closed&sort=updated&direction=desc&per_page=100", "--jq", expect.any(String)],
+      ["gh", "api", "repos/acme/app/pulls?state=open&per_page=100", "--jq", JQ_FILTER],
+      ["gh", "api", "repos/acme/app/pulls?state=closed&sort=updated&direction=desc&per_page=100", "--jq", JQ_FILTER],
     ]);
     // Every listed PR is reachable by number — the fork's and the default branch's too.
     expect([...result.byNumber!.keys()].sort()).toEqual([1, 2, 3, 4]);
@@ -515,11 +527,124 @@ describe("pullsForTrailEntry", () => {
     expect(pullsForTrailEntry(pulls(list), entry("fix/scroll", "2026-06-01T00:00:00Z")).map((p) => p.number)).toEqual([3, 2]);
   });
 
+  it("compares the close and the first sighting as instants, not as strings", () => {
+    // GitHub's timestamps have no milliseconds, a trail's do: as strings, "…:00Z" sorts after "…:00.500Z".
+    const closed = (closedAt: string) => [pr({ number: 1, headRef: "fix/x", state: "merged", closedAt })];
+    const seen = entry("fix/x", "2026-06-01T00:00:00.500Z");
+    expect(pullsForTrailEntry(pulls(closed("2026-06-01T00:00:00Z")), seen)).toEqual([]);
+    expect(pullsForTrailEntry(pulls(closed("2026-06-01T00:00:01Z")), seen).map((p) => p.number)).toEqual([1]);
+  });
+
   it("never claims the default branch, nor anything off GitHub", () => {
     const list = [pr({ number: 1, headRef: "feat/x" })];
     expect(pullsForTrailEntry(pulls(list), entry("main", "t0"))).toEqual([]);
     expect(pullsForTrailEntry({ byBranch: indexPullsByBranch(list, "acme", "main") }, entry("feat/x", "t0"))).toEqual([]);
     expect(pullsForTrailEntry(undefined, entry("feat/x", "t0"))).toEqual([]);
+  });
+});
+
+describe("recordedPullForBranch", () => {
+  const here = { github: { owner: "Acme", repo: "App" }, defaultBranch: "main", byBranch: new Map() };
+  const merged = (number: number, extra: Partial<PullSummary> = {}) => pr({ number, headRef: "feat/x", state: "merged", ...extra });
+
+  it("takes the recorded PR headed by the live branch: open first, then most recently updated, whatever order they were recorded in", () => {
+    const january = merged(5, { updatedAt: "2026-01-01T00:00:00Z" });
+    const september = merged(9, { updatedAt: "2026-09-01T00:00:00Z" });
+    expect(recordedPullForBranch([january, september], "feat/x", here)?.number).toBe(9);
+    expect(recordedPullForBranch([september, january, pr({ number: 12, headRef: "feat/x", updatedAt: "2025-01-01T00:00:00Z" })], "feat/x", here)?.number).toBe(12);
+    expect(recordedPullForBranch([january], "feat/other", here)).toBeUndefined();
+  });
+
+  it("is held to what a listed PR is: this owner's head, this repository, never the default branch", () => {
+    expect(recordedPullForBranch([merged(70, { headOwner: "stranger" })], "feat/x", here)).toBeUndefined();
+    expect(recordedPullForBranch([merged(70, { headOwner: null })], "feat/x", here)).toBeUndefined();
+    expect(recordedPullForBranch([pr({ number: 70, headRef: "main" })], "main", here)).toBeUndefined();
+    expect(recordedPullForBranch([merged(70, { url: "https://github.com/other/lib/pull/70" })], "feat/x", here)).toBeUndefined();
+    expect(recordedPullForBranch([merged(70)], "feat/x", { byBranch: new Map() })).toBeUndefined();
+    expect(recordedPullForBranch([merged(70)], null, here)).toBeUndefined();
+    // Owner and repository names are compared without case.
+    expect(recordedPullForBranch([merged(70)], "feat/x", here)?.number).toBe(70);
+  });
+
+  it("isPullOf goes by the URL, so a link's unknown PR counts by the repository the link names", () => {
+    expect(isPullOf({ url: "https://github.com/acme/app/pull/3" }, here.github)).toBe(true);
+    expect(isPullOf({ url: "https://github.com/acme/app-two/pull/3" }, here.github)).toBe(false);
+    expect(isPullOf({ url: "https://github.com/acme/app/pull/3" }, undefined)).toBe(false);
+  });
+});
+
+describe("fetchPullsByNumber", () => {
+  const node = (number: number, extra: Record<string, unknown> = {}) => ({
+    number,
+    url: `https://github.com/acme/app/pull/${number}`,
+    title: `PR ${number}`,
+    state: "OPEN",
+    isDraft: false,
+    headRefName: `b${number}`,
+    headRefOid: `sha${number}`,
+    baseRefName: "main",
+    createdAt: "2026-10-01T00:00:00Z",
+    updatedAt: "2026-11-01T00:00:00Z",
+    mergedAt: null,
+    closedAt: null,
+    author: { login: "dev" },
+    headRepositoryOwner: { login: "acme" },
+    ...extra,
+  });
+
+  it("asks for every number in one aliased query and maps each answer back to its number", async () => {
+    // gh exits 1 when any aliased field errors, with the rest of the answer on stdout.
+    ghAnswers({
+      error: Object.assign(new Error("exit 1"), { code: 1 as unknown as string }),
+      stderr: "gh: Could not resolve to a PullRequest with the number of 99.",
+      stdout: JSON.stringify({
+        data: {
+          repository: {
+            p7: node(7, { state: "MERGED", mergedAt: "2026-11-02T00:00:00Z", closedAt: "2026-11-02T00:00:00Z" }),
+            p8: node(8, { isDraft: true, author: null, headRepositoryOwner: null }),
+            p9: node(9, { state: "CLOSED", closedAt: "2026-11-03T00:00:00Z" }),
+            p99: null,
+            p100: null,
+          },
+        },
+        errors: [
+          { type: "NOT_FOUND", path: ["repository", "p99"], message: "Could not resolve to a PullRequest with the number of 99." },
+          { type: "FORBIDDEN", path: ["repository", "p100"], message: "Resource not accessible by integration" },
+        ],
+      }),
+    });
+    const answers = await fetchPullsByNumber({ owner: "acme", repo: "app" }, [7, 8, 9, 99, 100], "/work");
+
+    const [cmd, args, opts] = execFileMock.mock.calls[0];
+    expect([cmd, ...args.slice(0, 6)]).toEqual(["gh", "api", "graphql", "-f", "owner=acme", "-f", "name=app"]);
+    expect(args[6]).toBe("-f");
+    const fields =
+      "{ number url title state isDraft headRefName headRefOid baseRefName createdAt updatedAt mergedAt closedAt author{login} headRepositoryOwner{login} }";
+    expect(args[7]).toBe(
+      "query=query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { " +
+        [7, 8, 9, 99, 100].map((n) => `p${n}: pullRequest(number: ${n}) ${fields}`).join(" ") +
+        " } }",
+    );
+    expect(opts).toMatchObject({ cwd: "/work" });
+
+    expect(answers.get(7)).toMatchObject({ number: 7, state: "merged", headRef: "b7", headSha: "sha7", headOwner: "acme", baseRef: "main", author: "dev" });
+    expect(answers.get(7)).toMatchObject({ url: "https://github.com/acme/app/pull/7", mergedAt: "2026-11-02T00:00:00Z", closedAt: "2026-11-02T00:00:00Z" });
+    expect(answers.get(8)).toMatchObject({ number: 8, state: "draft", author: null, headOwner: null });
+    expect(answers.get(9)).toMatchObject({ number: 9, state: "closed" });
+    // Only GitHub's own NOT_FOUND makes a number "no such PR"…
+    expect(answers.get(99)).toBeNull();
+    // …any other empty field is a failure for that number, not a PR that does not exist.
+    expect(answers.get(100)).toEqual({ error: "Resource not accessible by integration" });
+    expect([...answers.keys()]).toEqual([7, 8, 9, 99, 100]);
+  });
+
+  it("fails with GitHub's reason when no repository came back — a GraphQL error or an HTTP one", async () => {
+    const exit1 = () => Object.assign(new Error("exit 1"), { code: 1 as unknown as string });
+    ghAnswers({ error: exit1(), stdout: JSON.stringify({ data: { repository: null }, errors: [{ type: "NOT_FOUND", message: "Could not resolve to a Repository" }] }) });
+    await expect(fetchPullsByNumber({ owner: "acme", repo: "nope" }, [1], "/")).rejects.toThrow("Could not resolve to a Repository");
+    // A 401 prints its JSON body on stdout: the reason is there, not "Unexpected response".
+    ghAnswers({ error: exit1(), stdout: JSON.stringify({ message: "Bad credentials", documentation_url: "https://docs.github.com/rest" }), stderr: "gh: Bad credentials (HTTP 401)" });
+    await expect(fetchPullsByNumber({ owner: "acme", repo: "app" }, [1], "/")).rejects.toThrow("Bad credentials");
   });
 });
 
@@ -572,6 +697,100 @@ describe("resolveLinkedPulls", () => {
     const { pulls, error } = await resolveLinkedPulls([link(41)], [], { cwd: "/" }, { fetch, now: () => 0 });
     expect(error).toBe("gh is not installed");
     expect(pulls).toEqual([expect.objectContaining({ number: 41, state: "unknown", url: "https://github.com/acme/app/pull/41", title: "acme/app#41" })]);
+  });
+});
+
+describe("resolveLinkedPulls — failures, sharing and the wait cap", () => {
+  const link = (number: number, repo = "acme/app") => ({ repo, number, url: `https://github.com/${repo}/pull/${number}`, firstSeen: "2026-06-01T00:00:00Z" });
+  const open = (number: number) => pr({ number, headRef: `b${number}` });
+  type Fetch = Parameters<typeof resolveLinkedPulls>[3] extends infer D ? (D extends { fetch: infer F } ? F : never) : never;
+
+  it("caches a failed lookup for the TTL: a second poll spawns nothing and still answers unknown, with the error", async () => {
+    const fetch = vi.fn(async () => {
+      throw new Error("Could not resolve to a Repository");
+    });
+    const links = [link(41), link(42), link(7, "acme/private")];
+    for (const now of [0, 30_000, PR_CACHE_TTL_MS - 1]) {
+      const { pulls, error } = await resolveLinkedPulls(links, [], { cwd: "/" }, { fetch, now: () => now });
+      expect(pulls.map((p) => [p?.number, p?.state])).toEqual([
+        [41, "unknown"],
+        [42, "unknown"],
+        [7, "unknown"],
+      ]);
+      expect(error).toBe("Could not resolve to a Repository");
+    }
+    // One call per repository, once — not once per poll.
+    expect(fetch).toHaveBeenCalledTimes(2);
+    // Past the TTL it is asked again, and a forced refresh asks sooner.
+    await resolveLinkedPulls(links, [], { cwd: "/" }, { fetch, now: () => PR_CACHE_TTL_MS });
+    expect(fetch).toHaveBeenCalledTimes(4);
+    await resolveLinkedPulls(links, [], { cwd: "/", force: true }, { fetch, now: () => PR_CACHE_TTL_MS + 20_000 });
+    expect(fetch).toHaveBeenCalledTimes(6);
+  });
+
+  it("keeps the last good answer beside the error when a later ask fails", async () => {
+    const fetch = vi.fn<Fetch>(async (_ref, numbers) => new Map(numbers.map((n) => [n, open(n)])));
+    await resolveLinkedPulls([link(20)], [], { cwd: "/" }, { fetch, now: () => 0 });
+    fetch.mockRejectedValueOnce(new Error("gh timed out"));
+    const { pulls, error } = await resolveLinkedPulls([link(20)], [], { cwd: "/" }, { fetch, now: () => PR_CACHE_TTL_MS });
+    expect(pulls.map((p) => [p?.number, p?.state])).toEqual([[20, "open"]]);
+    expect(error).toBe("gh timed out");
+  });
+
+  it("serves unknown once the wait cap passes, and the fetch lands for the next poll", async () => {
+    let answer!: () => void;
+    const fetch = vi.fn<Fetch>(
+      (_ref, numbers) => new Promise((resolvePromise) => (answer = () => resolvePromise(new Map(numbers.map((n) => [n, open(n)]))))),
+    );
+    vi.useFakeTimers();
+    try {
+      const first = resolveLinkedPulls([link(50)], [], { cwd: "/" }, { fetch, now: () => 0 });
+      await vi.advanceTimersByTimeAsync(PR_FORCE_WAIT_MS);
+      const capped = await first;
+      expect(capped.pulls.map((p) => [p?.number, p?.state])).toEqual([[50, "unknown"]]);
+      expect(capped.error).toBe("GitHub did not answer in time");
+
+      // A poll arriving while it still runs joins it rather than spawning another.
+      const second = resolveLinkedPulls([link(50)], [], { cwd: "/" }, { fetch, now: () => 6_000 });
+      answer();
+      expect((await second).pulls.map((p) => [p?.number, p?.state])).toEqual([[50, "open"]]);
+    } finally {
+      vi.useRealTimers();
+    }
+    const third = await resolveLinkedPulls([link(50)], [], { cwd: "/" }, { fetch, now: () => 7_000 });
+    expect(third).toEqual({ pulls: [expect.objectContaining({ number: 50, state: "open" })] });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("shares one fetch between lookups that arrive together", async () => {
+    const fetch = vi.fn<Fetch>(async (_ref, numbers) => new Map(numbers.map((n) => [n, open(n)])));
+    const all = await Promise.all([1, 2, 3].map(() => resolveLinkedPulls([link(60)], [], { cwd: "/" }, { fetch, now: () => 0 })));
+    expect(all.map((r) => r.pulls[0]?.number)).toEqual([60, 60, 60]);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks once for a repository spelled two ways", async () => {
+    const fetch = vi.fn<Fetch>(async (_ref, numbers) => new Map(numbers.map((n) => [n, open(n)])));
+    const { pulls } = await resolveLinkedPulls([link(1, "Acme/App"), link(2, "acme/app")], [], { cwd: "/" }, { fetch, now: () => 0 });
+    expect(pulls.map((p) => p?.number)).toEqual([1, 2]);
+    expect(fetch.mock.calls.map(([ref, numbers]) => [ref, numbers])).toEqual([[{ owner: "Acme", repo: "App" }, [1, 2]]]);
+  });
+
+  it("reports a number GitHub answered with an error as unknown, without dropping its siblings", async () => {
+    const fetch = vi.fn<Fetch>(async (_ref, numbers) => new Map(numbers.map((n) => [n, n === 71 ? { error: "Something went wrong" } : n === 72 ? null : open(n)])));
+    const { pulls, error } = await resolveLinkedPulls([link(70), link(71), link(72)], [], { cwd: "/" }, { fetch, now: () => 0 });
+    expect(pulls.map((p) => [p?.number, p?.state])).toEqual([[70, "open"], [71, "unknown"], [undefined, undefined]]);
+    expect(error).toBe("Something went wrong");
+  });
+
+  it("releases its slot when a fetch throws before returning a promise", async () => {
+    const thrower = vi.fn<Fetch>(() => {
+      throw new Error("boom");
+    });
+    // More throws than there are slots: a leaked slot would hang the last lookup.
+    for (const n of [1, 2, 3]) expect((await resolveLinkedPulls([link(n)], [], { cwd: "/" }, { fetch: thrower, now: () => 0 })).error).toBe("boom");
+    const fetch = vi.fn<Fetch>(async (_ref, numbers) => new Map(numbers.map((n) => [n, open(n)])));
+    expect((await resolveLinkedPulls([link(80)], [], { cwd: "/" }, { fetch, now: () => 0 })).pulls[0]?.number).toBe(80);
   });
 });
 

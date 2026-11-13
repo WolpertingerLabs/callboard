@@ -230,12 +230,6 @@ export default function ChatPrsView({ folder, chatId }: ChatPrsViewProps) {
             )}
             {/* One list, one card per PR; the state badge tells them apart. */}
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>{prs.map((pr) => prCard(pr))}</div>
-            {current.prError && current.status !== "error" && (
-              <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6, fontSize: 12, color: "var(--warning)" }}>
-                <AlertTriangle size={12} />
-                PR data may be stale — refreshing failed: {current.prError}
-              </div>
-            )}
           </>
         ) : (
           <div
@@ -254,6 +248,16 @@ export default function ChatPrsView({ folder, chatId }: ChatPrsViewProps) {
             <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>{emptyMessage(current)}</span>
           </div>
         ))}
+
+      {/* A lookup that failed without being the status itself: a refresh of
+          the listing, or a PR asked about by number. Either way what is shown
+          (an empty list included) may not be all there is. */}
+      {current?.prError && current.status !== "error" && (
+        <div data-testid="pr-lookup-warning" style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6, fontSize: 12, color: "var(--warning)" }}>
+          <AlertTriangle size={12} />
+          <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>PR data may be incomplete or out of date — a GitHub lookup failed: {current.prError}</span>
+        </div>
+      )}
     </div>
   );
 }

@@ -66,11 +66,16 @@ export function parseGitHubRemote(url: string): GitHubRepoRef | null {
     /^(?:https?|ssh|git):\/\/(?:[^@/\s]+@)?github\.com(?::\d+)?\/([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/i.exec(trimmed);
   if (!match) return null;
   const [, owner, repo] = match;
-  // Both are spliced into a `gh api` path, so anything GitHub would not accept
-  // as a name — `?`, `#`, `&`, `..` — is refused here rather than escaped.
-  if (!/^[A-Za-z0-9-]{1,39}$/.test(owner)) return null;
-  if (!/^[A-Za-z0-9._-]+$/.test(repo) || repo === "." || repo === "..") return null;
-  return { owner, repo };
+  return isGitHubRepoName(owner, repo) ? { owner, repo } : null;
+}
+
+/**
+ * Whether `owner` and `repo` are names GitHub would accept. Both are spliced
+ * into a `gh api` path and into URLs, so anything else — `?`, `#`, `&`, `..`
+ * — is refused rather than escaped.
+ */
+export function isGitHubRepoName(owner: string, repo: string): boolean {
+  return /^[A-Za-z0-9-]{1,39}$/.test(owner) && /^[A-Za-z0-9._-]+$/.test(repo) && repo !== "." && repo !== "..";
 }
 
 /** The subset of a REST pull object this module reads. */
@@ -173,12 +178,35 @@ export function matchPull(candidates: PullSummary[] | undefined, localSha: strin
  */
 export function pullsForTrailEntry(pulls: RepoPulls | undefined, entry: Pick<GitTrailEntry, "branch" | "firstSeen">): PullSummary[] {
   if (!pulls?.github || entry.branch === pulls.defaultBranch) return [];
-  return (pulls.byBranch.get(entry.branch) ?? []).filter((pr) => isOpen(pr) || !pr.closedAt || pr.closedAt >= entry.firstSeen);
+  // Compared as instants: GitHub's `…:00Z` and a trail's `…:00.500Z` do not
+  // sort as strings. An unreadable date disowns nothing.
+  const firstSeen = Date.parse(entry.firstSeen);
+  return (pulls.byBranch.get(entry.branch) ?? []).filter((pr) => isOpen(pr) || !pr.closedAt || !(Date.parse(pr.closedAt) < firstSeen));
 }
 
 /** Open work first, then most recently updated. */
 export function byOpenThenUpdated(a: PullSummary, b: PullSummary): number {
   return Number(isOpen(b)) - Number(isOpen(a)) || b.updatedAt.localeCompare(a.updatedAt);
+}
+
+/** Whether `pr` is a pull request of repository `ref`, by its URL — which an `unknown` PR has too, from its link. */
+export function isPullOf(pr: Pick<PullSummary, "url">, ref: GitHubRepoRef | undefined): boolean {
+  return ref !== undefined && pr.url.toLowerCase().startsWith(`https://github.com/${ref.owner}/${ref.repo}/pull/`.toLowerCase());
+}
+
+/**
+ * The live `branch`'s PR among those a chat's own records (trail, PR links)
+ * name, for when the SHA rule ({@link matchPull}) found none. Held to what
+ * {@link indexPullsByBranch} holds a listed PR to — this repository's PR,
+ * headed by this owner's branch of that name, never the default branch — so
+ * a fork's `feat/x` is not promoted onto ours. Open first, then most recently
+ * updated: the one answer for the Board and the PRs tab alike.
+ */
+export function recordedPullForBranch(recorded: PullSummary[], branch: string | null, pulls: RepoPulls | undefined): PullSummary | undefined {
+  const here = pulls?.github;
+  if (!here || branch === null || branch === pulls.defaultBranch) return undefined;
+  const owner = here.owner.toLowerCase();
+  return [...recorded].sort(byOpenThenUpdated).find((pr) => pr.headRef === branch && pr.headOwner?.toLowerCase() === owner && isPullOf(pr, here));
 }
 
 export function toBranchPr(pr: PullSummary): BranchPr {
@@ -327,7 +355,10 @@ function limited<T>(task: () => Promise<T>): Promise<T> {
   return new Promise<T>((resolvePromise, reject) => {
     const start = () => {
       running++;
-      task()
+      // Called inside the chain, so a task that throws before returning a
+      // promise still releases its slot.
+      Promise.resolve()
+        .then(task)
         .then(resolvePromise, reject)
         .finally(() => {
           running--;
@@ -408,11 +439,22 @@ export async function getRepoPulls(repoPath: string, force = false, now = Date.n
 
 const refKey = (owner: string, repo: string) => `${owner}/${repo}`.toLowerCase();
 
-/** PRs asked about by number, by `owner/repo#number`. `value` is null for one GitHub does not have. */
-const numberCache = new Map<string, { at: number; value: PullSummary | null }>();
+interface NumberEntry {
+  /** When it was last asked about, answered or not. */
+  at: number;
+  /** The last answer: null for one GitHub does not have. Absent while no ask has succeeded. */
+  value?: PullSummary | null;
+  /** Why the last ask failed. Kept beside the last good `value`, like a failed listing refresh. */
+  error?: string;
+}
 
-/** A merged PR never changes again; anything else is re-asked once the TTL passes. */
-const isSettled = (hit: { at: number; value: PullSummary | null }, now: number) => hit.value?.state === "merged" || now - hit.at < PR_CACHE_TTL_MS;
+/** PRs asked about by number, by `owner/repo#number`. */
+const numberCache = new Map<string, NumberEntry>();
+/** Lookups in flight, by the same key — shared by every caller that arrives while they run. */
+const numberPending = new Map<string, Promise<void>>();
+
+/** A merged PR never changes again; anything else — a failure included — is re-asked once the TTL passes. */
+const isSettled = (hit: NumberEntry, now: number) => hit.value?.state === "merged" || now - hit.at < PR_CACHE_TTL_MS;
 
 /** PRs asked about per GraphQL call. */
 const NUMBER_BATCH = 50;
@@ -439,14 +481,35 @@ function fromGraphql(node: any): PullSummary | null {
   });
 }
 
-/** One GraphQL call for up to {@link NUMBER_BATCH} PRs of one repository. A number GitHub does not have maps to null. */
-export async function fetchPullsByNumber(ref: GitHubRepoRef, numbers: number[], cwd: string): Promise<Map<number, PullSummary | null>> {
+/** One PR number's answer: the PR, null when GitHub says there is none, or why it could not say. */
+export type PullAnswer = PullSummary | null | { error: string };
+
+/**
+ * One GraphQL call for up to {@link NUMBER_BATCH} PRs of one repository.
+ * Only GitHub's own NOT_FOUND for a number makes it null; a field that came
+ * back empty for any other reason is an error for that number, not a PR that
+ * does not exist.
+ */
+export async function fetchPullsByNumber(ref: GitHubRepoRef, numbers: number[], cwd: string): Promise<Map<number, PullAnswer>> {
   const fields = numbers.map((n) => `p${n}: pullRequest(number: ${n}) { ${GRAPHQL_PULL_FIELDS} }`).join(" ");
   const query = `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { ${fields} } }`;
   const out = JSON.parse(await runGh(["api", "graphql", "-f", `owner=${ref.owner}`, "-f", `name=${ref.repo}`, "-f", `query=${query}`], cwd, true));
   const repository = out?.data?.repository;
-  if (!repository || typeof repository !== "object") throw new Error(String(out?.errors?.[0]?.message ?? "Unexpected response from GitHub").slice(0, 200));
-  return new Map(numbers.map((n) => [n, fromGraphql(repository[`p${n}`])]));
+  // No repository at all: a GraphQL error, or an HTTP-level one (a 401's body
+  // is `{ message }`), whose reason is on stdout too.
+  if (!repository || typeof repository !== "object") {
+    throw new Error(String(out?.errors?.[0]?.message ?? out?.message ?? "Unexpected response from GitHub").slice(0, 200));
+  }
+  const errors: any[] = Array.isArray(out.errors) ? out.errors : [];
+  return new Map(
+    numbers.map((n): [number, PullAnswer] => {
+      const found = fromGraphql(repository[`p${n}`]);
+      if (found) return [n, found];
+      const failure = errors.find((e) => Array.isArray(e?.path) && e.path[e.path.length - 1] === `p${n}`);
+      if (failure?.type === "NOT_FOUND") return [n, null];
+      return [n, { error: String(failure?.message ?? "Unexpected response from GitHub").slice(0, 200) }];
+    }),
+  );
 }
 
 /** A link GitHub could not be asked about, as a PR: its number and URL, state `unknown`. */
@@ -467,8 +530,35 @@ function unknownPull(link: ChatPrLink): PullSummary {
 }
 
 export interface LinkedPullDeps {
-  fetch: (ref: GitHubRepoRef, numbers: number[], cwd: string) => Promise<Map<number, PullSummary | null>>;
+  fetch: (ref: GitHubRepoRef, numbers: number[], cwd: string) => Promise<Map<number, PullAnswer>>;
   now: () => number;
+}
+
+/** Ask about `numbers` of one repository, a batch at a time, into the cache. Never rejects. */
+async function fetchIntoCache(ref: GitHubRepoRef, numbers: number[], cwd: string, deps: LinkedPullDeps, now: number): Promise<void> {
+  const key = (n: number) => `${refKey(ref.owner, ref.repo)}#${n}`;
+  // Stamped like an answer, so a failure is not re-asked before the TTL; the
+  // last good answer stays beside it.
+  const failed = (n: number, error: string) => numberCache.set(key(n), { ...numberCache.get(key(n)), at: now, error });
+  for (let i = 0; i < numbers.length; i += NUMBER_BATCH) {
+    const batch = numbers.slice(i, i + NUMBER_BATCH);
+    try {
+      const fetched = await limited(() => deps.fetch(ref, batch, cwd));
+      for (const n of batch) {
+        const answer = fetched.get(n);
+        if (answer === undefined) failed(n, "Unexpected response from GitHub");
+        else if (answer !== null && "error" in answer) failed(n, answer.error);
+        else numberCache.set(key(n), { at: now, value: answer });
+      }
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      log.debug(`PR lookup by number failed for ${ref.owner}/${ref.repo}: ${error}`);
+      // Whatever broke this batch (no gh, offline, a repository this account
+      // cannot see) breaks the rest.
+      for (const n of numbers.slice(i)) failed(n, error);
+      return;
+    }
+  }
 }
 
 /**
@@ -483,6 +573,12 @@ export interface LinkedPullDeps {
  * as an `unknown` PR carrying its number and URL: the chat's history says it
  * exists. One GitHub says does not exist is dropped — `error` reports the
  * first failure.
+ *
+ * Like {@link getRepoPulls}: failures are cached for the TTL like answers, so
+ * a link that cannot be resolved is not a `gh` spawn on every poll; callers
+ * arriving together share one fetch; and the wait is capped at
+ * {@link PR_FORCE_WAIT_MS} — past that this answers from what is cached
+ * (`unknown` for what never was) and the fetch lands for the next poll.
  */
 export async function resolveLinkedPulls(
   links: ChatPrLink[],
@@ -494,42 +590,59 @@ export async function resolveLinkedPulls(
   for (const pulls of known) if (pulls.github) listed.set(refKey(pulls.github.owner, pulls.github.repo), pulls);
   const now = deps.now();
   const keyOf = (link: ChatPrLink) => `${link.repo.toLowerCase()}#${link.number}`;
+  const inListing = (link: ChatPrLink) => listed.get(link.repo.toLowerCase())?.byNumber?.get(link.number);
 
-  const missing = new Map<string, Set<number>>();
+  // By lowercased repository, so two spellings of one name are one call.
+  const missing = new Map<string, { ref: GitHubRepoRef; numbers: Set<number> }>();
+  const waits = new Set<Promise<void>>();
   for (const link of links) {
-    if (listed.get(link.repo.toLowerCase())?.byNumber?.has(link.number)) continue;
+    if (inListing(link)) continue;
+    const pending = numberPending.get(keyOf(link));
+    if (pending) {
+      waits.add(pending);
+      continue;
+    }
     const hit = numberCache.get(keyOf(link));
     if (hit && isSettled(hit, now) && !(opts.force && hit.value?.state !== "merged" && now - hit.at >= PR_FORCE_MIN_AGE_MS)) continue;
-    const numbers = missing.get(link.repo) ?? new Set<number>();
-    numbers.add(link.number);
-    missing.set(link.repo, numbers);
+    const [owner, repo] = link.repo.split("/");
+    const wanted = missing.get(link.repo.toLowerCase()) ?? { ref: { owner, repo }, numbers: new Set<number>() };
+    wanted.numbers.add(link.number);
+    missing.set(link.repo.toLowerCase(), wanted);
+  }
+  for (const { ref, numbers } of missing.values()) {
+    const keys = [...numbers].map((n) => `${refKey(ref.owner, ref.repo)}#${n}`);
+    const run = fetchIntoCache(ref, [...numbers], opts.cwd, deps, now).finally(() => {
+      for (const key of keys) numberPending.delete(key);
+    });
+    for (const key of keys) numberPending.set(key, run);
+    waits.add(run);
+  }
+
+  let timedOut = false;
+  if (waits.size > 0) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const capped = new Promise<void>((resolvePromise) => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        resolvePromise();
+      }, PR_FORCE_WAIT_MS);
+    });
+    try {
+      await Promise.race([Promise.all(waits), capped]);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   let error: string | undefined;
-  await Promise.all(
-    [...missing].map(async ([repo, numbers]) => {
-      const [owner, name] = repo.split("/");
-      const all = [...numbers];
-      for (let i = 0; i < all.length; i += NUMBER_BATCH) {
-        const batch = all.slice(i, i + NUMBER_BATCH);
-        try {
-          const fetched = await limited(() => deps.fetch({ owner, repo: name }, batch, opts.cwd));
-          for (const n of batch) numberCache.set(`${repo.toLowerCase()}#${n}`, { at: now, value: fetched.get(n) ?? null });
-        } catch (err) {
-          error ??= err instanceof Error ? err.message : String(err);
-          log.debug(`PR lookup by number failed for ${repo}: ${error}`);
-          break;
-        }
-      }
-    }),
-  );
-
   const pulls = links.map((link) => {
-    const hit = listed.get(link.repo.toLowerCase())?.byNumber?.get(link.number);
+    const hit = inListing(link);
     if (hit) return hit;
     const cached = numberCache.get(keyOf(link));
-    // Never fetched (the lookup failed): the link itself is the answer.
-    if (!cached) return unknownPull(link);
+    if (cached?.error !== undefined) error ??= cached.error;
+    else if (!cached && timedOut) error ??= "GitHub did not answer in time";
+    // Never answered (the lookup failed, or is still running): the link itself is the answer.
+    if (cached?.value === undefined) return unknownPull(link);
     return cached.value ?? undefined;
   });
   return { pulls, ...(error !== undefined && { error }) };
@@ -539,4 +652,5 @@ export async function resolveLinkedPulls(
 export function clearRepoPullsCache(): void {
   cache.clear();
   numberCache.clear();
+  numberPending.clear();
 }

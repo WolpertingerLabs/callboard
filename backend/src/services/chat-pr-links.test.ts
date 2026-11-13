@@ -13,17 +13,37 @@ const dataDir = mkdtempSync(join(tmpdir(), "callboard-pr-links-data-"));
 process.env.CALLBOARD_DATA_DIR = dataDir;
 const tmp = mkdtempSync(join(tmpdir(), "callboard-pr-links-"));
 
+/** Where the (stubbed) Claude Code provider finds each session's transcript. */
+const sessionLogs: Record<string, string> = {};
+const resolveSession = vi.fn((sessionId: string) => (sessionLogs[sessionId] ? { logPath: sessionLogs[sessionId] } : null));
+vi.mock("../agents/factory.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../agents/factory.js")>()),
+  getSessionProvider: () => ({ resolveSession }),
+}));
+
 const { chatFileService } = await import("./chat-file-service.js");
-const { mergePrLinks, parsePrLinks, prLinkBacklogIdle, resetPrLinkSync, scanPrLinks, syncChatPrLinks, syncPrLinksInBackground } = await import(
-  "./chat-pr-links.js"
-);
+const { sessionRegistry } = await import("./session-registry.js");
+const {
+  DEFAULT_PR_LINK_DEPS,
+  initPrLinkRecorder,
+  mergePrLinks,
+  parsePrLinks,
+  prLinkBacklogIdle,
+  resetPrLinkSync,
+  scanPrLinks,
+  syncChatPrLinks,
+  syncPrLinksInBackground,
+} = await import("./chat-pr-links.js");
 type PrLinkDeps = import("./chat-pr-links.js").PrLinkDeps;
 
 afterAll(() => {
   rmSync(tmp, { recursive: true, force: true });
   rmSync(dataDir, { recursive: true, force: true });
 });
-beforeEach(() => resetPrLinkSync());
+beforeEach(() => {
+  resetPrLinkSync();
+  resolveSession.mockClear();
+});
 
 const prLink = (prNumber: number, timestamp = "2026-06-01T00:00:00Z", prRepository = "acme/app") =>
   JSON.stringify({ type: "pr-link", sessionId: "s", prNumber, prUrl: `https://github.com/${prRepository}/pull/${prNumber}`, prRepository, timestamp });
@@ -68,6 +88,46 @@ describe("scanPrLinks", () => {
       { repo: "acme/lib", number: 13, url: "https://github.com/acme/lib/pull/13", firstSeen: "2026-06-03T00:00:00Z" },
     ]);
     expect(offset).toBe(statSync(path).size);
+  });
+
+  it("skips an entry GitHub could not be asked about: a number past an Int, a repository named like a path, no timestamp", async () => {
+    const entry = (fields: Record<string, unknown>) =>
+      JSON.stringify({ type: "pr-link", prUrl: "https://github.com/acme/app/pull/1", prRepository: "acme/app", prNumber: 1, timestamp: "2026-06-01T00:00:00Z", ...fields });
+    const path = transcript(
+      lines(
+        entry({ prNumber: 1e21 }), // spliced into the query as `1e+21`, failing every PR asked about with it
+        entry({ prNumber: 2_147_483_648 }),
+        entry({ prRepository: "acme/.." }),
+        entry({ prRepository: "acme/." }),
+        entry({ prNumber: 3, timestamp: undefined }), // "when scanned" is not when the chat named it
+        entry({ prNumber: 4, timestamp: 1_700_000_000 }),
+        entry({ prNumber: 2_147_483_647 }),
+      ),
+    );
+    expect((await scanPrLinks(path)).links.map((l) => l.number)).toEqual([2_147_483_647]);
+
+    const stored = (fields: Record<string, unknown>) => ({ repo: "acme/app", number: 1, url: "u", firstSeen: "t", ...fields });
+    expect(parsePrLinks([stored({ number: 1e21 }), stored({ repo: "acme/.." }), stored({ number: 5 })]).map((l) => l.number)).toEqual([5]);
+  });
+
+  it("finds an entry in a line longer than one read, wherever a read boundary falls in it", async () => {
+    const READ = 1 << 20;
+    // `{"pad":"…","type":"pr-link",…}`: the marker starts 10 bytes plus the padding into the line.
+    const padded = (prNumber: number, markerAt: number) =>
+      JSON.stringify({ pad: "x".repeat(markerAt - 10), type: "pr-link", prNumber, prUrl: `https://github.com/acme/app/pull/${prNumber}`, prRepository: "acme/app", timestamp: "2026-06-01T00:00:00Z" });
+    const first = padded(1, READ - 5); // the marker itself is split across the first two reads
+    const second = padded(2, 3 * READ + 100); // the marker is whole, three reads into its line
+    const path = transcript(lines(first, JSON.stringify({ type: "assistant", message: { content: "y".repeat(2 * READ) } }), second, prLink(3)));
+    const { links, offset } = await scanPrLinks(path);
+    expect(links.map((l) => l.number)).toEqual([1, 2, 3]);
+    expect(offset).toBe(statSync(path).size);
+
+    // And resumed mid-file, with the long line torn before its end.
+    const whole = lines(prLink(4));
+    const torn = transcript(whole + second.slice(0, 2 * READ));
+    expect(await scanPrLinks(torn)).toEqual({ links: [expect.objectContaining({ number: 4 })], offset: Buffer.byteLength(whole) });
+    appendFileSync(torn, second.slice(2 * READ) + "\n");
+    expect((await scanPrLinks(torn, Buffer.byteLength(whole))).links.map((l) => l.number)).toEqual([2]);
   });
 
   it("stops at the last complete line, and picks the torn one up whole next time", async () => {
@@ -126,6 +186,44 @@ describe("syncChatPrLinks", () => {
     expect((await syncChatPrLinks(chatFileService.getChat(chat.id)!, deps({ [chat.session_id]: path }))).map((l) => l.number)).toEqual([5]);
   });
 
+  it("shares one run between callers that arrive together", async () => {
+    const chat = makeChat();
+    const d = deps({ [chat.session_id]: transcript(lines(prLink(1))) });
+    const a = syncChatPrLinks(chat, d);
+    const b = syncChatPrLinks(chat, d);
+    expect(b).toBe(a);
+    expect((await a).map((l) => l.number)).toEqual([1]);
+    expect(d.logPath).toHaveBeenCalledTimes(1);
+  });
+
+  it("writes onto the freshest record: what was written to the chat while its transcript was read survives", async () => {
+    const chat = makeChat({ title: "before" });
+    const run = syncChatPrLinks(chat, deps({ [chat.session_id]: transcript(lines(prLink(1))) }));
+    // Lands while the scan is awaited — after the snapshot `chat` was taken.
+    chatFileService.updateChatMetadata(chat.id, { title: "after", model: "opus" });
+    await run;
+    expect(metaOf(chat.id)).toMatchObject({ title: "after", model: "opus", prLinks: [expect.objectContaining({ number: 1 })] });
+  });
+
+  it("writes only the offsets it moved, so a run on an older snapshot does not rewind another session's", async () => {
+    const old = transcript(lines(prLink(1)));
+    const live = transcript(lines(prLink(2)));
+    const chat = makeChat({ session_ids: ["old-session"] });
+    const d = deps({ "old-session": old, [chat.session_id]: live });
+    await syncChatPrLinks(chat, d);
+    // The backlog's copy of the chat, taken now…
+    const snapshot = chatFileService.getChat(chat.id)!;
+    // …then a turn's end reads further into the old session's transcript.
+    appendFileSync(old, lines(prLink(3)));
+    await syncChatPrLinks(chatFileService.getChat(chat.id)!, d);
+    const advanced = statSync(old).size;
+    // The backlog reaches the chat: only the live transcript has grown for it.
+    appendFileSync(live, lines(prLink(4)));
+    await syncChatPrLinks(snapshot, deps({ [chat.session_id]: live }));
+    expect(metaOf(chat.id).prLinkScan).toEqual({ "old-session": advanced, [chat.session_id]: statSync(live).size });
+    expect(parsePrLinks(metaOf(chat.id).prLinks).map((l) => l.number)).toEqual([1, 2, 3, 4]);
+  });
+
   it("answers with the stored links for another engine, a missing transcript, or a failed read", async () => {
     const stored = [{ repo: "acme/app", number: 9, url: "https://github.com/acme/app/pull/9", firstSeen: "t" }];
     const codex = makeChat({ provider: "codex", prLinks: stored });
@@ -150,6 +248,61 @@ describe("syncPrLinksInBackground", () => {
     await prLinkBacklogIdle();
     expect(d.logPath).toHaveBeenCalledTimes(1);
     expect(parsePrLinks(metaOf(chat.id).prLinks).map((l) => l.number)).toEqual([7]);
+  });
+
+  it("gives the event loop a turn between chats, so a long backlog of up-to-date chats does not hold every request", async () => {
+    // No transcript to read: each sync finishes without ever awaiting I/O.
+    const backlog = Array.from({ length: 50 }, () => makeChat());
+    const d = deps({});
+    let syncedWhenTheLoopTurned = -1;
+    setImmediate(() => (syncedWhenTheLoopTurned = d.logPath.mock.calls.length));
+    syncPrLinksInBackground(backlog, d);
+    await prLinkBacklogIdle();
+    expect(d.logPath).toHaveBeenCalledTimes(50);
+    expect(syncedWhenTheLoopTurned).toBeGreaterThanOrEqual(0);
+    expect(syncedWhenTheLoopTurned).toBeLessThan(5);
+  });
+});
+
+describe("the production wiring", () => {
+  const tick = () => new Promise((r) => setImmediate(r));
+  initPrLinkRecorder();
+
+  it("finds a transcript through the Claude Code provider once, and does not look again for one that is missing", () => {
+    sessionLogs["wired-here"] = transcript(lines(prLink(1)));
+    expect(DEFAULT_PR_LINK_DEPS.logPath("wired-here")).toBe(sessionLogs["wired-here"]);
+    expect(DEFAULT_PR_LINK_DEPS.logPath("wired-here")).toBe(sessionLogs["wired-here"]);
+    expect(DEFAULT_PR_LINK_DEPS.logPath("wired-gone")).toBeNull();
+    expect(DEFAULT_PR_LINK_DEPS.logPath("wired-gone")).toBeNull();
+    // A miss walks every project directory: paid once per session, not once per sync.
+    expect(resolveSession.mock.calls.map(([id]) => id)).toEqual(["wired-here", "wired-gone"]);
+    expect(DEFAULT_PR_LINK_DEPS.size(sessionLogs["wired-here"])).toBe(statSync(sessionLogs["wired-here"]).size);
+    expect(DEFAULT_PR_LINK_DEPS.size(join(tmp, "no-such-file"))).toBeNull();
+
+    resetPrLinkSync();
+    expect(DEFAULT_PR_LINK_DEPS.logPath("wired-gone")).toBeNull();
+    expect(resolveSession).toHaveBeenCalledTimes(3);
+  });
+
+  it("syncs a chat's links when its turn ends — looking again for a transcript that was missing before the turn", async () => {
+    const chat = makeChat();
+    // Asked about before the session has written anything: remembered as missing.
+    expect(await syncChatPrLinks(chat)).toEqual([]);
+    sessionLogs[chat.session_id] = transcript(lines(prLink(31)));
+    expect(await syncChatPrLinks(chat)).toEqual([]);
+
+    sessionRegistry.register(chat.id, { type: "web" });
+    await tick();
+    expect(metaOf(chat.id).prLinks).toBeUndefined();
+    sessionRegistry.unregister(chat.id);
+    await vi.waitFor(() => expect(parsePrLinks(metaOf(chat.id).prLinks).map((l) => l.number)).toEqual([31]));
+  });
+
+  it("ignores a new chat's temporary id", async () => {
+    sessionRegistry.register("new-777", { type: "web" });
+    sessionRegistry.unregister("new-777");
+    await tick();
+    expect(resolveSession).not.toHaveBeenCalled();
   });
 });
 
