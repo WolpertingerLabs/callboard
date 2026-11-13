@@ -148,6 +148,7 @@ export type {
   FolderPrs,
   ChatPrsResponse,
   GitTrailEntry,
+  ChatPrLink,
 } from "./branches.js";
 
 export type { BuildIdFile } from "./build.js";

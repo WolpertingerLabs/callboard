@@ -21,7 +21,9 @@
  * is dropped: a wrong repository is worse than none. See {@link resolveRepoPath}.
  *
  * Runs once per chat: `metadata.gitTrailBackfilled` records the version that
- * ran (bump {@link GIT_TRAIL_BACKFILL_VERSION} to run it again), set even when
+ * ran (bump {@link GIT_TRAIL_BACKFILL_VERSION} to run it again — 2 re-read
+ * every chat for the branches a turn went through between its start and end,
+ * which live recording never sees), set even when
  * nothing was found, and left unset on a transient failure so a later request
  * retries. Results merge into the live trail with `mergeTrails` — the
  * fresher sighting wins per (cwd, branch) — in one synchronous read-merge-write
@@ -50,7 +52,7 @@ import { createLogger } from "../utils/logger.js";
 const log = createLogger("git-trail-backfill");
 
 /** The backfill that has run once a chat's `metadata.gitTrailBackfilled` reaches this. Bump to re-run everywhere. */
-export const GIT_TRAIL_BACKFILL_VERSION = 1;
+export const GIT_TRAIL_BACKFILL_VERSION = 2;
 
 /** Whether chat metadata still wants a backfill. */
 export function needsBackfill(meta: Record<string, unknown>): boolean {
@@ -283,7 +285,10 @@ async function observationsOf(chat: Chat, meta: Record<string, unknown>, deps: B
 
   const updated = chat.updated_at || chat.created_at;
   if (isRealBranch(meta.lastBranch) && chat.folder) {
-    observations.push({ cwd: chat.folder, branch: meta.lastBranch, firstSeen: updated, lastSeen: updated });
+    // First seen no later than the chat began: a trail entry only claims PRs
+    // not already closed by then (pullsForTrailEntry), and a late guess here
+    // would disown the PR the chat's last turn merged.
+    observations.push({ cwd: chat.folder, branch: meta.lastBranch, firstSeen: chat.created_at || updated, lastSeen: updated });
   }
 
   const workspace = chat.workspaceId ? deps.getWorkspace(chat.workspaceId) : null;

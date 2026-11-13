@@ -11,21 +11,31 @@
  * listing and {@link matchPull} for the match. Card membership only decides
  * which directories are asked about (see "Workspace keying" in .claude/CLAUDE.md).
  *
- * The chat's git trail (`metadata.gitTrail`, see git-trail.ts) adds the PRs
- * of branches its folder was on earlier, deleted worktrees included. Those
- * are matched by branch name alone — the chat demonstrably worked there — while
- * the live branch keeps the overview's SHA rule, so everything shown without a
- * trail is still shown with one.
+ * Two records of what the chats themselves did add to that, and are what
+ * makes the list complete:
+ *
+ *  - PR links (`metadata.prLinks`, see chat-pr-links.ts): the PRs each chat's
+ *    transcript names, by number. Synced from the transcripts before this
+ *    answers, so every PR the card's chats made is in the first response.
+ *  - The git trail (`metadata.gitTrail`, see git-trail.ts): the branches each
+ *    chat's folder was on, deleted worktrees included, matched by branch name
+ *    and time ({@link pullsForTrailEntry}) — the live branch too, so a PR
+ *    whose branch has moved on since it merged is still found.
+ *
+ * The live branch's SHA rule ({@link matchPull}) remains for a folder with no
+ * chat behind it, and nothing it finds is lost.
  */
+import { homedir } from "os";
 import { basename } from "path";
-import type { Chat, ChatPr, ChatPrsResponse, FolderPrs, GitTrailEntry } from "shared";
+import type { Chat, ChatPr, ChatPrLink, ChatPrsResponse, FolderPrs, GitTrailEntry } from "shared";
 import { createCardContext } from "./card-context.js";
 import { chatFileService } from "./chat-file-service.js";
+import { syncChatPrLinks } from "./chat-pr-links.js";
 import { listChatsSnapshot } from "./chats-snapshot.js";
 import { DEFAULT_PLACEMENT_DEPS, placeFolders, type FolderPlacement, type PlacementDeps } from "./git-overview.js";
 import { parseGitTrail } from "./git-trail.js";
 import { requestBackfill, type BackfillRequest } from "./git-trail-backfill.js";
-import { getRepoPulls, matchPull, pullForTrailBranch, toChatPr, type RepoPulls } from "./github-prs.js";
+import { getRepoPulls, matchPull, pullsForTrailEntry, resolveLinkedPulls, toChatPr, type PullSummary, type RepoPulls } from "./github-prs.js";
 import { parseChatMetadata } from "../utils/chat-metadata.js";
 
 /** A member chat of a card: its directory and its recorded git trail. */
@@ -70,9 +80,14 @@ export function cardOfChat(chatId: string, stored: Chat[] = listChatsSnapshot())
  * which this route would otherwise pay on every poll of the PRs tab.
  */
 export function trailOfChat(chatId: string, snapshot: () => Chat[] = listChatsSnapshot): GitTrailEntry[] {
+  return trailOfRecord(recordOfChat(chatId, snapshot)?.metadata);
+}
+
+/** Chat `chatId`'s record: its own file when filed under that id, else the snapshot's. */
+function recordOfChat(chatId: string, snapshot: () => Chat[]): Chat | undefined {
   const direct = chatFileService.getChatBySessionId(chatId);
-  if (direct && (direct.id === chatId || direct.session_id === chatId)) return trailOfRecord(direct.metadata);
-  return trailOfRecord(snapshot().find((chat) => chat.id === chatId)?.metadata);
+  if (direct && (direct.id === chatId || direct.session_id === chatId)) return direct;
+  return snapshot().find((chat) => chat.id === chatId);
 }
 
 export interface ChatPrsDeps extends PlacementDeps {
@@ -85,6 +100,10 @@ export interface ChatPrsDeps extends PlacementDeps {
    * this response answers from the trail as it is, the next poll sees more.
    */
   requestBackfill?: (request: BackfillRequest) => void;
+  /** The PRs a chat's history names, brought up to date first. Defaults to none. */
+  linksOf?: (chatId: string) => Promise<ChatPrLink[]>;
+  /** The PR behind each link, in order; see {@link resolveLinkedPulls}. */
+  linkedPulls?: (links: ChatPrLink[], known: RepoPulls[], force: boolean) => Promise<{ pulls: Array<PullSummary | undefined>; error?: string }>;
 }
 
 /** Production deps: the card and the trail share one chat snapshot per request, taken only if needed. */
@@ -97,6 +116,11 @@ function defaultDeps(): ChatPrsDeps {
     cardOf: (chatId) => cardOfChat(chatId, snapshot()),
     trailOf: (chatId) => trailOfChat(chatId, snapshot),
     requestBackfill: (request) => requestBackfill(request),
+    linksOf: async (chatId) => {
+      const record = recordOfChat(chatId, snapshot);
+      return record ? syncChatPrLinks(record) : [];
+    },
+    linkedPulls: (links, known, force) => resolveLinkedPulls(links, known, { cwd: homedir(), force }),
   };
 }
 
@@ -122,74 +146,97 @@ const isOpen = (pr: ChatPr) => pr.state === "open" || pr.state === "draft";
 /** Open work first, then most recently updated. */
 const byOpenThenUpdated = (a: ChatPr, b: ChatPr) => Number(isOpen(b)) - Number(isOpen(a)) || b.updatedAt.localeCompare(a.updatedAt);
 
-/** A placement's live (cwd, branch), for skipping the trail entry that repeats it. */
-const liveKey = (placement: FolderPlacement | undefined) =>
-  placement?.kind === "placed" ? `${placement.worktree.normPath}\0${placement.worktree.branch}` : null;
-const entryKey = (entry: GitTrailEntry) => `${entry.cwd}\0${entry.branch}`;
-
 /**
  * Assemble the PRs tab for `folder` (the chat's directory) and, given a
  * `chatId`, its trail and its card. `force` is the refresh button, with the
  * forced-refresh semantics of {@link getRepoPulls}.
  */
 export async function buildChatPrs(opts: { folder: string; chatId?: string; force?: boolean }, deps: ChatPrsDeps = defaultDeps()): Promise<ChatPrsResponse> {
+  const force = opts.force === true;
   const card = opts.chatId ? deps.cardOf(opts.chatId) : null;
   const ownTrail = opts.chatId && deps.trailOf ? deps.trailOf(opts.chatId) : [];
-  const placements = await placeFolders(new Set([opts.folder, ...(card?.members.map((m) => m.folder) ?? [])]), deps);
+  const others = (card?.members ?? []).filter((member) => member.chatId !== opts.chatId);
+  const chatIds = opts.chatId ? [opts.chatId, ...others.map((member) => member.chatId)] : [];
+
+  // Local work first, all at once: where each directory is, and what each
+  // chat's transcript says it made.
+  const [placements, linkLists] = await Promise.all([
+    placeFolders(new Set([opts.folder, ...(card?.members.map((m) => m.folder) ?? [])]), deps),
+    Promise.all(chatIds.map((chatId) => deps.linksOf?.(chatId) ?? [])),
+  ]);
 
   const current = placements.get(opts.folder);
   const currentCwd = current?.kind === "placed" ? current.worktree.normPath : deps.normalize(opts.folder);
 
   // Members working in a directory other than this chat's — the only ones
   // whose live PRs could differ from the one above.
-  const elsewhere = (card?.members ?? []).flatMap((member) => {
+  const elsewhere = others.flatMap((member) => {
     const placement = placements.get(member.folder);
     return placement?.kind === "placed" && placement.worktree.normPath !== currentCwd ? [{ member, placement }] : [];
   });
 
-  // Trail entries worth a lookup: their repository still exists, and they are
-  // not the very (cwd, branch) the live lookup already answers for that chat.
-  const usableTrail = (trail: GitTrailEntry[] | undefined, live: FolderPlacement | undefined) =>
-    (trail ?? []).filter((entry) => entryKey(entry) !== liveKey(live) && deps.exists(entry.repoPath));
-  const ownEntries = usableTrail(ownTrail, current);
-  const memberEntries = (card?.members ?? []).map((member) => ({ member, entries: usableTrail(member.trail, placements.get(member.folder)) }));
+  // Trail entries worth a lookup: those whose repository still exists.
+  const usable = (trail: GitTrailEntry[] | undefined) => (trail ?? []).filter((entry) => deps.exists(entry.repoPath));
+  const ownEntries = usable(ownTrail);
+  const memberEntries = others.flatMap((member) => usable(member.trail));
 
   // One lookup per repository, shared by every directory and trail entry in it.
   const repoPaths = new Set<string>();
   if (current?.kind === "placed") repoPaths.add(current.repo.repoPath);
   for (const { placement } of elsewhere) repoPaths.add(placement.repo.repoPath);
-  for (const entry of ownEntries) repoPaths.add(entry.repoPath);
-  for (const { entries } of memberEntries) for (const entry of entries) repoPaths.add(entry.repoPath);
+  for (const entry of [...ownEntries, ...memberEntries]) repoPaths.add(entry.repoPath);
   // Chats that predate the live trail get theirs from their history, once, in
   // the background — never awaited here. The repositories already in view
-  // help it match a Codex rollout's repository_url.
+  // help it match a Codex rollout's repository_url. The card on screen goes
+  // ahead of the Board's backlog, the chat itself (requested last) first.
   if (opts.chatId && deps.requestBackfill) {
     const knownRepos = [...repoPaths];
-    // The chat on screen goes ahead of the Board's backlog.
+    for (const member of others) deps.requestBackfill({ chatId: member.chatId, knownRepos, priority: true });
     deps.requestBackfill({ chatId: opts.chatId, knownRepos, priority: true });
-    for (const member of card?.members ?? []) if (member.chatId !== opts.chatId) deps.requestBackfill({ chatId: member.chatId, knownRepos });
   }
   const pullsByRepo = new Map<string, RepoPulls>();
-  await Promise.all([...repoPaths].map(async (repoPath) => pullsByRepo.set(repoPath, await deps.pullsFor(repoPath, opts.force === true))));
+  await Promise.all([...repoPaths].map(async (repoPath) => pullsByRepo.set(repoPath, await deps.pullsFor(repoPath, force))));
 
-  const currentPrs = folderPrs(opts.folder, current, current?.kind === "placed" ? pullsByRepo.get(current.repo.repoPath) : undefined);
+  // The linked PRs, from those listings where they hold them.
+  const links = linkLists.flat();
+  const linked = links.length > 0 && deps.linkedPulls ? await deps.linkedPulls(links, [...pullsByRepo.values()], force) : { pulls: [] };
+  const linkedOf = (index: number) => {
+    const start = linkLists.slice(0, index).reduce((n, list) => n + list.length, 0);
+    return linked.pulls.slice(start, start + linkLists[index].length).filter((pr): pr is PullSummary => pr !== undefined);
+  };
 
-  // One list, one entry per URL: this chat's live PR and its trail's, then
-  // the card's other chats' live PRs and their trails.
+  let currentPrs = folderPrs(opts.folder, current, current?.kind === "placed" ? pullsByRepo.get(current.repo.repoPath) : undefined);
+
+  // One list, one entry per URL: this chat's live PR, links and trail, then
+  // the card's other chats' live PRs, links and trails.
   const byUrl = new Map<string, ChatPr>();
-  const add = (pr: ChatPr | undefined) => {
-    if (pr && !byUrl.has(pr.url)) byUrl.set(pr.url, pr);
+  const add = (pr: PullSummary | ChatPr | undefined) => {
+    if (pr && !byUrl.has(pr.url)) byUrl.set(pr.url, "headSha" in pr ? toChatPr(pr) : pr);
   };
-  const addTrail = (entries: GitTrailEntry[]) => {
-    for (const entry of entries) {
-      const pull = pullForTrailBranch(pullsByRepo.get(entry.repoPath), entry.branch);
-      if (pull) add(toChatPr(pull));
-    }
-  };
+  const trailPulls = (entries: GitTrailEntry[]) => entries.flatMap((entry) => pullsForTrailEntry(pullsByRepo.get(entry.repoPath), entry));
+
+  // The live branch's PR, when the SHA rule found none but the chat's own
+  // record did: a PR of this repository headed by the branch checked out here.
+  if (currentPrs.status === "no_pr" && current?.kind === "placed") {
+    const here = pullsByRepo.get(current.repo.repoPath)?.github;
+    const prefix = here ? `https://github.com/${here.owner}/${here.repo}/pull/`.toLowerCase() : null;
+    const own = [...trailPulls(ownEntries.filter((entry) => entry.cwd === currentCwd)), ...(opts.chatId ? linkedOf(0) : [])];
+    const pr = own.find((pull) => pull.headRef === current.worktree.branch && prefix !== null && pull.url.toLowerCase().startsWith(prefix));
+    if (pr) currentPrs = { ...currentPrs, status: "found", pr: toChatPr(pr) };
+  }
+
   add(currentPrs.pr);
-  addTrail(ownEntries);
+  if (opts.chatId) for (const pr of linkedOf(0)) add(pr);
+  for (const pr of trailPulls(ownEntries)) add(pr);
   for (const { member, placement } of elsewhere) add(folderPrs(member.folder, placement, pullsByRepo.get(placement.repo.repoPath)).pr);
-  for (const { entries } of memberEntries) addTrail(entries);
+  others.forEach((_, i) => {
+    for (const pr of linkedOf(i + 1)) add(pr);
+  });
+  for (const pr of trailPulls(memberEntries)) add(pr);
+
+  // A failed lookup by number is reported like a failed listing — beside the
+  // PRs that are known, never instead of them.
+  if (linked.error !== undefined && currentPrs.prError === undefined && currentPrs.status !== "error") currentPrs = { ...currentPrs, prError: linked.error };
 
   return { current: currentPrs, prs: [...byUrl.values()].sort(byOpenThenUpdated), generatedAt: new Date().toISOString() };
 }

@@ -2653,6 +2653,10 @@ initSessionCompletionHandler({ sendMessage, getActiveSession });
 import { initGitTrailRecorder, noteChatSession } from "./git-trail.js";
 initGitTrailRecorder();
 
+// And the PRs a chat's own transcript names, at every turn's end.
+import { initPrLinkRecorder } from "./chat-pr-links.js";
+initPrLinkRecorder();
+
 // Register dependencies for the job runner (deterministic multi-step jobs).
 import { setJobRunnerDeps } from "./job-runner.js";
 setJobRunnerDeps({ sendMessage, stopSession, getActiveSession });

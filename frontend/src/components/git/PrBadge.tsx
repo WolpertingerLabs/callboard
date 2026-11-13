@@ -6,6 +6,8 @@ const PR_STYLES: Record<BranchPrState, { color: string; background: string }> = 
   draft: { color: "var(--text-muted)", background: "var(--bg-secondary)" },
   merged: { color: "var(--badge-trigger)", background: "color-mix(in srgb, var(--badge-trigger) 15%, transparent)" },
   closed: { color: "var(--danger)", background: "var(--danger-bg)" },
+  // A PR the chat's history names that GitHub could not be asked about.
+  unknown: { color: "var(--text-muted)", background: "var(--bg-secondary)" },
 };
 
 /**
@@ -30,10 +32,12 @@ export default function PrBadge({ pr }: { pr: BranchPr }) {
     textDecoration: "none",
     ...PR_STYLES[pr.state],
   };
-  const label = `PR #${pr.number} ${pr.state}: ${pr.title}`;
+  const state = pr.state === "unknown" ? "" : ` ${pr.state}`;
+  const label = `PR #${pr.number}${state}: ${pr.title}`;
   const content = (
     <>
-      <GitPullRequest size={11} />#{pr.number} {pr.state}
+      <GitPullRequest size={11} />#{pr.number}
+      {state}
     </>
   );
   if (!pr.url.startsWith("https://github.com/")) {

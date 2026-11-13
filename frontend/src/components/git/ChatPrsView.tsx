@@ -129,7 +129,8 @@ export default function ChatPrsView({ folder, chatId }: ChatPrsViewProps) {
 
   const prCard = (pr: ChatPr) => {
     const opened = ago(pr.createdAt, now);
-    const updated = ago(pr.updatedAt, now);
+    // An `unknown` PR's updatedAt is only when the chat first named it.
+    const updated = pr.state === "unknown" ? null : ago(pr.updatedAt, now);
     const merged = ago(pr.mergedAt, now);
     const closed = pr.state === "closed" ? ago(pr.closedAt, now) : null;
     const linkable = pr.url.startsWith("https://github.com/");
@@ -150,12 +151,15 @@ export default function ChatPrsView({ folder, chatId }: ChatPrsViewProps) {
             <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)", minWidth: 0, overflowWrap: "anywhere" }}>{pr.title}</span>
           )}
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", fontSize: 12, color: "var(--text-muted)" }}>
-          <GitBranch size={12} />
-          <span style={{ fontFamily: "var(--font-mono, monospace)", overflowWrap: "anywhere" }}>
-            {pr.headRef} → {pr.baseRef}
-          </span>
-        </div>
+        {/* Absent for a PR known only from the chat's history (state `unknown`). */}
+        {pr.headRef && (
+          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", fontSize: 12, color: "var(--text-muted)" }}>
+            <GitBranch size={12} />
+            <span style={{ fontFamily: "var(--font-mono, monospace)", overflowWrap: "anywhere" }}>
+              {pr.headRef} → {pr.baseRef}
+            </span>
+          </div>
+        )}
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", fontSize: 12, color: "var(--text-muted)" }}>
           {pr.author && <span>by {pr.author}</span>}
           {opened && <span>opened {opened}</span>}
@@ -226,7 +230,7 @@ export default function ChatPrsView({ folder, chatId }: ChatPrsViewProps) {
             )}
             {/* One list, one card per PR; the state badge tells them apart. */}
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>{prs.map((pr) => prCard(pr))}</div>
-            {current.pr && current.prError && (
+            {current.prError && current.status !== "error" && (
               <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6, fontSize: 12, color: "var(--warning)" }}>
                 <AlertTriangle size={12} />
                 PR data may be stale — refreshing failed: {current.prError}

@@ -125,7 +125,7 @@ export function noteChatSession(id: string, sessionId: string): void {
 }
 
 /** The record for registry id `id`: by its noted session id, by filename, then by the scan. */
-function chatForRegistryId(id: string) {
+export function chatForRegistryId(id: string) {
   const noted = sessionIdOf.get(id);
   if (noted) {
     const chat = chatFileService.getChatBySessionId(noted);

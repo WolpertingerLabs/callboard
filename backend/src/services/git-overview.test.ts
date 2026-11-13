@@ -339,6 +339,46 @@ describe("buildGitOverview — the git trail", () => {
     ]);
   });
 
+  it("gives a live row whose branch has moved past its merged PR that PR, through the trail", async () => {
+    // feat/old is checked out at a commit that is not #5's head: the SHA rule alone finds nothing.
+    const listWorktrees = async (dir: string) => (dir === "/src/app" ? [wt("/src/app", "main", true), wt("/src/app.feat-x", "feat/old", false, "later")] : []);
+    const d = deps({ "/src/app.feat-x": ["c1"] }, { pullsFor, listWorktrees, trails: () => [{ cardId: "c1", entry: entry("/src/app.feat-x", "feat/old") }] });
+    const row = rowOf((await buildGitOverview({}, d)).repos, "/src/app.feat-x")!;
+    expect(row.pr?.number).toBe(5);
+    expect(row.prs).toBeUndefined();
+  });
+
+  describe("PR links from the chats' own histories", () => {
+    const link = (number: number) => ({ repo: "acme/app", number, url: `https://github.com/acme/app/pull/${number}`, firstSeen: "t0" });
+    const linkedPulls = vi.fn(async (links: ReturnType<typeof link>[], _known?: unknown, _force?: boolean) => ({ pulls: links.map((l) => (l.number === 99 ? undefined : pull(l.number, `b${l.number}`, "merged"))) }));
+
+    it("badges the row a chat's folder is in with the PRs its history names, and a removed worktree's row too", async () => {
+      const d = deps(
+        { "/src/app": ["c1"], "/src/app.gone1": ["c2"] },
+        {
+          pullsFor,
+          exists: gone,
+          linkedPulls,
+          trails: () => [{ cardId: "c2", entry: entry("/src/app.gone1", "feat/none") }],
+          links: () => [
+            { cardId: "c1", folder: "/src/app", link: link(20) },
+            { cardId: "c1", folder: "/src/app", link: link(21) },
+            { cardId: "c1", folder: "/src/app", link: link(99) }, // GitHub has no such PR
+            { cardId: "c2", folder: "/src/app.gone1", link: link(22) },
+            { cardId: "c3", folder: "/src/nowhere", link: link(23) }, // no row to put it on
+          ],
+        },
+      );
+      const { repos } = await buildGitOverview({ force: true }, d);
+      // The main checkout: the fixture's live PR first, then the two its chat made.
+      const main = rowOf(repos, "/src/app")!;
+      expect(main.prs?.map((p) => p.number)).toEqual([1, 20, 21]);
+      expect(rowOf(repos, "/src/app.gone1")).toMatchObject({ removed: true, prs: [expect.objectContaining({ number: 22 })], cardIds: ["c2"] });
+      expect(linkedPulls.mock.calls[0][0].map((l: { number: number }) => l.number)).toEqual([20, 21, 99, 22]);
+      expect(linkedPulls.mock.calls[0][2]).toBe(true);
+    });
+  });
+
   it("is a strict superset: without trails the answer is today's, and trails never change a live field", async () => {
     const folders = { "/src/app.feat-x": ["c1"], "/src/app": ["c2"], "/src/lib": ["c3"] };
     const strip = (r: Awaited<ReturnType<typeof buildGitOverview>>) => r.repos;

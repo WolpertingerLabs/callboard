@@ -332,7 +332,8 @@ describe("backfillChat", () => {
     await backfillChat(chat, { deps: deps([], { logPaths, getWorkspace }) });
     expect(logPaths).not.toHaveBeenCalled();
     expect(trailOf(chat.id).map((e) => [e.cwd, e.repoPath, e.branch, e.firstSeen, e.lastSeen])).toEqual([
-      [repo, repo, "feat/pi-last", "2026-06-01T00:00:00.000Z", "2026-06-01T00:00:00.000Z"],
+      // First seen at the chat's creation, not its last update: see pullsForTrailEntry.
+      [repo, repo, "feat/pi-last", "2026-05-01T00:00:00.000Z", "2026-06-01T00:00:00.000Z"],
       [goneWt, repo, "feat/pi-ws", "2026-02-01T00:00:00Z", "2026-02-05T00:00:00Z"],
     ]);
   });

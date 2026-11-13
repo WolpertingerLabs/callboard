@@ -64,6 +64,18 @@ describe("ChatPrsView", () => {
     expect(card.textContent).toContain("updated 2h ago");
   });
 
+  it("shows a PR known only from the chat's history as a bare link, beside the reason GitHub was not asked", async () => {
+    const unknown = pr(30, { state: "unknown", title: "acme/app#30", headRef: "", baseRef: "", author: null, createdAt: "" });
+    mockPrs.mockResolvedValue(response({ status: "found", pr: pr(42), prError: "gh is not installed" }, [pr(42), unknown]));
+    await mount();
+    const card = screen.getAllByTestId("pr-card")[1];
+    expect(within(card).getByRole("link", { name: "acme/app#30" }).getAttribute("href")).toBe("https://github.com/acme/app/pull/30");
+    expect(within(card).getByLabelText("PR #30: acme/app#30").textContent).toBe("#30");
+    expect(card.textContent).not.toContain("→");
+    expect(card.textContent).not.toContain("updated");
+    expect(screen.getByText(/refreshing failed: gh is not installed/)).toBeDefined();
+  });
+
   it("says when it merged rather than when it was updated", async () => {
     mockPrs.mockResolvedValue(
       response({ status: "found", pr: pr(7, { state: "merged", mergedAt: "2026-11-05T12:00:00.000Z", closedAt: "2026-11-05T12:00:00.000Z" }) }),
