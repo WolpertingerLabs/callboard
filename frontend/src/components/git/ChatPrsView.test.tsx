@@ -64,6 +64,42 @@ describe("ChatPrsView", () => {
     expect(card.textContent).toContain("updated 2h ago");
   });
 
+  it("shows a PR known only from the chat's history as a bare link, beside the reason GitHub was not asked", async () => {
+    const unknown = pr(30, { state: "unknown", title: "acme/app#30", headRef: "", baseRef: "", author: null, createdAt: "" });
+    mockPrs.mockResolvedValue(response({ status: "found", pr: pr(42), prError: "gh is not installed" }, [pr(42), unknown]));
+    await mount();
+    const card = screen.getAllByTestId("pr-card")[1];
+    expect(within(card).getByRole("link", { name: "acme/app#30" }).getAttribute("href")).toBe("https://github.com/acme/app/pull/30");
+    expect(within(card).getByLabelText("PR #30: acme/app#30").textContent).toBe("#30");
+    expect(card.textContent).not.toContain("→");
+    expect(card.textContent).not.toContain("updated");
+    expect(screen.getByTestId("pr-lookup-warning").textContent).toContain("a GitHub lookup failed: gh is not installed");
+  });
+
+  it("says a lookup failed when the live branch has no PR of its own, under the list", async () => {
+    const unknown = pr(30, { state: "unknown", title: "acme/app#30", headRef: "", baseRef: "", author: null, createdAt: "" });
+    mockPrs.mockResolvedValue(response({ status: "default_branch", branch: "main", prError: "gh is not installed" }, [unknown]));
+    await mount();
+    expect(screen.getByTestId("pr-status-line").textContent).toContain("This is main, the default branch");
+    const warning = screen.getByTestId("pr-lookup-warning");
+    // Never claimed for a by-number lookup: nothing was "refreshed", and nothing shown is "stale".
+    expect(warning.textContent).toBe("PR data may be incomplete or out of date — a GitHub lookup failed: gh is not installed");
+    expect(screen.getByTestId("pr-card").compareDocumentPosition(warning) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("says a lookup failed under an empty list too, but not twice when the failure is the status itself", async () => {
+    mockPrs.mockResolvedValue(response({ status: "not_git", prError: "gh timed out" }));
+    await mount();
+    expect(screen.getByTestId("pr-empty").textContent).toContain("not in a git repository");
+    expect(screen.getByTestId("pr-lookup-warning").textContent).toContain("gh timed out");
+    cleanup();
+
+    mockPrs.mockResolvedValue(response({ status: "error", branch: "feat/a", prError: "gh: API rate limit exceeded" }));
+    await mount();
+    expect(screen.getByTestId("pr-empty").textContent).toContain("Couldn't look up PRs: gh: API rate limit exceeded");
+    expect(screen.queryByTestId("pr-lookup-warning")).toBeNull();
+  });
+
   it("says when it merged rather than when it was updated", async () => {
     mockPrs.mockResolvedValue(
       response({ status: "found", pr: pr(7, { state: "merged", mergedAt: "2026-11-05T12:00:00.000Z", closedAt: "2026-11-05T12:00:00.000Z" }) }),
@@ -131,7 +167,7 @@ describe("ChatPrsView", () => {
   it("flags a PR shown from a refresh that failed", async () => {
     mockPrs.mockResolvedValue(response({ status: "found", pr: pr(1), prError: "gh timed out" }));
     await mount();
-    expect(screen.getByText(/PR data may be stale — refreshing failed: gh timed out/)).toBeDefined();
+    expect(screen.getByTestId("pr-lookup-warning").textContent).toContain("a GitHub lookup failed: gh timed out");
   });
 
   it("asks for the folder alone for a new chat", async () => {

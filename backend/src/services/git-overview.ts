@@ -9,6 +9,19 @@
  * listing of directories, and two workspaces on one checkout are one row (see
  * "Workspace keying" in .claude/CLAUDE.md).
  *
+ * What the cards' chats themselves did adds to each row: the PRs of branches
+ * their folders were on earlier (the git trail) and the PRs their transcripts
+ * name (PR links, see chat-pr-links.ts). A link goes on the row its chat's
+ * folder is in, and only when the PR is that row's repository's — a PR the
+ * chat made in another repository is on the chat's PRs tab, not here. When
+ * the folder is gone, the link goes on the `removed` row a git trail recorded
+ * for that directory. When no trail recorded it, a `removed` row is made for
+ * the folder only if every link of its chats names the same GitHub repository
+ * and exactly one repository looked up in this request is that one; otherwise
+ * none of its links are shown. That is a guess at where the folder was: a
+ * deleted folder that was never a worktree of that repository, but whose
+ * chats only made PRs there, gets the row too.
+ *
  * Cost: card membership comes from the stat-gated card rollup, never from a
  * full chat scan. Which repository a folder belongs to is answered from the
  * filesystem (the nearest `.git`), so a folder outside any repository spawns
@@ -18,13 +31,27 @@
  * background — see github-prs.ts).
  */
 import { existsSync } from "fs";
+import { homedir } from "os";
 import { basename, sep } from "path";
-import type { BranchPr, BranchRepo, BranchRow, Chat, GitOverviewResponse, GitTrailEntry } from "shared";
+import type { BranchPr, BranchRepo, BranchRow, Chat, ChatPrLink, GitOverviewResponse, GitTrailEntry } from "shared";
 import { createCardContext } from "./card-context.js";
+import { parsePrLinks, syncPrLinksInBackground } from "./chat-pr-links.js";
 import { listChatsSnapshot } from "./chats-snapshot.js";
 import { parseGitTrail } from "./git-trail.js";
 import { needsBackfill, requestBackfill } from "./git-trail-backfill.js";
-import { byOpenThenUpdated, getRepoPulls, matchPull, pullForTrailBranch, toBranchPr, type PullSummary, type RepoPulls } from "./github-prs.js";
+import {
+  byOpenThenUpdated,
+  getRepoPulls,
+  isLinkOf,
+  matchPull,
+  pullsForTrailEntry,
+  recordedPullForBranch,
+  resolveLinkedPulls,
+  toBranchPr,
+  type LinkedPulls,
+  type PullSummary,
+  type RepoPulls,
+} from "./github-prs.js";
 import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { resolveWorktreeToMainRepoCached, tryGetGitWorktreesAsync, type WorktreeInfo } from "../utils/git.js";
 import { findGitRoot, normalizeDir } from "../utils/git-root.js";
@@ -35,30 +62,47 @@ export interface CardTrailEntry {
   entry: GitTrailEntry;
 }
 
+/** One PR an open card's member chat names in its history, with the folder that chat works in. */
+export interface CardPrLink {
+  cardId: string;
+  folder: string;
+  link: ChatPrLink;
+}
+
 /**
  * Card ids by member-chat folder over every open, visible card — and the git
- * trails of those same member chats, read from the same snapshot.
+ * trails and PR links of those same member chats, read from the same snapshot.
  */
-export function activeCardData(): { folders: Map<string, Set<string>>; trails: CardTrailEntry[]; unbackfilled: Chat[] } {
+export function activeCardData(): {
+  folders: Map<string, Set<string>>;
+  trails: CardTrailEntry[];
+  links: CardPrLink[];
+  unbackfilled: Chat[];
+  members: Chat[];
+} {
   const stored = listChatsSnapshot();
   const byId = new Map(stored.map((chat) => [chat.id, chat]));
   const folders = new Map<string, Set<string>>();
   const trails: CardTrailEntry[] = [];
+  const links: CardPrLink[] = [];
   const unbackfilled: Chat[] = [];
+  const members: Chat[] = [];
   // Runs carry no folder, so there is no reason to load them.
   for (const card of createCardContext(stored).summaries([], false, undefined, "open")) {
     for (const member of card.memberChats) {
       const record = byId.get(member.chatId);
       const meta = parseChatMetadata(record?.metadata);
       for (const entry of parseGitTrail(meta.gitTrail)) trails.push({ cardId: card.id, entry });
+      if (record) members.push(record);
       if (record && needsBackfill(meta)) unbackfilled.push(record);
       if (!member.folder) continue;
+      for (const link of parsePrLinks(meta.prLinks)) links.push({ cardId: card.id, folder: member.folder, link });
       const ids = folders.get(member.folder) ?? new Set<string>();
       ids.add(card.id);
       folders.set(member.folder, ids);
     }
   }
-  return { folders, trails, unbackfilled };
+  return { folders, trails, links, unbackfilled, members };
 }
 
 /** Card ids by member-chat folder, over every open, visible card. */
@@ -128,7 +172,11 @@ export interface OverviewDeps extends PlacementDeps {
   folders: () => Map<string, Set<string>>;
   /** The open cards' member chats' git trails. Absent = none, which is the overview without trails. */
   trails?: () => CardTrailEntry[];
+  /** The PRs the open cards' member chats' histories name. Absent = none. */
+  links?: () => CardPrLink[];
   pullsFor: (repoPath: string, force: boolean) => Promise<RepoPulls>;
+  /** The PR behind each link, in order; see {@link resolveLinkedPulls}. */
+  linkedPulls?: (links: ChatPrLink[], known: RepoPulls[], force: boolean) => Promise<LinkedPulls>;
 }
 
 export const DEFAULT_PLACEMENT_DEPS: PlacementDeps = {
@@ -147,10 +195,20 @@ function defaultDeps(): OverviewDeps {
       // Open cards' chats that predate the live trail: backfill from history in
       // the background; a later poll of the Board shows what it found.
       for (const chat of active.unbackfilled) requestBackfill({ chatId: chat.id, chat });
+      // Their PR links are read from the transcripts once, in the background;
+      // from then on each turn's end keeps them current.
+      syncPrLinksInBackground(active.members);
     }
     return active;
   };
-  return { ...DEFAULT_PLACEMENT_DEPS, folders: () => load().folders, trails: () => load().trails, pullsFor: getRepoPulls };
+  return {
+    ...DEFAULT_PLACEMENT_DEPS,
+    folders: () => load().folders,
+    trails: () => load().trails,
+    links: () => load().links,
+    pullsFor: getRepoPulls,
+    linkedPulls: (links, known, force) => resolveLinkedPulls(links, known, { cwd: homedir(), force }),
+  };
 }
 
 /** The worktree with the longest path containing `dir`, if any. */
@@ -272,20 +330,19 @@ export async function buildGitOverview(opts: { force?: boolean } = {}, deps: Ove
     .filter((repo) => repo.worktrees.length > 0);
 
   // 5. The git trails, sorted onto the rows they belong to. An entry on a
-  //    live row's directory, from one of that row's cards, adds an earlier
-  //    branch to it. An entry whose directory is gone — while its repository
+  //    live row's directory, from one of that row's cards, adds its branch's
+  //    PRs to it. An entry whose directory is gone — while its repository
   //    is not — is a removed worktree. Anything else (a directory that still
   //    exists but no open card works in) is not active work, and not a row.
-  const earlierByCwd = new Map<string, Set<string>>();
+  const trailByCwd = new Map<string, GitTrailEntry[]>();
   const removedByRepo = new Map<string, Map<string, { entries: GitTrailEntry[]; cardIds: Set<string> }>>();
+  const removedCwds = new Set<string>();
   for (const { cardId, entry } of deps.trails?.() ?? []) {
     const cwd = deps.normalize(entry.cwd);
     const repoPath = deps.normalize(entry.repoPath);
     if (cardsByCwd.has(cwd)) {
       if (!cardsByCwd.get(cwd)!.has(cardId)) continue;
-      const branches = earlierByCwd.get(cwd) ?? new Set<string>();
-      branches.add(entry.branch);
-      earlierByCwd.set(cwd, branches);
+      trailByCwd.set(cwd, [...(trailByCwd.get(cwd) ?? []), entry]);
     } else if (!deps.exists(cwd) && deps.exists(repoPath)) {
       const byCwd = removedByRepo.get(repoPath) ?? new Map();
       const removed = byCwd.get(cwd) ?? { entries: [], cardIds: new Set<string>() };
@@ -293,6 +350,7 @@ export async function buildGitOverview(opts: { force?: boolean } = {}, deps: Ove
       removed.cardIds.add(cardId);
       byCwd.set(cwd, removed);
       removedByRepo.set(repoPath, byCwd);
+      removedCwds.add(cwd);
     }
   }
 
@@ -301,10 +359,65 @@ export async function buildGitOverview(opts: { force?: boolean } = {}, deps: Ove
   const pulls = new Map<string, RepoPulls>();
   await Promise.all(repoPaths.map(async (repoPath) => pulls.set(repoPath, await deps.pullsFor(repoPath, opts.force === true))));
 
+  // 6. The PRs the chats' histories name, onto the row their chat's folder is
+  //    in: the worktree it was placed in, else the removed worktree it was.
+  //    A folder that is gone with no trail to say which repository it was in
+  //    is taken to have been a worktree of the one repository here that all
+  //    of its links name. Decided per folder, not per link: links to two
+  //    repositories, or to one that is not here (or is here twice), and the
+  //    folder has no row and none of its links are shown.
+  const repoByRef = new Map<string, string | null>();
+  for (const [repoPath, repoPulls] of pulls) {
+    if (!repoPulls.github) continue;
+    const ref = `${repoPulls.github.owner}/${repoPulls.github.repo}`.toLowerCase();
+    repoByRef.set(ref, repoByRef.has(ref) ? null : repoPath);
+  }
+  const allLinks = deps.links?.() ?? [];
+  const cwdOf = (folder: string) => {
+    const placement = placements.get(folder);
+    return placement?.kind === "placed" ? placement.worktree.normPath : deps.normalize(folder);
+  };
+  const namedBy = new Map<string, Set<string>>();
+  for (const { folder, link } of allLinks) {
+    if (placements.get(folder)?.kind === "placed") continue;
+    const cwd = cwdOf(folder);
+    if (removedCwds.has(cwd) || deps.exists(cwd)) continue;
+    namedBy.set(cwd, (namedBy.get(cwd) ?? new Set<string>()).add(link.repo.toLowerCase()));
+  }
+  for (const [cwd, refs] of namedBy) {
+    const repoPath = refs.size === 1 ? repoByRef.get([...refs][0]) : null;
+    if (!repoPath) continue;
+    const byCwd = removedByRepo.get(repoPath) ?? new Map();
+    byCwd.set(cwd, { entries: [], cardIds: new Set<string>() });
+    removedByRepo.set(repoPath, byCwd);
+    removedCwds.add(cwd);
+  }
+  const rowLinks = allLinks.flatMap(({ cardId, folder, link }) => {
+    const cwd = cwdOf(folder);
+    return placements.get(folder)?.kind === "placed" || removedCwds.has(cwd) ? [{ cwd, cardId, link }] : [];
+  });
+  const linkedByCwd = new Map<string, Array<{ pr: PullSummary; cardId: string; link: ChatPrLink }>>();
+  let linkErrors: Record<string, string> = {};
+  if (rowLinks.length > 0 && deps.linkedPulls) {
+    const resolved = await deps.linkedPulls(
+      rowLinks.map(({ link }) => link),
+      [...pulls.values()],
+      opts.force === true,
+    );
+    linkErrors = resolved.errors ?? {};
+    rowLinks.forEach(({ cwd, cardId, link }, i) => {
+      const pr = resolved.pulls[i];
+      if (pr) linkedByCwd.set(cwd, [...(linkedByCwd.get(cwd) ?? []), { pr, cardId, link }]);
+    });
+  }
+
+  // One per URL, compared in lower case: an `unknown` PR's URL is spelled as
+  // the transcript spelled the repository, a listed one's as GitHub does.
+  const urlKey = (pr: PullSummary) => pr.url.toLowerCase();
   /** `first` (when there is one), then `others` — open first, most recently updated — one per URL. */
   const badges = (first: PullSummary | undefined, others: PullSummary[]): BranchPr[] => {
-    const seen = new Set(first ? [first.url] : []);
-    const rest = others.filter((pr) => !seen.has(pr.url) && seen.add(pr.url)).sort(byOpenThenUpdated);
+    const seen = new Set(first ? [urlKey(first)] : []);
+    const rest = others.filter((pr) => !seen.has(urlKey(pr)) && seen.add(urlKey(pr))).sort(byOpenThenUpdated);
     return [...(first ? [first] : []), ...rest].map(toBranchPr);
   };
   const listingByPath = new Map(listings.map((repo) => [repo.repoPath, repo]));
@@ -312,31 +425,49 @@ export async function buildGitOverview(opts: { force?: boolean } = {}, deps: Ove
   const out: BranchRepo[] = [];
   for (const repoPath of repoPaths) {
     const repoPulls = pulls.get(repoPath)!;
+    // A row shows its own repository's PRs: a link to another repository's
+    // `#12` would read as this one's.
+    const linkedOn = (cwd: string) => (linkedByCwd.get(cwd) ?? []).filter(({ link, pr }) => isLinkOf(link, pr, repoPulls.github));
+    // Why a link shown on a row here could not be asked about — the
+    // repository then says so, as it does for a failed listing. The failure
+    // of the repository that link names, never another's.
+    let linkError: string | undefined;
+    const noteFailures = (shown: Array<{ pr: PullSummary; link: ChatPrLink }>) => {
+      for (const { pr, link } of shown) if (pr.state === "unknown") linkError ??= linkErrors[link.repo.toLowerCase()];
+    };
     const rows: BranchRow[] = (listingByPath.get(repoPath)?.worktrees ?? []).map((wt) => {
-      const pr = wt.branch ? matchPull(repoPulls.byBranch.get(wt.branch), wt.head) : undefined;
-      // Earlier branches by name alone; the live branch keeps its SHA rule above.
-      const earlier = [...(earlierByCwd.get(wt.normPath) ?? [])]
-        .filter((branch) => branch !== wt.branch)
-        .map((branch) => pullForTrailBranch(repoPulls, branch))
-        .filter((found): found is PullSummary => found !== undefined && found.url !== pr?.url);
+      noteFailures(linkedOn(wt.normPath));
+      const linked = linkedOn(wt.normPath).map(({ pr }) => pr);
+      // What this row's chats recorded: their trail's branches (by name and
+      // time) and the PRs their histories name.
+      const recorded = [...(trailByCwd.get(wt.normPath) ?? []).flatMap((entry) => pullsForTrailEntry(repoPulls, entry)), ...linked];
+      // The live branch's PR: the SHA rule, else the one the chats recorded for it.
+      const pr = (wt.branch ? matchPull(repoPulls.byBranch.get(wt.branch), wt.head) : undefined) ?? recordedPullForBranch(recorded, wt.branch, repoPulls);
+      const others = recorded.filter((found) => !pr || urlKey(found) !== urlKey(pr));
       return {
         cwd: wt.normPath,
         branch: wt.branch,
         isMain: wt.isMainWorktree,
         ...(pr && { pr: toBranchPr(pr) }),
-        ...(earlier.length > 0 && { prs: badges(pr, earlier) }),
+        ...(others.length > 0 && { prs: badges(pr, others) }),
         cardIds: [...cardsByCwd.get(wt.normPath)!].sort(),
       };
     });
-    // Removed worktrees: one row per directory, its entries' PRs as badges.
-    // Only those with a PR are shown — a deleted worktree with nothing to
-    // link to is history, and a long-lived repo has dozens of them.
+    // Removed worktrees: one row per directory, its entries' and links' PRs
+    // as badges. Only those with a PR are shown — a deleted worktree with
+    // nothing to link to is history, and a long-lived repo has dozens of them.
     for (const [cwd, removed] of removedByRepo.get(repoPath) ?? []) {
-      const found = removed.entries.map((entry) => pullForTrailBranch(repoPulls, entry.branch)).filter((pr): pr is PullSummary => pr !== undefined);
+      const linked = linkedOn(cwd);
+      const found = [...removed.entries.flatMap((entry) => pullsForTrailEntry(repoPulls, entry)), ...linked.map(({ pr }) => pr)];
       if (found.length === 0) continue;
-      const last = removed.entries.reduce((a, b) => (b.lastSeen > a.lastSeen ? b : a));
-      rows.push({ cwd, branch: last.branch, isMain: false, removed: true, prs: badges(undefined, found), cardIds: [...removed.cardIds].sort() });
+      noteFailures(linked);
+      // The card whose chat made a PR shown here belongs on the row, whether
+      // or not its trail recorded the directory.
+      const cardIds = new Set([...removed.cardIds, ...linked.map(({ cardId }) => cardId)]);
+      const last = removed.entries.reduce<GitTrailEntry | undefined>((a, b) => (!a || b.lastSeen > a.lastSeen ? b : a), undefined);
+      rows.push({ cwd, branch: last?.branch ?? null, isMain: false, removed: true, prs: badges(undefined, found), cardIds: [...cardIds].sort() });
     }
+    const prError = repoPulls.error ?? linkError;
     if (rows.length === 0) continue;
     rows.sort(
       (a, b) =>
@@ -345,7 +476,7 @@ export async function buildGitOverview(opts: { force?: boolean } = {}, deps: Ove
         (a.branch ?? "\uffff").localeCompare(b.branch ?? "\uffff") ||
         a.cwd.localeCompare(b.cwd),
     );
-    out.push({ repoPath, name: basename(repoPath), rows, ...(repoPulls.error && { prError: repoPulls.error }) });
+    out.push({ repoPath, name: basename(repoPath), rows, ...(prError && { prError }), ...(prError && !repoPulls.error && { prErrorPartial: true as const }) });
   }
   out.sort((a, b) => a.name.localeCompare(b.name) || a.repoPath.localeCompare(b.repoPath));
 

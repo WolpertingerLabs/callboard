@@ -68,10 +68,14 @@ export function parseGitTrail(raw: unknown): GitTrailEntry[] {
   );
 }
 
-/** `trail` with `sighting` folded in, or null when the sighting changes nothing. */
-export function mergeSighting(trail: GitTrailEntry[], sighting: GitTrailSighting, now: string): GitTrailEntry[] | null {
+/**
+ * `trail` with `sighting` folded in, or null when the sighting changes nothing.
+ * `since` is the earliest the folder can have been on a pair not seen before:
+ * `now`, unless the caller knows the pair appeared some time before it looked.
+ */
+export function mergeSighting(trail: GitTrailEntry[], sighting: GitTrailSighting, now: string, since = now): GitTrailEntry[] | null {
   const index = trail.findIndex((e) => e.cwd === sighting.cwd && e.branch === sighting.branch);
-  if (index === -1) return [...trail, { ...sighting, firstSeen: now, lastSeen: now }];
+  if (index === -1) return [...trail, { ...sighting, firstSeen: since, lastSeen: now }];
   const known = trail[index];
   // A sighting with no readable commit (reftable, an unborn branch) never moves the entry: only lastSeen would change.
   const headMoved = sighting.head !== undefined && sighting.head !== known.head;
@@ -125,7 +129,7 @@ export function noteChatSession(id: string, sessionId: string): void {
 }
 
 /** The record for registry id `id`: by its noted session id, by filename, then by the scan. */
-function chatForRegistryId(id: string) {
+export function chatForRegistryId(id: string) {
   const noted = sessionIdOf.get(id);
   if (noted) {
     const chat = chatFileService.getChatBySessionId(noted);
@@ -142,8 +146,14 @@ function chatForRegistryId(id: string) {
  * Record where chat `id`'s folder is now. `id` is the session registry's: a
  * chat id, or the session id a new chat migrates to. Returns whether the
  * trail was written. Never throws.
+ *
+ * `since` is when the turn now ending began. A branch first sighted at a
+ * turn's end was created somewhere inside that turn, so its `firstSeen` is
+ * the turn's start: stamped with the end, a PR opened and merged within the
+ * one turn would have closed "before the chat first saw the branch" and be
+ * disowned (see `pullsForTrailEntry`).
  */
-export function recordGitTrail(id: string, now = new Date().toISOString()): boolean {
+export function recordGitTrail(id: string, now = new Date().toISOString(), since = now): boolean {
   try {
     // A new chat registers under a temporary id before its record exists; it
     // is recorded when it migrates to its real one.
@@ -157,7 +167,7 @@ export function recordGitTrail(id: string, now = new Date().toISOString()): bool
     // write this chat in the gap, and every other metadata field is merged
     // through untouched.
     const fresh = chatFileService.getChatBySessionId(chat.session_id) ?? chat;
-    const next = mergeSighting(parseGitTrail(parseChatMetadata(fresh.metadata).gitTrail), sighting, now);
+    const next = mergeSighting(parseGitTrail(parseChatMetadata(fresh.metadata).gitTrail), sighting, now, since);
     if (!next) return false;
     return chatFileService.updateChatMetadataForRecord(fresh, { gitTrail: next }, { touch: false });
   } catch (err) {
@@ -168,6 +178,9 @@ export function recordGitTrail(id: string, now = new Date().toISOString()): bool
 
 let initialized = false;
 
+/** When each running turn started, by registry id — held from `session_started` to `session_stopped`. */
+const turnStartedAt = new Map<string, string>();
+
 /**
  * Record a trail sighting on every session start and stop. Deferred a tick so
  * the registry's synchronous emit — inside `sendMessage` — never waits on it.
@@ -177,6 +190,14 @@ export function initGitTrailRecorder(): void {
   initialized = true;
   sessionRegistry.on("change", (event: SessionEvent) => {
     if (event.event !== "session_started" && event.event !== "session_stopped") return;
-    setImmediate(() => recordGitTrail(event.chatId));
+    const now = new Date().toISOString();
+    if (event.event === "session_started") {
+      turnStartedAt.set(event.chatId, now);
+      setImmediate(() => recordGitTrail(event.chatId, now));
+      return;
+    }
+    const since = turnStartedAt.get(event.chatId);
+    turnStartedAt.delete(event.chatId);
+    setImmediate(() => recordGitTrail(event.chatId, new Date().toISOString(), since));
   });
 }

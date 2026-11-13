@@ -16,6 +16,7 @@ const tmp = realpathSync(mkdtempSync(join(tmpdir(), "callboard-git-trail-")));
 const { chatFileService } = await import("./chat-file-service.js");
 const { sessionRegistry } = await import("./session-registry.js");
 const { initGitTrailRecorder, mergeSighting, mergeTrails, noteChatSession, parseGitTrail, recordGitTrail, sightFolder } = await import("./git-trail.js");
+const { indexPullsByBranch, pullsForTrailEntry } = await import("./github-prs.js");
 
 afterAll(() => {
   rmSync(tmp, { recursive: true, force: true });
@@ -87,6 +88,12 @@ describe("mergeSighting", () => {
 
   it("adds a new (cwd, branch) pair", () => {
     expect(mergeSighting([entry], { ...base, branch: "b" }, "t1")).toEqual([entry, { ...base, branch: "b", firstSeen: "t1", lastSeen: "t1" }]);
+  });
+
+  it("dates a new pair from `since` when the caller knows it appeared before it looked", () => {
+    expect(mergeSighting([entry], { ...base, branch: "b" }, "t2", "t1")).toEqual([entry, { ...base, branch: "b", firstSeen: "t1", lastSeen: "t2" }]);
+    // A known pair keeps the first sighting it has.
+    expect(mergeSighting([entry], { ...base, head: "2" }, "t2", "t1")).toEqual([{ ...entry, head: "2", lastSeen: "t2" }]);
   });
 
   it("changes nothing for the same pair at the same commit — lastSeen alone is not a write", () => {
@@ -256,6 +263,52 @@ describe("the session-registry hook", () => {
     sessionRegistry.unregister(chat.id);
     await tick();
     expect(trailOf(chat.id).map((e) => e.branch)).toEqual(["main", "feat/during"]);
+  });
+
+  it("dates a branch first seen at a turn's end from that turn's start, so a PR opened and merged inside the turn is the chat's", async () => {
+    const repo = makeRepo();
+    const chat = makeChat(repo);
+    const start = Date.parse("2026-06-01T10:00:00.000Z");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(start);
+      sessionRegistry.register(chat.id, { type: "web" });
+      await tick();
+      // One turn: the agent branches off, opens a PR, merges it — and ends still on the branch.
+      git(repo, "checkout", "-q", "-b", "fix/x");
+      vi.setSystemTime(start + 10 * 60_000);
+      sessionRegistry.unregister(chat.id);
+      await tick();
+    } finally {
+      vi.useRealTimers();
+    }
+    const branch = trailOf(chat.id).find((e) => e.branch === "fix/x")!;
+    expect(branch).toMatchObject({ firstSeen: "2026-06-01T10:00:00.000Z", lastSeen: "2026-06-01T10:10:00.000Z" });
+
+    const merged = {
+      number: 9,
+      url: "https://github.com/acme/app/pull/9",
+      title: "PR 9",
+      state: "merged" as const,
+      headRef: "fix/x",
+      headSha: "x",
+      headOwner: "acme",
+      updatedAt: "2026-06-01T10:05:00Z",
+      baseRef: "main",
+      author: "dev",
+      createdAt: "2026-06-01T10:02:00Z",
+      mergedAt: "2026-06-01T10:05:00Z",
+      closedAt: "2026-06-01T10:05:00Z",
+    };
+    const pulls = { github: { owner: "acme", repo: "app" }, defaultBranch: "main", byBranch: indexPullsByBranch([merged], "acme", "main") };
+    expect(pullsForTrailEntry(pulls, branch).map((p) => p.number)).toEqual([9]);
+
+    // The next turn starts and ends on the same branch: its first sighting does not move.
+    sessionRegistry.register(chat.id, { type: "web" });
+    git(repo, "commit", "-q", "--allow-empty", "-m", "more");
+    sessionRegistry.unregister(chat.id);
+    await tick();
+    expect(trailOf(chat.id).find((e) => e.branch === "fix/x")!.firstSeen).toBe("2026-06-01T10:00:00.000Z");
   });
 
   it("records a new chat once its temporary id migrates to the real one", async () => {
