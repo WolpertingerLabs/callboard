@@ -306,6 +306,26 @@ describe("buildChatPrs — one list", () => {
       expect(result.prs.map((p) => [p.number, p.state])).toEqual([[10, "open"]]);
     });
 
+    it("lets the PR itself replace an unknown placeholder for it, whichever the list meets first", async () => {
+      // The chat's own link to #11 could not be asked about (and spells the repository its own way);
+      // its trail then finds the merged #11 in the listing.
+      const spelled = { ...link(11), url: "https://github.com/Acme/App/pull/11" };
+      const unknown: PullSummary = { ...pull(11, "", "unknown"), url: spelled.url, title: "Acme/App#11" };
+      const d = withTrail([entry("/src/app.feat-a", "feat/b")], { linksOf: async () => [spelled], linkedPulls: linkedPulls({ 11: unknown }, "gh timed out") });
+      const result = await buildChatPrs({ folder: "/src/app.feat-a", chatId: "c" }, d);
+      expect(result.prs.map((p) => [p.number, p.state, p.url])).toEqual([
+        [10, "open", "https://github.com/acme/app/pull/10"],
+        [11, "merged", "https://github.com/acme/app/pull/11"],
+      ]);
+    });
+
+    it("makes a linked PR the live branch's across a rename: the link names this repository though GitHub's URL no longer does", async () => {
+      const renamed: PullSummary = { ...pull(11, "feat/b", "merged", "b1"), url: "https://github.com/acme/renamed/pull/11" };
+      const d = deps({ ...moved, linksOf: async () => [link(11)], linkedPulls: linkedPulls({ 11: renamed }) });
+      const result = await buildChatPrs({ folder: "/src/app.feat-b", chatId: "c" }, d);
+      expect(result.current).toMatchObject({ status: "found", pr: expect.objectContaining({ number: 11, url: renamed.url }) });
+    });
+
     it("reports a failed link lookup beside any status, an empty-handed one included", async () => {
       const unknown: PullSummary = { ...pull(30, "", "unknown"), title: "acme/app#30" };
       const d = deps({ linksOf: async () => [link(30)], linkedPulls: linkedPulls({ 30: unknown }, "gh is not installed") });

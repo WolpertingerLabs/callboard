@@ -381,7 +381,7 @@ describe("buildGitOverview — the git trail", () => {
     /** Resolves each link to the PR the table has for its number. */
     const resolving = (table: Record<number, PullSummary>, error?: string) => async (links: ReturnType<typeof link>[]) => ({
       pulls: links.map((l) => table[l.number]),
-      ...(error && { error }),
+      ...(error && { error, errors: { "acme/app": error } }),
     });
     /** `app` with nothing listed on any branch: only what the chats recorded can give a row a PR. */
     const BARE: RepoPulls = { github: { owner: "acme", repo: "app" }, defaultBranch: "main", byBranch: new Map() };
@@ -438,10 +438,39 @@ describe("buildGitOverview — the git trail", () => {
       );
       const { repos } = await buildGitOverview({}, d);
       expect(rowOf(repos, "/src/app.feat-x")!.prs).toEqual([expect.objectContaining({ number: 12 }), { number: 30, url: unknown.url, state: "unknown", title: "acme/app#30" }]);
-      expect(repos.map((r) => [r.name, r.prError])).toEqual([
-        ["app", "gh is not installed"],
-        ["lib", undefined],
+      expect(repos.map((r) => [r.name, r.prError, r.prErrorPartial])).toEqual([
+        ["app", "gh is not installed", true],
+        ["lib", undefined, undefined],
       ]);
+    });
+
+    it("quotes a repository's own lookup failure, never the first one of another repository", async () => {
+      const lib = { repo: "other/lib", number: 4, url: "https://github.com/other/lib/pull/4", firstSeen: "t0" };
+      const linkedPulls = async (links: Array<{ repo: string; number: number; url: string }>) => ({
+        pulls: links.map((l): PullSummary => ({ ...pull(l.number, "", "unknown"), url: l.url })),
+        error: "Could not resolve to a Repository 'other/lib'",
+        errors: { "other/lib": "Could not resolve to a Repository 'other/lib'", "acme/app": "gh timed out" },
+      });
+      const links = () => [{ cardId: "c1", folder: "/src/app.feat-x", link: lib }, ...linksIn("/src/app.feat-x", "c1", 30)];
+      const { repos } = await buildGitOverview({}, deps({ "/src/app.feat-x": ["c1"] }, { pullsFor, linkedPulls, links }));
+      expect(rowOf(repos, "/src/app.feat-x")!.prs?.map((p) => p.number)).toEqual([12, 30]);
+      expect(repos[0]).toMatchObject({ prError: "gh timed out", prErrorPartial: true });
+      // A failed listing is the repository's error outright, and is not "partial".
+      const failing = async () => ({ ...APP, error: "gh: rate limited" });
+      const failed = await buildGitOverview({}, deps({ "/src/app.feat-x": ["c1"] }, { pullsFor: failing, linkedPulls, links }));
+      expect(failed.repos[0].prError).toBe("gh: rate limited");
+      expect(failed.repos[0].prErrorPartial).toBeUndefined();
+    });
+
+    it("keeps a row's linked PRs across a rename: the link names the row's repository though GitHub's URL no longer does", async () => {
+      const renamed = (n: number, headRef: string): PullSummary => ({ ...pull(n, headRef, "merged"), url: `https://github.com/acme/renamed/pull/${n}` });
+      const d = deps(
+        { "/src/app.feat-x": ["c1"] },
+        { pullsFor: bare, linkedPulls: resolving({ 40: renamed(40, "feat/x"), 41: renamed(41, "feat/earlier") }), links: () => linksIn("/src/app.feat-x", "c1", 40, 41) },
+      );
+      const row = rowOf((await buildGitOverview({}, d)).repos, "/src/app.feat-x")!;
+      expect(row.pr).toMatchObject({ number: 40, url: "https://github.com/acme/renamed/pull/40" });
+      expect(row.prs?.map((p) => p.number)).toEqual([40, 41]);
     });
 
     it("badges a PR once when a failed lookup spells its repository differently than GitHub does", async () => {
@@ -495,6 +524,19 @@ describe("buildGitOverview — the git trail", () => {
       const twice = async (repo: string) => (repo === "/src/app" || repo === "/src/lib" ? APP : { byBranch: new Map() });
       const ambiguous = await buildGitOverview({}, deps({ "/src/app": ["c1"], "/src/lib": ["c3"], "/src/app.gone2": ["c2"] }, { pullsFor: twice, exists: gone, linkedPulls, links }));
       expect(ambiguous.repos.flatMap((r) => r.rows).filter((r) => r.removed)).toEqual([]);
+      // …or the folder's chats made PRs in two repositories, both here: one row in each would be a guess twice over.
+      const libLink = { cardId: "c2", folder: "/src/app.gone2", link: { repo: "acme/lib", number: 3, url: "https://github.com/acme/lib/pull/3", firstSeen: "t0" } };
+      const both = async (repo: string) => (repo === "/src/app" ? APP : { github: { owner: "acme", repo: "lib" }, byBranch: new Map() });
+      const anyPull = async (asked: Array<{ number: number; url: string }>) => ({ pulls: asked.map((l) => ({ ...pull(l.number, "b", "merged"), url: l.url })) });
+      const folders = { "/src/app": ["c1"], "/src/lib": ["c3"], "/src/app.gone2": ["c2"] };
+      const split = await buildGitOverview({}, deps(folders, { pullsFor: both, exists: gone, linkedPulls: anyPull, links: () => [...links(), libLink] }));
+      expect(split.repos.flatMap((r) => r.rows).filter((r) => r.removed)).toEqual([]);
+      // (With the one link alone, the same folder does get its row — in the repository that link names.)
+      const single = await buildGitOverview({}, deps(folders, { pullsFor: both, exists: gone, linkedPulls: anyPull, links: () => [libLink] }));
+      expect(single.repos.map((r) => [r.name, r.rows.filter((row) => row.removed).map((row) => row.cwd)])).toEqual([
+        ["app", []],
+        ["lib", ["/src/app.gone2"]],
+      ]);
       // A folder that still exists but is in no worktree is not a removed one.
       const present = await buildGitOverview({}, deps({ "/src/app": ["c1"], "/src/elsewhere": ["c2"] }, { pullsFor, linkedPulls, links: () => linksIn("/src/elsewhere", "c2", 22) }));
       expect(present.repos.flatMap((r) => r.rows).filter((r) => r.removed)).toEqual([]);

@@ -287,6 +287,16 @@ describe("BranchesView", () => {
     expect(screen.getByLabelText("PR data unavailable: gh is not installed")).toBeDefined();
   });
 
+  it("words the flag as the PRs tab does when the listing worked and only a by-number lookup failed", async () => {
+    mockOverview.mockResolvedValue({
+      generatedAt: OVERVIEW.generatedAt,
+      repos: [{ repoPath: "/home/u/app", name: "app", prError: "gh timed out", prErrorPartial: true, rows: [{ cwd: "/home/u/app", branch: "main", isMain: true, cardIds: ["c3"] }] }],
+    });
+    await mount();
+    expect(screen.getByLabelText("PR data may be incomplete or out of date — a GitHub lookup failed: gh timed out")).toBeDefined();
+    expect(screen.queryByLabelText(/PR data unavailable/)).toBeNull();
+  });
+
   it("shows the path relative to the repo's parent, with the full path on hover", async () => {
     await mount();
     expect(row("/home/u/callboard.feat-pr-track").querySelector('[title="/home/u/callboard.feat-pr-track"]')!.textContent).toBe("callboard.feat-pr-track");

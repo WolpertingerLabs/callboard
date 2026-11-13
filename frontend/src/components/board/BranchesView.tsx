@@ -24,6 +24,13 @@ interface BranchesViewProps {
 /** Chips shown on a row before the rest fold behind "+N more". */
 const CHIP_LIMIT = 4;
 
+/** Why a repo's PR data is flagged: the listing failed, or only a PR asked about by number did — worded as the chat's PRs tab words it. */
+function prErrorLabel(repo: BranchRepo): string {
+  return repo.prErrorPartial
+    ? `PR data may be incomplete or out of date — a GitHub lookup failed: ${repo.prError}`
+    : `PR data unavailable: ${repo.prError}`;
+}
+
 /** `parent/` of the repo, so rows read `callboard.feat-x` rather than the whole path. */
 function parentPrefix(repoPath: string): string {
   const cut = repoPath.lastIndexOf("/");
@@ -321,8 +328,8 @@ export default function BranchesView({ cards, onOpenCard }: BranchesViewProps) {
             <span style={{ fontSize: 11, color: "var(--board-section-label-text)" }}>{rows.length}</span>
             {repo.prError && (
               <span
-                title={`PR data unavailable: ${repo.prError}`}
-                aria-label={`PR data unavailable: ${repo.prError}`}
+                title={prErrorLabel(repo)}
+                aria-label={prErrorLabel(repo)}
                 style={{ display: "flex", color: "var(--warning)" }}
               >
                 <AlertTriangle size={13} />

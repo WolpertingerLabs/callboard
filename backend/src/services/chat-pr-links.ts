@@ -162,22 +162,26 @@ export interface PrLinkDeps {
 
 /** Session id → transcript path. A transcript never moves, so a hit is kept for the daemon's lifetime. */
 const knownLogPaths = new Map<string, string>();
+/** How long a session found to have no transcript is not looked for again. */
+export const MISSING_LOG_TTL_MS = 60_000;
 /**
- * Sessions with no transcript. Kept for the daemon's lifetime too: a miss
- * walks every project directory, and a chat whose transcript is gone would
- * pay that on every sync. A turn's end forgets its chat's (see
- * {@link initPrLinkRecorder}) — that is when a transcript can have appeared.
+ * Sessions with no transcript, by when to look again. A miss walks every
+ * project directory, and a chat whose transcript is gone would pay that on
+ * every sync. Only for {@link MISSING_LOG_TTL_MS}, though: a new chat asked
+ * about before Claude Code has created its file must not read as having no
+ * PRs for the rest of a long first turn. A turn's end forgets its chat's at
+ * once (see {@link initPrLinkRecorder}).
  */
-const missingLogPaths = new Set<string>();
+const missingLogPaths = new Map<string, number>();
 
 export const DEFAULT_PR_LINK_DEPS: PrLinkDeps = {
   logPath: (sessionId) => {
     const known = knownLogPaths.get(sessionId);
     if (known && existsSync(known)) return known;
-    if (missingLogPaths.has(sessionId)) return null;
+    if ((missingLogPaths.get(sessionId) ?? 0) > Date.now()) return null;
     const found = getSessionProvider("claude-code" as never)?.resolveSession(sessionId)?.logPath;
     if (typeof found !== "string") {
-      missingLogPaths.add(sessionId);
+      missingLogPaths.set(sessionId, Date.now() + MISSING_LOG_TTL_MS);
       return null;
     }
     knownLogPaths.set(sessionId, found);

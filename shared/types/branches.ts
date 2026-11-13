@@ -71,6 +71,8 @@ export interface BranchRepo {
    * attempted (no GitHub remote).
    */
   prError?: string;
+  /** Set with `prError` when the listing itself worked and only a by-number lookup failed: the rest of the repo's PR data is current. */
+  prErrorPartial?: true;
 }
 
 export interface GitOverviewResponse {

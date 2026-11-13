@@ -26,6 +26,7 @@ const { sessionRegistry } = await import("./session-registry.js");
 const {
   DEFAULT_PR_LINK_DEPS,
   initPrLinkRecorder,
+  MISSING_LOG_TTL_MS,
   mergePrLinks,
   parsePrLinks,
   prLinkBacklogIdle,
@@ -282,6 +283,24 @@ describe("the production wiring", () => {
     resetPrLinkSync();
     expect(DEFAULT_PR_LINK_DEPS.logPath("wired-gone")).toBeNull();
     expect(resolveSession).toHaveBeenCalledTimes(3);
+  });
+
+  it("looks again for a missing transcript after a minute, so a chat asked about before its file exists is not blank for a long first turn", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(1_000_000);
+      expect(DEFAULT_PR_LINK_DEPS.logPath("wired-late")).toBeNull();
+      // Claude Code creates the file a moment later; the turn runs on.
+      sessionLogs["wired-late"] = transcript(lines(prLink(1)));
+      vi.setSystemTime(1_000_000 + MISSING_LOG_TTL_MS - 1);
+      expect(DEFAULT_PR_LINK_DEPS.logPath("wired-late")).toBeNull();
+      expect(resolveSession).toHaveBeenCalledTimes(1);
+      vi.setSystemTime(1_000_000 + MISSING_LOG_TTL_MS);
+      expect(DEFAULT_PR_LINK_DEPS.logPath("wired-late")).toBe(sessionLogs["wired-late"]);
+      expect(MISSING_LOG_TTL_MS).toBeLessThanOrEqual(60_000);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("syncs a chat's links when its turn ends — looking again for a transcript that was missing before the turn", async () => {

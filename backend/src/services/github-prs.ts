@@ -189,15 +189,28 @@ export function byOpenThenUpdated(a: PullSummary, b: PullSummary): number {
   return Number(isOpen(b)) - Number(isOpen(a)) || b.updatedAt.localeCompare(a.updatedAt);
 }
 
+const refKey = (owner: string, repo: string) => `${owner}/${repo}`.toLowerCase();
+
 /** Whether `pr` is a pull request of repository `ref`, by its URL — which an `unknown` PR has too, from its link. */
 export function isPullOf(pr: Pick<PullSummary, "url">, ref: GitHubRepoRef | undefined): boolean {
   return ref !== undefined && pr.url.toLowerCase().startsWith(`https://github.com/${ref.owner}/${ref.repo}/pull/`.toLowerCase());
 }
 
 /**
- * The live `branch`'s PR among those a chat's own records (trail, PR links)
- * name, for when the SHA rule ({@link matchPull}) found none. Held to what
- * {@link indexPullsByBranch} holds a listed PR to — this repository's PR,
+ * Whether `pr`, the PR behind `link`, is one of repository `ref`'s: the link
+ * names `ref`, or the PR's URL does. Either is enough — after a rename with
+ * `origin` left on the old name, the transcript and `origin` agree with each
+ * other while GitHub's URL carries the new one.
+ */
+export function isLinkOf(link: Pick<ChatPrLink, "repo">, pr: Pick<PullSummary, "url">, ref: GitHubRepoRef | undefined): boolean {
+  return ref !== undefined && (link.repo.toLowerCase() === refKey(ref.owner, ref.repo) || isPullOf(pr, ref));
+}
+
+/**
+ * The live `branch`'s PR among those a chat's own records name for this
+ * repository — its trail's (from this repository's listing) and its links'
+ * (those {@link isLinkOf} it) — for when the SHA rule ({@link matchPull})
+ * found none. Held to what {@link indexPullsByBranch} holds a listed PR to —
  * headed by this owner's branch of that name, never the default branch — so
  * a fork's `feat/x` is not promoted onto ours. Open first, then most recently
  * updated: the one answer for the Board and the PRs tab alike.
@@ -206,7 +219,7 @@ export function recordedPullForBranch(recorded: PullSummary[], branch: string | 
   const here = pulls?.github;
   if (!here || branch === null || branch === pulls.defaultBranch) return undefined;
   const owner = here.owner.toLowerCase();
-  return [...recorded].sort(byOpenThenUpdated).find((pr) => pr.headRef === branch && pr.headOwner?.toLowerCase() === owner && isPullOf(pr, here));
+  return [...recorded].sort(byOpenThenUpdated).find((pr) => pr.headRef === branch && pr.headOwner?.toLowerCase() === owner);
 }
 
 export function toBranchPr(pr: PullSummary): BranchPr {
@@ -437,8 +450,6 @@ export async function getRepoPulls(repoPath: string, force = false, now = Date.n
 
 // ── PRs by number ────────────────────────────────────────────────────
 
-const refKey = (owner: string, repo: string) => `${owner}/${repo}`.toLowerCase();
-
 interface NumberEntry {
   /** When it was last asked about, answered or not. */
   at: number;
@@ -529,6 +540,13 @@ function unknownPull(link: ChatPrLink): PullSummary {
   };
 }
 
+/** What {@link resolveLinkedPulls} answers. */
+export interface LinkedPulls {
+  pulls: Array<PullSummary | undefined>;
+  error?: string;
+  errors?: Record<string, string>;
+}
+
 export interface LinkedPullDeps {
   fetch: (ref: GitHubRepoRef, numbers: number[], cwd: string) => Promise<Map<number, PullAnswer>>;
   now: () => number;
@@ -572,7 +590,8 @@ async function fetchIntoCache(ref: GitHubRepoRef, numbers: number[], cwd: string
  * (no `gh`, offline, a repository this account cannot see) still comes back,
  * as an `unknown` PR carrying its number and URL: the chat's history says it
  * exists. One GitHub says does not exist is dropped — `error` reports the
- * first failure.
+ * first failure, `errors` the first for each repository (by lowercased
+ * `owner/name`), for a caller that shows repositories apart.
  *
  * Like {@link getRepoPulls}: failures are cached for the TTL like answers, so
  * a link that cannot be resolved is not a `gh` spawn on every poll; callers
@@ -585,7 +604,7 @@ export async function resolveLinkedPulls(
   known: Iterable<RepoPulls>,
   opts: { cwd: string; force?: boolean },
   deps: LinkedPullDeps = { fetch: fetchPullsByNumber, now: Date.now },
-): Promise<{ pulls: Array<PullSummary | undefined>; error?: string }> {
+): Promise<LinkedPulls> {
   const listed = new Map<string, RepoPulls>();
   for (const pulls of known) if (pulls.github) listed.set(refKey(pulls.github.owner, pulls.github.repo), pulls);
   const now = deps.now();
@@ -635,17 +654,21 @@ export async function resolveLinkedPulls(
   }
 
   let error: string | undefined;
+  const errors: Record<string, string> = {};
   const pulls = links.map((link) => {
     const hit = inListing(link);
     if (hit) return hit;
     const cached = numberCache.get(keyOf(link));
-    if (cached?.error !== undefined) error ??= cached.error;
-    else if (!cached && timedOut) error ??= "GitHub did not answer in time";
+    const failure = cached?.error ?? (!cached && timedOut ? "GitHub did not answer in time" : undefined);
+    if (failure !== undefined) {
+      error ??= failure;
+      errors[link.repo.toLowerCase()] ??= failure;
+    }
     // Never answered (the lookup failed, or is still running): the link itself is the answer.
     if (cached?.value === undefined) return unknownPull(link);
     return cached.value ?? undefined;
   });
-  return { pulls, ...(error !== undefined && { error }) };
+  return { pulls, ...(error !== undefined && { error, errors }) };
 }
 
 /** Drop every cached lookup. For tests; production never needs it. */

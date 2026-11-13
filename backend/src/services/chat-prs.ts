@@ -37,11 +37,13 @@ import { parseGitTrail } from "./git-trail.js";
 import { requestBackfill, type BackfillRequest } from "./git-trail-backfill.js";
 import {
   getRepoPulls,
+  isLinkOf,
   matchPull,
   pullsForTrailEntry,
   recordedPullForBranch,
   resolveLinkedPulls,
   toChatPr,
+  type LinkedPulls,
   type PullSummary,
   type RepoPulls,
 } from "./github-prs.js";
@@ -112,7 +114,7 @@ export interface ChatPrsDeps extends PlacementDeps {
   /** The PRs a chat's history names, brought up to date first. Defaults to none. */
   linksOf?: (chatId: string) => Promise<ChatPrLink[]>;
   /** The PR behind each link, in order; see {@link resolveLinkedPulls}. */
-  linkedPulls?: (links: ChatPrLink[], known: RepoPulls[], force: boolean) => Promise<{ pulls: Array<PullSummary | undefined>; error?: string }>;
+  linkedPulls?: (links: ChatPrLink[], known: RepoPulls[], force: boolean) => Promise<LinkedPulls>;
 }
 
 /** Production deps: the card and the trail share one chat snapshot per request, taken only if needed. */
@@ -208,11 +210,16 @@ export async function buildChatPrs(opts: { folder: string; chatId?: string; forc
 
   // The linked PRs, from those listings where they hold them.
   const links = linkLists.flat();
-  const linked = links.length > 0 && deps.linkedPulls ? await deps.linkedPulls(links, [...pullsByRepo.values()], force) : { pulls: [] };
-  const linkedOf = (index: number) => {
+  const linked: LinkedPulls = links.length > 0 && deps.linkedPulls ? await deps.linkedPulls(links, [...pullsByRepo.values()], force) : { pulls: [] };
+  /** Chat `index`'s links with the PR behind each, less those GitHub does not have. */
+  const linksOf = (index: number) => {
     const start = linkLists.slice(0, index).reduce((n, list) => n + list.length, 0);
-    return linked.pulls.slice(start, start + linkLists[index].length).filter((pr): pr is PullSummary => pr !== undefined);
+    return linkLists[index].flatMap((link, i) => {
+      const pr = linked.pulls[start + i];
+      return pr ? [{ link, pr }] : [];
+    });
   };
+  const linkedOf = (index: number) => linksOf(index).map(({ pr }) => pr);
 
   let currentPrs = folderPrs(opts.folder, current, current?.kind === "placed" ? pullsByRepo.get(current.repo.repoPath) : undefined);
 
@@ -222,16 +229,22 @@ export async function buildChatPrs(opts: { folder: string; chatId?: string; forc
   // transcript spelled the repository, a listed one's as GitHub does.
   const byUrl = new Map<string, ChatPr>();
   const add = (pr: PullSummary | ChatPr | undefined) => {
-    const key = pr?.url.toLowerCase();
-    if (pr && !byUrl.has(key!)) byUrl.set(key!, "headSha" in pr ? toChatPr(pr) : pr);
+    if (!pr) return;
+    const key = pr.url.toLowerCase();
+    // A link GitHub could not be asked about gives way to the PR itself,
+    // whichever is met first.
+    const known = byUrl.get(key);
+    if (!known || (known.state === "unknown" && pr.state !== "unknown")) byUrl.set(key, "headSha" in pr ? toChatPr(pr) : pr);
   };
   const trailPulls = (entries: GitTrailEntry[]) => entries.flatMap((entry) => pullsForTrailEntry(pullsByRepo.get(entry.repoPath), entry));
 
   // The live branch's PR, when the SHA rule found none but the chat's own
   // record did — chosen as the Board chooses it.
   if (currentPrs.status === "no_pr" && current?.kind === "placed") {
-    const own = [...trailPulls(ownEntries.filter((entry) => entry.cwd === currentCwd)), ...(opts.chatId ? linkedOf(0) : [])];
-    const pr = recordedPullForBranch(own, current.worktree.branch, pullsByRepo.get(current.repo.repoPath));
+    const here = pullsByRepo.get(current.repo.repoPath);
+    const ownLinked = opts.chatId ? linksOf(0).flatMap(({ link, pr }) => (isLinkOf(link, pr, here?.github) ? [pr] : [])) : [];
+    const own = [...trailPulls(ownEntries.filter((entry) => entry.cwd === currentCwd)), ...ownLinked];
+    const pr = recordedPullForBranch(own, current.worktree.branch, here);
     if (pr) currentPrs = { ...currentPrs, status: "found", pr: toChatPr(pr) };
   }
 

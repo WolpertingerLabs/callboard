@@ -16,6 +16,7 @@ import {
   fetchRepoPulls,
   getRepoPulls,
   indexPullsByBranch,
+  isLinkOf,
   isPullOf,
   matchPull,
   parseGitHubRemote,
@@ -559,11 +560,21 @@ describe("recordedPullForBranch", () => {
     expect(recordedPullForBranch([merged(70, { headOwner: "stranger" })], "feat/x", here)).toBeUndefined();
     expect(recordedPullForBranch([merged(70, { headOwner: null })], "feat/x", here)).toBeUndefined();
     expect(recordedPullForBranch([pr({ number: 70, headRef: "main" })], "main", here)).toBeUndefined();
-    expect(recordedPullForBranch([merged(70, { url: "https://github.com/other/lib/pull/70" })], "feat/x", here)).toBeUndefined();
     expect(recordedPullForBranch([merged(70)], "feat/x", { byBranch: new Map() })).toBeUndefined();
     expect(recordedPullForBranch([merged(70)], null, here)).toBeUndefined();
     // Owner and repository names are compared without case.
     expect(recordedPullForBranch([merged(70)], "feat/x", here)?.number).toBe(70);
+  });
+
+  it("isLinkOf takes a link for a repository when the link names it or the PR's URL does — a rename leaves only one of them true", () => {
+    const at = (url: string) => ({ url });
+    expect(isLinkOf({ repo: "acme/app" }, at("https://github.com/acme/app/pull/3"), here.github)).toBe(true);
+    // Renamed on GitHub, `origin` still on the old name: the transcript agrees with origin, the URL does not.
+    expect(isLinkOf({ repo: "ACME/app" }, at("https://github.com/acme/renamed/pull/3"), here.github)).toBe(true);
+    // The other way round: the link was recorded under the old name, origin has been updated.
+    expect(isLinkOf({ repo: "acme/old-name" }, at("https://github.com/acme/app/pull/3"), here.github)).toBe(true);
+    expect(isLinkOf({ repo: "other/lib" }, at("https://github.com/other/lib/pull/3"), here.github)).toBe(false);
+    expect(isLinkOf({ repo: "acme/app" }, at("https://github.com/acme/app/pull/3"), undefined)).toBe(false);
   });
 
   it("isPullOf goes by the URL, so a link's unknown PR counts by the repository the link names", () => {
@@ -726,6 +737,20 @@ describe("resolveLinkedPulls — failures, sharing and the wait cap", () => {
     expect(fetch).toHaveBeenCalledTimes(4);
     await resolveLinkedPulls(links, [], { cwd: "/", force: true }, { fetch, now: () => PR_CACHE_TTL_MS + 20_000 });
     expect(fetch).toHaveBeenCalledTimes(6);
+  });
+
+  it("reports each repository's own failure apart, beside the first overall", async () => {
+    const fetch = vi.fn<Fetch>(async (ref, numbers) => {
+      if (ref.repo === "lib") return new Map(numbers.map((n) => [n, open(n)]));
+      throw new Error(`no ${ref.repo}`);
+    });
+    const links = [link(1, "Acme/Private"), link(2, "acme/lib"), link(43), link(44)];
+    const { pulls, error, errors } = await resolveLinkedPulls(links, [], { cwd: "/" }, { fetch, now: () => 0 });
+    expect(pulls.map((p) => p?.state)).toEqual(["unknown", "open", "unknown", "unknown"]);
+    expect(error).toBe("no Private");
+    expect(errors).toEqual({ "acme/private": "no Private", "acme/app": "no app" });
+    // Nothing failed: neither is set.
+    expect(await resolveLinkedPulls([link(2, "acme/lib")], [], { cwd: "/" }, { fetch, now: () => 0 })).toEqual({ pulls: [expect.objectContaining({ number: 2 })] });
   });
 
   it("keeps the last good answer beside the error when a later ask fails", async () => {
