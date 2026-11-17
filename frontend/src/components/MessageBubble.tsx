@@ -1,5 +1,5 @@
 import { memo, useState, useMemo, useEffect, useRef, type CSSProperties, type ReactNode } from "react";
-import { Check, ClipboardType, Copy, FileText, GitFork, RotateCw, Square, Star, X } from "lucide-react";
+import { Check, ClipboardType, Copy, FileText, GitFork, RotateCw, Square, Star } from "lucide-react";
 import type { ChatTreeNode, ForkProvider, ParsedMessage } from "../api";
 import type { ChatRewriteAction } from "../utils/chatRewrite";
 import { parseTaskList, splitAttachmentBlocks, type AttachedFile, type TaskListItem } from "shared/types/index.js";
@@ -13,6 +13,7 @@ import { copyToClipboard } from "../utils/clipboard";
 import { markdownToHtml } from "../utils/markdownToHtml";
 import { formatBytes } from "../utils/formatBytes";
 import { getToolSummary, getToolDisplayName } from "./toolFormatting";
+import ImageLightbox from "./gallery/ImageLightbox";
 
 /**
  * The task list this message carries, or null when it is an ordinary tool call.
@@ -592,70 +593,13 @@ export function TodoList({ items }: { items: TaskListItem[] }) {
   );
 }
 
-function ImageFullscreen({ src, onClose }: { src: string; onClose: () => void }) {
-  useEffect(() => {
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", handleKey);
-    return () => window.removeEventListener("keydown", handleKey);
-  }, [onClose]);
-
-  return (
-    <div
-      onClick={onClose}
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 9999,
-        background: "var(--overlay-bg)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        cursor: "zoom-out",
-      }}
-    >
-      <button
-        onClick={onClose}
-        style={{
-          position: "absolute",
-          top: 16,
-          right: 16,
-          background: "var(--surface)",
-          border: "1px solid var(--border)",
-          borderRadius: 8,
-          padding: 6,
-          cursor: "pointer",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          zIndex: 1,
-        }}
-      >
-        <X size={18} style={{ color: "var(--text)" }} />
-      </button>
-      <img
-        src={src}
-        alt="Full size"
-        onClick={(e) => e.stopPropagation()}
-        style={{
-          maxWidth: "90vw",
-          maxHeight: "90vh",
-          objectFit: "contain",
-          borderRadius: 8,
-          cursor: "default",
-        }}
-      />
-    </div>
-  );
-}
-
 export function ImageThumbnails({ imageIds }: { imageIds: string[] }) {
-  const [fullscreenSrc, setFullscreenSrc] = useState<string | null>(null);
+  const [openIndex, setOpenIndex] = useState<number | null>(null);
+  const items = useMemo(() => imageIds.map((id) => ({ src: `/api/images/${id}`, alt: "Attached image" })), [imageIds]);
 
   return (
     <>
-      {fullscreenSrc && <ImageFullscreen src={fullscreenSrc} onClose={() => setFullscreenSrc(null)} />}
+      {openIndex !== null && <ImageLightbox items={items} startIndex={openIndex} onClose={() => setOpenIndex(null)} />}
       <div
         style={{
           display: "flex",
@@ -664,21 +608,26 @@ export function ImageThumbnails({ imageIds }: { imageIds: string[] }) {
           marginTop: 8,
         }}
       >
-        {imageIds.map((id) => (
-          <img
-            key={id}
-            src={`/api/images/${id}`}
-            alt="Attached image"
-            onClick={() => setFullscreenSrc(`/api/images/${id}`)}
-            style={{
-              maxHeight: 200,
-              maxWidth: 300,
-              borderRadius: 8,
-              objectFit: "cover",
-              cursor: "zoom-in",
-              border: "1px solid var(--border)",
-            }}
-          />
+        {items.map((item, i) => (
+          <button
+            key={imageIds[i]}
+            type="button"
+            onClick={() => setOpenIndex(i)}
+            aria-label={imageIds.length > 1 ? `Open image ${i + 1} of ${imageIds.length}` : "Open image"}
+            style={{ padding: 0, border: "none", background: "none", borderRadius: 8, cursor: "zoom-in", lineHeight: 0 }}
+          >
+            <img
+              src={item.src}
+              alt={item.alt}
+              style={{
+                maxHeight: 200,
+                maxWidth: 300,
+                borderRadius: 8,
+                objectFit: "cover",
+                border: "1px solid var(--border)",
+              }}
+            />
+          </button>
         ))}
       </div>
     </>
