@@ -1,4 +1,5 @@
 import {
+  memo,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -42,6 +43,12 @@ interface ImageLightboxProps {
   items: LightboxItem[];
   startIndex: number;
   onClose: () => void;
+  /**
+   * Where focus goes on close. Undefined: whatever was focused when the
+   * viewer opened — which is not always the trigger, since Safari does not
+   * focus a button on click. Null: nowhere (an open nobody asked for).
+   */
+  returnFocusTo?: HTMLElement | null;
 }
 
 /**
@@ -103,7 +110,7 @@ const stopPropagation = (e: SyntheticEvent) => e.stopPropagation();
  * cannot reach handlers on the message bubble that opened it (React
  * propagates portal events through the component tree).
  */
-export default function ImageLightbox({ items, startIndex, onClose }: ImageLightboxProps) {
+function ImageLightbox({ items, startIndex, onClose, returnFocusTo }: ImageLightboxProps) {
   const count = items.length;
   const [rawIndex, setIndex] = useState(() => Math.max(0, startIndex));
   // `items` can shrink under an open viewer; every read goes through this
@@ -257,11 +264,13 @@ export default function ImageLightbox({ items, startIndex, onClose }: ImageLight
   }, []);
 
   useEffect(() => {
-    const previouslyFocused = document.activeElement;
+    const previouslyFocused = returnFocusTo === undefined ? document.activeElement : returnFocusTo;
     closeButtonRef.current?.focus();
     return () => {
-      if (previouslyFocused instanceof HTMLElement && previouslyFocused.isConnected) previouslyFocused.focus();
+      if (previouslyFocused instanceof HTMLElement && previouslyFocused.isConnected) previouslyFocused.focus({ preventScroll: true });
     };
+    // Read once, at open: a later change of target must not move focus mid-view.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -734,3 +743,6 @@ const visuallyHidden: CSSProperties = {
   clip: "rect(0 0 0 0)",
   whiteSpace: "nowrap",
 };
+
+/** Memoized: a parent that re-renders per streamed token must not re-render an open viewer. */
+export default memo(ImageLightbox);

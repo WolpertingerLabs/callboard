@@ -13,7 +13,8 @@ import { copyToClipboard } from "../utils/clipboard";
 import { markdownToHtml } from "../utils/markdownToHtml";
 import { formatBytes } from "../utils/formatBytes";
 import { getToolSummary, getToolDisplayName } from "./toolFormatting";
-import ImageLightbox from "./gallery/ImageLightbox";
+import ImageLightbox, { type LightboxItem } from "./gallery/ImageLightbox";
+import { useGalleryItem } from "./gallery/ChatGallery";
 
 /**
  * The task list this message carries, or null when it is an ordinary tool call.
@@ -593,6 +594,11 @@ export function TodoList({ items }: { items: TaskListItem[] }) {
   );
 }
 
+/**
+ * A message's (or tool result's) attached images. Inside a chat each one is
+ * part of the chat-wide gallery, so the viewer swipes across messages; with no
+ * `ChatGalleryProvider` above, they open a viewer of just this message's images.
+ */
 export function ImageThumbnails({ imageIds }: { imageIds: string[] }) {
   const [openIndex, setOpenIndex] = useState<number | null>(null);
   const items = useMemo(() => imageIds.map((id) => ({ src: `/api/images/${id}`, alt: "Attached image" })), [imageIds]);
@@ -609,28 +615,41 @@ export function ImageThumbnails({ imageIds }: { imageIds: string[] }) {
         }}
       >
         {items.map((item, i) => (
-          <button
+          <ImageThumbnail
             key={imageIds[i]}
-            type="button"
-            onClick={() => setOpenIndex(i)}
-            aria-label={imageIds.length > 1 ? `Open image ${i + 1} of ${imageIds.length}` : "Open image"}
-            style={{ padding: 0, border: "none", background: "none", borderRadius: 8, cursor: "zoom-in", lineHeight: 0 }}
-          >
-            <img
-              src={item.src}
-              alt={item.alt}
-              style={{
-                maxHeight: 200,
-                maxWidth: 300,
-                borderRadius: 8,
-                objectFit: "cover",
-                border: "1px solid var(--border)",
-              }}
-            />
-          </button>
+            item={item}
+            label={imageIds.length > 1 ? `Open image ${i + 1} of ${imageIds.length}` : "Open image"}
+            onOpenLocal={() => setOpenIndex(i)}
+          />
         ))}
       </div>
     </>
+  );
+}
+
+function ImageThumbnail({ item, label, onOpenLocal }: { item: LightboxItem; label: string; onOpenLocal: () => void }) {
+  const ref = useRef<HTMLButtonElement>(null);
+  const openInGallery = useGalleryItem(ref, item);
+  return (
+    <button
+      ref={ref}
+      type="button"
+      onClick={openInGallery ? () => openInGallery() : onOpenLocal}
+      aria-label={label}
+      style={{ padding: 0, border: "none", background: "none", borderRadius: 8, cursor: "zoom-in", lineHeight: 0 }}
+    >
+      <img
+        src={item.src}
+        alt={item.alt}
+        style={{
+          maxHeight: 200,
+          maxWidth: 300,
+          borderRadius: 8,
+          objectFit: "cover",
+          border: "1px solid var(--border)",
+        }}
+      />
+    </button>
   );
 }
 

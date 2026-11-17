@@ -90,6 +90,7 @@ import {
 import MessageBubble, { AttachedFileChips, TEAM_COLORS } from "../components/MessageBubble";
 import ProviderBadge from "../components/ProviderBadge";
 import ToolCallBubble from "../components/ToolCallBubble";
+import { ChatGalleryProvider } from "../components/gallery/ChatGallery";
 import PromptInput, { parseLeadingCommand, type ComposerValueUpdate } from "../components/PromptInput";
 import FeedbackPanel, { type PendingAction } from "../components/FeedbackPanel";
 import ConfirmModal from "../components/ConfirmModal";
@@ -272,6 +273,9 @@ function InFlightBubbles({ messages }: { messages: InFlightMessage[] }) {
                 {message.imageCount} image{message.imageCount === 1 ? "" : "s"}
               </div>
             )}
+            {/* Deliberately not in the chat image gallery: these are local
+                previews of a message still being sent, and they are replaced
+                by gallery-registered ImageThumbnails once it is persisted. */}
             {message.imageUrls.length > 0 && (
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
                 {message.imageUrls.map((url) => (
@@ -3791,8 +3795,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 )}
               </>
             ) : (
-              /* EXISTING CHAT MODE: Message list */
-              <>
+              /* EXISTING CHAT MODE: Message list. One image gallery spans the
+                 whole transcript, so the viewer swipes across messages. */
+              <ChatGalleryProvider resetKey={id}>
                 {messages.length === 0 && !streaming && (
                   <div
                     style={{
@@ -3903,7 +3908,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   </ThinkingIndicator>
                 )}
                 <div ref={bottomRef} />
-              </>
+              </ChatGalleryProvider>
             )}
           </div>
         )}
