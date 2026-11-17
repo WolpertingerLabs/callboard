@@ -74,18 +74,22 @@ function prepareTable(table: Element): void {
 
   const lengthOf = (cell: Element) => cell.children.map(textOf).join('').trim().length;
   const longest: number[] = [];
-  const hasSpace: boolean[] = [];
+  // Whether a column is all short single tokens is a property of its VALUES:
+  // a "CLI flag" header over `--dry-run` cells must not disqualify it.
+  const bodyLongest: number[] = [];
+  const bodyHasSpace: boolean[] = [];
   const bodyFilled: number[] = [];
   const bodyLong: number[] = [];
   for (const row of allRows) {
     childElements(row, 'th', 'td').forEach((cell, i) => {
       longest[i] = Math.max(longest[i] ?? 0, lengthOf(cell));
-      if (/\s/.test(cell.children.map(textOf).join('').trim())) hasSpace[i] = true;
     });
   }
   for (const row of bodyRows) {
     childElements(row, 'th', 'td').forEach((cell, i) => {
       const length = lengthOf(cell);
+      bodyLongest[i] = Math.max(bodyLongest[i] ?? 0, length);
+      if (/\s/.test(cell.children.map(textOf).join('').trim())) bodyHasSpace[i] = true;
       if (length === 0) return;
       bodyFilled[i] = (bodyFilled[i] ?? 0) + 1;
       if (length >= WIDE_COLUMN_CHARS) bodyLong[i] = (bodyLong[i] ?? 0) + 1;
@@ -93,7 +97,7 @@ function prepareTable(table: Element): void {
   }
   const columns = longest.length;
   const wide = longest.map((length) => length >= WIDE_COLUMN_CHARS);
-  const nowrap = longest.map((length, i) => length <= NOWRAP_COLUMN_CHARS && !hasSpace[i]);
+  const nowrap = longest.map((_, i) => bodyLongest[i] !== undefined && bodyLongest[i] <= NOWRAP_COLUMN_CHARS && !bodyHasSpace[i]);
   const proseCount = longest.filter((_, i) => (bodyLong[i] ?? 0) > 0 && (bodyLong[i] ?? 0) >= PROSE_CELL_SHARE * (bodyFilled[i] ?? 0)).length;
   // A header-only table must not stack: its header is hidden in the stacked
   // layout, so it would render as nothing (briefly true of every streamed table).
@@ -102,11 +106,12 @@ function prepareTable(table: Element): void {
   for (const row of allRows) {
     childElements(row, 'th', 'td').forEach((cell, i) => {
       if (wide[i]) cell.properties.dataWide = '';
-      if (nowrap[i]) cell.properties.dataNowrap = '';
     });
   }
+  // Body cells only: a header wraps at its spaces like any other heading.
   for (const row of bodyRows) {
     childElements(row, 'th', 'td').forEach((cell, i) => {
+      if (nowrap[i]) cell.properties.dataNowrap = '';
       cell.properties.dataLabel = labels[i] ?? '';
     });
   }

@@ -36,10 +36,13 @@ function nodeText(node: unknown): string {
  * focusable, named region, so keyboard users can scroll it in browsers that do
  * not make scroll containers focusable (Safari). A table that fits stays out of
  * the tab order and out of the landmark list; a transcript can hold dozens.
+ * A focused wrapper keeps its attributes until blur, so widening the pane
+ * under it does not drop focus to <body>.
  */
 function ScrollableTable({ tableProps, children }: { tableProps: ComponentProps<'table'>; children: ReactNode }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [overflows, setOverflows] = useState(false);
+  const [focused, setFocused] = useState(false);
 
   useLayoutEffect(() => {
     const wrap = wrapRef.current;
@@ -59,7 +62,9 @@ function ScrollableTable({ tableProps, children }: { tableProps: ComponentProps<
       ref={wrapRef}
       className="md-table-wrap"
       data-stack={'data-stack' in tableProps ? '' : undefined}
-      {...(overflows && { role: 'region', 'aria-label': 'Scrollable table', tabIndex: 0 })}
+      onFocus={(e) => e.target === e.currentTarget && setFocused(true)}
+      onBlur={(e) => e.target === e.currentTarget && setFocused(false)}
+      {...((overflows || focused) && { role: 'region', 'aria-label': 'Scrollable table', tabIndex: 0 })}
     >
       <table className="md-table" {...tableProps}>
         {children}

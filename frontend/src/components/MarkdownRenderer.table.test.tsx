@@ -8,7 +8,7 @@
  * CSSOM for the container query, which jsdom parses but never evaluates.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render } from "@testing-library/react";
+import { act, cleanup, render } from "@testing-library/react";
 import MarkdownRenderer from "./MarkdownRenderer";
 import { injectCss, readCss } from "../testing/cssCascade";
 
@@ -31,7 +31,7 @@ const table = (header: string[], ...rows: string[][]) =>
 function renderTables(markdown: string) {
   const { container } = render(<MarkdownRenderer content={markdown} />);
   const tables = [...container.querySelectorAll("table")];
-  return { container, tables, table: tables[0], wrap: container.querySelector(".md-table-wrap")! };
+  return { container, tables, table: tables[0], wrap: container.querySelector<HTMLElement>(".md-table-wrap")! };
 }
 
 const labelsOf = (t: HTMLTableElement) => [...t.querySelectorAll("tbody tr:first-child td")].map((td) => td.getAttribute("data-label"));
@@ -51,14 +51,37 @@ describe("MarkdownRenderer table markup", () => {
     // jsdom does no layout, so both widths read 0; fake an overflowing wrapper.
     const scrollWidth = vi.spyOn(HTMLElement.prototype, "scrollWidth", "get").mockReturnValue(900);
     const clientWidth = vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(300);
+    // jsdom has no ResizeObserver; capture callbacks so a resize can be fired.
+    const resizeCallbacks: (() => void)[] = [];
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(cb: () => void) {
+          resizeCallbacks.push(cb);
+        }
+        observe() {}
+        disconnect() {}
+      },
+    );
     try {
       const { wrap } = renderTables(NUMERIC);
       expect(wrap.getAttribute("role")).toBe("region");
       expect(wrap.getAttribute("aria-label")).toBe("Scrollable table");
       expect(wrap.getAttribute("tabindex")).toBe("0");
+
+      // Stops overflowing while focused (pane widened): keeps focus until blur.
+      wrap.focus();
+      scrollWidth.mockReturnValue(300);
+      act(() => resizeCallbacks.forEach((cb) => cb()));
+      expect(document.activeElement).toBe(wrap);
+      expect(wrap.getAttribute("tabindex")).toBe("0");
+      act(() => wrap.blur());
+      expect(wrap.hasAttribute("tabindex")).toBe(false);
+      expect(wrap.hasAttribute("role")).toBe(false);
     } finally {
       scrollWidth.mockRestore();
       clientWidth.mockRestore();
+      vi.unstubAllGlobals();
     }
   });
 
@@ -74,12 +97,21 @@ describe("MarkdownRenderer table markup", () => {
   it("marks long columns wide and short-value columns nowrap", () => {
     const { table: t } = renderTables(PROSE);
     expect(flagsOf(t, "data-wide")).toEqual([true, false, true]);
-    expect(flagsOf(t, "data-nowrap")).toEqual([false, true, false]);
+    const bodyNowrap = [...t.querySelectorAll("tbody tr:first-child td")].map((td) => td.hasAttribute("data-nowrap"));
+    expect(bodyNowrap).toEqual([false, true, false]);
   });
 
   it("keeps nowrap for single tokens, not short phrases that can wrap at a space", () => {
     const { table: t } = renderTables(table(["Feature", "Status", "Flag"], ["Dark mode toggle", "Needs review", "`--dry-run`"], ["Tables", "Done", "`-f`"]));
-    expect(flagsOf(t, "data-nowrap")).toEqual([false, false, true]);
+    const bodyNowrap = [...t.querySelectorAll("tbody tr:first-child td")].map((td) => td.hasAttribute("data-nowrap"));
+    expect(bodyNowrap).toEqual([false, false, true]);
+  });
+
+  it("judges nowrap from body cells only, and never sets it on headers", () => {
+    const { table: t } = renderTables(table(["CLI flag", "Minimum supported version"], ["`--dry-run`", "v1.2.3"], ["`-f`", "v2"]));
+    const bodyFlags = [...t.querySelectorAll("tbody tr:first-child td")].map((td) => td.hasAttribute("data-nowrap"));
+    expect(bodyFlags).toEqual([true, true]);
+    expect(flagsOf(t, "data-nowrap")).toEqual([false, false]);
   });
 
   it("counts visible text only: a link's href does not make a column wide", () => {
@@ -205,8 +237,9 @@ describe("MarkdownRenderer table styles", () => {
         inner.find((r) => r.selectorText.split(/,\s*/).includes(selector) && r.style.getPropertyValue(property))?.style.getPropertyValue(property);
       expect(declared(".md-table[data-stack] tr", "display")).toBe("block");
       expect(declared(".md-table[data-stack] td", "white-space")).toBe("normal");
-      // Short-value columns may wrap at phone width in every table, not only stacked ones.
-      expect(declared(".md-table td[data-nowrap]", "white-space")).toBe("normal");
+      // Phone widths make room for a nowrap column instead of letting it wrap.
+      expect(declared(".md-table td[data-nowrap]", "white-space")).toBeUndefined();
+      expect(declared(".md-table td[data-wide]", "min-width")).toBe("8em");
       expect(declared(".md-table[data-stack] thead", "position")).toBe("absolute");
       // Read from the source: jsdom's CSSOM keeps only one of the two
       // `content` declarations, and which one is not what a browser does.

@@ -69,7 +69,6 @@
 }
 
 /* Short-value columns (flags, versions, numbers) never split mid-value. */
-.md-table th[data-nowrap],
 .md-table td[data-nowrap] {
   white-space: nowrap;
 }
@@ -79,12 +78,19 @@
  * rather than the viewport, so a narrow split pane gets it on desktop too.
  * Tables without `data-stack` keep the scrolling grid. */
 @container chat-layout (max-width: 620px) {
-  /* On a phone, fitting beats keeping a flag on one line: a `Flag |
-   * Description` table does not stack, and a nowrap flag column plus the
-   * description's 12em floor overflows ~290px. Words still never split. */
-  .md-table th[data-nowrap],
-  .md-table td[data-nowrap] {
-    white-space: normal;
+  /* Make room for grids that do not stack, typically `Flag | Description`:
+   * a nowrap flag column beside the long column's 12em floor overflows a
+   * phone. Lower the floor and trim the padding rather than letting the flag
+   * break at its hyphen. */
+  .md-table th,
+  .md-table td {
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+
+  .md-table th[data-wide],
+  .md-table td[data-wide] {
+    min-width: 8em;
   }
 
   .md-table-wrap[data-stack] {
