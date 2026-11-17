@@ -16,6 +16,18 @@
   border-radius: 8px;
 }
 
+/* The wrapper is focusable so the keyboard can scroll it. */
+.md-table-wrap:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (forced-colors: active) {
+  .md-table-wrap:focus-visible {
+    outline: 2px solid Highlight;
+  }
+}
+
 .md-table {
   min-width: 100%;
   border-collapse: collapse;
@@ -46,20 +58,27 @@
   background: var(--bg-secondary);
 }
 
-.md-table tbody tr:nth-child(even) {
-  background: color-mix(in srgb, var(--bg-secondary) 45%, transparent);
-}
-
+/* Long-text columns: a readable floor, and permission to break an unbreakable
+ * token (URL, path, hash) anywhere — `break-word` alone does not lower a
+ * cell's min-content width, so one long URL would otherwise set the column
+ * to its full length. The 12em floor keeps this from re-crushing the column. */
 .md-table th[data-wide],
 .md-table td[data-wide] {
   min-width: 12em;
+  overflow-wrap: anywhere;
+}
+
+/* Short-value columns (flags, versions, numbers) never split mid-value. */
+.md-table th[data-nowrap],
+.md-table td[data-nowrap] {
+  white-space: nowrap;
 }
 
 /* Narrow layout: a prose-heavy table re-flows into one card per row, each
  * cell captioned with its column header. Keyed on the chat column's width
  * rather than the viewport, so a narrow split pane gets it on desktop too.
  * Tables without `data-stack` keep the scrolling grid. */
-@container chat-layout (max-width: 600px) {
+@container chat-layout (max-width: 620px) {
   .md-table-wrap[data-stack] {
     border: none;
     border-radius: 0;
@@ -89,12 +108,12 @@
     padding: 4px 0;
     border: 1px solid var(--border);
     border-radius: 8px;
-    background: none;
   }
 
   .md-table[data-stack] td {
     padding: 4px 12px;
     border: none;
+    white-space: normal;
     /* GFM column alignment arrives as an inline style; a right-aligned value
      * under a left-aligned caption reads as a mistake. */
     text-align: start !important;
@@ -104,8 +123,13 @@
     border-top: 1px solid var(--border-light);
   }
 
+  /* The caption is visual only (`/ ""` is its alt text): the cell's explicit
+   * role already gives screen readers the column header, and without the alt
+   * text Chromium folds the caption into the cell's name, reading it twice.
+   * The first declaration is the fallback for engines without the syntax. */
   .md-table[data-stack] td:not([data-label=""])::before {
     content: attr(data-label);
+    content: attr(data-label) / "";
     display: block;
     margin-bottom: 1px;
     font-size: 0.8em;

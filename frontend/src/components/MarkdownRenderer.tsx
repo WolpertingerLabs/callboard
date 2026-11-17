@@ -80,8 +80,16 @@ const components: Components = {
   // Tables scroll sideways inside their own wrapper rather than squeezing
   // columns; prose-heavy ones re-flow into cards at narrow widths. Layout
   // lives in MarkdownRenderer.css, driven by attributes markdownTables.ts adds.
+  // The wrapper is a focusable, named region so keyboard users can scroll a
+  // wide table in browsers that do not make scroll containers focusable.
   table: ({ children, node: _node, ...props }) => (
-    <div className="md-table-wrap" data-stack={'data-stack' in props ? '' : undefined}>
+    <div
+      className="md-table-wrap"
+      role="region"
+      aria-label="Table"
+      tabIndex={0}
+      data-stack={'data-stack' in props ? '' : undefined}
+    >
       <table className="md-table" {...props}>
         {children}
       </table>
