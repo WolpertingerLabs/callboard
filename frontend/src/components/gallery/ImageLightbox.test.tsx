@@ -414,6 +414,42 @@ describe("ImageLightbox", () => {
     expect(screen.getByText("1 / 2")).toBeTruthy();
   });
 
+  it("does not jump back to the old index when the list shrinks and grows again", () => {
+    const onClose = vi.fn();
+    const { rerender } = render(<ImageLightbox items={ITEMS} startIndex={2} onClose={onClose} />);
+    rerender(<ImageLightbox items={ITEMS.slice(0, 2)} startIndex={2} onClose={onClose} />);
+    expect(screen.getByText("2 / 2")).toBeTruthy();
+    rerender(<ImageLightbox items={ITEMS} startIndex={2} onClose={onClose} />);
+    expect(screen.getByText("2 / 3")).toBeTruthy();
+  });
+
+  it("a pointer whose capture is lost without a pointerup cannot wedge later gestures", () => {
+    renderLightbox(0);
+    const img = currentImage("Alpha");
+    // A pinch whose pointers never get a pointerup or pointercancel.
+    down(img, 5, 150, 400);
+    down(img, 6, 250, 400);
+    fireEvent.lostPointerCapture(surface(), { pointerId: 5, pointerType: "touch" });
+    fireEvent.lostPointerCapture(surface(), { pointerId: 6, pointerType: "touch" });
+    // A later one-finger swipe is a swipe, not the third finger of a pinch.
+    drag({ x: 300, y: 200 }, { x: 100, y: 200 });
+    expect(screen.getByText("2 / 3")).toBeTruthy();
+  });
+
+  it("a primary pointerdown drops pointers that leaked from an earlier sequence", () => {
+    renderLightbox(0);
+    const img = currentImage("Alpha");
+    down(img, 5, 150, 400);
+    down(img, 6, 250, 400);
+    // No up, cancel or lost capture for 5 and 6. The next touch sequence
+    // starts with a primary pointer.
+    fireEvent.pointerDown(surface(), { pointerId: 7, pointerType: "touch", clientX: 300, clientY: 200, isPrimary: true });
+    move(7, 200, 200);
+    move(7, 100, 200);
+    up(7, 100, 200);
+    expect(screen.getByText("2 / 3")).toBeTruthy();
+  });
+
   it("sits above other layers and owns every touch on the dialog", () => {
     renderLightbox(0);
     const dialog = screen.getByRole("dialog");

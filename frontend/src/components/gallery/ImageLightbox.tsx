@@ -109,6 +109,10 @@ export default function ImageLightbox({ items, startIndex, onClose }: ImageLight
   // `items` can shrink under an open viewer; every read goes through this
   // clamped value so the counter, the strip and prev/next never point past the end.
   const index = Math.min(rawIndex, Math.max(0, count - 1));
+  // …and the state itself snaps to the clamp, so a list that shrinks and then
+  // grows again stays where the user is instead of jumping back to the old
+  // index. Adjusted during render (guarded, so it settles in one pass).
+  if (rawIndex !== index) setIndex(index);
 
   const surfaceRef = useRef<HTMLDivElement>(null);
   const stripRef = useRef<HTMLDivElement>(null);
@@ -348,6 +352,10 @@ export default function ImageLightbox({ items, startIndex, onClose }: ImageLight
 
   const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (e.pointerType === "mouse" && e.button !== 0) return;
+    // A primary pointer starts a fresh sequence: no other pointer can be down,
+    // so anything still in the map leaked (an up or cancel the browser never
+    // delivered). Drop it rather than let it turn every later touch into a pinch.
+    if (e.isPrimary) pointers.current.clear();
     try {
       e.currentTarget.setPointerCapture?.(e.pointerId);
     } catch {
@@ -528,6 +536,10 @@ export default function ImageLightbox({ items, startIndex, onClose }: ImageLight
           onPointerMove={onPointerMove}
           onPointerUp={(e) => endPointer(e, false)}
           onPointerCancel={(e) => endPointer(e, true)}
+          // Capture lost without a pointerup or pointercancel (the element was
+          // re-parented, the browser revoked it): treat it as a cancel. After a
+          // normal pointerup this is a no-op, as the pointer is already gone.
+          onLostPointerCapture={(e) => endPointer(e, true)}
           onClick={onSurfaceClick}
           style={{
             position: "absolute",
