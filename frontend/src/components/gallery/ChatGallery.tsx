@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import ImageLightbox, { type LightboxItem } from "./ImageLightbox";
 
 /**
@@ -15,7 +15,9 @@ import ImageLightbox, { type LightboxItem } from "./ImageLightbox";
  * Order is the DOM's, sorted when the viewer opens — no message-index
  * bookkeeping, and a thumbnail and a rendered image in the same message come
  * out in the order they are drawn. That order is snapshotted for the life of
- * the viewer, so an image streaming in cannot shift the one being looked at.
+ * the viewer, so an image streaming in cannot shift the one being looked at,
+ * and an auto-opening (display_mode: "fullscreen") image that streams in
+ * while the viewer is open does not take it over.
  *
  * Only mounted images take part. The transcript is not virtualized today; if
  * it ever is, images scrolled out of the DOM will simply be absent from the
@@ -29,8 +31,12 @@ interface GalleryEntry extends LightboxItem {
 interface GalleryApi {
   /** Add an image; returns its unregister function. */
   register(entry: GalleryEntry): () => void;
-  /** Open the viewer at the image registered for `el`. */
-  open(el: HTMLElement): void;
+  /**
+   * Open the viewer at the image registered for `el`. `auto` marks an open
+   * nobody tapped for (display_mode: "fullscreen"): it yields to a viewer that
+   * is already open, and returns focus nowhere on close.
+   */
+  open(el: HTMLElement, opts?: { auto?: boolean }): void;
 }
 
 const GalleryContext = createContext<GalleryApi | null>(null);
@@ -38,9 +44,16 @@ const GalleryContext = createContext<GalleryApi | null>(null);
 interface GallerySession {
   /** Bumped per open so a second open remounts the viewer at its own start index. */
   id: number;
-  items: LightboxItem[];
+  /** The image the viewer opens at. */
+  el: HTMLElement;
+  /**
+   * The snapshot, or null while the open is still a request: the list is
+   * built in a later commit than the one that asked for it (see below).
+   */
+  items: LightboxItem[] | null;
   startIndex: number;
-  returnFocusTo: HTMLElement | null;
+  /** See `ImageLightbox`'s prop: undefined restores to what was focused, null to nothing. */
+  returnFocusTo: HTMLElement | null | undefined;
 }
 
 /** Entries in document order. */
@@ -50,18 +63,50 @@ export function sortByDocumentOrder<T extends { el: Node }>(entries: T[]): T[] {
 
 const FOCUSABLE = "button, [href], [tabindex]:not([tabindex='-1'])";
 
-/** The element to return focus to: the focused control inside the image site, else its own first control. */
-function focusTarget(el: HTMLElement): HTMLElement | null {
+/**
+ * The element to return focus to: the focused control inside the image site,
+ * else its own first control, else (undefined) whatever was focused.
+ */
+function focusTarget(el: HTMLElement): HTMLElement | undefined {
   const active = document.activeElement;
   if (active instanceof HTMLElement && el.contains(active)) return active;
   if (el.matches(FOCUSABLE)) return el;
-  return el.querySelector<HTMLElement>(FOCUSABLE);
+  return el.querySelector<HTMLElement>(FOCUSABLE) ?? undefined;
 }
 
-export function ChatGalleryProvider({ children }: { children: ReactNode }) {
+export function ChatGalleryProvider({ children, resetKey }: { children: ReactNode; resetKey?: unknown }) {
   const entries = useRef(new Map<HTMLElement, GalleryEntry>());
   const nextId = useRef(0);
   const [session, setSession] = useState<GallerySession | null>(null);
+
+  // The provider outlives a chat switch (the page reuses one Chat instance
+  // across /chat/:id), so the open viewer — still showing the old chat's
+  // images — is closed when the chat changes. Adjusted during render rather
+  // than in an effect so the old viewer is never painted over the new chat.
+  const [prevResetKey, setPrevResetKey] = useState(resetKey);
+  if (prevResetKey !== resetKey) {
+    setPrevResetKey(resetKey);
+    setSession(null);
+  }
+
+  // Build the snapshot one commit after the request. An image that opens
+  // itself on mount does so from its own mount effect, before the effects of
+  // the images after it have registered them; React may also run a state
+  // updater eagerly at the setState call, so the list can't be taken there
+  // either. By this layout effect every image of the requesting commit is in
+  // `entries`, and it runs before paint, so a tap still opens in one frame.
+  useLayoutEffect(() => {
+    if (!session || session.items) return;
+    const sorted = sortByDocumentOrder([...entries.current.values()]);
+    const startIndex = sorted.findIndex((e) => e.el === session.el);
+    setSession(
+      startIndex < 0 ? null : { ...session, startIndex, items: sorted.map(({ src, alt, caption, referrerPolicy }) => ({ src, alt, caption, referrerPolicy })) },
+    );
+  }, [session]);
+
+  // Stable, with the viewer memoized: the transcript re-renders per streamed
+  // token, and that must not re-render an open viewer mid-pinch.
+  const close = useCallback(() => setSession(null), []);
 
   const api = useMemo<GalleryApi>(
     () => ({
@@ -73,23 +118,13 @@ export function ChatGalleryProvider({ children }: { children: ReactNode }) {
           if (entries.current.get(entry.el) === entry) entries.current.delete(entry.el);
         };
       },
-      open(el) {
-        const returnFocusTo = focusTarget(el);
-        // The snapshot is taken in the updater, i.e. at the next render — by
-        // then every effect of the current commit has run, so an image that
-        // opens itself on mount (display_mode: "fullscreen") sees siblings
-        // that mounted alongside it.
-        setSession((prev) => {
-          const sorted = sortByDocumentOrder([...entries.current.values()]);
-          const startIndex = sorted.findIndex((e) => e.el === el);
-          if (startIndex < 0) return prev;
-          return {
-            id: ++nextId.current,
-            items: sorted.map(({ src, alt, caption, referrerPolicy }) => ({ src, alt, caption, referrerPolicy })),
-            startIndex,
-            returnFocusTo,
-          };
-        });
+      open(el, opts) {
+        const auto = !!opts?.auto;
+        // An auto-open restores focus nowhere: what was focused is usually the
+        // composer, and focusing it on close would pop the phone keyboard.
+        const returnFocusTo = auto ? null : focusTarget(el);
+        const id = ++nextId.current;
+        setSession((prev) => (auto && prev?.items ? prev : { id, el, items: null, startIndex: 0, returnFocusTo }));
       },
     }),
     [],
@@ -98,14 +133,8 @@ export function ChatGalleryProvider({ children }: { children: ReactNode }) {
   return (
     <GalleryContext.Provider value={api}>
       {children}
-      {session && (
-        <ImageLightbox
-          key={session.id}
-          items={session.items}
-          startIndex={session.startIndex}
-          returnFocusTo={session.returnFocusTo}
-          onClose={() => setSession(null)}
-        />
+      {session?.items && (
+        <ImageLightbox key={session.id} items={session.items} startIndex={session.startIndex} returnFocusTo={session.returnFocusTo} onClose={close} />
       )}
     </GalleryContext.Provider>
   );
@@ -119,14 +148,16 @@ export function useHasChatGallery(): boolean {
 /**
  * Register the element behind `ref` as one image of the chat gallery.
  *
- * Pass `null` for `item` to stay out of it — an image that has not loaded,
- * failed, or is still behind MediaRenderer's untrusted-content gate.
+ * Pass `null` for `item` to stay out of it — an image that failed to load, or
+ * is still behind MediaRenderer's untrusted-content gate. An image that is
+ * still loading registers: the viewer loads it itself.
  *
- * Returns the function that opens the gallery at this image, or `null` when
- * there is no `ChatGalleryProvider` above (or `item` is null); callers then
- * fall back to a viewer of their own.
+ * Returns the function that opens the gallery at this image (`"auto"` for an
+ * open nobody tapped for — see `GalleryApi.open`), or `null` when there is no
+ * `ChatGalleryProvider` above (or `item` is null); callers then fall back to a
+ * viewer of their own.
  */
-export function useGalleryItem(ref: RefObject<HTMLElement>, item: LightboxItem | null): (() => void) | null {
+export function useGalleryItem(ref: RefObject<HTMLElement>, item: LightboxItem | null): ((mode?: "auto") => void) | null {
   const api = useContext(GalleryContext);
   const enabled = item !== null;
   const src = item?.src;
@@ -143,8 +174,8 @@ export function useGalleryItem(ref: RefObject<HTMLElement>, item: LightboxItem |
   return useMemo(
     () =>
       api && enabled
-        ? () => {
-            if (ref.current) api.open(ref.current);
+        ? (mode?: "auto") => {
+            if (ref.current) api.open(ref.current, { auto: mode === "auto" });
           }
         : null,
     [api, enabled, ref],

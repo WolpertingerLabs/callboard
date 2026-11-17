@@ -273,6 +273,9 @@ function InFlightBubbles({ messages }: { messages: InFlightMessage[] }) {
                 {message.imageCount} image{message.imageCount === 1 ? "" : "s"}
               </div>
             )}
+            {/* Deliberately not in the chat image gallery: these are local
+                previews of a message still being sent, and they are replaced
+                by gallery-registered ImageThumbnails once it is persisted. */}
             {message.imageUrls.length > 0 && (
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
                 {message.imageUrls.map((url) => (
@@ -3794,7 +3797,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             ) : (
               /* EXISTING CHAT MODE: Message list. One image gallery spans the
                  whole transcript, so the viewer swipes across messages. */
-              <ChatGalleryProvider>
+              <ChatGalleryProvider resetKey={id}>
                 {messages.length === 0 && !streaming && (
                   <div
                     style={{

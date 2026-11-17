@@ -634,7 +634,7 @@ function ImageThumbnail({ item, label, onOpenLocal }: { item: LightboxItem; labe
     <button
       ref={ref}
       type="button"
-      onClick={openInGallery ?? onOpenLocal}
+      onClick={openInGallery ? () => openInGallery() : onOpenLocal}
       aria-label={label}
       style={{ padding: 0, border: "none", background: "none", borderRadius: 8, cursor: "zoom-in", lineHeight: 0 }}
     >

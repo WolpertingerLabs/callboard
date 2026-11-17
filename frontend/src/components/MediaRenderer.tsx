@@ -58,11 +58,12 @@ export default function MediaRenderer({ data }: MediaRendererProps) {
 
   // display_mode "fullscreen" opens the gallery at this image as soon as it
   // can — on mount, or right after "View anyway" for a gated image — once.
+  // As an "auto" open it never takes over a viewer that is already open.
   const autoOpenPending = useRef(data.display_mode === "fullscreen" && inGallery);
   useEffect(() => {
     if (!autoOpenPending.current || !openInGallery) return;
     autoOpenPending.current = false;
-    openInGallery();
+    openInGallery("auto");
   }, [openInGallery]);
 
   const onLoad = () => setLoading(false);
@@ -169,7 +170,7 @@ export default function MediaRenderer({ data }: MediaRendererProps) {
             onError={onError}
             // Inline, a tap on the picture itself opens the gallery — the
             // fullscreen button is a small target on a phone.
-            onClick={!isModal && openInGallery ? openInGallery : undefined}
+            onClick={!isModal && openInGallery ? () => openInGallery() : undefined}
             style={{
               maxHeight,
               maxWidth,
@@ -279,7 +280,7 @@ export default function MediaRenderer({ data }: MediaRendererProps) {
             )}
             {renderMedia(false)}
             {/* Fullscreen button */}
-            {!loading && <FullscreenButton onClick={openInGallery ?? (() => setExpanded(true))} />}
+            {!loading && <FullscreenButton onClick={openInGallery ? () => openInGallery() : () => setExpanded(true)} />}
           </div>
 
           {/* Footer: filename, size, caption */}

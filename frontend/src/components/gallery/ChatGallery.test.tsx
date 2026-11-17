@@ -146,6 +146,37 @@ describe("ChatGalleryProvider", () => {
     expect(renders).toBe(before);
   });
 
+  it("closes the viewer when the chat changes", () => {
+    const { rerender } = render(
+      <ChatGalleryProvider resetKey="chat-b">
+        <ImageThumbnails imageIds={["b1", "b2"]} />
+      </ChatGalleryProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Open image 1 of 2" }));
+    expect(counter()).toBe("1 / 2");
+    rerender(
+      <ChatGalleryProvider resetKey="chat-a">
+        <ImageThumbnails imageIds={["a1"]} />
+      </ChatGalleryProvider>,
+    );
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("keeps the viewer open across re-renders of the same chat", () => {
+    const { rerender } = render(
+      <ChatGalleryProvider resetKey="chat-b">
+        <ImageThumbnails imageIds={["b1", "b2"]} />
+      </ChatGalleryProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Open image 1 of 2" }));
+    rerender(
+      <ChatGalleryProvider resetKey="chat-b">
+        <ImageThumbnails imageIds={["b1", "b2"]} />
+      </ChatGalleryProvider>,
+    );
+    expect(counter()).toBe("1 / 2");
+  });
+
   it("closes and opens again at a different image", () => {
     render(
       <Chat>
@@ -222,14 +253,53 @@ describe("MediaRenderer in the chat gallery", () => {
     expect(within(dialog()).queryByRole("button", { name: "Next image" })).toBeNull();
   });
 
-  it("display_mode fullscreen opens the gallery at that image, with its siblings", () => {
+  it("display_mode fullscreen opens the gallery at that image, with siblings before and after it", () => {
+    // The images after it register in effects that run after its own
+    // auto-open; the list must still include them.
     render(
       <Chat>
-        <ImageThumbnails imageIds={["upload"]} />
+        <ImageThumbnails imageIds={["before"]} />
         <MediaRenderer data={media({ display_mode: "fullscreen", caption: "Auto" })} />
+        <ImageThumbnails imageIds={["after1", "after2"]} />
+      </Chat>,
+    );
+    expect(counter()).toBe("2 / 4");
+    fireEvent.click(within(dialog()).getByRole("button", { name: "Next image" }));
+    expect(currentSrc()).toBe("/api/images/after1");
+  });
+
+  it("a fullscreen image that streams in does not take over an open viewer", () => {
+    const { rerender } = render(
+      <Chat>
+        <ImageThumbnails key="a" imageIds={["a", "b"]} />
+      </Chat>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Open image 2 of 2" }));
+    expect(counter()).toBe("2 / 2");
+    rerender(
+      <Chat>
+        <ImageThumbnails key="a" imageIds={["a", "b"]} />
+        <MediaRenderer key="m" data={media({ display_mode: "fullscreen", caption: "Late" })} />
       </Chat>,
     );
     expect(counter()).toBe("2 / 2");
+    expect(currentSrc()).toBe("/api/images/b");
+  });
+
+  it("closing an auto-opened viewer does not refocus the composer", () => {
+    render(
+      <>
+        <textarea aria-label="composer" autoFocus />
+        <Chat>
+          <MediaRenderer data={media({ display_mode: "fullscreen", caption: "Auto" })} />
+        </Chat>
+      </>,
+    );
+    // The composer had focus when the viewer opened itself.
+    expect(document.activeElement).toBe(within(dialog()).getByRole("button", { name: "Close image viewer" }));
+    fireEvent.click(within(dialog()).getByRole("button", { name: "Close image viewer" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).not.toBe(screen.getByLabelText("composer"));
   });
 
   it("video keeps the FullscreenFrame viewer", () => {
