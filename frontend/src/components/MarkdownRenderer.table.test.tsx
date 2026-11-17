@@ -239,7 +239,7 @@ describe("MarkdownRenderer table styles", () => {
       expect(declared(".md-table[data-stack] td", "white-space")).toBe("normal");
       // Phone widths make room for a nowrap column instead of letting it wrap.
       expect(declared(".md-table td[data-nowrap]", "white-space")).toBeUndefined();
-      expect(declared(".md-table td[data-wide]", "min-width")).toBe("8em");
+      expect(declared(".md-table td[data-wide]", "min-width")).toBe("7.5em");
       expect(declared(".md-table[data-stack] thead", "position")).toBe("absolute");
       // Read from the source: jsdom's CSSOM keeps only one of the two
       // `content` declarations, and which one is not what a browser does.

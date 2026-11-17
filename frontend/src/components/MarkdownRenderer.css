@@ -90,7 +90,7 @@
 
   .md-table th[data-wide],
   .md-table td[data-wide] {
-    min-width: 8em;
+    min-width: 7.5em;
   }
 
   .md-table-wrap[data-stack] {
