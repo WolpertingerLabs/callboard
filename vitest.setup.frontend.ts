@@ -16,8 +16,9 @@ import { beforeEach } from "vitest";
  * rather than by the threshold under test.
  *
  * jsdom's `MouseEvent` already carries `clientX`/`clientY` and the modifier
- * keys, so subclassing it and layering the two pointer-specific fields on top
- * is enough to make the whole gesture path genuinely testable.
+ * keys, so subclassing it and layering the pointer-specific fields on top
+ * is enough to make the whole gesture path genuinely testable. (`isPrimary`
+ * too: the image lightbox resets leaked pointers on a primary pointerdown.)
  *
  * `useLongPress.test.tsx` asserts this shim is live before it asserts anything
  * about thresholds — without that guard a green coordinate test proves nothing.
@@ -25,11 +26,14 @@ import { beforeEach } from "vitest";
 class PointerEventShim extends MouseEvent {
   pointerType: string;
   pointerId: number;
+  isPrimary: boolean;
 
   constructor(type: string, init: PointerEventInit = {}) {
     super(type, init);
     this.pointerType = init.pointerType ?? "mouse";
     this.pointerId = init.pointerId ?? 1;
+    // False unless asked for, as in the real constructor.
+    this.isPrimary = init.isPrimary ?? false;
   }
 }
 
