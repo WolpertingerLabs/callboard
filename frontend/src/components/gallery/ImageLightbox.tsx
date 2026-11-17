@@ -66,6 +66,12 @@ interface Gesture {
   v: Point;
   /** Whether the gesture began on the current image (vs. the backdrop around it). */
   downOnImage: boolean;
+  /**
+   * Set once a second finger joins; cleared only when a new gesture starts
+   * from no fingers. A gesture that was ever a pinch is never a tap — not for
+   * closing on the backdrop, and not as the first half of a double-tap.
+   */
+  multiTouch: boolean;
 }
 
 /** Velocity is discarded if the finger rested this long (ms) before lifting. */
@@ -99,7 +105,10 @@ const stopPropagation = (e: SyntheticEvent) => e.stopPropagation();
  */
 export default function ImageLightbox({ items, startIndex, onClose }: ImageLightboxProps) {
   const count = items.length;
-  const [index, setIndex] = useState(() => Math.min(Math.max(0, startIndex), Math.max(0, count - 1)));
+  const [rawIndex, setIndex] = useState(() => Math.max(0, startIndex));
+  // `items` can shrink under an open viewer; every read goes through this
+  // clamped value so the counter, the strip and prev/next never point past the end.
+  const index = Math.min(rawIndex, Math.max(0, count - 1));
 
   const surfaceRef = useRef<HTMLDivElement>(null);
   const stripRef = useRef<HTMLDivElement>(null);
@@ -120,7 +129,10 @@ export default function ImageLightbox({ items, startIndex, onClose }: ImageLight
     last: { t: 0, x: 0, y: 0 },
     v: { x: 0, y: 0 },
     downOnImage: false,
+    multiTouch: false,
   });
+  /** A backdrop tap waiting for its click (see `onSurfaceClick`). */
+  const closeOnClick = useRef(false);
   const lastTap = useRef<Tap | null>(null);
   const reducedMotion = useRef(prefersReducedMotion());
   const hasMounted = useRef(false);
@@ -185,7 +197,7 @@ export default function ImageLightbox({ items, startIndex, onClose }: ImageLight
 
   const go = useCallback(
     (delta: number) => {
-      setIndex((i) => Math.min(count - 1, Math.max(0, i + delta)));
+      setIndex((i) => Math.min(count - 1, Math.max(0, Math.min(i, count - 1) + delta)));
     },
     [count],
   );
@@ -206,7 +218,7 @@ export default function ImageLightbox({ items, startIndex, onClose }: ImageLight
     hasMounted.current = true;
   }, [index, writeBackdrop, writeImage, writeStrip]);
 
-  // ---- keyboard, focus, scroll lock, iOS gesture events ---------------------
+  // ---- keyboard, focus, iOS gesture events -----------------------------------
 
   const goRef = useRef(go);
   useLayoutEffect(() => {
@@ -218,6 +230,9 @@ export default function ImageLightbox({ items, startIndex, onClose }: ImageLight
     // open it owns these keys — Escape must not also reach the chat, and the
     // arrows must not scroll the transcript behind it.
     const onKeyDown = (e: KeyboardEvent) => {
+      // Alt+← is browser Back, Cmd+← / Ctrl+← are text and OS shortcuts —
+      // leave every modified key to the browser.
+      if (e.altKey || e.metaKey || e.ctrlKey) return;
       if (e.key === "Escape") {
         onCloseRef.current();
       } else if (e.key === "ArrowLeft") {
@@ -246,28 +261,24 @@ export default function ImageLightbox({ items, startIndex, onClose }: ImageLight
   }, []);
 
   useEffect(() => {
-    const { body } = document;
-    const prevOverflow = body.style.overflow;
-    body.style.overflow = "hidden";
-    return () => {
-      body.style.overflow = prevOverflow;
-    };
-  }, []);
-
-  useEffect(() => {
     // iOS Safari zooms the whole page on a pinch despite `user-scalable=no`
     // unless its proprietary gesture events are cancelled.
     const prevent = (e: Event) => e.preventDefault();
     const events = ["gesturestart", "gesturechange", "gestureend"];
     events.forEach((name) => document.addEventListener(name, prevent, { passive: false }));
 
-    // `touch-action: none` covers this everywhere else; the explicit
-    // non-passive touchmove is belt and braces for older iOS.
-    const surface = surfaceRef.current;
-    surface?.addEventListener("touchmove", prevent, { passive: false });
+    // `touch-action: none` on the dialog covers this everywhere else; the
+    // non-passive touchmove is belt and braces for older iOS. Multi-finger
+    // only: cancelling a one-finger touchmove can make iOS drop the click that
+    // ends a slightly jittery tap, and the backdrop closes on that click.
+    const dialog = dialogRef.current;
+    const preventPinch = (e: TouchEvent) => {
+      if (e.touches.length > 1) e.preventDefault();
+    };
+    dialog?.addEventListener("touchmove", preventPinch, { passive: false });
     return () => {
       events.forEach((name) => document.removeEventListener(name, prevent));
-      surface?.removeEventListener("touchmove", prevent);
+      dialog?.removeEventListener("touchmove", preventPinch);
     };
   }, []);
 
@@ -307,7 +318,11 @@ export default function ImageLightbox({ items, startIndex, onClose }: ImageLight
 
   const handleTap = (tap: Tap) => {
     if (!gesture.current.downOnImage) {
-      onCloseRef.current();
+      // Don't close here: unmounting on pointerup leaves the click that
+      // follows the tap with no overlay to land on, and iOS Safari hit-tests
+      // it onto whatever is underneath — a link, a button, another thumbnail.
+      // Close on that click instead, so the viewer itself absorbs it.
+      closeOnClick.current = true;
       return;
     }
     if (isDoubleTap(lastTap.current, tap)) {
@@ -324,6 +339,8 @@ export default function ImageLightbox({ items, startIndex, onClose }: ImageLight
     const [a, b] = [...pointers.current.values()].map(toSurface);
     const { dist, mid } = pinchState(a, b);
     g.mode = "pinch";
+    g.multiTouch = true;
+    lastTap.current = null;
     g.pinchDist = dist;
     g.pinchMid = mid;
     g.startTransform = transformRef.current;
@@ -339,8 +356,10 @@ export default function ImageLightbox({ items, startIndex, onClose }: ImageLight
     const p = { x: e.clientX, y: e.clientY };
     pointers.current.set(e.pointerId, p);
     const g = gesture.current;
+    closeOnClick.current = false;
 
     if (pointers.current.size === 1) {
+      g.multiTouch = false;
       const img = imgEls.current.get(indexRef.current);
       g.downOnImage = !!img && img.contains(e.target as Node);
       g.start = p;
@@ -348,7 +367,8 @@ export default function ImageLightbox({ items, startIndex, onClose }: ImageLight
       g.last = { t: e.timeStamp, ...p };
       g.v = { x: 0, y: 0 };
       g.mode = transformRef.current.scale > 1 ? "pan" : "pending";
-      // Freeze any running snap-back animation where it is.
+      // Settle any running snap-back at its end position, so the drag starts
+      // from where the strip will rest rather than mid-animation.
       writeStrip(0, false);
     } else if (pointers.current.size === 2) {
       beginPinch();
@@ -411,14 +431,17 @@ export default function ImageLightbox({ items, startIndex, onClose }: ImageLight
     const remaining = pointers.current.size;
 
     if (g.mode === "pinch") {
-      if (remaining === 1) {
+      if (remaining >= 2) {
+        // A third finger lifted: carry on with the pair that is left, measured
+        // afresh — keeping the old pair's distance would make the zoom jump.
+        beginPinch();
+      } else if (remaining === 1) {
         // Lifting one finger of a pinch hands over to a pan with the other.
+        // `multiTouch` stays set, so lifting that finger is not a tap.
         const [p] = [...pointers.current.values()];
         g.mode = "pan";
         g.start = p;
         g.startTransform = transformRef.current;
-        // Not a tap: a pinch that ends must never count toward a double-tap.
-        lastTap.current = null;
       } else if (remaining === 0) {
         g.mode = "idle";
       }
@@ -455,16 +478,24 @@ export default function ImageLightbox({ items, startIndex, onClose }: ImageLight
       return;
     }
 
-    const isTap = mode === "pending" || (mode === "pan" && Math.hypot(dx, dy) < AXIS_LOCK_SLOP);
+    const isTap = !g.multiTouch && (mode === "pending" || (mode === "pan" && Math.hypot(dx, dy) < AXIS_LOCK_SLOP));
     if (isTap && !cancelled) handleTap({ t: e.timeStamp, ...p });
   };
 
+  const onSurfaceClick = () => {
+    if (!closeOnClick.current) return;
+    closeOnClick.current = false;
+    onCloseRef.current();
+  };
+
   if (count === 0) return null;
-  // `items` can shrink under an open viewer (a message re-rendered); never index past the end.
-  const current = items[Math.min(index, count - 1)];
+  const current = items[index];
 
   return createPortal(
-    <ModalOverlay onClose={onClose} style={{ background: "transparent" }}>
+    // Above every other layer, as the viewer it replaced was: dropdowns,
+    // popovers and other modals sit at 1000, and a photo viewer opened from
+    // inside any of them must cover them.
+    <ModalOverlay onClose={onClose} style={{ background: "transparent", zIndex: 9999 }}>
       <div
         ref={dialogRef}
         role="dialog"
@@ -483,7 +514,10 @@ export default function ImageLightbox({ items, startIndex, onClose }: ImageLight
         onTouchMove={stopPropagation}
         onTouchEnd={stopPropagation}
         onContextMenu={stopPropagation}
-        style={{ position: "absolute", inset: 0, outline: "none" }}
+        // touch-action is the intersection along the ancestor chain, so this
+        // covers the buttons too: no page zoom from a pinch or a fast
+        // double-tap that starts on a control.
+        style={{ position: "absolute", inset: 0, outline: "none", touchAction: "none" }}
       >
         <div ref={backdropRef} aria-hidden="true" style={backdropStyle} />
 
@@ -494,13 +528,11 @@ export default function ImageLightbox({ items, startIndex, onClose }: ImageLight
           onPointerMove={onPointerMove}
           onPointerUp={(e) => endPointer(e, false)}
           onPointerCancel={(e) => endPointer(e, true)}
+          onClick={onSurfaceClick}
           style={{
             position: "absolute",
             inset: 0,
             overflow: "hidden",
-            // The viewer owns every touch on its surface: no browser scroll,
-            // no page zoom, so pinch and swipe reach the handlers above.
-            touchAction: "none",
             userSelect: "none",
             WebkitUserSelect: "none",
           }}

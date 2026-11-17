@@ -11,13 +11,46 @@ const ITEMS: LightboxItem[] = [
   { src: "/c.png", alt: "Charlie" },
 ];
 
+/**
+ * jsdom has no layout: every size is 0, which pins `clampPan` to 0 and would
+ * let a broken pan pass. Give the surface a 400×800 phone viewport at the
+ * origin and every image a 400×300 fitted size, so at 2.5× the image is
+ * 1000×750 — 300px of pan room each side horizontally, none vertically.
+ */
+const VIEW = { width: 400, height: 800 };
+const IMG = { width: 400, height: 300 };
+
+function stubLayout() {
+  const s = surface();
+  Object.defineProperty(s, "clientWidth", { configurable: true, value: VIEW.width });
+  Object.defineProperty(s, "clientHeight", { configurable: true, value: VIEW.height });
+  s.getBoundingClientRect = () => ({
+    left: 0,
+    top: 0,
+    right: VIEW.width,
+    bottom: VIEW.height,
+    width: VIEW.width,
+    height: VIEW.height,
+    x: 0,
+    y: 0,
+    toJSON: () => ({}),
+  });
+  for (const img of document.querySelectorAll("[role=dialog] img")) {
+    Object.defineProperty(img, "offsetWidth", { configurable: true, value: IMG.width });
+    Object.defineProperty(img, "offsetHeight", { configurable: true, value: IMG.height });
+  }
+}
+
 function renderLightbox(startIndex = 0, items = ITEMS) {
   const onClose = vi.fn();
   const utils = render(<ImageLightbox items={items} startIndex={startIndex} onClose={onClose} />);
+  stubLayout();
   return { onClose, ...utils };
 }
 
 const surface = () => screen.getByTestId("lightbox-surface");
+const strip = () => surface().firstElementChild as HTMLElement;
+const CENTRE = { x: VIEW.width / 2, y: VIEW.height / 2 };
 
 /** A one-finger drag across the surface, from `from` to `to` in steps. */
 function drag(from: { x: number; y: number }, to: { x: number; y: number }, target: Element = surface()) {
@@ -35,10 +68,17 @@ function drag(from: { x: number; y: number }, to: { x: number; y: number }, targ
   fireEvent.pointerUp(surface(), { pointerId: id, pointerType: "touch", clientX: to.x, clientY: to.y });
 }
 
+/** A tap as the browser delivers it: pointerdown, pointerup, then the click. */
 function tap(target: Element, at = { x: 100, y: 100 }) {
   fireEvent.pointerDown(target, { pointerId: 1, pointerType: "touch", clientX: at.x, clientY: at.y });
   fireEvent.pointerUp(surface(), { pointerId: 1, pointerType: "touch", clientX: at.x, clientY: at.y });
+  fireEvent.click(target);
 }
+
+const down = (target: Element, id: number, x: number, y: number) =>
+  fireEvent.pointerDown(target, { pointerId: id, pointerType: "touch", clientX: x, clientY: y });
+const move = (id: number, x: number, y: number) => fireEvent.pointerMove(surface(), { pointerId: id, pointerType: "touch", clientX: x, clientY: y });
+const up = (id: number, x: number, y: number) => fireEvent.pointerUp(surface(), { pointerId: id, pointerType: "touch", clientX: x, clientY: y });
 
 const currentImage = (alt: string) => screen.getByAltText(alt);
 
@@ -129,6 +169,25 @@ describe("ImageLightbox", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it("closes a backdrop tap on its click, not on pointerup", () => {
+    // Unmounting on pointerup would let iOS deliver the tap's click to
+    // whatever sits under the viewer.
+    const { onClose } = renderLightbox(0);
+    down(surface(), 1, 100, 100);
+    up(1, 100, 100);
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.click(surface());
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("a click with no backdrop tap before it does not close", () => {
+    const { onClose } = renderLightbox(0);
+    // A swipe ends without a tap, so a stray click after it is ignored.
+    drag({ x: 300, y: 200 }, { x: 286, y: 200 });
+    fireEvent.click(surface());
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
   it("swipes left to the next image and right back", () => {
     renderLightbox(0);
     drag({ x: 300, y: 200 }, { x: 100, y: 205 });
@@ -161,16 +220,22 @@ describe("ImageLightbox", () => {
   it("double-tap zooms in, and while zoomed a drag pans instead of changing image", () => {
     renderLightbox(0);
     const img = currentImage("Alpha");
-    tap(img);
-    tap(img);
-    expect(img.style.transform).toContain("scale(2.5)");
+    tap(img, CENTRE);
+    tap(img, CENTRE);
+    expect(img.style.transform).toBe("translate3d(0px, 0px, 0) scale(2.5)");
 
-    drag({ x: 300, y: 200 }, { x: 100, y: 200 }, img);
+    drag({ x: 300, y: 400 }, { x: 100, y: 400 }, img);
     expect(screen.getByText("1 / 3")).toBeTruthy();
+    // Panned 200px left; vertically the 750px-tall image fits, so it stays centred.
+    expect(img.style.transform).toBe("translate3d(-200px, 0px, 0) scale(2.5)");
+
+    // Further than the image's edge allows: clamped at 300px.
+    drag({ x: 300, y: 400 }, { x: -200, y: 500 }, img);
+    expect(img.style.transform).toBe("translate3d(-300px, 0px, 0) scale(2.5)");
 
     // A second double-tap returns to 1×, and swiping works again.
-    tap(img);
-    tap(img);
+    tap(img, CENTRE);
+    tap(img, CENTRE);
     expect(img.style.transform).toContain("scale(1)");
     drag({ x: 300, y: 200 }, { x: 100, y: 200 });
     expect(screen.getByText("2 / 3")).toBeTruthy();
@@ -191,14 +256,73 @@ describe("ImageLightbox", () => {
     expect(screen.getByText("1 / 3")).toBeTruthy();
   });
 
-  it("a pinch that starts mid-swipe cancels the swipe", () => {
+  it("pinches about the fingers' midpoint", () => {
     renderLightbox(0);
-    fireEvent.pointerDown(surface(), { pointerId: 1, pointerType: "touch", clientX: 300, clientY: 200 });
-    fireEvent.pointerMove(surface(), { pointerId: 1, pointerType: "touch", clientX: 150, clientY: 200 });
-    fireEvent.pointerDown(surface(), { pointerId: 2, pointerType: "touch", clientX: 250, clientY: 300 });
-    fireEvent.pointerUp(surface(), { pointerId: 1, pointerType: "touch", clientX: 100, clientY: 200 });
-    fireEvent.pointerUp(surface(), { pointerId: 2, pointerType: "touch", clientX: 250, clientY: 300 });
+    const img = currentImage("Alpha");
+    // Midpoint (300, 400) is 100px right of centre; 100px apart → 200px: 2×.
+    down(img, 1, 250, 400);
+    down(img, 2, 350, 400);
+    move(1, 200, 400);
+    move(2, 400, 400);
+    // The image point under the midpoint stays put: x = 100 - 2 × 100 = -100.
+    expect(img.style.transform).toBe("translate3d(-100px, 0px, 0) scale(2)");
+  });
+
+  it("a pinch that starts mid-swipe snaps the strip back", () => {
+    renderLightbox(0);
+    down(surface(), 1, 300, 200);
+    move(1, 150, 200);
+    expect(strip().style.transform).toBe("translate3d(calc(0% + -150px), 0, 0)");
+    down(surface(), 2, 250, 300);
+    expect(strip().style.transform).toBe("translate3d(calc(0% + 0px), 0, 0)");
+    up(1, 100, 200);
+    up(2, 250, 300);
     expect(screen.getByText("1 / 3")).toBeTruthy();
+  });
+
+  it("releasing a pinch that began on the backdrop does not close", () => {
+    const { onClose } = renderLightbox(0);
+    down(surface(), 1, 20, 60);
+    down(currentImage("Alpha"), 2, 200, 400);
+    move(2, 260, 460);
+    up(2, 260, 460);
+    up(1, 20, 60);
+    fireEvent.click(surface());
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("a pinch is never the first tap of a double-tap", () => {
+    renderLightbox(0);
+    const img = currentImage("Alpha");
+    down(img, 1, 150, 400);
+    down(img, 2, 250, 400);
+    move(2, 350, 400);
+    up(2, 350, 400);
+    up(1, 150, 400);
+    const zoomed = img.style.transform;
+    expect(zoomed).toContain("scale(2)");
+    // One quick tap near where the last finger lifted: still zoomed.
+    tap(img, { x: 150, y: 400 });
+    expect(img.style.transform).toBe(zoomed);
+  });
+
+  it("re-measures the pinch when a third finger lifts, so the zoom does not jump", () => {
+    renderLightbox(0);
+    const img = currentImage("Alpha");
+    down(img, 1, 100, 400);
+    down(img, 2, 300, 400);
+    down(img, 3, 200, 420);
+    // The pinch is fingers 1 and 2 (200px apart). Lift 1: the pair is now 2
+    // and 3, about 100px apart — with the old distance the scale would drop
+    // to 0.5× (clamped to 1); measured afresh, nothing moves.
+    up(1, 100, 400);
+    move(3, 200, 420);
+    expect(img.style.transform).toBe("translate3d(0px, 0px, 0) scale(1)");
+    // And the new pair zooms from its own distance: 2→3 spread doubles → 2×.
+    const before = Math.hypot(300 - 200, 400 - 420);
+    move(3, 300 - 2 * (300 - 200), 400 - 2 * (400 - 420));
+    expect(before).toBeCloseTo(102, 0);
+    expect(img.style.transform).toContain("scale(2)");
   });
 
   it("resets zoom when the image changes", () => {
@@ -269,10 +393,31 @@ describe("ImageLightbox", () => {
     expect(document.activeElement).toBe(next);
   });
 
-  it("locks body scroll while open", () => {
-    const { unmount } = renderLightbox(0);
-    expect(document.body.style.overflow).toBe("hidden");
-    unmount();
-    expect(document.body.style.overflow).toBe("");
+  it("leaves modified arrow keys and Escape to the browser", () => {
+    const { onClose } = renderLightbox(0);
+    fireEvent.keyDown(document, { key: "ArrowRight", altKey: true });
+    fireEvent.keyDown(document, { key: "ArrowRight", metaKey: true });
+    fireEvent.keyDown(document, { key: "Escape", ctrlKey: true });
+    expect(screen.getByText("1 / 3")).toBeTruthy();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("clamps the index when the list shrinks under it", () => {
+    const onClose = vi.fn();
+    const { rerender } = render(<ImageLightbox items={ITEMS} startIndex={2} onClose={onClose} />);
+    expect(screen.getByText("3 / 3")).toBeTruthy();
+    rerender(<ImageLightbox items={ITEMS.slice(0, 2)} startIndex={2} onClose={onClose} />);
+    expect(screen.getByText("2 / 2")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Next image" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(strip().style.transform).toBe("translate3d(calc(-100% + 0px), 0, 0)");
+    fireEvent.click(screen.getByRole("button", { name: "Previous image" }));
+    expect(screen.getByText("1 / 2")).toBeTruthy();
+  });
+
+  it("sits above other layers and owns every touch on the dialog", () => {
+    renderLightbox(0);
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.style.touchAction).toBe("none");
+    expect(Number((dialog.parentElement as HTMLElement).style.zIndex)).toBeGreaterThan(1000);
   });
 });
