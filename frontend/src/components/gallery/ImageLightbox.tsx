@@ -42,6 +42,12 @@ interface ImageLightboxProps {
   items: LightboxItem[];
   startIndex: number;
   onClose: () => void;
+  /**
+   * Where focus goes on close. Defaults to whatever was focused when the
+   * viewer opened — which is not always the trigger: Safari does not focus a
+   * button on click.
+   */
+  returnFocusTo?: HTMLElement | null;
 }
 
 /**
@@ -103,7 +109,7 @@ const stopPropagation = (e: SyntheticEvent) => e.stopPropagation();
  * cannot reach handlers on the message bubble that opened it (React
  * propagates portal events through the component tree).
  */
-export default function ImageLightbox({ items, startIndex, onClose }: ImageLightboxProps) {
+export default function ImageLightbox({ items, startIndex, onClose, returnFocusTo }: ImageLightboxProps) {
   const count = items.length;
   const [rawIndex, setIndex] = useState(() => Math.max(0, startIndex));
   // `items` can shrink under an open viewer; every read goes through this
@@ -257,11 +263,13 @@ export default function ImageLightbox({ items, startIndex, onClose }: ImageLight
   }, []);
 
   useEffect(() => {
-    const previouslyFocused = document.activeElement;
+    const previouslyFocused = returnFocusTo ?? document.activeElement;
     closeButtonRef.current?.focus();
     return () => {
-      if (previouslyFocused instanceof HTMLElement && previouslyFocused.isConnected) previouslyFocused.focus();
+      if (previouslyFocused instanceof HTMLElement && previouslyFocused.isConnected) previouslyFocused.focus({ preventScroll: true });
     };
+    // Read once, at open: a later change of target must not move focus mid-view.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {

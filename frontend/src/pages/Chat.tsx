@@ -90,6 +90,7 @@ import {
 import MessageBubble, { AttachedFileChips, TEAM_COLORS } from "../components/MessageBubble";
 import ProviderBadge from "../components/ProviderBadge";
 import ToolCallBubble from "../components/ToolCallBubble";
+import { ChatGalleryProvider } from "../components/gallery/ChatGallery";
 import PromptInput, { parseLeadingCommand, type ComposerValueUpdate } from "../components/PromptInput";
 import FeedbackPanel, { type PendingAction } from "../components/FeedbackPanel";
 import ConfirmModal from "../components/ConfirmModal";
@@ -3791,8 +3792,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 )}
               </>
             ) : (
-              /* EXISTING CHAT MODE: Message list */
-              <>
+              /* EXISTING CHAT MODE: Message list. One image gallery spans the
+                 whole transcript, so the viewer swipes across messages. */
+              <ChatGalleryProvider>
                 {messages.length === 0 && !streaming && (
                   <div
                     style={{
@@ -3903,7 +3905,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   </ThinkingIndicator>
                 )}
                 <div ref={bottomRef} />
-              </>
+              </ChatGalleryProvider>
             )}
           </div>
         )}

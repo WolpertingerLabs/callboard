@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ShieldAlert } from "lucide-react";
 import FullscreenFrame, { FullscreenButton } from "./FullscreenFrame";
+import { useGalleryItem, useHasChatGallery } from "./gallery/ChatGallery";
 import { formatBytes } from "../utils/formatBytes";
 
 export interface RenderFileData {
@@ -33,13 +34,36 @@ function getFileNameFromUrl(url: string): string {
 }
 
 export default function MediaRenderer({ data }: MediaRendererProps) {
-  const [expanded, setExpanded] = useState(data.display_mode === "fullscreen");
+  // Images in a chat open the chat-wide gallery (swipe, pinch-zoom) instead
+  // of FullscreenFrame; audio, video and PDFs keep FullscreenFrame.
+  const inGallery = useHasChatGallery() && data.media_type === "image";
+  const [expanded, setExpanded] = useState(data.display_mode === "fullscreen" && !inGallery);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [trustDismissed, setTrustDismissed] = useState(false);
 
   const contentUrl = data.url ? `/api/files/serve?url=${encodeURIComponent(data.url)}` : `/api/files/serve?path=${encodeURIComponent(data.file_path!)}`;
   const fileName = data.url ? getFileNameFromUrl(data.url) : getFileName(data.file_path!);
+
+  // An image joins the gallery only once it is actually shown: never while it
+  // is behind the untrusted-content gate, and not after it failed to load.
+  const mediaRef = useRef<HTMLDivElement>(null);
+  const gated = !!data.untrusted && !trustDismissed;
+  const openInGallery = useGalleryItem(
+    mediaRef,
+    data.media_type === "image" && !gated && !error
+      ? { src: contentUrl, alt: data.caption || fileName, caption: data.caption, referrerPolicy: "no-referrer" }
+      : null,
+  );
+
+  // display_mode "fullscreen" opens the gallery at this image as soon as it
+  // can — on mount, or right after "View anyway" for a gated image — once.
+  const autoOpenPending = useRef(data.display_mode === "fullscreen" && inGallery);
+  useEffect(() => {
+    if (!autoOpenPending.current || !openInGallery) return;
+    autoOpenPending.current = false;
+    openInGallery();
+  }, [openInGallery]);
 
   const onLoad = () => setLoading(false);
   const onError = () => {
@@ -143,11 +167,15 @@ export default function MediaRenderer({ data }: MediaRendererProps) {
             referrerPolicy="no-referrer"
             onLoad={onLoad}
             onError={onError}
+            // Inline, a tap on the picture itself opens the gallery — the
+            // fullscreen button is a small target on a phone.
+            onClick={!isModal && openInGallery ? openInGallery : undefined}
             style={{
               maxHeight,
               maxWidth,
               objectFit: "contain",
               display: "block",
+              cursor: !isModal && openInGallery ? "zoom-in" : undefined,
               borderRadius: isModal ? 0 : "var(--radius)",
             }}
           />
@@ -225,6 +253,7 @@ export default function MediaRenderer({ data }: MediaRendererProps) {
         >
           {/* Media content */}
           <div
+            ref={mediaRef}
             style={{
               position: "relative",
               display: "flex",
@@ -250,7 +279,7 @@ export default function MediaRenderer({ data }: MediaRendererProps) {
             )}
             {renderMedia(false)}
             {/* Fullscreen button */}
-            {!loading && <FullscreenButton onClick={() => setExpanded(true)} />}
+            {!loading && <FullscreenButton onClick={openInGallery ?? (() => setExpanded(true))} />}
           </div>
 
           {/* Footer: filename, size, caption */}
