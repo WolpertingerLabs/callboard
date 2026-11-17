@@ -1,10 +1,12 @@
-import { memo } from 'react';
+import { memo, useLayoutEffect, useRef, useState, type ComponentProps, type ReactNode } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import 'highlight.js/styles/github.css';
 import 'highlight.js/styles/github-dark.css';
 import CopyButton from './CopyButton';
+import rehypeResponsiveTables from './markdownTables';
+import './MarkdownRenderer.css';
 
 interface Props {
   content: string;
@@ -27,13 +29,57 @@ function nodeText(node: unknown): string {
   return '';
 }
 
+/**
+ * A markdown table in its horizontal scroll wrapper.
+ *
+ * While — and only while — the table overflows, the wrapper becomes a
+ * focusable, named region, so keyboard users can scroll it in browsers that do
+ * not make scroll containers focusable (Safari). A table that fits stays out of
+ * the tab order and out of the landmark list; a transcript can hold dozens.
+ * A focused wrapper keeps its attributes until blur, so widening the pane
+ * under it does not drop focus to <body>.
+ */
+function ScrollableTable({ tableProps, children }: { tableProps: ComponentProps<'table'>; children: ReactNode }) {
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const [overflows, setOverflows] = useState(false);
+  const [focused, setFocused] = useState(false);
+
+  useLayoutEffect(() => {
+    const wrap = wrapRef.current;
+    if (!wrap) return;
+    const measure = () => setOverflows(wrap.scrollWidth > wrap.clientWidth);
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    // Observing the table as well catches growth while a reply streams in.
+    const observer = new ResizeObserver(measure);
+    observer.observe(wrap);
+    if (wrap.firstElementChild) observer.observe(wrap.firstElementChild);
+    return () => observer.disconnect();
+  }, []);
+
+  return (
+    <div
+      ref={wrapRef}
+      className="md-table-wrap"
+      data-stack={'data-stack' in tableProps ? '' : undefined}
+      onFocus={(e) => e.target === e.currentTarget && setFocused(true)}
+      onBlur={(e) => e.target === e.currentTarget && setFocused(false)}
+      {...((overflows || focused) && { role: 'region', 'aria-label': 'Scrollable table', tabIndex: 0 })}
+    >
+      <table className="md-table" {...tableProps}>
+        {children}
+      </table>
+    </div>
+  );
+}
+
 // Hoisted to module scope so their identities are stable across renders.
 // Inline arrays/objects here made react-markdown hand React a fresh component
 // type for every `code`/`pre`/… on each render, which remounted every code
 // block (re-running highlighting and resetting CopyButton's "copied" state)
 // on each stream event and poll.
 const remarkPlugins = [remarkGfm];
-const rehypePlugins = [rehypeHighlight];
+const rehypePlugins = [rehypeHighlight, rehypeResponsiveTables];
 
 const components: Components = {
   // Custom styling for code blocks
@@ -75,46 +121,10 @@ const components: Components = {
     </blockquote>
   ),
 
-  // Custom styling for tables
-  table: ({ children, ...props }) => (
-    <table
-      style={{
-        width: '100%',
-        borderCollapse: 'collapse',
-        margin: '8px 0',
-      }}
-      {...props}
-    >
-      {children}
-    </table>
-  ),
-
-  th: ({ children, ...props }) => (
-    <th
-      style={{
-        border: '1px solid var(--border)',
-        padding: '6px 8px',
-        background: 'var(--assistant-bg)',
-        textAlign: 'left',
-        fontWeight: 600,
-      }}
-      {...props}
-    >
-      {children}
-    </th>
-  ),
-
-  td: ({ children, ...props }) => (
-    <td
-      style={{
-        border: '1px solid var(--border)',
-        padding: '6px 8px',
-      }}
-      {...props}
-    >
-      {children}
-    </td>
-  ),
+  // Tables scroll sideways inside their own wrapper rather than squeezing
+  // columns; prose-heavy ones re-flow into cards at narrow widths. Layout
+  // lives in MarkdownRenderer.css, driven by attributes markdownTables.ts adds.
+  table: ({ children, node: _node, ...props }) => <ScrollableTable tableProps={props}>{children}</ScrollableTable>,
 
   // Custom styling for links
   a: ({ children, href, ...props }) => (
