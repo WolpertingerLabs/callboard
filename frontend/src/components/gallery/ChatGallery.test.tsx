@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { useRef, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { ChatGalleryProvider, sortByDocumentOrder, useGalleryItem } from "./ChatGallery";
 import { ImageThumbnails } from "../MessageBubble";
@@ -144,6 +144,28 @@ describe("ChatGalleryProvider", () => {
     expect(counter()).toBe("2 / 4");
     fireEvent.click(within(dialog()).getByRole("button", { name: "Close image viewer" }));
     expect(renders).toBe(before);
+  });
+
+  it("leaves out an image removed in the same commit as the open", () => {
+    function Transcript() {
+      const [showSibling, setShowSibling] = useState(true);
+      return (
+        // The tap that opens the viewer also removes the other image, so both
+        // land in one commit — before the removed image's unregister runs.
+        <div onClick={() => setShowSibling(false)}>
+          <ImageThumbnails key="tapped" imageIds={["tapped"]} />
+          {showSibling && <ImageThumbnails key="gone" imageIds={["gone"]} />}
+        </div>
+      );
+    }
+    render(
+      <Chat>
+        <Transcript />
+      </Chat>,
+    );
+    fireEvent.click(screen.getAllByRole("button", { name: "Open image" })[0]);
+    expect(currentSrc()).toBe("/api/images/tapped");
+    expect(within(dialog()).queryByRole("button", { name: "Next image" })).toBeNull();
   });
 
   it("closes the viewer when the chat changes", () => {

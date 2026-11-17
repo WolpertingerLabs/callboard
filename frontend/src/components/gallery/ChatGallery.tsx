@@ -97,7 +97,11 @@ export function ChatGalleryProvider({ children, resetKey }: { children: ReactNod
   // `entries`, and it runs before paint, so a tap still opens in one frame.
   useLayoutEffect(() => {
     if (!session || session.items) return;
-    const sorted = sortByDocumentOrder([...entries.current.values()]);
+    // An image removed in the requesting commit is still registered here:
+    // React runs a deleted component's passive cleanup (the unregister) after
+    // this layout effect. Its element is already detached, though — skip it,
+    // or it becomes a ghost slide at an arbitrary position.
+    const sorted = sortByDocumentOrder([...entries.current.values()].filter((e) => e.el.isConnected));
     const startIndex = sorted.findIndex((e) => e.el === session.el);
     setSession(
       startIndex < 0 ? null : { ...session, startIndex, items: sorted.map(({ src, alt, caption, referrerPolicy }) => ({ src, alt, caption, referrerPolicy })) },
