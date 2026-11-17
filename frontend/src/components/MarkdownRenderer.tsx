@@ -1,4 +1,4 @@
-import { memo } from 'react';
+import { memo, useLayoutEffect, useRef, useState, type ComponentProps, type ReactNode } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
@@ -27,6 +27,45 @@ function nodeText(node: unknown): string {
   if (typeof n.value === 'string') return n.value;
   if (Array.isArray(n.children)) return n.children.map(nodeText).join('');
   return '';
+}
+
+/**
+ * A markdown table in its horizontal scroll wrapper.
+ *
+ * While — and only while — the table overflows, the wrapper becomes a
+ * focusable, named region, so keyboard users can scroll it in browsers that do
+ * not make scroll containers focusable (Safari). A table that fits stays out of
+ * the tab order and out of the landmark list; a transcript can hold dozens.
+ */
+function ScrollableTable({ tableProps, children }: { tableProps: ComponentProps<'table'>; children: ReactNode }) {
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const [overflows, setOverflows] = useState(false);
+
+  useLayoutEffect(() => {
+    const wrap = wrapRef.current;
+    if (!wrap) return;
+    const measure = () => setOverflows(wrap.scrollWidth > wrap.clientWidth);
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    // Observing the table as well catches growth while a reply streams in.
+    const observer = new ResizeObserver(measure);
+    observer.observe(wrap);
+    if (wrap.firstElementChild) observer.observe(wrap.firstElementChild);
+    return () => observer.disconnect();
+  }, []);
+
+  return (
+    <div
+      ref={wrapRef}
+      className="md-table-wrap"
+      data-stack={'data-stack' in tableProps ? '' : undefined}
+      {...(overflows && { role: 'region', 'aria-label': 'Scrollable table', tabIndex: 0 })}
+    >
+      <table className="md-table" {...tableProps}>
+        {children}
+      </table>
+    </div>
+  );
 }
 
 // Hoisted to module scope so their identities are stable across renders.
@@ -80,21 +119,7 @@ const components: Components = {
   // Tables scroll sideways inside their own wrapper rather than squeezing
   // columns; prose-heavy ones re-flow into cards at narrow widths. Layout
   // lives in MarkdownRenderer.css, driven by attributes markdownTables.ts adds.
-  // The wrapper is a focusable, named region so keyboard users can scroll a
-  // wide table in browsers that do not make scroll containers focusable.
-  table: ({ children, node: _node, ...props }) => (
-    <div
-      className="md-table-wrap"
-      role="region"
-      aria-label="Table"
-      tabIndex={0}
-      data-stack={'data-stack' in props ? '' : undefined}
-    >
-      <table className="md-table" {...props}>
-        {children}
-      </table>
-    </div>
-  ),
+  table: ({ children, node: _node, ...props }) => <ScrollableTable tableProps={props}>{children}</ScrollableTable>,
 
   // Custom styling for links
   a: ({ children, href, ...props }) => (

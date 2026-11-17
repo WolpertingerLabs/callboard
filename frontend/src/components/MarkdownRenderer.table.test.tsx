@@ -7,7 +7,7 @@
  * computes it (cell word breaking, the wide/nowrap hints), and through the
  * CSSOM for the container query, which jsdom parses but never evaluates.
  */
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render } from "@testing-library/react";
 import MarkdownRenderer from "./MarkdownRenderer";
 import { injectCss, readCss } from "../testing/cssCascade";
@@ -38,13 +38,28 @@ const labelsOf = (t: HTMLTableElement) => [...t.querySelectorAll("tbody tr:first
 const flagsOf = (t: HTMLTableElement, attr: string) => [...t.querySelectorAll("thead th")].map((th) => th.hasAttribute(attr));
 
 describe("MarkdownRenderer table markup", () => {
-  it("wraps every table in a focusable, named scroll region", () => {
+  it("wraps a table that fits in a plain scroll container, out of the tab order", () => {
     const { wrap, table } = renderTables(NUMERIC);
     expect(table.parentElement).toBe(wrap);
     expect(table.classList.contains("md-table")).toBe(true);
-    expect(wrap.getAttribute("role")).toBe("region");
-    expect(wrap.getAttribute("aria-label")).toBe("Table");
-    expect(wrap.getAttribute("tabindex")).toBe("0");
+    expect(wrap.hasAttribute("role")).toBe(false);
+    expect(wrap.hasAttribute("aria-label")).toBe(false);
+    expect(wrap.hasAttribute("tabindex")).toBe(false);
+  });
+
+  it("makes the wrapper a focusable, named region only while the table overflows", () => {
+    // jsdom does no layout, so both widths read 0; fake an overflowing wrapper.
+    const scrollWidth = vi.spyOn(HTMLElement.prototype, "scrollWidth", "get").mockReturnValue(900);
+    const clientWidth = vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(300);
+    try {
+      const { wrap } = renderTables(NUMERIC);
+      expect(wrap.getAttribute("role")).toBe("region");
+      expect(wrap.getAttribute("aria-label")).toBe("Scrollable table");
+      expect(wrap.getAttribute("tabindex")).toBe("0");
+    } finally {
+      scrollWidth.mockRestore();
+      clientWidth.mockRestore();
+    }
   });
 
   it("captions each body cell with its column header as plain text", () => {
@@ -60,6 +75,11 @@ describe("MarkdownRenderer table markup", () => {
     const { table: t } = renderTables(PROSE);
     expect(flagsOf(t, "data-wide")).toEqual([true, false, true]);
     expect(flagsOf(t, "data-nowrap")).toEqual([false, true, false]);
+  });
+
+  it("keeps nowrap for single tokens, not short phrases that can wrap at a space", () => {
+    const { table: t } = renderTables(table(["Feature", "Status", "Flag"], ["Dark mode toggle", "Needs review", "`--dry-run`"], ["Tables", "Done", "`-f`"]));
+    expect(flagsOf(t, "data-nowrap")).toEqual([false, false, true]);
   });
 
   it("counts visible text only: a link's href does not make a column wide", () => {
@@ -100,7 +120,7 @@ describe("MarkdownRenderer table markup", () => {
       expect(stacks(table(["A", "B", "C"], ["a", "b", LONG]))).toBe(true);
     });
 
-    it("judges prose by the average body cell, at the 40-character boundary", () => {
+    it("judges prose cells at the 40-character boundary", () => {
       expect(stacks(table(["A", "B", "C"], ["a", "b", "y".repeat(40)]))).toBe(true);
       expect(stacks(table(["A", "B", "C"], ["a", "b", "y".repeat(39)]))).toBe(false);
     });
@@ -110,6 +130,11 @@ describe("MarkdownRenderer table markup", () => {
       const { table: t } = renderTables(table(["Test", "ms", "Δ"], ...rows));
       expect(t.hasAttribute("data-stack")).toBe(false);
       expect(flagsOf(t, "data-wide")).toEqual([true, false, false]);
+    });
+
+    it("does not let a short row or empty cell cancel out a prose column", () => {
+      expect(stacks(table(["A", "B"], [LONG, LONG], ["y", "—"]))).toBe(true);
+      expect(stacks(table(["A", "B", "C"], ["a", "b", LONG], ["c", "d", ""], ["e", "f", ""]))).toBe(true);
     });
 
     it("never stacks a header-only table, whose header the stacked layout hides", () => {
@@ -180,6 +205,8 @@ describe("MarkdownRenderer table styles", () => {
         inner.find((r) => r.selectorText.split(/,\s*/).includes(selector) && r.style.getPropertyValue(property))?.style.getPropertyValue(property);
       expect(declared(".md-table[data-stack] tr", "display")).toBe("block");
       expect(declared(".md-table[data-stack] td", "white-space")).toBe("normal");
+      // Short-value columns may wrap at phone width in every table, not only stacked ones.
+      expect(declared(".md-table td[data-nowrap]", "white-space")).toBe("normal");
       expect(declared(".md-table[data-stack] thead", "position")).toBe("absolute");
       // Read from the source: jsdom's CSSOM keeps only one of the two
       // `content` declarations, and which one is not what a browser does.

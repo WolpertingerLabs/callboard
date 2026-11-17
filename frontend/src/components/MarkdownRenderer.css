@@ -79,6 +79,14 @@
  * rather than the viewport, so a narrow split pane gets it on desktop too.
  * Tables without `data-stack` keep the scrolling grid. */
 @container chat-layout (max-width: 620px) {
+  /* On a phone, fitting beats keeping a flag on one line: a `Flag |
+   * Description` table does not stack, and a nowrap flag column plus the
+   * description's 12em floor overflows ~290px. Words still never split. */
+  .md-table th[data-nowrap],
+  .md-table td[data-nowrap] {
+    white-space: normal;
+  }
+
   .md-table-wrap[data-stack] {
     border: none;
     border-radius: 0;

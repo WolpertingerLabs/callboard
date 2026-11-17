@@ -26,17 +26,22 @@ import type { Element, ElementContent, Root, RootContent } from 'hast';
 
 /**
  * A column whose longest cell reaches this many characters gets a readable
- * minimum width (`data-wide`), and a column whose body cells AVERAGE this many
- * is prose for the purpose of stacking. The average, not the max, decides
- * stacking: one long test name must not turn a 30-row numeric comparison into
- * 30 cards.
+ * minimum width (`data-wide`). For stacking, a column is prose when at least
+ * PROSE_CELL_SHARE of its non-empty body cells reach this many. A share, not
+ * the max: one long test name must not turn a 30-row numeric comparison into
+ * 30 cards. Not the mean either: a short row or a `—` placeholder must not
+ * cancel out a column that is mostly sentences.
  */
 export const WIDE_COLUMN_CHARS = 40;
 
+/** Share of a column's non-empty body cells that must be long for it to be prose. */
+export const PROSE_CELL_SHARE = 1 / 3;
+
 /**
- * A column whose cells are all at most this long never wraps (`data-nowrap`).
- * Short values are usually atoms — `--dry-run`, `v1.2.3`, `~7.5` — that read
- * wrong split at a hyphen, and the wrapper scrolls if a row of them overflows.
+ * A column whose cells are all single tokens at most this long never wraps
+ * (`data-nowrap`). Such values are atoms — `--dry-run`, `v1.2.3`, `~7.5` —
+ * that read wrong split at a hyphen, and the wrapper scrolls if a row of them
+ * overflows. Phrases ("Needs review") are excluded: they wrap at their spaces.
  */
 export const NOWRAP_COLUMN_CHARS = 20;
 
@@ -69,21 +74,27 @@ function prepareTable(table: Element): void {
 
   const lengthOf = (cell: Element) => cell.children.map(textOf).join('').trim().length;
   const longest: number[] = [];
-  const bodyTotal: number[] = [];
+  const hasSpace: boolean[] = [];
+  const bodyFilled: number[] = [];
+  const bodyLong: number[] = [];
   for (const row of allRows) {
     childElements(row, 'th', 'td').forEach((cell, i) => {
       longest[i] = Math.max(longest[i] ?? 0, lengthOf(cell));
+      if (/\s/.test(cell.children.map(textOf).join('').trim())) hasSpace[i] = true;
     });
   }
   for (const row of bodyRows) {
     childElements(row, 'th', 'td').forEach((cell, i) => {
-      bodyTotal[i] = (bodyTotal[i] ?? 0) + lengthOf(cell);
+      const length = lengthOf(cell);
+      if (length === 0) return;
+      bodyFilled[i] = (bodyFilled[i] ?? 0) + 1;
+      if (length >= WIDE_COLUMN_CHARS) bodyLong[i] = (bodyLong[i] ?? 0) + 1;
     });
   }
   const columns = longest.length;
   const wide = longest.map((length) => length >= WIDE_COLUMN_CHARS);
-  const nowrap = longest.map((length) => length <= NOWRAP_COLUMN_CHARS);
-  const proseCount = longest.filter((_, i) => bodyRows.length > 0 && (bodyTotal[i] ?? 0) / bodyRows.length >= WIDE_COLUMN_CHARS).length;
+  const nowrap = longest.map((length, i) => length <= NOWRAP_COLUMN_CHARS && !hasSpace[i]);
+  const proseCount = longest.filter((_, i) => (bodyLong[i] ?? 0) > 0 && (bodyLong[i] ?? 0) >= PROSE_CELL_SHARE * (bodyFilled[i] ?? 0)).length;
   // A header-only table must not stack: its header is hidden in the stacked
   // layout, so it would render as nothing (briefly true of every streamed table).
   const stack = bodyRows.length > 0 && (proseCount >= 2 || (proseCount >= 1 && columns >= 3));
