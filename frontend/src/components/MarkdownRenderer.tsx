@@ -5,6 +5,8 @@ import rehypeHighlight from 'rehype-highlight';
 import 'highlight.js/styles/github.css';
 import 'highlight.js/styles/github-dark.css';
 import CopyButton from './CopyButton';
+import rehypeResponsiveTables from './markdownTables';
+import './MarkdownRenderer.css';
 
 interface Props {
   content: string;
@@ -33,7 +35,7 @@ function nodeText(node: unknown): string {
 // block (re-running highlighting and resetting CopyButton's "copied" state)
 // on each stream event and poll.
 const remarkPlugins = [remarkGfm];
-const rehypePlugins = [rehypeHighlight];
+const rehypePlugins = [rehypeHighlight, rehypeResponsiveTables];
 
 const components: Components = {
   // Custom styling for code blocks
@@ -75,45 +77,15 @@ const components: Components = {
     </blockquote>
   ),
 
-  // Custom styling for tables
-  table: ({ children, ...props }) => (
-    <table
-      style={{
-        width: '100%',
-        borderCollapse: 'collapse',
-        margin: '8px 0',
-      }}
-      {...props}
-    >
-      {children}
-    </table>
-  ),
-
-  th: ({ children, ...props }) => (
-    <th
-      style={{
-        border: '1px solid var(--border)',
-        padding: '6px 8px',
-        background: 'var(--assistant-bg)',
-        textAlign: 'left',
-        fontWeight: 600,
-      }}
-      {...props}
-    >
-      {children}
-    </th>
-  ),
-
-  td: ({ children, ...props }) => (
-    <td
-      style={{
-        border: '1px solid var(--border)',
-        padding: '6px 8px',
-      }}
-      {...props}
-    >
-      {children}
-    </td>
+  // Tables scroll sideways inside their own wrapper rather than squeezing
+  // columns; prose-heavy ones re-flow into cards at narrow widths. Layout
+  // lives in MarkdownRenderer.css, driven by attributes markdownTables.ts adds.
+  table: ({ children, node: _node, ...props }) => (
+    <div className="md-table-wrap" data-stack={'data-stack' in props ? '' : undefined}>
+      <table className="md-table" {...props}>
+        {children}
+      </table>
+    </div>
   ),
 
   // Custom styling for links

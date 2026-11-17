@@ -1,0 +1,115 @@
+/* Markdown tables.
+ *
+ * The attributes these rules key on (`data-wide`, `data-label`, `data-stack`)
+ * are added by the rehype plugin in markdownTables.ts; see its header for why.
+ *
+ * Wide layout: the table sizes to its content, at least the full width of its
+ * wrapper, and the wrapper scrolls sideways when the content cannot fit. Cells
+ * reset the bubble's `word-break: break-word` so a column can never shrink
+ * below its longest word.
+ */
+.md-table-wrap {
+  margin: 10px 0;
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.md-table {
+  min-width: 100%;
+  border-collapse: collapse;
+  line-height: 1.45;
+}
+
+.md-table th,
+.md-table td {
+  padding: 8px 12px;
+  min-width: 4em;
+  text-align: start;
+  vertical-align: top;
+  word-break: normal;
+  overflow-wrap: break-word;
+}
+
+.md-table th + th,
+.md-table td + td {
+  border-left: 1px solid var(--border-light);
+}
+
+.md-table tbody tr {
+  border-top: 1px solid var(--border);
+}
+
+.md-table th {
+  font-weight: 600;
+  background: var(--bg-secondary);
+}
+
+.md-table tbody tr:nth-child(even) {
+  background: color-mix(in srgb, var(--bg-secondary) 45%, transparent);
+}
+
+.md-table th[data-wide],
+.md-table td[data-wide] {
+  min-width: 12em;
+}
+
+/* Narrow layout: a prose-heavy table re-flows into one card per row, each
+ * cell captioned with its column header. Keyed on the chat column's width
+ * rather than the viewport, so a narrow split pane gets it on desktop too.
+ * Tables without `data-stack` keep the scrolling grid. */
+@container chat-layout (max-width: 600px) {
+  .md-table-wrap[data-stack] {
+    border: none;
+    border-radius: 0;
+    overflow: visible;
+  }
+
+  .md-table[data-stack],
+  .md-table[data-stack] tbody,
+  .md-table[data-stack] tr,
+  .md-table[data-stack] td {
+    display: block;
+    min-width: 0;
+  }
+
+  /* Visually hidden, still read by screen readers. */
+  .md-table[data-stack] thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .md-table[data-stack] tbody tr {
+    margin: 8px 0;
+    padding: 4px 0;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: none;
+  }
+
+  .md-table[data-stack] td {
+    padding: 4px 12px;
+    border: none;
+    /* GFM column alignment arrives as an inline style; a right-aligned value
+     * under a left-aligned caption reads as a mistake. */
+    text-align: start !important;
+  }
+
+  .md-table[data-stack] td + td {
+    border-top: 1px solid var(--border-light);
+  }
+
+  .md-table[data-stack] td:not([data-label=""])::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 1px;
+    font-size: 0.8em;
+    font-weight: 600;
+    color: var(--text-muted);
+  }
+}
