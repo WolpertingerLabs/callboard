@@ -209,7 +209,7 @@ const FULLSCREEN_FRAME_BOX: CSSProperties = {
  * reload the document (and a reload revokes the bridge). SVG and markdown are
  * stateless, so they use a plain modal.
  */
-export default function ArtifactRenderer({ data, maxWidth = "85%", bridgeApi, fill = false, standaloneLatest = false, onAccessChange }: ArtifactRendererProps) {
+export default function ArtifactRenderer({ data, maxWidth = "92%", bridgeApi, fill = false, standaloneLatest = false, onAccessChange }: ArtifactRendererProps) {
   const [expanded, setExpanded] = useState(!fill && data.display_mode === "fullscreen");
   const [loading, setLoading] = useState(true);
   // Keyed by the result they belong to, so switching result (another version,

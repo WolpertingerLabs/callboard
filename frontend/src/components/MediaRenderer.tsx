@@ -75,7 +75,7 @@ export default function MediaRenderer({ data }: MediaRendererProps) {
   // Untrusted content gate
   if (data.untrusted && !trustDismissed) {
     return (
-      <div style={{ margin: "4px 0", maxWidth: "85%" }}>
+      <div style={{ margin: "4px 0", maxWidth: "92%" }}>
         <div
           style={{
             border: "1px solid var(--danger-border)",
@@ -141,7 +141,7 @@ export default function MediaRenderer({ data }: MediaRendererProps) {
       <div
         style={{
           margin: "4px 0",
-          maxWidth: "85%",
+          maxWidth: "92%",
           padding: "12px 16px",
           border: "1px solid var(--border)",
           borderRadius: "var(--radius)",
@@ -243,7 +243,7 @@ export default function MediaRenderer({ data }: MediaRendererProps) {
 
   return (
     <>
-      <div style={{ margin: "4px 0", maxWidth: "85%" }}>
+      <div style={{ margin: "4px 0", maxWidth: "92%" }}>
         <div
           style={{
             border: "1px solid var(--border)",

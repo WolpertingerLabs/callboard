@@ -252,7 +252,7 @@ function InFlightBubbles({ messages }: { messages: InFlightMessage[] }) {
         <div key={message.key} style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", margin: "6px 0" }}>
           <div
             style={{
-              maxWidth: "85%",
+              maxWidth: "92%",
               padding: "10px 14px",
               borderRadius: "var(--radius)",
               background: "var(--user-bg)",
