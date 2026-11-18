@@ -57,13 +57,30 @@
  * a per-turn one is how a cost display double-counts.
  *
  * `usage.cost` is a **breakdown object** (`{input, output, cacheRead, cacheWrite,
- * total}`), not a scalar. `costUsd` takes `cost.total`.
+ * total, totalFromProvider?}`), not a scalar. `costUsd` takes `cost.total`.
+ *
+ * Since pi 1.x `cost.total` is the *best available* figure, not always the
+ * catalog estimate: when the provider reports what it billed, pi writes that
+ * into `total` and sets `totalFromProvider: true`. OpenRouter does this on both
+ * of pi's OpenRouter transports (`applyOpenRouterReportedCost`, BYOK upstream
+ * cost included), so an OpenRouter turn's `costUsd` is the amount OpenRouter
+ * charged — no code change was needed for that. Everywhere else `total` is
+ * still `rate × tokens` from the catalog. The per-component fields stay
+ * catalog estimates in both cases, so they need not sum to `total`; callboard
+ * only reads `total`. `totalFromProvider` itself is not surfaced yet.
  *
  * ## Errors are messages, not events
  *
  * pi has no error event. A provider failure arrives as an ordinary assistant
  * `message_end` with `stopReason: "error"` and an `errorMessage` string. A
  * cancel arrives the same way with `stopReason: "aborted"`.
+ *
+ * pi-ai 1.x added two more stop reasons, neither an error: `"pending"` is the
+ * placeholder on a message still streaming (never on a finished one), and
+ * `"deferred"` is a response the provider will deliver later, which only a
+ * request that opts into deferral can get and callboard never sends.
+ * {@link buildTerminalResult} reports anything that is not `"error"` and
+ * carries no `errorMessage` as success, so both land there.
  *
  * @see plans/pi-adapter.md
  * @see plans/pi-spike-findings.md (§3 — ordering; §4 — usage; §6 — cancel)
@@ -308,6 +325,8 @@ export function buildTerminalResult(acc: PiTurnAccounting): AgentEvent & { type:
  * two mean different things all the way to the debug panel's cells.
  */
 export function translateUsage(usage: PiUsageLike): TokenUsage {
+  // Provider-billed when `cost.totalFromProvider` is set (OpenRouter), the
+  // catalog estimate otherwise — see the header's "Usage".
   const cost = typeof usage.cost === "number" ? usage.cost : usage.cost?.total;
   const count = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
   const cacheReadTokens = count(usage.cacheRead);

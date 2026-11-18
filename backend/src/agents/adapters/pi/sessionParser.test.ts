@@ -482,6 +482,39 @@ describe("parsePiSession", () => {
     expect(parsePiSession(path)).toEqual([expect.objectContaining({ content: "still here" })]);
   });
 
+  /**
+   * pi 1.x's two new entry types. A `usage` entry is spend outside any turn —
+   * here the cache warmer's — and a `context_edit` changes what the *model* is
+   * shown next, not what happened. Both leave the rendered transcript exactly
+   * as it was, including the edited target and its cost.
+   */
+  it("renders a conversation with usage (cache_warm) and context_edit entries exactly as without them", () => {
+    // One session id for both, parsed in turn, so `generationKey` matches too.
+    const plain = parsePiSession(writeSession("s1", conversationEntries()));
+    const entries = conversationEntries();
+    const withExtras = parsePiSession(
+      writeSession("s1", [
+        ...entries.slice(0, 2),
+        {
+          type: "usage",
+          id: "u1",
+          parentId: "e2",
+          timestamp: TS,
+          kind: "cache_warm",
+          provider: "openrouter",
+          model: "google/gemini-3.6-flash",
+          usage: { input: 0, output: 1, cacheRead: 9000, cacheWrite: 0, totalTokens: 9001, cost: { input: 0, output: 0, cacheRead: 0.02, cacheWrite: 0, total: 0.02 } },
+        },
+        { ...entries[2], parentId: "u1" },
+        entries[3],
+        // pi's own recovery shape: omit an earlier entry from the model's context.
+        { type: "context_edit", id: "ce1", parentId: "e4", timestamp: TS, targetId: "e2", replacement: null },
+        { type: "context_edit", id: "ce2", parentId: "ce1", timestamp: TS, targetId: "e4", replacement: { content: [{ type: "text", text: "edited" }] } },
+      ]),
+    );
+    expect(withExtras).toEqual(plain);
+  });
+
   it("shows a displayed custom_message but hides a hidden one", () => {
     const path = writeSession("s1", [
       { type: "custom_message", id: "c1", parentId: null, timestamp: TS, customType: "ext", content: "visible note", display: true },
