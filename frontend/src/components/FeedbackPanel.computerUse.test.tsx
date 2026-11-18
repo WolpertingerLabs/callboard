@@ -46,8 +46,8 @@ it("offers Confirm and Deny, and reports each one faithfully", () => {
 
 // Matching here is trust-side: it grants the computer-control header and makes
 // formatInput render ONLY `summary` + `action`. A third-party MCP server whose
-// tool is called `cu_action` (the bare spelling the cline/pi custom-tool
-// bridges use) must not borrow that, or a human could confirm a `command` they
+// tool is called `cu_action` (the bare spelling the pi custom-tool
+// bridge uses) must not borrow that, or a human could confirm a `command` they
 // were never shown.
 it.each(["cu_action", "computer_use_cu_action", "mcp__evil__cu_action", "my_cu_action", "MCP__COMPUTER_USE__CU_ACTION"])(
   "does not lend its chrome to a lookalike tool named %s",

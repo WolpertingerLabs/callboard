@@ -10,7 +10,7 @@
  */
 import type { SessionProvider } from "../agents/ports/SessionProvider.js";
 import { getSessionProviders } from "../agents/factory.js";
-import { isInternalProvider, isRetiredProvider, type InternalProviderKind } from "../agents/ports/AgentProvider.js";
+import { isInternalProvider, isRetiredProvider, RETIRED_PROVIDER_LABELS, type InternalProviderKind } from "../agents/ports/AgentProvider.js";
 import { buildHandoffTurns, flattenForHandoff, truncateAtCutoff, type HandoffTurn } from "../agents/handoff.js";
 import { historyBeforePrompt } from "./chat-rerun.js";
 import { buildCompressedTurns, type CompressDirection } from "../agents/compression.js";
@@ -44,7 +44,7 @@ export function resolveForkSource(
   // OpenRouter one, and the fallback would send the fork looking for a session
   // log nothing can read. An explicit 400 beats a fork that appears to work.
   if (isRetiredProvider(meta.provider)) {
-    return { ok: false, status: 400, error: `This chat ran on the OpenRouter agent harness, which has been removed. It cannot be ${verb}.` };
+    return { ok: false, status: 400, error: `This chat ran on ${RETIRED_PROVIDER_LABELS[meta.provider]}, which has been removed. It cannot be ${verb}.` };
   }
 
   // The SOURCE kind comes off persisted metadata, so it is read with the
@@ -70,7 +70,7 @@ export function resolveForkSource(
  * timestamp cannot express "strictly before the prompt" in every log (the
  * Claude CLI stamps the lines after a prompt earlier than the prompt), so:
  * a provider with `forkSessionBefore` cuts at the prompt's line; one whose
- * `forkSession` drops every entry stamped after the cutoff (pi, Cline) is
+ * `forkSession` drops every entry stamped after the cutoff (pi) is
  * forked one millisecond before the prompt, which drops the prompt's own
  * entry by construction; the seeded path slices the parsed history at the
  * prompt's index.

@@ -55,7 +55,7 @@ vi.mock("../utils/git.js", () => ({ getGitInfo: () => ({ isGitRepo: false }), re
  * produce a preview for its files, so a walk over all three is visible in
  * `previewCalls` as calls landing on providers that return null.
  */
-const PROVIDER_KINDS = ["claude-code", "codex", "cline"] as const;
+const PROVIDER_KINDS = ["claude-code", "codex", "pi"] as const;
 
 function makeProvider(kind: string) {
   return {
@@ -136,7 +136,7 @@ const BULK_IDS = Array.from({ length: 60 }, (_, i) => `claude-code-${String(i).p
 beforeEach(() => {
   overrideProviders = undefined;
   previewCalls = {};
-  sessionsByProvider = { "claude-code": [...BULK_IDS], codex: [], cline: [] };
+  sessionsByProvider = { "claude-code": [...BULK_IDS], codex: [], pi: [] };
   fileChats = BULK_IDS.map((id, i) => chat(id, i % 2 === 1 ? { triggered: true } : {}));
 });
 
@@ -176,8 +176,8 @@ describe("GET /api/chats preview reads", () => {
   });
 
   it("routes the read to the owning provider instead of trying all of them", async () => {
-    sessionsByProvider = { "claude-code": ["claude-code-a"], codex: ["codex-a"], cline: ["cline-a"] };
-    fileChats = [chat("claude-code-a"), chat("codex-a", { provider: "codex" }), chat("cline-a", { provider: "cline" })];
+    sessionsByProvider = { "claude-code": ["claude-code-a"], codex: ["codex-a"], pi: ["pi-a"] };
+    fileChats = [chat("claude-code-a"), chat("codex-a", { provider: "codex" }), chat("pi-a", { provider: "pi" })];
 
     const body = await listChats({ limit: "10", offset: "0" });
     expect(body.chats).toHaveLength(3);
@@ -187,27 +187,27 @@ describe("GET /api/chats preview reads", () => {
     // Three rows, three reads — one each, none speculative.
     expect(totalPreviewCalls()).toBe(3);
     expect(previewCalls["codex"]).toEqual(["/logs/codex-a.jsonl"]);
-    expect(previewCalls["cline"]).toEqual(["/logs/cline-a.jsonl"]);
+    expect(previewCalls["pi"]).toEqual(["/logs/pi-a.jsonl"]);
   });
 
   it("falls back to walking every provider when the record names none", async () => {
-    // No metadata.provider, and discovery says cline owns it — a session whose
+    // No metadata.provider, and discovery says pi owns it — a session whose
     // record predates the provider field must not lose its preview.
-    sessionsByProvider = { "claude-code": [], codex: [], cline: ["cline-orphan"] };
+    sessionsByProvider = { "claude-code": [], codex: [], pi: ["pi-orphan"] };
     fileChats = [];
     const body = await listChats({ limit: "10", offset: "0" });
-    expect(previewOf(body, "cline-orphan")).toBe("preview of /logs/cline-orphan.jsonl");
+    expect(previewOf(body, "pi-orphan")).toBe("preview of /logs/pi-orphan.jsonl");
   });
 
   it("falls back to walking every provider when the record names the wrong one", async () => {
-    sessionsByProvider = { "claude-code": [], codex: [], cline: ["cline-mislabelled"] };
-    fileChats = [chat("cline-mislabelled", { provider: "codex" })];
+    sessionsByProvider = { "claude-code": [], codex: [], pi: ["pi-mislabelled"] };
+    fileChats = [chat("pi-mislabelled", { provider: "codex" })];
     const body = await listChats({ limit: "10", offset: "0" });
-    expect(previewOf(body, "cline-mislabelled")).toBe("preview of /logs/cline-mislabelled.jsonl");
+    expect(previewOf(body, "pi-mislabelled")).toBe("preview of /logs/pi-mislabelled.jsonl");
   });
 
   it("preserves the rest of a chat's metadata alongside the preview", async () => {
-    sessionsByProvider = { "claude-code": ["claude-code-meta"], codex: [], cline: [] };
+    sessionsByProvider = { "claude-code": ["claude-code-meta"], codex: [], pi: [] };
     fileChats = [chat("claude-code-meta", { agentAlias: "forge", cardId: "card-1", triggered: false })];
     const body = await listChats({ limit: "10", offset: "0" });
     expect(JSON.parse(body.chats[0].metadata)).toEqual({
@@ -221,19 +221,19 @@ describe("GET /api/chats preview reads", () => {
   });
 
   it("lets a freshly read preview win over one stored in the record", async () => {
-    sessionsByProvider = { "claude-code": ["claude-code-stale"], codex: [], cline: [] };
+    sessionsByProvider = { "claude-code": ["claude-code-stale"], codex: [], pi: [] };
     fileChats = [chat("claude-code-stale", { preview: "an old preview" })];
     const body = await listChats({ limit: "10", offset: "0" });
     expect(previewOf(body, "claude-code-stale")).toBe("preview of /logs/claude-code-stale.jsonl");
   });
 
   it("leaves a stored preview in place when the log yields nothing", async () => {
-    // "pi-*" matches no provider's naming convention, so every provider
+    // "anon-*" matches no provider's naming convention, so every provider
     // declines and the record's own preview is what the client sees.
-    sessionsByProvider = { "claude-code": ["pi-unreadable"], codex: [], cline: [] };
-    fileChats = [chat("pi-unreadable", { preview: "recorded at spawn" })];
+    sessionsByProvider = { "claude-code": ["anon-unreadable"], codex: [], pi: [] };
+    fileChats = [chat("anon-unreadable", { preview: "recorded at spawn" })];
     const body = await listChats({ limit: "10", offset: "0" });
-    expect(previewOf(body, "pi-unreadable")).toBe("recorded at spawn");
+    expect(previewOf(body, "anon-unreadable")).toBe("recorded at spawn");
   });
 });
 
@@ -243,7 +243,7 @@ describe("GET /api/chats?cardsOnly=true preview reads", () => {
     sessionsByProvider = {
       "claude-code": ["claude-code-member", "claude-code-child", "claude-code-closed", ...BULK_IDS],
       codex: ["codex-member"],
-      cline: [],
+      pi: [],
     };
     fileChats = [
       // An open card root; the child is admitted by descent, not by any card
@@ -279,7 +279,7 @@ describe("GET /api/chats?cardsOnly=true preview reads", () => {
     await listChats({ limit: "20", offset: "0", cardsOnly: "true" });
     expect(previewCalls["claude-code"]).toEqual(["/logs/claude-code-member.jsonl", "/logs/claude-code-child.jsonl"]);
     expect(previewCalls["codex"]).toEqual(["/logs/codex-member.jsonl"]);
-    expect(previewCalls["cline"] ?? []).toEqual([]);
+    expect(previewCalls["pi"] ?? []).toEqual([]);
   });
 });
 
@@ -300,7 +300,7 @@ describe("GET /api/chats?includeLineage=true preview reads", () => {
     sessionsByProvider = {
       "claude-code": ["claude-code-root", "claude-code-kid", ...Array.from({ length: 30 }, (_, i) => `claude-code-fill-${String(i).padStart(2, "0")}`)],
       codex: [],
-      cline: [],
+      pi: [],
     };
     fileChats = [
       chat("claude-code-root", { bookmarked: true }),
@@ -362,7 +362,7 @@ describe("GET /api/chats?includeLineage=true preview reads", () => {
     // The other shape: root and kid share a row, so both are page members
     // rather than appended, and both must still carry a preview.
     fileChats = [chat("claude-code-root"), chat("claude-code-kid", { parentChatId: "claude-code-root" })];
-    sessionsByProvider = { "claude-code": ["claude-code-root", "claude-code-kid"], codex: [], cline: [] };
+    sessionsByProvider = { "claude-code": ["claude-code-root", "claude-code-kid"], codex: [], pi: [] };
     const body = await listChats({ limit: "20", offset: "0", includeLineage: "true" });
     expect(body).toMatchObject({ total: 1, windowRows: 1 });
     expect(body.chats.map((c: any) => c.id).sort()).toEqual(["claude-code-kid", "claude-code-root"]);

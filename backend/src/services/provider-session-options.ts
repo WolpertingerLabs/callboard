@@ -1,6 +1,6 @@
 /**
  * The per-harness extras sub-objects `sendMessage` puts on the query options
- * (`options.codex`, `options.acp`, `options.cline`, `options.pi`). Each builder
+ * (`options.codex`, `options.acp`, `options.pi`). Each builder
  * is the body of what was an inline `if (providerKind === …)` block in
  * claude.ts, moved verbatim apart from reading its inputs off an explicit
  * context instead of closing over sendMessage's locals.
@@ -11,7 +11,6 @@
  */
 import type { AgentSettings, DefaultPermissions, EffortLevel } from "shared/types/index.js";
 import type { AcpRunOptions } from "../agents/adapters/acp/AcpAdapter.js";
-import type { ClineAdapterOptions } from "../agents/adapters/cline/ClineAdapter.js";
 import type { CodexOptionsExtras } from "../agents/adapters/codex/optionsAdapter.js";
 import type { PiAdapterOptions } from "../agents/adapters/pi/PiAdapter.js";
 import { getSessionProvider } from "../agents/factory.js";
@@ -187,49 +186,13 @@ export function buildAcpExtras(ctx: ProviderOptionsContext & { acpProviderId: st
   return acp;
 }
 
-// For Cline chats, surface the per-provider settings the Cline adapter's
-// optionsAdapter looks for. Closest in shape to buildAcpExtras above rather than
-// the Codex one: Cline gates per call through `requestToolApproval`, so the
-// permission defaults are only the FIRST half of the decision and anything
-// resolving to "ask" escalates through the same `canUseTool` Claude Code uses.
-//
-// Unlike every other provider there is no credential *mode* to resolve and no
-// "not configured" error to raise here. `@cline/sdk` runs in this process and
-// falls back to its own environment lookup when no key is set, so a user whose
-// machine already has ANTHROPIC_API_KEY exported gets a working chat with an
-// empty Settings → API form. A genuinely missing credential surfaces as the
-// provider's own error on the terminal `result`, which is both more accurate
-// and more specific than anything a pre-flight check here could say.
-export async function buildClineExtras(ctx: ProviderOptionsContext): Promise<ClineAdapterOptions> {
-  const { agentSettings, chatModel, getDefaultPermissions, trackingId } = ctx;
-  // Per-chat override wins over the global default; either may be a
-  // cross-harness alias, resolved through the same registry as every other
-  // harness so `planner` lands on whatever the user pointed the `cline` target
-  // at.
-  const clineModel = (await resolveReasoningTarget({ provider: "cline", model: chatModel }, agentSettings)).model;
-  const chatEffort = ctx.chatEffort;
-  const cline: ClineAdapterOptions = {
-    ...(agentSettings.clineProviderId?.trim() && { providerId: agentSettings.clineProviderId.trim() }),
-    ...(clineModel && { model: clineModel }),
-    ...(agentSettings.clineApiKey?.trim() && { apiKey: agentSettings.clineApiKey.trim() }),
-    ...(agentSettings.clineBaseUrl?.trim() && { baseUrl: agentSettings.clineBaseUrl.trim() }),
-    ...(typeof agentSettings.clineMaxIterations === "number" && { maxIterations: agentSettings.clineMaxIterations }),
-    ...(chatEffort && { effort: chatEffort }),
-    // The accessor, not its value — see buildAcpExtras above for why. Both
-    // permission passes must read the policy at the same moment.
-    getPermissions: getDefaultPermissions,
-  };
-  log.info(
-    `Cline chat config — trackingId=${trackingId}, provider=${agentSettings.clineProviderId?.trim() || "(anthropic)"}, ` +
-      `model=${clineModel ?? "(provider default)"}, effort=${chatEffort ?? "(default)"}, ` +
-      `baseUrl=${agentSettings.clineBaseUrl?.trim() || "(default)"}, ` +
-      `apiKey=${agentSettings.clineApiKey?.trim() ? `…${agentSettings.clineApiKey.trim().slice(-4)}` : "(from environment)"}`,
-  );
-  return cline;
-}
-
-// pi chats. Same shape as buildClineExtras above — pi also runs in this process
-// and takes its credentials as config fields — with one difference that is not
+// pi chats. Closest in shape to buildAcpExtras above rather than the Codex one:
+// pi gates per call through its `tool_call` extension, so the permission
+// defaults are only the FIRST half of the decision and anything resolving to
+// "ask" escalates through the same `canUseTool` Claude Code uses. pi runs in this
+// process and takes its credentials as config fields, falling back to its own
+// environment lookup when no key is set, so there is no credential *mode* to
+// resolve and no "not configured" error to raise here. One difference is not
 // cosmetic: **pi resumes by file path, not by session id**.
 //
 // `queryOpts.options.resume` carries the id, as it does for every other
@@ -265,7 +228,7 @@ export async function buildPiExtras(ctx: ProviderOptionsContext & { resumeSessio
     ...(chatEffort && { effort: chatEffort }),
     ...(piResumePath && { resumeSessionPath: piResumePath }),
     // The accessor, not its value — both permission passes must read the
-    // policy at the same moment. See buildClineExtras above.
+    // policy at the same moment. See buildAcpExtras above.
     getPermissions: getDefaultPermissions,
   };
   log.info(

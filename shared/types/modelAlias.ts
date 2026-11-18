@@ -4,11 +4,12 @@
  * A single named alias (e.g. "planner", "worker") that resolves to a different
  * concrete model depending on which harness/provider runs the session — `opus`
  * under claude-code, a Codex slug under codex, a vendor model id under
- * acp/cline/pi. Aliases are accepted anywhere a model is configured (new chats,
+ * acp/pi. Aliases are accepted anywhere a model is configured (new chats,
  * per-chat overrides, provider defaults, cron/trigger actions, job steps, MCP
  * tools) and resolve to the per-provider target when the session starts.
- * `openrouter` is the one member of {@link HarnessProvider} that resolves
- * nowhere — see its doc-comment for why the key outlives its harness.
+ * `openrouter` and `cline` are the members of {@link HarnessProvider} that
+ * resolve nowhere — see their doc-comments for why the keys outlive their
+ * harnesses.
  *
  * Supersedes the OpenRouter-only `AgentSettings.openRouterModelAliases` map,
  * which is migrated into the `openrouter` target of each alias on load.
@@ -41,8 +42,12 @@ import type { UiAgentProviderKind } from "./providers.js";
  * would make `validateModelAliases` treat that key as an unknown provider and
  * strip it on the next settings write. Costs one union member; saves silently
  * eating typed-in slugs.
+ *
+ * **`"cline"` is kept for the same reason.** The Cline harness was removed the
+ * same way, so a `cline` target resolves nowhere either, but an alias that
+ * carries one must still validate and round-trip through a settings save.
  */
-export type HarnessProvider = UiAgentProviderKind | "openrouter";
+export type HarnessProvider = UiAgentProviderKind | "openrouter" | "cline";
 
 export interface ModelAlias {
   /** Alias name, e.g. "planner". Unique case-insensitively across the registry. */

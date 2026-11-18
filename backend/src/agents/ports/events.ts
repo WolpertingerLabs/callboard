@@ -43,7 +43,6 @@ export interface TokenUsage {
    * Whether these are per-turn or cumulative-for-the-session is the emitting
    * adapter's choice and must match `inputTokens`/`outputTokens`:
    *
-   *     cline   running totals, differenced on read
    *     acp     running totals, differenced on read
    *     pi      per-generation, used as-is
    *
@@ -168,8 +167,8 @@ export type AgentEvent =
        * in its Stop column and filters on, so it is not narrowed to a union:
        * each engine owns its vocabulary and a value this build has not seen
        * should still render. ACP sends ACP's (`end_turn`, `max_tokens`,
-       * `refusal`, …); Cline sends its loop-level finish reason (`completed`,
-       * `max_iterations`, …). Absent when the engine reports nothing — Codex's
+       * `refusal`, …); the retired Cline harness sent its loop-level finish
+       * reason (`completed`, `max_iterations`, …). Absent when the engine reports nothing — Codex's
        * rollout has no stop reason anywhere in it.
        */
       stopReason?: string;

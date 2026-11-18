@@ -1,7 +1,7 @@
 /**
- * ACP and Cline record the user's turn themselves, and so record its images
- * too, as image-store ids. Without them a turn sent with only images shows as
- * nothing (Cline) or as `[image …]` text after the attachment blocks (ACP),
+ * ACP records the user's turn itself, and so records its images too, as
+ * image-store ids. Without them a turn sent with only images shows as
+ * `[image …]` text after the attachment blocks,
  * which `splitAttachmentBlocks` cannot split and the optimistic bubble cannot
  * match.
  *
@@ -20,7 +20,6 @@ process.env.CALLBOARD_DATA_DIR = dataDir;
 const { userMessageOf } = await import("./acp/AcpAgentQuery.js");
 const { AcpTranscriptWriter } = await import("./acp/transcript.js");
 const { findAcpTranscript, parseAcpTranscript } = await import("./acp/sessionParser.js");
-const { internDataUris } = await import("./cline/ClineAgentQuery.js");
 const { ImageStorageService } = await import("../../services/image-storage.js");
 
 afterAll(() => rmSync(dataDir, { recursive: true, force: true }));
@@ -61,14 +60,5 @@ describe("ACP userMessageOf", () => {
     const [turn] = parseAcpTranscript(findAcpTranscript("img-only")!.filePath);
     expect(turn).toMatchObject({ role: "user", type: "text", content: "", imageIds: user.imageIds });
     expect(stored().some((f) => f.startsWith(user.imageIds[0]))).toBe(true);
-  });
-});
-
-describe("Cline internDataUris", () => {
-  it("interns data URIs, deduped, and ignores anything else", () => {
-    const uri = `data:image/png;base64,${Buffer.from("cline-image").toString("base64")}`;
-    const ids = internDataUris([uri, uri, "https://example.com/x.png"]);
-    expect(ids).toHaveLength(1);
-    expect(stored().some((f) => f.startsWith(ids[0]))).toBe(true);
   });
 });

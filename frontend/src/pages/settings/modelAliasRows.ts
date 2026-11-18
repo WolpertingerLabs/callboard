@@ -4,9 +4,9 @@ import type { ModelAlias } from "shared/types/index.js";
  * Row model for the Settings → Model Aliases editor, and the two conversions
  * between it and the stored `ModelAlias[]`.
  *
- * **There is no OpenRouter column, but `targets.openrouter` still round-trips.**
- * The harness was removed, so nothing resolves that target any more (no call
- * site passes `"openrouter"` to `resolveModelAlias`) and offering a picker for
+ * **There is no OpenRouter or Cline column, but `targets.openrouter` and
+ * `targets.cline` still round-trip.** Both harnesses were removed, so nothing resolves that target any more (no call
+ * site passes `"openrouter"` or `"cline"` to `resolveModelAlias`) and offering a picker for
  * it invited users to configure a model that could never run. The stored value
  * is still user data, though — carried on `AliasRow` and written back by
  * `toAliases()` untouched, because the editor rebuilds `targets` from row state
@@ -71,10 +71,26 @@ export function toAliases(rows: AliasRow[]): ModelAlias[] {
 
 /** True when any column the page still renders has a target. */
 export function hasEditableTarget(r: AliasRow): boolean {
-  return Boolean(r.claudeCode.trim() || r.codex.trim() || r.acp.trim() || r.cline.trim() || r.pi.trim());
+  return Boolean(r.claudeCode.trim() || r.codex.trim() || r.acp.trim() || r.pi.trim());
 }
 
 /** True when the retained OpenRouter slug is the row's *only* target. */
 export function onlyOpenRouterTarget(r: AliasRow): boolean {
-  return Boolean(r.openrouter.trim()) && !hasEditableTarget(r);
+  return Boolean(r.openrouter.trim()) && !r.cline.trim() && !hasEditableTarget(r);
+}
+
+/** The retired harnesses whose targets {@link AliasRow} carries without a column. */
+export const RETIRED_ALIAS_TARGETS = [
+  { key: "openrouter", label: "OpenRouter" },
+  { key: "cline", label: "Cline" },
+] as const satisfies readonly { key: keyof AliasRow; label: string }[];
+
+/** True when the row carries a retired target. */
+export function hasRetiredTarget(r: AliasRow): boolean {
+  return RETIRED_ALIAS_TARGETS.some(({ key }) => r[key].trim());
+}
+
+/** True when retired targets are all the row has — nothing it carries resolves. */
+export function onlyRetiredTargets(r: AliasRow): boolean {
+  return hasRetiredTarget(r) && !hasEditableTarget(r);
 }

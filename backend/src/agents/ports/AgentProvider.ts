@@ -58,7 +58,7 @@ export interface AgentQuery extends AsyncIterable<AgentEvent> {
  * travels in a separate `providerId` (see {@link AcpAdapter}) and the union
  * stays closed at one entry for the whole family.
  */
-export type AgentProviderKind = "claude-code" | "codex" | "acp" | "cline" | "pi" | "mock";
+export type AgentProviderKind = "claude-code" | "codex" | "acp" | "pi" | "mock";
 
 /**
  * The provider kinds a **request** may ask for — the user-selectable harnesses.
@@ -93,13 +93,16 @@ export type AgentProviderKind = "claude-code" | "codex" | "acp" | "cline" | "pi"
  *   neither method, so adding a transcript writer later cannot silently start
  *   minting wedged chats. An honest 400 beats a fork that renders and then
  *   forgets.
- * - **Every other kind is included**, `cline` and `pi` among them since Phase 5
- *   of the pi landing. Both session providers implement `forkSession` *and*
- *   `seedSession`, and both round-trip a real handoff — seed, read back, fork,
- *   read back again, with the carried content intact at every hop. They were
+ * - **Every other kind is included**, `pi` among them since Phase 5 of the pi
+ *   landing. Its session provider implements `forkSession` *and*
+ *   `seedSession`, and round-trips a real handoff — seed, read back, fork, read
+ *   back again, with the carried content intact at every hop. (The retired
+ *   Cline harness was admitted at the same time on the same evidence.) Both were
  *   absent from the frontend's `ForkProvider` union for no reason beyond nobody
  *   having widened it, which meant Callboard had built cross-harness handoff
  *   into two harnesses and offered it into neither.
+ * - **Retired kinds** ({@link RETIRED_PROVIDER_KINDS}) are neither sources nor
+ *   targets: nothing left in the process can read or write their transcripts.
  *
  * The frontend mirror of this is `ForkProvider` in `frontend/src/api.ts`; the
  * enforcing guard is in `routes/chats.ts`.
@@ -167,14 +170,33 @@ export function isInternalProvider(value: unknown): value is InternalProviderKin
  * can never be routed, resumed or forked, so nothing may treat membership here
  * as "supported but hidden". That is what {@link INTERNAL_PROVIDER_KINDS} is
  * for.
+ *
+ * `"cline"` joined the list when the Cline harness was removed. Unlike
+ * OpenRouter, no production install was known to hold Cline chats at the time;
+ * it is retired the same way anyway so any install that does gets a refusal by
+ * name rather than a silent fallback. Its transcripts under
+ * `<DATA_DIR>/cline-sessions/` are left on disk untouched.
  */
-export const RETIRED_PROVIDER_KINDS = ["openrouter"] as const;
+export const RETIRED_PROVIDER_KINDS = ["openrouter", "cline"] as const;
+
+/** A harness kind this build once implemented and no longer does. */
+export type RetiredProviderKind = (typeof RETIRED_PROVIDER_KINDS)[number];
+
+/**
+ * Human-readable name for each retired harness, for refusal messages
+ * ("This chat ran on {label}, which has been removed"). A `Record` so adding a
+ * kind to {@link RETIRED_PROVIDER_KINDS} fails to compile until it is named.
+ */
+export const RETIRED_PROVIDER_LABELS: Record<RetiredProviderKind, string> = {
+  openrouter: "the OpenRouter agent harness",
+  cline: "Cline",
+};
 
 /**
  * Type guard: a persisted provider value naming a harness this build removed.
  * See {@link RETIRED_PROVIDER_KINDS}.
  */
-export function isRetiredProvider(value: unknown): value is (typeof RETIRED_PROVIDER_KINDS)[number] {
+export function isRetiredProvider(value: unknown): value is RetiredProviderKind {
   return typeof value === "string" && (RETIRED_PROVIDER_KINDS as readonly string[]).includes(value);
 }
 

@@ -155,10 +155,6 @@ interface LocalStorageData {
   defaultAcpProviderId?: string;
   /** Last-selected ACP model, as the vendor names it. */
   defaultAcpModel?: string;
-  /** User's last-selected Cline model. Kept separate from the other providers'
-   * model values so switching the toggle restores each one's prior selection.
-   * Empty/absent means "use the global default from Settings → API". */
-  defaultClineModel?: string;
   defaultPiModel?: string;
   /** User's last-selected reasoning effort in the New Chat panel. Shared by
    * every reasoning-capable provider. Stored even when the provider is Claude
@@ -364,7 +360,7 @@ export function getDefaultProvider(): AgentProviderKind {
   // Validate against the known set on read — protects against stale or
   // forward-compat values (e.g. an experimental "codex" written by a
   // future build then opened in an older one). Unknown → claude-code.
-  // This is also what retires a saved `"openrouter"` default: the harness is
+  // This is also what retires a saved `"openrouter"` or `"cline"` default: the harness is
   // gone from the set, so the stored preference lapses to claude-code on the
   // next read rather than needing a migration.
   return readEnum(getStorageData().defaultProvider, UI_AGENT_PROVIDER_KINDS, "claude-code");
@@ -411,24 +407,6 @@ export function getDefaultAcpModel(): string {
 
 export function saveDefaultAcpModel(model: string): void {
   updateStorage({ defaultAcpModel: model });
-}
-
-/**
- * Last-selected Cline model.
- *
- * One value, not one per Cline provider. Changing the provider in
- * Settings → API is a rare, deliberate act, and the suggestion list re-scopes
- * itself the moment it changes — so a carried-over model from the previous
- * provider is visible and correctable rather than silent. Same trade the ACP
- * pair makes across vendors.
- */
-export function getDefaultClineModel(): string {
-  const data = getStorageData();
-  return typeof data.defaultClineModel === "string" ? data.defaultClineModel : "";
-}
-
-export function saveDefaultClineModel(model: string): void {
-  updateStorage({ defaultClineModel: model });
 }
 
 /**

@@ -6,7 +6,6 @@ import {
   getSystemInfo,
   getOpenRouterCatalog,
   getAcpModels,
-  getClineProviders,
   getPiProviders,
   getEngines,
   refreshEngines,
@@ -32,7 +31,6 @@ import type { EngineRecheckOutcome } from "./EngineStatusCard";
 import type { AgentSettings, OpenRouterModelInfo } from "shared/types/index.js";
 import type { SystemInfo, AcpProviderInfo, AcpModelCatalogInfo, EngineStatus, EngineBinaryCheckResponse } from "../../api";
 import OpenRouterModelSelector from "../../components/OpenRouterModelSelector";
-import ClineModelSelector from "../../components/ClineModelSelector";
 import CodexModelSelector from "../../components/CodexModelSelector";
 import { getDefaultProvider, getDefaultAcpProviderId } from "../../utils/localStorage";
 import type { AgentProviderKind } from "../../utils/localStorage";
@@ -130,16 +128,7 @@ const providerReferenceLinks: Record<SettingsTab, ReferenceLink[]> = {
     { label: "Agent Client Protocol", href: "https://agentclientprotocol.com", note: "The protocol callboard speaks to these agents" },
     { label: "OpenCode docs", href: "https://opencode.ai/docs/", note: "Model, auth and permission configuration for OpenCode" },
   ],
-  // Cline embeds an SDK rather than wrapping a service, so its billing lives
-  // wherever the user's chosen model provider bills — there is no Cline account
-  // in the picture. The links that help are the SDK's own docs plus the console
-  // for the default provider.
-  cline: [
-    { label: "Cline SDK docs", href: "https://docs.cline.bot/sdk/overview", note: "The agent runtime callboard embeds" },
-    { label: "Model providers", href: "https://docs.cline.bot/sdk/model-providers", note: "Provider ids and credentials the SDK accepts" },
-    { label: "Console billing", href: "https://console.anthropic.com/settings/billing", note: "Anthropic credits, for the default provider" },
-  ],
-  // Same shape as Cline: pi embeds a runtime rather than wrapping a service, so
+  // pi embeds a runtime rather than wrapping a service, so
   // billing lives with whichever model provider the user points it at. Its
   // default is OpenRouter, which is where the useful links go.
   //
@@ -1034,11 +1023,6 @@ export default function ApiSettings() {
     codexOpenRouterModel,
     acpUseOpenRouter,
     acpOpenRouterApiKey,
-    clineProviderId,
-    clineModel,
-    clineApiKey,
-    clineBaseUrl,
-    clineMaxIterations,
     piProviderId,
     piModel,
     piApiKey,
@@ -1052,7 +1036,6 @@ export default function ApiSettings() {
   // which tab is open. Kept in sync by the effect below rather than in
   // `loadAll`, so switching tabs re-seeds it without a re-fetch.
   const [acpProviderModel, setAcpProviderModel] = useState("");
-  const [clineProviders, setClineProviders] = useState<string[]>([]);
   const [piProviders, setPiProviders] = useState<string[]>([]);
 
   const loadAll = async () => {
@@ -1104,11 +1087,6 @@ export default function ApiSettings() {
         setActiveAcpProviderId((current) => current || pick.id);
       }
       setForm(formFromSettings(s));
-      // Provider list comes from the SDK, not a table here. Best-effort: the
-      // fields are free text, so an offline backend degrades to typing an id.
-      getClineProviders()
-        .then(({ providers }) => setClineProviders(providers))
-        .catch(() => {});
       // Catalog (for supportedParameters); best-effort — fields still work offline.
       getOpenRouterCatalog()
         .then(({ models }) => setOrModels(models))
@@ -1573,7 +1551,6 @@ export default function ApiSettings() {
           { kind: "claude-code" as SettingsTab, label: "Claude Code", icon: <Bot size={14} />, acpId: "" },
           { kind: "openrouter" as SettingsTab, label: "OpenRouter", icon: <Network size={14} />, acpId: "" },
           { kind: "codex" as SettingsTab, label: "Codex", icon: <Terminal size={14} />, acpId: "" },
-          { kind: "cline" as SettingsTab, label: "Cline", icon: <Boxes size={14} />, acpId: "" },
           { kind: "pi" as SettingsTab, label: "pi", icon: <Boxes size={14} />, acpId: "" },
           // One tab per configured ACP vendor rather than a single "ACP" tab:
           // a user picks OpenCode here the same way they pick it in New Chat,
@@ -2506,131 +2483,6 @@ export default function ApiSettings() {
         </>
       )}
 
-      {activeProvider === "cline" && (
-        <>
-          <EngineStatusCard engine={engineFor("cline")} loading={enginesLoading} onRecheck={handleRecheckEngines} onEnginesUpdated={handleEnginesUpdated} />
-          <ReferenceLinksSection provider="cline" />
-
-          {/* Cline — provider + credentials */}
-          <div style={sectionStyle}>
-            <div style={headerStyle}>
-              <Key size={16} style={{ color: "var(--accent-text)" }} />
-              <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Provider &amp; Credentials</span>
-            </div>
-            <div style={subtitleStyle}>
-              Cline runs <strong>inside Callboard</strong> — there is no CLI to install and no Cline account to sign into. It brings its own coding tools and
-              talks directly to the model provider you pick here, using your key.
-            </div>
-
-            <div style={fieldWrap}>
-              <label htmlFor="clineProviderId" style={labelStyle}>
-                Provider
-              </label>
-              <input
-                id="clineProviderId"
-                type="text"
-                list="cline-provider-ids"
-                value={clineProviderId}
-                onChange={(e) => setField("clineProviderId", e.target.value)}
-                placeholder="anthropic"
-                autoComplete="off"
-                spellCheck={false}
-                style={inputStyle}
-              />
-              <datalist id="cline-provider-ids">
-                {clineProviders.map((id) => (
-                  <option key={id} value={id} />
-                ))}
-              </datalist>
-              <div style={helpStyle}>
-                Which model provider the Cline runtime talks to. Blank means <code style={{ fontSize: 11 }}>anthropic</code>. The list comes from the installed
-                SDK. OpenRouter is one of them — pick <code style={{ fontSize: 11 }}>openrouter</code> and put your OpenRouter key below; no base URL needed.
-              </div>
-            </div>
-
-            <div style={fieldWrap}>
-              <label htmlFor="clineApiKey" style={labelStyle}>
-                API Key
-              </label>
-              <SecretField id="clineApiKey" value={clineApiKey} onChange={bind("clineApiKey")} placeholder="sk-..." />
-              <div style={helpStyle}>
-                Optional. Left blank, the runtime falls back to its own environment lookup (<code style={{ fontSize: 11 }}>ANTHROPIC_API_KEY</code>,{" "}
-                <code style={{ fontSize: 11 }}>OPENAI_API_KEY</code>, the AWS credential chain, …), so a machine that already has those configured needs nothing
-                here.
-              </div>
-            </div>
-
-            <div style={fieldWrap}>
-              <label htmlFor="clineBaseUrl" style={labelStyle}>
-                Base URL
-              </label>
-              <input
-                id="clineBaseUrl"
-                type="text"
-                value={clineBaseUrl}
-                onChange={(e) => setField("clineBaseUrl", e.target.value)}
-                placeholder="https://my-llm-host.internal/v1"
-                autoComplete="off"
-                spellCheck={false}
-                style={inputStyle}
-              />
-              <div style={helpStyle}>
-                Optional. Endpoint override — needed only for a self-hosted or OpenAI-compatible service. OpenRouter has its own provider id and does not need
-                one.
-              </div>
-            </div>
-          </div>
-
-          {/* Cline — model + loop ceiling */}
-          <div style={sectionStyle}>
-            <div style={headerStyle}>
-              <Cpu size={16} style={{ color: "var(--accent-text)" }} />
-              <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Model &amp; Limits</span>
-            </div>
-            <div style={subtitleStyle}>Default model for new Cline chats, and how long a single turn may loop.</div>
-
-            <div style={fieldWrap}>
-              <label htmlFor="clineModel" style={labelStyle}>
-                Default Model
-              </label>
-              {/* The same combobox the New Chat panel uses, scoped to the
-                  provider selected above — so changing the provider re-scopes
-                  the suggestions immediately, including to OpenRouter's list. */}
-              <ClineModelSelector
-                id="clineModel"
-                value={clineModel}
-                onChange={bind("clineModel")}
-                providerId={clineProviderId.trim() || "anthropic"}
-                placeholder="claude-sonnet-5"
-              />
-              <div style={helpStyle}>
-                Free text accepted — the provider validates the model. Leave empty and Cline uses its own default for the provider. An empty suggestion list
-                means the provider could not be reached, not that it has no models.
-              </div>
-            </div>
-
-            <div style={fieldWrap}>
-              <label htmlFor="clineMaxIterations" style={labelStyle}>
-                Max Iterations
-              </label>
-              <input
-                id="clineMaxIterations"
-                type="number"
-                min={1}
-                value={clineMaxIterations}
-                onChange={(e) => setField("clineMaxIterations", e.target.value)}
-                placeholder="(SDK default)"
-                autoComplete="off"
-                style={inputStyle}
-              />
-              <div style={helpStyle}>
-                Optional ceiling on agent-loop iterations per turn. A chat that hits it ends with &ldquo;max turns reached&rdquo; rather than an error.
-              </div>
-            </div>
-          </div>
-        </>
-      )}
-
       {error && <div style={{ fontSize: 13, color: "var(--error)", marginBottom: 12 }}>{error}</div>}
 
       <div style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "flex-end" }}>
@@ -2678,12 +2530,6 @@ export default function ApiSettings() {
           takes priority over one in the environment. What the agent is allowed to do is set under Permissions, and Callboard asks before every tool call it has
           not been told to allow. Note that <strong>third-party MCP servers do not apply to pi chats</strong>: pi has no MCP client, so a pi chat sees
           Callboard&rsquo;s own tools and pi&rsquo;s own built-ins, and nothing else.
-        </div>
-      ) : activeProvider === "cline" ? (
-        <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 16, lineHeight: 1.5 }}>
-          These are read when a Cline chat starts, so they take effect for new sessions; resume an existing chat to pick them up. Nothing is spawned and no
-          environment is rewritten — the runtime is embedded, so a blank field simply falls through to whatever the backend process already has. What the agent
-          is allowed to do is set under Permissions, and Callboard asks before every tool call it has not been told to allow.
         </div>
       ) : (
         <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 16, lineHeight: 1.5 }}>

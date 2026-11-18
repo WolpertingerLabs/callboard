@@ -26,7 +26,6 @@ vi.mock("./codex-execution-route.js", () => ({ resolveCodexExecutionRoute: async
 vi.mock("./claude-binary.js", () => ({ getClaudeCodeExecutablePath: async () => undefined }));
 vi.mock("./provider-session-options.js", () => ({
   buildCodexExtras: async (ctx: any) => ({ model: ctx.chatModel, permissions: ctx.getDefaultPermissions(), sandboxMode: "danger-full-access" }),
-  buildClineExtras: async () => ({ maxIterations: 50 }),
   buildPiExtras: async () => ({}),
 }));
 
@@ -81,12 +80,6 @@ describe("runChatModelCompletion", () => {
     await expect(runChatModelCompletion({ provider: "codex", prompt: "p" })).rejects.toThrow(/MCP servers/);
     expect(queries).toHaveLength(0);
     route.value = { route: "codex", injectedOpenRouter: false, mcpServerNames: ["github"] };
-  });
-
-  it("caps Cline's iterations and replaces its system prompt", async () => {
-    script.events = [{ type: "text", content: "s" }];
-    await runChatModelCompletion({ provider: "cline", prompt: "p", systemPrompt: "You summarise." });
-    expect(queries[0]!.req.options.cline).toMatchObject({ maxIterations: 3, systemPrompt: "You summarise." });
   });
 
   it("fails with the provider's reason when no text comes back", async () => {

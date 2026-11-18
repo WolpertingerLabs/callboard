@@ -35,8 +35,8 @@ describe("cronJobCreatePayload", () => {
       description: "d",
       prompt: " p ",
       type: "one-off" as const,
-      provider: "cline" as const,
-      models: { "claude-code": "opus", cline: " openai/x " },
+      provider: "pi" as const,
+      models: { "claude-code": "opus", pi: " openai/x " },
       effort: "high" as const,
       requireCompletion: true,
       qhEnabled: true,
@@ -50,7 +50,7 @@ describe("cronJobCreatePayload", () => {
       type: "one-off",
       status: "active",
       description: "d",
-      action: { type: "start_session", prompt: "p", provider: "cline", model: "openai/x", effort: "high", requireExplicitCompletion: true },
+      action: { type: "start_session", prompt: "p", provider: "pi", model: "openai/x", effort: "high", requireExplicitCompletion: true },
       quietHours: { enabled: true, start: "21:00", end: "05:00" },
       skipIfRunning: true,
     });
@@ -85,8 +85,8 @@ describe("cronJobFormFromJob / cronJobUpdatePayload", () => {
     });
   });
 
-  it("re-targets a retired OpenRouter cron to Claude Code and drops its model", () => {
-    const form = cronJobFormFromJob({ ...job, action: { type: "start_session", provider: "openrouter" as never, model: "x/y" } });
+  it.each(["openrouter", "cline"])("re-targets a retired %s cron to Claude Code and drops its model", (retired) => {
+    const form = cronJobFormFromJob({ ...job, action: { type: "start_session", provider: retired as never, model: "x/y" } });
     expect(form.provider).toBe("claude-code");
     expect(form.models).toStrictEqual({});
   });

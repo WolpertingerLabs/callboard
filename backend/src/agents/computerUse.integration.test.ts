@@ -5,7 +5,6 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { buildCodexToolServer } from "./adapters/codex/toolAdapter.js";
 import { buildAcpToolServer } from "./adapters/acp/toolAdapter.js";
 import { buildClaudeCodeToolServer } from "./adapters/claude-code/toolAdapter.js";
-import { buildClineTools } from "./adapters/cline/toolAdapter.js";
 import { buildPiTools } from "./adapters/pi/toolAdapter.js";
 import { defineTool, type ToolCallContext, type ToolServerSpec } from "./ports/tools.js";
 import { getToolCategorizer } from "./permissions/categorizers.js";
@@ -125,8 +124,7 @@ for (const engine of ["claude-code", "codex", "acp"] as const)
     });
   });
 
-for (const engine of ["cline", "pi"] as const)
-  it(`${engine} MCP-backed custom wrapper forwards cancellation/id and model-facing bytes`, async () => {
+it("pi MCP-backed custom wrapper forwards cancellation/id and model-facing bytes", async () => {
     const controller = new AbortController();
     let context: ToolCallContext | undefined;
     const spec = {
@@ -139,19 +137,16 @@ for (const engine of ["cline", "pi"] as const)
         }),
       ],
     };
-    const result =
-      engine === "cline"
-        ? await buildClineTools(spec).tools[0].execute({}, { agentId: "test", iteration: 0, toolCallId: "call-1", signal: controller.signal })
-        : await buildPiTools(spec).tools[0].execute("call-1", {}, controller.signal, undefined, undefined as never);
+    const result = await buildPiTools(spec).tools[0].execute("call-1", {}, controller.signal, undefined, undefined as never);
     expect(context?.signal).toBe(controller.signal);
     expect(context?.toolCallId).toBe("call-1");
     controller.abort();
     expect(context?.signal?.aborted).toBe(true);
-    expect(result).toEqual(engine === "cline" ? [{ type: "image", data: pixels, mediaType: "image/png" }] : { content, details: {} });
+    expect(result).toEqual({ content, details: {} });
   });
 
-it("all five engines categorize explicit control names, never guessed display labels", () => {
-  for (const engine of ["claude-code", "codex", "cline", "pi", "acp"] as const) {
+it("all four engines categorize explicit control names, never guessed display labels", () => {
+  for (const engine of ["claude-code", "codex", "pi", "acp"] as const) {
     for (const name of [
       "cu_request_control",
       "mcp__computer_use__cu_request_control",

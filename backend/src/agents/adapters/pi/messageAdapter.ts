@@ -2,11 +2,11 @@
  * Message adapter: pi's `AgentSessionEvent` stream → callboard's
  * {@link AgentEvent} union.
  *
- * ## One subscription per session, unlike Cline
+ * ## One subscription per session, unlike the retired Cline adapter
  *
  * `session.subscribe(listener)` hangs off the `AgentSession` itself, not off a
  * process-wide bus. So there is no `sessionId` filter here and none is needed —
- * the cross-feed guard that `cline/messageAdapter.ts` calls load-bearing simply
+ * the cross-feed guard the retired Cline adapter's `messageAdapter.ts` called load-bearing simply
  * does not apply. Each `PiAgentQuery` owns its session and hears only its own
  * events.
  *
@@ -133,8 +133,8 @@ interface PiMessageLike {
  * pi's `agent_end` can fire more than once per turn when `willRetry` is true, so
  * one `result` per `agent_end` would break the terminal contract. Terminal
  * accounting is assembled once by {@link buildTerminalResult}, which
- * `PiAgentQuery` calls after the stream ends. Same shape as the Cline and ACP
- * adapters.
+ * `PiAgentQuery` calls after the stream ends. Same shape as the ACP adapter (and the
+ * retired Cline one).
  */
 export function translatePiEvent(event: AgentSessionEvent): AgentEvent[] {
   switch (event.type) {
@@ -157,7 +157,7 @@ export function translatePiEvent(event: AgentSessionEvent): AgentEvent[] {
       // Deltas. Callboard's `text` is a complete unit rather than a delta (the
       // SSE layer does its own chunking), so the accumulating updates are
       // dropped and the whole message is emitted at `message_end` — the same
-      // choice `cline/messageAdapter.ts` makes about `content_start`.
+      // choice the retired Cline adapter made about `content_start`.
       return [];
     }
 
@@ -261,7 +261,7 @@ export interface PiTurnAccounting {
  * Usage is **summed across assistant messages**, not overwritten. A turn with
  * tool calls produces several assistant messages, each with its own per-message
  * usage, and the user is billed for all of them. This is the opposite of the
- * Cline adapter, whose `usage` event is already cumulative and where summing
+ * retired Cline adapter, whose `usage` event was cumulative and where summing
  * would double-count — the difference is a real property of the two streams, not
  * an inconsistency.
  */
@@ -292,7 +292,7 @@ export function recordTerminalSignal(acc: PiTurnAccounting, event: AgentSessionE
  * A cancelled turn reports `"success"`, not `"error"`. The distinction that
  * matters to `services/claude.ts` is whether `errorDetail` gets set, and claiming
  * an error nobody observed would put a red banner on a chat the user simply
- * stopped — the same reasoning `cline/messageAdapter.ts` records.
+ * stopped — the same reasoning the retired Cline adapter recorded.
  */
 export function buildTerminalResult(acc: PiTurnAccounting): AgentEvent & { type: "result" } {
   const aborted = acc.stopReason === "aborted";
@@ -312,7 +312,7 @@ export function buildTerminalResult(acc: PiTurnAccounting): AgentEvent & { type:
  * Cache tokens are deliberately not folded into `inputTokens`. They are billed
  * differently, `cost.total` already accounts for them, and inflating the input
  * count would make the token figure disagree with the cost figure beside it —
- * the same call the Cline adapter makes. `reasoning` is a **subset** of `output`
+ * the same call the retired Cline adapter made. `reasoning` is a **subset** of `output`
  * per pi's own doc-comment, so it rides along as a breakdown and is never added
  * on.
  *

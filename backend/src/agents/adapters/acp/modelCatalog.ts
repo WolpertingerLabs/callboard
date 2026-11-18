@@ -128,8 +128,8 @@ function catalogPath(): string {
  * In-memory mirror of the catalog file.
  *
  * Deliberately has no TTL, unlike every other model catalog in this codebase
- * (`services/openrouter-models.ts`, `services/codex-models.ts`, the pi and
- * Cline adapters) — and the difference is structural, not an oversight.
+ * (`services/openrouter-models.ts`, `services/codex-models.ts`, the pi
+ * adapter) — and the difference is structural, not an oversight.
  *
  * Two reasons, and the first is the strong one:
  *

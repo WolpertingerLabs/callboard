@@ -6,7 +6,7 @@
  * SessionProvider handles discovery (listing, reading, parsing old sessions).
  *
  * Both registries default to Claude Code implementations. Other adapters
- * (e.g. Codex, Cline) register via the per-kind Map; callers that
+ * (e.g. Codex, pi) register via the per-kind Map; callers that
  * omit `kind` keep the historical Claude-Code default so unmodified call
  * sites are unaffected.
  *
@@ -22,8 +22,6 @@ import { CodexAdapter } from "./adapters/codex/CodexAdapter.js";
 import { CodexSessionProvider } from "./adapters/codex/CodexSessionProvider.js";
 import { AcpAdapter } from "./adapters/acp/AcpAdapter.js";
 import { AcpSessionProvider } from "./adapters/acp/AcpSessionProvider.js";
-import { ClineAdapter } from "./adapters/cline/ClineAdapter.js";
-import { ClineSessionProvider } from "./adapters/cline/ClineSessionProvider.js";
 import { PiAdapter } from "./adapters/pi/PiAdapter.js";
 import { PiSessionProvider } from "./adapters/pi/PiSessionProvider.js";
 
@@ -69,8 +67,6 @@ function constructProvider(kind: AgentProviderKind, providerId?: string): AgentP
       return new ClaudeCodeAdapter();
     case "codex":
       return new CodexAdapter();
-    case "cline":
-      return new ClineAdapter();
     case "pi":
       return new PiAdapter();
     case "acp":
@@ -138,7 +134,6 @@ export function getSessionProviders(): readonly SessionProvider[] {
     _sessionProviders = [
       new ClaudeCodeSessionProvider(),
       new CodexSessionProvider(),
-      new ClineSessionProvider(),
       new PiSessionProvider(),
       // One session provider for every ACP vendor: the transcript is
       // callboard-owned and its layout is vendor-independent, so a single

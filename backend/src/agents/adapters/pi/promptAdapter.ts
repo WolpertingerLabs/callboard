@@ -6,7 +6,7 @@
  * `AgentQueryRequest.prompt` is `string | AsyncIterable<unknown>`, and the
  * streaming form is not an edge case — `services/claude.ts` uses it for
  * multimodal input **and whenever MCP servers are present**, which for callboard
- * is very nearly always. The Cline landing discovered this by shipping without
+ * is very nearly always. The (since retired) Cline landing discovered this by shipping without
  * it and watching the first real chat fail with `"streaming-input mode is not
  * supported"` (`plans/cline-spike-findings.md` §9). The plan's pi file list
  * inherited the same omission; this is the same fix, applied before rather than
@@ -17,13 +17,11 @@
  * `PromptOptions` takes `images?: ImageContent[]` beside the text, so the two
  * halves stay separate rather than being spliced into one blob. pi's
  * `ImageContent` is `{ type: "image", data, mimeType }` — structured, not a data
- * URI, which is what the Cline bridge had to produce. So the conversion from
+ * URI, which is what the retired Cline bridge had to produce. So the conversion from
  * Anthropic's nested `source.data` / `source.media_type` is a straight remap with
  * no string building.
  *
  * Unsupported blocks are counted and warned about rather than dropped silently.
- *
- * @see ../cline/promptAdapter.ts (the same flattening, into data URIs)
  */
 import { createLogger } from "../../../utils/logger.js";
 

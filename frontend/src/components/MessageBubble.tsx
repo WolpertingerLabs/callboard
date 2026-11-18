@@ -84,7 +84,7 @@ export function ToolSourceBadge({ toolSource }: { toolSource?: ParsedMessage["to
 
 // Tool-call formatting (summaries, display names) lives in toolFormatting.ts —
 // it handles every provider naming convention callboard sees (Claude Code,
-// Codex, ACP vendors, Cline, pi). Re-exported here for existing import sites.
+// Codex, ACP vendors, pi). Re-exported here for existing import sites.
 export { getToolSummary };
 
 const StatusIcon = ({ status }: { status: string }) => {
@@ -283,7 +283,6 @@ const copyMenuItemStyle: CSSProperties = {
 const FORK_TARGETS: { kind: ForkProvider; label: string }[] = [
   { kind: "claude-code", label: "Claude Code" },
   { kind: "codex", label: "Codex" },
-  { kind: "cline", label: "Cline" },
   { kind: "pi", label: "pi" },
 ];
 

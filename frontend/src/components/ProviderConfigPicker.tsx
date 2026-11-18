@@ -5,7 +5,6 @@ import OpenRouterModelSelector from "./OpenRouterModelSelector";
 import ClaudeModelSelector from "./ClaudeModelSelector";
 import CodexModelSelector from "./CodexModelSelector";
 import AcpModelSelector from "./AcpModelSelector";
-import ClineModelSelector from "./ClineModelSelector";
 import PiModelSelector from "./PiModelSelector";
 
 export type ProviderConfigPickerMode = "panel" | "inline";
@@ -62,24 +61,11 @@ interface ProviderConfigPickerProps {
   // ACP model omit it and the field hides.
   acpModel?: string;
   onAcpModelChange?: (model: string) => void;
-  // Per-chat Cline model, within the provider configured in Settings → API.
+  // Per-chat pi model, within the provider configured in Settings → API.
   // Empty = that global default. Kept separate from the other providers' model
   // values for the same reason `acpModel` is: switching the toggle restores each
-  // one's prior selection. Optional — callers that don't surface it omit it and
-  // the field hides.
-  clineModel?: string;
-  onClineModelChange?: (model: string) => void;
-  /**
-   * Which Cline provider the catalog is scoped to, from `/api/system-info`.
-   * Empty falls back to `anthropic`, the adapter's own default. This is what
-   * makes the picker offer OpenRouter models when the user has selected that
-   * provider — Cline ships `openrouter` as a provider id, so no special case is
-   * needed.
-   */
-  clineProviderId?: string;
-  // Per-chat pi model, within the provider configured in Settings → API. Same
-  // contract as `clineModel`; kept separate so switching the toggle restores
-  // each provider's prior selection.
+  // provider's prior selection. Optional — callers that don't surface it omit it
+  // and the field hides.
   piModel?: string;
   onPiModelChange?: (model: string) => void;
   // Opens Settings → API (caller decides how to close any wrapping panel first).
@@ -108,9 +94,9 @@ interface ProviderConfigPickerProps {
  *  - Chat.tsx composer — inline horizontal layout, provider toggle hidden
  *    (each chat is pinned to one provider at creation time).
  *
- * Reasoning effort renders for the reasoning-capable providers — Codex, Cline
- * and pi — and maps to each one's native knob (Codex `modelReasoningEffort`,
- * Cline `thinking`/`reasoningEffort`, pi `thinkingLevel`). Each provider also
+ * Reasoning effort renders for the reasoning-capable providers — Codex and pi
+ * — and maps to each one's native knob (Codex `modelReasoningEffort`, pi
+ * `thinkingLevel`). Each provider also
  * shows its own model control; Claude Code has no effort. Each provider's model
  * value lives in a separate prop — switching the toggle swaps the controls while
  * preserving every value, so toggling back restores the prior selection.
@@ -132,11 +118,8 @@ export default function ProviderConfigPicker({
   onAcpProviderChange,
   acpModel,
   onAcpModelChange,
-  clineModel,
   piModel,
   onPiModelChange,
-  onClineModelChange,
-  clineProviderId,
   onOpenApiSettings,
   mode = "panel",
   showProviderToggle = true,
@@ -148,14 +131,13 @@ export default function ProviderConfigPicker({
   // Codex per-chat model only renders when the caller wired a change handler.
   const showCodexKnobs = provider === "codex" && onCodexModelChange !== undefined;
   // Reasoning effort is shared by every reasoning-capable provider (Codex →
-  // `modelReasoningEffort`, Cline → `thinking`/`reasoningEffort`, pi →
-  // `thinkingLevel`).
-  const showEffort = provider === "codex" || provider === "cline" || provider === "pi";
+  // `modelReasoningEffort`, pi → `thinkingLevel`).
+  const showEffort = provider === "codex" || provider === "pi";
 
-  const selectedModel = provider === "codex" ? codexModel : provider === "cline" ? clineModel : provider === "pi" ? piModel : claudeModel;
+  const selectedModel = provider === "codex" ? codexModel : provider === "pi" ? piModel : claudeModel;
   // Key the result as well as cancelling the request: a changed selection must
   // never render the previous model's tiers, even for the frame before effects.
-  const capabilityKey = JSON.stringify([provider, selectedModel ?? "", cwd, clineProviderId, codexUseOpenRouter, claudeCodeUseOpenRouter]);
+  const capabilityKey = JSON.stringify([provider, selectedModel ?? "", cwd, codexUseOpenRouter, claudeCodeUseOpenRouter]);
   const [result, setResult] = useState<{ key: string; capability: Awaited<ReturnType<typeof getReasoningCapability>> }>();
   useEffect(() => {
     if (!showEffort) return;
@@ -383,40 +365,7 @@ export default function ProviderConfigPicker({
       </div>
     ) : null;
 
-  // Cline — effort plus a per-chat model. Unlike the ACP selector there is no
-  // vendor to scope the catalog to: the Cline provider is a global setting, so
-  // the suggestions come from whichever one Settings → API names.
-  const clineControls =
-    provider === "cline" ? (
-      <div style={inline ? { display: "flex", gap: 8, alignItems: "flex-start" } : { display: "block" }}>
-        {effortControl}
-        {onClineModelChange !== undefined && (
-          <div style={{ marginBottom: inline ? 0 : 12, flex: inline ? "1 1 auto" : undefined, minWidth: inline ? 180 : 0 }}>
-            <label
-              htmlFor={inline ? "inlineClineModel" : "newChatClineModel"}
-              style={{ display: "block", fontSize: inline ? 11 : 13, fontWeight: 600, color: "var(--text-muted)", marginBottom: inline ? 4 : 6 }}
-            >
-              Model
-            </label>
-            <ClineModelSelector
-              id={inline ? "inlineClineModel" : "newChatClineModel"}
-              value={clineModel ?? ""}
-              onChange={onClineModelChange}
-              providerId={clineProviderId ?? ""}
-              placeholder={inline ? "(default)" : "(leave empty to use the default from Settings → API)"}
-            />
-            {!inline && (
-              <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
-                Suggestions come from your configured Cline provider
-                {clineProviderId ? ` (${clineProviderId})` : ""}. Free text is accepted — the provider validates the model.
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-    ) : null;
-
-  // pi — effort plus a per-chat model. Unlike the Cline field this is a
+  // pi — effort plus a per-chat model. This is a
   // filtering combobox: pi's OpenRouter catalog answers with ~300 models, and a
   // plain input with a datalist that long is a scroll rather than a picker.
   const piControls =
@@ -500,37 +449,14 @@ export default function ProviderConfigPicker({
             </button>
             <button
               type="button"
-              onClick={() => onProviderChange("cline")}
-              // No `configured` gate, unlike Codex above. Cline is an
-              // embedded SDK rather than a binary to install or an account to
-              // sign into: it falls back to the backend's own environment
+              onClick={() => onProviderChange("pi")}
+              // No `configured` gate, unlike Codex above. pi is an embedded
+              // runtime rather than a binary to install or an account to sign
+              // into: it falls back to the backend's own environment
               // credentials, so there is no state in which the button would be
               // honestly disabled. A genuinely missing key surfaces as the
               // provider's own error on the first turn, which says more than a
               // greyed-out button could.
-              title="Use the Cline agent runtime for this chat"
-              style={{
-                flex: "1 1 64px",
-                padding: inline ? "4px 6px" : "6px 8px",
-                fontSize: inline ? 12 : 13,
-                fontWeight: 500,
-                borderRadius: 6,
-                border: provider === "cline" ? "1px solid var(--accent)" : "1px solid var(--border)",
-                background: provider === "cline" ? "var(--accent)" : "var(--surface)",
-                color: provider === "cline" ? "var(--text-on-accent)" : "var(--text)",
-                cursor: "pointer",
-                transition: "all 0.15s",
-              }}
-            >
-              Cline
-            </button>
-            <button
-              type="button"
-              onClick={() => onProviderChange("pi")}
-              // No `configured` gate, for the same reason as Cline: pi is an
-              // embedded runtime, and it falls back to the backend's own
-              // environment credentials. A genuinely missing key surfaces as the
-              // provider's own error on the first turn.
               title="Use the pi agent runtime for this chat"
               style={{
                 flex: "1 1 64px",
@@ -608,7 +534,6 @@ export default function ProviderConfigPicker({
       {claudeControls}
       {codexControls}
       {acpControls}
-      {clineControls}
       {piControls}
     </>
   );

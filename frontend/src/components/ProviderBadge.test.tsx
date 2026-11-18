@@ -40,8 +40,8 @@ describe("ProviderBadge", () => {
   });
 
   it("still renders the other providers unchanged", () => {
-    const { rerender } = render(<ProviderBadge provider="cline" />);
-    expect(screen.getByText("CL")).toBeTruthy();
+    const { rerender } = render(<ProviderBadge provider="pi" />);
+    expect(screen.getByText("PI")).toBeTruthy();
     rerender(<ProviderBadge provider={undefined} />);
     expect(screen.getByText("CC")).toBeTruthy();
   });
@@ -54,6 +54,13 @@ describe("ProviderBadge", () => {
     render(<ProviderBadge provider="openrouter" />);
     expect(screen.getByText("OR")).toBeTruthy();
     expect(screen.getByTitle(/OpenRouter agent harness, which has been removed/)).toBeTruthy();
+  });
+
+  it("names the retired Cline harness as CL, removed — not as CC", () => {
+    render(<ProviderBadge provider="cline" />);
+    expect(screen.getByText("CL")).toBeTruthy();
+    expect(screen.queryByText("CC")).toBeNull();
+    expect(screen.getByTitle(/ran on Cline, which has been removed/)).toBeTruthy();
   });
 
   it("keeps an unrecognized provider on the CC default", () => {

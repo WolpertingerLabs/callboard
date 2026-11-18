@@ -143,13 +143,8 @@
      from the emerald Codex fill and the violet worktree badge, so the badges
      are told apart by colour and not only by their two-or-three letters. */
   --badge-provider-acp-bg: #1d4ed8;
-  /* amber-700. A fill only, like the three above: --badge-provider-text (white)
-     sits on it at 5.02:1. Warm, so it is a hue family the emerald Codex and
-     blue ACP fills leave free — the badges have to be told apart by colour,
-     not only by their two letters. */
-  --badge-provider-cline-bg: #b45309;
   /* rose-700. White sits on it at 6.28:1. A hue family apart from emerald
-     (Codex), blue (ACP), amber (Cline) and the violet worktree badge — the
+     (Codex), blue (ACP) and the violet worktree badge — the
      badges have to be told apart by colour, not only by their letters. */
   --badge-provider-pi-bg: #be123c;
   --badge-provider-text: var(--text-on-accent);
@@ -399,13 +394,8 @@
      from the emerald Codex fill and the violet worktree badge, so the badges
      are told apart by colour and not only by their two-or-three letters. */
   --badge-provider-acp-bg: #1d4ed8;
-  /* amber-700. A fill only, like the three above: --badge-provider-text (white)
-     sits on it at 5.02:1. Warm, so it is a hue family the emerald Codex and
-     blue ACP fills leave free — the badges have to be told apart by colour,
-     not only by their two letters. */
-  --badge-provider-cline-bg: #b45309;
   /* rose-700. White sits on it at 6.28:1. A hue family apart from emerald
-     (Codex), blue (ACP), amber (Cline) and the violet worktree badge — the
+     (Codex), blue (ACP) and the violet worktree badge — the
      badges have to be told apart by colour, not only by their letters. */
   --badge-provider-pi-bg: #be123c;
   --badge-provider-text: var(--text-on-accent);

@@ -67,6 +67,7 @@ import {
 import { readChatRouteState, type ChatRouteState } from "../types/chatRouteState";
 import { assignForkMarkers, forksByTimestamp } from "../utils/forkMarkers";
 import { providerKindOf, useChatMeta } from "../hooks/useChatMeta";
+import { isRetiredProviderId } from "../utils/retiredProviders";
 import { INTERRUPTED_MESSAGE, useStopController } from "../hooks/useStopController";
 import { useMessageNavigation } from "../hooks/useMessageNavigation";
 import { useStableStarred, useStarredMessages, useStarredNavigation } from "../hooks/useStarredMessages";
@@ -738,8 +739,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
   const metadataVersion = useMetadataVersion();
 
-  // Every kind a chat can actually be on. `cline` and `pi` were missing until
-  // Phase 4 of the pi landing, which meant both fell through to `"claude-code"`
+  // Every kind a chat can actually be on. `cline` (since retired) and `pi` were
+  // missing until Phase 4 of the pi landing, which meant both fell through to `"claude-code"`
   // and their header rendered a "CC" badge — the one place in the UI that names
   // the harness, naming the wrong one.
   const chatProvider: AgentProviderKind = !id ? (newChatProvider ?? "claude-code") : providerKindOf(chatMeta.provider);
@@ -754,7 +755,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // Such a chat still opens (its record and transcript exist), but nothing can
   // resume it: POST /message answers 410. So the model/effort popover is hidden
   // rather than offering Anthropic models for a chat that never ran on one.
-  const isRetiredHarness = rawChatProvider === "openrouter";
+  const isRetiredHarness = isRetiredProviderId(rawChatProvider);
   const nativeAgent = chatMeta.nativeAgent;
   // Where "Open parent thread" goes. The parent's *chat* id is what the router
   // takes; the native thread id only happens to equal it for chats whose id is
@@ -815,15 +816,13 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const providerDisplayName =
     chatProvider === "codex"
       ? "Codex"
-      : chatProvider === "cline"
-        ? "Cline"
-        : chatProvider === "pi"
-          ? "pi"
-          : chatProvider === "acp"
-            ? // The vendor's own label when the server has told us one; otherwise a
-              // neutral noun rather than a guessed capitalization of the id.
-              (acpLabels[acpProviderId] ?? "The agent")
-            : "Claude";
+      : chatProvider === "pi"
+        ? "pi"
+        : chatProvider === "acp"
+          ? // The vendor's own label when the server has told us one; otherwise a
+            // neutral noun rather than a guessed capitalization of the id.
+            (acpLabels[acpProviderId] ?? "The agent")
+          : "Claude";
 
   // The chat's parentage tree, which feeds the inline fork-point markers. It
   // is fetched once per chat, never per render or message. A fork needs no
@@ -1015,10 +1014,6 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // composer's model picker to OpenRouter's catalog. Sourced from /system-info.
   const claudeCodeUseOpenRouter = Boolean(systemInfo?.claudeCodeUseOpenRouter);
   const codexUseOpenRouter = Boolean(systemInfo?.codexUseOpenRouter);
-  // Which Cline provider scopes the composer's model catalog. Unlike the ACP
-  // vendor below this is NOT per-chat: Cline's provider is a global setting, so
-  // there is nothing pinned in chat metadata to read it from.
-  const clineProviderId = systemInfo?.clineProviderId ?? "";
   // For effort we need a tri-state: `null` = no change pending,
   // `undefined` = user explicitly cleared (revert to model default),
   // an EffortLevel = user picked a new level.
@@ -2585,7 +2580,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             requestBody.acpProviderId = newChatAcpProviderId;
           }
           const newChatSelectedEffort = pendingEffort !== null ? pendingEffort : newChatEffort;
-          if (newChatSelectedEffort && ["codex", "cline", "pi"].includes(newChatProvider ?? "")) {
+          if (newChatSelectedEffort && ["codex", "pi"].includes(newChatProvider ?? "")) {
             requestBody.effort = newChatSelectedEffort;
           }
           // Model applies to every provider — an Anthropic model alias/ID for
@@ -2671,7 +2666,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           // Per-chat reasoning effort. Same tri-state semantics as model:
           // `null` skips the field; `undefined` sends "" (clear override);
           // an EffortLevel sends the level.
-          if (pendingEffort !== null && ["codex", "cline", "pi"].includes(chatProvider)) {
+          if (pendingEffort !== null && ["codex", "pi"].includes(chatProvider)) {
             body.effort = pendingEffort ?? "";
           }
 
@@ -4073,11 +4068,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 onCodexModelChange={(v) => setPendingModel(v === currentModel ? null : v)}
                 acpModel={pendingModel ?? currentModel}
                 onAcpModelChange={(v) => setPendingModel(v === currentModel ? null : v)}
-                clineModel={pendingModel ?? currentModel}
-                onClineModelChange={(v) => setPendingModel(v === currentModel ? null : v)}
                 piModel={pendingModel ?? currentModel}
                 onPiModelChange={(v) => setPendingModel(v === currentModel ? null : v)}
-                clineProviderId={clineProviderId}
                 // The chat's pinned vendor, so the selector offers that
                 // catalog rather than another vendor's.
                 acpProviderId={acpProviderId}

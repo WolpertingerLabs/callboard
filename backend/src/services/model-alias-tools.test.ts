@@ -78,7 +78,7 @@ describe("set_model_alias merge semantics", () => {
   it("preserves it even when the parameter is never passed", async () => {
     // The guarantee does not rest on the tool exposing an `openrouter`
     // parameter — an omitted target is left unchanged by the merge.
-    await call("set_model_alias", { name: "planner", cline: "claude-sonnet-4-6" });
+    await call("set_model_alias", { name: "planner", codex: "gpt-5.5" });
     const out = await call("set_model_alias", { name: "planner", pi: "google/gemini-3.6-flash" });
 
     expect(aliasNamed(out, "planner")?.targets.openrouter).toBe("anthropic/claude-opus-4.8");
@@ -115,6 +115,21 @@ describe("set_model_alias merge semantics", () => {
     expect(openrouter.safeParse("anthropic/claude-opus-4.8").success).toBe(false);
     expect(openrouter.safeParse("").success).toBe(true);
     expect(openrouter.safeParse(undefined).success).toBe(true);
+  });
+
+  it("treats a retired cline target the same way: kept on merge, clearable, never settable", async () => {
+    settings.modelAliases = [{ name: "worker", targets: { pi: "google/gemini-3.6-flash", cline: "claude-sonnet-4-6" } }];
+
+    const kept = await call("set_model_alias", { name: "worker", codex: "gpt-5.5" });
+    expect(aliasNamed(kept, "worker")?.targets).toEqual({ pi: "google/gemini-3.6-flash", cline: "claude-sonnet-4-6", codex: "gpt-5.5" });
+
+    const cleared = await call("set_model_alias", { name: "worker", cline: "" });
+    expect(aliasNamed(cleared, "worker")?.targets).toEqual({ pi: "google/gemini-3.6-flash", codex: "gpt-5.5" });
+
+    const shape = buildModelAliasTools().find((t) => t.name === "set_model_alias")!.inputSchema;
+    const cline = z.object(shape).shape.cline;
+    expect(cline.safeParse("claude-sonnet-4-6").success).toBe(false);
+    expect(cline.safeParse("").success).toBe(true);
   });
 
   it("retires the legacy openRouterModelAliases map on write", async () => {

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { validateModelAliases, type ModelAlias } from "shared/types/index.js";
-import { toRows, toAliases, hasEditableTarget, onlyOpenRouterTarget, type AliasRow } from "./modelAliasRows";
+import { toRows, toAliases, hasEditableTarget, hasRetiredTarget, onlyOpenRouterTarget, onlyRetiredTargets, type AliasRow } from "./modelAliasRows";
 
 /**
  * The alias editor rebuilds `targets` from row state on every save, so a target
@@ -65,6 +65,25 @@ describe("alias row round-trip", () => {
   });
 });
 
+describe("retired cline target round-trip", () => {
+  it("preserves a retired cline target when another column is edited", () => {
+    const stored: ModelAlias[] = [{ name: "worker", targets: { pi: "google/gemini-3.6-flash", cline: "claude-sonnet-4-6" } }];
+
+    const saved = roundTrip(stored, (r) => ({ ...r, codex: "gpt-5.5" }));
+
+    expect(saved).toEqual([{ name: "worker", targets: { pi: "google/gemini-3.6-flash", cline: "claude-sonnet-4-6", codex: "gpt-5.5" } }]);
+  });
+
+  it("keeps an alias whose only target is a retired cline id, and it validates", () => {
+    const stored: ModelAlias[] = [{ name: "legacy-cline", targets: { cline: "claude-sonnet-4-6" } }];
+
+    const { value, errors } = validateModelAliases(roundTrip(stored));
+
+    expect(errors).toEqual([]);
+    expect(value).toEqual(stored);
+  });
+});
+
 describe("legacy-note gating", () => {
   const row = (over: Partial<AliasRow> = {}): AliasRow => ({
     name: "a",
@@ -89,5 +108,15 @@ describe("legacy-note gating", () => {
     // advice to go set a target would be telling the user to redo their work.
     expect(onlyOpenRouterTarget(row({ openrouter: "moonshotai/kimi-k2", claudeCode: "opus" }))).toBe(false);
     expect(onlyOpenRouterTarget(row())).toBe(false);
+  });
+
+  it("has no column for a retired cline target, and flags it as the sole target", () => {
+    const clineOnly = row({ cline: "claude-sonnet-4-6" });
+    expect(hasEditableTarget(clineOnly)).toBe(false);
+    expect(hasRetiredTarget(clineOnly)).toBe(true);
+    expect(onlyRetiredTargets(clineOnly)).toBe(true);
+    expect(onlyRetiredTargets(row({ cline: "x", openrouter: "y" }))).toBe(true);
+    expect(onlyRetiredTargets(row({ cline: "x", pi: "google/gemini-3.6-flash" }))).toBe(false);
+    expect(hasRetiredTarget(row({ pi: "p" }))).toBe(false);
   });
 });

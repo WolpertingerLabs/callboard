@@ -44,14 +44,16 @@ function fmtTok(n?: number): string {
  * Colour for a Stop value, across the two vocabularies the column now carries.
  *
  * The panel was built for Anthropic's model-level `stop_reason` and recognised
- * exactly three values, so every Cline row — whose reason describes why the
- * *agent loop* ended, a different fact deliberately not relabelled — fell
- * through to muted grey. A clean `loop:completed` and a `loop:mistake_limit`
+ * exactly three values, so every row from the (since retired) Cline harness —
+ * whose reason describes why the *agent loop* ended, a different fact
+ * deliberately not relabelled — fell through to muted grey. A clean `loop:completed` and a `loop:mistake_limit`
  * rendered identically, and `loop:max_iterations`, the direct analogue of
  * `max_tokens`, got no danger colour at all.
  *
- * Cline's are namespaced `loop:` on the way in (`cline/sessionParser.ts`), which
- * is what lets both live here without `error` meaning two things at once.
+ * Loop-level reasons are namespaced `loop:` on the way in, which is what lets
+ * both live here without `error` meaning two things at once. No engine in this
+ * build emits them now Cline is gone; the cases stay as the convention for the
+ * next one that reports a loop-level finish (see `ParsedMessage.stopReason`).
  */
 function stopReasonColor(reason: string): string {
   switch (reason) {
@@ -319,7 +321,7 @@ export default function ChatDebugPanel({ messages }: Props) {
     // of every row. A chat can span engines — forks across harnesses are
     // supported — and folding in the input of rows from an engine that reports no
     // cache metric dilutes the rate towards zero: 10 Codex rows at 5k in / 4k
-    // cache read followed by 10 Cline rows at 5k in and no cache figure reported
+    // cache read followed by 10 ACP rows at 5k in and no cache figure reported
     // 28.6% where the measured rate is 44%. Rows nobody measured are not
     // evidence of a cache miss.
     const cacheHitRate = hasCacheRead && cachedRowsPromptTokens > 0 ? (totalCacheRead / cachedRowsPromptTokens) * 100 : null;

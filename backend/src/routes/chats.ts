@@ -42,7 +42,7 @@ import { getRun, latestRunChatId } from "../services/job-store.js";
 import { hasParkedApprovals } from "../services/job-approval-signal.js";
 import { sessionRegistry } from "../services/session-registry.js";
 import { getSessionProviders } from "../agents/factory.js";
-import { isRetiredProvider, isRoutableProvider, type InternalProviderKind } from "../agents/ports/AgentProvider.js";
+import { isRetiredProvider, isRoutableProvider, RETIRED_PROVIDER_LABELS, type InternalProviderKind } from "../agents/ports/AgentProvider.js";
 import { providerLabel } from "../agents/handoff.js";
 import { generateChatTitleFromTranscript } from "../services/quick-completion.js";
 import { ALL_SPACES, normalizePermissions, isSidebarFolderEligible, parseSidebarFolder, readSidebarFolder, sameSidebarFolder, type ParsedMessage, type Chat as SharedChat, type SpaceAgentScope } from "shared/types/index.js";
@@ -1307,7 +1307,7 @@ chatsRouter.post("/:id/fork", async (req, res) => {
           required: ["timestamp"],
           properties: {
             timestamp: { type: "string", description: "ISO timestamp of the message to fork at (history up to and including it is copied)" },
-            provider: { type: "string", enum: ["claude-code", "codex", "cline", "pi"], description: "Target harness. Omit to fork within the current harness of the chat (higher fidelity). Every routable kind except acp - see the route implementation for why acp is refused." },
+            provider: { type: "string", enum: ["claude-code", "codex", "pi"], description: "Target harness. Omit to fork within the current harness of the chat (higher fidelity). Every routable kind except acp - see the route implementation for why acp is refused." },
             model: { type: "string", description: "Model for the new chat. Required-ish on a harness switch, where the source model id is meaningless to the target." },
             effort: { type: "string", description: "Reasoning effort for the new chat (codex only)." }
           }
@@ -2594,7 +2594,7 @@ chatsRouter.post("/:id/regenerate-title", async (req, res) => {
     // readable conversation" — false of a chat that has a conversation no
     // surviving provider can read.
     if (isRetiredProvider(meta.provider)) {
-      return res.status(400).json({ error: "This chat ran on the OpenRouter agent harness, which has been removed. Its title cannot be regenerated." });
+      return res.status(400).json({ error: `This chat ran on ${RETIRED_PROVIDER_LABELS[meta.provider]}, which has been removed. Its title cannot be regenerated.` });
     }
 
     // Same session set and provider resolution as GET /:id/messages: a chat's

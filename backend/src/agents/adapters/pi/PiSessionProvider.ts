@@ -1,10 +1,10 @@
 /**
  * pi session provider — {@link SessionProvider} over **pi's own session files**.
  *
- * ## No shadow transcript, unlike Cline
+ * ## No shadow transcript, unlike the retired Cline adapter
  *
- * `ClineSessionProvider` reads a transcript callboard writes alongside Cline's
- * store, because Cline's history API is async and its on-disk format
+ * `ClineSessionProvider` read a transcript callboard wrote alongside Cline's
+ * store, because Cline's history API was async and its on-disk format
  * undocumented and pre-1.0. Neither holds here (the plan's Decision 1):
  * `parseSessionEntries(content)` is synchronous and takes a string — exactly the
  * shape this port's synchronous methods need — and the format is versioned with
@@ -43,7 +43,7 @@
  *   valid *target* for cross-harness handoff.
  *
  * Both produce a file pi resumes from directly — there is no separate "seed"
- * artifact of the kind the Cline adapter needs, because pi's session file *is*
+ * artifact of the kind the retired Cline adapter needed, because pi's session file *is*
  * the resumable state.
  *
  * @see plans/pi-adapter.md
@@ -159,7 +159,7 @@ export class PiSessionProvider implements SessionProvider {
    * cheap filters first means a scoped search costs a listing, and only an
    * unscoped grep pays for a full parse of everything.
    *
-   * As with Codex, ACP and Cline, callboard-native metadata (agentAlias,
+   * As with Codex and ACP, callboard-native metadata (agentAlias,
    * triggered, gitBranch) lives on callboard's chat records and is joined in by
    * `routes/chats.ts`.
    */
@@ -213,7 +213,7 @@ export class PiSessionProvider implements SessionProvider {
         log.warn(`Failed to remove ${filePath}: ${(err as Error).message}`);
       }
     }
-    // Nothing else to clean up: unlike Cline, pi keeps no parallel store of its
+    // Nothing else to clean up: unlike the retired Cline adapter, pi keeps no parallel store of its
     // own under the user's home — the adapter points every SessionManager at
     // callboard's `pi-sessions/`, so this file was the only copy.
   }

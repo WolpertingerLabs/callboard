@@ -117,7 +117,7 @@ export interface ChatTreeNode {
    * message it branched off. Absent on forks made before it was recorded.
    */
   forkedAt?: string;
-  /** "claude-code" | "codex" | "acp" | "cline" | "pi" */
+  /** "claude-code" | "codex" | "acp" | "pi" — or a retired kind ("openrouter", "cline") on old records */
   provider: string;
   /** Which ACP vendor, when `provider` is `"acp"`. Absent otherwise. */
   acpProviderId?: string;

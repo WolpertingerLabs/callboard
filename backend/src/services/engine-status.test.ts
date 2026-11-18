@@ -105,7 +105,10 @@ describe("bundled engines", () => {
   it("report installed with a bundled runtime and no install recipe", async () => {
     const engines = await getEngineStatuses();
 
-    for (const id of ["cline", "pi"]) {
+    // The Cline row is gone with its harness.
+    expect(engines.map((e) => e.id)).not.toContain("cline");
+
+    for (const id of ["pi"]) {
       const engine = byId(engines, id);
       expect(engine.runtime.kind).toBe("bundled");
       expect(engine.installed).toBe(true);
@@ -113,8 +116,8 @@ describe("bundled engines", () => {
       // that will actually run.
       expect(engine.version).toMatch(/^\d+\.\d+\.\d+/);
       // Phase 1 ships no recipes; Phase 2 adds `install` for the two engines
-      // that have an honest one, and these two never will — installing a newer
-      // @cline/sdk into callboard's tree is how you break the adapter.
+      // that have an honest one, and this one never will — installing a newer
+      // pi into callboard's tree is how you break the adapter.
       expect(engine).not.toHaveProperty("install");
     }
   });
@@ -129,13 +132,13 @@ describe("bundled engines", () => {
   });
 
   it("carry the manifest range, so pinned and ranged deps are distinguishable", async () => {
-    // The UI's remedy line turns on this. `@cline/sdk` and pi are pinned
+    // The UI's remedy line turns on this. pi is pinned
     // exactly, so "updating Callboard picks it up" is false for them: the pin
     // does not move until a maintainer moves it. `@openai/codex-sdk` carries a
     // caret, where the same sentence is true.
     const engines = await getEngineStatuses();
 
-    for (const id of ["cline", "pi"]) {
+    for (const id of ["pi"]) {
       const runtime = byId(engines, id).runtime;
       if (runtime.kind !== "bundled") throw new Error("unreachable");
       expect(runtime.pinned).toBe(true);
@@ -149,21 +152,21 @@ describe("bundled engines", () => {
   });
 
   it("flag a newer published version as a fact, without an install path", async () => {
-    mocks.latestVersions.mockResolvedValue({ "@cline/sdk": { version: "999.0.0", checkedAt: 1_700_000_000_000, stale: false } });
-    const cline = await getEngineStatuses().then((e) => byId(e, "cline"));
+    mocks.latestVersions.mockResolvedValue({ "@earendil-works/pi-coding-agent": { version: "999.0.0", checkedAt: 1_700_000_000_000, stale: false } });
+    const pi = await getEngineStatuses().then((e) => byId(e, "pi"));
 
-    expect(cline.latestVersion).toBe("999.0.0");
-    expect(cline.updateAvailable).toBe(true);
-    expect(cline.latestVersionCheckedAt).toBe(new Date(1_700_000_000_000).toISOString());
-    expect(cline).not.toHaveProperty("install");
+    expect(pi.latestVersion).toBe("999.0.0");
+    expect(pi.updateAvailable).toBe(true);
+    expect(pi.latestVersionCheckedAt).toBe(new Date(1_700_000_000_000).toISOString());
+    expect(pi).not.toHaveProperty("install");
   });
 
   it("pass the registry's staleness through, so the UI can age its claim", async () => {
-    mocks.latestVersions.mockResolvedValue({ "@cline/sdk": { version: "0.0.69", checkedAt: 1_700_000_000_000, stale: true } });
-    const cline = await getEngineStatuses().then((e) => byId(e, "cline"));
+    mocks.latestVersions.mockResolvedValue({ "@earendil-works/pi-coding-agent": { version: "0.0.69", checkedAt: 1_700_000_000_000, stale: true } });
+    const pi = await getEngineStatuses().then((e) => byId(e, "pi"));
 
-    expect(cline.latestVersionStale).toBe(true);
-    expect(cline.latestVersionCheckedAt).toBe(new Date(1_700_000_000_000).toISOString());
+    expect(pi.latestVersionStale).toBe(true);
+    expect(pi.latestVersionCheckedAt).toBe(new Date(1_700_000_000_000).toISOString());
   });
 });
 
@@ -336,8 +339,8 @@ describe("credentials", () => {
   });
 
   it("names the provider an embedded runtime's key belongs to", async () => {
-    mocks.agentSettings.mockReturnValue({ clineProviderId: "openrouter", clineApiKey: "sk-or-secret" });
-    const engine = await getEngineStatuses().then((e) => byId(e, "cline"));
+    mocks.agentSettings.mockReturnValue({ piProviderId: "openrouter", piApiKey: "sk-or-secret" });
+    const engine = await getEngineStatuses().then((e) => byId(e, "pi"));
     expect(engine.credentials).toMatchObject({ configured: true, source: "settings" });
     // Never the key itself.
     expect(JSON.stringify(engine)).not.toContain("sk-or-secret");
@@ -422,7 +425,7 @@ describe("credentials", () => {
     }
 
     // And the unobservable ones say so rather than defaulting to a negative.
-    for (const id of ["cline", "pi", "opencode"]) {
+    for (const id of ["pi", "opencode"]) {
       expect(byId(engines, id).credentials.configured).toBe("unknown");
     }
   });
@@ -439,7 +442,7 @@ describe("credentials", () => {
     });
 
     const engines = await getEngineStatuses();
-    expect(engines.map((e) => e.id)).toContain("cline");
+    expect(engines.map((e) => e.id)).toContain("pi");
     expect(byId(engines, "codex").credentials.configured).toBe(false);
   });
 });
@@ -485,7 +488,8 @@ describe("degrading offline", () => {
   it("asks the registry once for every engine's package", async () => {
     await getEngineStatuses();
     const [packages] = mocks.latestVersions.mock.calls[0];
-    expect(packages).toEqual(expect.arrayContaining(["@anthropic-ai/claude-code", "@openai/codex-sdk", "@cline/sdk", "@earendil-works/pi-coding-agent"]));
+    expect(packages).toEqual(expect.arrayContaining(["@anthropic-ai/claude-code", "@openai/codex-sdk", "@earendil-works/pi-coding-agent"]));
+    expect(packages).not.toContain("@cline/sdk");
     expect(mocks.latestVersions).toHaveBeenCalledOnce();
   });
 });
@@ -495,7 +499,7 @@ describe("bundledPackageVersion", () => {
     // The reason this is not `require("<pkg>/package.json")`: every engine
     // package but @openai/codex ships an exports map with no "./package.json"
     // entry, and that require throws ERR_PACKAGE_PATH_NOT_EXPORTED.
-    expect(bundledPackageVersion("@cline/sdk")).toMatch(/^\d+\.\d+\.\d+/);
+    expect(bundledPackageVersion("@earendil-works/pi-coding-agent")).toMatch(/^\d+\.\d+\.\d+/);
     expect(bundledPackageVersion("@anthropic-ai/claude-agent-sdk")).toMatch(/^\d+\.\d+\.\d+/);
   });
 
@@ -697,7 +701,7 @@ describe("the Codex rollout-format drift check", () => {
 
   it("reports no drift for engines that have no version contract", async () => {
     const engines = await getEngineStatuses();
-    for (const id of ["claude-code", "cline", "pi"]) expect(byId(engines, id).drift).toBeUndefined();
+    for (const id of ["claude-code", "pi"]) expect(byId(engines, id).drift).toBeUndefined();
   });
 });
 

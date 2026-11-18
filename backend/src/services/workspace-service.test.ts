@@ -685,8 +685,8 @@ describe("nothing is moved out from under a running session", () => {
   // `interruptChat` reaches `stopSessionAndWait` through a lazy
   // `await import("./claude.js")`, and claude.ts pulls in every provider adapter
   // — each of which loads its harness SDK at module scope. That cold import is
-  // ~1.5s and grows with every adapter callboard gains (@cline/sdk alone is
-  // ~930ms; pi's package ~570ms), which was quietly eating most of the 5s
+  // ~1.5s and grows with every adapter callboard gains (pi's package alone is
+  // ~570ms; the since-removed @cline/sdk was ~930ms), which was quietly eating most of the 5s
   // budget of the cases below.
   //
   // Warming it here rather than raising the timeout: the module load is a

@@ -20,6 +20,7 @@ import { errorMessage } from "../../../utils/errorMessage";
 import { QuietHoursBadge, QuietHoursFields } from "./QuietHours";
 import { dangerOutlineStyle, deleteButtonStyle } from "./dashboardStyles";
 import { formatShortAgo } from "../../../utils/dateFormat";
+import { isRetiredProviderId } from "../../../utils/retiredProviders";
 
 const statusConfig: Record<string, { color: string; icon: typeof Play; label: string }> = {
   active: { color: "var(--success)", icon: Play, label: "Active" },
@@ -65,7 +66,7 @@ export default function Triggers({ agent }: { agent: AgentConfig }) {
     const model = formModels[formProvider]?.trim();
     if (model) action.model = model;
     else delete action.model;
-    if (["codex", "cline", "pi"].includes(formProvider) && formEffort) action.effort = formEffort;
+    if (["codex", "pi"].includes(formProvider) && formEffort) action.effort = formEffort;
     else delete action.effort; // Replacement action deliberately clears a saved override.
     return action;
   };
@@ -236,9 +237,13 @@ export default function Triggers({ agent }: { agent: AgentConfig }) {
   const startEditing = (trigger: Trigger) => {
     setConfigError(null);
     setOriginalAction(trigger.action);
-    const provider = trigger.action.provider ?? "claude-code";
+    // A trigger stored on a removed harness has no toggle to land on: edit it as
+    // Claude Code with no model, the same conversion the cron editor makes.
+    const stored = trigger.action.provider ?? "claude-code";
+    const wasRetired = isRetiredProviderId(stored);
+    const provider = wasRetired ? "claude-code" : stored;
     setFormProvider(provider);
-    setFormModels({ [provider]: trigger.action.model ?? "" });
+    setFormModels(wasRetired ? {} : { [provider]: trigger.action.model ?? "" });
     setFormEffort(trigger.action.effort);
     setEditingTriggerId(trigger.id);
     setFormName(trigger.name);
@@ -546,9 +551,6 @@ export default function Triggers({ agent }: { agent: AgentConfig }) {
             onClaudeModelChange={(model) => changeModel("claude-code", model)}
             codexModel={formModels.codex ?? ""}
             onCodexModelChange={(model) => changeModel("codex", model)}
-            clineModel={formModels.cline ?? ""}
-            onClineModelChange={(model) => changeModel("cline", model)}
-            clineProviderId={systemInfo?.clineProviderId ?? ""}
             piModel={formModels.pi ?? ""}
             onPiModelChange={(model) => changeModel("pi", model)}
             codexConfigured={systemInfo?.codexConfigured}

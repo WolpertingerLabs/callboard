@@ -57,7 +57,7 @@ const AGENT: AgentConfig = { name: "Test", alias: "test", description: "", creat
 beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
-  mocks.getSystemInfo.mockResolvedValue({ version: "1.0.0", models: [], acpProviders: [], codexConfigured: true, clineProviderId: "anthropic" });
+  mocks.getSystemInfo.mockResolvedValue({ version: "1.0.0", models: [], acpProviders: [], codexConfigured: true });
   // Nothing here asserts on the network, but the components under test have
   // other mount-time fetches, and "empty" has to be the shape each unwrapper
   // expects rather than a bare `{}`: `getAgentCronJobs` returns `data.jobs`, so

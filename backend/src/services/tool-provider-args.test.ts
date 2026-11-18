@@ -38,10 +38,13 @@ describe("resolveProviderModelArgs", () => {
   it("offers every provider a user can actually be running on", () => {
     // The enum was frozen at claude-code|codex while three more harnesses
     // landed, so a pi session could not spawn a pi child even by asking.
-    for (const kind of ["claude-code", "codex", "acp", "cline", "pi"]) {
+    for (const kind of ["claude-code", "codex", "acp", "pi"]) {
       expect(providerModelSchema.provider.safeParse(kind).success).toBe(true);
     }
     expect(providerModelSchema.provider.safeParse("mock").success).toBe(false);
+    // Retired harnesses are not offered either.
+    expect(providerModelSchema.provider.safeParse("cline").success).toBe(false);
+    expect(providerModelSchema.provider.safeParse("openrouter").success).toBe(false);
   });
 
   it("accepts a model with provider=claude-code (alias)", () => {
@@ -87,7 +90,6 @@ describe("resolveProviderModelArgs", () => {
     it("inherits the provider when the caller does not name one", () => {
       expect(resolveProviderModelArgs({}, { provider: "pi" })).toEqual({ ok: true, provider: "pi", modelSource: "default" });
       expect(resolveProviderModelArgs({}, { provider: "codex" })).toEqual({ ok: true, provider: "codex", modelSource: "default" });
-      expect(resolveProviderModelArgs({}, { provider: "cline" })).toEqual({ ok: true, provider: "cline", modelSource: "default" });
     });
 
     it("lets an explicit provider override the inherited one, in both directions", () => {

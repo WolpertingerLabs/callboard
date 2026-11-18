@@ -127,6 +127,17 @@ describe("POST /:id/message on a removed harness", () => {
     expect(f.streamed).toBe(false);
   });
 
+  it("names Cline, not OpenRouter, for a chat that ran on the retired Cline harness", async () => {
+    setChat({ provider: "cline", lastBranch: "main" });
+    const f = await post({ effort: "high" });
+
+    expect(f.status).toBe(410);
+    expect(f.json?.error).toBe("This chat ran on Cline, which has been removed. It cannot be resumed.");
+    expect(f.json?.code).toBe("retired_provider");
+    expect(f.streamed).toBe(false);
+    expect(metadataWrites.some((w) => "effort" in w)).toBe(false);
+  });
+
   it("does not persist a reasoning effort onto a chat that can never run", async () => {
     await post({ effort: "high" });
 

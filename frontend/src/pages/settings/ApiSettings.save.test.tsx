@@ -26,7 +26,6 @@ vi.mock("../../api", async (importOriginal) => {
     getSystemInfo: async () => ({ acpProviders: [], models: [] }),
     getOpenRouterCatalog: async () => ({ models: [], aliases: [] }),
     getAcpModels: async () => ({ models: [] }),
-    getClineProviders: async () => ({ providers: [] }),
     getPiProviders: async () => ({ providers: [] }),
     getEngines: async () => [],
     refreshEngines: async () => ({ engines: [], probed: true }),
@@ -48,10 +47,11 @@ describe("Settings → API Save payload", () => {
       codexAuthMode: "api-key",
       codexUseOpenRouter: true,
       openRouterUtilityCompletions: true,
-      clineMaxIterations: 7,
       acpProviderModels: { opencode: "kept" },
-      // Not a form field: must not be echoed back by Save.
+      // Not form fields: must not be echoed back by Save. A retired Cline
+      // setting is one of these now.
       quickCompletionModel: "unrelated",
+      clineMaxIterations: 7,
     };
     render(<ApiSettings />);
     const baseUrl = await screen.findByLabelText(/^Base URL/);
@@ -102,11 +102,6 @@ describe("Settings → API Save payload", () => {
       acpOpenRouterApiKey: "",
       // No ACP vendor tab is resolved, so the stored map goes back untouched.
       acpProviderModels: { opencode: "kept" },
-      clineProviderId: "",
-      clineModel: "",
-      clineApiKey: "",
-      clineBaseUrl: "",
-      clineMaxIterations: 7,
     });
   });
 

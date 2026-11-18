@@ -34,7 +34,6 @@ import type { EngineBinaryOverride, EngineCredentials, EngineInstallCapability, 
 import { ACP_VENDOR_PRESETS } from "../agents/adapters/acp/vendors.js";
 import { acpProviderVersion, resetAcpAvailabilityCache, resolveAcpBinaryPath } from "../agents/adapters/acp/availability.js";
 import { getCodexAuthSource, isCodexRoutedThroughOpenRouter } from "../agents/adapters/codex/codexAuth.js";
-import { DEFAULT_CLINE_PROVIDER_ID } from "../agents/adapters/cline/optionsAdapter.js";
 import { DEFAULT_PI_PROVIDER_ID } from "../agents/adapters/pi/optionsAdapter.js";
 import { createLogger } from "../utils/logger.js";
 import { getAgentSettings, getCodexExecutableOverride, isClaudeCodeRoutedThroughOpenRouter } from "./agent-settings.js";
@@ -67,8 +66,8 @@ export { bundledPackageVersion } from "../utils/package-version.js";
  *
  * This is what separates "a newer release exists and a Callboard update will
  * bring it" from "a newer release exists and Callboard is pinned to this one
- * until a maintainer moves the pin". `@cline/sdk` and
- * `@earendil-works/pi-coding-agent` are pinned *exactly*; `@openai/codex-sdk`
+ * until a maintainer moves the pin".
+ * `@earendil-works/pi-coding-agent` is pinned *exactly*; `@openai/codex-sdk`
  * carries a caret. Stating the wrong one of those as a remedy is worse than
  * stating no remedy — see Decision 2 in the plan.
  *
@@ -344,7 +343,6 @@ export function resetEngineRefreshThrottle(): void {
 const CLAUDE_CODE_CLI_PACKAGE = "@anthropic-ai/claude-code";
 const CLAUDE_AGENT_SDK_PACKAGE = "@anthropic-ai/claude-agent-sdk";
 const CODEX_SDK_PACKAGE = "@openai/codex-sdk";
-const CLINE_SDK_PACKAGE = "@cline/sdk";
 const PI_PACKAGE = "@earendil-works/pi-coding-agent";
 
 /** npm package per ACP vendor id, for the "Latest" row. Vendors with no npm distribution are simply absent. */
@@ -585,10 +583,10 @@ function codexCredentials(): EngineCredentials {
 }
 
 /**
- * Credentials for an embedded runtime (Cline, pi).
+ * Credentials for an embedded runtime (pi).
  *
  * A key held by callboard is observable, so it reports `true`. A *blank* key is
- * not the same as no credential: both runtimes then fall back to the backend
+ * not the same as no credential: the runtime then falls back to the backend
  * process's own environment, and which variable that is depends on the
  * configured provider id. Callboard did not look and could not have — so the
  * answer is `"unknown"`, not `false`. Reporting "Not configured" over a note
@@ -679,7 +677,7 @@ async function assembleEngineStatuses(refresh: boolean): Promise<EngineStatus[]>
 
   // One batched registry call for every package on the page, so the fan-out is
   // a single cache read/write rather than one per engine.
-  const packages = [CLAUDE_CODE_CLI_PACKAGE, CODEX_SDK_PACKAGE, CLINE_SDK_PACKAGE, PI_PACKAGE];
+  const packages = [CLAUDE_CODE_CLI_PACKAGE, CODEX_SDK_PACKAGE, PI_PACKAGE];
   for (const vendor of acpVendors) {
     const pkg = ACP_VENDOR_PACKAGES[vendor.id];
     if (pkg) packages.push(pkg);
@@ -807,20 +805,11 @@ async function assembleEngineStatuses(refresh: boolean): Promise<EngineStatus[]>
     credentials: codexCredentials(),
   });
 
-  // Cline and pi — in-process libraries. Nothing to install, nothing to point
-  // elsewhere, and no separate account: the credential is whatever their model
-  // provider wants. Both are pinned exactly in callboard's manifest, which is
-  // why `dependencyRange` travels with them: "a newer release exists" is a very
+  // pi — an in-process library. Nothing to install, nothing to point
+  // elsewhere, and no separate account: the credential is whatever its model
+  // provider wants. It is pinned exactly in callboard's manifest, which is
+  // why `dependencyRange` travels with it: "a newer release exists" is a very
   // different statement when the manifest will never resolve to it.
-  engines.push({
-    id: "cline",
-    label: "Cline",
-    runtime: { kind: "bundled", package: CLINE_SDK_PACKAGE, ...callboardDependencyRange(CLINE_SDK_PACKAGE) },
-    installed: true,
-    ...versionFields(readPackageVersion(CLINE_SDK_PACKAGE), CLINE_SDK_PACKAGE),
-    credentials: embeddedCredentials("Cline", settings?.clineProviderId?.trim() || DEFAULT_CLINE_PROVIDER_ID, settings?.clineApiKey),
-  });
-
   engines.push({
     id: "pi",
     label: "pi",

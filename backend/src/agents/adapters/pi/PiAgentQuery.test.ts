@@ -511,7 +511,7 @@ describe("an OpenRouter model newer than pi's bundled catalog", () => {
 
 describe("subscription is per-session", () => {
   /**
-   * Unlike Cline's process-wide bus, which is why `messageAdapter` needs no
+   * Unlike the retired Cline adapter's process-wide bus, which is why `messageAdapter` needs no
    * `sessionId` filter. Two sessions, one listener each, no crossover.
    */
   it("does not leak events between sessions", async () => {

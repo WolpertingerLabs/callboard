@@ -142,7 +142,7 @@ describe("categorizePiToolName", () => {
     expect(PI_BUILTIN_TOOL_NAMES).toHaveLength(8);
   });
 
-  it("special-cases render_file, as the Claude/OR/Cline maps do", () => {
+  it("special-cases render_file, as the Claude map (and the retired OR/Cline maps) do", () => {
     expect(categorizePiToolName("render_file")).toBe("fileRead");
   });
 
@@ -159,7 +159,7 @@ describe("categorizePiToolName", () => {
   it("sends a name with no recognizable token to codeExecution", () => {
     // `set_chat_title` carries no token from any family — "set" is deliberately
     // not a fileWrite word in any of the four adapter tables. So it lands on the
-    // strictest axis rather than being guessed at. Matching the Cline and OR
+    // strictest axis rather than being guessed at. Matching the retired Cline and OR
     // tables here is worth more than a marginally kinder default: widening the
     // token list is a cross-adapter change, not a side effect of adding pi.
     expect(categorizePiToolName("set_chat_title")).toBe(MOST_RESTRICTIVE_CATEGORY);

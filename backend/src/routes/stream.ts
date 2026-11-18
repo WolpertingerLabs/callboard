@@ -1,5 +1,5 @@
 import { bindChatView, ChatViewError } from "../services/chat-view.js";
-import { isRetiredProvider } from "../agents/ports/AgentProvider.js";
+import { isRetiredProvider, RETIRED_PROVIDER_LABELS } from "../agents/ports/AgentProvider.js";
 import { assertReasoningEffort } from "../services/reasoning-capabilities.js";
 import { assertNativeAgentControllable, assertNativeAgentStoppable } from "../services/codex-native-agents.js";
 import { Router } from "express";
@@ -16,7 +16,15 @@ import { anyUploadExists, attachmentNamesOf, loadImageBuffers } from "../service
 import { titleSourceFor } from "../services/file-attachments.js";
 import { statSync, existsSync, readdirSync, watchFile, unwatchFile, openSync, readSync, closeSync } from "fs";
 import { join } from "path";
-import { discardCreatedWorktree, fallbackBranchName, getGitInfo, isAbortError, resolveBranch, uniqueBranchName, type ResolveBranchResult } from "../utils/git.js";
+import {
+  discardCreatedWorktree,
+  fallbackBranchName,
+  getGitInfo,
+  isAbortError,
+  resolveBranch,
+  uniqueBranchName,
+  type ResolveBranchResult,
+} from "../utils/git.js";
 import { chatFileService } from "../services/chat-file-service.js";
 import { findSessionLogPath } from "../utils/session-log.js";
 import { isConversationEntry } from "../agents/adapters/claude-code/sessionParser.js";
@@ -163,6 +171,21 @@ streamRouter.post("/new/message", async (req, res) => {
   // existing chat `getDefaultPermissions` re-reads the stored record and
   // ignores this field entirely, so it cannot raise a level.
   noteComputerControlAtCreation("POST /api/chats/new/message", res.locals?.authMethod, defaultPermissions);
+
+  // A retired harness is refused by name rather than dropped like an unknown
+  // value. Dropping it would start the chat on Claude Code — a harness the user
+  // did not pick — and a stale tab still offering, say, Cline would report a
+  // successful chat on the wrong engine. Before any branch or worktree work, so
+  // nothing is created on the way to refusing.
+  if (isRetiredProvider(provider)) {
+    const label = RETIRED_PROVIDER_LABELS[provider];
+    return res
+      .status(400)
+      .json({
+        error: `${label.charAt(0).toUpperCase()}${label.slice(1)} has been removed from Callboard. Pick another harness for this chat.`,
+        code: "retired_provider",
+      });
+  }
 
   // Check if folder exists — before effort validation, which probes the Codex
   // CLI in that cwd and would otherwise report the bad path as an unknown route.
@@ -339,7 +362,7 @@ streamRouter.post("/new/message", async (req, res) => {
     const safeEffort = typeof effort === "string" && effort.trim() ? (effort.trim() as EffortLevel) : undefined;
 
     // Per-chat model override — honored for every provider. For claude-code an
-    // Anthropic model alias or full ID; for codex/cline/pi that harness's slug.
+    // Anthropic model alias or full ID; for codex/pi that harness's slug.
     // Free-form text by design: the provider validates server-side, matching
     // the global Settings → API field.
     const safeModel: string | undefined = typeof model === "string" && model.trim().length > 0 ? model.trim() : undefined;
@@ -462,7 +485,7 @@ streamRouter.post("/:id/message", async (req, res) => {
             maxTurns: { type: "number", description: "Maximum agentic turns before stopping (default: 200)" },
             acknowledgeBranchDrift: { type: "boolean", description: "Acknowledge and proceed despite branch drift (branch changed since last message)" },
             model: { type: "string", description: "Model to persist for this chat. Claude Code chats: an Anthropic model alias (opus, sonnet, haiku, opusplan) or full model ID. Other harnesses: whatever model identifier that harness accepts. Empty string clears the per-chat override and reverts to the global default." },
-            effort: { type: "string", enum: ["persistent", "ultra", "max", "xhigh", "high", "medium", "low", "minimal", "none", ""], description: "Reasoning-effort level to persist for this chat. Only honored for harnesses that take one (codex, cline, pi); ignored otherwise. Omit to leave the existing effort untouched; pass empty string to clear the per-chat override." },
+            effort: { type: "string", enum: ["persistent", "ultra", "max", "xhigh", "high", "medium", "low", "minimal", "none", ""], description: "Reasoning-effort level to persist for this chat. Only honored for harnesses that take one (codex, pi); ignored otherwise. Omit to leave the existing effort untouched; pass empty string to clear the per-chat override." },
             requireExplicitCompletion: { type: "boolean", description: "Override the explicit-completion requirement for this message only. Omit to inherit the persisted setting of the chat." }
           }
         }
@@ -506,7 +529,7 @@ streamRouter.post("/:id/message", async (req, res) => {
     if (isRetiredProvider(meta.provider)) {
       return res
         .status(410)
-        .json({ error: "This chat ran on the OpenRouter agent harness, which has been removed. It cannot be resumed.", code: "retired_provider" });
+        .json({ error: `This chat ran on ${RETIRED_PROVIDER_LABELS[meta.provider]}, which has been removed. It cannot be resumed.`, code: "retired_provider" });
     }
     const ownershipExpectation = { sessionId: chatRecord.session_id, provider: meta.provider };
     // Validate the merged configuration before any metadata changes. Clearing

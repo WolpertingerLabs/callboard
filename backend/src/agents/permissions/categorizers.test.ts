@@ -23,7 +23,7 @@ import type { AgentProviderKind } from "../ports/AgentProvider.js";
  * The `satisfies` clause makes the list itself type-checked: a name that is not
  * a real kind is a compile error, so this cannot drift into fiction.
  */
-const ALL_KINDS = ["claude-code", "codex", "acp", "cline", "pi", "mock"] as const satisfies readonly AgentProviderKind[];
+const ALL_KINDS = ["claude-code", "codex", "acp", "pi", "mock"] as const satisfies readonly AgentProviderKind[];
 
 /**
  * Compile-time completeness for {@link ALL_KINDS}.
@@ -76,39 +76,4 @@ describe("TOOL_CATEGORIZERS", () => {
     }
   });
 
-  /**
-   * Cline's snake_case names collide with nothing in Claude's PascalCase map, so
-   * routing it through that one would send every tool to an unknown-name
-   * default. `run_commands` is the one that matters: Claude's map defaults
-   * unknown names to `fileWrite`, which is precisely the
-   * `codeExecution`-bypass-wearing-a-`fileWrite`-label shape of the regression
-   * this registry was built to make unrepresentable.
-   */
-  it("routes Cline through the Cline categorizer", () => {
-    const cline = getToolCategorizer("cline");
-    expect(cline("run_commands")).toBe("codeExecution");
-    expect(cline("read_files")).toBe("fileRead");
-    expect(cline("editor")).toBe("fileWrite");
-    expect(cline("fetch_web_content")).toBe("webAccess");
-    // Cline's `skills` INVOKES a skill with arguments rather than just reading
-    // SKILL.md back. It is execution.
-    expect(cline("skills")).toBe("codeExecution");
-    // A subagent inherits run_commands, so delegating is at least as privileged.
-    expect(cline("spawn_agent")).toBe("codeExecution");
-  });
-
-  /**
-   * `null` from a categorizer means "ask", and Cline reaches
-   * `requestToolApproval` for every tool (that is what `buildClineToolPolicies`
-   * forces) — so a null anywhere in this map would hang an unattended run, whose
-   * all-"allow" policy exists precisely so it needs no human, on its first
-   * bookkeeping call.
-   */
-  it("never returns null on the Cline path", () => {
-    const categorize = getToolCategorizer("cline");
-    const names = ["run_commands", "read_files", "ask_question", "submit_and_exit", "render_file", "some_unknown_future_tool", ""];
-    for (const name of names) {
-      expect(categorize(name), `${name || "(empty)"} categorized to null (= "ask")`).not.toBeNull();
-    }
-  });
 });

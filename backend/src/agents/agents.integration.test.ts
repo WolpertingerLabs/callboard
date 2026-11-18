@@ -10,13 +10,14 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 
-import { getAgentProvider, getSessionProvider, setAgentProviderForTesting } from "./factory.js";
+import { getAgentProvider, getSessionProvider, getSessionProviders, setAgentProviderForTesting } from "./factory.js";
 import {
   INTERNAL_PROVIDER_KINDS,
   isInternalProvider,
   isRetiredProvider,
   isRoutableProvider,
   RETIRED_PROVIDER_KINDS,
+  RETIRED_PROVIDER_LABELS,
   ROUTABLE_PROVIDER_KINDS,
 } from "./ports/AgentProvider.js";
 import { MockAgentProvider } from "./adapters/mock/MockAgentProvider.js";
@@ -200,7 +201,7 @@ describe("factory registry — every routable kind is reachable", () => {
  * `ForkProvider` (frontend) and the fork route's guard (backend) are two
  * spellings of one promise: *this kind can be handed a conversation it did not
  * produce*. They drift silently — a provider can implement `seedSession` and
- * never be offered, which is exactly what happened to Cline and pi until Phase
+ * never be offered, which is exactly what happened to pi (and the since-retired Cline) until Phase
  * 5 — so the property is asserted here rather than in either place alone.
  */
 describe("cross-harness fork and handoff — the target contract", () => {
@@ -209,7 +210,7 @@ describe("cross-harness fork and handoff — the target contract", () => {
 
   it("offers every routable kind except acp", () => {
     // If a kind is added to the union and forgotten here, this says so.
-    expect([...FORK_TARGETS].sort()).toEqual(["claude-code", "cline", "codex", "pi"]);
+    expect([...FORK_TARGETS].sort()).toEqual(["claude-code", "codex", "pi"]);
   });
 
   /**
@@ -218,12 +219,13 @@ describe("cross-harness fork and handoff — the target contract", () => {
    * written into 155 chat records: a guard that quietly admitted it again would
    * route those chats at an adapter that no longer exists.
    */
-  it("does not admit the removed openrouter kind anywhere", () => {
-    expect(ROUTABLE_PROVIDER_KINDS).not.toContain("openrouter");
-    expect(isRoutableProvider("openrouter")).toBe(false);
-    expect(INTERNAL_PROVIDER_KINDS).not.toContain("openrouter");
-    expect(isInternalProvider("openrouter")).toBe(false);
-    expect(getSessionProvider("openrouter" as never)).toBeUndefined();
+  it.each(["openrouter", "cline"])("does not admit the removed %s kind anywhere", (kind) => {
+    expect(ROUTABLE_PROVIDER_KINDS).not.toContain(kind);
+    expect(isRoutableProvider(kind)).toBe(false);
+    expect(INTERNAL_PROVIDER_KINDS).not.toContain(kind);
+    expect(isInternalProvider(kind)).toBe(false);
+    expect(getSessionProvider(kind as never)).toBeUndefined();
+    expect(getSessionProviders().map((p) => p.kind)).not.toContain(kind);
   });
 
   /**
@@ -237,6 +239,11 @@ describe("cross-harness fork and handoff — the target contract", () => {
   it("recognises the removed kind as retired rather than unknown", () => {
     expect(RETIRED_PROVIDER_KINDS).toContain("openrouter");
     expect(isRetiredProvider("openrouter")).toBe(true);
+    expect(RETIRED_PROVIDER_KINDS).toContain("cline");
+    expect(isRetiredProvider("cline")).toBe(true);
+    // Every retired kind has a name for its refusal message.
+    for (const kind of RETIRED_PROVIDER_KINDS) expect(RETIRED_PROVIDER_LABELS[kind]).toBeTruthy();
+    expect(RETIRED_PROVIDER_LABELS.cline).toBe("Cline");
     // Live kinds are never retired, or the refusal would take out working chats.
     for (const kind of INTERNAL_PROVIDER_KINDS) expect(isRetiredProvider(kind)).toBe(false);
     // Neither is a typo — that path degrades, it does not refuse.

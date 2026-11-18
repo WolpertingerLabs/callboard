@@ -96,11 +96,10 @@ describe("sendMessage pins provider and model into new-chat metadata", () => {
   });
 
   it("writes the per-chat model for every other kind that reads one back", async () => {
-    // claude-code, cline and pi were already correct — they are here as the
+    // claude-code and pi were already correct — they are here as the
     // controls that make the codex case above mean something, and so that the
     // next kind to land cannot quietly regress in the same direction.
     expect(await metadataFor({ provider: "claude-code", model: "opus" })).toMatchObject({ model: "opus" });
-    expect(await metadataFor({ provider: "cline", model: "some-cline-model" })).toMatchObject({ provider: "cline", model: "some-cline-model" });
     expect(await metadataFor({ provider: "pi", model: "some-pi-model" })).toMatchObject({ provider: "pi", model: "some-pi-model" });
     expect(await metadataFor({ provider: "acp", acpProviderId: "opencode", model: "some-acp-model" })).toMatchObject({
       provider: "acp",

@@ -37,11 +37,7 @@
  * Which providers actually have two passes, as of this file:
  *  - **acp** — yes. `resolveAcpPermission` is pass 1, `buildCanUseTool` pass 2.
  *    Kept in sync by `acpToolLabel` producing the one string both categorize.
- *  - **cline** — yes. `buildRequestToolApproval` is pass 1, `buildCanUseTool`
- *    pass 2. The easiest case of the three: Cline's `ToolApprovalRequest`
- *    always carries a real `toolName`, so there is no label ladder to keep the
- *    two passes agreeing — they receive the same string by construction.
- *  - **pi** — yes, and the same easy shape as Cline. `decidePiToolCall` (the
+ *  - **pi** — yes, and the easy case. `decidePiToolCall` (the
  *    `tool_call` extension handler) is pass 1, `buildCanUseTool` pass 2, and
  *    `ToolCallEvent.toolName` is always a real identifier from a closed set
  *    plus callboard's own tool names. Note pi does not ask *at all* without
@@ -60,7 +56,6 @@ import type { AgentProviderKind } from "../ports/AgentProvider.js";
 import type { PermissionCategory } from "./ToolPermissionPolicy.js";
 import { categorizeClaudeTool } from "../adapters/claude-code/permissionAdapter.js";
 import { categorizeAcpToolName } from "../adapters/acp/permissionAdapter.js";
-import { categorizeClineToolName } from "../adapters/cline/permissionAdapter.js";
 import { categorizePiToolName } from "../adapters/pi/permissionAdapter.js";
 
 /** Tool name → permission category. `null` means "ask", never "allowed". */
@@ -95,7 +90,6 @@ const gateEverything: ToolCategorizer = (name) => (isComputerControlToolName(nam
 export const TOOL_CATEGORIZERS: Record<AgentProviderKind, ToolCategorizer> = {
   "claude-code": categorizeClaudeTool,
   acp: categorizeAcpToolName,
-  cline: categorizeClineToolName,
   pi: categorizePiToolName,
   codex: gateEverything,
   mock: categorizeClaudeTool,

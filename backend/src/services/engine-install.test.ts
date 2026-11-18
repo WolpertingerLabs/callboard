@@ -348,7 +348,7 @@ describe("startEngineInstall — refusing without spawning", () => {
   });
 
   it("refuses a bundled engine, which has no runnable recipe and never will", () => {
-    for (const engineId of ["cline", "pi"]) {
+    for (const engineId of ["pi"]) {
       const result = startEngineInstall({ engineId, capability: { oneClick: true } });
       expect(result).toMatchObject({ ok: false, code: "no-recipe", status: 404 });
     }
@@ -416,7 +416,7 @@ describe("startEngineInstall — refusing without spawning", () => {
     // reaches one. Rate-limiting refusals would only punish a user fixing their
     // prefix.
     for (let i = 0; i < 5; i++) {
-      expect(startEngineInstall({ engineId: "cline", capability: { oneClick: true } })).toMatchObject({ code: "no-recipe" });
+      expect(startEngineInstall({ engineId: "pi", capability: { oneClick: true } })).toMatchObject({ code: "no-recipe" });
     }
     expect(startEngineInstall({ engineId: "opencode", capability: { oneClick: true } }).ok).toBe(true);
   });

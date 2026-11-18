@@ -159,7 +159,7 @@ describe("a remote or proxied client may not", () => {
 
 describe("the gate is narrow, which is the half that would break the app", () => {
   it("lets a proxied client save every other setting", async () => {
-    const res = await put({ openRouterApiKey: "sk-or-test", codexModel: "gpt-5.5", clineApiKey: "k" }, PROXIED);
+    const res = await put({ openRouterApiKey: "sk-or-test", codexModel: "gpt-5.5", piApiKey: "k" }, PROXIED);
     expect(res.code).toBe(200);
     expect(onDisk().openRouterApiKey).toBe("sk-or-test");
   });

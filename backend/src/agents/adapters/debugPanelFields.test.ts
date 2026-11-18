@@ -27,14 +27,14 @@
  * ## Fixtures, not the developer's home directory
  *
  * The probe this replaces read real transcripts out of `~`, which is how the
- * numbers were originally established but is not something a test can do: three
- * of the five engines have no sessions on any given machine, and the two that do
+ * numbers were originally established but is not something a test can do: two
+ * of the four engines have no sessions on any given machine, and the two that do
  * would make the assertions depend on whatever the developer last ran. Each
  * fixture below is instead written in its engine's real on-disk shape, and each
  * says where that shape was verified against.
  *
  * Where an engine has a translation layer between the wire and the transcript
- * (ACP and Cline write callboard's own normalized `AgentEvent`s), the fixture
+ * (ACP writes callboard's own normalized `AgentEvent`s), the fixture
  * feeds *engine-native* input through the adapter's real translation functions
  * rather than hand-writing the normalized form — otherwise this would test the
  * parser against a transcript no adapter would ever produce.
@@ -62,7 +62,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ParsedMessage } from "shared/types/index.js";
 
-// Before anything reads `paths.ts` — the ACP/Cline/pi roots are all derived from
+// Before anything reads `paths.ts` — the ACP/pi roots are all derived from
 // DATA_DIR, which is captured at module load. See #302.
 const tmpRoot = mkdtempSync(join(tmpdir(), "callboard-debug-panel-"));
 process.env.CALLBOARD_DATA_DIR = tmpRoot;
@@ -73,9 +73,6 @@ const { parsePiSession } = await import("./pi/sessionParser.js");
 const { parseAcpTranscript } = await import("./acp/sessionParser.js");
 const { AcpTranscriptWriter } = await import("./acp/transcript.js");
 const { buildAcpUsage, mapStopReason, translateAcpUpdate, AcpToolCallBuffer } = await import("./acp/messageAdapter.js");
-const { parseClineTranscript } = await import("./cline/sessionParser.js");
-const { ClineTranscriptWriter } = await import("./cline/transcript.js");
-const { buildTerminalResult, recordTerminalSignal, translateClineEvent } = await import("./cline/messageAdapter.js");
 const { CURRENT_SESSION_VERSION } = await import("@earendil-works/pi-coding-agent");
 
 afterAll(() => rmSync(tmpRoot, { recursive: true, force: true }));
@@ -108,7 +105,7 @@ const PROBES = {
    *
    * An engine that emits **one** message per generation needs none: the panel's
    * `__ungrouped_N` fallback already numbers rows per message. That is why acp
-   * and cline are `unavailable` here rather than carrying a positional key.
+   * is `unavailable` here rather than carrying a positional key.
    */
   grouping: (m: ParsedMessage) => (m.generationKey ?? m.requestId) != null,
   /** Req ID column — the engine's own id, never a synthesized one. */
@@ -206,26 +203,6 @@ const MATRIX: Record<string, Record<Field, Cell>> = {
       "cost rides on a separate `usage_update` beacon, not on `PromptResponse`, so a turn where the agent sent none has " +
         "no cost — and after such a gap the next turn's step spans two turns and is dashed rather than misattributed",
     ),
-    speed: unavailable(NO_ANTHROPIC_CONCEPT),
-    timestamp: every(),
-  },
-
-  cline: {
-    usage: every(),
-    model: every(),
-    stopReason: some(
-      "`buildTerminalResult` takes it from the `done` event, and a loop that ends on an unrecoverable error never emits " +
-        "one — so a turn can carry usage (a row) with no finish reason. The fixture's last turn is that shape.",
-    ),
-    grouping: unavailable(NO_KEY_NEEDED),
-    requestId: unavailable("no id reaches callboard: neither Cline's `usage` nor its `done` event carries one."),
-    cacheRead: some(
-      "`totalCacheReadTokens` is optional, and Cline's own emitter sends it as `total === 0 ? undefined : total` " +
-        "(`@cline/core/dist/index.js`), so it is absent on every turn before the first cache hit — and a turn whose step " +
-        "spans a turn that omitted it is dashed rather than credited the span",
-    ),
-    cacheWrite: some("as `cacheRead` — `totalCacheWriteTokens` is optional and zero-suppressed by the same emitter"),
-    cost: every(),
     speed: unavailable(NO_ANTHROPIC_CONCEPT),
     timestamp: every(),
   },
@@ -492,91 +469,6 @@ function acpMessages(): ParsedMessage[] {
 }
 
 /**
- * A Cline transcript, produced the way `ClineAgentQuery` produces one.
- *
- * Cline's counters are **cumulative for the session**, so the fixture feeds
- * running totals and the parser is expected to difference them back into
- * per-turn figures.
- *
- * Three turns, each covering something the matrix asserts:
- *
- *  1. A first turn whose cache totals are still **0**, which Cline's own emitter
- *     sends as `undefined` (`total === 0 ? undefined : total`, verified in
- *     `@cline/core/dist/index.js`) — so the Cache columns are legitimately blank
- *     on it, and `cacheRead`/`cacheWrite` cannot be `every()`.
- *  2. A normal turn, so the differencing is actually exercised: its row must
- *     show its own step, not the chat's running total.
- *  3. A turn that ends on an unrecoverable **error rather than `done`**, which
- *     is the shape that leaves `stopReason` unset — the state `stopReason:
- *     every()` claimed could not happen.
- */
-function clineMessages(): ParsedMessage[] {
-  const writer = new ClineTranscriptWriter("cline-session-1", "/tmp/repo");
-  writer.writeHeader({ providerId: "anthropic", modelId: "claude-opus-5" });
-
-  const turn = (text: string, totals: { input: number; output: number; cacheRead?: number; cacheWrite?: number; cost: number }, finish: unknown): void => {
-    writer.writeUserMessage(`turn: ${text}`);
-    writer.writeEvent({ type: "session_started", sessionId: "cline-session-1" });
-    const accounting = {};
-    const inner = [
-      { type: "content_end", contentType: "text", text },
-      {
-        type: "usage",
-        inputTokens: 1,
-        outputTokens: 1,
-        totalInputTokens: totals.input,
-        totalOutputTokens: totals.output,
-        // Absent, not zero, when Cline's emitter suppresses a zero total.
-        ...(totals.cacheRead !== undefined && { totalCacheReadTokens: totals.cacheRead }),
-        ...(totals.cacheWrite !== undefined && { totalCacheWriteTokens: totals.cacheWrite }),
-        totalCost: totals.cost,
-      },
-      finish,
-    ];
-    for (const event of inner) {
-      recordTerminalSignal(accounting, event as never);
-      const translated = translateClineEvent(event as never);
-      if (translated) writer.writeEvent(translated);
-    }
-    writer.writeEvent(buildTerminalResult(accounting));
-  };
-
-  const done = { type: "done", reason: "completed", text: "", iterations: 2 };
-  turn("Nothing cached yet.", { input: 1200, output: 300, cost: 0.01 }, done);
-  turn("Reading it now.", { input: 2600, output: 560, cacheRead: 900, cacheWrite: 40, cost: 0.03 }, done);
-  // No `done` — the loop died. `buildTerminalResult` still carries the usage it
-  // accumulated, so this is a row, and it has no finish reason to show.
-  turn(
-    "It says hello world.",
-    { input: 3800, output: 760, cacheRead: 1800, cacheWrite: 40, cost: 0.05 },
-    {
-      type: "error",
-      recoverable: false,
-      error: new Error("provider hung up"),
-    },
-  );
-
-  const messages = parseClineTranscript(writer.filePath!);
-  const rows = panelRows(messages);
-  // Three turns, three rows — with no `generationKey` minted for any of them.
-  expect(rows).toHaveLength(3);
-  expect(groupCount(rows)).toBe(3);
-
-  // Turn 1 measured no cache because Cline sent no cache figure at all.
-  expect(rows[0].usage).toEqual({ input_tokens: 1200, output_tokens: 300 });
-  // Differencing, not the running total: turn 2's step is 2600-1200 in. Its
-  // cache read is the full 900 rather than a dash — the baseline it follows sat
-  // at zero, and a counter at zero that goes quiet has nothing to hide.
-  expect(rows[1].usage).toMatchObject({ input_tokens: 1400, output_tokens: 260, cache_read_input_tokens: 900, cache_creation_input_tokens: 40 });
-  expect(rows[1].costUsd).toBeCloseTo(0.02, 10);
-  // 1800-900 read this turn and nothing newly written: a real zero, which is a
-  // different claim from turn 1's absent field.
-  expect(rows[2].usage).toMatchObject({ cache_read_input_tokens: 900, cache_creation_input_tokens: 0 });
-  expect(rows[2].stopReason).toBeUndefined();
-  return messages;
-}
-
-/**
  * A pi session file, in pi's real version-3 shape.
  *
  * The assistant message shape is `@earendil-works/pi-ai`'s `AssistantMessage`,
@@ -684,7 +576,6 @@ beforeAll(() => {
   PARSED["claude-code"] = claudeCodeMessages();
   PARSED.codex = codexMessages();
   PARSED.acp = acpMessages();
-  PARSED.cline = clineMessages();
   PARSED.pi = piMessages();
 });
 
@@ -715,7 +606,7 @@ describe("responses debug panel: per-engine field coverage", () => {
    *
    * Keys repeat *within* an engine on purpose — that is what collapses one API
    * call's several blocks into one row — so what must hold is that no key is
-   * used by two engines. Rows with no key at all (acp, cline — they need none)
+   * used by two engines. Rows with no key at all (acp — it needs none)
    * are excluded rather than compared as `undefined`.
    */
   it("grouping keys never collide across engines", () => {

@@ -176,7 +176,7 @@ describe("the MCP tool manifest matches the schemas it describes", () => {
     const providerParams = manifest.flatMap((t) => t.parameters.filter((p) => p.name === "provider").map((p) => [t.name, p] as const));
     expect(providerParams.length).toBeGreaterThan(0);
     for (const [toolName, param] of providerParams) {
-      expect(param.enumValues, toolName).toEqual(["claude-code", "codex", "acp", "cline", "pi"]);
+      expect(param.enumValues, toolName).toEqual(["claude-code", "codex", "acp", "pi"]);
     }
   });
 

@@ -92,7 +92,7 @@ function discoverProjectDirs(targetFolder: string): {
       // ignored while its main repo is not; `dirName` is the representation the
       // prefixes are written against.
       //
-      // Placed ahead of the folder match to read the same way Codex, ACP, Cline
+      // Placed ahead of the folder match to read the same way Codex, ACP
       // and Pi do. Do not read that position as semantic: **here it is inert**.
       // Every dir surviving the folder match belongs to the target folder, so
       // an ignored target ignores all of them whichever order the two checks

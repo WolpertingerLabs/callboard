@@ -12,7 +12,7 @@
  * | claude-code | `TodoWrite`   | `{todos: [{content, status, activeForm?}]}`|
  * | codex       | `update_plan` | `{plan: [{step, status}]}`                 |
  * | acp         | `plan`        | `{entries: [{content, priority, status}]}` |
- * | cline / pi  | —             | neither SDK has a list concept             |
+ * | pi          | —             | the SDK has no list concept                |
  *
  * The names are the engines' own, not callboard's, and none of them is ever MCP-
  * namespaced — `TodoWrite` and `update_plan` are built into their harnesses, and

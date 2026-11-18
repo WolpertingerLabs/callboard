@@ -1,6 +1,6 @@
 /** Explicit managed names only: never infer control authority from display text.
  * OpenCode sanitizes the MCP server/tool separator to `_`; Claude/Codex use
- * `mcp__server__tool`. Bare aliases are shared by Cline/pi custom-tool bridges.
+ * `mcp__server__tool`. Bare aliases are used by the pi custom-tool bridge.
  * This is categorization, NOT authorization; the owner-bound service gates calls.
  */
 export function isComputerControlToolName(name: string): boolean {

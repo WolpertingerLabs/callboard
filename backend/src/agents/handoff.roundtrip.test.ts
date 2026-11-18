@@ -5,7 +5,7 @@
  * on the metadata it composes. That is the right test for the route and the
  * wrong one for this question: a stub that returns `{ logPath }` proves the
  * route calls `seedSession`, not that the file `seedSession` wrote can be read
- * back. Cline and pi were both offered as handoff targets in Phase 5 on the
+ * back. pi (and the since-retired Cline) were offered as handoff targets in Phase 5 on the
  * strength of implementing the method; this is the check that the method
  * actually works.
  *
@@ -28,7 +28,6 @@ const tmpRoot = mkdtempSync(join(tmpdir(), "callboard-handoff-roundtrip-"));
 process.env.CALLBOARD_DATA_DIR = tmpRoot;
 
 const { PiSessionProvider } = await import("./adapters/pi/PiSessionProvider.js");
-const { ClineSessionProvider } = await import("./adapters/cline/ClineSessionProvider.js");
 const { buildHandoffTurns, truncateAtCutoff } = await import("./handoff.js");
 const { resolvePiSessionsRoot } = await import("./adapters/pi/paths.js");
 
@@ -52,12 +51,10 @@ function sourceHistory(): ParsedMessage[] {
 
 const TARGETS = [
   { kind: "pi" as const, provider: () => new PiSessionProvider() },
-  { kind: "cline" as const, provider: () => new ClineSessionProvider() },
 ];
 
 beforeEach(() => {
   rmSync(resolvePiSessionsRoot(), { recursive: true, force: true });
-  rmSync(join(tmpRoot, "cline-sessions"), { recursive: true, force: true });
 });
 
 describe.each(TARGETS)("handoff into $kind", ({ kind, provider: makeProvider }) => {

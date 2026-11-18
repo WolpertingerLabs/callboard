@@ -261,7 +261,7 @@ function FeedbackContent({ action, onRespond, agentName = "Claude" }: Props) {
  * computer-control header AND makes {@link formatInput} render only `summary` +
  * `action`, dropping every other input key. A looser match would let a
  * third-party MCP server exposing its own `cu_action` — the bare spelling the
- * cline/pi custom-tool bridges use — render as a Callboard GUI confirmation
+ * pi custom-tool bridge uses — render as a Callboard GUI confirmation
  * with, say, its `command` field never shown. The backend raises exactly one
  * name; recognize exactly that one.
  */

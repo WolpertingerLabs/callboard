@@ -12,7 +12,7 @@
  * mounts no interaction surface at all. One layer down, pi ships the `tool_call`
  * extension event, which is a real gate.
  *
- * ## In-process, like Cline and OpenRouter
+ * ## In-process, like the retired Cline and OpenRouter adapters
  *
  * `customTools` is an in-process array, so callboard's tools keep the per-chat
  * SSE emitter and live backend state by being closures — no MCP stdio shim and
@@ -38,8 +38,8 @@
  * `AgentQueryRequest.options`: the Claude-SDK-shaped top-level fields (`cwd`,
  * `resume`, `abortController`, `canUseTool`, `mcpServers`) that
  * `services/claude.ts` populates for every provider, plus a `pi` sub-object for
- * provider settings. Same pattern as `options.cline`, `options.codex` and
- * `options.openRouter`.
+ * provider settings. Same pattern as `options.codex` (and the retired
+ * `options.cline` / `options.openRouter`).
  *
  * `options.env` is deliberately not forwarded: pi runs in the backend process and
  * takes its credentials as config fields, so there is nothing for `env` to do —
@@ -202,7 +202,7 @@ export class PiAdapter implements AgentProvider {
   /**
    * Return the spec unchanged.
    *
-   * Same call the Cline adapter makes, for the same reason: pi's tools are plain
+   * Same call the retired Cline adapter made, for the same reason: pi's tools are plain
    * objects that must be built *with* the turn's permission context, and their
    * names must reach `buildToolFilters` so a narrowed allowlist does not delete
    * them. Doing that at query time keeps the tools and their allowlist derived

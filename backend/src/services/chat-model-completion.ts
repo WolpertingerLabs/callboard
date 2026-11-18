@@ -4,7 +4,7 @@
  * `quickCompletion` is the cheap utility path — titles, branch names — and
  * always runs on the global utility backend (Claude Code's haiku/sonnet/opus
  * tiers, or OpenRouter when the user opted into that). Its model parameter is
- * a tier name, not a model id, so it cannot be pointed at a Codex, Cline or pi
+ * a tier name, not a model id, so it cannot be pointed at a Codex or pi
  * chat's model at all.
  *
  * Compression summaries must be written by the model the chat is running on:
@@ -22,7 +22,7 @@
  *  - no resume, and the instructions carried in the prompt itself, so the
  *    answer does not depend on each harness's system-prompt plumbing. A
  *    `systemPrompt`, when given, REPLACES the harness's agent prompt where the
- *    harness takes one (Claude Code, Codex, Cline) — without it Claude Code's
+ *    harness takes one (Claude Code, Codex) — without it Claude Code's
  *    default prompt describes the throwaway cwd and platform, and the model
  *    dutifully repeats that into its answer. pi has no system-prompt option,
  *    so it gets the prompt alone.
@@ -41,17 +41,13 @@
  *    the CLI's config/read; when that cannot be read the run is refused rather
  *    than started with servers live. Verified against codex-cli 0.153.4: asked
  *    to run a shell command, the locked-down model had no tool to do it with.
- *  - cline: every tool call goes through `requestToolApproval`, which reads
- *    the deny-all axes and refuses; tools stay in the model's list but every
- *    call is refused. `maxIterations` is capped so a model that keeps trying
- *    cannot loop.
  *  - pi: deny-all removes every built-in tool from the session
  *    (`buildToolFilters`), and the per-call gate refuses anything else
  *    (extension tools included).
  *
  * Fallbacks, per harness:
  *  - claude-code: `persistSession: false` — nothing is written.
- *  - codex, cline, pi: each persists every run, and has no "don't" switch. The
+ *  - codex, pi: each persists every run, and has no "don't" switch. The
  *    session file is deleted through its own SessionProvider once the run ends
  *    (by the `session_started` id); if the run never reports one, the file
  *    stays behind under the throwaway cwd, which discovery ignores.
@@ -67,7 +63,7 @@ import type { InternalProviderKind } from "../agents/ports/AgentProvider.js";
 import { sanitizeInheritedAgentEnv } from "../agents/agentEnvPolicy.js";
 import { getAgentSettings, getApiEnvOverrides, resolveModelAlias } from "./agent-settings.js";
 import { getClaudeCodeExecutablePath } from "./claude-binary.js";
-import { buildClineExtras, buildCodexExtras, buildPiExtras, type ProviderOptionsContext } from "./provider-session-options.js";
+import { buildCodexExtras, buildPiExtras, type ProviderOptionsContext } from "./provider-session-options.js";
 import { resolveCodexExecutionRoute } from "./codex-execution-route.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -151,9 +147,6 @@ export async function runChatModelCompletion(opts: ChatModelCompletionOptions): 
   return text;
 }
 
-/** Iteration cap for a Cline summary run: one answer, with room for a refused tool call or two. */
-const CLINE_MAX_ITERATIONS = 3;
-
 /** The per-harness half of the options, locked down as the header describes. */
 async function addHarnessOptions(
   options: Record<string, unknown>,
@@ -195,9 +188,6 @@ async function addHarnessOptions(
     // here too so nothing downstream reads it.
     delete codex.sandboxMode;
     options.codex = { ...codex, permissions: DENY_ALL, lockdown: { mcpServerNames: codexRoute.mcpServerNames } };
-  }
-  if (provider === "cline") {
-    options.cline = { ...(await buildClineExtras(ctx)), maxIterations: CLINE_MAX_ITERATIONS, ...(opts.systemPrompt && { systemPrompt: opts.systemPrompt }) };
   }
   if (provider === "pi") options.pi = await buildPiExtras({ ...ctx, resumeSessionId: undefined, chatId: undefined });
 }

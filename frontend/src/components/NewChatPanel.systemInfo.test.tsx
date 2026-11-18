@@ -39,15 +39,12 @@ const payload = (acpProviders: ReturnType<typeof OPENCODE>) => ({
   version: "1.0.0",
   acpProviders,
   codexConfigured: true,
-  clineProviderId: "anthropic",
 });
 
 /** Resolve `/system-info` with `body`; answer anything else the panel touches harmlessly. */
 function serve(body: unknown) {
   return vi.fn((url: string) =>
-    String(url).includes("/system-info")
-      ? Promise.resolve({ ok: true, json: async () => body })
-      : Promise.resolve({ ok: true, json: async () => ({}) }),
+    String(url).includes("/system-info") ? Promise.resolve({ ok: true, json: async () => body }) : Promise.resolve({ ok: true, json: async () => ({}) }),
   );
 }
 
@@ -101,15 +98,15 @@ describe("the seed — what paints before the daemon answers", () => {
     expect(screen.queryByRole("button", { name: "OpenCode" })).toBeNull();
   });
 
-  it("still shows the four hardcoded providers with a cold cache", () => {
-    // Which is why only the ACP button ever popped in: these four never needed
-    // the payload, so the row was drawn and then reflowed when the fifth landed.
+  it("still shows the three hardcoded providers with a cold cache", () => {
+    // Which is why only the ACP button ever popped in: these three never needed
+    // the payload, so the row was drawn and then reflowed when the fourth landed.
     vi.stubGlobal("fetch", serveNothing());
     render(panel());
 
     // Labels as `ProviderConfigPicker` renders them — "Claude", not "Claude
     // Code", since #390 shortened it to fit the mobile row.
-    for (const label of ["Claude", "Codex", "Cline", "pi"]) {
+    for (const label of ["Claude", "Codex", "pi"]) {
       expect(screen.getByRole("button", { name: label })).toBeTruthy();
     }
   });

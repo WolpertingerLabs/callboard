@@ -1090,7 +1090,7 @@ export function buildCallboardToolsSpec(
 
       defineTool(
         "list_openrouter_models",
-        "List OpenRouter models that support tool calling, with their input/output pricing (per 1M tokens), optionally filtered by a search query. Use the returned slug wherever an OpenRouter model id is configured — the Claude Code / Codex / Cline / pi harnesses can each be pointed at OpenRouter credentials in Settings → API. The list is cached and refreshed on app start. Use list_model_aliases for cross-harness aliases.",
+        "List OpenRouter models that support tool calling, with their input/output pricing (per 1M tokens), optionally filtered by a search query. Use the returned slug wherever an OpenRouter model id is configured — the Claude Code / Codex / pi harnesses can each be pointed at OpenRouter credentials in Settings → API. The list is cached and refreshed on app start. Use list_model_aliases for cross-harness aliases.",
         {
           query: z
             .string()
@@ -1130,7 +1130,7 @@ export function buildCallboardToolsSpec(
 
       defineTool(
         "get_session_status",
-        "Check the status of a chat session on any engine (claude-code, codex, cline, pi, acp). Returns whether the session is active, complete, or not found. " +
+        "Check the status of a chat session on any engine (claude-code, codex, pi, acp). Returns whether the session is active, complete, or not found. " +
           "To poll, sleep between checks with the `wait` tool — not a background `sleep` shell, which is invisible to the user and holds this session open until it finishes.",
         {
           chatId: z.string().describe("The chat/session ID to check"),
@@ -1173,7 +1173,7 @@ export function buildCallboardToolsSpec(
 
       defineTool(
         "read_session_messages",
-        "Read the text messages from a chat session on any engine (claude-code, codex, cline, pi, acp) — each engine's transcript format is read for you. Returns the conversation content (user and assistant messages, plus attributed native inter-agent context). Useful for checking what a spawned session did.",
+        "Read the text messages from a chat session on any engine (claude-code, codex, pi, acp) — each engine's transcript format is read for you. Returns the conversation content (user and assistant messages, plus attributed native inter-agent context). Useful for checking what a spawned session did.",
         {
           chatId: z.string().describe("The chat/session ID to read messages from"),
           limit: z.number().optional().describe("Maximum number of messages to return (default: 50, returns most recent)"),
@@ -1344,7 +1344,7 @@ export function buildCallboardToolsSpec(
 
       defineTool(
         "get_chat_tree",
-        "Get the parentage tree for a chat: its ancestors and the full tree of descendant chats spawned from the same root, across all engines (claude-code, codex, cline, pi, acp). Each node includes chatId, title, role, provider, status (ongoing/waiting/stopped), and folder. Defaults to THIS chat when chatId is omitted. Use with read_session_messages / continue_chat to inspect or cooperate with related chats. " +
+        "Get the parentage tree for a chat: its ancestors and the full tree of descendant chats spawned from the same root, across all engines (claude-code, codex, pi, acp). Each node includes chatId, title, role, provider, status (ongoing/waiting/stopped), and folder. Defaults to THIS chat when chatId is omitted. Use with read_session_messages / continue_chat to inspect or cooperate with related chats. " +
           "A tree belongs to exactly one space (reported as spaceId); a tree in another space than THIS chat's is refused unless you pass space: \"all\" or its space id.",
         {
           chatId: z.string().optional().describe("Chat ID to get the tree for (default: the current chat)"),

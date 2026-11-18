@@ -7,7 +7,7 @@ import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { assertNativeAgentControllable, nativeAgentForChat } from "./codex-native-agents.js";
 import { beginComputerUseTurn, buildComputerUseToolsSpec } from "./computer-use-tools.js";
 import { getAgentProvider } from "../agents/factory.js";
-import { isInternalProvider, isRetiredProvider, type AgentProviderKind, type AgentQuery, type InternalProviderKind } from "../agents/ports/AgentProvider.js";
+import { isInternalProvider, isRetiredProvider, RETIRED_PROVIDER_LABELS, type AgentProviderKind, type RetiredProviderKind, type AgentQuery, type InternalProviderKind } from "../agents/ports/AgentProvider.js";
 import type { EffortLevel } from "shared/types/index.js";
 import type { PermissionResult } from "../agents/adapters/claude-code/types.js";
 import type { ToolServerSpec } from "../agents/ports/tools.js";
@@ -22,7 +22,7 @@ import type { StreamEvent, TaskListItem } from "shared/types/index.js";
 import { TASK_LIST_TOOLS, normalizePermissions, normalizeReviewSettings, appendAttachmentBlocks } from "shared/types/index.js";
 import { buildAttachmentBlocks, titleSourceFor, type FileAttachment } from "./file-attachments.js";
 import { buildPluginOptions, buildMcpServerOptions, buildHookOptions, type PluginDescriptor } from "./claude-session-options.js";
-import { buildAcpExtras, buildClineExtras, buildCodexExtras, buildPiExtras, type ProviderOptionsContext } from "./provider-session-options.js";
+import { buildAcpExtras, buildCodexExtras, buildPiExtras, type ProviderOptionsContext } from "./provider-session-options.js";
 import { buildAgentToolsSpec, setMessageSender } from "./agent-tools.js";
 import { buildCallboardToolsSpec, setCallboardMessageSender } from "./callboard-tools.js";
 import { buildJobStepToolsSpec } from "./job-step-tools.js";
@@ -88,6 +88,18 @@ export { buildPluginOptions, resolveServerPaths, isCommandLaunchable } from "./c
 export class RetiredProviderError extends Error {}
 
 /**
+ * What to do instead, per retired harness. OpenRouter credentials still work
+ * through a native harness, so that one points there; anything else just needs
+ * another harness.
+ */
+function retiredProviderNextStep(kind: RetiredProviderKind, action: "chat" | "job"): string {
+  const start = action === "chat" ? "Start a new chat" : "Re-point it at another harness";
+  return kind === "openrouter"
+    ? `${start} — to keep using OpenRouter credentials, route a native harness through them in Settings → API.`
+    : `${start}${action === "chat" ? " on another harness" : ""}.`;
+}
+
+/**
  * Narrow a free-form metadata.provider value to an InternalProviderKind — a
  * kind that can actually back a chat, so never `"mock"` — falling back to
  * "claude-code" on anything unrecognized. Logs a warn for malformed values so
@@ -106,8 +118,7 @@ function resolveProviderKind(value: unknown): InternalProviderKind {
   if (typeof value !== "string" || value === "") return "claude-code";
   if (isRetiredProvider(value)) {
     throw new RetiredProviderError(
-      "This chat ran on the OpenRouter agent harness, which has been removed. It cannot be resumed. " +
-        "Start a new chat — to keep using OpenRouter credentials, route a native harness through them in Settings → API.",
+      `This chat ran on ${RETIRED_PROVIDER_LABELS[value]}, which has been removed. It cannot be resumed. ${retiredProviderNextStep(value, "chat")}`,
     );
   }
   // Chat metadata, not a request body — so the internal list, which may include
@@ -477,7 +488,7 @@ export const STRICT_REVIEW_FALLBACK: PermissionReviewSettings & { approveAllowed
  * Build the canUseTool permission handler for the Claude SDK.
  * Uses a getter function for the tracking ID since it may change mid-session (new chat flow).
  *
- * The same callback serves pi, ACP and Cline (their permission adapters call
+ * The same callback serves pi and ACP (their permission adapters call
  * it on "ask"), so the review chain below covers every engine except Codex.
  *
  * For an "ask", the chain is:
@@ -508,7 +519,7 @@ export function buildCanUseTool(
   return async (
     toolName: string,
     input: Record<string, unknown>,
-    // `toolUseID` is passed by the Claude Agent SDK only; pi, ACP and Cline call
+    // `toolUseID` is passed by the Claude Agent SDK only; pi and ACP call
     // this with just `{ signal }`, so their audit records carry no tool-use id.
     { signal, suggestions, toolUseID }: { signal: AbortSignal; suggestions?: readonly unknown[]; toolUseID?: string },
   ): Promise<PermissionResult> => {
@@ -864,8 +875,8 @@ export interface SendMessageOptions {
   acpProviderId?: string;
   /**
    * Reasoning-effort level. Honored for new chats on the reasoning-capable
-   * providers — `provider: "codex"` (→ Codex `modelReasoningEffort`),
-   * `"cline"` and `"pi"` — written into chat
+   * providers — `provider: "codex"` (→ Codex `modelReasoningEffort`) and
+   * `"pi"` — written into chat
    * metadata so existing-chat follow-ups reuse the same setting without the
    * caller threading it through. Omitted entirely when undefined (preserves each
    * model's default). Ignored when paired with `claude-code`.
@@ -991,7 +1002,6 @@ type SessionQueryOptions = {
   stderr: (data: string) => void;
   codex?: Awaited<ReturnType<typeof buildCodexExtras>>;
   acp?: ReturnType<typeof buildAcpExtras>;
-  cline?: Awaited<ReturnType<typeof buildClineExtras>>;
   pi?: Awaited<ReturnType<typeof buildPiExtras>>;
 };
 
@@ -1027,15 +1037,14 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   if (opts.chatId) assertNativeAgentControllable(opts.chatId);
   const { prompt, imageMetadata, activePlugins, defaultPermissions } = opts;
   const isNewChat = !opts.chatId;
-  // A job step or cron action authored before the OpenRouter harness was removed
-  // can still name it, and `opts.provider` is no longer typed to admit the value.
+  // A job step or cron action authored before a harness (OpenRouter, Cline) was
+  // removed can still name it, and `opts.provider` is no longer typed to admit the value.
   // Refuse it here rather than letting it fall off the internal allowlist, which
   // would leave the metadata `provider` unwritten and quietly start a Claude Code
   // session in its place — a run that reports success on the wrong engine.
   if (isRetiredProvider(opts.provider)) {
     throw new RetiredProviderError(
-      "This job or cron action targets the OpenRouter agent harness, which has been removed. " +
-        "Re-point it at another harness — to keep using OpenRouter credentials, route a native harness through them in Settings → API.",
+      `This job or cron action targets ${RETIRED_PROVIDER_LABELS[opts.provider]}, which has been removed. ${retiredProviderNextStep(opts.provider, "job")}`,
     );
   }
   log.debug(`sendMessage — isNewChat=${isNewChat}, folder=${opts.folder || "n/a"}, chatId=${opts.chatId || "n/a"}`);
@@ -1173,16 +1182,13 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       // pi; their config blocks below pull it out of metadata. The stream.ts
       // boundary already drops `effort` when the paired provider can't use it, so
       // this second guard is defense-in-depth.
-      // ...and cline (→ Cline `thinking` / `reasoningEffort`), whose vocabulary is
-      // callboard's `EffortLevel` minus `"none"` — see cline/optionsAdapter.
-      ...(opts.effort && (opts.provider === "codex" || opts.provider === "cline" || opts.provider === "pi") && { effort: opts.effort }),
+      ...(opts.effort && (opts.provider === "codex" || opts.provider === "pi") && { effort: opts.effort }),
       // Pin the per-chat model alongside provider/effort. Every kind that can
       // back a chat reads this value back out of metadata in its config block
       // below, each in its own vocabulary: claude-code passes it to the SDK as
       // options.model; codex resolves it against the Codex catalog; acp names one
       // of the vendor's own models and applies it via `session/set_config_option`
-      // once the session exists; cline names a model within the configured Cline
-      // provider and passes it on `CoreSessionConfig.modelId`; pi resolves it
+      // once the session exists; pi resolves it
       // through `ModelRegistry.find()`.
       //
       // So the guard is the INTERNAL allowlist rather than a hand-listed set —
@@ -1873,12 +1879,11 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     },
   };
 
-  // Per-harness extras (`options.codex` / `.acp` / `.cline` / `.pi`) — see
+  // Per-harness extras (`options.codex` / `.acp` / `.pi`) — see
   // ./provider-session-options.ts. Each reads only the context it is handed.
   const providerCtx: ProviderOptionsContext = { agentSettings, folder, chatModel, chatEffort, getDefaultPermissions, trackingId };
   if (providerKind === "codex") queryOpts.options.codex = await buildCodexExtras({ ...providerCtx, codexRoute });
   if (providerKind === "acp") queryOpts.options.acp = buildAcpExtras({ ...providerCtx, acpProviderId });
-  if (providerKind === "cline") queryOpts.options.cline = await buildClineExtras(providerCtx);
   if (providerKind === "pi") queryOpts.options.pi = await buildPiExtras({ ...providerCtx, resumeSessionId, chatId: opts.chatId });
 
   log.debug(

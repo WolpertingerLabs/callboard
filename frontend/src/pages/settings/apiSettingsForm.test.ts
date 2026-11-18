@@ -44,11 +44,6 @@ const FULL: AgentSettings = {
   codexOpenRouterModel: "openai/gpt-x",
   acpUseOpenRouter: true,
   acpOpenRouterApiKey: "sk-or-acp",
-  clineProviderId: "anthropic",
-  clineModel: "cline-x",
-  clineApiKey: "sk-cline",
-  clineBaseUrl: "https://cline.example",
-  clineMaxIterations: 42,
 };
 
 describe("formFromSettings / settingsFromForm", () => {
@@ -69,28 +64,20 @@ describe("formFromSettings / settingsFromForm", () => {
     expect(form.codexSandboxMode).toBe("workspace-write");
     expect(form.claudeCodeUseOpenRouter).toBe(false);
     expect(form.apiKey).toBe("");
-    expect(form.clineMaxIterations).toBe("");
   });
 
   it("sends every field on Save — a snapshot, with blanks as empty strings", () => {
     const body = settingsFromForm(EMPTY_API_SETTINGS_FORM, undefined);
-    expect(Object.keys(body)).toHaveLength(46);
+    expect(Object.keys(body)).toHaveLength(41);
     expect(body.apiKey).toBe("");
     expect(body.codexAuthMode).toBe("subscription");
     expect(body.openRouterUtilityCompletions).toBe(false);
     expect("acpProviderModels" in body).toBe(true);
-    expect("clineMaxIterations" in body).toBe(true);
-    expect(body.clineMaxIterations).toBeUndefined();
   });
 
-  it.each([
-    ["", undefined],
-    ["   ", undefined],
-    [" 12 ", 12],
-    ["abc", undefined],
-    ["0", undefined],
-  ])("parses clineMaxIterations %j as %j", (text, expected) => {
-    expect(settingsFromForm({ ...EMPTY_API_SETTINGS_FORM, clineMaxIterations: text }, undefined).clineMaxIterations).toBe(expected);
+  it("sends no field for the retired Cline harness", () => {
+    const body = settingsFromForm(formFromSettings({ clineApiKey: "sk-cline", clineModel: "x" } as AgentSettings), undefined);
+    expect(Object.keys(body).filter((k) => k.startsWith("cline"))).toEqual([]);
   });
 
   it("does not trim free-text fields", () => {

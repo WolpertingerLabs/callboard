@@ -71,8 +71,22 @@ export interface AgentSettingsRead {
   error?: string;
 }
 
-/** Settings of the removed cloudflared remote-access tunnel; see {@link readAgentSettings}. */
-const RETIRED_SETTING_KEYS = ["remoteAccessEnabled", "remoteAccessMode", "cloudflaredToken", "remoteAccessHostname"] as const;
+/**
+ * Settings of removed features, stripped on read; see {@link readAgentSettings}.
+ * The cloudflared remote-access tunnel, and the retired Cline harness (whose
+ * `clineApiKey` is a stored secret — dropping it is the point, not a side effect).
+ */
+export const RETIRED_SETTING_KEYS = [
+  "remoteAccessEnabled",
+  "remoteAccessMode",
+  "cloudflaredToken",
+  "remoteAccessHostname",
+  "clineProviderId",
+  "clineModel",
+  "clineApiKey",
+  "clineBaseUrl",
+  "clineMaxIterations",
+] as const;
 
 /**
  * Read the settings file, and say how that went.
