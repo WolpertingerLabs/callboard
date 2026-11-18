@@ -523,7 +523,7 @@ export function TodoList({ items }: { items: TaskListItem[] }) {
         borderRadius: 10,
         overflow: "hidden",
         background: "var(--assistant-bg)",
-        maxWidth: "85%",
+        maxWidth: "92%",
       }}
     >
       <div
@@ -1144,7 +1144,7 @@ function MessageBubble({
         <div
           className="msg-bubble"
           style={{
-            maxWidth: "85%",
+            maxWidth: "92%",
             padding: "10px 14px",
             borderRadius: "var(--radius)",
             background: "var(--assistant-bg)",
@@ -1195,7 +1195,7 @@ function MessageBubble({
       <div
         className="msg-bubble"
         style={{
-          maxWidth: "85%",
+          maxWidth: "92%",
           ...(actionsMinWidth && { minWidth: actionsMinWidth }),
           padding: "10px 14px",
           borderRadius: "var(--radius)",

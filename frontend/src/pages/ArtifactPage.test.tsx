@@ -126,7 +126,7 @@ describe("ArtifactPage — rendering", () => {
     const frame = await frameNow();
     expect(frame.getAttribute("sandbox")).toBe("allow-scripts");
     expect(frame.getAttribute("src")).toBe(`/api/artifacts/cramhouse/versions/2/render?bridge=${/bridge=([0-9a-f]{32})/.exec(frame.src)![1]}&sha256=${SHA2}`);
-    // No chat chrome: no bubble header, no fullscreen button, no 85% box.
+    // No chat chrome: no bubble header, no fullscreen button, no 92% box.
     expect(screen.queryByTitle("Fullscreen")).toBeNull();
     expect(screen.getByTestId("artifact-renderer").style.maxWidth).toBe("");
     expect(screen.getByTestId("artifact-page-bar").textContent).toMatch(/Cramhouse.*v2/);
