@@ -301,8 +301,12 @@ describe("findPiModel", () => {
     // Index 0 is an anthropic-messages model. Copying its transport sent every
     // synthesized Gemini, Llama or DeepSeek slug through OpenRouter's
     // Anthropic-compatible endpoint.
-    getOpenRouterModelsSnapshot.mockReturnValue([{ ...maverick, id: "google/gemini-4-argon" }]);
-    expect(findPiModel(runtime(), "openrouter", "google/gemini-4-argon")).toMatchObject({
+    // A test-only slug under a real vendor: absent by construction, so the
+    // synthesis path is what runs, and `google/` siblings decide the transport.
+    const slug = "google/callboard-test-not-in-any-catalog";
+    expect(runtime().getModels("openrouter").some((m) => m.id === slug)).toBe(false);
+    getOpenRouterModelsSnapshot.mockReturnValue([{ ...maverick, id: slug }]);
+    expect(findPiModel(runtime(), "openrouter", slug)).toMatchObject({
       api: "openai-completions",
       baseUrl: "https://openrouter.ai/api/v1",
     });

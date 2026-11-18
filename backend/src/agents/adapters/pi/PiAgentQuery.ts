@@ -46,6 +46,16 @@
  * doing anything else and therefore emits nothing to its own subscribers; it is
  * not a substitute for `abort()`.
  *
+ * `dispose()` also runs at the end of **every** turn, not only on a cancel. A
+ * session is built per turn and never prompted again, and since pi 1.x it owns
+ * a cache warmer that arms on every model request and, in pi's default
+ * `"idle"` mode, keeps re-sending for up to 30 minutes after the agent
+ * settles; `dispose()` cancels it. Warming is pinned off anyway (`optionsAdapter.createPiSettingsManager`),
+ * so this is the second lock rather than the only one — and it stops a
+ * finished turn's session lingering for as long as the query is referenced.
+ * Whichever of the turn's end and `close()` gets there first disposes; the
+ * other finds nothing to do, so a session is never disposed twice.
+ *
  * @see plans/pi-adapter.md
  * @see plans/pi-spike-findings.md (§6 — abort/dispose, measured)
  */
@@ -251,6 +261,12 @@ export class PiAgentQuery implements AgentQuery {
     } finally {
       unsubscribe();
       await turn;
+      // The turn is over, so the session is too: callboard builds a fresh one
+      // per turn and never prompts this one again. Disposing here, not only on
+      // `close()`, is what tears down pi's cache warmer — which would otherwise
+      // outlive the turn by up to 30 minutes in "idle" mode — rather than
+      // leaving it to whoever holds the query. See the header's "Lifecycle".
+      this.disposeSession();
     }
 
     if (turnError && !accounting.errorMessage) {
@@ -365,6 +381,23 @@ export class PiAgentQuery implements AgentQuery {
     } catch (err) {
       log.warn(`aborting pi session ${this.opts.sessionId} failed: ${err instanceof Error ? err.message : String(err)}`);
     }
+    // Not `session.dispose()` directly: while `abort()` was awaited the turn
+    // may have unwound and disposed the session itself, and this must not do
+    // it a second time.
+    this.disposeSession();
+  }
+
+  /**
+   * Dispose the live session exactly once, whoever gets there first.
+   *
+   * Two paths end a session — the turn finishing (`iterate()`'s `finally`) and
+   * `close()` — and a cancel mid-turn runs both. Clearing `this.session`
+   * before disposing makes the second caller a no-op.
+   */
+  private disposeSession(): void {
+    const session = this.session;
+    if (!session) return;
+    this.session = undefined;
     try {
       session.dispose();
     } catch (err) {

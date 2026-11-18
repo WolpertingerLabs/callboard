@@ -31,9 +31,19 @@ const { resolvePiModelForRun } = await import("./modelCatalog.js");
 const { getOpenRouterModelsAsync, resetOpenRouterModelsCacheForTesting } = await import("../../../services/openrouter-models.js");
 
 const DEFAULT_ROOT = "https://openrouter.ai/api/v1";
-const NEW_MODEL = "google/gemini-4-argon";
+/**
+ * Slugs absent from pi's catalog *by construction*, not by luck. These used to
+ * be real-looking ids (`google/gemini-4-argon`, `openrouter/pareto-code`) that
+ * pi simply had not bundled yet, and a pi upgrade that bundled them silently
+ * moved every case below off the synthesis path. A `callboard-test-` slug no
+ * catalog will ever carry; the vendor prefix is kept where the case depends on
+ * vendor-sibling templating. The first test asserts all of them are absent.
+ */
+const NEW_MODEL = "google/callboard-test-not-in-any-catalog";
+const UNLISTED_MODEL = "vendor/callboard-test-not-in-any-catalog";
+const VARIABLE_PRICED_ROUTER = "callboard-test/variable-priced-router";
 
-/** A `/models` body carrying one model pi 0.85.1 does not bundle, priced as OpenRouter lists it. */
+/** A `/models` body carrying one model pi does not bundle, priced as OpenRouter lists it. */
 function catalogResponse(): Response {
   return {
     ok: true,
@@ -43,7 +53,7 @@ function catalogResponse(): Response {
       data: [
         {
           id: NEW_MODEL,
-          name: "Google: Gemini 4 Argon",
+          name: "Google: Callboard Test Model",
           supported_parameters: ["tools", "reasoning"],
           pricing: { prompt: "0.000002", completion: "0.00001", input_cache_read: "0.0000001", input_cache_write: "0.0000001875" },
           context_length: 1_048_576,
@@ -76,10 +86,11 @@ afterAll(() => {
 });
 
 describe("resolvePiModelForRun", () => {
-  it("guards a slug pi really does not bundle", () => {
-    // Every case below depends on this. If a pi upgrade bundles the slug, the
-    // synthesis path is no longer under test; pick a newer one.
-    expect(runtime.getModels("openrouter").some((m) => m.id === NEW_MODEL)).toBe(false);
+  it("guards slugs pi really does not bundle", () => {
+    // Every synthesis case below depends on this. The slugs are test-only, so
+    // this should never fail — if it does, the cause is right here.
+    const bundled = new Set(runtime.getModels("openrouter").map((m) => m.id));
+    for (const slug of [NEW_MODEL, UNLISTED_MODEL, VARIABLE_PRICED_ROUTER]) expect(bundled.has(slug), slug).toBe(false);
   });
 
   it("prices a model newer than pi's catalog on the first turn of a cold daemon", async () => {
@@ -106,8 +117,8 @@ describe("resolvePiModelForRun", () => {
   });
 
   it("routes a non-Anthropic slug through openai-completions, as pi does every bundled sibling", async () => {
-    // pi's first OpenRouter model is anthropic/claude-3-haiku on
-    // anthropic-messages; templating off it sent Gemini to the Anthropic API.
+    // pi's first OpenRouter model is an anthropic-messages one; templating
+    // off it sent Gemini to the Anthropic API.
     expect(runtime.getModels("openrouter")[0]?.api).toBe("anthropic-messages");
     expect(await resolvePiModelForRun(runtime, "openrouter", NEW_MODEL, DEFAULT_ROOT)).toMatchObject({
       api: "openai-completions",
@@ -143,15 +154,16 @@ describe("resolvePiModelForRun", () => {
   });
 
   it("warns when the catalog answers but does not list the slug", async () => {
-    const model = await resolvePiModelForRun(runtime, "openrouter", "vendor/not-in-any-catalog", DEFAULT_ROOT);
+    const model = await resolvePiModelForRun(runtime, "openrouter", UNLISTED_MODEL, DEFAULT_ROOT);
     expect(model?.cost).toMatchObject({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
-    expect(String(warn.mock.calls[0]?.[0])).toContain("vendor/not-in-any-catalog");
+    expect(String(warn.mock.calls[0]?.[0])).toContain(UNLISTED_MODEL);
   });
 
   it("bills a variable-priced router's -1 prices as unknown, never as a negative cost", async () => {
-    // As OpenRouter lists `openrouter/pareto-code` and `typesafe/jev-router`,
-    // neither bundled in pi. Taken at face value, -1 per token is
-    // -$1,000,000 per million, and every turn would record a refund.
+    // As OpenRouter lists its variable-priced routers (`openrouter/pareto-code`,
+    // `typesafe/jev-router`). Taken at face value, -1 per token is
+    // -$1,000,000 per million, and every turn would record a refund. A
+    // test-only slug, since pi now bundles some of the real ones.
     fetchMock.mockImplementation(async () => ({
       ok: true,
       status: 200,
@@ -159,8 +171,8 @@ describe("resolvePiModelForRun", () => {
       json: async () => ({
         data: [
           {
-            id: "openrouter/pareto-code",
-            name: "Pareto Code Router",
+            id: VARIABLE_PRICED_ROUTER,
+            name: "Variable-priced Router",
             supported_parameters: ["tools"],
             pricing: { prompt: "-1", completion: "-1", input_cache_read: "-1", input_cache_write: "NaN" },
           },
@@ -168,28 +180,48 @@ describe("resolvePiModelForRun", () => {
       }),
     }));
 
-    const model = await resolvePiModelForRun(runtime, "openrouter", "openrouter/pareto-code", DEFAULT_ROOT);
+    const model = await resolvePiModelForRun(runtime, "openrouter", VARIABLE_PRICED_ROUTER, DEFAULT_ROOT);
     expect(model?.cost).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
     expect(warn).toHaveBeenCalledTimes(1);
-    expect(String(warn.mock.calls[0][0])).toContain("openrouter/pareto-code");
+    expect(String(warn.mock.calls[0][0])).toContain(VARIABLE_PRICED_ROUTER);
   });
 
-  it("clamps pi's own bundled negative prices to 0, without touching pi's registry entry", async () => {
-    // pi 0.85.1 bundles `openrouter/auto` with OpenRouter's "-1" multiplied
-    // through to -1,000,000 per million. It is found, not synthesized, so the
-    // synthesis guard never sees it; left alone, a 20k-in / 1k-out turn on it
-    // recorded about -$21,000.
-    const bundled = runtime.getModels("openrouter").find((m) => m.id === "openrouter/auto");
-    expect(bundled?.cost.input).toBeLessThan(0);
+  it("clamps negative prices on a model pi's registry carries, without touching pi's registry entry", async () => {
+    // pi 0.85.1 bundled `openrouter/auto` with OpenRouter's "-1" multiplied
+    // through to -1,000,000 per million; a 20k-in / 1k-out turn on it recorded
+    // about -$21,000. 1.5 ships it at 0, but a found model with a negative
+    // price can still arrive (a models.json entry, a pi.dev catalog, a pi that
+    // regresses), so the guard stays and is tested against an injected model
+    // rather than whatever pi happens to bundle. Found, not synthesized, so
+    // the synthesis guard never sees it.
+    const template = runtime.getModels("openrouter").find((m) => m.id.startsWith("google/"))!;
+    const id = "callboard-test/negative-priced-router";
+    runtime.registerProvider("openrouter", {
+      models: [
+        {
+          id,
+          name: "Negative-priced Router",
+          api: template.api,
+          baseUrl: template.baseUrl,
+          reasoning: false,
+          input: ["text"],
+          cost: { input: -1_000_000, output: -1_000_000, cacheRead: 0, cacheWrite: 0 },
+          contextWindow: 128_000,
+          maxTokens: 16_384,
+        },
+      ],
+    });
+    const registered = runtime.getModels("openrouter").find((m) => m.id === id);
+    expect(registered?.cost.input).toBeLessThan(0);
 
-    const model = await resolvePiModelForRun(runtime, "openrouter", "openrouter/auto", DEFAULT_ROOT);
-    expect(model).toMatchObject({ id: "openrouter/auto", provider: "openrouter", api: bundled!.api, baseUrl: bundled!.baseUrl });
-    expect(model?.cost).toEqual({ ...bundled!.cost, input: 0, output: 0 });
+    const model = await resolvePiModelForRun(runtime, "openrouter", id, DEFAULT_ROOT);
+    expect(model).toMatchObject({ id, provider: "openrouter", api: registered!.api, baseUrl: registered!.baseUrl });
+    expect(model?.cost).toEqual({ ...registered!.cost, input: 0, output: 0 });
     // A copy: the registry entry every other lookup on this runtime shares is unchanged.
-    expect(model).not.toBe(bundled);
-    expect(runtime.getModels("openrouter").find((m) => m.id === "openrouter/auto")?.cost.input).toBeLessThan(0);
-    expect(String(warn.mock.calls[0]?.[0])).toContain("openrouter/auto");
-    // Bundled, so the OpenRouter catalog is never consulted for it.
+    expect(model).not.toBe(registered);
+    expect(runtime.getModels("openrouter").find((m) => m.id === id)?.cost.input).toBeLessThan(0);
+    expect(String(warn.mock.calls[0]?.[0])).toContain(id);
+    // Found in pi's registry, so the OpenRouter catalog is never consulted for it.
     expect(fetchMock).not.toHaveBeenCalled();
   });
 

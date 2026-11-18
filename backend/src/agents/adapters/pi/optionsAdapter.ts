@@ -122,6 +122,48 @@ export function translateThinkingLevel(effort: EffortLevel | undefined): { think
   return { thinkingLevel: effort satisfies PiThinkingLevel };
 }
 
+/** pi's cache-warming vocabulary, read off the getter rather than transcribed. */
+export type PiCacheWarmingMode = ReturnType<SettingsManager["getCacheWarmingMode"]>;
+
+/** The only cache-warming mode a callboard pi session runs with. */
+export const PI_CACHE_WARMING_MODE = "off" satisfies PiCacheWarmingMode;
+
+/**
+ * A `SettingsManager` for one chat: project trust denied, cache warming off.
+ *
+ * ## Why cache warming is off, and pinned rather than configured
+ *
+ * pi 1.x added a *cache warmer*: it may re-send a turn's request to keep the
+ * provider's prompt cache warm, betting that the next turn arrives before the
+ * cache expires. Its default mode, `"idle"`, keeps doing so for up to 30
+ * minutes after the agent settles. Each
+ * warm is a real, billed request, recorded only as a `{ type: "usage", kind:
+ * "cache_warm" }` session entry — callboard's accounting reads turn results,
+ * not those entries, so the spend would be invisible. Callboard chats also sit
+ * idle far longer than any warming payback. pi 0.85.1 had no warmer at all,
+ * so `"off"` is exact behaviour parity with the version this replaced.
+ *
+ * `applyOverrides({ cacheWarming: "off" })` looks like the tool for this and
+ * **does not work**, measured against 1.5.2: `getCacheWarmingMode()` reads the
+ * *global* settings only ("because warming costs money"), never the merged
+ * view overrides write to, and `reload()` rebuilds that merged view from disk
+ * regardless. A `"cacheWarming": "idle"` in `<agentDir>/settings.json` — a
+ * hand edit, or a pi CLI pointed at callboard's agent dir — would win.
+ *
+ * So the getter itself is pinned on the instance. pi's warmer asks it on every
+ * decision (`sdk.js` passes `() => settingsManager.getCacheWarmingMode()`), a
+ * `reload()` replaces data and never methods, and `setCacheWarmingMode()`
+ * writes a file this getter no longer reads. `optionsAdapter.test.ts` pins all
+ * three, plus the control showing the file really does say `"idle"`, and
+ * `assertPiTrustDenied` refuses a services bag whose manager reports anything
+ * else.
+ */
+export function createPiSettingsManager(cwd: string, agentDir: string): SettingsManager {
+  const settingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
+  settingsManager.getCacheWarmingMode = () => PI_CACHE_WARMING_MODE;
+  return settingsManager;
+}
+
 export interface BuildPiServicesInput {
   cwd: string;
   /** The permission gate, as an inline extension factory. Never optional. */
@@ -170,6 +212,12 @@ export function resolveCallboardSkillPaths(): string[] {
  * Callboard has no trust UI yet, so the answer is a constant `false`. When one
  * lands this becomes a real prompt; until then a hardcoded denial is the honest
  * behaviour, and it is the safe direction to be wrong in.
+ *
+ * The same settings manager also pins **cache warming off**. That is a billing
+ * property, not a trust one, but it has the same shape — a pi default that is
+ * wrong for callboard, easy to lose in a refactor, and silent when lost — so
+ * it lives here and is checked by the same gate. See
+ * {@link createPiSettingsManager}.
  *
  * `noSkills` / `noPromptTemplates` / `noThemes` are set for the same reason:
  * they are *separate* flags from `noExtensions`, and project-local skills are
@@ -241,7 +289,7 @@ export function buildPiServicesOptions(input: BuildPiServicesInput): CreateAgent
   return {
     cwd: input.cwd,
     agentDir,
-    settingsManager: SettingsManager.create(input.cwd, agentDir, { projectTrusted: false }),
+    settingsManager: createPiSettingsManager(input.cwd, agentDir),
     resourceLoaderReloadOptions: {
       resolveProjectTrust: async () => false,
     },

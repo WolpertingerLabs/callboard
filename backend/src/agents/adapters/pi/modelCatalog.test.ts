@@ -19,6 +19,7 @@ process.env.CALLBOARD_DATA_DIR = tmpRoot;
 process.env.PI_OFFLINE = "1";
 
 const getOpenRouterModelsSnapshot = vi.fn();
+const { ModelRuntime } = await import("@earendil-works/pi-coding-agent");
 
 vi.mock("../../../services/openrouter-models.js", () => ({
   getOpenRouterModelsSnapshot: (baseUrl?: string) => getOpenRouterModelsSnapshot(baseUrl),
@@ -166,8 +167,26 @@ it("preserves pi thinking-level map restrictions instead of offering all tiers",
 
 describe("actual model SDK reasoning restrictions", () => {
   it("intersects the bundled o3 model rather than treating all gateway tiers as SDK tiers", async () => {
+    // The expectation is read off o3's own `thinkingLevelMap`, not transcribed:
+    // which tiers pi refuses for o3 is catalog data and moves between pi
+    // releases (1.5 nulled `off`, so o3 lost "none"). What must not move is
+    // that the answer follows the map rather than offering every tier.
+    const agentDir = mkdtempSync(join(tmpRoot, "o3-agent-"));
+    const runtime = await ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: join(agentDir, "models.json"), allowModelNetwork: false });
+    const o3 = runtime.getModels("openrouter").find((m) => m.id === "openai/o3");
+    expect(o3?.reasoning).toBe(true);
+    const map: Partial<Record<string, string | null>> = o3?.thinkingLevelMap ?? {};
+    const toEffort = (level: string) => (level === "off" ? "none" : level);
+    const expected = [
+      ...["off", "minimal", "low", "medium", "high"].filter((level) => map[level] !== null),
+      // Above "high" a tier exists only when the map names it.
+      ...["xhigh", "max"].filter((level) => typeof map[level] === "string"),
+    ].map(toEffort);
+    // Without a restriction this would not be testing the intersection at all.
+    expect(Object.values(map).some((v) => v === null)).toBe(true);
+
     const efforts = await getPiModelReasoningEfforts("openrouter", "openai/o3", null);
-    expect(efforts).toEqual(["none", "minimal", "low", "medium", "high"]);
+    expect(efforts).toEqual(expected);
   });
   it("does not borrow unrelated utility metadata for synthesized models", async () => {
     getOpenRouterModelsSnapshot.mockReturnValue([{ id: "vendor/unbundled-scope-test", supportedParameters: ["reasoning"] }]);
