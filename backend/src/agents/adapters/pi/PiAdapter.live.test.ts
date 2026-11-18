@@ -245,14 +245,37 @@ describe.skipIf(!live)("pi adapter — live", () => {
   );
 
   it(
-    "rejects thinkingLevel 'off' on a model that mandates reasoning",
+    "refuses thinkingLevel 'off' on a model that mandates reasoning, before any request",
     async () => {
-      // The 400 that made `translateThinkingLevel(undefined)` send nothing at
-      // all rather than defaulting to "off". Asserted so a future pi that
-      // silently swallows it is noticed.
-      const { result } = await run("Reply with the single word: ok", { pi: { effort: "none" } });
-      expect(result?.status).toBe("error");
-      expect(result?.reason ?? "").toMatch(/reasoning/i);
+      // History: this model answered `thinkingLevel: "off"` with a provider 400.
+      // That 400 is why `translateThinkingLevel(undefined)` sends nothing at all
+      // rather than defaulting to "off", and this case was first written to
+      // catch a future pi that silently swallowed it.
+      //
+      // Since pi 1.5.2 the bundled catalog knows this model mandates reasoning,
+      // so callboard's own `assertPiModelReasoningEffort` (run inside
+      // `buildPiSessionOptions`) refuses "none" before a session exists — no
+      // completion request, no tokens, and a message that names the problem
+      // instead of a provider's 400 body. `services/claude.ts` turns the throw
+      // into an `error` stream event, so the user still sees it.
+      //
+      // Either shape is accepted: today the query throws while being iterated,
+      // but a refusal reported as an error `result` keeps the same contract.
+      // What must NOT happen is a turn that runs — that would mean either pi
+      // forgot the mandate or the pre-flight stopped firing, and the next stop
+      // is the 400 again.
+      let thrown: unknown;
+      let outcome: RunResult | undefined;
+      try {
+        outcome = await run("Reply with the single word: ok", { pi: { effort: "none" } });
+      } catch (err) {
+        thrown = err;
+      }
+      const reason = thrown instanceof Error ? thrown.message : (outcome?.result?.status === "error" && outcome.result.reason) || "";
+      expect(reason, "the turn ran instead of being refused").toMatch(/reasoning effort/i);
+      // Pre-flight means no model output and nothing billed.
+      expect(outcome?.text ?? "").toBe("");
+      expect(outcome?.result?.usage?.costUsd ?? 0).toBe(0);
     },
     TEST_TIMEOUT,
   );
