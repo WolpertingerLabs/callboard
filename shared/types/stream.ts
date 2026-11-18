@@ -101,8 +101,10 @@ export interface StreamEvent {
    * the chat UI can show a final spend total, and to mid-run `budget` events
    * (one per turn boundary, cumulative — not the turn's increment) so spend
    * tracking advances while the agent works. Populated by whichever adapters
-   * report a run cost (pi does, from its per-turn `usage.cost`); Claude Code chats
-   * report per-message rather than per-run costs and may surface 0 for
+   * report a run cost. Today that is pi, on `done` only (the sum of its
+   * per-turn `usage.cost`). No adapter currently emits mid-run `budget`
+   * events; the retired ACP harness was the last one that did. Claude Code
+   * chats report per-message rather than per-run costs and may surface 0 for
    * subscription-authenticated sessions.
    */
   costUsd?: number;
