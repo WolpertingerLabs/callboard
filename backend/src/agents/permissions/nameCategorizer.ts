@@ -1,12 +1,12 @@
 /**
- * The name-only tool categorizer shared by the Cline, pi and ACP adapters.
+ * The name-only tool categorizer shared by the pi and ACP adapters.
  *
- * All three bridge a foreign tool vocabulary onto callboard's four axes from a
- * tool *name* alone, and all three used to carry their own byte-identical copy
- * of the identifier check, tokenizer and token table below. What legitimately
- * differs between them is the exact-name table, so that is the one input:
- * Cline and pi each pass their own (they disagree on purpose — see each
- * adapter's `EXACT_CATEGORIES`), ACP passes none.
+ * Both bridge a foreign tool vocabulary onto callboard's four axes from a tool
+ * *name* alone, and both (with the since-retired Cline adapter) used to carry
+ * their own byte-identical copy of the identifier check, tokenizer and token
+ * table below. What legitimately differs between them is the exact-name table,
+ * so that is the one input: pi passes its own (see its `EXACT_CATEGORIES`), ACP
+ * passes none.
  *
  * Each adapter still exports its own named categorizer built from this factory,
  * so the registry in `categorizers.ts` keeps one entry per provider and the
@@ -48,7 +48,7 @@ export const MOST_RESTRICTIVE_CATEGORY: PermissionCategory = "codeExecution";
  * `webAccess` moves data in and out of the machine, `fileRead` only observes.
  *
  * The fallback serves callboard's own tools, which surface under bare names
- * (`spawn_job`, `set_chat_title`) on Cline and pi, and any MCP or vendor tools —
+ * (`spawn_job`, `set_chat_title`) on pi, and any MCP or vendor tools —
  * none of which are knowable in advance.
  */
 const CATEGORY_TOKENS: ReadonlyArray<readonly [PermissionCategory, readonly string[]]> = [

@@ -71,10 +71,10 @@ const rowLabelStyle: React.CSSProperties = {
 /**
  * Model picker for pi chats.
  *
- * ## Why a filtering combobox rather than the Cline field
+ * ## Why a filtering combobox rather than a datalist
  *
- * The Cline model field is an `<input list>` over a `<datalist>`, which is fine
- * for a catalog of a few dozen. pi's is **~300 models for OpenRouter alone**,
+ * The (since retired) Cline model field was an `<input list>` over a
+ * `<datalist>`, which is fine for a catalog of a few dozen. pi's is **~300 models for OpenRouter alone**,
  * measured against the real endpoint, and a native datalist that long is a
  * scroll rather than a picker.
  *

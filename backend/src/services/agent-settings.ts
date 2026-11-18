@@ -71,8 +71,22 @@ export interface AgentSettingsRead {
   error?: string;
 }
 
-/** Settings of the removed cloudflared remote-access tunnel; see {@link readAgentSettings}. */
-const RETIRED_SETTING_KEYS = ["remoteAccessEnabled", "remoteAccessMode", "cloudflaredToken", "remoteAccessHostname"] as const;
+/**
+ * Settings of removed features, stripped on read; see {@link readAgentSettings}.
+ * The cloudflared remote-access tunnel, and the retired Cline harness (whose
+ * `clineApiKey` is a stored secret — dropping it is the point, not a side effect).
+ */
+export const RETIRED_SETTING_KEYS = [
+  "remoteAccessEnabled",
+  "remoteAccessMode",
+  "cloudflaredToken",
+  "remoteAccessHostname",
+  "clineProviderId",
+  "clineModel",
+  "clineApiKey",
+  "clineBaseUrl",
+  "clineMaxIterations",
+] as const;
 
 /**
  * Read the settings file, and say how that went.
@@ -110,9 +124,10 @@ export function readAgentSettings(): AgentSettingsRead {
   if (!existsSync(SETTINGS_FILE)) return { settings: { proxyMode: "local" }, state: "absent" };
   try {
     const raw = JSON.parse(readFileSync(SETTINGS_FILE, "utf-8"));
-    // Fields of the removed cloudflared remote-access tunnel. Dropped on read so
-    // GET never echoes them (`cloudflaredToken` is no longer a masked secret
-    // field) and the next save, which writes the read-back object, purges them.
+    // Fields of removed features (see RETIRED_SETTING_KEYS). Dropped on read so
+    // GET never echoes them (`cloudflaredToken` and `clineApiKey` are no longer
+    // masked secret fields) and the next save, which writes the read-back
+    // object, purges them.
     for (const key of RETIRED_SETTING_KEYS) delete raw[key];
     if (!raw.proxyMode) {
       raw.proxyMode = "local";

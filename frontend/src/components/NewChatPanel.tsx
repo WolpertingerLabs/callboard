@@ -5,6 +5,7 @@ import { listAgents, getAgentIdentityPrompt, cachedSystemInfo, updateSpace, type
 import { useSpaces } from "../contexts/SpaceContext";
 import { ALL_SPACES, DEFAULT_SPACE_ID } from "shared/types/space.js";
 import { normalizePermissions } from "shared/types/permissions.js";
+import { UI_AGENT_PROVIDER_KINDS } from "shared/types/providers.js";
 import { spaceLabel } from "./SpaceChip";
 import { spaceHasOwnDefaults, writesBrowserFallback } from "../utils/spaceDefaults";
 import PermissionSettings from "./PermissionSettings";
@@ -35,8 +36,6 @@ import {
   getDefaultAcpModel,
   getDefaultPiModel,
   saveDefaultAcpModel,
-  getDefaultClineModel,
-  saveDefaultClineModel,
   saveDefaultPiModel,
   type AgentProviderKind,
   type EffortLevel,
@@ -220,17 +219,6 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   // kind covers many vendors whose catalogs share nothing — there is still no
   // single global ACP default, only a per-vendor one.
   const [acpModel, setAcpModel] = useState<string>(getDefaultAcpModel);
-  // Per-chat Cline model, within the provider configured in Settings → API.
-  // Empty = that global default (and when that is blank too, the adapter asks
-  // the SDK for the provider's own default — an empty model id is rejected by
-  // Cline's config schema).
-  const [clineModel, setClineModel] = useState<string>(getDefaultClineModel);
-  // Which Cline provider scopes the model catalog. Surfaced by /system-info so
-  // selecting `openrouter` there offers OpenRouter's models here. No
-  // availability check to match the ACP list: Cline is embedded and falls back
-  // to the backend's own environment credentials, so there is no unavailable
-  // state to fall back FROM.
-  const clineProviderId = (systemInfo ?? seed)?.clineProviderId ?? "";
   const [piModel, setPiModel] = useState<string>(getDefaultPiModel);
   // Whether each native harness is routed through OpenRouter — flips the model
   // pickers to OpenRouter's catalog. Sourced from /system-info.
@@ -263,7 +251,6 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
       "claude-code": getDefaultClaudeModel(),
       codex: getDefaultCodexModel(),
       acp: getDefaultAcpModel(),
-      cline: getDefaultClineModel(),
       pi: getDefaultPiModel(),
     } as Record<AgentProviderKind, string>,
   }));
@@ -290,7 +277,10 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     // survive a change of space; only the rest are re-seeded.
     const touched = touchedRef.current;
     const d = targetSpace.defaults ?? {};
-    const p = touched.has("provider") ? providerRef.current : (d.provider ?? globals.provider);
+    // A space saved while a since-retired harness (e.g. "cline") was offered can
+    // still name it; there is no button to land on, so use the fallback.
+    const spaceProvider = d.provider && (UI_AGENT_PROVIDER_KINDS as readonly string[]).includes(d.provider) ? d.provider : undefined;
+    const p = touched.has("provider") ? providerRef.current : (spaceProvider ?? globals.provider);
     // A model is chosen FOR an engine. If the new space switches the engine
     // the user did not pick, a model they picked for the old one would ride
     // along to the wrong engine — drop it and seed the new engine's instead.
@@ -304,7 +294,6 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
       setClaudeModel(model("claude-code"));
       setCodexModel(model("codex"));
       setAcpModel(model("acp"));
-      setClineModel(model("cline"));
       setPiModel(model("pi"));
     }
   }, [targetSpace, globals]);
@@ -330,7 +319,6 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
       saveDefaultCodexModel(codexModel);
       saveDefaultAcpProviderId(acpProviderId);
       saveDefaultAcpModel(acpModel);
-      saveDefaultClineModel(clineModel);
       saveDefaultPiModel(piModel);
     }
     const touched = touchedRef.current;
@@ -361,7 +349,6 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   const userSetClaudeModel = touch("model", setClaudeModel);
   const userSetCodexModel = touch("model", setCodexModel);
   const userSetAcpModel = touch("model", setAcpModel);
-  const userSetClineModel = touch("model", setClineModel);
   const userSetPiModel = touch("model", setPiModel);
 
   const displayPath = folder.trim() || (shownRecentDirs.length > 0 ? shownRecentDirs[0] : "");
@@ -392,7 +379,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   // Each provider carries its own model selection; forward the matching one.
   // ACP's is the vendor's own model id, applied after the session attaches.
   const modelForProvider = (p: AgentProviderKind): string =>
-    p === "codex" ? codexModel : p === "acp" ? acpModel : p === "cline" ? clineModel : p === "pi" ? piModel : claudeModel;
+    p === "codex" ? codexModel : p === "acp" ? acpModel : p === "pi" ? piModel : claudeModel;
 
   const confirmRemoveRecentDir = () => {
     // A space's list when the panel is showing one — removed as a delta, so a
@@ -437,7 +424,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     const effectiveProvider: AgentProviderKind = downgradeProvider(provider);
     // Each provider has its own model selection; forward the one matching
     // the effective provider. `effort` applies to the reasoning-capable
-    // providers (codex, cline, pi).
+    // providers (codex, pi).
     const trimmedModel = modelForProvider(effectiveProvider).trim();
 
     setFolder("");
@@ -451,7 +438,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
         // The vendor travels with the kind — `provider: "acp"` alone does not
         // say which harness runs the chat, and the route rejects it without this.
         ...(effectiveProvider === "acp" && { acpProviderId }),
-        ...(["codex", "cline", "pi"].includes(effectiveProvider) && effort && { effort }),
+        ...(["codex", "pi"].includes(effectiveProvider) && effort && { effort }),
         ...(trimmedModel && { model: trimmedModel }),
         ...(requireCompletion && { requireExplicitCompletion: true }),
       } satisfies ChatRouteState,
@@ -495,7 +482,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
         systemPrompt,
         agentAlias: agent.alias,
         provider: effectiveProvider,
-        ...(["codex", "cline", "pi"].includes(effectiveProvider) && effort && { effort }),
+        ...(["codex", "pi"].includes(effectiveProvider) && effort && { effort }),
         ...(effectiveProvider === "acp" && { acpProviderId }),
         ...(trimmedModel && { model: trimmedModel }),
         ...(requireCompletion && { requireExplicitCompletion: true }),
@@ -671,9 +658,6 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
               onAcpProviderChange={setAcpProviderId}
               acpModel={acpModel}
               onAcpModelChange={userSetAcpModel}
-              clineModel={clineModel}
-              onClineModelChange={userSetClineModel}
-              clineProviderId={clineProviderId}
               piModel={piModel}
               onPiModelChange={userSetPiModel}
               effort={effort}
@@ -897,9 +881,6 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
               onAcpProviderChange={setAcpProviderId}
               acpModel={acpModel}
               onAcpModelChange={userSetAcpModel}
-              clineModel={clineModel}
-              onClineModelChange={userSetClineModel}
-              clineProviderId={clineProviderId}
               piModel={piModel}
               onPiModelChange={userSetPiModel}
               effort={effort}

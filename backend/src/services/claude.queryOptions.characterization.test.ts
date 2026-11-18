@@ -5,7 +5,7 @@
  *
  * `sendMessage` assembles one `queryOpts` from a long run of independent
  * blocks — plugin/MCP/hook builders, five tool-server injections, the per-agent
- * key-alias rewrite, then one extras block per harness (codex/acp/cline/pi).
+ * key-alias rewrite, then one extras block per harness (codex/acp/pi).
  * The neighbouring seam tests each pin one field. This one pins the whole
  * object, plus the order servers were registered and the log lines the
  * assembly writes, for a representative spread of calls — so a structural
@@ -240,7 +240,7 @@ function normalizeEnv(env: Record<string, string | undefined>): Record<string, u
 }
 
 const RELEVANT_LOG =
-  /^(Injected|Failed to build|buildAgentToolsSpec|MCP servers for session|Codex chat config|ACP chat config|Cline chat config|pi chat config|Set MCP_KEY_ALIAS|Agent ".*" has no caller|Caller enrollment|A configured MCP server|Computer-control|Built \d+ hook|MCP server ".*" \(plugin .*\) has an unlaunchable|pi chat .* references session|SDK query options|Codex chat selected)/;
+  /^(Injected|Failed to build|buildAgentToolsSpec|MCP servers for session|Codex chat config|ACP chat config|pi chat config|Set MCP_KEY_ALIAS|Agent ".*" has no caller|Caller enrollment|A configured MCP server|Computer-control|Built \d+ hook|MCP server ".*" \(plugin .*\) has an unlaunchable|pi chat .* references session|SDK query options|Codex chat selected)/;
 
 // ── Harness ──────────────────────────────────────────────────────────────────
 function recordingProvider(sessionId: string, toolServers: "ok" | "throw" | "null" = "ok") {
@@ -357,11 +357,6 @@ const SETTINGS_RESET = {
   acpUseOpenRouter: undefined,
   acpOpenRouterApiKey: undefined,
   openRouterApiKey: undefined,
-  clineProviderId: undefined,
-  clineApiKey: undefined,
-  clineBaseUrl: undefined,
-  clineMaxIterations: undefined,
-  clineModel: undefined,
   piProviderId: undefined,
   piApiKey: undefined,
   piBaseUrl: undefined,
@@ -492,16 +487,15 @@ describe("sendMessage queryOpts characterization", () => {
     expect(await turn({ chatId: first.chatId, __kind: "acp", __acpId: "opencode" })).toMatchSnapshot();
   });
 
-  it("cline: configured provider, effort", async () => {
-    updateAgentSettings({ clineProviderId: " openrouter ", clineApiKey: " cl-key-5555 ", clineBaseUrl: " https://cline.example ", clineMaxIterations: 12, clineModel: "cline-default" } as never);
-    expect(await turn({ provider: "cline", effort: "medium" })).toMatchSnapshot("configured");
-    expect(await turn({ provider: "cline", model: "cline-chosen" })).toMatchSnapshot("per-chat model");
-  });
-
-  it("cline: bare settings + resume", async () => {
-    const first = await turn({ provider: "cline" });
-    expect(first).toMatchSnapshot("new");
-    expect(await turn({ chatId: first.chatId, __kind: "cline" })).toMatchSnapshot("resume");
+  it("cline: refused by name — the harness was removed", async () => {
+    // A job step or cron action authored before the removal can still name it.
+    // It must refuse rather than fall off the internal allowlist onto Claude Code.
+    const { RetiredProviderError } = await import("./claude.js");
+    const run = sendMessage({ folder: "/tmp", prompt: "hi", provider: "cline" as never });
+    await expect(run).rejects.toBeInstanceOf(RetiredProviderError);
+    await expect(sendMessage({ folder: "/tmp", prompt: "hi", provider: "cline" as never })).rejects.toThrow(
+      "This job or cron action targets Cline, which has been removed. Re-point it at another harness.",
+    );
   });
 
   it("pi: configured, new", async () => {

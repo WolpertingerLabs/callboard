@@ -82,7 +82,7 @@ describe("ChatDebugPanel summary totals", () => {
     // from an engine that reports no cache metric are not evidence of a cache
     // miss. Folding their input into the denominator dilutes the rate towards
     // zero: two Codex-shaped rows at 5k in / 4k cache read are 44.4%, and the
-    // two Cline-shaped rows below reported nothing.
+    // two rows below (from an engine with no cache figure) reported nothing.
     render(
       <ChatDebugPanel
         messages={[
@@ -203,9 +203,9 @@ describe("ChatDebugPanel rows", () => {
  */
 describe("ChatDebugPanel row cells", () => {
   it("renders a measured zero as 0, not as a dash", () => {
-    // Cline's turn 2 in `debugPanelFields.test.ts` really does produce
-    // `cache_creation_input_tokens: 0` — 40 cumulative minus 40 cumulative, a
-    // turn that wrote nothing new. A real pi generation on this machine reports
+    // A differenced cumulative counter (ACP's) produces
+    // `cache_creation_input_tokens: 0` on a turn that wrote nothing new — 40
+    // cumulative minus 40 cumulative. A real pi generation on this machine reports
     // `cacheRead: 0` the same way. Rendered as `-` it was byte-identical to a
     // Codex row, where OpenAI reports no cache-write metric at all.
     render(<ChatDebugPanel messages={[row({ usage: { input_tokens: 0, output_tokens: 20, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } })]} />);
@@ -248,9 +248,9 @@ describe("ChatDebugPanel row cells", () => {
     expect(modelColumn).toEqual(["measured-zero", "measured-five", "unreported"]);
   });
 
-  it("colours a clean Cline loop finish as success, not as an unrecognised value", () => {
-    // The Stop column knew three Anthropic values, so every Cline row — whose
-    // reason describes the agent loop, deliberately not relabelled — rendered
+  it("colours a clean loop-level finish as success, not as an unrecognised value", () => {
+    // The Stop column knew three Anthropic values, so every row from the retired
+    // Cline harness — whose reason describes the agent loop, deliberately not relabelled — rendered
     // the same muted grey, a clean `loop:completed` indistinguishable from a
     // `loop:mistake_limit`.
     render(<ChatDebugPanel messages={[row({ stopReason: "loop:completed" })]} />);

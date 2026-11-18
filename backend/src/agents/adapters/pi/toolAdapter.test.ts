@@ -197,7 +197,7 @@ describe("renderToolResult", () => {
 
   it("preserves images rather than flattening them to a placeholder", () => {
     // pi's ImageContent is structurally callboard's own block, so unlike the
-    // Cline bridge nothing is lost.
+    // retired Cline bridge nothing is lost.
     const result = renderToolResult({ content: [{ type: "image", data: "aGk=", mimeType: "image/png" }] });
     expect(result.content).toEqual([{ type: "image", data: "aGk=", mimeType: "image/png" }]);
   });

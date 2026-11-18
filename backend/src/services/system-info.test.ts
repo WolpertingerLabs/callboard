@@ -140,7 +140,7 @@ describe("buildSystemInfo", () => {
     expect(info.nodeVersion).toBe(process.version);
   });
 
-  it("falls back to the default Cline provider when settings are unreadable", async () => {
+  it("reports every routing mode off when settings are unreadable", async () => {
     // The same broken data dir takes `getAgentSettings()` down too, and that
     // one was already guarded — this pins that the guard still stands now the
     // resolver no longer throws past it.
@@ -148,7 +148,8 @@ describe("buildSystemInfo", () => {
 
     const info = await buildSystemInfo({ pkgRoot: PKG_ROOT });
 
-    expect(info.clineProviderId).toBe("anthropic");
+    // The retired Cline harness used to add `clineProviderId` here.
+    expect(info).not.toHaveProperty("clineProviderId");
     expect(info.claudeCodeUseOpenRouter).toBe(false);
     expect(info.codexUseOpenRouter).toBe(false);
   });

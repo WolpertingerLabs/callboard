@@ -190,7 +190,6 @@ const checkboxRowStyle: React.CSSProperties = { display: "flex", alignItems: "ce
 /** What the provider picker needs from system-info, identical for the create and edit forms. */
 interface CronPickerContext {
   cwd: string | undefined;
-  clineProviderId: string;
   codexConfigured: boolean | null;
   claudeCodeUseOpenRouter: boolean;
   codexUseOpenRouter: boolean;
@@ -252,9 +251,6 @@ function CronJobFormFields({
           onClaudeModelChange={(model) => setModel("claude-code", model)}
           codexModel={form.models.codex ?? ""}
           onCodexModelChange={(model) => setModel("codex", model)}
-          clineProviderId={picker.clineProviderId}
-          clineModel={form.models.cline ?? ""}
-          onClineModelChange={(model) => setModel("cline", model)}
           piModel={form.models.pi ?? ""}
           onPiModelChange={(model) => setModel("pi", model)}
           codexConfigured={picker.codexConfigured}
@@ -322,7 +318,6 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
   const codexConfigured = systemInfo ? (systemInfo.codexConfigured ?? false) : systemInfoFailed ? false : null;
   const claudeCodeUseOpenRouter = Boolean(systemInfo?.claudeCodeUseOpenRouter);
   const codexUseOpenRouter = Boolean(systemInfo?.codexUseOpenRouter);
-  const clineProviderId = systemInfo?.clineProviderId ?? "";
 
   // Delete confirmation state
   const [deleteTarget, setDeleteTarget] = useState<CronJob | null>(null);
@@ -429,7 +424,7 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
   };
 
   // Shared by the create and edit forms' provider pickers.
-  const pickerContext: CronPickerContext = { cwd: agent.workspacePath, clineProviderId, codexConfigured, claudeCodeUseOpenRouter, codexUseOpenRouter };
+  const pickerContext: CronPickerContext = { cwd: agent.workspacePath, codexConfigured, claudeCodeUseOpenRouter, codexUseOpenRouter };
 
   const scheduleTz = agent.userTimezone || agent.serverTimezone || "UTC";
 

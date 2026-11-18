@@ -2,7 +2,7 @@ import { assertPiModelReasoningEffort } from "./modelCatalog.js";
 /**
  * Options adapter: callboard run options → pi's session construction inputs.
  *
- * Mirrors `adapters/cline/optionsAdapter.ts` in role — `services/claude.ts`
+ * Mirrors `adapters/codex/optionsAdapter.ts` in role — `services/claude.ts`
  * builds a loosely-typed options bag and exactly one module per adapter turns it
  * into that engine's config. Everything pi-shaped lives here so the query stays
  * about lifecycle.
@@ -51,14 +51,14 @@ const log = createLogger("pi-options");
  * *nested* dependency of `pi-coding-agent` rather than a hoisted one — importing
  * it directly would depend on npm's layout, which is true today and not
  * guaranteed. Deriving it from the option callboard already imports keeps the
- * coupling to the one package `backend/package.json` names. Same reasoning as
- * `cline/optionsAdapter.ts` does for `ReasoningEffort`.
+ * coupling to the one package `backend/package.json` names. Same reasoning the
+ * retired Cline adapter applied to `ReasoningEffort`.
  */
 export type PiThinkingLevel = NonNullable<CreateAgentSessionFromServicesOptions["thinkingLevel"]>;
 
 /**
  * The `options.pi` sub-object `services/claude.ts` populates for a pi chat.
- * Same shape of contract as `options.cline` and `options.codex`.
+ * Same shape of contract as `options.codex`.
  */
 export interface PiRunOptions {
   /** pi provider id — `"openrouter"`, `"anthropic"`, `"google"`, … */

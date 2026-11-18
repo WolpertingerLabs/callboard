@@ -1,11 +1,11 @@
 /**
- * Engine status — what Settings → API needs to tell the truth about the five
+ * Engine status — what Settings → API needs to tell the truth about the four
  * engines callboard can run a chat on.
  *
  * ## Why this is not an "installed" boolean
  *
- * Four of the five engines ship *inside* the callboard npm package as ordinary
- * dependencies (`@openai/codex-sdk`, `@cline/sdk`,
+ * Three of the four engines ship *inside* the callboard npm package as ordinary
+ * dependencies (`@openai/codex-sdk`,
  * `@earendil-works/pi-coding-agent`, and the Claude Agent SDK). An
  * "installed ✓/✗" column would therefore print ✓ forever and teach the user
  * nothing. The axis that actually varies is
@@ -173,7 +173,7 @@ export type EngineRuntime =
  *   advertises `authMethods`, never who is signed in. A vendor may well have
  *   credentials on disk (OpenCode keeps them under its own data dir); callboard
  *   does not read other tools' credential stores to find out.
- * - **Cline and pi**: an unset key in Settings means the embedded runtime falls
+ * - **pi**: an unset key in Settings means the embedded runtime falls
  *   back to the backend process's own environment, and which variable that is
  *   depends on the configured provider id.
  *
@@ -262,7 +262,7 @@ export interface EngineInstallRecipe {
  * What a user can actually do about an engine that is not ready, if anything.
  *
  * Attached to {@link EngineStatus.install} only when there is a real action.
- * Absent means "nothing to install" — which for four of the five engines is the
+ * Absent means "nothing to install" — which for three of the four engines is the
  * permanent answer, and for a working install is the current one.
  *
  * Deliberately a *set* of recipes rather than the single one the plan's sketch
@@ -519,7 +519,7 @@ export interface EngineVersionDrift {
 
 /** One engine, as Settings → API renders it. */
 export interface EngineStatus {
-  /** `"claude-code" | "codex" | "cline" | "pi"`, or an ACP vendor id. */
+  /** `"claude-code" | "codex" | "pi"`, or an ACP vendor id. */
   id: string;
   label: string;
   runtime: EngineRuntime;

@@ -101,11 +101,11 @@ describe("parseChatMeta", () => {
 });
 
 describe("providerKindOf", () => {
-  it.each(["codex", "acp", "cline", "pi"])("keeps %s", (kind) => {
+  it.each(["codex", "acp", "pi"])("keeps %s", (kind) => {
     expect(providerKindOf(kind)).toBe(kind);
   });
 
-  it.each([null, "claude-code", "openrouter", "something-new"])("collapses %s to claude-code", (raw) => {
+  it.each([null, "claude-code", "openrouter", "cline", "something-new"])("collapses %s to claude-code", (raw) => {
     expect(providerKindOf(raw)).toBe("claude-code");
   });
 });

@@ -237,7 +237,7 @@ describe("detectHardStop — per-engine input shapes", () => {
     expect(kill("edit", { path: "/repo/src/index.ts", oldText: "a", newText: "b" })).toBeNull();
   });
 
-  it("Cline: run_commands {commands: string[] | {command,args}[]}, editor {path}, apply_patch {input}", () => {
+  it("run_commands {commands: string[] | {command,args}[]}, editor {path}, apply_patch {input} (shapes from the retired Cline harness)", () => {
     expect(kill("run_commands", { commands: ["npm test", "rm -rf ~"] })).toBe("kill");
     expect(kill("run_commands", { commands: [{ command: "rm", args: ["-rf", "/"] }] })).toBe("kill");
     expect(kill("run_commands", { command: "git", args: ["push", "--force", "origin", "main"] })).toBe("kill");

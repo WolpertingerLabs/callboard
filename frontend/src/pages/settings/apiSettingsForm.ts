@@ -3,10 +3,9 @@ import type { AgentSettings } from "shared/types/index.js";
 /**
  * The editable fields of the API settings page, as the inputs hold them.
  *
- * Mirrors the override fields on {@link AgentSettings}, with two differences
- * that are the whole reason this is its own type: every free-text field is a
- * plain string (`""` for "not set"), and `clineMaxIterations` is the text in
- * its box rather than a number. The ACP tab's Default Model is deliberately
+ * Mirrors the override fields on {@link AgentSettings}, with one difference
+ * that is the whole reason this is its own type: every free-text field is a
+ * plain string (`""` for "not set"). The ACP tab's Default Model is deliberately
  * absent — it is one entry of a per-vendor map, re-seeded whenever the vendor
  * tab changes, so the page keeps it beside the form rather than in it.
  */
@@ -20,8 +19,8 @@ export interface ApiSettingsForm {
   defaultHaikuModel: string;
   subagentModel: string;
   // Binary overrides — "run my copy, not the one you found". Two engines have
-  // one; Cline and pi are in-process libraries with no subprocess to point
-  // elsewhere, so they get no field rather than a disabled one.
+  // one; pi is an in-process library with no subprocess to point
+  // elsewhere, so it gets no field rather than a disabled one.
   pathToClaudeCodeExecutable: string;
   codexPathOverride: string;
   // Claude Code → OpenRouter endpoint routing
@@ -66,13 +65,6 @@ export interface ApiSettingsForm {
   // pair to keep alongside it.
   acpUseOpenRouter: boolean;
   acpOpenRouterApiKey: string;
-  // Cline (embedded SDK). No auth *mode* to pick: the runtime is in-process and
-  // takes credentials as config, falling back to its own env lookup when blank.
-  clineProviderId: string;
-  clineModel: string;
-  clineApiKey: string;
-  clineBaseUrl: string;
-  clineMaxIterations: string;
 }
 
 /** The form before settings have loaded — what every field read as at mount. */
@@ -136,11 +128,6 @@ export function formFromSettings(s: AgentSettings): ApiSettingsForm {
     codexOpenRouterModel: s.codexOpenRouterModel ?? "",
     acpUseOpenRouter: Boolean(s.acpUseOpenRouter),
     acpOpenRouterApiKey: s.acpOpenRouterApiKey ?? "",
-    clineProviderId: s.clineProviderId ?? "",
-    clineModel: s.clineModel ?? "",
-    clineApiKey: s.clineApiKey ?? "",
-    clineBaseUrl: s.clineBaseUrl ?? "",
-    clineMaxIterations: typeof s.clineMaxIterations === "number" ? String(s.clineMaxIterations) : "",
   };
 }
 
@@ -199,12 +186,5 @@ export function settingsFromForm(form: ApiSettingsForm, acpProviderModels: Recor
     acpUseOpenRouter: form.acpUseOpenRouter,
     acpOpenRouterApiKey: form.acpOpenRouterApiKey,
     acpProviderModels,
-    clineProviderId: form.clineProviderId,
-    clineModel: form.clineModel,
-    clineApiKey: form.clineApiKey,
-    clineBaseUrl: form.clineBaseUrl,
-    // Blank clears the override so the SDK's own ceiling applies; a
-    // non-numeric entry is dropped rather than saved as NaN.
-    clineMaxIterations: form.clineMaxIterations.trim() ? Number(form.clineMaxIterations.trim()) || undefined : undefined,
   };
 }

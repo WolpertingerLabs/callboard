@@ -16,7 +16,7 @@ import type { PermissionLevel } from "./permissions.js";
  * `isComputerControlToolName` deliberately accepts several spellings, but that
  * matching is deny-side: recognizing more names gates more calls. Here the same
  * looseness would be trust-side, and a third-party MCP server exposing its own
- * `cu_action` (the bare spelling is what the cline/pi custom-tool bridges use)
+ * `cu_action` (the bare spelling is what the pi custom-tool bridge uses)
  * would borrow this panel's chrome while its other inputs — a `command`, say —
  * went unrendered behind a server-chosen `summary`.
  */

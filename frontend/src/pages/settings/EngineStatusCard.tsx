@@ -34,7 +34,7 @@ import { errorMessage } from "../../utils/errorMessage";
  * that have one, an install hint promoted from a log string to an affordance.
  *
  * A **bundled** engine never gets one, however far behind it is. Not out of
- * caution: `npm i -g @cline/sdk@latest` cannot reach Callboard's nested
+ * caution: `npm i -g @earendil-works/pi-coding-agent@latest` cannot reach Callboard's nested
  * `node_modules`, so the button would be an inert no-op whose version row never
  * moved. Their action is a link to About — see {@link BundledUpdateNote}.
  *
@@ -349,11 +349,11 @@ function updateRemedy(runtime: EngineStatus["runtime"]): React.ReactNode {
  * An update being available is stated as a fact, and the *remedy* is stated only
  * where one exists. Three cases, and conflating them is how this row lies:
  *
- * - **Pinned** (`@cline/sdk`, `@earendil-works/pi-coding-agent` — exact
- *   versions in Callboard's manifest): updating Callboard changes nothing until
- *   a maintainer moves the pin, so the row states the pin and stops. The first
+ * - **Pinned** (`@earendil-works/pi-coding-agent` — an exact version in
+ *   Callboard's manifest): updating Callboard changes nothing until a
+ *   maintainer moves the pin, so the row states the pin and stops. The first
  *   cut of this said "updating Callboard picks it up", which was false for
- *   exactly the two engines it was rendered for.
+ *   exactly the engines it was rendered for.
  * - **Ranged** (`@openai/codex-sdk`, a caret): a Callboard update really can
  *   resolve the newer version, so saying so is honest.
  * - **External**: the user installs it, so "update available" is an action they

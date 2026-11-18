@@ -328,7 +328,7 @@ it("tool-only restrictions do not change base sidebar append reachability", asyn
   expect(ids(await searchChats({ scope: "visible", topLevelOnly: true, query: "target" }))).toEqual(["root"]);
 });
 
-it.each(["claude-code", "cline", "pi", "acp"])("keeps legacy %s roots and children during cold Codex discovery", async (providerKind) => {
+it.each(["claude-code", "pi", "acp"])("keeps legacy %s roots and children during cold Codex discovery", async (providerKind) => {
   state.incomplete = true;
   state.stored = [chat("legacy", { provider: undefined, title: "hello" }), chat("child", { provider: undefined, parentChatId: "legacy" })];
   discover();

@@ -52,7 +52,7 @@ async function assertPendingContextEffort(input: { provider: string; model?: str
     throw new Error(`Unknown reasoning effort "${String(input.effort)}". Choose a supported effort or clear it.`);
   }
   if (input.provider !== "codex") {
-    // Cline/pi resolution is independent of project cwd; non-reasoning
+    // pi resolution is independent of project cwd; non-reasoning
     // harnesses are rejected by the same resolver as every other API.
     await assertReasoningEffort(input);
     return;

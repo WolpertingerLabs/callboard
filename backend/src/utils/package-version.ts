@@ -7,8 +7,8 @@
  * package except `@openai/codex` ships an `exports` map with no
  * `"./package.json"` entry, so the require throws
  * `ERR_PACKAGE_PATH_NOT_EXPORTED` before it can read anything — verified against
- * the installed tree for `@anthropic-ai/claude-agent-sdk`, `@openai/codex-sdk`,
- * `@cline/sdk` and `@earendil-works/pi-coding-agent`.
+ * the installed tree for `@anthropic-ai/claude-agent-sdk`, `@openai/codex-sdk`
+ * and `@earendil-works/pi-coding-agent`.
  *
  * That is not a hypothetical. `CodexSessionProvider.checkSdkVersionOnce` used
  * exactly that pattern inside a bare `catch {}`, so its

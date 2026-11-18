@@ -32,7 +32,6 @@ vi.mock("../../api", async (importOriginal) => {
     // over them, so a catalog stub missing one crashes the routed model pickers.
     getOpenRouterCatalog: async () => ({ models: [], aliases: [] }),
     getAcpModels: async () => ({ models: [] }),
-    getClineProviders: async () => ({ providers: [] }),
     getPiProviders: async () => ({ providers: [] }),
     getEngines: async () => [],
     refreshEngines: async () => ({ engines: [], probed: true }),

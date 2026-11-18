@@ -62,3 +62,27 @@ describe("POST /new/message preflight order", () => {
     expect(validateEffort).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * A retired harness is refused by name instead of being dropped like an unknown
+ * value — dropping it would start the chat on Claude Code, a harness the user
+ * did not pick. A stale tab can still offer one.
+ */
+describe("POST /new/message on a retired harness", () => {
+  it.each([
+    ["cline", "Cline has been removed"],
+    ["openrouter", "The OpenRouter agent harness has been removed"],
+  ])("refuses %s with a named 400 before any other preflight", async (provider, message) => {
+    const response = await post({ folder: "/definitely/not/a/folder", provider, effort: "high" });
+    expect(response.status).toBe(400);
+    expect(response.json?.error).toContain(message);
+    expect((response.json as { code?: string } | null)?.code).toBe("retired_provider");
+    expect(validateEffort).not.toHaveBeenCalled();
+  });
+
+  it("still silently drops a value that is merely unknown", async () => {
+    const response = await post({ folder: "/definitely/not/a/folder", provider: "not-a-harness" });
+    // Falls through to the next preflight rather than the retired refusal.
+    expect(response.json?.error).toBe("folder does not exist");
+  });
+});

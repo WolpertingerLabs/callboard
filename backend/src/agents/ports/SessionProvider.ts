@@ -194,7 +194,7 @@ export interface SessionProvider {
    * log: the Claude CLI writes `attachment` lines AFTER a prompt but stamps
    * them 1–2 ms EARLIER, so `forkSession(promptTs - 1ms)` lands on an
    * attachment and keeps the prompt. Optional — a provider whose
-   * `forkSession` drops each entry stamped after the cutoff (pi, Cline) gets
+   * `forkSession` drops each entry stamped after the cutoff (pi) gets
    * the same result from `forkSession(promptTs - 1ms)`, and callers fall back
    * to that.
    *

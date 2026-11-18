@@ -1,6 +1,6 @@
 # Callboard
 
-A browser control panel for coding agents. Run [Claude Code](https://docs.anthropic.com/en/docs/claude-code), Codex, Cline, pi or OpenCode from a web UI instead of a terminal.
+A browser control panel for coding agents. Run [Claude Code](https://docs.anthropic.com/en/docs/claude-code), Codex, pi or OpenCode from a web UI instead of a terminal.
 
 > **Alpha software.** Expect breaking changes between updates.
 
@@ -22,13 +22,12 @@ Then open **http://localhost:8000** and log in.
 
 ## Engines
 
-Each chat runs on one of five engines. You pick the engine per chat and set each engine's defaults on its tab under **Settings → API**. The **OpenRouter** tab there isn't an engine. It holds the account-wide OpenRouter key and base URL, used for the OpenRouter model catalog and, when **Use OpenRouter for chat titles, branch names and themes** is ticked, for those one-shot completions. Otherwise they run on Claude Code.
+Each chat runs on one of four engines. You pick the engine per chat and set each engine's defaults on its tab under **Settings → API**. The **OpenRouter** tab there isn't an engine. It holds the account-wide OpenRouter key and base URL, used for the OpenRouter model catalog and, when **Use OpenRouter for chat titles, branch names and themes** is ticked, for those one-shot completions. Otherwise they run on Claude Code.
 
 | Engine          | How it runs                                                                                                | Must you install it? | Sign-in                                              |
 | --------------- | ---------------------------------------------------------------------------------------------------------- | -------------------- | ---------------------------------------------------- |
 | **Claude Code** | Bundled Agent SDK; prefers a `claude` binary if it finds one                                               | No (recommended)     | `claude auth login`, or an API key in Settings → API |
 | **Codex**       | Bundled `codex` binary                                                                                     | Only to log in       | `codex login`, or an OpenAI key in Settings → API    |
-| **Cline**       | In-process library                                                                                         | No                   | A provider key in Settings → API                     |
 | **pi**          | In-process library                                                                                         | No                   | A provider key in Settings → API                     |
 | **OpenCode**    | Your `opencode` binary, spawned per turn over the [Agent Client Protocol](https://agentclientprotocol.com) | **Yes**              | `opencode auth login` in your own terminal           |
 
@@ -63,16 +62,16 @@ The bundled `codex` binary is always available. What varies is the sign-in:
 
 To run a different `codex`, set **Binary path** (`codexPathOverride`); if you installed the CLI globally, `which codex` prints the path. This field does no `PATH` search: chats use either the path you set or the bundled copy. Callboard parses Codex's undocumented rollout files, so a far-off version can render transcripts with missing turns. When the version in effect differs from the one the parser targets, the status card shows a **Compatibility** row.
 
-### Cline and pi
+### pi
 
-Both run inside the Callboard process, with no binary. Pick a provider and add its key under their tabs in Settings → API. Cline defaults to `anthropic` and pi to `openrouter`.
+pi runs inside the Callboard process, with no binary. Pick a provider and add its key under its tab in Settings → API; the provider defaults to `openrouter`. A key set in Settings overrides the environment. Callboard never writes pi's auth file.
 
-- **Cline:** if you leave the key blank, Callboard passes no key and leaves the SDK to its own environment fallback (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and so on).
-- **pi:** a key set in Settings overrides the environment. Callboard never writes pi's auth file.
-  - pi's prompt-cache warming is always off in Callboard, whatever pi's own settings say. Warm-up requests are billed, and Callboard would not count them in a chat's cost.
-  - On OpenRouter, a chat's cost is the amount OpenRouter reports it billed. Other providers show pi's estimate from its model catalog.
-  - pi 1.5 no longer lets reasoning be turned off for `openai/o3`. A pi o3 chat saved with effort "none" is refused until you pick another effort or clear it.
-  - pi 1.5 renamed its Azure OpenAI provider from `azure-openai-responses` to `azure`. If your pi provider is set to the old id, change it under Settings → API → pi.
+- pi's prompt-cache warming is always off in Callboard, whatever pi's own settings say. Warm-up requests are billed, and Callboard would not count them in a chat's cost.
+- On OpenRouter, a chat's cost is the amount OpenRouter reports it billed. Other providers show pi's estimate from its model catalog.
+- pi 1.5 no longer lets reasoning be turned off for `openai/o3`. A pi o3 chat saved with effort "none" is refused until you pick another effort or clear it.
+- pi 1.5 renamed its Azure OpenAI provider from `azure-openai-responses` to `azure`. If your pi provider is set to the old id, change it under Settings → API → pi.
+
+The Cline engine has been removed. Chats that ran on it still appear (with a **CL** badge) when opened by link, but can't be continued or forked. Their transcripts are left untouched under `cline-sessions/` in the data directory.
 
 ### OpenCode
 
@@ -317,7 +316,7 @@ plans/               Design records
 
 Contributor conventions (the wire-compatibility rules for `shared/types/stream.ts`, `cwd` vs `workspaceId` keying, theming) are in [`.claude/CLAUDE.md`](.claude/CLAUDE.md).
 
-Stack: React 18, React Router 6, Express 4, TypeScript 5, Vite 5, Zod 4, Winston, Vitest. Engines come from `@anthropic-ai/claude-agent-sdk`, `@openai/codex-sdk`, `@cline/sdk`, `@earendil-works/pi-coding-agent` and `@agentclientprotocol/sdk`. Connections come from `@wolpertingerlabs/drawlatch`.
+Stack: React 18, React Router 6, Express 4, TypeScript 5, Vite 5, Zod 4, Winston, Vitest. Engines come from `@anthropic-ai/claude-agent-sdk`, `@openai/codex-sdk`, `@earendil-works/pi-coding-agent` and `@agentclientprotocol/sdk`. Connections come from `@wolpertingerlabs/drawlatch`.
 
 ## License
 

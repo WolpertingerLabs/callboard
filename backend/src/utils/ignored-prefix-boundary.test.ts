@@ -17,7 +17,7 @@
  *
  *  1. `isIgnoredProjectDir` — encoded project-dir names (Claude discovery's JS
  *     re-filter, `listClaudeProjectDirs`, `chat-search.discoverProjectDirs`);
- *  2. `isIgnoredProjectFolder` — raw `cwd` paths, which Codex, ACP, Cline and
+ *  2. `isIgnoredProjectFolder` — raw `cwd` paths, which Codex, ACP and
  *     Pi hand it; it encodes first, so it lands on (1);
  *  3. `find -path <dir>/<prefix>*` — the prune in
  *     `ClaudeCodeSessionProvider._discoverPaginated`, evaluated by `find`

@@ -95,7 +95,7 @@ describe("filesystem provider provenance", () => {
     parse.mockRestore();
   });
 
-  it.each(["pi", "cline", "claude-code"] as const)("infers ordinary external %s sessions without ID heuristics", async (kind) => {
+  it.each(["pi", "claude-code"] as const)("infers ordinary external %s sessions without ID heuristics", async (kind) => {
     const id = "external-" + kind;
     const provider = stub(kind, id);
     setSessionProvidersForTesting([provider]);
@@ -155,7 +155,6 @@ describe("filesystem provider provenance", () => {
     { stored: false, kind: "codex" as const },
     { stored: true, kind: "codex" as const },
     { stored: false, kind: "pi" as const },
-    { stored: false, kind: "cline" as const },
     { stored: false, kind: "acp" as const },
     { stored: false, kind: "claude-code" as const },
     { stored: true, kind: "claude-code" as const },

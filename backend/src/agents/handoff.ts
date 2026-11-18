@@ -18,7 +18,7 @@
  * `ParsedMessage` carries enough to replay tool calls structurally (name,
  * JSON input, result text, call id), but tool *names* don't survive the trip:
  * Claude's `Bash`/`Read` have no counterpart in Codex's `shell`/`apply_patch`
- * or Cline's `run_commands`. Replaying them verbatim would seed the target with
+ * or pi's `bash`. Replaying them verbatim would seed the target with
  * function calls naming tools that aren't in its tool list — at best confusing
  * the model, at worst rejected by the API.
  *
@@ -105,7 +105,6 @@ const MAX_HANDOFF_IMAGE_BYTES = 6 * 1024 * 1024;
 const PROVIDER_LABELS: Record<string, string> = {
   "claude-code": "Claude Code",
   codex: "Codex",
-  cline: "Cline",
   pi: "pi",
   // One label for the whole ACP family. The vendor is in `acpProviderId`, not in
   // the kind, so this is as specific as a kind-keyed label can honestly be — and

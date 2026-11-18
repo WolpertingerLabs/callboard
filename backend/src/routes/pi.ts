@@ -10,7 +10,7 @@ import { getAgentSettings } from "../services/agent-settings.js";
  * callboard, so a version bump that adds a provider or a model needs no edit
  * here.
  *
- * Stronger than the Cline equivalent in one respect: these are answered with the
+ * Stronger than the retired Cline equivalent in one respect: these are answered with the
  * **network explicitly disabled** (`allowModelNetwork: false`), off a catalog
  * shipped inside the package — measured at 1,157 models across all providers,
  * 307 of them OpenRouter's. So a user who has never run a pi chat, and who has
@@ -21,7 +21,7 @@ import { getAgentSettings } from "../services/agent-settings.js";
  * chats because ACP exposes models only through a live session.
  *
  * An unreadable catalog yields an empty list and a 200, not a 500: the model
- * field accepts free text either way, exactly as the Codex, ACP and Cline
+ * field accepts free text either way, exactly as the Codex and ACP
  * selectors already do for slugs newer than their catalog.
  */
 import { Router } from "express";

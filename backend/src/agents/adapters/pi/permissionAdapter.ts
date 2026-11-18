@@ -34,15 +34,15 @@
  * `start_chat_session`, deployed agents) hardcode every axis to `"allow"`
  * precisely so they need no human. A `null` there would hang an agent job step on
  * a prompt nobody will answer. So an unknown name resolves to
- * {@link MOST_RESTRICTIVE_CATEGORY} instead, exactly as the Cline and ACP
- * adapters do, and "fail-closed" means *strictest axis*, not *ask*.
+ * {@link MOST_RESTRICTIVE_CATEGORY} instead, exactly as the ACP adapter (and the
+ * retired Cline one) do, and "fail-closed" means *strictest axis*, not *ask*.
  *
  * ## The two-pass rule
  *
  * callboard evaluates a tool's permission twice: here (pass 1), and again inside
  * `buildCanUseTool` via `ToolPermissionPolicy` before it prompts (pass 2). If
  * they can disagree, a tool escalated by pass 1 can be silently auto-allowed by
- * pass 2. pi is the easy case, like Cline: `ToolCallEvent.toolName` is always a
+ * pass 2. pi is the easy case, like the retired Cline adapter: `ToolCallEvent.toolName` is always a
  * real identifier from a closed set plus callboard's own tool names, and that
  * same string is what pass 2 receives. Both passes run
  * {@link categorizePiToolName} over the identical input. The only way to break it
@@ -50,7 +50,6 @@
  *
  * @see plans/pi-adapter.md
  * @see plans/pi-spike-findings.md (§2 — project trust; §3 — the gate, measured)
- * @see ../cline/permissionAdapter.ts (the closest precedent)
  */
 import type { ExtensionAPI, ExtensionFactory, ToolCallEvent, ToolCallEventResult, CreateAgentSessionServicesOptions } from "@earendil-works/pi-coding-agent";
 import type { DefaultPermissions } from "shared/types/index.js";
@@ -168,7 +167,7 @@ const EXACT_CATEGORIES: ReadonlyMap<string, PermissionCategory> = new Map<string
   // naming it makes the answer intentional rather than a default.
   ["powershell", "codeExecution"],
 
-  // Parity with the Claude, OpenRouter and Cline maps, which special-case this
+  // Parity with the Claude map (and the retired OpenRouter and Cline ones), which special-case this
   // same callboard tool. Under pi it arrives bare: `customTools` is an
   // in-process array with no server prefix. Neither `render` nor `file` is a
   // token in any family below, so without this entry it would fall through to
@@ -214,7 +213,7 @@ const categorizeByName = makeNameCategorizer(EXACT_CATEGORIES);
  *
  * In the pi adapter the token fallback serves callboard's own `customTools`,
  * which surface under their bare names (`spawn_job`, `set_chat_title`). pi has
- * no MCP client, so unlike the Cline adapter there is no third-party tool
+ * no MCP client, so unlike the retired Cline adapter there is no third-party tool
  * surface for it to also cover — see the plan's Decision 5.
  *
  * Never returns `null` — see the header. The return type keeps `| null` only to
@@ -254,7 +253,7 @@ export interface PiPermissionContext {
  * Decide one tool call. Exported so the gate can be tested without constructing
  * a pi extension runtime.
  *
- * Order of operations mirrors the Claude, ACP and Cline paths: consult the
+ * Order of operations mirrors the Claude and ACP paths: consult the
  * four-axis policy first (a definite allow/deny answers without bothering the
  * user), and escalate to `canUseTool` — which owns the SSE prompt and the user's
  * reply — only when the policy says "ask".
@@ -403,7 +402,7 @@ export function assertPiTrustDenied(options: CreateAgentSessionServicesOptions):
  * Belt and braces beside the live gate: an axis set to `deny` makes the tool
  * *invisible to the model* rather than merely blocked at call time, so the model
  * does not waste a turn attempting something it will never be allowed to do.
- * Exactly what the Cline adapter does with `toolPolicies` + `requestToolApproval`.
+ * Exactly what the retired Cline adapter did with `toolPolicies` + `requestToolApproval`.
  *
  * **`tools` is an allowlist over `customTools` too.** This is the sharp edge the
  * spike found by wasting a run on it: passing `tools: ["read","bash",…]` without

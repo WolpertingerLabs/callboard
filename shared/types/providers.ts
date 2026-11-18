@@ -15,7 +15,7 @@
  * `ROUTABLE_PROVIDER_KINDS` is this list, and the frontend's stored-preference
  * validation reads it — so a new harness is added here, once.
  */
-export const UI_AGENT_PROVIDER_KINDS = ["claude-code", "codex", "acp", "cline", "pi"] as const;
+export const UI_AGENT_PROVIDER_KINDS = ["claude-code", "codex", "acp", "pi"] as const;
 
 export type UiAgentProviderKind = (typeof UI_AGENT_PROVIDER_KINDS)[number];
 
@@ -23,7 +23,7 @@ export type UiAgentProviderKind = (typeof UI_AGENT_PROVIDER_KINDS)[number];
  * Reasoning-effort levels. Named for OpenRouter's `reasoning.effort` field,
  * where they originated, and reused by every reasoning-capable harness — each
  * adapter translates them onto its own knob (Codex `modelReasoningEffort`,
- * Cline `thinking`/`reasoningEffort`, pi `thinkingLevel`). Non-reasoning models
+ * pi `thinkingLevel`). Non-reasoning models
  * must validate it against the resolved model and transport capabilities.
  *
  * `undefined` (no value persisted) means "don't send a reasoning payload";

@@ -31,7 +31,7 @@ vi.mock("./codex-models.js", () => ({ getCodexModelsAsync: mocks.native }));
 vi.mock("./openrouter-models.js", () => ({ getOpenRouterModelsAsync: mocks.or }));
 import { assertReasoningEffort, assertStoredReasoningEffort, resolveReasoningCapability, resolveReasoningTarget } from "./reasoning-capabilities.js";
 beforeEach(() => {
-  mocks.settings = { codexModel: "native", codexOpenRouterModel: "vendor/routed", clineModel: "cline-model", piModel: "vendor/routed" };
+  mocks.settings = { codexModel: "native", codexOpenRouterModel: "vendor/routed", piModel: "vendor/routed" };
   mocks.injected = false;
   mocks.ambient = false;
   mocks.routeUnknown = false;
@@ -79,14 +79,16 @@ describe("effective reasoning resolution", () => {
     await expect(assertReasoningEffort({ provider: "codex", effort: "max" })).rejects.toThrow("Clear the effort");
     await expect(assertReasoningEffort({ provider: "codex", effort: "none" })).resolves.toBeUndefined();
   });
-  it("Cline/pi OR settings intersect gateway tiers with adapter vocabulary", async () => {
-    mocks.settings.clineProviderId = "openrouter";
-    for (const provider of ["cline", "pi"]) {
-      const cap = await resolveReasoningCapability({ provider, model: "vendor/routed" });
-      expect(cap.route).toBe("openrouter");
-      expect(cap.efforts).not.toContain("max");
-      expect(cap.efforts).not.toContain("ultra");
-    }
+  it("pi OR settings intersect gateway tiers with adapter vocabulary", async () => {
+    const cap = await resolveReasoningCapability({ provider: "pi", model: "vendor/routed" });
+    expect(cap.route).toBe("openrouter");
+    expect(cap.efforts).not.toContain("max");
+    expect(cap.efforts).not.toContain("ultra");
+  });
+  it("the retired cline harness exposes no reasoning effort", async () => {
+    const cap = await resolveReasoningCapability({ provider: "cline", model: "vendor/routed" });
+    expect(cap.efforts).toEqual([]);
+    expect(cap.message).toContain("does not expose");
   });
   it("rejects malformed explicit values and efforts on unsupported harnesses", async () => {
     await expect(assertReasoningEffort({ provider: "codex", effort: {} })).rejects.toThrow("not supported");
@@ -94,12 +96,9 @@ describe("effective reasoning resolution", () => {
   });
 });
 
-it("recognizes Cline/pi explicit OpenRouter base URL routing, not unrelated keys", async () => {
-  mocks.settings.clineProviderId = "openai-native";
-  mocks.settings.clineBaseUrl = "https://openrouter.ai/api/v1";
+it("recognizes pi explicit OpenRouter base URL routing, not unrelated keys", async () => {
   mocks.settings.piProviderId = "openai";
   mocks.settings.piBaseUrl = "https://openrouter.ai/api/v1";
-  expect((await resolveReasoningTarget({ provider: "cline" })).route).toBe("openrouter");
   expect((await resolveReasoningTarget({ provider: "pi" })).route).toBe("openrouter");
 });
 

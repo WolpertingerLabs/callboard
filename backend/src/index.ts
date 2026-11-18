@@ -63,7 +63,6 @@ import { mcpToolsRouter } from "./routes/mcp-tools.js";
 import { openRouterRouter } from "./routes/openrouter.js";
 import { codexRouter } from "./routes/codex.js";
 import { acpRouter } from "./routes/acp.js";
-import { clineRouter } from "./routes/cline.js";
 import { piRouter } from "./routes/pi.js";
 import { enginesRouter } from "./routes/engines.js";
 import { jobsRouter } from "./routes/jobs.js";
@@ -239,7 +238,6 @@ app.use("/api/mcp-tools", mcpToolsRouter);
 app.use("/api/openrouter", openRouterRouter);
 app.use("/api/codex", codexRouter);
 app.use("/api/acp", acpRouter);
-app.use("/api/cline", clineRouter);
 app.use("/api/pi", piRouter);
 // Per-engine runtime/version/credential status. Deliberately not part of
 // /api/system-info — see routes/engines.ts.

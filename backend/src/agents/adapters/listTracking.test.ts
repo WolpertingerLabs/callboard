@@ -32,7 +32,6 @@ import { parseTaskList, TASK_LIST_TOOLS, type TaskListItem } from "shared/types/
 import { translateSdkMessages } from "./claude-code/messageAdapter.js";
 import { translateCodexEvent } from "./codex/messageAdapter.js";
 import { parseCodexRollout } from "./codex/sessionParser.js";
-import { translateClineEvent } from "./cline/messageAdapter.js";
 import { translatePiEvent } from "./pi/messageAdapter.js";
 import { AcpToolCallBuffer, translateAcpUpdate } from "./acp/messageAdapter.js";
 import { AcpTranscriptWriter } from "./acp/transcript.js";
@@ -172,28 +171,21 @@ describe("live: engine event → AgentEvent", () => {
     expect(event).toEqual({ type: "task_list", items: [{ content: "Keep this", status: "pending" }] });
   });
 
-  it("cline and pi: no task list is invented for an engine that has none", () => {
-    // Neither SDK has a per-response list concept — Cline's plan-ish surface is
-    // a Plan/Act *mode* setting and a checkpoint-diff planner, and pi has
-    // nothing. So the callboard-side rule is that their tool calls stay tool
-    // calls, even when one is named plan-ishly and carries list-shaped
-    // arguments. Anything else would mean callboard guessing at a list.
+  it("pi: no task list is invented for an engine that has none", () => {
+    // pi's SDK has no per-response list concept. So the callboard-side rule is
+    // that its tool calls stay tool calls, even when one is named plan-ishly
+    // and carries list-shaped arguments. Anything else would mean callboard guessing at a list.
     //
-    // This replaces an assertion on the two SDKs' exported symbol names, which
+    // This replaces an assertion on the SDKs' exported symbol names, which
     // tested a third-party surface: it passed with this feature deleted and
     // broke on any unrelated release adding a matching export.
     const listShaped = { entries: EXPECTED.map((item) => ({ content: item.content, status: item.status })) };
 
-    const cline = translateClineEvent({ type: "content_start", contentType: "tool", toolName: "plan_mode_respond", toolCallId: "c1", input: listShaped } as never);
-    expect(cline).toMatchObject({ type: "tool_use", toolName: "plan_mode_respond" });
-
     const [pi] = translatePiEvent({ type: "tool_execution_start", toolCallId: "p1", toolName: "update_todos", args: listShaped } as never);
     expect(pi).toMatchObject({ type: "tool_use", toolName: "update_todos" });
 
-    for (const event of [cline, pi]) {
-      const call = event as Extract<AgentEvent, { type: "tool_use" }>;
-      expect(parseTaskList(call.toolName, JSON.stringify(call.input))).toBeNull();
-    }
+    const call = pi as Extract<AgentEvent, { type: "tool_use" }>;
+    expect(parseTaskList(call.toolName, JSON.stringify(call.input))).toBeNull();
   });
 });
 

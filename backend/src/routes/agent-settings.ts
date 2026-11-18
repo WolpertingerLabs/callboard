@@ -246,11 +246,6 @@ agentSettingsRouter.put("/", requireSessionAuth, async (req: Request, res: Respo
     acpOpenRouterApiKey,
     codexOpenRouterBaseUrl,
     codexOpenRouterModel,
-    clineProviderId,
-    clineModel,
-    clineApiKey,
-    clineBaseUrl,
-    clineMaxIterations,
     piProviderId,
     piModel,
     piApiKey,
@@ -451,12 +446,7 @@ agentSettingsRouter.put("/", requireSessionAuth, async (req: Request, res: Respo
     acpUseOpenRouter !== undefined ||
     acpOpenRouterApiKey !== undefined ||
     codexOpenRouterBaseUrl !== undefined ||
-    codexOpenRouterModel !== undefined ||
-    clineProviderId !== undefined ||
-    clineModel !== undefined ||
-    clineApiKey !== undefined ||
-    clineBaseUrl !== undefined ||
-    clineMaxIterations !== undefined;
+    codexOpenRouterModel !== undefined;
 
   // Validate the alias map up front so bad input 400s before anything is written.
   let normalizedAliases: Record<string, string> | undefined;
@@ -588,11 +578,6 @@ agentSettingsRouter.put("/", requireSessionAuth, async (req: Request, res: Respo
       ...(acpProviderModels !== undefined && { acpProviderModels: normalizedAcpProviderModels }),
       ...(codexOpenRouterBaseUrl !== undefined && { codexOpenRouterBaseUrl: normalize(codexOpenRouterBaseUrl) }),
       ...(codexOpenRouterModel !== undefined && { codexOpenRouterModel: normalize(codexOpenRouterModel) }),
-      ...(clineProviderId !== undefined && { clineProviderId: normalize(clineProviderId) }),
-      ...(clineModel !== undefined && { clineModel: normalize(clineModel) }),
-      ...(clineApiKey !== undefined && { clineApiKey: normalize(clineApiKey) }),
-      ...(clineBaseUrl !== undefined && { clineBaseUrl: normalize(clineBaseUrl) }),
-      ...(clineMaxIterations !== undefined && { clineMaxIterations: normalizeCount(clineMaxIterations) }),
       // pi's credentials live here and nowhere else. Omitting these silently
       // drops the key the Settings form sent, and the pi block in claude.ts
       // then starts a session with no `apiKey` — pi falls through to its own

@@ -1,5 +1,6 @@
 import type { CronJob } from "../../../api";
 import type { AgentProviderKind, EffortLevel } from "../../../utils/localStorage";
+import { isRetiredProviderId } from "../../../utils/retiredProviders";
 
 /**
  * The cron job editor's state — one shape for both the New Job form and the
@@ -42,9 +43,9 @@ export const EMPTY_CRON_JOB_FORM: CronJobForm = {
 };
 
 /** Providers whose model the editor stages; any other provider is saved without one. */
-const MODEL_PROVIDERS: AgentProviderKind[] = ["claude-code", "codex", "cline", "pi"];
+const MODEL_PROVIDERS: AgentProviderKind[] = ["claude-code", "codex", "pi"];
 /** Providers that honour a reasoning-effort override. */
-const EFFORT_PROVIDERS: AgentProviderKind[] = ["codex", "cline", "pi"];
+const EFFORT_PROVIDERS: AgentProviderKind[] = ["codex", "pi"];
 
 /** Name, schedule and description are required; the submit button is disabled without them. */
 export function isCronJobFormComplete(form: CronJobForm): boolean {
@@ -57,13 +58,13 @@ export function cronJobFormFromJob(job: CronJob): CronJobForm {
   // hydrate the matching per-provider slot so the picker shows it under the
   // right toggle (and the others start clean).
   //
-  // A cron stored on the removed OpenRouter harness has no toggle to land on,
-  // so editing one re-targets it to Claude Code and drops its model — an OR
-  // slug means nothing there. Until someone saves it, firing the cron fails
-  // with a named error; saving is what converts it.
+  // A cron stored on a removed harness (OpenRouter, Cline) has no toggle to
+  // land on, so editing one re-targets it to Claude Code and drops its model —
+  // that harness's model id means nothing there. Until someone saves it, firing
+  // the cron fails with a named error; saving is what converts it.
   const stored = job.action?.provider ?? "claude-code";
-  const wasOpenRouter = (stored as string) === "openrouter";
-  const provider: AgentProviderKind = wasOpenRouter ? "claude-code" : stored;
+  const wasRetired = isRetiredProviderId(stored);
+  const provider: AgentProviderKind = wasRetired ? "claude-code" : stored;
   return {
     name: job.name,
     schedule: job.schedule,
@@ -76,7 +77,7 @@ export function cronJobFormFromJob(job: CronJob): CronJobForm {
     skipIfRunning: job.skipIfRunning || false,
     requireCompletion: job.action?.requireExplicitCompletion || false,
     provider,
-    models: !wasOpenRouter && MODEL_PROVIDERS.includes(provider) ? { [provider]: job.action?.model ?? "" } : {},
+    models: !wasRetired && MODEL_PROVIDERS.includes(provider) ? { [provider]: job.action?.model ?? "" } : {},
     effort: job.action?.effort,
   };
 }

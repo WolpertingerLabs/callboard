@@ -37,11 +37,10 @@ describe("query tool permission categories", () => {
   it.each(["search_chats", "get_chat_view"])("classifies %s as read-only across name-based permission adapters", async (name) => {
     const { categorizeClaudeTool } = await import("../agents/adapters/claude-code/permissionAdapter.js");
     const { categorizePiToolName } = await import("../agents/adapters/pi/permissionAdapter.js");
-    const { categorizeClineToolName } = await import("../agents/adapters/cline/permissionAdapter.js");
     const { categorizeAcpToolName } = await import("../agents/adapters/acp/permissionAdapter.js");
     const qualified = `mcp__callboard-tools__${name}`;
     expect(categorizeClaudeTool(qualified)).toBe("fileRead");
-    for (const categorize of [categorizePiToolName, categorizeClineToolName, categorizeAcpToolName]) {
+    for (const categorize of [categorizePiToolName, categorizeAcpToolName]) {
       expect(categorize(name)).toBe("fileRead");
       expect(categorize(qualified)).toBe("fileRead");
     }

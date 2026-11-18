@@ -27,7 +27,7 @@ export interface CronAction {
   /**
    * Reasoning-effort level. Honored by the reasoning-capable providers:
    * "codex" (→ Codex `modelReasoningEffort`; the extra `"none"` level hides
-   * reasoning summaries there), "cline" and "pi". Ignored for "claude-code".
+   * reasoning summaries there) and "pi". Ignored for "claude-code".
    * `undefined` uses the provider default.
    */
   effort?: EffortLevel;

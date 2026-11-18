@@ -707,9 +707,9 @@ function hardStop(effect: string, offending: string): ReviewVerdict {
  * `rm -rf ~` even with model review off.
  *
  * Shapes covered, by engine: Claude `Bash {command}` / `Write {file_path}`;
- * pi `bash {command}` / `write|edit {path}`; Cline `run_commands {commands:
- * string[] | {command,args}[]}`, `editor {path}`, `apply_patch {input}`;
- * ACP/OpenCode `{command}` / `{filePath}`.
+ * pi `bash {command}` / `write|edit {path}`; `run_commands {commands:
+ * string[] | {command,args}[]}`, `editor {path}`, `apply_patch {input}` (the
+ * retired Cline harness's shapes, kept as generic coverage); ACP/OpenCode `{command}` / `{filePath}`.
  */
 export function detectHardStop(toolName: string, input: Record<string, unknown>): ReviewVerdict | null {
   const found = extract(input);

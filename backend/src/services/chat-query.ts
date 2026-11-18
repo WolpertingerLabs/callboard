@@ -139,7 +139,6 @@ const MATCH_KIND: Record<AgentProviderKind, MatchKind> = {
   "claude-code": "transcript",
   pi: "messages",
   codex: "first-prompt",
-  cline: "first-prompt",
   acp: "first-prompt",
   mock: "unknown",
 };
@@ -756,7 +755,7 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
         contentSearchSemantics:
           "Provider-specific and not a full-text index. claude-code greps the raw session JSONL, tool calls and results included (matchKind 'transcript'); " +
           "Pi searches derived conversational text only, no tool traffic (matchKind 'messages'); Codex matches the first user prompt, or a native child's nickname/path (matchKind 'first-prompt'/'metadata'); " +
-          "Cline/ACP match first-message previews (matchKind 'first-prompt'). Read matchKind on each row before concluding a chat did not mention something.",
+          "ACP matches first-message previews (matchKind 'first-prompt'). Read matchKind on each row before concluding a chat did not mention something.",
       }),
     },
   };

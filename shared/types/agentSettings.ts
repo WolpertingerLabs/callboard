@@ -413,7 +413,7 @@ export interface AgentSettings {
    * Default model per ACP vendor id (e.g. `{ opencode: "opencode/gpt-5.5" }`).
    *
    * Keyed by vendor id rather than a single flat field — the analogue of
-   * {@link codexModel} / {@link clineModel} / {@link piModel} for ACP has to
+   * {@link codexModel} / {@link piModel} for ACP has to
    * be, because `"acp"` is one kind covering many vendors whose catalogs
    * share nothing. That is the same limitation documented on
    * {@link ModelAlias}'s `acp` target, but this field doesn't inherit it: the
@@ -438,57 +438,8 @@ export interface AgentSettings {
    */
   codexOpenRouterModel?: string;
 
-  // ── Cline ──────────────────────────────────────────────────────────
-  // Settings → API. Cline embeds the `@cline/sdk` agent runtime **in the backend
-  // process** — there is no binary to configure and no login to perform, so
-  // unlike the Codex block below there is no auth *mode*: credentials are config
-  // fields handed to the runtime per session.
-
-  /**
-   * Which Cline provider backs new Cline chats — `"anthropic"`, `"openai"`,
-   * `"google"`, `"bedrock"`, `"mistral"`, `"openai-compatible"`, …
-   *
-   * Blank defaults to `"anthropic"`. The full list the installed SDK supports is
-   * served by `GET /api/cline/models`, which reads it from the SDK rather than
-   * from a table here — a hardcoded list would drift on every bump.
-   */
-  clineProviderId?: string;
-
-  /** Default model id for new Cline chats. Blank ⇒ the provider's own default. */
-  clineModel?: string;
-
-  /**
-   * API key for {@link clineProviderId}.
-   *
-   * Blank means the runtime falls back to its own environment lookup
-   * (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, the AWS credential chain, …), which
-   * is the right behaviour for a machine that already has those configured.
-   */
-  clineApiKey?: string;
-
-  /**
-   * Base URL override, for an OpenAI-compatible or self-hosted endpoint.
-   *
-   * Note there is deliberately no `clineUseOpenRouter` toggle to match the Codex
-   * and ACP ones. Those exist because routing those harnesses through OpenRouter
-   * means rewriting a config file or injecting an environment variable. Cline
-   * ships `openrouter` as a **first-class provider id** — verified against the
-   * installed SDK, which advertises 270 models under it — so for Cline
-   * OpenRouter is not a mode, it is simply a value of {@link clineProviderId}
-   * with its key in {@link clineApiKey}. No base URL needed.
-   */
-  clineBaseUrl?: string;
-
-  /**
-   * Ceiling on agent-loop iterations per turn. Blank ⇒ the SDK's own default.
-   *
-   * Surfaces as `AgentEvent.result.status = "max_turns"` when hit, the same as
-   * Claude Code's `maxTurns`.
-   */
-  clineMaxIterations?: number;
-
   // ── pi ─────────────────────────────────────────────────────────────
-  // Settings → API. Like Cline, pi embeds its agent runtime **in the backend
+  // Settings → API. pi embeds its agent runtime **in the backend
   // process**, so there is no binary to configure and no login: credentials are
   // config fields handed to the runtime per session and never written to the
   // user's own `~/.pi/agent/auth.json`.
@@ -521,7 +472,7 @@ export interface AgentSettings {
   /**
    * Base URL override, for an OpenAI-compatible or self-hosted endpoint.
    *
-   * As with Cline there is deliberately no `piUseOpenRouter` toggle: OpenRouter
+   * There is deliberately no `piUseOpenRouter` toggle: OpenRouter
    * is a first-class value of {@link piProviderId}, not a mode.
    */
   piBaseUrl?: string;
@@ -641,7 +592,6 @@ export const SECRET_SETTING_FIELDS = [
   "codexApiKey",
   "codexOpenRouterApiKey",
   "acpOpenRouterApiKey",
-  "clineApiKey",
   "piApiKey",
 ] as const satisfies readonly (keyof AgentSettings)[];
 

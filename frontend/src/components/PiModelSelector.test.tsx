@@ -53,7 +53,7 @@ describe("PiModelSelector", () => {
   });
 
   /**
-   * The whole reason this is not the Cline `<datalist>`: 303 options rendered
+   * The whole reason this is not a `<datalist>`: 303 options rendered
    * at once is a scroll, not a picker.
    */
   it("caps the open list well below the catalog size", async () => {

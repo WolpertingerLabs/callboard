@@ -7,7 +7,7 @@
  * ## Why the key is derived, not read
  *
  * `ParsedMessage` carries no id that every engine fills. Claude Code has a
- * JSONL `uuid` and pi an entry id, but the parsers drop both, and ACP and Cline
+ * JSONL `uuid` and pi an entry id, but the parsers drop both, and ACP
  * transcripts have nothing per message at all. What every engine does carry is
  * the `timestamp` — the same identity a fork is made from — and the transcript
  * is always re-read from disk (live updates refetch it rather than assembling
@@ -23,7 +23,7 @@
  * the parent timeline by timestamp, so every parent message after a running
  * subagent's shifts while it works. Subagent (`teamName`) messages are also
  * left out of the ordinal count, for the same reason. Nor a content hash: ACP
- * and Cline coalesce a streamed message's deltas, so a message starred while
+ * coalesces a streamed message's deltas, so a message starred while
  * still being written would change hash as it grew.
  */
 import type { ParsedMessage } from "../api";

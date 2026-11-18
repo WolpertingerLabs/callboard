@@ -182,7 +182,7 @@ describe("usage", () => {
   /**
    * Summed, not overwritten: a turn with tool calls produces several assistant
    * messages, each with its own per-message usage, and the user is billed for
-   * all of them. The opposite of the Cline adapter, whose usage event is already
+   * all of them. The opposite of the retired Cline adapter, whose usage event was
    * cumulative — a real difference between the two streams.
    */
   it("sums usage across the assistant messages of one turn", () => {

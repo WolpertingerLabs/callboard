@@ -15,7 +15,7 @@ describe("job-level default model", () => {
   it("never reaches a step that switched to another harness", () => {
     expect(resolveJobSessionModel({ provider: "claude-code" }, { provider: "codex", model: "gpt-5.5" }, settings())).toBeUndefined();
     expect(resolveJobSessionModel({ provider: "codex" }, { model: "opus" }, settings())).toBeUndefined();
-    expect(resolveJobSessionModel({ provider: "pi" }, { provider: "cline", model: "vendor/slug" }, settings())).toBeUndefined();
+    expect(resolveJobSessionModel({ provider: "pi" }, { provider: "codex", model: "vendor/slug" }, settings())).toBeUndefined();
   });
   it("keeps a legacy OpenRouter slug away from native Claude Code and Codex steps", () => {
     // The removed harness documented this field as an OpenRouter slug; a
@@ -29,7 +29,7 @@ describe("job-level default model", () => {
     expect(
       resolveJobSessionModel({ provider: "codex" }, { provider: "codex", model: "openai/gpt-5.5" }, settings({ codexUseOpenRouter: true, codexOpenRouterApiKey: "k" })),
     ).toBe("openai/gpt-5.5");
-    // pi/cline speak OpenRouter slugs natively.
+    // pi speaks OpenRouter slugs natively.
     expect(resolveJobSessionModel({}, { provider: "pi", model: "vendor/slug" }, settings())).toBe("vendor/slug");
   });
   it("forwards a cross-harness alias to every step", () => {

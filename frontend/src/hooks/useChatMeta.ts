@@ -77,10 +77,11 @@ export function parseChatMeta(metadata: string | null | undefined): ChatMeta {
 
 /**
  * The harness kind a chat runs on, from its raw `metadata.provider`. Anything
- * unrecognized — absent, a retired harness — collapses to "claude-code".
+ * unrecognized — absent, a retired harness — collapses to "claude-code", so a
+ * caller that drives a control from it must check `isRetiredProviderId` first.
  */
 export function providerKindOf(provider: string | null): UiAgentProviderKind {
-  if (provider === "codex" || provider === "acp" || provider === "cline" || provider === "pi") return provider;
+  if (provider === "codex" || provider === "acp" || provider === "pi") return provider;
   return "claude-code";
 }
 

@@ -649,10 +649,10 @@ export async function getNewChatInfo(folder: string, space?: string): Promise<Ne
  * (the kind names a wire format rather than a harness, and ACP session state
  * lives inside the agent's process where no client can seed it).
  *
- * `cline` and `pi` were missing until Phase 5 of the pi landing. Both session
- * providers implement `forkSession` and `seedSession`, and both round-trip a
- * real handoff — Callboard had built the capability into two harnesses and
- * offered it into neither.
+ * `pi` (and the since-retired `cline`) were missing until Phase 5 of the pi
+ * landing. Both session providers implemented `forkSession` and `seedSession`,
+ * and both round-tripped a real handoff — Callboard had built the capability
+ * into two harnesses and offered it into neither.
  */
 export type ForkProvider = Exclude<UiAgentProviderKind, "acp">;
 
@@ -1709,16 +1709,6 @@ export interface SystemInfo {
    * on servers older than the ACP picker; treat that as "no ACP vendors".
    */
   acpProviders?: AcpProviderInfo[];
-  /**
-   * Which Cline provider new chats run on, from Settings → API.
-   *
-   * The model picker needs it to know which catalog to offer — Cline's list is
-   * per-provider, so selecting `openrouter` here is what surfaces OpenRouter's
-   * models in the picker. There is no `clineConfigured` companion: the SDK is
-   * embedded and falls back to the backend's own environment credentials, so
-   * there is no state in which the provider could honestly be disabled.
-   */
-  clineProviderId?: string;
 }
 
 /**
@@ -1865,34 +1855,6 @@ export async function getAcpModels(providerId: string): Promise<AcpModelCatalogI
   return request(`/acp/models?providerId=${encodeURIComponent(providerId)}`, { error: "Failed to get ACP models" });
 }
 
-/** One model the configured Cline provider will route to. */
-export interface ClineModelInfo {
-  value: string;
-  displayName: string;
-  description: string;
-}
-
-/**
- * Provider ids the embedded Cline runtime supports.
- *
- * Read from the SDK by the backend rather than from a table, so this stays
- * correct across SDK bumps without a frontend change.
- */
-export async function getClineProviders(): Promise<{ providers: string[] }> {
-  return request("/cline/providers", { error: "Failed to get Cline providers" });
-}
-
-/**
- * Models for one Cline provider.
- *
- * An empty list means the provider could not be reached, not that it has no
- * models — every model field accepts free text, so the picker degrades to an
- * input rather than blocking.
- */
-export async function getClineModels(providerId: string): Promise<{ providerId: string; models: ClineModelInfo[] }> {
-  return request(`/cline/models?providerId=${encodeURIComponent(providerId)}`, { error: "Failed to get Cline models" });
-}
-
 /** One model the configured pi provider will route to. */
 export interface PiModelInfo {
   value: string;
@@ -1904,8 +1866,7 @@ export interface PiModelInfo {
  * Provider ids the embedded pi runtime ships a model catalog for.
  *
  * Answered offline from a catalog bundled inside the package, so this is
- * populated before any key is entered — unlike the Cline equivalent, which can
- * need the network for some providers.
+ * populated before any key is entered.
  */
 export async function getPiProviders(): Promise<{ providers: string[] }> {
   return request("/pi/providers", { error: "Failed to get pi providers" });

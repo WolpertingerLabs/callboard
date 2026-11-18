@@ -101,7 +101,6 @@ describe("the registry itself", () => {
     // A global install cannot reach Callboard's nested node_modules, so the
     // command would be an inert no-op — worse than no command, because the
     // version it reports would never move. Decision 2.
-    expect(recipesFor("cline")).toEqual([]);
     expect(recipesFor("pi")).toEqual([]);
   });
 
@@ -155,10 +154,9 @@ describe("the registry itself", () => {
   });
 });
 
-describe("cline and pi — never", () => {
-  it("offer nothing however far behind they are", () => {
-    expect(installGuidanceFor(engine({ id: "cline", updateAvailable: true, version: "0.0.1", latestVersion: "9.9.9" }))).toBeUndefined();
-    expect(installGuidanceFor(engine({ id: "pi", updateAvailable: true }))).toBeUndefined();
+describe("pi — never", () => {
+  it("offers nothing however far behind it is", () => {
+    expect(installGuidanceFor(engine({ id: "pi", updateAvailable: true, version: "0.0.1", latestVersion: "9.9.9" }))).toBeUndefined();
   });
 });
 
@@ -298,6 +296,7 @@ describe("oneClickRecipeFor — the security argument, in both directions", () =
   });
 
   it("selects nothing for a bundled engine or an unknown id", () => {
+    // The retired Cline engine id is just an unknown one now.
     expect(oneClickRecipeFor("cline")).toBeUndefined();
     expect(oneClickRecipeFor("pi")).toBeUndefined();
     expect(oneClickRecipeFor("")).toBeUndefined();
@@ -379,7 +378,7 @@ describe("the button, and the reason there is not one — Decision 8", () => {
 
   it("offers no button at all to an engine that is fine", () => {
     expect(installGuidanceFor(opencode({ installed: true }), { oneClick: true })).toBeUndefined();
-    expect(installGuidanceFor(engine({ id: "cline", updateAvailable: true }), { oneClick: true })).toBeUndefined();
+    expect(installGuidanceFor(engine({ id: "pi", updateAvailable: true }), { oneClick: true })).toBeUndefined();
   });
 
   it("names the codex recipe as the button, not the script — there is no codex script", () => {

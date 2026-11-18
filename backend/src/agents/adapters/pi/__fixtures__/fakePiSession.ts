@@ -9,8 +9,8 @@
  * prove pi answers ~300 models with no network and no key, and a fixture that
  * stubbed the catalog would delete the only evidence for that claim.
  *
- * That is the opposite balance from `cline/__fixtures__/fakeClineCore.ts`, which
- * has to replace the whole SDK because Cline persists under the user's
+ * That is the opposite balance from the retired Cline adapter's `fakeClineCore.ts`,
+ * which had to replace the whole SDK because Cline persisted under the user's
  * `~/.cline` with no public redirect. pi takes an explicit `sessionDir` and an
  * explicit `agentDir`, so a test with `CALLBOARD_DATA_DIR` set cannot touch a
  * developer's own state (#302).
@@ -20,7 +20,7 @@
  * Each is a *measured* property of pi 0.83.0, not an assumption, and each is one
  * the adapter depends on:
  *
- *  1. **`subscribe()` is per-session**, unlike Cline's process-wide bus. Two
+ *  1. **`subscribe()` is per-session**, unlike the retired Cline adapter's process-wide bus. Two
  *     fake sessions never see each other's events, which is what lets
  *     `messageAdapter` skip a `sessionId` filter.
  *  2. **Events are emitted before `prompt()` resolves**, so a consumer that

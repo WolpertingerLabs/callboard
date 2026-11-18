@@ -34,9 +34,9 @@
  *   **A gap at zero is not a gap.** A running total sitting at 0 that goes quiet
  *   has nothing to hide: for the counter to have missed something it would have
  *   had to count it, and then it would not still read 0. This is not a
- *   hypothetical nicety — Cline's own emitter is exactly this shape, sending
+ *   hypothetical nicety — the retired Cline harness's emitter was exactly this shape, sending
  *   `totalCacheReadTokens: $.cacheReadTokens === 0 ? undefined : …` (verified in
- *   `@cline/core/dist/index.js`), so it drops the field on every turn until the
+ *   `@cline/core/dist/index.js`), so it dropped the field on every turn until the
  *   first cache hit. Without this branch the first turn that *did* read cache
  *   would be dashed as unattributable, turning a defensive guard into a
  *   regression on the common path.

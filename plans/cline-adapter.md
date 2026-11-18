@@ -1,5 +1,8 @@
 # Cline SDK as a native Callboard agent provider
 
+> **Status: retired in #552.** The Cline harness was removed; `"cline"` is now a
+> `RETIRED_PROVIDER_KINDS` entry. Kept for history, like `openrouter-adapter.md`.
+
 > **Read `plans/cline-spike-findings.md` first.** It records the *shipped type
 > declarations* of `@cline/sdk` 0.0.69, which correct several assumptions below
 > (lifecycle mapping, the two-layer event stream, a tenth built-in tool,

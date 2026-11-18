@@ -8,7 +8,7 @@ import { callboardUiTool, isCallboardUiTool } from "shared/types/callboard-ui-to
  *   MCP tools as `mcp__<server>__<tool>` (e.g. `mcp__callboard-tools__create_canvas`).
  * - **OpenRouter** — removed as a harness, but its snake_case names (`bash`,
  *   `read_file`, `edit_file`, `grep_files`, …) are kept in the table below: they
- *   are not OR-specific spellings, and the ACP vendors and Cline reach several of
+ *   are not OR-specific spellings, and the ACP vendors reach several of
  *   the same cases. Bare-named in-process callboard tools (`render_file`,
  *   `create_canvas`, …) are still produced by pi.
  * - **Codex** — normalized `Bash` / `Edit` / `WebSearch` names (but `Edit`
@@ -253,12 +253,15 @@ export function getToolSummary(toolName: string, content: string): string {
       case "ask_user_question":
         return input.question ? ` - ${truncate(input.question)}` : "";
 
-      // ---- Cline built-ins --------------------------------------------------
-      // Cline's tools are plural where the others are singular — it reads N
-      // files, runs N commands and fetches N urls per call — so the summaries
+      // ---- Plural-input built-ins (from the retired Cline harness) ----------
+      // These tools are plural where the others are singular — they read N
+      // files, run N commands and fetch N urls per call — so the summaries
       // name the first item and count the rest rather than dropping to the
-      // generic fallback. Shapes verified against the SDK's own zod schemas
-      // (`@cline/core/dist/extensions/tools/schemas.d.ts`), not guessed.
+      // generic fallback. Shapes were verified against Cline's own zod schemas.
+      // Cline is gone, but the names are generic enough (`apply_patch`,
+      // `editor`, …) that another engine may emit them, and a summary is
+      // harmless where it is not reached — the same call made for OpenRouter's
+      // snake_case names above.
       case "read_files":
         return listSummary(input.files, (f) => basename(field(f, "path")));
       case "search_codebase":
@@ -354,7 +357,7 @@ function field(item: unknown, key: string): string {
 /**
  * ` - <first>` for a one-item list, ` - <first> +N more` beyond that.
  *
- * Cline's tools all take arrays, and a call that reads eight files should say so
+ * Some tools (originally Cline's) take arrays, and a call that reads eight files should say so
  * rather than either naming one (misleading) or listing all eight (unreadable in
  * a one-line summary).
  */

@@ -51,11 +51,11 @@ const PROXIED_REQ = { socket: { remoteAddress: "127.0.0.1" }, headers: { "x-forw
 const SPOOFED_XFF_REQ = { socket: { remoteAddress: "127.0.0.1" }, headers: { "x-forwarded-for": "127.0.0.1, 203.0.113.7" } };
 
 const engine: EngineStatus = {
-  id: "cline",
-  label: "Cline",
-  runtime: { kind: "bundled", package: "@cline/sdk" },
+  id: "pi",
+  label: "pi",
+  runtime: { kind: "bundled", package: "@earendil-works/pi-coding-agent" },
   installed: true,
-  version: "0.0.69",
+  version: "0.85.1",
   credentials: { configured: false },
 };
 

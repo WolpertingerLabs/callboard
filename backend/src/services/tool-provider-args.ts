@@ -8,7 +8,7 @@ import { findModelAlias } from "./agent-settings.js";
  * everything a request may ask for rather than retyped by hand. The `satisfies`
  * is the guard that matters: the tool surface and {@link UiAgentProviderKind}
  * drifted apart once already (the enum was frozen at `claude-code | codex` while
- * `acp`, `cline` and `pi` landed behind it), and a hand-written union is exactly
+ * `acp`, `pi` and the since-retired `cline` landed behind it), and a hand-written union is exactly
  * how that happens.
  */
 const TOOL_PROVIDER_KINDS = ROUTABLE_PROVIDER_KINDS satisfies readonly UiAgentProviderKind[];

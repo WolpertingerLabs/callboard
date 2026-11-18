@@ -1,7 +1,7 @@
 /**
  * Reading pi's own session files — the read half of Decision 1.
  *
- * Callboard does **not** keep a shadow transcript for pi, unlike Cline. The
+ * Callboard does **not** keep a shadow transcript for pi, unlike the retired Cline adapter. The
  * plan's reasoning holds up: `parseSessionEntries(content)` is synchronous and
  * takes a string, which is exactly the shape `SessionProvider`'s synchronous
  * methods need, and the format is versioned with a migrator
@@ -302,7 +302,7 @@ interface PiSessionUsage {
  * The responses debug panel's row-grouping identity for one pi entry.
  *
  * A pi session entry IS one generation: one `AssistantMessage` per API call,
- * appended with its own tree-node `id`. So unlike ACP and Cline this is not a
+ * appended with its own tree-node `id`. So unlike ACP (and the retired Cline adapter) this is not a
  * positional counter — it is the file's own identifier for the generation, and
  * the panel's rows land one-per-API-call rather than one-per-turn.
  */
@@ -331,8 +331,8 @@ function entryGenerationKey(sessionId: string, entryId: string): string {
  *
  * Anything pi adds later falls through verbatim rather than being guessed at.
  *
- * Contrast Cline, whose finish reason is deliberately NOT translated: it reports
- * why the agent *loop* ended, which is a different fact from why the model
+ * Contrast the retired Cline adapter, whose finish reason was deliberately NOT
+ * translated: it reported why the agent *loop* ended, which is a different fact from why the model
  * stopped. pi's is the model's.
  */
 function normalizeStopReason(stopReason: string): string {
@@ -439,8 +439,8 @@ function projectMessage(message: PiAgentMessage, timestamp: string, generationKe
       // thinking + prose + two tool calls showed `Cost: $0.0626` four times, and
       // a user adding up a chat's per-message costs got ~4× the real spend.
       // (The Claude Code parser's `meta`, cited as precedent for spreading,
-      // carries no `costUsd` — the Agent SDK reports none — and both acp and
-      // cline stamp theirs on exactly one message. There was no precedent.)
+      // carries no `costUsd` — the Agent SDK reports none — and acp (like the
+      // retired cline) stamps its on exactly one message. There was no precedent.)
       //
       // So `model` and `generationKey` ride on every block, being identity, and
       // `usage` / `costUsd` / `stopReason` / `requestId` go on the entry's

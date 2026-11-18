@@ -26,7 +26,7 @@
  *
  * ## Only three engines appear here
  *
- * Cline and pi are in-process libraries, and Callboard's copy of the Claude
+ * pi is an in-process library, and Callboard's copy of the Claude
  * Agent SDK and the Codex SDK are ordinary nested dependencies. `npm i -g` of
  * any of those is **inert** — Node resolves the package from Callboard's own
  * `node_modules` first and the global prefix is not on that search path — so

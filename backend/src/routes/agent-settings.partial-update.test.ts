@@ -163,66 +163,46 @@ describe("PUT /api/agent-settings — retired remote-access tunnel fields", () =
 });
 
 /**
- * The Cline tab saved nothing at all, and nothing said so.
- *
- * This handler destructures an explicit allowlist off `req.body` and only
- * persists when one of the fields it recognises changed. The Cline adapter
- * shipped with its settings in the type, in the service, and in the UI form —
- * but never added here. So typing a provider, key and model into Settings → API
- * and pressing Save returned 200, showed "Saved!", and wrote nothing.
- *
- * It is invisible by construction: an unknown key is silently ignored rather
- * than rejected, so neither the type system nor the response could catch it.
- * Hence a round-trip test per field.
+ * The Cline harness is gone too. Its settings — `clineApiKey` among them, a
+ * stored secret — are dropped on read and purged by the next save, exactly like
+ * the tunnel fields above, and a stale Settings tab sending them back stores
+ * nothing.
  */
-describe("PUT /api/agent-settings — Cline fields round-trip", () => {
-  it("persists every field the Cline settings tab sends", async () => {
-    const res = await put({
-      clineProviderId: "openrouter",
-      clineModel: "openai/gpt-5.4",
-      clineApiKey: "sk-or-test",
-      clineBaseUrl: "https://example.invalid/v1",
-      clineMaxIterations: 40,
-    });
+describe("PUT /api/agent-settings — retired Cline fields", () => {
+  const RETIRED = {
+    clineProviderId: "openrouter",
+    clineModel: "openai/gpt-5.4",
+    clineApiKey: "sk-or-retired-cline-key",
+    clineBaseUrl: "https://example.invalid/v1",
+    clineMaxIterations: 40,
+  };
+
+  it("neither echoes nor keeps them once anything is saved", async () => {
+    writeFileSync(SETTINGS_FILE, JSON.stringify({ ...REMOTE_SETTINGS, ...RETIRED }, null, 2));
+    const res = await put({ model: "claude-opus-5" });
     expect(res.code).toBe(200);
-
-    const saved = onDisk();
-    expect(saved.clineProviderId).toBe("openrouter");
-    expect(saved.clineModel).toBe("openai/gpt-5.4");
-    expect(saved.clineApiKey).toBe("sk-or-test");
-    expect(saved.clineBaseUrl).toBe("https://example.invalid/v1");
-    expect(saved.clineMaxIterations).toBe(40);
+    for (const key of Object.keys(RETIRED)) {
+      expect(key in res.body, key).toBe(false);
+      expect(key in onDisk(), key).toBe(false);
+    }
+    expect(JSON.stringify(res.body)).not.toContain("retired-cline-key");
+    expect(onDisk().proxyMode).toBe("remote");
   });
 
-  it("saves the Cline tab on its own, without another field to piggyback on", () => {
-    // The failure mode this pins: the dirty check gates the write, so a body
-    // containing ONLY cline fields has to be enough to trigger a persist.
-    return put({ clineProviderId: "anthropic" }).then(() => {
-      expect(onDisk().clineProviderId).toBe("anthropic");
-    });
-  });
-
-  it("clears a field when the user empties it", async () => {
-    await put({ clineApiKey: "sk-or-test" });
-    expect(onDisk().clineApiKey).toBe("sk-or-test");
-    await put({ clineApiKey: "" });
-    expect(onDisk().clineApiKey).toBeUndefined();
-  });
-
-  it("leaves Cline settings alone when an unrelated tab is saved", async () => {
-    await put({ clineProviderId: "openrouter", clineModel: "openai/gpt-5.4" });
-    await put({ openRouterApiKey: "sk-or-other" });
-    const saved = onDisk();
-    expect(saved.clineProviderId).toBe("openrouter");
-    expect(saved.clineModel).toBe("openai/gpt-5.4");
+  it("does not store them when a stale client sends them", async () => {
+    const res = await put({ ...RETIRED, model: "claude-opus-5" });
+    expect(res.code).toBe(200);
+    for (const key of Object.keys(RETIRED)) expect(key in onDisk(), key).toBe(false);
   });
 });
 
 /**
- * pi had the same hole, and the Cline fix above did not close it — the
- * allowlist gained `cline*` and left `pi*` behind.
+ * pi had a hole the (since retired) Cline tab had first: this handler
+ * destructures an explicit allowlist off `req.body` and silently ignores any
+ * key it does not recognise, so a field missing from it saves nothing. The
+ * Cline fix gained `cline*` and left `pi*` behind.
  *
- * The symptom is one step further downstream than Cline's and reads as a model
+ * The symptom reads as a model
  * failure rather than a settings one: the key never lands on disk, the pi block
  * in `claude.ts` omits `apiKey` from the session options, and pi falls through
  * to its own `auth.json` / `$OPENROUTER_API_KEY` lookup. The chat then ends on

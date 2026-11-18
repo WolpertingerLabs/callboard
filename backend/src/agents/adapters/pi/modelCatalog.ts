@@ -2,12 +2,12 @@ import type { OpenRouterModelInfo } from "shared";
 /**
  * pi model catalog — what models the configured provider will route to.
  *
- * ## Offline, unlike ACP; and no network, unlike Cline
+ * ## Offline, unlike ACP; and no network, unlike the retired Cline adapter
  *
  * `adapters/acp/modelCatalog.ts` has to *harvest* models from real chats, so a
- * vendor the user has never run reports an empty list. `adapters/cline/modelCatalog.ts`
- * can ask the SDK but some providers fetch a live catalog, so it caches and
- * tolerates failure.
+ * vendor the user has never run reports an empty list. The retired Cline adapter's
+ * catalog could ask the SDK but some providers fetched a live catalog, so it
+ * cached and tolerated failure.
  *
  * pi needs neither workaround. `ModelRuntime.create({ allowModelNetwork: false })`
  * answers from a catalog shipped in the package — over a thousand models across

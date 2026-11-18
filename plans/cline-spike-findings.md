@@ -1,5 +1,8 @@
 # Cline SDK spike findings
 
+> **Status: retired in #552.** The Cline harness was removed; `"cline"` is now a
+> `RETIRED_PROVIDER_KINDS` entry. Kept for history, like `openrouter-adapter.md`.
+
 Read against the **shipped type declarations** of `@cline/sdk` / `@cline/core` /
 `@cline/shared` **0.0.69**, not the published docs. Where the two disagree, this
 file is the one to trust — several of the docs' summaries are one layer off from

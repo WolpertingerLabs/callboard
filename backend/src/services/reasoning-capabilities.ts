@@ -28,9 +28,8 @@ export async function resolveReasoningTarget(input: ReasoningRequest, settings =
   const provider = input.provider ?? "claude-code";
   const codexRoute = provider === "codex" ? (input.codexRoute ?? (await resolveCodexExecutionRoute(settings, input.cwd ?? input.folder))) : undefined;
   const injectedOpenRouter = codexRoute?.injectedOpenRouter ?? false;
-  const providerId =
-    provider === "cline" ? settings.clineProviderId?.trim() || "anthropic" : provider === "pi" ? settings.piProviderId?.trim() || "openrouter" : provider;
-  const configuredBaseUrl = provider === "cline" ? settings.clineBaseUrl : provider === "pi" ? settings.piBaseUrl : undefined;
+  const providerId = provider === "pi" ? settings.piProviderId?.trim() || "openrouter" : provider;
+  const configuredBaseUrl = provider === "pi" ? settings.piBaseUrl : undefined;
   const endpoint = codexRoute?.endpoint ?? safeApiRoot(configuredBaseUrl?.trim() || (providerId === "openrouter" ? "https://openrouter.ai/api/v1" : undefined));
   const route = codexRoute?.route ?? (providerId === "openrouter" || (endpoint && new URL(endpoint).hostname === "openrouter.ai") ? "openrouter" : providerId);
   const fallback =
@@ -38,13 +37,10 @@ export async function resolveReasoningTarget(input: ReasoningRequest, settings =
       ? injectedOpenRouter
         ? settings.codexOpenRouterModel
         : settings.codexModel
-      : provider === "cline"
-        ? settings.clineModel
-        : provider === "pi"
-          ? settings.piModel
-          : undefined;
-  const model =
-    provider === "codex" || provider === "cline" || provider === "pi" ? resolveSessionModel(input.model, fallback, provider, settings) : input.model;
+      : provider === "pi"
+        ? settings.piModel
+        : undefined;
+  const model = provider === "codex" || provider === "pi" ? resolveSessionModel(input.model, fallback, provider, settings) : input.model;
   // `model` is what execution pins on the thread; `defaultModel` is what the CLI
   // runs when it pins nothing, and is only ever consulted for capabilities.
   return { provider, providerId, route, endpoint, model: model ?? codexRoute?.model, defaultModel: codexRoute?.defaultModel, injectedOpenRouter };
@@ -57,14 +53,7 @@ export async function resolveReasoningCapability(input: ReasoningRequest): Promi
   // Most Codex chats name no model at all (subscription mode leaves codexModel
   // null), and the CLI does have a default: resolve against it instead of
   // refusing every effort for lack of a name.
-  let model = target.model ?? (provider === "codex" ? target.defaultModel : undefined);
-  if (provider === "cline" && !model) {
-    try {
-      model = (await import("../agents/adapters/cline/optionsAdapter.js")).resolveDefaultModelId(target.providerId);
-    } catch {
-      /* Unknown SDK default: do not invent a model. */
-    }
-  }
+  const model = target.model ?? (provider === "codex" ? target.defaultModel : undefined);
   const unknown: ReasoningCapability = {
     provider,
     route,
@@ -73,7 +62,7 @@ export async function resolveReasoningCapability(input: ReasoningRequest): Promi
     efforts: [],
     message: "Model-specific reasoning capabilities are unavailable. Choose a model with known capabilities or clear the effort to use the runtime default.",
   };
-  if (!["codex", "cline", "pi"].includes(provider)) return { ...unknown, status: "known", message: "This harness does not expose reasoning effort." };
+  if (!["codex", "pi"].includes(provider)) return { ...unknown, status: "known", message: "This harness does not expose reasoning effort." };
   if (route === "unknown") return unknown;
   if (!model) return { ...unknown, ...(provider === "codex" && route !== "openrouter" ? { legacySummaryNone: true } : {}) };
   if (route === "openrouter") {
@@ -119,23 +108,11 @@ export async function resolveReasoningCapability(input: ReasoningRequest): Promi
     const entry = (await getCodexModelsAsync()).find((m) => m.id === model);
     return { ...nativeCodexReasoningCapability(entry), provider, route, model, legacySummaryNone: true };
   }
-  if (provider === "pi") {
-    const { getPiModels } = await import("../agents/adapters/pi/modelCatalog.js");
-    const entry = (await getPiModels(target.providerId)).find((m) => m.value === model);
-    if (!entry?.reasoningEfforts) return unknown;
-    return { provider, route, model, status: "known", efforts: entry.reasoningEfforts.filter((effort) => ADAPTER_EFFORTS.includes(effort)) };
-  }
-  const { getClineModels } = await import("../agents/adapters/cline/modelCatalog.js");
-  const entry = (await getClineModels(target.providerId)).find((m) => m.value === model);
-  if (entry?.supportsReasoning === undefined) return unknown;
-  return {
-    provider,
-    route,
-    model,
-    status: "known",
-    efforts: entry.supportsReasoning ? ADAPTER_EFFORTS : [],
-    message: "Cline thinking controls are restricted to the SDK vocabulary and models advertising reasoning.",
-  };
+  // Only pi is left: the guard above admits codex and pi, and codex has returned.
+  const { getPiModels } = await import("../agents/adapters/pi/modelCatalog.js");
+  const entry = (await getPiModels(target.providerId)).find((m) => m.value === model);
+  if (!entry?.reasoningEfforts) return unknown;
+  return { provider, route, model, status: "known", efforts: entry.reasoningEfforts.filter((effort) => ADAPTER_EFFORTS.includes(effort)) };
 }
 
 function capabilityAllows(capability: ReasoningCapability, effort: unknown): boolean {

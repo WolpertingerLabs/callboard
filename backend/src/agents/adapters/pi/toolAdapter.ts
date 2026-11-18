@@ -11,7 +11,7 @@
  *
  * pi needs none of it. `customTools` is an in-process array, so handlers keep
  * live backend state by simply being closures — the same property the Claude
- * Code, OpenRouter and Cline adapters enjoy.
+ * Code adapter (and the retired OpenRouter and Cline ones) enjoy.
  *
  * ## Zod → typebox, in practice: it is JSON Schema on both ends
  *
@@ -83,13 +83,13 @@
  * A tool that *returned* `{ isError: true }` would therefore be recorded as a
  * success with a stray property, and callboard's `tool_result.isError` would
  * never be set — a failed tool rendering green. So {@link renderToolResult}
- * throws, the same convention `cline/toolAdapter.ts` and
- * `openrouter/toolAdapter.ts` use.
+ * throws, the same convention the retired Cline and
+ * OpenRouter tool adapters used.
  *
  * ## Naming is load-bearing
  *
- * `def.name` passes through unprefixed, exactly as the OpenRouter and Cline
- * bridges do. That bare name is what `tool_call` reports and what
+ * `def.name` passes through unprefixed, exactly as the retired OpenRouter and Cline
+ * bridges did. That bare name is what `tool_call` reports and what
  * `categorizePiToolName` gates on, so the names {@link buildPiTools} returns must
  * be the same ones `buildToolFilters` is given — see `PiAgentQuery.iterate`,
  * which is the only place that pairs them.
@@ -176,7 +176,7 @@ function translateToolDef(def: AnyToolDefinition): PiToolDefinition {
  * Translate a callboard {@link ToolCallResult} into pi's `AgentToolResult`.
  *
  * Content is very nearly an identity map, which is a genuine improvement over
- * the Cline bridge: pi's `ImageContent` is `{ type: "image", data, mimeType }` —
+ * the retired Cline bridge: pi's `ImageContent` is `{ type: "image", data, mimeType }` —
  * exactly callboard's own image block — so an image-returning tool survives
  * intact. Host handlers proxying MCP make this an MCP-backed custom-tool bridge.
  *

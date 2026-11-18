@@ -2,14 +2,13 @@
  * Permission categories for the twelve storage/artifact tools, on every
  * name-based categorizer that sees them.
  *
- * Cline and pi receive callboard tools bare (`extraTools` / `customTools`) and
- * pin every one in `EXACT_CATEGORIES`, so the category is a decision rather
+ * pi receives callboard tools bare (`customTools`) and
+ * pins every one in `EXACT_CATEGORIES`, so the category is a decision rather
  * than a tokenizer accident. ACP has no exact table — it is tokens-only on the
  * full `mcp__callboard-tools__<name>` label — so its answers are measured here,
  * not assumed.
  */
 import { describe, expect, it } from "vitest";
-import { categorizeClineToolName } from "../adapters/cline/permissionAdapter.js";
 import { categorizePiToolName } from "../adapters/pi/permissionAdapter.js";
 import { categorizeAcpToolName } from "../adapters/acp/permissionAdapter.js";
 import { getToolCategorizer } from "./categorizers.js";
@@ -32,18 +31,13 @@ const EXPECTED = {
 const NAMES = Object.keys(EXPECTED) as (keyof typeof EXPECTED)[];
 
 describe("storage/artifact tool categories", () => {
-  it.each(NAMES)("cline: %s", (name) => {
-    expect(categorizeClineToolName(name)).toBe(EXPECTED[name]);
-    expect(getToolCategorizer("cline")(name)).toBe(EXPECTED[name]);
-  });
-
   it.each(NAMES)("pi: %s", (name) => {
     expect(categorizePiToolName(name)).toBe(EXPECTED[name]);
     expect(getToolCategorizer("pi")(name)).toBe(EXPECTED[name]);
   });
 
   it("render_artifact is pinned, not inferred: nothing in its name tokenizes", () => {
-    // Remove the exact entry and this is what cline/pi would say — which is why
+    // Remove the exact entry and this is what pi would say — which is why
     // the entry exists (the same reason as render_file's).
     expect(categorizeAcpToolName("render_artifact")).toBe("codeExecution");
   });

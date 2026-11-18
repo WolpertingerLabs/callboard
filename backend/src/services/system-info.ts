@@ -33,7 +33,6 @@ import { binaryVersionLine } from "../utils/binary-version.js";
 import { resolveClaudeBinary } from "./claude-binary.js";
 import { getSdkInfoAsync } from "./sdk-info.js";
 import { listAcpProviderAvailability } from "../agents/adapters/acp/availability.js";
-import { DEFAULT_CLINE_PROVIDER_ID } from "../agents/adapters/cline/optionsAdapter.js";
 import { getCodexAuthSource, detectCodexOpenRouterEnv, isCodexRoutedThroughOpenRouter, type CodexAuthSource } from "../agents/adapters/codex/codexAuth.js";
 import { getAgentSettings, detectClaudeCodeOpenRouterEnv, isClaudeCodeRoutedThroughOpenRouter } from "./agent-settings.js";
 
@@ -199,15 +198,8 @@ export async function buildSystemInfo({ pkgRoot }: BuildSystemInfoOptions) {
   // Codex options adapter resolve from. Keys themselves are never exposed.
   let claudeCodeUseOpenRouter = false;
   let codexUseOpenRouter = false;
-  // Which Cline provider new chats run on. The model picker needs it to know
-  // WHICH catalog to offer: Cline's model list is per-provider, so a user who
-  // set the provider to `openrouter` should be offered OpenRouter's ~270
-  // models and one on `anthropic` should not. Blank means the adapter's own
-  // default (`anthropic`) — see cline/optionsAdapter.
-  let clineProviderId = DEFAULT_CLINE_PROVIDER_ID;
   try {
     const s = getAgentSettings();
-    clineProviderId = s.clineProviderId?.trim() || DEFAULT_CLINE_PROVIDER_ID;
     claudeCodeUseOpenRouter = isClaudeCodeRoutedThroughOpenRouter(s);
     codexUseOpenRouter = isCodexRoutedThroughOpenRouter(s);
   } catch {
@@ -290,10 +282,5 @@ export async function buildSystemInfo({ pkgRoot }: BuildSystemInfoOptions) {
     // install. Availability here means "the binary resolves", never
     // "authenticated" — see adapters/acp/availability.ts.
     acpProviders,
-    // The Cline provider new chats use. There is deliberately no
-    // `clineConfigured` flag to match `codexConfigured`: Cline is an embedded
-    // SDK that falls back to the backend's own environment credentials, so
-    // there is no state in which the picker could honestly be disabled.
-    clineProviderId,
   };
 }

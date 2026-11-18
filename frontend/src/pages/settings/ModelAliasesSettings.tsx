@@ -6,7 +6,7 @@ import ClaudeModelSelector from "../../components/ClaudeModelSelector";
 import CodexModelSelector from "../../components/CodexModelSelector";
 import AcpModelSelector from "../../components/AcpModelSelector";
 import PiModelSelector from "../../components/PiModelSelector";
-import { emptyRow, toRows, toAliases, hasEditableTarget, onlyOpenRouterTarget, type AliasRow } from "./modelAliasRows";
+import { emptyRow, toRows, toAliases, hasEditableTarget, hasRetiredTarget, onlyRetiredTargets, RETIRED_ALIAS_TARGETS, type AliasRow } from "./modelAliasRows";
 import { errorMessage } from "../../utils/errorMessage";
 import { sectionStyle } from "./styles";
 
@@ -90,11 +90,12 @@ export default function ModelAliasesSettings() {
   // problems surface before the save round-trips.
   const { errors: validationErrors } = validateModelAliases(toAliases(rows));
   // A named row with no target at all is a likely mistake — flag it even though
-  // toAliases() would silently drop it. `openrouter` stays in this test despite
-  // having no column: a row carrying only a retained slug still survives the
+  // toAliases() would silently drop it. The retired targets (`openrouter`,
+  // `cline`) stay in this test despite having no column: a row carrying only a
+  // retained slug still survives the
   // save, so calling it unsaved would be a lie. Such a row gets the per-row
   // legacy note below instead.
-  const targetlessNames = rows.filter((r) => r.name.trim() && !hasEditableTarget(r) && !r.openrouter.trim()).map((r) => r.name.trim());
+  const targetlessNames = rows.filter((r) => r.name.trim() && !hasEditableTarget(r) && !hasRetiredTarget(r)).map((r) => r.name.trim());
 
   const handleSave = async () => {
     if (validationErrors.length > 0) {
@@ -213,24 +214,7 @@ export default function ModelAliasesSettings() {
                     placeholder={acpProviderId === "opencode" ? "opencode/gpt-5.5" : "vendor model id"}
                   />
                 </div>
-                {/* A plain input rather than a selector: Cline's catalog is
-                    per-provider and the provider is a global setting, so there
-                    is no single list to offer here the way there is for Codex.
-                    The Settings → API field, which knows the provider, does
-                    offer suggestions. */}
-                <div style={{ minWidth: 0 }}>
-                  <label style={colLabel}>Cline</label>
-                  <input
-                    type="text"
-                    value={row.cline}
-                    onChange={(e) => update(i, { cline: e.target.value })}
-                    placeholder="claude-sonnet-4-6"
-                    autoComplete="off"
-                    spellCheck={false}
-                    style={inputStyle}
-                  />
-                </div>
-                {/* A real selector, unlike Cline's: pi's catalog is bundled with
+                {/* A real selector: pi's catalog is bundled with
                     the package and answered offline, so it is available here
                     without knowing which provider is configured — and at ~300
                     models it needs the filtering more than any other column. */}
@@ -240,7 +224,7 @@ export default function ModelAliasesSettings() {
                 </div>
               </div>
 
-              {/* Only for aliases that predate the OpenRouter harness removal.
+              {/* Only for aliases that predate a harness removal (OpenRouter, Cline).
                   The retained target has no column, so without this the value is
                   invisible — and a row whose *sole* target is that slug reads as
                   blank-but-somehow-saved with nowhere to learn why. The advice to
@@ -252,20 +236,20 @@ export default function ModelAliasesSettings() {
                   is a permanent nag whose only escape is deleting the alias
                   outright — an explicit click is not the silent drop that
                   keeping the value in AliasRow exists to prevent. */}
-              {row.openrouter.trim() && (
-                <div style={{ ...helpStyle, marginTop: 8, display: "flex", alignItems: "baseline", gap: 6, flexWrap: "wrap" }}>
+              {RETIRED_ALIAS_TARGETS.filter(({ key }) => row[key].trim()).map(({ key, label }) => (
+                <div key={key} style={{ ...helpStyle, marginTop: 8, display: "flex", alignItems: "baseline", gap: 6, flexWrap: "wrap" }}>
                   <span>
-                    Retired OpenRouter target (<code>{row.openrouter.trim()}</code>) kept from an earlier version — stored, but no longer used by any harness.
-                    {onlyOpenRouterTarget(row) && " Set a target above for the harnesses you run."}
+                    Retired {label} target (<code>{row[key].trim()}</code>) kept from an earlier version — stored, but no longer used by any harness.
+                    {onlyRetiredTargets(row) && " Set a target above for the harnesses you run."}
                   </span>
                   <button
                     type="button"
-                    onClick={() => update(i, { openrouter: "" })}
+                    onClick={() => update(i, { [key]: "" })}
                     // Every row's button reads "Clear it", so the accessible
                     // name has to carry the alias to be distinguishable — and
                     // has to open with the visible text, or speech input can't
                     // match it (WCAG 2.5.3, Label in Name).
-                    aria-label={`Clear it — the retired OpenRouter target for ${row.name.trim() || "this alias"}`}
+                    aria-label={`Clear it — the retired ${label} target for ${row.name.trim() || "this alias"}`}
                     style={{
                       background: "transparent",
                       border: "none",
@@ -280,7 +264,7 @@ export default function ModelAliasesSettings() {
                     Clear it
                   </button>
                 </div>
-              )}
+              ))}
             </div>
           ))}
 

@@ -105,23 +105,10 @@ vi.mock("../agents/factory.js", () => ({
       getSessionPreview: () => "preview",
     },
     {
-      // Cline and pi both implement seedSession AND forkSession for real —
-      // `agents/handoff.roundtrip.test.ts` drives the actual providers. Here
-      // they are stubs like the rest, so these cases assert the ROUTE offers
-      // them rather than re-proving the providers work.
-      kind: "cline",
-      forkSession: (...args: unknown[]) => {
-        calls.forkSession.push(args);
-        return { logPath: "/tmp/fork-cline.jsonl" };
-      },
-      seedSession: (...args: unknown[]) => {
-        calls.seedSession.push(args);
-        return { logPath: "/tmp/seed-cline.jsonl" };
-      },
-      parseSessionMessages: () => sourceMessages,
-      getSessionPreview: () => "preview",
-    },
-    {
+      // pi implements seedSession AND forkSession for real —
+      // `agents/handoff.roundtrip.test.ts` drives the actual provider. Here it
+      // is a stub like the rest, so these cases assert the ROUTE offers it
+      // rather than re-proving the provider works.
       kind: "pi",
       forkSession: (...args: unknown[]) => {
         calls.forkSession.push(args);
@@ -359,6 +346,23 @@ describe("POST /api/chats/:id/fork cross-harness handoff", () => {
     expect(calls.seedSession).toHaveLength(0);
   });
 
+  it("refuses cline as a target — the harness was removed", async () => {
+    setParent({});
+    const res = await fork({ provider: "cline" });
+    expect(res.code).toBe(400);
+    expect(res.meta.error).toContain('Unknown target provider "cline"');
+    expect(calls.seedSession).toHaveLength(0);
+  });
+
+  it("refuses a chat stamped with the removed cline harness as a SOURCE, by name", async () => {
+    setParent({ provider: "cline" });
+    const res = await fork();
+    expect(res.code).toBe(400);
+    expect(res.meta.error).toContain("This chat ran on Cline, which has been removed");
+    expect(calls.forkSession).toHaveLength(0);
+    expect(calls.seedSession).toHaveLength(0);
+  });
+
   it("rejects a handoff when there is no history to carry", async () => {
     setParent({});
     const previous = sourceMessages;
@@ -412,18 +416,15 @@ describe("POST /api/chats/:id/fork model and effort", () => {
 });
 
 /**
- * The two targets Phase 5 admitted.
+ * The target Phase 5 admitted (alongside the since-retired Cline).
  *
- * Both providers implement `seedSession` and `forkSession`, and both round-trip
+ * The provider implements `seedSession` and `forkSession`, and round-trips
  * a real handoff (`agents/handoff.roundtrip.test.ts` drives the actual files).
- * What was missing was the *offer*: `ForkProvider` never named them, so the
+ * What was missing was the *offer*: `ForkProvider` never named it, so the
  * capability existed and the UI refused it. These cases pin the route half.
  */
-describe("POST /api/chats/:id/fork — cline and pi are handoff targets", () => {
-  it.each([
-    ["cline", "Cline"],
-    ["pi", "pi"],
-  ])("hands a claude-code chat off to %s", async (kind, label) => {
+describe("POST /api/chats/:id/fork — pi is a handoff target", () => {
+  it.each([["pi", "pi"]])("hands a claude-code chat off to %s", async (kind, label) => {
     setParent({});
     const res = await fork({ provider: kind });
     expect(res.code).toBe(201);
@@ -433,18 +434,18 @@ describe("POST /api/chats/:id/fork — cline and pi are handoff targets", () => 
     expect(res.meta.title).toBe(`→ ${label}: Parent`);
   });
 
-  it.each(["cline", "pi"])("takes the high-fidelity native path for a same-harness %s fork", async (kind) => {
+  it.each(["pi"])("takes the high-fidelity native path for a same-harness %s fork", async (kind) => {
     setParent({ provider: kind });
     const res = await fork();
     expect(res.code).toBe(201);
-    // Both have a native fork, so neither should fall through to the flattened
+    // It has a native fork, so it should not fall through to the flattened
     // seed path the way Codex does.
     expect(calls.forkSession).toHaveLength(1);
     expect(calls.seedSession).toHaveLength(0);
     expect(res.meta.chatRole).toBe("fork");
   });
 
-  it.each(["cline", "pi"])("hands a %s chat back out to another harness", async (kind) => {
+  it.each(["pi"])("hands a %s chat back out to another harness", async (kind) => {
     setParent({ provider: kind });
     const res = await fork({ provider: "codex" });
     expect(res.code).toBe(201);
@@ -452,7 +453,7 @@ describe("POST /api/chats/:id/fork — cline and pi are handoff targets", () => 
     expect(res.meta.provider).toBe("codex");
   });
 
-  it.each(["cline", "pi"])("passes the preamble and carried history to %s's writer", async (kind) => {
+  it.each(["pi"])("passes the preamble and carried history to %s's writer", async (kind) => {
     setParent({});
     await fork({ provider: kind });
     const [turns] = calls.seedSession[0] as [Array<{ text: string }>, unknown];

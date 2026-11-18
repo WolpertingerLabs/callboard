@@ -129,7 +129,7 @@ describe("resolveSessionModel", () => {
  * `services/claude.ts` looks up `acpProviderModels[acpProviderId]` and hands
  * the result to `resolveSessionModel` as the provider default — exactly the
  * same call every other harness makes with its own settings field
- * (`codexModel`, `clineModel`, `piModel`). These tests exercise that lookup +
+ * (`codexModel`, `piModel`). These tests exercise that lookup +
  * resolveSessionModel call directly, since that IS the resolution logic; there
  * is nothing ACP-specific inside resolveSessionModel itself to test.
  */

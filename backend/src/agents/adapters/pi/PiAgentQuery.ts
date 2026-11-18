@@ -3,9 +3,9 @@
  *
  * ## Nothing is memoized, and that is a decision
  *
- * Every other in-process adapter shares one engine instance across the process:
- * `ClineAgentQuery` memoizes a `ClineCore` because `dispose()` is instance-wide
- * and a per-query instance would kill every other live chat. pi has the opposite
+ * The retired Cline adapter shared one engine instance across the process:
+ * `ClineAgentQuery` memoized a `ClineCore` because `dispose()` was instance-wide
+ * and a per-query instance would have killed every other live chat. pi has the opposite
  * shape — `AgentSession.dispose()` only removes that session's listeners — so
  * there is no such pressure, and the thing that *would* be shared is exactly the
  * thing that must not be.
@@ -30,12 +30,12 @@
  * ## Push → pull
  *
  * `session.subscribe()` is a callback and `AgentQuery` is an async iterable.
- * {@link EventQueue} bridges them, unbounded for the reason `ClineAgentQuery`'s
- * queue is: applying back-pressure inside the listener would stall the runtime
+ * {@link EventQueue} bridges them, unbounded for the reason the retired `ClineAgentQuery`'s
+ * queue was: applying back-pressure inside the listener would stall the runtime
  * that also has to deliver the permission gate, deadlocking any turn whose
  * consumer is slower than its producer. A turn's events are bounded by the turn.
  *
- * Unlike Cline's, this subscription is **per-session**, so no `sessionId` filter
+ * Unlike the retired Cline adapter's, this subscription is **per-session**, so no `sessionId` filter
  * is needed — see `messageAdapter`.
  *
  * ## Lifecycle
@@ -353,8 +353,8 @@ export class PiAgentQuery implements AgentQuery {
     } else {
       // Not fatal: pi falls back to its own environment lookup, and the
       // provider's own error message reaching the user is better than a
-      // pre-flight check that guesses wrong — the behaviour the Cline landing
-      // settled on.
+      // pre-flight check that guesses wrong — the behaviour the (since retired) Cline
+      // landing settled on.
       log.debug(`no API key configured for pi provider "${providerId}" — deferring to pi's own lookup`);
     }
     return runtime;

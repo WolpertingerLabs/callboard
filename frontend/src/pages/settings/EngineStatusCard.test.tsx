@@ -24,11 +24,11 @@ afterEach(cleanup);
  */
 const render = (ui: React.ReactElement) => rtlRender(<MemoryRouter>{ui}</MemoryRouter>);
 
-/** Cline: bundled and pinned to an exact version in Callboard's manifest. */
+/** pi: bundled and pinned to an exact version in Callboard's manifest. */
 const base: EngineStatus = {
-  id: "cline",
-  label: "Cline",
-  runtime: { kind: "bundled", package: "@cline/sdk", dependencyRange: "0.0.69", pinned: true },
+  id: "pi",
+  label: "pi",
+  runtime: { kind: "bundled", package: "@earendil-works/pi-coding-agent", dependencyRange: "0.0.69", pinned: true },
   installed: true,
   version: "0.0.69",
   credentials: { configured: "unknown", note: "No key set here." },
@@ -139,8 +139,8 @@ describe("the Runtime row", () => {
 describe("the Latest row", () => {
   it("states a pinned engine's newer release as a fact, with no remedy attached", () => {
     // The bug this replaces: this row said "updating Callboard picks it up"
-    // for @cline/sdk and @earendil-works/pi-coding-agent, both of which are
-    // pinned to an exact version in Callboard's manifest. Updating Callboard
+    // for @earendil-works/pi-coding-agent (and the since-retired @cline/sdk),
+    // both pinned to an exact version in Callboard's manifest. Updating Callboard
     // installs the same version until a maintainer moves the pin, so the old
     // copy promised an action that provably does nothing.
     render(<EngineStatusCard engine={{ ...base, latestVersion: "0.0.77", updateAvailable: true }} />);
@@ -395,7 +395,7 @@ describe("a bundled engine that is behind", () => {
   const behind: EngineStatus = { ...base, latestVersion: "0.0.77", updateAvailable: true };
 
   it("gets a link to About and no install command at all", () => {
-    // Decision 2, as corrected in #354: `npm i -g @cline/sdk@latest` cannot
+    // Decision 2, as corrected in #354: `npm i -g @earendil-works/pi-coding-agent@latest` cannot
     // reach Callboard's nested node_modules, so a button would be inert — and a
     // button whose version row never moves is worse than no button.
     render(<EngineStatusCard engine={behind} />);
