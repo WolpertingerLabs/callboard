@@ -20,16 +20,22 @@
  *
  * Everything ACP comes from **`@agentclientprotocol/sdk/unstable`**, never the
  * bare `@agentclientprotocol/sdk`. Since SDK 2.x the two entry points carry
- * different schemas, and the SDK parses incoming requests and notifications
- * against the schema of the entry point the app was built from. The stable one
- * does not know the unstable surface this adapter consumes: a `plan_update`
- * `session/update` is silently dropped before it reaches our handler (proven
- * by the "unstable ACP surface" case in AcpAdapter.e2e.test.ts), and
- * `PromptResponse.usage` — which {@link AcpAgentQuery} reads for token
- * accounting — exists only in the unstable types. `/unstable` re-exports the
- * whole stable surface, so one entry point per app loses nothing. ESLint
- * (`no-restricted-imports` + an inline-`import()` selector, `eslint.config.js`)
- * enforces it across `backend/src`.
+ * different schemas, and the SDK's migration guide requires one entry point per
+ * app; `/unstable` re-exports the whole stable surface, so nothing is lost.
+ * Concretely:
+ *
+ *  - `PromptResponse.usage`, which {@link AcpAgentQuery} reads for token
+ *    accounting, is typed only in `/unstable`.
+ *  - The SDK parses incoming notifications against the entry point's schema,
+ *    so on the stable one a `plan_update` `session/update` is dropped before it
+ *    reaches our handler (the "unstable ACP surface" case in
+ *    AcpAdapter.e2e.test.ts). That is not a live path today — `plan_update` is
+ *    gated on `ClientCapabilities.plan`, which we do not advertise; see the
+ *    `translatePlan` note in messageAdapter.ts — but it would become one the
+ *    day we advertise `plan`, or if an agent ignores the gate.
+ *
+ * ESLint (`no-restricted-imports` plus inline-`import()` and dynamic-import
+ * selectors, `eslint.config.js`) enforces it across `backend/src`.
  *
  * The plan named `ClientSideConnection`. That class was `@deprecated` in SDK
  * 1.4.0 and is gone from 2.x in favour of the `client()` app builder, so this
@@ -584,7 +590,9 @@ export class AcpAgentClient {
   /**
    * Set one of the session's config options, e.g. the model.
    *
-   * ACP (SDK 1.4.0 through 2.8.0) has no models API — a model is just a `SessionConfigOption` whose
+   * ACP has no models API (1.4.0 had none; 2.8.0 adds `session/options` on
+   * `/unstable`, capability-gated, which callboard does not use yet) — a model is
+   * just a `SessionConfigOption` whose
    * `category` is `"model"`, so selecting one is `session/set_config_option`
    * after the session exists. That ordering is forced by the protocol, not a
    * choice: there is nowhere on `session/new` to ask for a model.

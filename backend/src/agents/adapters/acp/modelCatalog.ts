@@ -3,9 +3,12 @@
  *
  * ## Why harvested rather than probed
  *
- * ACP (SDK 1.4.0 through 2.8.0) has no models API. The catalog exists in exactly one place — the
- * `configOptions` returned by `session/new` / `session/resume` — so a client can
- * only learn it by opening a session. The obvious implementation is the one
+ * ACP has no models API. In SDK 1.4.0 the catalog existed in exactly one place —
+ * the `configOptions` returned by `session/new` / `session/resume` — so a client
+ * could only learn it by opening a session. (2.8.0 adds `session/options` on
+ * `/unstable`, gated on `sessionCapabilities.options`, which returns
+ * `configOptions` for a `cwd` without creating a session; callboard does not use
+ * it yet, so everything below still describes the live path.) The obvious implementation is the one
  * `codex-models.ts` uses for Codex: ask the vendor once at startup and cache the
  * answer.
  *

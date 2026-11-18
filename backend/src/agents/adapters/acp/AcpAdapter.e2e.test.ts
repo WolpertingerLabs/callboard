@@ -552,8 +552,9 @@ describe("model discovery", () => {
         options: { cwd: process.cwd(), acp: { preset: acpTestAgentPreset("config-options"), getPermissions: () => allowAll } },
       });
       try {
-        // `configOptions` only exists once a session does — ACP (SDK 1.4.0 through 2.8.0) has no
-        // models API, so the list cannot be answered before the turn starts.
+        // `configOptions` only exists once a session does — ACP 1.4.0 had no
+        // models API, and 2.8.0's capability-gated `session/options` is not used
+        // yet, so the list cannot be answered before the turn starts.
         expect(await query.supportedModels()).toEqual([]);
         for await (const _event of query) {
           /* drain */
@@ -676,15 +677,21 @@ describe("tool calls whose arguments arrive late", () => {
 /**
  * The single-entry-point rule, end to end.
  *
- * Since SDK 2.x the bare `@agentclientprotocol/sdk` parses incoming requests
- * and notifications against the *stable* schema, which does not know the
- * unstable surface this adapter relies on. Both peers here are the real SDK
- * over real stdio. Verified against 2.8.0: with the client (AcpAgentClient) on
- * the bare entry point, the `plan_update` notification never arrives and this
- * fails. `PromptResponse.usage` happens to survive today because 2.8.0 does not
- * schema-parse responses; it is asserted anyway, since it is unstable surface
- * and a later SDK that does parse responses would strip it. Soft assertions so
- * a regression reports every lost field at once.
+ * What this guards is the **notification** half. SDK 2.x parses incoming
+ * notifications against the schema of the entry point an app was built from;
+ * verified against 2.8.0, with the client (AcpAgentClient) on the bare entry
+ * point the `plan_update` never arrives and this fails. That is a latent
+ * hazard, not a live one: `plan_update` is gated on `ClientCapabilities.plan`,
+ * which callboard does not advertise (see `translatePlan` in
+ * messageAdapter.ts), so a conforming agent never sends it to us today. The
+ * fake sends it regardless — it stands in for the day we advertise `plan`, or
+ * an agent that ignores the gate.
+ *
+ * `PromptResponse.usage` survives on either entry point in 2.8.0, because
+ * responses are not schema-parsed, so its assertion is not evidence for the
+ * entry-point rule. It is here to pin every counter end to end, and would
+ * start catching a regression only if a later SDK begins parsing responses.
+ * Soft assertions so a regression reports every lost field at once.
  */
 describe("unstable ACP surface survives a real SDK round-trip", () => {
   it(
