@@ -46,6 +46,28 @@
  * doing anything else and therefore emits nothing to its own subscribers; it is
  * not a substitute for `abort()`.
  *
+ * ### A turn that ends normally is deliberately *not* disposed
+ *
+ * `dispose()` runs only on `close()` and on the setup-cancel path. It is not
+ * called when a turn simply finishes, and that is a decision, not an omission.
+ * Since pi 1.x, `AgentSession.dispose()` also calls
+ * `cleanupSessionResources(this.sessionId)`, which clears pi-ai's
+ * **process-global, per-session-id** state, and callboard reuses one session id
+ * for every turn of a chat. Disposing after each turn would therefore wipe,
+ * every turn:
+ *
+ * - Anthropic message-thread state,
+ * - the strict-tool-limits memory — pi 1.5.1's fix for a 400 on every turn,
+ *   which per-turn disposal would bring straight back,
+ * - cached Codex WebSocket sessions.
+ *
+ * pi 1.x's cache warmer also lives on the session, and `dispose()` would cancel
+ * it — but disposal is not what keeps it quiet. Warming is prevented by the
+ * getter pin in `optionsAdapter.createPiSettingsManager` alone: the warmer asks
+ * `getCacheWarmingMode()` before every run and stops on `"off"`.
+ * `optionsAdapter.test.ts` builds a real session and checks the warmer reports
+ * itself disabled.
+ *
  * @see plans/pi-adapter.md
  * @see plans/pi-spike-findings.md (§6 — abort/dispose, measured)
  */
@@ -63,7 +85,7 @@ import type { AgentEvent } from "../../ports/events.js";
 import type { ToolServerSpec } from "../../ports/tools.js";
 import { buildTerminalResult, recordTerminalSignal, translatePiEvent, type PiTurnAccounting } from "./messageAdapter.js";
 import { buildPiServicesOptions, buildPiSessionOptions, resolvePiAgentDir, DEFAULT_PI_PROVIDER_ID, type PiRunOptions } from "./optionsAdapter.js";
-import { buildPermissionExtension, buildToolFilters, type PiPermissionContext } from "./permissionAdapter.js";
+import { assertPiTrustDenied, buildPermissionExtension, buildToolFilters, type PiPermissionContext } from "./permissionAdapter.js";
 import { getPiModels, resolvePiModelForRun, type PiModelOption } from "./modelCatalog.js";
 import { buildPiTools } from "./toolAdapter.js";
 import { resolvePiPrompt } from "./promptAdapter.js";
@@ -179,8 +201,14 @@ export class PiAgentQuery implements AgentQuery {
     // The trust denial, the settings manager and the inline gate all live in
     // here. This is the ONLY sanctioned way into a pi session in this adapter —
     // `createAgentSession()` resolves no trust and defaults to trusted.
+    const servicesOptions = buildPiServicesOptions({ cwd, extension: buildPermissionExtension(permissionCtx), agentDir });
+    // The same gate the tests assert, run on the options this turn will really
+    // use. Synchronous and I/O-free; a problem here means a refactor broke the
+    // trust denial or the cache-warming pin, and the turn must not run.
+    const unsafe = assertPiTrustDenied(servicesOptions);
+    if (unsafe.length > 0) throw new Error(`Refusing to start a pi session with unsafe options: ${unsafe.join("; ")}`);
     const services = await createAgentSessionServices({
-      ...buildPiServicesOptions({ cwd, extension: buildPermissionExtension(permissionCtx), agentDir }),
+      ...servicesOptions,
       modelRuntime: runtime,
     });
     if (this.closed) return;

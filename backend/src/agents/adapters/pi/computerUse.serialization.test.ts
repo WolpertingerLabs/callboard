@@ -1,20 +1,16 @@
-import { createRequire } from "node:module";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 import { expect, it } from "vitest";
+import { normalizeContext } from "@earendil-works/pi-ai";
+import { stream } from "@earendil-works/pi-ai/api/anthropic-messages";
 import { buildPiTools } from "./toolAdapter.js";
 import { defineTool } from "../../ports/tools.js";
+import { piAiVersions } from "./__fixtures__/piAiVersion.js";
 
-it("pi 0.85.1 provider serializer retains custom-tool images, not just UI details", async () => {
-  // Resolve the actual pi-ai version used by the pinned coding-agent, not an
-  // unrelated hoisted version. No provider/model requests leave this test.
-  const piRequire = createRequire(import.meta.resolve("@earendil-works/pi-coding-agent"));
-  const path = piRequire.resolve
-    .paths("@earendil-works/pi-ai")!
-    .map((root) => join(root, "@earendil-works/pi-ai/dist/api/anthropic-messages.js"))
-    .find(existsSync)!;
-  const { stream } = await import(pathToFileURL(path).href);
+it("pi's provider serializer retains custom-tool images, not just UI details", async () => {
+  // Through pi-ai's `./api/*` export, and checked to be the pi-ai the pinned
+  // coding agent depends on rather than an unrelated hoisted copy. No
+  // provider/model requests leave this test.
+  const { resolved, expected } = piAiVersions();
+  expect(resolved).toBe(expected);
   const pixels = "aGk=";
   const { tools } = buildPiTools({
     name: "computer_use",
@@ -36,7 +32,9 @@ it("pi 0.85.1 provider serializer retains custom-tool images, not just UI detail
       contextWindow: 10000,
       maxTokens: 100,
     },
-    {
+    // Normalized first, as pi does before every provider call: since pi-ai 1.x
+    // the API-level `stream` takes only a branded `TranscriptContext`.
+    normalizeContext({
       messages: [
         {
           role: "assistant",
@@ -50,7 +48,7 @@ it("pi 0.85.1 provider serializer retains custom-tool images, not just UI detail
         },
         { role: "toolResult", toolCallId: "fixture-1", toolName: "cu_observe", content: result.content, isError: false, timestamp: 1 },
       ],
-    },
+    }),
     {
       apiKey: "offline-fixture",
       onPayload: (body: unknown) => {

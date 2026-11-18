@@ -63,6 +63,11 @@ export interface FakePiScript {
   willRetryFirst?: boolean;
   /** Rejects `prompt()` instead of finishing normally. */
   failWith?: Error;
+  /**
+   * Parks `prompt()` after the user message until `abort()` is called, so a
+   * test can land a `close()` while the turn is genuinely still running.
+   */
+  holdUntilAborted?: boolean;
 }
 
 type Listener = (event: AgentSessionEvent) => void;
@@ -96,7 +101,8 @@ export class FakeExtensionApi {
 export class FakePiSession {
   private readonly listeners = new Set<Listener>();
   private aborted = false;
-  private disposed = false;
+  private disposeCalls = 0;
+  private releaseHold?: () => void;
 
   /** Events this session emitted, in order — for assertions. */
   readonly emitted: AgentSessionEvent[] = [];
@@ -131,6 +137,10 @@ export class FakePiSession {
       type: "message_end",
       message: { role: "user", content: [{ type: "text", text }], timestamp: Date.now() },
     } as unknown as AgentSessionEvent);
+
+    if (this.script.holdUntilAborted && !this.aborted) {
+      await new Promise<void>((resolve) => (this.releaseHold = resolve));
+    }
 
     for (const call of this.script.toolCalls ?? []) {
       await this.runToolCall(call);
@@ -211,6 +221,7 @@ export class FakePiSession {
   /** Ends the turn. The next `message_end` reports `stopReason: "aborted"`. */
   async abort(): Promise<void> {
     this.aborted = true;
+    this.releaseHold?.();
   }
 
   /**
@@ -218,12 +229,17 @@ export class FakePiSession {
    * `dispose()` emits nothing to its own subscribers.
    */
   dispose(): void {
-    this.disposed = true;
+    this.disposeCalls++;
     this.listeners.clear();
   }
 
   get isDisposed(): boolean {
-    return this.disposed;
+    return this.disposeCalls > 0;
+  }
+
+  /** How many times `dispose()` was called — a session must be disposed exactly once. */
+  get disposeCount(): number {
+    return this.disposeCalls;
   }
 
   get wasAborted(): boolean {

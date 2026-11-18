@@ -344,7 +344,12 @@ export function buildPermissionExtension(ctx: PiPermissionContext): PiPermission
  * are missing — a chat on an untrusted repo simply works, having executed the
  * repo's TypeScript. `permissionAdapter.test.ts` runs this over the real
  * `buildPiServicesOptions()` output so that swapping in `createAgentSession()`,
- * or losing `noExtensions`, fails a test rather than shipping.
+ * or losing `noExtensions`, fails a test rather than shipping. `PiAgentQuery`
+ * also runs it on every turn's options before building services and refuses the
+ * turn on any problem — cheap (no I/O) and fail-closed.
+ *
+ * It also checks that cache warming is off — a billing guard rather than a
+ * trust one, kept here because it fails in the same silent way.
  *
  * Returns the list of problems; empty means the options are safe.
  */
@@ -353,8 +358,18 @@ export function assertPiTrustDenied(options: CreateAgentSessionServicesOptions):
 
   if (!options.settingsManager) {
     problems.push("no settingsManager — pi defaults projectTrusted to true");
-  } else if (options.settingsManager.isProjectTrusted()) {
-    problems.push("settingsManager reports the project as trusted");
+  } else {
+    if (options.settingsManager.isProjectTrusted()) {
+      problems.push("settingsManager reports the project as trusted");
+    }
+    // Not a trust hole, a billing one — but the same shape: a pi default
+    // (`"idle"`) that silently spends money callboard never accounts for. Kept
+    // in this gate so it cannot be dropped without a test noticing. See
+    // optionsAdapter.createPiSettingsManager.
+    const warming = options.settingsManager.getCacheWarmingMode();
+    if (warming !== "off") {
+      problems.push(`settingsManager reports cache warming "${warming}" — pi would send unaccounted, billed warm-up requests`);
+    }
   }
 
   if (!options.resourceLoaderReloadOptions?.resolveProjectTrust) {

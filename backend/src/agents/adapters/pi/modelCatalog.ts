@@ -11,8 +11,9 @@ import type { OpenRouterModelInfo } from "shared";
  *
  * pi needs neither workaround. `ModelRuntime.create({ allowModelNetwork: false })`
  * answers from a catalog shipped in the package — over a thousand models across
- * all providers and several hundred of them OpenRouter's (pi 0.85.1: 1,354 and
- * 366; the spike, on an older pi, counted 1,157 and 307), with the network
+ * all providers and several hundred of them OpenRouter's (pi 1.5.2: 1,643 and
+ * 403; 0.85.1: 1,354 and 366; the spike, on an older pi, counted 1,157 and
+ * 307), with the network
  * explicitly disabled. A user who has never run a pi chat still gets a fully
  * populated picker, and no model lookup can hang on a provider being down.
  * (One lookup may *wait*, boundedly: a turn on an OpenRouter model newer than
@@ -284,21 +285,42 @@ export async function listPiProviderIds(): Promise<string[]> {
  * Merge Callboard's live OpenRouter catalog onto pi's bundled provider models
  * when the provider is `"openrouter"`.
  *
- * ## pi never refreshes OpenRouter — the list is frozen at the package version
+ * ## pi refreshes OpenRouter only partly, and not on the picker's schedule
  *
- * The TTL-and-revalidate machinery above is real but it does nothing for this
- * provider. `pi-ai`'s `createProvider` only builds a `refreshModels` when the
- * definition supplies a `fetchModels`, and `openrouterProvider()` supplies
- * none: it passes a static `OPENROUTER_MODELS` and nothing else. So OpenRouter
- * is not among the providers `runtime.refresh()` even visits, and pi's
- * OpenRouter list is exactly what shipped in the installed package. pi 0.85.1
- * ships 366; on 2026-10-31 OpenRouter listed 386 tool-calling models, **81 of
- * them missing** from pi's list, including current flagships.
+ * Up to 0.85.1 pi never refreshed OpenRouter at all: `openrouterProvider()`
+ * supplies no `fetchModels`, so the list was exactly what shipped in the
+ * package. pi 1.x changed that one layer up — `ModelRuntime.create()` wraps
+ * the provider in `withPersonalizedCatalog`, so a *network* refresh merges
+ * pi.dev's published OpenRouter catalog (when newer than the bundled one) and
+ * then, if the runtime holds a key, narrows it to that key's models and prices
+ * from OpenRouter's `GET /models/user`. The result is saved to
+ * `models-store.json` and replaces the bundled list from then on, offline too.
  *
- * That gap does not close on its own; only a pi upgrade moves it. Callboard
- * already warms an hourly-refreshed catalog of OpenRouter's tool-calling
- * models, so overlaying its ids onto pi's list is the cheapest way to close it:
- * fresh models appear in the picker within an hour of release, and the
+ * Which refresh runs depends on the path:
+ *
+ * - **A keyed turn** (`PiAgentQuery.buildRuntime`) refreshes inside
+ *   `setRuntimeApiKey`, bounded by `MODEL_REFRESH_TIMEOUT_MS`, and gets the
+ *   personalized list.
+ * - **A keyless turn** never refreshes: that runtime is built with
+ *   `allowModelNetwork: false` and nothing else asks. It sees the bundled
+ *   list, or whatever was last saved to the store.
+ * - **The picker** (this module's credential-free runtime) refreshes in the
+ *   background on its own TTL with no key, so it can only pick up pi.dev's
+ *   catalog — and `PI_OFFLINE` stops even that.
+ *
+ * All three share one `models-store.json` (callboard's pi agent dir), so the
+ * last refresh wins: after a keyed turn, the picker and keyless turns read
+ * that key's narrowed list until the picker's next keyless refresh overwrites
+ * it. The overlay below re-adds whatever the narrowing dropped, so the picker
+ * loses nothing.
+ *
+ * So pi's list still lags OpenRouter: by pi.dev's publishing cadence at best,
+ * by the installed package at worst (offline, or before any keyed turn). On
+ * 2026-10-31, against 0.85.1, OpenRouter listed 386 tool-calling models and
+ * **81 of them** were missing from pi's list, including current flagships.
+ * Callboard already warms an hourly-refreshed catalog of OpenRouter's
+ * tool-calling models, so overlaying its ids onto pi's list still closes the
+ * gap: fresh models appear in the picker within an hour of release, and the
  * pi-provided ones are never dropped.
  *
  * A model that only exists in the overlay is not in pi's catalog either, so
@@ -352,9 +374,9 @@ function overlayOpenRouterModels(options: PiModelOption[], baseUrl = "https://op
  * Codex and ACP selectors already do for slugs newer than their catalog.
  *
  * When the provider is `"openrouter"`, the cached pi list is overlaid with
- * Callboard's live OpenRouter catalog — pi's OpenRouter list is frozen at the
- * installed package version and no refresh here can move it. See
- * {@link overlayOpenRouterModels}.
+ * Callboard's live OpenRouter catalog — pi's own OpenRouter list lags
+ * OpenRouter, and this module's keyless refresh moves it only as far as
+ * pi.dev's catalog. See {@link overlayOpenRouterModels}.
  */
 export async function getPiModels(providerId: string, baseUrl = "https://openrouter.ai/api/v1"): Promise<PiModelOption[]> {
   const id = providerId.trim();
@@ -423,10 +445,10 @@ type PiModel = ReturnType<ModelRuntime["getModels"]>[number];
  * one. An absent price is not an unusable one: it is how OpenRouter says a
  * model has no cache tier, so 0 is the honest answer there.
  *
- * This guards *synthesized* models only. Two routers, `openrouter/auto` and
- * `openrouter/auto-beta`, are bundled in pi 0.85.1 with the same "-1" already
- * multiplied into their `cost`; they never reach synthesis, and
- * {@link withUsableCost} is what keeps them from billing negative.
+ * This guards *synthesized* models only. A model pi's registry already
+ * carries never reaches synthesis, and {@link withUsableCost} is what keeps a
+ * negative price there from billing — pi 0.85.1 bundled `openrouter/auto` and
+ * `openrouter/auto-beta` with the same "-1" multiplied into their `cost`.
  */
 function isUsablePrice(price: string | undefined): boolean {
   if (price === undefined) return true;
@@ -455,14 +477,21 @@ function clampRates<T extends PiCostRates>(rates: T): T {
 /**
  * `model`, or a copy of it with every negative or non-finite rate billed at 0.
  *
- * pi's bundled data is generated from OpenRouter's `/models`, and the generator
- * multiplies through without checking: pi 0.85.1 ships `openrouter/auto` and
- * `openrouter/auto-beta` — variable-priced routers OpenRouter lists at `"-1"` —
- * with `cost.input` and `cost.output` of −1,000,000 per million. pi's
+ * pi's bundled data is generated from OpenRouter's `/models`, and the 0.85.1
+ * generator multiplied through without checking: it shipped `openrouter/auto`
+ * and `openrouter/auto-beta` — variable-priced routers OpenRouter lists at
+ * `"-1"` — with `cost.input` and `cost.output` of −1,000,000 per million. pi's
  * `calculateCost` applies those as-is, so a 20k-in / 1k-out turn on either
  * recorded about −$21,000. The real price is unknowable up front (the router
  * picks the model), so it is unknown, billed at 0 and warned about — the same
  * answer {@link isUsablePrice} gives a synthesized model.
+ *
+ * pi 1.5 ships both routers at 0 and bundles no negative price at all, so this
+ * is now a guard rather than a live fix. It stays: a found model's price can
+ * also come from `models.json`, pi.dev's catalog or a key's `/models/user`
+ * prices, none of which is checked, and a regression in pi's generator would
+ * bring the refunds straight back. `modelCatalog.runPath.test.ts` tests it on
+ * an injected model rather than on whatever pi happens to bundle.
  *
  * A copy, not an edit: the object is pi's registry entry, shared by every
  * lookup on that runtime. A copy is accepted everywhere the original is —
@@ -482,13 +511,15 @@ function withUsableCost<M extends PiModel>(model: M): M {
  * The bundled OpenRouter model whose transport a synthesized slug should copy.
  *
  * This used to be `getModels("openrouter")[0]`, on the claim that every bundled
- * OpenRouter model agreed on `api`/`baseUrl`. They do not. pi 0.85.1 ships two
+ * OpenRouter model agreed on `api`/`baseUrl`. They do not. pi 0.85.1 shipped two
  * dialects: 15 models on `anthropic-messages` against `https://openrouter.ai/api`
  * — exactly the plain `anthropic/…` slugs — and 351 on `openai-completions`
  * against `…/api/v1`, which is every other vendor *and* the `anthropic/…:batch`
- * variants. Index 0 sorts to `anthropic/claude-3-haiku`, so every synthesized
+ * variants. Index 0 sorted to `anthropic/claude-3-haiku`, so every synthesized
  * Gemini, Llama or DeepSeek slug was being sent through OpenRouter's
- * Anthropic-compatible endpoint.
+ * Anthropic-compatible endpoint. pi 1.5.2 keeps the split (20 / 383, the 20
+ * now including `~anthropic/…-latest` aliases) and index 0 is still an
+ * `anthropic-messages` model.
  *
  * pi ships no rule for this, only the generated per-model data, so the choice
  * is read off that data rather than hardcoded: the majority transport among

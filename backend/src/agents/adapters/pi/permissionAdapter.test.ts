@@ -11,7 +11,7 @@
  * @see plans/pi-spike-findings.md (§2, §3)
  */
 import { describe, it, expect, vi } from "vitest";
-import type { ToolCallEvent } from "@earendil-works/pi-coding-agent";
+import { SettingsManager, type ToolCallEvent } from "@earendil-works/pi-coding-agent";
 import {
   assertPiTrustDenied,
   buildPermissionExtension,
@@ -84,6 +84,15 @@ describe("project trust is denied by construction", () => {
     const base = buildPiServicesOptions({ cwd: "/tmp/x", extension: () => {} });
     const options = { ...base, resourceLoaderOptions: { ...base.resourceLoaderOptions, noExtensions: false } };
     expect(assertPiTrustDenied(options)).toContain("noExtensions is not true — project-local extensions are discoverable");
+  });
+
+  it("assertPiTrustDenied catches a settings manager that would warm the cache", () => {
+    // pi's own manager, untrusted but otherwise stock: warming follows the
+    // global settings, which here ask for "idle" — pi's default anyway.
+    const base = buildPiServicesOptions({ cwd: "/tmp/x", extension: () => {} });
+    const settingsManager = SettingsManager.inMemory({ cacheWarming: "idle" }, { projectTrusted: false });
+    expect(settingsManager.getCacheWarmingMode()).toBe("idle");
+    expect(assertPiTrustDenied({ ...base, settingsManager })).toEqual([expect.stringContaining('cache warming "idle"')]);
   });
 
   it("assertPiTrustDenied catches a session built with no gate at all", () => {

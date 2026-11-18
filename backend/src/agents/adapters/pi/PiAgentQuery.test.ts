@@ -51,6 +51,7 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
 });
 
 const { PiAdapter } = await import("./PiAdapter.js");
+const { ModelRuntime } = await import("@earendil-works/pi-coding-agent");
 const { buildPermissionExtension } = await import("./permissionAdapter.js");
 const { assertPiTrustDenied } = await import("./permissionAdapter.js");
 const { resetOpenRouterModelsCacheForTesting } = await import("../../../services/openrouter-models.js");
@@ -63,6 +64,14 @@ beforeEach(() => {
   duringServices = null;
   duringSession = null;
 });
+
+/**
+ * An OpenRouter slug absent from pi's catalog by construction — the cold-catalog
+ * cases need one pi cannot resolve on its own, and a real-looking slug stops
+ * being one the day pi bundles it. Guarded in "an OpenRouter model newer than
+ * pi's bundled catalog".
+ */
+const NEW_MODEL = "google/callboard-test-not-in-any-catalog";
 
 const ALL_ALLOW: DefaultPermissions = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", computerControl: "deny" };
 const ALL_DENY: DefaultPermissions = { fileRead: "deny", fileWrite: "deny", codeExecution: "deny", webAccess: "deny", computerControl: "deny" };
@@ -207,6 +216,38 @@ describe("retries are not terminal", () => {
   });
 });
 
+describe("a turn that ends normally is not disposed", () => {
+  /**
+   * Deliberate: `dispose()` runs `cleanupSessionResources(sessionId)`, and
+   * callboard reuses one session id for every turn of a chat, so a per-turn
+   * dispose would wipe pi-ai's per-session state (Anthropic threads,
+   * strict-tool-limits memory, Codex WebSocket sessions) on every turn. See
+   * the "Lifecycle" header in PiAgentQuery.ts.
+   */
+  it("does not dispose the session after a normal turn", async () => {
+    await run({ text: "ok" });
+    expect(nextSession?.disposeCount).toBe(0);
+    expect(nextSession?.wasAborted).toBe(false);
+  });
+
+  it("does not dispose it after a turn whose prompt rejected", async () => {
+    await run({ failWith: new Error("boom") });
+    expect(nextSession?.disposeCount).toBe(0);
+  });
+
+  it("disposes once on a close() after the turn ended, and not again on a second", async () => {
+    const session = new FakePiSession({ text: "ok" });
+    nextSession = session;
+    const query = new PiAdapter().query({ prompt: "hi", options: { cwd: tmpRoot } });
+    for await (const _event of query) void _event;
+    expect(session.disposeCount).toBe(0);
+    await query.close();
+    expect(session.disposeCount).toBe(1);
+    await query.close();
+    expect(session.disposeCount).toBe(1);
+  });
+});
+
 describe("close()", () => {
   it("aborts the session and disposes it", async () => {
     nextSession = new FakePiSession({ text: "never finishes" });
@@ -217,6 +258,33 @@ describe("close()", () => {
     await query.close();
     expect(nextSession.wasAborted).toBe(true);
     expect(nextSession.isDisposed).toBe(true);
+  });
+
+  it("disposes exactly once when close() lands mid-turn", async () => {
+    // close() aborts and disposes; the turn unwinding from that abort must not
+    // add a dispose of its own.
+    const session = new FakePiSession({ text: "partial", holdUntilAborted: true });
+    nextSession = session;
+    const query = new PiAdapter().query({ prompt: "hi", options: { cwd: tmpRoot } });
+    const iterator = query[Symbol.asyncIterator]();
+    expect((await iterator.next()).value).toMatchObject({ type: "session_started" });
+    // The turn is parked inside prompt(), so nothing has been disposed yet.
+    expect(session.disposeCount).toBe(0);
+
+    const draining = (async () => {
+      const rest: AgentEvent[] = [];
+      for (let next = await iterator.next(); !next.done; next = await iterator.next()) rest.push(next.value);
+      return rest;
+    })();
+    await query.close();
+    const rest = await draining;
+
+    expect(session.wasAborted).toBe(true);
+    expect(rest.at(-1)).toMatchObject({ type: "result", status: "success" });
+    expect(session.disposeCount).toBe(1);
+    // A late second close() finds nothing left to dispose.
+    await query.close();
+    expect(session.disposeCount).toBe(1);
   });
 
   it("is idempotent", async () => {
@@ -245,6 +313,27 @@ describe("the session is built with project trust denied", () => {
     await run({ text: "ok" });
     expect(capturedServicesOptions).not.toBeNull();
     expect(assertPiTrustDenied(capturedServicesOptions as never)).toEqual([]);
+  });
+
+  it("refuses the turn, before building services, when the options fail the gate", async () => {
+    // Simulates a refactor that loses the trust denial: the runtime gate must
+    // stop the turn rather than build a session on a trusted project.
+    const { SettingsManager } = await import("@earendil-works/pi-coding-agent");
+    const trusted = vi.spyOn(SettingsManager.prototype, "isProjectTrusted").mockReturnValue(true);
+    try {
+      const session = new FakePiSession({ text: "should never run" });
+      nextSession = session;
+      const query = new PiAdapter().query({ prompt: "hi", options: { cwd: tmpRoot } });
+      await expect(
+        (async () => {
+          for await (const _event of query) void _event;
+        })(),
+      ).rejects.toThrow(/unsafe options: settingsManager reports the project as trusted/);
+      expect(capturedServicesOptions).toBeNull();
+      expect(session.prompts).toHaveLength(0);
+    } finally {
+      trusted.mockRestore();
+    }
   });
 
   it("supplies its own ModelRuntime rather than letting pi build one", async () => {
@@ -309,7 +398,7 @@ describe("close() during setup", () => {
     const session = new FakePiSession({ text: "should never run" });
     nextSession = session;
 
-    const query = new PiAdapter().query({ prompt: "hi", options: { cwd: tmpRoot, pi: { providerId: "openrouter", model: "google/gemini-4-argon" } } });
+    const query = new PiAdapter().query({ prompt: "hi", options: { cwd: tmpRoot, pi: { providerId: "openrouter", model: NEW_MODEL } } });
     const drained = drain(query);
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
     await query.close();
@@ -356,7 +445,7 @@ describe("close() during setup", () => {
     vi.stubGlobal("fetch", fetchMock);
     const session = new FakePiSession({ text: "should never run" });
     nextSession = session;
-    const query = new PiAdapter().query({ prompt: "hi", options: { cwd: tmpRoot, pi: { providerId: "openrouter", model: "google/gemini-4-argon" } } });
+    const query = new PiAdapter().query({ prompt: "hi", options: { cwd: tmpRoot, pi: { providerId: "openrouter", model: NEW_MODEL } } });
     duringServices = () => query.close();
 
     const { events } = await drain(query);
@@ -390,6 +479,12 @@ describe("an OpenRouter model newer than pi's bundled catalog", () => {
     resetOpenRouterModelsCacheForTesting();
   });
 
+  it("uses a slug pi really does not bundle", async () => {
+    const agentDir = mkdtempSync(join(tmpRoot, "guard-agent-"));
+    const runtime = await ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: join(agentDir, "models.json"), allowModelNetwork: false });
+    expect(runtime.getModels("openrouter").some((m) => m.id === NEW_MODEL)).toBe(false);
+  });
+
   it("is priced on the first turn after a restart, not billed at $0", async () => {
     // A cold daemon: no catalog in memory for this turn's endpoint. The turn
     // used to peek at it, find nothing, and hand pi a model costed at zero.
@@ -399,15 +494,15 @@ describe("an OpenRouter model newer than pi's bundled catalog", () => {
       status: 200,
       statusText: "OK",
       json: async () => ({
-        data: [{ id: "google/gemini-4-argon", name: "Gemini 4 Argon", supported_parameters: ["tools"], pricing: { prompt: "0.000002", completion: "0.00001" } }],
+        data: [{ id: NEW_MODEL, name: "Callboard Test Model", supported_parameters: ["tools"], pricing: { prompt: "0.000002", completion: "0.00001" } }],
       }),
     }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await run({ text: "ok" }, { pi: { providerId: "openrouter", model: "google/gemini-4-argon" } });
+    await run({ text: "ok" }, { pi: { providerId: "openrouter", model: NEW_MODEL } });
 
     const model = capturedSessionOptions?.model as { id: string; api: string; cost: { input: number; output: number } } | undefined;
-    expect(model).toMatchObject({ id: "google/gemini-4-argon", api: "openai-completions" });
+    expect(model).toMatchObject({ id: NEW_MODEL, api: "openai-completions" });
     expect(model?.cost.input).toBeCloseTo(2, 10);
     expect(model?.cost.output).toBeCloseTo(10, 10);
     expect(fetchMock).toHaveBeenCalledWith("https://openrouter.ai/api/v1/models", expect.anything());

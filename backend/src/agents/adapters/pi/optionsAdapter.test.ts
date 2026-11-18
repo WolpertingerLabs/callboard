@@ -1,5 +1,23 @@
-import { describe, it, expect } from "vitest";
-import { buildPiSessionOptions, translateThinkingLevel, resolvePiAgentDir, DEFAULT_PI_PROVIDER_ID } from "./optionsAdapter.js";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  createAgentSessionFromServices,
+  createAgentSessionServices,
+  ModelRuntime,
+  SessionManager,
+  SettingsManager,
+} from "@earendil-works/pi-coding-agent";
+import {
+  buildPiServicesOptions,
+  buildPiSessionOptions,
+  createPiSettingsManager,
+  translateThinkingLevel,
+  resolvePiAgentDir,
+  DEFAULT_PI_PROVIDER_ID,
+  PI_CACHE_WARMING_MODE,
+} from "./optionsAdapter.js";
 import type { EffortLevel } from "shared/types/index.js";
 
 describe("translateThinkingLevel", () => {
@@ -106,5 +124,103 @@ describe("SDK thinking clamp defense", () => {
     expect(() => buildPiSessionOptions({ ...base, model: { reasoning: true, thinkingLevelMap: { high: null } } as never, pi: { effort: "high" } })).toThrow(
       "high",
     );
+  });
+});
+
+/**
+ * Cache warming must be off no matter what pi's global settings say. pi 1.x
+ * defaults it to "idle", and every warm is a billed request callboard never
+ * accounts for. The getter is what pi's warmer consults, so the getter is what
+ * these tests pin — including against the two ways the obvious fix
+ * (`applyOverrides`) silently fails.
+ */
+describe("cache warming", () => {
+  let agentDir: string;
+  let cwd: string;
+
+  beforeEach(() => {
+    agentDir = mkdtempSync(join(tmpdir(), "callboard-pi-warm-agent-"));
+    cwd = mkdtempSync(join(tmpdir(), "callboard-pi-warm-cwd-"));
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ cacheWarming: "idle" }));
+  });
+
+  afterEach(() => {
+    rmSync(agentDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  it("is really asked for by the global settings file in these tests (control)", () => {
+    // Without this the "off" assertions below could pass on pi's default alone.
+    expect(SettingsManager.create(cwd, agentDir, { projectTrusted: false }).getCacheWarmingMode()).toBe("idle");
+  });
+
+  it("is not switched off by applyOverrides — which is why the getter is pinned instead", () => {
+    // Pins the pi behaviour the design rests on. If pi ever makes overrides
+    // reach the getter, this fails and the pin can become an override.
+    const stock = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
+    stock.applyOverrides({ cacheWarming: "off" });
+    expect(stock.getCacheWarmingMode()).toBe("idle");
+  });
+
+  it("is off on the services' settings manager even when the global settings say idle", () => {
+    const options = buildPiServicesOptions({ cwd, agentDir, extension: () => {}, skillPaths: [] });
+    expect(options.settingsManager?.getCacheWarmingMode()).toBe("off");
+    expect(PI_CACHE_WARMING_MODE).toBe("off");
+  });
+
+  it("stays off across settingsManager.reload()", async () => {
+    const settingsManager = createPiSettingsManager(cwd, agentDir);
+    // Re-written between create and reload, so reload has something new to read.
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ cacheWarming: "streaming" }));
+    await settingsManager.reload();
+    expect(settingsManager.getGlobalSettings().cacheWarming).toBe("streaming");
+    expect(settingsManager.getCacheWarmingMode()).toBe("off");
+  });
+
+  it("stays off after something calls setCacheWarmingMode", async () => {
+    const settingsManager = createPiSettingsManager(cwd, agentDir);
+    settingsManager.setCacheWarmingMode("idle");
+    await settingsManager.flush();
+    expect(settingsManager.getCacheWarmingMode()).toBe("off");
+  });
+
+  /**
+   * The getter pin, end to end on a real pi session: real services, a real
+   * `createAgentSessionFromServices`, and pi's own `CacheWarmer` reporting its
+   * mode. Never prompted and offline, so nothing leaves the process. The
+   * control builds the same session on pi's stock settings manager, so the
+   * "disabled" answer cannot come from anything but the pin.
+   */
+  async function realSession(settingsManager?: SettingsManager) {
+    const modelRuntime = await ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: join(agentDir, "models.json"), allowModelNetwork: false });
+    const base = buildPiServicesOptions({ cwd, agentDir, extension: () => {}, skillPaths: [] });
+    const services = await createAgentSessionServices({ ...base, ...(settingsManager && { settingsManager }), modelRuntime });
+    const { session } = await createAgentSessionFromServices({ services, sessionManager: SessionManager.inMemory(cwd) });
+    return session;
+  }
+
+  it("reports itself disabled on a real pi session built from these options", async () => {
+    const session = await realSession();
+    try {
+      expect(session.cacheWarmingStatus).toEqual({ state: "inactive", reason: "cache warming disabled" });
+    } finally {
+      session.dispose();
+    }
+  });
+
+  it("is armed on the same real session without the pin (control)", async () => {
+    const session = await realSession(SettingsManager.create(cwd, agentDir, { projectTrusted: false }));
+    try {
+      expect(session.cacheWarmingStatus).toMatchObject({ state: "inactive" });
+      expect(session.cacheWarmingStatus?.reason).not.toBe("cache warming disabled");
+    } finally {
+      session.dispose();
+    }
+  });
+
+  it("does not write anything to the user's settings file", () => {
+    createPiSettingsManager(cwd, agentDir);
+    buildPiServicesOptions({ cwd, agentDir, extension: () => {}, skillPaths: [] });
+    expect(JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8"))).toEqual({ cacheWarming: "idle" });
   });
 });

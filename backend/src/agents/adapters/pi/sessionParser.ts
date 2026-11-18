@@ -24,13 +24,27 @@
  *
  * A pi session is an append-only **tree**: every entry carries `id` and
  * `parentId`, and the live conversation is the path from the current leaf back
- * to the root. Nine entry types exist (`message`, `thinking_level_change`,
- * `model_change`, `compaction`, `branch_summary`, `custom`, `custom_message`,
- * `label`, `session_info`), and pi injects several of its own into any session
+ * to the root. Eleven entry types exist as of pi 1.5 (`message`,
+ * `thinking_level_change`, `model_change`, `usage`, `compaction`,
+ * `branch_summary`, `custom`, `custom_message`, `context_edit`, `label`,
+ * `session_info`), and pi injects several of its own into any session
  * callboard writes — the spike watched `model_change` and
  * `thinking_level_change` appear in a hand-written file after one resume. A
  * parser that switches exhaustively on today's list will break on a pi that adds
- * a tenth, so unknown types are skipped rather than treated as an error.
+ * another, so unknown types are skipped rather than treated as an error — which
+ * is exactly how the two 1.x additions were survived before they were listed.
+ *
+ * The two 1.x additions are both deliberately rendered as nothing:
+ *
+ * - **`usage`** is spend outside a turn, e.g. `kind: "cache_warm"` from pi's
+ *   cache warmer. Not a message, and callboard pins warming off
+ *   (`optionsAdapter.createPiSettingsManager`), so none should appear.
+ * - **`context_edit`** omits (`replacement: null`) or replaces a target entry's
+ *   content in the *model's* context — pi writes omissions itself when it
+ *   recovers from a failed or overflowing response. The transcript is the
+ *   record of what happened, not of what the model is shown next, so the
+ *   original entry still renders; pi's own HTML export makes the same call.
+ *   Callboard never issues an edit of its own.
  *
  * @see plans/pi-adapter.md (Decision 1)
  * @see plans/pi-spike-findings.md (§5 — the format, round-tripped)
@@ -218,16 +232,20 @@ function projectEntry(entry: SessionEntry, sessionId: string): ParsedMessage[] {
     }
 
     // Tree/plumbing entries with nothing to render. Listed rather than left to
-    // the default so adding a case is a deliberate act.
+    // the default so adding a case is a deliberate act. `usage` is spend
+    // outside a turn (`kind: "cache_warm"`, …) and `context_edit` edits the
+    // model's context, not the record — see the header's "Entry types".
     case "thinking_level_change":
     case "model_change":
     case "custom":
     case "label":
     case "session_info":
+    case "usage":
+    case "context_edit":
       return [];
 
     default:
-      // A pi that adds a tenth entry type renders nothing rather than throwing.
+      // A pi that adds another entry type renders nothing rather than throwing.
       return [];
   }
 }
@@ -309,6 +327,7 @@ function entryGenerationKey(sessionId: string, entryId: string): string {
  *     "error"     →  "error"      (no Anthropic counterpart — verbatim)
  *     "aborted"   →  "aborted"    (no Anthropic counterpart — verbatim)
  *     "pending"   →  "pending"    (a partial write; verbatim, and honest)
+ *     "deferred"  →  "deferred"   (pi 1.x: the answer is fetched later; verbatim)
  *
  * Anything pi adds later falls through verbatim rather than being guessed at.
  *
@@ -381,7 +400,13 @@ function summaryMetrics(usage: PiSessionUsage | undefined, generationKey: string
   };
 }
 
-/** pi's `cost` breakdown → a scalar USD figure, when it has one. */
+/**
+ * pi's `cost` breakdown → a scalar USD figure, when it has one.
+ *
+ * `total`, which pi 1.x fills with the provider-billed amount when the provider
+ * reports one (`totalFromProvider: true` — OpenRouter) and the catalog estimate
+ * otherwise. Same field, same reasoning as `messageAdapter.translateUsage`.
+ */
 function projectCost(usage: PiSessionUsage | undefined): number | undefined {
   const cost = typeof usage?.cost === "number" ? usage.cost : usage?.cost?.total;
   return typeof cost === "number" && Number.isFinite(cost) ? cost : undefined;
