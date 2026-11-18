@@ -70,7 +70,7 @@
  * @see ../codex/permissionAdapter.ts (the other foreign-vocabulary bridge)
  */
 import { isComputerControlToolName } from "../../permissions/computerControl.js";
-import type { PermissionOption, PermissionOptionKind, RequestPermissionRequest, RequestPermissionResponse, ToolKind } from "@agentclientprotocol/sdk";
+import type { PermissionOption, PermissionOptionKind, RequestPermissionRequest, RequestPermissionResponse, ToolKind } from "@agentclientprotocol/sdk/unstable";
 import type { DefaultPermissions } from "shared/types/index.js";
 import { decidePermission, type PermissionCategory, type PermissionDecision } from "../../permissions/ToolPermissionPolicy.js";
 import { isToolIdentifier, makeNameCategorizer, MOST_RESTRICTIVE_CATEGORY } from "../../permissions/nameCategorizer.js";

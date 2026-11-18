@@ -30,7 +30,7 @@
  * @see ../../shared/socketToolServer.ts (the socket host shared with Codex)
  * @see ../codex/toolAdapter.ts (same mechanism, different consumer)
  */
-import type { McpServerStdio } from "@agentclientprotocol/sdk";
+import type { McpServerStdio } from "@agentclientprotocol/sdk/unstable";
 import type { ToolServerSpec } from "../../ports/tools.js";
 import { buildSocketToolServer, shimSpawnCommand } from "../../shared/socketToolServer.js";
 import { createLogger } from "../../../utils/logger.js";

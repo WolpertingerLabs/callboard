@@ -8,7 +8,7 @@
  * indefinitely, so "never throw, never omit" is the load-bearing property.
  */
 import { describe, expect, it, vi } from "vitest";
-import type { PermissionOption, RequestPermissionRequest } from "@agentclientprotocol/sdk";
+import type { PermissionOption, RequestPermissionRequest } from "@agentclientprotocol/sdk/unstable";
 import type { DefaultPermissions } from "shared/types/index.js";
 import { acpToolLabel, categorizeAcpToolKind, categorizeAcpToolName, resolveAcpPermission, selectPermissionOption } from "./permissionAdapter.js";
 import { decidePermission, ToolPermissionPolicy } from "../../permissions/ToolPermissionPolicy.js";

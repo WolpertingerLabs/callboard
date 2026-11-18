@@ -3,6 +3,9 @@ import tseslint from "typescript-eslint";
 import react from "eslint-plugin-react";
 import reactHooks from "eslint-plugin-react-hooks";
 
+const ACP_SDK_ENTRY_MESSAGE =
+  'Import from "@agentclientprotocol/sdk/unstable" instead: the SDK requires one entry point per app, PromptResponse.usage is typed only there, and stable parsing drops unstable notifications.';
+
 export default tseslint.config(
   {
     ignores: ["**/node_modules/**", "**/dist/**", "**/build/**", "**/.next/**", "**/coverage/**", "**/.claude/worktrees/**"],
@@ -60,6 +63,25 @@ export default tseslint.config(
     rules: {
       "@typescript-eslint/explicit-function-return-type": "off",
       "@typescript-eslint/explicit-module-boundary-types": "off",
+    },
+  },
+  {
+    // ACP SDK: one entry point, `/unstable` — the SDK's migration guide requires
+    // one entry point per app, and `/unstable` re-exports the whole stable
+    // surface. `PromptResponse.usage` is typed only there, and the stable
+    // entry point's notification parsing would drop `plan_update` if we ever
+    // advertise `ClientCapabilities.plan` (or an agent ignores that gate).
+    // See "Which SDK entry point" in backend/src/agents/adapters/acp/AcpAgentClient.ts.
+    files: ["backend/src/**/*.ts"],
+    rules: {
+      "@typescript-eslint/no-restricted-imports": ["error", { paths: [{ name: "@agentclientprotocol/sdk", message: ACP_SDK_ENTRY_MESSAGE }] }],
+      // The rule above sees neither inline type imports — `import("pkg").T` —
+      // nor dynamic `await import("pkg")`.
+      "no-restricted-syntax": [
+        "error",
+        { selector: "TSImportType[argument.literal.value='@agentclientprotocol/sdk']", message: ACP_SDK_ENTRY_MESSAGE },
+        { selector: "ImportExpression[source.value='@agentclientprotocol/sdk']", message: ACP_SDK_ENTRY_MESSAGE },
+      ],
     },
   },
   {

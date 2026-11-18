@@ -37,7 +37,7 @@
  *
  * @see plans/acp-adapter.md
  */
-import type { ContentBlock, McpServer } from "@agentclientprotocol/sdk";
+import type { ContentBlock, McpServer } from "@agentclientprotocol/sdk/unstable";
 import type { AgentQuery } from "../../ports/AgentProvider.js";
 import type { AgentEvent } from "../../ports/events.js";
 import type { DefaultPermissions } from "shared/types/index.js";
@@ -89,7 +89,7 @@ export class AcpAgentQuery implements AgentQuery {
   private aborted = false;
   private toolServersClosed = false;
   /** Populated once `initialize` returns, so `supportedModels` has something to read. */
-  private configOptions: import("@agentclientprotocol/sdk").SessionConfigOption[] = [];
+  private configOptions: import("@agentclientprotocol/sdk/unstable").SessionConfigOption[] = [];
 
   constructor(private readonly params: AcpQueryParams) {
     const external = params.externalSignal;
@@ -289,8 +289,10 @@ export class AcpAgentQuery implements AgentQuery {
   /**
    * Models the agent is willing to route to.
    *
-   * ACP 1.4.0 has **no model API**. There is no `ModelId` type, no
-   * `models/list`, nothing on `AgentCapabilities`. What exists is
+   * ACP has **no model API**: SDK 1.4.0 had no `ModelId` type, no `models/list`,
+   * nothing on `AgentCapabilities`. (2.8.0 adds `session/options` on `/unstable`,
+   * gated on `sessionCapabilities.options`, which returns `configOptions` without
+   * creating a session — callboard does not use it yet.) What exists is
    * `SessionConfigOption` — a generic session-config mechanism whose entries
    * carry a `category`, one of whose values happens to be `"model"`. So the
    * model list, where an agent offers one at all, is a `select` config option

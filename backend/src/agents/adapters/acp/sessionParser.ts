@@ -302,7 +302,7 @@ export function parseAcpTranscript(filePath: string): ParsedMessage[] {
    *
    * `PromptResponse.usage` is a **session** total, not this response's. The
    * pinned SDK says so field by field
-   * (`@agentclientprotocol/sdk/dist/schema/types.gen.d.ts`):
+   * (`@agentclientprotocol/sdk/dist/v1/unstable/schema/types.gen.d.ts`):
    *
    *     totalTokens        "Sum of all token types across session."
    *     inputTokens        "Total input tokens across all turns."

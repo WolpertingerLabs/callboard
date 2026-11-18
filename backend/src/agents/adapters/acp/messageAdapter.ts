@@ -66,7 +66,7 @@ import type {
   ToolCallContent,
   ToolCallStatus,
   Usage,
-} from "@agentclientprotocol/sdk";
+} from "@agentclientprotocol/sdk/unstable";
 import type { AgentEvent, TaskListItem, TokenUsage } from "../../ports/events.js";
 import { createLogger } from "../../../utils/logger.js";
 

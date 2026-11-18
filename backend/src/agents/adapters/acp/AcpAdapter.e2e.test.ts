@@ -552,8 +552,9 @@ describe("model discovery", () => {
         options: { cwd: process.cwd(), acp: { preset: acpTestAgentPreset("config-options"), getPermissions: () => allowAll } },
       });
       try {
-        // `configOptions` only exists once a session does — ACP 1.4.0 has no
-        // models API, so the list cannot be answered before the turn starts.
+        // `configOptions` only exists once a session does — ACP 1.4.0 had no
+        // models API, and 2.8.0's capability-gated `session/options` is not used
+        // yet, so the list cannot be answered before the turn starts.
         expect(await query.supportedModels()).toEqual([]);
         for await (const _event of query) {
           /* drain */
@@ -668,6 +669,44 @@ describe("tool calls whose arguments arrive late", () => {
       // The orphan is flushed at the end of the turn, before the result event.
       const terminal = events.findIndex((e) => e.type === "result");
       expect(events.indexOf(toolUses[1])).toBeLessThan(terminal);
+    },
+    TEST_TIMEOUT,
+  );
+});
+
+/**
+ * The single-entry-point rule, end to end.
+ *
+ * What this guards is the **notification** half. SDK 2.x parses incoming
+ * notifications against the schema of the entry point an app was built from;
+ * verified against 2.8.0, with the client (AcpAgentClient) on the bare entry
+ * point the `plan_update` never arrives and this fails. That is a latent
+ * hazard, not a live one: `plan_update` is gated on `ClientCapabilities.plan`,
+ * which callboard does not advertise (see `translatePlan` in
+ * messageAdapter.ts), so a conforming agent never sends it to us today. The
+ * fake sends it regardless — it stands in for the day we advertise `plan`, or
+ * an agent that ignores the gate.
+ *
+ * `PromptResponse.usage` survives on either entry point in 2.8.0, because
+ * responses are not schema-parsed, so its assertion is not evidence for the
+ * entry-point rule. It is here to pin every counter end to end, and would
+ * start catching a regression only if a later SDK begins parsing responses.
+ * Soft assertions so a regression reports every lost field at once.
+ */
+describe("unstable ACP surface survives a real SDK round-trip", () => {
+  it(
+    "delivers PromptResponse.usage (every counter) and a plan_update notification",
+    async () => {
+      const events = await run("unstable");
+
+      expect.soft(events).toContainEqual({ type: "task_list", items: [{ content: "Unstable step", status: "in_progress" }] });
+      expect.soft(textOf(events)).toBe("done");
+      expect.soft(events.at(-1)).toEqual({
+        type: "result",
+        status: "success",
+        stopReason: "end_turn",
+        usage: { inputTokens: 40, outputTokens: 30, cacheReadTokens: 20, cacheWriteTokens: 5, reasoningTokens: 5 },
+      });
     },
     TEST_TIMEOUT,
   );
