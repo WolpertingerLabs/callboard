@@ -46,15 +46,27 @@
  * doing anything else and therefore emits nothing to its own subscribers; it is
  * not a substitute for `abort()`.
  *
- * `dispose()` also runs at the end of **every** turn, not only on a cancel. A
- * session is built per turn and never prompted again, and since pi 1.x it owns
- * a cache warmer that arms on every model request and, in pi's default
- * `"idle"` mode, keeps re-sending for up to 30 minutes after the agent
- * settles; `dispose()` cancels it. Warming is pinned off anyway (`optionsAdapter.createPiSettingsManager`),
- * so this is the second lock rather than the only one — and it stops a
- * finished turn's session lingering for as long as the query is referenced.
- * Whichever of the turn's end and `close()` gets there first disposes; the
- * other finds nothing to do, so a session is never disposed twice.
+ * ### A turn that ends normally is deliberately *not* disposed
+ *
+ * `dispose()` runs only on `close()` and on the setup-cancel path. It is not
+ * called when a turn simply finishes, and that is a decision, not an omission.
+ * Since pi 1.x, `AgentSession.dispose()` also calls
+ * `cleanupSessionResources(this.sessionId)`, which clears pi-ai's
+ * **process-global, per-session-id** state, and callboard reuses one session id
+ * for every turn of a chat. Disposing after each turn would therefore wipe,
+ * every turn:
+ *
+ * - Anthropic message-thread state,
+ * - the strict-tool-limits memory — pi 1.5.1's fix for a 400 on every turn,
+ *   which per-turn disposal would bring straight back,
+ * - cached Codex WebSocket sessions.
+ *
+ * pi 1.x's cache warmer also lives on the session, and `dispose()` would cancel
+ * it — but disposal is not what keeps it quiet. Warming is prevented by the
+ * getter pin in `optionsAdapter.createPiSettingsManager` alone: the warmer asks
+ * `getCacheWarmingMode()` before every run and stops on `"off"`.
+ * `optionsAdapter.test.ts` builds a real session and checks the warmer reports
+ * itself disabled.
  *
  * @see plans/pi-adapter.md
  * @see plans/pi-spike-findings.md (§6 — abort/dispose, measured)
@@ -73,7 +85,7 @@ import type { AgentEvent } from "../../ports/events.js";
 import type { ToolServerSpec } from "../../ports/tools.js";
 import { buildTerminalResult, recordTerminalSignal, translatePiEvent, type PiTurnAccounting } from "./messageAdapter.js";
 import { buildPiServicesOptions, buildPiSessionOptions, resolvePiAgentDir, DEFAULT_PI_PROVIDER_ID, type PiRunOptions } from "./optionsAdapter.js";
-import { buildPermissionExtension, buildToolFilters, type PiPermissionContext } from "./permissionAdapter.js";
+import { assertPiTrustDenied, buildPermissionExtension, buildToolFilters, type PiPermissionContext } from "./permissionAdapter.js";
 import { getPiModels, resolvePiModelForRun, type PiModelOption } from "./modelCatalog.js";
 import { buildPiTools } from "./toolAdapter.js";
 import { resolvePiPrompt } from "./promptAdapter.js";
@@ -189,8 +201,14 @@ export class PiAgentQuery implements AgentQuery {
     // The trust denial, the settings manager and the inline gate all live in
     // here. This is the ONLY sanctioned way into a pi session in this adapter —
     // `createAgentSession()` resolves no trust and defaults to trusted.
+    const servicesOptions = buildPiServicesOptions({ cwd, extension: buildPermissionExtension(permissionCtx), agentDir });
+    // The same gate the tests assert, run on the options this turn will really
+    // use. Synchronous and I/O-free; a problem here means a refactor broke the
+    // trust denial or the cache-warming pin, and the turn must not run.
+    const unsafe = assertPiTrustDenied(servicesOptions);
+    if (unsafe.length > 0) throw new Error(`Refusing to start a pi session with unsafe options: ${unsafe.join("; ")}`);
     const services = await createAgentSessionServices({
-      ...buildPiServicesOptions({ cwd, extension: buildPermissionExtension(permissionCtx), agentDir }),
+      ...servicesOptions,
       modelRuntime: runtime,
     });
     if (this.closed) return;
@@ -261,12 +279,6 @@ export class PiAgentQuery implements AgentQuery {
     } finally {
       unsubscribe();
       await turn;
-      // The turn is over, so the session is too: callboard builds a fresh one
-      // per turn and never prompts this one again. Disposing here, not only on
-      // `close()`, is what tears down pi's cache warmer — which would otherwise
-      // outlive the turn by up to 30 minutes in "idle" mode — rather than
-      // leaving it to whoever holds the query. See the header's "Lifecycle".
-      this.disposeSession();
     }
 
     if (turnError && !accounting.errorMessage) {
@@ -381,23 +393,6 @@ export class PiAgentQuery implements AgentQuery {
     } catch (err) {
       log.warn(`aborting pi session ${this.opts.sessionId} failed: ${err instanceof Error ? err.message : String(err)}`);
     }
-    // Not `session.dispose()` directly: while `abort()` was awaited the turn
-    // may have unwound and disposed the session itself, and this must not do
-    // it a second time.
-    this.disposeSession();
-  }
-
-  /**
-   * Dispose the live session exactly once, whoever gets there first.
-   *
-   * Two paths end a session — the turn finishing (`iterate()`'s `finally`) and
-   * `close()` — and a cancel mid-turn runs both. Clearing `this.session`
-   * before disposing makes the second caller a no-op.
-   */
-  private disposeSession(): void {
-    const session = this.session;
-    if (!session) return;
-    this.session = undefined;
     try {
       session.dispose();
     } catch (err) {

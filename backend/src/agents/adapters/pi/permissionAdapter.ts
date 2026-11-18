@@ -344,7 +344,9 @@ export function buildPermissionExtension(ctx: PiPermissionContext): PiPermission
  * are missing — a chat on an untrusted repo simply works, having executed the
  * repo's TypeScript. `permissionAdapter.test.ts` runs this over the real
  * `buildPiServicesOptions()` output so that swapping in `createAgentSession()`,
- * or losing `noExtensions`, fails a test rather than shipping.
+ * or losing `noExtensions`, fails a test rather than shipping. `PiAgentQuery`
+ * also runs it on every turn's options before building services and refuses the
+ * turn on any problem — cheap (no I/O) and fail-closed.
  *
  * It also checks that cache warming is off — a billing guard rather than a
  * trust one, kept here because it fails in the same silent way.

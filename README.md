@@ -71,6 +71,7 @@ Both run inside the Callboard process, with no binary. Pick a provider and add i
 - **pi:** a key set in Settings overrides the environment. Callboard never writes pi's auth file.
   - pi's prompt-cache warming is always off in Callboard, whatever pi's own settings say. Warm-up requests are billed, and Callboard would not count them in a chat's cost.
   - On OpenRouter, a chat's cost is the amount OpenRouter reports it billed. Other providers show pi's estimate from its model catalog.
+  - pi 1.5 no longer lets reasoning be turned off for `openai/o3`. A pi o3 chat saved with effort "none" is refused until you pick another effort or clear it.
   - pi 1.5 renamed its Azure OpenAI provider from `azure-openai-responses` to `azure`. If your pi provider is set to the old id, change it under Settings → API → pi.
 
 ### OpenCode

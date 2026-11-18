@@ -155,8 +155,11 @@ export const PI_CACHE_WARMING_MODE = "off" satisfies PiCacheWarmingMode;
  * `reload()` replaces data and never methods, and `setCacheWarmingMode()`
  * writes a file this getter no longer reads. `optionsAdapter.test.ts` pins all
  * three, plus the control showing the file really does say `"idle"`, and
- * `assertPiTrustDenied` refuses a services bag whose manager reports anything
- * else.
+ * checks a real pi session's warmer reports itself disabled.
+ * `assertPiTrustDenied` also lists any other mode as a problem; it is asserted
+ * over these options in `permissionAdapter.test.ts` and checked again by
+ * `PiAgentQuery` before every turn's services are built, which refuses the
+ * turn rather than run it.
  */
 export function createPiSettingsManager(cwd: string, agentDir: string): SettingsManager {
   const settingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });

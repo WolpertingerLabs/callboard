@@ -2,7 +2,13 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SettingsManager } from "@earendil-works/pi-coding-agent";
+import {
+  createAgentSessionFromServices,
+  createAgentSessionServices,
+  ModelRuntime,
+  SessionManager,
+  SettingsManager,
+} from "@earendil-works/pi-coding-agent";
 import {
   buildPiServicesOptions,
   buildPiSessionOptions,
@@ -176,6 +182,40 @@ describe("cache warming", () => {
     settingsManager.setCacheWarmingMode("idle");
     await settingsManager.flush();
     expect(settingsManager.getCacheWarmingMode()).toBe("off");
+  });
+
+  /**
+   * The getter pin, end to end on a real pi session: real services, a real
+   * `createAgentSessionFromServices`, and pi's own `CacheWarmer` reporting its
+   * mode. Never prompted and offline, so nothing leaves the process. The
+   * control builds the same session on pi's stock settings manager, so the
+   * "disabled" answer cannot come from anything but the pin.
+   */
+  async function realSession(settingsManager?: SettingsManager) {
+    const modelRuntime = await ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: join(agentDir, "models.json"), allowModelNetwork: false });
+    const base = buildPiServicesOptions({ cwd, agentDir, extension: () => {}, skillPaths: [] });
+    const services = await createAgentSessionServices({ ...base, ...(settingsManager && { settingsManager }), modelRuntime });
+    const { session } = await createAgentSessionFromServices({ services, sessionManager: SessionManager.inMemory(cwd) });
+    return session;
+  }
+
+  it("reports itself disabled on a real pi session built from these options", async () => {
+    const session = await realSession();
+    try {
+      expect(session.cacheWarmingStatus).toEqual({ state: "inactive", reason: "cache warming disabled" });
+    } finally {
+      session.dispose();
+    }
+  });
+
+  it("is armed on the same real session without the pin (control)", async () => {
+    const session = await realSession(SettingsManager.create(cwd, agentDir, { projectTrusted: false }));
+    try {
+      expect(session.cacheWarmingStatus).toMatchObject({ state: "inactive" });
+      expect(session.cacheWarmingStatus?.reason).not.toBe("cache warming disabled");
+    } finally {
+      session.dispose();
+    }
   });
 
   it("does not write anything to the user's settings file", () => {

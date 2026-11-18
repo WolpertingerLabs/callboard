@@ -216,33 +216,35 @@ describe("retries are not terminal", () => {
   });
 });
 
-describe("the session is disposed when the turn ends", () => {
+describe("a turn that ends normally is not disposed", () => {
   /**
-   * A session is built per turn and never prompted again, and pi's cache
-   * warmer lives on it — so a turn that ends normally must dispose it too, not
-   * only a cancelled one.
+   * Deliberate: `dispose()` runs `cleanupSessionResources(sessionId)`, and
+   * callboard reuses one session id for every turn of a chat, so a per-turn
+   * dispose would wipe pi-ai's per-session state (Anthropic threads,
+   * strict-tool-limits memory, Codex WebSocket sessions) on every turn. See
+   * the "Lifecycle" header in PiAgentQuery.ts.
    */
-  it("disposes the session exactly once after a normal turn, with no close()", async () => {
+  it("does not dispose the session after a normal turn", async () => {
     await run({ text: "ok" });
-    expect(nextSession?.disposeCount).toBe(1);
+    expect(nextSession?.disposeCount).toBe(0);
     expect(nextSession?.wasAborted).toBe(false);
   });
 
-  it("disposes it after a turn whose prompt rejected", async () => {
+  it("does not dispose it after a turn whose prompt rejected", async () => {
     await run({ failWith: new Error("boom") });
-    expect(nextSession?.disposeCount).toBe(1);
+    expect(nextSession?.disposeCount).toBe(0);
   });
 
-  it("does not dispose again on a close() after the turn ended", async () => {
+  it("disposes once on a close() after the turn ended, and not again on a second", async () => {
     const session = new FakePiSession({ text: "ok" });
     nextSession = session;
     const query = new PiAdapter().query({ prompt: "hi", options: { cwd: tmpRoot } });
     for await (const _event of query) void _event;
+    expect(session.disposeCount).toBe(0);
+    await query.close();
     expect(session.disposeCount).toBe(1);
     await query.close();
     expect(session.disposeCount).toBe(1);
-    // Nothing left to abort, either: the session is gone.
-    expect(session.wasAborted).toBe(false);
   });
 });
 
@@ -258,9 +260,9 @@ describe("close()", () => {
     expect(nextSession.isDisposed).toBe(true);
   });
 
-  it("disposes exactly once when close() lands mid-turn, though the turn's own end disposes too", async () => {
-    // Both paths run here: close() aborts and disposes, and the turn unwinding
-    // from that abort reaches the iterator's finally, which disposes as well.
+  it("disposes exactly once when close() lands mid-turn", async () => {
+    // close() aborts and disposes; the turn unwinding from that abort must not
+    // add a dispose of its own.
     const session = new FakePiSession({ text: "partial", holdUntilAborted: true });
     nextSession = session;
     const query = new PiAdapter().query({ prompt: "hi", options: { cwd: tmpRoot } });
@@ -311,6 +313,27 @@ describe("the session is built with project trust denied", () => {
     await run({ text: "ok" });
     expect(capturedServicesOptions).not.toBeNull();
     expect(assertPiTrustDenied(capturedServicesOptions as never)).toEqual([]);
+  });
+
+  it("refuses the turn, before building services, when the options fail the gate", async () => {
+    // Simulates a refactor that loses the trust denial: the runtime gate must
+    // stop the turn rather than build a session on a trusted project.
+    const { SettingsManager } = await import("@earendil-works/pi-coding-agent");
+    const trusted = vi.spyOn(SettingsManager.prototype, "isProjectTrusted").mockReturnValue(true);
+    try {
+      const session = new FakePiSession({ text: "should never run" });
+      nextSession = session;
+      const query = new PiAdapter().query({ prompt: "hi", options: { cwd: tmpRoot } });
+      await expect(
+        (async () => {
+          for await (const _event of query) void _event;
+        })(),
+      ).rejects.toThrow(/unsafe options: settingsManager reports the project as trusted/);
+      expect(capturedServicesOptions).toBeNull();
+      expect(session.prompts).toHaveLength(0);
+    } finally {
+      trusted.mockRestore();
+    }
   });
 
   it("supplies its own ModelRuntime rather than letting pi build one", async () => {
