@@ -282,8 +282,7 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
         name: "provider",
         type: "enum",
         description:
-          'Agent engine for the new session. Defaults to the engine this session is running on. "acp" is only usable from a session already ' +
-          "running ACP, which is the only place its vendor id can come from.",
+          "Agent engine for the new session. Defaults to the engine this session is running on.",
         required: false,
         enumValues: [...ROUTABLE_PROVIDER_KINDS],
       },
@@ -593,7 +592,7 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
       { name: "description", type: "string", description: 'Optional human note. "" clears.', required: false },
       { name: "claude-code", type: "string", description: "Anthropic alias or full model id", required: false },
       { name: "codex", type: "string", description: "Codex model slug", required: false },
-      { name: "acp", type: "string", description: "Model id as the ACP vendor names it", required: false },
+      { name: "acp", type: "string", description: 'Retired — only "" (clear) is accepted', required: false },
       { name: "pi", type: "string", description: "Model id within the configured pi provider", required: false },
       { name: "openrouter", type: "string", description: 'Retired — only "" (clear) is accepted', required: false },
       { name: "cline", type: "string", description: 'Retired — only "" (clear) is accepted', required: false },
@@ -1124,8 +1123,7 @@ const AGENT_TOOLS: McpToolDefinition[] = [
         name: "provider",
         type: "enum",
         description:
-          'Agent engine for the new session. Defaults to the engine this session is running on. "acp" is only usable from a session already ' +
-          "running ACP, which is the only place its vendor id can come from.",
+          "Agent engine for the new session. Defaults to the engine this session is running on.",
         required: false,
         enumValues: [...ROUTABLE_PROVIDER_KINDS],
       },
@@ -1154,8 +1152,7 @@ const AGENT_TOOLS: McpToolDefinition[] = [
         name: "provider",
         type: "enum",
         description:
-          'Agent engine for the new session. Defaults to the engine this session is running on. "acp" is only usable from a session already ' +
-          "running ACP, which is the only place its vendor id can come from.",
+          "Agent engine for the new session. Defaults to the engine this session is running on.",
         required: false,
         enumValues: [...ROUTABLE_PROVIDER_KINDS],
       },

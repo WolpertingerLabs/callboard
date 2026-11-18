@@ -43,15 +43,10 @@ export interface TokenUsage {
    * Whether these are per-turn or cumulative-for-the-session is the emitting
    * adapter's choice and must match `inputTokens`/`outputTokens`:
    *
-   *     acp     running totals, differenced on read
    *     pi      per-generation, used as-is
    *
-   * An earlier revision of this comment claimed ACP sent per-turn figures. The
-   * SDK this repo pins says otherwise, field by field — `inputTokens` is "Total
-   * input tokens across all turns", `cachedReadTokens` is "Total cache read
-   * tokens", `totalTokens` is "Sum of all token types across session" — so the
-   * ACP parser differences them, and the claim is corrected here rather than
-   * left as a confident lie beside the code it describes.
+   * (The retired ACP harness reported running totals, which its parser
+   * differenced on read.)
    */
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
@@ -97,13 +92,13 @@ export type AgentEvent =
        * The agent's running task list, as it stands right now.
        *
        * A **complete snapshot**, never a delta — every engine that has this
-       * concept resends the whole list on every change (ACP says so in the
-       * schema: "the client replaces the entire plan with each update"), and an
-       * empty `items` means the list was cleared. Consumers replace, they do
+       * concept resends the whole list on every change (the retired ACP
+       * harness's schema said so outright: "the client replaces the entire plan
+       * with each update"), and an empty `items` means the list was cleared. Consumers replace, they do
        * not merge.
        *
-       * Not a `tool_use`, because for ACP no tool was called: a plan arrives as
-       * a session update. Claude Code is the exception that keeps emitting
+       * Not a `tool_use`, because for some engines no tool was called (the
+       * retired ACP harness's plan arrived as a session update). Claude Code is the exception that keeps emitting
        * `tool_use` — its list genuinely *is* the `TodoWrite` tool, and its
        * transcript is written by the CLI rather than by us.
        */
@@ -124,7 +119,7 @@ export type AgentEvent =
        *
        * Claude Code is the only engine emitting it today. That is a statement
        * about the other adapters, not about the shape: "I started work that
-       * outlives this turn" is engine-neutral, and Codex/ACP simply have no
+       * outlives this turn" is engine-neutral, and Codex simply has no
        * equivalent to translate yet.
        *
        * `started` and `ended` are the only phases. Progress updates are not
@@ -166,8 +161,8 @@ export type AgentEvent =
        * for control flow. This is the raw label the responses debug panel shows
        * in its Stop column and filters on, so it is not narrowed to a union:
        * each engine owns its vocabulary and a value this build has not seen
-       * should still render. ACP sends ACP's (`end_turn`, `max_tokens`,
-       * `refusal`, …); the retired Cline harness sent its loop-level finish
+       * should still render. The retired ACP harness sent ACP's (`end_turn`,
+       * `max_tokens`, `refusal`, …); the retired Cline harness sent its loop-level finish
        * reason (`completed`, `max_iterations`, …). Absent when the engine reports nothing — Codex's
        * rollout has no stop reason anywhere in it.
        */

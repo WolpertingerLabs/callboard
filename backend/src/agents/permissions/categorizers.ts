@@ -3,7 +3,8 @@
  *
  * ## Why a registry and not a conditional
  *
- * `services/claude.ts` used to build its `ToolPermissionPolicy` with a ternary:
+ * `services/claude.ts` used to build its `ToolPermissionPolicy` with a ternary
+ * (on the since-retired ACP harness's kind):
  *
  * ```ts
  * new ToolPermissionPolicy(providerKind === "acp" ? categorizeAcpToolName : categorizeClaudeTool, …)
@@ -11,7 +12,7 @@
  *
  * That shape has two problems, and only the first is aesthetic. The second is
  * the bug it shipped: **the fallback is a real provider's map, not a neutral
- * default.** Every non-ACP kind silently inherited Claude Code's PascalCase
+ * default.** Every other kind silently inherited Claude Code's PascalCase
  * table, so the since-removed OpenRouter harness — whose tool names were all
  * snake_case — matched nothing and fell through `categorizeClaudeTool`'s
  * `return "fileWrite"`. The production log carries 641 `tool=bash,
@@ -35,8 +36,6 @@
  * both passes reach their categorizer through the same provider kind.
  *
  * Which providers actually have two passes, as of this file:
- *  - **acp** — yes. `resolveAcpPermission` is pass 1, `buildCanUseTool` pass 2.
- *    Kept in sync by `acpToolLabel` producing the one string both categorize.
  *  - **pi** — yes, and the easy case. `decidePiToolCall` (the
  *    `tool_call` extension handler) is pass 1, `buildCanUseTool` pass 2, and
  *    `ToolCallEvent.toolName` is always a real identifier from a closed set
@@ -48,14 +47,15 @@
  *  - **codex** — no passes at all; see below.
  *  - **mock** — no passes; it is a scripted event emitter.
  *
- * @see plans/acp-adapter.md (Permissions — "The two-pass rule")
- * @see ../adapters/acp/permissionAdapter.ts (the reference implementation)
+ * (The retired ACP harness was the first two-pass adapter, and the rule was
+ * written for it.)
+ *
+ * @see plans/acp-adapter.md (Permissions — "The two-pass rule"; historical)
  */
 import { isComputerControlToolName } from "./computerControl.js";
 import type { AgentProviderKind } from "../ports/AgentProvider.js";
 import type { PermissionCategory } from "./ToolPermissionPolicy.js";
 import { categorizeClaudeTool } from "../adapters/claude-code/permissionAdapter.js";
-import { categorizeAcpToolName } from "../adapters/acp/permissionAdapter.js";
 import { categorizePiToolName } from "../adapters/pi/permissionAdapter.js";
 
 /** Tool name → permission category. `null` means "ask", never "allowed". */
@@ -89,7 +89,6 @@ const gateEverything: ToolCategorizer = (name) => (isComputerControlToolName(nam
  */
 export const TOOL_CATEGORIZERS: Record<AgentProviderKind, ToolCategorizer> = {
   "claude-code": categorizeClaudeTool,
-  acp: categorizeAcpToolName,
   pi: categorizePiToolName,
   codex: gateEverything,
   mock: categorizeClaudeTool,

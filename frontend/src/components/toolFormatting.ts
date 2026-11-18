@@ -8,18 +8,17 @@ import { callboardUiTool, isCallboardUiTool } from "shared/types/callboard-ui-to
  *   MCP tools as `mcp__<server>__<tool>` (e.g. `mcp__callboard-tools__create_canvas`).
  * - **OpenRouter** — removed as a harness, but its snake_case names (`bash`,
  *   `read_file`, `edit_file`, `grep_files`, …) are kept in the table below: they
- *   are not OR-specific spellings, and the ACP vendors reach several of
- *   the same cases. Bare-named in-process callboard tools (`render_file`,
+ *   are not OR-specific spellings, and other agents reach several of the same
+ *   cases. Bare-named in-process callboard tools (`render_file`,
  *   `create_canvas`, …) are still produced by pi.
  * - **Codex** — normalized `Bash` / `Edit` / `WebSearch` names (but `Edit`
  *   carries a change-list input, not `{file_path, old_string, new_string}`),
  *   and MCP tools as `<server>__<tool>` (e.g. `callboard-tools__render_file`).
- * - **ACP vendors** — whatever the agent calls its own tools. OpenCode's are
- *   lowercase (`read`, `glob`, `task`, `bash`) with **camelCase** input keys
- *   (`filePath`, not `file_path`), so they reach `fallbackSummary` rather than
- *   a dedicated case. That is the design working — the fallback is what makes a
- *   vendor a data entry — but it only works if it probes the keys real agents
- *   send, which is why `filePath` is in the path list below.
+ * - **camelCase inputs** — the retired ACP harness (OpenCode) sent lowercase
+ *   names (`read`, `glob`, `task`, `bash`) with **camelCase** input keys
+ *   (`filePath`, not `file_path`). Its transcripts are no longer reachable from
+ *   a live harness, but the `filePath` / `oldString` probes stay as generic
+ *   coverage: the fallback only works if it probes the keys real agents send.
  * - **pi** — seven lowercase built-ins (`read`, `bash`, `edit`, `write`,
  *   `grep`, `find`, `ls`) with plain `path` / `command` / `pattern` inputs, plus
  *   bare-named in-process callboard tools. Its keys read off the shipped
@@ -30,7 +29,7 @@ import { callboardUiTool, isCallboardUiTool } from "shared/types/callboard-ui-to
  *
  *   Most of those would land on `fallbackSummary` and come out roughly right by
  *   accident. They get dedicated cases anyway — that accident is exactly what
- *   #318 found broken for OpenCode, and `edit` in particular has no fallback
+ *   #318 found broken for OpenCode (since retired), and `edit` in particular has no fallback
  *   that can say how many edits it made.
  *
  * This module parses every one of those conventions down to a bare tool name,
@@ -122,7 +121,7 @@ function summarizeCodexChanges(changes: CodexFileChange[]): string {
  */
 function summarizePiEdits(input: Record<string, unknown>): string {
   const count = Array.isArray(input.edits) ? input.edits.length : 0;
-  // No edit list ⇒ not pi's shape (OpenCode's `edit`, say). Defer to the shared
+  // No edit list ⇒ not pi's shape (a camelCase `{ filePath, … }` edit, say). Defer to the shared
   // path probe rather than inventing a count.
   if (count === 0) return path2(input);
   const suffix = path2(input);
@@ -167,7 +166,7 @@ export function getToolSummary(toolName: string, content: string): string {
 
     switch (tool) {
       // ---- Server-side / hosted tools --------------------------------------
-      // `web_search` is Codex's and Cursor's; `web_fetch` is an ACP vendor name.
+      // `web_search` is Codex's and Cursor's; `web_fetch` is a common agent name.
       // The model's input usually isn't preserved (content is "{}"), so fall
       // back to a generic label when the recoverable fields are absent.
       case "web_search":
@@ -200,8 +199,8 @@ export function getToolSummary(toolName: string, content: string): string {
       case "monitor":
         return input.command ? ` - ${truncate(input.command)}` : "";
 
-      // ---- Lowercase file tools: pi AND the ACP vendors ---------------------
-      // These names collide. pi's inputs are `path`; OpenCode's are `filePath`.
+      // ---- Lowercase file tools: pi and camelCase-input agents --------------
+      // These names collide. pi's inputs are `path`; others send `filePath`.
       // `path2` probes both (plus Claude's `file_path`), so one case serves
       // every harness that names its tools this way — which is the point of
       // having a shared formatter rather than a per-provider one.
@@ -210,7 +209,7 @@ export function getToolSummary(toolName: string, content: string): string {
       case "ls":
         return path2(input);
       case "edit":
-        // pi sends `{ path, edits: [...] }`; OpenCode sends
+        // pi sends `{ path, edits: [...] }`; the camelCase shape is
         // `{ filePath, oldString, newString }`. Only the first has a count
         // worth showing, and `summarizePiEdits` falls through to the shared
         // path probe when there is no edit list.
@@ -384,8 +383,8 @@ function patchSummary(patch: unknown): string {
 }
 
 /**
- * ` - <basename>` from `file_path` (Claude), `filePath` (ACP vendors) or `path`
- * (OR harness), else "".
+ * ` - <basename>` from `file_path` (Claude), `filePath` (camelCase agents, e.g.
+ * the retired ACP harness) or `path` (pi, the OR harness), else "".
  */
 function path2(input: { file_path?: unknown; filePath?: unknown; path?: unknown }): string {
   const p = input.file_path ?? input.filePath ?? input.path;

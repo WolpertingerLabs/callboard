@@ -4,14 +4,17 @@
  *
  * pi receives callboard tools bare (`customTools`) and
  * pins every one in `EXACT_CATEGORIES`, so the category is a decision rather
- * than a tokenizer accident. ACP has no exact table — it is tokens-only on the
- * full `mcp__callboard-tools__<name>` label — so its answers are measured here,
- * not assumed.
+ * than a tokenizer accident. A tokens-only categorizer (no exact table, the way
+ * the retired ACP adapter worked) sees the full `mcp__callboard-tools__<name>`
+ * label, so its answers are measured here as generic coverage, not assumed.
  */
 import { describe, expect, it } from "vitest";
 import { categorizePiToolName } from "../adapters/pi/permissionAdapter.js";
-import { categorizeAcpToolName } from "../adapters/acp/permissionAdapter.js";
 import { getToolCategorizer } from "./categorizers.js";
+import { makeNameCategorizer } from "./nameCategorizer.js";
+
+/** Tokens only, no exact table. */
+const categorizeByTokens = makeNameCategorizer();
 
 const EXPECTED = {
   list_storage_keys: "fileRead",
@@ -39,22 +42,18 @@ describe("storage/artifact tool categories", () => {
   it("render_artifact is pinned, not inferred: nothing in its name tokenizes", () => {
     // Remove the exact entry and this is what pi would say — which is why
     // the entry exists (the same reason as render_file's).
-    expect(categorizeAcpToolName("render_artifact")).toBe("codeExecution");
+    expect(categorizeByTokens("render_artifact")).toBe("codeExecution");
   });
 
-  it.each(NAMES.filter((n) => n !== "render_artifact"))("acp (full label): %s tokenizes to the same category", (name) => {
-    expect(categorizeAcpToolName(`mcp__callboard-tools__${name}`)).toBe(EXPECTED[name]);
-    expect(getToolCategorizer("acp")(`mcp__callboard-tools__${name}`)).toBe(EXPECTED[name]);
+  it.each(NAMES.filter((n) => n !== "render_artifact"))("tokens only (full label): %s tokenizes to the same category", (name) => {
+    expect(categorizeByTokens(`mcp__callboard-tools__${name}`)).toBe(EXPECTED[name]);
   });
 
-  it("acp: render_artifact gets the strictest gate — exactly as render_file already does", () => {
-    // ACP categorizes only by tokens and has no exact table, so neither render
-    // tool is recognised there: both fail closed to codeExecution (they prompt
-    // under a codeExecution=ask policy; never silently allowed). Parity with
-    // render_file is the property pinned here. Giving ACP an exact table is a
-    // change to its permission design, for both tools at once, not a side
-    // effect of adding one of them.
-    expect(categorizeAcpToolName("mcp__callboard-tools__render_artifact")).toBe("codeExecution");
-    expect(categorizeAcpToolName("mcp__callboard-tools__render_artifact")).toBe(categorizeAcpToolName("mcp__callboard-tools__render_file"));
+  it("tokens only: render_artifact gets the strictest gate — exactly as render_file already does", () => {
+    // With no exact table neither render tool is recognised: both fail closed
+    // to codeExecution (they prompt under a codeExecution=ask policy; never
+    // silently allowed). Parity with render_file is the property pinned here.
+    expect(categorizeByTokens("mcp__callboard-tools__render_artifact")).toBe("codeExecution");
+    expect(categorizeByTokens("mcp__callboard-tools__render_artifact")).toBe(categorizeByTokens("mcp__callboard-tools__render_file"));
   });
 });

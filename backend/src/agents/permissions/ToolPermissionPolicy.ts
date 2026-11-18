@@ -3,7 +3,7 @@
  *
  * The category → allow/deny/ask decision is identical across engines; only
  * the tool-name → category mapping is adapter-specific (tool names differ
- * between Claude Code, Codex, OpenCode, etc.). Adapters inject their own
+ * between Claude Code, Codex, pi, etc.). Adapters inject their own
  * categorizer via the constructor.
  *
  * @see plans/agent-abstraction-layer.md (Decision 2)

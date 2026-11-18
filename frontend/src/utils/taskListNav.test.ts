@@ -25,7 +25,6 @@ const text = (content: string): ParsedMessage => message({ content });
 const LISTS: Array<[engine: string, toolName: string, content: string]> = [
   ["claude-code", TASK_LIST_TOOLS.claudeCode, JSON.stringify({ todos: [{ content: "Ship it", status: "in_progress" }] })],
   ["codex", TASK_LIST_TOOLS.codex, JSON.stringify({ plan: [{ step: "Ship it", status: "in_progress" }] })],
-  ["acp", TASK_LIST_TOOLS.acp, JSON.stringify({ entries: [{ content: "Ship it", priority: "high", status: "in_progress" }] })],
 ];
 
 describe("the jump-to-list button finds every engine's list", () => {
@@ -54,7 +53,7 @@ describe("the jump-to-list button finds every engine's list", () => {
 
   it("a cleared list is still a list — the button points at the message saying so", () => {
     // Otherwise pressing the button lands on the previous, stale plan, which is
-    // the one thing `plan_removed` exists to stop the user reading as current.
+    // the one thing a cleared list exists to stop the user reading as current.
     const [, toolName] = LISTS[0];
     const messages = [toolUse(toolName, JSON.stringify({ todos: [{ content: "Old plan", status: "pending" }] })), toolUse(toolName, JSON.stringify({ todos: [] }))];
     expect(findLatestTaskListIndex(messages)).toBe(1);
@@ -63,7 +62,7 @@ describe("the jump-to-list button finds every engine's list", () => {
   it("a tool_result echoing a list payload is not a jump target", () => {
     // Only the call is the list. A result carrying the same JSON back would
     // otherwise put the button on the wrong message.
-    const [, toolName, content] = LISTS[2];
+    const [, toolName, content] = LISTS[1];
     const messages = [message({ role: "user", type: "tool_result", toolName, content })];
     expect(findLatestTaskListIndex(messages)).toBe(-1);
   });

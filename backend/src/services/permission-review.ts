@@ -116,7 +116,7 @@ export interface FormattedToolInput {
   text: string;
   /** The reviewer is shown only the head of the input. */
   truncated: boolean;
-  /** No input at all (missing, non-object, or `{}` — e.g. an ACP call with no rawInput). */
+  /** No input at all (missing, non-object, or `{}` — e.g. a call with no rawInput, as the retired ACP harness could send). */
   empty: boolean;
 }
 
@@ -148,8 +148,9 @@ function neutraliseTags(text: string): string {
 }
 
 /**
- * The tool name is engine-supplied and, on ACP, not validated against an
- * identifier grammar — it is a label the agent process chose. Anything outside
+ * The tool name is engine-supplied and not necessarily validated against an
+ * identifier grammar — on the retired ACP harness it was a label the agent
+ * process chose. Anything outside
  * a plain identifier alphabet is replaced, so it cannot carry instructions or
  * line breaks into the trusted header of the prompt.
  */
@@ -709,7 +710,8 @@ function hardStop(effect: string, offending: string): ReviewVerdict {
  * Shapes covered, by engine: Claude `Bash {command}` / `Write {file_path}`;
  * pi `bash {command}` / `write|edit {path}`; `run_commands {commands:
  * string[] | {command,args}[]}`, `editor {path}`, `apply_patch {input}` (the
- * retired Cline harness's shapes, kept as generic coverage); ACP/OpenCode `{command}` / `{filePath}`.
+ * retired Cline harness's shapes, kept as generic coverage); `{command}` /
+ * `{filePath}` (the retired ACP/OpenCode shapes, likewise kept).
  */
 export function detectHardStop(toolName: string, input: Record<string, unknown>): ReviewVerdict | null {
   const found = extract(input);

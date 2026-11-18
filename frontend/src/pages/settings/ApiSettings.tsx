@@ -1,19 +1,16 @@
 import { useEffect, useRef, useState } from "react";
-import { Key, Globe, Cpu, Eye, EyeOff, RefreshCw, Bot, Network, Terminal, Plug, Boxes, ExternalLink, AlertTriangle, CheckCircle2, HardDrive } from "lucide-react";
+import { Key, Globe, Cpu, Eye, EyeOff, RefreshCw, Bot, Network, Terminal, Boxes, ExternalLink, AlertTriangle, CheckCircle2, HardDrive } from "lucide-react";
 import {
   getAgentSettings,
   updateAgentSettings,
   getSystemInfo,
   getOpenRouterCatalog,
-  getAcpModels,
   getPiProviders,
   getEngines,
   refreshEngines,
   checkEngineBinary,
 } from "../../api";
 import PiModelSelector from "../../components/PiModelSelector";
-import AcpModelSelector from "../../components/AcpModelSelector";
-import { mergeAcpProviderModel } from "./acpProviderModels";
 import { EMPTY_API_SETTINGS_FORM, formFromSettings, settingsFromForm, type ApiSettingsForm } from "./apiSettingsForm";
 import { selectMaskedSecret } from "./maskedSecret";
 import {
@@ -26,13 +23,13 @@ import {
   type ClaudeCredentialMode,
   type CodexCredentialMode,
 } from "./credentialMode";
-import EngineStatusCard, { EngineStatusDot, StatusRow } from "./EngineStatusCard";
+import EngineStatusCard, { EngineStatusDot } from "./EngineStatusCard";
 import type { EngineRecheckOutcome } from "./EngineStatusCard";
 import type { AgentSettings, OpenRouterModelInfo } from "shared/types/index.js";
-import type { SystemInfo, AcpProviderInfo, AcpModelCatalogInfo, EngineStatus, EngineBinaryCheckResponse } from "../../api";
+import type { SystemInfo, EngineStatus, EngineBinaryCheckResponse } from "../../api";
 import OpenRouterModelSelector from "../../components/OpenRouterModelSelector";
 import CodexModelSelector from "../../components/CodexModelSelector";
-import { getDefaultProvider, getDefaultAcpProviderId } from "../../utils/localStorage";
+import { getDefaultProvider } from "../../utils/localStorage";
 import type { AgentProviderKind } from "../../utils/localStorage";
 import { errorMessage } from "../../utils/errorMessage";
 import { sectionStyle, headerStyle, subtitleStyle } from "./styles";
@@ -94,7 +91,7 @@ type ReferenceLink = {
  *
  * Wider than {@link AgentProviderKind} by `"openrouter"`, which left that union
  * when the OR harness was retired. The tab stays: the key still backs the
- * account-wide ACP fallback and the model catalog, so this page is where an
+ * native harnesses' OpenRouter routing and the model catalog, so this page is where an
  * OpenRouter credential is configured — it is a service config, not a harness
  * tab. See plans/remove-openrouter-engine.md.
  */
@@ -121,13 +118,6 @@ const providerReferenceLinks: Record<SettingsTab, ReferenceLink[]> = {
     { label: "API billing", href: "https://platform.openai.com/settings/organization/billing/overview", note: "OpenAI Platform billing" },
     { label: "API limits", href: "https://platform.openai.com/settings/organization/limits", note: "OpenAI Platform limits" },
   ],
-  // ACP is a wire format, not a vendor, so there is no single usage or billing
-  // page to link — credentials belong to whichever CLI the user configured, and
-  // callboard never handles them. The protocol docs are the honest destination.
-  acp: [
-    { label: "Agent Client Protocol", href: "https://agentclientprotocol.com", note: "The protocol callboard speaks to these agents" },
-    { label: "OpenCode docs", href: "https://opencode.ai/docs/", note: "Model, auth and permission configuration for OpenCode" },
-  ],
   // pi embeds a runtime rather than wrapping a service, so
   // billing lives with whichever model provider the user points it at. Its
   // default is OpenRouter, which is where the useful links go.
@@ -141,195 +131,6 @@ const providerReferenceLinks: Record<SettingsTab, ReferenceLink[]> = {
     { label: "OpenRouter credits", href: "https://openrouter.ai/settings/credits", note: "Credit balance, for the default provider" },
   ],
 };
-
-/**
- * An ACP vendor's status from `/api/system-info` alone.
- *
- * `acpProviders` carries the two facts that matter most — is the binary there,
- * and what is it called — and it arrives with the rest of the page rather than
- * behind a registry lookup. So a missing `/api/engines` answer costs the version
- * rows and nothing else, instead of blanking the tab.
- *
- * Credentials are `"unknown"` here for the same reason they are on the real
- * status: ACP has no auth introspection, and this path knows strictly less than
- * that one does.
- */
-function acpFallbackEngine(vendor: AcpProviderInfo): EngineStatus {
-  return {
-    id: vendor.id,
-    label: vendor.label,
-    runtime: { kind: "external", command: vendor.command },
-    installed: vendor.available,
-    credentials: {
-      configured: "unknown",
-      note: `Held by the ${vendor.label} CLI, never by Callboard. ACP gives a client no way to ask whether an agent is signed in.`,
-    },
-  };
-}
-
-/**
- * Read-only status for one ACP vendor.
- *
- * Every other tab on this page edits credentials callboard holds. This one has
- * none to edit, and that is the point rather than an omission: ACP's model is
- * that credentials belong to the vendor CLI — `initialize` advertises
- * `authMethods` and never a place to hand over a key — so the useful thing to
- * show is what callboard *does* know, and what it does to the agent it spawns.
- *
- * The CLI and Credentials rows this used to render itself are now
- * {@link EngineStatusCard}'s Runtime and Credentials rows — an ACP vendor is
- * the one genuinely install-or-not engine on the page, so it is the shared
- * card's first consumer rather than a parallel implementation of it. What is
- * left here is what the card cannot know: the permission override callboard
- * applies to sessions it launches (invisible otherwise, and it materially
- * changes how the agent behaves) and the harvested model catalog.
- *
- * When `/api/engines` has not answered — a cold registry lookup, or a failed
- * call — the card falls back to {@link acpFallbackEngine} rather than to a
- * placeholder. `systemInfo.acpProviders` already carries `available` and
- * `command` synchronously, and dropping to "Checking engine status…" would take
- * the single most actionable line on the page ("`opencode` not found on PATH")
- * away from exactly the user who needs it.
- */
-function AcpProviderSection({
-  vendor,
-  engine,
-  enginesLoading,
-  onRecheckEngines,
-  onEnginesUpdated,
-  useOpenRouter,
-  onUseOpenRouterChange,
-  openRouterApiKey,
-  onOpenRouterApiKeyChange,
-  accountKeySet,
-  defaultModel,
-  onDefaultModelChange,
-}: {
-  vendor: AcpProviderInfo;
-  /** This vendor's row from `GET /api/engines`; absent while it loads or if the call failed. */
-  engine: EngineStatus | undefined;
-  enginesLoading: boolean;
-  /** Drop the daemon's cached lookups and re-probe — the card's Recheck button. */
-  onRecheckEngines: () => Promise<EngineRecheckOutcome>;
-  /** Adopt the statuses the server re-probed after running an install from this card. */
-  onEnginesUpdated: (engines: EngineStatus[]) => void;
-  useOpenRouter: boolean;
-  onUseOpenRouterChange: (v: boolean) => void;
-  openRouterApiKey: string;
-  onOpenRouterApiKeyChange: (v: string) => void;
-  /** Whether the account-wide OpenRouter key is set, so the copy can say what blank falls back to. */
-  accountKeySet: boolean;
-  /** This vendor's entry in `agentSettings.acpProviderModels`, or "" if unset. */
-  defaultModel: string;
-  onDefaultModelChange: (v: string) => void;
-}) {
-  const [catalog, setCatalog] = useState<AcpModelCatalogInfo | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    getAcpModels(vendor.id)
-      .then((c) => {
-        if (!cancelled) setCatalog(c);
-      })
-      .catch(() => {
-        // A vendor with no catalog is the normal cold-start state, not an error.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [vendor.id]);
-
-  return (
-    <>
-      <EngineStatusCard engine={engine ?? acpFallbackEngine(vendor)} loading={enginesLoading} onRecheck={onRecheckEngines} onEnginesUpdated={onEnginesUpdated} />
-
-      <div style={sectionStyle}>
-        <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 8 }}>
-          <Plug size={14} style={{ color: "var(--accent-text)" }} />
-          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>Session behaviour</span>
-          <span style={{ fontSize: 11, color: "var(--text-muted)" }}>Agent Client Protocol</span>
-        </div>
-
-        <StatusRow label="Permissions">
-          Callboard runs this agent with every tool set to <code style={{ fontSize: 11 }}>ask</code>, so its own four axes decide. Without that override the
-          vendor&rsquo;s defaults apply and the permission settings here would govern nothing.
-        </StatusRow>
-
-        <StatusRow label="Models">
-          {catalog && catalog.models.length > 0 ? (
-            <>
-              {catalog.models.length} known{catalog.currentValue ? <> · last ran {<code style={{ fontSize: 11 }}>{catalog.currentValue}</code>}</> : null}
-            </>
-          ) : (
-            <>None yet — the list is learned from chats you run, so it fills in after the first one.</>
-          )}
-        </StatusRow>
-      </div>
-
-      <div style={sectionStyle}>
-        <div style={headerStyle}>
-          <Cpu size={16} style={{ color: "var(--accent-text)" }} />
-          <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Model</span>
-        </div>
-        <div style={subtitleStyle}>Default model for new {vendor.label} chats.</div>
-
-        <div style={fieldWrap}>
-          <label htmlFor="acpProviderModel" style={labelStyle}>
-            Default Model
-          </label>
-          <AcpModelSelector id="acpProviderModel" value={defaultModel} onChange={onDefaultModelChange} providerId={vendor.id} placeholder={vendor.label + "'s own default"} />
-          <div style={helpStyle}>
-            Blank leaves {vendor.label}&rsquo;s own configured model alone — the same one it would use if you ran it from a terminal. Suggestions come from
-            models {vendor.label} has actually reported in past chats (see &ldquo;Models&rdquo; above), same as the per-chat picker; free text is accepted and
-            sent as-is, and an unknown model id fails the turn with {vendor.label}&rsquo;s own error rather than silently falling back. A per-chat model, when
-            one is picked for a chat, always overrides this.
-          </div>
-        </div>
-      </div>
-
-      <div style={sectionStyle}>
-        <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 8 }}>
-          <Network size={14} style={{ color: "var(--accent-text)" }} />
-          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>OpenRouter</span>
-        </div>
-        <div style={{ ...helpStyle, marginTop: 0, marginBottom: 10 }}>
-          Hand {vendor.label} an OpenRouter key so its own OpenRouter provider works. Nothing about the agent is rewritten — it simply gains the
-          <code style={{ fontSize: 11 }}> openrouter/&hellip; </code> models in the per-chat model picker alongside whatever it already had.
-        </div>
-
-        <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", marginBottom: 10 }}>
-          <input type="checkbox" checked={useOpenRouter} onChange={(e) => onUseOpenRouterChange(e.target.checked)} />
-          <span style={{ fontSize: 13, color: "var(--text)" }}>Give ACP agents an OpenRouter key</span>
-        </label>
-
-        {useOpenRouter && (
-          <div style={fieldWrap}>
-            <label htmlFor="acp-or-key" style={labelStyle}>
-              OpenRouter API key
-            </label>
-            <input
-              id="acp-or-key"
-              type="password"
-              value={openRouterApiKey}
-              onChange={(e) => onOpenRouterApiKeyChange(e.target.value)}
-              onFocus={selectMaskedSecret}
-              placeholder={accountKeySet ? "Leave empty to use your account-wide OpenRouter key" : "sk-or-v1-…"}
-              style={inputStyle}
-              autoComplete="off"
-            />
-            <div style={helpStyle}>
-              Optional. Blank uses the key from the OpenRouter tab
-              {accountKeySet ? "" : ", which is not set yet — without one of the two, nothing is passed"}. Delivered as{" "}
-              <code style={{ fontSize: 11 }}>OPENROUTER_API_KEY</code> to the process Callboard spawns, and only to vendors recorded as reading it.
-            </div>
-          </div>
-        )}
-      </div>
-
-      <ReferenceLinksSection provider="acp" />
-    </>
-  );
-}
 
 function ReferenceLinksSection({ provider }: { provider: SettingsTab }) {
   const links = providerReferenceLinks[provider];
@@ -947,10 +748,6 @@ export default function ApiSettings() {
   // Seeded from the user's New Chat default so the page opens on the provider
   // they actually use; purely a view selector, not persisted back.
   const [activeProvider, setActiveProvider] = useState<SettingsTab>(() => getDefaultProvider());
-  // Which ACP vendor the "acp" tab is showing. `activeProvider` is a KIND, and
-  // `acp` is one kind covering many CLIs, so the vendor needs its own slot —
-  // the same split the chat metadata and the New Chat picker already make.
-  const [activeAcpProviderId, setActiveAcpProviderId] = useState("");
 
   const [settings, setSettings] = useState<AgentSettings | null>(null);
   const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
@@ -1021,8 +818,6 @@ export default function ApiSettings() {
     codexOpenRouterApiKey,
     codexOpenRouterBaseUrl,
     codexOpenRouterModel,
-    acpUseOpenRouter,
-    acpOpenRouterApiKey,
     piProviderId,
     piModel,
     piApiKey,
@@ -1030,12 +825,6 @@ export default function ApiSettings() {
   } = form;
   // Catalog models, for the role-model placeholders on the routed-harness tabs.
   const [orModels, setOrModels] = useState<OpenRouterModelInfo[]>([]);
-  // Default model for the ACTIVE ACP vendor tab. Unlike every field in `form`,
-  // this one can't be seeded once at load: `settings` holds a map keyed by
-  // vendor id (`acpProviderModels`), and which entry is "the" value depends on
-  // which tab is open. Kept in sync by the effect below rather than in
-  // `loadAll`, so switching tabs re-seeds it without a re-fetch.
-  const [acpProviderModel, setAcpProviderModel] = useState("");
   const [piProviders, setPiProviders] = useState<string[]>([]);
 
   const loadAll = async () => {
@@ -1076,16 +865,6 @@ export default function ApiSettings() {
       const [s, sys] = await Promise.all([getAgentSettings(), getSystemInfo({ refresh: true }).catch(() => null)]);
       setSettings(s);
       setSystemInfo(sys);
-      // Seed the ACP tab's vendor. The kind alone cannot say which one, so a
-      // user whose New Chat default is an ACP vendor would otherwise land on a
-      // selected tab with an empty body. Prefer their saved pick, then anything
-      // installed, then whatever is configured.
-      const vendors = sys?.acpProviders ?? [];
-      if (vendors.length > 0) {
-        const saved = getDefaultAcpProviderId();
-        const pick = vendors.find((v) => v.id === saved) ?? vendors.find((v) => v.available) ?? vendors[0];
-        setActiveAcpProviderId((current) => current || pick.id);
-      }
       setForm(formFromSettings(s));
       // Catalog (for supportedParameters); best-effort — fields still work offline.
       getOpenRouterCatalog()
@@ -1101,22 +880,6 @@ export default function ApiSettings() {
   useEffect(() => {
     loadAll();
   }, []);
-
-  // Re-seed the ACP default-model field whenever settings load or the active
-  // vendor tab changes — the two events that can invalidate it. Separate from
-  // `loadAll` because that runs once at mount, before `activeAcpProviderId` has
-  // necessarily settled on its final pick (see the "prefer saved pick" logic
-  // there); this effect re-runs once it does.
-  //
-  // Trips the same `react-hooks/set-state-in-effect` lint warning as the
-  // `loadAll` effect just above — deriving local editable state from a prop
-  // that only settles after a fetch has no synchronous-during-render
-  // alternative here (there's no earlier point in this component's own
-  // render to read `settings`/`activeAcpProviderId` from), so this is left
-  // consistent with that existing precedent rather than introduced fresh.
-  useEffect(() => {
-    setAcpProviderModel(settings?.acpProviderModels?.[activeAcpProviderId] ?? "");
-  }, [settings, activeAcpProviderId]);
 
   /**
    * Which instant-save control is mid-write, and what each one's last write
@@ -1156,14 +919,8 @@ export default function ApiSettings() {
       codexPathOverride.trim() !== (settings?.codexPathOverride ?? "").trim();
 
     try {
-      // Every field, every time — see `settingsFromForm`. One tab is open but
-      // the stored ACP model is a map, so this tab's edit is merged into it
-      // rather than sent alone — see `mergeAcpProviderModel` for why every
-      // other vendor's entry survives, why a blank passes through instead of
-      // being deleted here, and why an unresolved vendor id is a no-op.
-      const updated = await updateAgentSettings(
-        settingsFromForm(form, mergeAcpProviderModel(settings?.acpProviderModels, activeAcpProviderId, acpProviderModel)),
-      );
+      // Every field, every time — see `settingsFromForm`.
+      const updated = await updateAgentSettings(settingsFromForm(form));
       setSettings(updated);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
@@ -1243,14 +1000,13 @@ export default function ApiSettings() {
    * it, and match `persistEngineInstalls`.
    *
    * `settings` is left alone on success even though the PUT returns the merged
-   * object. Adopting it would re-run the effect that re-seeds the ACP tab's
-   * Default Model from `settings`, discarding an unsaved edit there — and
-   * nothing this control writes is read back off `settings`: the segments read
-   * the local flag, which `apply` has already moved.
+   * object: nothing this control writes is read back off `settings` — the
+   * segments read the local flag, which `apply` has already moved. (It also
+   * kept the retired ACP tab's re-seed effect from discarding an unsaved
+   * Default Model edit, back when that tab existed.)
    *
    * `systemInfo` is a different matter and *is* refetched. Nothing derives
-   * editable state from it — the only two effects that write form fields key on
-   * `settings` and `activeAcpProviderId` — but plenty of this page's *claims*
+   * editable state from it, but plenty of this page's *claims*
    * come out of it, and one of them is computed from the very flag just written:
    * `codexConfigured` is forced true while Codex is routed, so a click that
    * turned routing off left the Codex tab reporting credentials that the flag
@@ -1358,10 +1114,10 @@ export default function ApiSettings() {
    * it drops are per-daemon, not per-engine, so probing one and leaving the rest
    * on stale answers would be a distinction the backend does not make.
    *
-   * `systemInfo` is refreshed alongside it because `acpProviders[].available`
-   * comes from the same PATH lookup that was just invalidated — without this the
-   * tab strip and the New Chat picker would keep the pre-install answer while the
-   * card showed the new one.
+   * `systemInfo` is refreshed alongside it so the page's system-info-derived
+   * claims do not keep the pre-install answer while the card shows the new one.
+   * (The retired ACP harness's `acpProviders[].available`, read off the same
+   * PATH lookup, was the case that first needed this.)
    *
    * Errors propagate: {@link EngineStatusCard}'s button owns the failure state,
    * and swallowing them here would leave it showing a success it did not have.
@@ -1396,8 +1152,8 @@ export default function ApiSettings() {
    * the pre-install answer — the card would say "Installed" over a row that had
    * reverted to "Not installed".
    *
-   * `systemInfo` is refreshed alongside it because `acpProviders[].available`
-   * feeds the New Chat picker from the same lookup.
+   * `systemInfo` is refreshed alongside it for the same reason as in
+   * {@link handleRecheckEngines}.
    */
   const handleEnginesUpdated = (fresh: EngineStatus[]) => {
     if (fresh.length === 0) return; // a refresh that failed server-side; keep what we have
@@ -1428,15 +1184,9 @@ export default function ApiSettings() {
    * card and no dot. Inventing a row for it would be the same kind of lie as an
    * "installed ✓" column on a bundled engine.
    */
-  const engineFor = (tab: SettingsTab, acpId?: string): EngineStatus | undefined => {
-    const id = tab === "acp" ? acpId : tab === "openrouter" ? undefined : tab;
-    if (!id) return undefined;
-    const engine = engines.find((e) => e.id === id);
-    if (engine) return engine;
-    // An ACP vendor knows enough from system-info alone to show a dot, so its
-    // tab is not left blank while /api/engines is in flight or after it failed.
-    const vendor = tab === "acp" ? (systemInfo?.acpProviders ?? []).find((v) => v.id === id) : undefined;
-    return vendor ? acpFallbackEngine(vendor) : undefined;
+  const engineFor = (tab: SettingsTab): EngineStatus | undefined => {
+    if (tab === "openrouter") return undefined;
+    return engines.find((e) => e.id === tab);
   };
 
   // Inline alias validation — mirrors the backend's write-time rules so the
@@ -1538,8 +1288,8 @@ export default function ApiSettings() {
       <div
         style={{
           display: "flex",
-          // Wraps: the row was built for three fixed tabs, and each configured
-          // ACP vendor adds another.
+          // Wraps: the row was built for three fixed tabs, and the retired ACP
+          // harness once added one per configured vendor.
           flexWrap: "wrap",
           borderRadius: 8,
           border: "1px solid var(--border)",
@@ -1548,30 +1298,16 @@ export default function ApiSettings() {
         }}
       >
         {[
-          { kind: "claude-code" as SettingsTab, label: "Claude Code", icon: <Bot size={14} />, acpId: "" },
-          { kind: "openrouter" as SettingsTab, label: "OpenRouter", icon: <Network size={14} />, acpId: "" },
-          { kind: "codex" as SettingsTab, label: "Codex", icon: <Terminal size={14} />, acpId: "" },
-          { kind: "pi" as SettingsTab, label: "pi", icon: <Boxes size={14} />, acpId: "" },
-          // One tab per configured ACP vendor rather than a single "ACP" tab:
-          // a user picks OpenCode here the same way they pick it in New Chat,
-          // and the page has nothing to say about the protocol in the abstract.
-          ...(systemInfo?.acpProviders ?? []).map((v) => ({
-            kind: "acp" as SettingsTab,
-            label: v.label,
-            icon: <Plug size={14} />,
-            acpId: v.id,
-          })),
-        ].map(({ kind, label, icon, acpId }, idx, arr) => {
-          // Two tabs share the `acp` kind, so the vendor has to match as well or
-          // every ACP tab would highlight at once.
-          const isActiveTab = activeProvider === kind && (!acpId || activeAcpProviderId === acpId);
+          { kind: "claude-code" as SettingsTab, label: "Claude Code", icon: <Bot size={14} /> },
+          { kind: "openrouter" as SettingsTab, label: "OpenRouter", icon: <Network size={14} /> },
+          { kind: "codex" as SettingsTab, label: "Codex", icon: <Terminal size={14} /> },
+          { kind: "pi" as SettingsTab, label: "pi", icon: <Boxes size={14} /> },
+        ].map(({ kind, label, icon }, idx, arr) => {
+          const isActiveTab = activeProvider === kind;
           return (
             <button
-              key={acpId || kind}
-              onClick={() => {
-                setActiveProvider(kind);
-                if (acpId) setActiveAcpProviderId(acpId);
-              }}
+              key={kind}
+              onClick={() => setActiveProvider(kind)}
               style={{
                 flex: 1,
                 display: "flex",
@@ -1598,7 +1334,7 @@ export default function ApiSettings() {
                   OpenRouter tab never has one: it is a service credential
                   rather than an engine. */}
               {(() => {
-                const engine = engineFor(kind, acpId);
+                const engine = engineFor(kind);
                 return engine ? <EngineStatusDot engine={engine} /> : null;
               })()}
             </button>
@@ -1977,7 +1713,7 @@ export default function ApiSettings() {
               </label>
               <SecretField id="openRouterApiKey" value={openRouterApiKey} onChange={bind("openRouterApiKey")} placeholder="sk-or-..." />
               <div style={helpStyle}>
-                Create one at openrouter.ai/keys. Also handed to ACP agents when the key on their own tab is blank, so a single key can cover both.
+                Create one at openrouter.ai/keys.
               </div>
             </div>
 
@@ -2078,27 +1814,6 @@ export default function ApiSettings() {
           </div>
         </>
       )}
-
-      {activeProvider === "acp" &&
-        (() => {
-          const vendor = (systemInfo?.acpProviders ?? []).find((v) => v.id === activeAcpProviderId);
-          return vendor ? (
-            <AcpProviderSection
-              vendor={vendor}
-              engine={engineFor("acp", vendor.id)}
-              onRecheckEngines={handleRecheckEngines}
-              onEnginesUpdated={handleEnginesUpdated}
-              enginesLoading={enginesLoading}
-              useOpenRouter={acpUseOpenRouter}
-              onUseOpenRouterChange={bind("acpUseOpenRouter")}
-              openRouterApiKey={acpOpenRouterApiKey}
-              onOpenRouterApiKeyChange={bind("acpOpenRouterApiKey")}
-              accountKeySet={Boolean(settings?.openRouterApiKey?.trim())}
-              defaultModel={acpProviderModel}
-              onDefaultModelChange={setAcpProviderModel}
-            />
-          ) : null;
-        })()}
 
       {activeProvider === "codex" && (
         <>
@@ -2518,11 +2233,7 @@ export default function ApiSettings() {
           Overrides are applied as environment variables when Callboard spawns an OpenRouter session. They take effect for new sessions; resume an existing chat
           to pick up the new settings. Leave a field empty to fall back to the ambient environment.
         </div>
-      ) : activeProvider === "acp" ? (
-        <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 16, lineHeight: 1.5 }}>
-          An ACP agent&rsquo;s own credentials live in its CLI, so the only thing to set here is whether Callboard also hands it an OpenRouter key. Pick the
-          model per chat in the New Chat panel or the composer, and set what it may do under Permissions.
-        </div>
+
       ) : activeProvider === "pi" ? (
         <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 16, lineHeight: 1.5 }}>
           These are read when a pi chat starts, so they take effect for new sessions; resume an existing chat to pick them up. The runtime is embedded, so

@@ -767,7 +767,7 @@ function TreeNodeRow({
             background: STATUS_DOT[node.status] || "var(--text-muted)",
           }}
         />
-        <ProviderBadge provider={node.provider === "claude-code" ? undefined : node.provider} acpProviderId={node.acpProviderId} compact />
+        <ProviderBadge provider={node.provider === "claude-code" ? undefined : node.provider} compact />
         {node.role && <ChatRoleBadge role={node.role} />}
         <span
           style={{

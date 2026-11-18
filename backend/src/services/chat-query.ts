@@ -139,7 +139,6 @@ const MATCH_KIND: Record<AgentProviderKind, MatchKind> = {
   "claude-code": "transcript",
   pi: "messages",
   codex: "first-prompt",
-  acp: "first-prompt",
   mock: "unknown",
 };
 
@@ -269,7 +268,7 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
       !canonical &&
       meta.provider &&
       meta.provider !== "codex" &&
-      (discoveryBySession.get(sid) ?? []).some((session) => session.providerKind === meta.provider && session.acpProviderId === meta.acpProviderId);
+      (discoveryBySession.get(sid) ?? []).some((session) => session.providerKind === meta.provider);
     const provenNonCodex =
       (typeof canonicalProvider === "string" && canonicalProvider !== "codex") ||
       discoveredNonCodex ||
@@ -295,23 +294,17 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
     list.push(session);
     discoveryBySession.set(session.sessionId, list);
   }
-  const routing = new Map<string, { provider: string; vendor?: string }>();
+  const routing = new Map<string, { provider: string }>();
   const rejectedIds = new Set<string>();
   for (const chat of stored) {
     const meta = parseChatMetadata(chat.metadata);
-    const current = (discoveryBySession.get(chat.session_id) ?? []).filter(
-      (s) => (!meta.provider || meta.provider === s.providerKind) && (!meta.acpProviderId || meta.acpProviderId === s.acpProviderId),
-    );
+    const current = (discoveryBySession.get(chat.session_id) ?? []).filter((s) => !meta.provider || meta.provider === s.providerKind);
     const aliases = Array.isArray(meta.session_ids) ? meta.session_ids : [];
     const evidence = current.length ? current : aliases.flatMap((sid) => (typeof sid === "string" ? (discoveryBySession.get(sid) ?? []) : []));
-    const namespaces = new Map(
-      evidence
-        .filter((s) => !meta.provider || meta.provider === s.providerKind)
-        .map((s) => [JSON.stringify([s.providerKind, s.acpProviderId]), { provider: s.providerKind, vendor: s.acpProviderId }]),
-    );
-    if (typeof meta.provider === "string" && (meta.provider !== "acp" || typeof meta.acpProviderId === "string")) {
-      routing.set(chat.id, { provider: meta.provider, ...(typeof meta.acpProviderId === "string" && { vendor: meta.acpProviderId }) });
-    } else if (namespaces.size === 1) routing.set(chat.id, namespaces.values().next().value!);
+    const namespaces = new Set(evidence.filter((s) => !meta.provider || meta.provider === s.providerKind).map((s) => s.providerKind));
+    if (typeof meta.provider === "string") {
+      routing.set(chat.id, { provider: meta.provider });
+    } else if (namespaces.size === 1) routing.set(chat.id, { provider: namespaces.values().next().value! });
     else if (evidence.length) {
       rejectedIds.add(chat.id);
       warnings.push(`Ambiguous provider ownership for ${chat.id}`);
@@ -321,9 +314,7 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
     stored
       .filter((chat) => {
         const route = routing.get(chat.id);
-        return (discoveryBySession.get(chat.session_id) ?? []).some(
-          (session) => session.providerKind === route?.provider && session.acpProviderId === route?.vendor,
-        );
+        return (discoveryBySession.get(chat.session_id) ?? []).some((session) => session.providerKind === route?.provider);
       })
       .map((chat) => chat.id),
   );
@@ -334,7 +325,7 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
     const knownOwners = owners.get(session.sessionId) ?? [];
     const candidates = knownOwners.filter((chat) => {
       const owner = routing.get(chat.id);
-      return owner?.provider === session.providerKind && owner.vendor === session.acpProviderId;
+      return owner?.provider === session.providerKind;
     });
     if (candidates.length > 1) {
       for (const chat of candidates) {
@@ -352,15 +343,10 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
     if (!storedChat && knownOwners.length) {
       // Historical cross-engine aliases belong to the logical chat, never a new
       // standalone row. Preserve content matches without guessing current routing.
-      if (
-        knownOwners.length === 1 &&
-        knownOwners[0].session_id !== session.sessionId &&
-        routing.has(knownOwners[0].id) &&
-        (session.providerKind !== "acp" || routing.get(knownOwners[0].id)?.vendor === session.acpProviderId)
-      ) {
+      if (knownOwners.length === 1 && knownOwners[0].session_id !== session.sessionId && routing.has(knownOwners[0].id)) {
         const owner = knownOwners[0];
         const keys = identities.get(owner.id) ?? new Set<string>();
-        keys.add(JSON.stringify([session.providerKind, session.acpProviderId ?? null, session.sessionId]));
+        keys.add(JSON.stringify([session.providerKind, session.sessionId]));
         identities.set(owner.id, keys);
         if (!rows.has(owner.id) && !rejectedIds.has(owner.id) && !unsafeNative(owner)) {
           const route = routing.get(owner.id)!;
@@ -377,11 +363,7 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
             session_log_path: session.filePath,
             created_at: session.createdAt.toISOString(),
             updated_at: session.updatedAt.toISOString(),
-            metadata: JSON.stringify({
-              ...parseChatMetadata(logical.metadata),
-              provider: route.provider,
-              ...(route.vendor && { acpProviderId: route.vendor }),
-            }),
+            metadata: JSON.stringify({ ...parseChatMetadata(logical.metadata), provider: route.provider }),
           });
         }
       } else {
@@ -412,7 +394,7 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
     const previous = rows.get(id);
     if (previous) {
       const prior = parseChatMetadata(previous.metadata);
-      if (prior.provider !== session.providerKind || prior.acpProviderId !== session.acpProviderId) {
+      if (prior.provider !== session.providerKind) {
         rows.delete(id);
         rejectedIds.add(id);
         warnings.push(`Ambiguous discovered identity: ${id}`);
@@ -420,7 +402,7 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
       }
     }
     const keys = identities.get(id) ?? new Set<string>();
-    keys.add(JSON.stringify([session.providerKind, session.acpProviderId ?? null, session.sessionId]));
+    keys.add(JSON.stringify([session.providerKind, session.sessionId]));
     identities.set(id, keys);
     // Discovery is globally newest-first. Execution identity already comes
     // from the stored record; an older current log must not replace the
@@ -435,7 +417,7 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
       session_log_path: session.filePath,
       created_at: session.createdAt.toISOString(),
       updated_at: session.updatedAt.toISOString(),
-      metadata: JSON.stringify({ ...meta, provider: session.providerKind, ...(session.acpProviderId && { acpProviderId: session.acpProviderId }) }),
+      metadata: JSON.stringify({ ...meta, provider: session.providerKind }),
     });
   }
   // Stored-only pins and tree relatives are the sidebar's appendables, not every stale record.
@@ -600,7 +582,7 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
     const keysByChat = new Map(candidates.map((chat) => [chat.id, [...(identities.get(chat.id) ?? [])]]));
     const eligibleKeys = new Set([...keysByChat.values()].flat());
     const selectedSessions = discovery.sessions.filter((session) =>
-      eligibleKeys.has(JSON.stringify([session.providerKind, session.acpProviderId ?? null, session.sessionId])),
+      eligibleKeys.has(JSON.stringify([session.providerKind, session.sessionId])),
     );
     const content = selectedSessions.length ? await collectContentMatches(term, selectedSessions) : { keys: new Set<string>(), warnings: [] };
     // The shared pool reports saturation as a warning and an empty result set,
@@ -702,7 +684,6 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
         spaceId: spaces.spaceOf(chat.id, membership.storedById.get(chat.id)?.folder ?? chat.folder),
         sessionId: chat.session_id,
         provider: meta.provider ?? null,
-        acpProviderId: meta.acpProviderId,
         title: typeof (meta.title ?? meta.preview) === "string" ? String(meta.title ?? meta.preview).slice(0, 300) : null,
         folder: chat.folder,
         displayFolder: chat.displayFolder ?? chat.folder,
@@ -754,8 +735,8 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
       ...((view?.available || args.grep !== undefined) && {
         contentSearchSemantics:
           "Provider-specific and not a full-text index. claude-code greps the raw session JSONL, tool calls and results included (matchKind 'transcript'); " +
-          "Pi searches derived conversational text only, no tool traffic (matchKind 'messages'); Codex matches the first user prompt, or a native child's nickname/path (matchKind 'first-prompt'/'metadata'); " +
-          "ACP matches first-message previews (matchKind 'first-prompt'). Read matchKind on each row before concluding a chat did not mention something.",
+          "Pi searches derived conversational text only, no tool traffic (matchKind 'messages'); Codex matches the first user prompt, or a native child's nickname/path (matchKind 'first-prompt'/'metadata'). " +
+          "Read matchKind on each row before concluding a chat did not mention something.",
       }),
     },
   };

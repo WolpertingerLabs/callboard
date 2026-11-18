@@ -3,7 +3,7 @@ import { afterEach, expect, it, vi } from "vitest";
 const state = vi.hoisted(() => ({
   lookup: vi.fn(() => null),
   listener: undefined as undefined | ((event: { event: string; chatId: string; type: string }) => void),
-  chat: { id: "watcher", session_id: "duplicate", metadata: '{"provider":"acp","acpProviderId":"opencode"}' },
+  chat: { id: "watcher", session_id: "duplicate", metadata: '{"provider":"pi"}' },
 }));
 vi.mock("../utils/session-log.js", () => ({ findSessionLogPath: state.lookup }));
 vi.mock("./chat-file-service.js", () => ({ chatFileService: { getAllChats: () => [state.chat], getChat: () => state.chat } }));

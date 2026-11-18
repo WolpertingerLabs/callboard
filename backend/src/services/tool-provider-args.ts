@@ -8,7 +8,7 @@ import { findModelAlias } from "./agent-settings.js";
  * everything a request may ask for rather than retyped by hand. The `satisfies`
  * is the guard that matters: the tool surface and {@link UiAgentProviderKind}
  * drifted apart once already (the enum was frozen at `claude-code | codex` while
- * `acp`, `pi` and the since-retired `cline` landed behind it), and a hand-written union is exactly
+ * `pi` and the since-retired `acp` and `cline` landed behind it), and a hand-written union is exactly
  * how that happens.
  */
 const TOOL_PROVIDER_KINDS = ROUTABLE_PROVIDER_KINDS satisfies readonly UiAgentProviderKind[];
@@ -30,8 +30,7 @@ export const providerModelSchema = {
     .optional()
     .describe(
       "Agent engine for the new session. Omit to inherit the engine THIS session is running on — pass a value only to deliberately start the " +
-        'session on a different one. "acp" names a family of harnesses rather than a single one, so it is only usable from a session that is ' +
-        "itself running ACP (the vendor comes with the inheritance); asking for it from anywhere else is an error.",
+        "session on a different one.",
     ),
   model: z
     .string()
@@ -58,7 +57,7 @@ export interface ProviderModelArgs {
 
 /**
  * The engine the *calling* session is running on, threaded in by whoever built
- * the tool spec. `provider` and `acpProviderId` are fixed for a session's
+ * the tool spec. `provider` is fixed for a session's
  * lifetime. `getModel` is deliberately a getter: unlike the provider, a chat's
  * model is mutable — the user can switch it mid-chat, and the switch lands in
  * the chat record's metadata before the next turn — so a plain value captured
@@ -66,8 +65,6 @@ export interface ProviderModelArgs {
  */
 export interface CallingSessionEngine {
   provider?: UiAgentProviderKind;
-  /** Which ACP vendor, when `provider` is `"acp"`. Meaningless otherwise. */
-  acpProviderId?: string;
   /** Live per-chat model override of the calling session, read at tool-call time. */
   getModel?: () => string | undefined;
 }
@@ -79,7 +76,6 @@ export type ResolvedProviderModel =
   | {
       ok: true;
       provider: UiAgentProviderKind;
-      acpProviderId?: string;
       model?: string;
       modelSource: ResolvedModelSource;
       /** Set when the caller's model was considered for inheritance and skipped. */
@@ -139,28 +135,7 @@ export type ResolvedProviderModel =
 export function resolveProviderModelArgs(args: ProviderModelArgs, current?: CallingSessionEngine): ResolvedProviderModel {
   const provider = args.provider ?? current?.provider ?? "claude-code";
 
-  // "acp" is one kind covering many CLIs, so the kind alone does not identify a
-  // harness — the vendor id has to travel with it, and inheritance from an ACP
-  // caller is the only place it comes from. Refuse here rather than letting an
-  // id-less "acp" fail somewhere deep inside session startup, where whatever
-  // surfaces will not name the actual problem.
-  let acpProviderId: string | undefined;
-  if (provider === "acp") {
-    acpProviderId = current?.provider === "acp" ? current.acpProviderId : undefined;
-    if (!acpProviderId) {
-      return {
-        ok: false,
-        error:
-          'provider="acp" names a family of harnesses rather than one, so it needs a vendor id, and the only place that can come from is a ' +
-          "calling session that is itself running ACP — this one is not. Omit `provider` to inherit this session's engine, or name a concrete " +
-          `one: ${TOOL_PROVIDER_KINDS.filter((k) => k !== "acp")
-            .map((k) => `"${k}"`)
-            .join(", ")}.`,
-      };
-    }
-  }
-
-  return { ok: true, provider, ...(acpProviderId && { acpProviderId }), ...resolveSessionModelArg(args, provider, current) };
+  return { ok: true, provider, ...resolveSessionModelArg(args, provider, current) };
 }
 
 /**
@@ -187,8 +162,7 @@ function resolveSessionModelArg(
   }
   if (!callerModel) return { modelSource: "default" };
 
-  // Same engine ⇒ same model vocabulary (for ACP, provider inheritance carries
-  // the vendor id, so the vendor — and therefore the vocabulary — matches too).
+  // Same engine ⇒ same model vocabulary.
   // Passed verbatim: the child re-resolves it through its own resolveSessionModel.
   // A missing provider in the calling context has always meant the legacy
   // Claude Code default (the same fallback used to choose `provider` above).

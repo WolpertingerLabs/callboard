@@ -16,7 +16,7 @@ vi.mock("./chat-discovery.js", () => ({
   discoverChatCorpus: () => ({ sessions: state.sessions, warnings: state.warnings }),
 }));
 vi.mock("./chat-content-search.js", () => ({
-  collectContentMatches: vi.fn(() => ({ keys: new Set([JSON.stringify(["codex", null, "closed"])]), warnings: [] })),
+  collectContentMatches: vi.fn(() => ({ keys: new Set([JSON.stringify(["codex", "closed"])]), warnings: [] })),
 }));
 vi.mock("./chat-view.js", () => ({ chatViews: { read: () => state.view ?? { available: false, reason: "missing" } } }));
 vi.mock("../agents/adapters/codex/CodexSessionProvider.js", () => ({
@@ -328,11 +328,11 @@ it("tool-only restrictions do not change base sidebar append reachability", asyn
   expect(ids(await searchChats({ scope: "visible", topLevelOnly: true, query: "target" }))).toEqual(["root"]);
 });
 
-it.each(["claude-code", "pi", "acp"])("keeps legacy %s roots and children during cold Codex discovery", async (providerKind) => {
+it.each(["claude-code", "pi"])("keeps legacy %s roots and children during cold Codex discovery", async (providerKind) => {
   state.incomplete = true;
   state.stored = [chat("legacy", { provider: undefined, title: "hello" }), chat("child", { provider: undefined, parentChatId: "legacy" })];
   discover();
-  state.sessions = state.sessions.map((s) => ({ ...s, providerKind, ...(providerKind === "acp" && { acpProviderId: "vendor" }) }));
+  state.sessions = state.sessions.map((s) => ({ ...s, providerKind }));
   expect(ids(await searchChats({}))).toEqual(["child", "legacy"]);
   expect(ids(await searchChats({ topLevelOnly: true }))).toEqual(["legacy"]);
 });

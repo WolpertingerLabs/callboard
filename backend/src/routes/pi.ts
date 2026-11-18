@@ -17,12 +17,13 @@ import { getAgentSettings } from "../services/agent-settings.js";
  * not yet entered a key, still gets a fully populated picker, and no model
  * lookup can hang on a provider being down.
  *
- * Contrast with `routes/acp.ts`, which serves a catalog *harvested* from past
- * chats because ACP exposes models only through a live session.
+ * (The retired ACP harness's `routes/acp.ts` had to serve a catalog
+ * *harvested* from past chats, because ACP exposes models only through a live
+ * session.)
  *
  * An unreadable catalog yields an empty list and a 200, not a 500: the model
- * field accepts free text either way, exactly as the Codex and ACP
- * selectors already do for slugs newer than their catalog.
+ * field accepts free text either way, exactly as the Codex
+ * selector already does for slugs newer than their catalog.
  */
 import { Router } from "express";
 import { getPiModels, listPiProviderIds } from "../agents/adapters/pi/modelCatalog.js";

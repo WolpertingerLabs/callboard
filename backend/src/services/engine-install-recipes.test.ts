@@ -32,9 +32,6 @@ const claudeCode = (over: Partial<EngineStatus> = {}): EngineStatus =>
     ...over,
   });
 
-const opencode = (over: Partial<EngineStatus> = {}): EngineStatus =>
-  engine({ id: "opencode", runtime: { kind: "external", command: "opencode" }, credentials: { configured: "unknown" }, ...over });
-
 const codex = (over: Partial<EngineStatus> = {}): EngineStatus =>
   engine({ id: "codex", runtime: { kind: "bundled-overridable", package: "@openai/codex-sdk" }, ...over });
 
@@ -71,8 +68,8 @@ describe("the registry itself", () => {
     // the recipes down could not change it relative to those recipes; because
     // it is written out independently, a package present in one and not the
     // other is detectable — which is exactly what the test above does.
-    expect(INSTALLABLE_PACKAGES.size).toBe(3);
-    expect([...INSTALLABLE_PACKAGES].sort()).toEqual(["@anthropic-ai/claude-code", "@openai/codex", "opencode-ai"]);
+    expect(INSTALLABLE_PACKAGES.size).toBe(2);
+    expect([...INSTALLABLE_PACKAGES].sort()).toEqual(["@anthropic-ai/claude-code", "@openai/codex"]);
   });
 
   it("names the allowlisted package as the literal last argv entry", () => {
@@ -129,13 +126,13 @@ describe("the registry itself", () => {
     // npm-global got two careful notes about a failure that is occasional,
     // while the scripts, which fail this way *by design every time*, got none.
     //
-    // Read off the live installers: opencode's sets
-    // `INSTALL_DIR=$HOME/.opencode/bin` and edits the shell rc; Anthropic's runs
-    // `<binary> install`, landing the launcher in `$HOME/.local/bin`. Neither
-    // directory can be on a running daemon's PATH, which is fixed at exec.
-    const dirs: Record<string, string> = { "claude-code": "~/.local/bin", opencode: "~/.opencode/bin" };
+    // Read off the live installer: Anthropic's runs `<binary> install`, landing
+    // the launcher in `$HOME/.local/bin`, which cannot be on a running daemon's
+    // PATH (fixed at exec). (The retired OpenCode script did the same with
+    // `~/.opencode/bin`.)
+    const dirs: Record<string, string> = { "claude-code": "~/.local/bin" };
     const scripts = ENGINE_INSTALL_RECIPES.filter((r) => r.method === "script");
-    expect(scripts.map((r) => r.engineId).sort()).toEqual(["claude-code", "opencode"]);
+    expect(scripts.map((r) => r.engineId).sort()).toEqual(["claude-code"]);
     for (const recipe of scripts) {
       const caveats = (recipe.caveats ?? []).join(" ");
       expect(caveats).toContain(dirs[recipe.engineId]);
@@ -160,18 +157,11 @@ describe("pi — never", () => {
   });
 });
 
-describe("opencode — the one genuinely install-or-not engine", () => {
-  it("offers both paths when the binary is not on PATH", () => {
-    const guidance = installGuidanceFor(opencode({ installed: false }));
-    expect(guidance?.recipes.map((r) => r.method)).toEqual(["npm-global", "script"]);
-    expect(guidance?.reason).toContain("opencode");
-  });
-
-  it("says nothing once the binary resolves", () => {
-    // Credentials stay "unknown" forever for an ACP vendor — ACP has no auth
-    // introspection — so gating on anything but `installed` would leave an
-    // install command on the card of a working, signed-in OpenCode.
-    expect(installGuidanceFor(opencode({ installed: true }))).toBeUndefined();
+describe("opencode — retired with the ACP harness", () => {
+  it("has no recipe and no guidance, so its id is just an unknown one", () => {
+    expect(recipesFor("opencode")).toEqual([]);
+    expect(installGuidanceFor(engine({ id: "opencode", installed: false, credentials: { configured: "unknown" } }))).toBeUndefined();
+    expect(INSTALLABLE_PACKAGES.has("opencode-ai")).toBe(false);
   });
 });
 
@@ -281,7 +271,6 @@ describe("claude code — two states, and the ones in between", () => {
 
 describe("oneClickRecipeFor — the security argument, in both directions", () => {
   it("selects exactly the npm-global recipe for each engine that has one", () => {
-    expect(oneClickRecipeFor("opencode")?.package).toBe("opencode-ai");
     expect(oneClickRecipeFor("claude-code")?.package).toBe("@anthropic-ai/claude-code");
     expect(oneClickRecipeFor("codex")?.package).toBe("@openai/codex");
   });
@@ -296,8 +285,9 @@ describe("oneClickRecipeFor — the security argument, in both directions", () =
   });
 
   it("selects nothing for a bundled engine or an unknown id", () => {
-    // The retired Cline engine id is just an unknown one now.
+    // The retired Cline and OpenCode engine ids are just unknown ones now.
     expect(oneClickRecipeFor("cline")).toBeUndefined();
+    expect(oneClickRecipeFor("opencode")).toBeUndefined();
     expect(oneClickRecipeFor("pi")).toBeUndefined();
     expect(oneClickRecipeFor("")).toBeUndefined();
     expect(oneClickRecipeFor("../../etc/passwd")).toBeUndefined();
@@ -324,20 +314,21 @@ describe("oneClickRecipeFor — the security argument, in both directions", () =
 });
 
 describe("the button, and the reason there is not one — Decision 8", () => {
-  const missingOpencode = () => opencode({ installed: false });
+  // Neither a native CLI nor a bundled binary: the engine cannot start.
+  const missingClaude = () => claudeCode({ installed: false });
 
   it("says nothing either way when nobody evaluated capability", () => {
     // Every internal caller. Inventing "Callboard will not run this for you"
     // from an unasked question is the same class of claim as an "installed ✓"
     // nothing checked.
-    const guidance = installGuidanceFor(missingOpencode());
+    const guidance = installGuidanceFor(missingClaude());
     expect(guidance?.oneClick).toBeUndefined();
     expect(guidance?.refusal).toBeUndefined();
   });
 
   it("offers the npm recipe as a button when capability permits", () => {
-    const guidance = installGuidanceFor(missingOpencode(), { oneClick: true });
-    expect(guidance?.oneClick).toEqual({ engineId: "opencode", package: "opencode-ai", command: "npm install -g opencode-ai" });
+    const guidance = installGuidanceFor(missingClaude(), { oneClick: true });
+    expect(guidance?.oneClick).toEqual({ engineId: "claude-code", package: "@anthropic-ai/claude-code", command: "npm install -g @anthropic-ai/claude-code" });
     expect(guidance?.refusal).toBeUndefined();
   });
 
@@ -345,7 +336,7 @@ describe("the button, and the reason there is not one — Decision 8", () => {
     // The nvm case. The daemon doing the install is the daemon that will look,
     // so it is a note; turning it into a refusal would remove a button that
     // works on the overwhelming majority of nvm machines.
-    const guidance = installGuidanceFor(missingOpencode(), { oneClick: true, note: "nvm-managed" });
+    const guidance = installGuidanceFor(missingClaude(), { oneClick: true, note: "nvm-managed" });
     expect(guidance?.oneClick?.note).toBe("nvm-managed");
   });
 
@@ -353,8 +344,8 @@ describe("the button, and the reason there is not one — Decision 8", () => {
     // The structural half of Decision 8: a refusal may only ever *add* a
     // sentence. If this ever starts emptying `recipes`, a refused user is left
     // with nothing to type, which is the state the decision forbids.
-    const permitted = installGuidanceFor(missingOpencode(), { oneClick: true });
-    const refused = installGuidanceFor(missingOpencode(), { oneClick: false, code: "not-local", refusal: "You are on the tunnel." });
+    const permitted = installGuidanceFor(missingClaude(), { oneClick: true });
+    const refused = installGuidanceFor(missingClaude(), { oneClick: false, code: "not-local", refusal: "You are on the tunnel." });
     expect(refused?.recipes.map((r) => r.command)).toEqual(permitted?.recipes.map((r) => r.command));
     expect(refused?.recipes.length).toBeGreaterThan(0);
     expect(refused?.reason).toBe(permitted?.reason);
@@ -363,7 +354,7 @@ describe("the button, and the reason there is not one — Decision 8", () => {
   });
 
   it("still says something when a refusal arrives with no sentence attached", () => {
-    const guidance = installGuidanceFor(missingOpencode(), { oneClick: false });
+    const guidance = installGuidanceFor(missingClaude(), { oneClick: false });
     expect(guidance?.refusal).toBeTruthy();
   });
 
@@ -377,7 +368,7 @@ describe("the button, and the reason there is not one — Decision 8", () => {
   });
 
   it("offers no button at all to an engine that is fine", () => {
-    expect(installGuidanceFor(opencode({ installed: true }), { oneClick: true })).toBeUndefined();
+    expect(installGuidanceFor(claudeCode(), { oneClick: true })).toBeUndefined();
     expect(installGuidanceFor(engine({ id: "pi", updateAvailable: true }), { oneClick: true })).toBeUndefined();
   });
 

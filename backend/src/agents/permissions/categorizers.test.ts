@@ -23,7 +23,7 @@ import type { AgentProviderKind } from "../ports/AgentProvider.js";
  * The `satisfies` clause makes the list itself type-checked: a name that is not
  * a real kind is a compile error, so this cannot drift into fiction.
  */
-const ALL_KINDS = ["claude-code", "codex", "acp", "pi", "mock"] as const satisfies readonly AgentProviderKind[];
+const ALL_KINDS = ["claude-code", "codex", "pi", "mock"] as const satisfies readonly AgentProviderKind[];
 
 /**
  * Compile-time completeness for {@link ALL_KINDS}.
@@ -57,10 +57,14 @@ describe("TOOL_CATEGORIZERS", () => {
     }
   });
 
-  it("routes ACP through the ACP categorizer", () => {
-    // ACP's tokenizer resolves an unknown, non-identifier label to the
-    // strictest gate; Claude's map would have said fileWrite.
-    expect(getToolCategorizer("acp")("Run `rm -rf` to clear the index")).toBe("codeExecution");
+  it("routes pi through the name categorizer", () => {
+    // The shared name tokenizer resolves an unknown, non-identifier label to
+    // the strictest gate; Claude's map would have said fileWrite.
+    expect(getToolCategorizer("pi")("Run `rm -rf` to clear the index")).toBe("codeExecution");
+  });
+
+  it("has no entry for the retired acp kind", () => {
+    expect(Object.hasOwn(TOOL_CATEGORIZERS, "acp")).toBe(false);
   });
 
   /**

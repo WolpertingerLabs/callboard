@@ -26,7 +26,7 @@ export function resolveSessionLog(sessionId: string, metadata?: string | null) {
   for (const provider of getSessionProviders()) {
     if (meta.provider != null && meta.provider !== provider.kind) continue;
     try {
-      const resolved = provider.resolveSession(sessionId, { acpProviderId: meta.acpProviderId });
+      const resolved = provider.resolveSession(sessionId);
       if (resolved) matches.push({ provider, ...resolved });
     } catch {
       return null;

@@ -136,7 +136,7 @@ export default function ForkPointMarker({ forks, align }: { forks: ChatTreeNode[
                 title={`Status: ${node.nativeAgent?.lifecycle ?? node.status}`}
                 style={{ width: 7, height: 7, borderRadius: "50%", flexShrink: 0, background: STATUS_DOT[node.status] || "var(--text-muted)" }}
               />
-              <ProviderBadge provider={node.provider === "claude-code" ? undefined : node.provider} acpProviderId={node.acpProviderId} compact />
+              <ProviderBadge provider={node.provider === "claude-code" ? undefined : node.provider} compact />
               <span style={{ fontSize: 12, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
                 {node.title || node.chatId}
               </span>

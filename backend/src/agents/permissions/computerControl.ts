@@ -1,5 +1,6 @@
 /** Explicit managed names only: never infer control authority from display text.
- * OpenCode sanitizes the MCP server/tool separator to `_`; Claude/Codex use
+ * Some engines sanitize the MCP server/tool separator to `_` (the retired
+ * ACP harness's OpenCode did; kept as generic coverage); Claude/Codex use
  * `mcp__server__tool`. Bare aliases are used by the pi custom-tool bridge.
  * This is categorization, NOT authorization; the owner-bound service gates calls.
  */

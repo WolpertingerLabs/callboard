@@ -28,16 +28,16 @@
  *
  * The probe this replaces read real transcripts out of `~`, which is how the
  * numbers were originally established but is not something a test can do: two
- * of the four engines have no sessions on any given machine, and the two that do
+ * of the engines may have no sessions on any given machine, and the two that do
  * would make the assertions depend on whatever the developer last ran. Each
  * fixture below is instead written in its engine's real on-disk shape, and each
  * says where that shape was verified against.
  *
  * Where an engine has a translation layer between the wire and the transcript
- * (ACP writes callboard's own normalized `AgentEvent`s), the fixture
- * feeds *engine-native* input through the adapter's real translation functions
- * rather than hand-writing the normalized form — otherwise this would test the
- * parser against a transcript no adapter would ever produce.
+ * (the retired ACP harness wrote callboard's own normalized `AgentEvent`s), the
+ * fixture should feed *engine-native* input through the adapter's real
+ * translation functions rather than hand-writing the normalized form —
+ * otherwise it tests the parser against a transcript no adapter would produce.
  *
  * ## Calibration
  *
@@ -62,7 +62,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ParsedMessage } from "shared/types/index.js";
 
-// Before anything reads `paths.ts` — the ACP/pi roots are all derived from
+// Before anything reads `paths.ts` — the pi root is derived from
 // DATA_DIR, which is captured at module load. See #302.
 const tmpRoot = mkdtempSync(join(tmpdir(), "callboard-debug-panel-"));
 process.env.CALLBOARD_DATA_DIR = tmpRoot;
@@ -70,9 +70,6 @@ process.env.CALLBOARD_DATA_DIR = tmpRoot;
 const { parseMessages } = await import("./claude-code/sessionParser.js");
 const { parseCodexRollout } = await import("./codex/sessionParser.js");
 const { parsePiSession } = await import("./pi/sessionParser.js");
-const { parseAcpTranscript } = await import("./acp/sessionParser.js");
-const { AcpTranscriptWriter } = await import("./acp/transcript.js");
-const { buildAcpUsage, mapStopReason, translateAcpUpdate, AcpToolCallBuffer } = await import("./acp/messageAdapter.js");
 const { CURRENT_SESSION_VERSION } = await import("@earendil-works/pi-coding-agent");
 
 afterAll(() => rmSync(tmpRoot, { recursive: true, force: true }));
@@ -104,8 +101,8 @@ const PROBES = {
    * key, so its blocks collapse to one row instead of multiplying its usage.
    *
    * An engine that emits **one** message per generation needs none: the panel's
-   * `__ungrouped_N` fallback already numbers rows per message. That is why acp
-   * is `unavailable` here rather than carrying a positional key.
+   * `__ungrouped_N` fallback already numbers rows per message. (That is why the
+   * retired acp column was `unavailable` here rather than carrying a positional key.)
    */
   grouping: (m: ParsedMessage) => (m.generationKey ?? m.requestId) != null,
   /** Req ID column — the engine's own id, never a synthesized one. */
@@ -143,9 +140,6 @@ const unavailable = (because: string): Cell => ({ kind: "none", because });
 
 /** Reasons repeated across engines, named once so they read as one decision. */
 const NO_ANTHROPIC_CONCEPT = "an Anthropic-only service field; no other vendor has the concept, let alone the datum";
-const NO_KEY_NEEDED =
-  "one message per turn carries the usage, so the panel's own `__ungrouped_N` fallback already gives each turn its own row. " +
-  "A positional key was added here and removed again: it changed the row count from N to N.";
 
 // ── The matrix ──────────────────────────────────────────────────────
 
@@ -180,29 +174,6 @@ const MATRIX: Record<string, Record<Field, Cell>> = {
     cacheRead: every(),
     cacheWrite: unavailable("OpenAI bills no prompt-cache writes and reports no such metric; `token_count` has `cached_input_tokens` and no counterpart"),
     cost: unavailable("a rollout records no price; a subscription run is not billed per call"),
-    speed: unavailable(NO_ANTHROPIC_CONCEPT),
-    timestamp: every(),
-  },
-
-  acp: {
-    usage: every(),
-    model: every(),
-    stopReason: every(),
-    grouping: unavailable(NO_KEY_NEEDED),
-    requestId: unavailable(
-      "ACP mints no request id — neither the protocol nor `PromptResponse` has one. An id callboard invented would " +
-        "look like one a user could quote to a vendor's support, and none is needed for grouping.",
-    ),
-    cacheRead: some(
-      "`cachedReadTokens` is `number | null | undefined` in the ACP schema and only some vendors fill it. OpenCode does; " +
-        "the fixture's third turn is a vendor that reports neither cache figure, and its row's Cache R/W columns are blank. " +
-        "`every()` here would have told a maintainer that a blank column must be a callboard regression.",
-    ),
-    cacheWrite: some("as `cacheRead` — both are optional in the schema and a vendor may report neither"),
-    cost: some(
-      "cost rides on a separate `usage_update` beacon, not on `PromptResponse`, so a turn where the agent sent none has " +
-        "no cost — and after such a gap the next turn's step spans two turns and is dashed rather than misattributed",
-    ),
     speed: unavailable(NO_ANTHROPIC_CONCEPT),
     timestamp: every(),
   },
@@ -384,91 +355,6 @@ function codexMessages(): ParsedMessage[] {
 }
 
 /**
- * An ACP transcript, produced the way `AcpAgentQuery` produces one.
- *
- * The ACP-native values go through the adapter's own `translateAcpUpdate` /
- * `buildAcpUsage` / `mapStopReason` rather than being hand-written as normalized
- * events, so this exercises the whole wire → event → disk → `ParsedMessage`
- * chain.
- *
- * **Every figure the fixture feeds is cumulative**, because that is what ACP
- * sends — `Usage.inputTokens` is "Total input tokens across all turns" and
- * `totalTokens` is "Sum of all token types across session" in the pinned SDK. A
- * fixture of per-turn numbers would have encoded the bug as ground truth.
- *
- * Three turns, and the third is deliberately from a **vendor that reports no
- * cache figures and no cost beacon**: ACP's cache counts are
- * `number | null | undefined` and only some agents fill them, so an engine-wide
- * `every()` for those columns would be a claim about OpenCode dressed up as a
- * claim about ACP.
- */
-function acpMessages(): ParsedMessage[] {
-  const writer = new AcpTranscriptWriter("opencode", "acp-session-1", "/tmp/repo");
-  writer.writeHeader({ name: "opencode", version: "1.0.0" });
-
-  const buffer = new AcpToolCallBuffer();
-  const turn = (
-    text: string,
-    opts: { cumulativeCost?: number; inputTokens: number; outputTokens: number; cache?: { read: number; write: number; thought: number }; stopReason: string },
-  ): void => {
-    writer.writeUserMessage(`turn: ${text}`);
-    writer.writeEvent({ type: "session_started", sessionId: "acp-session-1" });
-    // The model rides in on an `adapter_specific` beacon rather than an event of
-    // its own: ACP reports the model as a *session config option*, so nothing in
-    // the turn's event stream carries it. `AcpAgentQuery` reads it back after
-    // `set_config_option` and emits exactly this — see its `turn_model` note.
-    writer.writeEvent({ type: "adapter_specific", adapter: "acp", payload: { kind: "turn_model", model: "anthropic/claude-opus-5" } });
-    for (const e of translateAcpUpdate({ sessionUpdate: "agent_message_chunk", content: { type: "text", text } } as never, buffer)) writer.writeEvent(e);
-    if (opts.cumulativeCost !== undefined) {
-      for (const e of translateAcpUpdate(
-        { sessionUpdate: "usage_update", used: 100, size: 200, cost: { amount: opts.cumulativeCost, currency: "USD" } } as never,
-        buffer,
-      ))
-        writer.writeEvent(e);
-    }
-    const result = mapStopReason(opts.stopReason);
-    const usage = buildAcpUsage({
-      totalTokens: opts.inputTokens + opts.outputTokens,
-      inputTokens: opts.inputTokens,
-      outputTokens: opts.outputTokens,
-      // A vendor that reports none sends null, not zero — it has not measured
-      // zero cached reads, it does not count them.
-      thoughtTokens: opts.cache ? opts.cache.thought : null,
-      cachedReadTokens: opts.cache ? opts.cache.read : null,
-      cachedWriteTokens: opts.cache ? opts.cache.write : null,
-    } as never);
-    writer.writeEvent(usage ? { ...result, usage } : result);
-  };
-
-  turn("Reading it now.", { cumulativeCost: 0.01, inputTokens: 1200, outputTokens: 300, cache: { read: 900, write: 40, thought: 12 }, stopReason: "end_turn" });
-  turn("It says hello world.", {
-    cumulativeCost: 0.03,
-    inputTokens: 2600,
-    outputTokens: 560,
-    cache: { read: 1800, write: 40, thought: 24 },
-    stopReason: "end_turn",
-  });
-  turn("And a vendor that counts nothing.", { inputTokens: 3000, outputTokens: 600, stopReason: "end_turn" });
-
-  const messages = parseAcpTranscript(writer.filePath!);
-  const rows = panelRows(messages);
-  // Three turns, three rows — with no `generationKey` minted for any of them.
-  expect(rows).toHaveLength(3);
-  expect(groupCount(rows)).toBe(3);
-
-  // Differenced, not copied: turn 2's step is 2600-1200 in and 1800-900 of cache
-  // read. A row showing 2600 would claim the whole session's usage for one
-  // response, and 900/1800 down the column would read as a cache warming up.
-  expect(rows[1].usage).toMatchObject({ input_tokens: 1400, output_tokens: 260, cache_read_input_tokens: 900, cache_creation_input_tokens: 0 });
-  expect(rows[1].costUsd).toBeCloseTo(0.02, 10);
-  // The vendor that counts nothing leaves the columns blank rather than zero.
-  expect(rows[2].usage?.cache_read_input_tokens).toBeUndefined();
-  expect(rows[2].usage?.reasoning_tokens).toBeUndefined();
-  expect(rows[2].costUsd).toBeUndefined();
-  return messages;
-}
-
-/**
  * A pi session file, in pi's real version-3 shape.
  *
  * The assistant message shape is `@earendil-works/pi-ai`'s `AssistantMessage`,
@@ -575,7 +461,6 @@ const PARSED: Record<string, ParsedMessage[]> = {};
 beforeAll(() => {
   PARSED["claude-code"] = claudeCodeMessages();
   PARSED.codex = codexMessages();
-  PARSED.acp = acpMessages();
   PARSED.pi = piMessages();
 });
 
@@ -606,7 +491,7 @@ describe("responses debug panel: per-engine field coverage", () => {
    *
    * Keys repeat *within* an engine on purpose — that is what collapses one API
    * call's several blocks into one row — so what must hold is that no key is
-   * used by two engines. Rows with no key at all (acp — it needs none)
+   * used by two engines. Rows with no key at all (an engine that needs none)
    * are excluded rather than compared as `undefined`.
    */
   it("grouping keys never collide across engines", () => {

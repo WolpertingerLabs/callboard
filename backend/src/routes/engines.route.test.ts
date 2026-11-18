@@ -99,7 +99,7 @@ beforeEach(() => {
   mocks.getInstallCapability.mockImplementation(async ({ local }: { local: boolean }) =>
     local ? { oneClick: true } : { oneClick: false, code: "not-local", refusal: "not a direct local connection" },
   );
-  mocks.startEngineInstall.mockReturnValue({ ok: true, installId: "inst-1", engineId: "opencode", package: "opencode-ai", command: "npm install -g opencode-ai" });
+  mocks.startEngineInstall.mockReturnValue({ ok: true, installId: "inst-1", engineId: "claude-code", package: "@anthropic-ai/claude-code", command: "npm install -g @anthropic-ai/claude-code" });
   mocks.installRunEvents.mockReturnValue([]);
   mocks.isInstallRunDone.mockReturnValue(false);
   mocks.subscribeToInstallRun.mockReturnValue(() => undefined);
@@ -213,7 +213,7 @@ describe("the client-scope gate", () => {
     // owns what the service then does with it (403, nothing spawned); the
     // service is mocked here, so asserting a status would only be asserting the
     // mock.
-    await call(installHandler, { ...SPOOFED_XFF_REQ, params: { id: "opencode" } });
+    await call(installHandler, { ...SPOOFED_XFF_REQ, params: { id: "claude-code" } });
     expect(mocks.startEngineInstall).toHaveBeenCalledWith(expect.objectContaining({ capability: expect.objectContaining({ oneClick: false }) }));
 
     // The stream route refuses on its own, before it looks the run up.
@@ -254,24 +254,24 @@ describe("the client-scope gate", () => {
 
 describe("POST /api/engines/:id/install", () => {
   it("passes the id through as a selector and answers with an installId", async () => {
-    const { status, body } = await call(installHandler, { ...LOCAL_REQ, params: { id: "opencode" } });
+    const { status, body } = await call(installHandler, { ...LOCAL_REQ, params: { id: "claude-code" } });
     expect(status).toBe(200);
-    expect(body).toEqual({ installId: "inst-1", engineId: "opencode", package: "opencode-ai", command: "npm install -g opencode-ai" });
+    expect(body).toEqual({ installId: "inst-1", engineId: "claude-code", package: "@anthropic-ai/claude-code", command: "npm install -g @anthropic-ai/claude-code" });
     // The id reaches the service as an id and nothing else — there is no argv,
     // no command and no package parameter on this endpoint to smuggle one in.
-    expect(mocks.startEngineInstall).toHaveBeenCalledWith(expect.objectContaining({ engineId: "opencode" }));
+    expect(mocks.startEngineInstall).toHaveBeenCalledWith(expect.objectContaining({ engineId: "claude-code" }));
   });
 
   it("hands the service the capability derived from this request, not a fresh one", async () => {
     // The card and the endpoint must agree by construction: the button is shown
     // iff pressing it is allowed. Sharing one evaluation is how that holds.
-    await call(installHandler, { ...PROXIED_REQ, params: { id: "opencode" } });
+    await call(installHandler, { ...PROXIED_REQ, params: { id: "claude-code" } });
     expect(mocks.startEngineInstall).toHaveBeenCalledWith(expect.objectContaining({ capability: expect.objectContaining({ oneClick: false }) }));
   });
 
   it("returns the service's refusal verbatim, in both fields a caller might read", async () => {
     mocks.startEngineInstall.mockReturnValue({ ok: false, code: "prefix-not-writable", refusal: "npm's global prefix is not writable.", status: 422 });
-    const { status, body } = await call(installHandler, { ...LOCAL_REQ, params: { id: "opencode" } });
+    const { status, body } = await call(installHandler, { ...LOCAL_REQ, params: { id: "claude-code" } });
     expect(status).toBe(422);
     expect(body).toEqual({ error: "npm's global prefix is not writable.", refusal: "npm's global prefix is not writable.", code: "prefix-not-writable" });
   });
@@ -304,7 +304,7 @@ describe("GET /api/engines/installs/:installId/stream", () => {
 
   it("replays the transcript so far and then follows the run", async () => {
     mocks.installRunEvents.mockReturnValue([
-      { type: "install_started", installId: "inst-1", engineId: "opencode", package: "opencode-ai", command: "npm install -g opencode-ai", startedAt: "t" },
+      { type: "install_started", installId: "inst-1", engineId: "claude-code", package: "@anthropic-ai/claude-code", command: "npm install -g @anthropic-ai/claude-code", startedAt: "t" },
       { type: "install_output", stream: "stdout", line: "added 1 package" },
     ]);
     const { sse, ended } = await call(streamHandler, { ...LOCAL_REQ, params: { installId: "inst-1" } });

@@ -13,7 +13,7 @@
  *
  * | Caller | Why it cannot be stale |
  * |---|---|
- * | `NewChatPanel` | gates a provider button; stale ⇒ an uninstalled CLI is offered and the chat fails at start |
+ * | `NewChatPanel` | gates the Codex button; stale ⇒ an unconfigured harness is offered and the chat fails at start |
  * | `AboutSettings` | its whole job is reporting current daemon state, including the update banner |
  * | `CronJobs` | gates a *scheduled* job; stale ⇒ failure hours later, unattended |
  *
@@ -57,7 +57,7 @@ const AGENT: AgentConfig = { name: "Test", alias: "test", description: "", creat
 beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
-  mocks.getSystemInfo.mockResolvedValue({ version: "1.0.0", models: [], acpProviders: [], codexConfigured: true });
+  mocks.getSystemInfo.mockResolvedValue({ version: "1.0.0", models: [], codexConfigured: true });
   // Nothing here asserts on the network, but the components under test have
   // other mount-time fetches, and "empty" has to be the shape each unwrapper
   // expects rather than a bare `{}`: `getAgentCronJobs` returns `data.jobs`, so
@@ -97,14 +97,20 @@ describe("callers that must not be served a cached payload", () => {
 describe("callers for which the cache is the right default", () => {
   /**
    * The other half of the contract, and the reason this file is not just "pass
-   * `refresh` everywhere". This one reads the payload to populate a datalist —
+   * `refresh` everywhere". This one reads the payload to populate a model list —
    * it gates nothing — so paying a round trip on every mount would be cost with
    * no answer attached. A future edit that "fixes" it by adding `refresh` should
    * have to change a test that says why that is not a fix.
+   *
+   * (This used to be `ModelAliasesSettings`, whose only system-info read served
+   * the retired ACP harness's column.) Imported after `resetModules` because the
+   * selector keeps a module-level model cache that an earlier mount in this file
+   * would already have filled, and a filled cache never calls out at all.
    */
-  it("ModelAliasesSettings takes the cached default", async () => {
-    const ModelAliasesSettings = (await import("./pages/settings/ModelAliasesSettings")).default;
-    render(wrap(<ModelAliasesSettings />));
+  it("ClaudeModelSelector takes the cached default", async () => {
+    vi.resetModules();
+    const ClaudeModelSelector = (await import("./components/ClaudeModelSelector")).default;
+    render(wrap(<ClaudeModelSelector value="" onChange={() => {}} />));
 
     await waitFor(() => expect(mocks.getSystemInfo).toHaveBeenCalled());
     expect(askedFresh()).toBe(false);

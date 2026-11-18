@@ -187,7 +187,6 @@ type DiscoveredSession = {
   createdAt: Date;
   updatedAt: Date;
   providerKind: string;
-  acpProviderId?: string;
 };
 
 /**
@@ -735,11 +734,11 @@ chatsRouter.get("/", (req, res) => {
           if (!sessionIds.includes(s.sessionId)) {
             sessionIds.push(s.sessionId);
           }
-          const built = nativeMetadata(s.filePath, s.sessionId, withSessionProviderMeta({ ...meta, session_ids: sessionIds }, s.providerKind, s.acpProviderId), false);
+          const built = nativeMetadata(s.filePath, s.sessionId, withSessionProviderMeta({ ...meta, session_ids: sessionIds }, s.providerKind), false);
           metadata = JSON.stringify(built);
           parsed = built;
         } catch {
-          metadata = withSessionProvider(JSON.stringify({ session_ids: [s.sessionId] }), s.providerKind, s.acpProviderId);
+          metadata = withSessionProvider(JSON.stringify({ session_ids: [s.sessionId] }), s.providerKind);
         }
         // Augment with file storage data while keeping filesystem as source of truth for timestamps
         const row = {
@@ -764,7 +763,7 @@ chatsRouter.get("/", (req, res) => {
         return row;
       } else {
         // No file record found, create from filesystem only - this is normal
-        const parsed = nativeMetadata(s.filePath, s.sessionId, withSessionProviderMeta({ session_ids: [s.sessionId] }, s.providerKind, s.acpProviderId), false);
+        const parsed = nativeMetadata(s.filePath, s.sessionId, withSessionProviderMeta({ session_ids: [s.sessionId] }, s.providerKind), false);
         const row = {
           id: s.sessionId,
           // Keep original folder (may be a worktree)
@@ -801,33 +800,23 @@ chatsRouter.get("/", (req, res) => {
      * reading it last is a reordering of I/O, not of rows.
      */
     const attachPreview = (chat: any) => {
-      // Reconcile only returned legacy/ACP rows, not the over-fetched list.
+      // Reconcile only returned legacy rows, not the over-fetched list.
       // A discovered historical log alone cannot establish a multi-session
-      // chat's owner, and an ACP ID may exist under multiple vendor directories.
+      // chat's owner.
       const stored = fileChatsById.get(chat.id);
       const original = parseChatMetadata(stored?.metadata);
       const listed = parseChatMetadata(chat.metadata);
-      if ((stored && original.provider == null) || listed.provider === "acp") {
+      if (stored && original.provider == null) {
         const resolved = findChat(chat.id, false);
         if (resolved) {
           const routing = parseChatMetadata(resolved.metadata);
-          if (original.provider == null) delete listed.provider;
-          if (!original.acpProviderId) delete listed.acpProviderId;
+          delete listed.provider;
           if (routing.provider != null) listed.provider = routing.provider;
-          if (routing.acpProviderId) listed.acpProviderId = routing.acpProviderId;
           chat = {
             ...chat,
             metadata: JSON.stringify(listed),
             session_log_path: resolved.session_log_path,
             ...(resolved._provider_resolution_error && { _provider_resolution_error: resolved._provider_resolution_error }),
-          };
-        } else if (listed.provider === "acp") {
-          delete listed.acpProviderId;
-          chat = {
-            ...chat,
-            metadata: JSON.stringify(listed),
-            session_log_path: null,
-            _provider_resolution_error: "ACP session is missing or has ambiguous vendor ownership",
           };
         }
       }
@@ -1307,7 +1296,7 @@ chatsRouter.post("/:id/fork", async (req, res) => {
           required: ["timestamp"],
           properties: {
             timestamp: { type: "string", description: "ISO timestamp of the message to fork at (history up to and including it is copied)" },
-            provider: { type: "string", enum: ["claude-code", "codex", "pi"], description: "Target harness. Omit to fork within the current harness of the chat (higher fidelity). Every routable kind except acp - see the route implementation for why acp is refused." },
+            provider: { type: "string", enum: ["claude-code", "codex", "pi"], description: "Target harness. Omit to fork within the current harness of the chat (higher fidelity). Any routable kind." },
             model: { type: "string", description: "Model for the new chat. Required-ish on a harness switch, where the source model id is meaningless to the target." },
             effort: { type: "string", description: "Reasoning effort for the new chat (codex only)." }
           }
@@ -1336,27 +1325,6 @@ chatsRouter.post("/:id/fork", async (req, res) => {
     return res.status(400).json({ error: `Unknown target provider "${req.body.provider}"` });
   }
   const targetKind: InternalProviderKind = isRoutableProvider(req.body.provider) ? req.body.provider : providerKind;
-  // Forking INTO ACP is refused on the kind itself, and this guard is the
-  // route's own invariant rather than a consequence of some provider's missing
-  // method. Two independent reasons, either one sufficient:
-  //
-  //  1. `"acp"` names a wire format, not a harness. The vendor rides in
-  //     `acpProviderId`, which this route does not accept, so a fork here could
-  //     only stamp a chat with a kind and no vendor — permanently unrunnable.
-  //  2. Even given a vendor it could not work. ACP session state lives inside
-  //     the agent's process, and the protocol gives a client no way to hand an
-  //     agent a conversation it did not have; a seeded transcript would render
-  //     correctly and lose every bit of context on the next message.
-  //
-  // `AcpSessionProvider` implements neither `forkSession` nor `seedSession`
-  // today, which would also produce a 400 — but that is its decision to revisit,
-  // and while `"acp"` was outside `ROUTABLE_PROVIDER_KINDS` the allowlist was
-  // the real guard. Now that a request may name the kind, the guard has to live
-  // here, or adding a transcript-seeding method later would silently start
-  // minting wedged chats.
-  if (targetKind === "acp") {
-    return res.status(400).json({ error: `Forking into ${providerLabel("acp")} is not supported` });
-  }
   const targetProvider = getSessionProviders().find((p) => p.kind === targetKind);
   if (!targetProvider) {
     return res.status(400).json({ error: `Forking into ${providerLabel(targetKind)} is not supported` });
@@ -1549,7 +1517,7 @@ function announceSupersede(result: SupersedeResult, chat: any, source: ForkSourc
 chatsRouter.post("/:id/continue-from", (req, res) => {
   // #swagger.tags = ['Chats']
   // #swagger.summary = 'Continue a chat from a message, in its place'
-  // #swagger.description = 'Creates a new chat whose history is this chat up to and including the message at the given timestamp (a same-harness fork), and puts it in this chat\'s place: it inherits the parent link, role, fork point, sidebar folder, space, pin and card face fields. The original chat is kept as a child of the new one with chatRole "superseded", forkedAt set to the timestamp and its title prefixed "Original: ". Children of the original whose fork point is at or before the timestamp move to the new chat; the rest, and children with no fork point, stay. When the original was a root, every chat stamped with it as rootChatId is re-stamped to the new chat. Starred messages at or before the timestamp are copied. Refused while the chat is running or waiting on a prompt, for ACP chats and for native Codex subagents.'
+  // #swagger.description = 'Creates a new chat whose history is this chat up to and including the message at the given timestamp (a same-harness fork), and puts it in this chat\'s place: it inherits the parent link, role, fork point, sidebar folder, space, pin and card face fields. The original chat is kept as a child of the new one with chatRole "superseded", forkedAt set to the timestamp and its title prefixed "Original: ". Children of the original whose fork point is at or before the timestamp move to the new chat; the rest, and children with no fork point, stay. When the original was a root, every chat stamped with it as rootChatId is re-stamped to the new chat. Starred messages at or before the timestamp are copied. Refused while the chat is running or waiting on a prompt, for chats on a retired harness and for native Codex subagents.'
   /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
   /* #swagger.requestBody = {
     required: true,
@@ -1567,7 +1535,7 @@ chatsRouter.post("/:id/continue-from", (req, res) => {
     }
   } */
   /* #swagger.responses[201] = { description: "{ chat, original }: the new chat and the original as rewritten" } */
-  /* #swagger.responses[400] = { description: "Missing timestamp, no messages at or before it, or the provider cannot be continued (ACP, retired)" } */
+  /* #swagger.responses[400] = { description: "Missing timestamp, no messages at or before it, or the provider cannot be continued (retired)" } */
   /* #swagger.responses[404] = { description: "Chat not found" } */
   /* #swagger.responses[409] = { description: "The chat is running, waiting on a prompt, a native Codex subagent, or moved in the tree (expectedParentChatId)" } */
   const resolved = resolveSupersedeRequest(req, "continued");
@@ -1640,7 +1608,7 @@ export const rerunTiming = { startTimeoutMs: RERUN_START_TIMEOUT_MS };
 chatsRouter.post("/:id/rerun", async (req, res) => {
   // #swagger.tags = ['Chats']
   // #swagger.summary = 'Rerun a prompt, in the chat\'s place'
-  // #swagger.description = 'Resolves the user prompt at the given timestamp — or, for an assistant message, the user turn it replies to — and creates a new chat whose history is this chat strictly before that prompt, put in this chat\'s place exactly as POST /chats/:id/continue-from does (the original becomes a "superseded" child, titled "Original: …"). The prompt\'s text (all of its blocks) and image attachments are then sent to the new chat as a fresh turn; connect to GET /chats/{newId}/stream to watch it. Rerunning a chat\'s opening prompt starts a fresh session on the same harness, model and settings. Slash commands, compaction summaries and team messages cannot be rerun. Refused while the chat is running or waiting on a prompt, for ACP chats and for native Codex subagents.'
+  // #swagger.description = 'Resolves the user prompt at the given timestamp — or, for an assistant message, the user turn it replies to — and creates a new chat whose history is this chat strictly before that prompt, put in this chat\'s place exactly as POST /chats/:id/continue-from does (the original becomes a "superseded" child, titled "Original: …"). The prompt\'s text (all of its blocks) and image attachments are then sent to the new chat as a fresh turn; connect to GET /chats/{newId}/stream to watch it. Rerunning a chat\'s opening prompt starts a fresh session on the same harness, model and settings. Slash commands, compaction summaries and team messages cannot be rerun. Refused while the chat is running or waiting on a prompt, for chats on a retired harness and for native Codex subagents.'
   /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
   /* #swagger.requestBody = {
     required: true,
@@ -1659,7 +1627,7 @@ chatsRouter.post("/:id/rerun", async (req, res) => {
     }
   } */
   /* #swagger.responses[201] = { description: "{ chat, original, prompt, runError?, promptText? }: the new chat (running), the original as rewritten, and the prompt timestamp rerun. runError (with promptText, so a client can restore it as a draft) is set when the new chat is in place but its run could not be started." } */
-  /* #swagger.responses[400] = { description: "Missing timestamp, no rerunnable prompt at or before it, an attachment no longer stored, or the provider cannot be continued (ACP, retired)" } */
+  /* #swagger.responses[400] = { description: "Missing timestamp, no rerunnable prompt at or before it, an attachment no longer stored, or the provider cannot be continued (retired)" } */
   /* #swagger.responses[404] = { description: "Chat not found" } */
   /* #swagger.responses[409] = { description: "The chat is running, waiting on a prompt, a native Codex subagent, or moved in the tree (expectedParentChatId). When a rerun of the opening prompt had already started its fresh chat, chatId names it: it runs on as a chat of its own." } */
   /* #swagger.responses[502] = { description: "Rerunning the opening prompt: the fresh chat failed to start. chatId is set if it exists anyway." } */
@@ -2879,7 +2847,7 @@ function deleteOneChat(id: string, storedRecord?: SharedChat | null): string {
   const provider = getSessionProviders().find((p) => p.kind === (meta.provider ?? "claude-code"));
   // Delete only the authoritative namespace, and only then remove metadata.
   // A routing failure must not partially delete a stored chat.
-  if (provider) provider.deleteSessionFiles(chat.session_id, { acpProviderId: meta.acpProviderId });
+  if (provider) provider.deleteSessionFiles(chat.session_id);
   // The same record `findChat` resolved above, not a second lookup for it: on
   // a miss that lookup is the whole-directory scan this parameter exists to
   // avoid, and it would answer identically — nothing between here and there

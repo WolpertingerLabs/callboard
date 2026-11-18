@@ -132,6 +132,22 @@ describe("set_model_alias merge semantics", () => {
     expect(cline.safeParse("").success).toBe(true);
   });
 
+  it("treats a retired acp (OpenCode) target the same way: kept on merge, clearable, never settable", async () => {
+    settings.modelAliases = [{ name: "coder", targets: { codex: "gpt-5.5", acp: "opencode/gpt-5.5" } }];
+
+    const kept = await call("set_model_alias", { name: "coder", pi: "google/gemini-3.6-flash" });
+    expect(aliasNamed(kept, "coder")?.targets).toEqual({ codex: "gpt-5.5", acp: "opencode/gpt-5.5", pi: "google/gemini-3.6-flash" });
+
+    const cleared = await call("set_model_alias", { name: "coder", acp: "" });
+    expect(aliasNamed(cleared, "coder")?.targets).toEqual({ codex: "gpt-5.5", pi: "google/gemini-3.6-flash" });
+
+    const shape = buildModelAliasTools().find((t) => t.name === "set_model_alias")!.inputSchema;
+    const acp = z.object(shape).shape.acp;
+    expect(acp.safeParse("opencode/gpt-5.5").success).toBe(false);
+    expect(acp.safeParse("").success).toBe(true);
+    expect(acp.safeParse(undefined).success).toBe(true);
+  });
+
   it("retires the legacy openRouterModelAliases map on write", async () => {
     settings.openRouterModelAliases = { planner: "anthropic/claude-opus-4.8" };
 

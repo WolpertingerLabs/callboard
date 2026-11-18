@@ -307,7 +307,7 @@ export function loadComputerUsePolicy(chatId: string): HostPolicy {
   // fingerprint (session ids, last branch, model, folder) used to be in here,
   // and a nudge resume appending a session id or an acknowledged branch drift
   // revoked the browser mid-turn with "permissions changed".
-  return { policy, signature: JSON.stringify([policy, routing.provider, routing.acpProviderId]) };
+  return { policy, signature: JSON.stringify([policy, routing.provider]) };
 }
 export function controlError(code: string, message: string): Error & { code: string } {
   return Object.assign(new Error(message), { code });

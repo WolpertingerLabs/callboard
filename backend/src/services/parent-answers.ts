@@ -273,7 +273,7 @@ export function childPromptWaitNote(releasedBy: string | undefined): string | nu
   const split = rest.indexOf(":");
   const childId = (split >= 0 ? rest.slice(0, split) : rest).replace(/[^A-Za-z0-9_-]/g, "?").slice(0, 80);
   // Both halves came through a free-form string; the tool name is engine-
-  // supplied (unvalidated on ACP), and this note goes into the parent's context.
+  // supplied (not necessarily an identifier), and this note goes into the parent's context.
   const tool = split >= 0 ? sanitizeToolName(rest.slice(split + 1)) : "a tool";
   return (
     `This wait ended early because child chat ${childId} needs approval for ${tool}. Call list_pending_requests to see it, then ` +

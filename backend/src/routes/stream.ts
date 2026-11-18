@@ -9,7 +9,6 @@ import { controlOriginError } from "../auth.js";
 import { noteComputerControlAtCreation } from "../services/computer-use-policy.js";
 import { isRoutableProvider, type AgentProviderKind } from "../agents/ports/AgentProvider.js";
 import { sendRetiredProviderError } from "../utils/route-errors.js";
-import { listAcpVendorIds, resolveAcpVendorPreset } from "../agents/adapters/acp/vendors.js";
 import type { EffortLevel } from "shared/types/index.js";
 import { sessionRegistry } from "../services/session-registry.js";
 import { anyUploadExists, attachmentNamesOf, loadImageBuffers } from "../services/image-storage.js";
@@ -105,7 +104,6 @@ streamRouter.post("/new/message", async (req, res) => {
             cardId: { type: "string", description: "Deprecated no-op. Cards are derived from the chat lineage tree — a top-level chat is a card automatically and every child joins its root. Accepted (and ignored) so older clients keep working." },
             createCard: { type: "boolean", description: "Deprecated no-op. A top-level chat is a card automatically; use PATCH /api/cards/{rootChatId} with hidden:true to opt a card out of the board. Accepted (and ignored) so older clients keep working." },
             cardCategory: { type: "string", description: "Deprecated no-op (was used with createCard). Use PATCH /api/cards/{rootChatId} to set the category. Accepted and ignored." },
-            acpProviderId: { type: "string", description: "Which ACP vendor runs the chat. Required when provider is \'acp\', ignored otherwise. Must name a configured preset (see GET /api/system-info acpProviders)." },
             clientTrackingId: { type: "string", description: "Client-generated temporary session id (must match new-<alphanumeric/_/->, max 80 chars) used as the session key until the real chat id exists, so POST /api/chats/{clientTrackingId}/stop can cancel the run during startup. Ignored when malformed or already in use." },
             branchConfig: {
               type: "object",
@@ -137,7 +135,6 @@ streamRouter.post("/new/message", async (req, res) => {
     systemPrompt,
     agentAlias,
     provider,
-    acpProviderId,
     effort,
     model,
     requireExplicitCompletion,
@@ -339,26 +336,6 @@ streamRouter.post("/new/message", async (req, res) => {
     // allowlist is silently dropped — same outcome as omitting the field.
     const safeProvider: AgentProviderKind | undefined = isRoutableProvider(provider) ? provider : undefined;
 
-    // `"acp"` is one kind covering many vendors, so it is the only kind whose
-    // request is incomplete without a second field. An unknown or missing
-    // `acpProviderId` is rejected outright rather than dropped like the other
-    // optional knobs: silently falling back to Claude Code would start a chat on
-    // a harness the user did not pick, and persisting `provider: "acp"` with no
-    // vendor would wedge the chat permanently — the exact failure that kept
-    // `"acp"` out of the routable list until this endpoint existed.
-    let safeAcpProviderId: string | undefined;
-    if (safeProvider === "acp") {
-      const requested = typeof acpProviderId === "string" ? acpProviderId.trim() : "";
-      if (!resolveAcpVendorPreset(requested)) {
-        return res.status(400).json({
-          error: requested
-            ? `Unknown ACP provider "${requested}". Configured providers: ${listAcpVendorIds().join(", ")}`
-            : `acpProviderId is required when provider is "acp". Configured providers: ${listAcpVendorIds().join(", ")}`,
-        });
-      }
-      safeAcpProviderId = requested;
-    }
-
     const safeEffort = typeof effort === "string" && effort.trim() ? (effort.trim() as EffortLevel) : undefined;
 
     // Per-chat model override — honored for every provider. For claude-code an
@@ -411,7 +388,6 @@ streamRouter.post("/new/message", async (req, res) => {
       systemPrompt,
       agentAlias,
       ...(safeProvider && { provider: safeProvider }),
-      ...(safeAcpProviderId && { acpProviderId: safeAcpProviderId }),
       ...(safeEffort && { effort: safeEffort }),
       ...(safeModel && { model: safeModel }),
       ...(safeClientTrackingId && { clientTrackingId: safeClientTrackingId }),
@@ -521,7 +497,7 @@ streamRouter.post("/:id/message", async (req, res) => {
     const storedChat = chatFileService.getChat(req.params.id);
     const expectedContext = chatContextFingerprint(storedChat);
     const storedMeta = parseChatMetadata(storedChat?.metadata);
-    const needsProvenance = !storedChat || storedMeta.provider == null || (storedMeta.provider === "acp" && !storedMeta.acpProviderId);
+    const needsProvenance = !storedChat || storedMeta.provider == null;
     const chatRecord = needsProvenance ? (findChatForStatus(req.params.id) ?? storedChat) : storedChat;
     if (!chatRecord) return res.status(404).json({ error: "Chat not found" });
     if (chatRecord._provider_resolution_error) return res.status(409).json({ error: chatRecord._provider_resolution_error });
@@ -596,7 +572,7 @@ streamRouter.post("/:id/message", async (req, res) => {
       // The original discovery snapshot is only valid for a still-absent record.
       chatFileService.upsertChat(chatRecord.id, chatRecord.folder, chatRecord.session_id, { metadata: JSON.stringify({ ...meta, ...fields }) });
     } else if (needsProvenance) {
-      const routing = parseChatMetadata(withSessionProvider("{}", meta.provider, meta.acpProviderId));
+      const routing = parseChatMetadata(withSessionProvider("{}", meta.provider));
       chatFileService.updateChatMetadata(fresh.id, { ...routing, ...fields }, { normalizeLegacy: true });
     } else if (Object.keys(fields).length > 0) {
       chatFileService.updateChatMetadata(req.params.id, fields);

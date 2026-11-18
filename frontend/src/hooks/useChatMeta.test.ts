@@ -18,6 +18,7 @@ describe("parseChatMeta", () => {
         jobRunId: "run-1",
         nativeAgent: NATIVE,
         parentChatId: "chat-explicit",
+        // A stale key from the retired ACP harness: ignored, not surfaced.
         acpProviderId: "opencode",
         model: "gpt-5",
         effort: "high",
@@ -31,7 +32,6 @@ describe("parseChatMeta", () => {
       nativeAgent: NATIVE,
       parentChatId: "chat-explicit",
       treeParentChatId: "chat-explicit",
-      acpProviderId: "opencode",
       model: "gpt-5",
       effort: "high",
       defaultPermissions: { fileRead: "allow" },
@@ -62,7 +62,6 @@ describe("parseChatMeta", () => {
     expect(meta.jobRunId).toBeUndefined();
     expect(meta.nativeAgent).toBeUndefined();
     expect(meta.parentChatId).toBeUndefined();
-    expect(meta.acpProviderId).toBeUndefined();
     expect(meta.model).toBeUndefined();
     expect(meta.effort).toBeUndefined();
     expect(meta.defaultPermissions).toBeUndefined();
@@ -80,11 +79,10 @@ describe("parseChatMeta", () => {
     expect(meta).toEqual(parseChatMeta("{}"));
   });
 
-  it("keeps an empty model and ACP id (an explicit 'no override'), but not an empty provider, parent or alias", () => {
-    const meta = parseChatMeta(JSON.stringify({ provider: "", model: "", acpProviderId: "", parentChatId: "", agentAlias: "" }));
+  it("keeps an empty model (an explicit 'no override'), but not an empty provider, parent or alias", () => {
+    const meta = parseChatMeta(JSON.stringify({ provider: "", model: "", parentChatId: "", agentAlias: "" }));
     expect(meta.provider).toBeNull();
     expect(meta.model).toBe("");
-    expect(meta.acpProviderId).toBe("");
     expect(meta.parentChatId).toBeUndefined();
     expect(meta.agentAlias).toBeUndefined();
   });
@@ -101,11 +99,11 @@ describe("parseChatMeta", () => {
 });
 
 describe("providerKindOf", () => {
-  it.each(["codex", "acp", "pi"])("keeps %s", (kind) => {
+  it.each(["codex", "pi"])("keeps %s", (kind) => {
     expect(providerKindOf(kind)).toBe(kind);
   });
 
-  it.each([null, "claude-code", "openrouter", "cline", "something-new"])("collapses %s to claude-code", (raw) => {
+  it.each([null, "claude-code", "openrouter", "cline", "acp", "something-new"])("collapses %s to claude-code", (raw) => {
     expect(providerKindOf(raw)).toBe("claude-code");
   });
 });

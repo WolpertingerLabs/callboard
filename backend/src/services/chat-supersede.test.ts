@@ -159,7 +159,7 @@ describe("supersedeChat — child", () => {
 });
 
 describe("checkSupersedable", () => {
-  it("refuses a running chat, one waiting on a prompt, an ACP chat and a native Codex subagent", () => {
+  it("refuses a running chat, one waiting on a prompt, a retired-harness chat and a native Codex subagent", () => {
     const chat = makeChat({});
     expect(checkSupersedable(chat)).toEqual({ ok: true });
     running.add(chat.id);
@@ -167,7 +167,14 @@ describe("checkSupersedable", () => {
     running.clear();
     openPrompt(chat.session_id);
     expect(checkSupersedable(chat)).toMatchObject({ ok: false, status: 409 });
-    expect(checkSupersedable(makeChat({ provider: "acp", acpProviderId: "opencode" }))).toMatchObject({ ok: false, status: 400 });
+    expect(checkSupersedable(makeChat({ provider: "acp", acpProviderId: "opencode" }))).toEqual({
+      ok: false,
+      status: 400,
+      error: "This chat ran on OpenCode, which has been removed. It cannot be continued or compressed.",
+    });
+    // Every retired kind is refused by name at this early gate, not only acp.
+    expect(checkSupersedable(makeChat({ provider: "cline" }))).toMatchObject({ ok: false, status: 400, error: expect.stringContaining("Cline") });
+    expect(checkSupersedable(makeChat({ provider: "openrouter" }))).toMatchObject({ ok: false, status: 400, error: expect.stringContaining("OpenRouter") });
     expect(checkSupersedable(makeChat({ provider: "codex", nativeAgent: { parentThreadId: "x" } }))).toMatchObject({ ok: false, status: 409 });
   });
 });

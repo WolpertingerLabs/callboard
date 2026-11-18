@@ -100,7 +100,7 @@ describe("actual POST /:id/message provenance preflight", () => {
     },
   );
 
-  it.each([{ provider: "claude-code" }, { provider: "acp", acpProviderId: "opencode" }])(
+  it.each([{ provider: "claude-code" }, { provider: "pi" }])(
     "keeps explicit routing authoritative ($provider)",
     async (metadata) => {
       const id = "explicit-" + ++counter;
@@ -223,12 +223,12 @@ describe("POST /:id/message persists its settings in one write", () => {
 });
 
 describe("POST preflight concurrent context changes", () => {
-  it.each(["session", "folder", "provider", "acpProviderId", "model", "effort", "session_ids", "lastBranch", "deletion"])(
+  it.each(["session", "folder", "provider", "model", "effort", "session_ids", "lastBranch", "deletion"])(
     "rejects concurrent %s changes without stale writes",
     async (field) => {
       const id = "race-" + ++counter;
       setSessionProvidersForTesting([provider("codex", id)]);
-      chatFileService.upsertChat(id, dir, id, { metadata: field === "acpProviderId" ? '{"provider":"acp","acpProviderId":"opencode"}' : "{}" });
+      chatFileService.upsertChat(id, dir, id, { metadata: "{}" });
       let concurrent: string;
       calls.validate.mockImplementationOnce(async () => {
         if (field === "deletion") {

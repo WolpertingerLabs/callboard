@@ -489,13 +489,24 @@ describe("POST /new/message — cancelled during worktree creation", () => {
   });
 
   it("a refusal after branch resolution ends the creation, so a later stop finds nothing", async () => {
+    // The only refusal left after branch resolution: the sole attachment is
+    // deleted between the up-front listing check and the post-resolution load,
+    // so there is nothing to send. (It used to be the retired ACP harness's
+    // unknown-vendor 400.)
+    const { ImageStorageService } = await import("../services/image-storage.js");
+    const { image } = await ImageStorageService.storeImage(Buffer.from("x"), "gone.md", "text/markdown");
+    imageHook.onLoad = () => {
+      ImageStorageService.deleteImage(image!.id);
+    };
     const repoDir = makeRepo("refused-after-resolve");
     const answered = await postNewMessage(
       repoDir,
       { newBranch: "feat/refused", baseBranch: "main", useWorktree: true },
-      { clientTrackingId: "new-cancel-5", provider: "acp", acpProviderId: "no-such-vendor" },
+      { clientTrackingId: "new-cancel-5", prompt: "", imageIds: [image!.id] },
     );
+    imageHook.onLoad = undefined;
     expect(answered.status).toBe(400);
+    expect(answered.body).toEqual({ error: "prompt is required" });
     expect(stop("new-cancel-5")).toEqual({ stopped: false });
   });
 

@@ -99,8 +99,7 @@ describe("resolveOpenRouterApiUrl — shared with the model catalog", () => {
 describe("isOpenRouterUtilityCompletionEnabled", () => {
   it("requires both the opt-in and a key", () => {
     expect(isOpenRouterUtilityCompletionEnabled(configured())).toBe(true);
-    // A key on its own belongs to some other feature (the ACP fallback, a routed
-    // native harness) and must not be spent on titles.
+    // A key on its own belongs to some other feature (a routed native harness) and must not be spent on titles.
     expect(isOpenRouterUtilityCompletionEnabled({ proxyMode: "local", openRouterApiKey: "sk-or-test" })).toBe(false);
     // The toggle on its own is a request we cannot serve.
     expect(isOpenRouterUtilityCompletionEnabled({ proxyMode: "local", openRouterUtilityCompletions: true })).toBe(false);

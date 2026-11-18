@@ -7,8 +7,8 @@
  * ## Why the key is derived, not read
  *
  * `ParsedMessage` carries no id that every engine fills. Claude Code has a
- * JSONL `uuid` and pi an entry id, but the parsers drop both, and ACP
- * transcripts have nothing per message at all. What every engine does carry is
+ * JSONL `uuid` and pi an entry id, but the parsers drop both (and the retired
+ * ACP harness's transcripts had nothing per message at all). What every engine does carry is
  * the `timestamp` — the same identity a fork is made from — and the transcript
  * is always re-read from disk (live updates refetch it rather than assembling
  * it from stream frames), so a timestamp is the same after a reload, a
@@ -22,9 +22,9 @@
  * Deliberately NOT the array index. Claude Code splices subagent messages into
  * the parent timeline by timestamp, so every parent message after a running
  * subagent's shifts while it works. Subagent (`teamName`) messages are also
- * left out of the ordinal count, for the same reason. Nor a content hash: ACP
- * coalesces a streamed message's deltas, so a message starred while
- * still being written would change hash as it grew.
+ * left out of the ordinal count, for the same reason. Nor a content hash: a
+ * harness that coalesces a streamed message's deltas (the retired ACP one did)
+ * would change a message's hash as it grew while still being written.
  */
 import type { ParsedMessage } from "../api";
 

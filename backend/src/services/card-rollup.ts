@@ -157,7 +157,7 @@ function claimRecheckBudget(now: number): boolean {
  */
 function cachedPreviewOf(sessionId: string, metadata?: string | null, now: number = Date.now()): string | null {
   const meta = parseChatMetadata(metadata);
-  const cacheKey = JSON.stringify([sessionId, meta.provider, meta.acpProviderId]);
+  const cacheKey = JSON.stringify([sessionId, meta.provider]);
   const cached = previewCache.get(cacheKey);
   if (cached) {
     if (cached.kind === "hit") return cached.preview;

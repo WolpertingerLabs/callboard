@@ -197,6 +197,36 @@ describe("PUT /api/agent-settings — retired Cline fields", () => {
 });
 
 /**
+ * The ACP harness (OpenCode) is gone as well. `acpOpenRouterApiKey` is a stored
+ * secret; it and the two other `acp*` fields go the same way as Cline's.
+ */
+describe("PUT /api/agent-settings — retired ACP fields", () => {
+  const RETIRED = {
+    acpUseOpenRouter: true,
+    acpOpenRouterApiKey: "sk-or-retired-acp-key",
+    acpProviderModels: { opencode: "opencode/gpt-5.5" },
+  };
+
+  it("neither echoes nor keeps them once anything is saved", async () => {
+    writeFileSync(SETTINGS_FILE, JSON.stringify({ ...REMOTE_SETTINGS, ...RETIRED }, null, 2));
+    const res = await put({ model: "claude-opus-5" });
+    expect(res.code).toBe(200);
+    for (const key of Object.keys(RETIRED)) {
+      expect(key in res.body, key).toBe(false);
+      expect(key in onDisk(), key).toBe(false);
+    }
+    expect(JSON.stringify(res.body)).not.toContain("retired-acp-key");
+    expect(onDisk().proxyMode).toBe("remote");
+  });
+
+  it("does not store them when a stale client sends them", async () => {
+    const res = await put({ ...RETIRED, model: "claude-opus-5" });
+    expect(res.code).toBe(200);
+    for (const key of Object.keys(RETIRED)) expect(key in onDisk(), key).toBe(false);
+  });
+});
+
+/**
  * pi had a hole the (since retired) Cline tab had first: this handler
  * destructures an explicit allowlist off `req.body` and silently ignores any
  * key it does not recognise, so a field missing from it saves nothing. The
@@ -244,52 +274,5 @@ describe("PUT /api/agent-settings — pi fields round-trip", () => {
     const saved = onDisk();
     expect(saved.piProviderId).toBe("openrouter");
     expect(saved.piModel).toBe("~anthropic/claude-haiku-latest");
-  });
-});
-
-/**
- * `acpProviderModels` — the per-ACP-vendor default model map. Same
- * round-trip/clear/reject shape as `openRouterModelAliases`, minus the
- * one-hop-alias check (these entries are vendor ids → raw model ids, not a
- * self-referential alias registry).
- */
-describe("PUT /api/agent-settings — acpProviderModels round-trip", () => {
-  it("persists a vendor's default model and round-trips it on a subsequent GET", async () => {
-    const res = await put({ acpProviderModels: { opencode: "opencode/gpt-5.5" } });
-    expect(res.code).toBe(200);
-    expect(res.body.acpProviderModels).toEqual({ opencode: "opencode/gpt-5.5" });
-    expect(onDisk().acpProviderModels).toEqual({ opencode: "opencode/gpt-5.5" });
-  });
-
-  it("clears a vendor's entry on an empty string, dropping the map once it's empty", async () => {
-    await put({ acpProviderModels: { opencode: "opencode/gpt-5.5" } });
-    expect(onDisk().acpProviderModels).toEqual({ opencode: "opencode/gpt-5.5" });
-
-    await put({ acpProviderModels: { opencode: "" } });
-    expect(onDisk().acpProviderModels).toBeUndefined();
-  });
-
-  it("clears only the edited vendor's entry, keeping other vendors' defaults", async () => {
-    await put({ acpProviderModels: { opencode: "opencode/gpt-5.5", "other-vendor": "other/model-1" } });
-    await put({ acpProviderModels: { opencode: "opencode/gpt-5.5", "other-vendor": "" } });
-    expect(onDisk().acpProviderModels).toEqual({ opencode: "opencode/gpt-5.5" });
-  });
-
-  it("400s on a non-object body, and does not write anything", async () => {
-    const res = await put({ acpProviderModels: "not an object" });
-    expect(res.code).toBe(400);
-    expect(res.body.error).toMatch(/acpProviderModels must be an object/);
-    expect(onDisk().acpProviderModels).toBeUndefined();
-  });
-
-  it("400s on an array, same as any other bad shape", async () => {
-    const res = await put({ acpProviderModels: ["opencode/gpt-5.5"] });
-    expect(res.code).toBe(400);
-  });
-
-  it("leaves acpProviderModels alone when an unrelated tab is saved", async () => {
-    await put({ acpProviderModels: { opencode: "opencode/gpt-5.5" } });
-    await put({ openRouterApiKey: "sk-or-other" });
-    expect(onDisk().acpProviderModels).toEqual({ opencode: "opencode/gpt-5.5" });
   });
 });

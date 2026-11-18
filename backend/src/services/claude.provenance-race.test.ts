@@ -30,7 +30,7 @@ afterEach(() => {
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 describe("sendMessage provenance validation concurrency", () => {
-  it.each(["session", "folder", "provider", "acpProviderId", "model", "effort", "session_ids", "lastBranch", "deletion"])(
+  it.each(["session", "folder", "provider", "model", "effort", "session_ids", "lastBranch", "deletion"])(
     "rejects concurrent %s changes before pinning routing or executing",
     async (field) => {
       const id = "low-level-race-" + ++counter;
@@ -42,7 +42,7 @@ describe("sendMessage provenance validation concurrency", () => {
           resolveSession: (sid: string) => (sid === id ? { logPath, folder: dir, displayFolder: dir } : null),
         } as unknown as SessionProvider,
       ]);
-      chatFileService.upsertChat(id, dir, id, { metadata: field === "acpProviderId" ? '{"provider":"acp","acpProviderId":"opencode"}' : "{}" });
+      chatFileService.upsertChat(id, dir, id, { metadata: "{}" });
       let concurrent: string;
       validate.mockImplementationOnce(async () => {
         if (field === "deletion") {

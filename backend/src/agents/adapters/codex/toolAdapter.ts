@@ -31,7 +31,7 @@ import { CALLBOARD_UI_SERVER, isCallboardUiTool } from "shared/types/callboard-u
  *
  * @see plans/codex-adapter-job.md (Step 6 tool-bridge — "Codex is an MCP client")
  * @see ../../shared/mcp-server-shim.ts (the stdio frontend Codex actually spawns)
- * @see ../../shared/socketToolServer.ts (the socket host shared with ACP)
+ * @see ../../shared/socketToolServer.ts (the socket host; once shared with the retired ACP harness)
  */
 import type { AnyToolDefinition, ToolServerSpec } from "../../ports/tools.js";
 import { buildSocketToolServer, shimSpawnCommand } from "../../shared/socketToolServer.js";

@@ -303,7 +303,6 @@ export default function ChatListItem({
   const ownChatStatusEmoji = meta.chatStatusEmoji || undefined;
   const ownSummon = meta.summon || undefined;
   const provider = meta.provider || undefined;
-  const acpProviderId = meta.acpProviderId || undefined;
   const ownJobRunId = meta.jobRunId || undefined;
   const ownJobStepId = meta.jobStepId || undefined;
   // Set by the list route on the run's representative row only — a run owns
@@ -586,7 +585,7 @@ export default function ChatListItem({
               <Zap size={10} style={{ color: "var(--chatlist-badge-triggered-text)" }} />
             </span>
           )}
-          <ProviderBadge provider={provider} acpProviderId={acpProviderId} compact />
+          <ProviderBadge provider={provider} compact />
           {summon && (
             <span
               title={`Summon: ${summon.message}`}

@@ -3,12 +3,12 @@
  *
  * ## The failure this suite exists for
  *
- * The payload is assembled from four probes started together, and `Promise.all`
+ * The payload is assembled from probes started together, and `Promise.all`
  * rejects on the *first* rejection. Express 4 does not catch an async handler's
  * rejection, so one throwing probe does not produce a 500 — it produces a
- * request that **never answers**, with the three good answers discarded along
- * with it. The New Chat picker's OpenCode button comes out of that payload, so
- * the visible symptom is a popup that never finishes loading.
+ * request that **never answers**, with the good answers discarded along with
+ * it. The New Chat panel reads that payload, so the visible symptom was a popup
+ * that never finished loading (it carried the retired ACP vendor list then).
  *
  * `resolveClaudeBinary()` is the probe that can do it, and not hypothetically:
  * its first act is `getClaudeCodeExecutableOverride()` → `getAgentSettings()` →
@@ -23,8 +23,7 @@
  * `resolveClaudeBinary` would have asserted the guard without proving there was
  * anything to guard against.
  *
- * `sdk-info` and the ACP availability list are stubbed because they spawn — an
- * Agent SDK query and a `which` per vendor — and this suite is about control
+ * `sdk-info` is stubbed because it spawns an Agent SDK query, and this suite is about control
  * flow, not about what is installed on the machine running it. `fetch` is
  * stubbed for the same reason: no test reaches the npm registry.
  */
@@ -37,7 +36,6 @@ const mocks = vi.hoisted(() => ({
   /** Flipped per-case to break `ensureDataDir` the way an unwritable $HOME does. */
   dataDirBroken: false,
   getSdkInfoAsync: vi.fn(),
-  listAcpProviderAvailability: vi.fn(),
   /** Codex's two credential answers, stubbed so no case depends on the running machine's $CODEX_HOME. */
   codexAuthSource: null as "api-key" | "auth.json" | "config.toml" | null,
   codexRouted: false,
@@ -63,11 +61,6 @@ vi.mock("./sdk-info.js", () => ({
   refreshSdkInfoCache: vi.fn(),
 }));
 
-vi.mock("../agents/adapters/acp/availability.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../agents/adapters/acp/availability.js")>()),
-  listAcpProviderAvailability: mocks.listAcpProviderAvailability,
-}));
-
 // Codex's credential answers come from the real `$CODEX_HOME` otherwise, which
 // makes "is a routed harness reported as natively logged in?" depend on whoever
 // runs the suite.
@@ -79,9 +72,6 @@ vi.mock("../agents/adapters/codex/codexAuth.js", async (importOriginal) => ({
 
 const { buildSystemInfo } = await import("./system-info.js");
 
-/** The vendor list the picker renders — the sibling answer a rejecting probe used to take down with it. */
-const VENDORS = [{ id: "opencode", label: "OpenCode", available: true, command: "opencode" }];
-
 const PKG_ROOT = mkdtempSync(join(tmpdir(), "callboard-system-info-"));
 writeFileSync(join(PKG_ROOT, "package.json"), JSON.stringify({ name: "@wolpertingerlabs/callboard", version: "9.9.9-test" }));
 
@@ -91,7 +81,6 @@ beforeEach(() => {
   mocks.codexRouted = false;
   vi.clearAllMocks();
   mocks.getSdkInfoAsync.mockResolvedValue({ account: null, models: [], fetchedAt: 0 });
-  mocks.listAcpProviderAvailability.mockResolvedValue(VENDORS);
   // No test talks to registry.npmjs.org. A rejection is also the shape an
   // offline daemon sees, which is the documented best-effort case.
   vi.stubGlobal(
@@ -109,7 +98,9 @@ describe("buildSystemInfo", () => {
     // silently reporting "unknown".
     const info = await buildSystemInfo({ pkgRoot: PKG_ROOT });
     expect(info.version).toBe("9.9.9-test");
-    expect(info.acpProviders).toEqual(VENDORS);
+    // The retired ACP harness's vendor list is no longer sent; old bundles read
+    // `info.acpProviders ?? []`.
+    expect(info).not.toHaveProperty("acpProviders");
     expect(typeof info.claudeCliVersion).toBe("string");
   });
 
@@ -129,13 +120,13 @@ describe("buildSystemInfo", () => {
   });
 
   it("does not discard the sibling probes' answers when one of them fails", async () => {
-    // The part that actually broke the UI. The ACP list had already succeeded;
-    // `Promise.all` threw it away to report a failure in an unrelated probe.
+    // The part that actually broke the UI. A sibling probe (the retired ACP
+    // harness's vendor list, at the time) had already succeeded; `Promise.all`
+    // threw it away to report a failure in an unrelated probe.
     mocks.dataDirBroken = true;
 
     const info = await buildSystemInfo({ pkgRoot: PKG_ROOT });
 
-    expect(info.acpProviders).toEqual(VENDORS);
     expect(info.version).toBe("9.9.9-test");
     expect(info.nodeVersion).toBe(process.version);
   });
@@ -152,17 +143,6 @@ describe("buildSystemInfo", () => {
     expect(info).not.toHaveProperty("clineProviderId");
     expect(info.claudeCodeUseOpenRouter).toBe(false);
     expect(info.codexUseOpenRouter).toBe(false);
-  });
-
-  it("reports an empty vendor list rather than failing when the ACP probe throws", async () => {
-    // An empty list reads as "no ACP vendors", which is the safe answer; a
-    // rejection would hang the request for everyone else's fields too.
-    mocks.listAcpProviderAvailability.mockRejectedValue(new Error("PATH exploded"));
-
-    const info = await buildSystemInfo({ pkgRoot: PKG_ROOT });
-
-    expect(info.acpProviders).toEqual([]);
-    expect(info.version).toBe("9.9.9-test");
   });
 
   it("survives an SDK info lookup that rejects", async () => {

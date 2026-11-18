@@ -159,7 +159,7 @@ describe("the kill switch, against a real file", () => {
       resetEngineInstallState();
       resetEngineInstallCaches();
       writeFileSync(SETTINGS_FILE, contents);
-      const result = startEngineInstall({ engineId: "opencode", capability: await askLocal(), clientKey: "127.0.0.1" });
+      const result = startEngineInstall({ engineId: "claude-code", capability: await askLocal(), clientKey: "127.0.0.1" });
       expect(result.ok).toBe(false);
       expect(result.ok === false && result.status).toBe(403);
     }

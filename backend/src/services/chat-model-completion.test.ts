@@ -29,7 +29,7 @@ vi.mock("./provider-session-options.js", () => ({
   buildPiExtras: async () => ({}),
 }));
 
-const { runChatModelCompletion, ChatModelCompletionError } = await import("./chat-model-completion.js");
+const { runChatModelCompletion } = await import("./chat-model-completion.js");
 
 afterEach(() => {
   queries.length = 0;
@@ -85,9 +85,5 @@ describe("runChatModelCompletion", () => {
   it("fails with the provider's reason when no text comes back", async () => {
     script.events = [{ type: "result", status: "error", reason: "invalid model" }];
     await expect(runChatModelCompletion({ provider: "pi", prompt: "p" })).rejects.toThrow(/invalid model/);
-  });
-
-  it("refuses ACP", async () => {
-    await expect(runChatModelCompletion({ provider: "acp", prompt: "p" })).rejects.toBeInstanceOf(ChatModelCompletionError);
   });
 });

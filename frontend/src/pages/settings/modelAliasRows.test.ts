@@ -84,6 +84,25 @@ describe("retired cline target round-trip", () => {
   });
 });
 
+describe("retired acp target round-trip", () => {
+  it("preserves a retired acp target when another column is edited", () => {
+    const stored: ModelAlias[] = [{ name: "worker", targets: { pi: "google/gemini-3.6-flash", acp: "opencode/gpt-5.5" } }];
+
+    const saved = roundTrip(stored, (r) => ({ ...r, codex: "gpt-5.5" }));
+
+    expect(saved).toEqual([{ name: "worker", targets: { pi: "google/gemini-3.6-flash", acp: "opencode/gpt-5.5", codex: "gpt-5.5" } }]);
+  });
+
+  it("keeps an alias whose only target is a retired acp id, and it validates", () => {
+    const stored: ModelAlias[] = [{ name: "legacy-opencode", targets: { acp: "opencode/gpt-5.5" } }];
+
+    const { value, errors } = validateModelAliases(roundTrip(stored));
+
+    expect(errors).toEqual([]);
+    expect(value).toEqual(stored);
+  });
+});
+
 describe("legacy-note gating", () => {
   const row = (over: Partial<AliasRow> = {}): AliasRow => ({
     name: "a",
@@ -118,5 +137,13 @@ describe("legacy-note gating", () => {
     expect(onlyRetiredTargets(row({ cline: "x", openrouter: "y" }))).toBe(true);
     expect(onlyRetiredTargets(row({ cline: "x", pi: "google/gemini-3.6-flash" }))).toBe(false);
     expect(hasRetiredTarget(row({ pi: "p" }))).toBe(false);
+  });
+
+  it("has no column for a retired acp target, and flags it as the sole target", () => {
+    const acpOnly = row({ acp: "opencode/gpt-5.5" });
+    expect(hasEditableTarget(acpOnly)).toBe(false);
+    expect(hasRetiredTarget(acpOnly)).toBe(true);
+    expect(onlyRetiredTargets(acpOnly)).toBe(true);
+    expect(onlyRetiredTargets(row({ acp: "x", codex: "gpt-5.5" }))).toBe(false);
   });
 });

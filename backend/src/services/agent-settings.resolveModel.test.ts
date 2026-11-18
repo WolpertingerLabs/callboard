@@ -25,21 +25,6 @@ describe("resolveModelAlias", () => {
     expect(resolveModelAlias("planner", "codex", s)).toBe("gpt-5.5");
   });
 
-  it("resolves an acp target, so an alias works on an ACP chat too", () => {
-    // ACP was excluded from HarnessProvider until the adapter could apply a
-    // named model (session/set_config_option). It can, so an alias points at a
-    // vendor's model id like any other harness. One key covers every ACP vendor
-    // — see HarnessProvider's doc-comment for why that is a documented edge.
-    const s = withAliases([{ name: "planner", targets: { "claude-code": "opus", acp: "opencode/gpt-5.5" } }]);
-    expect(resolveModelAlias("planner", "acp", s)).toBe("opencode/gpt-5.5");
-    expect(resolveSessionModel("planner", undefined, "acp", s)).toBe("opencode/gpt-5.5");
-    // An alias with no acp target leaves the vendor CLI's own choice standing,
-    // rather than borrowing another harness's model id.
-    expect(resolveModelAlias("worker", "acp", withAliases([{ name: "worker", targets: { codex: "gpt-5.5" } }]))).toBeUndefined();
-    // And a literal model id still passes straight through.
-    expect(resolveModelAlias("opencode/mimo-v2.5-free", "acp", s)).toBe("opencode/mimo-v2.5-free");
-  });
-
   it("returns undefined when the alias has no target for that provider", () => {
     const s = withAliases([{ name: "worker", targets: { openrouter: "moonshotai/kimi-k2" } }]);
     expect(resolveModelAlias("worker", "openrouter", s)).toBe("moonshotai/kimi-k2");
@@ -119,46 +104,5 @@ describe("resolveSessionModel", () => {
 
   it("passes a real slug override through, trimming whitespace", () => {
     expect(resolveSessionModel("  openai/gpt-4o ", "x", "openrouter", s)).toBe("openai/gpt-4o");
-  });
-});
-
-/**
- * `AgentSettings.acpProviderModels` is a Record<vendorId, modelId> rather than
- * a single field, because "acp" is one kind covering many vendors whose
- * catalogs share nothing (see the field's doc-comment). The caller in
- * `services/claude.ts` looks up `acpProviderModels[acpProviderId]` and hands
- * the result to `resolveSessionModel` as the provider default — exactly the
- * same call every other harness makes with its own settings field
- * (`codexModel`, `piModel`). These tests exercise that lookup +
- * resolveSessionModel call directly, since that IS the resolution logic; there
- * is nothing ACP-specific inside resolveSessionModel itself to test.
- */
-describe("resolveSessionModel — per-ACP-vendor default (acpProviderModels)", () => {
-  const settingsWithOpenCodeDefault: AgentSettings = {
-    proxyMode: "local",
-    acpProviderModels: { opencode: "opencode/gpt-5.5" },
-  };
-
-  it("resolves the vendor's stored default when there is no per-chat model", () => {
-    const vendorDefault = settingsWithOpenCodeDefault.acpProviderModels?.["opencode"];
-    expect(resolveSessionModel(undefined, vendorDefault, "acp", settingsWithOpenCodeDefault)).toBe("opencode/gpt-5.5");
-  });
-
-  it("still lets a per-chat override win over the vendor's stored default", () => {
-    const vendorDefault = settingsWithOpenCodeDefault.acpProviderModels?.["opencode"];
-    expect(resolveSessionModel("opencode/mimo-v2.5-free", vendorDefault, "acp", settingsWithOpenCodeDefault)).toBe("opencode/mimo-v2.5-free");
-  });
-
-  it("a different vendor's chat does not see this vendor's default", () => {
-    // The whole reason the field is keyed by vendor id: looking it up under
-    // any OTHER vendor's id (as the caller does, keyed by acpProviderId) finds
-    // nothing, so a second vendor is unaffected by the first's configured model.
-    const otherVendorDefault = settingsWithOpenCodeDefault.acpProviderModels?.["some-other-vendor"];
-    expect(resolveSessionModel(undefined, otherVendorDefault, "acp", settingsWithOpenCodeDefault)).toBeUndefined();
-  });
-
-  it("falls all the way through to undefined when neither is set", () => {
-    const s: AgentSettings = { proxyMode: "local" };
-    expect(resolveSessionModel(undefined, s.acpProviderModels?.["opencode"], "acp", s)).toBeUndefined();
   });
 });

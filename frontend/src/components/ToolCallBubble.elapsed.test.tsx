@@ -3,9 +3,9 @@
  * The running-tool clock.
  *
  * A spinner says "running"; it does not say "still running, and for how long".
- * OpenCode's `task` tool made the difference matter — the subagent runs in a
- * child session the ACP protocol gives the client no window into, so nothing
- * arrives between the call opening and its result, sometimes for minutes, and a
+ * OpenCode's `task` tool, on the since-retired ACP harness, made the difference
+ * matter — the subagent ran in a child session the ACP protocol gave the client
+ * no window into, so nothing arrived between the call opening and its result, sometimes for minutes, and a
  * lone spinner reads as a dead chat.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";

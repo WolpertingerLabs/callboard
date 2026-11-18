@@ -151,10 +151,6 @@ interface LocalStorageData {
   /** User's last-selected provider in the New Chat panel — persisted so the
    * toggle remembers their choice across page reloads. */
   defaultProvider?: AgentProviderKind;
-  /** Last-selected ACP vendor id. Only meaningful when defaultProvider is "acp". */
-  defaultAcpProviderId?: string;
-  /** Last-selected ACP model, as the vendor names it. */
-  defaultAcpModel?: string;
   defaultPiModel?: string;
   /** User's last-selected reasoning effort in the New Chat panel. Shared by
    * every reasoning-capable provider. Stored even when the provider is Claude
@@ -360,7 +356,7 @@ export function getDefaultProvider(): AgentProviderKind {
   // Validate against the known set on read — protects against stale or
   // forward-compat values (e.g. an experimental "codex" written by a
   // future build then opened in an older one). Unknown → claude-code.
-  // This is also what retires a saved `"openrouter"` or `"cline"` default: the harness is
+  // This is also what retires a saved `"openrouter"`, `"cline"` or `"acp"` default: the harness is
   // gone from the set, so the stored preference lapses to claude-code on the
   // next read rather than needing a migration.
   return readEnum(getStorageData().defaultProvider, UI_AGENT_PROVIDER_KINDS, "claude-code");
@@ -372,46 +368,7 @@ export function saveDefaultProvider(provider: AgentProviderKind): void {
 }
 
 /**
- * Last-selected ACP vendor id (`"opencode"`, …).
- *
- * Deliberately NOT validated against a known set on read, unlike the provider
- * above: the vendor list is server-side data that grows without a frontend
- * build (built-in presets today, user-defined providers later), so a set here
- * would go stale and silently discard a legitimate choice. The caller checks it
- * against the live `acpProviders` list from `/api/system-info` instead, which is
- * the only place that can actually know.
- */
-export function getDefaultAcpProviderId(): string {
-  const data = getStorageData();
-  return typeof data.defaultAcpProviderId === "string" ? data.defaultAcpProviderId : "";
-}
-
-export function saveDefaultAcpProviderId(providerId: string): void {
-  updateStorage({ defaultAcpProviderId: providerId });
-}
-
-/**
- * Last-selected ACP model. Empty means "leave the vendor CLI's own configured
- * model alone", which is the only sensible default: `acp` covers many vendors
- * and there is no model id that would be a reasonable guess across them.
- *
- * Stored per user rather than per vendor, matching how the OR / Claude / Codex
- * model preferences are kept. Switching vendors therefore carries the old
- * string over — the agent rejects a model it does not have, with its own
- * message, rather than silently running on something else.
- */
-export function getDefaultAcpModel(): string {
-  const data = getStorageData();
-  return typeof data.defaultAcpModel === "string" ? data.defaultAcpModel : "";
-}
-
-export function saveDefaultAcpModel(model: string): void {
-  updateStorage({ defaultAcpModel: model });
-}
-
-/**
- * Last per-chat pi model, remembered across New Chat panels the same way the
- * ACP one is. Empty means "use the default from Settings → API".
+ * Last per-chat pi model, remembered across New Chat panels. Empty means "use the default from Settings → API".
  */
 export function getDefaultPiModel(): string {
   const data = getStorageData();

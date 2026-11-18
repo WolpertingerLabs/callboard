@@ -23,9 +23,6 @@ export async function searchDiscoveredContent(query: string, sessions: OwnedSess
         case "codex":
           text = (await import("../agents/adapters/codex/sessionParser.js")).readFirstUserPrompt(session.filePath);
           break;
-        case "acp":
-          text = (await import("../agents/adapters/acp/sessionParser.js")).readAcpTranscriptPreview(session.filePath);
-          break;
         case "pi":
           text = (await import("../agents/adapters/pi/sessionParser.js")).deriveSearchText(session.filePath);
           break;
@@ -33,7 +30,7 @@ export async function searchDiscoveredContent(query: string, sessions: OwnedSess
           warnings.push(`Unsupported content-search provider: ${session.providerKind}`);
           continue;
       }
-      if (text?.toLowerCase().includes(needle)) keys.push(JSON.stringify([session.providerKind, session.acpProviderId ?? null, session.sessionId]));
+      if (text?.toLowerCase().includes(needle)) keys.push(JSON.stringify([session.providerKind, session.sessionId]));
     } catch (error) {
       warnings.push(`${session.providerKind}: content read failed for ${session.sessionId}: ${String(error)}`);
     }
@@ -46,7 +43,7 @@ export async function searchDiscoveredContent(query: string, sessions: OwnedSess
       const output = execFileSync("grep", ["-il", "--", query, ...batch.map((s) => s.filePath)], { encoding: "utf8", timeout: 5000, maxBuffer: 1024 * 1024 });
       const paths = new Set(output.trim().split("\n"));
       for (const session of batch)
-        if (paths.has(session.filePath)) keys.push(JSON.stringify([session.providerKind, session.acpProviderId ?? null, session.sessionId]));
+        if (paths.has(session.filePath)) keys.push(JSON.stringify([session.providerKind, session.sessionId]));
     } catch (error) {
       if ((error as { status?: number }).status !== 1) warnings.push(`claude-code: grep failed: ${String(error)}`);
     }

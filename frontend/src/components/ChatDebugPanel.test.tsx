@@ -203,7 +203,7 @@ describe("ChatDebugPanel rows", () => {
  */
 describe("ChatDebugPanel row cells", () => {
   it("renders a measured zero as 0, not as a dash", () => {
-    // A differenced cumulative counter (ACP's) produces
+    // A differenced cumulative counter (the retired ACP harness's) produces
     // `cache_creation_input_tokens: 0` on a turn that wrote nothing new — 40
     // cumulative minus 40 cumulative. A real pi generation on this machine reports
     // `cacheRead: 0` the same way. Rendered as `-` it was byte-identical to a

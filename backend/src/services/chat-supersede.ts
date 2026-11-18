@@ -5,6 +5,7 @@ import { mergeTrails, parseGitTrail } from "./git-trail.js";
 import { hasPendingRequest, repointParentOffers } from "./pending-requests.js";
 import { repointCallbacksForParent } from "./session-callbacks.js";
 import { sessionRegistry } from "./session-registry.js";
+import { isRetiredProvider, RETIRED_PROVIDER_LABELS } from "../agents/ports/AgentProvider.js";
 import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -172,8 +173,14 @@ export function checkSupersedable(chat: ChatRecord): SupersedeCheck {
     };
   }
   const meta = parseChatMetadata(chat.metadata);
-  if (meta.provider === "acp") {
-    return { ok: false, status: 400, error: "ACP chats keep their history inside the agent's process, so they cannot be continued or compressed" };
+  // Refused here, at the early gate, so a retired harness's chat is named
+  // rather than reaching the session lookups below.
+  if (isRetiredProvider(meta.provider)) {
+    return {
+      ok: false,
+      status: 400,
+      error: `This chat ran on ${RETIRED_PROVIDER_LABELS[meta.provider]}, which has been removed. It cannot be continued or compressed.`,
+    };
   }
   const keys = [chat.id, chat.session_id].filter(Boolean);
   if (keys.some((k) => sessionRegistry.has(k))) return { ok: false, status: 409, error: "This chat is still running — stop it or wait for it to finish first" };

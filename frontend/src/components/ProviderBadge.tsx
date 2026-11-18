@@ -1,76 +1,48 @@
 import { isRetiredProviderId, RETIRED_PROVIDERS } from "../utils/retiredProviders";
 
 interface ProviderBadgeProps {
-  // Chat provider from metadata. "codex" → "CX",
-  // "pi" → "PI", "acp" → the vendor's tag, a retired harness ("openrouter",
-  // "cline") → its own tag (see RETIRED_PROVIDERS). Anything else (including
-  // undefined/null, which is how Claude Code chats are stored — only the
-  // alternative providers are persisted to metadata) renders as the "CC" default.
+  // Chat provider from metadata. "codex" → "CX", "pi" → "PI", a retired
+  // harness ("openrouter", "cline", "acp") → its own tag (see RETIRED_PROVIDERS).
+  // Anything else (including undefined/null, which is how Claude Code chats are
+  // stored — only the alternative providers are persisted to metadata) renders
+  // as the "CC" default.
   provider?: string | null;
-  // Which ACP vendor, for chats on the ACP kind — the `acpProviderId` in chat
-  // metadata. Ignored for every other provider. Absent or unrecognized falls
-  // back to the family tag; see ACP_VENDOR_TAGS.
-  acpProviderId?: string | null;
   // Smaller variant for dense list rows; the default sizing suits the chat header.
   compact?: boolean;
 }
-
-// Short tags for the ACP vendors callboard ships a preset for.
-//
-// ACP originally got one badge for the whole family, on the reasoning that the
-// chat list rows carried only the provider KIND. They carry the vendor too — it
-// was always in the same metadata blob — and "ACP" names a wire format rather
-// than the harness the user picked, which is the same reason the chat header's
-// status line says "OpenCode is thinking" and not "ACP is thinking".
-//
-// A lookup rather than a derivation because no rule produces "OC" from
-// "opencode": initials need word boundaries the id does not have, and the first
-// two letters give "OP". Vendors are a shipped table (`vendors.ts`), so a second
-// short table is the honest way to spell their tags. A vendor with no entry —
-// including one wired in by hand through the preset override — falls back to
-// "ACP", which is correct if unspecific.
-const ACP_VENDOR_TAGS: Record<string, { tag: string; label: string }> = {
-  opencode: { tag: "OC", label: "OpenCode" },
-};
 
 // Harnesses callboard has removed (see RETIRED_PROVIDERS) still name their own
 // tag here: the badge is the only place the UI names the harness, and falling
 // through to the "CC" default would put "This chat runs on Claude Code" on a
 // chat Claude Code cannot resume, which is the one wrong answer available here.
 
-// Small tag marking which provider a chat runs on: "CX" for Codex, "PI" for pi, the vendor's own tag for an ACP agent, "CC" (Claude Code)
-// otherwise. Shared by the chat header and the chat list so
+// Small tag marking which provider a chat runs on: "CX" for Codex, "PI" for pi,
+// "CC" (Claude Code) otherwise. Shared by the chat header and the chat list so
 // the indicator is consistent everywhere.
-export default function ProviderBadge({ provider, acpProviderId, compact }: ProviderBadgeProps) {
+export default function ProviderBadge({ provider, compact }: ProviderBadgeProps) {
   const isCodex = provider === "codex";
-  const isAcp = provider === "acp";
   const isPi = provider === "pi";
   const retired = isRetiredProviderId(provider) ? RETIRED_PROVIDERS[provider] : undefined;
-  const vendor = isAcp && acpProviderId ? ACP_VENDOR_TAGS[acpProviderId] : undefined;
 
-  const label = retired ? retired.tag : isCodex ? "CX" : isPi ? "PI" : isAcp ? (vendor?.tag ?? "ACP") : "CC";
+  const label = retired ? retired.tag : isCodex ? "CX" : isPi ? "PI" : "CC";
   const title = retired
     ? `This chat ran on ${retired.label}, which has been removed — it cannot be resumed`
     : isCodex
       ? "This chat runs on OpenAI Codex"
       : isPi
         ? "This chat runs on the pi agent runtime"
-        : isAcp
-          ? `This chat runs on ${vendor?.label ?? "an ACP agent"}`
-          : "This chat runs on Claude Code";
+        : "This chat runs on Claude Code";
 
   // A retired harness falls through to the muted outline, sharing it with the
   // Claude Code default: the filled badges read as "this is a harness you can
   // run on", and dedicating a colour to one you cannot would say the opposite of
   // what the title says. It reaches that branch on its own — a retired kind is
-  // none of the three filled ones — so there is nothing extra to test for here.
+  // neither of the two filled ones — so there is nothing extra to test for here.
   const palette = isCodex
     ? { background: "var(--badge-provider-codex-bg)", color: "var(--badge-provider-text)" }
     : isPi
       ? { background: "var(--badge-provider-pi-bg)", color: "var(--badge-provider-text)" }
-      : isAcp
-        ? { background: "var(--badge-provider-acp-bg)", color: "var(--badge-provider-text)" }
-        : { background: "var(--surface)", color: "var(--text-muted)", border: "1px solid var(--border)" };
+      : { background: "var(--surface)", color: "var(--text-muted)", border: "1px solid var(--border)" };
 
   return (
     <span

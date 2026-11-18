@@ -38,13 +38,14 @@ describe("resolveProviderModelArgs", () => {
   it("offers every provider a user can actually be running on", () => {
     // The enum was frozen at claude-code|codex while three more harnesses
     // landed, so a pi session could not spawn a pi child even by asking.
-    for (const kind of ["claude-code", "codex", "acp", "pi"]) {
+    for (const kind of ["claude-code", "codex", "pi"]) {
       expect(providerModelSchema.provider.safeParse(kind).success).toBe(true);
     }
     expect(providerModelSchema.provider.safeParse("mock").success).toBe(false);
     // Retired harnesses are not offered either.
     expect(providerModelSchema.provider.safeParse("cline").success).toBe(false);
     expect(providerModelSchema.provider.safeParse("openrouter").success).toBe(false);
+    expect(providerModelSchema.provider.safeParse("acp").success).toBe(false);
   });
 
   it("accepts a model with provider=claude-code (alias)", () => {
@@ -155,16 +156,6 @@ describe("resolveProviderModelArgs", () => {
       });
     });
 
-    it("carries the acp vendor id along with a same-engine inherited model", () => {
-      expect(resolveProviderModelArgs({}, { provider: "acp", acpProviderId: "opencode", getModel: () => "opencode/gpt-5.5" })).toEqual({
-        ok: true,
-        provider: "acp",
-        acpProviderId: "opencode",
-        model: "opencode/gpt-5.5",
-        modelSource: "inherited",
-      });
-    });
-
     it("maps a cross-engine caller model through its alias target for the child provider", () => {
       aliasRegistry.aliases = [{ name: "planner", targets: { "claude-code": "opus", codex: "gpt-5.5" } }];
 
@@ -241,54 +232,6 @@ describe("resolveProviderModelArgs", () => {
       expect(resolveProviderModelArgs({}, { provider: "claude-code", getModel: () => "opus" })).toMatchObject({
         model: "opus",
         modelSource: "inherited",
-      });
-    });
-  });
-
-  describe("acp carries its vendor id", () => {
-    it("inherits the vendor id alongside the kind", () => {
-      expect(resolveProviderModelArgs({}, { provider: "acp", acpProviderId: "opencode" })).toEqual({
-        ok: true,
-        provider: "acp",
-        acpProviderId: "opencode",
-        modelSource: "default",
-      });
-      expect(resolveProviderModelArgs({ provider: "acp" }, { provider: "acp", acpProviderId: "opencode" })).toEqual({
-        ok: true,
-        provider: "acp",
-        acpProviderId: "opencode",
-        modelSource: "default",
-      });
-    });
-
-    it("refuses an explicit acp from a session that is not itself ACP", () => {
-      // "acp" alone does not name a harness, and there is no tool param for the
-      // vendor — so this has to fail here, by name, rather than deep inside
-      // session startup where the message would not say what went wrong.
-      const result = resolveProviderModelArgs({ provider: "acp" }, { provider: "codex" });
-      expect(result.ok).toBe(false);
-      expect(result.ok === false && result.error).toMatch(/acp/);
-      expect(resolveProviderModelArgs({ provider: "acp" }).ok).toBe(false);
-      // Not even from an ACP session whose own vendor id somehow went missing.
-      expect(resolveProviderModelArgs({ provider: "acp" }, { provider: "acp" }).ok).toBe(false);
-    });
-
-    it("ignores a stray vendor id on a non-ACP provider", () => {
-      expect(resolveProviderModelArgs({ provider: "codex" }, { provider: "acp", acpProviderId: "opencode" })).toEqual({
-        ok: true,
-        provider: "codex",
-        modelSource: "default",
-      });
-    });
-
-    it("does not carry an acp caller's model to a different engine", () => {
-      // A vendor model id ("opencode/gpt-5.5") is a raw id in the child's
-      // namespace unless it is a registered alias — here it is not.
-      expect(resolveProviderModelArgs({ provider: "codex" }, { provider: "acp", acpProviderId: "opencode", getModel: () => "opencode/gpt-5.5" })).toEqual({
-        ok: true,
-        provider: "codex",
-        modelSource: "default",
-        inheritanceNote: expect.any(String),
       });
     });
   });

@@ -65,7 +65,7 @@ beforeEach(() => {
   vi.setSystemTime(new Date("2026-08-21T12:00:00Z"));
   vi.clearAllMocks();
   mocks.execSync.mockReturnValue("/usr/bin/claude\n");
-  mocks.execFileSync.mockReturnValue("/usr/bin/opencode\n");
+  mocks.execFileSync.mockReturnValue("/usr/bin/codex\n");
   mocks.getSdkInfoAsync.mockResolvedValue({ account: null, models: [], fetchedAt: 0 });
   mocks.refreshSdkInfoCache.mockResolvedValue({ account: null, models: [], fetchedAt: 0 });
   mocks.getLatestVersions.mockResolvedValue({});

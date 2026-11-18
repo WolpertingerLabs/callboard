@@ -5,9 +5,7 @@ import type { AgentSettings } from "shared/types/index.js";
  *
  * Mirrors the override fields on {@link AgentSettings}, with one difference
  * that is the whole reason this is its own type: every free-text field is a
- * plain string (`""` for "not set"). The ACP tab's Default Model is deliberately
- * absent — it is one entry of a per-vendor map, re-seeded whenever the vendor
- * tab changes, so the page keeps it beside the form rather than in it.
+ * plain string (`""` for "not set").
  */
 export interface ApiSettingsForm {
   apiBaseUrl: string;
@@ -60,11 +58,6 @@ export interface ApiSettingsForm {
   codexOpenRouterApiKey: string;
   codexOpenRouterBaseUrl: string;
   codexOpenRouterModel: string;
-  // ACP → OpenRouter. Unlike the two above this rewrites nothing in the agent's
-  // config; it only hands the vendor a key, so there is no base-URL or model
-  // pair to keep alongside it.
-  acpUseOpenRouter: boolean;
-  acpOpenRouterApiKey: string;
 }
 
 /** The form before settings have loaded — what every field read as at mount. */
@@ -126,8 +119,6 @@ export function formFromSettings(s: AgentSettings): ApiSettingsForm {
     codexOpenRouterApiKey: s.codexOpenRouterApiKey ?? "",
     codexOpenRouterBaseUrl: s.codexOpenRouterBaseUrl ?? "",
     codexOpenRouterModel: s.codexOpenRouterModel ?? "",
-    acpUseOpenRouter: Boolean(s.acpUseOpenRouter),
-    acpOpenRouterApiKey: s.acpOpenRouterApiKey ?? "",
   };
 }
 
@@ -136,11 +127,9 @@ export function formFromSettings(s: AgentSettings): ApiSettingsForm {
  *
  * A full snapshot rather than a delta, and that is the existing contract, not
  * an oversight to fix here — the instant-save Credentials controls are the
- * page's delta writers. `acpProviderModels` is computed by the caller (see
- * `mergeAcpProviderModel`) because it folds one tab's edit into a map the form
- * does not hold.
+ * page's delta writers.
  */
-export function settingsFromForm(form: ApiSettingsForm, acpProviderModels: Record<string, string> | undefined): Partial<AgentSettings> {
+export function settingsFromForm(form: ApiSettingsForm): Partial<AgentSettings> {
   return {
     apiBaseUrl: form.apiBaseUrl,
     apiKey: form.apiKey,
@@ -183,8 +172,5 @@ export function settingsFromForm(form: ApiSettingsForm, acpProviderModels: Recor
     codexOpenRouterApiKey: form.codexOpenRouterApiKey,
     codexOpenRouterBaseUrl: form.codexOpenRouterBaseUrl,
     codexOpenRouterModel: form.codexOpenRouterModel,
-    acpUseOpenRouter: form.acpUseOpenRouter,
-    acpOpenRouterApiKey: form.acpOpenRouterApiKey,
-    acpProviderModels,
   };
 }

@@ -3,7 +3,7 @@
  *
  * That endpoint is polled by several pages and used to spawn `claude --version`
  * on *every request* — measured at ~108ms of a ~120ms warm response, which the
- * New Chat picker's OpenCode button then queued behind. Caching it is only sound
+ * New Chat panel then queued behind. Caching it is only sound
  * if three things hold, and each has a case here:
  *
  * - the answer is reused rather than re-spawned (the point);

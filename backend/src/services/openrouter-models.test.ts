@@ -392,7 +392,6 @@ describe("periodic refresh is gated on OpenRouter being configured", () => {
     ["codexUseOpenRouter", { codexUseOpenRouter: true }],
     ["claudeCodeOpenRouterApiKey", { claudeCodeOpenRouterApiKey: "sk-or-x" }],
     ["codexOpenRouterApiKey", { codexOpenRouterApiKey: "sk-or-x" }],
-    ["acpOpenRouterApiKey", { acpOpenRouterApiKey: "sk-or-x" }],
   ])("counts %s as OpenRouter being in use", async (_label, extra) => {
     mockGetAgentSettings.mockReturnValue({ proxyMode: "local", ...extra } as AgentSettings);
     await initAndWarm();

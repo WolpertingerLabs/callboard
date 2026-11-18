@@ -10,7 +10,7 @@
  *    `"openrouter"`, so it could persist an effort value onto a chat that can
  *    never run again.
  *
- * Same no-supertest style as stream.acp-provider.test.ts.
+ * No-supertest style: the route handler is invoked directly.
  */
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { EventEmitter } from "events";
@@ -133,6 +133,17 @@ describe("POST /:id/message on a removed harness", () => {
 
     expect(f.status).toBe(410);
     expect(f.json?.error).toBe("This chat ran on Cline, which has been removed. It cannot be resumed.");
+    expect(f.json?.code).toBe("retired_provider");
+    expect(f.streamed).toBe(false);
+    expect(metadataWrites.some((w) => "effort" in w)).toBe(false);
+  });
+
+  it("names OpenCode for a chat that ran on the retired ACP harness", async () => {
+    setChat({ provider: "acp", acpProviderId: "opencode", lastBranch: "main" });
+    const f = await post({ effort: "high" });
+
+    expect(f.status).toBe(410);
+    expect(f.json?.error).toBe("This chat ran on OpenCode, which has been removed. It cannot be resumed.");
     expect(f.json?.code).toBe("retired_provider");
     expect(f.streamed).toBe(false);
     expect(metadataWrites.some((w) => "effort" in w)).toBe(false);

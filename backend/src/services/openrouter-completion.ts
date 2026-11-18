@@ -82,7 +82,7 @@ const TIER_SETTING: Record<"haiku" | "sonnet" | "opus", keyof AgentSettings> = {
  * Whether utility completions should run on OpenRouter: the user opted in AND a
  * key exists. Both halves matter — the toggle without a key is a request we
  * cannot serve, and a key without the toggle belongs to some other feature
- * (the ACP fallback, a routed native harness) and must not be spent here.
+ * (a routed native harness) and must not be spent here.
  */
 export function isOpenRouterUtilityCompletionEnabled(settings?: AgentSettings): boolean {
   const s = settings ?? getAgentSettings();

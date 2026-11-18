@@ -71,6 +71,7 @@ describe("POST /new/message preflight order", () => {
 describe("POST /new/message on a retired harness", () => {
   it.each([
     ["cline", "Cline has been removed"],
+    ["acp", "OpenCode has been removed"],
     ["openrouter", "The OpenRouter agent harness has been removed"],
   ])("refuses %s with a named 400 before any other preflight", async (provider, message) => {
     const response = await post({ folder: "/definitely/not/a/folder", provider, effort: "high" });

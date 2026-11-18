@@ -194,21 +194,20 @@ export function buildCallboardToolsSpec(
     includeJobTools?: boolean;
     chatView?: ChatViewBinding;
     /**
-     * The engine this session is itself running on, and (for ACP) which vendor.
+     * The engine this session is itself running on.
      * `start_chat_session` inherits it when the caller does not name a provider,
      * so a Pi session spawns Pi children rather than silently handing them to
      * Claude Code.
      *
-     * `provider`/`acpProviderId` are plain values, not getters: a chat's
+     * `provider` is a plain value, not a getter: a chat's
      * provider is immutable by design (see plans/openrouter-adapter.md), so
-     * they are fixed for the session's whole lifetime and there is nothing to
+     * it is fixed for the session's whole lifetime and there is nothing to
      * re-read. `getModel` is the exception — a getter — because a chat's model
      * IS mutable (the user can switch it mid-chat, and the switch lands in the
      * chat record's metadata before the next turn), so a value captured here
      * would go stale for the rest of the session.
      */
     provider?: UiAgentProviderKind;
-    acpProviderId?: string;
     /**
      * Live read of the calling chat's current model override. Drives `model`
      * inheritance in the session-starting tools when the caller omits `model`.
@@ -867,7 +866,6 @@ export function buildCallboardToolsSpec(
 
             const providerModel = resolveProviderModelArgs(args, {
               provider: opts?.provider,
-              acpProviderId: opts?.acpProviderId,
               getModel: opts?.getModel,
             });
             if (!providerModel.ok) {
@@ -951,7 +949,6 @@ export function buildCallboardToolsSpec(
               // Meaningless without a parent edge, so only for a linked child.
               ...(args.parentAnswers === true && parentChat && !independent && { parentAnswers: true }),
               provider: providerModel.provider,
-              ...(providerModel.acpProviderId && { acpProviderId: providerModel.acpProviderId }),
               ...(providerModel.model && { model: providerModel.model }),
               ...(args.effort && { effort: args.effort as EffortLevel }),
               ...(args.requireExplicitCompletion === true && { requireExplicitCompletion: true }),
@@ -1130,7 +1127,7 @@ export function buildCallboardToolsSpec(
 
       defineTool(
         "get_session_status",
-        "Check the status of a chat session on any engine (claude-code, codex, pi, acp). Returns whether the session is active, complete, or not found. " +
+        "Check the status of a chat session on any engine (claude-code, codex, pi). Returns whether the session is active, complete, or not found. " +
           "To poll, sleep between checks with the `wait` tool — not a background `sleep` shell, which is invisible to the user and holds this session open until it finishes.",
         {
           chatId: z.string().describe("The chat/session ID to check"),
@@ -1173,7 +1170,7 @@ export function buildCallboardToolsSpec(
 
       defineTool(
         "read_session_messages",
-        "Read the text messages from a chat session on any engine (claude-code, codex, pi, acp) — each engine's transcript format is read for you. Returns the conversation content (user and assistant messages, plus attributed native inter-agent context). Useful for checking what a spawned session did.",
+        "Read the text messages from a chat session on any engine (claude-code, codex, pi) — each engine's transcript format is read for you. Returns the conversation content (user and assistant messages, plus attributed native inter-agent context). Useful for checking what a spawned session did.",
         {
           chatId: z.string().describe("The chat/session ID to read messages from"),
           limit: z.number().optional().describe("Maximum number of messages to return (default: 50, returns most recent)"),
@@ -1344,7 +1341,7 @@ export function buildCallboardToolsSpec(
 
       defineTool(
         "get_chat_tree",
-        "Get the parentage tree for a chat: its ancestors and the full tree of descendant chats spawned from the same root, across all engines (claude-code, codex, pi, acp). Each node includes chatId, title, role, provider, status (ongoing/waiting/stopped), and folder. Defaults to THIS chat when chatId is omitted. Use with read_session_messages / continue_chat to inspect or cooperate with related chats. " +
+        "Get the parentage tree for a chat: its ancestors and the full tree of descendant chats spawned from the same root, across all engines (claude-code, codex, pi). Each node includes chatId, title, role, provider, status (ongoing/waiting/stopped), and folder. Defaults to THIS chat when chatId is omitted. Use with read_session_messages / continue_chat to inspect or cooperate with related chats. " +
           "A tree belongs to exactly one space (reported as spaceId); a tree in another space than THIS chat's is refused unless you pass space: \"all\" or its space id.",
         {
           chatId: z.string().optional().describe("Chat ID to get the tree for (default: the current chat)"),

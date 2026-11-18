@@ -88,20 +88,28 @@ function eventOfType<T extends EngineInstallEvent["type"]>(events: EngineInstall
 /** Every output line, in order, whichever stream it came from. */
 const outputLines = (events: EngineInstallEvent[]) => events.filter((e) => e.type === "install_output").map((e) => e.line);
 
-const opencodeInstalled = (path = "/home/u/.npm-global/bin/opencode"): EngineStatus => ({
-  id: "opencode",
-  label: "OpenCode",
-  runtime: { kind: "external", command: "opencode", resolvedPath: path, package: "opencode-ai" },
+// Claude Code is the fixture engine: since the ACP harness (OpenCode) was
+// retired it is the one-click recipe whose runtime carries a `resolvedPath`.
+const claudeInstalled = (path = "/home/u/.npm-global/bin/claude"): EngineStatus => ({
+  id: "claude-code",
+  label: "Claude Code",
+  runtime: {
+    kind: "external-preferred",
+    command: "claude",
+    resolvedPath: path,
+    package: "@anthropic-ai/claude-code",
+    fallbackPackage: "@anthropic-ai/claude-agent-sdk",
+  },
   installed: true,
   version: "1.2.3",
   credentials: { configured: "unknown" },
 });
 
-const opencodeMissing = (): EngineStatus => ({
-  id: "opencode",
-  label: "OpenCode",
-  runtime: { kind: "external", command: "opencode", package: "opencode-ai" },
-  installed: false,
+const claudeMissing = (): EngineStatus => ({
+  id: "claude-code",
+  label: "Claude Code",
+  runtime: { kind: "external-preferred", command: "claude", package: "@anthropic-ai/claude-code", fallbackPackage: "@anthropic-ai/claude-agent-sdk" },
+  installed: true,
   credentials: { configured: "unknown" },
 });
 
@@ -113,7 +121,7 @@ beforeEach(() => {
   mocks.execFileAsync.mockResolvedValue({ stdout: "/home/u/.npm-global/lib/node_modules\n", stderr: "" });
   mocks.accessSync.mockReturnValue(undefined);
   mocks.readAgentSettings.mockReturnValue({ settings: {}, state: "ok" });
-  mocks.refreshEngineStatuses.mockResolvedValue({ engines: [opencodeInstalled()], probed: true });
+  mocks.refreshEngineStatuses.mockResolvedValue({ engines: [claudeInstalled()], probed: true });
 });
 
 afterEach(() => {
@@ -121,7 +129,7 @@ afterEach(() => {
 });
 
 /** Start an install and collect every event it emits, including the replay buffer. */
-async function runInstall(engineId = "opencode"): Promise<{ events: EngineInstallEvent[]; started: ReturnType<typeof startEngineInstall> }> {
+async function runInstall(engineId = "claude-code"): Promise<{ events: EngineInstallEvent[]; started: ReturnType<typeof startEngineInstall> }> {
   const events: EngineInstallEvent[] = [];
   const started = startEngineInstall({ engineId, capability: { oneClick: true }, clientKey: "127.0.0.1" });
   if (started.ok) {
@@ -335,7 +343,7 @@ describe("getInstallCapability — every gate, and the sentence it hands the car
 describe("startEngineInstall — refusing without spawning", () => {
   it("refuses when the capability says no, and passes its reason through", () => {
     const result = startEngineInstall({
-      engineId: "opencode",
+      engineId: "claude-code",
       capability: { oneClick: false, code: "not-local", refusal: "You are on the tunnel." },
     });
     expect(result).toMatchObject({ ok: false, code: "not-local", refusal: "You are on the tunnel.", status: 403 });
@@ -343,7 +351,7 @@ describe("startEngineInstall — refusing without spawning", () => {
   });
 
   it("answers a preflight refusal with 422 rather than 403 — it is not a permission problem", () => {
-    const result = startEngineInstall({ engineId: "opencode", capability: { oneClick: false, code: "prefix-not-writable", refusal: "not writable" } });
+    const result = startEngineInstall({ engineId: "claude-code", capability: { oneClick: false, code: "prefix-not-writable", refusal: "not writable" } });
     expect(result).toMatchObject({ ok: false, status: 422 });
   });
 
@@ -356,7 +364,7 @@ describe("startEngineInstall — refusing without spawning", () => {
   });
 
   it("refuses every id that is not an engine, without building a command from it", () => {
-    for (const engineId of ["", "..", "opencode-ai", "npm", "opencode; rm -rf /", "$(id)", "../../codex"]) {
+    for (const engineId of ["", "..", "@anthropic-ai/claude-code", "npm", "codex; rm -rf /", "$(id)", "../../codex", "opencode"]) {
       const result = startEngineInstall({ engineId, capability: { oneClick: true } });
       expect(result.ok).toBe(false);
     }
@@ -364,11 +372,11 @@ describe("startEngineInstall — refusing without spawning", () => {
   });
 
   it("runs one install at a time", async () => {
-    const first = startEngineInstall({ engineId: "opencode", capability: { oneClick: true } });
+    const first = startEngineInstall({ engineId: "claude-code", capability: { oneClick: true } });
     expect(first.ok).toBe(true);
     const second = startEngineInstall({ engineId: "codex", capability: { oneClick: true } });
     expect(second).toMatchObject({ ok: false, code: "busy", status: 409 });
-    expect(second.ok === false && second.refusal).toContain("opencode-ai");
+    expect(second.ok === false && second.refusal).toContain("@anthropic-ai/claude-code");
     expect(mocks.spawn).toHaveBeenCalledTimes(1);
   });
 
@@ -379,7 +387,7 @@ describe("startEngineInstall — refusing without spawning", () => {
     // repeat cycle is about four seconds, so without this an authenticated LAN
     // client could loop the endpoint and drive that probe every ~4s. Bounding
     // the *accepted install* is what puts the bound back at its source.
-    await runInstall("opencode");
+    await runInstall("claude-code");
     child.emit("close", 0, null);
     await settle();
 
@@ -398,7 +406,7 @@ describe("startEngineInstall — refusing without spawning", () => {
     // deadlocks the very code under test.
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
-      await runInstall("opencode");
+      await runInstall("claude-code");
       child.emit("close", 0, null);
       await settle();
 
@@ -418,7 +426,7 @@ describe("startEngineInstall — refusing without spawning", () => {
     for (let i = 0; i < 5; i++) {
       expect(startEngineInstall({ engineId: "pi", capability: { oneClick: true } })).toMatchObject({ code: "no-recipe" });
     }
-    expect(startEngineInstall({ engineId: "opencode", capability: { oneClick: true } }).ok).toBe(true);
+    expect(startEngineInstall({ engineId: "claude-code", capability: { oneClick: true } }).ok).toBe(true);
   });
 });
 
@@ -426,18 +434,17 @@ describe("startEngineInstall — refusing without spawning", () => {
 
 describe("the spawn itself", () => {
   it("runs the registry's literal argv, with no shell", async () => {
-    await runInstall("opencode");
+    await runInstall("claude-code");
     expect(mocks.spawn).toHaveBeenCalledTimes(1);
     const [command, args, options] = mocks.spawn.mock.calls[0];
     expect(command).toBe("npm");
-    expect(args).toEqual(["install", "-g", "opencode-ai"]);
+    expect(args).toEqual(["install", "-g", "@anthropic-ai/claude-code"]);
     expect(options.shell).toBe(false);
     expect(options.stdio).toEqual(["ignore", "pipe", "pipe"]);
   });
 
   it("selects each engine's own package and nothing else", async () => {
     for (const [engineId, pkg] of [
-      ["opencode", "opencode-ai"],
       ["codex", "@openai/codex"],
       ["claude-code", "@anthropic-ai/claude-code"],
     ] as const) {
@@ -456,13 +463,13 @@ describe("the spawn itself", () => {
     const options = mocks.spawn.mock.calls[0][2];
     expect(options.env.NO_COLOR).toBe("1");
     expect(options.env.npm_config_progress).toBe("false");
-    expect(mocks.spawn.mock.calls[0][1]).toEqual(["install", "-g", "opencode-ai"]);
+    expect(mocks.spawn.mock.calls[0][1]).toEqual(["install", "-g", "@anthropic-ai/claude-code"]);
   });
 
   it("announces what it is about to run before it runs it", async () => {
     const { events, started } = await runInstall();
     expect(started.ok).toBe(true);
-    expect(events[0]).toMatchObject({ type: "install_started", engineId: "opencode", package: "opencode-ai", command: "npm install -g opencode-ai" });
+    expect(events[0]).toMatchObject({ type: "install_started", engineId: "claude-code", package: "@anthropic-ai/claude-code", command: "npm install -g @anthropic-ai/claude-code" });
   });
 });
 
@@ -528,7 +535,7 @@ describe("a non-zero exit", () => {
     expect(exit).toMatchObject({ ok: false, code: 1 });
     expect(exit.refusal).toContain("exited with code 1");
     // The user is sent back to the copy block by name.
-    expect(exit.refusal).toContain("npm install -g opencode-ai");
+    expect(exit.refusal).toContain("npm install -g @anthropic-ai/claude-code");
     expect(events.some((e) => e.type === "install_verified")).toBe(false);
     expect(mocks.refreshEngineStatuses).not.toHaveBeenCalled();
   });
@@ -591,9 +598,9 @@ describe("a zero exit — which is not, on its own, a success", () => {
     await settle();
 
     const verified = eventOfType(events, "install_verified")!;
-    expect(verified).toMatchObject({ visible: true, engineId: "opencode" });
+    expect(verified).toMatchObject({ visible: true, engineId: "claude-code" });
     expect(verified.refusal).toBeUndefined();
-    expect(verified.summary).toContain("/home/u/.npm-global/bin/opencode");
+    expect(verified.summary).toContain("/home/u/.npm-global/bin/claude");
     expect(verified.summary).toContain("1.2.3");
     expect(verified.engines).toHaveLength(1);
   });
@@ -603,7 +610,7 @@ describe("a zero exit — which is not, on its own, a success", () => {
     // process really cannot see it. A tick here would be the worst string this
     // feature could ship — a success message for a machine that did not change
     // in any way the user can use.
-    mocks.refreshEngineStatuses.mockResolvedValue({ engines: [opencodeMissing()], probed: true });
+    mocks.refreshEngineStatuses.mockResolvedValue({ engines: [claudeMissing()], probed: true });
     const { events } = await runInstall();
     child.emit("close", 0, null);
     await settle();
@@ -669,7 +676,7 @@ describe("a zero exit — which is not, on its own, a success", () => {
 
 describe("replay, so a late or reconnecting stream loses nothing", () => {
   it("keeps the whole transcript and the verdict after the run is done", async () => {
-    const started = startEngineInstall({ engineId: "opencode", capability: { oneClick: true } });
+    const started = startEngineInstall({ engineId: "claude-code", capability: { oneClick: true } });
     expect(started.ok).toBe(true);
     const installId = started.ok ? started.installId : "";
     child.stdout.write("added 1 package\n");
@@ -684,13 +691,13 @@ describe("replay, so a late or reconnecting stream loses nothing", () => {
   });
 
   it("does not hand out a run under the wrong id", async () => {
-    const started = startEngineInstall({ engineId: "opencode", capability: { oneClick: true } });
+    const started = startEngineInstall({ engineId: "claude-code", capability: { oneClick: true } });
     expect(getInstallRun("not-the-id")).toBeNull();
     expect(started.ok && getInstallRun(started.installId)).toBeTruthy();
   });
 
   it("caps the buffer while keeping the frame that says what was run", async () => {
-    const started = startEngineInstall({ engineId: "opencode", capability: { oneClick: true } });
+    const started = startEngineInstall({ engineId: "claude-code", capability: { oneClick: true } });
     const run = getInstallRun(started.ok ? started.installId : "")!;
     child.stdout.write(Array.from({ length: 2_000 }, (_, i) => `line ${i}`).join("\n") + "\n");
     await settle();
@@ -713,16 +720,16 @@ describe("assertSpawnable — defence in depth, tested so that deleting it fails
    * function would change nothing observable, and the second layer would quietly
    * become one layer. Importing it here means deletion breaks the build.
    */
-  const good = { engineId: "opencode", method: "npm-global", label: "npm (global)", package: "opencode-ai", argv: ["npm", "install", "-g", "opencode-ai"], command: "npm install -g opencode-ai", docsUrl: "https://x", visibleAfterRecheck: true } as const;
+  const good = { engineId: "claude-code", method: "npm-global", label: "npm (global)", package: "@anthropic-ai/claude-code", argv: ["npm", "install", "-g", "@anthropic-ai/claude-code"], command: "npm install -g @anthropic-ai/claude-code", docsUrl: "https://x", visibleAfterRecheck: true } as const;
 
   it("accepts the shape the registry actually produces", () => {
-    expect(assertSpawnable(good)).toEqual({ argv: ["npm", "install", "-g", "opencode-ai"], package: "opencode-ai" });
+    expect(assertSpawnable(good)).toEqual({ argv: ["npm", "install", "-g", "@anthropic-ai/claude-code"], package: "@anthropic-ai/claude-code" });
   });
 
   it("rejects a script recipe even if someone hand-fits an argv to it", () => {
     // Decision 5's last line of defence. A `script` recipe carries no argv by
     // construction; this rejects one that has been given one anyway.
-    expect(assertSpawnable({ ...good, method: "script", argv: ["npm", "install", "-g", "opencode-ai"] })).toBeNull();
+    expect(assertSpawnable({ ...good, method: "script", argv: ["npm", "install", "-g", "@anthropic-ai/claude-code"] })).toBeNull();
   });
 
   it("rejects a package that is not on the allowlist", () => {
@@ -737,12 +744,12 @@ describe("assertSpawnable — defence in depth, tested so that deleting it fails
 
   it("rejects any argv that is not exactly npm install -g <pkg>", () => {
     for (const argv of [
-      ["npm", "install", "-g", "opencode-ai", "--foreground-scripts"],
-      ["npm", "install", "opencode-ai"],
-      ["npm", "exec", "-g", "opencode-ai"],
-      ["npx", "install", "-g", "opencode-ai"],
-      ["npm", "install", "--global", "opencode-ai"],
-      ["npm", "install", "-g", "opencode-ai; id"],
+      ["npm", "install", "-g", "@anthropic-ai/claude-code", "--foreground-scripts"],
+      ["npm", "install", "@anthropic-ai/claude-code"],
+      ["npm", "exec", "-g", "@anthropic-ai/claude-code"],
+      ["npx", "install", "-g", "@anthropic-ai/claude-code"],
+      ["npm", "install", "--global", "@anthropic-ai/claude-code"],
+      ["npm", "install", "-g", "@anthropic-ai/claude-code; id"],
       [],
     ]) {
       expect(assertSpawnable({ ...good, argv })).toBeNull();
@@ -751,8 +758,8 @@ describe("assertSpawnable — defence in depth, tested so that deleting it fails
 
   it("rejects a missing, non-array or holey argv", () => {
     expect(assertSpawnable({ ...good, argv: undefined })).toBeNull();
-    expect(assertSpawnable({ ...good, argv: "npm install -g opencode-ai" as unknown as string[] })).toBeNull();
-    expect(assertSpawnable({ ...good, argv: ["npm", "install", "", "opencode-ai"] })).toBeNull();
+    expect(assertSpawnable({ ...good, argv: "npm install -g @anthropic-ai/claude-code" as unknown as string[] })).toBeNull();
+    expect(assertSpawnable({ ...good, argv: ["npm", "install", "", "@anthropic-ai/claude-code"] })).toBeNull();
     expect(assertSpawnable({ ...good, argv: ["npm", "install", "-g", undefined as unknown as string] })).toBeNull();
   });
 

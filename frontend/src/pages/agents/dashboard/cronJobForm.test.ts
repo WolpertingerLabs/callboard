@@ -85,7 +85,7 @@ describe("cronJobFormFromJob / cronJobUpdatePayload", () => {
     });
   });
 
-  it.each(["openrouter", "cline"])("re-targets a retired %s cron to Claude Code and drops its model", (retired) => {
+  it.each(["openrouter", "cline", "acp"])("re-targets a retired %s cron to Claude Code and drops its model", (retired) => {
     const form = cronJobFormFromJob({ ...job, action: { type: "start_session", provider: retired as never, model: "x/y" } });
     expect(form.provider).toBe("claude-code");
     expect(form.models).toStrictEqual({});

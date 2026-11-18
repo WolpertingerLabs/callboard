@@ -22,7 +22,6 @@ export interface ChatMeta {
    * compares against.
    */
   treeParentChatId?: string;
-  acpProviderId?: string;
   model?: string;
   effort?: EffortLevel;
   /** Present when truthy; still to be run through `normalizePermissions`. */
@@ -62,7 +61,6 @@ export function parseChatMeta(metadata: string | null | undefined): ChatMeta {
     nativeAgent: (meta.nativeAgent || undefined) as NativeCodexAgent | undefined,
     parentChatId: nonEmpty(meta.parentChatId),
     treeParentChatId: nonEmpty(meta.parentChatId) ?? nonEmpty(meta.forkedFrom),
-    acpProviderId: str(meta.acpProviderId),
     model: str(meta.model),
     effort: str(meta.effort) as EffortLevel | undefined,
     defaultPermissions: (meta.defaultPermissions || undefined) as DefaultPermissions | undefined,
@@ -81,7 +79,7 @@ export function parseChatMeta(metadata: string | null | undefined): ChatMeta {
  * caller that drives a control from it must check `isRetiredProviderId` first.
  */
 export function providerKindOf(provider: string | null): UiAgentProviderKind {
-  if (provider === "codex" || provider === "acp" || provider === "pi") return provider;
+  if (provider === "codex" || provider === "pi") return provider;
   return "claude-code";
 }
 

@@ -51,8 +51,6 @@
  *    session file is deleted through its own SessionProvider once the run ends
  *    (by the `session_started` id); if the run never reports one, the file
  *    stays behind under the throwaway cwd, which discovery ignores.
- *  - acp: refused — an ACP vendor is a process we would have to spawn and
- *    attach to for one answer, and supersede/compress refuses ACP chats anyway.
  */
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -92,7 +90,6 @@ export class ChatModelCompletionError extends Error {}
 /** Run `prompt` once on the chat's harness/model and return the assistant's text. */
 export async function runChatModelCompletion(opts: ChatModelCompletionOptions): Promise<string> {
   const { provider } = opts;
-  if (provider === "acp") throw new ChatModelCompletionError("One-shot completions are not supported for ACP chats");
   if (opts.signal?.aborted) throw new ChatModelCompletionError("Cancelled before it started");
 
   const agentSettings = getAgentSettings();

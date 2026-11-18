@@ -4,15 +4,13 @@
  * Lives here rather than inline in `Chat.tsx` because it is pure — messages in,
  * display items out — and because what it does is load-bearing beyond rendering:
  * a `tool_use` that captures the wrong result does not show a mismatch, it shows
- * nothing, since the bubble renders the call and the result together. The ACP
- * plan snapshots are the sharp case (see `acp/sessionParser.ts`): they are
- * `tool_use` messages for which no tool ran, and the checklist renderer returns
- * before it ever reads `toolResult`, so a plan that swallowed a real tool's
- * output would delete that output from the transcript as far as the user is
- * concerned.
+ * nothing, since the bubble renders the call and the result together, so a
+ * wrong pairing deletes a real tool's output from the transcript as far as the
+ * user is concerned. (The retired ACP harness's synthetic `plan` snapshots, which
+ * had no result of their own, were once excluded from pairing here; with the
+ * harness gone a tool named `plan` pairs like any other.)
  */
 import type { ParsedMessage } from "../api";
-import { TASK_LIST_TOOLS } from "shared/types/index.js";
 
 /** A `tool_use` and the result it was matched with, if any. */
 export interface ToolGroup {
@@ -30,9 +28,6 @@ export interface SingleMessage {
 }
 
 export type DisplayItem = ToolGroup | SingleMessage;
-
-/** Synthetic ACP plans have no result, including in old ID-less histories. */
-const isPlan = (message: ParsedMessage) => message.toolName === TASK_LIST_TOOLS.acp;
 
 /**
  * Reserve globally unique ID pairs first, in either order and at any distance.
@@ -58,14 +53,14 @@ export function groupToolMessages(messages: readonly ParsedMessage[]): DisplayIt
   const consumed = new Set<number>();
   for (const [id, useIndex] of uses) {
     const resultIndex = results.get(id);
-    if (useIndex < 0 || resultIndex === undefined || resultIndex < 0 || isPlan(messages[useIndex])) continue;
+    if (useIndex < 0 || resultIndex === undefined || resultIndex < 0) continue;
     pairs.set(useIndex, resultIndex);
     consumed.add(resultIndex);
   }
 
   messages.forEach((use, index) => {
     const result = messages[index + 1];
-    if (use.type !== "tool_use" || isPlan(use) || pairs.has(index) || !result || result.type !== "tool_result" || consumed.has(index + 1)) return;
+    if (use.type !== "tool_use" || pairs.has(index) || !result || result.type !== "tool_result" || consumed.has(index + 1)) return;
     // Both IDs present must have been resolved above, never by adjacency.
     if (use.toolUseId && result.toolUseId) return;
     if (use.toolUseId && (uses.get(use.toolUseId) === -1 || results.has(use.toolUseId))) return;

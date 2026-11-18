@@ -1,5 +1,5 @@
 import { beforeEach, afterEach, it, expect, vi } from "vitest";
-import { mkdtempSync, writeFileSync, rmSync, truncateSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Chat } from "shared";
@@ -58,30 +58,6 @@ beforeEach(() => {
   state.warnings = [];
   state.native = [];
 });
-it("isolates ACP content matches by vendor", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "acp-content-"));
-  scratchDirs.push(dir);
-  state.stored = [chat("a", { provider: "acp", acpProviderId: "vendor-a" }), chat("b", { provider: "acp", acpProviderId: "vendor-b" })];
-  state.stored.forEach((c) => (c.session_id = "session-1"));
-  state.sessions = state.stored.map((c, i) => {
-    const filePath = join(dir, c.id + ".jsonl");
-    writeFileSync(filePath, JSON.stringify({ type: "user_message", content: i === 0 ? "needle" : "unrelated" }) + "\n");
-    return {
-      sessionId: c.session_id,
-      providerKind: "acp",
-      acpProviderId: i === 0 ? "vendor-a" : "vendor-b",
-      folder: c.folder,
-      displayFolder: c.folder,
-      filePath,
-      createdAt: new Date(0),
-      updatedAt: new Date(0),
-    };
-  });
-  state.view = { available: true, filters: DEFAULT_CHAT_FILTERS, options: DEFAULT_CHAT_VIEW_OPTIONS, submittedSearch: "needle" };
-  const result = await searchChats({ scope: "visible" });
-  expect(ids(result)).toEqual(["a"]);
-  expect(result).toMatchObject({ total: 1, partial: false });
-});
 it("keeps discovered historical cross-engine-only chats listable", async () => {
   state.stored = [chat("root", { session_ids: ["old"] })];
   discover();
@@ -130,58 +106,6 @@ it("searches historical-only backing without changing current execution identity
   expect(result).toMatchObject({ total: 1, partial: false });
 });
 
-it.each(["codex", "acp"] as const)("uncertain ACP history cannot erase verified current %s identity in either discovery order", async (provider) => {
-  const dir = mkdtempSync(join(tmpdir(), "acp-history-"));
-  scratchDirs.push(dir);
-  const oldPath = join(dir, "old.jsonl");
-  const currentPath = join(dir, "current.jsonl");
-  writeFileSync(oldPath, JSON.stringify({ type: "user_message", content: "needle" }) + "\n");
-  writeFileSync(currentPath, JSON.stringify({ type: "user_message", content: "unrelated" }) + "\n");
-  state.stored = [chat("root", { provider, ...(provider === "acp" && { acpProviderId: "current-vendor" }), session_ids: ["old"] })];
-  discover();
-  const current = { ...state.sessions[0], providerKind: provider, ...(provider === "acp" && { acpProviderId: "current-vendor" }), filePath: currentPath };
-  const old = { ...current, sessionId: "old", providerKind: "acp", acpProviderId: "old-vendor", filePath: oldPath };
-  for (const sessions of [
-    [current, old],
-    [old, current],
-  ]) {
-    state.sessions = sessions;
-    state.view = undefined;
-    const result = await searchChats({});
-    expect(ids(result)).toEqual(["root"]);
-    expect(result.chats[0]).toMatchObject({ sessionId: "root", provider });
-    expect(result).toMatchObject({ partial: true, total: null });
-    state.view = { available: true, filters: DEFAULT_CHAT_FILTERS, options: DEFAULT_CHAT_VIEW_OPTIONS, submittedSearch: "needle" };
-    expect((await searchChats({ scope: "visible" })).chats).toEqual([]);
-  }
-});
-
-it.each(["codex", "different-vendor", "same-vendor"] as const)("ACP historical-only ownership: %s", async (kind) => {
-  const dir = mkdtempSync(join(tmpdir(), "acp-history-only-"));
-  scratchDirs.push(dir);
-  const filePath = join(dir, "old.jsonl");
-  writeFileSync(filePath, JSON.stringify({ type: "user_message", content: "needle" }) + "\n");
-  const provider = kind === "codex" ? "codex" : "acp";
-  state.stored = [chat("root", { provider, ...(provider === "acp" && { acpProviderId: "current-vendor" }), session_ids: ["old"] })];
-  discover();
-  state.sessions[0] = {
-    ...state.sessions[0],
-    sessionId: "old",
-    providerKind: "acp",
-    acpProviderId: kind === "same-vendor" ? "current-vendor" : "old-vendor",
-    filePath,
-  };
-  state.view = { available: true, filters: DEFAULT_CHAT_FILTERS, options: DEFAULT_CHAT_VIEW_OPTIONS, submittedSearch: "needle" };
-  const result = await searchChats({ scope: "visible" });
-  if (kind === "same-vendor") {
-    expect(result.chats).toEqual([expect.objectContaining({ chatId: "root", sessionId: "root", provider: "acp", acpProviderId: "current-vendor" })]);
-    expect(result.partial).toBe(false);
-  } else {
-    expect(result.chats).toEqual([]);
-    expect(result.partial).toBe(true);
-  }
-});
-
 it("separates newest cross-engine browse backing from canonical execution identity", async () => {
   state.stored = [chat("root", { session_ids: ["old"] })];
   discover();
@@ -199,19 +123,6 @@ it("separates newest cross-engine browse backing from canonical execution identi
     displayFolder: "/history-display",
     updatedAt: "2026-09-10T00:00:00.000Z",
   });
-});
-it("an unowned ACP vendor with the same raw current ID cannot revoke proven primary routing", async () => {
-  state.stored = [chat("root", { provider: "acp", acpProviderId: "owned" })];
-  discover();
-  const owned = { ...state.sessions[0], providerKind: "acp", acpProviderId: "owned" };
-  const unowned = { ...owned, acpProviderId: "unowned" };
-  for (const sessions of [
-    [owned, unowned],
-    [unowned, owned],
-  ]) {
-    state.sessions = sessions;
-    expect((await searchChats({})).chats).toEqual([expect.objectContaining({ chatId: "root", provider: "acp", acpProviderId: "owned" })]);
-  }
 });
 
 function historicalNativeAnchor() {
@@ -294,30 +205,4 @@ it("does not scan unreadable content belonging only to excluded candidates", asy
   expect(ids(result)).toEqual(["selected"]);
   expect(result.warnings).toEqual([]);
   expect(result.partial).toBe(false);
-});
-
-it("selected content includes current and historical aliases but not another ACP vendor's same raw ID", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "qualified-subset-"));
-  scratchDirs.push(dir);
-  const files = ["current", "old", "excluded"].map((id) => join(dir, id + ".jsonl"));
-  files.forEach((file, i) => writeFileSync(file, JSON.stringify({ type: "user_message", content: i === 1 ? "needle" : "other" }) + "\n"));
-  truncateSync(files[2], 33 * 1024 * 1024);
-  state.stored = [
-    chat("selected", { provider: "acp", acpProviderId: "a", session_ids: ["old"], title: "keep" }),
-    chat("excluded", { provider: "acp", acpProviderId: "b" }),
-  ];
-  state.stored[1].session_id = "old";
-  discover();
-  const base = state.sessions[0];
-  state.sessions = [
-    { ...base, providerKind: "acp", acpProviderId: "a", filePath: files[0] },
-    { ...base, sessionId: "old", providerKind: "acp", acpProviderId: "a", filePath: files[1] },
-    { ...base, sessionId: "old", providerKind: "acp", acpProviderId: "b", filePath: files[2] },
-  ];
-  state.view = { available: true, filters: DEFAULT_CHAT_FILTERS, options: DEFAULT_CHAT_VIEW_OPTIONS, submittedSearch: "needle" };
-  const result = await searchChats({ scope: "visible", query: "keep" });
-  expect(ids(result)).toEqual(["selected"]);
-  expect(result).toMatchObject({ partial: false, warnings: [] });
-  state.view.submittedSearch = "other";
-  expect(ids(await searchChats({ scope: "visible", query: "keep" }))).toEqual(["selected"]);
 });

@@ -26,8 +26,8 @@ const mocks = vi.hoisted(() => ({
   sdkInfo: vi.fn(),
   codexAuthSource: vi.fn(),
   codexRoutedThroughOpenRouter: vi.fn(),
-  acpBinaryPath: vi.fn(),
-  acpVersion: vi.fn(),
+  /** `resolveBinaryPath` from utils/binary-path.ts — the cached `which` behind Codex login detection. */
+  binaryPath: vi.fn(),
 }));
 
 vi.mock("./npm-registry.js", async (importOriginal) => ({
@@ -58,9 +58,9 @@ vi.mock("../agents/adapters/codex/codexAuth.js", () => ({
   isCodexRoutedThroughOpenRouter: mocks.codexRoutedThroughOpenRouter,
 }));
 
-vi.mock("../agents/adapters/acp/availability.js", () => ({
-  resolveAcpBinaryPath: mocks.acpBinaryPath,
-  acpProviderVersion: mocks.acpVersion,
+vi.mock("../utils/binary-path.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../utils/binary-path.js")>()),
+  resolveBinaryPath: mocks.binaryPath,
 }));
 
 import type { EngineStatus } from "shared/types/index.js";
@@ -84,8 +84,7 @@ beforeEach(() => {
   mocks.sdkInfo.mockResolvedValue({ account: null, models: [], fetchedAt: 0 });
   mocks.codexAuthSource.mockReturnValue(null);
   mocks.codexRoutedThroughOpenRouter.mockReturnValue(false);
-  mocks.acpBinaryPath.mockReturnValue(null);
-  mocks.acpVersion.mockResolvedValue(undefined);
+  mocks.binaryPath.mockReturnValue(null);
 });
 
 afterEach(() => {
@@ -239,39 +238,11 @@ describe("claude-code — the external-preferred kind", () => {
   });
 });
 
-describe("acp vendors — the external kind", () => {
-  it("report not installed when the binary is missing", async () => {
-    mocks.acpBinaryPath.mockReturnValue(null);
-
-    const engine = await getEngineStatuses().then((e) => byId(e, "opencode"));
-
-    expect(engine.installed).toBe(false);
-    expect(engine.runtime).toMatchObject({ kind: "external", command: "opencode" });
-    if (engine.runtime.kind !== "external") throw new Error("unreachable");
-    expect(engine.runtime.resolvedPath).toBeUndefined();
-    expect(engine.version).toBeUndefined();
-    // Phase 2 attaches the copyable commands here. The gating itself is
-    // engine-install-recipes.test.ts's subject; this asserts the wiring.
-    expect(engine.install?.recipes.map((r) => r.command)).toEqual(["npm install -g opencode-ai", "curl -fsSL https://opencode.ai/install | bash"]);
-  });
-
-  it("report the resolved path and the CLI's own version when installed", async () => {
-    mocks.acpBinaryPath.mockReturnValue("/usr/local/bin/opencode");
-    mocks.acpVersion.mockResolvedValue("1.18.18");
-    mocks.latestVersions.mockResolvedValue({ "opencode-ai": { version: "1.19.0", checkedAt: 1_700_000_000_000, stale: false } });
-
-    const engine = await getEngineStatuses().then((e) => byId(e, "opencode"));
-
-    expect(engine.installed).toBe(true);
-    expect(engine.runtime).toEqual({ kind: "external", command: "opencode", resolvedPath: "/usr/local/bin/opencode", package: "opencode-ai" });
-    expect(engine.version).toBe("1.18.18");
-    expect(engine.updateAvailable).toBe(true);
-  });
-
-  it("never executes the version probe for a binary that is not there", async () => {
-    mocks.acpBinaryPath.mockReturnValue(null);
-    await getEngineStatuses();
-    expect(mocks.acpVersion).not.toHaveBeenCalled();
+describe("the retired ACP harness", () => {
+  it("assembles no vendor row: the engines are claude-code, codex and pi", async () => {
+    const engines = await getEngineStatuses();
+    expect(engines.map((e) => e.id)).toEqual(["claude-code", "codex", "pi"]);
+    expect(engines.some((e) => e.runtime.kind === "external")).toBe(false);
   });
 });
 
@@ -395,25 +366,11 @@ describe("credentials", () => {
     expect(engine.credentials.note).toContain("environment lookup");
   });
 
-  it("gives ACP a genuine non-answer, not a wrong answer", async () => {
-    // Reproduced live before this changed: a machine with a valid opencode
-    // auth.json rendered "Not configured". A flag that is false on every
-    // machine forever varies with nothing — it is the dishonest-✓ column with
-    // its sign flipped, and it made the tab's dot unable to ever go green.
-    mocks.acpBinaryPath.mockReturnValue("/usr/local/bin/opencode");
-    const engine = await getEngineStatuses().then((e) => byId(e, "opencode"));
-    expect(engine.installed).toBe(true);
-    expect(engine.credentials.configured).toBe("unknown");
-    expect(engine.credentials.configured).not.toBe(false);
-    expect(engine.credentials.note).toContain("never by Callboard");
-  });
-
   it("never claims a credential state it did not observe", async () => {
-    // The general form of the two cases above, and the test the tri-state was
+    // The general form of the case above, and the test the tri-state was
     // introduced to make writable: `false` is a claim about the user's machine,
     // so it is only allowed where the backend actually inspected the place that
     // engine's credentials live. Everything else must say "unknown".
-    mocks.acpBinaryPath.mockReturnValue("/usr/local/bin/opencode");
     const engines = await getEngineStatuses();
 
     /** Engines whose credentials Callboard can actually read. */
@@ -425,7 +382,7 @@ describe("credentials", () => {
     }
 
     // And the unobservable ones say so rather than defaulting to a negative.
-    for (const id of ["pi", "opencode"]) {
+    for (const id of ["pi"]) {
       expect(byId(engines, id).credentials.configured).toBe("unknown");
     }
   });
@@ -540,15 +497,15 @@ describe("userCliPath — the CLI the user can type, as opposed to the one Callb
     // The engine is bundled and always runnable, so nothing else in the status
     // needs this. `codex login` does: it is a command the user either has or
     // does not, and Phase 2's first cut asserted "does not" without looking.
-    mocks.acpBinaryPath.mockImplementation((command: string) => (command === "codex" ? "/usr/local/bin/codex" : null));
+    mocks.binaryPath.mockImplementation((command: string) => (command === "codex" ? "/usr/local/bin/codex" : null));
 
     const engine = await getEngineStatuses().then((e) => byId(e, "codex"));
     expect(engine.userCliPath).toBe("/usr/local/bin/codex");
-    expect(mocks.acpBinaryPath).toHaveBeenCalledWith("codex");
+    expect(mocks.binaryPath).toHaveBeenCalledWith("codex");
   });
 
   it("reports none when there is no codex on PATH", async () => {
-    mocks.acpBinaryPath.mockReturnValue(null);
+    mocks.binaryPath.mockReturnValue(null);
     const engine = await getEngineStatuses().then((e) => byId(e, "codex"));
     expect(engine.userCliPath).toBeUndefined();
   });

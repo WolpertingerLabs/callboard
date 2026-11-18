@@ -135,7 +135,7 @@ const deadOrphan = join(tmpRoot, "repo.feature-orphan");
  * Every claude-code sibling is therefore reachable by gone-`descendant` too.
  *
  * `sibling-path` is only ever the sole admitting rule for an engine that
- * records its cwd **verbatim** — codex, pi, acp all read the cwd out of
+ * records its cwd **verbatim** — codex and pi read the cwd out of
  * the session file rather than a directory name, so there is no decode and no
  * second spelling. Hence the verbatim-cwd rows below.
  */
@@ -353,7 +353,7 @@ vi.mock("./agent-settings.js", async (importOriginal) => ({
 vi.mock("../agents/factory.js", async () => {
   const { ClaudeCodeSessionProvider } = await import("../agents/adapters/claude-code/ClaudeCodeSessionProvider.js");
   // A minimal stand-in for every engine that stores its cwd verbatim (codex,
-  // pi, acp). Discovery is all the merged query needs from it, and the
+  // pi). Discovery is all the merged query needs from it, and the
   // point is precisely that it does NOT encode paths into directory names.
   const verbatim = {
     kind: "pi",

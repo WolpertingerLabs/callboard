@@ -10,6 +10,7 @@
 export const RETIRED_PROVIDERS = {
   openrouter: { tag: "OR", label: "the OpenRouter agent harness" },
   cline: { tag: "CL", label: "Cline" },
+  acp: { tag: "OC", label: "OpenCode" },
 } as const satisfies Record<string, { tag: string; label: string }>;
 
 /** A harness id in {@link RETIRED_PROVIDERS}. */

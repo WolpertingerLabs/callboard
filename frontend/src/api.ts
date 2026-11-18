@@ -644,17 +644,16 @@ export async function getNewChatInfo(folder: string, space?: string): Promise<Ne
 /**
  * The harnesses a conversation can be forked or handed off into.
  *
- * Every `RoutableProviderKind` **except `acp`** — see the fork route's own
- * guard in `routes/chats.ts` for the two independent reasons ACP is excluded
- * (the kind names a wire format rather than a harness, and ACP session state
- * lives inside the agent's process where no client can seed it).
+ * Every UI harness kind. (The retired ACP harness was the one exception while
+ * it shipped: its session state lived inside the agent's process, where no
+ * client could seed it.)
  *
  * `pi` (and the since-retired `cline`) were missing until Phase 5 of the pi
  * landing. Both session providers implemented `forkSession` and `seedSession`,
  * and both round-tripped a real handoff — Callboard had built the capability
  * into two harnesses and offered it into neither.
  */
-export type ForkProvider = Exclude<UiAgentProviderKind, "acp">;
+export type ForkProvider = UiAgentProviderKind;
 
 /**
  * Fork a chat at a message: creates a new chat whose history is a copy of
@@ -1700,22 +1699,13 @@ export interface SystemInfo {
    * control.
    */
   codexAuthNote?: string;
-  /**
-   * Configured ACP vendors and whether each one's CLI is installed.
-   *
-   * `available` means the binary resolves on PATH — **not** that the user is
-   * authenticated. ACP has no auth introspection, so an unauthenticated vendor
-   * reports available and fails at send time with the CLI's own message. Absent
-   * on servers older than the ACP picker; treat that as "no ACP vendors".
-   */
-  acpProviders?: AcpProviderInfo[];
 }
 
 /**
  * Per-engine runtime / version / credential status.
  *
  * A separate call from {@link getSystemInfo} on purpose: system-info is polled
- * by several pages and its `acpProviders` / `codexConfigured` / `codexAuthSource`
+ * by several pages and its `codexConfigured` / `codexAuthSource`
  * fields are read by older bundles, so engine status — which hits the npm
  * registry — got its own route rather than growing that payload.
  *
@@ -1750,7 +1740,7 @@ export async function checkEngineBinary(path: string, engineId: string, signal?:
  *
  * Distinct from `getEngines(true)`, which only bypasses the npm-registry cache.
  * The daemon memoizes where each binary resolved for its whole lifetime, so a
- * user who has just installed `opencode` and re-fetches is told again that it is
+ * user who has just installed `codex` and re-fetches is told again that it is
  * missing. This drops those caches server-side first, which is why it is a POST.
  *
  * Answers `probed: false` when the call was coalesced with a concurrent one or
@@ -1834,27 +1824,6 @@ export async function readEngineInstallStream(installId: string, onEvent: (event
   }
 }
 
-/** The models callboard has seen an ACP vendor advertise. */
-export interface AcpModelCatalogInfo {
-  providerId: string;
-  models: { value: string; displayName: string; description: string }[];
-  /** ISO timestamp of the session that produced the list; "" when never seen. */
-  discoveredAt: string;
-  /** The model that session was running on, when the vendor reported one. */
-  currentValue?: string;
-}
-
-/**
- * Models known for an ACP vendor.
- *
- * Harvested from previous chats rather than probed — a promptless ACP session
- * persists in the vendor's own store — so a vendor that has never run reports an
- * empty list. That is not an error, and the model field takes free text anyway.
- */
-export async function getAcpModels(providerId: string): Promise<AcpModelCatalogInfo> {
-  return request(`/acp/models?providerId=${encodeURIComponent(providerId)}`, { error: "Failed to get ACP models" });
-}
-
 /** One model the configured pi provider will route to. */
 export interface PiModelInfo {
   value: string;
@@ -1885,21 +1854,13 @@ export async function getPiModels(providerId: string): Promise<{ providerId: str
   return request(`/pi/models?providerId=${encodeURIComponent(providerId)}`, { error: "Failed to get pi models" });
 }
 
-export interface AcpProviderInfo {
-  id: string;
-  label: string;
-  available: boolean;
-  /** The binary probed, so a disabled entry can say what to install. */
-  command: string;
-}
-
 /**
  * The last `/api/system-info` payload this tab saw, or `null` before the first.
  *
  * Module-level rather than per-caller because the point is to share it across
  * *mounts*: `NewChatPanel` is conditionally rendered, so it remounts on every
- * popup open and would otherwise start from an empty ACP vendor list every
- * single time. `ClaudeModelSelector` had already reached for a private
+ * popup open and would otherwise start from an empty payload every single
+ * time. `ClaudeModelSelector` had already reached for a private
  * `cachedModels` of its own for the same reason; this is that idea moved to
  * where every caller can use it.
  */
@@ -1914,11 +1875,11 @@ let systemInfoInFlight: Promise<SystemInfo> | null = null;
  * This is the accessor that actually kills the pop-in, and it exists because a
  * promise cannot: `useEffect` runs *after* the browser has painted, so even a
  * cache hit that resolves in a microtask is one frame too late — the row would
- * still render without the OpenCode button and then reflow. A component seeds
- * its initial state from this instead, and paints the button on frame one.
+ * still render without whatever the payload gates and then reflow. A component
+ * seeds its initial state from this instead, and paints it on frame one.
  *
  * `null` means "this tab has never had an answer", which is not the same as
- * "there are no ACP vendors" — callers must keep their existing empty-state
+ * "the server reported nothing" — callers must keep their existing empty-state
  * behaviour for it rather than treating it as data.
  */
 export function cachedSystemInfo(): SystemInfo | null {

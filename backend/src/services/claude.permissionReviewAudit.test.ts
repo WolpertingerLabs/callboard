@@ -289,7 +289,7 @@ describe("audit records of a screened ask", () => {
       "permission.review.settings.parent_answers": true,
       "permission.review.settings.approve_allowed": true,
     });
-    // pi/ACP call without a toolUseID: null, not invented.
+    // A pi call (no toolUseID): null, not invented.
     expect(requested.attributes["tool.use_id"]).toBeUndefined();
     release({ verdict: "deny", reason: "nope", source: "model" });
     await promise;

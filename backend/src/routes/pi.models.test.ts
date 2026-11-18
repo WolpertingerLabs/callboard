@@ -92,8 +92,8 @@ describe("GET /api/pi/models", () => {
   });
 
   it("200s with an empty list for an unknown provider, rather than 500ing", async () => {
-    // The model field accepts free text either way — the Codex and ACP
-    // selectors already behave this way for slugs newer than their catalog.
+    // The model field accepts free text either way — the Codex
+    // selector already behaves this way for slugs newer than their catalog.
     const { status, body } = await get("/models", { providerId: "not-a-real-provider" });
     expect(status).toBe(200);
     expect(body.models).toEqual([]);

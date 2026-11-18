@@ -232,7 +232,6 @@ agentSettingsRouter.put("/", requireSessionAuth, async (req: Request, res: Respo
     openRouterUtilityOpusModel,
     openRouterModelAliases,
     modelAliases,
-    acpProviderModels,
     codexAuthMode,
     codexApiKey,
     codexBaseUrl,
@@ -242,8 +241,6 @@ agentSettingsRouter.put("/", requireSessionAuth, async (req: Request, res: Respo
     codexSandboxMode,
     codexUseOpenRouter,
     codexOpenRouterApiKey,
-    acpUseOpenRouter,
-    acpOpenRouterApiKey,
     codexOpenRouterBaseUrl,
     codexOpenRouterModel,
     piProviderId,
@@ -292,10 +289,10 @@ agentSettingsRouter.put("/", requireSessionAuth, async (req: Request, res: Respo
    * `{"Planner": "x", "planner": "y"}` is a valid object that would otherwise
    * just pick whichever key iteration saw last).
    *
-   * Shared by `normalizeAliases` (below, which layers its own duplicate-name
+   * Used by `normalizeAliases` (below, which layers its own duplicate-name
    * and one-hop cycle checks on top — those entries ARE a self-referential
-   * alias registry) and the ACP per-vendor default-model map (which needs
-   * neither: vendor ids map straight to raw model ids, not to each other).
+   * alias registry). It was also shared with the retired ACP harness's
+   * per-vendor default-model map.
    */
   const normalizeStringMap = (
     v: unknown,
@@ -340,18 +337,6 @@ agentSettingsRouter.put("/", requireSessionAuth, async (req: Request, res: Respo
       }
     }
     return { aliases: map };
-  };
-
-  // Sanitize the per-ACP-vendor default-model map. Unlike normalizeAliases,
-  // there's no cycle check: these are vendor ids to raw model ids, not a
-  // self-referential alias registry, so a duplicate check is unneeded too —
-  // vendor ids come from the settings UI's own tabs, not free-typed rows.
-  const normalizeAcpProviderModels = (v: unknown): { models?: Record<string, string>; error?: string } => {
-    const { map, error } = normalizeStringMap(v, {
-      typeErrorMessage: "acpProviderModels must be an object mapping ACP vendor id to model id",
-    });
-    if (error) return { error };
-    return { models: map };
   };
 
   // Track whether any API / auth / model override field was included so we
@@ -443,8 +428,6 @@ agentSettingsRouter.put("/", requireSessionAuth, async (req: Request, res: Respo
     codexPathOverride !== undefined ||
     codexUseOpenRouter !== undefined ||
     codexOpenRouterApiKey !== undefined ||
-    acpUseOpenRouter !== undefined ||
-    acpOpenRouterApiKey !== undefined ||
     codexOpenRouterBaseUrl !== undefined ||
     codexOpenRouterModel !== undefined;
 
@@ -467,16 +450,6 @@ agentSettingsRouter.put("/", requireSessionAuth, async (req: Request, res: Respo
       return;
     }
     normalizedModelAliases = value.length > 0 ? value : undefined;
-  }
-
-  let normalizedAcpProviderModels: Record<string, string> | undefined;
-  if (acpProviderModels !== undefined) {
-    const result = normalizeAcpProviderModels(acpProviderModels);
-    if (result.error) {
-      res.status(400).json({ error: result.error });
-      return;
-    }
-    normalizedAcpProviderModels = result.models;
   }
 
   // Codex enum fields — validate against the allowed values; an unrecognized
@@ -573,9 +546,6 @@ agentSettingsRouter.put("/", requireSessionAuth, async (req: Request, res: Respo
       ...(codexSandboxMode !== undefined && { codexSandboxMode: normalizeCodexSandboxMode(codexSandboxMode) }),
       ...(codexUseOpenRouter !== undefined && { codexUseOpenRouter: normalizeBool(codexUseOpenRouter) }),
       ...(codexOpenRouterApiKey !== undefined && { codexOpenRouterApiKey: normalize(codexOpenRouterApiKey) }),
-      ...(acpUseOpenRouter !== undefined && { acpUseOpenRouter: normalizeBool(acpUseOpenRouter) }),
-      ...(acpOpenRouterApiKey !== undefined && { acpOpenRouterApiKey: normalize(acpOpenRouterApiKey) }),
-      ...(acpProviderModels !== undefined && { acpProviderModels: normalizedAcpProviderModels }),
       ...(codexOpenRouterBaseUrl !== undefined && { codexOpenRouterBaseUrl: normalize(codexOpenRouterBaseUrl) }),
       ...(codexOpenRouterModel !== undefined && { codexOpenRouterModel: normalize(codexOpenRouterModel) }),
       // pi's credentials live here and nowhere else. Omitting these silently

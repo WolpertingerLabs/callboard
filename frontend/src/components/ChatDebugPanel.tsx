@@ -321,7 +321,7 @@ export default function ChatDebugPanel({ messages }: Props) {
     // of every row. A chat can span engines — forks across harnesses are
     // supported — and folding in the input of rows from an engine that reports no
     // cache metric dilutes the rate towards zero: 10 Codex rows at 5k in / 4k
-    // cache read followed by 10 ACP rows at 5k in and no cache figure reported
+    // cache read followed by 10 rows at 5k in from an engine with no cache figure reported
     // 28.6% where the measured rate is 44%. Rows nobody measured are not
     // evidence of a cache miss.
     const cacheHitRate = hasCacheRead && cachedRowsPromptTokens > 0 ? (totalCacheRead / cachedRowsPromptTokens) * 100 : null;

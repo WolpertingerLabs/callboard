@@ -42,19 +42,16 @@ const FULL: AgentSettings = {
   codexOpenRouterApiKey: "sk-or-codex",
   codexOpenRouterBaseUrl: "https://or.example/codex",
   codexOpenRouterModel: "openai/gpt-x",
-  acpUseOpenRouter: true,
-  acpOpenRouterApiKey: "sk-or-acp",
 };
 
 describe("formFromSettings / settingsFromForm", () => {
   it("round-trips every owned field unchanged, secrets included", () => {
-    const acp = { opencode: "m" };
-    expect(settingsFromForm(formFromSettings(FULL), acp)).toEqual({ ...FULL, acpProviderModels: acp });
+    expect(settingsFromForm(formFromSettings(FULL))).toEqual(FULL);
   });
 
   it("ignores settings the form does not own", () => {
-    const form = formFromSettings({ ...FULL, acpProviderModels: { a: "b" } } as AgentSettings);
-    expect(form).not.toHaveProperty("acpProviderModels");
+    const form = formFromSettings({ ...FULL, modelAliases: [] } as AgentSettings);
+    expect(form).not.toHaveProperty("modelAliases");
   });
 
   it("seeds blanks, false flags and the two enum defaults from empty settings", () => {
@@ -67,20 +64,26 @@ describe("formFromSettings / settingsFromForm", () => {
   });
 
   it("sends every field on Save — a snapshot, with blanks as empty strings", () => {
-    const body = settingsFromForm(EMPTY_API_SETTINGS_FORM, undefined);
-    expect(Object.keys(body)).toHaveLength(41);
+    const body = settingsFromForm(EMPTY_API_SETTINGS_FORM);
+    expect(Object.keys(body)).toHaveLength(38);
     expect(body.apiKey).toBe("");
     expect(body.codexAuthMode).toBe("subscription");
     expect(body.openRouterUtilityCompletions).toBe(false);
-    expect("acpProviderModels" in body).toBe(true);
   });
 
   it("sends no field for the retired Cline harness", () => {
-    const body = settingsFromForm(formFromSettings({ clineApiKey: "sk-cline", clineModel: "x" } as AgentSettings), undefined);
+    const body = settingsFromForm(formFromSettings({ clineApiKey: "sk-cline", clineModel: "x" } as AgentSettings));
     expect(Object.keys(body).filter((k) => k.startsWith("cline"))).toEqual([]);
   });
 
+  it("sends no field for the retired ACP harness", () => {
+    const body = settingsFromForm(
+      formFromSettings({ acpUseOpenRouter: true, acpOpenRouterApiKey: "sk-or-acp", acpProviderModels: { opencode: "m" } } as unknown as AgentSettings),
+    );
+    expect(Object.keys(body).filter((k) => k.startsWith("acp"))).toEqual([]);
+  });
+
   it("does not trim free-text fields", () => {
-    expect(settingsFromForm({ ...EMPTY_API_SETTINGS_FORM, apiBaseUrl: " https://x " }, undefined).apiBaseUrl).toBe(" https://x ");
+    expect(settingsFromForm({ ...EMPTY_API_SETTINGS_FORM, apiBaseUrl: " https://x " }).apiBaseUrl).toBe(" https://x ");
   });
 });

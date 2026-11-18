@@ -295,8 +295,8 @@ describe("quickCompletion — backend selection", () => {
   });
 
   it("stays on Claude Code when a key exists but the opt-in does not", async () => {
-    // The regression this guards: an OpenRouter key saved for the ACP fallback
-    // (or a routed native harness) must not silently start paying for titles.
+    // The regression this guards: an OpenRouter key saved for a routed native
+    // harness must not silently start paying for titles.
     mockGetAgentSettings.mockReturnValue({ proxyMode: "local", openRouterApiKey: "sk-or-test" });
     const fetchMock = stubOpenRouter("never used");
     const mock = new MockAgentProvider();

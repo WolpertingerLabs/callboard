@@ -1,26 +1,19 @@
 /**
- * The New Chat popup's provider row: painted from cache, believed from the wire.
+ * The New Chat popup's provider row: believed from the wire, not from cache.
  *
- * This is the suite for the behaviour the whole change exists to produce, and
- * for the regression the first cut of it introduced. Both live in the same two
- * lines of `NewChatPanel`, pulling in opposite directions:
- *
- * - **The seed.** `cachedSystemInfo()` is read synchronously into initial state,
- *   because `useEffect` runs after the first paint by definition. Without it the
- *   OpenCode button — the only provider button built from server data rather
- *   than hardcoded JSX — arrived a round trip after the other four and reflowed
- *   the row.
  * - **The refresh.** The effect asks the daemon again with `{refresh: true}`.
  *   `getSystemInfo()`'s cached default resolves with the last payload this tab
  *   saw and hands the revalidation to the module cache rather than to the
- *   caller, so taking the default pinned the panel to a stale vendor list for
- *   its entire lifetime — a button for an uninstalled CLI, rendered *enabled*,
+ *   caller, so taking the default pinned the panel to a stale answer for its
+ *   entire lifetime — a button for an unavailable harness, rendered *enabled*,
  *   which `downgradeProvider` then agreed with.
+ * - **No seed for the Codex gate.** The cached payload does seed some fields,
+ *   but never `codexConfigured`: a cached `false` would disable a button that
+ *   may well be fine, so until the daemon answers the button stays live.
  *
- * So the cases below come in pairs: one that the button is there without the
- * network, one that it is not there when there is nothing cached (or the first
- * would pass vacuously), and one that a vendor uninstalled since the cache
- * warmed is corrected once the daemon answers.
+ * (This suite was first written around the retired ACP harness's OpenCode
+ * button, the only provider button once built from server data; the Codex gate
+ * is what is left of the same contract.)
  *
  * The real `../api` module is used with `fetch` stubbed, so the cache and the
  * component are exercised as the one mechanism they actually are — mocking
@@ -33,12 +26,9 @@ import { MemoryRouter } from "react-router-dom";
 import NewChatPanel from "./NewChatPanel";
 import { getSystemInfo, resetSystemInfoCache } from "../api";
 
-const OPENCODE = (available: boolean) => [{ id: "opencode", label: "OpenCode", available, command: "opencode" }];
-
-const payload = (acpProviders: ReturnType<typeof OPENCODE>) => ({
+const payload = (codexConfigured: boolean) => ({
   version: "1.0.0",
-  acpProviders,
-  codexConfigured: true,
+  codexConfigured,
 });
 
 /** Resolve `/system-info` with `body`; answer anything else the panel touches harmlessly. */
@@ -75,32 +65,21 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+const codexButton = () => screen.getByRole("button", { name: "Codex" });
+
 describe("the seed — what paints before the daemon answers", () => {
-  it("renders the OpenCode button without waiting for the network", async () => {
-    // Warm the cache the way a previous popup open (or the composer, or the
-    // model selector) would have.
-    vi.stubGlobal("fetch", serve(payload(OPENCODE(true))));
+  it("does not disable Codex from a cached false while the daemon is silent", async () => {
+    vi.stubGlobal("fetch", serve(payload(false)));
     await getSystemInfo();
 
     // From here on nothing resolves, so the effect cannot contribute.
     vi.stubGlobal("fetch", serveNothing());
     render(panel());
 
-    expect(screen.getByRole("button", { name: "OpenCode" })).toBeTruthy();
-  });
-
-  it("renders no vendor button when this tab has never fetched", () => {
-    // The control. Without this the case above would pass on a component that
-    // rendered "OpenCode" unconditionally.
-    vi.stubGlobal("fetch", serveNothing());
-    render(panel());
-
-    expect(screen.queryByRole("button", { name: "OpenCode" })).toBeNull();
+    expect(codexButton().hasAttribute("disabled")).toBe(false);
   });
 
   it("still shows the three hardcoded providers with a cold cache", () => {
-    // Which is why only the ACP button ever popped in: these three never needed
-    // the payload, so the row was drawn and then reflowed when the fourth landed.
     vi.stubGlobal("fetch", serveNothing());
     render(panel());
 
@@ -119,36 +98,29 @@ describe("the refresh — what the panel believes", () => {
   // to the caller. What separates the two is which payload the panel ends up
   // believing, which is exactly what the pair below measures.
 
-  it("disables a vendor that was uninstalled since the cache warmed", async () => {
-    // The regression, end to end. The cache says OpenCode is installed; it is
-    // not any more. Serving stale for the popup's whole lifetime left this
-    // button enabled and clickable, and the chat then failed at start instead of
-    // falling back.
-    vi.stubGlobal("fetch", serve(payload(OPENCODE(true))));
+  it("disables Codex once the daemon says it is no longer configured", async () => {
+    vi.stubGlobal("fetch", serve(payload(true)));
     await getSystemInfo();
 
-    vi.stubGlobal("fetch", serve(payload(OPENCODE(false))));
+    vi.stubGlobal("fetch", serve(payload(false)));
     render(panel());
 
-    // Painted from the seed first, and still enabled — that is all this tab knew
-    // when the frame was drawn, and drawing *something* is the point of the seed.
-    expect(screen.getByRole("button", { name: "OpenCode" }).hasAttribute("disabled")).toBe(false);
-
-    // …and corrected as soon as the daemon answers. On the cached default this
-    // second assertion never came true: the revalidation updated the module
-    // cache and the panel was never told.
-    await waitFor(() => expect(screen.getByRole("button", { name: "OpenCode" }).hasAttribute("disabled")).toBe(true));
+    // On the cached default this never came true: the revalidation updated the
+    // module cache and the panel was never told.
+    await waitFor(() => expect(codexButton().hasAttribute("disabled")).toBe(true));
   });
 
-  it("keeps the button enabled when the daemon confirms the vendor is installed", async () => {
+  it("keeps Codex enabled when the daemon confirms it is configured", async () => {
     // The other half, so the case above is not satisfied by a component that
     // disables the button unconditionally once any payload arrives.
-    vi.stubGlobal("fetch", serve(payload(OPENCODE(true))));
+    vi.stubGlobal("fetch", serve(payload(true)));
     await getSystemInfo();
 
-    vi.stubGlobal("fetch", serve(payload(OPENCODE(true))));
+    const fresh = serve(payload(true));
+    vi.stubGlobal("fetch", fresh);
     render(panel());
 
-    await waitFor(() => expect(screen.getByRole("button", { name: "OpenCode" }).hasAttribute("disabled")).toBe(false));
+    await waitFor(() => expect(fresh.mock.calls.some(([url]) => String(url).includes("/system-info"))).toBe(true));
+    await waitFor(() => expect(codexButton().hasAttribute("disabled")).toBe(false));
   });
 });

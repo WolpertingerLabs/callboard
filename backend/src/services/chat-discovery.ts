@@ -20,7 +20,7 @@ export function discoverChatCorpus(providers: readonly SessionProvider[] = getSe
         if (page.warnings) warnings.push(...page.warnings.map((w) => `${provider.kind}: ${w}`));
         let added = 0;
         for (const s of page.sessions) {
-          const key = JSON.stringify([s.sessionId, s.acpProviderId, s.filePath]);
+          const key = JSON.stringify([s.sessionId, s.filePath]);
           if (seen.has(key)) continue;
           seen.add(key);
           added++;
@@ -46,7 +46,6 @@ export function discoverChatCorpus(providers: readonly SessionProvider[] = getSe
       b.updatedAt.getTime() - a.updatedAt.getTime() ||
       a.sessionId.localeCompare(b.sessionId) ||
       a.providerKind.localeCompare(b.providerKind) ||
-      (a.acpProviderId ?? "").localeCompare(b.acpProviderId ?? "") ||
       a.filePath.localeCompare(b.filePath),
   );
   return { sessions, warnings };

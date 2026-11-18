@@ -102,7 +102,7 @@ describe("the Runtime row", () => {
     // The degraded path: the fallback built from /api/system-info knows the
     // binary is there but not where, and keying the sentence off `resolvedPath`
     // rendered "not found on PATH" over an installed CLI.
-    render(<EngineStatusCard engine={{ ...base, id: "opencode", label: "OpenCode", installed: true, runtime: { kind: "external", command: "opencode" } }} />);
+    render(<EngineStatusCard engine={{ ...base, id: "somecli", label: "SomeCLI", installed: true, runtime: { kind: "external", command: "somecli" } }} />);
     expect(screen.getByText(/found on PATH/)).toBeTruthy();
     expect(screen.queryByText(/not found on PATH/)).toBeNull();
     expect(screen.queryByText(/Install it to enable/)).toBeNull();
@@ -127,7 +127,7 @@ describe("the Runtime row", () => {
   it("tells an external engine's user to install it", () => {
     render(
       <EngineStatusCard
-        engine={{ ...base, id: "opencode", label: "OpenCode", installed: false, version: undefined, runtime: { kind: "external", command: "opencode" } }}
+        engine={{ ...base, id: "somecli", label: "SomeCLI", installed: false, version: undefined, runtime: { kind: "external", command: "somecli" } }}
       />,
     );
     expect(screen.getByText(/not found on PATH/)).toBeTruthy();
@@ -164,8 +164,8 @@ describe("the Latest row", () => {
       <EngineStatusCard
         engine={{
           ...base,
-          id: "opencode",
-          runtime: { kind: "external", command: "opencode", resolvedPath: "/usr/bin/opencode", package: "opencode-ai" },
+          id: "somecli",
+          runtime: { kind: "external", command: "somecli", resolvedPath: "/usr/bin/somecli", package: "somecli" },
           version: "1.0.0",
           latestVersion: "1.1.0",
           updateAvailable: true,
@@ -182,8 +182,7 @@ describe("the Latest row", () => {
 
   it("does not blame the registry for a package it never asked about", () => {
     // An external CLI with no npm distribution has no `package` on its runtime,
-    // so nothing was ever looked up. Latent with one ACP preset shipped;
-    // guaranteed the moment a second one lands without an npm package.
+    // so nothing was ever looked up.
     render(
       <EngineStatusCard
         engine={{ ...base, id: "somecli", label: "SomeCLI", runtime: { kind: "external", command: "somecli", resolvedPath: "/usr/bin/somecli" } }}
@@ -222,18 +221,19 @@ describe("the Credentials row", () => {
   });
 
   it("says Callboard cannot tell rather than asserting a negative it cannot support", () => {
-    // Reproduced live before this changed: a machine with a valid opencode
-    // auth.json rendered "Not configured". "Not configured" is a claim about
-    // the user's machine, and for an ACP vendor Callboard has no standing to
-    // make it — it does not read other tools' credential stores.
+    // Reproduced live before this changed (on the since-retired ACP harness's
+    // OpenCode): a machine with a valid auth.json rendered "Not configured".
+    // "Not configured" is a claim about the user's machine, and for an external
+    // CLI holding its own login Callboard has no standing to make it — it does
+    // not read other tools' credential stores.
     render(
       <EngineStatusCard
         engine={{
           ...base,
-          id: "opencode",
-          label: "OpenCode",
-          runtime: { kind: "external", command: "opencode", resolvedPath: "/usr/bin/opencode", package: "opencode-ai" },
-          credentials: { configured: "unknown", note: "Held by the OpenCode CLI, never by Callboard." },
+          id: "somecli",
+          label: "SomeCLI",
+          runtime: { kind: "external", command: "somecli", resolvedPath: "/usr/bin/somecli", package: "somecli" },
+          credentials: { configured: "unknown", note: "Held by the SomeCLI CLI, never by Callboard." },
         }}
       />,
     );
@@ -252,10 +252,10 @@ describe("the Credentials row", () => {
 
 describe("engineStatusDot", () => {
   it("greys out an engine that is not installed", () => {
-    const dot = engineStatusDot({ ...base, installed: false, runtime: { kind: "external", command: "opencode" } });
+    const dot = engineStatusDot({ ...base, installed: false, runtime: { kind: "external", command: "somecli" } });
     expect(dot.color).toBe("var(--text-muted)");
     expect(dot.label).toBe("Not installed");
-    expect(dot.title).toContain("opencode");
+    expect(dot.title).toContain("somecli");
   });
 
   it("greens an installed, credentialed engine and names the source in the tooltip", () => {
@@ -266,8 +266,8 @@ describe("engineStatusDot", () => {
   });
 
   it("ambers an engine whose credentials Callboard cannot see", () => {
-    // Amber rather than red: for an ACP vendor this is a question Callboard
-    // cannot ask, not a fault.
+    // Amber rather than red: for an external CLI holding its own login this is
+    // a question Callboard cannot ask, not a fault.
     const dot = engineStatusDot({ ...base, credentials: { configured: "unknown", note: "Held by the CLI." } });
     expect(dot.color).toBe("var(--warning)");
     expect(dot.label).toBe("Credentials not confirmed");
@@ -283,12 +283,12 @@ describe("engineStatusDot", () => {
 
   it("never greens an engine on the strength of the unknown state", () => {
     // `"unknown"` is truthy, so a `credentials.configured ?` check here would
-    // paint every ACP vendor green regardless of whether it is signed in.
+    // paint every such engine green regardless of whether it is signed in.
     expect(engineStatusDot({ ...base, credentials: { configured: "unknown" } }).color).not.toBe("var(--success)");
   });
 
   it("keeps the long reason out of the card header, where Credentials already says it", () => {
-    const note = "Held by the OpenCode CLI, never by Callboard.";
+    const note = "Held by the SomeCLI CLI, never by Callboard.";
     render(<EngineStatusCard engine={{ ...base, credentials: { configured: "unknown", note } }} />);
     // Once, in the Credentials row — not again as a truncated header line.
     expect(screen.getAllByText(note)).toHaveLength(1);
@@ -309,38 +309,38 @@ describe("before the status arrives", () => {
 
 describe("the install block — Phase 2's whole deliverable", () => {
   const guidance: EngineInstallGuidance = {
-    reason: "No `opencode` on the PATH of the user running the Callboard daemon.",
+    reason: "No `somecli` on the PATH of the user running the Callboard daemon.",
     scope: "Installing it does not change which binary your chats run.",
     alternative: "Or set an API key on this tab.",
     recipes: [
       {
-        engineId: "opencode",
+        engineId: "somecli",
         method: "npm-global",
         label: "npm (global)",
-        package: "opencode-ai",
-        argv: ["npm", "install", "-g", "opencode-ai"],
-        command: "npm install -g opencode-ai",
-        docsUrl: "https://opencode.ai/docs/",
+        package: "somecli",
+        argv: ["npm", "install", "-g", "somecli"],
+        command: "npm install -g somecli",
+        docsUrl: "https://somecli.example/docs/",
         visibleAfterRecheck: true,
         caveats: ["Needs a writable npm global prefix."],
       },
       {
-        engineId: "opencode",
+        engineId: "somecli",
         method: "script",
-        label: "OpenCode's installer",
-        command: "curl -fsSL https://opencode.ai/install | bash",
-        docsUrl: "https://opencode.ai/docs/",
+        label: "SomeCLI's installer",
+        command: "curl -fsSL https://somecli.example/install | bash",
+        docsUrl: "https://somecli.example/docs/",
         visibleAfterRecheck: false,
-        caveats: ["Installs to `~/.opencode/bin` — Recheck will not find this install; run `callboard restart`."],
+        caveats: ["Installs to `~/.somecli/bin` — Recheck will not find this install; run `callboard restart`."],
       },
     ],
   };
 
   const missing: EngineStatus = {
     ...base,
-    id: "opencode",
-    label: "OpenCode",
-    runtime: { kind: "external", command: "opencode" },
+    id: "somecli",
+    label: "SomeCLI",
+    runtime: { kind: "external", command: "somecli" },
     installed: false,
     version: undefined,
     install: guidance,
@@ -348,8 +348,8 @@ describe("the install block — Phase 2's whole deliverable", () => {
 
   it("shows every command, verbatim", () => {
     render(<EngineStatusCard engine={missing} />);
-    expect(screen.getByText("npm install -g opencode-ai")).toBeTruthy();
-    expect(screen.getByText("curl -fsSL https://opencode.ai/install | bash")).toBeTruthy();
+    expect(screen.getByText("npm install -g somecli")).toBeTruthy();
+    expect(screen.getByText("curl -fsSL https://somecli.example/install | bash")).toBeTruthy();
   });
 
   it("says what to run, what it does not change, and what needs nothing installed", () => {
@@ -381,8 +381,8 @@ describe("the install block — Phase 2's whole deliverable", () => {
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
 
     render(<EngineStatusCard engine={missing} />);
-    fireEvent.click(screen.getByLabelText("Copy: npm install -g opencode-ai"));
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith("npm install -g opencode-ai"));
+    fireEvent.click(screen.getByLabelText("Copy: npm install -g somecli"));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("npm install -g somecli"));
   });
 
   it("is absent entirely when the engine is fine", () => {
@@ -475,19 +475,19 @@ describe("guidance with nothing to install", () => {
 describe("what the card promises Recheck can see", () => {
   const withScript = (visibleAfterRecheck: boolean): EngineStatus => ({
     ...base,
-    id: "opencode",
-    label: "OpenCode",
-    runtime: { kind: "external", command: "opencode" },
+    id: "somecli",
+    label: "SomeCLI",
+    runtime: { kind: "external", command: "somecli" },
     installed: false,
     install: {
-      reason: "No `opencode` on PATH.",
+      reason: "No `somecli` on PATH.",
       recipes: [
         {
-          engineId: "opencode",
+          engineId: "somecli",
           method: "script",
-          label: "OpenCode's installer",
-          command: "curl -fsSL https://opencode.ai/install | bash",
-          docsUrl: "https://opencode.ai/docs/",
+          label: "SomeCLI's installer",
+          command: "curl -fsSL https://somecli.example/install | bash",
+          docsUrl: "https://somecli.example/docs/",
           visibleAfterRecheck,
         },
       ],
@@ -495,8 +495,8 @@ describe("what the card promises Recheck can see", () => {
   });
 
   it("does not tell you to press Recheck after a script install", () => {
-    // Verified against the live installers: opencode's writes to
-    // `~/.opencode/bin` and edits the shell rc, Anthropic's lands in
+    // Verified against the live installers: the (since retired) OpenCode one
+    // wrote to its own `~/<cli>/bin` and edited the shell rc, Anthropic's lands in
     // `~/.local/bin`. A running daemon's PATH is fixed at exec, so Recheck
     // cannot ever see either — telling someone to press it is a button that
     // does nothing, dressed as an instruction.

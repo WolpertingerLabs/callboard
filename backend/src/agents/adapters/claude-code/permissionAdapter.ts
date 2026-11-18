@@ -2,7 +2,7 @@
  * Claude Code permission adapter — maps Claude's tool names into the
  * {@link PermissionCategory} space used by callboard's default-permissions UI.
  *
- * Tool names are SDK-specific; a Codex or OpenCode adapter would need its own
+ * Tool names are SDK-specific; another adapter (pi, say) needs its own
  * map. The neutral allow/deny/ask *decision* lives in the port via
  * {@link ToolPermissionPolicy}.
  */

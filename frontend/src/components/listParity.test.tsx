@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * Cross-engine list parity: the same running task list, sent by four different
+ * Cross-engine list parity: the same running task list, sent by different
  * engines, has to put the same checklist on screen.
  *
  * The backend half (`backend/src/agents/adapters/listTracking.test.ts`) proves
@@ -10,7 +10,7 @@
  *
  * Kept as one table rather than split per component because the bug it replaces
  * was a gate that matched a single engine's tool name (`=== "TodoWrite"`). That
- * reads as correct in isolation; it only reads as wrong next to the three other
+ * reads as correct in isolation; it only reads as wrong next to the other
  * engines it silently excluded.
  */
 import { afterEach, describe, expect, it } from "vitest";
@@ -63,19 +63,6 @@ const ENGINES: Engine[] = [
       }),
     ),
   },
-  {
-    name: "acp",
-    message: toolUse(
-      TASK_LIST_TOOLS.acp,
-      JSON.stringify({
-        entries: [
-          { content: "Wire the adapter", priority: "high", status: "completed" },
-          { content: "Render the list", priority: "medium", status: "in_progress" },
-          { content: "Prove it", priority: "low", status: "pending" },
-        ],
-      }),
-    ),
-  },
 ];
 
 describe("every engine's list renders as a list", () => {
@@ -107,14 +94,13 @@ describe("every engine's list renders as a list", () => {
 });
 
 describe("a cleared list says so", () => {
-  // ACP's `plan_removed` and a `TodoWrite` with no todos mean the same thing.
-  // Both have to render: whatever the newest list message says is what the user
+  // A `TodoWrite` with no todos and an `update_plan` with no steps mean the
+  // same thing (as the retired ACP harness's `plan_removed` did). Both have to render: whatever the newest list message says is what the user
   // reads as the agent's current plan, so falling back to no list at all leaves
   // the previous, stale one as the newest thing on screen.
   it.each([
     ["claude-code", TASK_LIST_TOOLS.claudeCode, JSON.stringify({ todos: [] })],
     ["codex", TASK_LIST_TOOLS.codex, JSON.stringify({ plan: [] })],
-    ["acp", TASK_LIST_TOOLS.acp, JSON.stringify({ entries: [] })],
   ])("%s: an empty list renders as cleared", (_name, toolName, content) => {
     render(<ToolCallBubble toolUse={toolUse(toolName, content)} toolResult={null} isRunning={false} />);
     expect(screen.getByText("cleared")).toBeTruthy();
@@ -130,18 +116,25 @@ describe("the gate does not fire on things that are not task lists", () => {
   });
 
   it("a task-list tool whose payload is not a list stays a tool bubble", () => {
-    // A vendor shipping its own tool called `plan` is more plausible than it
-    // sounds; rendering its arguments as a checklist would be a silent lie.
-    expect(parseTodoItems(toolUse(TASK_LIST_TOOLS.acp, JSON.stringify({ query: "find the plan" })))).toBeNull();
+    // A vendor shipping its own tool called `update_plan` is more plausible than
+    // it sounds; rendering its arguments as a checklist would be a silent lie.
+    expect(parseTodoItems(toolUse(TASK_LIST_TOOLS.codex, JSON.stringify({ query: "find the plan" })))).toBeNull();
   });
 
   it("a half-understood list falls back rather than rendering a shorter one", () => {
     // Dropping the malformed row would hide it; the raw bubble shows the truth.
-    const partial = JSON.stringify({ entries: [{ content: "Real step", status: "pending" }, { content: "No status" }] });
-    expect(parseTodoItems(toolUse(TASK_LIST_TOOLS.acp, partial))).toBeNull();
+    const partial = JSON.stringify({ plan: [{ step: "Real step", status: "pending" }, { step: "No status" }] });
+    expect(parseTodoItems(toolUse(TASK_LIST_TOOLS.codex, partial))).toBeNull();
   });
 
   it("a tool_result carrying a list-shaped payload is not a task list", () => {
-    expect(parseTodoItems({ ...toolUse(TASK_LIST_TOOLS.acp, JSON.stringify({ entries: [] })), type: "tool_result" })).toBeNull();
+    expect(parseTodoItems({ ...toolUse(TASK_LIST_TOOLS.codex, JSON.stringify({ plan: [] })), type: "tool_result" })).toBeNull();
+  });
+
+  it("a bare `plan` tool is an ordinary tool now the ACP harness is retired", () => {
+    // `plan` was the retired ACP harness's task-list name; nothing emits it any
+    // more, so it is not kept as a match an unrelated tool could trip.
+    const entries = JSON.stringify({ entries: [{ content: "Step", priority: "high", status: "pending" }] });
+    expect(parseTodoItems(toolUse("plan", entries))).toBeNull();
   });
 });
