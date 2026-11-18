@@ -272,10 +272,23 @@ describe.skipIf(!live)("pi adapter — live", () => {
         thrown = err;
       }
       const reason = thrown instanceof Error ? thrown.message : (outcome?.result?.status === "error" && outcome.result.reason) || "";
-      expect(reason, "the turn ran instead of being refused").toMatch(/reasoning effort/i);
-      // Pre-flight means no model output and nothing billed.
-      expect(outcome?.text ?? "").toBe("");
-      expect(outcome?.result?.usage?.costUsd ?? 0).toBe(0);
+      // callboard's exact pre-flight wording, anchored. A looser match would
+      // also pass on a provider 400 that mentions reasoning effort — that is,
+      // on the request having been sent.
+      expect(reason, "the turn was not refused by callboard's pre-flight").toMatch(/^Pi cannot express reasoning effort "none" for the resolved model/);
+      // The same assertion throws "choose one of: no model resolved" when the
+      // model did not resolve at all (dropped from the catalog, metadata fetch
+      // failed). That would keep the line above green while proving nothing,
+      // and the rest of the suite would be running on pi's default model.
+      expect(reason, "the model did not resolve; the refusal is the no-model form").not.toMatch(/no model resolved/);
+      // The refusal lists the model's real effort tiers, so it was read.
+      expect(reason).toMatch(/\bminimal\b/);
+      if (!thrown) {
+        // Reported as a result rather than thrown: still pre-flight, so no
+        // model output and nothing billed.
+        expect(outcome?.text ?? "").toBe("");
+        expect(outcome?.result?.usage?.costUsd ?? 0).toBe(0);
+      }
     },
     TEST_TIMEOUT,
   );
