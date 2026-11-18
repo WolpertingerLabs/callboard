@@ -43,8 +43,12 @@ import { getAcpModelCatalog, resetAcpModelCatalogCache } from "./modelCatalog.js
 import type { AgentEvent } from "../../ports/events.js";
 import type { DefaultPermissions } from "shared/types/index.js";
 
-/** A cheap model that needs no paid credential, so the suite costs nothing to run. */
-const FREE_MODEL = "opencode/nemotron-3-ultra-free";
+/**
+ * A cheap model that needs no paid credential, so the suite costs nothing to run.
+ * OpenCode Zen rotates its free models; when a live run fails with "model not
+ * found", re-pick from `opencode models` (this and the switch target below).
+ */
+const FREE_MODEL = "opencode/nemotron-3.5-lightning-free";
 const TEST_TIMEOUT = 180_000;
 
 function openCodeInstalled(): boolean {
@@ -273,7 +277,7 @@ describeLive("OpenCode over ACP (live)", () => {
         cwd: project(),
         prompt: "Reply with exactly: OK",
         permissions: allowAll,
-        model: "opencode/mimo-v2.5-free",
+        model: "opencode/mimo-v2.6-flash-free",
       });
       expect(events.at(-1)).toMatchObject({ type: "result", status: "success" });
     },
