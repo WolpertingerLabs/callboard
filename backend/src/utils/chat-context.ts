@@ -16,7 +16,6 @@ export function chatContextFingerprint(chat: StoredChatContext | null | undefine
     session_id: chat.session_id,
     folder: chat.folder,
     provider: meta.provider,
-    acpProviderId: meta.acpProviderId,
     model: meta.model,
     effort: meta.effort,
     session_ids: meta.session_ids,

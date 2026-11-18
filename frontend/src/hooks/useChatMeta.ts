@@ -22,7 +22,6 @@ export interface ChatMeta {
    * compares against.
    */
   treeParentChatId?: string;
-  acpProviderId?: string;
   model?: string;
   effort?: EffortLevel;
   /** Present when truthy; still to be run through `normalizePermissions`. */
@@ -62,7 +61,6 @@ export function parseChatMeta(metadata: string | null | undefined): ChatMeta {
     nativeAgent: (meta.nativeAgent || undefined) as NativeCodexAgent | undefined,
     parentChatId: nonEmpty(meta.parentChatId),
     treeParentChatId: nonEmpty(meta.parentChatId) ?? nonEmpty(meta.forkedFrom),
-    acpProviderId: str(meta.acpProviderId),
     model: str(meta.model),
     effort: str(meta.effort) as EffortLevel | undefined,
     defaultPermissions: (meta.defaultPermissions || undefined) as DefaultPermissions | undefined,

@@ -4,8 +4,8 @@ import { getSessionProviders } from "../agents/factory.js";
 import { SessionRoutingError } from "../agents/ports/SessionProvider.js";
 
 /** Enrich response metadata without mutating storage or overriding explicit routing. */
-export function withSessionProvider(metadata: string | null | undefined, provider: string, acpProviderId?: string): string {
-  return JSON.stringify(withSessionProviderMeta(parseChatMetadata(metadata), provider, acpProviderId));
+export function withSessionProvider(metadata: string | null | undefined, provider: string): string {
+  return JSON.stringify(withSessionProviderMeta(parseChatMetadata(metadata), provider));
 }
 
 /**
@@ -13,14 +13,9 @@ export function withSessionProvider(metadata: string | null | undefined, provide
  * would otherwise stringify only to have it parsed straight back. Returns a new
  * object; `meta` is not mutated.
  */
-export function withSessionProviderMeta(meta: Record<string, any>, provider: string, acpProviderId?: string): Record<string, any> {
+export function withSessionProviderMeta(meta: Record<string, any>, provider: string): Record<string, any> {
   // Explicit routing (including unknown/retired values) is authoritative.
-  const owner = meta.provider ?? provider;
-  return {
-    ...meta,
-    provider: owner,
-    ...(owner === "acp" && provider === "acp" && acpProviderId && !meta.acpProviderId && { acpProviderId }),
-  };
+  return { ...meta, provider: meta.provider ?? provider };
 }
 
 /** Resolve only within the explicit owner, rejecting conflicting resolver evidence. */
@@ -30,7 +25,7 @@ export function resolveSessionAcrossProviders(sessionId: string, metadata?: stri
   for (const provider of getSessionProviders()) {
     if (meta.provider != null && provider.kind !== meta.provider) continue;
     try {
-      const resolved = provider.resolveSession(sessionId, { acpProviderId: meta.acpProviderId });
+      const resolved = provider.resolveSession(sessionId);
       if (resolved && statSync(resolved.logPath).isFile()) matches.push({ ...resolved, provider: provider.kind });
     } catch (err) {
       if (err instanceof SessionRoutingError) throw err;
@@ -43,7 +38,7 @@ export function resolveSessionAcrossProviders(sessionId: string, metadata?: stri
 
 /**
  * Current identity is separate from historical routing evidence. A historical
- * log may establish provider/vendor but never the current thread's lifecycle.
+ * log may establish the provider but never the current thread's lifecycle.
  */
 export function resolveSessionContext(sessionId: string, metadata?: string | null) {
   const current = resolveSessionAcrossProviders(sessionId, metadata);
@@ -54,13 +49,13 @@ export function resolveSessionContext(sessionId: string, metadata?: string | nul
     const evidence = [...new Set<string>(ids.filter((id: unknown) => typeof id === "string" && id !== sessionId))]
       .map((id) => resolveSessionAcrossProviders(id, metadata))
       .filter((entry) => entry !== null);
-    const owners = new Set(evidence.map((entry) => JSON.stringify([entry.provider, entry.acpProviderId])));
+    const owners = new Set(evidence.map((entry) => entry.provider));
     if (owners.size > 1) throw new SessionRoutingError("Conflicting provider provenance across recorded sessions");
     provenance = evidence[0] ?? null;
   }
   return {
     current,
     provenance,
-    metadata: provenance ? withSessionProvider(metadata, provenance.provider, provenance.acpProviderId) : (metadata ?? "{}"),
+    metadata: provenance ? withSessionProvider(metadata, provenance.provider) : (metadata ?? "{}"),
   };
 }

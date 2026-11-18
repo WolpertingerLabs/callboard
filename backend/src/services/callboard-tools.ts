@@ -194,21 +194,20 @@ export function buildCallboardToolsSpec(
     includeJobTools?: boolean;
     chatView?: ChatViewBinding;
     /**
-     * The engine this session is itself running on, and (for ACP) which vendor.
+     * The engine this session is itself running on.
      * `start_chat_session` inherits it when the caller does not name a provider,
      * so a Pi session spawns Pi children rather than silently handing them to
      * Claude Code.
      *
-     * `provider`/`acpProviderId` are plain values, not getters: a chat's
+     * `provider` is a plain value, not a getter: a chat's
      * provider is immutable by design (see plans/openrouter-adapter.md), so
-     * they are fixed for the session's whole lifetime and there is nothing to
+     * it is fixed for the session's whole lifetime and there is nothing to
      * re-read. `getModel` is the exception — a getter — because a chat's model
      * IS mutable (the user can switch it mid-chat, and the switch lands in the
      * chat record's metadata before the next turn), so a value captured here
      * would go stale for the rest of the session.
      */
     provider?: UiAgentProviderKind;
-    acpProviderId?: string;
     /**
      * Live read of the calling chat's current model override. Drives `model`
      * inheritance in the session-starting tools when the caller omits `model`.
@@ -867,7 +866,6 @@ export function buildCallboardToolsSpec(
 
             const providerModel = resolveProviderModelArgs(args, {
               provider: opts?.provider,
-              acpProviderId: opts?.acpProviderId,
               getModel: opts?.getModel,
             });
             if (!providerModel.ok) {
@@ -951,7 +949,6 @@ export function buildCallboardToolsSpec(
               // Meaningless without a parent edge, so only for a linked child.
               ...(args.parentAnswers === true && parentChat && !independent && { parentAnswers: true }),
               provider: providerModel.provider,
-              ...(providerModel.acpProviderId && { acpProviderId: providerModel.acpProviderId }),
               ...(providerModel.model && { model: providerModel.model }),
               ...(args.effort && { effort: args.effort as EffortLevel }),
               ...(args.requireExplicitCompletion === true && { requireExplicitCompletion: true }),

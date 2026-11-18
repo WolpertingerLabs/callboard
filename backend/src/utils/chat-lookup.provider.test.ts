@@ -48,15 +48,15 @@ writeFileSync(
 );
 const codex = new CodexSessionProvider();
 
-function stub(kind: SessionProvider["kind"], id: string, acpProviderId?: string): SessionProvider {
+function stub(kind: SessionProvider["kind"], id: string): SessionProvider {
   const path = join(dir, id + ".jsonl");
   writeFileSync(path, JSON.stringify({ type: "session_meta", payload: { id, cwd: dir, source: "exec" } }) + "\n");
   return {
     kind,
-    resolveSession: (sessionId: string) => (sessionId === id ? { logPath: path, folder: dir, displayFolder: dir, acpProviderId } : null),
+    resolveSession: (sessionId: string) => (sessionId === id ? { logPath: path, folder: dir, displayFolder: dir } : null),
     discoverSessions: () => ({
       total: 1,
-      sessions: [{ sessionId: id, folder: dir, displayFolder: dir, filePath: path, createdAt: new Date(), updatedAt: new Date(), acpProviderId }],
+      sessions: [{ sessionId: id, folder: dir, displayFolder: dir, filePath: path, createdAt: new Date(), updatedAt: new Date() }],
     }),
     getSessionPreview: () => null,
     parseSessionMessages: vi.fn(() => []),

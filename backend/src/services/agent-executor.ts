@@ -49,12 +49,6 @@ export interface ExecuteAgentOptions {
   metadata?: Record<string, unknown>;
   maxTurns?: number;
   provider?: UiAgentProviderKind;
-  /**
-   * Which ACP vendor, when `provider` is `"acp"`. Required there and ignored
-   * everywhere else: `"acp"` is one kind covering many CLIs, so the kind alone
-   * does not identify a harness.
-   */
-  acpProviderId?: string;
   model?: string;
   /** OR-only reasoning effort. Ignored when provider is claude-code. */
   effort?: EffortLevel;

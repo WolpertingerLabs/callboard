@@ -20,7 +20,7 @@ export function readChatSessionMessages(chat: { metadata?: string | null; sessio
   if (!sessionIds && chat.session_id && !ids.includes(chat.session_id)) ids.push(chat.session_id);
   const provider = getSessionProviders().find((p) => p.kind === (meta.provider ?? "claude-code"));
   if (!provider) return [];
-  return meta.acpProviderId ? provider.parseSessionMessages(ids, { acpProviderId: meta.acpProviderId }) : provider.parseSessionMessages(ids);
+  return provider.parseSessionMessages(ids);
 }
 
 /**
@@ -115,7 +115,7 @@ export function findChat(id: string, includeGitInfo: boolean = true, storedRecor
         nativeMetadata(
           resolved.logPath,
           id,
-          parseChatMetadata(withSessionProvider(JSON.stringify({ session_ids: [id] }), resolved.provider, resolved.acpProviderId)),
+          parseChatMetadata(withSessionProvider(JSON.stringify({ session_ids: [id] }), resolved.provider)),
         ),
       ),
       created_at: st.birthtime.toISOString(),

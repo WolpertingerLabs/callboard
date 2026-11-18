@@ -26,7 +26,6 @@ export interface SidebarChatMeta {
   chatStatusEmoji?: string;
   summon?: { message: string; urgency: string; createdAt: string };
   provider?: string;
-  acpProviderId?: string;
   jobRunId?: string;
   jobStepId?: string;
   jobRunNeedsYou?: boolean;

@@ -91,10 +91,10 @@ export const AGENT_UNATTENDED_TOOLS = [
  * tools (talk_to_agent, deploy_agent) can link spawned sessions into the
  * chat parentage tree.
  *
- * `opts.provider` / `opts.acpProviderId` are the engine this session is itself
+ * `opts.provider` is the engine this session is itself
  * running on — what talk_to_agent and deploy_agent start the target agent on
- * when the caller does not name a provider. Plain values, not getters: a chat's
- * provider is immutable by design, so they are fixed for the session's lifetime.
+ * when the caller does not name a provider. A plain value, not a getter: a chat's
+ * provider is immutable by design, so it is fixed for the session's lifetime.
  * `opts.getModel` is the exception — a getter — because a chat's model is
  * mutable (the user can switch it mid-chat); it drives `model` inheritance
  * when the caller omits `model`.
@@ -104,7 +104,6 @@ export function buildAgentToolsSpec(
   getChatId?: () => string,
   opts?: {
     provider?: UiAgentProviderKind;
-    acpProviderId?: string;
     getModel?: () => string | undefined;
     /**
      * Live read of the calling session's effective permissions. An agent chat
@@ -149,7 +148,6 @@ export function buildAgentToolsSpec(
 
             const providerModel = resolveProviderModelArgs(args, {
               provider: opts?.provider,
-              acpProviderId: opts?.acpProviderId,
               getModel: opts?.getModel,
             });
             if (!providerModel.ok) {
@@ -178,7 +176,6 @@ export function buildAgentToolsSpec(
               maxTurns: args.maxTurns ?? 50,
               defaultPermissions: unattendedPermissions(),
               provider: providerModel.provider,
-              ...(providerModel.acpProviderId && { acpProviderId: providerModel.acpProviderId }),
               ...(providerModel.model && { model: providerModel.model }),
               ...(args.effort && { effort: args.effort as EffortLevel }),
               ...(getChatId?.() && { parentChatId: getChatId(), chatRole: "agent-consult" }),
@@ -279,7 +276,6 @@ export function buildAgentToolsSpec(
 
             const providerModel = resolveProviderModelArgs(args, {
               provider: opts?.provider,
-              acpProviderId: opts?.acpProviderId,
               getModel: opts?.getModel,
             });
             if (!providerModel.ok) {
@@ -296,7 +292,6 @@ export function buildAgentToolsSpec(
               metadata: { deployedBy: agentAlias },
               maxTurns: args.maxTurns,
               provider: providerModel.provider,
-              ...(providerModel.acpProviderId && { acpProviderId: providerModel.acpProviderId }),
               ...(providerModel.model && { model: providerModel.model }),
               ...(args.effort && { effort: args.effort as EffortLevel }),
               ...(getChatId?.() && { parentChatId: getChatId(), chatRole: "agent-deploy" }),

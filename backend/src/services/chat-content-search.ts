@@ -51,7 +51,7 @@ export async function collectContentMatches(query: string, sessions: OwnedSessio
         if (code !== 0) resolve({ keys: [], warnings: ["Content search worker terminated before completion"] });
       });
     });
-    // Session identities include provider and ACP vendor. Logical chat IDs
+    // Session identities are `[provider, sessionId]`. Logical chat IDs
     // must never enter this set: a chat ID can spell another session's ID.
     // Only the legacy REST response flattens these separate namespaces.
     const keys = new Set(result.keys);
@@ -67,10 +67,10 @@ export async function collectContentMatches(query: string, sessions: OwnedSessio
       }
     }
     for (const key of result.keys) {
-      const [provider, vendor, sid] = JSON.parse(key) as [string, string | null, string];
+      const [provider, sid] = JSON.parse(key) as [string, string];
       const compatible = (owners.get(sid) ?? []).filter((chat) => {
         const meta = parseChatMetadata(chat.metadata);
-        return (!meta.provider || meta.provider === provider || chat.session_id !== sid) && (provider !== "acp" || meta.acpProviderId === vendor);
+        return !meta.provider || meta.provider === provider || chat.session_id !== sid;
       });
       if (compatible.length === 1) chatIds.add(compatible[0].id);
     }

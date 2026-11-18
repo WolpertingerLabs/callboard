@@ -31,8 +31,6 @@ export interface ChatRouteState {
   systemPrompt?: string;
   agentAlias?: string;
   provider?: UiAgentProviderKind;
-  /** The ACP vendor; required alongside `provider: "acp"`. */
-  acpProviderId?: string;
   effort?: EffortLevel;
   /** The harness's own model id. */
   model?: string;

@@ -16,11 +16,6 @@ import type { ParsedMessage } from "shared/types/index.js";
 import type { AgentProviderKind } from "./AgentProvider.js";
 import type { HandoffTurn } from "../handoff.js";
 
-/** Optional authoritative routing for providers that share a kind across vendors. */
-export interface SessionRouting {
-  acpProviderId?: string;
-}
-
 /** Ownership is ambiguous; callers must not silently route to a default engine. */
 export class SessionRoutingError extends Error {}
 
@@ -28,8 +23,6 @@ export class SessionRoutingError extends Error {}
 
 /** A discovered session entry from the provider's native storage. */
 export interface DiscoveredSession {
-  /** ACP vendor identity when evidenced by native storage; never a guessed default. */
-  acpProviderId?: string;
   sessionId: string;
   /** The working directory this session was run in. */
   folder: string;
@@ -50,8 +43,6 @@ export interface DiscoverResult {
 
 /** Result of resolving a session ID to its native storage location. */
 export interface ResolvedSession {
-  /** ACP vendor identity when evidenced by native storage; never a guessed default. */
-  acpProviderId?: string;
   /** Absolute path to the session log file. */
   logPath: string;
   /** The working directory this session was run in (may be a worktree). */
@@ -132,7 +123,7 @@ export interface SessionProvider {
    * Returns richer data than just a path so callers don't need to know
    * provider-specific path encoding/decoding conventions.
    */
-  resolveSession(sessionId: string, routing?: SessionRouting): ResolvedSession | null;
+  resolveSession(sessionId: string): ResolvedSession | null;
 
   /**
    * Find child/subagent session files for a given parent session.
@@ -149,7 +140,7 @@ export interface SessionProvider {
    * The sessionIds array supports multi-session chats (where one chat
    * spans multiple session IDs due to resumed sessions).
    */
-  parseSessionMessages(sessionIds: string[], routing?: SessionRouting): ParsedMessage[];
+  parseSessionMessages(sessionIds: string[]): ParsedMessage[];
 
   /**
    * Extract a short preview string from a session log (e.g. first user
@@ -169,7 +160,7 @@ export interface SessionProvider {
    * Called by DELETE /chats/:id after callboard's own metadata is
    * cleaned up. No-op if the session is not found.
    */
-  deleteSessionFiles(sessionId: string, routing?: SessionRouting): void;
+  deleteSessionFiles(sessionId: string): void;
 
   /**
    * Fork a session at a point in time: copy the native session log(s) up

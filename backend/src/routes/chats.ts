@@ -187,7 +187,6 @@ type DiscoveredSession = {
   createdAt: Date;
   updatedAt: Date;
   providerKind: string;
-  acpProviderId?: string;
 };
 
 /**
@@ -735,11 +734,11 @@ chatsRouter.get("/", (req, res) => {
           if (!sessionIds.includes(s.sessionId)) {
             sessionIds.push(s.sessionId);
           }
-          const built = nativeMetadata(s.filePath, s.sessionId, withSessionProviderMeta({ ...meta, session_ids: sessionIds }, s.providerKind, s.acpProviderId), false);
+          const built = nativeMetadata(s.filePath, s.sessionId, withSessionProviderMeta({ ...meta, session_ids: sessionIds }, s.providerKind), false);
           metadata = JSON.stringify(built);
           parsed = built;
         } catch {
-          metadata = withSessionProvider(JSON.stringify({ session_ids: [s.sessionId] }), s.providerKind, s.acpProviderId);
+          metadata = withSessionProvider(JSON.stringify({ session_ids: [s.sessionId] }), s.providerKind);
         }
         // Augment with file storage data while keeping filesystem as source of truth for timestamps
         const row = {
@@ -764,7 +763,7 @@ chatsRouter.get("/", (req, res) => {
         return row;
       } else {
         // No file record found, create from filesystem only - this is normal
-        const parsed = nativeMetadata(s.filePath, s.sessionId, withSessionProviderMeta({ session_ids: [s.sessionId] }, s.providerKind, s.acpProviderId), false);
+        const parsed = nativeMetadata(s.filePath, s.sessionId, withSessionProviderMeta({ session_ids: [s.sessionId] }, s.providerKind), false);
         const row = {
           id: s.sessionId,
           // Keep original folder (may be a worktree)
@@ -801,33 +800,23 @@ chatsRouter.get("/", (req, res) => {
      * reading it last is a reordering of I/O, not of rows.
      */
     const attachPreview = (chat: any) => {
-      // Reconcile only returned legacy/ACP rows, not the over-fetched list.
+      // Reconcile only returned legacy rows, not the over-fetched list.
       // A discovered historical log alone cannot establish a multi-session
-      // chat's owner, and an ACP ID may exist under multiple vendor directories.
+      // chat's owner.
       const stored = fileChatsById.get(chat.id);
       const original = parseChatMetadata(stored?.metadata);
       const listed = parseChatMetadata(chat.metadata);
-      if ((stored && original.provider == null) || listed.provider === "acp") {
+      if (stored && original.provider == null) {
         const resolved = findChat(chat.id, false);
         if (resolved) {
           const routing = parseChatMetadata(resolved.metadata);
-          if (original.provider == null) delete listed.provider;
-          if (!original.acpProviderId) delete listed.acpProviderId;
+          delete listed.provider;
           if (routing.provider != null) listed.provider = routing.provider;
-          if (routing.acpProviderId) listed.acpProviderId = routing.acpProviderId;
           chat = {
             ...chat,
             metadata: JSON.stringify(listed),
             session_log_path: resolved.session_log_path,
             ...(resolved._provider_resolution_error && { _provider_resolution_error: resolved._provider_resolution_error }),
-          };
-        } else if (listed.provider === "acp") {
-          delete listed.acpProviderId;
-          chat = {
-            ...chat,
-            metadata: JSON.stringify(listed),
-            session_log_path: null,
-            _provider_resolution_error: "ACP session is missing or has ambiguous vendor ownership",
           };
         }
       }
@@ -2858,7 +2847,7 @@ function deleteOneChat(id: string, storedRecord?: SharedChat | null): string {
   const provider = getSessionProviders().find((p) => p.kind === (meta.provider ?? "claude-code"));
   // Delete only the authoritative namespace, and only then remove metadata.
   // A routing failure must not partially delete a stored chat.
-  if (provider) provider.deleteSessionFiles(chat.session_id, { acpProviderId: meta.acpProviderId });
+  if (provider) provider.deleteSessionFiles(chat.session_id);
   // The same record `findChat` resolved above, not a second lookup for it: on
   // a miss that lookup is the whole-directory scan this parameter exists to
   // avoid, and it would answer identically — nothing between here and there

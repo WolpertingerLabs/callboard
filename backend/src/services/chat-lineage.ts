@@ -129,7 +129,6 @@ function toNode(chat: Chat, meta: ChatMeta, budget?: LifecycleBudget): ChatTreeN
     ...(typeof meta.chatRole === "string" && meta.chatRole && { role: meta.chatRole }),
     ...(typeof meta.forkedAt === "string" && meta.forkedAt && { forkedAt: meta.forkedAt }),
     provider: typeof meta.provider === "string" && meta.provider ? meta.provider : "claude-code",
-    ...(typeof meta.acpProviderId === "string" && meta.acpProviderId && { acpProviderId: meta.acpProviderId }),
     status: nativeAgent?.lifecycle === "active" ? "ongoing" : chatStatus(chat),
     ...(nativeAgent ? { nativeAgent } : {}),
     ...(typeof meta.chatStatus === "string" && meta.chatStatus && { chatStatus: meta.chatStatus }),

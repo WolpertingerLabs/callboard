@@ -41,15 +41,13 @@ const fileChats: any[] = [
   record("broken", "{broken"),
   record("array", '["x"]'),
   record("empty", ""),
-  record("acp", '{"provider":"acp","acpProviderId":"opencode"}'),
-  record("acp-inferred", "{}"),
   record("triggered", '{"triggered":true,"title":"Cron"}'),
   record("native", '{"provider":"codex","nativeAgent":{"lifecycle":"running","role":"worker"},"title":"Kid"}'),
   record("bookmarked", '{"bookmarked":true,"pinned":true,"tags":["a"],"nested":{"k":[1,{"z":null}]}}'),
 ];
 
-/** [sessionId, providerKind, acpProviderId?] — newest first. */
-const sessions: Array<[string, string, string?]> = [
+/** [sessionId, providerKind] — newest first. */
+const sessions: Array<[string, string]> = [
   ["plain", "claude-code"],
   ["explicit", "codex"],
   ["multi", "claude-code"],
@@ -57,13 +55,10 @@ const sessions: Array<[string, string, string?]> = [
   ["broken", "codex"],
   ["array", "claude-code"],
   ["empty", "claude-code"],
-  ["acp", "acp", "other"],
-  ["acp-inferred", "acp", "gemini"],
   ["triggered", "claude-code"],
   ["native", "codex"],
   ["bookmarked", "claude-code"],
   ["orphan", "claude-code"],
-  ["orphan-acp", "acp", "opencode"],
 ];
 
 vi.mock("../services/chat-file-service.js", () => ({
@@ -80,12 +75,12 @@ vi.mock("../utils/chat-lookup.js", async (importOriginal) => ({
     const session = sessions.find(([sid]) => sid === id);
     if (!session) return null;
     const chat = fileChats.find((c) => c.id === id) ?? record(id, "{}");
-    const [, provider, acpProviderId] = session;
+    const [, provider] = session;
     let meta: Record<string, unknown> = {};
     try {
       meta = JSON.parse(chat.metadata);
     } catch {}
-    const metadata = JSON.stringify({ ...meta, provider, ...(acpProviderId && { acpProviderId }) });
+    const metadata = JSON.stringify({ ...meta, provider });
     return { ...chat, metadata, displayFolder: chat.folder, session_log_path: `/tmp/proj/${id}.jsonl` };
   },
 }));
@@ -95,10 +90,9 @@ vi.mock("../utils/git.js", () => ({ getGitInfo: () => ({ isGitRepo: false }), re
 vi.mock("../agents/factory.js", () => {
   const discovered = (kind: string) =>
     sessions
-      .map(([sessionId, providerKind, acpProviderId], i) => ({
+      .map(([sessionId, providerKind], i) => ({
         sessionId,
         providerKind,
-        ...(acpProviderId && { acpProviderId }),
         folder: "/tmp/proj",
         displayFolder: "/tmp/proj",
         filePath: `/tmp/proj/${sessionId}.jsonl`,
@@ -108,7 +102,7 @@ vi.mock("../agents/factory.js", () => {
       .filter((s) => s.providerKind === kind);
   return {
     getSessionProviders: () =>
-      ["claude-code", "codex", "acp"].map((kind) => ({
+      ["claude-code", "codex"].map((kind) => ({
         kind,
         discoverSessions: ({ limit, offset }: { limit: number; offset: number }) => {
           const all = discovered(kind);
@@ -152,13 +146,10 @@ const ALL_ROWS = [
   ["broken", "{\"session_ids\":[\"broken\"],\"provider\":\"codex\"}"],
   ["array", "{\"session_ids\":[\"array\"],\"provider\":\"claude-code\"}"],
   ["empty", "{\"session_ids\":[\"empty\"],\"provider\":\"claude-code\"}"],
-  ["acp", "{\"provider\":\"acp\",\"acpProviderId\":\"other\",\"session_ids\":[\"acp\"]}"],
-  ["acp-inferred", "{\"session_ids\":[\"acp-inferred\"],\"provider\":\"acp\",\"acpProviderId\":\"gemini\"}"],
   ["triggered", "{\"triggered\":true,\"title\":\"Cron\",\"session_ids\":[\"triggered\"],\"provider\":\"claude-code\"}"],
   ["native", "{\"provider\":\"codex\",\"nativeAgent\":{\"lifecycle\":\"unknown\",\"role\":\"worker\",\"management\":\"read-only\",\"controlNote\":\"Native Codex child: read-only in Callboard. Ask its parent Codex thread to send instructions, interrupt, or close it. The exec transport cannot independently control this child; direct resume could race its owner. Inherited Callboard MCP tools are bound to the owning root, not this child; do not use them to set child-local title, status, or completion.\"},\"title\":\"Kid\",\"session_ids\":[\"native\"]}"],
   ["bookmarked", "{\"bookmarked\":true,\"pinned\":true,\"tags\":[\"a\"],\"nested\":{\"k\":[1,{\"z\":null}]},\"session_ids\":[\"bookmarked\"],\"provider\":\"claude-code\"}"],
   ["orphan", "{\"session_ids\":[\"orphan\"],\"provider\":\"claude-code\"}"],
-  ["orphan-acp", "{\"session_ids\":[\"orphan-acp\"],\"provider\":\"acp\",\"acpProviderId\":\"opencode\"}"],
 ];
 
 describe("GET /api/chats — row metadata bytes", () => {

@@ -57,7 +57,7 @@ export interface ProviderModelArgs {
 
 /**
  * The engine the *calling* session is running on, threaded in by whoever built
- * the tool spec. `provider` and `acpProviderId` are fixed for a session's
+ * the tool spec. `provider` is fixed for a session's
  * lifetime. `getModel` is deliberately a getter: unlike the provider, a chat's
  * model is mutable — the user can switch it mid-chat, and the switch lands in
  * the chat record's metadata before the next turn — so a plain value captured
@@ -65,8 +65,6 @@ export interface ProviderModelArgs {
  */
 export interface CallingSessionEngine {
   provider?: UiAgentProviderKind;
-  /** Which ACP vendor, when `provider` is `"acp"`. Meaningless otherwise. */
-  acpProviderId?: string;
   /** Live per-chat model override of the calling session, read at tool-call time. */
   getModel?: () => string | undefined;
 }
@@ -78,7 +76,6 @@ export type ResolvedProviderModel =
   | {
       ok: true;
       provider: UiAgentProviderKind;
-      acpProviderId?: string;
       model?: string;
       modelSource: ResolvedModelSource;
       /** Set when the caller's model was considered for inheritance and skipped. */
