@@ -26,6 +26,14 @@
  *
  *     CALLBOARD_ACP_LIVE=1 npx vitest run --project node AcpAdapter.opencode.live
  *
+ * OpenCode Zen rotates its free models, so the two model ids are overridable
+ * without editing this file — pick any `-free` ids from `opencode models`:
+ *
+ *     OPENCODE_LIVE_MODEL      the model every scratch project pins (default below)
+ *     OPENCODE_LIVE_ALT_MODEL  a different model, for the model-switch case
+ *
+ * A run failing with "model not found" means one of these has rotated out.
+ *
  * ## Cost control
  *
  * Each test writes an `opencode.json` into a scratch project pinning a free
@@ -45,10 +53,11 @@ import type { DefaultPermissions } from "shared/types/index.js";
 
 /**
  * A cheap model that needs no paid credential, so the suite costs nothing to run.
- * OpenCode Zen rotates its free models; when a live run fails with "model not
- * found", re-pick from `opencode models` (this and the switch target below).
+ * Defaults were current for OpenCode 1.19.6; override via env (see header).
  */
-const FREE_MODEL = "opencode/nemotron-3.5-lightning-free";
+const FREE_MODEL = process.env.OPENCODE_LIVE_MODEL || "opencode/nemotron-3.5-lightning-free";
+/** A second free model, distinct from {@link FREE_MODEL}, for the model-switch case. */
+const ALT_FREE_MODEL = process.env.OPENCODE_LIVE_ALT_MODEL || "opencode/mimo-v2.6-flash-free";
 const TEST_TIMEOUT = 180_000;
 
 function openCodeInstalled(): boolean {
@@ -270,14 +279,14 @@ describeLive("OpenCode over ACP (live)", () => {
   it(
     "runs on the model callboard asked for, not the vendor's configured default",
     async () => {
-      // The scratch project pins nemotron; ask for a different free model and
+      // The scratch project pins FREE_MODEL; ask for a different free model and
       // check the agent actually switched. `supportedModels()` reflects the
       // agent's echoed config, so it is its answer rather than ours.
       const { events } = await run({
         cwd: project(),
         prompt: "Reply with exactly: OK",
         permissions: allowAll,
-        model: "opencode/mimo-v2.6-flash-free",
+        model: ALT_FREE_MODEL,
       });
       expect(events.at(-1)).toMatchObject({ type: "result", status: "success" });
     },
