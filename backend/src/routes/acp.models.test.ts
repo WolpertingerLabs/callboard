@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Request, Response } from "express";
-import type { SessionConfigOption } from "@agentclientprotocol/sdk";
+import type { SessionConfigOption } from "@agentclientprotocol/sdk/unstable";
 import { acpRouter } from "./acp.js";
 import { recordAcpModels, resetAcpModelCatalogCache } from "../agents/adapters/acp/modelCatalog.js";
 

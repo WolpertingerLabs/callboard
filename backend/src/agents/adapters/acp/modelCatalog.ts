@@ -3,7 +3,7 @@
  *
  * ## Why harvested rather than probed
  *
- * ACP 1.4.0 has no models API. The catalog exists in exactly one place — the
+ * ACP (SDK 1.4.0 through 2.8.0) has no models API. The catalog exists in exactly one place — the
  * `configOptions` returned by `session/new` / `session/resume` — so a client can
  * only learn it by opening a session. The obvious implementation is the one
  * `codex-models.ts` uses for Codex: ask the vendor once at startup and cache the
@@ -31,7 +31,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { SessionConfigOption } from "@agentclientprotocol/sdk";
+import type { SessionConfigOption } from "@agentclientprotocol/sdk/unstable";
 import { createLogger } from "../../../utils/logger.js";
 import { resolveAcpSessionsRoot } from "./transcript.js";
 

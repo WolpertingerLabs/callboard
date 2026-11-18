@@ -11,7 +11,7 @@
  * it to its contract.
  */
 import { describe, expect, it } from "vitest";
-import type { SessionUpdate } from "@agentclientprotocol/sdk";
+import type { SessionUpdate } from "@agentclientprotocol/sdk/unstable";
 import { AcpToolCallBuffer, buildAcpUsage, contentBlockToText, mapStopReason, toolContentToText, translateAcpUpdate } from "./messageAdapter.js";
 
 /** Cast helper: these tests deliberately feed shapes outside the union. */

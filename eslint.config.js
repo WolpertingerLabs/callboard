@@ -63,6 +63,37 @@ export default tseslint.config(
     },
   },
   {
+    // ACP SDK: one entry point, `/unstable`. Since SDK 2.x the bare entry point
+    // parses incoming traffic with the stable schema, which drops unstable
+    // updates such as `plan_update` and does not type `PromptResponse.usage`;
+    // `/unstable` re-exports the whole stable surface.
+    // See "Which SDK entry point" in backend/src/agents/adapters/acp/AcpAgentClient.ts.
+    files: ["backend/src/**/*.ts"],
+    rules: {
+      "@typescript-eslint/no-restricted-imports": [
+        "error",
+        {
+          paths: [
+            {
+              name: "@agentclientprotocol/sdk",
+              message:
+                'Import from "@agentclientprotocol/sdk/unstable" instead: the stable entry point drops unstable protocol data (plan_update, PromptResponse.usage).',
+            },
+          ],
+        },
+      ],
+      // The rule above does not see inline type imports — `import("pkg").T`.
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector: "TSImportType[argument.literal.value='@agentclientprotocol/sdk']",
+          message:
+            'Import from "@agentclientprotocol/sdk/unstable" instead: the stable entry point drops unstable protocol data (plan_update, PromptResponse.usage).',
+        },
+      ],
+    },
+  },
+  {
     // Node.js files (bin/callboard.js, scripts/*.cjs, scripts/*.mjs)
     files: ["*.js", "bin/*.js", "scripts/*.cjs", "scripts/*.mjs", "packages/computer-use/test/*.mjs"],
     languageOptions: {

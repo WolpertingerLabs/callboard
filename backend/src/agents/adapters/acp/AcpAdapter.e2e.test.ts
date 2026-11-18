@@ -552,7 +552,7 @@ describe("model discovery", () => {
         options: { cwd: process.cwd(), acp: { preset: acpTestAgentPreset("config-options"), getPermissions: () => allowAll } },
       });
       try {
-        // `configOptions` only exists once a session does — ACP 1.4.0 has no
+        // `configOptions` only exists once a session does — ACP (SDK 1.4.0 through 2.8.0) has no
         // models API, so the list cannot be answered before the turn starts.
         expect(await query.supportedModels()).toEqual([]);
         for await (const _event of query) {
@@ -668,6 +668,38 @@ describe("tool calls whose arguments arrive late", () => {
       // The orphan is flushed at the end of the turn, before the result event.
       const terminal = events.findIndex((e) => e.type === "result");
       expect(events.indexOf(toolUses[1])).toBeLessThan(terminal);
+    },
+    TEST_TIMEOUT,
+  );
+});
+
+/**
+ * The single-entry-point rule, end to end.
+ *
+ * Since SDK 2.x the bare `@agentclientprotocol/sdk` parses incoming requests
+ * and notifications against the *stable* schema, which does not know the
+ * unstable surface this adapter relies on. Both peers here are the real SDK
+ * over real stdio. Verified against 2.8.0: with the client (AcpAgentClient) on
+ * the bare entry point, the `plan_update` notification never arrives and this
+ * fails. `PromptResponse.usage` happens to survive today because 2.8.0 does not
+ * schema-parse responses; it is asserted anyway, since it is unstable surface
+ * and a later SDK that does parse responses would strip it. Soft assertions so
+ * a regression reports every lost field at once.
+ */
+describe("unstable ACP surface survives a real SDK round-trip", () => {
+  it(
+    "delivers PromptResponse.usage (every counter) and a plan_update notification",
+    async () => {
+      const events = await run("unstable");
+
+      expect.soft(events).toContainEqual({ type: "task_list", items: [{ content: "Unstable step", status: "in_progress" }] });
+      expect.soft(textOf(events)).toBe("done");
+      expect.soft(events.at(-1)).toEqual({
+        type: "result",
+        status: "success",
+        stopReason: "end_turn",
+        usage: { inputTokens: 40, outputTokens: 30, cacheReadTokens: 20, cacheWriteTokens: 5, reasoningTokens: 5 },
+      });
     },
     TEST_TIMEOUT,
   );

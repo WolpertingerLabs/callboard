@@ -18,14 +18,26 @@
  *
  * ## Which SDK entry point
  *
- * The plan named `ClientSideConnection`. In the pinned SDK (1.4.0) that class is
- * `@deprecated` in favour of the `client()` app builder, so this uses `client()`:
- * same wire protocol, but typed handler registration and a long-lived
- * `ClientConnection` handle (`connect(stream)`) instead of a class whose
- * replacement the SDK is already steering people toward. `connectWith(...)` — the
- * other new-API shape — scopes the connection to a callback's lifetime, which
- * does not fit an `AgentQuery` that must be constructed synchronously and closed
- * later by an unrelated caller.
+ * Everything ACP comes from **`@agentclientprotocol/sdk/unstable`**, never the
+ * bare `@agentclientprotocol/sdk`. Since SDK 2.x the two entry points carry
+ * different schemas, and the SDK parses incoming requests and notifications
+ * against the schema of the entry point the app was built from. The stable one
+ * does not know the unstable surface this adapter consumes: a `plan_update`
+ * `session/update` is silently dropped before it reaches our handler (proven
+ * by the "unstable ACP surface" case in AcpAdapter.e2e.test.ts), and
+ * `PromptResponse.usage` — which {@link AcpAgentQuery} reads for token
+ * accounting — exists only in the unstable types. `/unstable` re-exports the
+ * whole stable surface, so one entry point per app loses nothing. ESLint
+ * (`no-restricted-imports` + an inline-`import()` selector, `eslint.config.js`)
+ * enforces it across `backend/src`.
+ *
+ * The plan named `ClientSideConnection`. That class was `@deprecated` in SDK
+ * 1.4.0 and is gone from 2.x in favour of the `client()` app builder, so this
+ * uses `client()`: same wire protocol, but typed handler registration and a
+ * long-lived `ClientConnection` handle (`connect(stream)`). `connectWith(...)` —
+ * the other builder shape — scopes the connection to a callback's lifetime,
+ * which does not fit an `AgentQuery` that must be constructed synchronously and
+ * closed later by an unrelated caller.
  *
  * ## Update delivery
  *
@@ -62,7 +74,7 @@ import {
   type SessionConfigOption,
   type SessionModeState,
   type SessionNotification,
-} from "@agentclientprotocol/sdk";
+} from "@agentclientprotocol/sdk/unstable";
 import { sanitizeInheritedAgentEnv } from "../../agentEnvPolicy.js";
 import { createLogger } from "../../../utils/logger.js";
 import { DETACHED_SPAWN_OPTIONS, killProcessTree } from "../../../utils/tree-kill.js";
@@ -572,7 +584,7 @@ export class AcpAgentClient {
   /**
    * Set one of the session's config options, e.g. the model.
    *
-   * ACP 1.4.0 has no models API — a model is just a `SessionConfigOption` whose
+   * ACP (SDK 1.4.0 through 2.8.0) has no models API — a model is just a `SessionConfigOption` whose
    * `category` is `"model"`, so selecting one is `session/set_config_option`
    * after the session exists. That ordering is forced by the protocol, not a
    * choice: there is nowhere on `session/new` to ask for a model.

@@ -5,7 +5,7 @@
  *
  * This is a **real protocol peer**, not a stub. It is a separate OS process; it
  * speaks real JSON-RPC framed as newline-delimited JSON over real stdio pipes;
- * it uses the same `@agentclientprotocol/sdk` the adapter uses, from the agent
+ * it uses the same `@agentclientprotocol/sdk/unstable` the adapter uses, from the agent
  * side. Nothing about the transport, the framing, the handshake, or the request/
  * response correlation is faked or short-circuited. A test that drives this
  * exercises `spawn` → `ndJsonStream` → `initialize` → `session/new` →
@@ -38,7 +38,8 @@ import {
   type NewSessionResponse,
   type PromptRequest,
   type PromptResponse,
-} from "@agentclientprotocol/sdk";
+  type SessionUpdate,
+} from "@agentclientprotocol/sdk/unstable";
 
 /** Scenario names this fake understands. */
 export const SCENARIOS = [
@@ -79,6 +80,13 @@ export const SCENARIOS = [
    * later `tool_call_update`, the way OpenCode does.
    */
   "late-args",
+  /**
+   * Uses the parts of the protocol that exist only in the SDK's `/unstable`
+   * schema: a `plan_update` notification and a `PromptResponse.usage` carrying
+   * every optional counter. Guards the single-entry-point rule — see "Which SDK
+   * entry point" in AcpAgentClient.ts.
+   */
+  "unstable",
 ] as const;
 
 export type FakeAcpScenario = (typeof SCENARIOS)[number];
@@ -193,6 +201,23 @@ async function runLateArgs(cx: AgentContext, sessionId: string): Promise<PromptR
   // report it rather than swallowing it.
   await update(cx, sessionId, { sessionUpdate: "tool_call", toolCallId: "call-orphan", title: "glob", kind: "search", status: "pending", rawInput: {} });
   return { stopReason: "end_turn" };
+}
+
+/**
+ * Unstable-schema traffic, typed against `/unstable` so the payload is checked
+ * at compile time rather than passed as `unknown`.
+ */
+async function runUnstable(cx: AgentContext, sessionId: string): Promise<PromptResponse> {
+  const planUpdate: SessionUpdate = {
+    sessionUpdate: "plan_update",
+    plan: { type: "items", planId: "plan-1", entries: [{ content: "Unstable step", priority: "medium", status: "in_progress" }] },
+  };
+  await update(cx, sessionId, planUpdate);
+  await say(cx, sessionId, "done");
+  return {
+    stopReason: "end_turn",
+    usage: { totalTokens: 100, inputTokens: 40, outputTokens: 30, thoughtTokens: 5, cachedReadTokens: 20, cachedWriteTokens: 5 },
+  };
 }
 
 async function runPermission(cx: AgentContext, sessionId: string): Promise<PromptResponse> {
@@ -400,6 +425,8 @@ async function handlePrompt(params: PromptRequest, cx: AgentContext): Promise<Pr
         return await runCrash(cx, sessionId);
       case "late-args":
         return await runLateArgs(cx, sessionId);
+      case "unstable":
+        return await runUnstable(cx, sessionId);
       case "basic":
       default:
         return await runBasic(cx, sessionId, params);
