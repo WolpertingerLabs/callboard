@@ -1,5 +1,8 @@
 # Plan: ACP adapter — one seam, four+ vendors
 
+> **Status: retired in #554.** The ACP harness (OpenCode) was removed; `"acp"` is now a
+> `RETIRED_PROVIDER_KINDS` entry. Kept for history, like `openrouter-adapter.md` and `cline-adapter.md`.
+
 Add `acp` as a callboard `AgentProviderKind` backed by the **Agent Client Protocol**
 (`@agentclientprotocol/sdk`), so that Copilot, Cursor, Kiro, Trae, Gemini CLI, and any
 future ACP-speaking agent become configuration rather than code.
