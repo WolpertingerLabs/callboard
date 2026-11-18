@@ -1,4 +1,4 @@
-import { RETIRED_PROVIDERS } from "../utils/retiredProviders";
+import { isRetiredProviderId, RETIRED_PROVIDERS } from "../utils/retiredProviders";
 
 interface ProviderBadgeProps {
   // Chat provider from metadata. "codex" → "CX",
@@ -45,7 +45,7 @@ export default function ProviderBadge({ provider, acpProviderId, compact }: Prov
   const isCodex = provider === "codex";
   const isAcp = provider === "acp";
   const isPi = provider === "pi";
-  const retired = provider && Object.hasOwn(RETIRED_PROVIDERS, provider) ? RETIRED_PROVIDERS[provider] : undefined;
+  const retired = isRetiredProviderId(provider) ? RETIRED_PROVIDERS[provider] : undefined;
   const vendor = isAcp && acpProviderId ? ACP_VENDOR_TAGS[acpProviderId] : undefined;
 
   const label = retired ? retired.tag : isCodex ? "CX" : isPi ? "PI" : isAcp ? (vendor?.tag ?? "ACP") : "CC";

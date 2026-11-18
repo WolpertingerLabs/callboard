@@ -124,9 +124,10 @@ export function readAgentSettings(): AgentSettingsRead {
   if (!existsSync(SETTINGS_FILE)) return { settings: { proxyMode: "local" }, state: "absent" };
   try {
     const raw = JSON.parse(readFileSync(SETTINGS_FILE, "utf-8"));
-    // Fields of the removed cloudflared remote-access tunnel. Dropped on read so
-    // GET never echoes them (`cloudflaredToken` is no longer a masked secret
-    // field) and the next save, which writes the read-back object, purges them.
+    // Fields of removed features (see RETIRED_SETTING_KEYS). Dropped on read so
+    // GET never echoes them (`cloudflaredToken` and `clineApiKey` are no longer
+    // masked secret fields) and the next save, which writes the read-back
+    // object, purges them.
     for (const key of RETIRED_SETTING_KEYS) delete raw[key];
     if (!raw.proxyMode) {
       raw.proxyMode = "local";

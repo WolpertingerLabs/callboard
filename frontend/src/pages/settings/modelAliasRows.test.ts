@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { validateModelAliases, type ModelAlias } from "shared/types/index.js";
-import { toRows, toAliases, hasEditableTarget, hasRetiredTarget, onlyOpenRouterTarget, onlyRetiredTargets, type AliasRow } from "./modelAliasRows";
+import { toRows, toAliases, hasEditableTarget, hasRetiredTarget, onlyRetiredTargets, type AliasRow } from "./modelAliasRows";
 
 /**
  * The alias editor rebuilds `targets` from row state on every save, so a target
@@ -103,11 +103,11 @@ describe("legacy-note gating", () => {
   });
 
   it("only advises setting a target when the retired slug is the sole one", () => {
-    expect(onlyOpenRouterTarget(row({ openrouter: "moonshotai/kimi-k2" }))).toBe(true);
+    expect(onlyRetiredTargets(row({ openrouter: "moonshotai/kimi-k2" }))).toBe(true);
     // The common case after migration: already configured elsewhere, so the
     // advice to go set a target would be telling the user to redo their work.
-    expect(onlyOpenRouterTarget(row({ openrouter: "moonshotai/kimi-k2", claudeCode: "opus" }))).toBe(false);
-    expect(onlyOpenRouterTarget(row())).toBe(false);
+    expect(onlyRetiredTargets(row({ openrouter: "moonshotai/kimi-k2", claudeCode: "opus" }))).toBe(false);
+    expect(onlyRetiredTargets(row())).toBe(false);
   });
 
   it("has no column for a retired cline target, and flags it as the sole target", () => {

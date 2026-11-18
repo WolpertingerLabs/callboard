@@ -12,10 +12,7 @@ export const RETIRED_PROVIDERS: Record<string, { tag: string; label: string }> =
   cline: { tag: "CL", label: "Cline" },
 };
 
-/** The ids in {@link RETIRED_PROVIDERS}. */
-export const RETIRED_PROVIDER_IDS: readonly string[] = Object.keys(RETIRED_PROVIDERS);
-
 /** Whether a raw `metadata.provider` names a removed harness. */
-export function isRetiredProviderId(provider: string | null | undefined): boolean {
+export function isRetiredProviderId(provider: string | null | undefined): provider is string {
   return !!provider && Object.hasOwn(RETIRED_PROVIDERS, provider);
 }

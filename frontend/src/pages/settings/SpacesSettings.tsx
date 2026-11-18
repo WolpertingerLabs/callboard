@@ -22,6 +22,7 @@ import { SpaceDot, spaceLabel } from "../../components/SpaceChip";
 import ModalOverlay from "../../components/ModalOverlay";
 import PermissionSettings from "../../components/PermissionSettings";
 import { errorMessage } from "../../utils/errorMessage";
+import { isRetiredProviderId } from "../../utils/retiredProviders";
 import { headerStyle, helpStyle, inputStyle, labelStyle, sectionStyle, subtitleStyle } from "./styles";
 
 const buttonStyle: React.CSSProperties = {
@@ -503,7 +504,10 @@ function SpaceEditor({
           </label>
           <select
             id="space-provider"
-            value={defaults.provider ?? ""}
+            // A space saved while a since-retired harness was offered can still
+            // name it. Show it as the browser default, which is what New Chat
+            // falls back to; nothing is written until the user picks a value.
+            value={isRetiredProviderId(defaults.provider) ? "" : (defaults.provider ?? "")}
             onChange={(e) => void onPatch(space.id, { defaults: { provider: (e.target.value || null) as UiAgentProviderKind | null } })}
             style={inputStyle}
           >

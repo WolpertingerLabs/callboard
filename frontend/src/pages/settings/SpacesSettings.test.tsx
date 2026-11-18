@@ -149,6 +149,16 @@ describe("SpacesSettings", () => {
     await waitFor(() => expect((screen.getByLabelText("Model") as HTMLInputElement).value).toBe("opus"));
   });
 
+  it.each(["cline", "openrouter"])("shows a stored retired %s engine default as the browser default, without writing it", async (retired) => {
+    server[1] = { ...server[1], defaults: { provider: retired as never } };
+    renderPage();
+    await edit("Work");
+    const select = screen.getByLabelText("Engine") as HTMLSelectElement;
+    expect(select.value).toBe("");
+    expect(within(select).getByRole("option", { selected: true }).textContent).toBe("(browser default)");
+    expect(m.updateSpace).not.toHaveBeenCalled();
+  });
+
   it("counts on mount, but a metadata bump reloads WITHOUT counts and keeps the last numbers", async () => {
     server[0] = { ...server[0], chatCount: 7 };
     const view = renderPage();
@@ -176,4 +186,3 @@ describe("SpacesSettings", () => {
     expect(screen.getByText(/Recent folders: \/work\/repo/)).toBeTruthy();
   });
 });
-

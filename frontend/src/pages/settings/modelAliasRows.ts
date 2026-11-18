@@ -74,11 +74,6 @@ export function hasEditableTarget(r: AliasRow): boolean {
   return Boolean(r.claudeCode.trim() || r.codex.trim() || r.acp.trim() || r.pi.trim());
 }
 
-/** True when the retained OpenRouter slug is the row's *only* target. */
-export function onlyOpenRouterTarget(r: AliasRow): boolean {
-  return Boolean(r.openrouter.trim()) && !r.cline.trim() && !hasEditableTarget(r);
-}
-
 /** The retired harnesses whose targets {@link AliasRow} carries without a column. */
 export const RETIRED_ALIAS_TARGETS = [
   { key: "openrouter", label: "OpenRouter" },
