@@ -3,11 +3,10 @@
  *
  * A single named alias (e.g. "planner", "worker") that resolves to a different
  * concrete model depending on which harness/provider runs the session — `opus`
- * under claude-code, a Codex slug under codex, a vendor model id under
- * acp/pi. Aliases are accepted anywhere a model is configured (new chats,
+ * under claude-code, a Codex slug under codex, a pi model id under pi. Aliases are accepted anywhere a model is configured (new chats,
  * per-chat overrides, provider defaults, cron/trigger actions, job steps, MCP
  * tools) and resolve to the per-provider target when the session starts.
- * `openrouter` and `cline` are the members of {@link HarnessProvider} that
+ * `openrouter`, `acp` and `cline` are the members of {@link HarnessProvider} that
  * resolve nowhere — see their doc-comments for why the keys outlive their
  * harnesses.
  *
@@ -18,21 +17,6 @@ import type { UiAgentProviderKind } from "./providers.js";
 
 /**
  * The harnesses an alias can target.
- *
- * `"acp"` was excluded when this was written, on the grounds that an alias
- * resolves to a model id you can name up front and ACP had nowhere to put one.
- * That stopped being true: the adapter now applies a named model with
- * `session/set_config_option` once the session exists, so `planner` →
- * `opencode/gpt-5.5` is as applicable as `planner` → `gpt-5.5` on Codex.
- *
- * **One key covers every ACP vendor, and that is a real limitation.** Model ids
- * are vendor-specific — `opencode/mimo-v2.5-free` means nothing to a different
- * ACP CLI — so a user running two ACP vendors would have one target applied to
- * both, and the wrong one is refused by the agent with its own error rather than
- * silently substituted. Exactly one vendor ships today, which is why this is a
- * documented edge and not a bug; the fix when a second lands is a per-vendor key
- * with this one as the fallback, which the normalizer's unknown-key handling
- * already leaves room for.
  *
  * **`"openrouter"` is spelled out rather than inherited from
  * {@link UiAgentProviderKind}, and outlives the harness it was named for.** The
@@ -46,8 +30,12 @@ import type { UiAgentProviderKind } from "./providers.js";
  * **`"cline"` is kept for the same reason.** The Cline harness was removed the
  * same way, so a `cline` target resolves nowhere either, but an alias that
  * carries one must still validate and round-trip through a settings save.
+ *
+ * **`"acp"` is kept for the same reason as `cline`.** The ACP harness (which
+ * ran OpenCode) was removed the same way; an alias carrying an `acp` target
+ * still validates and round-trips, and resolves nowhere.
  */
-export type HarnessProvider = UiAgentProviderKind | "openrouter" | "cline";
+export type HarnessProvider = UiAgentProviderKind | "openrouter" | "acp" | "cline";
 
 export interface ModelAlias {
   /** Alias name, e.g. "planner". Unique case-insensitively across the registry. */

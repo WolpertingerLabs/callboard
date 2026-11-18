@@ -33,8 +33,8 @@
  *
  * ## Fork and seed are both honest here
  *
- * `AcpSessionProvider` implements neither, correctly: nothing in ACP lets a
- * client hand an agent a conversation it did not have. pi lifts that constraint
+ * The retired ACP harness's session provider implemented neither, correctly:
+ * nothing in ACP lets a client hand an agent a conversation it did not have. pi lifts that constraint
  * — the spike hand-wrote a version-3 file, opened it with `SessionManager.open()`
  * and watched the model answer from the seeded context. So:
  *
@@ -159,7 +159,7 @@ export class PiSessionProvider implements SessionProvider {
    * cheap filters first means a scoped search costs a listing, and only an
    * unscoped grep pays for a full parse of everything.
    *
-   * As with Codex and ACP, callboard-native metadata (agentAlias,
+   * As with Codex, callboard-native metadata (agentAlias,
    * triggered, gitBranch) lives on callboard's chat records and is joined in by
    * `routes/chats.ts`.
    */

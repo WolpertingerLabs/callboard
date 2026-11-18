@@ -31,7 +31,6 @@ vi.mock("../../api", async (importOriginal) => {
     // `aliases` matters: OpenRouterModelSelector destructures both keys and maps
     // over them, so a catalog stub missing one crashes the routed model pickers.
     getOpenRouterCatalog: async () => ({ models: [], aliases: [] }),
-    getAcpModels: async () => ({ models: [] }),
     getPiProviders: async () => ({ providers: [] }),
     getEngines: async () => [],
     refreshEngines: async () => ({ engines: [], probed: true }),
@@ -40,7 +39,7 @@ vi.mock("../../api", async (importOriginal) => {
 
 vi.mock("../../utils/localStorage", async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>;
-  return { ...actual, getDefaultProvider: () => "claude-code", getDefaultAcpProviderId: () => "" };
+  return { ...actual, getDefaultProvider: () => "claude-code" };
 });
 
 /**
@@ -74,7 +73,7 @@ function tab(name: string): HTMLElement {
 
 async function renderSettings(settings: Record<string, unknown>, systemInfo: Record<string, unknown> = {}) {
   h.settings = settings;
-  h.systemInfo = { acpProviders: [], models: [], ...systemInfo };
+  h.systemInfo = { models: [], ...systemInfo };
   // Read through `h` on every call rather than closed over, so a case that moves
   // the payload mid-test sees the new one on the next fetch.
   h.getSystemInfo.mockImplementation(async () => h.systemInfo);
@@ -170,7 +169,7 @@ describe("Settings → API credentials control", () => {
 
   it("refetches system-info after a credential write, so the forced values move with the flag", async () => {
     // The click deliberately does not adopt the settings PUT response — that
-    // discards unsaved ACP edits. `systemInfo` is the opposite case: no effect
+    // would discard unsaved edits elsewhere on the page. `systemInfo` is the opposite case: no effect
     // derives editable state from it, and one of its fields is computed *from*
     // the flag just written, so without this the Codex tab kept reporting
     // credentials that the flag behind them no longer implied.
@@ -314,21 +313,17 @@ describe("Settings → API credentials control", () => {
    * The guarantee, rather than the mapping: a round trip through OpenRouter and
    * back writes the routing field twice and touches nothing else on the page.
    *
-   * The two surviving edits are what pin the deliberate decision *not* to adopt
-   * the PUT response into `settings`. Adopting it re-runs the effect that
-   * re-seeds the ACP tab's Default Model from `settings`, so "improving"
-   * `persistCredentialFields` to `setSettings(await updateAgentSettings(…))`
-   * discards an unsaved edit there — and passes every other test in this file.
+   * The two surviving edits pin that the instant-save writes only the routing
+   * field and leaves unsaved form state alone. (The second edit used to live on
+   * the retired ACP harness's tab, whose Default Model re-seeded from
+   * `settings`; the pi tab now stands in for "another tab's unsaved edit".)
    */
   it("survives a round trip with unsaved edits on two tabs intact", async () => {
-    await renderSettings(
-      { claudeCodeOpenRouterApiKey: "sk-or-x" },
-      { acpProviders: [{ id: "opencode", label: "OpenCode", available: true, command: "opencode" }] },
-    );
+    await renderSettings({ claudeCodeOpenRouterApiKey: "sk-or-x" });
 
-    fireEvent.click(tab("OpenCode"));
-    const acpModel = await screen.findByLabelText("Default Model");
-    fireEvent.change(acpModel, { target: { value: "anthropic/claude-opus-4.8" } });
+    fireEvent.click(tab("pi"));
+    await waitFor(() => expect(document.getElementById("piBaseUrl")).toBeTruthy());
+    fireEvent.change(document.getElementById("piBaseUrl")!, { target: { value: "https://pi.unsaved" } });
 
     fireEvent.click(tab("Claude Code"));
     fireEvent.change(await screen.findByLabelText(/^API Key/), { target: { value: "sk-ant-unsaved" } });
@@ -345,7 +340,7 @@ describe("Settings → API credentials control", () => {
     ]);
 
     expect(screen.getByLabelText(/^API Key/)).toHaveProperty("value", "sk-ant-unsaved");
-    fireEvent.click(tab("OpenCode"));
-    expect(await screen.findByLabelText("Default Model")).toHaveProperty("value", "anthropic/claude-opus-4.8");
+    fireEvent.click(tab("pi"));
+    await waitFor(() => expect(document.getElementById("piBaseUrl")).toHaveProperty("value", "https://pi.unsaved"));
   });
 });

@@ -23,9 +23,8 @@ vi.mock("../../api", async (importOriginal) => {
     ...actual,
     getAgentSettings: async () => h.settings,
     updateAgentSettings: h.updateAgentSettings,
-    getSystemInfo: async () => ({ acpProviders: [], models: [] }),
+    getSystemInfo: async () => ({ models: [] }),
     getOpenRouterCatalog: async () => ({ models: [], aliases: [] }),
-    getAcpModels: async () => ({ models: [] }),
     getPiProviders: async () => ({ providers: [] }),
     getEngines: async () => [],
     refreshEngines: async () => ({ engines: [], probed: true }),
@@ -34,7 +33,7 @@ vi.mock("../../api", async (importOriginal) => {
 
 vi.mock("../../utils/localStorage", async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>;
-  return { ...actual, getDefaultProvider: () => "claude-code", getDefaultAcpProviderId: () => "" };
+  return { ...actual, getDefaultProvider: () => "claude-code" };
 });
 
 describe("Settings → API Save payload", () => {
@@ -47,9 +46,10 @@ describe("Settings → API Save payload", () => {
       codexAuthMode: "api-key",
       codexUseOpenRouter: true,
       openRouterUtilityCompletions: true,
-      acpProviderModels: { opencode: "kept" },
-      // Not form fields: must not be echoed back by Save. A retired Cline
-      // setting is one of these now.
+      // Not form fields: must not be echoed back by Save. Retired Cline and
+      // ACP settings are among these now.
+      acpProviderModels: { opencode: "dropped" },
+      acpUseOpenRouter: true,
       quickCompletionModel: "unrelated",
       clineMaxIterations: 7,
     };
@@ -98,10 +98,6 @@ describe("Settings → API Save payload", () => {
       codexOpenRouterApiKey: "",
       codexOpenRouterBaseUrl: "",
       codexOpenRouterModel: "",
-      acpUseOpenRouter: false,
-      acpOpenRouterApiKey: "",
-      // No ACP vendor tab is resolved, so the stored map goes back untouched.
-      acpProviderModels: { opencode: "kept" },
     });
   });
 

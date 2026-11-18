@@ -75,7 +75,7 @@ describe.runIf(RUN)("killProcessTree", () => {
     //
     // This rejected with `ReferenceError: Cannot access 'timer' before
     // initialization`, which is why it is asserted as a resolution rather than
-    // "does not hang": AcpAgentClient.close() awaits this, so the rejection
+    // "does not hang": the retired ACP harness's AcpAgentClient.close() awaited this, so the rejection
     // skipped `this.child = null`, skipped AcpAgentQuery.closeToolServers() —
     // leaking an MCP server, its socket and its temp dir — and replaced the
     // turn's real outcome with a ReferenceError.

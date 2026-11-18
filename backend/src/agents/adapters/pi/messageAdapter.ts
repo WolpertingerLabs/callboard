@@ -133,8 +133,8 @@ interface PiMessageLike {
  * pi's `agent_end` can fire more than once per turn when `willRetry` is true, so
  * one `result` per `agent_end` would break the terminal contract. Terminal
  * accounting is assembled once by {@link buildTerminalResult}, which
- * `PiAgentQuery` calls after the stream ends. Same shape as the ACP adapter (and the
- * retired Cline one).
+ * `PiAgentQuery` calls after the stream ends. Same shape as the retired ACP and Cline
+ * adapters.
  */
 export function translatePiEvent(event: AgentSessionEvent): AgentEvent[] {
   switch (event.type) {

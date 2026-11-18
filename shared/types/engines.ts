@@ -17,9 +17,10 @@
  * - **version** — what is running, and what npm currently publishes;
  * - **credentials** — configured or not, and from which source.
  *
- * Only two entries have an install step a user can take at all: an ACP vendor's
- * CLI, and the *preferred* native `claude` that
- * `getClaudeCodeExecutablePath()` picks over the SDK's bundled binary.
+ * Few entries have an install step a user can take at all — chiefly the
+ * *preferred* native `claude` that `getClaudeCodeExecutablePath()` picks over
+ * the SDK's bundled binary. (The retired ACP harness's vendor CLIs were the
+ * other.)
  *
  * These types live in `shared/` because both `backend/src/services/engine-status.ts`
  * (which assembles them) and `frontend/.../EngineStatusCard.tsx` (which renders
@@ -156,7 +157,11 @@ export type EngineRuntime =
        */
       override?: EngineBinaryOverride;
     }
-  /** An external binary spawned per turn, with nothing bundled behind it — the ACP vendors. */
+  /**
+   * An external binary spawned per turn, with nothing bundled behind it. The
+   * retired ACP harness's vendors were the producers; none remains today, and
+   * the variant is kept because this is an API type.
+   */
   | { kind: "external"; command: string; resolvedPath?: string; package?: string };
 
 /**
@@ -169,10 +174,9 @@ export type EngineRuntime =
  * authenticated, and — because it varies with nothing — it can never become
  * `true`, so the tab's status dot could never go green.
  *
- * - **ACP vendors**: the protocol carries no auth introspection. `initialize`
- *   advertises `authMethods`, never who is signed in. A vendor may well have
- *   credentials on disk (OpenCode keeps them under its own data dir); callboard
- *   does not read other tools' credential stores to find out.
+ * - **External CLIs** (the retired ACP harness's vendors, for one): nothing
+ *   callboard can read says who is signed in, and callboard does not read other
+ *   tools' credential stores to find out.
  * - **pi**: an unset key in Settings means the embedded runtime falls
  *   back to the backend process's own environment, and which variable that is
  *   depends on the configured provider id.
@@ -240,7 +244,7 @@ export interface EngineInstallRecipe {
    * (`caveats` names the two cases where it does not.)
    *
    * `false` for the vendor scripts, which install into a directory they add to
-   * your *shell rc* — `~/.opencode/bin`, `~/.local/bin`. A running process's
+   * your *shell rc* — `~/.local/bin`, for instance. A running process's
    * PATH is fixed at exec, so Recheck cannot see those however many times it is
    * pressed, and the card must not tell someone to press it.
    */
@@ -277,7 +281,7 @@ export interface EngineInstallRecipe {
  * followed its own recipe.
  */
 export interface EngineInstallGuidance {
-  /** Why this is being offered — "no `opencode` on PATH", "`codex login` needs the CLI". */
+  /** Why this is being offered — "no `claude` on PATH", "`codex login` needs the CLI". */
   reason: string;
   /**
    * What installing does and does not change, when that is not obvious.
@@ -519,7 +523,7 @@ export interface EngineVersionDrift {
 
 /** One engine, as Settings → API renders it. */
 export interface EngineStatus {
-  /** `"claude-code" | "codex" | "pi"`, or an ACP vendor id. */
+  /** `"claude-code" | "codex" | "pi"`. */
   id: string;
   label: string;
   runtime: EngineRuntime;

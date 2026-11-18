@@ -87,21 +87,19 @@ describe("claude-code's list degrades instead of disappearing", () => {
   });
 });
 
-describe("codex and acp stay strict, because their names are forgeable", () => {
-  // `update_plan` and `plan` are names a vendor could genuinely ship on an
+describe("codex stays strict, because its name is forgeable", () => {
+  // `update_plan` is a name a vendor could genuinely ship on an
   // unrelated tool; `TodoWrite` is Claude Code's own built-in and an MCP tool
   // can only reach us `mcp__server__tool`-namespaced. Strictness is aimed at
   // that false positive, which is why it does not apply to all three.
   it.each([
     ["codex", TASK_LIST_TOOLS.codex, JSON.stringify({ plan: [{ step: "Ship it", status: "someday" }] })],
-    ["acp", TASK_LIST_TOOLS.acp, JSON.stringify({ entries: [{ content: "Ship it", status: "someday" }] })],
   ])("%s: an unknown status rejects the whole list", (_engine, toolName, content) => {
     expect(parseTaskList(toolName, content)).toBeNull();
   });
 
   it.each([
     ["codex", TASK_LIST_TOOLS.codex, JSON.stringify({ plan: [{ step: "Ship it", status: "in_progress" }] })],
-    ["acp", TASK_LIST_TOOLS.acp, JSON.stringify({ entries: [{ content: "Ship it", priority: "high", status: "in_progress" }] })],
   ])("%s: a well-formed list is accepted", (_engine, toolName, content) => {
     expect(parseTaskList(toolName, content)).toEqual([{ content: "Ship it", status: "in_progress" }]);
   });

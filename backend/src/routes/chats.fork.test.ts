@@ -122,16 +122,11 @@ vi.mock("../agents/factory.js", () => ({
       getSessionPreview: () => "preview",
     },
     {
-      // AcpSessionProvider IS registered in the real getSessionProviders(), so
-      // the route's `find(p => p.kind === targetKind)` guard succeeds for "acp".
-      // Stubbed here WITH a seedSession the real one does not have, on purpose:
-      // that makes the rejection below prove the ROUTE refuses an ACP fork on
-      // its own, rather than inheriting the refusal from a missing method.
-      //
-      // This stub has already earned its keep once. It was written when the
-      // routable allowlist was the guard; when "acp" joined that allowlist it
-      // turned green-to-201 and caught the reintroduced wedged-chat bug in the
-      // same commit, which is why the route now carries an explicit check.
+      // The ACP harness is retired and its session provider is gone from the
+      // real registry. Stubbed here WITH a seedSession anyway, on purpose: it
+      // makes the rejection below prove the ROUTE refuses "acp" as a target on
+      // the routable allowlist alone, even if something registered a provider
+      // under the retired kind.
       kind: "acp",
       seedSession: (...args: unknown[]) => {
         calls.seedSession.push(args);
@@ -306,20 +301,13 @@ describe("POST /api/chats/:id/fork cross-harness handoff", () => {
     expect(res.meta.error).toContain("Unknown target provider");
   });
 
-  it("rejects a fork into acp, which no ACP agent can be handed a conversation", async () => {
-    // "acp" is a routable kind now, so this is no longer stopped by the
-    // allowlist — it is stopped by `AcpSessionProvider` implementing neither
-    // `forkSession` nor `seedSession`, deliberately. ACP session state lives
-    // inside the vendor's process and the protocol gives a client no way to
-    // hand an agent a conversation it did not have, so a seeded transcript
-    // would render correctly and then lose every bit of context on the next
-    // message. A 400 is the honest answer.
+  it("refuses acp as a target — the harness (OpenCode) was removed", async () => {
+    // Not routable any more, so the request never gets as far as looking for a
+    // provider — even the stubbed one above, which could seed. Nothing is written.
     setParent({});
     const res = await fork({ provider: "acp" });
     expect(res.code).toBe(400);
-    expect(res.meta.error).toContain("not supported");
-    // Still refused before anything is written — which is the property that
-    // actually matters, and the one the old allowlist rejection provided.
+    expect(res.meta.error).toContain('Unknown target provider "acp"');
     expect(calls.seedSession).toHaveLength(0);
   });
 
@@ -359,6 +347,15 @@ describe("POST /api/chats/:id/fork cross-harness handoff", () => {
     const res = await fork();
     expect(res.code).toBe(400);
     expect(res.meta.error).toContain("This chat ran on Cline, which has been removed");
+    expect(calls.forkSession).toHaveLength(0);
+    expect(calls.seedSession).toHaveLength(0);
+  });
+
+  it("refuses a chat stamped with the removed acp harness as a SOURCE, by name", async () => {
+    setParent({ provider: "acp", acpProviderId: "opencode" });
+    const res = await fork();
+    expect(res.code).toBe(400);
+    expect(res.meta.error).toContain("This chat ran on OpenCode, which has been removed");
     expect(calls.forkSession).toHaveLength(0);
     expect(calls.seedSession).toHaveLength(0);
   });

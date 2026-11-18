@@ -81,7 +81,7 @@ export function parseChatMeta(metadata: string | null | undefined): ChatMeta {
  * caller that drives a control from it must check `isRetiredProviderId` first.
  */
 export function providerKindOf(provider: string | null): UiAgentProviderKind {
-  if (provider === "codex" || provider === "acp" || provider === "pi") return provider;
+  if (provider === "codex" || provider === "pi") return provider;
   return "claude-code";
 }
 

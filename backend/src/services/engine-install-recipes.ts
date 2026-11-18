@@ -24,7 +24,7 @@
  * pipe the internet into a shell on the user's behalf") is enforced by the
  * shape of the data and not by a rule someone has to remember.
  *
- * ## Only three engines appear here
+ * ## Only two engines appear here
  *
  * pi is an in-process library, and Callboard's copy of the Claude
  * Agent SDK and the Codex SDK are ordinary nested dependencies. `npm i -g` of
@@ -32,11 +32,12 @@
  * `node_modules` first and the global prefix is not on that search path — so
  * offering it would be a button that silently changes nothing. Decision 2.
  *
- * The three that *do* appear each have a different reason:
+ * The two that *do* appear each have a different reason (the retired ACP
+ * harness's OpenCode was a third, the only one that was genuinely
+ * install-or-not):
  *
  * | Engine | Why a command exists |
  * |---|---|
- * | OpenCode | Genuinely install-or-not: the binary is spawned from `PATH`, and without it the engine cannot run |
  * | Claude Code | The native `claude` is **preferred** over the bundled binary, and is the only way to reach `claude auth login` |
  * | Codex | The engine already runs. The CLI is needed *only* so `codex login` exists as a command — see {@link CODEX_LOGIN_SCOPE} |
  *
@@ -57,10 +58,9 @@ import type { EngineInstallCapability, EngineInstallGuidance, EngineInstallRecip
 // cannot name a package the allowlist does not.
 
 const CLAUDE_CODE_CLI_PACKAGE = "@anthropic-ai/claude-code";
-const OPENCODE_PACKAGE = "opencode-ai";
 const CODEX_CLI_PACKAGE = "@openai/codex";
 
-// {@link INSTALLABLE_PACKAGES} lists these same three, independently, so that
+// {@link INSTALLABLE_PACKAGES} lists these same two, independently, so that
 // neither list can move without the other — see its doc comment.
 
 // ── Shared caveats ──────────────────────────────────────────────────
@@ -84,21 +84,16 @@ const NPM_GLOBAL_CAVEATS = Object.freeze([
  * What a `curl … | bash` installer does that the npm path does not.
  *
  * The second entry is the important one and it is stated **per script**, with
- * the real directory, because it is not a corner case — it is what these
- * scripts do by design, every time:
+ * the real directory, because it is not a corner case — it is what such
+ * scripts do by design, every time. `https://claude.ai/install.sh` downloads to
+ * `$HOME/.claude/downloads` and then runs `<binary> install`, which lands the
+ * launcher in `$HOME/.local/bin` and wires up shell integration (verified by
+ * reading the live script; the retired OpenCode installer did the same with
+ * `~/.opencode/bin`).
  *
- * - `https://opencode.ai/install` sets `INSTALL_DIR=$HOME/.opencode/bin`,
- *   `mkdir -p`s it, and appends `export PATH=$INSTALL_DIR:$PATH` to the user's
- *   shell rc.
- * - `https://claude.ai/install.sh` downloads to `$HOME/.claude/downloads` and
- *   then runs `<binary> install`, which lands the launcher in
- *   `$HOME/.local/bin` and wires up shell integration.
- *
- * Both verified by reading the live scripts. In both cases the directory is on
- * the user's *future* shells' PATH and not on the running daemon's — a
- * process's environment is fixed at exec — and for OpenCode the directory
- * usually did not exist when the daemon started, so it *cannot* have been
- * inherited. Recheck re-runs `which` in the daemon's environment, so it will
+ * The directory is on the user's *future* shells' PATH and not on the running
+ * daemon's — a process's environment is fixed at exec — and it may not have
+ * existed when the daemon started, so it *cannot* have been inherited. Recheck re-runs `which` in the daemon's environment, so it will
  * keep answering "not installed" until Callboard is restarted from a shell that
  * has been re-sourced. Telling someone to press Recheck without saying that is
  * the copy-block equivalent of a button that does nothing.
@@ -156,26 +151,6 @@ export const ENGINE_INSTALL_RECIPES: readonly EngineInstallRecipe[] = Object.fre
     caveats: scriptCaveats("~/.local/bin", "claude"),
   },
   {
-    engineId: "opencode",
-    method: "npm-global",
-    label: "npm (global)",
-    package: OPENCODE_PACKAGE,
-    argv: Object.freeze(["npm", "install", "-g", OPENCODE_PACKAGE]),
-    command: `npm install -g ${OPENCODE_PACKAGE}`,
-    docsUrl: "https://opencode.ai/docs/",
-    visibleAfterRecheck: true,
-    caveats: NPM_GLOBAL_CAVEATS,
-  },
-  {
-    engineId: "opencode",
-    method: "script",
-    label: "OpenCode's installer",
-    command: "curl -fsSL https://opencode.ai/install | bash",
-    docsUrl: "https://opencode.ai/docs/",
-    visibleAfterRecheck: false,
-    caveats: scriptCaveats("~/.opencode/bin", "opencode"),
-  },
-  {
     engineId: "codex",
     method: "npm-global",
     label: "npm (global)",
@@ -220,7 +195,7 @@ export const ENGINE_INSTALL_RECIPES: readonly EngineInstallRecipe[] = Object.fre
  * awkward to grow.
  */
 export const INSTALLABLE_PACKAGES: ReadonlySet<string> = Object.freeze(
-  new Set<string>([CLAUDE_CODE_CLI_PACKAGE, OPENCODE_PACKAGE, CODEX_CLI_PACKAGE]),
+  new Set<string>([CLAUDE_CODE_CLI_PACKAGE, CODEX_CLI_PACKAGE]),
 ) as ReadonlySet<string>;
 
 /** Every recipe registered for an engine id, in offer order. Empty for the bundled engines. */
@@ -274,8 +249,6 @@ export function oneClickRecipeFor(engineId: string): EngineInstallRecipe | undef
  * would not help them. Every gate below is an **observed** fact, and the
  * observation has to be as wide as the claim:
  *
- * - **OpenCode** — `installed === false` means `which opencode` came back empty
- *   and the engine cannot run. Unambiguous.
  * - **Claude Code** — the CLI counts as present if *either* lookup found one.
  *   `runtime.resolvedPath` is what the Agent SDK will run;
  *   {@link EngineStatus.userCliPath} is what the user can type. They differ
@@ -289,8 +262,8 @@ export function oneClickRecipeFor(engineId: string): EngineInstallRecipe | undef
  *   following this card's own recipe and pressing Recheck returned the very
  *   same "install it" block.
  *
- * Credentials `"unknown"` never qualifies anywhere: that is the SDK or the
- * protocol failing to answer, not an observed absence, and acting on it is the
+ * Credentials `"unknown"` never qualifies anywhere: that is the SDK failing to
+ * answer, not an observed absence, and acting on it is the
  * Bedrock defect with a command attached.
  *
  * The result may carry **no recipes** — "you have the CLI, you just have not
@@ -339,7 +312,7 @@ function withOneClick(engineId: string, guidance: EngineInstallGuidance, capabil
 
   if (!recipe) {
     // Every recipe on offer is copy-only. No `npm-global` entry exists for this
-    // engine — today that is unreachable (all three engines with recipes have
+    // engine — today that is unreachable (both engines with recipes have
     // one), and it is handled anyway so that adding a script-only engine cannot
     // produce a card that silently has no button and no explanation.
     return {
@@ -435,18 +408,5 @@ function baseGuidanceFor(engine: EngineStatus): EngineInstallGuidance | undefine
     };
   }
 
-  // ACP vendors — the one genuinely install-or-not row on the page.
-  if (engine.installed) return undefined;
-  const command = engine.runtime.kind === "external" ? engine.runtime.command : engine.id;
-  return {
-    reason: `No \`${command}\` on the PATH of the user running the Callboard daemon, so this engine cannot start. Callboard spawns the binary per turn; there is nothing bundled behind it.`,
-    // `opencode auth login` is verified against the CLI's own help output. Any
-    // future vendor gets the claim Callboard can make without having looked —
-    // that installing is not signing in, and that ACP gives it no way to help.
-    alternative:
-      engine.id === "opencode"
-        ? "Installing it is only half the job: run `opencode auth login` in your own terminal afterwards. ACP gives Callboard no way to hand an agent a key, and it never touches this CLI's credential store."
-        : "Installing it is only half the job — sign in with the vendor's own CLI afterwards. ACP gives Callboard no way to hand an agent a key, and it never touches this CLI's credential store.",
-    recipes,
-  };
+  return undefined;
 }

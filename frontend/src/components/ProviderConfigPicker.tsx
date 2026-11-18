@@ -4,7 +4,6 @@ import type { AgentProviderKind, EffortLevel } from "../utils/localStorage";
 import OpenRouterModelSelector from "./OpenRouterModelSelector";
 import ClaudeModelSelector from "./ClaudeModelSelector";
 import CodexModelSelector from "./CodexModelSelector";
-import AcpModelSelector from "./AcpModelSelector";
 import PiModelSelector from "./PiModelSelector";
 
 export type ProviderConfigPickerMode = "panel" | "inline";
@@ -41,29 +40,9 @@ interface ProviderConfigPickerProps {
   // doesn't gate Codex) — Codex is treated as available until an explicit
   // false disables the button.
   codexConfigured?: boolean | null;
-  // ACP vendors, from /api/system-info. One button each rather than an "ACP"
-  // button plus a sub-picker: `acp` is a wire format, not a harness, and a user
-  // picks OpenCode the same way they pick Codex. The kind travels as "acp" with
-  // the id alongside it — see acpProviderId below. Omitted/empty renders nothing,
-  // so callers that don't offer ACP are unaffected.
-  acpProviders?: Array<{ id: string; label: string; available: boolean; command: string }>;
-  // Which ACP vendor is selected. Only meaningful when provider === "acp".
-  acpProviderId?: string;
-  // Selecting an ACP vendor sets BOTH the kind and the id, so callers wire this
-  // together with onProviderChange rather than as an independent control.
-  onAcpProviderChange?: (providerId: string) => void;
-  // Per-chat ACP model, as the vendor names it. Empty = this vendor's default
-  // from Settings → API (`AgentSettings.acpProviderModels`, keyed by vendor id),
-  // and when that is blank too, the vendor CLI's own configured model. Kept
-  // separate from the other providers' model values so switching the toggle
-  // restores each one's prior selection, the same way `model` / `claudeModel` /
-  // `codexModel` already do. Optional — callers that don't surface a per-chat
-  // ACP model omit it and the field hides.
-  acpModel?: string;
-  onAcpModelChange?: (model: string) => void;
   // Per-chat pi model, within the provider configured in Settings → API.
   // Empty = that global default. Kept separate from the other providers' model
-  // values for the same reason `acpModel` is: switching the toggle restores each
+  // values so switching the toggle restores each
   // provider's prior selection. Optional — callers that don't surface it omit it
   // and the field hides.
   piModel?: string;
@@ -113,11 +92,6 @@ export default function ProviderConfigPicker({
   codexModel,
   onCodexModelChange,
   codexConfigured,
-  acpProviders,
-  acpProviderId,
-  onAcpProviderChange,
-  acpModel,
-  onAcpModelChange,
   piModel,
   onPiModelChange,
   onOpenApiSettings,
@@ -337,34 +311,6 @@ export default function ProviderConfigPicker({
       </div>
     ) : null;
 
-  // ACP model — only when the caller wired a change handler, like Codex's. There
-  // is no effort control: ACP has no reasoning-effort concept to map onto.
-  const acpControls =
-    provider === "acp" && onAcpModelChange !== undefined ? (
-      <div style={{ marginBottom: inline ? 0 : 12, flex: inline ? "1 1 auto" : undefined, minWidth: inline ? 180 : 0 }}>
-        <label
-          htmlFor={inline ? "inlineAcpModel" : "newChatAcpModel"}
-          style={{ display: "block", fontSize: inline ? 11 : 13, fontWeight: 600, color: "var(--text-muted)", marginBottom: inline ? 4 : 6 }}
-        >
-          Model
-        </label>
-        <AcpModelSelector
-          id={inline ? "inlineAcpModel" : "newChatAcpModel"}
-          value={acpModel ?? ""}
-          onChange={onAcpModelChange}
-          providerId={acpProviderId ?? ""}
-          placeholder={inline ? "(default)" : "(default — uses Settings → API)"}
-        />
-        {!inline && (
-          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
-            Optional — leave empty to use this vendor&rsquo;s default model from Settings → API, and the vendor&rsquo;s own configured model when that is blank
-            too. Suggestions come from models this agent has advertised before. Any model it does not have is refused outright rather than swapped for a
-            default.
-          </div>
-        )}
-      </div>
-    ) : null;
-
   // pi — effort plus a per-chat model. This is a
   // filtering combobox: pi's OpenRouter catalog answers with ~300 models, and a
   // plain input with a datalist that long is a scroll rather than a picker.
@@ -402,10 +348,10 @@ export default function ProviderConfigPicker({
       {showProviderToggle && (
         <div style={{ marginBottom: inline ? 8 : 12 }}>
           <div style={{ fontSize: inline ? 11 : 13, fontWeight: 600, color: "var(--text-muted)", marginBottom: inline ? 4 : 6 }}>Provider</div>
-          {/* Wraps: the row held three buttons when it was written, and each ACP
-              vendor adds another. `flex: 1` alone cannot shrink a button below
-              its label (min-width defaults to auto), so a fifth entry pushed
-              the last one outside the sidebar rather than onto a second line. */}
+          {/* Wraps: `flex: 1` alone cannot shrink a button below its label
+              (min-width defaults to auto), so when the retired ACP harness added
+              a button per vendor, a fifth entry pushed the last one outside the
+              sidebar rather than onto a second line. */}
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
             <button
               type="button"
@@ -473,45 +419,7 @@ export default function ProviderConfigPicker({
             >
               pi
             </button>
-            {(acpProviders ?? []).map((vendor) => {
-              // Selected only when BOTH the kind and the id match — two ACP
-              // vendors must never light up together.
-              const selected = provider === "acp" && acpProviderId === vendor.id;
-              return (
-                <button
-                  key={vendor.id}
-                  type="button"
-                  onClick={() => {
-                    if (!vendor.available) return;
-                    onAcpProviderChange?.(vendor.id);
-                    onProviderChange("acp");
-                  }}
-                  disabled={!vendor.available}
-                  title={vendor.available ? `Use ${vendor.label} for this chat` : `Install the \`${vendor.command}\` CLI to enable this provider`}
-                  style={{
-                    flex: "1 1 64px",
-                    padding: inline ? "4px 6px" : "6px 8px",
-                    fontSize: inline ? 12 : 13,
-                    fontWeight: 500,
-                    borderRadius: 6,
-                    border: selected ? "1px solid var(--accent)" : "1px solid var(--border)",
-                    background: selected ? "var(--accent)" : "var(--surface)",
-                    color: !vendor.available ? "var(--text-muted)" : selected ? "var(--text-on-accent)" : "var(--text)",
-                    cursor: vendor.available ? "pointer" : "not-allowed",
-                    opacity: vendor.available ? 1 : 0.6,
-                    transition: "all 0.15s",
-                  }}
-                >
-                  {vendor.label}
-                </button>
-              );
-            })}
           </div>
-          {provider === "acp" && !inline && (
-            <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
-              Credentials for this harness live in its own CLI. Callboard gates every tool call it makes.
-            </div>
-          )}
           {codexConfigured === false && provider === "codex" && (
             <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
               Configure{" "}
@@ -533,7 +441,6 @@ export default function ProviderConfigPicker({
 
       {claudeControls}
       {codexControls}
-      {acpControls}
       {piControls}
     </>
   );

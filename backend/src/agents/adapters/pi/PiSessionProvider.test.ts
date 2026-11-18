@@ -13,7 +13,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, utimesSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// Before anything reads `paths.ts` — the ACP suite once wrote fake sessions into
+// Before anything reads `paths.ts` — the (since-retired) ACP suite once wrote fake sessions into
 // a developer's real chat list (#302).
 const tmpRoot = mkdtempSync(join(tmpdir(), "callboard-pi-provider-"));
 process.env.CALLBOARD_DATA_DIR = tmpRoot;
@@ -284,7 +284,8 @@ describe("forkSession", () => {
   /**
    * The check that matters: pi must be able to open what we wrote. A fork that
    * renders in callboard but that `SessionManager.open()` cannot resolve is the
-   * failure `AcpSessionProvider` describes — correct-looking history, no context.
+   * failure the retired ACP session provider described — correct-looking
+   * history, no context.
    */
   it("produces a file pi itself resumes, with our id and the kept history", () => {
     writeSession("src", threeTurns());

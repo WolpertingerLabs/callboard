@@ -171,19 +171,20 @@ describe("getToolSummary — Codex tools", () => {
   });
 });
 
-describe("getToolSummary — ACP vendor tools", () => {
-  // OpenCode names its tools in lowercase and its inputs in camelCase, so they
-  // reach the fallback rather than a dedicated case. Without `filePath` in the
+describe("getToolSummary — lowercase tools with camelCase inputs", () => {
+  // The shape the retired ACP harness's OpenCode used, kept as generic
+  // coverage: lowercase tool names with camelCase inputs reach the fallback
+  // rather than a dedicated case. Without `filePath` in the
   // path probe every file operation rendered as a bare "read" / "write" with no
   // indication of which file — the tool card told you nothing.
-  it("names the file for OpenCode's camelCase file tools", () => {
+  it("names the file for camelCase file tools", () => {
     expect(getToolSummary("read", j({ filePath: "/repo/backend/src/index.ts" }))).toBe(" - index.ts");
     expect(getToolSummary("write", j({ filePath: "/repo/notes.md", content: "hi" }))).toBe(" - notes.md");
     expect(getToolSummary("edit", j({ filePath: "/repo/a.ts", oldString: "x", newString: "y" }))).toBe(" - a.ts");
   });
 
   it("describes a subagent call by what it was sent to do", () => {
-    // The one tool with nothing to show while it runs: OpenCode reports no
+    // The one tool with nothing to show while it runs: an agent may report no
     // update at all until the subagent finishes, so the description is the only
     // thing the card can say for its whole (often minutes-long) lifetime.
     expect(getToolSummary("task", j({ description: "Explore repo structure", subagent_type: "explore", prompt: "Explore..." }))).toBe(
@@ -191,7 +192,7 @@ describe("getToolSummary — ACP vendor tools", () => {
     );
   });
 
-  it("keeps working for the vendor tools that already matched", () => {
+  it("keeps working for the lowercase tools that already matched", () => {
     expect(getToolSummary("bash", j({ command: "npm test" }))).toBe(" - npm test");
     expect(getToolSummary("glob", j({ pattern: "**/*.ts" }))).toBe(" - **/*.ts");
     expect(getToolSummary("grep", j({ pattern: "TODO" }))).toBe(" - 'TODO'");

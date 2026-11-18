@@ -84,7 +84,7 @@ export function ToolSourceBadge({ toolSource }: { toolSource?: ParsedMessage["to
 
 // Tool-call formatting (summaries, display names) lives in toolFormatting.ts —
 // it handles every provider naming convention callboard sees (Claude Code,
-// Codex, ACP vendors, pi). Re-exported here for existing import sites.
+// Codex, pi). Re-exported here for existing import sites.
 export { getToolSummary };
 
 const StatusIcon = ({ status }: { status: string }) => {
@@ -535,8 +535,8 @@ export function TodoList({ items }: { items: TaskListItem[] }) {
         }}
       >
         <span style={{ fontWeight: 600, fontSize: 14 }}>Tasks</span>
-        {/* An empty list is the agent clearing its plan (ACP's `plan_removed`,
-            or a TodoWrite with no todos), not a list that failed to load. It
+        {/* An empty list is the agent clearing its plan (a TodoWrite with no
+            todos, say — or the retired ACP harness's `plan_removed`), not a list that failed to load. It
             has to render, and say so: this bubble is the newest thing in the
             transcript, and falling back to nothing would leave the previous
             list on screen as the agent's current plan. */}

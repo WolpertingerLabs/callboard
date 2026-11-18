@@ -6,29 +6,26 @@
  * of the tokenizer and token table) over every string literal in their test
  * files plus edge cases — empty, whitespace, mixed case, camelCase, snake_case,
  * unicode, `mcp__x__y`, digits, over-length names. The shared factory must give
- * the identical answer for every one, per provider. The Cline column was pruned
- * when that harness was retired; pi and ACP still pin the same corpus.
+ * the identical answer for every one, per provider. The Cline and ACP columns
+ * were pruned when those harnesses were retired; pi still pins the same corpus.
  */
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { categorizePiToolName } from "../adapters/pi/permissionAdapter.js";
-import { categorizeAcpToolName } from "../adapters/acp/permissionAdapter.js";
 
 interface ParityCase {
   name: string;
   pi: string | null;
-  acp: string | null;
 }
 
 const cases: ParityCase[] = JSON.parse(readFileSync(new URL("./__fixtures__/nameCategorizer.parity.json", import.meta.url), "utf8"));
 
 describe("makeNameCategorizer parity with the pre-consolidation categorizers", () => {
-  it("covers a broad corpus, including names where the providers disagree", () => {
+  it("covers a broad corpus", () => {
     expect(cases.length).toBeGreaterThan(200);
-    expect(cases.some((c) => c.pi !== c.acp)).toBe(true);
   });
 
-  it.each(cases)("$name", ({ name, pi, acp }) => {
-    expect({ pi: categorizePiToolName(name), acp: categorizeAcpToolName(name) }).toEqual({ pi, acp });
+  it.each(cases)("$name", ({ name, pi }) => {
+    expect(categorizePiToolName(name)).toEqual(pi);
   });
 });

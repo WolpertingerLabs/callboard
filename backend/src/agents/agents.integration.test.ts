@@ -182,8 +182,7 @@ describe("ToolPermissionPolicy", () => {
 describe("factory registry — every routable kind is reachable", () => {
   it("constructs an agent provider for each routable kind", () => {
     for (const kind of ROUTABLE_PROVIDER_KINDS) {
-      // ACP needs a vendor id; every other kind identifies its engine alone.
-      const provider = kind === "acp" ? getAgentProvider(kind, "opencode") : getAgentProvider(kind);
+      const provider = getAgentProvider(kind);
       expect(provider.kind, `${kind} constructed the wrong adapter`).toBe(kind);
     }
   });
@@ -206,9 +205,9 @@ describe("factory registry — every routable kind is reachable", () => {
  */
 describe("cross-harness fork and handoff — the target contract", () => {
   /** Mirrors `ForkProvider` in `frontend/src/api.ts`. Keep the two in step. */
-  const FORK_TARGETS = ROUTABLE_PROVIDER_KINDS.filter((kind) => kind !== "acp");
+  const FORK_TARGETS = ROUTABLE_PROVIDER_KINDS;
 
-  it("offers every routable kind except acp", () => {
+  it("offers every routable kind", () => {
     // If a kind is added to the union and forgotten here, this says so.
     expect([...FORK_TARGETS].sort()).toEqual(["claude-code", "codex", "pi"]);
   });
@@ -219,7 +218,7 @@ describe("cross-harness fork and handoff — the target contract", () => {
    * written into 155 chat records: a guard that quietly admitted it again would
    * route those chats at an adapter that no longer exists.
    */
-  it.each(["openrouter", "cline"])("does not admit the removed %s kind anywhere", (kind) => {
+  it.each(["openrouter", "cline", "acp"])("does not admit the removed %s kind anywhere", (kind) => {
     expect(ROUTABLE_PROVIDER_KINDS).not.toContain(kind);
     expect(isRoutableProvider(kind)).toBe(false);
     expect(INTERNAL_PROVIDER_KINDS).not.toContain(kind);
@@ -244,6 +243,9 @@ describe("cross-harness fork and handoff — the target contract", () => {
     // Every retired kind has a name for its refusal message.
     for (const kind of RETIRED_PROVIDER_KINDS) expect(RETIRED_PROVIDER_LABELS[kind]).toBeTruthy();
     expect(RETIRED_PROVIDER_LABELS.cline).toBe("Cline");
+    expect(RETIRED_PROVIDER_KINDS).toContain("acp");
+    expect(isRetiredProvider("acp")).toBe(true);
+    expect(RETIRED_PROVIDER_LABELS.acp).toBe("OpenCode");
     // Live kinds are never retired, or the refusal would take out working chats.
     for (const kind of INTERNAL_PROVIDER_KINDS) expect(isRetiredProvider(kind)).toBe(false);
     // Neither is a typo — that path degrades, it does not refuse.
@@ -257,20 +259,6 @@ describe("cross-harness fork and handoff — the target contract", () => {
       expect(provider, `${kind} has no SessionProvider`).toBeDefined();
       expect(typeof provider?.seedSession, `${kind} is offered as a handoff target but implements no seedSession — the fork route would 400`).toBe("function");
     }
-  });
-
-  /**
-   * ACP's exclusion is deliberate and load-bearing: its session state lives
-   * inside the agent's process, and nothing in the protocol lets a client hand
-   * an agent a conversation it did not have. A seeded transcript would render
-   * correctly and lose all context on the next message.
-   */
-  it("does not offer acp, and acp implements neither operation", () => {
-    expect(FORK_TARGETS).not.toContain("acp");
-    const acp = getSessionProvider("acp");
-    expect(acp).toBeDefined();
-    expect(acp?.seedSession).toBeUndefined();
-    expect(acp?.forkSession).toBeUndefined();
   });
 
   it("every kind with a native fork also has a parser to fork from", () => {

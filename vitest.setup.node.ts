@@ -3,11 +3,11 @@
  * `~/.callboard`.
  *
  * `CALLBOARD_DATA_DIR` is the single switch that moves every callboard-owned
- * path — chats, workspaces, cards, ACP transcripts. Tests that know they write
+ * path — chats, workspaces, cards, pi sessions. Tests that know they write
  * set it themselves; the failure mode is a test that writes *incidentally*.
- * `toolAdapter.test.ts` was one: it drives a real `AcpAdapter.query()` to prove
- * `anyOf` schemas survive registration, and the adapter — correctly — records a
- * transcript for the session it opened. With no override in that file, the
+ * The retired ACP harness's `toolAdapter.test.ts` was one: it drove a real
+ * `AcpAdapter.query()` to prove `anyOf` schemas survive registration, and the
+ * adapter — correctly — recorded a transcript for the session it opened. With no override in that file, the
  * transcript landed in the real data dir and the fake agent's session showed up
  * in the developer's sidebar as a chat.
  *

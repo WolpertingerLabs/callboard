@@ -318,7 +318,6 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // Provider kind for NEW chats, set by NewChatPanel. Existing chats route
   // by chat metadata server-side; this value is only honored on creation.
   const newChatProvider = routeState.provider;
-  const newChatAcpProviderId = routeState.acpProviderId;
   // Reasoning effort for NEW chats, set by NewChatPanel. Like the provider,
   // only honored on creation and persisted into chat metadata; the
   // existing-chat path recovers it from metadata server-side.
@@ -772,57 +771,23 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     viewOpen: viewMode === "computer",
   });
 
-  // Which ACP vendor, for chats on the ACP kind. Read from metadata rather than
-  // derived from `chatProvider`, because the kind alone does not name a harness.
-  const acpProviderId = !id ? (newChatAcpProviderId ?? "") : (chatMeta.acpProviderId ?? "");
-
-  // Vendor id → display label, for ACP chats. Chat metadata stores the id
-  // ("opencode"); only the server knows it is spelled "OpenCode". Title-casing
-  // the id gets that wrong, and the vendor's own spelling is the one the user
-  // picked in the panel. Declared here rather than beside the other
-  // /system-info state below because `providerDisplayName` reads it during
-  // render, and a `const` declared further down would be in the TDZ.
-  //
   // The cached default, not `refresh`: every field read off it here only
   // shapes what the composer displays.
   const { info: systemInfo } = useSystemInfo();
-  const acpLabels = useMemo(
-    (): Record<string, string> => Object.fromEntries((systemInfo?.acpProviders ?? []).map((v) => [v.id, v.label])),
-    [systemInfo],
-  );
 
-  // Forking is meaningless for an ACP chat, so the source is null there rather
-  // than a stand-in value. ACP session state lives inside the vendor's process
-  // and the protocol gives a client no way to hand an agent a conversation it
-  // did not have — `AcpSessionProvider` implements neither `forkSession` nor
-  // `seedSession`, so the route would 400. Hiding the button is the honest
-  // surface for that; a fork that renders and then loses all context is worse
-  // than no fork button.
-  // Null for ACP and for a retired harness — the latter because forking copies
-  // the source's session log, and nothing left in the process can read one the
-  // removed engine wrote. `POST /api/chats/:id/fork` refuses it by name with a
-  // 400; hiding the entry is the same answer given before the user asks.
-  // Otherwise every kind is both a valid fork source and a valid target (see
-  // `ForkProvider`).
-  const forkSourceProvider: ForkProvider | null = chatProvider === "acp" || isRetiredHarness ? null : chatProvider;
+  // Null for a retired harness, because forking copies the source's session
+  // log, and nothing left in the process can read one the removed engine wrote.
+  // `POST /api/chats/:id/fork` refuses it by name with a 400; hiding the entry
+  // is the same answer given before the user asks. Otherwise every kind is both
+  // a valid fork source and a valid target (see `ForkProvider`).
+  const forkSourceProvider: ForkProvider | null = isRetiredHarness ? null : chatProvider;
 
   // The harness whose model/effort controls the composer popover renders. Null
   // for a retired harness, which has no controls worth opening.
   const composerProvider: AgentProviderKind | null = isRetiredHarness ? null : chatProvider;
 
   // Human-readable harness name for status text ("Claude is thinking...").
-  // ACP shows the vendor, not the protocol: "OpenCode is thinking" is what the
-  // user picked, and "ACP is thinking" names a wire format.
-  const providerDisplayName =
-    chatProvider === "codex"
-      ? "Codex"
-      : chatProvider === "pi"
-        ? "pi"
-        : chatProvider === "acp"
-          ? // The vendor's own label when the server has told us one; otherwise a
-            // neutral noun rather than a guessed capitalization of the id.
-            (acpLabels[acpProviderId] ?? "The agent")
-          : "Claude";
+  const providerDisplayName = chatProvider === "codex" ? "Codex" : chatProvider === "pi" ? "pi" : "Claude";
 
   // The chat's parentage tree, which feeds the inline fork-point markers. It
   // is fetched once per chat, never per render or message. A fork needs no
@@ -2574,11 +2539,6 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           if (newChatProvider && newChatProvider !== "claude-code") {
             requestBody.provider = newChatProvider;
           }
-          // The vendor rides with the kind. Without it the route rejects the
-          // request outright rather than guessing a harness.
-          if (newChatProvider === "acp" && newChatAcpProviderId) {
-            requestBody.acpProviderId = newChatAcpProviderId;
-          }
           const newChatSelectedEffort = pendingEffort !== null ? pendingEffort : newChatEffort;
           if (newChatSelectedEffort && ["codex", "pi"].includes(newChatProvider ?? "")) {
             requestBody.effort = newChatSelectedEffort;
@@ -3196,7 +3156,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 to. Model + effort selection has moved out of the header and into
                 the composer's hamburger menu (see PromptInput's `menuItems`
                 prop below). */}
-            <ProviderBadge provider={rawChatProvider ?? chatProvider} acpProviderId={acpProviderId} />
+            <ProviderBadge provider={rawChatProvider ?? chatProvider} />
           </div>
           <div
             title={!id ? folder : chat?.folder}
@@ -4066,13 +4026,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 onClaudeModelChange={(v) => setPendingModel(v === currentModel ? null : v)}
                 codexModel={pendingModel ?? currentModel}
                 onCodexModelChange={(v) => setPendingModel(v === currentModel ? null : v)}
-                acpModel={pendingModel ?? currentModel}
-                onAcpModelChange={(v) => setPendingModel(v === currentModel ? null : v)}
                 piModel={pendingModel ?? currentModel}
                 onPiModelChange={(v) => setPendingModel(v === currentModel ? null : v)}
-                // The chat's pinned vendor, so the selector offers that
-                // catalog rather than another vendor's.
-                acpProviderId={acpProviderId}
                 codexConfigured={true}
                 claudeCodeUseOpenRouter={claudeCodeUseOpenRouter}
                 codexUseOpenRouter={codexUseOpenRouter}

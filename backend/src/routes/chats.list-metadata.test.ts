@@ -9,7 +9,7 @@
  * round-tripping version, so they pin that the change is byte-for-byte — key
  * order included — across the shapes that differ: records with and without
  * `session_ids`, malformed and non-object metadata, explicit and inferred
- * provider routing, ACP vendors, persisted Codex native-agent snapshots,
+ * provider routing, persisted Codex native-agent snapshots,
  * triggered rows, and sessions with no stored record at all.
  *
  * Same no-supertest, in-memory style as chats.pinned.test.ts.

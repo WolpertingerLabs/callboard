@@ -1,11 +1,12 @@
 /**
  * A callboard {@link ToolServerSpec} hosted as a live, in-process MCP server on
- * a private socket, for agents that are MCP *clients* (Codex, ACP agents) and
+ * a private socket, for agents that are MCP *clients* (Codex; formerly the
+ * retired ACP harness's agents too) and
  * reach it over stdio through the {@link file://./mcp-server-shim.ts shim}.
  *
- * The provider adapters (`adapters/codex/toolAdapter.ts`,
- * `adapters/acp/toolAdapter.ts`) wrap the returned {@link SocketToolServer} in
- * their own handle type and emit their own config shape for the spawn command;
+ * The provider adapter (`adapters/codex/toolAdapter.ts`; the retired ACP
+ * harness had a second) wraps the returned {@link SocketToolServer} in
+ * its own handle type and emit their own config shape for the spawn command;
  * everything below — tool registration, socket allocation, the `net.Server`
  * lifecycle and the shim's location — is shared.
  *
@@ -29,7 +30,7 @@ import type { AnyToolDefinition, ToolServerSpec } from "../ports/tools.js";
 
 export interface SocketToolServerOptions {
   /**
-   * Short provider name (`"codex"`, `"acp"`). Prefixes log lines (`"<label> tool
+   * Short provider name (`"codex"`). Prefixes log lines (`"<label> tool
    * server …"`) and the socket's temp dir (`cb-<label>-mcp-`).
    */
   label: string;

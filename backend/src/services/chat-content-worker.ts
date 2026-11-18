@@ -23,9 +23,6 @@ export async function searchDiscoveredContent(query: string, sessions: OwnedSess
         case "codex":
           text = (await import("../agents/adapters/codex/sessionParser.js")).readFirstUserPrompt(session.filePath);
           break;
-        case "acp":
-          text = (await import("../agents/adapters/acp/sessionParser.js")).readAcpTranscriptPreview(session.filePath);
-          break;
         case "pi":
           text = (await import("../agents/adapters/pi/sessionParser.js")).deriveSearchText(session.filePath);
           break;

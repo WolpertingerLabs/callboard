@@ -3,8 +3,8 @@
  *
  * ## The shim that isn't here
  *
- * Codex and every ACP vendor are MCP *clients*: they spawn their tool servers
- * themselves, so Codex and ACP (`agents/shared/mcp-server-shim.ts`) have to
+ * Codex (like the retired ACP harness's vendors) is an MCP *client*: it spawns
+ * its tool servers itself, so Codex (`agents/shared/mcp-server-shim.ts`) has to
  * host callboard's tools on a private socket and hand the agent a relay binary.
  * Without that, a callboard tool would run in a fresh child with empty module
  * state and lose the per-chat SSE emitter and every in-memory job run.

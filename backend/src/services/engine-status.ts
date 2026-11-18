@@ -12,7 +12,7 @@
  * | Claude Code runtime | `getClaudeCodeExecutablePath()` — the same call `services/claude.ts` passes to the SDK |
  * | Claude Code credentials | `getSdkInfoAsync()`'s account info |
  * | Codex credentials | `getCodexAuthSource()` + `isCodexRoutedThroughOpenRouter()` |
- * | ACP presence / version | `resolveAcpBinaryPath()` / `acpProviderVersion()` |
+ * | Codex login CLI on PATH | `resolveBinaryPath()` (`utils/binary-path.ts`) |
  * | Bundled versions | the package's own `package.json` on disk — see {@link bundledPackageVersion} |
  * | Pinned vs ranged | callboard's own manifest — see {@link callboardDependencyRange} |
  * | Latest versions | `services/npm-registry.ts` |
@@ -20,8 +20,8 @@
  * Nothing here throws. Every probe is individually guarded, because the caller
  * is a settings page: a status that says "unknown" is useful, a 500 is not.
  *
- * And "unknown" means unknown. Where callboard cannot observe a fact — an ACP
- * vendor's credentials, an embedded runtime's ambient key — the answer is
+ * And "unknown" means unknown. Where callboard cannot observe a fact — an
+ * embedded runtime's ambient key, say — the answer is
  * `"unknown"`, not `false`. A `false` that can never become `true` on any
  * machine is the dishonest-✓ column with its sign flipped.
  *
@@ -31,8 +31,6 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { EngineBinaryOverride, EngineCredentials, EngineInstallCapability, EngineStatus, EngineVersionDrift } from "shared/types/index.js";
-import { ACP_VENDOR_PRESETS } from "../agents/adapters/acp/vendors.js";
-import { acpProviderVersion, resetAcpAvailabilityCache, resolveAcpBinaryPath } from "../agents/adapters/acp/availability.js";
 import { getCodexAuthSource, isCodexRoutedThroughOpenRouter } from "../agents/adapters/codex/codexAuth.js";
 import { DEFAULT_PI_PROVIDER_ID } from "../agents/adapters/pi/optionsAdapter.js";
 import { createLogger } from "../utils/logger.js";
@@ -41,7 +39,7 @@ import { resetClaudeBinaryCache, resolveClaudeBinary, type ClaudeBinaryResolutio
 import { EXPECTED_CODEX_CLI_VERSION } from "../agents/adapters/codex/sessionParser.js";
 import { bundledPackageVersion as readPackageVersion } from "../utils/package-version.js";
 import { binaryVersion, resetBinaryVersionCache } from "../utils/binary-version.js";
-import type { BinaryPathCheck } from "../utils/binary-path.js";
+import { resetBinaryPathCache, resolveBinaryPath, type BinaryPathCheck } from "../utils/binary-path.js";
 import { installGuidanceFor } from "./engine-install-recipes.js";
 import { getLatestVersions, isNewerVersion } from "./npm-registry.js";
 import { getSdkInfoAsync, refreshSdkInfoCache } from "./sdk-info.js";
@@ -156,7 +154,9 @@ export function resetEngineStatusCache(): void {
  * installs something and asks Callboard to look again, which is exactly what
  * `POST /api/engines/refresh` does:
  *
- * - `availability.ts` — resolved path *and* `--version` output, per ACP command;
+ * - `utils/binary-path.ts` — the cached `which` behind Codex login detection
+ *   (it began in the retired ACP harness, where it also cached vendor CLIs'
+ *   `--version` output);
  * - `claude-binary.ts` — the `which claude` / well-known-directory lookup that
  *   now answers for chats, the status card, the About page and the login prompt
  *   alike. It was two caches in two modules until those two resolvers were
@@ -191,7 +191,7 @@ export function resetEngineStatusCache(): void {
  */
 export function resetEngineProbeCaches(): void {
   resetClaudeBinaryCache();
-  resetAcpAvailabilityCache();
+  resetBinaryPathCache();
   resetEngineStatusCache();
   refreshSdkInfoCache().catch((err) => log.warn(`SDK info refresh failed: ${err instanceof Error ? err.message : String(err)}`));
 }
@@ -263,7 +263,7 @@ function withInstallCapability(engines: EngineStatus[], capability: EngineInstal
  *
  * A GET is nearly free after the first one — the caches are the whole point.
  * A POST is the opposite by construction: it *deletes* those caches, so it pays
- * for `which claude`, one `which` per ACP vendor, two `--version` spawns, an SDK
+ * for `which claude`, `which codex`, two `--version` spawns, an SDK
  * query and five registry fetches, **every time**. Measured on the unthrottled
  * version: three GETs produced one spawn; three POSTs produced four, one more
  * per call. Two of those spawns are synchronous on a single-threaded server, so
@@ -345,11 +345,6 @@ const CLAUDE_AGENT_SDK_PACKAGE = "@anthropic-ai/claude-agent-sdk";
 const CODEX_SDK_PACKAGE = "@openai/codex-sdk";
 const PI_PACKAGE = "@earendil-works/pi-coding-agent";
 
-/** npm package per ACP vendor id, for the "Latest" row. Vendors with no npm distribution are simply absent. */
-const ACP_VENDOR_PACKAGES: Record<string, string> = {
-  opencode: "opencode-ai",
-};
-
 // ── Binary overrides ────────────────────────────────────────────────
 
 /**
@@ -415,16 +410,15 @@ function codexVersionDrift(actual: string | undefined, source: "bundled" | "over
 /**
  * Where a user-installed CLI resolves on the daemon's PATH, or `undefined`.
  *
- * Reuses `resolveAcpBinaryPath` — despite the ACP name it is simply a cached,
- * shell-free `which`, and it is already invalidated by
- * {@link resetEngineProbeCaches}, so a `codex` installed and then Rechecked is
- * seen. Wrapped rather than called directly so the intent reads at the call
- * site: this is not about ACP, it is about whether `<cli> login` is a command
- * the user has.
+ * Uses `resolveBinaryPath` (`utils/binary-path.ts`) — a cached, shell-free
+ * `which` that {@link resetEngineProbeCaches} invalidates, so a `codex`
+ * installed and then Rechecked is seen. Wrapped rather than called directly so
+ * the intent reads at the call site: this is about whether `<cli> login` is a
+ * command the user has.
  */
 async function resolveUserCliPath(command: string): Promise<string | undefined> {
   try {
-    return (await resolveAcpBinaryPath(command)) ?? undefined;
+    return (await resolveBinaryPath(command)) ?? undefined;
   } catch {
     return undefined;
   }
@@ -600,27 +594,6 @@ function embeddedCredentials(label: string, providerId: string, apiKey: string |
   };
 }
 
-/**
- * ACP credentials — a genuine non-answer, and typed as one.
- *
- * The protocol carries no auth introspection: `initialize` advertises
- * `authMethods` (what the agent *offers*) and never who is signed in, and
- * `AcpAgentQuery.accountInfo` refuses to guess for the same reason. What the
- * vendor's CLI keeps on disk is its own business — OpenCode does store
- * credentials under its data dir — and callboard does not read other tools'
- * credential stores to find out.
- *
- * So this is `"unknown"` rather than `false`. `false` here would be wrong on
- * every authenticated machine, and — since it varies with nothing — it could
- * never become `true`, which means the tab's dot could never go green.
- */
-function acpCredentials(label: string): EngineCredentials {
-  return {
-    configured: "unknown",
-    note: `Held by the ${label} CLI, never by Callboard. ACP gives a client no way to hand an agent a key or to ask whether one is signed in, and Callboard does not read the CLI's own credential store — so an unauthenticated agent is only discovered at send time, from its own message.`,
-  };
-}
-
 // ── Assembly ────────────────────────────────────────────────────────
 
 /**
@@ -673,15 +646,9 @@ async function assembleEngineStatuses(refresh: boolean): Promise<EngineStatus[]>
     settings = undefined;
   }
 
-  const acpVendors = Object.values(ACP_VENDOR_PRESETS);
-
   // One batched registry call for every package on the page, so the fan-out is
   // a single cache read/write rather than one per engine.
   const packages = [CLAUDE_CODE_CLI_PACKAGE, CODEX_SDK_PACKAGE, PI_PACKAGE];
-  for (const vendor of acpVendors) {
-    const pkg = ACP_VENDOR_PACKAGES[vendor.id];
-    if (pkg) packages.push(pkg);
-  }
   const latest = await getLatestVersions(packages, { refresh });
 
   /**
@@ -818,26 +785,6 @@ async function assembleEngineStatuses(refresh: boolean): Promise<EngineStatus[]>
     ...versionFields(readPackageVersion(PI_PACKAGE), PI_PACKAGE),
     credentials: embeddedCredentials("pi", settings?.piProviderId?.trim() || DEFAULT_PI_PROVIDER_ID, settings?.piApiKey),
   });
-
-  // ACP vendors — the one genuinely install-or-not row on the page.
-  for (const vendor of acpVendors) {
-    const command = vendor.command[0];
-    const resolvedPath = await resolveAcpBinaryPath(command);
-    const pkg = ACP_VENDOR_PACKAGES[vendor.id];
-    engines.push({
-      id: vendor.id,
-      label: vendor.label,
-      runtime: {
-        kind: "external",
-        command,
-        ...(resolvedPath ? { resolvedPath } : {}),
-        ...(pkg ? { package: pkg } : {}),
-      },
-      installed: resolvedPath !== null,
-      ...versionFields(resolvedPath ? await acpProviderVersion(command) : undefined, pkg),
-      credentials: acpCredentials(vendor.label),
-    });
-  }
 
   // The copyable command, last, so the decision reads the finished status rather
   // than a half-built one. `installGuidanceFor` returns undefined for every

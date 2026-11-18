@@ -2,7 +2,7 @@
  * The agent's running task list, as it crosses from a session parser to the
  * renderer.
  *
- * Four engines, four wrapper keys, one checklist. This module is the single
+ * Several engines, several wrapper keys, one checklist. This module is the single
  * place that knows the translation, because the alternative is each renderer
  * knowing one engine — which is exactly how callboard ended up rendering Claude
  * Code's list and silently dropping everybody else's.
@@ -11,19 +11,19 @@
  * | ----------- | ------------- | ------------------------------------------ |
  * | claude-code | `TodoWrite`   | `{todos: [{content, status, activeForm?}]}`|
  * | codex       | `update_plan` | `{plan: [{step, status}]}`                 |
- * | acp         | `plan`        | `{entries: [{content, priority, status}]}` |
  * | pi          | —             | the SDK has no list concept                |
  *
  * The names are the engines' own, not callboard's, and none of them is ever MCP-
- * namespaced — `TodoWrite` and `update_plan` are built into their harnesses, and
- * `plan` is written by callboard's ACP transcript parser from ACP's
- * `sessionUpdate: "plan"`. So this matches names exactly rather than reaching for
+ * namespaced — `TodoWrite` and `update_plan` are built into their harnesses.
+ * (The retired ACP harness also recorded a bare `plan`; with nothing left to
+ * emit it, that name was dropped rather than kept as a forgeable match.) So
+ * this matches names exactly rather than reaching for
  * the bare-name matching `isCallboardTool` does for `render_file` and the canvas
  * tools; there is no server prefix here to strip.
  *
  * A name match alone is not enough to render, though. `parseTaskList` also
  * requires the payload to actually be a list of well-formed rows, so a vendor
- * that happens to ship an unrelated tool called `plan` falls through to the
+ * that happens to ship an unrelated tool called `update_plan` falls through to the
  * ordinary tool bubble instead of rendering its arguments as a checklist.
  */
 
@@ -31,8 +31,8 @@
 export interface TaskListItem {
   content: string;
   /**
-   * The three statuses ACP's `PlanEntryStatus`, Claude Code's `TodoWrite`, and
-   * Codex's `update_plan` all independently converged on.
+   * The three statuses Claude Code's `TodoWrite` and Codex's `update_plan` (and
+   * the retired ACP harness's `PlanEntryStatus`) all independently converged on.
    */
   status: "pending" | "in_progress" | "completed";
   /** Present-tense label for the running step. Claude Code sends it; nobody else does. */
@@ -45,8 +45,6 @@ export const TASK_LIST_TOOLS = {
   claudeCode: "TodoWrite",
   /** Codex's built-in plan tool, as its rollout records the call. */
   codex: "update_plan",
-  /** ACP's `sessionUpdate: "plan"`, as the ACP transcript parser records it. */
-  acp: "plan",
 } as const;
 
 const STATUSES: ReadonlySet<string> = new Set(["pending", "in_progress", "completed"]);
@@ -87,16 +85,6 @@ const TASK_LIST_SHAPES: ReadonlyMap<string, TaskListShape> = new Map<string, Tas
       onUnknownStatus: "reject",
     },
   ],
-  [
-    TASK_LIST_TOOLS.acp,
-    {
-      // ACP's `PlanEntry` is already `{content, status}`; its `priority` has no
-      // place in the rendered list and is dropped rather than shown unlabelled.
-      key: "entries",
-      pick: (row) => ({ content: row.content, status: row.status }),
-      onUnknownStatus: "reject",
-    },
-  ],
 ]);
 
 /**
@@ -118,7 +106,7 @@ const TASK_LIST_SHAPES: ReadonlyMap<string, TaskListShape> = new Map<string, Tas
  *
  * **`onUnknownStatus` is where that rule bends, and only for Claude Code.** The
  * strictness above is aimed at a false positive: a vendor shipping an unrelated
- * tool genuinely called `plan` or `update_plan`, whose arguments would otherwise
+ * tool genuinely called `update_plan`, whose arguments would otherwise
  * render as a bogus checklist. `TodoWrite` has no such exposure — it is Claude
  * Code's own built-in, and an MCP tool could only ever reach us
  * `mcp__server__tool`-namespaced, so an exact match is unforgeable. What Claude
@@ -133,7 +121,7 @@ const TASK_LIST_SHAPES: ReadonlyMap<string, TaskListShape> = new Map<string, Tas
  * stream already takes knowingly, and it is strictly less than showing nothing.
  *
  * An empty list is a real answer and parses to `[]`. That is how a cleared plan
- * arrives (ACP's `plan_removed`, or a `TodoWrite` with no todos), and it has to
+ * arrives (a `TodoWrite` with no todos, or an empty `update_plan`), and it has to
  * render as "no tasks" rather than fall back — otherwise the previous list stays
  * on screen as the newest thing the transcript shows.
  */

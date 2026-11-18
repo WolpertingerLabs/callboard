@@ -8,7 +8,7 @@
  * at all — a tool call executes unless an extension's `tool_call` handler returns
  * `{ block: true }`. Left alone, callboard would render its four-axis permission
  * UI over a harness that never prompts: the decorative-gate failure
- * `adapters/acp/vendors.ts` names as disqualifying. {@link buildPermissionExtension}
+ * the retired ACP harness's vendor presets named as disqualifying. {@link buildPermissionExtension}
  * is what makes the gate real, and it is not optional.
  *
  * The spike confirmed every property this depends on against 0.83.0:
@@ -34,8 +34,8 @@
  * `start_chat_session`, deployed agents) hardcode every axis to `"allow"`
  * precisely so they need no human. A `null` there would hang an agent job step on
  * a prompt nobody will answer. So an unknown name resolves to
- * {@link MOST_RESTRICTIVE_CATEGORY} instead, exactly as the ACP adapter (and the
- * retired Cline one) do, and "fail-closed" means *strictest axis*, not *ask*.
+ * {@link MOST_RESTRICTIVE_CATEGORY} instead, exactly as the retired ACP and Cline
+ * adapters did, and "fail-closed" means *strictest axis*, not *ask*.
  *
  * ## The two-pass rule
  *
@@ -253,7 +253,7 @@ export interface PiPermissionContext {
  * Decide one tool call. Exported so the gate can be tested without constructing
  * a pi extension runtime.
  *
- * Order of operations mirrors the Claude and ACP paths: consult the
+ * Order of operations mirrors the Claude path (and the retired ACP one): consult the
  * four-axis policy first (a definite allow/deny answers without bothering the
  * user), and escalate to `canUseTool` — which owns the SSE prompt and the user's
  * reply — only when the policy says "ask".

@@ -1,16 +1,17 @@
 /**
- * MCP-stdio shim — the standalone Node entry an MCP-*client* agent (Codex, any
- * ACP agent) spawns to reach a callboard {@link ToolServerSpec}.
+ * MCP-stdio shim — the standalone Node entry an MCP-*client* agent (Codex; the
+ * retired ACP harness's agents did too) spawns to reach a callboard {@link ToolServerSpec}.
  *
  * ## Why a shim exists at all (the design crux)
  *
  * Claude Code and OpenRouter receive callboard's tools **injected in-process**
  * (`createSdkMcpServer`) — the tool handlers run inside the callboard backend
  * process, so they keep full access to live state (the per-chat SSE emitter, the
- * registered `sendMessage`, in-memory job runs, file-backed services). Codex and
- * ACP agents are different: they are MCP *clients*. They do not host tools; they
- * **spawn** the MCP servers named in their config (Codex's `mcp_servers`, ACP's
- * `session/new` `McpServer[]`) and talk to them over stdio.
+ * registered `sendMessage`, in-memory job runs, file-backed services). Codex is
+ * different: it is an MCP *client*. It does not host tools; it **spawns** the
+ * MCP servers named in its config (`mcp_servers`) and talks to them over stdio.
+ * (The retired ACP harness's agents worked the same way, through `session/new`
+ * `McpServer[]`.)
  *
  * If we let the agent spawn a server that *rebuilt* the spec in the child
  * process, every stateful callboard tool would break — the child has its own

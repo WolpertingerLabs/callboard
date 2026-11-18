@@ -196,19 +196,17 @@ export interface AgentSettings {
 
   // ── OpenRouter (a service, not a harness) ─────────────────────────
   // OpenRouter stopped being a selectable agent harness; the credential below
-  // stayed, because two things that are not the harness still need it: the
-  // utility completions (chat titles, branch names, themes) and the
-  // account-wide fallback key for ACP agents. Settings → API's OpenRouter tab
+  // stayed, because the utility completions (chat titles, branch names, themes)
+  // still need it. Settings → API's OpenRouter tab
   // is therefore a credential page, not a provider page.
 
   /**
    * OPENROUTER_API_KEY — the account-wide OpenRouter credential.
    *
-   * Two consumers, both outside any harness:
-   *  - utility completions, when {@link openRouterUtilityCompletions} is on
-   *    (see services/openrouter-completion.ts);
-   *  - ACP agents, as the fallback when {@link acpOpenRouterApiKey} is blank
-   *    (see services/claude.ts).
+   * One consumer, outside any harness: utility completions, when
+   * {@link openRouterUtilityCompletions} is on (see
+   * services/openrouter-completion.ts). (The retired ACP harness also used it
+   * as a fallback key.)
    *
    * Note this is NOT the key used to route a native harness through OpenRouter
    * — those modes each carry their own (`claudeCodeOpenRouterApiKey`,
@@ -376,60 +374,6 @@ export interface AgentSettings {
   codexOpenRouterBaseUrl?: string;
 
   /**
-   * When true, hand ACP agents an OpenRouter credential so they can route
-   * through it.
-   *
-   * Unlike the Claude Code and Codex toggles, this injects nothing into the
-   * agent's configuration and rewrites no endpoint. An ACP agent is a
-   * third-party CLI that already knows how to talk to OpenRouter; all callboard
-   * supplies is the key, through the environment variable the vendor's preset
-   * declares (`AcpVendorPreset.openRouterApiKeyEnv`). A vendor that declares
-   * none never receives a key, which is the guard that keeps this from spraying
-   * a credential at an arbitrary binary.
-   *
-   * The agent decides what to do with it. OpenCode, given
-   * `OPENROUTER_API_KEY`, adds ~340 `openrouter/*` entries to the model list it
-   * advertises — so selecting one is the ordinary per-chat model choice, not a
-   * separate mode.
-   *
-   * One flag covers every ACP vendor, the same trade the alias registry makes:
-   * exactly one ships today, and the per-vendor `openRouterApiKeyEnv` gate means
-   * an unrelated vendor is skipped rather than handed the key.
-   */
-  acpUseOpenRouter?: boolean;
-
-  /**
-   * Dedicated OpenRouter API key for ACP agents.
-   *
-   * Blank falls back to {@link openRouterApiKey}, the account-wide key — which
-   * is what most users want and what the Codex pair deliberately does NOT do
-   * (its separate key exists because its routing rewrites Codex's own provider
-   * config, and mixing the two was lossy). Nothing is rewritten here, so there
-   * is no reason to make a user re-enter a key they have already given.
-   */
-  acpOpenRouterApiKey?: string;
-
-  /**
-   * Default model per ACP vendor id (e.g. `{ opencode: "opencode/gpt-5.5" }`).
-   *
-   * Keyed by vendor id rather than a single flat field — the analogue of
-   * {@link codexModel} / {@link piModel} for ACP has to
-   * be, because `"acp"` is one kind covering many vendors whose catalogs
-   * share nothing. That is the same limitation documented on
-   * {@link ModelAlias}'s `acp` target, but this field doesn't inherit it: the
-   * settings UI always knows which vendor tab is open when it writes an entry,
-   * so there is no ambiguity about which vendor a value belongs to.
-   *
-   * Resolved through `resolveSessionModel` exactly like the other harnesses'
-   * provider-default fields: a per-chat override wins first (itself
-   * alias-aware), then this vendor's entry here (also alias-aware), then
-   * nothing — the vendor CLI's own configured default stands. An entry with
-   * an empty value is dropped by the settings route rather than stored, so a
-   * vendor absent from this map and one explicitly cleared read identically.
-   */
-  acpProviderModels?: Record<string, string>;
-
-  /**
    * Default model for new Codex chats while {@link codexUseOpenRouter} is on.
    * Separate from {@link codexModel} for the same reason the Claude Code pair is
    * split: native Codex wants a bare CLI slug ("gpt-5.5") and the routed harness
@@ -591,7 +535,6 @@ export const SECRET_SETTING_FIELDS = [
   "openRouterApiKey",
   "codexApiKey",
   "codexOpenRouterApiKey",
-  "acpOpenRouterApiKey",
   "piApiKey",
 ] as const satisfies readonly (keyof AgentSettings)[];
 

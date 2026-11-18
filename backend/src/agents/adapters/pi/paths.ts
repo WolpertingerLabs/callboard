@@ -7,7 +7,7 @@
  * so nothing that already imported it there has to move.
  *
  * @see plans/pi-adapter.md
- * @see ../acp/transcript.ts (`isSafePathSegment` — the precedent this copies)
+ * (`isSafePathSegment` was copied from the retired ACP harness's `acp/transcript.ts`.)
  */
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -22,7 +22,7 @@ const PI_SESSIONS_DIRNAME = "pi-sessions";
  * A **function, not a module const**. `DATA_DIR` is captured at module load, so a
  * const would freeze the path at import time and a test that sets
  * `CALLBOARD_DATA_DIR` afterwards would write into the developer's real chat list
- * — which is exactly what happened to the ACP suite (#302).
+ * — which is exactly what happened to the (since-retired) ACP suite (#302).
  *
  * Note this is a single flat directory rather than pi's own
  * `~/.pi/agent/sessions/<encoded-cwd>/` layout: the adapter passes an explicit
@@ -38,7 +38,7 @@ export function resolvePiSessionsRoot(): string {
  * root — separators, `..`, NUL, absolute-path or drive-letter forms — is
  * rejected rather than sanitized.
  *
- * Copied from `acp/transcript.ts` deliberately rather than imported: each
+ * Copied from the retired ACP harness's `acp/transcript.ts` deliberately rather than imported: each
  * adapter owning its own guard is the property that keeps one adapter's
  * loosening from silently widening another's. The regex is identical.
  *

@@ -40,7 +40,7 @@ const mocks = vi.hoisted(() => ({
  * Deferred `--version` probes, so the reset-mid-probe race can be driven
  * deterministically rather than hoped for.
  *
- * `availability.ts` captures `promisify(execFile)` at module load, so the mock
+ * The probing modules capture `promisify(execFile)` at module load, so the mock
  * has to carry `promisify.custom` — without it, promisify falls back to the
  * callback convention and resolves with a bare stdout string, which the
  * `{ stdout }` destructuring there would read as `undefined`.
@@ -49,9 +49,6 @@ const pendingVersionProbes: { resolve: (stdout: string) => void }[] = [];
 
 /** When false (the default) probes settle immediately, so no other case has to care. */
 let holdVersionProbes = false;
-
-/** Let the awaited PATH lookup ahead of a `--version` probe settle. */
-const tick = () => new Promise((r) => setTimeout(r, 0));
 
 // One `execFile` mock now serves both kinds of probe, because both are async:
 // a `which` lookup answers immediately from `mocks.which`, and anything else is
@@ -118,7 +115,7 @@ vi.mock("./sdk-info.js", () => ({
 }));
 
 const { getClaudeCodeExecutablePath, resetClaudeBinaryCache } = await import("./claude-binary.js");
-const { resolveAcpBinaryPath, acpProviderVersion, resetAcpAvailabilityCache } = await import("../agents/adapters/acp/availability.js");
+const { resolveBinaryPath, resetBinaryPathCache } = await import("../utils/binary-path.js");
 const { resetEngineProbeCaches, getEngineStatuses, resetEngineStatusCache } = await import("./engine-status.js");
 const { binaryVersionLine } = await import("../utils/binary-version.js");
 
@@ -168,9 +165,9 @@ const CACHES: { name: string; probe: () => Promise<string | undefined | null>; r
     reset: resetClaudeBinaryCache,
   },
   {
-    name: "acp availability — the PATH lookup for a vendor CLI",
-    probe: () => resolveAcpBinaryPath("opencode"),
-    reset: resetAcpAvailabilityCache,
+    name: "binary-path — the cached `which` behind Codex login detection",
+    probe: () => resolveBinaryPath("codex"),
+    reset: resetBinaryPathCache,
   },
 ];
 
@@ -196,54 +193,44 @@ describe.each(CACHES)("$name", ({ probe, reset }) => {
   });
 });
 
-describe("acp availability — the --version probe alongside the path", () => {
+describe("binary-path — Codex login detection", () => {
   it("re-probes a binary that was previously absent", async () => {
     // The state the whole feature exists for: `which` came back empty, the card
-    // said "not installed", the user installed it. A cached `null` is just as
-    // stale as a cached path.
+    // said "no `codex` on PATH", the user installed it. A cached `null` is just
+    // as stale as a cached path.
     mocks.which.mockImplementation(() => {
       throw new Error("not found");
     });
-    expect(await resolveAcpBinaryPath("opencode")).toBeNull();
+    expect(await resolveBinaryPath("codex")).toBeNull();
 
-    whichReturns("/fake/b/opencode");
-    expect(await resolveAcpBinaryPath("opencode")).toBeNull();
+    whichReturns("/fake/b/codex");
+    expect(await resolveBinaryPath("codex")).toBeNull();
 
-    resetAcpAvailabilityCache();
-    expect(await resolveAcpBinaryPath("opencode")).toBe("/fake/b/opencode");
+    resetBinaryPathCache();
+    expect(await resolveBinaryPath("codex")).toBe("/fake/b/codex");
   });
 
-  it("does not let a probe started before a reset write its answer afterwards", async () => {
-    // Clearing the maps cannot cancel a promise already in flight, and the
-    // ordering that loses is the likely one — a slow probe is the usual reason
-    // someone pressed Recheck, so the stale answer tends to settle last. Without
-    // the generation check it would win for the rest of the process's life, and
-    // it would also delete the *replacement* probe's map entry on its way out.
-    whichReturns("/fake/a/opencode");
-    holdVersionProbes = true;
+  it("a `codex` installed and then Rechecked shows up as the Codex card's userCliPath", async () => {
+    // The production consumer of the relocated lookup (it lived in the retired
+    // ACP harness's availability.ts). Without the reset reaching it, the card
+    // would keep offering the install it had just been followed.
+    mocks.which.mockImplementation(() => {
+      throw new Error("not found");
+    });
+    resetEngineStatusCache();
+    const before = await getEngineStatuses();
+    expect(before.find((e) => e.id === "codex")?.userCliPath).toBeUndefined();
 
-    // Probe 1 starts and is left hanging. `acpProviderVersion` now awaits the
-    // PATH lookup before spawning `--version`, so the queue is populated a tick
-    // later rather than synchronously.
-    const stale = acpProviderVersion("opencode");
-    await tick();
-    expect(pendingVersionProbes).toHaveLength(1);
+    whichReturns("/fake/b/codex");
+    resetEngineProbeCaches();
+    const after = await getEngineStatuses({ refresh: true });
+    expect(after.find((e) => e.id === "codex")?.userCliPath).toBe("/fake/b/codex");
+  });
 
-    // The user presses Recheck. Probe 2 starts in the new generation.
-    resetAcpAvailabilityCache();
-    const fresh = acpProviderVersion("opencode");
-    await tick();
-    expect(pendingVersionProbes).toHaveLength(2);
-
-    // Probe 2 answers first with the truth, then the stale one finally lands.
-    pendingVersionProbes[1].resolve("2.0.0-new");
-    expect(await fresh).toBe("2.0.0-new");
-    pendingVersionProbes[0].resolve("1.0.0-stale");
-    expect(await stale).toBe("1.0.0-stale");
-
-    // The cache must still hold the post-reset answer: the stale probe's write
-    // was discarded rather than applied on top of it.
-    expect(await acpProviderVersion("opencode")).toBe("2.0.0-new");
+  it("no ACP vendor row is assembled any more", async () => {
+    resetEngineStatusCache();
+    const ids = (await getEngineStatuses()).map((e) => e.id);
+    expect(ids).toEqual(["claude-code", "codex", "pi"]);
   });
 });
 

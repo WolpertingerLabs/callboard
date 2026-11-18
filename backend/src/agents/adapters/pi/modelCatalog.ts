@@ -2,10 +2,10 @@ import type { OpenRouterModelInfo } from "shared";
 /**
  * pi model catalog — what models the configured provider will route to.
  *
- * ## Offline, unlike ACP; and no network, unlike the retired Cline adapter
+ * ## Offline, unlike the retired ACP and Cline adapters
  *
- * `adapters/acp/modelCatalog.ts` has to *harvest* models from real chats, so a
- * vendor the user has never run reports an empty list. The retired Cline adapter's
+ * The retired ACP adapter's catalog had to *harvest* models from real chats, so
+ * a vendor the user had never run reported an empty list. The retired Cline adapter's
  * catalog could ask the SDK but some providers fetched a live catalog, so it
  * cached and tolerated failure.
  *
@@ -371,7 +371,7 @@ function overlayOpenRouterModels(options: PiModelOption[], baseUrl = "https://op
  * pin a transient failure for the life of the process, and the next call is
  * cheap. An empty list is the honest answer to "we could not read the catalog",
  * and every model field in callboard accepts free text anyway — exactly as the
- * Codex and ACP selectors already do for slugs newer than their catalog.
+ * Codex selector already does for slugs newer than its catalog.
  *
  * When the provider is `"openrouter"`, the cached pi list is overlaid with
  * Callboard's live OpenRouter catalog — pi's own OpenRouter list lags

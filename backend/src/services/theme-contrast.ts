@@ -639,14 +639,6 @@ export const PAIRINGS: Pairing[] = [
     kind: "text",
   },
   {
-    id: "provider-badge-acp",
-    where: "ACP provider badge",
-    fg: v("badge-provider-text"),
-    bg: v("badge-provider-acp-bg"),
-    backdrop: v("bg-sidebar"),
-    kind: "text",
-  },
-  {
     id: "provider-badge-pi",
     where: "pi provider badge",
     fg: v("badge-provider-text"),

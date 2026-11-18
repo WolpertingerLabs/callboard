@@ -1,14 +1,14 @@
 /**
- * The name-only tool categorizer shared by the pi and ACP adapters.
+ * The name-only tool categorizer behind the pi adapter.
  *
- * Both bridge a foreign tool vocabulary onto callboard's four axes from a tool
- * *name* alone, and both (with the since-retired Cline adapter) used to carry
- * their own byte-identical copy of the identifier check, tokenizer and token
- * table below. What legitimately differs between them is the exact-name table,
- * so that is the one input: pi passes its own (see its `EXACT_CATEGORIES`), ACP
- * passes none.
+ * It bridges a foreign tool vocabulary onto callboard's four axes from a tool
+ * *name* alone. pi and the since-retired ACP and Cline adapters each used to
+ * carry their own byte-identical copy of the identifier check, tokenizer and
+ * token table below. What legitimately differed between them was the
+ * exact-name table, so that is the one input: pi passes its own (see its
+ * `EXACT_CATEGORIES`); ACP passed none.
  *
- * Each adapter still exports its own named categorizer built from this factory,
+ * Each adapter exports its own named categorizer built from this factory,
  * so the registry in `categorizers.ts` keeps one entry per provider and the
  * two-pass rule ("both passes run the identical function") still holds per
  * adapter.
@@ -86,7 +86,7 @@ const CATEGORY_TOKENS: ReadonlyArray<readonly [PermissionCategory, readonly stri
  *
  * Rule 3 of the two-pass ruling. `ToolPermissionPolicy` is a
  * `(toolName: string, …)` bridge and nothing structurally guarantees the caller
- * passes an identifier — ACP's label falls back to a human-readable `title`, and
+ * passes an identifier — the retired ACP adapter's label fell back to a human-readable `title`, and
  * `` Run `rm -rf` to clear the search index `` tokenizes to `search`. Prose is
  * never parsed for a gate: anything that is not a single identifier-shaped token
  * goes straight to {@link MOST_RESTRICTIVE_CATEGORY} and its words are never read.

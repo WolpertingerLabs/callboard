@@ -21,7 +21,7 @@ interface Props {
   responding?: boolean;
   action: PendingAction;
   onRespond: (allow: boolean, updatedInput?: Record<string, unknown>) => void;
-  /** Display name of the harness running this chat (e.g. "Claude", "Codex", "OpenCode") */
+  /** Display name of the harness running this chat (e.g. "Claude", "Codex", "pi") */
   agentName?: string;
 }
 

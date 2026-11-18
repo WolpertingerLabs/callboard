@@ -149,7 +149,7 @@ describe("SpacesSettings", () => {
     await waitFor(() => expect((screen.getByLabelText("Model") as HTMLInputElement).value).toBe("opus"));
   });
 
-  it.each(["cline", "openrouter"])("shows a stored retired %s engine default as the browser default, without writing it", async (retired) => {
+  it.each(["cline", "openrouter", "acp"])("shows a stored retired %s engine default as the browser default, without writing it", async (retired) => {
     server[1] = { ...server[1], defaults: { provider: retired as never } };
     renderPage();
     await edit("Work");

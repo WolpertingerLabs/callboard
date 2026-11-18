@@ -5,7 +5,7 @@
  *
  * `sendMessage` assembles one `queryOpts` from a long run of independent
  * blocks — plugin/MCP/hook builders, five tool-server injections, the per-agent
- * key-alias rewrite, then one extras block per harness (codex/acp/pi).
+ * key-alias rewrite, then one extras block per harness (codex/pi).
  * The neighbouring seam tests each pin one field. This one pins the whole
  * object, plus the order servers were registered and the log lines the
  * assembly writes, for a representative spread of calls — so a structural
@@ -240,7 +240,7 @@ function normalizeEnv(env: Record<string, string | undefined>): Record<string, u
 }
 
 const RELEVANT_LOG =
-  /^(Injected|Failed to build|buildAgentToolsSpec|MCP servers for session|Codex chat config|ACP chat config|pi chat config|Set MCP_KEY_ALIAS|Agent ".*" has no caller|Caller enrollment|A configured MCP server|Computer-control|Built \d+ hook|MCP server ".*" \(plugin .*\) has an unlaunchable|pi chat .* references session|SDK query options|Codex chat selected)/;
+  /^(Injected|Failed to build|buildAgentToolsSpec|MCP servers for session|Codex chat config|pi chat config|Set MCP_KEY_ALIAS|Agent ".*" has no caller|Caller enrollment|A configured MCP server|Computer-control|Built \d+ hook|MCP server ".*" \(plugin .*\) has an unlaunchable|pi chat .* references session|SDK query options|Codex chat selected)/;
 
 // ── Harness ──────────────────────────────────────────────────────────────────
 function recordingProvider(sessionId: string, toolServers: "ok" | "throw" | "null" = "ok") {
@@ -313,9 +313,8 @@ async function turn(sendOpts: Record<string, unknown>): Promise<Turn> {
   delete sendOpts.__sessionId;
   delete sendOpts.__toolServers;
   const ctrl = recordingProvider(sessionId, toolServers);
-  setAgentProviderForTesting(ctrl.provider, ((sendOpts.provider as string) ?? (sendOpts.__kind as string) ?? "claude-code") as never, (sendOpts.acpProviderId ?? sendOpts.__acpId) as never);
+  setAgentProviderForTesting(ctrl.provider, ((sendOpts.provider as string) ?? (sendOpts.__kind as string) ?? "claude-code") as never);
   delete sendOpts.__kind;
-  delete sendOpts.__acpId;
   logs.length = 0;
   replacements.length = 0;
   codexRouteState.calls = 0;
@@ -353,9 +352,6 @@ const SETTINGS_RESET = {
   codexOpenRouterApiKey: undefined,
   codexUseOpenRouter: undefined,
   codexSandboxMode: undefined,
-  acpProviderModels: undefined,
-  acpUseOpenRouter: undefined,
-  acpOpenRouterApiKey: undefined,
   openRouterApiKey: undefined,
   piProviderId: undefined,
   piApiKey: undefined,
@@ -476,17 +472,6 @@ describe("sendMessage queryOpts characterization", () => {
     await expect(sendMessage({ prompt: "hi", folder: workDir, provider: "codex", triggered: true } as never)).rejects.toThrowErrorMatchingSnapshot();
   });
 
-  it("acp: vendor default model + OpenRouter key", async () => {
-    updateAgentSettings({ acpProviderModels: { opencode: "opencode/vendor-default" }, acpUseOpenRouter: true, openRouterApiKey: " acct-key " } as never);
-    expect(await turn({ provider: "acp", acpProviderId: "opencode", defaultPermissions: PERMS })).toMatchSnapshot("vendor default");
-    expect(await turn({ provider: "acp", acpProviderId: "opencode", model: "opencode/chosen" })).toMatchSnapshot("per-chat model");
-  });
-
-  it("acp: resume", async () => {
-    const first = await turn({ provider: "acp", acpProviderId: "opencode" });
-    expect(await turn({ chatId: first.chatId, __kind: "acp", __acpId: "opencode" })).toMatchSnapshot();
-  });
-
   it("cline: refused by name — the harness was removed", async () => {
     // A job step or cron action authored before the removal can still name it.
     // It must refuse rather than fall off the internal allowlist onto Claude Code.
@@ -495,6 +480,15 @@ describe("sendMessage queryOpts characterization", () => {
     await expect(run).rejects.toBeInstanceOf(RetiredProviderError);
     await expect(sendMessage({ folder: "/tmp", prompt: "hi", provider: "cline" as never })).rejects.toThrow(
       "This job or cron action targets Cline, which has been removed. Re-point it at another harness.",
+    );
+  });
+
+  it("acp: refused by name — the harness (OpenCode) was removed", async () => {
+    const { RetiredProviderError } = await import("./claude.js");
+    const run = sendMessage({ folder: "/tmp", prompt: "hi", provider: "acp" as never, acpProviderId: "opencode" } as never);
+    await expect(run).rejects.toBeInstanceOf(RetiredProviderError);
+    await expect(sendMessage({ folder: "/tmp", prompt: "hi", provider: "acp" as never })).rejects.toThrow(
+      "This job or cron action targets OpenCode, which has been removed. Re-point it at another harness.",
     );
   });
 

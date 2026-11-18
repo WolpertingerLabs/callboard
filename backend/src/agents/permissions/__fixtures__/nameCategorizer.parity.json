@@ -1,1612 +1,1290 @@
 [
   {
     "name": "",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": " ",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "   ",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "   read_file  ",
-    "pi": "fileRead",
-    "acp": "fileRead"
+    "pi": "fileRead"
   },
   {
     "name": "(empty)",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "-leading",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "-m ...",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "../../permissions/ToolPermissionPolicy.js",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "../claude-code/permissionAdapter.js",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "./cu_payload",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "./optionsAdapter.js",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "./permissionAdapter.js",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": ".dot",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "/elsewhere",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "/tmp/proj/hello.txt",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "/tmp/proj/notes.txt",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "/tmp/some-repo",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "/tmp/x",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "123",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "@agentclientprotocol/sdk",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "@cline/sdk",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "@earendil-works/pi-coding-agent",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "A tool",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "Aborted",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "Allow once",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "Always",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "Approval failed",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "Auto-denied by default codeExecution policy",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "Bash",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "Click via cu_action",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "Edit",
-    "pi": "fileWrite",
-    "acp": "fileWrite"
+    "pi": "fileWrite"
   },
   {
     "name": "HTTPRequest",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "List the files in src/",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "Never",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "No approval channel available for this run",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "Not that file",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "READ_FILE",
-    "pi": "fileRead",
-    "acp": "fileRead"
+    "pi": "fileRead"
   },
   {
     "name": "Read",
-    "pi": "fileRead",
-    "acp": "fileRead"
+    "pi": "fileRead"
   },
   {
     "name": "Read README.md",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "ReadFile",
-    "pi": "fileRead",
-    "acp": "fileRead"
+    "pi": "fileRead"
   },
   {
     "name": "Read_File",
-    "pi": "fileRead",
-    "acp": "fileRead"
+    "pi": "fileRead"
   },
   {
     "name": "Reading a file",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "Reject",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "Run",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "Run `rm -rf` to clear the search index",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "Run something",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "RunCommand",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "SSE gone",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "WebFetch",
-    "pi": "webAccess",
-    "acp": "webAccess"
+    "pi": "webAccess"
   },
   {
     "name": "Write",
-    "pi": "fileWrite",
-    "acp": "fileWrite"
+    "pi": "fileWrite"
   },
   {
     "name": "_",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "a managed computer-control name in the title labels the call only when the kind has no opinion",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "a managed-looking filename never overrides an informative kind",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "a null-opinion kind with a managed-looking title is still not trusted when the input is some other tool's",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "a/b/c",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "a1",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "a2",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "accepts the always variant when it is the only one offered",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "accepts the identifier shapes real tools use",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "acpToolLabel",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "admits powershell on Windows, where it resolves",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "agrees with itself on every category, because it is one function over one string",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "allow",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "allow_always",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "allow_once",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "an OpenCode edit of a file named like a managed tool is prompted as a write, not admitted as computer control",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "answers cancelled when no offered option matches the decision",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "answers cancelled when the agent offers no options at all",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "answers cancelled when the run aborts while the user is being asked",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "apply_patch",
-    "pi": "fileWrite",
-    "acp": "fileWrite"
+    "pi": "fileWrite"
   },
   {
     "name": "ask",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "ask_question",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "assertPiTrustDenied catches %s",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "assertPiTrustDenied catches a session built with no gate at all",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "assertPiTrustDenied catches noExtensions being turned off",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "auto-allows when the axis says allow, without prompting",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "auto-allows without prompting when policy allows",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "auto-rejects without prompting when policy denies",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "bash",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "blocks a tool name it cannot categorize when the axis says ask",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "blocks on ask with no canUseTool — nobody to ask",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "blocks when canUseTool throws",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "blocks when the run was aborted mid-prompt",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "blocks when there is no toolName at all",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "blocks with no permissions configured at all",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "browser",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "buildClineToolPolicies",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "buildPermissionExtension",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "buildPiServicesOptions produces options with no trust holes",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "buildRequestToolApproval",
-    "pi": "webAccess",
-    "acp": "webAccess"
+    "pi": "webAccess"
   },
   {
     "name": "buildToolFilters",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "c",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "c1",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "c2",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "c3",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "call-1",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "callboard could not identify this tool",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "cancelled",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "cannot disagree with pass 2 about the policy, because both read the same accessor",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "carries the user's refusal back to the model",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "cat",
-    "pi": "fileRead",
-    "acp": "fileRead"
+    "pi": "fileRead"
   },
   {
     "name": "categorizeAcpToolKind (logging only — never a gate)",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "categorizeAcpToolName",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "categorizeClineToolName",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "categorizePiToolName",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "categorizes from the ACP kind when the title is prose",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "categorizes powershell the same on every platform",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "click",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "codeExecution",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "commit",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "computer",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "computerControl",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "computer_use",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "computer_use.py",
-    "pi": "computerControl",
-    "acp": "computerControl"
+    "pi": "computerControl"
   },
   {
     "name": "computer_use/main",
-    "pi": "computerControl",
-    "acp": "computerControl"
+    "pi": "computerControl"
   },
   {
     "name": "computer_use_cu_observe",
-    "pi": "computerControl",
-    "acp": "computerControl"
+    "pi": "computerControl"
   },
   {
     "name": "computer_useful_action",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "covers every built-in pi ships — no tool falls through to the token table",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "covers the ten tools the docs describe as nine, spawn_agent included",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "cu_action",
-    "pi": "computerControl",
-    "acp": "computerControl"
+    "pi": "computerControl"
   },
   {
     "name": "cu_open",
-    "pi": "computerControl",
-    "acp": "computerControl"
+    "pi": "computerControl"
   },
   {
     "name": "cu_payload",
-    "pi": "computerControl",
-    "acp": "computerControl"
+    "pi": "computerControl"
   },
   {
     "name": "cu_status",
-    "pi": "computerControl",
-    "acp": "computerControl"
+    "pi": "computerControl"
   },
   {
     "name": "curl",
-    "pi": "webAccess",
-    "acp": "webAccess"
+    "pi": "webAccess"
   },
   {
     "name": "darwin",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "decidePiToolCall is fail-closed",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "delete",
-    "pi": "fileWrite",
-    "acp": "fileWrite"
+    "pi": "fileWrite"
   },
   {
     "name": "delete_artifact",
-    "pi": "fileWrite",
-    "acp": "fileWrite"
+    "pi": "fileWrite"
   },
   {
     "name": "denies a request with no tool name",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "denies an ask decision when no approval channel exists",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "denies an unrecognised tool under an all-allow policy",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "denies on a deny axis without consulting the user",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "denies once the run is aborted mid-prompt",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "denies rather than throwing when canUseTool blows up",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "denies when the axis says deny, and tells the model why",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "denies when there is no policy at all",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "deny",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "does NOT register project_trust — that event is dead on the SDK path",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "does not let the shape of a filename choose the permission axis",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "edit",
-    "pi": "fileWrite",
-    "acp": "fileWrite"
+    "pi": "fileWrite"
   },
   {
     "name": "editor",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "emitter gone",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "emoji_🚀_run",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "encodes no allow/deny decision, whatever the axes say",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "escalates to canUseTool on ask and honours the user's allow",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "escalates to the user when the axis says ask",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "evalJs",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "execute",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "execute_shell",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "f",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "falls back to the token table for callboard's own %s",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "fetch",
-    "pi": "webAccess",
-    "acp": "webAccess"
+    "pi": "webAccess"
   },
   {
     "name": "fetch_page",
-    "pi": "webAccess",
-    "acp": "webAccess"
+    "pi": "webAccess"
   },
   {
     "name": "fetch_web_content",
-    "pi": "webAccess",
-    "acp": "webAccess"
+    "pi": "webAccess"
   },
   {
     "name": "fileRead",
-    "pi": "fileRead",
-    "acp": "fileRead"
+    "pi": "fileRead"
   },
   {
     "name": "fileWrite",
-    "pi": "fileWrite",
-    "acp": "fileWrite"
+    "pi": "fileWrite"
   },
   {
     "name": "filters out malformed options before deciding",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "find",
-    "pi": "fileRead",
-    "acp": "fileRead"
+    "pi": "fileRead"
   },
   {
     "name": "frobnicate",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "fs.read",
-    "pi": "fileRead",
-    "acp": "fileRead"
+    "pi": "fileRead"
   },
   {
     "name": "fs.write",
-    "pi": "fileWrite",
-    "acp": "fileWrite"
+    "pi": "fileWrite"
   },
   {
     "name": "gated wrongly",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "gates callboard's own tools too",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "gates subagent spawning at the execution axis",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "getURL",
-    "pi": "webAccess",
-    "acp": "webAccess"
+    "pi": "webAccess"
   },
   {
     "name": "gives anything it cannot identify the strictest gate",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "grep",
-    "pi": "fileRead",
-    "acp": "fileRead"
+    "pi": "fileRead"
   },
   {
     "name": "grep_and_exec",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "hides denied built-ins from the model",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "identical input",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "ignores a kind that is not identifier-shaped",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "installs callboard's gate as an inline factory despite noExtensions",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "keeps callboard's own tools in the allowlist when an axis narrows it",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "keeps callboard's tools even when every built-in is denied",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "keeps powershell out of the allowlist off Windows",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "kill_process",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "linux",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "list_and_delete",
-    "pi": "fileWrite",
-    "acp": "fileWrite"
+    "pi": "fileWrite"
   },
   {
     "name": "list_cards",
-    "pi": "fileRead",
-    "acp": "fileRead"
+    "pi": "fileRead"
   },
   {
     "name": "list_storage_keys",
-    "pi": "fileRead",
-    "acp": "fileRead"
+    "pi": "fileRead"
   },
   {
     "name": "ls",
-    "pi": "fileRead",
-    "acp": "codeExecution"
+    "pi": "fileRead"
   },
   {
     "name": "maps ACP's structured tool kinds onto callboard's four axes",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "maps every ACP kind onto a category at least as strict as the kind table's",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "maps every built-in tool to the axis that actually governs it",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "maps the built-in %s to %s",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "maps the obvious families",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "matches names across snake_case, camelCase and kebab-case",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "mcp__callboard-tools__render_file",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "mcp__computer-use__cu_action",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "mcp__computer_use__cu_open",
-    "pi": "computerControl",
-    "acp": "computerControl"
+    "pi": "computerControl"
   },
   {
     "name": "mcp__fs__read_file",
-    "pi": "fileRead",
-    "acp": "fileRead"
+    "pi": "fileRead"
   },
   {
     "name": "mcp__server__read_file",
-    "pi": "fileRead",
-    "acp": "fileRead"
+    "pi": "fileRead"
   },
   {
     "name": "mcp__shell__exec",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "mcp__x__y",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "move",
-    "pi": "fileWrite",
-    "acp": "fileWrite"
+    "pi": "fileWrite"
   },
   {
     "name": "names a call after its ACP kind when nothing else identifies it",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "naïve_write",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "never lists a denied tool in the allowlist",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "never reads words out of prose",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "never returns null — an unknown name is codeExecution, not ask",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "never returns null, so an unattended run cannot hang on a bookkeeping call",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "never throw, never omit",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "new\nline",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "no extensionFactories",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "no id",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "no resolveProjectTrust",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "no settingsManager",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "noExtensions is not true",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "noExtensions is not true — project-local extensions are discoverable",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "not a kind",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "not on prod",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "notes.txt",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "other",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "passes the user's own rejection message back to the model",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "piAllowlistBuiltinNames drops Windows-only built-ins off Windows",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "please read the file",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "powershell",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "prefers a name, then the kind, then a shaped title — in that order",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "prefers the one-shot variant so callboard keeps control of policy",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "prefers the programmatic name, falls back to the title, then a placeholder",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "project trust is denied by construction",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "project_trust",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "prompt channel died",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "prompts for $name instead of silently executing it",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "r1",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "r2",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "read",
-    "pi": "fileRead",
-    "acp": "fileRead"
+    "pi": "fileRead"
   },
   {
     "name": "read file",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "read-file",
-    "pi": "fileRead",
-    "acp": "fileRead"
+    "pi": "fileRead"
   },
   {
     "name": "read2file",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "readFile",
-    "pi": "fileRead",
-    "acp": "fileRead"
+    "pi": "fileRead"
   },
   {
     "name": "read_file",
-    "pi": "fileRead",
-    "acp": "fileRead"
+    "pi": "fileRead"
   },
   {
     "name": "read_files",
-    "pi": "fileRead",
-    "acp": "fileRead"
+    "pi": "fileRead"
   },
   {
     "name": "read_ファイル",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "reads permissions at decision time, not at construction",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "reads the policy at decision time, not at session start",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "reads the policy at decision time, so a mid-turn tightening binds on the very next call",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "refuses to categorize a tool from prose alone",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "refuses to parse prose for a gate",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "refuses to tokenize a sentence",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "registers a tool_call handler and nothing else",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "reject_always",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "reject_once",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "rejects when canUseTool throws instead of propagating the error",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "render_artifact",
-    "pi": "fileRead",
-    "acp": "codeExecution"
+    "pi": "fileRead"
   },
   {
     "name": "render_file",
-    "pi": "fileRead",
-    "acp": "codeExecution"
+    "pi": "fileRead"
   },
   {
     "name": "resolveAcpPermission",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "resolveProjectTrust missing",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "resolves an ambiguous name to the MOST restrictive family it matches",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "resolves an ambiguous name to the most restrictive matching family",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "resolves most-restrictive-first when a name matches two families",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "returns nothing when no axis denies",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "returns nothing with no permissions configured",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "returns null for kinds no axis governs",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "returns null rather than picking an option meaning the opposite",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "returns undefined (not {block:false}) on allow — pi's 'no opinion' shape",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "rm -rf /",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "routes an ACP execute tool to codeExecution, not the Claude map's fileWrite default",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "routes every built-in through the live gate",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "run the command rm -rf /",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "run-command",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "runCommand",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "run_command",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "run_commands",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "run_something",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "s",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "s1",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "search",
-    "pi": "fileRead",
-    "acp": "fileRead"
+    "pi": "fileRead"
   },
   {
     "name": "search_and_run",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "search_codebase",
-    "pi": "fileRead",
-    "acp": "fileRead"
+    "pi": "fileRead"
   },
   {
     "name": "search_replace",
-    "pi": "fileWrite",
-    "acp": "fileWrite"
+    "pi": "fileWrite"
   },
   {
     "name": "selectPermissionOption",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "selected",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "sends a name with no recognizable token to codeExecution",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "sends anything it cannot identify to the strictest axis",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "server:tool",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "set",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "set_chat_title",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "sets all three mitigations explicitly, not by default",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "settingsManager missing",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "shared/types/index.js",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "skills",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "some_new_cline_tool",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "spawn_agent",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "spawn_job",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "special-cases render_file, as the Claude/OR/Cline maps do",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "stat",
-    "pi": "fileRead",
-    "acp": "fileRead"
+    "pi": "fileRead"
   },
   {
     "name": "still excludes powershell on a codeExecution deny, on every platform",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "still refuses to be identified by prose",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "submit_and_exit",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "survives a request with no toolCall at all",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "switch_mode",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "t1",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "tab\tread",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "takes a lying kind at face value — the same standing risk as a lying name",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "the allowlist is platform-gated (the catalogue is not)",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "the two-pass rule",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "think",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "tool123",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "tool_call",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "totally_unknown",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "totally_unknown_xyz",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "treats `skills` as execution, not a disk read",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "treats absent permissions as ask",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "unknown_tool",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "update_card",
-    "pi": "fileWrite",
-    "acp": "fileWrite"
+    "pi": "fileWrite"
   },
   {
     "name": "v2_fetch",
-    "pi": "webAccess",
-    "acp": "webAccess"
+    "pi": "webAccess"
   },
   {
     "name": "view_file",
-    "pi": "fileRead",
-    "acp": "fileRead"
+    "pi": "fileRead"
   },
   {
     "name": "vitest",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "we don't know what this is",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "web-browse",
-    "pi": "webAccess",
-    "acp": "webAccess"
+    "pi": "webAccess"
   },
   {
     "name": "web-search",
-    "pi": "webAccess",
-    "acp": "webAccess"
+    "pi": "webAccess"
   },
   {
     "name": "webAccess",
-    "pi": "webAccess",
-    "acp": "webAccess"
+    "pi": "webAccess"
   },
   {
     "name": "web_fetch",
-    "pi": "webAccess",
-    "acp": "webAccess"
+    "pi": "webAccess"
   },
   {
     "name": "web_search",
-    "pi": "webAccess",
-    "acp": "webAccess"
+    "pi": "webAccess"
   },
   {
     "name": "win32",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "wires the handler to the fail-closed decision",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "write",
-    "pi": "fileWrite",
-    "acp": "fileWrite"
+    "pi": "fileWrite"
   },
   {
     "name": "write_file",
-    "pi": "fileWrite",
-    "acp": "fileWrite"
+    "pi": "fileWrite"
   },
   {
     "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   },
   {
     "name": "ünïcödé",
-    "pi": "codeExecution",
-    "acp": "codeExecution"
+    "pi": "codeExecution"
   }
 ]

@@ -52,9 +52,9 @@ export function buildModelAliasTools(): AnyToolDefinition[] {
     defineTool(
       "list_model_aliases",
       "View the global cross-harness model alias registry. Each alias resolves to a different concrete model per provider — an " +
-        'Anthropic alias/ID for claude-code, a Codex slug for codex, a vendor model id for acp/pi — so `model: "<alias>"` works ' +
+        'Anthropic alias/ID for claude-code, a Codex slug for codex, a pi model id for pi — so `model: "<alias>"` works ' +
         "on any harness (new chats, per-chat overrides, job steps, cron/trigger actions). Returns every alias with its per-provider targets. " +
-        "Aliases predating the removal of the OpenRouter or Cline harnesses may also carry an `openrouter` or `cline` target: those are " +
+        "Aliases predating the removal of the OpenRouter, ACP (OpenCode) or Cline harnesses may also carry an `openrouter`, `acp` or `cline` target: those are " +
         "retired and never resolve, so ignore them when picking a model for a session.",
       {},
       async () => jsonResult({ modelAliases: currentAliases() }),
@@ -88,12 +88,15 @@ export function buildModelAliasTools(): AnyToolDefinition[] {
               "delete_model_alias instead.",
           ),
         codex: z.string().optional().describe('codex target — a Codex model slug, e.g. "gpt-5.5". Pass "" to clear.'),
+        // Same treatment as `openrouter` above, for the same reason.
         acp: z
-          .string()
+          .literal("")
           .optional()
           .describe(
-            'acp target — a model id as the ACP vendor names it, e.g. "opencode/gpt-5.5". One key covers every configured ACP vendor, ' +
-              'so it is only unambiguous while a single vendor is configured. Pass "" to clear.',
+            'acp target — RETIRED; the only accepted value is "", which clears one. The ACP harness (OpenCode) was removed, so this ' +
+              "target no longer resolves on any harness and a new one cannot be set. Values stored before the removal are kept as-is " +
+              "unless cleared. If the retired target is the alias's only one, clearing it would leave nothing to resolve to — use " +
+              "delete_model_alias instead.",
           ),
         // Same treatment as `openrouter` above, for the same reason.
         cline: z

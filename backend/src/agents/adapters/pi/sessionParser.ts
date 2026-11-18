@@ -302,7 +302,7 @@ interface PiSessionUsage {
  * The responses debug panel's row-grouping identity for one pi entry.
  *
  * A pi session entry IS one generation: one `AssistantMessage` per API call,
- * appended with its own tree-node `id`. So unlike ACP (and the retired Cline adapter) this is not a
+ * appended with its own tree-node `id`. So unlike the retired ACP and Cline adapters this is not a
  * positional counter — it is the file's own identifier for the generation, and
  * the panel's rows land one-per-API-call rather than one-per-turn.
  */
@@ -439,8 +439,8 @@ function projectMessage(message: PiAgentMessage, timestamp: string, generationKe
       // thinking + prose + two tool calls showed `Cost: $0.0626` four times, and
       // a user adding up a chat's per-message costs got ~4× the real spend.
       // (The Claude Code parser's `meta`, cited as precedent for spreading,
-      // carries no `costUsd` — the Agent SDK reports none — and acp (like the
-      // retired cline) stamps its on exactly one message. There was no precedent.)
+      // carries no `costUsd` — the Agent SDK reports none — and the retired acp
+      // and cline parsers stamped theirs on exactly one message. There was no precedent.)
       //
       // So `model` and `generationKey` ride on every block, being identity, and
       // `usage` / `costUsd` / `stopReason` / `requestId` go on the entry's

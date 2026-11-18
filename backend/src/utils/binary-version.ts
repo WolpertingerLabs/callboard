@@ -158,8 +158,8 @@ function startProbe(execPath: string): Promise<string | undefined> {
     // cannot cancel a promise already in flight, and the ordering that loses is
     // the likely one: a slow probe is the usual reason someone pressed Recheck,
     // so the stale answer tends to settle last and would win for the rest of the
-    // process's life. Same guard, and the same reasoning, as `acpProviderVersion`
-    // in `agents/adapters/acp/availability.ts`.
+    // process's life. Same guard, and the same reasoning, as `resolveBinaryPath`
+    // in `utils/binary-path.ts`.
     //
     // A *revalidation* is subject to the identical hazard — it is simply a probe
     // whose caller walked away — which is why the guard lives here, on the one

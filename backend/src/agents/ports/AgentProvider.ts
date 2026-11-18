@@ -48,17 +48,11 @@ export interface AgentQuery extends AsyncIterable<AgentEvent> {
 /**
  * Discriminator used for compile-time branching when a caller genuinely needs
  * adapter-specific behaviour (per the plan's Decision 3). New adapters extend
- * this union.
- *
- * **`"acp"` is deliberately one kind covering many vendors.** Every other member
- * is 1:1 with an engine, but the Agent Client Protocol is a wire format that
- * Copilot, Cursor, Kiro, Gemini and others all speak. Adding a member per vendor
- * would mean a union edit plus a new `constructProvider` case for each one —
- * exactly the per-vendor cost the ACP adapter exists to remove — so the vendor
- * travels in a separate `providerId` (see {@link AcpAdapter}) and the union
- * stays closed at one entry for the whole family.
+ * this union. Every member is 1:1 with an engine. (The retired ACP harness was
+ * the one exception — one kind covering many vendors, with the vendor in a
+ * separate id — and is now a {@link RETIRED_PROVIDER_KINDS} entry.)
  */
-export type AgentProviderKind = "claude-code" | "codex" | "acp" | "pi" | "mock";
+export type AgentProviderKind = "claude-code" | "codex" | "pi" | "mock";
 
 /**
  * The provider kinds a **request** may ask for — the user-selectable harnesses.
@@ -69,31 +63,16 @@ export type AgentProviderKind = "claude-code" | "codex" | "acp" | "pi" | "mock";
  * of keeping their own copies. Membership here is a promise that a user can
  * *fully specify* a chat on this kind with the fields the routes accept.
  *
- * `"acp"` was held out of this list through Phase 1 because it could not make
- * that promise: `"acp"` alone does not identify an engine — the paired
- * `acpProviderId` does — and no route surfaced that field, so
- * `POST /api/chats/:id/fork` accepting `{"provider":"acp"}` would have stamped a
- * chat with a kind and no vendor. It is admitted now because the promise now
- * holds: `POST /api/stream` takes `acpProviderId`, validates it against the
- * configured presets, and refuses `"acp"` without one.
- *
  * ## Forking and handoff: which kinds are excluded, and why
  *
  * Membership here says a chat can *run* on the kind. Being a fork or handoff
  * *target* is a narrower promise — the target has to accept a conversation it
- * did not produce — and exactly one kind fails it:
+ * did not produce. Every routable kind makes it today. (The retired ACP harness
+ * was the one that did not: its session state lived inside the agent's
+ * process, with nothing in the protocol letting a client hand an agent a
+ * conversation it did not have, so `routes/chats.ts` refused it as a target.)
  *
- * - **`acp` is excluded.** Two independent reasons, either sufficient. The kind
- *   names a wire format rather than a harness, so a fork could only stamp a chat
- *   with a kind and no vendor; and ACP session state lives inside the agent's
- *   process, with nothing in the protocol letting a client hand an agent a
- *   conversation it did not have. A seeded transcript would render correctly and
- *   lose every bit of context on the next message. `routes/chats.ts` refuses it
- *   on the kind itself rather than relying on `AcpSessionProvider` implementing
- *   neither method, so adding a transcript writer later cannot silently start
- *   minting wedged chats. An honest 400 beats a fork that renders and then
- *   forgets.
- * - **Every other kind is included**, `pi` among them since Phase 5 of the pi
+ * - **Every routable kind is included**, `pi` among them since Phase 5 of the pi
  *   landing. Its session provider implements `forkSession` *and*
  *   `seedSession`, and round-trips a real handoff — seed, read back, fork, read
  *   back again, with the carried content intact at every hop. (The retired
@@ -119,8 +98,8 @@ export type RoutableProviderKind = (typeof ROUTABLE_PROVIDER_KINDS)[number];
  * process. Still excludes `"mock"`, which is never a chat's persisted provider.
  *
  * Identical to {@link ROUTABLE_PROVIDER_KINDS} today — the two lists last
- * differed while a kind was *implemented before being offered* (`"acp"`) and
- * again while one was *withdrawn from offer while still implemented*
+ * differed while a kind was *implemented before being offered* (the retired
+ * `"acp"`) and again while one was *withdrawn from offer while still implemented*
  * (`"openrouter"`, until its adapter was deleted). Kept as its own list because
  * the next adapter will land in exactly that state again, and because the call
  * sites already encode which question they are asking: use
@@ -176,8 +155,14 @@ export function isInternalProvider(value: unknown): value is InternalProviderKin
  * it is retired the same way anyway so any install that does gets a refusal by
  * name rather than a silent fallback. Its transcripts under
  * `<DATA_DIR>/cline-sessions/` are left on disk untouched.
+ *
+ * `"acp"` joined it when the ACP harness — which ran OpenCode — was removed,
+ * on the same terms: no install was known to hold ACP chats (0 of 1049 records
+ * on the development machine), transcripts under `<DATA_DIR>/acp-sessions/` are
+ * left untouched, and the vendor id an old record carries in `acpProviderId`
+ * is no longer read. It is labelled by the vendor users actually picked.
  */
-export const RETIRED_PROVIDER_KINDS = ["openrouter", "cline"] as const;
+export const RETIRED_PROVIDER_KINDS = ["openrouter", "cline", "acp"] as const;
 
 /** A harness kind this build once implemented and no longer does. */
 export type RetiredProviderKind = (typeof RETIRED_PROVIDER_KINDS)[number];
@@ -190,6 +175,7 @@ export type RetiredProviderKind = (typeof RETIRED_PROVIDER_KINDS)[number];
 export const RETIRED_PROVIDER_LABELS: Record<RetiredProviderKind, string> = {
   openrouter: "the OpenRouter agent harness",
   cline: "Cline",
+  acp: "OpenCode",
 };
 
 /**

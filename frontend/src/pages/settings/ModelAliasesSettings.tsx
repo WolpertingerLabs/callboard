@@ -1,10 +1,9 @@
 import { useEffect, useState } from "react";
 import { Route, Plus, Trash2, Save, Check } from "lucide-react";
-import { getAgentSettings, updateAgentSettings, getSystemInfo, type AcpProviderInfo } from "../../api";
+import { getAgentSettings, updateAgentSettings } from "../../api";
 import { validateModelAliases } from "shared/types/index.js";
 import ClaudeModelSelector from "../../components/ClaudeModelSelector";
 import CodexModelSelector from "../../components/CodexModelSelector";
-import AcpModelSelector from "../../components/AcpModelSelector";
 import PiModelSelector from "../../components/PiModelSelector";
 import { emptyRow, toRows, toAliases, hasEditableTarget, hasRetiredTarget, onlyRetiredTargets, RETIRED_ALIAS_TARGETS, type AliasRow } from "./modelAliasRows";
 import { errorMessage } from "../../utils/errorMessage";
@@ -45,16 +44,6 @@ export default function ModelAliasesSettings() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
-  // Configured ACP vendors, for the ACP column's label and its model
-  // suggestions. Empty until /system-info answers, and empty is fine — the
-  // column still renders as a free-text field, which is all it ever guarantees.
-  const [acpProviders, setAcpProviders] = useState<AcpProviderInfo[]>([]);
-  // The alias registry keys ACP targets on the KIND, so there is one column
-  // whatever the vendor count. It borrows the vendor's name only when that name
-  // is unambiguous; with several configured, "ACP" is the honest label because
-  // the one target really does apply to all of them.
-  const acpLabel = acpProviders.length === 1 ? acpProviders[0].label : "ACP";
-  const acpProviderId = acpProviders.length === 1 ? acpProviders[0].id : "";
 
   const load = async () => {
     setLoading(true);
@@ -70,18 +59,6 @@ export default function ModelAliasesSettings() {
 
   useEffect(() => {
     load();
-    let cancelled = false;
-    getSystemInfo()
-      .then((info) => {
-        if (!cancelled) setAcpProviders(info.acpProviders ?? []);
-      })
-      .catch(() => {
-        // No ACP vendors surfaced — the column stays free text, which is what it
-        // degrades to for an unseen vendor anyway.
-      });
-    return () => {
-      cancelled = true;
-    };
   }, []);
 
   const update = (i: number, patch: Partial<AliasRow>) => setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)));
@@ -91,7 +68,7 @@ export default function ModelAliasesSettings() {
   const { errors: validationErrors } = validateModelAliases(toAliases(rows));
   // A named row with no target at all is a likely mistake — flag it even though
   // toAliases() would silently drop it. The retired targets (`openrouter`,
-  // `cline`) stay in this test despite having no column: a row carrying only a
+  // `cline`, `acp`) stay in this test despite having no column: a row carrying only a
   // retained slug still survives the
   // save, so calling it unsaved would be a lie. Such a row gets the per-row
   // legacy note below instead.
@@ -127,7 +104,7 @@ export default function ModelAliasesSettings() {
         </div>
         <div style={helpStyle}>
           Name a shortcut once and point it at a different model per harness — e.g. <code>planner</code> → <code>opus</code> on Claude Code,{" "}
-          <code>gpt-5.5</code> on Codex, <code>opencode/gpt-5.5</code> on an ACP agent. Then set <code>model: &quot;planner&quot;</code> anywhere a model is
+          <code>gpt-5.5</code> on Codex, <code>google/gemini-3.6-flash</code> on pi. Then set <code>model: &quot;planner&quot;</code> anywhere a model is
           configured (new chats, per-chat overrides, job steps, cron/trigger actions) and it resolves to the target for whichever harness runs the session.
           Leave a harness blank to fall back to that provider&rsquo;s configured default. Targets must be real model ids, never other alias names.
         </div>
@@ -200,20 +177,6 @@ export default function ModelAliasesSettings() {
                   <label style={colLabel}>Codex</label>
                   <CodexModelSelector value={row.codex} onChange={(v) => update(i, { codex: v })} placeholder="gpt-5.5" />
                 </div>
-                {/* One column for the whole ACP family. The registry keys on the
-                    kind, not the vendor, so it is labelled with the vendor only
-                    while exactly one is configured — with several, the label says
-                    ACP because the single target really does apply to all of
-                    them. See HarnessProvider's doc-comment for the limitation. */}
-                <div style={{ minWidth: 0 }}>
-                  <label style={colLabel}>{acpLabel}</label>
-                  <AcpModelSelector
-                    value={row.acp}
-                    onChange={(v) => update(i, { acp: v })}
-                    providerId={acpProviderId}
-                    placeholder={acpProviderId === "opencode" ? "opencode/gpt-5.5" : "vendor model id"}
-                  />
-                </div>
                 {/* A real selector: pi's catalog is bundled with
                     the package and answered offline, so it is available here
                     without knowing which provider is configured — and at ~300
@@ -224,7 +187,7 @@ export default function ModelAliasesSettings() {
                 </div>
               </div>
 
-              {/* Only for aliases that predate a harness removal (OpenRouter, Cline).
+              {/* Only for aliases that predate a harness removal (OpenRouter, Cline, OpenCode).
                   The retained target has no column, so without this the value is
                   invisible — and a row whose *sole* target is that slug reads as
                   blank-but-somehow-saved with nowhere to learn why. The advice to

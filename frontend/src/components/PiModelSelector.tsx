@@ -15,7 +15,7 @@ interface Props {
 /**
  * pi's OpenRouter catalog alone is ~300 models, so the list is *always*
  * filtered rather than merely capped for tidiness. Fifty is the same ceiling the
- * ACP and Codex selectors use; the difference is that here it is doing real
+ * Codex selector uses (and the retired ACP one did); the difference is that here it is doing real
  * work on every keystroke.
  */
 const MAX_RESULTS = 50;
@@ -78,7 +78,7 @@ const rowLabelStyle: React.CSSProperties = {
  * measured against the real endpoint, and a native datalist that long is a
  * scroll rather than a picker.
  *
- * So this reuses the {@link AcpModelSelector} shape instead — subsequence
+ * So this reuses the shape of the (since retired) ACP model selector instead — subsequence
  * filtering, capped results, keyboard navigation. Duplicated rather than
  * abstracted, which is this codebase's explicit stance: "three model fields that
  * behaved differently would cost more than one duplicated combobox". A fourth

@@ -3,7 +3,6 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { buildCodexToolServer } from "./adapters/codex/toolAdapter.js";
-import { buildAcpToolServer } from "./adapters/acp/toolAdapter.js";
 import { buildClaudeCodeToolServer } from "./adapters/claude-code/toolAdapter.js";
 import { buildPiTools } from "./adapters/pi/toolAdapter.js";
 import { defineTool, type ToolCallContext, type ToolServerSpec } from "./ports/tools.js";
@@ -21,8 +20,8 @@ const bounded = <T>(promise: Promise<T>) =>
     }),
   ]);
 
-for (const engine of ["claude-code", "codex", "acp"] as const)
-  // Claude Code uses an in-memory transport. Codex and ACP use the production
+for (const engine of ["claude-code", "codex"] as const)
+  // Claude Code uses an in-memory transport. Codex uses the production
   // Unix-socket relay, which the managed Codex sandbox explicitly forbids.
   describe.skipIf(process.env.CODEX_SANDBOX_NETWORK_DISABLED === "1" && engine !== "claude-code")(`${engine} native MCP relay`, () => {
     async function connect(spec: ToolServerSpec) {
@@ -34,8 +33,8 @@ for (const engine of ["claude-code", "codex", "acp"] as const)
         await client.connect(clientSide);
         return { client, close: () => handle.instance.close() };
       }
-      const handle = engine === "codex" ? buildCodexToolServer(spec) : buildAcpToolServer(spec);
-      const config = "toMcpServerConfig" in handle ? handle.toMcpServerConfig() : handle.toAcpMcpServer();
+      const handle = buildCodexToolServer(spec);
+      const config = handle.toMcpServerConfig();
       try {
         await client.connect(new StdioClientTransport({ command: config.command, args: config.args }));
       } catch (error) {
@@ -145,8 +144,8 @@ it("pi MCP-backed custom wrapper forwards cancellation/id and model-facing bytes
     expect(result).toEqual({ content, details: {} });
   });
 
-it("all four engines categorize explicit control names, never guessed display labels", () => {
-  for (const engine of ["claude-code", "codex", "pi", "acp"] as const) {
+it("every engine categorizes explicit control names, never guessed display labels", () => {
+  for (const engine of ["claude-code", "codex", "pi"] as const) {
     for (const name of [
       "cu_request_control",
       "mcp__computer_use__cu_request_control",

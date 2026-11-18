@@ -83,7 +83,6 @@ export const THEME_VARIABLE_NAMES = [
   "badge-trigger",
   "badge-worktree",
   "badge-provider-codex-bg",
-  "badge-provider-acp-bg",
   "badge-provider-pi-bg",
   "badge-env-text",
   "badge-env-bg",

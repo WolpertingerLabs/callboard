@@ -3,8 +3,8 @@
  *
  * `NewChatPanel` is conditionally mounted, so it remounts on every New Chat
  * open and used to re-fetch this payload from a cold empty list each time —
- * which is why the OpenCode button appeared after the other four and reflowed
- * the row. Caching it is the fix; the risk the cache introduces is the reason
+ * which is why the (since retired) ACP harness's OpenCode button appeared after
+ * the other four and reflowed the row. Caching it is the fix; the risk the cache introduces is the reason
  * for this file, because several callers *depend on freshness*: Settings → API
  * reads this endpoint immediately after a save, a Recheck and an install, and
  * handing any of those the pre-mutation payload would show the user the state
@@ -173,8 +173,8 @@ describe("getSystemInfo", () => {
 
 describe("cachedSystemInfo", () => {
   it("is null before anything has been fetched", () => {
-    // The distinction the seeding callers depend on: "never asked" is not "no
-    // ACP vendors", so a null seed has to leave their empty state alone.
+    // The distinction the seeding callers depend on: "never asked" is not "the
+    // server reported nothing", so a null seed has to leave their empty state alone.
     expect(cachedSystemInfo()).toBeNull();
   });
 

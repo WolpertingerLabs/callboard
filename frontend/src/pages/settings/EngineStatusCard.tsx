@@ -78,13 +78,11 @@ const rowStyle: React.CSSProperties = {
 };
 
 /**
- * One label/value row.
- *
- * Exported because `AcpProviderSection` renders its Permissions and Models rows
- * in the same shape directly beneath this card, and two row helpers that drift
- * apart would be visible as a seam mid-column.
+ * One label/value row. (Exported while the retired ACP harness's settings tab
+ * rendered rows of its own beneath this card; nothing outside this file uses it
+ * now.)
  */
-export function StatusRow({ label, children }: { label: string; children: React.ReactNode }) {
+function StatusRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div style={rowStyle}>
       <span style={{ color: "var(--text-muted)", flexShrink: 0 }}>{label}</span>
@@ -101,10 +99,10 @@ const mono: React.CSSProperties = { fontSize: 11, fontFamily: "monospace" };
  * Three states, from existing tokens rather than new ones — `--success`,
  * `--warning` and `--text-muted` all already carry a checked light/dark pair.
  *
- * "Uncredentialed" is amber rather than red on purpose: for an ACP vendor it is
- * not a fault at all, just a question Callboard cannot ask (credentials live in
- * the vendor's CLI), and for the embedded runtimes the process environment may
- * still supply a key. `title` says which of those it is; `label` is what the
+ * "Uncredentialed" is amber rather than red on purpose: for an external CLI it
+ * may not be a fault at all, just a question Callboard cannot ask (credentials
+ * live in that CLI — the retired ACP harness was the original case), and for the
+ * embedded runtimes the process environment may still supply a key. `title` says which of those it is; `label` is what the
  * card header shows, because the reason is already spelled out one row below in
  * Credentials and printing it twice reads as noise.
  */
@@ -293,8 +291,8 @@ function versionSummary(engine: EngineStatus): React.ReactNode {
 /**
  * The npm package this engine's "Latest" is about, when there is one.
  *
- * Optional only on `external`: an ACP vendor may ship a CLI that npm has never
- * heard of, and for that one nothing was ever asked.
+ * Optional only on `external`: an external CLI (as the retired ACP harness's
+ * vendors were) may not be on npm at all, and for that one nothing was ever asked.
  */
 function trackedPackage(engine: EngineStatus): string | undefined {
   return engine.runtime.package;
@@ -408,7 +406,7 @@ function formatCheckedAt(iso: string | undefined): string {
  * The Credentials row: configured, not configured, or genuinely unknown.
  *
  * The third state is the point. "Not configured" is an assertion about the
- * user's machine, and for an ACP vendor — or an embedded runtime reading a key
+ * user's machine, and for an external CLI holding its own login — or an embedded runtime reading a key
  * from the process environment — Callboard has no standing to make it. It read
  * as a flat denial to users who *were* authenticated, printed directly above a
  * note explaining that a chat might work anyway.

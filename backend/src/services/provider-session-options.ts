@@ -1,6 +1,6 @@
 /**
  * The per-harness extras sub-objects `sendMessage` puts on the query options
- * (`options.codex`, `options.acp`, `options.pi`). Each builder
+ * (`options.codex`, `options.pi`). Each builder
  * is the body of what was an inline `if (providerKind === …)` block in
  * claude.ts, moved verbatim apart from reading its inputs off an explicit
  * context instead of closing over sendMessage's locals.
@@ -10,14 +10,13 @@
  * written under.
  */
 import type { AgentSettings, DefaultPermissions, EffortLevel } from "shared/types/index.js";
-import type { AcpRunOptions } from "../agents/adapters/acp/AcpAdapter.js";
 import type { CodexOptionsExtras } from "../agents/adapters/codex/optionsAdapter.js";
 import type { PiAdapterOptions } from "../agents/adapters/pi/PiAdapter.js";
 import { getSessionProvider } from "../agents/factory.js";
 import { detectCodexOpenRouterEnv } from "../agents/adapters/codex/codexAuth.js";
 import { resolveCodexExecutionRoute, type CodexExecutionRoute } from "./codex-execution-route.js";
 import { resolveReasoningTarget } from "./reasoning-capabilities.js";
-import { getCodexExecutablePath, resolveSessionModel } from "./agent-settings.js";
+import { getCodexExecutablePath } from "./agent-settings.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("claude");
@@ -31,7 +30,7 @@ export interface ProviderOptionsContext {
   chatModel: string | undefined;
   /** The per-chat reasoning effort from chat metadata. */
   chatEffort: EffortLevel | undefined;
-  /** Live permission accessor — handed through as a function, never snapshotted (see buildAcpExtras). */
+  /** Live permission accessor — handed through as a function, never snapshotted (see buildPiExtras). */
   getDefaultPermissions: () => DefaultPermissions | null;
   /** Session registry key at option-build time; used only in log lines. */
   trackingId: string;
@@ -129,65 +128,8 @@ export async function buildCodexExtras(ctx: ProviderOptionsContext & { codexRout
   return codex;
 }
 
-// For ACP chats, surface the provider id and the permission defaults the ACP
-// adapter needs. Unlike Codex — which must collapse permissions onto a sandbox
-// tier chosen at thread start — ACP gates per call, so the defaults are only
-// the FIRST half of the decision: the adapter consults them, and anything
-// resolving to "ask" escalates through the `canUseTool` already on
-// `queryOpts.options` (the same callback Claude Code uses). A model IS passed
-// now — ACP exposes models only as a post-session config option, so the
-// adapter applies it with `session/set_config_option` after attaching rather
-// than requesting it on `session/new`. There is still no effort knob: ACP has
-// no reasoning-effort concept at all, so there would be nothing honest to send.
-export function buildAcpExtras(ctx: ProviderOptionsContext & { acpProviderId: string | undefined }): AcpRunOptions {
-  const { agentSettings, chatModel, getDefaultPermissions, trackingId, acpProviderId } = ctx;
-  // The vendor's own model id, e.g. "opencode/nemotron-3-ultra-free". Resolved
-  // with the same three-step fallback every other harness uses
-  // (resolveSessionModel): a per-chat override wins first — itself alias-aware,
-  // so `planner` on the chat resolves through the `acp` alias target — then
-  // this vendor's stored default from `agentSettings.acpProviderModels`
-  // (looked up by `acpProviderId`, also alias-aware), then nothing at all —
-  // the vendor CLI's own configured default stands.
-  //
-  // The per-vendor lookup exists because "acp" is one kind covering many
-  // vendors whose catalogs share nothing: a flat default (like a single alias
-  // `acp` target) would apply the same model id to every vendor a user
-  // configures, and the wrong one would be refused by that vendor's own CLI
-  // rather than silently substituted. `acpProviderModels` is keyed by vendor id
-  // for exactly that reason; an alias whose `acp` target only makes sense for
-  // one vendor still applies to all of them if used as a per-chat override —
-  // that limitation is real and lives on the alias mechanism, not here.
-  const acpProviderDefaultModel = acpProviderId ? agentSettings.acpProviderModels?.[acpProviderId] : undefined;
-  const acpModel = resolveSessionModel(chatModel, acpProviderDefaultModel, "acp", agentSettings);
-  // OpenRouter credential, when the user turned it on. The dedicated key wins,
-  // then the account-wide one — unlike the Codex pair, which requires its own,
-  // because nothing here rewrites the agent's provider config and there is no
-  // reason to make a user re-enter a key they have already given. The adapter
-  // still drops it unless the vendor's preset names an env var for it.
-  const acpOpenRouterApiKey = agentSettings.acpUseOpenRouter
-    ? agentSettings.acpOpenRouterApiKey?.trim() || agentSettings.openRouterApiKey?.trim() || undefined
-    : undefined;
-  const acp: AcpRunOptions = {
-    ...(acpProviderId && { providerId: acpProviderId }),
-    ...(acpModel && { model: acpModel }),
-    ...(acpOpenRouterApiKey && { openRouterApiKey: acpOpenRouterApiKey }),
-    // The accessor, not its value. sendMessage's `toolPermissionPolicy` holds this
-    // same function and calls it per tool call; handing the adapter a
-    // snapshot taken here would let pass 1 auto-allow on a policy the user
-    // has since tightened, and pass 2 — the one that would have caught it —
-    // is only reached when pass 1 says "ask". Two passes, one input, one
-    // moment of reading it.
-    getPermissions: getDefaultPermissions,
-  };
-  log.info(
-    `ACP chat config — trackingId=${trackingId}, providerId=${acpProviderId ?? "(unset)"}, model=${acpModel ?? "(agent default)"}, ` +
-      `openRouter=${acpOpenRouterApiKey ? "on" : "off"}`,
-  );
-  return acp;
-}
-
-// pi chats. Closest in shape to buildAcpExtras above rather than the Codex one:
-// pi gates per call through its `tool_call` extension, so the permission
+// pi chats. Unlike the Codex builder above — which must collapse permissions
+// onto a sandbox tier chosen at thread start — pi gates per call through its `tool_call` extension, so the permission
 // defaults are only the FIRST half of the decision and anything resolving to
 // "ask" escalates through the same `canUseTool` Claude Code uses. pi runs in this
 // process and takes its credentials as config fields, falling back to its own
@@ -227,8 +169,12 @@ export async function buildPiExtras(ctx: ProviderOptionsContext & { resumeSessio
     ...(agentSettings.piBaseUrl?.trim() && { baseUrl: agentSettings.piBaseUrl.trim() }),
     ...(chatEffort && { effort: chatEffort }),
     ...(piResumePath && { resumeSessionPath: piResumePath }),
-    // The accessor, not its value — both permission passes must read the
-    // policy at the same moment. See buildAcpExtras above.
+    // The accessor, not its value. sendMessage's `toolPermissionPolicy` holds this
+    // same function and calls it per tool call; handing the adapter a
+    // snapshot taken here would let pass 1 auto-allow on a policy the user
+    // has since tightened, and pass 2 — the one that would have caught it —
+    // is only reached when pass 1 says "ask". Two passes, one input, one
+    // moment of reading it.
     getPermissions: getDefaultPermissions,
   };
   log.info(

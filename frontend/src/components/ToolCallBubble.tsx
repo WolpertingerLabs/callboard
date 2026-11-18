@@ -33,9 +33,10 @@ const ELAPSED_VISIBLE_AFTER_MS = 5_000;
  * running or has not been going long enough to be worth saying.
  *
  * Exists because a spinner alone cannot distinguish "working" from "wedged",
- * and some tool calls are genuinely opaque for minutes. OpenCode's `task` is
- * the case that prompted it: the subagent runs in a child session that the ACP
- * protocol gives the client no window into — OpenCode sends *no* update for it
+ * and some tool calls are genuinely opaque for minutes. OpenCode's `task`, on
+ * the since-retired ACP harness, is the case that prompted it: the subagent ran
+ * in a child session that the ACP protocol gave the client no window into —
+ * OpenCode sent *no* update for it
  * between the call opening and its result, measured, so there is nothing to
  * stream no matter how the adapter is written. Two and a half minutes of one
  * collapsed row and a 12px spinner reads as a dead chat. A ticking clock is the
@@ -90,7 +91,7 @@ function ToolCallBubble({ toolUse, toolResult, isRunning, backgroundPending = fa
 
   // Special case: an agent's running task list renders as TodoList. Matched by
   // tool name AND payload shape so every engine that has a list hits it (Claude:
-  // TodoWrite, Codex: update_plan, ACP: plan) — the same cross-provider parity
+  // TodoWrite, Codex: update_plan) — the same cross-provider parity
   // render_file and the canvas tools get below, for the same reason.
   const todoItems = useMemo(() => parseTodoItems(toolUse), [toolUse]);
 

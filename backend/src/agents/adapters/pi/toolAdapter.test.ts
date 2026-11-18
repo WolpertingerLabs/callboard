@@ -18,7 +18,7 @@ import { z } from "zod";
 import { buildPiTools, renderToolResult, toolParametersFromShape } from "./toolAdapter.js";
 import { defineTool, type ToolServerSpec } from "../../ports/tools.js";
 
-// A scratch data dir before anything touches `paths.ts` — the ACP suite once
+// A scratch data dir before anything touches `paths.ts` — the retired ACP suite once
 // wrote fake sessions into a developer's real chat list (#302), and these spec
 // builders read agent config off disk.
 const tmpRoot = mkdtempSync(join(tmpdir(), "callboard-pi-tools-"));

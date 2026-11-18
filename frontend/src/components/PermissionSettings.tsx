@@ -10,8 +10,8 @@ interface PermissionSettingsProps {
    * Which harness these permissions will govern, when that is known.
    *
    * Only used to say when an axis governs *nothing* on the chosen harness. An
-   * axis that silently does nothing is the decorative-gate failure
-   * `adapters/acp/vendors.ts` names as disqualifying — it just wears a different
+   * axis that silently does nothing is the decorative-gate failure the retired
+   * ACP harness's vendor table named as disqualifying — it just wears a different
    * costume when the control is real and the tool behind it is absent.
    */
   provider?: string;

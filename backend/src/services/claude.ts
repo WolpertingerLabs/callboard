@@ -22,7 +22,7 @@ import type { StreamEvent, TaskListItem } from "shared/types/index.js";
 import { TASK_LIST_TOOLS, normalizePermissions, normalizeReviewSettings, appendAttachmentBlocks } from "shared/types/index.js";
 import { buildAttachmentBlocks, titleSourceFor, type FileAttachment } from "./file-attachments.js";
 import { buildPluginOptions, buildMcpServerOptions, buildHookOptions, type PluginDescriptor } from "./claude-session-options.js";
-import { buildAcpExtras, buildCodexExtras, buildPiExtras, type ProviderOptionsContext } from "./provider-session-options.js";
+import { buildCodexExtras, buildPiExtras, type ProviderOptionsContext } from "./provider-session-options.js";
 import { buildAgentToolsSpec, setMessageSender } from "./agent-tools.js";
 import { buildCallboardToolsSpec, setCallboardMessageSender } from "./callboard-tools.js";
 import { buildJobStepToolsSpec } from "./job-step-tools.js";
@@ -213,7 +213,7 @@ export function getActiveSession(chatId: string): ActiveSession | undefined {
  *
  * Three things have to happen, in this order:
  *  1. `abort()` — the signal every adapter threads into its harness (SDK
- *     subprocess, `codex exec` spawn, ACP transport) and that the query
+ *     subprocess, `codex exec` spawn, pi session) and that the query
  *     loop, nudge/recovery continuations and pending permission requests all
  *     check. This is the cooperative half.
  *  2. `closeQuery()` — hard-terminate the provider run. A run parked in a tool
@@ -488,7 +488,7 @@ export const STRICT_REVIEW_FALLBACK: PermissionReviewSettings & { approveAllowed
  * Build the canUseTool permission handler for the Claude SDK.
  * Uses a getter function for the tracking ID since it may change mid-session (new chat flow).
  *
- * The same callback serves pi and ACP (their permission adapters call
+ * The same callback serves pi (its permission adapter calls
  * it on "ask"), so the review chain below covers every engine except Codex.
  *
  * For an "ask", the chain is:
@@ -519,8 +519,8 @@ export function buildCanUseTool(
   return async (
     toolName: string,
     input: Record<string, unknown>,
-    // `toolUseID` is passed by the Claude Agent SDK only; pi and ACP call
-    // this with just `{ signal }`, so their audit records carry no tool-use id.
+    // `toolUseID` is passed by the Claude Agent SDK only; pi calls
+    // this with just `{ signal }`, so its audit records carry no tool-use id.
     { signal, suggestions, toolUseID }: { signal: AbortSignal; suggestions?: readonly unknown[]; toolUseID?: string },
   ): Promise<PermissionResult> => {
     // If a PreToolUse hook flagged "ask", skip auto-approval and prompt the user
@@ -864,16 +864,6 @@ export interface SendMessageOptions {
    */
   provider?: AgentProviderKind;
   /**
-   * Which ACP vendor runs this chat, paired with `provider: "acp"`. Ignored for
-   * every other provider. Only honored for new chats — existing ACP chats route
-   * by the `acpProviderId` already in their metadata.
-   *
-   * Must name a built-in preset in `adapters/acp/vendors.ts` (Phase 2 adds more;
-   * Phase 3 lets users define their own). An unknown id fails at send time with
-   * an explicit error rather than spawning something arbitrary.
-   */
-  acpProviderId?: string;
-  /**
    * Reasoning-effort level. Honored for new chats on the reasoning-capable
    * providers — `provider: "codex"` (→ Codex `modelReasoningEffort`) and
    * `"pi"` — written into chat
@@ -1001,7 +991,6 @@ type SessionQueryOptions = {
   canUseTool: ReturnType<typeof buildCanUseTool>;
   stderr: (data: string) => void;
   codex?: Awaited<ReturnType<typeof buildCodexExtras>>;
-  acp?: ReturnType<typeof buildAcpExtras>;
   pi?: Awaited<ReturnType<typeof buildPiExtras>>;
 };
 
@@ -1086,7 +1075,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     // Legacy stored records also need resolver provenance before resuming. Reads
     // remain immutable; only this write path pins inferred routing.
     const storedMetadata = parseChatMetadata(chat.metadata);
-    const needsProvenance = storedMetadata.provider == null || (storedMetadata.provider === "acp" && !storedMetadata.acpProviderId);
+    const needsProvenance = storedMetadata.provider == null;
     const resolvedChat = needsProvenance ? findChat(opts.chatId, false) : null;
     if (resolvedChat?._provider_resolution_error) throw new Error(resolvedChat._provider_resolution_error);
     initialMetadata = needsProvenance ? parseChatMetadata(resolvedChat?.metadata || chat.metadata) : storedMetadata;
@@ -1108,7 +1097,6 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     }
     const routing: Record<string, unknown> = {};
     if (storedMetadata.provider == null && initialMetadata.provider != null) routing.provider = initialMetadata.provider;
-    if (!storedMetadata.acpProviderId && initialMetadata.acpProviderId) routing.acpProviderId = initialMetadata.acpProviderId;
     if (Object.keys(routing).length) chatFileService.updateChatMetadata(chat.id, routing, { normalizeLegacy: true });
     // Recover agentAlias from chat metadata when not explicitly provided.
     // This ensures Callboard tools are re-injected when resuming an agent session.
@@ -1166,17 +1154,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       // unknown strings would log a warn on every message in the chat,
       // and "claude-code" is the default so writing it is redundant.
       //
-      // The guard is the INTERNAL allowlist, not the routable one: `"acp"` has
-      // no user-facing picker yet and is deliberately absent from what routes
-      // accept, but sendMessage reaches it directly via `acpProviderId` and must
-      // be able to pin it. Values arriving from a request were already narrowed
-      // against the routable list at the route boundary.
+      // The guard is the INTERNAL allowlist, not the routable one, because
+      // sendMessage also has internal callers. Values arriving from a request
+      // were already narrowed against the routable list at the route boundary.
       ...(isInternalProvider(opts.provider) && opts.provider !== "claude-code" && { provider: opts.provider }),
-      // Pin the ACP vendor alongside the kind. `provider: "acp"` alone does not
-      // say WHICH ACP agent runs the chat, so without this a follow-up message
-      // could not reconstruct the adapter. Only meaningful when paired with
-      // provider "acp".
-      ...(opts.provider === "acp" && opts.acpProviderId && { acpProviderId: opts.acpProviderId }),
       // Pin reasoning-effort alongside the provider. Meaningful for the
       // reasoning-capable providers — codex (→ Codex `modelReasoningEffort`) and
       // pi; their config blocks below pull it out of metadata. The stream.ts
@@ -1186,9 +1167,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       // Pin the per-chat model alongside provider/effort. Every kind that can
       // back a chat reads this value back out of metadata in its config block
       // below, each in its own vocabulary: claude-code passes it to the SDK as
-      // options.model; codex resolves it against the Codex catalog; acp names one
-      // of the vendor's own models and applies it via `session/set_config_option`
-      // once the session exists; pi resolves it
+      // options.model; codex resolves it against the Codex catalog; pi resolves it
       // through `ModelRegistry.find()`.
       //
       // So the guard is the INTERNAL allowlist rather than a hand-listed set —
@@ -1342,11 +1321,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   // `provider: "garbage"` would otherwise hit the factory's exhaustiveness
   // throw and 500 the user's chat permanently.
   const providerKind = resolveProviderKind(initialMetadata.provider);
-  // `"acp"` is one kind covering many vendors, so the adapter is selected by the
-  // paired `acpProviderId` too — the factory memoizes ACP instances per provider
-  // id. Ignored for every other kind.
-  const acpProviderId = typeof initialMetadata.acpProviderId === "string" ? initialMetadata.acpProviderId : undefined;
-  const agentProvider = getAgentProvider(providerKind, acpProviderId);
+  const agentProvider = getAgentProvider(providerKind);
 
   // ── Explicit completion ("Ralph loop") setup ──
   // Job steps already report through complete_job_step and the runner's
@@ -1499,9 +1474,9 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   //
   // The categorizer comes from a per-provider registry rather than a conditional,
   // and that is a correctness requirement rather than tidiness. This used to be
-  // `providerKind === "acp" ? categorizeAcpToolName : categorizeClaudeTool`,
-  // whose `else` branch is not a neutral default but a *real provider's map*:
-  // every non-ACP kind inherited Claude Code's PascalCase table. The
+  // `providerKind === "acp" ? categorizeAcpToolName : categorizeClaudeTool` (on
+  // the since-retired ACP harness), whose `else` branch is not a neutral default
+  // but a *real provider's map*: every other kind inherited Claude Code's PascalCase table. The
   // since-removed OpenRouter harness named its tools in snake_case, so they
   // matched nothing and fell through `categorizeClaudeTool`'s
   // `return "fileWrite"` — including `bash`, which meant its shell tool was
@@ -1512,13 +1487,11 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   // kind with no categorizer is a compile error instead of a silent adoption of
   // whichever map happened to be the fallback.
   //
-  // For adapters that ALSO evaluate policy on their own side (ACP does; see
-  // "The two-pass rule" in adapters/acp/permissionAdapter.ts), routing both
+  // For adapters that ALSO evaluate policy on their own side (pi does; see
+  // "The two-pass rule" in agents/permissions/categorizers.ts), routing both
   // passes through this registry is what makes them run the identical function.
   // Same function is necessary but not sufficient — the two passes must also see
-  // the same input, which the ACP adapter enforces by categorizing the exact
-  // string it passes as `toolName` and never consulting ACP's `ToolKind`, which
-  // this pass cannot see.
+  // the same input, i.e. categorize the exact string passed as `toolName`.
   const toolPermissionPolicy = new ToolPermissionPolicy(getToolCategorizer(providerKind), getDefaultPermissions);
 
   // The review-chain settings and parent, read live from the stored record on
@@ -1603,8 +1576,8 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   // unenforceable at this layer (only the service's own authorizer stood). With
   // no allow-list entry every `mcp__computer_use__*` call reaches `canUseTool`,
   // whose computerControl branch denies, or admits the transport call and lets
-  // the service decide scope. Codex and OpenCode have no per-call hook, so for
-  // them the service remains the sole gate — see their adapters.
+  // the service decide scope. Codex has no per-call hook, so for
+  // it the service remains the sole gate — see their adapters.
   //
   // The name is reserved. A plugin whose `.mcp.json` server is also called
   // `computer_use` would have pushed `mcp__computer_use__*` onto the list above
@@ -1665,7 +1638,6 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
           // The engine this session runs on, so start_chat_session spawns children
           // onto it by default instead of always handing them to Claude Code.
           provider: providerKind,
-          ...(providerKind === "acp" && acpProviderId && { acpProviderId }),
           // Live read of this chat's current model override, so a child started
           // without an explicit `model` inherits it. A getter, not a value: the
           // model can change mid-session, and a still-registering chat (temp
@@ -1770,7 +1742,6 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       () =>
         buildAgentToolsSpec(agentAlias, () => trackingId, {
           provider: providerKind,
-          ...(providerKind === "acp" && acpProviderId && { acpProviderId }),
           // Same live model-override read as the callboard-tools spec above.
           getModel: () => chatFileService.getModelOverride(trackingId),
           // Same ceiling as callboard-tools: an agent chat a user started with
@@ -1879,11 +1850,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     },
   };
 
-  // Per-harness extras (`options.codex` / `.acp` / `.pi`) — see
+  // Per-harness extras (`options.codex` / `.pi`) — see
   // ./provider-session-options.ts. Each reads only the context it is handed.
   const providerCtx: ProviderOptionsContext = { agentSettings, folder, chatModel, chatEffort, getDefaultPermissions, trackingId };
   if (providerKind === "codex") queryOpts.options.codex = await buildCodexExtras({ ...providerCtx, codexRoute });
-  if (providerKind === "acp") queryOpts.options.acp = buildAcpExtras({ ...providerCtx, acpProviderId });
   if (providerKind === "pi") queryOpts.options.pi = await buildPiExtras({ ...providerCtx, resumeSessionId, chatId: opts.chatId });
 
   log.debug(
@@ -2420,9 +2390,9 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
               //
               // Keyed on the payload rather than on the adapter. `turn_cost` was
               // one adapter's alone when it was written, but nothing about it is
-              // adapter-shaped — it is a number in USD — and the ACP adapter emits
-              // it too, from ACP's own `usage_update.cost`. Gating on the
-              // emitter's name would have meant a second identical branch.
+              // adapter-shaped — it is a number in USD — and the retired ACP
+              // adapter emitted it too. No adapter in this build emits it; the
+              // branch stays because it is keyed on the payload, not the emitter.
               //
               // No `maxBudgetUsd` rides along: the field is a per-session spend
               // CAP, and the only harness that had one was OpenRouter's. It stays
@@ -2442,7 +2412,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
             default:
               // Compile-time exhaustiveness. A new AgentEvent member with no
               // branch here doesn't crash, it goes *quiet* — which is how
-              // Codex's and ACP's task lists were produced, translated, and
+              // Codex's (and the retired ACP harness's) task lists were produced, translated, and
               // then dropped without anything failing. `never` makes the
               // omission a build error instead of a silence.
               ((_exhaustive: never) => _exhaustive)(event);

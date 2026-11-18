@@ -32,7 +32,6 @@ import { DATA_DIR } from "../utils/paths.js";
 import { binaryVersionLine } from "../utils/binary-version.js";
 import { resolveClaudeBinary } from "./claude-binary.js";
 import { getSdkInfoAsync } from "./sdk-info.js";
-import { listAcpProviderAvailability } from "../agents/adapters/acp/availability.js";
 import { getCodexAuthSource, detectCodexOpenRouterEnv, isCodexRoutedThroughOpenRouter, type CodexAuthSource } from "../agents/adapters/codex/codexAuth.js";
 import { getAgentSettings, detectClaudeCodeOpenRouterEnv, isClaudeCodeRoutedThroughOpenRouter } from "./agent-settings.js";
 
@@ -70,18 +69,16 @@ export async function buildSystemInfo({ pkgRoot }: BuildSystemInfoOptions) {
     // ignore
   }
 
-  // ── The four independent probes, started together ────────────────
+  // ── The independent probes, started together ─────────────────────
   //
-  // These used to be four sequential `await`s, so the response shipped at the
+  // These used to be sequential `await`s, so the response shipped at the
   // *sum* of their latencies. Nothing below reads anything the probe above it
   // produced, and the cost was not evenly spread: measured against a warm
   // daemon, the whole endpoint was ~120ms and `claude --version` alone was
-  // ~108ms of it. The ACP vendor list is cheap — its PATH lookups are cached
-  // for the process lifetime — but it was computed last, so the New Chat
-  // picker's OpenCode button (the only provider button that comes from this
-  // payload rather than from hardcoded JSX) could not paint until a `claude`
-  // spawn it has nothing to do with had finished. Started together, the
-  // response costs the slowest probe instead of all of them.
+  // ~108ms of it. A cheap probe computed last (the retired ACP harness's
+  // vendor list was one) could not paint until a `claude` spawn it had nothing
+  // to do with had finished. Started together, the response costs the slowest
+  // probe instead of all of them.
   //
   // Each probe carries its own guard rather than relying on a wrapper, because
   // `Promise.all` rejects on the *first* rejection: a shared handler would
@@ -103,8 +100,7 @@ export async function buildSystemInfo({ pkgRoot }: BuildSystemInfoOptions) {
   // `mkdirSync` EACCES (a read-only `$HOME`, or `~/.callboard`
   // removed under a parent nobody can write) therefore throws straight out of
   // the resolver, and before this guard that took the whole payload with it —
-  // including the ACP vendor list the New Chat picker needs, which had already
-  // succeeded. `engine-status.ts` puts the identical `.catch` on the identical
+  // including the probes that had already succeeded. `engine-status.ts` puts the identical `.catch` on the identical
   // call for the identical reason.
   //
   // The fallback is the empty resolution, so an unreadable-settings daemon
@@ -114,8 +110,8 @@ export async function buildSystemInfo({ pkgRoot }: BuildSystemInfoOptions) {
   //
   // The spawn itself lives in `utils/binary-version.ts`, which memoizes it per
   // resolved path and revalidates in the background once the answer is stale.
-  // It is the same argument `adapters/acp/availability.ts` makes for its own
-  // probes: this is a *polled* endpoint, so an `execFile` per poll bought
+  // It is the same argument `utils/binary-path.ts` makes for its cached `which`:
+  // this is a *polled* endpoint, so an `execFile` per poll bought
   // nothing. Keyed on the resolved path rather than the name `claude`, so a
   // user who repoints the binary-override setting is not answered from the old
   // binary's entry — and dropped outright by `POST /api/engines/refresh`
@@ -179,15 +175,7 @@ export async function buildSystemInfo({ pkgRoot }: BuildSystemInfoOptions) {
   // that try block is entered — rather than a claim that the fetch is fragile.
   const sdkInfoProbe = getSdkInfoAsync().catch(() => ({ account: null, models: [], fetchedAt: 0 }));
 
-  // ACP vendors are one kind covering many CLIs, so there is no single
-  // "acpConfigured" flag — the picker needs the per-vendor list. Cached after
-  // the first PATH lookup, so this is cheap on every subsequent poll.
-  //
-  // A failed PATH probe must not take the whole system-info payload down; an
-  // empty list reads as "no ACP vendors", which is the safe answer.
-  const acpProvidersProbe: Promise<Awaited<ReturnType<typeof listAcpProviderAvailability>>> = listAcpProviderAvailability().catch(() => []);
-
-  const [claudeCli, latestVersion, sdkInfo, acpProviders] = await Promise.all([claudeCliProbe, latestVersionProbe, sdkInfoProbe, acpProvidersProbe]);
+  const [claudeCli, latestVersion, sdkInfo] = await Promise.all([claudeCliProbe, latestVersionProbe, sdkInfoProbe]);
   const { binary: claudeCliBinary, version: claudeCliVersion } = claudeCli;
 
   // Whether each native harness is EFFECTIVELY routed through OpenRouter —
@@ -277,10 +265,8 @@ export async function buildSystemInfo({ pkgRoot }: BuildSystemInfoOptions) {
     codexConfigured,
     codexAuthSource,
     codexAuthNote,
-    // Which ACP vendors have their CLI installed. One entry per built-in
-    // preset, present even when unavailable so the picker can say what to
-    // install. Availability here means "the binary resolves", never
-    // "authenticated" — see adapters/acp/availability.ts.
-    acpProviders,
+    // `acpProviders` (the retired ACP harness's vendor list) is no longer
+    // sent. Old bundles read `info.acpProviders ?? []`, so absence reads as
+    // "no ACP vendors".
   };
 }

@@ -56,9 +56,9 @@ let sessionCounter = 0;
  * production looks the adapter up by kind, so injecting under "claude-code"
  * would let a codex chat construct the real Codex adapter.
  */
-async function metadataFor(opts: { provider?: string; acpProviderId?: string; model?: string }): Promise<Record<string, unknown>> {
+async function metadataFor(opts: { provider?: string; model?: string }): Promise<Record<string, unknown>> {
   const sessionId = `provider-model-sess-${++sessionCounter}`;
-  setAgentProviderForTesting(new MockAgentProvider({ events: HEALTHY(sessionId) }), (opts.provider ?? "claude-code") as never, opts.acpProviderId as never);
+  setAgentProviderForTesting(new MockAgentProvider({ events: HEALTHY(sessionId) }), (opts.provider ?? "claude-code") as never);
   const emitter = await sendMessage({ prompt: "build the thing", folder: workDir, ...opts } as never);
   const chatId = await new Promise<string>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("session did not finish within 10s")), 10_000);
@@ -101,11 +101,6 @@ describe("sendMessage pins provider and model into new-chat metadata", () => {
     // next kind to land cannot quietly regress in the same direction.
     expect(await metadataFor({ provider: "claude-code", model: "opus" })).toMatchObject({ model: "opus" });
     expect(await metadataFor({ provider: "pi", model: "some-pi-model" })).toMatchObject({ provider: "pi", model: "some-pi-model" });
-    expect(await metadataFor({ provider: "acp", acpProviderId: "opencode", model: "some-acp-model" })).toMatchObject({
-      provider: "acp",
-      acpProviderId: "opencode",
-      model: "some-acp-model",
-    });
   });
 
   it("omits model entirely when the caller passes none", async () => {

@@ -15,7 +15,7 @@
  * `ROUTABLE_PROVIDER_KINDS` is this list, and the frontend's stored-preference
  * validation reads it — so a new harness is added here, once.
  */
-export const UI_AGENT_PROVIDER_KINDS = ["claude-code", "codex", "acp", "pi"] as const;
+export const UI_AGENT_PROVIDER_KINDS = ["claude-code", "codex", "pi"] as const;
 
 export type UiAgentProviderKind = (typeof UI_AGENT_PROVIDER_KINDS)[number];
 
@@ -43,17 +43,6 @@ export type EffortLevel = "persistent" | "ultra" | "max" | "xhigh" | "high" | "m
  */
 export interface ProviderRunConfig {
   provider?: UiAgentProviderKind;
-  /**
-   * Which ACP vendor runs the chat — `"opencode"`, … Meaningful only
-   * when `provider` is `"acp"`, and required there: `"acp"` is one kind covering
-   * many CLIs, so the kind alone does not identify a harness.
-   *
-   * Optional on this type because every other provider ignores it, not because
-   * it is optional for ACP. `POST /api/stream` rejects `provider: "acp"` without
-   * a valid one rather than falling back, so a chat can never be persisted with
-   * a kind and no vendor.
-   */
-  acpProviderId?: string;
   /**
    * Model for the chat's provider. For "claude-code": an Anthropic model alias
    * ("opus", "sonnet", "haiku", "opusplan") or full model ID (e.g.

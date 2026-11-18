@@ -43,12 +43,27 @@
  * `which` and `--version`, just with a smaller constant. They share one verdict
  * builder so the two cannot answer differently.
  *
+ * ## And "where does this command resolve on PATH?"
+ *
+ * {@link resolveBinaryPath} is the other half of the same question, for a bare
+ * command name rather than a configured path: a cached, shell-free `which`.
+ * Codex login detection uses it to decide whether `codex login` is a command
+ * the user has. It moved here from the retired ACP harness's
+ * `availability.ts`, which is where it was first written (to find vendor CLIs).
+ *
  * @see plans/engine-availability-and-install.md — Phase 4
  */
+import { execFile } from "node:child_process";
 import { accessSync, constants, statSync, type Stats } from "node:fs";
 import { access, stat } from "node:fs/promises";
 import { isAbsolute } from "node:path";
+import { promisify } from "node:util";
 import type { EngineOverrideState } from "shared/types/index.js";
+import { createLogger } from "./logger.js";
+
+const log = createLogger("binary-path");
+
+const execFileAsync = promisify(execFile);
 
 /** What {@link checkBinaryPath} concluded, plus the sentence to show for it. */
 export interface BinaryPathCheck {
@@ -202,4 +217,84 @@ export async function checkBinaryPathAsync(raw: string | undefined, what: string
     executable = false;
   }
   return verdictFor(path, what, fallback, stats, executable);
+}
+
+// ── PATH lookup ─────────────────────────────────────────────────────
+
+/** Resolved absolute path per command, or `null` for "looked, not there". */
+const pathCache = new Map<string, string | null>();
+
+/** In-flight PATH lookups, so concurrent callers share one spawn rather than racing several. */
+const pathProbes = new Map<string, Promise<string | null>>();
+
+/** Bumped by {@link resetBinaryPathCache}; a probe from an older generation never writes. */
+let pathCacheGeneration = 0;
+
+/**
+ * Where does `command` resolve to on PATH, if anywhere?
+ *
+ * `execFile` rather than `exec` so the command name is an argument and never
+ * reaches a shell.
+ *
+ * Cached for the process lifetime — PATH does not change under a running
+ * daemon — until {@link resetBinaryPathCache}, which `POST /api/engines/refresh`
+ * reaches through `resetEngineProbeCaches()` so a CLI installed and then
+ * Rechecked is seen. Holds the resolved *path* rather than a boolean, so a
+ * caller can name the binary it found.
+ *
+ * ## Why it is async
+ *
+ * It was `execFileSync`, and a `which` is only fast while every entry on `PATH`
+ * is: one autofs mount or one dead NFS export makes it arbitrarily slow, and a
+ * synchronous spawn on a single-threaded server stalls every open SSE stream and
+ * in-flight chat rather than just its caller. Measured with a deliberately slow
+ * `which` (2.5s — under the timeout, so this is the stall the daemon *accepts*):
+ * an unrelated `/api/auth/check` took 2.4-2.7s against a 2ms baseline while one
+ * `POST /api/engines/refresh` ran. The `timeout` bounds a hung child, not a slow
+ * one; `killSignal: "SIGKILL"` is what makes even that bound real. Being async is
+ * what keeps the cost on the caller.
+ */
+export async function resolveBinaryPath(command: string): Promise<string | null> {
+  const cached = pathCache.get(command);
+  if (cached !== undefined) return cached;
+  const inFlight = pathProbes.get(command);
+  if (inFlight) return inFlight;
+
+  const generation = pathCacheGeneration;
+  const probe = (async (): Promise<string | null> => {
+    let resolved: string | null = null;
+    try {
+      const which = process.platform === "win32" ? "where" : "which";
+      const { stdout } = await execFileAsync(which, [command], { timeout: 3_000, killSignal: "SIGKILL", encoding: "utf-8", maxBuffer: 1024 * 1024 });
+      // `where` can list several matches; the first line is the one that wins.
+      resolved = stdout.split("\n")[0].trim() || null;
+    } catch {
+      // Non-zero exit is the normal "not found" answer, not an error worth raising.
+      resolved = null;
+    }
+    // A reset cannot cancel a promise already in flight, and a slow probe is the
+    // usual reason someone pressed Recheck — so a probe from before the reset
+    // must neither write its stale answer nor delete its replacement's entry.
+    // Same guard as `binaryVersionLine` in `binary-version.ts`.
+    if (generation === pathCacheGeneration) {
+      pathCache.set(command, resolved);
+      pathProbes.delete(command);
+    }
+    log.debug(`"${command}" ${resolved ? `found at ${resolved}` : "not found"} on PATH`);
+    return resolved;
+  })();
+
+  pathProbes.set(command, probe);
+  return probe;
+}
+
+/**
+ * Forget cached PATH lookups. Production, not only a test seam: reached from
+ * `POST /api/engines/refresh` via `resetEngineProbeCaches()` in
+ * `services/engine-status.ts`.
+ */
+export function resetBinaryPathCache(): void {
+  pathCacheGeneration++;
+  pathCache.clear();
+  pathProbes.clear();
 }

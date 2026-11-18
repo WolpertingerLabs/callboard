@@ -1,32 +1,13 @@
 /**
- * Tool pairing, and specifically the property the ACP plan's synthetic call id
- * exists to protect: a plan snapshot must not capture the next real tool's
- * result.
+ * Tool pairing: by id first, adjacency only for histories that predate ids, and
+ * never a guess when ids are ambiguous.
  *
- * That claim was previously asserted only as "the two plans have different ids",
- * which is a fact about `sessionParser` and not about what happens to the tool
- * standing behind them. It would have held with the pairing completely broken.
- * So the assertions here are on the pairing itself, with the plan messages built
- * the way the parser actually mints them.
- *
- * @see backend/src/agents/adapters/acp/sessionParser.ts (where plan ids come from)
+ * (The retired ACP harness's synthetic `plan` snapshots were once excluded from
+ * pairing here; with the harness gone a tool named `plan` pairs like any other.)
  */
 import { describe, expect, it } from "vitest";
-import { TASK_LIST_TOOLS } from "shared/types/index.js";
 import type { ParsedMessage } from "../api";
 import { groupToolMessages, type ToolGroup } from "./toolGrouping";
-
-/** The reserved namespace `acp/sessionParser.ts` mints plan ids in. */
-const planId = (n: number) => `\u0000callboard:${TASK_LIST_TOOLS.acp}-${n}`;
-
-const plan = (n: number): ParsedMessage =>
-  ({
-    role: "assistant",
-    type: "tool_use",
-    toolName: TASK_LIST_TOOLS.acp,
-    toolUseId: planId(n),
-    content: JSON.stringify({ entries: [{ content: "Ship it", priority: "high", status: "in_progress" }] }),
-  }) as ParsedMessage;
 
 const toolUse = (toolUseId: string, toolName = "Bash"): ParsedMessage =>
   ({ role: "assistant", type: "tool_use", toolName, toolUseId, content: JSON.stringify({ command: "ls" }) }) as ParsedMessage;
@@ -34,54 +15,6 @@ const toolUse = (toolUseId: string, toolName = "Bash"): ParsedMessage =>
 const toolResult = (toolUseId: string, content: string): ParsedMessage => ({ role: "user", type: "tool_result", toolUseId, content }) as ParsedMessage;
 
 const groups = (items: ReturnType<typeof groupToolMessages>): ToolGroup[] => items.filter((item): item is ToolGroup => item.kind === "tool_group");
-
-describe("a plan snapshot cannot swallow a real tool's result", () => {
-  it("the result goes to the tool that ran, not to the plan sitting in front of it", () => {
-    // The transcript shape a plan-then-work turn produces: ACP sends the plan as
-    // a session update (no tool ran), the agent then calls a tool, and the
-    // tool's result arrives after. Nothing pairs the plan with anything.
-    const items = groupToolMessages([plan(0), toolUse("c1"), toolResult("c1", "the real output")]);
-
-    const [planGroup, bashGroup] = groups(items);
-    expect(planGroup.toolUse.toolName).toBe(TASK_LIST_TOOLS.acp);
-    expect(planGroup.toolResult).toBeNull();
-    expect(bashGroup.toolUse.toolUseId).toBe("c1");
-    expect(bashGroup.toolResult?.content).toBe("the real output");
-  });
-
-  it("a plan immediately followed by a foreign result leaves that result unclaimed", () => {
-    // This is the case the synthetic id buys. With no id on the plan, the
-    // adjacency fallback fires and the plan takes the result — and because the
-    // checklist renders without ever reading `toolResult`, the output would not
-    // be misplaced, it would be gone.
-    const items = groupToolMessages([plan(0), toolResult("c1", "belongs to something else")]);
-
-    const [planGroup] = groups(items);
-    expect(planGroup.toolResult).toBeNull();
-    expect(items.some((item) => item.kind === "single" && item.message.content === "belongs to something else")).toBe(true);
-  });
-
-  it("consecutive plans stay separate rather than collapsing into one", () => {
-    // Two snapshots in a row is the normal case — a plan and its first update.
-    const items = groupToolMessages([plan(0), plan(1), toolUse("c1"), toolResult("c1", "the real output")]);
-
-    const paired = groups(items);
-    expect(paired.map((g) => g.toolUse.toolUseId)).toEqual([planId(0), planId(1), "c1"]);
-    expect(paired.filter((g) => g.toolResult !== null)).toHaveLength(1);
-  });
-
-  it("an agent tool that names itself plan-0 keeps its own result", () => {
-    // The collision the reserved namespace rules out: ACP's ToolCallId is
-    // agent-chosen, so `plan-0` is a name an agent can genuinely pick. Its
-    // result must reach it and not the checklist above it.
-    const items = groupToolMessages([plan(0), toolUse("plan-0", "make_a_plan"), toolResult("plan-0", "the agent's own output")]);
-
-    const [planGroup, agentGroup] = groups(items);
-    expect(planGroup.toolResult).toBeNull();
-    expect(agentGroup.toolUse.toolName).toBe("make_a_plan");
-    expect(agentGroup.toolResult?.content).toBe("the agent's own output");
-  });
-});
 
 describe("ordinary tool pairing", () => {
   it("matches by id across intervening messages rather than by position", () => {
@@ -154,14 +87,11 @@ describe("stable IDs across mixed and replayed histories", () => {
     expect(items[1]).toMatchObject({ kind: "single", originalIndex: 1, message: { content: "not owned" } });
   });
 
-  it("never pairs synthetic or legacy ACP plans, even with an ID-less or matching result", () => {
-    for (const use of [plan(0), { ...plan(0), toolUseId: undefined }]) {
-      for (const result of [toolResult("", "legacy output"), toolResult(planId(0), "reserved")]) {
-        const items = groupToolMessages([use, result]);
-        expect(groups(items)[0].toolResult).toBeNull();
-        expect(items).toHaveLength(2);
-      }
-    }
+  it("pairs a tool named plan like any other, by id and by legacy adjacency", () => {
+    const byId = groupToolMessages([toolUse("p1", "plan"), toolResult("p1", "planned")]);
+    expect(groups(byId)[0].toolResult?.content).toBe("planned");
+    const idless = groupToolMessages([toolUse("", "plan"), toolResult("", "legacy output")]);
+    expect(groups(idless)[0].toolResult?.content).toBe("legacy output");
   });
 
   it("does not use message IDs, mismatched IDs, or non-adjacent ID-less fallback", () => {

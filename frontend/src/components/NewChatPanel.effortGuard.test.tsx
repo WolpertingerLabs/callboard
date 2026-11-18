@@ -19,7 +19,7 @@ import { addRecentDirectory, saveDefaultOpenRouterEffort, saveDefaultProvider, t
 function serve(efforts: string[] | null) {
   return vi.fn((url: string) => {
     const path = String(url);
-    if (path.includes("/system-info")) return Promise.resolve({ ok: true, json: async () => ({ version: "1.0.0", acpProviders: [], codexConfigured: true }) });
+    if (path.includes("/system-info")) return Promise.resolve({ ok: true, json: async () => ({ version: "1.0.0", codexConfigured: true }) });
     if (path.includes("/codex/reasoning")) {
       if (efforts === null) return new Promise(() => {});
       return Promise.resolve({ ok: true, json: async () => ({ provider: "codex", route: "codex", status: "known", efforts, message: "" }) });

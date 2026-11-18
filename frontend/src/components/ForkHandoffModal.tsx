@@ -10,7 +10,7 @@ interface Props {
   target: ForkProvider | null;
   /**
    * The chat's own harness, named in the explanation. `null` for a chat that
-   * cannot be forked at all (ACP).
+   * cannot be forked at all (a retired harness).
    */
   from: ForkProvider | null;
   onCancel: () => void;

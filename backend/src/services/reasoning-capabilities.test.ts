@@ -85,8 +85,8 @@ describe("effective reasoning resolution", () => {
     expect(cap.efforts).not.toContain("max");
     expect(cap.efforts).not.toContain("ultra");
   });
-  it("the retired cline harness exposes no reasoning effort", async () => {
-    const cap = await resolveReasoningCapability({ provider: "cline", model: "vendor/routed" });
+  it.each(["cline", "acp"])("the retired %s harness exposes no reasoning effort", async (provider) => {
+    const cap = await resolveReasoningCapability({ provider, model: "vendor/routed" });
     expect(cap.efforts).toEqual([]);
     expect(cap.message).toContain("does not expose");
   });

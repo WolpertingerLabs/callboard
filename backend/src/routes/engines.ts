@@ -2,8 +2,9 @@
  * Engine status API — `GET /api/engines`.
  *
  * Its own route rather than more fields on `/api/system-info`: system-info is
- * polled by several pages and already carries `acpProviders` /
- * `codexConfigured` / `codexAuthSource`, which older browser bundles read and
+ * polled by several pages and already carries
+ * `codexConfigured` / `codexAuthSource` (and, until the ACP harness was
+ * retired, `acpProviders`), which older browser bundles read and
  * which this feature deliberately does not touch. Engine status runs at a
  * different cadence — it hits the npm registry and the filesystem — so it gets
  * its own route and its own cache.
@@ -134,7 +135,7 @@ enginesRouter.get("/binary-check", async (req, res) => {
  * beyond the response: five module-level caches are cleared, and the next chat
  * that starts sees the new resolution too. `?refresh=1` only bypasses the npm
  * registry cache, which is a different and much weaker claim — a user who has
- * just installed `opencode` and presses that gets the same "not installed" back.
+ * just installed `claude` and presses that gets the same "not installed" back.
  *
  * ## What it costs, stated accurately
  *
@@ -154,7 +155,7 @@ enginesRouter.get("/binary-check", async (req, res) => {
 enginesRouter.post("/refresh", async (req, res) => {
   // #swagger.tags = ['System']
   // #swagger.summary = 'Re-probe every engine, ignoring cached lookups'
-  // #swagger.description = 'Clears the process-lifetime caches that memoize where each engine binary resolved (ACP PATH lookups and version probes, the Claude Code executable path handed to the Agent SDK, the separate claude binary lookup used by the login prompt, and the cached Agent SDK account info), then re-assembles every engine status with a fresh npm registry fetch. This is what makes an engine a user just installed - or a login they just completed - visible without restarting the daemon. Installs nothing. Rate-limited to one real probe every 10 seconds; inside that window the cached statuses are returned with probed:false.'
+  // #swagger.description = 'Clears the process-lifetime caches that memoize where each engine binary resolved (the cached PATH lookup behind Codex login detection, the Claude Code executable path handed to the Agent SDK, the separate claude binary lookup used by the login prompt, and the cached Agent SDK account info), then re-assembles every engine status with a fresh npm registry fetch. This is what makes an engine a user just installed - or a login they just completed - visible without restarting the daemon. Installs nothing. Rate-limited to one real probe every 10 seconds; inside that window the cached statuses are returned with probed:false.'
   /* #swagger.responses[200] = { description: 'Engine statuses, with probed:false when the call was coalesced or throttled' } */
   try {
     const { engines, probed, retryAfterMs } = await refreshEngineStatuses({ capability: await capabilityFor(req) });

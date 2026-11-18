@@ -86,7 +86,7 @@ export interface ExecuteAgentResult {
  * Returns the chatId of the new session, or null if it failed.
  */
 export async function executeAgent(opts: ExecuteAgentOptions): Promise<ExecuteAgentResult | null> {
-  const { agentAlias, prompt, triggeredBy, metadata, maxTurns, provider, acpProviderId, model, effort, requireExplicitCompletion } = opts;
+  const { agentAlias, prompt, triggeredBy, metadata, maxTurns, provider, model, effort, requireExplicitCompletion } = opts;
 
   try {
     const config = getAgent(agentAlias);
@@ -122,7 +122,6 @@ export async function executeAgent(opts: ExecuteAgentOptions): Promise<ExecuteAg
       triggeredBy,
       defaultPermissions: unattendedPermissions(),
       ...(provider && { provider }),
-      ...(provider === "acp" && acpProviderId && { acpProviderId }),
       ...(model && { model }),
       ...(effort && { effort }),
       ...(requireExplicitCompletion === true && { requireExplicitCompletion: true }),

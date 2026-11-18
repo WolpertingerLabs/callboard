@@ -73,8 +73,9 @@ export interface AgentSettingsRead {
 
 /**
  * Settings of removed features, stripped on read; see {@link readAgentSettings}.
- * The cloudflared remote-access tunnel, and the retired Cline harness (whose
- * `clineApiKey` is a stored secret — dropping it is the point, not a side effect).
+ * The cloudflared remote-access tunnel, and the retired Cline and ACP harnesses
+ * (whose `clineApiKey` and `acpOpenRouterApiKey` are stored secrets — dropping
+ * them is the point, not a side effect).
  */
 export const RETIRED_SETTING_KEYS = [
   "remoteAccessEnabled",
@@ -86,6 +87,9 @@ export const RETIRED_SETTING_KEYS = [
   "clineApiKey",
   "clineBaseUrl",
   "clineMaxIterations",
+  "acpUseOpenRouter",
+  "acpOpenRouterApiKey",
+  "acpProviderModels",
 ] as const;
 
 /**
@@ -125,7 +129,8 @@ export function readAgentSettings(): AgentSettingsRead {
   try {
     const raw = JSON.parse(readFileSync(SETTINGS_FILE, "utf-8"));
     // Fields of removed features (see RETIRED_SETTING_KEYS). Dropped on read so
-    // GET never echoes them (`cloudflaredToken` and `clineApiKey` are no longer
+    // GET never echoes them (`cloudflaredToken`, `clineApiKey` and
+    // `acpOpenRouterApiKey` are no longer
     // masked secret fields) and the next save, which writes the read-back
     // object, purges them.
     for (const key of RETIRED_SETTING_KEYS) delete raw[key];

@@ -183,7 +183,7 @@ describe("the reviewer cannot approve what it did not see", () => {
     expect(complete.mock.calls[0][0].systemPrompt).toMatch(/truncated[\s\S]*never approve/i);
   });
 
-  it.each([[{}], [undefined as unknown as Record<string, unknown>]])("empty or missing input (ACP with no rawInput): approve → escalate", async (input) => {
+  it.each([[{}], [undefined as unknown as Record<string, unknown>]])("empty or missing input (e.g. no rawInput): approve → escalate", async (input) => {
     const verdict = await reviewToolCall({ ...REQ, input }, { complete: answering('{"verdict":"approve","reason":"fine"}') });
     expect(verdict).toMatchObject({ verdict: "escalate" });
     expect(verdict.reason).toMatch(/no input/);
@@ -248,7 +248,7 @@ describe("detectHardStop — per-engine input shapes", () => {
     expect(kill("apply_patch", { input: "*** Begin Patch\n*** Update File: src/git.ts\n@@\n-a\n+b\n*** End Patch" })).toBeNull();
   });
 
-  it("ACP/OpenCode: {command}, {filePath}, unified diffs", () => {
+  it("{command}, {filePath}, unified diffs (the retired ACP/OpenCode shapes, kept as generic coverage)", () => {
     expect(kill("bash", { command: "pkill -f callboard" })).toBe("kill");
     expect(kill("write", { filePath: "/repo/.git/index", content: "" })).toBe("kill");
     expect(kill("edit", { filePath: "/Users/someone/.callboard/config.json", oldString: "a", newString: "b" })).toBe("kill");

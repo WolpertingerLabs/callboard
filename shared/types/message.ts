@@ -111,28 +111,23 @@ export interface ParsedMessage {
    *   claude-code  cache read ✓  cache write ✓
    *   codex        cache read ✓  cache write ✗ — OpenAI bills no cache writes
    *                                             and reports no such metric
-   *   acp          cache read ~  cache write ~ — both optional in the schema;
-   *                                             blank for a vendor that omits them
    *   pi           cache read ✓  cache write ✓
    *
    * ## What an *existing* chat shows
    *
    * Populating these fields per engine is a **parser** change, so it reaches a
-   * chat already on disk only if the number is still on disk. It is for pi and
-   * it is not for ACP, and the difference is where each engine's
-   * transcript sits relative to translation:
+   * chat already on disk only if the number is still on disk. It was for pi and
+   * it was not for the retired ACP harness, and the difference is where each
+   * engine's transcript sits relative to translation:
    *
    * - **pi** — retroactive. A pi session file is pi's own format, and it has
    *   always recorded `usage`, `stopReason`, `responseId` and the `cost`
    *   breakdown. The parser was simply not reading them, so existing pi chats
    *   light up on reparse with no migration.
-   * - **acp** — forward-only. Its transcripts store callboard's own
-   *   already-normalized `AgentEvent`s, so whatever the *writer* dropped is gone
-   *   before the file is written. A stored ACP result line on this machine reads
-   *   `{"type":"result","status":"success","usage":{"inputTokens":2,
-   *   "outputTokens":1241}}` — the cache figures and the stop reason were
-   *   discarded at write time and no parser can recover them. Chats started
-   *   before this change keep showing dashes in those columns; new ones do not.
+   * - **acp** (retired) — was forward-only. Its transcripts stored callboard's own
+   *   already-normalized `AgentEvent`s, so whatever the *writer* dropped was
+   *   gone before the file was written — the general lesson for any engine
+   *   whose transcript callboard writes itself.
    *
    * Worth knowing before reading a blank column as a bug in the fix.
    */
@@ -147,9 +142,9 @@ export interface ParsedMessage {
   /**
    * USD cost for this response, when the adapter exposes it.
    *
-   * Reported by **pi** (from `usage.cost.total`) and **acp** (from a
-   * `usage_update` that carries a USD amount) — both differenced or taken per-turn so a row shows its own
-   * spend rather than the chat's.
+   * Reported by **pi** (from `usage.cost.total`), taken per-turn so a row shows
+   * its own spend rather than the chat's. (The retired ACP harness also
+   * reported one.)
    *
    * Never populated for **claude-code** or **codex**, and not for want of
    * trying: the Agent SDK's JSONL records no cost field anywhere (surveyed
@@ -180,9 +175,8 @@ export interface ParsedMessage {
    * this build has not seen must still render. Parsers translate into the three
    * names above **only** when the engine reports the same closed concept under a
    * different spelling — pi's `stop`/`length`/`toolUse` do, and are renamed.
-   * Everything else passes through verbatim: ACP already uses these names for
-   * the values that overlap and has its own (`refusal`, `cancelled`) for the
-   * rest.
+   * Everything else passes through verbatim (the retired ACP harness, for
+   * instance, sent `refusal` and `cancelled` alongside these names).
    *
    * A vocabulary that describes something other than why the *model* stopped
    * is namespaced, not translated. The retired Cline harness reported why its
@@ -212,8 +206,8 @@ export interface ParsedMessage {
    * Code takes it from the JSONL line, Codex from the rollout's `turn_id`, pi
    * from the provider's `responseId`.
    *
-   * Never synthesized. ACP mints no request id, so this
-   * stays unset for it and the panel's Req ID column shows a dash — an id
+   * Never synthesized. An engine that mints no request id (the retired ACP
+   * harness was one) leaves this unset, and the panel's Req ID column shows a dash — an id
    * callboard invented would look like one a user could quote to a vendor.
    * Row *grouping* is a separate concern and uses {@link generationKey}.
    */
@@ -233,8 +227,8 @@ export interface ParsedMessage {
    * several session files and a bare index would merge entry 0 of one with entry
    * 0 of the next into a single row.
    *
-   * ACP mints **none**. A positional turn key was added for it (and the retired
-   * Cline harness) and then removed: the panel's `__ungrouped_N` fallback
+   * The retired ACP and Cline harnesses minted **none**. A positional turn key
+   * was added for them and then removed: the panel's `__ungrouped_N` fallback
    * already numbers rows per message, and the parser annotates exactly one
    * message per turn, so the key
    * changed the row count from N to N. Only mint one where an engine really does
