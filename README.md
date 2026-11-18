@@ -86,6 +86,8 @@ Callboard never touches OpenCode's credential file. Settings → API → OpenCod
 
 Callboard can check that `opencode` is installed but not whether you're signed in. If you never signed in, the first message fails with OpenCode's own error.
 
+Callboard was last validated with OpenCode **1.19.6** (the `opencode-ai` npm package). OpenCode V2, the 2.x binary distribution, isn't supported yet.
+
 ### Binary path fields
 
 The Claude Code and Codex **Binary path** fields only accept a path that is absolute, exists, is a regular file, and is executable by the daemon's user. If the path fails a check, Callboard ignores it and the card explains why. Changes apply to the next chat.
