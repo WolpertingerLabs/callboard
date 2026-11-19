@@ -306,6 +306,18 @@ const TREE_REFRESH_INTERVAL_MS = 10_000;
 /** Even right after a quiet spell, wait this long so a burst of ticks costs one request. */
 const TREE_REFRESH_MIN_DELAY_MS = 1_000;
 
+/**
+ * Whether a prompt is a slash command — which a quote must not be put in front
+ * of. Judged against the known commands; before that list has loaded (it is
+ * fetched with the chat) anything shaped like one counts, so a command sent
+ * in that window still runs. "Shaped like one" ends at whitespace, so a
+ * path such as `/tmp/x` is still prose.
+ */
+function leadsWithCommand(prompt: string, commands: string[]): boolean {
+  if (commands.length === 0) return /^\s*\/[\w:-]+(?:\s|$)/.test(prompt);
+  return parseLeadingCommand(prompt, commands).command !== null;
+}
+
 export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -2709,6 +2721,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
         await readSSE(res.body, controller.signal);
       } catch (err: any) {
+        // Deliberately no `onRefused` on an AbortError: an abort (Stop, a newer
+        // send, leaving the chat) can't tell whether the daemon got the message.
         if (err.name !== "AbortError") {
           if (!id && !answered && !notFromComposer) restoreNewChatComposer(prompt, images);
           if (!answered) onRefused?.();
@@ -2793,7 +2807,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const handleComposerSend = useCallback(
     (prompt: string, images?: File[]) => {
       const quotes = id ? getQuotes(id) : [];
-      if (!id || quotes.length === 0 || sendBlockedReason || parseLeadingCommand(prompt, allSlashCommands).command !== null) {
+      if (!id || quotes.length === 0 || sendBlockedReason || leadsWithCommand(prompt, allSlashCommands)) {
         return handleSend(prompt, images);
       }
       const chatId = id;
@@ -4327,10 +4341,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
       <ConfirmModal
         isOpen={branchChangeConfirm.isOpen}
-        onClose={() => {
-          branchChangeConfirm.onRefused?.();
-          setBranchChangeConfirm({ isOpen: false, prompt: "", message: "" });
-        }}
+        onClose={() => setBranchChangeConfirm({ isOpen: false, prompt: "", message: "" })}
+        // Only backing out hands the quotes and question back: Confirm also
+        // closes the modal, and its retry carries `onRefused` on instead.
+        onCancel={branchChangeConfirm.onRefused}
         onConfirm={handleConfirmBranchChange}
         title="Uncommitted Changes Detected"
         message={branchChangeConfirm.message}
@@ -4340,10 +4354,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
       <ConfirmModal
         isOpen={branchDriftConfirm.isOpen}
-        onClose={() => {
-          branchDriftConfirm.onRefused?.();
-          setBranchDriftConfirm({ isOpen: false, prompt: "", message: "" });
-        }}
+        onClose={() => setBranchDriftConfirm({ isOpen: false, prompt: "", message: "" })}
+        // Only backing out hands the quotes and question back: Confirm also
+        // closes the modal, and its retry carries `onRefused` on instead.
+        onCancel={branchDriftConfirm.onRefused}
         onConfirm={handleConfirmBranchDrift}
         title="Branch Changed"
         message={branchDriftConfirm.message}

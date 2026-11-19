@@ -23,11 +23,13 @@ const Q1 = "2026-01-01T10:00:00.000Z";
 const A1 = "2026-01-01T10:00:01.000Z";
 const S1 = "2026-01-01T10:00:02.000Z";
 const focusComposer = vi.fn();
+/** The chat's commands as the server lists them; empty is "not loaded yet". */
+let chatSlashCommands: string[] = ["compact"];
 
 vi.mock("../api/computerUse", () => ({ computerUseClient: { status: vi.fn(), open: vi.fn(), observe: vi.fn(), control: vi.fn(), action: vi.fn() } }));
 vi.mock("../api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../api")>()),
-  getChat: vi.fn(async (id: string) => ({ id, title: "Work", folder: "/tmp", is_git_repo: true, metadata: "{}", slash_commands: ["compact"] })),
+  getChat: vi.fn(async (id: string) => ({ id, title: "Work", folder: "/tmp", is_git_repo: true, metadata: "{}", slash_commands: chatSlashCommands })),
   getChatTree: vi.fn(async (id: string) => ({
     targetChatId: id,
     rootChatId: id,
@@ -94,7 +96,8 @@ vi.mock("../components/PromptInput", async (importOriginal) => {
 vi.mock("../components/GitDiffView", () => ({ default: () => <div /> }));
 vi.mock("../components/ChatDebugPanel", () => ({ default: () => <div /> }));
 
-type Reply = "ok" | "refuse" | "throw" | "drift" | "uncommitted" | Promise<"refuse">;
+type Settled = "ok" | "refuse" | "throw" | "drift" | "uncommitted";
+type Reply = Settled | Promise<Settled>;
 let replies: Reply[] = [];
 const respond = (status: number, body: unknown) => ({ ok: false, status, body: null, json: async () => body });
 
@@ -140,6 +143,7 @@ const QUOTED = `> **${origin}:**\n> first`;
 
 beforeEach(() => {
   replies = [];
+  chatSlashCommands = ["compact"];
   resetQuoteTraysForTests();
   Object.defineProperty(window, "innerWidth", { value: 1200, configurable: true });
   Element.prototype.scrollTo = vi.fn();
@@ -268,6 +272,47 @@ it.each([
   expect(sentPrompts()[1]).toBe(`${QUOTED}\n\nWhy?`);
   await waitFor(() => expect(getQuotes("original")).toHaveLength(1));
   expect(composer().value).toBe("Why?");
+});
+
+it.each([
+  ["drift", "Branch Changed", "Continue Anyway"],
+  ["uncommitted", "Uncommitted Changes Detected", "Switch Branch Anyway"],
+] as const)("a %s 409: a confirmed retry that goes through leaves the tray and composer empty", async (reply, title, confirm) => {
+  let accept!: () => void;
+  replies = [reply, new Promise<Settled>((resolve) => (accept = () => resolve("ok")))];
+  await quoteFromAnswer();
+  type("Why?");
+  send();
+
+  await screen.findByText(title);
+  fireEvent.click(screen.getByRole("button", { name: confirm }));
+  await waitFor(() => expect(sentPrompts()).toHaveLength(2));
+  expect(sentPrompts()[1]).toBe(`${QUOTED}\n\nWhy?`);
+  // Pending: nothing handed back, so nothing can be sent twice.
+  expect(getQuotes("original")).toHaveLength(0);
+  expect(composer().value).toBe("");
+
+  await act(async () => accept());
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 20)));
+  expect(getQuotes("original")).toHaveLength(0);
+  expect(screen.queryByTestId("quote-chip")).toBeNull();
+  expect(composer().value).toBe("");
+  expect(screen.queryByText(title)).toBeNull();
+});
+
+it("treats a command-shaped prompt as a command before the command list has loaded", async () => {
+  chatSlashCommands = [];
+  await quoteFromAnswer();
+  type("/compact keep the API notes");
+  send();
+
+  await waitFor(() => expect(sentPrompts()).toEqual(["/compact keep the API notes"]));
+  expect(getQuotes("original").map((q) => q.text)).toEqual(["first"]);
+
+  // A path is still prose, list or no list.
+  type("/tmp/x is that path");
+  send();
+  await waitFor(() => expect(sentPrompts()[1]).toBe(`${QUOTED}\n\n/tmp/x is that path`));
 });
 
 it("sends a slash command as typed and leaves the tray alone", async () => {

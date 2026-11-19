@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { useRef } from "react";
 import MessageQuoteSelection, { SELECTION_HINT } from "./MessageQuoteSelection";
+import { matchesShortcutLetter } from "./SelectionQuoteToolbar";
 import QuoteTray from "./QuoteTray";
 import { resolveMessageSelection } from "../hooks/useMessageTextSelection";
 import { addQuote, getQuotes, resetQuoteTraysForTests, restoreQuotes, useQuoteTray } from "../hooks/useQuoteTray";
@@ -50,6 +51,7 @@ function Harness({ chatId = "chat-1", messages = MESSAGES, onAsk }: { chatId?: s
           </div>
         ))}
         <p data-testid="outside">not a message</p>
+        <button type="button">elsewhere</button>
       </div>
       <MessageQuoteSelection chatId={chatId} messages={messages} containerRef={containerRef} resetKey={chatId} onAsk={onAsk} />
       <QuoteTray quotes={tray.quotes} onRemove={tray.remove} onClear={tray.clear} />
@@ -260,6 +262,7 @@ describe("selection toolbar and quote tray", () => {
     settle();
     act(() => {
       fireEvent.keyDown(document, { key: "Escape" });
+      vi.advanceTimersByTime(0);
     });
     expect(toolbar()).toBeNull();
     expect(window.getSelection()!.toString()).toBe("first");
@@ -313,6 +316,103 @@ describe("selection toolbar and quote tray", () => {
     });
     expect(onAsk).toHaveBeenCalledTimes(1);
     expect(getQuotes("chat-1").map((q) => q.text)).toEqual(["first", "second"]);
+  });
+
+  it("leads the live hint with the shortcuts that need no toolbar focus", () => {
+    expect(SELECTION_HINT.startsWith("Alt+Q quotes")).toBe(true);
+    expect(SELECTION_HINT.indexOf("Alt+A")).toBeLessThan(SELECTION_HINT.indexOf("Alt+F10"));
+  });
+
+  it("matches the letter the layout typed, falling back to the physical key only for a non-letter", () => {
+    // QWERTY.
+    expect(matchesShortcutLetter({ key: "q", code: "KeyQ" }, "Q")).toBe(true);
+    // AZERTY: the key labelled Q sits where QWERTY's A is, and vice versa.
+    expect(matchesShortcutLetter({ key: "q", code: "KeyA" }, "Q")).toBe(true);
+    expect(matchesShortcutLetter({ key: "a", code: "KeyQ" }, "Q")).toBe(false);
+    expect(matchesShortcutLetter({ key: "a", code: "KeyQ" }, "A")).toBe(true);
+    expect(matchesShortcutLetter({ key: "Q", code: "KeyQ" }, "q")).toBe(true);
+    // macOS Option+letter types a symbol.
+    expect(matchesShortcutLetter({ key: "œ", code: "KeyQ" }, "Q")).toBe(true);
+    expect(matchesShortcutLetter({ key: "å", code: "KeyA" }, "A")).toBe(true);
+    expect(matchesShortcutLetter({ key: "œ", code: "KeyQ" }, "A")).toBe(false);
+  });
+
+  it("on AZERTY, Alt+Q is the key labelled Q and quotes, Alt+A asks", () => {
+    const onAsk = vi.fn();
+    render(<Harness onAsk={onAsk} />);
+    select(para(0), 0, para(0), 5);
+    settle();
+    act(() => {
+      fireEvent.keyDown(document, { key: "a", code: "KeyQ", altKey: true });
+    });
+    expect(onAsk).toHaveBeenCalledTimes(1);
+
+    select(para(1), 0, para(1), 6);
+    settle();
+    act(() => {
+      fireEvent.keyDown(document, { key: "q", code: "KeyA", altKey: true });
+    });
+    expect(onAsk).toHaveBeenCalledTimes(1);
+    expect(getQuotes("chat-1").map((q) => q.text)).toEqual(["first", "second"]);
+  });
+
+  it("gives focus back to where Alt+F10 took it from when the bar closes", () => {
+    render(<Harness />);
+    const elsewhere = screen.getByRole("button", { name: "elsewhere" });
+
+    for (const close of ["quote", "escape"] as const) {
+      elsewhere.focus();
+      select(para(0), 0, para(0), close === "quote" ? 5 : 7);
+      settle();
+      act(() => {
+        fireEvent.keyDown(document, { key: "F10", code: "F10", altKey: true });
+      });
+      expect(toolbar()!.contains(document.activeElement)).toBe(true);
+
+      act(() => {
+        if (close === "quote") fireEvent.click(document.activeElement!);
+        else fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+        vi.advanceTimersByTime(0);
+      });
+      expect(toolbar()).toBeNull();
+      expect(document.activeElement).toBe(elsewhere);
+    }
+  });
+
+  it("leaves focus where Ask put it", () => {
+    const composer = document.createElement("textarea");
+    document.body.appendChild(composer);
+    render(<Harness onAsk={() => composer.focus()} />);
+    screen.getByRole("button", { name: "elsewhere" }).focus();
+    select(para(0), 0, para(0), 5);
+    settle();
+    act(() => {
+      fireEvent.keyDown(document, { key: "F10", code: "F10", altKey: true });
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Ask" }));
+    expect(document.activeElement).toBe(composer);
+    composer.remove();
+  });
+
+  it("leaves the bar up when another listener claimed the Escape (a menu closing)", () => {
+    render(<Harness />);
+    select(para(0), 0, para(0), 5);
+    settle();
+    // Added after the hook's, like a bubble menu opened over the selection.
+    const claim = (e: KeyboardEvent) => e.preventDefault();
+    document.addEventListener("keydown", claim);
+    act(() => {
+      fireEvent.keyDown(document, { key: "Escape" });
+      vi.advanceTimersByTime(0);
+    });
+    document.removeEventListener("keydown", claim);
+    expect(toolbar()).toBeTruthy();
+
+    act(() => {
+      fireEvent.keyDown(document, { key: "Escape" });
+      vi.advanceTimersByTime(0);
+    });
+    expect(toolbar()).toBeNull();
   });
 
   it("ignores the shortcuts with other modifiers held, or with no bar up", () => {

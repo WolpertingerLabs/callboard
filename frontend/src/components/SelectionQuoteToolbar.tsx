@@ -17,8 +17,10 @@
  * moves focus into the bar (the usual "go to toolbar" key), and inside it the
  * arrow keys, Home and End move between buttons (one tab stop, roving).
  * Alt+letter rather than Ctrl/Cmd+Shift+letter: Ctrl+Shift+Q quits Chrome on
- * Windows and Linux, and Cmd+Shift+Q logs out of macOS. Matched on
- * `KeyboardEvent.code`, because Option+letter on a Mac types a symbol.
+ * Windows and Linux, and Cmd+Shift+Q logs out of macOS. See
+ * {@link matchesShortcutLetter} for how the letter is recognised. Focus taken
+ * by Alt+F10 goes back where it came from when the bar closes, unless the
+ * action moved it on (Ask puts it in the composer).
  */
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
@@ -59,6 +61,18 @@ function isEditable(target: EventTarget | null): boolean {
 
 export const shortcutLabel = (letter: string) => `Alt+${letter.toUpperCase()}`;
 
+/**
+ * Whether a key event is the given letter. By the character the layout
+ * produced when that is a plain ASCII letter — so Alt+Q is the key labelled Q
+ * on AZERTY too, where it sits at QWERTY's A — and by the physical key only
+ * when it is not: macOS Option+letter types a symbol (Option+Q is `œ`).
+ */
+export function matchesShortcutLetter(e: Pick<KeyboardEvent, "key" | "code">, letter: string): boolean {
+  const wanted = letter.toUpperCase();
+  if (/^[a-z]$/i.test(e.key)) return e.key.toUpperCase() === wanted;
+  return e.code === `Key${wanted}`;
+}
+
 export default function SelectionQuoteToolbar({ rect, actions }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
   const [active, setActive] = useState(0);
@@ -67,16 +81,33 @@ export default function SelectionQuoteToolbar({ rect, actions }: Props) {
     actionsRef.current = actions;
   }, [actions]);
 
+  /** Where focus was when Alt+F10 took it into the bar. */
+  const returnFocusRef = useRef<HTMLElement | null>(null);
+
+  // Closing (Quote, Escape, the selection going) removes the focused button
+  // and drops focus on <body>; put it back. Not when an action moved it on.
+  useEffect(
+    () => () => {
+      const back = returnFocusRef.current;
+      const now = document.activeElement;
+      if (back?.isConnected && (!now || now === document.body)) back.focus({ preventScroll: true });
+    },
+    [],
+  );
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || isEditable(e.target)) return;
       if (e.code === FOCUS_SHORTCUT.code) {
         e.preventDefault();
-        rootRef.current?.querySelectorAll("button")[0]?.focus();
+        const root = rootRef.current;
+        const from = document.activeElement;
+        if (from instanceof HTMLElement && from !== document.body && !root?.contains(from)) returnFocusRef.current = from;
+        root?.querySelectorAll("button")[0]?.focus();
         setActive(0);
         return;
       }
-      const action = actionsRef.current.find((a) => a.shortcutKey && e.code === `Key${a.shortcutKey.toUpperCase()}`);
+      const action = actionsRef.current.find((a) => a.shortcutKey && matchesShortcutLetter(e, a.shortcutKey));
       if (!action) return;
       e.preventDefault();
       action.onSelect();

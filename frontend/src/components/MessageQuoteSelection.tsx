@@ -34,7 +34,11 @@ interface Props {
 
 export const QUOTE_SHORTCUT = "Q";
 export const ASK_SHORTCUT = "A";
-export const SELECTION_HINT = `Text selected in a message. ${shortcutLabel(QUOTE_SHORTCUT)} quotes it, ${shortcutLabel(ASK_SHORTCUT)} quotes it and asks about it, ${FOCUS_SHORTCUT.label} moves to the toolbar.`;
+/**
+ * Leads with the action shortcuts, which work everywhere: Alt+F10 is taken by
+ * the window manager on some desktops (GNOME), so it comes last, as an extra.
+ */
+export const SELECTION_HINT = `${shortcutLabel(QUOTE_SHORTCUT)} quotes the selected text, ${shortcutLabel(ASK_SHORTCUT)} quotes it and asks about it. ${FOCUS_SHORTCUT.label} moves to the quote toolbar.`;
 
 export default function MessageQuoteSelection({ chatId, messages, containerRef, enabled = true, resetKey, onAsk }: Props) {
   const messagesRef = useRef(messages);

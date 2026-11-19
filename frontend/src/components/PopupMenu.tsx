@@ -74,6 +74,8 @@ export default function PopupMenu({
     const close = () => onCloseRef.current();
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
+      // Claimed, so page-level Escape handlers (the quote bar) leave it be.
+      e.preventDefault();
       close();
       returnFocusRef.current?.current?.focus();
     };

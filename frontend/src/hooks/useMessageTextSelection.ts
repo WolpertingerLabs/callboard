@@ -21,7 +21,8 @@
  *    selection until shortly after the finger lifts. On desktop the
  *    toolbar's `mousedown` is prevented and the selection simply survives.
  *
- * A selection dismissed with Escape stays dismissed until it changes.
+ * A selection dismissed with Escape stays dismissed until it changes. An
+ * Escape another listener has claimed (`preventDefault`) leaves it alone.
  *
  * Callers should keep this hook in a small component of its own: the result
  * changes on every (frame-throttled) scroll while a selection is shown.
@@ -280,8 +281,14 @@ export function useMessageTextSelection({ containerRef, originOf, enabled = true
     };
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Escape" || !rangeRef.current) return;
-      dismissedRef.current = rangeRef.current;
-      dismiss();
+      // Looked at once the event has been through every listener: an Escape
+      // that closed something else (a bubble's copy menu, a popup menu) is
+      // that thing's, and listeners added after this one run after it.
+      setTimeout(() => {
+        if (e.defaultPrevented || !rangeRef.current) return;
+        dismissedRef.current = rangeRef.current;
+        dismiss();
+      }, 0);
     };
     const reposition = () => {
       frame = null;
