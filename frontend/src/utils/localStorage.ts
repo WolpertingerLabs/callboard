@@ -186,6 +186,20 @@ interface LocalStorageData {
    * {@link getArtifactWriteGrant}.
    */
   artifactWriteGrants?: Partial<Record<string, string>>;
+  /** The aside options row's Read only toggle, as last left. Absent = off. */
+  asideReadOnly?: boolean;
+  /**
+   * The last explicit harness/model an aside was asked on — offered as a
+   * one-click recent choice, never pre-selected (the default stays "Same as
+   * chat": a stored model may belong to another harness than the chat's).
+   */
+  asideRecentTarget?: AsideTarget;
+}
+
+/** A harness, and optionally a model on it, for an aside. */
+export interface AsideTarget {
+  provider: UiAgentProviderKind;
+  model?: string;
 }
 
 export type JsonViewMode = "tree" | "pretty" | "raw";
@@ -770,4 +784,25 @@ export function initializeSuggestedDirectories(chatDirectories: string[]): void 
 
     updateStorage({ recentDirectories: suggestedDirs });
   }
+}
+
+export function getAsideReadOnly(): boolean {
+  return getStorageData().asideReadOnly === true;
+}
+
+export function saveAsideReadOnly(on: boolean): void {
+  updateStorage({ asideReadOnly: on });
+}
+
+/** The last explicit aside target, validated on read (the store is JSON another build may have written). */
+export function getAsideRecentTarget(): AsideTarget | null {
+  const stored = getStorageData().asideRecentTarget as unknown;
+  if (!stored || typeof stored !== "object") return null;
+  const { provider, model } = stored as Record<string, unknown>;
+  if (!(UI_AGENT_PROVIDER_KINDS as readonly unknown[]).includes(provider)) return null;
+  return { provider: provider as UiAgentProviderKind, ...(typeof model === "string" && model.trim() && { model: model.trim() }) };
+}
+
+export function saveAsideRecentTarget(target: AsideTarget): void {
+  updateStorage({ asideRecentTarget: { provider: target.provider, ...(target.model?.trim() && { model: target.model.trim() }) } });
 }

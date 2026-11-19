@@ -749,7 +749,7 @@ export async function createAside(id: string, opts: CreateAsideOptions): Promise
       ...(opts.model && { model: opts.model }),
       ...(opts.effort && { effort: opts.effort }),
       ...(opts.chatView !== undefined && { chatView: opts.chatView }),
-      ...(opts.prompt && opts.activePlugins && { activePlugins: opts.activePlugins }),
+      ...(opts.prompt && opts.activePlugins?.length && { activePlugins: opts.activePlugins }),
       // So the quotes' origin lines show the asker's clock, not the daemon's.
       timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     },

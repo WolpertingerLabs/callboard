@@ -47,6 +47,8 @@ import {
   deleteDraft,
   fetchDraftImages,
   forkChat,
+  createAside,
+  AsidesUnsupportedError,
   continueChatFrom,
   rerunChatFrom,
   RerunError,
@@ -67,9 +69,10 @@ import {
 import { readChatRouteState, type ChatRouteState } from "../types/chatRouteState";
 import { assignForkMarkers, forksByTimestamp } from "../utils/forkMarkers";
 import { buildQuotedPrompt } from "../utils/messageQuotes";
-import { clearQuotes, getQuotes, restoreQuotes, useQuoteTray } from "../hooks/useQuoteTray";
+import { clearQuotes, getQuotes, removeQuote, restoreQuotes, useQuoteTray } from "../hooks/useQuoteTray";
 import MessageQuoteSelection from "../components/MessageQuoteSelection";
 import QuoteTray from "../components/QuoteTray";
+import AskAsideControls, { READ_ONLY_PERMISSIONS, type AskAsideOptions } from "../components/AskAsideControls";
 import { providerKindOf, useChatMeta } from "../hooks/useChatMeta";
 import { isRetiredProviderId } from "../utils/retiredProviders";
 import { INTERRUPTED_MESSAGE, useStopController } from "../hooks/useStopController";
@@ -544,6 +547,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const hasReceivedFirstResponseRef = useRef<boolean>(false);
   const currentIdRef = useRef<string | undefined>(id);
+  /** A chat whose run another request started (an aside): read its transcript once when the stream attaches. */
+  const refetchOnAttachRef = useRef<string | null>(null);
   // refreshActivity's request order: issued, and the newest one applied.
   const activityRequestSeqRef = useRef(0);
   const activityAppliedSeqRef = useRef(0);
@@ -1606,6 +1611,15 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         return;
       }
       reading = true;
+      // A chat started by another request (an aside's first turn) may have
+      // emitted before this attach, and /stream does not replay: read the
+      // transcript once now so its opening is not missing until the next update.
+      if (chatId && refetchOnAttachRef.current === chatId) {
+        refetchOnAttachRef.current = null;
+        getMessages(chatId).then((msgs) => {
+          if (currentIdRef.current === chatId) setMessages(Array.isArray(msgs) ? msgs : []);
+        });
+      }
       await readSSE(res.body, controller.signal, onFrame);
     } catch (err: any) {
       if (err.name !== "AbortError") {
@@ -2803,6 +2817,72 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // typed there.
   const quoteTray = useQuoteTray(id);
   const [focusComposer, setFocusComposer] = useState<(() => void) | null>(null);
+
+  // ── Ask as aside ───────────────────────────────────────────────────────
+  // The tray's quotes plus the composer's text become a side question in a
+  // child chat forked at the latest quote (POST /chats/:id/fork, kind aside),
+  // started at once; the page then goes to it (PR 3 opens it in a side panel
+  // instead). Nothing leaves the tray or the composer until the aside exists,
+  // so a refusal has nothing to restore: the quotes and the question are
+  // still where they were.
+  const [asideInFlight, setAsideInFlight] = useState(false);
+  const asideInFlightRef = useRef(false);
+  const [asideError, setAsideError] = useState<string | null>(null);
+  useEffect(() => setAsideError(null), [id]);
+  const handleAskAside = useCallback(
+    async ({ readOnly, target }: AskAsideOptions): Promise<boolean> => {
+      if (!id || asideInFlightRef.current) return false;
+      const chatId = id;
+      const quotes = getQuotes(chatId);
+      if (quotes.length === 0) return false;
+      // Read through the composer's updater form — resolved against its live value.
+      let question = "";
+      promptInputSetValue?.((current) => {
+        question = current;
+        return current;
+      });
+      if (!question.trim()) {
+        setAsideError("Type your question in the composer, then Ask as aside.");
+        focusComposer?.();
+        return false;
+      }
+      asideInFlightRef.current = true;
+      setAsideInFlight(true);
+      setAsideError(null);
+      try {
+        const created = await createAside(chatId, {
+          quotes: quotes.map(({ timestamp, role, text }) => ({ timestamp, role: role === "user" ? "user" : "assistant", text })),
+          prompt: question.trim(),
+          ...(readOnly && { permissions: READ_ONLY_PERMISSIONS }),
+          ...(target && { provider: target.provider, ...(target.model && { model: target.model }) }),
+          chatView: originatingChatView(),
+          activePlugins: activePluginIds,
+        });
+        // Created: the quotes and the question have gone into it.
+        for (const quote of quotes) removeQuote(chatId, quote.id);
+        promptInputSetValue?.((current) => (current === question ? "" : current));
+        if (created.runError) {
+          // The aside exists but its question did not go out: put it in the
+          // aside's composer so resending is one click.
+          if (created.promptText) saveComposerDraft(created.id, created.promptText);
+          window.alert(`The aside was created, but its question could not be sent: ${created.runError}`);
+        } else if (created.started) {
+          refetchOnAttachRef.current = created.id;
+        }
+        onChatListRefresh?.();
+        navigate(`/chat/${created.id}`);
+        return true;
+      } catch (err) {
+        console.error("Failed to create aside:", err);
+        setAsideError(err instanceof AsidesUnsupportedError ? err.message : errorMessage(err, "Failed to create the aside"));
+        return false;
+      } finally {
+        asideInFlightRef.current = false;
+        setAsideInFlight(false);
+      }
+    },
+    [id, promptInputSetValue, focusComposer, activePluginIds, onChatListRefresh, navigate],
+  );
 
   /**
    * The composer's send: the tray's quotes, if any, go first. They leave the
@@ -4156,7 +4236,18 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         <PromptInput
           onSend={handleComposerSend}
           onFocusRequest={setFocusComposer}
-          accessory={<QuoteTray quotes={quoteTray.quotes} onRemove={quoteTray.remove} onClear={quoteTray.clear} />}
+          accessory={
+            <QuoteTray
+              quotes={quoteTray.quotes}
+              onRemove={quoteTray.remove}
+              onClear={quoteTray.clear}
+              actions={
+                id && !nativeAgent && !isRetiredHarness ? (
+                  <AskAsideControls chatProvider={chatProvider} busy={asideInFlight} error={asideError} onAsk={handleAskAside} />
+                ) : undefined
+              }
+            />
+          }
           disabled={!!nativeAgent || (!id && streaming)}
           sendBlockedReason={composerBlockedReason}
           onSaveDraft={handleSaveDraft}
