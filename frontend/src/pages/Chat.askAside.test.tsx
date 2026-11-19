@@ -2,8 +2,8 @@
  * Ask as aside on the real chat page: the quote tray's quotes plus the
  * composer's question go to POST /chats/:id/fork as an aside (kind, fork
  * point, quotes, prompt, time zone, chat view, plugins, permissions, harness),
- * and on success the tray and composer are emptied and the page goes to the
- * aside. A refusal leaves both exactly as they were and says why; an older
+ * and on success the tray and composer are emptied and the aside opens in the
+ * side panel beside this chat (`?aside=`), which stays on screen. A refusal leaves both exactly as they were and says why; an older
  * daemon (a plain fork back) is named; a second click while the first is out
  * sends nothing. Harness as Chat.quoteTray.test.tsx.
  */
@@ -15,6 +15,7 @@ import Chat from "./Chat";
 import { addQuote, getQuotes, resetQuoteTraysForTests } from "../hooks/useQuoteTray";
 import { getAsideRecentTarget, getComposerDraft, saveAsideRecentTarget, saveComposerDraft } from "../utils/localStorage";
 import { getMessages } from "../api";
+import { quoteFromAsideReply } from "../utils/messageQuotes";
 
 const Q1 = "2026-01-01T10:00:00.000Z";
 const A1 = "2026-01-01T10:00:01.000Z";
@@ -160,14 +161,16 @@ function selectIn(text: string, length: number) {
   selectRange(node, 0, node, length);
 }
 
-const composer = () => screen.getByLabelText("Composer") as HTMLInputElement;
+/** The main chat's composer: once the aside panel opens, the aside's own composer is the second. */
+const composer = () => screen.getAllByLabelText("Composer")[0] as HTMLInputElement;
 const type = (value: string) => fireEvent.change(composer(), { target: { value } });
 
 function LocationProbe() {
   const navigate = useNavigate();
+  const { pathname, search } = useLocation();
   return (
     <>
-      <div data-testid="location">{useLocation().pathname}</div>
+      <div data-testid="location">{pathname + search}</div>
       <button type="button" onClick={() => navigate("/chat/other")}>
         go elsewhere
       </button>
@@ -239,11 +242,14 @@ async function quoteAndType(question: string) {
   type(question);
 }
 
-it("creates the aside from the tray and the composer, empties both, and opens it", async () => {
+it("creates the aside from the tray and the composer, empties both, and opens it in the panel", async () => {
   await quoteAndType("Why?");
   fireEvent.click(askButton());
 
-  await waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/chat/aside-1"));
+  await waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/chat/original?aside=aside-1"));
+  expect(screen.getByTestId("aside-panel")).toBeTruthy();
+  // The main chat is still on screen beside it.
+  expect(screen.getAllByText("first answer").length).toBeGreaterThan(0);
   expect(forkBodies()).toEqual([
     {
       timestamp: A1,
@@ -300,7 +306,7 @@ it("sends one request for a double click, and is disabled while it is out", asyn
   fireEvent.click(askButton());
   expect(forkBodies()).toHaveLength(1);
   await act(async () => release());
-  await waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/chat/aside-1"));
+  await waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/chat/original?aside=aside-1"));
   expect(forkBodies()).toHaveLength(1);
 });
 
@@ -321,7 +327,7 @@ it("blocks the composer's own send while the aside is out", async () => {
   fireEvent.click(screen.getByRole("button", { name: "send" }));
   expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url) === "/api/chats/original/message")).toBe(false);
   await act(async () => release());
-  await waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/chat/aside-1"));
+  await waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/chat/original?aside=aside-1"));
 });
 
 it("does not pull the user back from another chat, nor show the request there", async () => {
@@ -371,7 +377,7 @@ it("reads the aside's transcript once on attaching to its stream", async () => {
   await quoteAndType("Why?");
   const before = vi.mocked(getMessages).mock.calls.filter(([id]) => id === "aside-1").length;
   fireEvent.click(askButton());
-  await waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/chat/aside-1"));
+  await waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/chat/original?aside=aside-1"));
   await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url) === "/api/chats/aside-1/stream")).toBe(true));
   // The page's own load, plus the read on attach.
   await waitFor(() => expect(vi.mocked(getMessages).mock.calls.filter(([id]) => id === "aside-1").length - before).toBe(2));
@@ -382,7 +388,7 @@ it("keeps an aside whose question could not be sent, with the text in its compos
   const alert = vi.spyOn(window, "alert").mockImplementation(() => {});
   await quoteAndType("Why?");
   fireEvent.click(askButton());
-  await waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/chat/aside-1"));
+  await waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/chat/original?aside=aside-1"));
   expect(alert).toHaveBeenCalledWith(expect.stringContaining("engine down"));
   expect(getComposerDraft("aside-1")).toBe("> **Assistant:**\n> first\n\nWhy?");
   expect(getQuotes("original")).toHaveLength(0);
@@ -391,7 +397,7 @@ it("keeps an aside whose question could not be sent, with the text in its compos
 it("empties the composer when the question had trailing whitespace", async () => {
   await quoteAndType("Why?  \n");
   fireEvent.click(askButton());
-  await waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/chat/aside-1"));
+  await waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/chat/original?aside=aside-1"));
   expect(forkBodies()[0].prompt).toBe("Why?");
   expect(composer().value).toBe("");
 });
@@ -427,4 +433,27 @@ it("names the plain fork an older daemon made, so it can be deleted", async () =
   await quoteAndType("Why?");
   fireEvent.click(askButton());
   expect((await screen.findByRole("alert")).textContent).toMatch(/created an ordinary fork instead \(not started\), “Fork: Work”, which you can delete/);
+});
+
+it("leaves out, and keeps in the tray, a passage inserted from an aside", async () => {
+  await quoteAndType("Why?");
+  act(() => {
+    addQuote("original", quoteFromAsideReply({ role: "assistant", type: "text", content: "aside says", timestamp: "2026-01-01T12:00:00.000Z" }, "aside-0")!);
+  });
+  fireEvent.click(askButton());
+  await waitFor(() => expect(forkBodies()).toHaveLength(1));
+  expect(forkBodies()[0]).toMatchObject({ timestamp: A1, quotes: [{ timestamp: A1, role: "assistant", text: "first" }] });
+  await waitFor(() => expect(getQuotes("original").map((q) => q.text)).toEqual(["aside says"]));
+});
+
+it("says why when the tray holds only passages inserted from an aside", async () => {
+  render(tree());
+  await screen.findByText("first answer");
+  act(() => {
+    addQuote("original", quoteFromAsideReply({ role: "assistant", type: "text", content: "aside says", timestamp: "2026-01-01T12:00:00.000Z" }, "aside-0")!);
+  });
+  type("Why?");
+  fireEvent.click(askButton());
+  expect((await screen.findByRole("alert")).textContent).toMatch(/inserted from an aside/);
+  expect(forkBodies()).toHaveLength(0);
 });

@@ -6,6 +6,7 @@ import {
   asideTitle,
   parseAsideQuotes,
   quoteTimeFormatter,
+  formatQuoteBlock,
   formatQuoteOrigin,
   formatQuoteTime,
   renderQuotedPrompt,
@@ -47,6 +48,11 @@ describe("renderQuotedPrompt", () => {
   it("labels a system message and an unknown role", () => {
     expect(formatQuoteOrigin({ role: "system", timestamp: "x" })).toBe("System");
     expect(formatQuoteOrigin({ role: "tool", timestamp: "x" })).toBe("Message");
+  });
+
+  it("names a quote by its label, in place of the role, when it has one", () => {
+    expect(formatQuoteOrigin({ role: "assistant", timestamp: "x", label: "Aside reply" })).toBe("Aside reply");
+    expect(formatQuoteBlock({ role: "assistant", timestamp: "x", label: "Aside reply", text: "hi" })).toBe("> **Aside reply:**\n> hi");
   });
 });
 

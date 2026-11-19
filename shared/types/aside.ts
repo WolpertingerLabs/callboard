@@ -53,6 +53,12 @@ export interface QuoteLike {
   timestamp: string;
   role: string;
   text: string;
+  /**
+   * Names the quote's origin in place of the role label — for a passage that
+   * is not from the chat it is sent in (an aside's reply inserted into the
+   * main chat reads `Aside reply, 14:02`).
+   */
+  label?: string;
 }
 
 const ROLE_LABEL: Record<string, string> = { user: "User", assistant: "Assistant", system: "System" };
@@ -111,9 +117,12 @@ export function quoteTimeFormatter(timeZone?: unknown, now?: Date): (iso: string
 }
 
 /** `Assistant, 14:02` — the origin line a quote is introduced by; just the role without a time. */
-export function formatQuoteOrigin(quote: Pick<QuoteLike, "role" | "timestamp">, formatTime: (iso: string) => string | null = quoteTimeFormatter()): string {
+export function formatQuoteOrigin(
+  quote: Pick<QuoteLike, "role" | "timestamp" | "label">,
+  formatTime: (iso: string) => string | null = quoteTimeFormatter(),
+): string {
   const time = formatTime(quote.timestamp);
-  const role = quoteRoleLabel(quote.role);
+  const role = quote.label || quoteRoleLabel(quote.role);
   return time ? `${role}, ${time}` : role;
 }
 

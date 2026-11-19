@@ -5,10 +5,15 @@ import type { ChatTreeNode } from "../api";
 import ProviderBadge from "./ProviderBadge";
 import { STATUS_DOT } from "./ChatTreeList";
 import { ASIDE_ROLE, PRE_COMPRESSION_ROLE, SUPERSEDED_ROLE } from "../utils/chatRewrite";
+import { useAsideActions } from "../contexts/AsideContext";
 
 /**
  * Inline marker under a message that one or more forks branched off: a
  * "N forks" chip opening a menu of those forks, each navigating to its chat.
+ *
+ * Asides open in the chat page's side panel instead (AsideContext), where the
+ * page has one; and while the chip or an aside's row is hovered or focused,
+ * those asides' highlighted passages are emphasised. Forks still navigate.
  *
  * Rows mirror the sidebar's ChatTreeList (status dot, provider badge,
  * title). Keyboard: Arrow keys move between rows, Escape closes and returns
@@ -40,6 +45,7 @@ export function menuLabel(forks: ChatTreeNode[]): string {
 
 export default function ForkPointMarker({ forks, align }: { forks: ChatTreeNode[]; align: "left" | "right" }) {
   const navigate = useNavigate();
+  const asideActions = useAsideActions();
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -75,15 +81,36 @@ export default function ForkPointMarker({ forks, align }: { forks: ChatTreeNode[
   };
 
   const label = markerLabel(forks);
+  const asideIds = forks.filter((f) => f.role === ASIDE_ROLE).map((f) => f.chatId);
+  const loneAside = asideActions && forks.length === 1 && forks[0]!.role === ASIDE_ROLE ? forks[0]!.chatId : null;
+  const emphasize = (ids: readonly string[] | null) => {
+    if (asideActions && asideIds.length > 0) asideActions.emphasizeAsides(ids);
+  };
+  // Anything inside the marker hovered or focused emphasises its asides; a row
+  // narrows that to its own (see the rows below).
+  const wrapHandlers =
+    asideIds.length > 0 && asideActions
+      ? {
+          onMouseEnter: () => emphasize(asideIds),
+          onMouseLeave: () => emphasize(null),
+          onFocus: (e: React.FocusEvent) => {
+            if (e.target === triggerRef.current) emphasize(asideIds);
+          },
+          onBlur: (e: React.FocusEvent) => {
+            if (!wrapRef.current?.contains(e.relatedTarget as Node | null)) emphasize(null);
+          },
+        }
+      : {};
 
   return (
-    <div ref={wrapRef} style={{ position: "relative", marginTop: 4 }}>
+    <div ref={wrapRef} style={{ position: "relative", marginTop: 4 }} {...wrapHandlers}>
       <button
         ref={triggerRef}
-        onClick={() => setOpen((v) => !v)}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        title={`Branched off this message: ${label}`}
+        // A lone aside opens straight away: a one-row menu would be a click for nothing.
+        onClick={() => (loneAside ? asideActions!.openAside(loneAside) : setOpen((v) => !v))}
+        aria-haspopup={loneAside ? undefined : "menu"}
+        aria-expanded={loneAside ? undefined : open}
+        title={loneAside ? `Open the aside about this message: ${forks[0]!.title || "Aside"}` : `Branched off this message: ${label}`}
         style={{
           display: "inline-flex",
           alignItems: "center",
@@ -131,8 +158,11 @@ export default function ForkPointMarker({ forks, align }: { forks: ChatTreeNode[
               className="fork-point-menu-item"
               onClick={() => {
                 setOpen(false);
-                navigate(`/chat/${node.chatId}`);
+                if (node.role === ASIDE_ROLE && asideActions) asideActions.openAside(node.chatId);
+                else navigate(`/chat/${node.chatId}`);
               }}
+              onMouseEnter={node.role === ASIDE_ROLE ? () => emphasize([node.chatId]) : undefined}
+              onFocus={node.role === ASIDE_ROLE ? () => emphasize([node.chatId]) : undefined}
               title={node.title || node.folder}
               style={{
                 display: "flex",

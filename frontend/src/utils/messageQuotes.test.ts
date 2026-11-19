@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { ParsedMessage } from "../api";
 import {
+  ASIDE_REPLY_LABEL,
   buildQuotedPrompt,
   formatQuoteOrigin,
   formatQuoteTime,
   isQuotableMessage,
   isSameQuote,
   normalizeQuoteText,
+  quoteFromAsideReply,
   quoteFromSelection,
   quoteOriginOf,
   type MessageQuote,
@@ -128,5 +130,27 @@ describe("buildQuotedPrompt", () => {
 
   it("is just the quotes when there is no typed text", () => {
     expect(buildQuotedPrompt([quote()], "", NOW)).toBe("> **Assistant, 14:02:**\n> the passage");
+  });
+});
+
+describe("quoteFromAsideReply", () => {
+  it("quotes the whole reply, from the aside, under the aside's label", () => {
+    const quote = quoteFromAsideReply({ role: "assistant", type: "text", content: "  line one  \n\n\n\nline two \n", timestamp: "t" }, "aside-1")!;
+    expect(quote).toMatchObject({
+      messageIndex: -1,
+      timestamp: "t",
+      role: "assistant",
+      text: "  line one\n\nline two",
+      fromChatId: "aside-1",
+      label: ASIDE_REPLY_LABEL,
+    });
+    expect(formatQuoteOrigin({ ...quote, timestamp: "nope" })).toBe("Aside reply");
+  });
+
+  it("is null without text or a timestamp, and is not the same quote as the main chat's own", () => {
+    expect(quoteFromAsideReply({ role: "assistant", type: "text", content: "  ", timestamp: "t" }, "a")).toBeNull();
+    expect(quoteFromAsideReply({ role: "assistant", type: "text", content: "x" }, "a")).toBeNull();
+    const fromAside = quoteFromAsideReply({ role: "assistant", type: "text", content: "x", timestamp: "t" }, "a")!;
+    expect(isSameQuote(fromAside, { ...fromAside, fromChatId: undefined })).toBe(false);
   });
 });
