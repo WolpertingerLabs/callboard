@@ -125,6 +125,12 @@ page was checked:
 | Remount of the main chat | A conditional wrapper would remount it | Page shape is constant: the main chat is always the first child of `.chat-page` |
 | Modals from the embedded chat | `position: fixed`, z-index 1000 | Panel has no `transform`; sheet z-index 40 sits below them |
 
+| `?aside=` naming any chat | Self, unrelated, archived or split-off chats would open as "Aside" | Shown only once a tree requested after it opened lists it as a direct, unarchived aside; otherwise closed in place. No tree yet = pending |
+| A crash in the aside | Would unmount the whole page | `ErrorBoundary` (region) around the embedded chat, reset per aside |
+| Escape from popovers inside the panel | Composer menu and command-chip popover listened on `document` (bubble), after the panel's handler | They claim Escape in the capture phase (`preventDefault`); the panel skips claimed Escapes |
+| Mobile sheet | Content behind it reachable | `aria-modal`, Tab trapped, main `.chat-layout` `inert` (excluded from `isModalOpen` so the quote bar works in the sheet) |
+| View key across sidebar clicks | Any aside-only change kept the view | Only the panel's own navigations (announced target) and Back/Forward keep it |
+
 Nested asides (Ask as aside inside the panel) are not offered.
 
 ## Out of scope (for now)

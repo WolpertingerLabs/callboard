@@ -41,15 +41,17 @@ vi.mock("../api", async (importOriginal) => ({
     tree: id === "original" ? node("original", { children: treeChildren }) : node(id),
   })),
   getMessages: vi.fn(async (id: string) =>
-    id === "original"
-      ? [
-          { role: "user", type: "text", content: "first question", timestamp: Q1 },
-          { role: "assistant", type: "text", content: "first answer", timestamp: A1 },
-        ]
-      : [
-          { role: "user", type: "text", content: "why so?", timestamp: "2026-01-01T11:00:00.000Z" },
-          { role: "assistant", type: "text", content: "because of reasons", timestamp: "2026-01-01T11:00:01.000Z" },
-        ],
+    id === "aside-boom"
+      ? [{ role: "assistant", type: "text", content: "explode", timestamp: "2026-01-01T11:00:01.000Z" }]
+      : id === "original"
+        ? [
+            { role: "user", type: "text", content: "first question", timestamp: Q1 },
+            { role: "assistant", type: "text", content: "first answer", timestamp: A1 },
+          ]
+        : [
+            { role: "user", type: "text", content: "why so?", timestamp: "2026-01-01T11:00:00.000Z" },
+            { role: "assistant", type: "text", content: "because of reasons", timestamp: "2026-01-01T11:00:01.000Z" },
+          ],
   ),
   getPending: vi.fn(async () => null),
   getActivity: vi.fn(async () => ({ activities: [], conditionWatch: null, awaitingChildren: 0 })),
@@ -103,6 +105,16 @@ vi.mock("../components/PromptInput", async (importOriginal) => {
   }
   const real = await importOriginal<typeof import("../components/PromptInput")>();
   return { default: PromptInputStub, parseLeadingCommand: real.parseLeadingCommand };
+});
+// A bubble that crashes, for the error-boundary test: only a message reading "explode".
+vi.mock("../components/MessageBubble", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../components/MessageBubble")>();
+  const Real = real.default;
+  function MaybeExplode(props: React.ComponentProps<typeof Real>) {
+    if (props.message.content === "explode") throw new Error("aside bubble exploded");
+    return <Real {...props} />;
+  }
+  return { ...real, default: MaybeExplode };
 });
 vi.mock("../components/GitDiffView", () => ({ default: () => <div /> }));
 vi.mock("../components/ChatDebugPanel", () => ({ default: () => <div /> }));
@@ -434,5 +446,37 @@ describe("clicking a highlight", () => {
     fireEvent.click(answer, { clientX: 20, clientY: 15, button: 0, detail: 1 });
     await act(async () => {});
     expect(location()).toBe("/chat/original");
+  });
+});
+
+describe("panel containment", () => {
+  it("keeps the main chat when the aside crashes", async () => {
+    treeChildren = [...treeChildren, node("aside-boom", { role: "aside", title: "Aside: boom", forkedAt: A1 })];
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    render(page("/chat/original?aside=aside-boom"));
+    expect(await within(panel()).findByText(/This aside/)).toBeTruthy();
+    expect(screen.getByText("first answer")).toBeTruthy();
+    expect(within(panel()).getByRole("button", { name: /Try again/ })).toBeTruthy();
+  });
+
+  it("makes the main chat inert under the mobile sheet, and only while it is open", async () => {
+    Object.defineProperty(window, "innerWidth", { value: 390, configurable: true });
+    render(page("/chat/original?aside=aside-1"));
+    await within(panel()).findByText("because of reasons");
+    const sheet = screen.getByRole("dialog", { name: "Aside: why so?" });
+    expect(sheet.getAttribute("aria-modal")).toBe("true");
+    const main = document.querySelector(".chat-page > .chat-layout")!;
+    expect(main.hasAttribute("inert")).toBe(true);
+    fireEvent.click(within(panel()).getByRole("button", { name: "Close aside" }));
+    await waitFor(() => expect(main.hasAttribute("inert")).toBe(false));
+  });
+
+  it("scrolls the aside, not the main chat, for keys aimed at the panel itself", async () => {
+    render(page("/chat/original?aside=aside-1"));
+    await within(panel()).findByText("because of reasons");
+    fireEvent.keyDown(panel(), { key: "PageUp" });
+    expect(await within(panel()).findByTitle("Scroll to bottom and resume auto-scroll")).toBeTruthy();
+    const main = document.querySelector(".chat-page > .chat-layout")!;
+    expect(within(main as HTMLElement).queryByTitle("Scroll to bottom and resume auto-scroll")).toBeNull();
   });
 });
