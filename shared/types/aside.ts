@@ -17,7 +17,18 @@ export interface AsideQuote {
   /** "system" since this was added: a daemon before it refuses such a quote (400), never mislabels it. */
   role: "user" | "assistant" | "system";
   text: string;
+  /**
+   * Which repeat of `text` in the message this is — 0 for the first (matched
+   * ignoring whitespace) — so the passage is found again in the right place
+   * when the same words appear more than once. Optional and additive: absent
+   * means the first, which is also what a daemon before it stores (it drops
+   * the key) and what quotes made before it carry.
+   */
+  occurrence?: number;
 }
+
+/** Highest `occurrence` accepted — far past any real repeat count, short of nonsense. */
+export const ASIDE_MAX_OCCURRENCE = 100_000;
 
 /** Most quotes one aside (or one quoted prompt) may carry. */
 export const ASIDE_MAX_QUOTES = 20;
@@ -174,13 +185,17 @@ export function parseAsideQuotes(value: unknown, forkPoint?: string): { ok: true
   const quotes: AsideQuote[] = [];
   for (const [i, raw] of value.entries()) {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ok: false, error: `quotes[${i}] must be an object` };
-    const { timestamp, role, text } = raw as Record<string, unknown>;
+    const { timestamp, role, text, occurrence } = raw as Record<string, unknown>;
     if (typeof timestamp !== "string" || isNaN(new Date(timestamp).getTime())) return { ok: false, error: `quotes[${i}].timestamp must be an ISO timestamp` };
     if (role !== "user" && role !== "assistant" && role !== "system") return { ok: false, error: `quotes[${i}].role must be "user", "assistant" or "system"` };
     if (typeof text !== "string" || !text.trim()) return { ok: false, error: `quotes[${i}].text must be a non-empty string` };
     if (text.length > ASIDE_MAX_QUOTE_CHARS) return { ok: false, error: `quotes[${i}].text is longer than ${ASIDE_MAX_QUOTE_CHARS} characters` };
     if (limitMs !== undefined && new Date(timestamp).getTime() > limitMs) return { ok: false, error: `quotes[${i}] is after the fork point` };
-    quotes.push({ timestamp, role, text });
+    if (occurrence !== undefined && !(Number.isSafeInteger(occurrence) && (occurrence as number) >= 0 && (occurrence as number) <= ASIDE_MAX_OCCURRENCE)) {
+      return { ok: false, error: `quotes[${i}].occurrence must be a whole number from 0 to ${ASIDE_MAX_OCCURRENCE}` };
+    }
+    // 0 is the default: stored only when it says something.
+    quotes.push({ timestamp, role, text, ...(typeof occurrence === "number" && occurrence > 0 && { occurrence }) });
   }
   return { ok: true, quotes };
 }

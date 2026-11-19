@@ -113,7 +113,7 @@ afterEach(() => {
 describe("resolveMessageSelection", () => {
   it("names the one message the selected text is in", () => {
     render(<Harness />);
-    expect(resolveMessageSelection(select(para(1), 0, para(1), 6), container())).toEqual({ messageIndex: 1, text: "second" });
+    expect(resolveMessageSelection(select(para(1), 0, para(1), 6), container())).toEqual({ messageIndex: 1, text: "second", occurrence: 0 });
   });
 
   it("refuses text spread over two messages", () => {
@@ -123,18 +123,18 @@ describe("resolveMessageSelection", () => {
 
   it("accepts a selection that ends at the very start of the next message (triple-click)", () => {
     render(<Harness />);
-    expect(resolveMessageSelection(select(para(0), 0, para(1), 0), container())).toEqual({ messageIndex: 0, text: "first message text" });
+    expect(resolveMessageSelection(select(para(0), 0, para(1), 0), container())).toEqual({ messageIndex: 0, text: "first message text", occurrence: 0 });
   });
 
   it("keeps the metadata line under the bubble out of the text when a drag runs past the body", () => {
     render(<Harness />);
-    expect(resolveMessageSelection(select(para(1), 7, meta(1), 9), container())).toEqual({ messageIndex: 1, text: "message text" });
+    expect(resolveMessageSelection(select(para(1), 7, meta(1), 9), container())).toEqual({ messageIndex: 1, text: "message text", occurrence: 0 });
   });
 
   it("drops text outside every message, and finds nothing in a selection of metadata alone", () => {
     render(<Harness />);
     const outside = screen.getByTestId("outside").firstChild!;
-    expect(resolveMessageSelection(select(para(4), 0, outside, 3), container())).toEqual({ messageIndex: 4, text: "untimestamped text" });
+    expect(resolveMessageSelection(select(para(4), 0, outside, 3), container())).toEqual({ messageIndex: 4, text: "untimestamped text", occurrence: 0 });
     expect(resolveMessageSelection(select(meta(0), 0, meta(0), 9), container())).toBeNull();
   });
 });

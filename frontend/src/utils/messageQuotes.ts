@@ -32,6 +32,12 @@ export interface MessageQuote {
   /** The selected text, normalised by {@link normalizeQuoteText}. */
   text: string;
   /**
+   * Which repeat of `text` in the message this is — 0 for the first; absent
+   * for "the first" too. Lets an aside's highlight land on the passage that
+   * was selected when the same words appear twice. See shared `AsideQuote`.
+   */
+  occurrence?: number;
+  /**
    * Set on a passage from ANOTHER chat (an aside's reply inserted into its
    * main chat): that chat's id. Such a quote has no bubble here — its
    * `messageIndex` is -1 and its timestamp is not this chat's — so it can go
@@ -90,12 +96,12 @@ export function quoteOriginOf(message: ParsedMessage | undefined): QuoteOrigin |
  * between selecting and clicking Quote, and the index may by then address a
  * different message. The timestamp is what an aside forks at.
  */
-export function quoteFromSelection(rawText: string, messageIndex: number, origin: QuoteOrigin | null): MessageQuote | null {
+export function quoteFromSelection(rawText: string, messageIndex: number, origin: QuoteOrigin | null, occurrence?: number): MessageQuote | null {
   if (!origin) return null;
   const text = normalizeQuoteText(rawText);
   if (!text.trim()) return null;
   quoteSeq += 1;
-  return { id: `quote-${quoteSeq}`, messageIndex, timestamp: origin.timestamp, role: origin.role, text };
+  return { id: `quote-${quoteSeq}`, messageIndex, timestamp: origin.timestamp, role: origin.role, text, ...(occurrence && { occurrence }) };
 }
 
 /** The label an aside's reply carries once inserted into the main chat. */
@@ -124,10 +130,17 @@ export function quoteFromAsideReply(message: ParsedMessage, asideChatId: string)
 
 /** Two quotes of the same passage of the same message. */
 export function isSameQuote(
-  a: Pick<MessageQuote, "messageIndex" | "timestamp" | "text" | "fromChatId">,
-  b: Pick<MessageQuote, "messageIndex" | "timestamp" | "text" | "fromChatId">,
+  a: Pick<MessageQuote, "messageIndex" | "timestamp" | "text" | "fromChatId" | "occurrence">,
+  b: Pick<MessageQuote, "messageIndex" | "timestamp" | "text" | "fromChatId" | "occurrence">,
 ) {
-  return a.messageIndex === b.messageIndex && a.timestamp === b.timestamp && a.text === b.text && a.fromChatId === b.fromChatId;
+  // The same words twice in one message are two passages.
+  return (
+    a.messageIndex === b.messageIndex &&
+    a.timestamp === b.timestamp &&
+    a.text === b.text &&
+    a.fromChatId === b.fromChatId &&
+    (a.occurrence ?? 0) === (b.occurrence ?? 0)
+  );
 }
 
 /*

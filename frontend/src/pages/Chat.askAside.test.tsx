@@ -8,7 +8,7 @@
  * sends nothing. Harness as Chat.quoteTray.test.tsx.
  */
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vitest";
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import type { ReactNode } from "react";
 import Chat from "./Chat";
@@ -485,4 +485,30 @@ it("says why when the tray holds only passages inserted from an aside", async ()
   fireEvent.click(askButton());
   expect((await screen.findByRole("alert")).textContent).toMatch(/inserted from an aside/);
   expect(forkBodies()).toHaveLength(0);
+});
+
+it("sends which repeat of a passage was selected, so the highlight lands on it", async () => {
+  const usual = vi.mocked(getMessages).getMockImplementation()!;
+  onTestFinished(() => {
+    vi.mocked(getMessages).mockImplementation(usual);
+  });
+  vi.mocked(getMessages).mockImplementation(async (id: string) =>
+    id === "original"
+      ? [
+          { role: "user", type: "text", content: "first question", timestamp: Q1 },
+          { role: "assistant", type: "text", content: "again and again", timestamp: A1 },
+        ]
+      : [],
+  );
+  render(tree());
+  await screen.findByText("again and again");
+  // The second "again".
+  const node = firstText(screen.getByText("again and again"));
+  selectRange(node, 10, node, 15);
+  fireEvent.click(await screen.findByRole("button", { name: "Quote" }));
+  await screen.findByTestId("quote-chip");
+  type("Why twice?");
+  fireEvent.click(askButton());
+  await waitFor(() => expect(forkBodies()).toHaveLength(1));
+  expect(forkBodies()[0].quotes).toEqual([{ timestamp: A1, role: "assistant", text: "again", occurrence: 1 }]);
 });

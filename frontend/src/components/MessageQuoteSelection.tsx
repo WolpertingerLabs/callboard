@@ -51,7 +51,7 @@ export default function MessageQuoteSelection({ chatId, messages, containerRef, 
   const quote = useCallback(
     (thenAsk: boolean) => {
       if (!selection || !chatId) return;
-      const q = quoteFromSelection(selection.text, selection.messageIndex, selection.origin);
+      const q = quoteFromSelection(selection.text, selection.messageIndex, selection.origin, selection.occurrence);
       if (q) addQuote(chatId, q);
       dismiss(true);
       if (thenAsk) onAsk?.();

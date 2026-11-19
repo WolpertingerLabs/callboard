@@ -3151,7 +3151,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
       setAsideError(null);
       try {
         const created = await createAside(chatId, {
-          quotes: quotes.map(({ timestamp, role, text }) => ({ timestamp, role, text })),
+          quotes: quotes.map(({ timestamp, role, text, occurrence }) => ({ timestamp, role, text, ...(occurrence && { occurrence }) })),
           prompt: question.trim(),
           ...(readOnly && { readOnly: true }),
           ...(target && { provider: target.provider, ...(target.model && { model: target.model }) }),

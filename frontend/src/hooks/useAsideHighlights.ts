@@ -17,9 +17,9 @@
  * Only one Chat instance on a page may own these names. The embedded aside
  * chat passes no asides, so it never paints (or clears) them.
  */
-import { useEffect, useRef, type MutableRefObject, type RefObject } from "react";
+import { useEffect, useMemo, useRef, type MutableRefObject, type RefObject } from "react";
 import type { ParsedMessage } from "../api";
-import { locateAsideRanges, type AsideEntry } from "../utils/asideHighlights";
+import { locateAsides, quoteCandidates, type AsideEntry, type LocatedAsides } from "../utils/asideHighlights";
 
 export const ASIDE_HIGHLIGHT = "aside-quote";
 export const ASIDE_HIGHLIGHT_ACTIVE = "aside-quote-active";
@@ -63,6 +63,12 @@ export function useAsideHighlights({
   const activeRef = useRef(activeIds);
   activeRef.current = activeIds;
   const paintRef = useRef<() => void>(() => {});
+  // The transcript array is replaced on every streamed refetch; what matters
+  // here is only where each quote's message is. Re-locate when that moves —
+  // a quoted bubble's own text changing is caught by the observer below.
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+  const placesKey = useMemo(() => asides.map((a) => a.quotes.map((q) => quoteCandidates(messages, q).join(",")).join(";")).join("|"), [messages, asides]);
 
   useEffect(() => {
     const reg = registry();
@@ -72,9 +78,16 @@ export function useAsideHighlights({
       return;
     }
     let frame: number | null = null;
+    // What the last pass found; re-located only when a change could have moved it.
+    let last: LocatedAsides | null = null;
+    let relocate = true;
     const paint = () => {
       frame = null;
-      const located = locateAsideRanges(container, messages, asides);
+      if (relocate || !last) {
+        last = locateAsides(container, messagesRef.current, asides);
+        relocate = false;
+      }
+      const located = last.ranges;
       rangesRef.current = located;
       const all = [...located.values()].flat();
       if (all.length === 0) reg.highlights.delete(ASIDE_HIGHLIGHT);
@@ -89,9 +102,26 @@ export function useAsideHighlights({
     const schedule = () => {
       if (frame === null) frame = requestAnimationFrame(paint);
     };
+    // Emphasis changes repaint what was found, without finding it again.
     paintRef.current = schedule;
     schedule();
-    const observer = typeof MutationObserver === "undefined" ? null : new MutationObserver(schedule);
+    // A streamed reply mutates the transcript many times a second; most of it
+    // is nowhere near a quote. Re-locate only when a change is inside a
+    // quoted bubble, a painted range has gone stale (its text node replaced),
+    // or a quote is still missing (its bubble may just have rendered).
+    const isStale = (r: Range) => !r.startContainer.isConnected || !r.endContainer.isConnected;
+    const onMutations = (records: MutationRecord[]) => {
+      const prev = last;
+      const affected =
+        !prev ||
+        prev.missing ||
+        [...prev.ranges.values()].some((list) => list.some(isStale)) ||
+        records.some((record) => [...prev.contents].some((content) => content.contains(record.target)));
+      if (!affected) return;
+      relocate = true;
+      schedule();
+    };
+    const observer = typeof MutationObserver === "undefined" ? null : new MutationObserver(onMutations);
     observer?.observe(container, { childList: true, subtree: true, characterData: true });
     return () => {
       if (frame !== null) cancelAnimationFrame(frame);
@@ -101,7 +131,7 @@ export function useAsideHighlights({
       reg.highlights.delete(ASIDE_HIGHLIGHT);
       reg.highlights.delete(ASIDE_HIGHLIGHT_ACTIVE);
     };
-  }, [containerRef, messages, asides, enabled]);
+  }, [containerRef, placesKey, asides, enabled]);
 
   // Emphasis changes repaint without re-observing.
   const activeKey = activeIds.join("\n");

@@ -82,12 +82,41 @@ export function quoteCandidates(messages: readonly ParsedMessage[], quote: Pick<
 
 const WHITESPACE = /\s/;
 
+const strip = (text: string) => text.replace(/\s+/g, "");
+
+/**
+ * Which of the whitespace-insensitive matches of `text` in `content` the
+ * selection `range` is — 0 for the first. Read when the passage is selected,
+ * so a passage that appears more than once in a message is found again in
+ * the right place ({@link findQuoteRange}). Counts the matches that start
+ * before the selection does.
+ */
+export function quoteOccurrence(content: Element, range: Range, text: string): number {
+  const needle = strip(text);
+  if (!needle) return 0;
+  const doc = content.ownerDocument;
+  const before = doc.createRange();
+  before.selectNodeContents(content);
+  // Up to where the selection starts, or nothing if it starts before the content.
+  if (before.comparePoint(range.startContainer, range.startOffset) >= 0) before.setEnd(range.startContainer, range.startOffset);
+  else before.collapse(true);
+  const offset = strip(before.toString()).length;
+  const haystack = strip(content.textContent ?? "");
+  let count = 0;
+  for (let at = haystack.indexOf(needle); at >= 0 && at < offset; at = haystack.indexOf(needle, at + 1)) count++;
+  return count;
+}
+
 /**
  * The range of `text` inside `root`'s text, matched ignoring whitespace, or
  * null when it is not there (the message was edited away, compressed, or the
  * quote predates a re-render that changed its text).
+ *
+ * `occurrence` picks among repeats (see {@link quoteOccurrence}); a quote
+ * without one (made before it was recorded), or one past the last match,
+ * gets the first.
  */
-export function findQuoteRange(root: Element, text: string): Range | null {
+export function findQuoteRange(root: Element, text: string, occurrence = 0): Range | null {
   const needle = text.replace(/\s+/g, "");
   if (!needle) return null;
   const doc = root.ownerDocument;
@@ -106,8 +135,17 @@ export function findQuoteRange(root: Element, text: string): Range | null {
       offsets.push(i);
     }
   }
-  const at = haystack.indexOf(needle);
-  if (at < 0) return null;
+  const first = haystack.indexOf(needle);
+  if (first < 0) return null;
+  let at = first;
+  for (let n = 0; n < occurrence; n++) {
+    const next = haystack.indexOf(needle, at + 1);
+    if (next < 0) {
+      at = first;
+      break;
+    }
+    at = next;
+  }
   const end = at + needle.length - 1;
   const range = doc.createRange();
   range.setStart(nodes[at]!, offsets[at]!);
@@ -115,22 +153,52 @@ export function findQuoteRange(root: Element, text: string): Range | null {
   return range;
 }
 
-/** Each aside's ranges in the transcript rendered under `container`. Quotes that cannot be found are skipped. */
-export function locateAsideRanges(container: Element, messages: readonly ParsedMessage[], asides: readonly AsideEntry[]): Map<string, Range[]> {
-  const out = new Map<string, Range[]>();
+/** What one locating pass found, and what it read to find it. */
+export interface LocatedAsides {
+  /** Each aside's ranges, by aside id; asides with none are left out. */
+  ranges: Map<string, Range[]>;
+  /** The quotable-content elements the ranges are in — a change elsewhere cannot move them. */
+  contents: Set<Element>;
+  /** Some quote was not found: a change anywhere (a bubble rendering late) may bring it. */
+  missing: boolean;
+}
+
+/**
+ * Each aside's ranges in the transcript rendered under `container`. Quotes
+ * that cannot be found are skipped. The quotable-content elements are indexed
+ * by message once per pass, not looked up per quote.
+ */
+export function locateAsides(container: Element, messages: readonly ParsedMessage[], asides: readonly AsideEntry[]): LocatedAsides {
+  const contentByIndex = new Map<number, Element>();
+  for (const wrapper of container.querySelectorAll("[data-message-index]")) {
+    const content = wrapper.querySelector("[data-quote-content]");
+    if (content) contentByIndex.set(Number(wrapper.getAttribute("data-message-index")), content);
+  }
+  const ranges = new Map<string, Range[]>();
+  const contents = new Set<Element>();
+  let missing = false;
   for (const aside of asides) {
-    const ranges: Range[] = [];
+    const found: Range[] = [];
     for (const quote of aside.quotes) {
+      let hit = false;
       for (const index of quoteCandidates(messages, quote)) {
-        const content = container.querySelector(`[data-message-index="${index}"] [data-quote-content]`);
-        const range = content && findQuoteRange(content, quote.text);
+        const content = contentByIndex.get(index);
+        const range = content && findQuoteRange(content, quote.text, quote.occurrence);
         if (range) {
-          ranges.push(range);
+          found.push(range);
+          contents.add(content);
+          hit = true;
           break;
         }
       }
+      if (!hit) missing = true;
     }
-    if (ranges.length > 0) out.set(aside.chatId, ranges);
+    if (found.length > 0) ranges.set(aside.chatId, found);
   }
-  return out;
+  return { ranges, contents, missing };
+}
+
+/** {@link locateAsides}' ranges alone. */
+export function locateAsideRanges(container: Element, messages: readonly ParsedMessage[], asides: readonly AsideEntry[]): Map<string, Range[]> {
+  return locateAsides(container, messages, asides).ranges;
 }

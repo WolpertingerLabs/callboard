@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { ChatTreeNode, ChatTreeResponse, ParsedMessage } from "../api";
-import { asidesOf, findQuoteRange, locateAsideRanges, quoteCandidates } from "./asideHighlights";
+import { asidesOf, findQuoteRange, locateAsideRanges, quoteCandidates, quoteOccurrence } from "./asideHighlights";
 
 const node = (chatId: string, extra: Partial<ChatTreeNode> = {}): ChatTreeNode => ({
   chatId,
@@ -129,5 +129,57 @@ describe("locateAsideRanges", () => {
     expect(located.get("a")!.map((r) => r.toString())).toEqual(["part two"]);
     expect(located.has("b")).toBe(false);
     expect(located.get("c")!.map((r) => r.toString())).toEqual(["question"]);
+  });
+});
+
+describe("repeated passages (occurrence)", () => {
+  afterEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  const html = "<div id=c><p>run the tests, then</p><p>run   the\ntests again</p><p>and run the tests</p></div>";
+
+  it("records which repeat a selection is, ignoring whitespace", () => {
+    document.body.innerHTML = html;
+    const root = document.getElementById("c")!;
+    const ps = root.querySelectorAll("p");
+    const select = (p: Element, from: number, to: number) => {
+      const range = document.createRange();
+      range.setStart(p.firstChild!, from);
+      range.setEnd(p.firstChild!, to);
+      return range;
+    };
+    expect(quoteOccurrence(root, select(ps[0]!, 0, 13), "run the tests")).toBe(0);
+    expect(quoteOccurrence(root, select(ps[1]!, 0, 15), "run the tests")).toBe(1);
+    expect(quoteOccurrence(root, select(ps[2]!, 4, 17), "run the tests")).toBe(2);
+  });
+
+  it("finds the recorded repeat, and the first for none or one past the last", () => {
+    document.body.innerHTML = html;
+    const root = document.getElementById("c")!;
+    const paragraphOf = (r: Range | null) =>
+      r!.startContainer.parentElement === root.children[0] ? 0 : r!.startContainer.parentElement === root.children[1] ? 1 : 2;
+    expect(paragraphOf(findQuoteRange(root, "run the tests"))).toBe(0);
+    expect(paragraphOf(findQuoteRange(root, "run the tests", 1))).toBe(1);
+    expect(paragraphOf(findQuoteRange(root, "run the tests", 2))).toBe(2);
+    expect(paragraphOf(findQuoteRange(root, "run the tests", 7))).toBe(0);
+  });
+
+  it("locates an aside's quote by its occurrence", () => {
+    document.body.innerHTML = `<div id=w><div data-message-index="0"><div data-quote-content>${html}</div></div></div>`;
+    const messages: ParsedMessage[] = [{ role: "assistant", type: "text", content: "", timestamp: "t1" }];
+    const asides = [
+      {
+        chatId: "a",
+        title: "A",
+        status: "stopped" as const,
+        provider: "claude-code",
+        createdAt: "",
+        updatedAt: "",
+        quotes: [{ ...quote("run the tests"), occurrence: 2 }],
+      },
+    ];
+    const [range] = locateAsideRanges(document.getElementById("w")!, messages, asides).get("a")!;
+    expect(range!.startContainer.textContent).toBe("and run the tests");
   });
 });

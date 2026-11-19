@@ -46,9 +46,19 @@ const aside = (chatId: string, text: string): AsideEntry => ({
   quotes: [{ timestamp: "t1", role: "assistant", text }],
 });
 
-function Transcript({ asides, activeIds, body = "alpha beta gamma" }: { asides: AsideEntry[]; activeIds: string[]; body?: string }) {
+function Transcript({
+  asides,
+  activeIds,
+  body = "alpha beta gamma",
+  msgs = messages,
+}: {
+  asides: AsideEntry[];
+  activeIds: string[];
+  body?: string;
+  msgs?: ParsedMessage[];
+}) {
   const ref = useRef<HTMLDivElement>(null);
-  useAsideHighlights({ containerRef: ref, messages, asides, activeIds, enabled: true });
+  useAsideHighlights({ containerRef: ref, messages: msgs, asides, activeIds, enabled: true });
   return (
     <div ref={ref}>
       <div data-message-index="0">
@@ -108,4 +118,28 @@ it("hit-tests a point against the painted ranges", () => {
   const ranges = new Map([["a", [range]]]);
   expect(asideAtPoint(ranges, 20, 15)).toBe("a");
   expect(asideAtPoint(ranges, 60, 15)).toBeNull();
+});
+
+it("does not re-find passages for changes outside quoted bubbles, nor for an equal transcript refetched", async () => {
+  const asides = [aside("a", "alpha")];
+  const { container, rerender } = render(<Transcript asides={asides} activeIds={[]} />);
+  await flush();
+  const first = registry.get(ASIDE_HIGHLIGHT)!.ranges[0];
+
+  // A reply streaming in elsewhere, and the same transcript fetched again.
+  const streaming = document.createElement("div");
+  streaming.textContent = "streaming…";
+  container.firstElementChild!.appendChild(streaming);
+  streaming.textContent = "streaming… more";
+  rerender(<Transcript asides={asides} activeIds={["a"]} msgs={messages.map((m) => ({ ...m }))} />);
+  await flush();
+  // Repainted (the emphasis), from the same ranges.
+  expect(registry.get(ASIDE_HIGHLIGHT_ACTIVE)!.ranges[0]).toBe(first);
+  expect(registry.get(ASIDE_HIGHLIGHT)!.ranges[0]).toBe(first);
+
+  // A change inside the quoted bubble does re-find them.
+  rerender(<Transcript asides={asides} activeIds={["a"]} msgs={messages.map((m) => ({ ...m }))} body="alpha beta gamma delta" />);
+  await flush();
+  expect(registry.get(ASIDE_HIGHLIGHT)!.ranges[0]).not.toBe(first);
+  expect(painted(ASIDE_HIGHLIGHT)).toEqual(["alpha"]);
 });
