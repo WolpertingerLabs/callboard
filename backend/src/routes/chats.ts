@@ -47,7 +47,7 @@ import { getSessionProviders } from "../agents/factory.js";
 import { isRetiredProvider, isRoutableProvider, RETIRED_PROVIDER_LABELS, type InternalProviderKind } from "../agents/ports/AgentProvider.js";
 import { providerLabel } from "../agents/handoff.js";
 import { generateChatTitleFromTranscript } from "../services/quick-completion.js";
-import { ASIDE_MAX_PROMPT_CHARS, ASIDE_ROLE, asideForkPoint, asideTitle, parseAsideQuotes, renderQuotedPrompt, type AsideQuote, type DefaultPermissions } from "shared/types/index.js";
+import { ASIDE_MAX_PROMPT_CHARS, ASIDE_ROLE, asideForkPoint, asideTitle, parseAsideQuotes, quoteTimeFormatter, renderQuotedPrompt, type AsideQuote, type DefaultPermissions } from "shared/types/index.js";
 import { ALL_SPACES, normalizePermissions, isSidebarFolderEligible, parseSidebarFolder, readSidebarFolder, sameSidebarFolder, type ParsedMessage, type Chat as SharedChat, type SpaceAgentScope } from "shared/types/index.js";
 import { createLogger } from "../utils/logger.js";
 import { buildWorkspaceIndex, viewForDirectory } from "../services/workspace-views.js";
@@ -1302,10 +1302,11 @@ chatsRouter.post("/:id/fork", async (req, res) => {
             provider: { type: "string", enum: ["claude-code", "codex", "pi"], description: "Target harness. Omit to fork within the current harness of the chat (higher fidelity). Any routable kind." },
             model: { type: "string", description: "Model for the new chat. Required-ish on a harness switch, where the source model id is meaningless to the target." },
             effort: { type: "string", description: "Reasoning effort for the new chat (codex only)." },
-            kind: { type: "string", enum: ["fork", "aside"], description: "fork (default) or aside. quotes, prompt, permissions and activePlugins are accepted only with aside." },
+            kind: { type: "string", enum: ["fork", "aside"], description: "fork (default) or aside. quotes, prompt, permissions, activePlugins and timeZone are accepted only with aside." },
             quotes: { type: "array", maxItems: 20, items: { type: "object", required: ["timestamp", "role", "text"], properties: { timestamp: { type: "string" }, role: { type: "string", enum: ["user", "assistant"] }, text: { type: "string", maxLength: 10000 } } }, description: "Aside only, required: the quoted passages. `timestamp` must equal the latest of their timestamps (the fork point)." },
             prompt: { type: "string", maxLength: 20000, description: "Aside only: the question. When given, the first turn is started immediately." },
             permissions: { type: "object", description: "Aside only: permissions (full or partial — fileRead, fileWrite, codeExecution, webAccess, computerControl; allow/ask/deny). Merged over the permissions of this chat and capped so no category is looser. Omit to inherit them." },
+            timeZone: { type: "string", description: "Aside only: IANA time zone for the HH:MM on the quote origin lines (the browser zone). Unknown zones fall back to the daemon zone." },
             activePlugins: { type: "array", items: { type: "string" }, description: "Aside with prompt only: active plugin IDs for the first turn, as on POST /chats/:id/message." },
             chatView: { type: "object", description: "Aside with prompt only: the browser chat view binding, as on POST /chats/:id/message." }
           }
@@ -1394,6 +1395,17 @@ chatsRouter.post("/:id/fork", async (req, res) => {
   baseTitle = baseTitle ? baseTitle.replace(/\s+/g, " ").trim() : null;
 
   const asideSpec = aside.aside;
+  // The cap was computed before the effort check awaited. Re-read the parent
+  // now — nothing awaits between here and createChat — and cap again, so a
+  // parent tightened in between cannot leave the aside looser than it is.
+  let asidePermissions = asideSpec?.permissions ?? null;
+  if (asideSpec) {
+    const current = findChat(chat.id, false) as any;
+    if (current) {
+      const again = resolveAsidePermissions(parseChatMetadata(current.metadata).defaultPermissions, req.body.permissions);
+      if (again.ok) asidePermissions = again.permissions;
+    }
+  }
   const forkMeta = {
     session_ids: [newSessionId],
     title: asideSpec
@@ -1436,7 +1448,7 @@ chatsRouter.post("/:id/fork", async (req, res) => {
     ...(asideSpec && {
       asideQuotes: asideSpec.quotes,
       // Inherited unless the request named some, then capped to the parent's.
-      defaultPermissions: asideSpec.permissions ?? undefined,
+      defaultPermissions: asidePermissions ?? undefined,
     }),
   };
 
@@ -1453,7 +1465,8 @@ chatsRouter.post("/:id/fork", async (req, res) => {
     // The aside's question, started now so the user does not send twice. The
     // aside stays either way; a turn that cannot start is reported beside it,
     // with the text, so the client can offer it again.
-    const promptText = renderQuotedPrompt(asideSpec.quotes, asideSpec.prompt);
+    // Origin-line times in the asker's zone; an unknown zone falls back to the daemon's.
+    const promptText = renderQuotedPrompt(asideSpec.quotes, asideSpec.prompt, quoteTimeFormatter(req.body.timeZone));
     let runError: string | undefined;
     try {
       const turn = await startChatTurn({
@@ -1495,7 +1508,7 @@ function parseAsideRequest(body: Record<string, unknown>, timestamp: string, par
   const { kind } = body;
   if (kind !== undefined && kind !== "fork" && kind !== ASIDE_ROLE) return { ok: false, error: 'kind must be "fork" or "aside"' };
   if (kind !== ASIDE_ROLE) {
-    const stray = (["quotes", "prompt", "permissions", "activePlugins"] as const).filter((k) => body[k] !== undefined);
+    const stray = (["quotes", "prompt", "permissions", "activePlugins", "timeZone"] as const).filter((k) => body[k] !== undefined);
     if (stray.length > 0) return { ok: false, error: `${stray.join(", ")} ${stray.length === 1 ? "is" : "are"} only accepted with kind "aside"` };
     return { ok: true, aside: null };
   }

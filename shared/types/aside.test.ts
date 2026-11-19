@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { ASIDE_MAX_QUOTE_CHARS, ASIDE_MAX_QUOTES, asideForkPoint, asideTitle, parseAsideQuotes, renderQuotedPrompt, type AsideQuote } from "./aside.js";
+import {
+  ASIDE_MAX_QUOTE_CHARS,
+  ASIDE_MAX_QUOTES,
+  asideForkPoint,
+  asideTitle,
+  parseAsideQuotes,
+  quoteTimeFormatter,
+  renderQuotedPrompt,
+  type AsideQuote,
+} from "./aside.js";
 
 const q = (timestamp: string, role: AsideQuote["role"], text: string): AsideQuote => ({ timestamp, role, text });
 
@@ -75,5 +84,21 @@ describe("parseAsideQuotes", () => {
   it("refuses a quote after the fork point", () => {
     const result = parseAsideQuotes([ok, { ...ok, timestamp: "2026-01-01T00:00:01Z" }], "2026-01-01T00:00:00Z");
     expect(result).toEqual({ ok: false, error: "quotes[1] is after the fork point" });
+  });
+});
+
+describe("quoteTimeFormatter", () => {
+  const iso = "2026-01-01T14:02:00Z";
+  it("formats HH:MM in the given IANA zone, on a 24-hour clock", () => {
+    expect(quoteTimeFormatter("UTC")(iso)).toBe("14:02");
+    expect(quoteTimeFormatter("Asia/Kolkata")(iso)).toBe("19:32");
+    expect(quoteTimeFormatter("America/New_York")("2026-01-01T05:00:00Z")).toBe("00:00");
+  });
+  it("falls back to the local zone for an unknown, empty or non-string zone", () => {
+    const local = renderQuotedPrompt([q(iso, "user", "x")], "");
+    for (const zone of ["Not/AZone", "", 42, undefined]) expect(renderQuotedPrompt([q(iso, "user", "x")], "", quoteTimeFormatter(zone))).toBe(local);
+  });
+  it("gives no time for an unreadable timestamp", () => {
+    expect(quoteTimeFormatter("UTC")("nope")).toBeNull();
   });
 });

@@ -44,6 +44,29 @@ function localTime(iso: string): string | null {
 }
 
 /**
+ * An origin-line time formatter for {@link renderQuotedPrompt}: `HH:MM` in the
+ * IANA `timeZone` (the asking browser's), or the local zone of whoever runs
+ * this when it is absent or not a zone `Intl` knows.
+ */
+export function quoteTimeFormatter(timeZone?: unknown): (iso: string) => string | null {
+  if (typeof timeZone !== "string" || !timeZone) return localTime;
+  let format: Intl.DateTimeFormat;
+  try {
+    format = new Intl.DateTimeFormat("en-US", { timeZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+  } catch {
+    return localTime;
+  }
+  return (iso) => {
+    const date = new Date(iso);
+    if (isNaN(date.getTime())) return null;
+    const parts = format.formatToParts(date);
+    const hour = parts.find((p) => p.type === "hour")?.value;
+    const minute = parts.find((p) => p.type === "minute")?.value;
+    return hour && minute ? `${hour}:${minute}` : null;
+  };
+}
+
+/**
  * The quotes as Markdown blockquotes, each under an origin line
  * (`> **Assistant, 14:02:**`), then the question. Blockquotes are separated by
  * a blank line so adjacent quotes do not merge into one.

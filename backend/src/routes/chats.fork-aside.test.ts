@@ -251,6 +251,17 @@ describe("POST /api/chats/:id/fork kind aside", () => {
       expect(res.meta.defaultPermissions).toEqual(parentPerms);
     });
 
+    it("re-caps against the parent as it is just before the aside is written", async () => {
+      setParent({ defaultPermissions: parentPerms });
+      // The parent is tightened while the route awaits its effort check.
+      const tighter = { ...parentPerms, fileRead: "ask", fileWrite: "deny" };
+      effortContexts.mockImplementationOnce(() => setParent({ defaultPermissions: tighter }));
+      expect((await aside()).meta.defaultPermissions).toEqual(tighter);
+      effortContexts.mockImplementationOnce(() => setParent({ defaultPermissions: tighter }));
+      const res = await aside({ permissions: { fileRead: "allow", codeExecution: "ask" } });
+      expect(res.meta.defaultPermissions).toEqual({ ...tighter, codeExecution: "ask" });
+    });
+
     it("clamps to ask-everywhere under a parent with no permissions", async () => {
       setParent({});
       const res = await aside({ permissions: { fileRead: "allow" } });
@@ -269,6 +280,15 @@ describe("POST /api/chats/:id/fork kind aside", () => {
       expect(turn.chatId).toBe("fork-chat");
       expect(turn.acknowledgeBranchDrift).toBe(true);
       expect(turn.prompt).toMatch(/^> \*\*Assistant, \d\d:\d\d:\*\*\n> the passage\n\nwhy this\?$/);
+    });
+
+    it("writes the origin-line times in the asker's zone, else the daemon's", async () => {
+      setParent({});
+      await aside({ prompt: "why?", timeZone: "Asia/Kolkata" }); // T1 is 00:05 UTC
+      expect(turns.calls[0].prompt).toMatch(/^> \*\*Assistant, 05:35:\*\*/);
+      await aside({ prompt: "why?", timeZone: "Not/AZone" });
+      expect(turns.calls[1].prompt).toMatch(/^> \*\*Assistant, \d\d:\d\d:\*\*/);
+      expect((await fork({ timeZone: "UTC" })).meta.error).toBe('timeZone is only accepted with kind "aside"');
     });
 
     it("passes the composer's plugins to the first turn", async () => {

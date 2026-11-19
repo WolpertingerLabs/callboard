@@ -103,6 +103,7 @@ export {
   renderQuotedPrompt,
   asideTitle,
   asideForkPoint,
+  quoteTimeFormatter,
   parseAsideQuotes,
 } from "./aside.js";
 

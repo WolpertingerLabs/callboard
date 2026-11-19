@@ -29,6 +29,7 @@ it("forks at the latest quote with kind aside, passing the first turn's plugins"
     provider: "codex",
     model: "m",
     activePlugins: ["p1"],
+    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
   });
 });
 
