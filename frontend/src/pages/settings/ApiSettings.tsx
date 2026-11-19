@@ -1704,7 +1704,7 @@ export default function ApiSettings() {
             </div>
             <div style={subtitleStyle}>
               An OpenRouter account key, used by the features below rather than by a harness of its own. To run a coding harness on OpenRouter, turn on
-              &ldquo;Route through OpenRouter&rdquo; on the Claude Code or Codex tab — each keeps its own key.
+              &ldquo;Route through OpenRouter&rdquo; on the Claude or Codex tab — each keeps its own key.
             </div>
 
             <div style={fieldWrap}>
