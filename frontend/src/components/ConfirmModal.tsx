@@ -2,15 +2,31 @@ import ModalOverlay from "./ModalOverlay";
 
 interface ConfirmModalProps {
   isOpen: boolean;
+  /** Called whenever the modal closes — after Confirm as well as after Cancel. */
   onClose: () => void;
   onConfirm: () => void;
+  /**
+   * Called when the user backs out (Cancel, or the dialog failing and being
+   * dismissed), before `onClose`, and never after Confirm — for a caller whose
+   * "closed without confirming" has work of its own to undo.
+   */
+  onCancel?: () => void;
   title: string;
   message: string;
   confirmText?: string;
   confirmStyle?: "danger" | "primary";
 }
 
-export default function ConfirmModal({ isOpen, onClose, onConfirm, title, message, confirmText = "Confirm", confirmStyle = "primary" }: ConfirmModalProps) {
+export default function ConfirmModal({
+  isOpen,
+  onClose,
+  onConfirm,
+  onCancel,
+  title,
+  message,
+  confirmText = "Confirm",
+  confirmStyle = "primary",
+}: ConfirmModalProps) {
   if (!isOpen) return null;
 
   const handleConfirm = () => {
@@ -18,8 +34,13 @@ export default function ConfirmModal({ isOpen, onClose, onConfirm, title, messag
     onClose();
   };
 
+  const handleCancel = () => {
+    onCancel?.();
+    onClose();
+  };
+
   return (
-    <ModalOverlay onClose={onClose}>
+    <ModalOverlay onClose={handleCancel}>
       <div
         style={{
           background: "var(--bg)",
@@ -46,7 +67,7 @@ export default function ConfirmModal({ isOpen, onClose, onConfirm, title, messag
         <div style={{ display: "flex", gap: 12, justifyContent: "flex-end" }}>
           <button
             type="button"
-            onClick={onClose}
+            onClick={handleCancel}
             style={{
               padding: "8px 16px",
               borderRadius: 6,

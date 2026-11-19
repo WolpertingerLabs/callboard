@@ -66,6 +66,10 @@ import {
 } from "../api";
 import { readChatRouteState, type ChatRouteState } from "../types/chatRouteState";
 import { assignForkMarkers, forksByTimestamp } from "../utils/forkMarkers";
+import { buildQuotedPrompt } from "../utils/messageQuotes";
+import { clearQuotes, getQuotes, restoreQuotes, useQuoteTray } from "../hooks/useQuoteTray";
+import MessageQuoteSelection from "../components/MessageQuoteSelection";
+import QuoteTray from "../components/QuoteTray";
 import { providerKindOf, useChatMeta } from "../hooks/useChatMeta";
 import { isRetiredProviderId } from "../utils/retiredProviders";
 import { INTERRUPTED_MESSAGE, useStopController } from "../hooks/useStopController";
@@ -302,6 +306,18 @@ const TREE_REFRESH_INTERVAL_MS = 10_000;
 /** Even right after a quiet spell, wait this long so a burst of ticks costs one request. */
 const TREE_REFRESH_MIN_DELAY_MS = 1_000;
 
+/**
+ * Whether a prompt is a slash command — which a quote must not be put in front
+ * of. Judged against the known commands once they have loaded (an empty list
+ * then really is "no commands"); before that, anything shaped like one
+ * counts, so a command sent in that window still runs. "Shaped like one" ends
+ * at whitespace, so a path such as `/tmp/x` is still prose.
+ */
+function leadsWithCommand(prompt: string, commands: string[], loaded: boolean): boolean {
+  if (!loaded) return /^\s*\/[\w:-]+(?:\s|$)/.test(prompt);
+  return parseLeadingCommand(prompt, commands).command !== null;
+}
+
 export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -437,6 +453,12 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     mcpToolsLoading,
   } = useChatCommands(id, agentChat);
   const [showSlashCommandsModal, setShowSlashCommandsModal] = useState(false);
+  /**
+   * The chat whose command list has arrived — the list state outlives a
+   * switch of chat, so a bare "is it empty" cannot tell loaded-and-empty from
+   * not-loaded-yet. Set where the list is installed (the getChat effect).
+   */
+  const [commandsLoadedFor, setCommandsLoadedFor] = useState<string | null>(null);
   const [slashCommandsModalTab, setSlashCommandsModalTab] = useState<"commands" | "tools" | "keywords">("commands");
   // Owned here rather than inside the launchpad because SessionInfoNav has to
   // know which shape the launchpad took: with nothing starred the launchpad
@@ -498,6 +520,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     prompt: string;
     images?: File[];
     message: string;
+    /** The refused send's `onRefused`: Cancel hands back what it took, and the retry carries it on. */
+    onRefused?: () => void;
   }>({ isOpen: false, prompt: "", message: "" });
   const forceBranchChangeRef = useRef(false);
   const [branchDriftConfirm, setBranchDriftConfirm] = useState<{
@@ -505,6 +529,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     prompt: string;
     images?: File[];
     message: string;
+    /** The refused send's `onRefused`: Cancel hands back what it took, and the retry carries it on. */
+    onRefused?: () => void;
   }>({ isOpen: false, prompt: "", message: "" });
   const acknowledgeBranchDriftRef = useRef(false);
   const [viewMode, setViewMode] = useState<"chat" | "diff" | "debug" | "job" | "computer">("chat");
@@ -608,7 +634,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // Typed as handleSend itself, options included: a narrower type here once
   // hid this ref's canned send from a search for sends that aren't the
   // composer's.
-  const handleSendRef = useRef<(prompt: string, images?: File[], options?: { notFromComposer?: boolean }) => void>(() => {});
+  const handleSendRef = useRef<(prompt: string, images?: File[], options?: { notFromComposer?: boolean; onRefused?: () => void }) => void>(() => {});
   const planApprovedRef = useRef(false);
   const tempChatIdRef = useRef<string | null>(null);
   const streamingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1926,6 +1952,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       // Use slash commands and plugins from chat data if available for faster display
       if (chatData?.slash_commands && chatData.slash_commands.length > 0) {
         setSlashCommands(chatData.slash_commands.map((cmd: any) => (typeof cmd === "string" ? cmd : cmd.name)));
+        setCommandsLoadedFor(id!);
       }
       if (chatData?.plugins && chatData.plugins.length > 0) {
         setPlugins(chatData.plugins);
@@ -1936,7 +1963,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
       // Fetch fresh data if not available
       if (!chatData?.slash_commands?.length && !chatData?.plugins?.length) {
-        loadSlashCommands();
+        loadSlashCommands().then((loaded) => {
+          if (loaded && currentIdRef.current === id) setCommandsLoadedFor(id!);
+        });
       }
     }).catch((err) => {
       console.warn("Failed to load chat:", err);
@@ -2422,8 +2451,12 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
      * `notFromComposer` marks a send that isn't the composer's contents — the
      * canned plan-review replies. Those don't carry an opened draft's text or
      * images, so they are neither held for its restore nor allowed to retire it.
+     *
+     * `onRefused` runs when the send failed outright — the route refused it or
+     * the request never got an answer — so a caller that took something out of
+     * the page for it (the quote tray) can put it back.
      */
-    async (prompt: string, images?: File[], { notFromComposer = false }: { notFromComposer?: boolean } = {}) => {
+    async (prompt: string, images?: File[], { notFromComposer = false, onRefused }: { notFromComposer?: boolean; onRefused?: () => void } = {}) => {
       // The composer greys Send out for this, so reaching here means some other
       // caller (a plan-review auto-reply, a retry) got in. Bail before the
       // in-flight bubble and the streaming flag, because there is no config to
@@ -2637,6 +2670,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             body: JSON.stringify({ ...body, chatView: originatingChatView() }),
             signal: controller.signal,
           });
+          answered = true;
         }
 
         // If this message came from a draft, delete the draft now that it's
@@ -2662,6 +2696,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               isOpen: true,
               prompt,
               images,
+              onRefused,
               message: errorData.message || "There are uncommitted changes that would be affected by this branch switch.",
             });
             setStreaming(false);
@@ -2675,6 +2710,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               isOpen: true,
               prompt,
               images,
+              onRefused,
               message: errorData.message || "The branch has changed since your last message.",
             });
             setStreaming(false);
@@ -2685,6 +2721,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           // A new chat that was refused (a worktree that timed out, a branch
           // git would not make) never became one: its text goes back.
           if (!id && !notFromComposer) restoreNewChatComposer(prompt, images);
+          onRefused?.();
           setNetworkError(errorData.error || "Failed to send message");
           setStreaming(false);
           clearInFlightMessages();
@@ -2693,8 +2730,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
         await readSSE(res.body, controller.signal);
       } catch (err: any) {
+        // Deliberately no `onRefused` on an AbortError: an abort (Stop, a newer
+        // send, leaving the chat) can't tell whether the daemon got the message.
         if (err.name !== "AbortError") {
           if (!id && !answered && !notFromComposer) restoreNewChatComposer(prompt, images);
+          if (!answered) onRefused?.();
           setNetworkError("network error");
           setStreaming(false);
           clearInFlightMessages(); // Drop optimistic bubbles on error
@@ -2756,22 +2796,57 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // Keep ref in sync so readSSE can call handleSend without stale closure
   handleSendRef.current = handleSend;
 
+  // ── Select & quote ─────────────────────────────────────────────────────
+  // Text selected inside one quotable bubble gets a floating Quote / Ask bar
+  // (MessageQuoteSelection, rendered below); quotes wait in a per-chat tray
+  // above the composer and go out, as blockquotes, ahead of the next message
+  // typed there.
+  const quoteTray = useQuoteTray(id);
+  const [focusComposer, setFocusComposer] = useState<(() => void) | null>(null);
+
+  /**
+   * The composer's send: the tray's quotes, if any, go first. They leave the
+   * tray as the message goes out — a send then refused puts them back, and
+   * the typed text too if the composer is still empty.
+   *
+   * A slash command goes out as typed and leaves the tray alone: it has to
+   * lead the prompt to run at all, and a command is not a question about the
+   * quoted text.
+   */
+  const handleComposerSend = useCallback(
+    (prompt: string, images?: File[]) => {
+      const quotes = id ? getQuotes(id) : [];
+      if (!id || quotes.length === 0 || sendBlockedReason || leadsWithCommand(prompt, allSlashCommands, commandsLoadedFor === id)) {
+        return handleSend(prompt, images);
+      }
+      const chatId = id;
+      clearQuotes(chatId);
+      const onRefused = () => {
+        restoreQuotes(chatId, quotes);
+        // Only into the same chat's empty composer — never over new typing.
+        if (currentIdRef.current === chatId) promptInputSetValue?.((current) => (current === "" ? prompt : current));
+      };
+      return handleSend(buildQuotedPrompt(quotes, prompt), images, { onRefused });
+    },
+    [id, handleSend, sendBlockedReason, allSlashCommands, commandsLoadedFor, promptInputSetValue],
+  );
+
   // Retry the original message with forceBranchChange after user confirms the modal
   const handleConfirmBranchChange = useCallback(() => {
-    const { prompt, images } = branchChangeConfirm;
+    const { prompt, images, onRefused } = branchChangeConfirm;
     forceBranchChangeRef.current = true;
     setBranchChangeConfirm({ isOpen: false, prompt: "", message: "" });
-    handleSend(prompt, images);
+    handleSend(prompt, images, { onRefused });
     // Reset synchronously — handleSend reads the ref before its first await
     forceBranchChangeRef.current = false;
   }, [branchChangeConfirm, handleSend]);
 
   // Retry the original message with acknowledgeBranchDrift after user confirms the modal
   const handleConfirmBranchDrift = useCallback(() => {
-    const { prompt, images } = branchDriftConfirm;
+    const { prompt, images, onRefused } = branchDriftConfirm;
     acknowledgeBranchDriftRef.current = true;
     setBranchDriftConfirm({ isOpen: false, prompt: "", message: "" });
-    handleSend(prompt, images);
+    handleSend(prompt, images, { onRefused });
     // Reset synchronously — handleSend reads the ref before its first await
     acknowledgeBranchDriftRef.current = false;
   }, [branchDriftConfirm, handleSend]);
@@ -4070,8 +4145,18 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             {DRAFT_RESTORING}
           </div>
         )}
+        <MessageQuoteSelection
+          chatId={id}
+          messages={messages}
+          containerRef={chatContainerRef}
+          enabled={!nativeAgent}
+          resetKey={`${id}:${viewMode}`}
+          onAsk={focusComposer ?? undefined}
+        />
         <PromptInput
-          onSend={handleSend}
+          onSend={handleComposerSend}
+          onFocusRequest={setFocusComposer}
+          accessory={<QuoteTray quotes={quoteTray.quotes} onRemove={quoteTray.remove} onClear={quoteTray.clear} />}
           disabled={!!nativeAgent || (!id && streaming)}
           sendBlockedReason={composerBlockedReason}
           onSaveDraft={handleSaveDraft}
@@ -4266,6 +4351,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       <ConfirmModal
         isOpen={branchChangeConfirm.isOpen}
         onClose={() => setBranchChangeConfirm({ isOpen: false, prompt: "", message: "" })}
+        // Only backing out hands the quotes and question back: Confirm also
+        // closes the modal, and its retry carries `onRefused` on instead.
+        onCancel={branchChangeConfirm.onRefused}
         onConfirm={handleConfirmBranchChange}
         title="Uncommitted Changes Detected"
         message={branchChangeConfirm.message}
@@ -4276,6 +4364,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       <ConfirmModal
         isOpen={branchDriftConfirm.isOpen}
         onClose={() => setBranchDriftConfirm({ isOpen: false, prompt: "", message: "" })}
+        // Only backing out hands the quotes and question back: Confirm also
+        // closes the modal, and its retry carries `onRefused` on instead.
+        onCancel={branchDriftConfirm.onRefused}
         onConfirm={handleConfirmBranchDrift}
         title="Branch Changed"
         message={branchDriftConfirm.message}

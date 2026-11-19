@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, useLayoutEffect, useId } from "react";
+import { useState, useRef, useCallback, useEffect, useLayoutEffect, useId, type ReactNode } from "react";
 import { ArrowUp, Paperclip, Edit, ImageIcon, Menu, Braces } from "lucide-react";
 import ImageUpload, { validateAttachmentFiles } from "./ImageUpload";
 import SlashCommandAutocomplete, { slashOptionId } from "./SlashCommandAutocomplete";
@@ -204,6 +204,18 @@ interface Props {
    * itself.
    */
   focusKey?: string;
+  /**
+   * Registration callback handing out a focus-the-composer function, same
+   * shape as {@link Props.onSetValue}. Unlike {@link Props.focusKey} it is an
+   * explicit user request (the selection toolbar's Ask), so it focuses on a
+   * touch device too.
+   */
+  onFocusRequest?: (focus: (() => void) | null) => void;
+  /**
+   * Shown above the attachments, inside the composer — the quote tray.
+   * Presentation only: what it holds is the caller's to fold into `onSend`.
+   */
+  accessory?: ReactNode;
 }
 
 /** How long typing has to pause before the draft is written to storage. */
@@ -229,6 +241,8 @@ export default function PromptInput({
   draftKey,
   draftPaused = false,
   focusKey,
+  onFocusRequest,
+  accessory,
 }: Props) {
   // The stored draft, read once for the first render. Later chats load theirs
   // in the `draftKey` effect below. Mounting paused shows nothing of it: the
@@ -944,6 +958,20 @@ export default function PromptInput({
   }, [onInsertAtCaret, insertAtCaret]);
 
   useEffect(() => {
+    if (!onFocusRequest) return;
+    // Arrow-wrapped like the registrations around it.
+    onFocusRequest(() => () => {
+      const el = textareaRef.current;
+      if (!el || el.disabled) return;
+      el.focus({ preventScroll: true });
+      const end = el.value.length;
+      el.setSelectionRange(end, end);
+      setCaret(end);
+    });
+    return () => onFocusRequest(null);
+  }, [onFocusRequest]);
+
+  useEffect(() => {
     // Arrow-wrapped like the two registrations above. `setImages` is stable, so
     // this registers once.
     onAddImages?.(() => (files: File[]) => setImages((prev) => [...prev, ...files]));
@@ -1025,6 +1053,8 @@ export default function PromptInput({
         style={{ display: "none" }}
         disabled={disabled}
       />
+
+      {accessory}
 
       {/* Attachment previews */}
       <ImageUpload images={images} onImagesChange={setImages} />

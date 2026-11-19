@@ -39,8 +39,12 @@ export function forksByTimestamp(tree: ChatTreeResponse | null): Map<string, Cha
   return map;
 }
 
-/** Messages whose bubble can carry a marker — the ones a fork can be made from. */
-function hasMarkerSlot(message: ParsedMessage): boolean {
+/**
+ * Messages whose bubble can carry a marker — the ones a fork can be made from.
+ * Also the messages text can be quoted from (utils/messageQuotes.ts): a quote
+ * has to name a point in the main thread an aside can later branch off.
+ */
+export function hasMarkerSlot(message: ParsedMessage): boolean {
   return message.type === "text" && !message.teamName && !!message.timestamp;
 }
 

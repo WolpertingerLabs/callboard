@@ -58,6 +58,8 @@ export default function ModalOverlay({ children, style, onClose, onBackdropClick
   return (
     <ErrorBoundary region="This dialog" variant="modal" onDismiss={onClose}>
       <div
+        // Lets page-level floating UI see a modal is open (utils/modalOpen.ts).
+        data-modal-overlay=""
         style={{ ...overlayStyle, ...style }}
         onClick={
           onBackdropClick &&
