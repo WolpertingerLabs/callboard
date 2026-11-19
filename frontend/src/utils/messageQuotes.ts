@@ -54,16 +54,30 @@ export function normalizeQuoteText(raw: string): string {
 
 let quoteSeq = 0;
 
+/** Where a quote comes from — read off the message when the text is selected. */
+export type QuoteOrigin = Pick<MessageQuote, "timestamp" | "role">;
+
+/** The origin of a quotable message, or null when its text cannot be quoted. */
+export function quoteOriginOf(message: ParsedMessage | undefined): QuoteOrigin | null {
+  return isQuotableMessage(message) ? { timestamp: message.timestamp!, role: message.role } : null;
+}
+
 /**
- * A quote of `rawText` from `message`, or null when there is nothing to quote
- * (an ineligible message, or a selection that is only whitespace).
+ * A quote of `rawText` from the message at `messageIndex`, or null when there
+ * is nothing to quote (no origin — an ineligible message — or a selection that
+ * is only whitespace).
+ *
+ * Takes the origin rather than the message: it is captured when the text is
+ * selected, because the transcript array can be replaced (a reload, a poll)
+ * between selecting and clicking Quote, and the index may by then address a
+ * different message. The timestamp is what an aside forks at.
  */
-export function quoteFromSelection(rawText: string, messageIndex: number, message: ParsedMessage | undefined): MessageQuote | null {
-  if (!isQuotableMessage(message)) return null;
+export function quoteFromSelection(rawText: string, messageIndex: number, origin: QuoteOrigin | null): MessageQuote | null {
+  if (!origin) return null;
   const text = normalizeQuoteText(rawText);
   if (!text.trim()) return null;
   quoteSeq += 1;
-  return { id: `quote-${quoteSeq}`, messageIndex, timestamp: message.timestamp!, role: message.role, text };
+  return { id: `quote-${quoteSeq}`, messageIndex, timestamp: origin.timestamp, role: origin.role, text };
 }
 
 /** Two quotes of the same passage of the same message. */

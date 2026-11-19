@@ -1,25 +1,33 @@
 /**
  * The user's text selection in a chat transcript, when it lies within one
- * message's bubble — what the floating Quote / Ask toolbar is shown for.
+ * message's quotable content — what the floating Quote / Ask toolbar is
+ * shown for.
  *
- * Nothing here touches the bubbles: the transcript is read through its
- * `[data-message-index]` wrappers (Chat.tsx) and the document's own
- * `Selection`, so the memoized `MessageBubble`s are never re-rendered by a
- * selection. Unrelated to `useSelectionActivation`, which is list
- * multi-select (rows, not text).
+ * The transcript is read through its `[data-message-index]` wrappers
+ * (Chat.tsx), the `[data-quote-content]` element MessageBubble puts round a
+ * message's rendered body, and the document's own `Selection`. Clipping to
+ * the content element is what keeps the bubble's chrome — the relative time,
+ * model and timing line under it, the fork marker, open copy / fork menus —
+ * out of a quote when a drag or a triple-click runs past the body's end.
+ * Unrelated to `useSelectionActivation`, which is list multi-select.
  *
  * When the selection is "settled" is the subtle part:
  *  - mouse: while the button is down the toolbar stays hidden, so it does not
  *    chase a drag; it appears on release;
  *  - touch and keyboard: `selectionchange` is the only signal (a long-press
  *    and the handles fire no pointer event we can use), so it is debounced;
- *  - a press on the toolbar itself must not count as the selection going
- *    away. On desktop the toolbar's `mousedown` is prevented and the
- *    selection survives; on touch the tap may still collapse it before the
- *    click lands, so a press inside `[data-selection-toolbar]` holds the
- *    current selection until the click has been handled.
+ *  - a tap on a toolbar button on a touch screen may collapse the selection
+ *    before its click lands, so a touch/pen press on one holds the current
+ *    selection until shortly after the finger lifts. On desktop the
+ *    toolbar's `mousedown` is prevented and the selection simply survives.
+ *
+ * A selection dismissed with Escape stays dismissed until it changes.
+ *
+ * Callers should keep this hook in a small component of its own: the result
+ * changes on every (frame-throttled) scroll while a selection is shown.
  */
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import type { QuoteOrigin } from "../utils/messageQuotes";
 
 export interface SelectionRect {
   top: number;
@@ -30,7 +38,9 @@ export interface SelectionRect {
 
 export interface MessageTextSelection {
   messageIndex: number;
-  /** The selected text, raw — `Selection.toString()` of the part inside the bubble. */
+  /** Timestamp and role of the message, captured when the text was selected. */
+  origin: QuoteOrigin;
+  /** The selected text, raw — `Selection.toString()` of the part inside the message's content. */
   text: string;
   /** Viewport rect of the selection, for positioning the toolbar. */
   rect: SelectionRect;
@@ -44,56 +54,97 @@ export interface MessageTextSelection {
 
 /** Marks the toolbar's root, so pressing it does not read as the selection ending. */
 export const SELECTION_TOOLBAR_ATTR = "data-selection-toolbar";
+/** Marks the element holding a message's quotable text (MessageBubble). */
+export const QUOTE_CONTENT_ATTR = "data-quote-content";
 
 const MESSAGE_SELECTOR = "[data-message-index]";
+const CONTENT_SELECTOR = `[${QUOTE_CONTENT_ATTR}]`;
 const SETTLE_MS = 250;
+/** How long a touch press on the toolbar holds the selection after the finger lifts — the click comes in between. */
+const TOUCH_HOLD_MS = 400;
+
+function contentOf(node: Node, container: Element): Element | null {
+  const el = node.nodeType === Node.ELEMENT_NODE ? (node as Element) : node.parentElement;
+  const content = el?.closest(CONTENT_SELECTOR) ?? null;
+  return content && container.contains(content) ? content : null;
+}
+
+function messageIndexOf(content: Element): number | null {
+  const wrapper = content.closest(MESSAGE_SELECTOR);
+  if (!wrapper) return null;
+  const index = Number(wrapper.getAttribute("data-message-index"));
+  return Number.isInteger(index) ? index : null;
+}
+
+/** The part of `range` inside `el`, as text. */
+function clippedText(range: Range, el: Element): string {
+  const clipped = el.ownerDocument.createRange();
+  clipped.selectNodeContents(el);
+  if (clipped.compareBoundaryPoints(Range.START_TO_START, range) < 0) clipped.setStart(range.startContainer, range.startOffset);
+  if (clipped.compareBoundaryPoints(Range.END_TO_END, range) > 0) clipped.setEnd(range.endContainer, range.endOffset);
+  return clipped.toString();
+}
 
 /**
- * Which message a range selects text in, and that text — or null when the
- * selected text is spread over more than one message, or lies (partly)
- * outside every message.
+ * Which message a range selects text in, and that text (only the part inside
+ * the message's quotable content) — or null when the selected text is spread
+ * over more than one message, or touches no message's content at all.
  *
- * Judged by text, not by boundary nodes: a triple-click selection ends at
- * offset 0 of the *next* block, and so does a drag released just past the
- * end of a bubble. Neither selects any of that next message's text, so
- * neither is a cross-message selection.
+ * The usual case — both ends in the same content element — is two `closest`
+ * lookups. Only when the ends lie elsewhere is every content element the
+ * range crosses looked at, and then judged by text, not boundary nodes: a
+ * triple-click ends at offset 0 of the *next* block, a drag released past a
+ * bubble ends in its metadata line. Neither selects text of another message,
+ * so neither is a cross-message selection.
  */
 export function resolveMessageSelection(range: Range, container: Element): { messageIndex: number; text: string } | null {
   if (range.collapsed) return null;
-  const doc = container.ownerDocument;
-  const hits: { el: Element; text: string }[] = [];
-  for (const el of container.querySelectorAll(MESSAGE_SELECTOR)) {
-    if (!range.intersectsNode(el)) continue;
-    const clipped = doc.createRange();
-    clipped.selectNodeContents(el);
-    if (clipped.compareBoundaryPoints(Range.START_TO_START, range) < 0) clipped.setStart(range.startContainer, range.startOffset);
-    if (clipped.compareBoundaryPoints(Range.END_TO_END, range) > 0) clipped.setEnd(range.endContainer, range.endOffset);
-    const text = clipped.toString();
-    if (text.trim()) hits.push({ el, text });
-    if (hits.length > 1) return null;
+  const start = contentOf(range.startContainer, container);
+  if (start && start === contentOf(range.endContainer, container)) {
+    const messageIndex = messageIndexOf(start);
+    const text = range.toString();
+    return messageIndex !== null && text.trim() ? { messageIndex, text } : null;
   }
-  if (hits.length !== 1) return null;
-  const [{ el, text }] = hits;
-  // Text selected outside every bubble (an in-flight message, a notice).
-  if (range.toString().replace(/\s+/g, "") !== text.replace(/\s+/g, "")) return null;
-  const messageIndex = Number(el.getAttribute("data-message-index"));
-  return Number.isInteger(messageIndex) ? { messageIndex, text } : null;
+  let hit: { el: Element; text: string } | null = null;
+  for (const el of container.querySelectorAll(CONTENT_SELECTOR)) {
+    if (!range.intersectsNode(el)) continue;
+    const text = clippedText(range, el);
+    if (!text.trim()) continue;
+    if (hit) return null;
+    hit = { el, text };
+  }
+  if (!hit) return null;
+  const messageIndex = messageIndexOf(hit.el);
+  return messageIndex !== null ? { messageIndex, text: hit.text } : null;
 }
 
-function rectOf(range: Range): SelectionRect | null {
+function rectOf(range: Range): SelectionRect {
   // jsdom has no layout, and no Range.getBoundingClientRect at all.
   if (typeof range.getBoundingClientRect !== "function") return { top: 0, bottom: 0, left: 0, right: 0 };
   const r = range.getBoundingClientRect();
   return { top: r.top, bottom: r.bottom, left: r.left, right: r.right };
 }
 
+const sameRect = (a: SelectionRect, b: SelectionRect) => a.top === b.top && a.bottom === b.bottom && a.left === b.left && a.right === b.right;
+
+function sameRange(a: Range, b: Range): boolean {
+  try {
+    return a.compareBoundaryPoints(Range.START_TO_START, b) === 0 && a.compareBoundaryPoints(Range.END_TO_END, b) === 0;
+  } catch {
+    return false; // different roots
+  }
+}
+
 interface Options {
   containerRef: RefObject<HTMLElement | null>;
-  /** Whether text in the message at this transcript index may be quoted. */
-  isEligible: (messageIndex: number) => boolean;
+  /**
+   * The message at this transcript index's origin, or null when its text may
+   * not be quoted. Read when a selection settles, and kept on the result.
+   */
+  originOf: (messageIndex: number) => QuoteOrigin | null;
   /** Off, nothing is tracked and the result is null. */
   enabled?: boolean;
-  /** A change (the chat being shown) drops the current selection's toolbar. */
+  /** A change (the chat or view being shown) drops the current selection's toolbar. */
   resetKey?: unknown;
 }
 
@@ -103,14 +154,18 @@ export interface UseMessageTextSelectionResult {
   dismiss: (clearDocumentSelection?: boolean) => void;
 }
 
-export function useMessageTextSelection({ containerRef, isEligible, enabled = true, resetKey }: Options): UseMessageTextSelectionResult {
+export function useMessageTextSelection({ containerRef, originOf, enabled = true, resetKey }: Options): UseMessageTextSelectionResult {
   const [selection, setSelection] = useState<MessageTextSelection | null>(null);
-  const isEligibleRef = useRef(isEligible);
+  const originOfRef = useRef(originOf);
   useEffect(() => {
-    isEligibleRef.current = isEligible;
-  }, [isEligible]);
+    originOfRef.current = originOf;
+  }, [originOf]);
+  /** The range the toolbar is shown for, to re-measure on scroll. */
   const rangeRef = useRef<Range | null>(null);
+  /** A touch press on a toolbar button is in progress: selection changes are ignored. */
   const holdRef = useRef(false);
+  /** The range Escape dismissed: no toolbar for it until the selection changes. */
+  const dismissedRef = useRef<Range | null>(null);
 
   const dismiss = useCallback((clearDocumentSelection = false) => {
     holdRef.current = false;
@@ -130,29 +185,38 @@ export function useMessageTextSelection({ containerRef, isEligible, enabled = tr
   useEffect(() => {
     if (!enabled) return;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let holdTimer: ReturnType<typeof setTimeout> | null = null;
+    let frame: number | null = null;
     let mouseDown = false;
+
+    const hide = () => {
+      rangeRef.current = null;
+      setSelection((prev) => (prev ? null : prev));
+    };
 
     const evaluate = () => {
       timer = null;
+      if (holdRef.current) return;
       const container = containerRef.current;
       const sel = window.getSelection();
       if (!container || !sel || sel.rangeCount === 0 || sel.isCollapsed) {
-        if (!holdRef.current) {
-          rangeRef.current = null;
-          setSelection(null);
-        }
+        dismissedRef.current = null;
+        hide();
         return;
       }
       const range = sel.getRangeAt(0);
+      if (dismissedRef.current) {
+        if (sameRange(dismissedRef.current, range)) return;
+        dismissedRef.current = null;
+      }
       const hit = resolveMessageSelection(range, container);
-      const rect = hit && isEligibleRef.current(hit.messageIndex) ? rectOf(range) : null;
-      if (!hit || !rect) {
-        rangeRef.current = null;
-        setSelection(null);
+      const origin = hit ? originOfRef.current(hit.messageIndex) : null;
+      if (!hit || !origin) {
+        hide();
         return;
       }
       rangeRef.current = range.cloneRange();
-      setSelection({ messageIndex: hit.messageIndex, text: hit.text, rect });
+      setSelection({ messageIndex: hit.messageIndex, origin, text: hit.text, rect: rectOf(range) });
     };
 
     const schedule = (ms: number) => {
@@ -166,44 +230,72 @@ export function useMessageTextSelection({ containerRef, isEligible, enabled = tr
         // Mid-drag: hide, and look again on release.
         if (timer) clearTimeout(timer);
         timer = null;
-        setSelection((prev) => (prev ? null : prev));
+        hide();
         return;
       }
       schedule(SETTLE_MS);
     };
 
-    const inToolbar = (target: EventTarget | null) => target instanceof Element && !!target.closest(`[${SELECTION_TOOLBAR_ATTR}]`);
+    const toolbarButton = (target: EventTarget | null) =>
+      target instanceof Element && target.closest(`[${SELECTION_TOOLBAR_ATTR}]`) ? target.closest("button") : null;
+
+    const releaseHold = () => {
+      if (holdTimer) clearTimeout(holdTimer);
+      holdTimer = null;
+      if (!holdRef.current) return;
+      holdRef.current = false;
+      // Whatever the tap did to the selection, look at it now.
+      schedule(0);
+    };
 
     const onPointerDown = (e: PointerEvent) => {
-      if (inToolbar(e.target)) {
-        holdRef.current = true;
+      if (holdTimer) clearTimeout(holdTimer);
+      holdTimer = null;
+      if (toolbarButton(e.target)) {
+        // Only a finger or pen tap can collapse the selection before the click.
+        holdRef.current = e.pointerType === "touch" || e.pointerType === "pen";
         return;
       }
       holdRef.current = false;
       if (e.pointerType === "mouse" && e.button === 0) mouseDown = true;
     };
     const onPointerUp = (e: PointerEvent) => {
-      if (inToolbar(e.target) || holdRef.current) return;
-      if (e.pointerType !== "mouse") return;
+      if (holdRef.current) {
+        if (holdTimer) clearTimeout(holdTimer);
+        holdTimer = setTimeout(releaseHold, TOUCH_HOLD_MS);
+        return;
+      }
+      if (e.pointerType !== "mouse" || !mouseDown) return;
       mouseDown = false;
       // The selection a click collapses is updated after mouseup.
       schedule(0);
     };
     const onPointerCancel = () => {
+      // A touch that became a scroll, or a drag the browser took over.
+      mouseDown = false;
+      releaseHold();
+    };
+    const onBlur = () => {
       mouseDown = false;
     };
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") dismiss();
+      if (e.key !== "Escape" || !rangeRef.current) return;
+      dismissedRef.current = rangeRef.current;
+      dismiss();
     };
-    const onReposition = () => {
+    const reposition = () => {
+      frame = null;
       const range = rangeRef.current;
       const container = containerRef.current;
       if (!range || !container) return;
       const rect = rectOf(range);
-      if (!rect) return;
       const box = container.getBoundingClientRect();
       const offscreen = rect.bottom < box.top || rect.top > box.bottom;
-      setSelection((prev) => (prev ? { ...prev, rect, offscreen } : prev));
+      setSelection((prev) => (!prev || (sameRect(prev.rect, rect) && !!prev.offscreen === offscreen) ? prev : { ...prev, rect, offscreen }));
+    };
+    const onReposition = () => {
+      if (!rangeRef.current || frame !== null) return;
+      frame = requestAnimationFrame(reposition);
     };
 
     document.addEventListener("selectionchange", onSelectionChange);
@@ -211,15 +303,20 @@ export function useMessageTextSelection({ containerRef, isEligible, enabled = tr
     document.addEventListener("pointerup", onPointerUp, true);
     document.addEventListener("pointercancel", onPointerCancel, true);
     document.addEventListener("keydown", onKeyDown);
+    window.addEventListener("blur", onBlur);
     window.addEventListener("scroll", onReposition, true);
     window.addEventListener("resize", onReposition);
     return () => {
       if (timer) clearTimeout(timer);
+      if (holdTimer) clearTimeout(holdTimer);
+      if (frame !== null) cancelAnimationFrame(frame);
+      holdRef.current = false;
       document.removeEventListener("selectionchange", onSelectionChange);
       document.removeEventListener("pointerdown", onPointerDown, true);
       document.removeEventListener("pointerup", onPointerUp, true);
       document.removeEventListener("pointercancel", onPointerCancel, true);
       document.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("blur", onBlur);
       window.removeEventListener("scroll", onReposition, true);
       window.removeEventListener("resize", onReposition);
     };

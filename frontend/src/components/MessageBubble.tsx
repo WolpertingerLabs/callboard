@@ -1222,7 +1222,12 @@ function MessageBubble({
           />
         )}
         {toggleStar && <StarButton starred={starred} onToggle={toggleStar} right={slotRight(starSlot)} />}
-        {message.isBuiltInCommand ? bodyText : bodyText && <MarkdownRenderer content={bodyText} className="message-markdown" />}
+        {/* The quotable text, and only it: selection-to-quote clips to this
+            element, so the buttons above, the metadata line below and any
+            open menu stay out of a quote (hooks/useMessageTextSelection.ts). */}
+        <div data-quote-content="">
+          {message.isBuiltInCommand ? bodyText : bodyText && <MarkdownRenderer content={bodyText} className="message-markdown" />}
+        </div>
         {attachedFiles.length > 0 && <AttachedFileChips files={attachedFiles} />}
         {message.imageIds && message.imageIds.length > 0 && <ImageThumbnails imageIds={message.imageIds} />}
       </div>

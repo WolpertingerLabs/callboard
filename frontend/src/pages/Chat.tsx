@@ -29,8 +29,6 @@ import {
   SlidersHorizontal,
   Workflow,
   Loader2,
-  Quote,
-  MessageSquareQuote,
 } from "lucide-react";
 import { useDebouncedCallback } from "../hooks/useDebouncedCallback";
 import { useIsMobile } from "../hooks/useIsMobile";
@@ -68,10 +66,9 @@ import {
 } from "../api";
 import { readChatRouteState, type ChatRouteState } from "../types/chatRouteState";
 import { assignForkMarkers, forksByTimestamp } from "../utils/forkMarkers";
-import { buildQuotedPrompt, isQuotableMessage, quoteFromSelection } from "../utils/messageQuotes";
+import { buildQuotedPrompt } from "../utils/messageQuotes";
 import { clearQuotes, getQuotes, restoreQuotes, useQuoteTray } from "../hooks/useQuoteTray";
-import { useMessageTextSelection } from "../hooks/useMessageTextSelection";
-import SelectionQuoteToolbar from "../components/SelectionQuoteToolbar";
+import MessageQuoteSelection from "../components/MessageQuoteSelection";
 import QuoteTray from "../components/QuoteTray";
 import { providerKindOf, useChatMeta } from "../hooks/useChatMeta";
 import { isRetiredProviderId } from "../utils/retiredProviders";
@@ -505,6 +502,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     prompt: string;
     images?: File[];
     message: string;
+    /** The refused send's `onRefused`: Cancel hands back what it took, and the retry carries it on. */
+    onRefused?: () => void;
   }>({ isOpen: false, prompt: "", message: "" });
   const forceBranchChangeRef = useRef(false);
   const [branchDriftConfirm, setBranchDriftConfirm] = useState<{
@@ -512,6 +511,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     prompt: string;
     images?: File[];
     message: string;
+    /** The refused send's `onRefused`: Cancel hands back what it took, and the retry carries it on. */
+    onRefused?: () => void;
   }>({ isOpen: false, prompt: "", message: "" });
   const acknowledgeBranchDriftRef = useRef(false);
   const [viewMode, setViewMode] = useState<"chat" | "diff" | "debug" | "job" | "computer">("chat");
@@ -2674,6 +2675,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               isOpen: true,
               prompt,
               images,
+              onRefused,
               message: errorData.message || "There are uncommitted changes that would be affected by this branch switch.",
             });
             setStreaming(false);
@@ -2687,6 +2689,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               isOpen: true,
               prompt,
               images,
+              onRefused,
               message: errorData.message || "The branch has changed since your last message.",
             });
             setStreaming(false);
@@ -2771,60 +2774,56 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   handleSendRef.current = handleSend;
 
   // ── Select & quote ─────────────────────────────────────────────────────
-  // Text selected inside one quotable bubble gets a floating Quote / Ask bar;
-  // quotes wait in a per-chat tray above the composer and go out, as
-  // blockquotes, ahead of the next message typed there.
+  // Text selected inside one quotable bubble gets a floating Quote / Ask bar
+  // (MessageQuoteSelection, rendered below); quotes wait in a per-chat tray
+  // above the composer and go out, as blockquotes, ahead of the next message
+  // typed there.
   const quoteTray = useQuoteTray(id);
   const [focusComposer, setFocusComposer] = useState<(() => void) | null>(null);
-  const isQuotableIndex = useCallback((index: number) => isQuotableMessage(messages[index]), [messages]);
-  const { selection: textSelection, dismiss: dismissTextSelection } = useMessageTextSelection({
-    containerRef: chatContainerRef,
-    isEligible: isQuotableIndex,
-    enabled: !!id && !nativeAgent,
-    resetKey: `${id}:${viewMode}`,
-  });
-  const quoteSelection = useCallback(
-    (thenFocus: boolean) => {
-      if (!textSelection) return;
-      const quote = quoteFromSelection(textSelection.text, textSelection.messageIndex, messages[textSelection.messageIndex]);
-      if (quote) quoteTray.add(quote);
-      dismissTextSelection(true);
-      if (thenFocus) focusComposer?.();
-    },
-    [textSelection, messages, quoteTray, dismissTextSelection, focusComposer],
-  );
 
   /**
    * The composer's send: the tray's quotes, if any, go first. They leave the
-   * tray as the message goes out — a send then refused puts them back.
+   * tray as the message goes out — a send then refused puts them back, and
+   * the typed text too if the composer is still empty.
+   *
+   * A slash command goes out as typed and leaves the tray alone: it has to
+   * lead the prompt to run at all, and a command is not a question about the
+   * quoted text.
    */
   const handleComposerSend = useCallback(
     (prompt: string, images?: File[]) => {
       const quotes = id ? getQuotes(id) : [];
-      if (!id || quotes.length === 0 || sendBlockedReason) return handleSend(prompt, images);
+      if (!id || quotes.length === 0 || sendBlockedReason || parseLeadingCommand(prompt, allSlashCommands).command !== null) {
+        return handleSend(prompt, images);
+      }
       const chatId = id;
       clearQuotes(chatId);
-      return handleSend(buildQuotedPrompt(quotes, prompt), images, { onRefused: () => restoreQuotes(chatId, quotes) });
+      const onRefused = () => {
+        restoreQuotes(chatId, quotes);
+        // Only into the same chat's empty composer — never over new typing.
+        if (currentIdRef.current === chatId) promptInputSetValue?.((current) => (current === "" ? prompt : current));
+      };
+      return handleSend(buildQuotedPrompt(quotes, prompt), images, { onRefused });
     },
-    [id, handleSend, sendBlockedReason],
+    [id, handleSend, sendBlockedReason, allSlashCommands, promptInputSetValue],
   );
 
   // Retry the original message with forceBranchChange after user confirms the modal
   const handleConfirmBranchChange = useCallback(() => {
-    const { prompt, images } = branchChangeConfirm;
+    const { prompt, images, onRefused } = branchChangeConfirm;
     forceBranchChangeRef.current = true;
     setBranchChangeConfirm({ isOpen: false, prompt: "", message: "" });
-    handleSend(prompt, images);
+    handleSend(prompt, images, { onRefused });
     // Reset synchronously — handleSend reads the ref before its first await
     forceBranchChangeRef.current = false;
   }, [branchChangeConfirm, handleSend]);
 
   // Retry the original message with acknowledgeBranchDrift after user confirms the modal
   const handleConfirmBranchDrift = useCallback(() => {
-    const { prompt, images } = branchDriftConfirm;
+    const { prompt, images, onRefused } = branchDriftConfirm;
     acknowledgeBranchDriftRef.current = true;
     setBranchDriftConfirm({ isOpen: false, prompt: "", message: "" });
-    handleSend(prompt, images);
+    handleSend(prompt, images, { onRefused });
     // Reset synchronously — handleSend reads the ref before its first await
     acknowledgeBranchDriftRef.current = false;
   }, [branchDriftConfirm, handleSend]);
@@ -4123,21 +4122,14 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             {DRAFT_RESTORING}
           </div>
         )}
-        {textSelection && !textSelection.offscreen && (
-          <SelectionQuoteToolbar
-            rect={textSelection.rect}
-            actions={[
-              { key: "quote", label: "Quote", icon: <Quote size={14} />, title: "Add to the quotes above the composer", onSelect: () => quoteSelection(false) },
-              {
-                key: "ask",
-                label: "Ask",
-                icon: <MessageSquareQuote size={14} />,
-                title: "Quote it and write a question",
-                onSelect: () => quoteSelection(true),
-              },
-            ]}
-          />
-        )}
+        <MessageQuoteSelection
+          chatId={id}
+          messages={messages}
+          containerRef={chatContainerRef}
+          enabled={!nativeAgent}
+          resetKey={`${id}:${viewMode}`}
+          onAsk={focusComposer ?? undefined}
+        />
         <PromptInput
           onSend={handleComposerSend}
           onFocusRequest={setFocusComposer}
@@ -4335,7 +4327,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
       <ConfirmModal
         isOpen={branchChangeConfirm.isOpen}
-        onClose={() => setBranchChangeConfirm({ isOpen: false, prompt: "", message: "" })}
+        onClose={() => {
+          branchChangeConfirm.onRefused?.();
+          setBranchChangeConfirm({ isOpen: false, prompt: "", message: "" });
+        }}
         onConfirm={handleConfirmBranchChange}
         title="Uncommitted Changes Detected"
         message={branchChangeConfirm.message}
@@ -4345,7 +4340,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
       <ConfirmModal
         isOpen={branchDriftConfirm.isOpen}
-        onClose={() => setBranchDriftConfirm({ isOpen: false, prompt: "", message: "" })}
+        onClose={() => {
+          branchDriftConfirm.onRefused?.();
+          setBranchDriftConfirm({ isOpen: false, prompt: "", message: "" });
+        }}
         onConfirm={handleConfirmBranchDrift}
         title="Branch Changed"
         message={branchDriftConfirm.message}

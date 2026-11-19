@@ -8,6 +8,7 @@ import {
   isSameQuote,
   normalizeQuoteText,
   quoteFromSelection,
+  quoteOriginOf,
   type MessageQuote,
 } from "./messageQuotes";
 
@@ -57,21 +58,31 @@ describe("normalizeQuoteText", () => {
   });
 });
 
+describe("quoteOriginOf", () => {
+  it("is the timestamp and role of a quotable message, null otherwise", () => {
+    expect(quoteOriginOf(text({ role: "user" }))).toEqual({ timestamp: at(2026, 11, 19, 14, 2), role: "user" });
+    expect(quoteOriginOf(text({ type: "tool_result" }))).toBeNull();
+    expect(quoteOriginOf(text({ teamName: "helper" }))).toBeNull();
+    expect(quoteOriginOf(undefined)).toBeNull();
+  });
+});
+
 describe("quoteFromSelection", () => {
-  it("records index, role, timestamp and the normalised text", () => {
-    const q = quoteFromSelection("  some text  \n", 7, text({ role: "user" }));
+  const origin = { timestamp: at(2026, 11, 19, 14, 2), role: "user" as const };
+
+  it("records index, the captured origin and the normalised text", () => {
+    const q = quoteFromSelection("  some text  \n", 7, origin);
     expect(q).toMatchObject({ messageIndex: 7, role: "user", timestamp: at(2026, 11, 19, 14, 2), text: "some text" });
     expect(q!.id).toBeTruthy();
   });
 
   it("gives every quote its own id", () => {
-    expect(quoteFromSelection("a", 1, text())!.id).not.toBe(quoteFromSelection("a", 1, text())!.id);
+    expect(quoteFromSelection("a", 1, origin)!.id).not.toBe(quoteFromSelection("a", 1, origin)!.id);
   });
 
-  it("returns null for whitespace or an ineligible message", () => {
-    expect(quoteFromSelection(" \n ", 1, text())).toBeNull();
-    expect(quoteFromSelection("x", 1, text({ type: "tool_result" }))).toBeNull();
-    expect(quoteFromSelection("x", 1, undefined)).toBeNull();
+  it("returns null for whitespace or with no origin (an ineligible message)", () => {
+    expect(quoteFromSelection(" \n ", 1, origin)).toBeNull();
+    expect(quoteFromSelection("x", 1, null)).toBeNull();
   });
 });
 
