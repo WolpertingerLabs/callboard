@@ -1284,7 +1284,7 @@ export default function ApiSettings() {
 
   return (
     <>
-      {/* Integration toggle — Claude Code and OpenRouter as first-class providers */}
+      {/* Integration toggle — Claude and OpenRouter as first-class providers */}
       <div
         style={{
           display: "flex",
@@ -1298,7 +1298,7 @@ export default function ApiSettings() {
         }}
       >
         {[
-          { kind: "claude-code" as SettingsTab, label: "Claude Code", icon: <Bot size={14} /> },
+          { kind: "claude-code" as SettingsTab, label: "Claude", icon: <Bot size={14} /> },
           { kind: "openrouter" as SettingsTab, label: "OpenRouter", icon: <Network size={14} /> },
           { kind: "codex" as SettingsTab, label: "Codex", icon: <Terminal size={14} /> },
           { kind: "pi" as SettingsTab, label: "pi", icon: <Boxes size={14} /> },

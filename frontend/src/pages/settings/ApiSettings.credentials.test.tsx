@@ -325,7 +325,7 @@ describe("Settings → API credentials control", () => {
     await waitFor(() => expect(document.getElementById("piBaseUrl")).toBeTruthy());
     fireEvent.change(document.getElementById("piBaseUrl")!, { target: { value: "https://pi.unsaved" } });
 
-    fireEvent.click(tab("Claude Code"));
+    fireEvent.click(tab("Claude"));
     fireEvent.change(await screen.findByLabelText(/^API Key/), { target: { value: "sk-ant-unsaved" } });
 
     fireEvent.click(segment("Credentials", "OpenRouter"));
