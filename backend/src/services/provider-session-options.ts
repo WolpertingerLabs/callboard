@@ -34,6 +34,13 @@ export interface ProviderOptionsContext {
   getDefaultPermissions: () => DefaultPermissions | null;
   /** Session registry key at option-build time; used only in log lines. */
   trackingId: string;
+  /**
+   * Instruction text this session must ADD to the harness's own system prompt
+   * (today: the aside instruction). Delivered through each harness's additive
+   * channel — Codex `developer_instructions`, pi's appended system prompt —
+   * never through `model_instructions_file`, which replaces Codex's base prompt.
+   */
+  additionalInstructions?: string;
 }
 
 // For Codex chats, surface the per-provider settings the Codex adapter's
@@ -114,6 +121,7 @@ export async function buildCodexExtras(ctx: ProviderOptionsContext & { codexRout
     }),
     reasoningRoute: reasoningTarget.route === "openrouter" ? "openrouter" : reasoningTarget.route === "codex" ? "native" : "unknown",
     ...(permissions && { permissions }),
+    ...(ctx.additionalInstructions && { developerInstructions: ctx.additionalInstructions }),
   };
   log.info(
     `Codex chat config — trackingId=${trackingId}, authMode=${useOpenRouter ? "openrouter" : authMode}, ` +
@@ -176,6 +184,7 @@ export async function buildPiExtras(ctx: ProviderOptionsContext & { resumeSessio
     // is only reached when pass 1 says "ask". Two passes, one input, one
     // moment of reading it.
     getPermissions: getDefaultPermissions,
+    ...(ctx.additionalInstructions && { appendSystemPrompt: [ctx.additionalInstructions] }),
   };
   log.info(
     `pi chat config — trackingId=${trackingId}, provider=${agentSettings.piProviderId?.trim() || "(openrouter)"}, ` +

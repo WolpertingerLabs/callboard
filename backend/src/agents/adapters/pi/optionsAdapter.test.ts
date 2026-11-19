@@ -218,6 +218,39 @@ describe("cache warming", () => {
     }
   });
 
+  it("appends appendSystemPrompt after pi's own prompt and its discovered append, on a real session", async () => {
+    // pi's own discovered append (the global APPEND_SYSTEM.md) must survive:
+    // the option adds to it rather than replacing it.
+    writeFileSync(join(agentDir, "APPEND_SYSTEM.md"), "DISCOVERED APPEND");
+    try {
+      const modelRuntime = await ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: join(agentDir, "models.json"), allowModelNetwork: false });
+      const plain = buildPiServicesOptions({ cwd, agentDir, extension: () => {}, skillPaths: [] });
+      const base = await createAgentSessionFromServices({ services: await createAgentSessionServices({ ...plain, modelRuntime }), sessionManager: SessionManager.inMemory(cwd) });
+      const opts = buildPiServicesOptions({ cwd, agentDir, extension: () => {}, skillPaths: [], appendSystemPrompt: ["ASIDE INSTRUCTION"] });
+      const extended = await createAgentSessionFromServices({ services: await createAgentSessionServices({ ...opts, modelRuntime }), sessionManager: SessionManager.inMemory(cwd) });
+      try {
+        const before = base.session.systemPrompt;
+        const after = extended.session.systemPrompt;
+        expect(before).toContain("DISCOVERED APPEND");
+        expect(before).not.toContain("ASIDE INSTRUCTION");
+        expect(after).toContain("DISCOVERED APPEND");
+        expect(after).toContain("ASIDE INSTRUCTION");
+        // pi's base prompt is kept whole: the extended prompt starts the same way.
+        expect(after.startsWith(before.slice(0, 200))).toBe(true);
+      } finally {
+        base.session.dispose();
+        extended.session.dispose();
+      }
+    } finally {
+      rmSync(join(agentDir, "APPEND_SYSTEM.md"), { force: true });
+    }
+  });
+
+  it("adds no override when there is nothing to append", () => {
+    const options = buildPiServicesOptions({ cwd, agentDir, extension: () => {}, skillPaths: [] });
+    expect(options.resourceLoaderOptions).not.toHaveProperty("appendSystemPromptOverride");
+  });
+
   it("does not write anything to the user's settings file", () => {
     createPiSettingsManager(cwd, agentDir);
     buildPiServicesOptions({ cwd, agentDir, extension: () => {}, skillPaths: [] });

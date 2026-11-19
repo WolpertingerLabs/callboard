@@ -1787,9 +1787,15 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   // preamble on top would contradict it as often as help.
   const spaceInstruction = opts.agentAlias ? "" : spaceInstructionsPrompt(space);
   // An aside answers a side question about quoted passages; built from the
-  // stored role on every turn, so it holds on resume too.
+  // stored role on every turn, so it holds on resume too. Only Claude Code
+  // takes it in the append: Codex would write the append as a
+  // model_instructions_file, which REPLACES its base prompt, and pi ignores
+  // the append. Those two get it through their additive channels instead
+  // (`additionalInstructions` in providerCtx below).
   const asideInstruction = asideInstructionFor(initialMetadata);
-  const systemPromptAppend = [opts.systemPrompt, spaceInstruction, completionInstruction, asideInstruction].filter(Boolean).join("\n\n");
+  const systemPromptAppend = [opts.systemPrompt, spaceInstruction, completionInstruction, providerKind === "claude-code" ? asideInstruction : ""]
+    .filter(Boolean)
+    .join("\n\n");
 
   // The per-chat model and effort as stored in chat metadata (new chats: just
   // written above; resumed chats: loaded from disk). Every harness reads them.
@@ -1856,7 +1862,15 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
 
   // Per-harness extras (`options.codex` / `.pi`) — see
   // ./provider-session-options.ts. Each reads only the context it is handed.
-  const providerCtx: ProviderOptionsContext = { agentSettings, folder, chatModel, chatEffort, getDefaultPermissions, trackingId };
+  const providerCtx: ProviderOptionsContext = {
+    agentSettings,
+    folder,
+    chatModel,
+    chatEffort,
+    getDefaultPermissions,
+    trackingId,
+    ...(asideInstruction && { additionalInstructions: asideInstruction }),
+  };
   if (providerKind === "codex") queryOpts.options.codex = await buildCodexExtras({ ...providerCtx, codexRoute });
   if (providerKind === "pi") queryOpts.options.pi = await buildPiExtras({ ...providerCtx, resumeSessionId, chatId: opts.chatId });
 

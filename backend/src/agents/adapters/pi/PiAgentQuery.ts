@@ -201,7 +201,12 @@ export class PiAgentQuery implements AgentQuery {
     // The trust denial, the settings manager and the inline gate all live in
     // here. This is the ONLY sanctioned way into a pi session in this adapter —
     // `createAgentSession()` resolves no trust and defaults to trusted.
-    const servicesOptions = buildPiServicesOptions({ cwd, extension: buildPermissionExtension(permissionCtx), agentDir });
+    const servicesOptions = buildPiServicesOptions({
+      cwd,
+      extension: buildPermissionExtension(permissionCtx),
+      agentDir,
+      ...(pi.appendSystemPrompt?.length && { appendSystemPrompt: pi.appendSystemPrompt }),
+    });
     // The same gate the tests assert, run on the options this turn will really
     // use. Synchronous and I/O-free; a problem here means a refactor broke the
     // trust denial or the cache-warming pin, and the turn must not run.

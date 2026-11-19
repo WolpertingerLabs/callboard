@@ -77,6 +77,11 @@ export interface PiRunOptions {
   baseUrl?: string;
   /** Reasoning effort for capable models. */
   effort?: EffortLevel;
+  /**
+   * Texts appended to pi's system prompt, after anything pi itself appends
+   * (an `APPEND_SYSTEM.md` it discovers). Additive: pi's own prompt is kept.
+   */
+  appendSystemPrompt?: string[];
 }
 
 /** pi's default provider when settings name none. */
@@ -178,6 +183,8 @@ export interface BuildPiServicesInput {
    * {@link resolveCallboardSkillPaths}; tests pass their own.
    */
   skillPaths?: string[];
+  /** {@link PiRunOptions.appendSystemPrompt} — appended after pi's own appends. */
+  appendSystemPrompt?: string[];
 }
 
 /**
@@ -305,6 +312,10 @@ export function buildPiServicesOptions(input: BuildPiServicesInput): CreateAgent
       // Omitted entirely when empty: pi records a diagnostic for a named path
       // that does not exist, and "user has no custom skills" is not a fault.
       ...(skillPaths.length > 0 ? { additionalSkillPaths: skillPaths } : {}),
+      // The override, not `appendSystemPrompt`: that option would replace pi's
+      // discovered APPEND_SYSTEM.md and read each entry as a path if a file of
+      // that name happens to exist. The override only ever adds the text.
+      ...(input.appendSystemPrompt?.length ? { appendSystemPromptOverride: (base: string[]) => [...base, ...input.appendSystemPrompt!] } : {}),
     },
   };
 }
