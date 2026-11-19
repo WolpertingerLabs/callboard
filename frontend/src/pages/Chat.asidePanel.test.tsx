@@ -429,13 +429,23 @@ describe("clicking a highlight", () => {
     await waitFor(() => expect(location()).toBe("/chat/original?aside=aside-1"));
   });
 
-  it("does not on a double click, a drag, or the click that clears a selection", async () => {
+  // Past the wait a single click gets, so a later assertion sees whatever it was going to do.
+  const pastClickDelay = () => act(() => new Promise((resolve) => setTimeout(resolve, 450)));
+
+  it("does not on a real double click — a detail-1 click, then a detail-2 one", async () => {
     const answer = await setup();
+    // What a browser sends for a double click: two presses, two clicks.
+    press(answer, { detail: 1 });
     press(answer, { detail: 2 });
-    await act(async () => {});
+    fireEvent.dblClick(answer, { clientX: 20, clientY: 15, button: 0, detail: 2 });
+    await pastClickDelay();
     expect(location()).toBe("/chat/original");
+  });
+
+  it("does not on a drag, nor on the click that clears a selection", async () => {
+    const answer = await setup();
     press(answer, { downX: 60, x: 20 });
-    await act(async () => {});
+    await pastClickDelay();
     expect(location()).toBe("/chat/original");
     const range = document.createRange();
     range.selectNodeContents(answer);
@@ -444,7 +454,7 @@ describe("clicking a highlight", () => {
     fireEvent.mouseDown(answer, { clientX: 20, clientY: 15, button: 0 });
     window.getSelection()!.removeAllRanges(); // the press collapsed it
     fireEvent.click(answer, { clientX: 20, clientY: 15, button: 0, detail: 1 });
-    await act(async () => {});
+    await pastClickDelay();
     expect(location()).toBe("/chat/original");
   });
 });

@@ -154,3 +154,18 @@ it("gives focus back to the opener it is handed when the focused control went aw
   fireEvent.keyDown(screen.getByText("reply"), { key: "Escape" });
   expect(document.activeElement).toBe(screen.getByTestId("trigger"));
 });
+
+it("leaves an Escape that an input method is using to cancel a composition", () => {
+  const onClose = vi.fn();
+  render(
+    <AsidePanel label="Aside" isMobile={false} onClose={onClose}>
+      <textarea aria-label="typing" />
+    </AsidePanel>,
+  );
+  const field = screen.getByLabelText("typing");
+  fireEvent.keyDown(field, { key: "Escape", isComposing: true });
+  fireEvent.keyDown(field, { key: "Escape", keyCode: 229 });
+  expect(onClose).not.toHaveBeenCalled();
+  fireEvent.keyDown(field, { key: "Escape" });
+  expect(onClose).toHaveBeenCalledTimes(1);
+});

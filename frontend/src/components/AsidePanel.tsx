@@ -52,6 +52,10 @@ function trapTab(root: HTMLElement, e: React.KeyboardEvent) {
 /** Whether an Escape inside the panel is someone else's to handle. */
 function escapeIsClaimed(panel: HTMLElement, e: React.KeyboardEvent): boolean {
   if (e.defaultPrevented || isModalOpen()) return true;
+  // An input method composing text (Japanese, Chinese, Korean…) uses Escape to
+  // cancel the composition; that Escape is the IME's, not a request to close.
+  // keyCode 229 is how some browsers report keys an IME is processing.
+  if (e.nativeEvent.isComposing || e.keyCode === 229) return true;
   // An open menu (the composer's, a bubble's) closes first.
   if (panel.querySelector('[role="menu"], [role="listbox"]')) return true;
   // The quote bar dismisses a selection on Escape.
@@ -65,6 +69,7 @@ export default function AsidePanel({
   isMobile,
   onClose,
   getReturnFocus,
+  getFallbackFocus,
   children,
 }: {
   /** Accessible name — the aside's title. */
@@ -77,8 +82,19 @@ export default function AsidePanel({
    * close. Without one, focus goes back to whatever had it at open.
    */
   getReturnFocus?: () => HTMLElement | null;
+  /** Where focus goes when neither the opener nor what had focus at open is still there (the main composer). */
+  getFallbackFocus?: () => HTMLElement | null;
   children: ReactNode;
 }) {
+  // What had focus when the panel was asked for — read during the first
+  // render, before any child mounts: by the time this component's own effect
+  // runs, the embedded composer's (earlier) effect has already focused itself.
+  const [focusAtOpen] = useState(() => {
+    const active = document.activeElement;
+    return active instanceof HTMLElement && active !== document.body ? active : null;
+  });
+  const getFallbackFocusRef = useRef(getFallbackFocus);
+  getFallbackFocusRef.current = getFallbackFocus;
   const getReturnFocusRef = useRef(getReturnFocus);
   getReturnFocusRef.current = getReturnFocus;
   const panelRef = useRef<HTMLDivElement>(null);
@@ -88,7 +104,6 @@ export default function AsidePanel({
 
   // Focus in on open, back out on close.
   useEffect(() => {
-    const before = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     // After the embedded chat's own autofocus has had its chance.
     const timer = setTimeout(() => {
       const panel = panelRef.current;
@@ -100,10 +115,10 @@ export default function AsidePanel({
       // when the user had already moved it somewhere else in the page.
       const active = document.activeElement;
       if (active && active !== document.body && active.isConnected) return;
-      const target = [getReturnFocusRef.current?.(), before].find((el) => el?.isConnected);
+      const target = [getReturnFocusRef.current?.(), focusAtOpen, getFallbackFocusRef.current?.()].find((el) => el?.isConnected);
       target?.focus({ preventScroll: true });
     };
-  }, []);
+  }, [focusAtOpen]);
 
   // The page row the panel shares with the main chat; the window where that has no layout.
   const available = () => panelRef.current?.parentElement?.getBoundingClientRect().width || window.innerWidth;

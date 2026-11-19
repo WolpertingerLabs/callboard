@@ -344,6 +344,14 @@ function InFlightBubbles({ messages }: { messages: InFlightMessage[] }) {
   );
 }
 
+/**
+ * How long a click on highlighted text waits before opening its aside, so a
+ * double click (which arrives as a detail-1 click, then a detail-2 one) can
+ * cancel it. Around the common double-click interval; there is no API for the
+ * user's own setting.
+ */
+const HIGHLIGHT_CLICK_DELAY_MS = 350;
+
 /** At most one parentage-tree refetch per this long while a chat is open — see the tree effect. */
 const TREE_REFRESH_INTERVAL_MS = 10_000;
 /** Even right after a quiet spell, wait this long so a burst of ticks costs one request. */
@@ -2944,7 +2952,10 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
       const switching = query.has(ASIDE_PARAM);
       if (query.get(ASIDE_PARAM) === chatId) return;
       if (fresh) setFreshAsideId(chatId);
-      asideReturnFocusRef.current = returnFocus ?? null;
+      // The control that asked, whatever it was — read now, before the
+      // panel's composer takes focus. A menu row passes its trigger instead.
+      const active = document.activeElement;
+      asideReturnFocusRef.current = returnFocus ?? (active instanceof HTMLElement && active !== document.body ? active : null);
       asideOpenRef.current = { chatId, afterSeq: treeRequestSeqRef.current };
       query.set(ASIDE_PARAM, chatId);
       const state = (loc.state ?? {}) as Record<string, unknown>;
@@ -3040,28 +3051,52 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
   // selecting text: the press that clears an existing selection (judged at
   // pointer-down — by the click the selection is already gone), a drag, or a
   // double/triple click selecting a word or line. Nor one on a control.
+  //
+  // Browsers report a double click as a click with detail 1 and then one with
+  // detail 2, so the first cannot know yet: the open waits out the
+  // double-click interval, and a second press inside it cancels it.
   useEffect(() => {
     const container = chatContainerRef.current;
     if (embedded || viewMode !== "chat" || !container || asides.length === 0) return;
     let press: { x: number; y: number; hadSelection: boolean } | null = null;
+    let pending: ReturnType<typeof setTimeout> | null = null;
+    const cancelPending = () => {
+      if (pending) clearTimeout(pending);
+      pending = null;
+    };
     const onDown = (e: MouseEvent) => {
+      // A second press while an open is waiting: it was a double click.
+      cancelPending();
       const selection = window.getSelection();
       press = { x: e.clientX, y: e.clientY, hadSelection: !!selection && !selection.isCollapsed };
     };
     const onClick = (e: MouseEvent) => {
       const down = press;
       press = null;
-      if (e.button !== 0 || e.defaultPrevented || e.detail > 1) return;
+      if (e.detail > 1) {
+        cancelPending();
+        return;
+      }
+      if (e.button !== 0 || e.defaultPrevented) return;
       if (!down || down.hadSelection || Math.hypot(e.clientX - down.x, e.clientY - down.y) > 4) return;
       const selection = window.getSelection();
       if (selection && !selection.isCollapsed) return;
       if (e.target instanceof Element && e.target.closest("button, a, input, textarea, select, [role='menu']")) return;
       const hit = asideAtPoint(highlightRanges.current, e.clientX, e.clientY);
-      if (hit) openAside(hit);
+      if (!hit) return;
+      cancelPending();
+      pending = setTimeout(() => {
+        pending = null;
+        // A selection made meanwhile (the double click's word) wins too.
+        const now = window.getSelection();
+        if (now && !now.isCollapsed) return;
+        openAside(hit);
+      }, HIGHLIGHT_CLICK_DELAY_MS);
     };
     container.addEventListener("mousedown", onDown);
     container.addEventListener("click", onClick);
     return () => {
+      cancelPending();
       container.removeEventListener("mousedown", onDown);
       container.removeEventListener("click", onClick);
     };
@@ -4887,7 +4922,14 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
       <div className="chat-page" style={{ height: "100%", display: "flex", minWidth: 0 }}>
         {page}
         {asideId && id && !asideInvalid && (
-          <AsidePanel label={openAsideEntry?.title ?? "Aside"} isMobile={isMobile} onClose={closeAside} getReturnFocus={() => asideReturnFocusRef.current}>
+          <AsidePanel
+            label={openAsideEntry?.title ?? "Aside"}
+            isMobile={isMobile}
+            onClose={closeAside}
+            getReturnFocus={() => asideReturnFocusRef.current}
+            // The opener gone too (Ask as aside empties the tray its button sat in): the main composer.
+            getFallbackFocus={() => pageLayoutRef.current?.querySelector<HTMLElement>("textarea:not([disabled])") ?? null}
+          >
             {/* An aside that crashes takes down the panel, not the chat beside it. */}
             <ErrorBoundary region="This aside" variant="region" resetKey={asideId}>
               <Chat
