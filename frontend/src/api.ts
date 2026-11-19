@@ -718,11 +718,48 @@ function chatRoleOf(chat: Chat): string | undefined {
   }
 }
 
-/** Thrown by {@link createAside} when the daemon made a plain fork: it predates asides. */
+/** `metadata.title` of a chat record, or undefined. */
+function chatTitleOf(chat: Chat): string | undefined {
+  try {
+    const title = (JSON.parse(chat.metadata || "{}") as { title?: unknown }).title;
+    return typeof title === "string" && title.trim() ? title.trim() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Thrown by {@link createAside} when the daemon made a plain fork: it predates
+ * asides. That fork exists (not started) and is on {@link chat}; it is named
+ * in the message so the user can delete it, and never deleted for them.
+ */
 export class AsidesUnsupportedError extends Error {
   constructor(readonly chat: Chat) {
-    super("The Callboard daemon is too old for asides — it created an ordinary fork instead. Update and restart the daemon.");
+    const title = chatTitleOf(chat);
+    super(
+      `The Callboard daemon is too old for asides. It created an ordinary fork instead (not started)${title ? `, “${title}”` : ""}, ` +
+        "which you can delete from the chat list. Update and restart the daemon to use asides.",
+    );
     this.name = "AsidesUnsupportedError";
+  }
+}
+
+/**
+ * A refused {@link createAside}: the daemon's message, status and `code`.
+ * `targetRefused` is true when the refusal was about the chosen harness or
+ * its model/effort (`code: "fork_target_invalid"`), and only then.
+ */
+export class AsideRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+  ) {
+    super(message);
+    this.name = "AsideRequestError";
+  }
+  get targetRefused(): boolean {
+    return this.status === 400 && this.code === "fork_target_invalid";
   }
 }
 
@@ -738,14 +775,17 @@ export class AsidesUnsupportedError extends Error {
  *
  * A daemon from before asides ignores `kind` and makes an ordinary fork; that
  * is detected from the returned record and thrown as
- * {@link AsidesUnsupportedError} (the fork it made is on the error).
+ * {@link AsidesUnsupportedError} (the fork it made is on the error). A
+ * refusal throws {@link AsideRequestError}.
  */
 export async function createAside(id: string, opts: CreateAsideOptions): Promise<CreateAsideResponse> {
   const timestamp = asideForkPoint(opts.quotes);
   if (!timestamp) throw new Error("An aside needs at least one quote");
-  const created: CreateAsideResponse = await request(`/chats/${seg(id)}/fork`, {
+  const res = await fetch(`${BASE}/chats/${seg(id)}/fork`, {
     method: "POST",
-    json: {
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
       timestamp,
       kind: "aside",
       quotes: opts.quotes,
@@ -759,9 +799,13 @@ export async function createAside(id: string, opts: CreateAsideOptions): Promise
       ...(opts.prompt && opts.activePlugins?.length && { activePlugins: opts.activePlugins }),
       // So the quotes' origin lines show the asker's clock, not the daemon's.
       timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-    },
-    error: "Failed to create aside",
+    }),
   });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new AsideRequestError(errorBodyMessage(body, "Failed to create aside"), res.status, typeof body?.code === "string" ? body.code : undefined);
+  }
+  const created = (await res.json()) as CreateAsideResponse;
   if (chatRoleOf(created) !== ASIDE_ROLE) throw new AsidesUnsupportedError(created);
   return created;
 }

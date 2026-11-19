@@ -43,15 +43,31 @@ interface Props {
   busy: boolean;
   /** Why the last attempt failed, shown under the row. */
   error?: string | null;
+  /** Why asking is not possible right now (a slash command in the composer); disables the button. */
+  blockedReason?: string;
   onAsk: (options: AskAsideOptions) => Promise<AskAsideResult>;
 }
 
 /**
  * How an ask went: the aside's first turn `started`; it was `created` but its
- * question did not go out; the daemon `refused` it; or it was `skipped` before
- * any request (no question, attachments, already asking).
+ * question did not go out; the daemon `refused` the chosen harness or its
+ * model/effort; it `failed` for another reason (network, quotes, an older
+ * daemon); or it was `skipped` before any request (no question, attachments,
+ * already asking). A remembered harness/model is forgotten on `refused` only.
  */
-export type AskAsideResult = "started" | "created" | "refused" | "skipped";
+export type AskAsideResult = "started" | "created" | "refused" | "failed" | "skipped";
+
+/**
+ * What Read only guarantees on each harness. Claude Code and pi ask per call;
+ * Codex collapses permissions onto a sandbox at thread start, so there the
+ * guarantee is the read-only sandbox, and commands inside it run unprompted.
+ */
+export function readOnlyTooltip(harness: ForkProvider): string {
+  if (harness === "codex") {
+    return "Read only: Codex runs in a read-only sandbox, so nothing can be written; commands inside it run without asking. Never controls the computer.";
+  }
+  return "Read only: the aside asks you before writing files or running code (no model reviewer answers for you) and never controls the computer.";
+}
 
 /** The configured pi provider, fetched once and only when pi is picked for an aside. */
 let piProviderIdPromise: Promise<string> | null = null;
@@ -88,7 +104,7 @@ const chipStyle = {
   cursor: "pointer",
 } as const;
 
-export default function AskAsideControls({ chatProvider, busy, error, onAsk }: Props) {
+export default function AskAsideControls({ chatProvider, busy, error, blockedReason, onAsk }: Props) {
   const isMobile = useIsMobile();
   // 44px on touch layouts (WCAG 2.5.5), compact otherwise.
   const chip = { ...chipStyle, minHeight: isMobile ? 44 : chipStyle.minHeight, ...(isMobile && { padding: "2px 12px", fontSize: 13 }) };
@@ -96,6 +112,7 @@ export default function AskAsideControls({ chatProvider, busy, error, onAsk }: P
   const [target, setTarget] = useState<AsideTarget | null>(null);
   const [recent, setRecent] = useState(getAsideRecentTarget);
   const modelId = useId();
+  const blockedId = useId();
   // Two clicks in one tick both run before `busy` re-renders: guard locally too.
   const askingRef = useRef(false);
 
@@ -106,7 +123,7 @@ export default function AskAsideControls({ chatProvider, busy, error, onAsk }: P
   };
 
   const ask = async () => {
-    if (busy || askingRef.current) return;
+    if (busy || blockedReason || askingRef.current) return;
     askingRef.current = true;
     const chosen = target && { provider: target.provider, ...(target.model?.trim() && { model: target.model.trim() }) };
     let result: AskAsideResult = "skipped";
@@ -153,7 +170,7 @@ export default function AskAsideControls({ chatProvider, busy, error, onAsk }: P
         type="button"
         aria-pressed={readOnly}
         onClick={toggleReadOnly}
-        title="Read only: the aside asks you before writing files or running code (no model reviewer answers for you) and never controls the computer"
+        title={readOnlyTooltip(target?.provider ?? chatProvider)}
         style={{
           ...chip,
           ...(readOnly && { background: "var(--accent)", color: "var(--text-on-accent)", borderColor: "var(--accent)" }),
@@ -194,22 +211,28 @@ export default function AskAsideControls({ chatProvider, busy, error, onAsk }: P
       <button
         type="button"
         onClick={() => void ask()}
-        disabled={busy}
+        disabled={busy || !!blockedReason}
         aria-busy={busy}
-        title="Ask the composer's question about the quoted passages in a side branch"
+        aria-describedby={blockedReason ? blockedId : undefined}
+        title={blockedReason ?? "Ask the composer's question about the quoted passages in a side branch"}
         style={{
           ...chip,
           marginLeft: "auto",
           background: "var(--accent)",
           color: "var(--text-on-accent)",
           borderColor: "var(--accent)",
-          opacity: busy ? 0.6 : 1,
-          cursor: busy ? "default" : "pointer",
+          opacity: busy || blockedReason ? 0.6 : 1,
+          cursor: busy || blockedReason ? "default" : "pointer",
         }}
       >
         <MessageSquareQuote size={12} aria-hidden />
         {busy ? "Asking…" : "Ask as aside"}
       </button>
+      {blockedReason && !busy && (
+        <div id={blockedId} role="status" style={{ flexBasis: "100%", color: "var(--text-muted)", fontSize: 12 }}>
+          {blockedReason}
+        </div>
+      )}
       {error && (
         <div role="alert" style={{ flexBasis: "100%", color: "var(--error)", fontSize: 12 }}>
           {error}

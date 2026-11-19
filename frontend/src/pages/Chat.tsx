@@ -49,6 +49,7 @@ import {
   forkChat,
   createAside,
   AsidesUnsupportedError,
+  AsideRequestError,
   continueChatFrom,
   rerunChatFrom,
   RerunError,
@@ -317,6 +318,9 @@ const TREE_REFRESH_MIN_DELAY_MS = 1_000;
  * counts, so a command sent in that window still runs. "Shaped like one" ends
  * at whitespace, so a path such as `/tmp/x` is still prose.
  */
+/** Why Ask as aside is unavailable while the composer leads with a slash command. */
+const ASIDE_COMMAND_BLOCKED = "A slash command runs in this chat, not as an aside. Remove it to ask as an aside.";
+
 function leadsWithCommand(prompt: string, commands: string[], loaded: boolean): boolean {
   if (!loaded) return /^\s*\/[\w:-]+(?:\s|$)/.test(prompt);
   return parseLeadingCommand(prompt, commands).command !== null;
@@ -2849,6 +2853,14 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     composerSnapshotRef.current = get;
   }, []);
   const [asideError, setAsideError] = useState<{ chatId: string; message: string } | null>(null);
+  // A slash command runs in this chat and has to lead the prompt to run at
+  // all; it is not a question about the quotes. Ask as aside stays disabled
+  // while one leads the composer, by the same rule the composer's send uses.
+  const [composerLeadsWithCommand, setComposerLeadsWithCommand] = useState(false);
+  const isCommandPrompt = useCallback(
+    (prompt: string) => leadsWithCommand(prompt, allSlashCommands, commandsLoadedFor === id),
+    [allSlashCommands, commandsLoadedFor, id],
+  );
   const handleAskAside = useCallback(
     async ({ readOnly, target }: AskAsideOptions): Promise<AskAsideResult> => {
       if (!id || asideInFlightForRef.current.has(id)) return "skipped";
@@ -2859,6 +2871,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       const { prompt: question, attachments } = composerSnapshotRef.current?.() ?? { prompt: "", attachments: 0 };
       if (attachments > 0) {
         setAsideError({ chatId, message: "An aside can't carry attachments yet. Remove them, or send to this chat instead." });
+        return "skipped";
+      }
+      if (leadsWithCommand(question, allSlashCommands, commandsLoadedFor === chatId)) {
+        setAsideError({ chatId, message: ASIDE_COMMAND_BLOCKED });
         return "skipped";
       }
       if (!question.trim()) {
@@ -2887,8 +2903,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         // Created: the quotes and the question have gone into it.
         for (const quote of quotes) removeQuote(chatId, quote.id);
         const stillHere = currentIdRef.current === chatId;
-        if (stillHere) promptInputSetValue?.((current) => (current === question ? "" : current));
-        else if (getComposerDraft(chatId) === question) saveComposerDraft(chatId, "");
+        // Compared trimmed: the question was sent trimmed, and the composer
+        // or the stored draft may still hold trailing whitespace or a newline.
+        if (stillHere) promptInputSetValue?.((current) => (current.trim() === question.trim() ? "" : current));
+        else if (getComposerDraft(chatId).trim() === question.trim()) saveComposerDraft(chatId, "");
         if (created.runError) {
           // The aside exists but its question did not go out: put it in the
           // aside's composer so resending is one click.
@@ -2905,12 +2923,13 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       } catch (err) {
         console.error("Failed to create aside:", err);
         setAsideError({ chatId, message: err instanceof AsidesUnsupportedError ? err.message : errorMessage(err, "Failed to create the aside") });
-        return "refused";
+        // Only a refusal of the chosen harness/model counts against it.
+        return err instanceof AsideRequestError && err.targetRefused ? "refused" : "failed";
       } finally {
         setInFlight(false);
       }
     },
-    [id, promptInputSetValue, focusComposer, activePluginIds, onChatListRefresh, navigate],
+    [id, promptInputSetValue, focusComposer, activePluginIds, onChatListRefresh, navigate, allSlashCommands, commandsLoadedFor],
   );
 
   /**
@@ -2926,7 +2945,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     (prompt: string, images?: File[]) => {
       // Belt and braces: the composer is blocked while an aside is out, and
       // this is its only send path.
-      if (asideInFlight) return;
+      if (id && asideInFlightForRef.current.has(id)) return;
       const quotes = id ? getQuotes(id) : [];
       if (!id || quotes.length === 0 || sendBlockedReason || leadsWithCommand(prompt, allSlashCommands, commandsLoadedFor === id)) {
         return handleSend(prompt, images);
@@ -2940,7 +2959,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       };
       return handleSend(buildQuotedPrompt(quotes, prompt), images, { onRefused });
     },
-    [id, handleSend, sendBlockedReason, allSlashCommands, commandsLoadedFor, promptInputSetValue, asideInFlight],
+    [id, handleSend, sendBlockedReason, allSlashCommands, commandsLoadedFor, promptInputSetValue],
   );
 
   // Retry the original message with forceBranchChange after user confirms the modal
@@ -4269,6 +4288,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           onSend={handleComposerSend}
           onFocusRequest={setFocusComposer}
           onSnapshotRequest={registerComposerSnapshot}
+          isCommandPrompt={isCommandPrompt}
+          onCommandLeadChange={setComposerLeadsWithCommand}
           accessory={
             <QuoteTray
               quotes={quoteTray.quotes}
@@ -4280,6 +4301,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                     chatProvider={chatProvider}
                     busy={asideInFlight}
                     error={asideError?.chatId === id ? asideError.message : null}
+                    blockedReason={composerLeadsWithCommand ? ASIDE_COMMAND_BLOCKED : undefined}
                     onAsk={handleAskAside}
                   />
                 ) : undefined

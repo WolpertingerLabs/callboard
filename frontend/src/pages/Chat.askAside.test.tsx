@@ -13,7 +13,7 @@ import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-rou
 import type { ReactNode } from "react";
 import Chat from "./Chat";
 import { addQuote, getQuotes, resetQuoteTraysForTests } from "../hooks/useQuoteTray";
-import { getComposerDraft } from "../utils/localStorage";
+import { getAsideRecentTarget, getComposerDraft, saveAsideRecentTarget, saveComposerDraft } from "../utils/localStorage";
 import { getMessages } from "../api";
 
 const Q1 = "2026-01-01T10:00:00.000Z";
@@ -67,6 +67,8 @@ vi.mock("../components/PromptInput", async (importOriginal) => {
     onSetValue,
     onSnapshotRequest,
     sendBlockedReason,
+    onCommandLeadChange,
+    isCommandPrompt,
   }: {
     onSend: (prompt: string) => void;
     accessory?: ReactNode;
@@ -74,6 +76,8 @@ vi.mock("../components/PromptInput", async (importOriginal) => {
     onSetValue?: (setter: (value: Update) => void) => void;
     onSnapshotRequest?: (get: (() => { prompt: string; attachments: number }) | null) => void;
     sendBlockedReason?: string;
+    onCommandLeadChange?: (leads: boolean) => void;
+    isCommandPrompt?: (prompt: string) => boolean;
   }) {
     const [text, setTextState] = useState("");
     // Like the real composer, an updater is resolved at the moment of the call,
@@ -90,9 +94,13 @@ vi.mock("../components/PromptInput", async (importOriginal) => {
       onSetValue?.(() => (value: Update) => setText(typeof value === "function" ? value(live.current) : value));
     }, [onSetValue]);
     useEffect(() => {
-      onSnapshotRequest?.(() => ({ prompt: live.current, attachments: composerState.attachments }));
+      // Trimmed, as the real composer composes the prompt it would send.
+      onSnapshotRequest?.(() => ({ prompt: live.current.trim(), attachments: composerState.attachments }));
       return () => onSnapshotRequest?.(null);
     }, [onSnapshotRequest]);
+    useEffect(() => {
+      onCommandLeadChange?.(isCommandPrompt?.(text) ?? false);
+    }, [text, isCommandPrompt, onCommandLeadChange]);
     return (
       <div>
         {accessory}
@@ -167,7 +175,7 @@ function LocationProbe() {
   );
 }
 
-type ForkReply = "ok" | "refuse" | "old" | "runError" | Promise<"ok">;
+type ForkReply = "ok" | "refuse" | "refuseTarget" | "old" | "runError" | Promise<"ok">;
 let forkReplies: ForkReply[] = [];
 const forkBodies = () =>
   vi
@@ -199,9 +207,12 @@ beforeEach(() => {
       if (url === "/api/chats/original/fork" && init?.method === "POST") {
         const reply = await (forkReplies.shift() ?? "ok");
         if (reply === "refuse") return { ok: false, status: 400, json: async () => ({ error: "quotes[0] is after the fork point" }) };
+        if (reply === "refuseTarget")
+          return { ok: false, status: 400, json: async () => ({ error: 'Unknown target provider "nope"', code: "fork_target_invalid" }) };
         const chatRole = reply === "old" ? "fork" : "aside";
+        const title = reply === "old" ? "Fork: Work" : "Aside: Why?";
         const outcome = reply === "runError" ? { runError: "engine down", promptText: "> **Assistant:**\n> first\n\nWhy?" } : { started: true };
-        return { ok: true, status: 201, json: async () => ({ id: "aside-1", folder: "/tmp", metadata: JSON.stringify({ chatRole }), ...outcome }) };
+        return { ok: true, status: 201, json: async () => ({ id: "aside-1", folder: "/tmp", metadata: JSON.stringify({ chatRole, title }), ...outcome }) };
       }
       if (url === "/api/chats/aside-1/stream") {
         return { ok: true, status: 200, body: new ReadableStream({ start: (c) => c.close() }), json: async () => ({}) };
@@ -327,9 +338,12 @@ it("does not pull the user back from another chat, nor show the request there", 
   expect(await screen.findByRole("button", { name: "Ask as aside" })).toHaveProperty("disabled", false);
   expect(screen.queryByTestId("send-blocked")).toBeNull();
 
+  // The draft the original chat's composer saved, with a trailing newline.
+  saveComposerDraft("original", "Why?\n");
   await act(async () => release());
   await waitFor(() => expect(getQuotes("original")).toHaveLength(0));
   expect(screen.getByTestId("location").textContent).toBe("/chat/other");
+  expect(getComposerDraft("original")).toBe("");
 });
 
 it("refuses attachments rather than dropping them", async () => {
@@ -372,4 +386,45 @@ it("keeps an aside whose question could not be sent, with the text in its compos
   expect(alert).toHaveBeenCalledWith(expect.stringContaining("engine down"));
   expect(getComposerDraft("aside-1")).toBe("> **Assistant:**\n> first\n\nWhy?");
   expect(getQuotes("original")).toHaveLength(0);
+});
+
+it("empties the composer when the question had trailing whitespace", async () => {
+  await quoteAndType("Why?  \n");
+  fireEvent.click(askButton());
+  await waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/chat/aside-1"));
+  expect(forkBodies()[0].prompt).toBe("Why?");
+  expect(composer().value).toBe("");
+});
+
+it("is disabled, with the reason, while the composer leads with a slash command", async () => {
+  await quoteAndType("/compact keep the tests");
+  await waitFor(() => expect(askButton()).toHaveProperty("disabled", true));
+  expect(screen.getByText(/slash command runs in this chat/)).toBeTruthy();
+  fireEvent.click(askButton());
+  expect(forkBodies()).toHaveLength(0);
+
+  type("Why?");
+  await waitFor(() => expect(askButton()).toHaveProperty("disabled", false));
+});
+
+it("forgets the remembered harness only when the daemon refuses that target", async () => {
+  saveAsideRecentTarget({ provider: "codex", model: "gpt-x" });
+  forkReplies = ["refuse"];
+  await quoteAndType("Why?");
+  fireEvent.click(screen.getByRole("button", { name: "Codex · gpt-x" }));
+  fireEvent.click(askButton());
+  await screen.findByRole("alert");
+  // A quote problem says nothing about the harness.
+  expect(getAsideRecentTarget()).toEqual({ provider: "codex", model: "gpt-x" });
+
+  forkReplies = ["refuseTarget"];
+  fireEvent.click(askButton());
+  await waitFor(() => expect(getAsideRecentTarget()).toBeNull());
+});
+
+it("names the plain fork an older daemon made, so it can be deleted", async () => {
+  forkReplies = ["old"];
+  await quoteAndType("Why?");
+  fireEvent.click(askButton());
+  expect((await screen.findByRole("alert")).textContent).toMatch(/created an ordinary fork instead \(not started\), “Fork: Work”, which you can delete/);
 });

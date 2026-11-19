@@ -6,7 +6,7 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import AskAsideControls, { type AskAsideResult } from "./AskAsideControls";
+import AskAsideControls, { readOnlyTooltip, type AskAsideResult } from "./AskAsideControls";
 import { getAsideReadOnly, getAsideRecentTarget, saveAsideRecentTarget } from "../utils/localStorage";
 import { getAgentSettings } from "../api";
 
@@ -95,6 +95,35 @@ describe("AskAsideControls", () => {
     fireEvent.change(harness(), { target: { value: "codex" } });
     ask();
     await waitFor(() => expect(getAsideRecentTarget()).toEqual({ provider: "pi" }));
+  });
+
+  it("keeps the stored choice when the request failed for another reason", async () => {
+    saveAsideRecentTarget({ provider: "codex" });
+    const onAsk = renderControls(vi.fn(async (): Promise<AskAsideResult> => "failed"));
+    fireEvent.click(screen.getByRole("button", { name: "Codex" }));
+    ask();
+    await waitFor(() => expect(onAsk).toHaveBeenCalled());
+    expect(getAsideRecentTarget()).toEqual({ provider: "codex" });
+  });
+
+  it("says what Read only guarantees on the harness the aside will run on", () => {
+    renderControls();
+    expect(readOnly().title).toBe(readOnlyTooltip("claude-code"));
+    expect(readOnly().title).toMatch(/asks you before writing files or running code/);
+    fireEvent.change(harness(), { target: { value: "codex" } });
+    expect(readOnly().title).toMatch(/read-only sandbox.*commands inside it run without asking/);
+    cleanup();
+    render(<AskAsideControls chatProvider="codex" busy={false} onAsk={vi.fn()} />);
+    expect(readOnly().title).toBe(readOnlyTooltip("codex"));
+  });
+
+  it("is disabled with the reason while blocked", () => {
+    const onAsk = vi.fn();
+    render(<AskAsideControls chatProvider="claude-code" busy={false} blockedReason="no commands" onAsk={onAsk} />);
+    expect(screen.getByRole("button", { name: "Ask as aside" })).toHaveProperty("disabled", true);
+    expect(screen.getByRole("status").textContent).toBe("no commands");
+    ask();
+    expect(onAsk).not.toHaveBeenCalled();
   });
 
   it("offers pi models from the configured pi provider", async () => {

@@ -227,6 +227,15 @@ interface Props {
    */
   onSnapshotRequest?: (snapshot: (() => ComposerSnapshot) | null) => void;
   /**
+   * Whether the composer's prompt leads with a slash command: a command chip,
+   * or text the caller's {@link Props.isCommandPrompt} recognises. Reported
+   * only when it changes, so the caller re-renders on the toggle rather than
+   * on every keystroke.
+   */
+  onCommandLeadChange?: (leads: boolean) => void;
+  /** The caller's rule for "this prompt runs a command" — see {@link Props.onCommandLeadChange}. */
+  isCommandPrompt?: (prompt: string) => boolean;
+  /**
    * Shown above the attachments, inside the composer — the quote tray.
    * Presentation only: what it holds is the caller's to fold into `onSend`.
    */
@@ -258,6 +267,8 @@ export default function PromptInput({
   focusKey,
   onFocusRequest,
   onSnapshotRequest,
+  onCommandLeadChange,
+  isCommandPrompt,
   accessory,
 }: Props) {
   // The stored draft, read once for the first render. Later chats load theirs
@@ -993,6 +1004,15 @@ export default function PromptInput({
   useEffect(() => {
     imagesRef.current = images;
   }, [images]);
+  const commandLeadRef = useRef<boolean | null>(null);
+  useEffect(() => {
+    if (!onCommandLeadChange) return;
+    const leads = activeCommand !== null || (isCommandPrompt?.(value) ?? false);
+    if (leads === commandLeadRef.current) return;
+    commandLeadRef.current = leads;
+    onCommandLeadChange(leads);
+  }, [activeCommand, value, isCommandPrompt, onCommandLeadChange]);
+
   useEffect(() => {
     if (!onSnapshotRequest) return;
     onSnapshotRequest(() => ({ prompt: composePrompt(activeCommandRef.current, valueRef.current), attachments: imagesRef.current.length }));

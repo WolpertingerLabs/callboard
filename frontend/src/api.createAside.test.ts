@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { AsidesUnsupportedError, createAside } from "./api";
+import { AsideRequestError, AsidesUnsupportedError, createAside } from "./api";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -59,4 +59,20 @@ it("sends Read only as a flag for the daemon to apply", async () => {
   expect(JSON.parse(fetcher.mock.calls[0][1].body as string)).toMatchObject({ readOnly: true });
   await createAside("c", { quotes, prompt: "why?" });
   expect(JSON.parse(fetcher.mock.calls[1][1].body as string)).not.toHaveProperty("readOnly");
+});
+
+it("throws AsideRequestError with the status and code, marking a refused target", async () => {
+  const refuse = (body: Record<string, unknown>) =>
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ ok: false, status: 400, json: async () => body })),
+    );
+  refuse({ error: 'Unknown target provider "x"', code: "fork_target_invalid" });
+  const target = await createAside("c", { quotes, prompt: "why?" }).catch((e) => e);
+  expect(target).toBeInstanceOf(AsideRequestError);
+  expect(target).toMatchObject({ message: 'Unknown target provider "x"', status: 400, code: "fork_target_invalid", targetRefused: true });
+
+  refuse({ error: "quotes[0] is after the fork point" });
+  const other = await createAside("c", { quotes, prompt: "why?" }).catch((e) => e);
+  expect(other).toMatchObject({ status: 400, targetRefused: false });
 });
