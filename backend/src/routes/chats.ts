@@ -3,6 +3,8 @@ import { listChatsSnapshot } from "../services/chats-snapshot.js";
 import { createCardMembership, isNativeRecord } from "../services/card-membership.js";
 import { bindChatView, ChatViewError, chatViews } from "../services/chat-view.js";
 import { resolveAsidePermissions } from "../services/aside.js";
+import { getAgentSettings } from "../services/agent-settings.js";
+import { codexSandboxRefusal } from "../services/permission-ceiling.js";
 import { startChatTurn } from "../services/chat-turn.js";
 import { discoverChatCorpus } from "../services/chat-discovery.js";
 import { createTriggeredPredicate, cardIsArchived, archivedRootIdsOf } from "../services/chat-visibility.js";
@@ -1284,6 +1286,13 @@ chatsRouter.post("/", (req, res) => {
   }
 });
 
+/**
+ * `code` on a fork refusal that is about the chosen target — the harness, or
+ * the model/effort on it — rather than the request's other input. A client
+ * remembering a harness/model choice forgets it on this code only.
+ */
+const FORK_TARGET_INVALID = "fork_target_invalid";
+
 // Fork a chat: copy session history up to a message into a new chat
 chatsRouter.post("/:id/fork", async (req, res) => {
   // #swagger.tags = ['Chats']
@@ -1346,14 +1355,23 @@ chatsRouter.post("/:id/fork", async (req, res) => {
   // Target harness. Omitted (the common case) means "same harness", which
   // keeps the high-fidelity same-provider fork path below.
   if (req.body.provider !== undefined && !isRoutableProvider(req.body.provider)) {
-    return res.status(400).json({ error: `Unknown target provider "${req.body.provider}"` });
+    return res.status(400).json({ error: `Unknown target provider "${req.body.provider}"`, code: FORK_TARGET_INVALID });
   }
   const targetKind: InternalProviderKind = isRoutableProvider(req.body.provider) ? req.body.provider : providerKind;
   const targetProvider = getSessionProviders().find((p) => p.kind === targetKind);
   if (!targetProvider) {
-    return res.status(400).json({ error: `Forking into ${providerLabel(targetKind)} is not supported` });
+    return res.status(400).json({ error: `Forking into ${providerLabel(targetKind)} is not supported`, code: FORK_TARGET_INVALID });
   }
   const isHandoff = targetKind !== providerKind;
+
+  // A Codex aside runs under whatever an explicit codexSandboxMode setting
+  // says, not the sandbox its permissions select — so a Read only aside on
+  // "workspace-write" would write without asking. Refused here, before
+  // anything is written; checked again below against the final permissions.
+  if (aside.aside && targetKind === "codex") {
+    const refusal = codexSandboxRefusal(normalizePermissions(aside.aside.permissions), getAgentSettings().codexSandboxMode);
+    if (refusal) return res.status(400).json({ error: refusal, code: "codex_sandbox_exceeds_ceiling" });
+  }
 
   // Model / effort for the new chat. A handoff cannot inherit the source's:
   // model ids and effort scales are per-harness ("claude-opus-5" means
@@ -1372,7 +1390,7 @@ chatsRouter.post("/:id/fork", async (req, res) => {
     if (req.body.effort !== undefined) await assertReasoningEffort({ provider: targetKind, model, effort: req.body.effort, cwd: chat.folder });
     else await assertStoredReasoningEffort({ provider: targetKind, model, effort, cwd: chat.folder });
   } catch (error) {
-    return res.status(400).json({ error: (error as Error).message });
+    return res.status(400).json({ error: (error as Error).message, code: FORK_TARGET_INVALID });
   }
 
   const newSessionId = randomUUID();
@@ -1380,7 +1398,7 @@ chatsRouter.post("/:id/fork", async (req, res) => {
   try {
     forked = writeForkedSession({ chat, source, targetKind, targetProvider, timestamp, newSessionId });
   } catch (error) {
-    if (error instanceof UnsupportedForkError) return res.status(400).json({ error: `Forking into ${providerLabel(targetKind)} is not supported` });
+    if (error instanceof UnsupportedForkError) return res.status(400).json({ error: `Forking into ${providerLabel(targetKind)} is not supported`, code: FORK_TARGET_INVALID });
     log.error(`Failed to fork session (${providerKind} → ${targetKind}): ${error}`);
   }
   if (!forked) {
@@ -1405,6 +1423,17 @@ chatsRouter.post("/:id/fork", async (req, res) => {
     if (current) {
       const again = resolveAsidePermissions(parseChatMetadata(current.metadata).defaultPermissions, req.body.permissions, asideSpec.readOnly);
       if (again.ok) asidePermissions = again.permissions;
+    }
+    // The parent may have changed since the first check: the same refusal,
+    // on what will actually be written. The session file is removed with it.
+    const late = targetKind === "codex" ? codexSandboxRefusal(normalizePermissions(asidePermissions), getAgentSettings().codexSandboxMode) : null;
+    if (late) {
+      try {
+        targetProvider.deleteSessionFiles(newSessionId);
+      } catch (error) {
+        log.warn(`Could not remove the unused aside session ${newSessionId}: ${error}`);
+      }
+      return res.status(400).json({ error: late, code: "codex_sandbox_exceeds_ceiling" });
     }
   }
   const forkMeta = {

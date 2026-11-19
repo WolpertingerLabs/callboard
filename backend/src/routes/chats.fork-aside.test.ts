@@ -65,7 +65,7 @@ vi.mock("../services/chat-file-service.js", () => ({
   },
 }));
 /** Calls recorded by the stub providers, so tests can assert which path ran. */
-const calls = vi.hoisted(() => ({ forkSession: [] as unknown[][], seedSession: [] as unknown[][], createChat: [] as unknown[][] }));
+const calls = vi.hoisted(() => ({ forkSession: [] as unknown[][], seedSession: [] as unknown[][], createChat: [] as unknown[][], deleted: [] as string[] }));
 
 /** History the source provider hands back to the handoff projection. */
 const sourceMessages: unknown[] = [
@@ -96,6 +96,7 @@ vi.mock("../agents/factory.js", () => ({
         calls.seedSession.push(args);
         return { logPath: "/tmp/seed-codex.jsonl" };
       },
+      deleteSessionFiles: (id: string) => calls.deleted.push(id),
       parseSessionMessages: () => sourceMessages,
       getSessionPreview: () => "preview",
     },
@@ -133,6 +134,12 @@ vi.mock("../agents/factory.js", () => ({
   ],
 }));
 vi.mock("../services/claude.js", () => ({ hasPendingRequest: () => false }));
+/** Settings → Codex sandbox mode as the route reads it — never the real settings file. */
+const settings = vi.hoisted(() => ({ codexSandboxMode: undefined as string | undefined }));
+vi.mock("../services/agent-settings.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../services/agent-settings.js")>()),
+  getAgentSettings: () => ({ ...(settings.codexSandboxMode && { codexSandboxMode: settings.codexSandboxMode }) }),
+}));
 /** What the aside's auto-start was asked to send, and what it answers. */
 const turns = vi.hoisted(() => ({ calls: [] as any[], result: { ok: true, emitter: {} } as any, throws: null as Error | null }));
 vi.mock("../services/chat-turn.js", () => ({
@@ -156,6 +163,7 @@ function fork(body: Record<string, unknown> = {}): Promise<{ code: number; meta:
   calls.forkSession = [];
   calls.seedSession = [];
   calls.createChat = [];
+  calls.deleted = [];
   return new Promise((resolve) => {
     const res = {
       statusCode: 200,
@@ -193,6 +201,7 @@ const quote = (timestamp = T1, text = "the passage") => ({ timestamp, role: "ass
 const aside = (body: Record<string, unknown> = {}) => fork({ timestamp: T1, kind: "aside", quotes: [quote()], ...body });
 
 afterEach(() => {
+  settings.codexSandboxMode = undefined;
   turns.calls = [];
   turns.result = { ok: true, emitter: {} };
   turns.throws = null;
@@ -296,6 +305,62 @@ describe("POST /api/chats/:id/fork kind aside", () => {
       setParent({});
       const res = await aside({ permissions: { fileRead: "allow" } });
       expect(res.meta.defaultPermissions).toEqual({ fileRead: "ask", fileWrite: "ask", codeExecution: "ask", webAccess: "ask", computerControl: "deny" });
+    });
+  });
+
+  it("marks a refusal of the target harness or effort with fork_target_invalid, and no other", async () => {
+    setParent({});
+    expect((await aside({ provider: "acp" })).meta).toMatchObject({ code: "fork_target_invalid" });
+    expect((await aside({ provider: "codex", effort: "ultra" })).meta).toMatchObject({ code: "fork_target_invalid" });
+    expect((await aside({ quotes: [quote(T0)] })).meta).not.toHaveProperty("code");
+  });
+
+  describe("Codex sandbox setting", () => {
+    const loose = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", computerControl: "deny" };
+
+    it("refuses a Read only Codex aside under workspace-write, writing nothing", async () => {
+      setParent({ defaultPermissions: loose });
+      settings.codexSandboxMode = "workspace-write";
+      const res = await aside({ provider: "codex", readOnly: true, prompt: "why?" });
+      expect(res.code).toBe(400);
+      expect(res.meta.code).toBe("codex_sandbox_exceeds_ceiling");
+      expect(res.meta.error).toMatch(/codexSandboxMode="workspace-write"/);
+      expect(calls.seedSession).toHaveLength(0);
+      expect(calls.createChat).toHaveLength(0);
+      expect(turns.calls).toHaveLength(0);
+    });
+
+    it("refuses any Codex aside the setting would loosen, Read only or not", async () => {
+      setParent({ defaultPermissions: { ...loose, codeExecution: "ask" } });
+      settings.codexSandboxMode = "danger-full-access";
+      expect((await aside({ provider: "codex" })).code).toBe(400);
+    });
+
+    it("allows a Read only Codex aside with no explicit sandbox mode, or one that fits", async () => {
+      setParent({ defaultPermissions: loose });
+      const plain = await aside({ provider: "codex", readOnly: true });
+      expect(plain.code).toBe(201);
+      settings.codexSandboxMode = "read-only";
+      expect((await aside({ provider: "codex", readOnly: true })).code).toBe(201);
+    });
+
+    it("leaves other harnesses alone", async () => {
+      setParent({ defaultPermissions: loose });
+      settings.codexSandboxMode = "danger-full-access";
+      expect((await aside({ readOnly: true })).code).toBe(201);
+    });
+
+    it("refuses when the parent is tightened during the request, removing the written session", async () => {
+      setParent({ defaultPermissions: loose, provider: "codex" });
+      settings.codexSandboxMode = "workspace-write";
+      // Fits at first (allow-all → full access ≥ workspace-write); the parent then drops to ask.
+      effortContexts.mockImplementationOnce(() => setParent({ defaultPermissions: { ...loose, fileWrite: "ask", codeExecution: "ask" }, provider: "codex" }));
+      const res = await aside();
+      expect(res.code).toBe(400);
+      expect(res.meta.code).toBe("codex_sandbox_exceeds_ceiling");
+      expect(calls.seedSession).toHaveLength(1);
+      expect(calls.deleted).toEqual([(calls.seedSession[0]![1] as { newSessionId: string }).newSessionId]);
+      expect(calls.createChat).toHaveLength(0);
     });
   });
 
