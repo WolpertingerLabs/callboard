@@ -29,6 +29,8 @@ import {
   SlidersHorizontal,
   Workflow,
   Loader2,
+  Quote,
+  MessageSquareQuote,
 } from "lucide-react";
 import { useDebouncedCallback } from "../hooks/useDebouncedCallback";
 import { useIsMobile } from "../hooks/useIsMobile";
@@ -66,6 +68,11 @@ import {
 } from "../api";
 import { readChatRouteState, type ChatRouteState } from "../types/chatRouteState";
 import { assignForkMarkers, forksByTimestamp } from "../utils/forkMarkers";
+import { buildQuotedPrompt, isQuotableMessage, quoteFromSelection } from "../utils/messageQuotes";
+import { clearQuotes, getQuotes, restoreQuotes, useQuoteTray } from "../hooks/useQuoteTray";
+import { useMessageTextSelection } from "../hooks/useMessageTextSelection";
+import SelectionQuoteToolbar from "../components/SelectionQuoteToolbar";
+import QuoteTray from "../components/QuoteTray";
 import { providerKindOf, useChatMeta } from "../hooks/useChatMeta";
 import { isRetiredProviderId } from "../utils/retiredProviders";
 import { INTERRUPTED_MESSAGE, useStopController } from "../hooks/useStopController";
@@ -608,7 +615,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // Typed as handleSend itself, options included: a narrower type here once
   // hid this ref's canned send from a search for sends that aren't the
   // composer's.
-  const handleSendRef = useRef<(prompt: string, images?: File[], options?: { notFromComposer?: boolean }) => void>(() => {});
+  const handleSendRef = useRef<(prompt: string, images?: File[], options?: { notFromComposer?: boolean; onRefused?: () => void }) => void>(() => {});
   const planApprovedRef = useRef(false);
   const tempChatIdRef = useRef<string | null>(null);
   const streamingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -2422,8 +2429,12 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
      * `notFromComposer` marks a send that isn't the composer's contents — the
      * canned plan-review replies. Those don't carry an opened draft's text or
      * images, so they are neither held for its restore nor allowed to retire it.
+     *
+     * `onRefused` runs when the send failed outright — the route refused it or
+     * the request never got an answer — so a caller that took something out of
+     * the page for it (the quote tray) can put it back.
      */
-    async (prompt: string, images?: File[], { notFromComposer = false }: { notFromComposer?: boolean } = {}) => {
+    async (prompt: string, images?: File[], { notFromComposer = false, onRefused }: { notFromComposer?: boolean; onRefused?: () => void } = {}) => {
       // The composer greys Send out for this, so reaching here means some other
       // caller (a plan-review auto-reply, a retry) got in. Bail before the
       // in-flight bubble and the streaming flag, because there is no config to
@@ -2637,6 +2648,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             body: JSON.stringify({ ...body, chatView: originatingChatView() }),
             signal: controller.signal,
           });
+          answered = true;
         }
 
         // If this message came from a draft, delete the draft now that it's
@@ -2685,6 +2697,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           // A new chat that was refused (a worktree that timed out, a branch
           // git would not make) never became one: its text goes back.
           if (!id && !notFromComposer) restoreNewChatComposer(prompt, images);
+          onRefused?.();
           setNetworkError(errorData.error || "Failed to send message");
           setStreaming(false);
           clearInFlightMessages();
@@ -2695,6 +2708,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       } catch (err: any) {
         if (err.name !== "AbortError") {
           if (!id && !answered && !notFromComposer) restoreNewChatComposer(prompt, images);
+          if (!answered) onRefused?.();
           setNetworkError("network error");
           setStreaming(false);
           clearInFlightMessages(); // Drop optimistic bubbles on error
@@ -2755,6 +2769,45 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
   // Keep ref in sync so readSSE can call handleSend without stale closure
   handleSendRef.current = handleSend;
+
+  // ── Select & quote ─────────────────────────────────────────────────────
+  // Text selected inside one quotable bubble gets a floating Quote / Ask bar;
+  // quotes wait in a per-chat tray above the composer and go out, as
+  // blockquotes, ahead of the next message typed there.
+  const quoteTray = useQuoteTray(id);
+  const [focusComposer, setFocusComposer] = useState<(() => void) | null>(null);
+  const isQuotableIndex = useCallback((index: number) => isQuotableMessage(messages[index]), [messages]);
+  const { selection: textSelection, dismiss: dismissTextSelection } = useMessageTextSelection({
+    containerRef: chatContainerRef,
+    isEligible: isQuotableIndex,
+    enabled: !!id && !nativeAgent,
+    resetKey: `${id}:${viewMode}`,
+  });
+  const quoteSelection = useCallback(
+    (thenFocus: boolean) => {
+      if (!textSelection) return;
+      const quote = quoteFromSelection(textSelection.text, textSelection.messageIndex, messages[textSelection.messageIndex]);
+      if (quote) quoteTray.add(quote);
+      dismissTextSelection(true);
+      if (thenFocus) focusComposer?.();
+    },
+    [textSelection, messages, quoteTray, dismissTextSelection, focusComposer],
+  );
+
+  /**
+   * The composer's send: the tray's quotes, if any, go first. They leave the
+   * tray as the message goes out — a send then refused puts them back.
+   */
+  const handleComposerSend = useCallback(
+    (prompt: string, images?: File[]) => {
+      const quotes = id ? getQuotes(id) : [];
+      if (!id || quotes.length === 0 || sendBlockedReason) return handleSend(prompt, images);
+      const chatId = id;
+      clearQuotes(chatId);
+      return handleSend(buildQuotedPrompt(quotes, prompt), images, { onRefused: () => restoreQuotes(chatId, quotes) });
+    },
+    [id, handleSend, sendBlockedReason],
+  );
 
   // Retry the original message with forceBranchChange after user confirms the modal
   const handleConfirmBranchChange = useCallback(() => {
@@ -4070,8 +4123,25 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             {DRAFT_RESTORING}
           </div>
         )}
+        {textSelection && !textSelection.offscreen && (
+          <SelectionQuoteToolbar
+            rect={textSelection.rect}
+            actions={[
+              { key: "quote", label: "Quote", icon: <Quote size={14} />, title: "Add to the quotes above the composer", onSelect: () => quoteSelection(false) },
+              {
+                key: "ask",
+                label: "Ask",
+                icon: <MessageSquareQuote size={14} />,
+                title: "Quote it and write a question",
+                onSelect: () => quoteSelection(true),
+              },
+            ]}
+          />
+        )}
         <PromptInput
-          onSend={handleSend}
+          onSend={handleComposerSend}
+          onFocusRequest={setFocusComposer}
+          accessory={<QuoteTray quotes={quoteTray.quotes} onRemove={quoteTray.remove} onClear={quoteTray.clear} />}
           disabled={!!nativeAgent || (!id && streaming)}
           sendBlockedReason={composerBlockedReason}
           onSaveDraft={handleSaveDraft}
