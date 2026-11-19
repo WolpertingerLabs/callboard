@@ -1,7 +1,7 @@
 import type { AgentSettings } from "shared/types/index.js";
 
 /**
- * The Credentials control on the Claude Code and Codex tabs, as a mapping.
+ * The Credentials control on the Claude and Codex tabs, as a mapping.
  *
  * There is no `credentialMode` field on {@link AgentSettings} and there should
  * not be: the persisted model already carries this decision, split across a
