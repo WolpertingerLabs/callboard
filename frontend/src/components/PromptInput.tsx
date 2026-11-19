@@ -64,6 +64,12 @@ export function parseLeadingCommand(text: string, commands: string[]): { command
  */
 export type ComposerValueUpdate = string | ((current: string) => string);
 
+/** What {@link Props.onSnapshotRequest}'s getter reads: the prompt as it would be sent, and the attachment count. */
+export interface ComposerSnapshot {
+  prompt: string;
+  attachments: number;
+}
+
 /** Drop the leading `/token` the autocomplete matched on, keeping the rest. */
 export function stripLeadingCommandToken(text: string): string {
   const match = /^\s*\/\S*[ \t]?/.exec(text);
@@ -212,6 +218,24 @@ interface Props {
    */
   onFocusRequest?: (focus: (() => void) | null) => void;
   /**
+   * Registration callback handing out a READ-ONLY snapshot of what the
+   * composer holds — its prompt (command chip included) and how many
+   * attachments wait with it — same shape as {@link Props.onSetValue}. For a
+   * caller that sends the composer's content somewhere else (Ask as aside):
+   * reading it this way leaves the caret, the chip and autocomplete alone.
+   * The getter itself is passed (keep it in a ref, not in state).
+   */
+  onSnapshotRequest?: (snapshot: (() => ComposerSnapshot) | null) => void;
+  /**
+   * Whether the composer's prompt leads with a slash command: a command chip,
+   * or text the caller's {@link Props.isCommandPrompt} recognises. Reported
+   * only when it changes, so the caller re-renders on the toggle rather than
+   * on every keystroke.
+   */
+  onCommandLeadChange?: (leads: boolean) => void;
+  /** The caller's rule for "this prompt runs a command" — see {@link Props.onCommandLeadChange}. */
+  isCommandPrompt?: (prompt: string) => boolean;
+  /**
    * Shown above the attachments, inside the composer — the quote tray.
    * Presentation only: what it holds is the caller's to fold into `onSend`.
    */
@@ -242,6 +266,9 @@ export default function PromptInput({
   draftPaused = false,
   focusKey,
   onFocusRequest,
+  onSnapshotRequest,
+  onCommandLeadChange,
+  isCommandPrompt,
   accessory,
 }: Props) {
   // The stored draft, read once for the first render. Later chats load theirs
@@ -970,6 +997,27 @@ export default function PromptInput({
     });
     return () => onFocusRequest(null);
   }, [onFocusRequest]);
+
+  // Read through refs at call time, so the getter registers once and is never
+  // stale. Handed over as is (not arrow-wrapped): the caller keeps it in a ref.
+  const imagesRef = useRef(images);
+  useEffect(() => {
+    imagesRef.current = images;
+  }, [images]);
+  const commandLeadRef = useRef<boolean | null>(null);
+  useEffect(() => {
+    if (!onCommandLeadChange) return;
+    const leads = activeCommand !== null || (isCommandPrompt?.(value) ?? false);
+    if (leads === commandLeadRef.current) return;
+    commandLeadRef.current = leads;
+    onCommandLeadChange(leads);
+  }, [activeCommand, value, isCommandPrompt, onCommandLeadChange]);
+
+  useEffect(() => {
+    if (!onSnapshotRequest) return;
+    onSnapshotRequest(() => ({ prompt: composePrompt(activeCommandRef.current, valueRef.current), attachments: imagesRef.current.length }));
+    return () => onSnapshotRequest(null);
+  }, [onSnapshotRequest]);
 
   useEffect(() => {
     // Arrow-wrapped like the two registrations above. `setImages` is stable, so

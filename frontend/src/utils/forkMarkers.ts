@@ -18,7 +18,7 @@ function findNode(node: ChatTreeNode, chatId: string): ChatTreeNode | null {
 }
 
 /**
- * The tree's target chat's DIRECT forks (role `fork` or `engine-switch`, or an
+ * The tree's target chat's DIRECT forks (role `fork`, `engine-switch` or `aside`, or an
  * original this chat replaced — `superseded` / `pre-compression`, see
  * utils/chatRewrite.ts),
  * grouped by the message timestamp they branched off. Forks made before

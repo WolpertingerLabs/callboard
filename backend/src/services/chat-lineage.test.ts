@@ -191,6 +191,21 @@ describe("buildChatTree", () => {
     expect(byId.get("bogus")).not.toHaveProperty("forkedAt");
   });
 
+  it("exposes an aside's quotes, and only on an aside with well-formed ones", () => {
+    const quotes = [{ timestamp: "2026-02-03T04:05:06.000Z", role: "assistant", text: "the passage" }];
+    writeChat("root");
+    writeChat("aside", { parentChatId: "root", rootChatId: "root", chatRole: "aside", forkedAt: "2026-02-03T04:05:06.000Z", asideQuotes: quotes });
+    // A stray field on another role (say a detached-then-refiled record) is not an aside's.
+    writeChat("fork", { parentChatId: "root", rootChatId: "root", chatRole: "fork", asideQuotes: quotes });
+    writeChat("junk", { parentChatId: "root", rootChatId: "root", chatRole: "aside", asideQuotes: [{ timestamp: "nope", role: "x", text: 1 }] });
+
+    const byId = new Map(buildChatTree("root")!.tree.children.map((c) => [c.chatId, c]));
+    expect(byId.get("aside")!.role).toBe("aside");
+    expect(byId.get("aside")!.asideQuotes).toEqual(quotes);
+    expect(byId.get("fork")).not.toHaveProperty("asideQuotes");
+    expect(byId.get("junk")).not.toHaveProperty("asideQuotes");
+  });
+
   it("marks statuses stopped when no session registry entries exist", () => {
     writeChat("root");
     const result = buildChatTree("root");

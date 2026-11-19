@@ -2,7 +2,8 @@ import { withNativeCodexChats, readNativeLifecycle, createLifecycleBudget, type 
 import { chatFileService, type Chat } from "./chat-file-service.js";
 import { sessionRegistry } from "./session-registry.js";
 import { hasPendingRequest } from "./claude.js";
-import type { ChatTreeAncestor, ChatTreeNode, ChatTreeResponse } from "shared/types/index.js";
+import type { AsideQuote, ChatTreeAncestor, ChatTreeNode, ChatTreeResponse } from "shared/types/index.js";
+import { ASIDE_ROLE, parseAsideQuotes } from "shared/types/index.js";
 import { createLogger } from "../utils/logger.js";
 import { parseChatMetadataRecord } from "../utils/chat-metadata.js";
 import { spaceStampOf } from "./space-membership.js";
@@ -116,6 +117,16 @@ function chatStatus(chat: Chat): "ongoing" | "waiting" | "stopped" {
   return "stopped";
 }
 
+/**
+ * An aside's stored quotes, as `{ asideQuotes }` — or nothing. Read only on an
+ * aside, and re-checked so a hand-edited record cannot put junk on the wire.
+ */
+function asideQuotesOf(meta: ChatMeta): { asideQuotes?: AsideQuote[] } {
+  if (meta.chatRole !== ASIDE_ROLE || !Array.isArray(meta.asideQuotes)) return {};
+  const parsed = parseAsideQuotes(meta.asideQuotes);
+  return parsed.ok ? { asideQuotes: parsed.quotes } : {};
+}
+
 function toNode(chat: Chat, meta: ChatMeta, budget?: LifecycleBudget): ChatTreeNode {
   const native = meta.nativeAgent as ChatTreeNode["nativeAgent"];
   const nativeAgent = native
@@ -128,6 +139,7 @@ function toNode(chat: Chat, meta: ChatMeta, budget?: LifecycleBudget): ChatTreeN
     title: title || null,
     ...(typeof meta.chatRole === "string" && meta.chatRole && { role: meta.chatRole }),
     ...(typeof meta.forkedAt === "string" && meta.forkedAt && { forkedAt: meta.forkedAt }),
+    ...asideQuotesOf(meta),
     provider: typeof meta.provider === "string" && meta.provider ? meta.provider : "claude-code",
     status: nativeAgent?.lifecycle === "active" ? "ongoing" : chatStatus(chat),
     ...(nativeAgent ? { nativeAgent } : {}),

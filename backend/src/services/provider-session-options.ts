@@ -34,6 +34,13 @@ export interface ProviderOptionsContext {
   getDefaultPermissions: () => DefaultPermissions | null;
   /** Session registry key at option-build time; used only in log lines. */
   trackingId: string;
+  /**
+   * Instruction text this session must ADD to the harness's own system prompt
+   * (today: the aside instruction). Delivered through each harness's additive
+   * channel — Codex `developer_instructions`, pi's appended system prompt —
+   * never through `model_instructions_file`, which replaces Codex's base prompt.
+   */
+  additionalInstructions?: string;
 }
 
 // For Codex chats, surface the per-provider settings the Codex adapter's
@@ -114,6 +121,7 @@ export async function buildCodexExtras(ctx: ProviderOptionsContext & { codexRout
     }),
     reasoningRoute: reasoningTarget.route === "openrouter" ? "openrouter" : reasoningTarget.route === "codex" ? "native" : "unknown",
     ...(permissions && { permissions }),
+    ...(ctx.additionalInstructions && codexDeveloperInstructionsFor(codexRoute, ctx.additionalInstructions, trackingId)),
   };
   log.info(
     `Codex chat config — trackingId=${trackingId}, authMode=${useOpenRouter ? "openrouter" : authMode}, ` +
@@ -127,6 +135,38 @@ export async function buildCodexExtras(ctx: ProviderOptionsContext & { codexRout
   );
   return codex;
 }
+
+/**
+ * `{ developerInstructions }` carrying `addition` AFTER the user's own
+ * `developer_instructions` — our value is a `-c` override, so sending ours
+ * alone would drop theirs for the run. When the probe could not read the
+ * effective config there is no way to tell, so nothing is sent: the user's
+ * setting stands and the addition is skipped. (In practice that turn does not
+ * run at all: the UI-tool reservation refuses an unreadable config.)
+ *
+ * Resume is covered: verified live on codex-cli 0.153.4 that resuming a
+ * Callboard-seeded rollout (every Codex aside, since Codex has no native fork)
+ * injects the value as a `developer` message in the thread's initial context,
+ * and that a later resume keeps obeying it from that history.
+ */
+export function codexDeveloperInstructionsFor(route: CodexExecutionRoute, addition: string, trackingId: string): { developerInstructions?: string } {
+  if (route.developerInstructions === undefined) {
+    log.warn(`Codex chat ${trackingId}: effective config unreadable, so its developer_instructions are unknown; the additional instructions were not sent`);
+    return {};
+  }
+  const merged = route.developerInstructions ? `${route.developerInstructions}\n\n${addition}` : addition;
+  // Sent as one `-c` argument: an oversized value could fail the launch on the
+  // OS argv limit. Skip the addition (the user's own value still applies from
+  // their config) rather than risk the turn.
+  if (Buffer.byteLength(merged, "utf8") > CODEX_DEVELOPER_INSTRUCTIONS_MAX_BYTES) {
+    log.warn(`Codex chat ${trackingId}: developer_instructions would be ${Buffer.byteLength(merged, "utf8")} bytes; the additional instructions were not sent`);
+    return {};
+  }
+  return { developerInstructions: merged };
+}
+
+/** Largest merged `developer_instructions` sent as a `-c` override (well under Linux's 128 KiB per-argument limit). */
+export const CODEX_DEVELOPER_INSTRUCTIONS_MAX_BYTES = 100 * 1024;
 
 // pi chats. Unlike the Codex builder above — which must collapse permissions
 // onto a sandbox tier chosen at thread start — pi gates per call through its `tool_call` extension, so the permission
@@ -176,6 +216,7 @@ export async function buildPiExtras(ctx: ProviderOptionsContext & { resumeSessio
     // is only reached when pass 1 says "ask". Two passes, one input, one
     // moment of reading it.
     getPermissions: getDefaultPermissions,
+    ...(ctx.additionalInstructions && { appendSystemPrompt: [ctx.additionalInstructions] }),
   };
   log.info(
     `pi chat config — trackingId=${trackingId}, provider=${agentSettings.piProviderId?.trim() || "(openrouter)"}, ` +

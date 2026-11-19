@@ -1,4 +1,4 @@
-import { handshakeHeaders } from "shared/types/index.js";
+import { ASIDE_ROLE, asideForkPoint, handshakeHeaders, type AsideQuote } from "shared/types/index.js";
 import type { PermissionReviewSettings, ReasoningCapability } from "shared/types/index.js";
 import { normalizePermissions } from "shared/types/permissions.js";
 import type { SpaceListItem, SpacePatch } from "shared/types/space.js";
@@ -665,12 +665,149 @@ export type ForkProvider = UiAgentProviderKind;
  * calls flattened to text summaries. Omitting it forks within the chat's own
  * harness, which preserves the session log verbatim.
  */
-export async function forkChat(id: string, timestamp: string, opts?: { provider?: ForkProvider; model?: string }): Promise<Chat> {
+export async function forkChat(id: string, timestamp: string, opts?: { provider?: ForkProvider; model?: string; effort?: string }): Promise<Chat> {
   return request(`/chats/${seg(id)}/fork`, {
     method: "POST",
-    json: { timestamp, ...(opts?.provider && { provider: opts.provider }), ...(opts?.model && { model: opts.model }) },
+    json: {
+      timestamp,
+      ...(opts?.provider && { provider: opts.provider }),
+      ...(opts?.model && { model: opts.model }),
+      ...(opts?.effort && { effort: opts.effort }),
+    },
     error: "Failed to fork chat",
   });
+}
+
+export interface CreateAsideOptions {
+  /** The passages asked about. The fork point is the latest of their timestamps. */
+  quotes: AsideQuote[];
+  /** The question. When given, the aside's first turn starts immediately. */
+  prompt?: string;
+  /** Full or partial; capped server-side so nothing is looser than the parent. Omit to inherit. */
+  permissions?: Partial<DefaultPermissions>;
+  /**
+   * Read only, decided by the daemon: fileWrite and codeExecution at most
+   * "ask", computerControl "deny", and no inherited model reviewer — so every
+   * write or run is the user's to approve.
+   */
+  readOnly?: boolean;
+  /** A different harness: the handoff fork path (tool calls flattened to text). */
+  provider?: ForkProvider;
+  model?: string;
+  effort?: string;
+  /** The originating browser chat view (`originatingChatView()`), as sent with a message. */
+  chatView?: unknown;
+  /** Active per-directory plugin ids for the first turn, as sent with a message. Only with `prompt`. */
+  activePlugins?: string[];
+}
+
+/**
+ * The chat an aside created: the fork's record, plus how its first turn went
+ * when a prompt was sent — `started`, or `runError` with the `promptText` that
+ * could not be sent (the aside exists either way).
+ */
+export type CreateAsideResponse = Chat & { started?: boolean; runError?: string; promptText?: string };
+
+/** `metadata.chatRole` of a chat record, or undefined when absent or unreadable. */
+function chatRoleOf(chat: Chat): string | undefined {
+  try {
+    const role = (JSON.parse(chat.metadata || "{}") as { chatRole?: unknown }).chatRole;
+    return typeof role === "string" ? role : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** `metadata.title` of a chat record, or undefined. */
+function chatTitleOf(chat: Chat): string | undefined {
+  try {
+    const title = (JSON.parse(chat.metadata || "{}") as { title?: unknown }).title;
+    return typeof title === "string" && title.trim() ? title.trim() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Thrown by {@link createAside} when the daemon made a plain fork: it predates
+ * asides. That fork exists (not started) and is on {@link chat}; it is named
+ * in the message so the user can delete it, and never deleted for them.
+ */
+export class AsidesUnsupportedError extends Error {
+  constructor(readonly chat: Chat) {
+    const title = chatTitleOf(chat);
+    super(
+      `The Callboard daemon is too old for asides. It created an ordinary fork instead (not started)${title ? `, “${title}”` : ""}, ` +
+        "which you can delete from the chat list. Update and restart the daemon to use asides.",
+    );
+    this.name = "AsidesUnsupportedError";
+  }
+}
+
+/**
+ * A refused {@link createAside}: the daemon's message, status and `code`.
+ * `targetRefused` is true when the refusal was about the chosen harness or
+ * its model/effort (`code: "fork_target_invalid"`), and only then.
+ */
+export class AsideRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+  ) {
+    super(message);
+    this.name = "AsideRequestError";
+  }
+  get targetRefused(): boolean {
+    return this.status === 400 && this.code === "fork_target_invalid";
+  }
+}
+
+/**
+ * Ask a side question about quoted passages of a chat: a child chat forked at
+ * the latest quoted message, with chatRole "aside" (POST /chats/:id/fork,
+ * kind "aside").
+ *
+ * When `started` is set, attach to `GET /chats/:newId/stream` — and then
+ * re-fetch the chat's messages: events emitted between the start and the
+ * attach are not replayed, so the stream alone can miss the opening of the
+ * reply.
+ *
+ * A daemon from before asides ignores `kind` and makes an ordinary fork; that
+ * is detected from the returned record and thrown as
+ * {@link AsidesUnsupportedError} (the fork it made is on the error). A
+ * refusal throws {@link AsideRequestError}.
+ */
+export async function createAside(id: string, opts: CreateAsideOptions): Promise<CreateAsideResponse> {
+  const timestamp = asideForkPoint(opts.quotes);
+  if (!timestamp) throw new Error("An aside needs at least one quote");
+  const res = await fetch(`${BASE}/chats/${seg(id)}/fork`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      timestamp,
+      kind: "aside",
+      quotes: opts.quotes,
+      ...(opts.prompt && { prompt: opts.prompt }),
+      ...(opts.permissions && { permissions: opts.permissions }),
+      ...(opts.readOnly && { readOnly: true }),
+      ...(opts.provider && { provider: opts.provider }),
+      ...(opts.model && { model: opts.model }),
+      ...(opts.effort && { effort: opts.effort }),
+      ...(opts.chatView !== undefined && { chatView: opts.chatView }),
+      ...(opts.prompt && opts.activePlugins?.length && { activePlugins: opts.activePlugins }),
+      // So the quotes' origin lines show the asker's clock, not the daemon's.
+      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new AsideRequestError(errorBodyMessage(body, "Failed to create aside"), res.status, typeof body?.code === "string" ? body.code : undefined);
+  }
+  const created = (await res.json()) as CreateAsideResponse;
+  if (chatRoleOf(created) !== ASIDE_ROLE) throw new AsidesUnsupportedError(created);
+  return created;
 }
 
 /**

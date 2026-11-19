@@ -51,7 +51,18 @@ import { unattendedPermissions } from "./session-spawn.js";
 
 const RANK: Record<PermissionLevel, number> = { deny: 0, ask: 1, allow: 2 };
 
-const AXES = ["fileRead", "fileWrite", "codeExecution", "webAccess", "computerControl"] as const satisfies readonly (keyof DefaultPermissions)[];
+/** Every permission category, in display order. */
+export const AXES = ["fileRead", "fileWrite", "codeExecution", "webAccess", "computerControl"] as const satisfies readonly (keyof DefaultPermissions)[];
+
+/** Whether `value` is a permission category name. */
+export function isPermissionAxis(value: unknown): value is (typeof AXES)[number] {
+  return typeof value === "string" && (AXES as readonly string[]).includes(value);
+}
+
+/** Whether `value` is a permission level (allow / ask / deny). */
+export function isPermissionLevel(value: unknown): value is PermissionLevel {
+  return typeof value === "string" && Object.hasOwn(RANK, value);
+}
 
 /** Per axis, the stricter of `requested` and `ceiling`. */
 export function capPermissions(requested: DefaultPermissions, ceiling: DefaultPermissions | null | undefined): DefaultPermissions {

@@ -63,6 +63,7 @@ import { startReviewAudit, type PermissionAuditHooks, type ReviewAuditResult, ty
 import { notifyParentOfChildPrompt } from "./parent-answers.js";
 import { resolveParentage, walkToRootId } from "./chat-lineage.js";
 import { answeringParentFor } from "./superseded-parent.js";
+import { asideInstructionFor } from "./aside.js";
 import { readChat, resolveNewChatSpace, spaceInstructionsPrompt, spaceOfChat, spaceRecord } from "./space-service.js";
 import { spaceForFolder, touchSpaceRecentDirectory } from "./space-store.js";
 import { DEFAULT_SPACE_ID } from "shared";
@@ -1785,7 +1786,16 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   // prompt is its persona's, compiled from its own workspace, and a space
   // preamble on top would contradict it as often as help.
   const spaceInstruction = opts.agentAlias ? "" : spaceInstructionsPrompt(space);
-  const systemPromptAppend = [opts.systemPrompt, spaceInstruction, completionInstruction].filter(Boolean).join("\n\n");
+  // An aside answers a side question about quoted passages; built from the
+  // stored role on every turn, so it holds on resume too. Only Claude Code
+  // takes it in the append: Codex would write the append as a
+  // model_instructions_file, which REPLACES its base prompt, and pi ignores
+  // the append. Those two get it through their additive channels instead
+  // (`additionalInstructions` in providerCtx below).
+  const asideInstruction = asideInstructionFor(initialMetadata);
+  const systemPromptAppend = [opts.systemPrompt, spaceInstruction, completionInstruction, providerKind === "claude-code" ? asideInstruction : ""]
+    .filter(Boolean)
+    .join("\n\n");
 
   // The per-chat model and effort as stored in chat metadata (new chats: just
   // written above; resumed chats: loaded from disk). Every harness reads them.
@@ -1852,7 +1862,15 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
 
   // Per-harness extras (`options.codex` / `.pi`) — see
   // ./provider-session-options.ts. Each reads only the context it is handed.
-  const providerCtx: ProviderOptionsContext = { agentSettings, folder, chatModel, chatEffort, getDefaultPermissions, trackingId };
+  const providerCtx: ProviderOptionsContext = {
+    agentSettings,
+    folder,
+    chatModel,
+    chatEffort,
+    getDefaultPermissions,
+    trackingId,
+    ...(asideInstruction && { additionalInstructions: asideInstruction }),
+  };
   if (providerKind === "codex") queryOpts.options.codex = await buildCodexExtras({ ...providerCtx, codexRoute });
   if (providerKind === "pi") queryOpts.options.pi = await buildPiExtras({ ...providerCtx, resumeSessionId, chatId: opts.chatId });
 

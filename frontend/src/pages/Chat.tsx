@@ -47,6 +47,9 @@ import {
   deleteDraft,
   fetchDraftImages,
   forkChat,
+  createAside,
+  AsidesUnsupportedError,
+  AsideRequestError,
   continueChatFrom,
   rerunChatFrom,
   RerunError,
@@ -67,9 +70,11 @@ import {
 import { readChatRouteState, type ChatRouteState } from "../types/chatRouteState";
 import { assignForkMarkers, forksByTimestamp } from "../utils/forkMarkers";
 import { buildQuotedPrompt } from "../utils/messageQuotes";
-import { clearQuotes, getQuotes, restoreQuotes, useQuoteTray } from "../hooks/useQuoteTray";
+import { clearQuotes, getQuotes, removeQuote, restoreQuotes, useQuoteTray } from "../hooks/useQuoteTray";
 import MessageQuoteSelection from "../components/MessageQuoteSelection";
 import QuoteTray from "../components/QuoteTray";
+import AskAsideControls, { type AskAsideOptions, type AskAsideResult } from "../components/AskAsideControls";
+import type { ComposerSnapshot } from "../components/PromptInput";
 import { providerKindOf, useChatMeta } from "../hooks/useChatMeta";
 import { isRetiredProviderId } from "../utils/retiredProviders";
 import { INTERRUPTED_MESSAGE, useStopController } from "../hooks/useStopController";
@@ -313,6 +318,9 @@ const TREE_REFRESH_MIN_DELAY_MS = 1_000;
  * counts, so a command sent in that window still runs. "Shaped like one" ends
  * at whitespace, so a path such as `/tmp/x` is still prose.
  */
+/** Why Ask as aside is unavailable while the composer leads with a slash command. */
+const ASIDE_COMMAND_BLOCKED = "A slash command runs in this chat, not as an aside. Remove it to ask as an aside.";
+
 function leadsWithCommand(prompt: string, commands: string[], loaded: boolean): boolean {
   if (!loaded) return /^\s*\/[\w:-]+(?:\s|$)/.test(prompt);
   return parseLeadingCommand(prompt, commands).command !== null;
@@ -544,6 +552,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const hasReceivedFirstResponseRef = useRef<boolean>(false);
   const currentIdRef = useRef<string | undefined>(id);
+  /** A chat whose run another request started (an aside): read its transcript once when the stream attaches. */
+  const refetchOnAttachRef = useRef<string | null>(null);
+  /** Bumped when a stream-driven refetch applies, so an older one-off read (on attach) knows to stand down. */
+  const messagesAppliedSeqRef = useRef(0);
   // refreshActivity's request order: issued, and the newest one applied.
   const activityRequestSeqRef = useRef(0);
   const activityAppliedSeqRef = useRef(0);
@@ -1479,6 +1491,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   getMessages(streamChatId!).then((msgs) => {
                     if (currentIdRef.current !== streamChatId) return;
                     const msgArray = Array.isArray(msgs) ? msgs : [];
+                    messagesAppliedSeqRef.current += 1;
                     setMessages(msgArray);
                     settleInFlightMessages(msgArray);
                   });
@@ -1606,6 +1619,22 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         return;
       }
       reading = true;
+      // A chat started by another request (an aside's first turn) may have
+      // emitted before this attach, and /stream does not replay: read the
+      // transcript once now so its opening is not missing until the next update.
+      if (chatId && refetchOnAttachRef.current === chatId) {
+        refetchOnAttachRef.current = null;
+        // Superseded if a stream-driven refetch lands first: that one is newer.
+        const appliedBefore = messagesAppliedSeqRef.current;
+        getMessages(chatId)
+          .then((msgs) => {
+            if (currentIdRef.current !== chatId || messagesAppliedSeqRef.current !== appliedBefore) return;
+            setMessages(Array.isArray(msgs) ? msgs : []);
+          })
+          .catch(() => {
+            // The stream's own updates refetch anyway; this read was a head start.
+          });
+      }
       await readSSE(res.body, controller.signal, onFrame);
     } catch (err: any) {
       if (err.name !== "AbortError") {
@@ -2380,7 +2409,14 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
    */
   const draftRestoring = draftRestore !== null && !draftRestore.settled;
   const DRAFT_RESTORING = "Restoring this draft's images…";
-  const composerBlockedReason = sendBlockedReason ?? (draftRestoring ? DRAFT_RESTORING : undefined);
+  // Ask as aside requests, by the chat they were asked from. While one is out
+  // the composer cannot send: its quotes and question are on their way to the
+  // aside, and a send would put the same question to this chat as well.
+  const [asideInFlightFor, setAsideInFlightFor] = useState<ReadonlySet<string>>(() => new Set());
+  const asideInFlightForRef = useRef<ReadonlySet<string>>(asideInFlightFor);
+  const asideInFlight = !!id && asideInFlightFor.has(id);
+  const ASIDE_IN_FLIGHT = "Asking the aside… this chat can send again once it has started.";
+  const composerBlockedReason = sendBlockedReason ?? (draftRestoring ? DRAFT_RESTORING : asideInFlight ? ASIDE_IN_FLIGHT : undefined);
 
   /**
    * A new chat's worktree being created: from the POST going out until the
@@ -2804,6 +2840,98 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const quoteTray = useQuoteTray(id);
   const [focusComposer, setFocusComposer] = useState<(() => void) | null>(null);
 
+  // ── Ask as aside ───────────────────────────────────────────────────────
+  // The tray's quotes plus the composer's question become a side question in
+  // a child chat forked at the latest quote (POST /chats/:id/fork, kind aside),
+  // started at once; the page then goes to it (PR 3 opens it in a side panel
+  // instead). Nothing leaves the tray or the composer until the aside exists,
+  // so a refusal has nothing to restore: the quotes and the question are
+  // still where they were. In-flight state and errors are the originating
+  // chat's (`asideInFlightFor`, `asideError`), never shown on another.
+  const composerSnapshotRef = useRef<(() => ComposerSnapshot) | null>(null);
+  const registerComposerSnapshot = useCallback((get: (() => ComposerSnapshot) | null) => {
+    composerSnapshotRef.current = get;
+  }, []);
+  const [asideError, setAsideError] = useState<{ chatId: string; message: string } | null>(null);
+  // A slash command runs in this chat and has to lead the prompt to run at
+  // all; it is not a question about the quotes. Ask as aside stays disabled
+  // while one leads the composer, by the same rule the composer's send uses.
+  const [composerLeadsWithCommand, setComposerLeadsWithCommand] = useState(false);
+  const isCommandPrompt = useCallback(
+    (prompt: string) => leadsWithCommand(prompt, allSlashCommands, commandsLoadedFor === id),
+    [allSlashCommands, commandsLoadedFor, id],
+  );
+  const handleAskAside = useCallback(
+    async ({ readOnly, target }: AskAsideOptions): Promise<AskAsideResult> => {
+      if (!id || asideInFlightForRef.current.has(id)) return "skipped";
+      const chatId = id;
+      const quotes = getQuotes(chatId);
+      if (quotes.length === 0) return "skipped";
+      // Read-only: the caret, the command chip and autocomplete are left alone.
+      const { prompt: question, attachments } = composerSnapshotRef.current?.() ?? { prompt: "", attachments: 0 };
+      if (attachments > 0) {
+        setAsideError({ chatId, message: "An aside can't carry attachments yet. Remove them, or send to this chat instead." });
+        return "skipped";
+      }
+      if (leadsWithCommand(question, allSlashCommands, commandsLoadedFor === chatId)) {
+        setAsideError({ chatId, message: ASIDE_COMMAND_BLOCKED });
+        return "skipped";
+      }
+      if (!question.trim()) {
+        setAsideError({ chatId, message: "Type your question in the composer, then Ask as aside." });
+        focusComposer?.();
+        return "skipped";
+      }
+      const setInFlight = (on: boolean) => {
+        const next = new Set(asideInFlightForRef.current);
+        if (on) next.add(chatId);
+        else next.delete(chatId);
+        asideInFlightForRef.current = next;
+        setAsideInFlightFor(next);
+      };
+      setInFlight(true);
+      setAsideError(null);
+      try {
+        const created = await createAside(chatId, {
+          quotes: quotes.map(({ timestamp, role, text }) => ({ timestamp, role, text })),
+          prompt: question.trim(),
+          ...(readOnly && { readOnly: true }),
+          ...(target && { provider: target.provider, ...(target.model && { model: target.model }) }),
+          chatView: originatingChatView(),
+          activePlugins: activePluginIds,
+        });
+        // Created: the quotes and the question have gone into it.
+        for (const quote of quotes) removeQuote(chatId, quote.id);
+        const stillHere = currentIdRef.current === chatId;
+        // Compared trimmed: the question was sent trimmed, and the composer
+        // or the stored draft may still hold trailing whitespace or a newline.
+        if (stillHere) promptInputSetValue?.((current) => (current.trim() === question.trim() ? "" : current));
+        else if (getComposerDraft(chatId).trim() === question.trim()) saveComposerDraft(chatId, "");
+        if (created.runError) {
+          // The aside exists but its question did not go out: put it in the
+          // aside's composer so resending is one click.
+          if (created.promptText) saveComposerDraft(created.id, created.promptText);
+          window.alert(`The aside was created, but its question could not be sent: ${created.runError}`);
+        } else if (created.started && stillHere) {
+          refetchOnAttachRef.current = created.id;
+        }
+        onChatListRefresh?.();
+        // Only from the chat it was asked in: a user who has moved on is not
+        // pulled back. The aside is in the chat list either way.
+        if (stillHere) navigate(`/chat/${created.id}`);
+        return created.started ? "started" : "created";
+      } catch (err) {
+        console.error("Failed to create aside:", err);
+        setAsideError({ chatId, message: err instanceof AsidesUnsupportedError ? err.message : errorMessage(err, "Failed to create the aside") });
+        // Only a refusal of the chosen harness/model counts against it.
+        return err instanceof AsideRequestError && err.targetRefused ? "refused" : "failed";
+      } finally {
+        setInFlight(false);
+      }
+    },
+    [id, promptInputSetValue, focusComposer, activePluginIds, onChatListRefresh, navigate, allSlashCommands, commandsLoadedFor],
+  );
+
   /**
    * The composer's send: the tray's quotes, if any, go first. They leave the
    * tray as the message goes out — a send then refused puts them back, and
@@ -2815,6 +2943,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
    */
   const handleComposerSend = useCallback(
     (prompt: string, images?: File[]) => {
+      // Belt and braces: the composer is blocked while an aside is out, and
+      // this is its only send path.
+      if (id && asideInFlightForRef.current.has(id)) return;
       const quotes = id ? getQuotes(id) : [];
       if (!id || quotes.length === 0 || sendBlockedReason || leadsWithCommand(prompt, allSlashCommands, commandsLoadedFor === id)) {
         return handleSend(prompt, images);
@@ -4156,7 +4287,27 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         <PromptInput
           onSend={handleComposerSend}
           onFocusRequest={setFocusComposer}
-          accessory={<QuoteTray quotes={quoteTray.quotes} onRemove={quoteTray.remove} onClear={quoteTray.clear} />}
+          onSnapshotRequest={registerComposerSnapshot}
+          isCommandPrompt={isCommandPrompt}
+          onCommandLeadChange={setComposerLeadsWithCommand}
+          accessory={
+            <QuoteTray
+              quotes={quoteTray.quotes}
+              onRemove={quoteTray.remove}
+              onClear={quoteTray.clear}
+              actions={
+                id && !nativeAgent && !isRetiredHarness ? (
+                  <AskAsideControls
+                    chatProvider={chatProvider}
+                    busy={asideInFlight}
+                    error={asideError?.chatId === id ? asideError.message : null}
+                    blockedReason={composerLeadsWithCommand ? ASIDE_COMMAND_BLOCKED : undefined}
+                    onAsk={handleAskAside}
+                  />
+                ) : undefined
+              }
+            />
+          }
           disabled={!!nativeAgent || (!id && streaming)}
           sendBlockedReason={composerBlockedReason}
           onSaveDraft={handleSaveDraft}

@@ -31,6 +31,13 @@ export interface CodexExecutionRoute {
   uiAliasPresence?: CodexUiAliasPresence;
   /** Names of every MCP server the effective config defines (names only — never transports). Undefined when unreadable. */
   mcpServerNames?: string[];
+  /**
+   * The effective config's `developer_instructions` (the user's own, from
+   * CODEX_HOME / profile / project layers as the CLI merges them): the text,
+   * `null` when the config was read and sets none, undefined when unreadable.
+   * Read so a Callboard addition can be appended to it rather than replace it.
+   */
+  developerInstructions?: string | null;
 }
 interface RouteConfig {
   model_provider?: unknown;
@@ -137,6 +144,7 @@ export async function resolveCodexExecutionRoute(settings: AgentSettings, cwd?: 
               if (uiAliasPresence) resolvedRoute.uiAliasPresence = uiAliasPresence;
               const mcpServerNames = codexMcpServerNames(response.result.config);
               if (mcpServerNames) resolvedRoute.mcpServerNames = mcpServerNames;
+              resolvedRoute.developerInstructions = codexDeveloperInstructions(response.result.config);
               if (resolvedRoute.route === "codex") {
                 const namespaces = directUiNamespacesFromConfig(cliUserAgent, response.result.config);
                 if (namespaces && canSplitCodexUiTools(response.result.config)) {
@@ -179,9 +187,17 @@ export async function resolveCodexExecutionRoute(settings: AgentSettings, cwd?: 
       injectedOpenRouter,
       ...(resolved.uiAliasPresence && { uiAliasPresence: resolved.uiAliasPresence }),
       ...(resolved.mcpServerNames && { mcpServerNames: resolved.mcpServerNames }),
+      // The user's developer_instructions apply on any provider route.
+      ...(resolved.developerInstructions !== undefined && { developerInstructions: resolved.developerInstructions }),
     };
   }
   return { ...resolved, injectedOpenRouter };
+}
+
+/** The effective `developer_instructions`, or `null` when the config sets none (or only blank text). */
+export function codexDeveloperInstructions(config: unknown): string | null {
+  const value = (config as { developer_instructions?: unknown } | null)?.developer_instructions;
+  return typeof value === "string" && value.trim() ? value : null;
 }
 
 /** Config/read is already our read-only CLI config probe, not an execution

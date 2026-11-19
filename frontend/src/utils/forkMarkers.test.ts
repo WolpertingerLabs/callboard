@@ -37,6 +37,13 @@ describe("forksByTimestamp", () => {
     expect(map.get(T2)).toEqual([f3]);
   });
 
+  it("puts an aside at its fork point beside the forks there", () => {
+    const fork = node("f1", { role: "fork", forkedAt: T1 });
+    const aside = node("a1", { role: "aside", forkedAt: T1 });
+    const map = forksByTimestamp(tree(node("me", { children: [fork, aside] })));
+    expect(map.get(T1)).toEqual([fork, aside]);
+  });
+
   it("includes an original this chat replaced, but not other child roles", () => {
     const original = node("orig", { role: "superseded", forkedAt: T1 });
     const uncompressed = node("raw", { role: "pre-compression", forkedAt: T2 });

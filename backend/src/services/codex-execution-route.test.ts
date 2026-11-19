@@ -3,7 +3,7 @@ import { mkdtemp, writeFile, rm, mkdir } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveCodexExecutionRoute, routeFromCodexConfig, safeApiRoot } from "./codex-execution-route.js";
+import { codexDeveloperInstructions, resolveCodexExecutionRoute, routeFromCodexConfig, safeApiRoot } from "./codex-execution-route.js";
 import { translateCodexOptions } from "../agents/adapters/codex/optionsAdapter.js";
 let home: string;
 beforeEach(async () => {
@@ -167,6 +167,30 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
   expect(result).toMatchObject({ route: "codex", injectedOpenRouter: false });
   expect(result.model).toBeUndefined();
   expect(result.defaultModel).toBeUndefined();
+});
+
+describe("developer_instructions from the effective config", () => {
+  it("reads the user's value as the CLI merges it, project layer included, and null when none is set", async () => {
+    await config(`developer_instructions = "USER RULES"\n`);
+    expect((await resolveCodexExecutionRoute({ codexHome: home }, home)).developerInstructions).toBe("USER RULES");
+
+    // A trusted project's own config layer is merged over CODEX_HOME's by the CLI.
+    const project = join(home, "project");
+    await mkdir(join(project, ".codex"), { recursive: true });
+    execFileSync("git", ["init", project], { stdio: "ignore" });
+    await config(`developer_instructions = "USER RULES"\n[projects.${JSON.stringify(project)}]\ntrust_level='trusted'\n`);
+    await writeFile(join(project, ".codex", "config.toml"), `developer_instructions = "PROJECT RULES"\n`);
+    expect((await resolveCodexExecutionRoute({ codexHome: home }, project)).developerInstructions).toBe("PROJECT RULES");
+
+    await config(`model_provider='openai'\n`);
+    expect((await resolveCodexExecutionRoute({ codexHome: home }, home)).developerInstructions).toBeNull();
+  });
+
+  it("treats a blank or absent value as none", () => {
+    expect(codexDeveloperInstructions({ developer_instructions: "x" })).toBe("x");
+    expect(codexDeveloperInstructions({ developer_instructions: "   " })).toBeNull();
+    expect(codexDeveloperInstructions({})).toBeNull();
+  });
 });
 
 describe("codexMcpServerNames", () => {

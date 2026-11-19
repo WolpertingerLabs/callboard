@@ -93,6 +93,24 @@ export {
   rerunnableReplies,
 } from "./rerun.js";
 
+export type { AsideQuote, QuoteLike } from "./aside.js";
+export {
+  ASIDE_ROLE,
+  ASIDE_MAX_QUOTES,
+  ASIDE_MAX_QUOTE_CHARS,
+  ASIDE_MAX_PROMPT_CHARS,
+  ASIDE_TITLE_MAX_CHARS,
+  renderQuotedPrompt,
+  asideTitle,
+  asideForkPoint,
+  quoteTimeFormatter,
+  formatQuoteTime,
+  formatQuoteOrigin,
+  formatQuoteBlock,
+  quoteRoleLabel,
+  parseAsideQuotes,
+} from "./aside.js";
+
 export type { TaskListItem } from "./taskList.js";
 export { TASK_LIST_TOOLS, parseTaskList, isTaskListTool } from "./taskList.js";
 

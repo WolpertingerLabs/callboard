@@ -245,6 +245,21 @@ describe("translateCodexOptions — systemPrompt → temp model_instructions_fil
     expect((codexOpts.config as { model_instructions_file?: string }).model_instructions_file).toBeUndefined();
   });
 
+  it("developerInstructions ADD to Codex's prompt: developer_instructions, with no instructions file of their own", () => {
+    // An aside's instruction alone must not become a model_instructions_file,
+    // which would replace the CLI's built-in prompt.
+    const alone = translateCodexOptions({ codex: { developerInstructions: "aside rule" } });
+    expect(alone.instructionsFilePath).toBeNull();
+    expect(alone.codexOpts.config).toMatchObject({ developer_instructions: "aside rule" });
+    expect((alone.codexOpts.config as Record<string, unknown>).model_instructions_file).toBeUndefined();
+
+    // Beside a caller system prompt, each keeps its own channel.
+    const both = translateCodexOptions({ systemPrompt: "follow the rules", codex: { developerInstructions: "aside rule" } });
+    trackTempFromFile(both.instructionsFilePath);
+    expect(readFileSync(both.instructionsFilePath!, "utf-8")).toBe("follow the rules");
+    expect(both.codexOpts.config).toMatchObject({ developer_instructions: "aside rule" });
+  });
+
   it("no systemPrompt → no file, no model_instructions_file (reasoning-summary config only)", () => {
     const { codexOpts, instructionsFilePath } = translateCodexOptions({});
     expect(instructionsFilePath).toBeNull();

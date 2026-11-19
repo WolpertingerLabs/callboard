@@ -136,6 +136,14 @@ export interface CodexOptionsExtras {
    * run with that server live.
    */
   lockdown?: { mcpServerNames: string[] };
+  /**
+   * Instructions ADDED to Codex's own prompt (today: the aside instruction), as
+   * the `developer_instructions` config key — a developer message beside the
+   * base instructions. Unlike `model_instructions_file` it replaces nothing of
+   * Codex's built-in prompt; it does override a `developer_instructions` the
+   * user set in config.toml for this run.
+   */
+  developerInstructions?: string;
 }
 
 /**
@@ -556,6 +564,9 @@ export function translateCodexOptions(options: Record<string, unknown>): CodexTr
   const instructionsFilePath = instructions ? writeInstructionsFile(instructions) : null;
   if (instructionsFilePath) {
     codexOpts.config = { ...codexOpts.config, model_instructions_file: instructionsFilePath };
+  }
+  if (extras.developerInstructions) {
+    codexOpts.config = { ...codexOpts.config, developer_instructions: extras.developerInstructions };
   }
 
   // ── lockdown (one-shot, tool-less runs) ──────────────────────────

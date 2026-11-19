@@ -111,6 +111,17 @@ describe("supersedeChat — root", () => {
     expect(metaOf(legacy.id).rootChatId).toBe(n.id);
   });
 
+  it("moves an aside with its fork point, as a fork", () => {
+    const root = makeChat({ title: "Root" });
+    const quotes = [{ timestamp: before, role: "assistant", text: "q" }];
+    const early = makeChat({ parentChatId: root.id, forkedFrom: root.id, rootChatId: root.id, chatRole: "aside", forkedAt: before, asideQuotes: quotes });
+    const late = makeChat({ parentChatId: root.id, rootChatId: root.id, chatRole: "aside", forkedAt: after, asideQuotes: quotes });
+    const { chat: n, movedChildren } = supersede(root);
+    expect(movedChildren).toEqual([early.id]);
+    expect(metaOf(early.id)).toMatchObject({ parentChatId: n.id, chatRole: "aside", asideQuotes: quotes });
+    expect(metaOf(late.id).parentChatId).toBe(root.id);
+  });
+
   it("compress-before keeps fork points and stars from the cutoff on; compress-after up to it", () => {
     const stars = [`user@${before}#0`, `assistant@${T}#0`, `user@${after}#1`];
     const rootA = makeChat({ starredMessages: stars });
@@ -130,6 +141,16 @@ describe("supersedeChat — root", () => {
 });
 
 describe("supersedeChat — child", () => {
+  it("an aside's replacement is the aside: its role, fork point and quotes move to the new chat", () => {
+    const root = makeChat({ title: "Root" });
+    const quotes = [{ timestamp: before, role: "user", text: "q" }];
+    const child = makeChat({ title: "Aside: q?", parentChatId: root.id, rootChatId: root.id, chatRole: "aside", forkedAt: before, asideQuotes: quotes });
+    const { chat: n } = supersede(child);
+    expect(metaOf(n.id)).toMatchObject({ parentChatId: root.id, chatRole: "aside", forkedAt: before, asideQuotes: quotes });
+    expect(metaOf(child.id)).toMatchObject({ parentChatId: n.id, chatRole: "superseded" });
+    expect(metaOf(child.id)).not.toHaveProperty("asideQuotes");
+  });
+
   it("puts the new chat in the child's slot under the same parent, with its role and fork point", () => {
     const root = makeChat({ title: "Root" });
     const child = makeChat({ title: "Child", parentChatId: root.id, forkedFrom: root.id, rootChatId: root.id, chatRole: "fork", forkedAt: before });

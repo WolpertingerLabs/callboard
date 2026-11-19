@@ -320,7 +320,8 @@ export function supersedeChat(opts: SupersedeOptions): SupersedeResult {
     // A job-step chat: no parent pointer, tied to its run's tree by the stamp.
     position.rootChatId = meta.rootChatId;
   }
-  for (const key of ["chatRole", "forkedAt", ...ROOT_FIELDS] as const) {
+  // asideQuotes travels with the role: N takes an aside's place, so N is the aside.
+  for (const key of ["chatRole", "forkedAt", "asideQuotes", ...ROOT_FIELDS] as const) {
     if (meta[key] !== undefined) position[key] = meta[key];
     // An adopted N was filed by the new-chat path (a space from the folder
     // rules, say); what C did not have, N must not keep either.
@@ -362,6 +363,8 @@ export function supersedeChat(opts: SupersedeOptions): SupersedeResult {
       forkedFrom: created.id,
       rootChatId: wasRoot ? created.id : previousRootChatId,
       chatRole: SUPERSEDED_ROLE[kind],
+      // No longer an aside (if it was one): its quotes went to N with the role.
+      asideQuotes: undefined,
       forkedAt: timestamp,
       title: prefixedTitle(kind, title),
       supersededBy: { chatId: created.id, kind, at: new Date().toISOString(), ...(cutoff !== timestamp && { cutoff }) },

@@ -1,5 +1,6 @@
 import type { SlashCommand } from "./slashCommand.js";
 import type { Plugin } from "./plugins.js";
+import type { AsideQuote } from "./aside.js";
 
 export interface Chat {
   id: string;
@@ -117,6 +118,12 @@ export interface ChatTreeNode {
    * message it branched off. Absent on forks made before it was recorded.
    */
   forkedAt?: string;
+  /**
+   * For an `"aside"` child: the passages of the parent it was asked about
+   * (`metadata.asideQuotes`). Additive — absent on every other role and from
+   * older daemons.
+   */
+  asideQuotes?: AsideQuote[];
   /** "claude-code" | "codex" | "pi" — or a retired kind ("openrouter", "cline", "acp") on old records */
   provider: string;
   status: "ongoing" | "waiting" | "stopped";
