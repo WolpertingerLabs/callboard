@@ -63,6 +63,7 @@ import { startReviewAudit, type PermissionAuditHooks, type ReviewAuditResult, ty
 import { notifyParentOfChildPrompt } from "./parent-answers.js";
 import { resolveParentage, walkToRootId } from "./chat-lineage.js";
 import { answeringParentFor } from "./superseded-parent.js";
+import { asideInstructionFor } from "./aside.js";
 import { readChat, resolveNewChatSpace, spaceInstructionsPrompt, spaceOfChat, spaceRecord } from "./space-service.js";
 import { spaceForFolder, touchSpaceRecentDirectory } from "./space-store.js";
 import { DEFAULT_SPACE_ID } from "shared";
@@ -1785,7 +1786,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   // prompt is its persona's, compiled from its own workspace, and a space
   // preamble on top would contradict it as often as help.
   const spaceInstruction = opts.agentAlias ? "" : spaceInstructionsPrompt(space);
-  const systemPromptAppend = [opts.systemPrompt, spaceInstruction, completionInstruction].filter(Boolean).join("\n\n");
+  // An aside answers a side question about quoted passages; built from the
+  // stored role on every turn, so it holds on resume too.
+  const asideInstruction = asideInstructionFor(initialMetadata);
+  const systemPromptAppend = [opts.systemPrompt, spaceInstruction, completionInstruction, asideInstruction].filter(Boolean).join("\n\n");
 
   // The per-chat model and effort as stored in chat metadata (new chats: just
   // written above; resumed chats: loaded from disk). Every harness reads them.

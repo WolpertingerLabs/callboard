@@ -121,6 +121,8 @@ export function detachChatFromParent(chat: { id: string; session_id?: string; me
       rootChatId: undefined,
       chatRole: undefined,
       forkedAt: undefined,
+      // An aside's quotes point into the parent it no longer has.
+      asideQuotes: undefined,
       card: undefined,
       // A root is archived through its card; a per-child flag left behind
       // would be read by nothing and come back if the chat were re-parented.

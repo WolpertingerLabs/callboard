@@ -1,7 +1,9 @@
 import { collectContentMatches } from "../services/chat-content-search.js";
 import { listChatsSnapshot } from "../services/chats-snapshot.js";
 import { createCardMembership, isNativeRecord } from "../services/card-membership.js";
-import { chatViews } from "../services/chat-view.js";
+import { bindChatView, ChatViewError, chatViews } from "../services/chat-view.js";
+import { resolveAsidePermissions } from "../services/aside.js";
+import { startChatTurn } from "../services/chat-turn.js";
 import { discoverChatCorpus } from "../services/chat-discovery.js";
 import { createTriggeredPredicate, cardIsArchived, archivedRootIdsOf } from "../services/chat-visibility.js";
 import { isCardEligible } from "../services/card-fields.js";
@@ -45,6 +47,7 @@ import { getSessionProviders } from "../agents/factory.js";
 import { isRetiredProvider, isRoutableProvider, RETIRED_PROVIDER_LABELS, type InternalProviderKind } from "../agents/ports/AgentProvider.js";
 import { providerLabel } from "../agents/handoff.js";
 import { generateChatTitleFromTranscript } from "../services/quick-completion.js";
+import { ASIDE_MAX_PROMPT_CHARS, ASIDE_ROLE, asideTitle, parseAsideQuotes, renderQuotedPrompt, type AsideQuote, type DefaultPermissions } from "shared/types/index.js";
 import { ALL_SPACES, normalizePermissions, isSidebarFolderEligible, parseSidebarFolder, readSidebarFolder, sameSidebarFolder, type ParsedMessage, type Chat as SharedChat, type SpaceAgentScope } from "shared/types/index.js";
 import { createLogger } from "../utils/logger.js";
 import { buildWorkspaceIndex, viewForDirectory } from "../services/workspace-views.js";
@@ -1285,7 +1288,7 @@ chatsRouter.post("/", (req, res) => {
 chatsRouter.post("/:id/fork", async (req, res) => {
   // #swagger.tags = ['Chats']
   // #swagger.summary = 'Fork a chat'
-  // #swagger.description = 'Create a new chat whose session history is a copy of this chat up to and including the message at the given timestamp. The forked chat is not auto-started — the user sends the next message. The fork inherits the original chat's card membership through the parentage tree (its root). Pass `provider` to hand the conversation to a different harness: the history is translated into that harness native session format, with tool calls flattened to text summaries.'
+  // #swagger.description = 'Create a new chat whose session history is a copy of this chat up to and including the message at the given timestamp. The forked chat is not auto-started — the user sends the next message. The fork inherits the original chat's card membership through the parentage tree (its root). Pass `provider` to hand the conversation to a different harness: the history is translated into that harness native session format, with tool calls flattened to text summaries. With `kind: "aside"` the new chat is an aside — a side question about `quotes` (passages of this chat, none later than `timestamp`): chatRole "aside", the quotes stored as metadata.asideQuotes, titled "Aside: <question>", an aside instruction appended to its system prompt on every turn, and permissions inherited from this chat or the given `permissions` capped so no category is looser than this chat\'s. With `prompt`, the aside\'s first turn (the quotes as Markdown blockquotes, then the question) is started immediately, through the same path as POST /chats/:id/message; connect to GET /chats/:id/stream for its events. A turn that cannot start leaves the aside in place and is reported as `runError`, with the text in `promptText`.'
   /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
   /* #swagger.requestBody = {
     required: true,
@@ -1298,14 +1301,19 @@ chatsRouter.post("/:id/fork", async (req, res) => {
             timestamp: { type: "string", description: "ISO timestamp of the message to fork at (history up to and including it is copied)" },
             provider: { type: "string", enum: ["claude-code", "codex", "pi"], description: "Target harness. Omit to fork within the current harness of the chat (higher fidelity). Any routable kind." },
             model: { type: "string", description: "Model for the new chat. Required-ish on a harness switch, where the source model id is meaningless to the target." },
-            effort: { type: "string", description: "Reasoning effort for the new chat (codex only)." }
+            effort: { type: "string", description: "Reasoning effort for the new chat (codex only)." },
+            kind: { type: "string", enum: ["fork", "aside"], description: "fork (default) or aside. quotes, prompt and permissions are accepted only with aside." },
+            quotes: { type: "array", maxItems: 20, items: { type: "object", required: ["timestamp", "role", "text"], properties: { timestamp: { type: "string" }, role: { type: "string", enum: ["user", "assistant"] }, text: { type: "string", maxLength: 10000 } } }, description: "Aside only, required: the quoted passages. Every timestamp must be at or before `timestamp`." },
+            prompt: { type: "string", maxLength: 20000, description: "Aside only: the question. When given, the first turn is started immediately." },
+            permissions: { type: "object", description: "Aside only: permissions (full or partial — fileRead, fileWrite, codeExecution, webAccess, computerControl; allow/ask/deny). Merged over this chat\'s and capped so no category is looser. Omit to inherit this chat\'s." },
+            chatView: { type: "object", description: "Aside with prompt only: the browser chat view binding, as on POST /chats/:id/message." }
           }
         }
       }
     }
   } */
-  /* #swagger.responses[201] = { description: "Forked chat created" } */
-  /* #swagger.responses[400] = { description: "Missing timestamp or provider does not support forking" } */
+  /* #swagger.responses[201] = { description: "Forked chat created. For an aside with prompt: plus started: true, or runError and promptText when the first turn could not start." } */
+  /* #swagger.responses[400] = { description: "Missing timestamp, provider does not support forking, or invalid aside input (quotes, prompt, permissions)" } */
   /* #swagger.responses[404] = { description: "Chat not found" } */
   const { timestamp } = req.body;
   if (!timestamp || typeof timestamp !== "string") {
@@ -1318,6 +1326,19 @@ chatsRouter.post("/:id/fork", async (req, res) => {
   const source = resolveForkSource(chat);
   if (!source.ok) return res.status(source.status).json({ error: source.error });
   const { meta, providerKind } = source;
+
+  // An aside: everything it carries is checked before anything is written.
+  const aside = parseAsideRequest(req.body, timestamp, meta.defaultPermissions);
+  if (!aside.ok) return res.status(400).json({ error: aside.error });
+  let chatView: ReturnType<typeof bindChatView>;
+  if (aside.aside?.prompt) {
+    try {
+      chatView = bindChatView(res.locals?.chatViewOwner, req.body.chatView);
+    } catch (error) {
+      if (error instanceof ChatViewError) return res.status(400).json({ code: "CHAT_VIEW_INVALID", error: error.message });
+      throw error;
+    }
+  }
 
   // Target harness. Omitted (the common case) means "same harness", which
   // keeps the high-fidelity same-provider fork path below.
@@ -1371,15 +1392,18 @@ chatsRouter.post("/:id/fork", async (req, res) => {
   }
   baseTitle = baseTitle ? baseTitle.replace(/\s+/g, " ").trim() : null;
 
+  const asideSpec = aside.aside;
   const forkMeta = {
     session_ids: [newSessionId],
-    title: baseTitle
-      ? isHandoff
-        ? `→ ${providerLabel(targetKind)}: ${baseTitle}`
-        : `Fork: ${baseTitle}`
-      : isHandoff
-        ? `→ ${providerLabel(targetKind)}`
-        : "Fork",
+    title: asideSpec
+      ? asideTitle(asideSpec.prompt || asideSpec.quotes[0]!.text)
+      : baseTitle
+        ? isHandoff
+          ? `→ ${providerLabel(targetKind)}: ${baseTitle}`
+          : `Fork: ${baseTitle}`
+        : isHandoff
+          ? `→ ${providerLabel(targetKind)}`
+          : "Fork",
     // Legacy parent pointer (kept for compat) plus the parentage-tree
     // fields — the fork becomes a child of the original in the chat tree.
     forkedFrom: chat.id,
@@ -1388,7 +1412,9 @@ chatsRouter.post("/:id/fork", async (req, res) => {
     // ancestor promotes the highest surviving chat, and old forkedFrom-only
     // chains may never have carried rootChatId at all.
     rootChatId: walkToRootId(chat.id),
-    chatRole: isHandoff ? "engine-switch" : "fork",
+    // An aside on another harness is still an aside: its role is what it is
+    // for, and the provider field already records the switch.
+    chatRole: asideSpec ? ASIDE_ROLE : isHandoff ? "engine-switch" : "fork",
     // The message the fork branched off, so the original thread can mark the
     // spot. Forks from before this field carry none and get no inline marker.
     forkedAt: timestamp,
@@ -1406,6 +1432,11 @@ chatsRouter.post("/:id/fork", async (req, res) => {
     // that guard doesn't apply here, since this route writes metadata itself.
     ...(model && { model }),
     ...inheritedChatFields(meta),
+    ...(asideSpec && {
+      asideQuotes: asideSpec.quotes,
+      // Inherited unless the request named some, then capped to the parent's.
+      defaultPermissions: asideSpec.permissions ?? undefined,
+    }),
   };
 
   try {
@@ -1416,11 +1447,65 @@ chatsRouter.post("/:id/fork", async (req, res) => {
     // cascade interrupts when that directory is removed underneath it.
     const newChat = chatFileService.createChat(chat.folder, newSessionId, JSON.stringify(forkMeta), chat.workspaceId);
     clearListCaches();
-    res.status(201).json(newChat);
+    if (!asideSpec?.prompt) return res.status(201).json(newChat);
+
+    // The aside's question, started now so the user does not send twice. The
+    // aside stays either way; a turn that cannot start is reported beside it,
+    // with the text, so the client can offer it again.
+    const promptText = renderQuotedPrompt(asideSpec.quotes, asideSpec.prompt);
+    let runError: string | undefined;
+    try {
+      const turn = await startChatTurn({
+        chatId: newChat.id,
+        prompt: promptText,
+        // The record's lastBranch is the parent's, inherited a moment ago;
+        // the user has not seen a drift prompt and an aside asks, it does
+        // not continue the work on that branch.
+        acknowledgeBranchDrift: true,
+        chatView,
+      });
+      if (!turn.ok) runError = String(turn.body.message ?? turn.body.error ?? `could not start (${turn.status})`);
+    } catch (error: any) {
+      runError = error?.message ?? String(error);
+    }
+    if (runError) log.warn(`Aside ${newChat.id} of ${chat.id}: could not start its first turn: ${runError}`);
+    res.status(201).json(runError ? { ...newChat, runError, promptText } : { ...newChat, started: true });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
 });
+
+/** A validated `kind: "aside"` request — or `aside: null` for a plain fork. */
+type AsideRequest =
+  | { ok: true; aside: { quotes: AsideQuote[]; prompt?: string; permissions: DefaultPermissions | null } | null }
+  | { ok: false; error: string };
+
+/**
+ * The aside half of a fork request. `quotes`, `prompt` and `permissions` are
+ * refused on a plain fork rather than ignored, so a client that meant an aside
+ * cannot silently get an ordinary fork.
+ */
+function parseAsideRequest(body: Record<string, unknown>, timestamp: string, parentPermissions: DefaultPermissions | null | undefined): AsideRequest {
+  const { kind } = body;
+  if (kind !== undefined && kind !== "fork" && kind !== ASIDE_ROLE) return { ok: false, error: 'kind must be "fork" or "aside"' };
+  if (kind !== ASIDE_ROLE) {
+    const stray = (["quotes", "prompt", "permissions"] as const).filter((k) => body[k] !== undefined);
+    if (stray.length > 0) return { ok: false, error: `${stray.join(", ")} ${stray.length === 1 ? "is" : "are"} only accepted with kind "aside"` };
+    return { ok: true, aside: null };
+  }
+  if (isNaN(new Date(timestamp).getTime())) return { ok: false, error: "timestamp is not a valid date" };
+  const quotes = parseAsideQuotes(body.quotes, timestamp);
+  if (!quotes.ok) return quotes;
+  let prompt: string | undefined;
+  if (body.prompt !== undefined) {
+    if (typeof body.prompt !== "string") return { ok: false, error: "prompt must be a string" };
+    if (body.prompt.length > ASIDE_MAX_PROMPT_CHARS) return { ok: false, error: `prompt is longer than ${ASIDE_MAX_PROMPT_CHARS} characters` };
+    prompt = body.prompt.trim() || undefined;
+  }
+  const permissions = resolveAsidePermissions(parentPermissions, body.permissions);
+  if (!permissions.ok) return permissions;
+  return { ok: true, aside: { quotes: quotes.quotes, ...(prompt && { prompt }), permissions: permissions.permissions } };
+}
 
 /**
  * Shared front half of the supersede routes (continue-from, compress): parse

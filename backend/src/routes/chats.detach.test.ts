@@ -116,6 +116,22 @@ describe("POST /api/chats/:id/detach", () => {
     expect(walkToRootId(fork.id)).toBe(fork.id);
   });
 
+  it("clears an aside's role and quotes, which point into the old parent", async () => {
+    const original = makeChat({ title: "original" });
+    const aside = makeChat({
+      parentChatId: original.id,
+      rootChatId: original.id,
+      chatRole: "aside",
+      forkedAt: "2026-01-01T00:00:00Z",
+      asideQuotes: [{ timestamp: "2026-01-01T00:00:00Z", role: "assistant", text: "q" }],
+    });
+
+    expect((await detach(aside.id)).status).toBe(200);
+    const meta = metaOf(aside.id);
+    expect(meta).not.toHaveProperty("chatRole");
+    expect(meta).not.toHaveProperty("asideQuotes");
+  });
+
   it("brings the detached chat's own descendants along, re-stamping their root", async () => {
     const root = makeChat();
     const child = makeChat({ parentChatId: root.id, rootChatId: root.id });
