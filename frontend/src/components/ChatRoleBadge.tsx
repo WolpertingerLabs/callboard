@@ -50,3 +50,25 @@ export default function ChatRoleBadge({ role }: { role: string }) {
     </span>
   );
 }
+
+/**
+ * How many asides a chat has, where the sidebar shows the chat: asides are
+ * folded into their parent's row rather than listed as rows of their own
+ * (they open in the chat's side panel). Nothing for none.
+ */
+export function AsideCount({ count }: { count: number }) {
+  if (count <= 0) return null;
+  const label = `${count} aside${count === 1 ? "" : "s"}`;
+  return (
+    <span
+      role="img"
+      aria-label={label}
+      title={label}
+      data-testid="aside-count"
+      style={{ display: "inline-flex", alignItems: "center", gap: 2, flexShrink: 0, fontSize: 10, color: "var(--chatlist-icon)" }}
+    >
+      <MessageSquareQuote size={11} aria-hidden />
+      {count}
+    </span>
+  );
+}
