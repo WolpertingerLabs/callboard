@@ -28,7 +28,8 @@ import type { RowActivity } from "./ChatTreeList";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { useSelectionActivation } from "../hooks/useSelectionActivation";
 import ProviderBadge from "./ProviderBadge";
-import ChatRoleBadge, { isIconRole } from "./ChatRoleBadge";
+import ChatRoleBadge, { AsideCount, isIconRole } from "./ChatRoleBadge";
+import type { AsideAttention } from "../utils/asideAttention";
 import FolderPathPill from "./FolderPathPill";
 import MenuRow from "./MenuRow";
 import PopupMenu, { placePopupMenu, type PopupMenuPosition } from "./PopupMenu";
@@ -175,6 +176,10 @@ interface Props {
   /** Receives the event so the list can read shift/meta/ctrl for range and toggle. */
   onToggleSelect?: (e: React.MouseEvent) => void;
   onLongPress?: () => void;
+  /** This chat's asides, which the list folds into this row rather than listing (see `buildRows`). */
+  asideCount?: number;
+  /** What those asides need (running, unread, summoned) — a dot on the count, not the row's status. */
+  asideAttention?: AsideAttention;
 }
 
 /**
@@ -254,6 +259,8 @@ export default function ChatListItem({
   selectable = true,
   onToggleSelect,
   onLongPress,
+  asideCount = 0,
+  asideAttention,
 }: Props) {
   const [hovered, setHovered] = useState(false);
   // The kebab popup escapes the sidebar's overflow:auto scroll container via
@@ -514,6 +521,7 @@ export default function ChatListItem({
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 2 }}>
           {roleIcon && <ChatRoleBadge role={roleIcon} />}
+          <AsideCount count={asideCount} attention={asideAttention} />
           {/* Before the bookmark, and kept even inside the Pinned section: the
               section says where the row is filed, this says why, and the two
               are not the same thing once a section is collapsed or the list is

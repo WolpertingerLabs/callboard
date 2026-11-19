@@ -5,8 +5,8 @@ import ComputerUseHeader from "../components/ComputerUseHeader";
 import { usePendingFeedback } from "../hooks/usePendingFeedback";
 import { useComputerUseController } from "../hooks/useComputerUseController";
 import ComputerUsePanel from "../components/ComputerUsePanel";
-import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from "react";
-import { useParams, useNavigate, useSearchParams, useLocation } from "react-router-dom";
+import { memo, useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from "react";
+import { useParams, useNavigate, useSearchParams, useLocation, useNavigationType } from "react-router-dom";
 import {
   RotateCw,
   CheckSquare,
@@ -29,6 +29,9 @@ import {
   SlidersHorizontal,
   Workflow,
   Loader2,
+  MessageSquareQuote,
+  Maximize2,
+  X,
 } from "lucide-react";
 import { useDebouncedCallback } from "../hooks/useDebouncedCallback";
 import { useIsMobile } from "../hooks/useIsMobile";
@@ -69,8 +72,16 @@ import {
 } from "../api";
 import { readChatRouteState, type ChatRouteState } from "../types/chatRouteState";
 import { assignForkMarkers, forksByTimestamp } from "../utils/forkMarkers";
-import { buildQuotedPrompt } from "../utils/messageQuotes";
-import { clearQuotes, getQuotes, removeQuote, restoreQuotes, useQuoteTray } from "../hooks/useQuoteTray";
+import { buildQuotedPrompt, quoteFromAsideReply } from "../utils/messageQuotes";
+import { addQuote, clearQuotes, getQuotes, removeQuote, restoreQuotes, useQuoteTray } from "../hooks/useQuoteTray";
+import { asidesOf } from "../utils/asideHighlights";
+import { asideAtPoint, useAsideHighlights } from "../hooks/useAsideHighlights";
+import { AsideContext, type AsideActions } from "../contexts/AsideContext";
+import { ASIDE_PARAM, useChatViewKey } from "../hooks/useChatViewKey";
+import AsidePanel from "../components/AsidePanel";
+import ErrorBoundary from "../components/ErrorBoundary";
+import AsideListButton from "../components/AsideListButton";
+import { hasMarkerSlot } from "../utils/forkMarkers";
 import MessageQuoteSelection from "../components/MessageQuoteSelection";
 import QuoteTray from "../components/QuoteTray";
 import AskAsideControls, { type AskAsideOptions, type AskAsideResult } from "../components/AskAsideControls";
@@ -172,8 +183,37 @@ function detectStaleExitPlanMode(messages: ParsedMessage[]): PendingAction | nul
   return null;
 }
 
+/**
+ * The chat page embedded in the aside panel, beside its main chat. What
+ * changes (see the audit in plans/highlight-asides.md, PR 3):
+ *  - the chat comes from `chatId`, never the route; route state, the
+ *    `folder` param and the new-chat path are ignored;
+ *  - no page header or mobile action bar — a compact bar with `title`, the
+ *    stop button and `actions` (the panel's open-in-full and close);
+ *  - it publishes nothing to the module-level compose-screen slot, and its
+ *    view key is its own chat id, so the panel opening or closing is no
+ *    navigation for either instance;
+ *  - a continue-from / compress / rerun that replaces the aside hands the new
+ *    chat id to `onReplaced` instead of navigating the page;
+ *  - no Ask as aside (no asides of asides), and no aside panel of its own;
+ *  - replies offer "Insert into main chat", into `mainChatId`'s quote tray.
+ */
+export interface EmbeddedChatOptions {
+  mainChatId: string;
+  /** Offer "Insert into main chat" on replies — once the aside is known to be the main chat's. */
+  insertIntoMain: boolean;
+  title: ReactNode;
+  actions: ReactNode;
+  onReplaced: (newChatId: string) => void;
+  /** This page started the aside's first turn: read its transcript once the stream attaches (/stream does not replay). */
+  refetchOnAttach?: boolean;
+}
+
 interface ChatProps {
   onChatListRefresh?: () => void;
+  /** With `embedded`: the chat to show, instead of the route's. */
+  chatId?: string;
+  embedded?: EmbeddedChatOptions;
 }
 
 /**
@@ -274,9 +314,7 @@ function InFlightBubbles({ messages }: { messages: InFlightMessage[] }) {
             }}
           >
             {message.text}
-            {message.fileNames && message.fileNames.length > 0 && (
-              <AttachedFileChips files={message.fileNames.map((name) => ({ name }))} />
-            )}
+            {message.fileNames && message.fileNames.length > 0 && <AttachedFileChips files={message.fileNames.map((name) => ({ name }))} />}
             {/* Carried across the new-chat redirect: the count came, the previews could not. */}
             {message.imageUrls.length === 0 && !!message.imageCount && (
               <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-muted)" }}>
@@ -306,6 +344,14 @@ function InFlightBubbles({ messages }: { messages: InFlightMessage[] }) {
   );
 }
 
+/**
+ * How long a click on highlighted text waits before opening its aside, so a
+ * double click (which arrives as a detail-1 click, then a detail-2 one) can
+ * cancel it. Around the common double-click interval; there is no API for the
+ * user's own setting.
+ */
+const HIGHLIGHT_CLICK_DELAY_MS = 350;
+
 /** At most one parentage-tree refetch per this long while a chat is open — see the tree effect. */
 const TREE_REFRESH_INTERVAL_MS = 10_000;
 /** Even right after a quiet spell, wait this long so a burst of ticks costs one request. */
@@ -320,22 +366,38 @@ const TREE_REFRESH_MIN_DELAY_MS = 1_000;
  */
 /** Why Ask as aside is unavailable while the composer leads with a slash command. */
 const ASIDE_COMMAND_BLOCKED = "A slash command runs in this chat, not as an aside. Remove it to ask as an aside.";
+/** Ask as aside with only passages inserted from an aside in the tray: none of them is a point in this chat to fork at. */
+const ASIDE_INSERTED_ONLY = "Passages inserted from an aside can't start another aside. Quote this chat's own text to ask one.";
 
 function leadsWithCommand(prompt: string, commands: string[], loaded: boolean): boolean {
   if (!loaded) return /^\s*\/[\w:-]+(?:\s|$)/.test(prompt);
   return parseLeadingCommand(prompt, commands).command !== null;
 }
 
-export default function Chat({ onChatListRefresh }: ChatProps = {}) {
-  const { id } = useParams<{ id: string }>();
+export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedded }: ChatProps = {}) {
+  const params = useParams<{ id: string }>();
+  const id = embedded ? chatIdOverride : params.id;
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const location = useLocation();
   const isMobile = useIsMobile();
+  const embeddedRef = useRef(embedded);
+  embeddedRef.current = embedded;
+  // For effect deps: whether this is the embedded chat, never the options
+  // object itself — a new object would tear the effect down on every render.
+  const isEmbedded = !!embedded;
+  // The history entry this view belongs to — see useChatViewKey. The embedded
+  // chat is its own view for as long as it is mounted (the panel remounts it
+  // per aside).
+  const navigationType = useNavigationType();
+  /** The search the aside panel's own navigation is headed for (see useChatViewKey); cleared once it lands. */
+  const panelNavTargetRef = useRef<string | null>(null);
+  const routeViewKey = useChatViewKey(location, navigationType, panelNavTargetRef.current);
+  const viewKey = embedded ? `embedded:${id}` : routeViewKey;
 
   // Mode detection: no id means we're on /chat/new (new chat mode)
-  const folder = searchParams.get("folder") || "";
-  const routeState = readChatRouteState(location.state);
+  const folder = embedded ? "" : searchParams.get("folder") || "";
+  const routeState = readChatRouteState(embedded ? undefined : location.state);
   const defaultPermissions = routeState.defaultPermissions;
   const agentSystemPrompt = routeState.systemPrompt;
   const agentAlias = routeState.agentAlias;
@@ -416,7 +478,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const [responseError, setResponseError] = useState("");
   const [controlNotice, setControlNotice] = useState("");
   const { pendingAction, pendingKey, responding, setPendingAction, capturePending, isCurrentPending, isUnchangedPending, beginResponse, finishResponse } =
-    usePendingFeedback(id ?? `new:${location.key}`);
+    usePendingFeedback(id ?? `new:${viewKey}`);
   // What this chat is blocked on right now — a wait countdown, a delegated
   // session, an open condition watch. Fetched rather than streamed: the
   // countdown is derived from `expiresAt` client-side, so the dock only needs
@@ -553,7 +615,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const hasReceivedFirstResponseRef = useRef<boolean>(false);
   const currentIdRef = useRef<string | undefined>(id);
   /** A chat whose run another request started (an aside): read its transcript once when the stream attaches. */
-  const refetchOnAttachRef = useRef<string | null>(null);
+  const refetchOnAttachRef = useRef<string | null>(embedded?.refetchOnAttach && id ? id : null);
   /** Bumped when a stream-driven refetch applies, so an older one-off read (on attach) knows to stand down. */
   const messagesAppliedSeqRef = useRef(0);
   // refreshActivity's request order: issued, and the newest one applied.
@@ -842,7 +904,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // TREE_REFRESH_INTERVAL_MS. A debounce would either cost a request per tick
   // (short) or never fire while some other chat keeps ticking (long); the
   // throttle bounds the cost and still lands the change.
-  const [chatTreeState, setChatTreeState] = useState<{ chatId: string; tree: ChatTreeResponse } | null>(null);
+  /** `seq`: the request's sequence number — the aside panel trusts only a tree asked for after it opened. */
+  const [chatTreeState, setChatTreeState] = useState<{ chatId: string; tree: ChatTreeResponse; seq: number } | null>(null);
+  /** The latest tree request that failed or came back empty, by sequence number. */
+  const [chatTreeFailure, setChatTreeFailure] = useState<{ chatId: string; seq: number } | null>(null);
   /** Bumped per request and on chat switch: only the latest response may land. */
   const treeRequestSeqRef = useRef(0);
   const treeLastFetchAtRef = useRef(0);
@@ -851,12 +916,20 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const fetchChatTree = useCallback((chatId: string) => {
     const seq = ++treeRequestSeqRef.current;
     treeLastFetchAtRef.current = Date.now();
+    // A failed or empty answer keeps the last good tree on screen (markers),
+    // but is recorded: the aside panel must not wait on it forever.
+    const failed = () => {
+      if (seq === treeRequestSeqRef.current) setChatTreeFailure({ chatId, seq });
+    };
     getChatTree(chatId)
       .then((tree) => {
-        if (seq === treeRequestSeqRef.current && tree?.tree) setChatTreeState({ chatId, tree });
+        if (seq !== treeRequestSeqRef.current) return;
+        if (tree?.tree) setChatTreeState({ chatId, tree, seq });
+        else failed();
       })
       .catch(() => {
         // No stored record / no tree — no fork markers.
+        failed();
       });
   }, []);
   // Opening a chat fetches at once; leaving it drops any refresh in flight.
@@ -941,7 +1014,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     (newChatId: string) => {
       setPendingRewrite(null);
       onChatListRefresh?.();
-      navigate(`/chat/${newChatId}`);
+      // In the panel, the replacement takes the aside's place there.
+      if (embeddedRef.current) embeddedRef.current.onReplaced(newChatId);
+      else navigate(`/chat/${newChatId}`);
     },
     [navigate, onChatListRefresh],
   );
@@ -1033,7 +1108,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     setPendingModel(null);
     setPendingEffort(null);
     setModelPopoverOpen(false);
-  }, [location.key]);
+  }, [viewKey]);
 
   // Resolve effective permissions for this chat
   const effectivePermissions = useMemo((): DefaultPermissions => {
@@ -1117,13 +1192,16 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // the first commit. That second one is only safe *because* the ref is
   // mount-scoped: re-reading `location.state.draft` from an effect would put a
   // key rotation inside the compose window.
-  const locationKeyRef = useRef(location.key);
-  locationKeyRef.current = location.key;
+  const locationKeyRef = useRef(viewKey);
+  locationKeyRef.current = viewKey;
 
   // Publish this view as the compose screen on screen; see the module-level
   // declaration for why the slot is not a ref. Re-runs on every navigation, so
   // the slot names where the user is now rather than where they came in.
   useEffect(() => {
+    // The embedded aside chat is never a compose screen, and is mounted beside
+    // the one that holds the seat.
+    if (embedded) return;
     // The seat is always empty by the time we take it: SplitLayout mounts Chat
     // in exactly one place, and both orderings that reach this line — a
     // same-instance navigation, and a remount — run the outgoing cleanup
@@ -1136,11 +1214,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       console.error("Chat: a chat view was already published to the slot; a new-chat redirect may skip for one of them", activeChatViewEntry);
     }
     const token = {};
-    activeChatViewEntry = { key: location.key, token };
+    activeChatViewEntry = { key: viewKey, token };
     return () => {
       if (activeChatViewEntry?.token === token) activeChatViewEntry = null;
     };
-  }, [location.key]);
+  }, [viewKey, isEmbedded]);
 
   // The compose screen a new-chat send was fired from. `chat_created` redirects
   // only while the user is still sitting on it — see the handler in readSSE.
@@ -1973,34 +2051,36 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       navigate(location.pathname + location.search, { replace: true, state: Object.keys(rest).length > 0 ? rest : undefined });
     }
 
-    getChat(id!).then((chatData) => {
-      // Guard: only apply if still on this chat
-      if (currentIdRef.current !== id) return;
-      setChat(chatData);
-      setChatLoadedFor(id!);
-      // Use slash commands and plugins from chat data if available for faster display
-      if (chatData?.slash_commands && chatData.slash_commands.length > 0) {
-        setSlashCommands(chatData.slash_commands.map((cmd: any) => (typeof cmd === "string" ? cmd : cmd.name)));
-        setCommandsLoadedFor(id!);
-      }
-      if (chatData?.plugins && chatData.plugins.length > 0) {
-        setPlugins(chatData.plugins);
-      }
-      if (chatData?.appPlugins) {
-        setAppPluginsData(chatData.appPlugins);
-      }
+    getChat(id!)
+      .then((chatData) => {
+        // Guard: only apply if still on this chat
+        if (currentIdRef.current !== id) return;
+        setChat(chatData);
+        setChatLoadedFor(id!);
+        // Use slash commands and plugins from chat data if available for faster display
+        if (chatData?.slash_commands && chatData.slash_commands.length > 0) {
+          setSlashCommands(chatData.slash_commands.map((cmd: any) => (typeof cmd === "string" ? cmd : cmd.name)));
+          setCommandsLoadedFor(id!);
+        }
+        if (chatData?.plugins && chatData.plugins.length > 0) {
+          setPlugins(chatData.plugins);
+        }
+        if (chatData?.appPlugins) {
+          setAppPluginsData(chatData.appPlugins);
+        }
 
-      // Fetch fresh data if not available
-      if (!chatData?.slash_commands?.length && !chatData?.plugins?.length) {
-        loadSlashCommands().then((loaded) => {
-          if (loaded && currentIdRef.current === id) setCommandsLoadedFor(id!);
-        });
-      }
-    }).catch((err) => {
-      console.warn("Failed to load chat:", err);
-      // With no record there is no agentAlias to read: list the ordinary tools.
-      if (currentIdRef.current === id) setChatLoadFailedFor(id);
-    });
+        // Fetch fresh data if not available
+        if (!chatData?.slash_commands?.length && !chatData?.plugins?.length) {
+          loadSlashCommands().then((loaded) => {
+            if (loaded && currentIdRef.current === id) setCommandsLoadedFor(id!);
+          });
+        }
+      })
+      .catch((err) => {
+        console.warn("Failed to load chat:", err);
+        // With no record there is no agentAlias to read: list the ordinary tools.
+        if (currentIdRef.current === id) setChatLoadFailedFor(id);
+      });
     // Mark chat as read (fire-and-forget — best-effort background update)
     markAsRead(id!).catch(() => {});
     refreshActivity(id!);
@@ -2144,8 +2224,14 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         // Typing/caret navigation in editable controls (the composer) is not scroll intent
         const tag = target.tagName;
         if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target.isContentEditable) return;
-        // Only when the browser would plausibly scroll the chat container
-        if (target !== document.body && !container.contains(target)) return;
+        // Only when the browser would plausibly scroll the chat container.
+        // Focus on the body is the main chat's: with the aside panel open, it
+        // alone answers, so one PageUp does not unlatch both transcripts.
+        // The panel itself (focused on open, when the composer did not take
+        // focus) belongs to the embedded chat in the same way.
+        const panelRoot = embedded ? container.closest("[data-aside-panel]") : null;
+        const ours = target === document.body ? !embedded : container.contains(target) || target === panelRoot;
+        if (!ours) return;
       }
       const upward = e.key === "ArrowUp" || e.key === "PageUp" || e.key === "Home" || (e.key === " " && e.shiftKey);
       const downward = e.key === "ArrowDown" || e.key === "PageDown" || e.key === "End" || (e.key === " " && !e.shiftKey);
@@ -2251,7 +2337,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       container.removeEventListener("scroll", handleScroll);
       window.clearTimeout(suppressSettleTimer);
     };
-  }, [viewMode, id, latchFollow, unlatch]);
+  }, [viewMode, id, latchFollow, unlatch, isEmbedded]);
 
   // ── Auto-mark chat as read when user has scrolled to the bottom ──
   // Uses IntersectionObserver on bottomRef (the sentinel div at the end of
@@ -2351,16 +2437,16 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     const open = openDraftRef.current;
     if (!open) return;
     if (open.key === undefined) {
-      open.key = location.key; // the prefill's own replace
+      open.key = viewKey; // the prefill's own replace
       return;
     }
-    if (open.key === location.key) return;
+    if (open.key === viewKey) return;
     open.abort();
     openDraftRef.current = null;
     draftRestoreGenerationRef.current++;
     setDraftRestore(null);
     setActiveDraftId(null);
-  }, [location.key]);
+  }, [viewKey]);
   useEffect(
     () => () => {
       openDraftRef.current?.abort();
@@ -2840,14 +2926,297 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const quoteTray = useQuoteTray(id);
   const [focusComposer, setFocusComposer] = useState<(() => void) | null>(null);
 
+  // ── Aside panel ────────────────────────────────────────────────────────
+  // `?aside=<chatId>` opens that aside beside this chat, in a second, embedded
+  // Chat (see EmbeddedChatOptions). The URL is the state: reload keeps it,
+  // a link to it opens it, and leaving the chat closes it. Opening pushes an
+  // entry (marked in its state), so Back closes the panel; closing pops that
+  // entry when it is ours, and otherwise just drops the param. Switching
+  // between asides replaces. Never in the embedded chat itself.
+  const asideId = !embedded && id ? searchParams.get(ASIDE_PARAM) : null;
+  const locationRef = useRef(location);
+  locationRef.current = location;
+  // The panel's own navigation has landed: later entry changes are not its.
+  useEffect(() => {
+    panelNavTargetRef.current = null;
+  }, [location.key]);
+  /** Navigate for the panel, announcing it so the view (and its draft, staged model…) carries over. */
+  const panelNavigate = useCallback((search: string, options: { replace?: boolean; state?: unknown }) => {
+    const loc = locationRef.current;
+    panelNavTargetRef.current = search;
+    navigateRef.current({ pathname: loc.pathname, search }, options);
+  }, []);
+  /** An aside this page just started: its embedded chat reads the transcript once its stream attaches. */
+  const [freshAsideId, setFreshAsideId] = useState<string | null>(null);
+  /**
+   * The open aside, and the tree request it has to be judged by: only a tree
+   * asked for AFTER it opened can say it is not this chat's aside (an aside
+   * just created is in no earlier one). Until then it is pending, not invalid.
+   */
+  const asideOpenRef = useRef<{ chatId: string; afterSeq: number } | null>(null);
+  /** Where focus goes back to when the panel closes — the control that opened it, when that was a menu row about to vanish. */
+  const asideReturnFocusRef = useRef<HTMLElement | null>(null);
+  /** Set while a close is popping the history entry, so a second close (a double click, Escape and click) does not pop twice. */
+  const asideClosingRef = useRef(false);
+  const openAside = useCallback(
+    (chatId: string, { fresh = false, returnFocus }: { fresh?: boolean; returnFocus?: HTMLElement | null } = {}) => {
+      const loc = locationRef.current;
+      const query = new URLSearchParams(loc.search);
+      const switching = query.has(ASIDE_PARAM);
+      if (query.get(ASIDE_PARAM) === chatId) return;
+      if (fresh) setFreshAsideId(chatId);
+      // The control that asked, whatever it was — read now, before the
+      // panel's composer takes focus. A menu row passes its trigger instead.
+      const active = document.activeElement;
+      asideReturnFocusRef.current = returnFocus ?? (active instanceof HTMLElement && active !== document.body ? active : null);
+      asideOpenRef.current = { chatId, afterSeq: treeRequestSeqRef.current };
+      query.set(ASIDE_PARAM, chatId);
+      const state = (loc.state ?? {}) as Record<string, unknown>;
+      panelNavigate(`?${query}`, switching ? { replace: true, state: loc.state } : { state: { ...state, asidePanelPushed: true } });
+    },
+    [panelNavigate],
+  );
+  /** Drop the param in place — for an aside that turned out not to be one, where a pop could land anywhere. */
+  const dropAsideParam = useCallback(() => {
+    const loc = locationRef.current;
+    const query = new URLSearchParams(loc.search);
+    query.delete(ASIDE_PARAM);
+    const search = query.toString();
+    const { asidePanelPushed: _, ...state } = (loc.state ?? {}) as Record<string, unknown>;
+    panelNavigate(search ? `?${search}` : "", { replace: true, state: Object.keys(state).length > 0 ? state : undefined });
+  }, [panelNavigate]);
+  const closeAside = useCallback(() => {
+    if (asideClosingRef.current) return;
+    const loc = locationRef.current;
+    if (!new URLSearchParams(loc.search).has(ASIDE_PARAM)) return;
+    if ((loc.state as { asidePanelPushed?: boolean } | null)?.asidePanelPushed) {
+      asideClosingRef.current = true;
+      navigateRef.current(-1);
+      return;
+    }
+    dropAsideParam();
+  }, [dropAsideParam]);
+  // A close has landed (or the param changed some other way): closable again.
+  // And with the panel closed, the open record goes: a Forward back to it is
+  // judged again by a fresh tree, not waved through on the old one.
+  useEffect(() => {
+    asideClosingRef.current = false;
+    if (!asideId) asideOpenRef.current = null;
+  }, [asideId]);
+  /** The open aside was replaced (continue-from, compress, rerun in the panel): show its replacement. */
+  const replaceAside = useCallback(
+    (newChatId: string) => {
+      const loc = locationRef.current;
+      const query = new URLSearchParams(loc.search);
+      query.set(ASIDE_PARAM, newChatId);
+      asideOpenRef.current = { chatId: newChatId, afterSeq: treeRequestSeqRef.current };
+      panelNavigate(`?${query}`, { replace: true, state: loc.state });
+      if (id) fetchChatTree(id);
+    },
+    [id, fetchChatTree, panelNavigate],
+  );
+  // An aside opened some other way (a link, a reload, Back/Forward): judge it
+  // by the next tree, and ask for that tree now rather than on the next tick.
+  useEffect(() => {
+    if (!asideId || !id) return;
+    if (asideOpenRef.current?.chatId === asideId) return;
+    asideOpenRef.current = { chatId: asideId, afterSeq: treeRequestSeqRef.current };
+    fetchChatTree(id);
+  }, [asideId, id, fetchChatTree]);
+
+  // This chat's asides, from the parentage tree (the embedded chat has none
+  // to show: asides of asides are not offered).
+  const asides = useMemo(() => (isEmbedded ? asidesOf(null) : asidesOf(chatTree)), [isEmbedded, chatTree]);
+  const openAsideEntry = asideId ? asides.find((a) => a.chatId === asideId) : undefined;
+  // `?aside=` names a chat; it is only shown as this chat's aside once a tree
+  // asked for after it opened lists it as one — a direct, unarchived aside of
+  // this chat. Not this chat itself, not an unrelated chat, not one archived
+  // or split off while open: those close. Nor one whose tree, asked for after
+  // it opened, failed or came back empty: no answer is not a yes. Only no
+  // answer YET is pending: the panel stays.
+  const openRecord = asideOpenRef.current?.chatId === asideId ? asideOpenRef.current : null;
+  const treeAfterOpen = !!openRecord && !!chatTreeState && chatTreeState.chatId === id && chatTreeState.seq > openRecord.afterSeq ? chatTreeState : null;
+  const failureAfterOpen =
+    !!openRecord &&
+    !!chatTreeFailure &&
+    chatTreeFailure.chatId === id &&
+    chatTreeFailure.seq > openRecord.afterSeq &&
+    chatTreeFailure.seq > (treeAfterOpen?.seq ?? -1);
+  const asideInvalid = !!asideId && (asideId === id || failureAfterOpen || (!!treeAfterOpen && !openAsideEntry));
+  // Closed the way it came: a pushed entry is popped (no duplicate /chat/X
+  // entry left behind), anything else drops the param in place.
+  useEffect(() => {
+    if (asideInvalid) closeAside();
+  }, [asideInvalid, closeAside]);
+  // The embedded chat's options, kept identity-stable: they are its props
+  // (it is memoized), and a new object on every main-chat render — the main
+  // chat re-renders on every streamed frame — would re-render the whole aside
+  // and, through its effects, re-subscribe its scroll and key listeners.
+  const asideTitle = openAsideEntry?.title;
+  const asideConfirmed = !!openAsideEntry;
+  const asideFresh = !!asideId && freshAsideId === asideId;
+  const embeddedOptions = useMemo<EmbeddedChatOptions | null>(
+    () =>
+      id && !isEmbedded
+        ? {
+            mainChatId: id,
+            // Not until a tree confirms it is this chat's aside: a reply
+            // from any other chat is not an "Aside reply" of this one.
+            insertIntoMain: asideConfirmed,
+            refetchOnAttach: asideFresh,
+            onReplaced: replaceAside,
+            title: (
+              <>
+                <MessageSquareQuote size={16} aria-hidden style={{ flexShrink: 0, color: "var(--text-muted)" }} />
+                <span style={{ fontSize: 14, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={asideTitle}>
+                  {asideTitle ?? "Aside"}
+                </span>
+              </>
+            ),
+            actions: (
+              <button
+                type="button"
+                onClick={closeAside}
+                title="Close aside (Esc)"
+                aria-label="Close aside"
+                style={{
+                  background: "var(--bg-secondary)",
+                  color: "var(--text)",
+                  padding: 8,
+                  borderRadius: 6,
+                  border: "1px solid var(--border)",
+                  cursor: "pointer",
+                  display: "flex",
+                }}
+              >
+                <X size={14} />
+              </button>
+            ),
+          }
+        : null,
+    [id, isEmbedded, asideConfirmed, asideFresh, replaceAside, asideTitle, closeAside],
+  );
+
+  // Emphasis: the asides whose chip or list row is hovered or focused, else
+  // the one open in the panel.
+  const [hoveredAsides, setHoveredAsides] = useState<readonly string[] | null>(null);
+  // A hover left over from the chat just left is not about this one.
+  useEffect(() => setHoveredAsides(null), [id]);
+  const emphasizedAsides = useMemo(() => (hoveredAsides && hoveredAsides.length > 0 ? hoveredAsides : asideId ? [asideId] : []), [hoveredAsides, asideId]);
+  const highlightRanges = useAsideHighlights({
+    containerRef: chatContainerRef,
+    messages,
+    asides,
+    activeIds: emphasizedAsides,
+    enabled: !embedded && viewMode === "chat",
+  });
+  const asideActions = useMemo<AsideActions>(
+    () => ({
+      openAside: (chatId, opts) => openAside(chatId, { returnFocus: opts?.returnFocus }),
+      openAsideId: asideId && !asideInvalid ? asideId : null,
+      closeAside,
+      emphasizeAsides: setHoveredAsides,
+    }),
+    [openAside, closeAside, asideId, asideInvalid],
+  );
+  // A plain click on highlighted text opens its aside. Not one that is part of
+  // selecting text: the press that clears an existing selection (judged at
+  // pointer-down — by the click the selection is already gone), a drag, or a
+  // double/triple click selecting a word or line. Nor one on a control.
+  //
+  // Browsers report a double click as a click with detail 1 and then one with
+  // detail 2, so the first cannot know yet: the open waits out the
+  // double-click interval, and a second press inside it cancels it.
+  // Subscribed on whether there are asides at all, not on the `asides` array:
+  // the tree is refetched (a new array) on metadata ticks, and re-subscribing
+  // would drop a recorded press or cancel an open waiting out the interval.
+  // The painted ranges are read through their ref, the opener through this one.
+  const openAsideRef = useRef(openAside);
+  openAsideRef.current = openAside;
+  const hasAsides = asides.length > 0;
+  useEffect(() => {
+    const container = chatContainerRef.current;
+    if (isEmbedded || viewMode !== "chat" || !container || !hasAsides) return;
+    let press: { x: number; y: number; hadSelection: boolean } | null = null;
+    let pending: ReturnType<typeof setTimeout> | null = null;
+    const cancelPending = () => {
+      if (pending) clearTimeout(pending);
+      pending = null;
+    };
+    const onDown = (e: MouseEvent) => {
+      // A second press while an open is waiting: it was a double click.
+      cancelPending();
+      const selection = window.getSelection();
+      press = { x: e.clientX, y: e.clientY, hadSelection: !!selection && !selection.isCollapsed };
+    };
+    const onClick = (e: MouseEvent) => {
+      const down = press;
+      press = null;
+      if (e.detail > 1) {
+        cancelPending();
+        return;
+      }
+      if (e.button !== 0 || e.defaultPrevented) return;
+      if (!down || down.hadSelection || Math.hypot(e.clientX - down.x, e.clientY - down.y) > 4) return;
+      const selection = window.getSelection();
+      if (selection && !selection.isCollapsed) return;
+      if (e.target instanceof Element && e.target.closest("button, a, input, textarea, select, [role='menu']")) return;
+      const hit = asideAtPoint(highlightRanges.current, e.clientX, e.clientY);
+      if (!hit) return;
+      cancelPending();
+      pending = setTimeout(() => {
+        pending = null;
+        // A selection made meanwhile (the double click's word) wins too.
+        const now = window.getSelection();
+        if (now && !now.isCollapsed) return;
+        openAsideRef.current(hit);
+      }, HIGHLIGHT_CLICK_DELAY_MS);
+    };
+    container.addEventListener("mousedown", onDown);
+    container.addEventListener("click", onClick);
+    return () => {
+      cancelPending();
+      container.removeEventListener("mousedown", onDown);
+      container.removeEventListener("click", onClick);
+    };
+  }, [isEmbedded, viewMode, hasAsides, highlightRanges]);
+
+  // The mobile sheet covers the main chat; nothing under it may take focus or
+  // be read out (React 18 has no `inert` prop, so it is set directly).
+  const pageLayoutRef = useRef<HTMLDivElement>(null);
+  const sheetOpen = !embedded && isMobile && !!asideId && !asideInvalid;
+  useEffect(() => {
+    const el = pageLayoutRef.current;
+    if (!el) return;
+    if (sheetOpen) el.setAttribute("inert", "");
+    else el.removeAttribute("inert");
+  }, [sheetOpen]);
+
+  // ── Insert into main chat ──────────────────────────────────────────────
+  // In the panel: an aside's reply, quoted into the main chat's tray. It
+  // waits there like any quote, for the main composer's next send.
+  const mainChatId = embedded?.mainChatId;
+  const handleInsertIntoMain = useCallback(
+    (message: ParsedMessage) => {
+      if (!mainChatId || !id) return false;
+      const quote = quoteFromAsideReply(message, id);
+      return quote ? addQuote(mainChatId, quote) : false;
+    },
+    [mainChatId, id],
+  );
+
   // ── Ask as aside ───────────────────────────────────────────────────────
   // The tray's quotes plus the composer's question become a side question in
   // a child chat forked at the latest quote (POST /chats/:id/fork, kind aside),
-  // started at once; the page then goes to it (PR 3 opens it in a side panel
-  // instead). Nothing leaves the tray or the composer until the aside exists,
-  // so a refusal has nothing to restore: the quotes and the question are
-  // still where they were. In-flight state and errors are the originating
+  // started at once; it then opens in the aside panel beside this chat, which
+  // stays as it was. Nothing leaves the tray or the composer until the aside
+  // exists, so a refusal has nothing to restore: the quotes and the question
+  // are still where they were. In-flight state and errors are the originating
   // chat's (`asideInFlightFor`, `asideError`), never shown on another.
+  //
+  // Only the tray's own quotes go: a passage inserted from an aside's reply
+  // has no point in this transcript for an aside to fork at. It stays in the
+  // tray for the next ordinary send.
   const composerSnapshotRef = useRef<(() => ComposerSnapshot) | null>(null);
   const registerComposerSnapshot = useCallback((get: (() => ComposerSnapshot) | null) => {
     composerSnapshotRef.current = get;
@@ -2865,8 +3234,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     async ({ readOnly, target }: AskAsideOptions): Promise<AskAsideResult> => {
       if (!id || asideInFlightForRef.current.has(id)) return "skipped";
       const chatId = id;
-      const quotes = getQuotes(chatId);
-      if (quotes.length === 0) return "skipped";
+      const quotes = getQuotes(chatId).filter((quote) => !quote.fromChatId);
+      if (quotes.length === 0) {
+        if (getQuotes(chatId).length > 0) setAsideError({ chatId, message: ASIDE_INSERTED_ONLY });
+        return "skipped";
+      }
       // Read-only: the caret, the command chip and autocomplete are left alone.
       const { prompt: question, attachments } = composerSnapshotRef.current?.() ?? { prompt: "", attachments: 0 };
       if (attachments > 0) {
@@ -2893,7 +3265,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       setAsideError(null);
       try {
         const created = await createAside(chatId, {
-          quotes: quotes.map(({ timestamp, role, text }) => ({ timestamp, role, text })),
+          quotes: quotes.map(({ timestamp, role, text, occurrence }) => ({ timestamp, role, text, ...(occurrence && { occurrence }) })),
           prompt: question.trim(),
           ...(readOnly && { readOnly: true }),
           ...(target && { provider: target.provider, ...(target.model && { model: target.model }) }),
@@ -2912,13 +3284,17 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           // aside's composer so resending is one click.
           if (created.promptText) saveComposerDraft(created.id, created.promptText);
           window.alert(`The aside was created, but its question could not be sent: ${created.runError}`);
-        } else if (created.started && stillHere) {
-          refetchOnAttachRef.current = created.id;
         }
         onChatListRefresh?.();
         // Only from the chat it was asked in: a user who has moved on is not
         // pulled back. The aside is in the chat list either way.
-        if (stillHere) navigate(`/chat/${created.id}`);
+        if (stillHere) {
+          // Opened first, so the tree asked for next is the one that judges it
+          // (an aside is in no tree asked for before it existed) — and brings
+          // its marker and highlights now rather than on the next tree tick.
+          openAside(created.id, { fresh: !!created.started && !created.runError });
+          fetchChatTree(chatId);
+        }
         return created.started ? "started" : "created";
       } catch (err) {
         console.error("Failed to create aside:", err);
@@ -2929,7 +3305,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         setInFlight(false);
       }
     },
-    [id, promptInputSetValue, focusComposer, activePluginIds, onChatListRefresh, navigate, allSlashCommands, commandsLoadedFor],
+    [id, promptInputSetValue, focusComposer, activePluginIds, onChatListRefresh, fetchChatTree, openAside, allSlashCommands, commandsLoadedFor],
   );
 
   /**
@@ -3267,231 +3643,348 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       </div>
     ) : null;
 
-  return (
-    <div className="chat-layout" style={{ height: "100%", display: "flex", flexDirection: "column" }}>
-      <header
-        className={`chat-header${isMobile ? " chat-header-mobile" : ""}`}
-        style={{
-          padding: "12px 16px",
-          borderBottom: "1px solid var(--border)",
-          background: "var(--bg-sidebar)",
-          alignItems: "center",
-          gap: 12,
-          flexShrink: 0,
-        }}
-      >
-        {isMobile && (
+  const stopButton = (
+    <button
+      className="chat-header-generation-stop"
+      onClick={handleStop}
+      disabled={!canStop}
+      style={{
+        background: stopping ? "var(--bg-secondary)" : canStop ? "var(--danger-solid)" : "var(--border)",
+        color: stopping ? "var(--danger)" : canStop ? "var(--text-on-danger)" : "var(--text-secondary)",
+        padding: "8px",
+        borderRadius: 6,
+        border: "none",
+        cursor: canStop ? "pointer" : "default",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        opacity: canStop || stopping ? 1 : 0.5,
+      }}
+      title={stopping ? "Stopping — cancelling the request" : canStop ? "Stop generation" : "No active generation"}
+    >
+      {stopping ? <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} /> : <Square size={14} />}
+    </button>
+  );
+
+  /**
+   * The panel's "Open as full chat": the same chat at its own URL. What is
+   * typed in the panel's composer is saved first — its debounced save would
+   * otherwise race the page swapping composers, and the full chat would open
+   * with the last saved text, not what was on screen.
+   */
+  const openEmbeddedAsFullChat = () => {
+    if (!id) return;
+    const snapshot = composerSnapshotRef.current?.();
+    if (snapshot) saveComposerDraft(id, snapshot.prompt);
+    navigate(`/chat/${id}`);
+  };
+
+  const asideListButton =
+    !embedded && id && asides.length > 0 ? (
+      <AsideListButton asides={asides} openId={asideId} onOpen={(chatId, returnFocus) => openAside(chatId, { returnFocus })} onEmphasize={setHoveredAsides} />
+    ) : null;
+
+  const page = (
+    <div ref={pageLayoutRef} className="chat-layout" style={{ height: "100%", display: "flex", flexDirection: "column", flex: 1, minWidth: 0 }}>
+      {embedded ? (
+        <header
+          className="aside-panel-header"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            padding: "8px 12px",
+            borderBottom: "1px solid var(--border)",
+            background: "var(--bg-sidebar)",
+            flexShrink: 0,
+            minWidth: 0,
+          }}
+        >
+          <div style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 6 }}>{embedded.title}</div>
+          {(networkError || streamUnavailable) && (
+            <button
+              onClick={handleReconnect}
+              style={{
+                background: "var(--accent)",
+                color: "var(--text-on-accent)",
+                padding: 8,
+                borderRadius: 6,
+                border: "none",
+                cursor: "pointer",
+                display: "flex",
+              }}
+              title="Reconnect to stream"
+            >
+              <RotateCw size={16} />
+            </button>
+          )}
+          {stopButton}
           <button
-            onClick={() => navigate("/")}
+            type="button"
+            onClick={openEmbeddedAsFullChat}
+            title="Open this aside as a full chat"
+            aria-label="Open as full chat"
             style={{
-              background: "none",
-              border: "none",
-              padding: "4px 8px",
-              cursor: "pointer",
+              background: "var(--bg-secondary)",
               color: "var(--text)",
+              padding: 8,
+              borderRadius: 6,
+              border: "1px solid var(--border)",
+              cursor: "pointer",
               display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
             }}
-            title="Back to chat list"
           >
-            <ArrowLeft size={20} />
+            <Maximize2 size={14} />
           </button>
-        )}
-        <div className="chat-header-identity">
-          <div className="chat-header-identity-line">
-            <div style={{ fontSize: 15, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              {!id
-                ? info?.is_git_repo
-                  ? newChatOnNoBranch
-                    ? "(no branch)"
-                    : info.git_branch || "main"
-                  : folder.split("/").pop() || "New Chat"
-                : chat?.is_git_repo
-                  ? chat.git_branch || "main"
-                  : chat?.folder?.split("/").pop() || "Chat"}
-            </div>
-            {!id ? (
-              <div
-                style={{
-                  fontSize: 11,
-                  padding: "2px 6px",
-                  borderRadius: 4,
-                  background: "var(--accent)",
-                  color: "var(--text-on-accent)",
-                  fontWeight: 500,
-                }}
-              >
-                New
+          {embedded.actions}
+        </header>
+      ) : (
+        <header
+          className={`chat-header${isMobile ? " chat-header-mobile" : ""}`}
+          style={{
+            padding: "12px 16px",
+            borderBottom: "1px solid var(--border)",
+            background: "var(--bg-sidebar)",
+            alignItems: "center",
+            gap: 12,
+            flexShrink: 0,
+          }}
+        >
+          {isMobile && (
+            <button
+              onClick={() => navigate("/")}
+              style={{
+                background: "none",
+                border: "none",
+                padding: "4px 8px",
+                cursor: "pointer",
+                color: "var(--text)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+              title="Back to chat list"
+            >
+              <ArrowLeft size={20} />
+            </button>
+          )}
+          <div className="chat-header-identity">
+            <div className="chat-header-identity-line">
+              <div style={{ fontSize: 15, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {!id
+                  ? info?.is_git_repo
+                    ? newChatOnNoBranch
+                      ? "(no branch)"
+                      : info.git_branch || "main"
+                    : folder.split("/").pop() || "New Chat"
+                  : chat?.is_git_repo
+                    ? chat.git_branch || "main"
+                    : chat?.folder?.split("/").pop() || "Chat"}
               </div>
-            ) : globalSessionActive ? (
-              <div
-                data-testid="chat-header-running"
-                title={activeSessionLabel(globalSessionActive.type)}
-                style={{ display: "flex", alignItems: "center", gap: 5, flexShrink: 0, fontSize: 11, fontWeight: 500, color: "var(--text-muted)" }}
-              >
-                <RunningDot />
-                {/* The sidebar's dot, spelled out where there is room; on mobile the words are for screen readers only. */}
-                <span style={isMobile ? visuallyHidden : undefined}>{activeSessionLabel(globalSessionActive.type)}</span>
-              </div>
-            ) : null}
-            {/* Worktree tag */}
-            {(!id ? info?.is_worktree : chat?.folder && chat?.displayFolder && chat.folder !== chat.displayFolder) && (
-              <div
-                style={{
-                  fontSize: 11,
-                  padding: "2px 6px",
-                  borderRadius: 4,
-                  background: "var(--badge-worktree)",
-                  color: "var(--text-on-accent)",
-                  fontWeight: 500,
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 3,
-                  flexShrink: 0,
-                }}
-                title="This session is running in a git worktree"
-              >
-                <GitFork size={10} />
-                {!isMobile && "worktree"}
-              </div>
-            )}
-            {/* Provider badge — "CC" for Claude Code, "CX" for Codex, and so
+              {!id ? (
+                <div
+                  style={{
+                    fontSize: 11,
+                    padding: "2px 6px",
+                    borderRadius: 4,
+                    background: "var(--accent)",
+                    color: "var(--text-on-accent)",
+                    fontWeight: 500,
+                  }}
+                >
+                  New
+                </div>
+              ) : globalSessionActive ? (
+                <div
+                  data-testid="chat-header-running"
+                  title={activeSessionLabel(globalSessionActive.type)}
+                  style={{ display: "flex", alignItems: "center", gap: 5, flexShrink: 0, fontSize: 11, fontWeight: 500, color: "var(--text-muted)" }}
+                >
+                  <RunningDot />
+                  {/* The sidebar's dot, spelled out where there is room; on mobile the words are for screen readers only. */}
+                  <span style={isMobile ? visuallyHidden : undefined}>{activeSessionLabel(globalSessionActive.type)}</span>
+                </div>
+              ) : null}
+              {/* Worktree tag */}
+              {(!id ? info?.is_worktree : chat?.folder && chat?.displayFolder && chat.folder !== chat.displayFolder) && (
+                <div
+                  style={{
+                    fontSize: 11,
+                    padding: "2px 6px",
+                    borderRadius: 4,
+                    background: "var(--badge-worktree)",
+                    color: "var(--text-on-accent)",
+                    fontWeight: 500,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 3,
+                    flexShrink: 0,
+                  }}
+                  title="This session is running in a git worktree"
+                >
+                  <GitFork size={10} />
+                  {!isMobile && "worktree"}
+                </div>
+              )}
+              {/* Provider badge — "CC" for Claude Code, "CX" for Codex, and so
                 on. Fed the RAW metadata provider, not `chatProvider`: a chat on
                 a removed harness must not be badged as the harness it fell back
                 to. Model + effort selection has moved out of the header and into
                 the composer's hamburger menu (see PromptInput's `menuItems`
                 prop below). */}
-            <ProviderBadge provider={rawChatProvider ?? chatProvider} />
+              <ProviderBadge provider={rawChatProvider ?? chatProvider} />
+            </div>
+            <div
+              title={!id ? folder : chat?.folder}
+              style={{
+                fontSize: 12,
+                color: "var(--text-muted)",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+                direction: "rtl",
+                textAlign: "left",
+              }}
+            >
+              {!id ? folder : chat?.folder}
+            </div>
           </div>
-          <div
-            title={!id ? folder : chat?.folder}
-            style={{
-              fontSize: 12,
-              color: "var(--text-muted)",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-              direction: "rtl",
-              textAlign: "left",
-            }}
-          >
-            {!id ? folder : chat?.folder}
-          </div>
-        </div>
-        {/* Desktop: action buttons inline, right-aligned */}
-        {!isMobile && (
-          <div className="chat-header-actions">
-            {/* View mode switcher - Chat / Git diff / Debug / Job */}
-            {viewModeSwitcher}
+          {/* Desktop: action buttons inline, right-aligned */}
+          {!isMobile && (
+            <div className="chat-header-actions">
+              {/* View mode switcher - Chat / Git diff / Debug / Job */}
+              {viewModeSwitcher}
 
-            {id && userMessageIndices.length > 1 && (
+              {asideListButton}
+
+              {id && userMessageIndices.length > 1 && (
+                <div style={{ display: "flex", borderRadius: 6, overflow: "hidden", border: "1px solid var(--border)" }}>
+                  <button
+                    onClick={scrollToTop}
+                    style={{
+                      background: "var(--bg-secondary, var(--surface))",
+                      color: "var(--text)",
+                      padding: "8px",
+                      border: "none",
+                      borderRight: "1px solid var(--border)",
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      transition: "all 0.15s ease",
+                    }}
+                    title="Jump to top"
+                  >
+                    <ArrowUpToLine size={16} />
+                  </button>
+                  <button
+                    onClick={navigatePrevUserMessage}
+                    disabled={userMsgNavIndex === 0}
+                    style={{
+                      background: "var(--bg-secondary, var(--surface))",
+                      color: userMsgNavIndex === 0 ? "var(--text-muted)" : "var(--text)",
+                      padding: "8px",
+                      border: "none",
+                      borderRight: "1px solid var(--border)",
+                      cursor: userMsgNavIndex === 0 ? "default" : "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      opacity: userMsgNavIndex === 0 ? 0.4 : 1,
+                      transition: "all 0.15s ease",
+                    }}
+                    title="Previous user message"
+                  >
+                    <ChevronUp size={16} />
+                  </button>
+                  <button
+                    onClick={navigateNextUserMessage}
+                    disabled={userMsgNavIndex === null}
+                    style={{
+                      background: "var(--bg-secondary, var(--surface))",
+                      color: userMsgNavIndex === null ? "var(--text-muted)" : "var(--text)",
+                      padding: "8px",
+                      border: "none",
+                      borderRight: "1px solid var(--border)",
+                      cursor: userMsgNavIndex === null ? "default" : "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      opacity: userMsgNavIndex === null ? 0.4 : 1,
+                      transition: "all 0.15s ease",
+                    }}
+                    title="Next user message"
+                  >
+                    <ChevronDown size={16} />
+                  </button>
+                  <button
+                    onClick={scrollToBottom}
+                    style={{
+                      background: "var(--bg-secondary, var(--surface))",
+                      color: "var(--text)",
+                      padding: "8px",
+                      border: "none",
+                      borderLeft: "1px solid var(--border)",
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      transition: "all 0.15s ease",
+                    }}
+                    title="Jump to bottom"
+                  >
+                    <ArrowDownToLine size={16} />
+                  </button>
+                </div>
+              )}
+
+              {hasTodoList && (
+                <button
+                  onClick={handleTodoListClick}
+                  style={{
+                    background: "var(--accent)",
+                    color: "var(--text-on-accent)",
+                    padding: "8px",
+                    borderRadius: 6,
+                    border: "none",
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                  title="Jump to latest to-do list"
+                >
+                  <CheckSquare size={16} />
+                </button>
+              )}
+
+              {/* Slash commands & MCP tools group */}
               <div style={{ display: "flex", borderRadius: 6, overflow: "hidden", border: "1px solid var(--border)" }}>
-                <button
-                  onClick={scrollToTop}
-                  style={{
-                    background: "var(--bg-secondary, var(--surface))",
-                    color: "var(--text)",
-                    padding: "8px",
-                    border: "none",
-                    borderRight: "1px solid var(--border)",
-                    cursor: "pointer",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    transition: "all 0.15s ease",
-                  }}
-                  title="Jump to top"
-                >
-                  <ArrowUpToLine size={16} />
-                </button>
-                <button
-                  onClick={navigatePrevUserMessage}
-                  disabled={userMsgNavIndex === 0}
-                  style={{
-                    background: "var(--bg-secondary, var(--surface))",
-                    color: userMsgNavIndex === 0 ? "var(--text-muted)" : "var(--text)",
-                    padding: "8px",
-                    border: "none",
-                    borderRight: "1px solid var(--border)",
-                    cursor: userMsgNavIndex === 0 ? "default" : "pointer",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    opacity: userMsgNavIndex === 0 ? 0.4 : 1,
-                    transition: "all 0.15s ease",
-                  }}
-                  title="Previous user message"
-                >
-                  <ChevronUp size={16} />
-                </button>
-                <button
-                  onClick={navigateNextUserMessage}
-                  disabled={userMsgNavIndex === null}
-                  style={{
-                    background: "var(--bg-secondary, var(--surface))",
-                    color: userMsgNavIndex === null ? "var(--text-muted)" : "var(--text)",
-                    padding: "8px",
-                    border: "none",
-                    borderRight: "1px solid var(--border)",
-                    cursor: userMsgNavIndex === null ? "default" : "pointer",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    opacity: userMsgNavIndex === null ? 0.4 : 1,
-                    transition: "all 0.15s ease",
-                  }}
-                  title="Next user message"
-                >
-                  <ChevronDown size={16} />
-                </button>
-                <button
-                  onClick={scrollToBottom}
-                  style={{
-                    background: "var(--bg-secondary, var(--surface))",
-                    color: "var(--text)",
-                    padding: "8px",
-                    border: "none",
-                    borderLeft: "1px solid var(--border)",
-                    cursor: "pointer",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    transition: "all 0.15s ease",
-                  }}
-                  title="Jump to bottom"
-                >
-                  <ArrowDownToLine size={16} />
-                </button>
-              </div>
-            )}
-
-            {hasTodoList && (
-              <button
-                onClick={handleTodoListClick}
-                style={{
-                  background: "var(--accent)",
-                  color: "var(--text-on-accent)",
-                  padding: "8px",
-                  borderRadius: 6,
-                  border: "none",
-                  cursor: "pointer",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                }}
-                title="Jump to latest to-do list"
-              >
-                <CheckSquare size={16} />
-              </button>
-            )}
-
-            {/* Slash commands & MCP tools group */}
-            <div style={{ display: "flex", borderRadius: 6, overflow: "hidden", border: "1px solid var(--border)" }}>
-              {allSlashCommands.length > 0 && (
+                {allSlashCommands.length > 0 && (
+                  <button
+                    onClick={() => {
+                      setSlashCommandsModalTab("commands");
+                      setShowSlashCommandsModal(true);
+                    }}
+                    style={{
+                      background: "var(--bg-secondary)",
+                      color: "var(--text)",
+                      padding: "8px",
+                      border: "none",
+                      borderRight: "1px solid var(--border)",
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                    }}
+                    title="View available slash commands"
+                  >
+                    <Slash size={16} />
+                  </button>
+                )}
                 <button
                   onClick={() => {
-                    setSlashCommandsModalTab("commands");
+                    setSlashCommandsModalTab("tools");
                     setShowSlashCommandsModal(true);
                   }}
                   style={{
@@ -3499,133 +3992,94 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                     color: "var(--text)",
                     padding: "8px",
                     border: "none",
-                    borderRight: "1px solid var(--border)",
                     cursor: "pointer",
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
                   }}
-                  title="View available slash commands"
+                  title="View available MCP tools"
                 >
-                  <Slash size={16} />
+                  <Wrench size={16} />
                 </button>
-              )}
+              </div>
+
+              {/* Chat Permissions Button */}
               <button
-                onClick={() => {
-                  setSlashCommandsModalTab("tools");
-                  setShowSlashCommandsModal(true);
-                }}
+                onClick={() => setShowPermissionsModal(true)}
                 style={{
                   background: "var(--bg-secondary)",
                   color: "var(--text)",
                   padding: "8px",
-                  border: "none",
+                  borderRadius: 6,
+                  border: "1px solid var(--border)",
                   cursor: "pointer",
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
                 }}
-                title="View available MCP tools"
+                title="Chat permissions"
               >
-                <Wrench size={16} />
+                <Shield size={16} />
               </button>
-            </div>
 
-            {/* Chat Permissions Button */}
+              {(networkError || streamUnavailable) && (
+                <button
+                  onClick={handleReconnect}
+                  style={{
+                    background: "var(--accent)",
+                    color: "var(--text-on-accent)",
+                    padding: "8px",
+                    borderRadius: 6,
+                    border: "none",
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                  title="Reconnect to stream"
+                >
+                  <RotateCw size={16} />
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Stop button - always in top bar. Three states: idle (nothing to
+            stop), armed, and stopping (cancel sent, waiting for the run to
+            actually end server-side). */}
+          {stopButton}
+
+          {/* Desktop safety strip: separate from view navigation and general actions.
+            The component returns null when unused, so no empty row is reserved. */}
+          {!isMobile && computerChatId && <ComputerUseHeader controller={computerController} viewOpen={viewMode === "computer"} />}
+
+          {/* Mobile: toggle button for secondary action bar */}
+          {isMobile && (
             <button
-              onClick={() => setShowPermissionsModal(true)}
+              onClick={() => setShowMobileActions(!showMobileActions)}
               style={{
-                background: "var(--bg-secondary)",
-                color: "var(--text)",
+                background: showMobileActions ? "var(--accent)" : "var(--bg-secondary)",
+                color: showMobileActions ? "var(--text-on-accent)" : "var(--text)",
                 padding: "8px",
                 borderRadius: 6,
-                border: "1px solid var(--border)",
+                border: showMobileActions ? "none" : "1px solid var(--border)",
                 cursor: "pointer",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
               }}
-              title="Chat permissions"
+              title={showMobileActions ? "Hide actions" : "Show actions"}
             >
-              <Shield size={16} />
+              <MoreHorizontal size={16} />
             </button>
+          )}
+        </header>
+      )}
 
-            {(networkError || streamUnavailable) && (
-              <button
-                onClick={handleReconnect}
-                style={{
-                  background: "var(--accent)",
-                  color: "var(--text-on-accent)",
-                  padding: "8px",
-                  borderRadius: 6,
-                  border: "none",
-                  cursor: "pointer",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                }}
-                title="Reconnect to stream"
-              >
-                <RotateCw size={16} />
-              </button>
-            )}
-          </div>
-        )}
-
-        {/* Stop button - always in top bar. Three states: idle (nothing to
-            stop), armed, and stopping (cancel sent, waiting for the run to
-            actually end server-side). */}
-        <button
-          className="chat-header-generation-stop"
-          onClick={handleStop}
-          disabled={!canStop}
-          style={{
-            background: stopping ? "var(--bg-secondary)" : canStop ? "var(--danger-solid)" : "var(--border)",
-            color: stopping ? "var(--danger)" : canStop ? "var(--text-on-danger)" : "var(--text-secondary)",
-            padding: "8px",
-            borderRadius: 6,
-            border: "none",
-            cursor: canStop ? "pointer" : "default",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            opacity: canStop || stopping ? 1 : 0.5,
-          }}
-          title={stopping ? "Stopping — cancelling the request" : canStop ? "Stop generation" : "No active generation"}
-        >
-          {stopping ? <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} /> : <Square size={14} />}
-        </button>
-
-        {/* Desktop safety strip: separate from view navigation and general actions.
-            The component returns null when unused, so no empty row is reserved. */}
-        {!isMobile && computerChatId && <ComputerUseHeader controller={computerController} viewOpen={viewMode === "computer"} />}
-
-        {/* Mobile: toggle button for secondary action bar */}
-        {isMobile && (
-          <button
-            onClick={() => setShowMobileActions(!showMobileActions)}
-            style={{
-              background: showMobileActions ? "var(--accent)" : "var(--bg-secondary)",
-              color: showMobileActions ? "var(--text-on-accent)" : "var(--text)",
-              padding: "8px",
-              borderRadius: 6,
-              border: showMobileActions ? "none" : "1px solid var(--border)",
-              cursor: "pointer",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-            }}
-            title={showMobileActions ? "Hide actions" : "Show actions"}
-          >
-            <MoreHorizontal size={16} />
-          </button>
-        )}
-      </header>
-
-      {isMobile && computerChatId && <ComputerUseHeader controller={computerController} viewOpen={viewMode === "computer"} />}
+      {!embedded && isMobile && computerChatId && <ComputerUseHeader controller={computerController} viewOpen={viewMode === "computer"} />}
 
       {/* Mobile: secondary action bar */}
-      {isMobile && showMobileActions && (
+      {!embedded && isMobile && showMobileActions && (
         <div
           style={{
             padding: "6px 16px",
@@ -3639,6 +4093,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         >
           {/* View mode switcher - Chat / Git diff / Debug / Job */}
           {viewModeSwitcher}
+
+          {asideListButton}
 
           {id && userMessageIndices.length > 1 && (
             <div style={{ display: "flex", borderRadius: 6, overflow: "hidden", border: "1px solid var(--border)", flexShrink: 0 }}>
@@ -3995,8 +4451,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   // history.
                   // `handleFork` is stable and takes the message's timestamp, so
                   // the memoized bubble isn't handed a fresh closure per render.
-                  const canFork =
-                    item.message.type === "text" && !item.message.teamName && !!item.message.timestamp && !!id && forkSourceProvider !== null;
+                  const canFork = item.message.type === "text" && !item.message.teamName && !!item.message.timestamp && !!id && forkSourceProvider !== null;
                   const starKey = id ? starKeys.get(item.originalIndex) : undefined;
                   return (
                     <div key={item.originalIndex} data-message-index={item.originalIndex}>
@@ -4013,9 +4468,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                         // again (not a slash command or a compaction summary), or a
                         // reply whose prompt is one.
                         onRerun={
-                          canFork &&
-                          !streaming &&
-                          (item.message.role === "assistant" ? replyRerunnable[item.originalIndex] : isRerunPrompt(item.message))
+                          canFork && !streaming && (item.message.role === "assistant" ? replyRerunnable[item.originalIndex] : isRerunPrompt(item.message))
                             ? handleRerun
                             : undefined
                         }
@@ -4023,6 +4476,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                         starKey={starKey}
                         starred={!!starKey && starredKeys.has(starKey)}
                         onToggleStar={starKey ? toggleStar : undefined}
+                        onInsertIntoMain={
+                          embedded?.insertIntoMain && item.message.role === "assistant" && hasMarkerSlot(item.message) ? handleInsertIntoMain : undefined
+                        }
                       />
                     </div>
                   );
@@ -4141,7 +4597,14 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               they were chosen in. The remount is also the *only* thing that
               re-emits — the propagate effect depends on none of the props a
               folder change touches. */}
-          <BranchSelector key={folder} folder={folder} spaceId={newChatSpaceId} currentBranch={info.git_branch || "main"} isDetached={info.isDetached} onChange={setBranchConfig} />
+          <BranchSelector
+            key={folder}
+            folder={folder}
+            spaceId={newChatSpaceId}
+            currentBranch={info.git_branch || "main"}
+            isDetached={info.isDetached}
+            onChange={setBranchConfig}
+          />
         </div>
       )}
 
@@ -4296,7 +4759,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               onRemove={quoteTray.remove}
               onClear={quoteTray.clear}
               actions={
-                id && !nativeAgent && !isRetiredHarness ? (
+                id && !embedded && !nativeAgent && !isRetiredHarness ? (
                   <AskAsideControls
                     chatProvider={chatProvider}
                     busy={asideInFlight}
@@ -4526,4 +4989,40 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       />
     </div>
   );
+
+  // The panel's own chat: and nothing in it opens a panel inside the panel.
+  if (embedded) return <AsideContext.Provider value={null}>{page}</AsideContext.Provider>;
+
+  // Always this shape, panel or not: the main chat stays the first child of
+  // one element, so opening the panel never remounts it (its scroll position,
+  // its stream, its composer all carry on).
+  return (
+    <AsideContext.Provider value={id ? asideActions : null}>
+      <div className="chat-page" style={{ height: "100%", display: "flex", minWidth: 0 }}>
+        {page}
+        {asideId && id && !asideInvalid && embeddedOptions && (
+          <AsidePanel
+            label={openAsideEntry?.title ?? "Aside"}
+            isMobile={isMobile}
+            onClose={closeAside}
+            getReturnFocus={() => asideReturnFocusRef.current}
+            // The opener gone too (Ask as aside empties the tray its button sat in): the main composer.
+            getFallbackFocus={() => pageLayoutRef.current?.querySelector<HTMLElement>("[data-composer] textarea:not([disabled])") ?? null}
+          >
+            {/* An aside that crashes takes down the panel, not the chat beside it. */}
+            <ErrorBoundary region="This aside" variant="region" resetKey={asideId}>
+              <EmbeddedChat key={asideId} chatId={asideId} onChatListRefresh={onChatListRefresh} embedded={embeddedOptions} />
+            </ErrorBoundary>
+          </AsidePanel>
+        )}
+      </div>
+    </AsideContext.Provider>
+  );
 }
+
+/**
+ * The aside panel's chat. Memoized so the main chat re-rendering (every
+ * streamed frame) does not re-render the aside: its props are a chat id, the
+ * page's stable list-refresh callback and identity-stable options.
+ */
+const EmbeddedChat = memo(Chat);

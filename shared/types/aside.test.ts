@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   ASIDE_MAX_QUOTE_CHARS,
+  ASIDE_MAX_OCCURRENCE,
   ASIDE_MAX_QUOTES,
   asideForkPoint,
   asideTitle,
   parseAsideQuotes,
   quoteTimeFormatter,
+  formatQuoteBlock,
   formatQuoteOrigin,
   formatQuoteTime,
   renderQuotedPrompt,
@@ -48,6 +50,11 @@ describe("renderQuotedPrompt", () => {
     expect(formatQuoteOrigin({ role: "system", timestamp: "x" })).toBe("System");
     expect(formatQuoteOrigin({ role: "tool", timestamp: "x" })).toBe("Message");
   });
+
+  it("names a quote by its label, in place of the role, when it has one", () => {
+    expect(formatQuoteOrigin({ role: "assistant", timestamp: "x", label: "Aside reply" })).toBe("Aside reply");
+    expect(formatQuoteBlock({ role: "assistant", timestamp: "x", label: "Aside reply", text: "hi" })).toBe("> **Aside reply:**\n> hi");
+  });
 });
 
 describe("asideTitle", () => {
@@ -79,6 +86,15 @@ describe("parseAsideQuotes", () => {
   it("accepts a system message's quote", () => {
     const system = q("2026-01-01T00:00:00Z", "system", "a notice");
     expect(parseAsideQuotes([system])).toEqual({ ok: true, quotes: [system] });
+  });
+
+  it("keeps a quote's occurrence, drops a zero one (the default), and refuses a malformed one", () => {
+    const second = { ...ok, occurrence: 2 };
+    expect(parseAsideQuotes([second])).toEqual({ ok: true, quotes: [second] });
+    expect(parseAsideQuotes([{ ...ok, occurrence: 0 }])).toEqual({ ok: true, quotes: [ok] });
+    for (const bad of [-1, 1.5, "2", null, ASIDE_MAX_OCCURRENCE + 1]) {
+      expect(parseAsideQuotes([{ ...ok, occurrence: bad }])).toMatchObject({ ok: false, error: expect.stringContaining("occurrence") });
+    }
   });
 
   it("drops unknown keys", () => {

@@ -29,6 +29,7 @@
  */
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import type { QuoteOrigin } from "../utils/messageQuotes";
+import { quoteOccurrence, turnOccurrence } from "../utils/asideHighlights";
 
 export interface SelectionRect {
   top: number;
@@ -43,6 +44,8 @@ export interface MessageTextSelection {
   origin: QuoteOrigin;
   /** The selected text, raw — `Selection.toString()` of the part inside the message's content. */
   text: string;
+  /** Which repeat of that text in the message it is (0 = first); see `quoteOccurrence`. */
+  occurrence?: number;
   /** Viewport rect of the selection, for positioning the toolbar. */
   rect: SelectionRect;
   /**
@@ -98,13 +101,13 @@ function clippedText(range: Range, el: Element): string {
  * bubble ends in its metadata line. Neither selects text of another message,
  * so neither is a cross-message selection.
  */
-export function resolveMessageSelection(range: Range, container: Element): { messageIndex: number; text: string } | null {
+export function resolveMessageSelection(range: Range, container: Element): { messageIndex: number; text: string; occurrence: number } | null {
   if (range.collapsed) return null;
   const start = contentOf(range.startContainer, container);
   if (start && start === contentOf(range.endContainer, container)) {
     const messageIndex = messageIndexOf(start);
     const text = range.toString();
-    return messageIndex !== null && text.trim() ? { messageIndex, text } : null;
+    return messageIndex !== null && text.trim() ? { messageIndex, text, occurrence: quoteOccurrence(start, range, text) } : null;
   }
   let hit: { el: Element; text: string } | null = null;
   for (const el of container.querySelectorAll(CONTENT_SELECTOR)) {
@@ -116,7 +119,7 @@ export function resolveMessageSelection(range: Range, container: Element): { mes
   }
   if (!hit) return null;
   const messageIndex = messageIndexOf(hit.el);
-  return messageIndex !== null ? { messageIndex, text: hit.text } : null;
+  return messageIndex !== null ? { messageIndex, text: hit.text, occurrence: quoteOccurrence(hit.el, range, hit.text) } : null;
 }
 
 function rectOf(range: Range): SelectionRect {
@@ -218,7 +221,18 @@ export function useMessageTextSelection({ containerRef, originOf, enabled = true
         return;
       }
       rangeRef.current = range.cloneRange();
-      setSelection({ messageIndex: hit.messageIndex, origin, text: hit.text, rect: rectOf(range) });
+      // The occurrence is the turn's: count the matches in its earlier blocks
+      // (same timestamp and role, before this one in the transcript) too.
+      const before: Element[] = [];
+      for (const wrapper of container.querySelectorAll(MESSAGE_SELECTOR)) {
+        const index = Number(wrapper.getAttribute("data-message-index"));
+        if (!Number.isInteger(index) || index >= hit.messageIndex) continue;
+        const other = originOfRef.current(index);
+        const content = other && other.timestamp === origin.timestamp && other.role === origin.role ? wrapper.querySelector(CONTENT_SELECTOR) : null;
+        if (content) before.push(content);
+      }
+      const occurrence = turnOccurrence(before, hit.text, hit.occurrence);
+      setSelection({ messageIndex: hit.messageIndex, origin, text: hit.text, occurrence, rect: rectOf(range) });
     };
 
     const schedule = (ms: number) => {

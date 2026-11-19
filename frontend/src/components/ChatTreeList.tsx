@@ -6,7 +6,7 @@ import { chatMeta } from "../utils/chatMeta";
 import ChatListItem, { type ChatCardMenu } from "./ChatListItem";
 import ChatSectionHeader from "./ChatSectionHeader";
 import ProviderBadge from "./ProviderBadge";
-import ChatRoleBadge from "./ChatRoleBadge";
+import ChatRoleBadge, { AsideCount } from "./ChatRoleBadge";
 import MenuRow from "./MenuRow";
 import { useLongPress } from "../hooks/useLongPress";
 import PopupMenu, { placePopupMenu, type PopupMenuPosition } from "./PopupMenu";
@@ -17,6 +17,8 @@ import { useChatSectionExpansion } from "../hooks/useChatSectionExpansion";
 import type { SpaceListItem } from "shared/types/space.js";
 import { isSidebarFolderEligible, readSidebarFolder } from "shared/types/sidebarFolder.js";
 import { treeContains, withNodeChildArchived } from "../utils/childArchive";
+import { ASIDE_ROLE } from "../utils/chatRewrite";
+import { chatSignals, nodeSignals, sumAttention } from "../utils/asideAttention";
 
 /**
  * The sidebar chat list.
@@ -122,6 +124,12 @@ interface Props {
    * and marked, and its menu offers Unarchive.
    */
   showArchivedChildren?: boolean;
+  /**
+   * Fold asides into their parent's row (the default). Off while a search is
+   * showing hits: an aside that matched is a hit, and must be a row of its own
+   * to be seen — folded, it would vanish into its parent's count.
+   */
+  foldAsides?: boolean;
 }
 
 /** What one row is told about the selection it is part of. */
@@ -293,7 +301,49 @@ export interface Row {
    * `canFile` is false.
    */
   sidebarFolder?: string;
+  /**
+   * Asides of `chat`, which are not rows of their own: an aside is a side
+   * question about this chat and opens in its side panel, so the row says how
+   * many there are instead. They are not in `members` either — they make no
+   * row a group, and pin, select and file nothing — though the server still
+   * lists them in the chat's tree (`get_chat_tree`), card counts and archive.
+   */
+  asideCount: number;
+  /** Their ids, for the running dot on the count (see `sessionStatusFor`). */
+  asideIds: readonly string[];
+  /**
+   * Every folded aside in this row's group (the front chat's and any
+   * member's). Not members, but their attention signals are the row's:
+   * `activity` is rolled up over `members` and these, so an aside's unread
+   * output, summon or waiting job reaches the parent's row, and the row's
+   * timestamp agrees with the position the aside's recency gave it.
+   */
+  foldedAsides: readonly Chat[];
 }
+
+/**
+ * An aside folded into its parent's row: role `aside`, with its parent in the
+ * same list, not the chat open, and with no loaded chats of its own. One
+ * whose parent is not loaded (filtered out, or the chat was split off and the
+ * role stayed) is listed like any chat — hiding it would leave no row to reach
+ * it from.
+ */
+function isFoldedAside(chat: Chat, byId: Map<string, Chat>, parents: ReadonlySet<string>, activeChatId?: string): boolean {
+  // The chat being read keeps a place in the list: it is reached by its own
+  // URL here (/chat/<aside>), not through its parent's panel.
+  if (chat.id === activeChatId) return false;
+  // Nor one with chats of its own hanging off it (a fork of the aside): the
+  // tree shows it, so the row's count must not claim it — the same rule
+  // TreeNodeRow folds by.
+  if (parents.has(chat.id)) return false;
+  const meta = chatMeta(chat);
+  if (meta.chatRole !== ASIDE_ROLE) return false;
+  const parentId = meta.parentChatId || meta.forkedFrom;
+  return !!parentId && parentId !== chat.id && byId.has(parentId);
+}
+
+const NO_ASIDES: readonly string[] = [];
+const NO_FOLDED: readonly Chat[] = [];
 
 /** Shared empty bucket, so an unpinned row allocates nothing per render. */
 const NO_PINNED_MEMBERS: Chat[] = [];
@@ -370,8 +420,15 @@ function lineageOf(chat: Chat, byId: Map<string, Chat>): LineageInfo {
  * module is memoised on `chats`, and so is the one in ChatList — both from the
  * same `filteredChats` array.
  */
-export function buildRows(chats: Chat[]): Row[] {
+export function buildRows(chats: Chat[], activeChatId?: string, foldAsides = true): Row[] {
   const byId = new Map<string, Chat>(chats.map((c) => [c.id, c]));
+  // Chats some loaded chat names as its parent.
+  const parents = new Set<string>();
+  for (const c of chats) {
+    const m = chatMeta(c);
+    const parentId = m.parentChatId || m.forkedFrom;
+    if (parentId && parentId !== c.id) parents.add(parentId);
+  }
   const infoById = new Map<string, LineageInfo>();
   // The group's membership, in the prop's order.
   const groupMembers = new Map<string, Chat[]>();
@@ -380,9 +437,25 @@ export function buildRows(chats: Chat[]): Row[] {
   // whole group — see Row.pinnedMembers for why the header row's own flag
   // is not enough.
   const groupPinned = new Map<string, Chat[]>();
+  // Folded asides, counted per parent chat; see `Row.asideCount`.
+  const folded = new Set<string>();
+  const asidesOfParent = new Map<string, string[]>();
+  const groupAsides = new Map<string, Chat[]>();
   for (const chat of chats) {
     const info = lineageOf(chat, byId);
     infoById.set(chat.id, info);
+    if (foldAsides && isFoldedAside(chat, byId, parents, activeChatId)) {
+      folded.add(chat.id);
+      const meta = chatMeta(chat);
+      const parentId = (meta.parentChatId || meta.forkedFrom)!;
+      const list = asidesOfParent.get(parentId);
+      if (list) list.push(chat.id);
+      else asidesOfParent.set(parentId, [chat.id]);
+      const inGroup = groupAsides.get(info.rootKey);
+      if (inGroup) inGroup.push(chat);
+      else groupAsides.set(info.rootKey, [chat]);
+      continue;
+    }
     const members = groupMembers.get(info.rootKey);
     if (members) members.push(chat);
     else groupMembers.set(info.rootKey, [chat]);
@@ -396,11 +469,16 @@ export function buildRows(chats: Chat[]): Row[] {
   const seen = new Set<string>();
   const result: Row[] = [];
   for (const chat of chats) {
-    const { rootKey, hasLineage } = infoById.get(chat.id)!;
+    const { rootKey, hasLineage: ownLineage } = infoById.get(chat.id)!;
     if (seen.has(rootKey)) continue;
+    // A folded aside still places its group where its own recency puts it —
+    // it is often the newest thing in the tree — but it is not the group:
+    // the row is built from the members, which hold its parent.
+    const isAside = folded.has(chat.id);
+    const members = groupMembers.get(rootKey);
+    if (!members) continue; // unreachable: a folded aside's parent shares its root key
     seen.add(rootKey);
-    // Always set: this row's own chat filed itself into the bucket above.
-    const members = groupMembers.get(rootKey)!;
+    const hasLineage = isAside ? false : ownLineage;
     const isGroup = members.length > 1 || hasLineage || groupLineage.get(rootKey) === true;
     // `chat` — the first member seen, i.e. the most recently updated one — has
     // already fixed this row's position by being the iteration that created it.
@@ -413,7 +491,7 @@ export function buildRows(chats: Chat[]): Row[] {
     // row with a chat that is not one of its members would double-count it
     // against the row ChatList's selection expects to find it in.
     const root = byId.get(rootKey);
-    const front = isGroup && root && infoById.get(root.id)!.rootKey === rootKey ? root : chat;
+    const front = isGroup && root && infoById.get(root.id)!.rootKey === rootKey && !folded.has(root.id) ? root : isAside ? members[0]! : chat;
     const frontMeta = chatMeta(front);
     const canFile = isSidebarFolderEligible(frontMeta, front.id);
     result.push({
@@ -421,10 +499,13 @@ export function buildRows(chats: Chat[]): Row[] {
       rootKey,
       isGroup,
       members,
-      activity: rollUpActivity(members),
+      activity: rollUpActivity(groupAsides.has(rootKey) ? [...members, ...groupAsides.get(rootKey)!] : members),
       pinnedMembers: groupPinned.get(rootKey) ?? NO_PINNED_MEMBERS,
       canFile,
       sidebarFolder: canFile ? readSidebarFolder(frontMeta) : undefined,
+      asideCount: asidesOfParent.get(front.id)?.length ?? 0,
+      asideIds: asidesOfParent.get(front.id) ?? NO_ASIDES,
+      foldedAsides: groupAsides.get(rootKey) ?? NO_FOLDED,
     });
   }
   return result;
@@ -598,6 +679,8 @@ function TreeNodeRow({
   splitOff,
   childArchive,
   underArchived = false,
+  isRunning,
+  foldAsides = true,
 }: {
   node: ChatTreeNode;
   depth: number;
@@ -607,6 +690,10 @@ function TreeNodeRow({
   childArchive?: TreeChildArchive;
   /** An ancestor of this node is an archived child: it goes (or fades) with it. */
   underArchived?: boolean;
+  /** Whether a chat has a live session — the folded asides' running dot. Falls back to the tree's own status. */
+  isRunning?: (chatId: string) => boolean;
+  /** See `Props.foldAsides`: off while a search is up. */
+  foldAsides?: boolean;
 }) {
   const [menu, setMenu] = useState<{ position: PopupMenuPosition; openedByTouch: boolean } | null>(null);
   const rowRef = useRef<HTMLDivElement>(null);
@@ -695,6 +782,16 @@ function TreeNodeRow({
   // Faded with an archived ancestor as well as for its own flag, so a shown
   // archived subtree reads as one archived thing.
   const faded = (archivedChild || underArchived) && !isActive;
+  // Asides are folded into this row (see `Row.asideCount`), unless one has
+  // children of its own to hang off it, or is the chat open.
+  // "Of its own" means visible: an archived child the list is not showing does
+  // not count — the list drops those before it folds (`withoutArchivedChildren`),
+  // so the row and the tree agree on which asides are folded.
+  const hasVisibleChildren = (child: ChatTreeNode) => child.children.some((c) => childArchive?.showArchived || !c.childArchived);
+  const foldedAside = (child: ChatTreeNode) =>
+    foldAsides && child.role === ASIDE_ROLE && !hasVisibleChildren(child) && child.chatId !== activeChatId;
+  const asideNodes = node.children.filter((child) => foldedAside(child) && (childArchive?.showArchived || !child.childArchived));
+  const asideAttention = sumAttention(asideNodes.map((child) => nodeSignals(child, isRunning?.(child.chatId))));
 
   return (
     <>
@@ -769,6 +866,7 @@ function TreeNodeRow({
         />
         <ProviderBadge provider={node.provider === "claude-code" ? undefined : node.provider} compact />
         {node.role && <ChatRoleBadge role={node.role} />}
+        <AsideCount count={asideNodes.length} attention={asideAttention} />
         <span
           style={{
             fontSize: 13,
@@ -840,6 +938,7 @@ function TreeNodeRow({
         // Under an archived child that is only showing because it holds the
         // open chat: its other children stay hidden, as they would be anyway.
         .filter((child) => childArchive?.showArchived || !childrenUnderArchived || treeContains(child, activeChatId))
+        .filter((child) => !foldedAside(child))
         .map((child) => (
           <TreeNodeRow
             key={child.chatId}
@@ -850,6 +949,8 @@ function TreeNodeRow({
             splitOff={splitOff}
             childArchive={childArchive}
             underArchived={childrenUnderArchived}
+            isRunning={isRunning}
+            foldAsides={foldAsides}
           />
         ))}
     </>
@@ -876,6 +977,7 @@ export default function ChatTreeList({
   detachingIds,
   onSetChildArchived,
   showArchivedChildren = false,
+  foldAsides = true,
 }: Props) {
   const navigate = useNavigate();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -885,7 +987,7 @@ export default function ChatTreeList({
   // Group loaded chats by lineage root, preserving the server's recency order:
   // each group appears at the position of its most recently updated member,
   // fronted by its root where that chat is loaded. See `buildRows`.
-  const rows = useMemo(() => buildRows(chats), [chats]);
+  const rows = useMemo(() => buildRows(chats, activeChatId, foldAsides), [chats, activeChatId, foldAsides]);
 
   // Read current expansion/rows from the refresh effect without making it a
   // dependency — the effect must fire on refreshes, not on every expand click.
@@ -967,6 +1069,7 @@ export default function ChatTreeList({
   );
 
   const handleNavigate = useCallback((chatId: string) => navigate(`/chat/${chatId}`), [navigate]);
+  const isRunning = (chatId: string) => !!sessionStatusFor(chatId)?.active;
 
   // Selection mode is list-wide, so any row's props answer it.
   const selectionActive = rows.length > 0 && !!selectionFor?.(rows[0].chat).selectionMode;
@@ -1017,12 +1120,16 @@ export default function ChatTreeList({
    * and `groupSessionStatus`: a member not in the `chats` prop has no row
    * and is not counted. A group row's badge says only "active somewhere in
    * here" (`groupSessionStatus` below); the header is where a tree with three
-   * agents working reads as three.
+   * agents working reads as three. Folded asides count: they are agents
+   * working too, just not rows.
    */
   const runningIn = (section: ChatSection<Row>) =>
-    section.items.reduce((n, row) => n + row.members.filter((member) => sessionStatusFor(member.id)?.active).length, 0);
+    section.items.reduce((n, row) => n + [...row.members, ...row.foldedAsides].filter((member) => sessionStatusFor(member.id)?.active).length, 0);
 
-  const renderRow = ({ chat, rootKey, isGroup, members, activity, pinnedMembers, canFile, sidebarFolder }: Row) => {
+  const renderRow = ({ chat, rootKey, isGroup, members, activity, pinnedMembers, canFile, sidebarFolder, asideCount, asideIds, foldedAsides }: Row) => {
+    // What the front chat's asides need shows on their count; the row's own
+    // status stays the parent's.
+    const asideAttention = sumAttention(foldedAsides.filter((a) => asideIds.includes(a.id)).map((a) => chatSignals(a, isRunning(a.id))));
     /**
      * Pin the chat this row is labelled with; unpin every member holding a pin.
      *
@@ -1045,7 +1152,8 @@ export default function ChatTreeList({
       // No `activity`: a lone row stands for one chat, so the roll-up would be
       // that chat's own metadata read back to it. The component's own reading
       // is the definition the roll-up matches, not a second one to keep in
-      // step — see `rollUpActivity`.
+      // step — see `rollUpActivity`. Unless asides are folded into it: then
+      // their unread output, summons and waiting jobs are the row's too.
       return (
         <ChatListItem
           key={chat.id}
@@ -1062,6 +1170,9 @@ export default function ChatTreeList({
           onMoveToSpace={onMoveToSpace && (() => onMoveToSpace(chat))}
           sessionStatus={sessionStatusFor(chat.id)}
           dimmed={isDimmed?.(chat)}
+          activity={foldedAsides.length > 0 ? activity : undefined}
+          asideCount={asideCount}
+          asideAttention={asideAttention}
           {...selectionFor?.(chat)}
         />
       );
@@ -1148,6 +1259,8 @@ export default function ChatTreeList({
               // whole group's. See `RowActivity`.
               activity={activity}
               dimmed={isDimmed?.(chat)}
+              asideCount={asideCount}
+              asideAttention={asideAttention}
               {...selectionFor?.(chat)}
             />
           </div>
@@ -1161,6 +1274,8 @@ export default function ChatTreeList({
               onNavigate={handleNavigate}
               splitOff={splitOff}
               childArchive={childArchive}
+              isRunning={isRunning}
+              foldAsides={foldAsides}
             />
           </div>
         )}

@@ -130,6 +130,20 @@ describe("prepareThemeWrite — what a write is accountable for", () => {
     expect(out.unsatisfiable.some((f) => f.id === "text-on-bg" && f.mode === "light")).toBe(true);
   });
 
+  it("checks text through an aside highlight on both bubbles and code, so a custom theme cannot make it unreadable", async () => {
+    // An opaque highlight the colour of the text itself: the passage vanishes.
+    const out = await prepareThemeWrite({ dark: { "aside-highlight-active-bg": "#e6edf3" }, existing: complete() });
+    const ids = ["text-on-aside-highlight-active-assistant", "text-on-aside-highlight-active-code", "text-on-aside-highlight-active-user"];
+    // No lightness move rescues dark text on a near-text fill, so it is refused
+    // (the caller does not store it) — on both bubbles and in code blocks.
+    expect(
+      out.unsatisfiable
+        .filter((f) => f.mode === "dark")
+        .map((f) => f.id)
+        .sort(),
+    ).toEqual(ids);
+  });
+
   it("treats an unreadable value as the write's problem regardless of the baseline", async () => {
     const out = await prepareThemeWrite({ light: { warning: "goldenrod" } });
     expect(out.unsatisfiable.some((f) => f.unmeasurable?.includes("goldenrod"))).toBe(true);

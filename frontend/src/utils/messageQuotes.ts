@@ -31,6 +31,22 @@ export interface MessageQuote {
   role: ParsedMessage["role"];
   /** The selected text, normalised by {@link normalizeQuoteText}. */
   text: string;
+  /**
+   * Which repeat of `text` in the message this is — 0 for the first; absent
+   * for "the first" too. Lets an aside's highlight land on the passage that
+   * was selected when the same words appear twice. See shared `AsideQuote`.
+   */
+  occurrence?: number;
+  /**
+   * Set on a passage from ANOTHER chat (an aside's reply inserted into its
+   * main chat): that chat's id. Such a quote has no bubble here — its
+   * `messageIndex` is -1 and its timestamp is not this chat's — so it can go
+   * out with a message but cannot be an aside's quote (an aside forks at a
+   * point of this chat's transcript).
+   */
+  fromChatId?: string;
+  /** Names the origin in place of the role label (`Aside reply`); see shared `QuoteLike.label`. */
+  label?: string;
 }
 
 /**
@@ -80,17 +96,51 @@ export function quoteOriginOf(message: ParsedMessage | undefined): QuoteOrigin |
  * between selecting and clicking Quote, and the index may by then address a
  * different message. The timestamp is what an aside forks at.
  */
-export function quoteFromSelection(rawText: string, messageIndex: number, origin: QuoteOrigin | null): MessageQuote | null {
+export function quoteFromSelection(rawText: string, messageIndex: number, origin: QuoteOrigin | null, occurrence?: number): MessageQuote | null {
   if (!origin) return null;
   const text = normalizeQuoteText(rawText);
   if (!text.trim()) return null;
   quoteSeq += 1;
-  return { id: `quote-${quoteSeq}`, messageIndex, timestamp: origin.timestamp, role: origin.role, text };
+  return { id: `quote-${quoteSeq}`, messageIndex, timestamp: origin.timestamp, role: origin.role, text, ...(occurrence && { occurrence }) };
+}
+
+/** The label an aside's reply carries once inserted into the main chat. */
+export const ASIDE_REPLY_LABEL = "Aside reply";
+
+/**
+ * An aside's reply as a quote for the MAIN chat's tray ("Insert into main
+ * chat"): the whole reply, labelled as the aside's, or null when there is no
+ * text to quote.
+ */
+export function quoteFromAsideReply(message: ParsedMessage, asideChatId: string): MessageQuote | null {
+  if (!message.timestamp) return null;
+  const text = normalizeQuoteText(message.content ?? "");
+  if (!text.trim()) return null;
+  quoteSeq += 1;
+  return {
+    id: `quote-${quoteSeq}`,
+    messageIndex: -1,
+    timestamp: message.timestamp,
+    role: message.role,
+    text,
+    fromChatId: asideChatId,
+    label: ASIDE_REPLY_LABEL,
+  };
 }
 
 /** Two quotes of the same passage of the same message. */
-export function isSameQuote(a: Pick<MessageQuote, "messageIndex" | "timestamp" | "text">, b: Pick<MessageQuote, "messageIndex" | "timestamp" | "text">) {
-  return a.messageIndex === b.messageIndex && a.timestamp === b.timestamp && a.text === b.text;
+export function isSameQuote(
+  a: Pick<MessageQuote, "messageIndex" | "timestamp" | "text" | "fromChatId" | "occurrence">,
+  b: Pick<MessageQuote, "messageIndex" | "timestamp" | "text" | "fromChatId" | "occurrence">,
+) {
+  // The same words twice in one message are two passages.
+  return (
+    a.messageIndex === b.messageIndex &&
+    a.timestamp === b.timestamp &&
+    a.text === b.text &&
+    a.fromChatId === b.fromChatId &&
+    (a.occurrence ?? 0) === (b.occurrence ?? 0)
+  );
 }
 
 /*
@@ -116,7 +166,7 @@ export function formatQuoteTime(timestamp: string, now?: Date): string {
 const localTimes = (now?: Date) => quoteTimeFormatter(undefined, now);
 
 /** `Assistant, 14:02` — the short origin line a quote is introduced by. */
-export function formatQuoteOrigin(quote: Pick<MessageQuote, "role" | "timestamp">, now?: Date): string {
+export function formatQuoteOrigin(quote: Pick<MessageQuote, "role" | "timestamp" | "label">, now?: Date): string {
   return sharedFormatQuoteOrigin(quote, localTimes(now));
 }
 

@@ -222,6 +222,16 @@ describe("POST /api/chats/:id/fork kind aside", () => {
     expect(res.chat).not.toHaveProperty("started");
   });
 
+  it("stores which repeat of a passage each quote is, and refuses a malformed one", async () => {
+    setParent({});
+    const res = await aside({ quotes: [{ ...quote(T0, "again"), occurrence: 1 }, quote(T1, "second")] });
+    expect(res.code).toBe(201);
+    expect(res.meta.asideQuotes).toEqual([{ ...quote(T0, "again"), occurrence: 1 }, quote(T1, "second")]);
+
+    const refused = await aside({ quotes: [{ ...quote(T1, "x"), occurrence: -1 }] });
+    expect(refused.code).toBe(400);
+  });
+
   it("keeps a system message's quote as system, labelled so in the prompt", async () => {
     setParent({});
     const res = await aside({ quotes: [{ timestamp: T1, role: "system", text: "notice" }], prompt: "why?" });

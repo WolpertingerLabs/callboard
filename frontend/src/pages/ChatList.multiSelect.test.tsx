@@ -982,6 +982,14 @@ describe("bulk delete", () => {
     expect(screen.getByText(/This deletes the selected chats, not the chats forked from them/)).toBeTruthy();
   });
 
+  it("warns for a chat whose only children are folded asides, though its row is lone", async () => {
+    await mount([CHATS[0], makeChat("aside", "chat aside", { chatRole: "aside", parentChatId: "one", rootChatId: "one" }), CHATS[1]], CARDS);
+    expect(screen.queryByTitle("Expand chat tree")).toBeNull();
+    selectAndPressDelete("chat one");
+
+    expect(screen.getByText(/This deletes the selected chats, not the chats forked from them/)).toBeTruthy();
+  });
+
   it("still warns when the group's only child is archived and hidden, so the row looks lone", async () => {
     // The archived child is withheld from the rows, so `one` renders without
     // a chevron — but deleting it still leaves that child behind to regroup.

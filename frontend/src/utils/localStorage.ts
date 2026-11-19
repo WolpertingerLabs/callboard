@@ -194,6 +194,8 @@ interface LocalStorageData {
    * chat": a stored model may belong to another harness than the chat's).
    */
   asideRecentTarget?: AsideTarget;
+  /** The desktop aside panel's dragged width, px. */
+  asidePanelWidth?: number;
 }
 
 /** A harness, and optionally a model on it, for an aside. */
@@ -810,4 +812,18 @@ export function clearAsideRecentTarget(): void {
 
 export function saveAsideRecentTarget(target: AsideTarget): void {
   updateStorage({ asideRecentTarget: { provider: target.provider, ...(target.model?.trim() && { model: target.model.trim() }) } });
+}
+
+/** Narrowest the desktop aside panel may be dragged. */
+export const ASIDE_PANEL_MIN_WIDTH = 320;
+const DEFAULT_ASIDE_PANEL_WIDTH = 440;
+
+/** The desktop aside panel's width — one browser-wide preference, like the sidebar's. */
+export function getAsidePanelWidth(): number {
+  const stored = getStorageData().asidePanelWidth;
+  return Math.max(ASIDE_PANEL_MIN_WIDTH, typeof stored === "number" && Number.isFinite(stored) ? stored : DEFAULT_ASIDE_PANEL_WIDTH);
+}
+
+export function saveAsidePanelWidth(value: number): void {
+  updateStorage({ asidePanelWidth: Math.max(ASIDE_PANEL_MIN_WIDTH, Math.round(value)) });
 }

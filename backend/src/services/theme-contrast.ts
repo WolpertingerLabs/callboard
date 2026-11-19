@@ -487,6 +487,60 @@ export const PAIRINGS: Pairing[] = [
   { id: "text-on-bg-secondary", where: "body text, secondary panels", fg: v("text"), bg: v("bg-secondary"), backdrop: v("bg-secondary"), kind: "text" },
   { id: "text-on-user-bg", where: "user message bubble", fg: v("text"), bg: v("user-bg"), backdrop: v("bg"), kind: "text" },
   { id: "text-on-assistant-bg", where: "assistant message bubble", fg: v("text"), bg: v("assistant-bg"), backdrop: v("bg"), kind: "text" },
+  // Aside highlights: a translucent wash painted over message text in either
+  // bubble (::highlight(aside-quote) / (aside-quote-active), index.css), so
+  // the text has to stay readable through each, on each. Never both at once:
+  // an active aside's ranges are painted in the active highlight only
+  // (hooks/useAsideHighlights.ts), so one wash over the surface is the truth.
+  {
+    id: "text-on-aside-highlight-assistant",
+    where: "a passage an aside asked about, in a reply",
+    fg: v("text"),
+    bg: v("aside-highlight-bg"),
+    backdrop: v("assistant-bg"),
+    kind: "text",
+  },
+  {
+    id: "text-on-aside-highlight-user",
+    where: "a passage an aside asked about, in a user message",
+    fg: v("text"),
+    bg: v("aside-highlight-bg"),
+    backdrop: v("user-bg"),
+    kind: "text",
+  },
+  {
+    id: "text-on-aside-highlight-active-assistant",
+    where: "the hovered or open aside's passage, in a reply",
+    fg: v("text"),
+    bg: v("aside-highlight-active-bg"),
+    backdrop: v("assistant-bg"),
+    kind: "text",
+  },
+  // A quoted passage can run through a code block inside either bubble.
+  {
+    id: "text-on-aside-highlight-code",
+    where: "a passage an aside asked about, in a code block",
+    fg: v("text"),
+    bg: v("aside-highlight-bg"),
+    backdrop: v("code-bg"),
+    kind: "text",
+  },
+  {
+    id: "text-on-aside-highlight-active-code",
+    where: "the hovered or open aside's passage, in a code block",
+    fg: v("text"),
+    bg: v("aside-highlight-active-bg"),
+    backdrop: v("code-bg"),
+    kind: "text",
+  },
+  {
+    id: "text-on-aside-highlight-active-user",
+    where: "the hovered or open aside's passage, in a user message",
+    fg: v("text"),
+    bg: v("aside-highlight-active-bg"),
+    backdrop: v("user-bg"),
+    kind: "text",
+  },
   { id: "text-on-code-bg", where: "code blocks", fg: v("text"), bg: v("code-bg"), backdrop: v("bg"), kind: "text" },
   { id: "muted-on-bg", where: "secondary text, main window", fg: v("text-muted"), bg: v("bg"), backdrop: v("bg"), kind: "text" },
   { id: "muted-on-surface", where: "secondary text, panels", fg: v("text-muted"), bg: v("surface"), backdrop: v("surface"), kind: "text" },

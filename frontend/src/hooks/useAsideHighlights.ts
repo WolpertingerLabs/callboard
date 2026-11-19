@@ -1,0 +1,173 @@
+/**
+ * Paint each aside's quoted passages in the main transcript, with the CSS
+ * Custom Highlight API: `CSS.highlights` holds ranges the browser draws over
+ * the text (`::highlight(aside-quote)` in index.css), so the memoized
+ * bubbles' DOM is never touched. Where the API is missing it does nothing.
+ *
+ * Ranges point into live text nodes, so they go stale when a bubble
+ * re-renders. Re-located on the next frame after the transcript changes —
+ * the messages array, the asides, or any DOM change in the container (a
+ * streamed reply, a lazily rendered code block) — at most once per frame.
+ * The work per paint is proportional to the quoted messages, not the
+ * transcript: only bubbles a quote names are read.
+ *
+ * `activeIds`' ranges are painted again in a second, stronger highlight: the
+ * aside whose chip is hovered or focused, or the one open in the panel.
+ *
+ * Only one Chat instance on a page may own these names. The embedded aside
+ * chat passes no asides, so it never paints (or clears) them.
+ */
+import { useEffect, useMemo, useRef, type MutableRefObject, type RefObject } from "react";
+import type { ParsedMessage } from "../api";
+import { locateAsides, quoteCandidates, type AsideEntry, type LocatedAsides } from "../utils/asideHighlights";
+
+export const ASIDE_HIGHLIGHT = "aside-quote";
+export const ASIDE_HIGHLIGHT_ACTIVE = "aside-quote-active";
+
+interface HighlightRegistryLike {
+  set(name: string, highlight: unknown): void;
+  delete(name: string): void;
+}
+
+function registry(): { highlights: HighlightRegistryLike; Highlight: new (...ranges: Range[]) => { priority: number } } | null {
+  const css = (globalThis as { CSS?: { highlights?: HighlightRegistryLike } }).CSS;
+  const Highlight = (globalThis as { Highlight?: new (...ranges: Range[]) => { priority: number } }).Highlight;
+  if (!css?.highlights || typeof Highlight !== "function") return null;
+  return { highlights: css.highlights, Highlight };
+}
+
+/** Whether this browser can paint aside highlights at all. */
+export function asideHighlightsSupported(): boolean {
+  return registry() !== null;
+}
+
+/**
+ * @returns a ref to the ranges last painted, per aside id — for hit-testing a
+ * click on a highlight.
+ */
+export function useAsideHighlights({
+  containerRef,
+  messages,
+  asides,
+  activeIds,
+  enabled,
+}: {
+  containerRef: RefObject<HTMLElement | null>;
+  messages: readonly ParsedMessage[];
+  asides: readonly AsideEntry[];
+  activeIds: readonly string[];
+  /** Off while the transcript is not the view on screen. */
+  enabled: boolean;
+}): MutableRefObject<Map<string, Range[]>> {
+  const rangesRef = useRef<Map<string, Range[]>>(new Map());
+  const activeRef = useRef(activeIds);
+  activeRef.current = activeIds;
+  const paintRef = useRef<() => void>(() => {});
+  // The transcript array is replaced on every streamed refetch; what matters
+  // here is only where each quote's message is. Re-locate when that moves —
+  // a quoted bubble's own text changing is caught by the observer below.
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+  // quoteCandidates reads a per-transcript index (built once per array), not a scan per quote.
+  const placesKey = useMemo(() => asides.map((a) => a.quotes.map((q) => quoteCandidates(messages, q).join(",")).join(";")).join("|"), [messages, asides]);
+
+  useEffect(() => {
+    const reg = registry();
+    const container = containerRef.current;
+    if (!reg || !enabled || !container || asides.length === 0) {
+      rangesRef.current = new Map();
+      return;
+    }
+    let frame: number | null = null;
+    // What the last pass found; re-located only when a change could have moved it.
+    let last: LocatedAsides | null = null;
+    let relocate = true;
+    const paint = () => {
+      frame = null;
+      if (relocate || !last) {
+        last = locateAsides(container, messagesRef.current, asides);
+        relocate = false;
+      }
+      const located = last.ranges;
+      rangesRef.current = located;
+      // The active asides' ranges are painted in the active highlight ONLY,
+      // not stacked over the base one: what is on screen is then exactly one
+      // wash over the bubble, which is what the theme contrast check measures.
+      const activeIds = new Set(activeRef.current);
+      const base: Range[] = [];
+      const active: Range[] = [];
+      for (const [chatId, list] of located) (activeIds.has(chatId) ? active : base).push(...list);
+      if (base.length === 0) reg.highlights.delete(ASIDE_HIGHLIGHT);
+      else reg.highlights.set(ASIDE_HIGHLIGHT, new reg.Highlight(...base));
+      if (active.length > 0) {
+        const highlight = new reg.Highlight(...active);
+        highlight.priority = 1;
+        reg.highlights.set(ASIDE_HIGHLIGHT_ACTIVE, highlight);
+      } else reg.highlights.delete(ASIDE_HIGHLIGHT_ACTIVE);
+    };
+    const schedule = () => {
+      if (frame === null) frame = requestAnimationFrame(paint);
+    };
+    // Emphasis changes repaint what was found, without finding it again.
+    paintRef.current = schedule;
+    schedule();
+    // A streamed reply mutates the transcript many times a second; most of it
+    // is nowhere near a quote. Re-locate only when:
+    //  - a change is inside a bubble a quote was looked for in (found or not:
+    //    a quote whose text is not there waits for that bubble to change, or
+    //    for its message to move, which re-runs this effect);
+    //  - a painted range has gone stale (its text node replaced);
+    //  - a quote's bubble had not rendered yet, and a node bringing it is added.
+    const bringsAwaited = (node: Node, awaited: Set<number>) => {
+      if (!(node instanceof Element)) return false;
+      const own = node.closest("[data-message-index]");
+      if (own && awaited.has(Number(own.getAttribute("data-message-index")))) return true;
+      return [...node.querySelectorAll("[data-message-index]")].some((el) => awaited.has(Number(el.getAttribute("data-message-index"))));
+    };
+    const isStale = (r: Range) => !r.startContainer.isConnected || !r.endContainer.isConnected;
+    const onMutations = (records: MutationRecord[]) => {
+      const prev = last;
+      const affected =
+        !prev ||
+        // A quote's bubble not rendered yet: only a bubble being added can bring it.
+        (prev.awaitingRender &&
+          records.some((record) => record.type === "childList" && [...record.addedNodes].some((node) => bringsAwaited(node, prev.awaitingIndices)))) ||
+        [...prev.ranges.values()].some((list) => list.some(isStale)) ||
+        records.some((record) => [...prev.contents].some((content) => content.contains(record.target)));
+      if (!affected) return;
+      relocate = true;
+      schedule();
+    };
+    const observer = typeof MutationObserver === "undefined" ? null : new MutationObserver(onMutations);
+    observer?.observe(container, { childList: true, subtree: true, characterData: true });
+    return () => {
+      if (frame !== null) cancelAnimationFrame(frame);
+      observer?.disconnect();
+      paintRef.current = () => {};
+      rangesRef.current = new Map();
+      reg.highlights.delete(ASIDE_HIGHLIGHT);
+      reg.highlights.delete(ASIDE_HIGHLIGHT_ACTIVE);
+    };
+  }, [containerRef, placesKey, asides, enabled]);
+
+  // Emphasis changes repaint without re-observing.
+  const activeKey = activeIds.join("\n");
+  useEffect(() => {
+    paintRef.current();
+  }, [activeKey]);
+
+  return rangesRef;
+}
+
+/** The aside whose painted range lies under the viewport point, if any. */
+export function asideAtPoint(ranges: Map<string, Range[]>, x: number, y: number): string | null {
+  for (const [chatId, list] of ranges) {
+    for (const range of list) {
+      if (typeof range.getClientRects !== "function") continue;
+      for (const rect of range.getClientRects()) {
+        if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) return chatId;
+      }
+    }
+  }
+  return null;
+}

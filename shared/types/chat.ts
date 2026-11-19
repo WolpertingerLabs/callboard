@@ -137,6 +137,14 @@ export interface ChatTreeNode {
    * shown. Absent means not archived — or an older daemon.
    */
   childArchived?: boolean;
+  /**
+   * The chat's read mark (`metadata.lastReadAt`): output after it is unread.
+   * Additive — lets a page holding only the tree (the chat page's aside list)
+   * say an aside has a reply waiting. Absent from older daemons.
+   */
+  lastReadAt?: string;
+  /** An open summon on the chat (`metadata.summon`). Additive; absent from older daemons. */
+  summon?: { urgency: string; createdAt: string };
   folder: string;
   createdAt: string;
   updatedAt: string;

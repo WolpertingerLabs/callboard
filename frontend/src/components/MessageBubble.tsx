@@ -1,5 +1,5 @@
 import { memo, useState, useMemo, useEffect, useRef, type CSSProperties, type ReactNode } from "react";
-import { Check, ClipboardType, Copy, FileText, GitFork, RotateCw, Square, Star } from "lucide-react";
+import { Check, ClipboardType, Copy, CornerDownLeft, FileText, GitFork, RotateCw, Square, Star } from "lucide-react";
 import type { ChatTreeNode, ForkProvider, ParsedMessage } from "../api";
 import type { ChatRewriteAction } from "../utils/chatRewrite";
 import { parseTaskList, splitAttachmentBlocks, type AttachedFile, type TaskListItem } from "shared/types/index.js";
@@ -739,6 +739,51 @@ interface Props {
   starred?: boolean;
   /** Called with the key and the new state. Stable for the same reason as `onFork`. */
   onToggleStar?: (key: string, starred: boolean) => void;
+  /**
+   * In an aside's transcript: shows "Insert into main chat" under the reply,
+   * called with the message (the page quotes it into the main chat's tray).
+   * Returns whether it was added (false: already there). Stable for the same
+   * reason as `onFork`.
+   */
+  onInsertIntoMain?: (message: ParsedMessage) => boolean;
+}
+
+/** "Insert into main chat", with a moment of "Inserted" after a click. */
+function InsertIntoMainButton({ onInsert, align }: { onInsert: () => boolean; align: "left" | "right" }) {
+  const [state, setState] = useState<"idle" | "inserted" | "already">("idle");
+  useEffect(() => {
+    if (state === "idle") return;
+    const timer = setTimeout(() => setState("idle"), 2000);
+    return () => clearTimeout(timer);
+  }, [state]);
+  return (
+    <button
+      type="button"
+      onClick={() => setState(onInsert() ? "inserted" : "already")}
+      title="Quote this reply in the main chat's composer"
+      style={{
+        alignSelf: align === "right" ? "flex-end" : "flex-start",
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 4,
+        marginTop: 4,
+        fontSize: 11,
+        fontWeight: 500,
+        padding: "2px 6px",
+        borderRadius: 4,
+        background: "var(--surface)",
+        // "Already in main chat" is not a success: muted, like the idle label.
+        color: state === "inserted" ? "var(--success)" : "var(--text-muted)",
+        border: "1px solid var(--border)",
+        cursor: "pointer",
+      }}
+    >
+      {state === "idle" ? <CornerDownLeft size={11} aria-hidden /> : <Check size={11} aria-hidden />}
+      <span role={state === "idle" ? undefined : "status"}>
+        {state === "inserted" ? "Inserted into main chat" : state === "already" ? "Already in main chat" : "Insert into main chat"}
+      </span>
+    </button>
+  );
 }
 
 /** Format a millisecond delta as a human-readable duration */
@@ -892,6 +937,7 @@ function MessageBubble({
   starKey,
   starred = false,
   onToggleStar,
+  onInsertIntoMain,
 }: Props) {
   const [expanded, setExpanded] = useState(false);
   const isUser = message.role === "user";
@@ -1233,6 +1279,7 @@ function MessageBubble({
       </div>
       <MessageMetadata message={message} align={isUser ? "right" : "left"} leading={starred && toggleStar ? <StarredIndicator /> : undefined} />
       {forks && forks.length > 0 && <ForkPointMarker forks={forks} align={isUser ? "right" : "left"} />}
+      {onInsertIntoMain && !isUser && bodyText.trim() && <InsertIntoMainButton onInsert={() => onInsertIntoMain(message)} align={isUser ? "right" : "left"} />}
     </div>
   );
 }

@@ -56,6 +56,8 @@ export const THEME_VARIABLE_NAMES = [
   "text-on-danger",
   "accent-bg",
   "accent-light",
+  "aside-highlight-bg",
+  "aside-highlight-active-bg",
   "danger-bg",
   "danger-border",
   "warning-bg",
