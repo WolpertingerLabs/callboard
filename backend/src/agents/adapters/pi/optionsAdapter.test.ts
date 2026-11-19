@@ -246,6 +246,39 @@ describe("cache warming", () => {
     }
   });
 
+  it("appends it again on a RESUMED session: pi rebuilds the system prompt from the loader, not from the file", async () => {
+    // Persist a real two-message session, then reopen the file as PiAgentQuery
+    // does on resume (SessionManager.open) with the addition configured.
+    const sessionDir = join(agentDir, "sessions-resume");
+    const writer = SessionManager.create(cwd, sessionDir, { id: "resume-check" });
+    writer.appendMessage({ role: "user", content: "q", timestamp: Date.now() } as never);
+    writer.appendMessage({
+      role: "assistant",
+      content: [{ type: "text", text: "a" }],
+      api: "openai-completions",
+      provider: "openrouter",
+      model: "m",
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      stopReason: "stop",
+      timestamp: Date.now(),
+    } as never);
+    const file = writer.getSessionFile()!;
+    expect(readFileSync(file, "utf-8")).toContain('"q"');
+
+    const modelRuntime = await ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: join(agentDir, "models.json"), allowModelNetwork: false });
+    const opts = buildPiServicesOptions({ cwd, agentDir, extension: () => {}, skillPaths: [], appendSystemPrompt: ["ASIDE INSTRUCTION"] });
+    const { session } = await createAgentSessionFromServices({
+      services: await createAgentSessionServices({ ...opts, modelRuntime }),
+      sessionManager: SessionManager.open(file, sessionDir, cwd),
+    });
+    try {
+      expect(session.messages.length).toBe(2); // the history really was resumed
+      expect(session.systemPrompt).toContain("ASIDE INSTRUCTION");
+    } finally {
+      session.dispose();
+    }
+  });
+
   it("adds no override when there is nothing to append", () => {
     const options = buildPiServicesOptions({ cwd, agentDir, extension: () => {}, skillPaths: [] });
     expect(options.resourceLoaderOptions).not.toHaveProperty("appendSystemPromptOverride");

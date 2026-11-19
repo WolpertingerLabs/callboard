@@ -143,14 +143,30 @@ export async function buildCodexExtras(ctx: ProviderOptionsContext & { codexRout
  * effective config there is no way to tell, so nothing is sent: the user's
  * setting stands and the addition is skipped. (In practice that turn does not
  * run at all: the UI-tool reservation refuses an unreadable config.)
+ *
+ * Resume is covered: verified live on codex-cli 0.153.4 that resuming a
+ * Callboard-seeded rollout (every Codex aside, since Codex has no native fork)
+ * injects the value as a `developer` message in the thread's initial context,
+ * and that a later resume keeps obeying it from that history.
  */
 export function codexDeveloperInstructionsFor(route: CodexExecutionRoute, addition: string, trackingId: string): { developerInstructions?: string } {
   if (route.developerInstructions === undefined) {
     log.warn(`Codex chat ${trackingId}: effective config unreadable, so its developer_instructions are unknown; the additional instructions were not sent`);
     return {};
   }
-  return { developerInstructions: route.developerInstructions ? `${route.developerInstructions}\n\n${addition}` : addition };
+  const merged = route.developerInstructions ? `${route.developerInstructions}\n\n${addition}` : addition;
+  // Sent as one `-c` argument: an oversized value could fail the launch on the
+  // OS argv limit. Skip the addition (the user's own value still applies from
+  // their config) rather than risk the turn.
+  if (Buffer.byteLength(merged, "utf8") > CODEX_DEVELOPER_INSTRUCTIONS_MAX_BYTES) {
+    log.warn(`Codex chat ${trackingId}: developer_instructions would be ${Buffer.byteLength(merged, "utf8")} bytes; the additional instructions were not sent`);
+    return {};
+  }
+  return { developerInstructions: merged };
 }
+
+/** Largest merged `developer_instructions` sent as a `-c` override (well under Linux's 128 KiB per-argument limit). */
+export const CODEX_DEVELOPER_INSTRUCTIONS_MAX_BYTES = 100 * 1024;
 
 // pi chats. Unlike the Codex builder above — which must collapse permissions
 // onto a sandbox tier chosen at thread start — pi gates per call through its `tool_call` extension, so the permission

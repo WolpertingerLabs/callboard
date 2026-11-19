@@ -98,6 +98,13 @@ describe("sendMessage — aside instruction", () => {
     expect(optionsOf().codex.developerInstructions).toBe(`USER RULES\n\n${ASIDE_INSTRUCTION}`);
   });
 
+  it("skips the addition when the merged value would be too large for one argument", async () => {
+    const { CODEX_DEVELOPER_INSTRUCTIONS_MAX_BYTES } = await import("./provider-session-options.js");
+    userConfig.developerInstructions = "x".repeat(CODEX_DEVELOPER_INSTRUCTIONS_MAX_BYTES);
+    await run({ chatId: storedAside("codex", "stored-aside-codex-huge").id });
+    expect(optionsOf().codex).not.toHaveProperty("developerInstructions");
+  });
+
   it("sends nothing over an unreadable Codex config rather than risk replacing the user's", async () => {
     userConfig.developerInstructions = undefined;
     await run({ chatId: storedAside("codex", "stored-aside-codex-unread").id });
