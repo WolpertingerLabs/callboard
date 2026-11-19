@@ -44,7 +44,8 @@ export interface ChatTurnRequest {
 
 export type ChatTurnResult = { ok: true; emitter: EventEmitter } | { ok: false; status: number; body: Record<string, unknown> };
 
-const NOTHING_TO_SEND = { error: "prompt is required" };
+/** The 400 body for a message with nothing to send (no text, no attachment that resolves). */
+export const NOTHING_TO_SEND = { error: "prompt is required" };
 
 export async function startChatTurn(req: ChatTurnRequest): Promise<ChatTurnResult> {
   const { chatId, prompt, imageIds, activePlugins, maxTurns, acknowledgeBranchDrift, model, effort, requireExplicitCompletion, chatView } = req;

@@ -57,17 +57,15 @@ vi.mock("../services/chat-file-service.js", () => ({
     },
     // Echoes the composed metadata back so the test can assert on it, plus the
     // top-level workspaceId argument (which is a Chat field, not metadata).
-    createChat: (folder: string, sessionId: string, metadata: string, workspaceId?: string) => ({
-      id: "fork-chat",
-      folder,
-      session_id: sessionId,
-      metadata,
-      ...(workspaceId && { workspaceId }),
-    }),
+    // Recorded, so the refusal cases can assert that no record was written.
+    createChat: (folder: string, sessionId: string, metadata: string, workspaceId?: string) => {
+      calls.createChat.push([folder, sessionId, metadata, workspaceId]);
+      return { id: "fork-chat", folder, session_id: sessionId, metadata, ...(workspaceId && { workspaceId }) };
+    },
   },
 }));
 /** Calls recorded by the stub providers, so tests can assert which path ran. */
-const calls: { forkSession: unknown[][]; seedSession: unknown[][] } = { forkSession: [], seedSession: [] };
+const calls = vi.hoisted(() => ({ forkSession: [] as unknown[][], seedSession: [] as unknown[][], createChat: [] as unknown[][] }));
 
 /** History the source provider hands back to the handoff projection. */
 const sourceMessages: unknown[] = [
@@ -157,6 +155,7 @@ const forkHandler = (chatsRouter as any).stack.find((layer: any) => layer.route?
 function fork(body: Record<string, unknown> = {}): Promise<{ code: number; meta: any; chat: any }> {
   calls.forkSession = [];
   calls.seedSession = [];
+  calls.createChat = [];
   return new Promise((resolve) => {
     const res = {
       statusCode: 200,
@@ -190,7 +189,7 @@ function setParent(meta: Record<string, unknown>, fields: Record<string, unknown
 
 const T0 = "2026-01-01T00:00:00.000Z";
 const T1 = "2026-01-01T00:05:00.000Z";
-const quote = (timestamp = T0, text = "the passage") => ({ timestamp, role: "assistant", text });
+const quote = (timestamp = T1, text = "the passage") => ({ timestamp, role: "assistant", text });
 const aside = (body: Record<string, unknown> = {}) => fork({ timestamp: T1, kind: "aside", quotes: [quote()], ...body });
 
 afterEach(() => {
@@ -272,13 +271,22 @@ describe("POST /api/chats/:id/fork kind aside", () => {
       expect(turn.prompt).toMatch(/^> \*\*Assistant, \d\d:\d\d:\*\*\n> the passage\n\nwhy this\?$/);
     });
 
+    it("passes the composer's plugins to the first turn", async () => {
+      setParent({});
+      await aside({ prompt: "why?", activePlugins: ["plug-a", "plug-b"] });
+      expect(turns.calls[0].activePlugins).toEqual(["plug-a", "plug-b"]);
+      await aside({ prompt: "why?" });
+      expect(turns.calls[1]).not.toHaveProperty("activePlugins");
+    });
+
     it("keeps the aside and reports a refused start with the text", async () => {
       setParent({});
-      turns.result = { ok: false, status: 409, body: { error: "branch_drift", message: "branch moved" } };
+      // The aside was deleted (another tab) between its creation and the start.
+      turns.result = { ok: false, status: 404, body: { error: "Chat not found" } };
       const res = await aside({ prompt: "why?" });
       expect(res.code).toBe(201);
       expect(res.chat.id).toBe("fork-chat");
-      expect(res.chat.runError).toBe("branch moved");
+      expect(res.chat.runError).toBe("Chat not found");
       expect(res.chat.promptText).toMatch(/why\?$/);
       expect(res.chat).not.toHaveProperty("started");
     });
@@ -311,6 +319,9 @@ describe("POST /api/chats/:id/fork kind aside", () => {
       ["a non-string question", { prompt: 42 }, /prompt must be a string/],
       ["bad permissions", { permissions: { fileRead: "sure" } }, /allow, ask, deny/],
       ["an invalid fork point", { timestamp: "later" }, /not a valid date/],
+      ["a fork point later than the latest quote", { quotes: [quote(T0)] }, /must be the latest quote timestamp/],
+      ["activePlugins without a question", { activePlugins: ["p"] }, /only accepted with a prompt/],
+      ["malformed activePlugins", { prompt: "why?", activePlugins: "p" }, /array of strings/],
       ["an unknown kind", { kind: "tangent" }, /kind must be/],
     ])("refuses %s", async (_label, body, error) => {
       setParent({});
@@ -319,7 +330,15 @@ describe("POST /api/chats/:id/fork kind aside", () => {
       expect(res.meta.error).toMatch(error);
       expect(calls.forkSession).toHaveLength(0);
       expect(calls.seedSession).toHaveLength(0);
+      expect(calls.createChat).toHaveLength(0);
       expect(turns.calls).toHaveLength(0);
+    });
+
+    it("compares the fork point as an instant, not as a string", async () => {
+      setParent({});
+      const res = await aside({ timestamp: "2026-01-01T00:05:00Z" });
+      expect(res.code).toBe(201);
+      expect(res.meta.forkedAt).toBe("2026-01-01T00:05:00Z");
     });
 
     it("refuses aside fields on a plain fork rather than ignoring them", async () => {
@@ -328,6 +347,8 @@ describe("POST /api/chats/:id/fork kind aside", () => {
       expect(res.code).toBe(400);
       expect(res.meta.error).toBe('quotes, prompt are only accepted with kind "aside"');
       expect(calls.forkSession).toHaveLength(0);
+      expect(calls.createChat).toHaveLength(0);
+      expect((await fork({ activePlugins: ["p"] })).meta.error).toBe('activePlugins is only accepted with kind "aside"');
     });
 
     it("leaves a plain fork as it was", async () => {

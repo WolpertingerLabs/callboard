@@ -3,7 +3,7 @@ import { isRetiredProvider, RETIRED_PROVIDER_LABELS } from "../agents/ports/Agen
 import { assertReasoningEffort } from "../services/reasoning-capabilities.js";
 import { assertNativeAgentStoppable } from "../services/codex-native-agents.js";
 import { Router } from "express";
-import { startChatTurn } from "../services/chat-turn.js";
+import { NOTHING_TO_SEND, startChatTurn } from "../services/chat-turn.js";
 import { sendMessage, getActiveSession, stopSession, respondToPermission, hasPendingRequest, getPendingRequest } from "../services/claude.js";
 import { pendingRequestRequiresHuman } from "../services/pending-requests.js";
 import { controlOriginError } from "../auth.js";
@@ -62,7 +62,6 @@ function nothingToSend(prompt: string, imageIds: unknown, loaded?: unknown[]): b
   return !hasAttachments(imageIds) || !anyUploadExists(imageIds);
 }
 
-const NOTHING_TO_SEND = { error: "prompt is required" };
 
 // Send first message to create a new chat (no existing chat ID required)
 streamRouter.post("/new/message", async (req, res) => {
