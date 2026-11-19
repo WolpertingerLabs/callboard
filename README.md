@@ -36,7 +36,7 @@ Bundled engines are npm dependencies of Callboard, so updating Callboard updates
 
 Callboard uses the first `claude` it finds, checking in this order:
 
-1. **Binary path** under Settings → API → Claude Code (`pathToClaudeCodeExecutable`)
+1. **Binary path** under Settings → API → Claude (`pathToClaudeCodeExecutable`)
 2. the `CLAUDE_BINARY` environment variable (it must answer `--version` as Claude Code)
 3. `which claude`
 4. `~/.local/bin`, `~/.claude/bin`, `/usr/local/bin`, `/usr/bin`, `/opt/homebrew/bin`
@@ -50,7 +50,7 @@ npm install -g @anthropic-ai/claude-code
 claude auth login
 ```
 
-To use an API key or a gateway token, set it under **Settings → API → Claude Code** instead. The "Claude Code Needs Credentials" dialog appears only when Callboard finds no credential at all.
+To use an API key or a gateway token, set it under **Settings → API → Claude** instead. The "Claude Code Needs Credentials" dialog appears only when Callboard finds no credential at all.
 
 ### Codex
 

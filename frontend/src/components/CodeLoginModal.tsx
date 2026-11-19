@@ -173,7 +173,7 @@ export default function CodeLoginModal({ isOpen, onClose, onStatusChange, status
               lineHeight: 1.5,
             }}
           >
-            Or set an API key or auth token under Settings &rarr; API &rarr; Claude Code, which authenticates chats without any CLI. Then click &ldquo;Check
+            Or set an API key or auth token under Settings &rarr; API &rarr; Claude, which authenticates chats without any CLI. Then click &ldquo;Check
             Again&rdquo;.
           </p>
 
