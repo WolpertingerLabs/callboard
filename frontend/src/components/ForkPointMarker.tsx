@@ -30,6 +30,14 @@ export function markerLabel(forks: ChatTreeNode[]): string {
   return `${count(others, "fork")}, ${count(asides, "aside")}`;
 }
 
+/** The menu's accessible name: what it lists — forks, asides or both. */
+export function menuLabel(forks: ChatTreeNode[]): string {
+  const asides = forks.filter((f) => f.role === ASIDE_ROLE).length;
+  if (asides === 0) return "Forks from this message";
+  if (asides === forks.length) return "Asides about this message";
+  return "Forks and asides from this message";
+}
+
 export default function ForkPointMarker({ forks, align }: { forks: ChatTreeNode[]; align: "left" | "right" }) {
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
@@ -97,7 +105,7 @@ export default function ForkPointMarker({ forks, align }: { forks: ChatTreeNode[
         <div
           ref={menuRef}
           role="menu"
-          aria-label="Forks from this message"
+          aria-label={menuLabel(forks)}
           onKeyDown={onMenuKeyDown}
           style={{
             position: "absolute",

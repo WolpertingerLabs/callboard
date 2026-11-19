@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import type { Chat } from "../api";
 import ChatListItem from "./ChatListItem";
-import { markerLabel } from "./ForkPointMarker";
+import { markerLabel, menuLabel } from "./ForkPointMarker";
 
 vi.mock("../api", () => ({ dismissSummon: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("react-router-dom", () => ({ useNavigate: () => () => {} }));
@@ -90,5 +90,11 @@ describe("fork point marker label", () => {
     expect(markerLabel([n("aside"), n("aside")])).toBe("2 asides");
     expect(markerLabel([n("fork"), n("aside")])).toBe("1 fork, 1 aside");
     expect(markerLabel([n("fork"), n("engine-switch"), n("aside")])).toBe("2 forks, 1 aside");
+  });
+
+  it("names the menu for what it lists", () => {
+    expect(menuLabel([n("fork")])).toBe("Forks from this message");
+    expect(menuLabel([n("aside"), n("aside")])).toBe("Asides about this message");
+    expect(menuLabel([n("fork"), n("aside")])).toBe("Forks and asides from this message");
   });
 });

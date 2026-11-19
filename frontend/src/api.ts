@@ -1,4 +1,4 @@
-import { asideForkPoint, handshakeHeaders, type AsideQuote } from "shared/types/index.js";
+import { ASIDE_ROLE, asideForkPoint, handshakeHeaders, type AsideQuote } from "shared/types/index.js";
 import type { PermissionReviewSettings, ReasoningCapability } from "shared/types/index.js";
 import { normalizePermissions } from "shared/types/permissions.js";
 import type { SpaceListItem, SpacePatch } from "shared/types/space.js";
@@ -691,6 +691,8 @@ export interface CreateAsideOptions {
   effort?: string;
   /** The originating browser chat view (`originatingChatView()`), as sent with a message. */
   chatView?: unknown;
+  /** Active per-directory plugin ids for the first turn, as sent with a message. Only with `prompt`. */
+  activePlugins?: string[];
 }
 
 /**
@@ -700,15 +702,42 @@ export interface CreateAsideOptions {
  */
 export type CreateAsideResponse = Chat & { started?: boolean; runError?: string; promptText?: string };
 
+/** `metadata.chatRole` of a chat record, or undefined when absent or unreadable. */
+function chatRoleOf(chat: Chat): string | undefined {
+  try {
+    const role = (JSON.parse(chat.metadata || "{}") as { chatRole?: unknown }).chatRole;
+    return typeof role === "string" ? role : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Thrown by {@link createAside} when the daemon made a plain fork: it predates asides. */
+export class AsidesUnsupportedError extends Error {
+  constructor(readonly chat: Chat) {
+    super("The Callboard daemon is too old for asides — it created an ordinary fork instead. Update and restart the daemon.");
+    this.name = "AsidesUnsupportedError";
+  }
+}
+
 /**
  * Ask a side question about quoted passages of a chat: a child chat forked at
  * the latest quoted message, with chatRole "aside" (POST /chats/:id/fork,
- * kind "aside"). Connect to its stream when `started` is set.
+ * kind "aside").
+ *
+ * When `started` is set, attach to `GET /chats/:newId/stream` — and then
+ * re-fetch the chat's messages: events emitted between the start and the
+ * attach are not replayed, so the stream alone can miss the opening of the
+ * reply.
+ *
+ * A daemon from before asides ignores `kind` and makes an ordinary fork; that
+ * is detected from the returned record and thrown as
+ * {@link AsidesUnsupportedError} (the fork it made is on the error).
  */
 export async function createAside(id: string, opts: CreateAsideOptions): Promise<CreateAsideResponse> {
   const timestamp = asideForkPoint(opts.quotes);
   if (!timestamp) throw new Error("An aside needs at least one quote");
-  return request(`/chats/${seg(id)}/fork`, {
+  const created: CreateAsideResponse = await request(`/chats/${seg(id)}/fork`, {
     method: "POST",
     json: {
       timestamp,
@@ -720,9 +749,12 @@ export async function createAside(id: string, opts: CreateAsideOptions): Promise
       ...(opts.model && { model: opts.model }),
       ...(opts.effort && { effort: opts.effort }),
       ...(opts.chatView !== undefined && { chatView: opts.chatView }),
+      ...(opts.prompt && opts.activePlugins && { activePlugins: opts.activePlugins }),
     },
     error: "Failed to create aside",
   });
+  if (chatRoleOf(created) !== ASIDE_ROLE) throw new AsidesUnsupportedError(created);
+  return created;
 }
 
 /**
