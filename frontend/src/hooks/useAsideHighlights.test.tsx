@@ -74,7 +74,7 @@ function Transcript({
 const flush = () => act(() => new Promise((resolve) => setTimeout(resolve, 5)));
 const painted = (name: string) => registry.get(name)?.ranges.map((r) => r.toString());
 
-it("paints every aside's passages, and the active one again on top", async () => {
+it("paints every aside's passages, and the active one in the active highlight instead — never both", async () => {
   const asides = [aside("a", "alpha"), aside("b", "gamma")];
   const { rerender } = render(<Transcript asides={asides} activeIds={[]} />);
   await flush();
@@ -84,6 +84,8 @@ it("paints every aside's passages, and the active one again on top", async () =>
   rerender(<Transcript asides={asides} activeIds={["b"]} />);
   await flush();
   expect(painted(ASIDE_HIGHLIGHT_ACTIVE)).toEqual(["gamma"]);
+  // Not stacked: one wash over the text — the one the theme contrast check measures.
+  expect(painted(ASIDE_HIGHLIGHT)).toEqual(["alpha"]);
   expect(registry.get(ASIDE_HIGHLIGHT_ACTIVE)!.priority).toBeGreaterThan(registry.get(ASIDE_HIGHLIGHT)!.priority);
 });
 
@@ -98,7 +100,7 @@ it("re-finds the passages when the transcript re-renders", async () => {
 });
 
 it("clears its highlights on unmount", async () => {
-  const { unmount } = render(<Transcript asides={[aside("a", "alpha")]} activeIds={["a"]} />);
+  const { unmount } = render(<Transcript asides={[aside("a", "alpha"), aside("b", "gamma")]} activeIds={["a"]} />);
   await flush();
   expect(registry.size).toBe(2);
   unmount();
@@ -135,13 +137,12 @@ it("does not re-find passages for changes outside quoted bubbles, nor for an equ
   await flush();
   // Repainted (the emphasis), from the same ranges.
   expect(registry.get(ASIDE_HIGHLIGHT_ACTIVE)!.ranges[0]).toBe(first);
-  expect(registry.get(ASIDE_HIGHLIGHT)!.ranges[0]).toBe(first);
 
   // A change inside the quoted bubble does re-find them.
   rerender(<Transcript asides={asides} activeIds={["a"]} msgs={messages.map((m) => ({ ...m }))} body="alpha beta gamma delta" />);
   await flush();
-  expect(registry.get(ASIDE_HIGHLIGHT)!.ranges[0]).not.toBe(first);
-  expect(painted(ASIDE_HIGHLIGHT)).toEqual(["alpha"]);
+  expect(registry.get(ASIDE_HIGHLIGHT_ACTIVE)!.ranges[0]).not.toBe(first);
+  expect(painted(ASIDE_HIGHLIGHT_ACTIVE)).toEqual(["alpha"]);
 });
 
 it("does not re-find anything on streamed changes elsewhere while a quote's text is simply gone", async () => {
@@ -162,7 +163,7 @@ it("does not re-find anything on streamed changes elsewhere while a quote's text
   rerender(<Transcript asides={asides} activeIds={["a"]} />);
   await flush();
   // Repainted for the emphasis from the same ranges: never re-found.
-  expect(registry.get(ASIDE_HIGHLIGHT)!.ranges[0]).toBe(first);
+  expect(registry.get(ASIDE_HIGHLIGHT_ACTIVE)!.ranges[0]).toBe(first);
 });
 
 it("finds a quote whose bubble renders late, once that bubble is added — and only for that", async () => {

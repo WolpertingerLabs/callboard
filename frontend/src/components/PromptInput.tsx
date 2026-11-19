@@ -20,6 +20,7 @@ import {
 import type { Keyword } from "../api";
 import { getComposerDraft, saveComposerDraft } from "../utils/localStorage";
 import { canAutoFocusTextInput, isEditingElsewhere } from "../utils/autoFocus";
+import { escapeIsInScope } from "../utils/escapeScope";
 
 export type PromptMenuItem = MenuItem;
 
@@ -1068,14 +1069,17 @@ export default function PromptInput({
   const canSend = (value.trim() || activeCommand || images.length > 0) && !disabled && !sendBlockedReason;
 
   const menuHasActiveItem = menuItems.some((item) => item.active);
+  const composerRootRef = useRef<HTMLDivElement>(null);
 
   // Close the menu on Escape — and claim it (capture, preventDefault), so a
   // container that closes on Escape (the aside panel) sees it was handled:
   // React's own handlers run at the root, before a bubbling document listener.
+  // Only an Escape pressed in this composer's chat: with the aside panel open
+  // there are two composers, and this menu must not eat the other chat's.
   useEffect(() => {
     if (!menuOpen) return;
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
+      if (e.key === "Escape" && escapeIsInScope(e.target, composerRootRef.current)) {
         e.preventDefault();
         setMenuOpen(false);
         textareaRef.current?.focus();
@@ -1087,6 +1091,7 @@ export default function PromptInput({
 
   return (
     <div
+      ref={composerRootRef}
       style={{
         padding: "8px 12px",
         paddingBottom: "calc(8px + var(--safe-bottom))",

@@ -110,3 +110,46 @@ it("ends the emphasis on a fork row, and when it unmounts mid-hover", () => {
   unmount();
   expect(a.emphasizeAsides).toHaveBeenLastCalledWith(null);
 });
+
+it("does not end another marker's emphasis when it unmounts", () => {
+  const a = actions();
+  const view = render(
+    <AsideContext.Provider value={a}>
+      <div key="m1" data-testid="m1">
+        <ForkPointMarker forks={[node("a1", "aside")]} align="left" />
+      </div>
+      <div key="m2" data-testid="m2">
+        <ForkPointMarker forks={[node("a2", "aside")]} align="left" />
+      </div>
+    </AsideContext.Provider>,
+  );
+  const [first, second] = [view.getByTestId("m1").firstElementChild!, view.getByTestId("m2").firstElementChild!];
+  fireEvent.mouseEnter(first);
+  fireEvent.mouseLeave(first);
+  fireEvent.mouseEnter(second);
+  expect(a.emphasizeAsides).toHaveBeenLastCalledWith(["a2"]);
+  // The first marker goes (the transcript re-rendered): the second's emphasis stays.
+  view.rerender(
+    <AsideContext.Provider value={a}>
+      <div key="m2" data-testid="m2">
+        <ForkPointMarker forks={[node("a2", "aside")]} align="left" />
+      </div>
+    </AsideContext.Provider>,
+  );
+  expect(a.emphasizeAsides).toHaveBeenLastCalledWith(["a2"]);
+});
+
+it("emphasises all of its asides again when the pointer comes back to the chip from a row", () => {
+  const a = actions();
+  renderMarker([node("f1", "fork"), node("a1", "aside"), node("a2", "aside")], a);
+  const chip = screen.getByRole("button", { name: "1 fork, 2 asides" });
+  fireEvent.click(chip);
+  const row = screen.getByRole("menuitem", { name: /aside a2/ });
+  fireEvent.mouseEnter(row);
+  expect(a.emphasizeAsides).toHaveBeenLastCalledWith(["a2"]);
+  // The pointer moves from the row to the chip: inside the marker all along,
+  // so its wrapper is not entered again — only the chip is.
+  fireEvent.mouseOut(row, { relatedTarget: chip });
+  fireEvent.mouseOver(chip, { relatedTarget: row });
+  expect(a.emphasizeAsides).toHaveBeenLastCalledWith(["a1", "a2"]);
+});

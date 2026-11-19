@@ -83,8 +83,15 @@ export default function ForkPointMarker({ forks, align }: { forks: ChatTreeNode[
   const label = markerLabel(forks);
   const asideIds = forks.filter((f) => f.role === ASIDE_ROLE).map((f) => f.chatId);
   const loneAside = asideActions && forks.length === 1 && forks[0]!.role === ASIDE_ROLE ? forks[0]!.chatId : null;
+  /** Whether the emphasis on screen is this marker's — so its unmount clears only its own. */
+  const emphasizingRef = useRef(false);
   const emphasize = (ids: readonly string[] | null) => {
-    if (asideActions && asideIds.length > 0) asideActions.emphasizeAsides(ids);
+    if (!asideActions || asideIds.length === 0) return;
+    // Ending an emphasis is only this marker's to do if it is this marker's:
+    // the pointer may have moved on to another marker that set its own.
+    if (!ids && !emphasizingRef.current) return;
+    emphasizingRef.current = !!ids;
+    asideActions.emphasizeAsides(ids);
   };
   // Unmounted while hovered (the transcript re-rendered under the pointer, the
   // chat switched): the emphasis would otherwise stay on with nothing to end it.
@@ -112,6 +119,8 @@ export default function ForkPointMarker({ forks, align }: { forks: ChatTreeNode[
     <div ref={wrapRef} style={{ position: "relative", marginTop: 4 }} {...wrapHandlers}>
       <button
         ref={triggerRef}
+        // Back on the chip from a row (which narrowed it to its own): all of them again.
+        onMouseEnter={asideIds.length > 0 ? () => emphasize(asideIds) : undefined}
         // A lone aside opens straight away: a one-row menu would be a click for nothing.
         onClick={() => {
           if (!loneAside) setOpen((v) => !v);

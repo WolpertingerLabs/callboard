@@ -90,10 +90,15 @@ export function useAsideHighlights({
       }
       const located = last.ranges;
       rangesRef.current = located;
-      const all = [...located.values()].flat();
-      if (all.length === 0) reg.highlights.delete(ASIDE_HIGHLIGHT);
-      else reg.highlights.set(ASIDE_HIGHLIGHT, new reg.Highlight(...all));
-      const active = activeRef.current.flatMap((id) => located.get(id) ?? []);
+      // The active asides' ranges are painted in the active highlight ONLY,
+      // not stacked over the base one: what is on screen is then exactly one
+      // wash over the bubble, which is what the theme contrast check measures.
+      const activeIds = new Set(activeRef.current);
+      const base: Range[] = [];
+      const active: Range[] = [];
+      for (const [chatId, list] of located) (activeIds.has(chatId) ? active : base).push(...list);
+      if (base.length === 0) reg.highlights.delete(ASIDE_HIGHLIGHT);
+      else reg.highlights.set(ASIDE_HIGHLIGHT, new reg.Highlight(...base));
       if (active.length > 0) {
         const highlight = new reg.Highlight(...active);
         highlight.priority = 1;
