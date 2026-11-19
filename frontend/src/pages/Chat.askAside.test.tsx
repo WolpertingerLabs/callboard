@@ -9,10 +9,12 @@
  */
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import type { ReactNode } from "react";
 import Chat from "./Chat";
-import { getQuotes, resetQuoteTraysForTests } from "../hooks/useQuoteTray";
+import { addQuote, getQuotes, resetQuoteTraysForTests } from "../hooks/useQuoteTray";
+import { getComposerDraft } from "../utils/localStorage";
+import { getMessages } from "../api";
 
 const Q1 = "2026-01-01T10:00:00.000Z";
 const A1 = "2026-01-01T10:00:01.000Z";
@@ -49,7 +51,12 @@ vi.mock("../api", async (importOriginal) => ({
   respondToChat: vi.fn(() => new Promise(() => {})),
   stopChat: vi.fn(async () => ({ stopped: true })),
 }));
-vi.mock("../contexts/SessionContext", () => ({ useIsSessionActive: () => null, useMetadataVersion: () => 0 }));
+/** Chats the session registry reports as running, and attachments in the stub composer. */
+const composerState = vi.hoisted(() => ({ attachments: 0, active: new Set<string>() }));
+vi.mock("../contexts/SessionContext", () => ({
+  useIsSessionActive: (id?: string) => (id && composerState.active.has(id) ? { startedAt: 1 } : null),
+  useMetadataVersion: () => 0,
+}));
 vi.mock("../components/PromptInput", async (importOriginal) => {
   const { useEffect, useRef, useState } = await import("react");
   type Update = string | ((current: string) => string);
@@ -58,11 +65,15 @@ vi.mock("../components/PromptInput", async (importOriginal) => {
     accessory,
     onFocusRequest,
     onSetValue,
+    onSnapshotRequest,
+    sendBlockedReason,
   }: {
     onSend: (prompt: string) => void;
     accessory?: ReactNode;
     onFocusRequest?: (focus: (() => void) | null) => void;
     onSetValue?: (setter: (value: Update) => void) => void;
+    onSnapshotRequest?: (get: (() => { prompt: string; attachments: number }) | null) => void;
+    sendBlockedReason?: string;
   }) {
     const [text, setTextState] = useState("");
     // Like the real composer, an updater is resolved at the moment of the call,
@@ -78,10 +89,15 @@ vi.mock("../components/PromptInput", async (importOriginal) => {
     useEffect(() => {
       onSetValue?.(() => (value: Update) => setText(typeof value === "function" ? value(live.current) : value));
     }, [onSetValue]);
+    useEffect(() => {
+      onSnapshotRequest?.(() => ({ prompt: live.current, attachments: composerState.attachments }));
+      return () => onSnapshotRequest?.(null);
+    }, [onSnapshotRequest]);
     return (
       <div>
         {accessory}
         <input aria-label="Composer" value={text} onChange={(e) => setText(e.target.value)} />
+        {sendBlockedReason && <div data-testid="send-blocked">{sendBlockedReason}</div>}
         <button
           type="button"
           onClick={() => {
@@ -140,10 +156,18 @@ const composer = () => screen.getByLabelText("Composer") as HTMLInputElement;
 const type = (value: string) => fireEvent.change(composer(), { target: { value } });
 
 function LocationProbe() {
-  return <div data-testid="location">{useLocation().pathname}</div>;
+  const navigate = useNavigate();
+  return (
+    <>
+      <div data-testid="location">{useLocation().pathname}</div>
+      <button type="button" onClick={() => navigate("/chat/other")}>
+        go elsewhere
+      </button>
+    </>
+  );
 }
 
-type ForkReply = "ok" | "refuse" | "old" | Promise<"ok">;
+type ForkReply = "ok" | "refuse" | "old" | "runError" | Promise<"ok">;
 let forkReplies: ForkReply[] = [];
 const forkBodies = () =>
   vi
@@ -154,6 +178,8 @@ const askButton = () => screen.getByRole("button", { name: /Ask as aside|Asking/
 
 beforeEach(() => {
   forkReplies = [];
+  composerState.attachments = 0;
+  composerState.active = new Set();
   resetQuoteTraysForTests();
   Object.defineProperty(window, "innerWidth", { value: 1200, configurable: true });
   Element.prototype.scrollTo = vi.fn();
@@ -174,7 +200,11 @@ beforeEach(() => {
         const reply = await (forkReplies.shift() ?? "ok");
         if (reply === "refuse") return { ok: false, status: 400, json: async () => ({ error: "quotes[0] is after the fork point" }) };
         const chatRole = reply === "old" ? "fork" : "aside";
-        return { ok: true, status: 201, json: async () => ({ id: "aside-1", folder: "/tmp", metadata: JSON.stringify({ chatRole }), started: true }) };
+        const outcome = reply === "runError" ? { runError: "engine down", promptText: "> **Assistant:**\n> first\n\nWhy?" } : { started: true };
+        return { ok: true, status: 201, json: async () => ({ id: "aside-1", folder: "/tmp", metadata: JSON.stringify({ chatRole }), ...outcome }) };
+      }
+      if (url === "/api/chats/aside-1/stream") {
+        return { ok: true, status: 200, body: new ReadableStream({ start: (c) => c.close() }), json: async () => ({}) };
       }
       return { ok: true, json: async () => ({}) };
     }),
@@ -213,6 +243,8 @@ it("creates the aside from the tray and the composer, empties both, and opens it
     },
   ]);
   expect(getQuotes("original")).toHaveLength(0);
+  expect(getComposerDraft("original")).toBe("");
+  expect(composer().value).toBe("");
 });
 
 it("sends Read only and an explicit harness and model", async () => {
@@ -223,7 +255,9 @@ it("sends Read only and an explicit harness and model", async () => {
   fireEvent.click(askButton());
 
   await waitFor(() => expect(forkBodies()).toHaveLength(1));
-  expect(forkBodies()[0]).toMatchObject({ permissions: { fileWrite: "ask", codeExecution: "ask" }, provider: "codex", model: "gpt-x" });
+  // Read only is the daemon's to apply (caps, no model reviewer): sent as a flag.
+  expect(forkBodies()[0]).toMatchObject({ readOnly: true, provider: "codex", model: "gpt-x" });
+  expect(forkBodies()[0]).not.toHaveProperty("permissions");
 });
 
 it("leaves the tray and the question in place when the aside is refused, and says why", async () => {
@@ -265,4 +299,77 @@ it("asks for a question before sending anything", async () => {
   expect((await screen.findByRole("alert")).textContent).toMatch(/Type your question/);
   expect(focusComposer).toHaveBeenCalled();
   expect(forkBodies()).toHaveLength(0);
+});
+
+it("blocks the composer's own send while the aside is out", async () => {
+  let release!: () => void;
+  forkReplies = [new Promise<"ok">((resolve) => (release = () => resolve("ok")))];
+  await quoteAndType("Why?");
+  fireEvent.click(askButton());
+  expect((await screen.findByTestId("send-blocked")).textContent).toMatch(/Asking the aside/);
+  fireEvent.click(screen.getByRole("button", { name: "send" }));
+  expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url) === "/api/chats/original/message")).toBe(false);
+  await act(async () => release());
+  await waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/chat/aside-1"));
+});
+
+it("does not pull the user back from another chat, nor show the request there", async () => {
+  let release!: () => void;
+  forkReplies = [new Promise<"ok">((resolve) => (release = () => resolve("ok")))];
+  await quoteAndType("Why?");
+  fireEvent.click(askButton());
+  await screen.findByRole("button", { name: "Asking…" });
+
+  // Move on, with a quote waiting in the other chat's tray.
+  addQuote("other", { id: "q-other", messageIndex: 1, timestamp: A1, role: "assistant", text: "elsewhere" });
+  fireEvent.click(screen.getByRole("button", { name: "go elsewhere" }));
+  await waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/chat/other"));
+  expect(await screen.findByRole("button", { name: "Ask as aside" })).toHaveProperty("disabled", false);
+  expect(screen.queryByTestId("send-blocked")).toBeNull();
+
+  await act(async () => release());
+  await waitFor(() => expect(getQuotes("original")).toHaveLength(0));
+  expect(screen.getByTestId("location").textContent).toBe("/chat/other");
+});
+
+it("refuses attachments rather than dropping them", async () => {
+  composerState.attachments = 2;
+  await quoteAndType("Why?");
+  fireEvent.click(askButton());
+  expect((await screen.findByRole("alert")).textContent).toMatch(/can't carry attachments/);
+  expect(forkBodies()).toHaveLength(0);
+});
+
+it("passes a system message's quote through as system", async () => {
+  await quoteAndType("Why?");
+  // A system quote in the tray, as PR 1 can make from a system text message.
+  addQuote("original", { id: "q-sys", messageIndex: 0, timestamp: Q1, role: "system", text: "notice" });
+  fireEvent.click(askButton());
+  await waitFor(() => expect(forkBodies()).toHaveLength(1));
+  expect(forkBodies()[0].quotes).toEqual([
+    { timestamp: A1, role: "assistant", text: "first" },
+    { timestamp: Q1, role: "system", text: "notice" },
+  ]);
+});
+
+it("reads the aside's transcript once on attaching to its stream", async () => {
+  composerState.active = new Set(["aside-1"]);
+  await quoteAndType("Why?");
+  const before = vi.mocked(getMessages).mock.calls.filter(([id]) => id === "aside-1").length;
+  fireEvent.click(askButton());
+  await waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/chat/aside-1"));
+  await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url) === "/api/chats/aside-1/stream")).toBe(true));
+  // The page's own load, plus the read on attach.
+  await waitFor(() => expect(vi.mocked(getMessages).mock.calls.filter(([id]) => id === "aside-1").length - before).toBe(2));
+});
+
+it("keeps an aside whose question could not be sent, with the text in its composer", async () => {
+  forkReplies = ["runError"];
+  const alert = vi.spyOn(window, "alert").mockImplementation(() => {});
+  await quoteAndType("Why?");
+  fireEvent.click(askButton());
+  await waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/chat/aside-1"));
+  expect(alert).toHaveBeenCalledWith(expect.stringContaining("engine down"));
+  expect(getComposerDraft("aside-1")).toBe("> **Assistant:**\n> first\n\nWhy?");
+  expect(getQuotes("original")).toHaveLength(0);
 });

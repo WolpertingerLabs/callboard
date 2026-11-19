@@ -6,15 +6,17 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import AskAsideControls from "./AskAsideControls";
+import AskAsideControls, { type AskAsideResult } from "./AskAsideControls";
 import { getAsideReadOnly, getAsideRecentTarget, saveAsideRecentTarget } from "../utils/localStorage";
+import { getAgentSettings } from "../api";
 
 // The model pickers fetch catalogs; a plain input stands in for each.
 const fakeSelector = vi.hoisted(() => (name: string) => ({
-  default: ({ id, value, onChange }: { id?: string; value: string; onChange: (v: string) => void }) => (
-    <input id={id} data-testid={name} value={value} onChange={(e) => onChange(e.target.value)} />
+  default: ({ id, value, onChange, providerId }: { id?: string; value: string; onChange: (v: string) => void; providerId?: string }) => (
+    <input id={id} data-testid={name} data-provider-id={providerId ?? ""} value={value} onChange={(e) => onChange(e.target.value)} />
   ),
 }));
+vi.mock("../api", () => ({ getAgentSettings: vi.fn(async () => ({ piProviderId: "anthropic" })) }));
 vi.mock("./ClaudeModelSelector", () => fakeSelector("ClaudeModelSelector"));
 vi.mock("./CodexModelSelector", () => fakeSelector("CodexModelSelector"));
 vi.mock("./PiModelSelector", () => fakeSelector("PiModelSelector"));
@@ -24,7 +26,7 @@ afterEach(() => {
   localStorage.clear();
 });
 
-const renderControls = (onAsk = vi.fn(async () => true)) => {
+const renderControls = (onAsk = vi.fn(async (): Promise<AskAsideResult> => "started")) => {
   render(<AskAsideControls chatProvider="claude-code" busy={false} onAsk={onAsk} />);
   return onAsk;
 };
@@ -68,12 +70,49 @@ describe("AskAsideControls", () => {
     await waitFor(() => expect(next).toHaveBeenCalledWith({ readOnly: false, target: { provider: "codex", model: "gpt-x" } }));
   });
 
-  it("does not remember a choice whose aside was not created", async () => {
+  it("remembers a choice only once its aside has started", async () => {
     saveAsideRecentTarget({ provider: "pi" });
-    renderControls(vi.fn(async () => false));
+    const onAsk = renderControls(vi.fn(async (): Promise<AskAsideResult> => "created"));
+    fireEvent.change(harness(), { target: { value: "codex" } });
+    ask();
+    await waitFor(() => expect(onAsk).toHaveBeenCalled());
+    expect(getAsideRecentTarget()).toEqual({ provider: "pi" });
+  });
+
+  it("forgets the stored choice when the daemon refuses it, and only that one", async () => {
+    saveAsideRecentTarget({ provider: "codex", model: "gone" });
+    const onAsk = renderControls(vi.fn(async (): Promise<AskAsideResult> => "refused"));
+    fireEvent.click(screen.getByRole("button", { name: "Codex · gone" }));
+    ask();
+    await waitFor(() => expect(onAsk).toHaveBeenCalled());
+    await waitFor(() => expect(getAsideRecentTarget()).toBeNull());
+    expect(screen.queryByRole("button", { name: "Codex · gone" })).toBeNull();
+
+    // A refusal on another choice leaves the stored one alone.
+    cleanup();
+    saveAsideRecentTarget({ provider: "pi" });
+    renderControls(vi.fn(async (): Promise<AskAsideResult> => "refused"));
     fireEvent.change(harness(), { target: { value: "codex" } });
     ask();
     await waitFor(() => expect(getAsideRecentTarget()).toEqual({ provider: "pi" }));
+  });
+
+  it("offers pi models from the configured pi provider", async () => {
+    renderControls();
+    fireEvent.change(harness(), { target: { value: "pi" } });
+    await waitFor(() => expect(screen.getByTestId("PiModelSelector").getAttribute("data-provider-id")).toBe("anthropic"));
+    expect(getAgentSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses 44px touch targets on a narrow screen", () => {
+    Object.defineProperty(window, "innerWidth", { value: 375, configurable: true });
+    try {
+      renderControls();
+      for (const name of ["Read only", "Ask as aside"]) expect(screen.getByRole("button", { name }).style.minHeight).toBe("44px");
+      expect(harness().style.minHeight).toBe("44px");
+    } finally {
+      Object.defineProperty(window, "innerWidth", { value: 1024, configurable: true });
+    }
   });
 
   it("ignores a malformed stored target", () => {

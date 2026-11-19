@@ -52,3 +52,11 @@ it("refuses without quotes, before any request", async () => {
   await expect(createAside("c", { quotes: [] })).rejects.toThrow(/at least one quote/);
   expect(fetcher).not.toHaveBeenCalled();
 });
+
+it("sends Read only as a flag for the daemon to apply", async () => {
+  const fetcher = answering({ id: "a", metadata: JSON.stringify({ chatRole: "aside" }) });
+  await createAside("c", { quotes, prompt: "why?", readOnly: true });
+  expect(JSON.parse(fetcher.mock.calls[0][1].body as string)).toMatchObject({ readOnly: true });
+  await createAside("c", { quotes, prompt: "why?" });
+  expect(JSON.parse(fetcher.mock.calls[1][1].body as string)).not.toHaveProperty("readOnly");
+});

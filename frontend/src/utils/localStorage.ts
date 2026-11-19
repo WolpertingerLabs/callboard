@@ -803,6 +803,11 @@ export function getAsideRecentTarget(): AsideTarget | null {
   return { provider: provider as UiAgentProviderKind, ...(typeof model === "string" && model.trim() && { model: model.trim() }) };
 }
 
+/** Forget the recent aside target — a request on it was refused. */
+export function clearAsideRecentTarget(): void {
+  updateStorage({ asideRecentTarget: undefined });
+}
+
 export function saveAsideRecentTarget(target: AsideTarget): void {
   updateStorage({ asideRecentTarget: { provider: target.provider, ...(target.model?.trim() && { model: target.model.trim() }) } });
 }

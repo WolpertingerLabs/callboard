@@ -12,15 +12,23 @@
  *   pre-selected: a stored model may belong to another harness than the chat's.
  *
  * Pure presentation plus the two preferences; the request is the caller's
- * (`onAsk`), which resolves to whether the aside was created.
+ * (`onAsk`), which resolves to how it went ({@link AskAsideResult}).
  */
-import { useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { History, Lock, MessageSquareQuote } from "lucide-react";
 import ClaudeModelSelector from "./ClaudeModelSelector";
 import CodexModelSelector from "./CodexModelSelector";
 import PiModelSelector from "./PiModelSelector";
-import type { ForkProvider } from "../api";
-import { getAsideReadOnly, getAsideRecentTarget, saveAsideReadOnly, saveAsideRecentTarget, type AsideTarget } from "../utils/localStorage";
+import { getAgentSettings, type ForkProvider } from "../api";
+import { useIsMobile } from "../hooks/useIsMobile";
+import {
+  clearAsideRecentTarget,
+  getAsideReadOnly,
+  getAsideRecentTarget,
+  saveAsideReadOnly,
+  saveAsideRecentTarget,
+  type AsideTarget,
+} from "../utils/localStorage";
 
 export interface AskAsideOptions {
   readOnly: boolean;
@@ -35,7 +43,26 @@ interface Props {
   busy: boolean;
   /** Why the last attempt failed, shown under the row. */
   error?: string | null;
-  onAsk: (options: AskAsideOptions) => Promise<boolean>;
+  onAsk: (options: AskAsideOptions) => Promise<AskAsideResult>;
+}
+
+/**
+ * How an ask went: the aside's first turn `started`; it was `created` but its
+ * question did not go out; the daemon `refused` it; or it was `skipped` before
+ * any request (no question, attachments, already asking).
+ */
+export type AskAsideResult = "started" | "created" | "refused" | "skipped";
+
+/** The configured pi provider, fetched once and only when pi is picked for an aside. */
+let piProviderIdPromise: Promise<string> | null = null;
+function configuredPiProviderId(): Promise<string> {
+  piProviderIdPromise ??= getAgentSettings()
+    .then((s) => s.piProviderId ?? "")
+    .catch(() => {
+      piProviderIdPromise = null;
+      return "";
+    });
+  return piProviderIdPromise;
 }
 
 const HARNESSES: { kind: ForkProvider; label: string }[] = [
@@ -46,9 +73,6 @@ const HARNESSES: { kind: ForkProvider; label: string }[] = [
 const harnessLabel = (kind: ForkProvider) => HARNESSES.find((h) => h.kind === kind)?.label ?? kind;
 const targetLabel = (t: AsideTarget) => (t.model ? `${harnessLabel(t.provider)} · ${t.model}` : harnessLabel(t.provider));
 const sameTarget = (a: AsideTarget | null, b: AsideTarget | null) => !!a && !!b && a.provider === b.provider && (a.model ?? "") === (b.model ?? "");
-
-/** Read only as the daemon takes it: only the two write-capable axes, the rest inherited. */
-export const READ_ONLY_PERMISSIONS = { fileWrite: "ask", codeExecution: "ask" } as const;
 
 const chipStyle = {
   display: "inline-flex",
@@ -65,6 +89,9 @@ const chipStyle = {
 } as const;
 
 export default function AskAsideControls({ chatProvider, busy, error, onAsk }: Props) {
+  const isMobile = useIsMobile();
+  // 44px on touch layouts (WCAG 2.5.5), compact otherwise.
+  const chip = { ...chipStyle, minHeight: isMobile ? 44 : chipStyle.minHeight, ...(isMobile && { padding: "2px 12px", fontSize: 13 }) };
   const [readOnly, setReadOnly] = useState(getAsideReadOnly);
   const [target, setTarget] = useState<AsideTarget | null>(null);
   const [recent, setRecent] = useState(getAsideRecentTarget);
@@ -82,17 +109,36 @@ export default function AskAsideControls({ chatProvider, busy, error, onAsk }: P
     if (busy || askingRef.current) return;
     askingRef.current = true;
     const chosen = target && { provider: target.provider, ...(target.model?.trim() && { model: target.model.trim() }) };
-    let created = false;
+    let result: AskAsideResult = "skipped";
     try {
-      created = await onAsk({ readOnly, target: chosen });
+      result = await onAsk({ readOnly, target: chosen });
     } finally {
       askingRef.current = false;
     }
-    if (created && chosen) {
+    if (!chosen) return;
+    // Remembered only once it has actually run; forgotten when the daemon
+    // refused it, so a broken choice is not offered again.
+    if (result === "started") {
       saveAsideRecentTarget(chosen);
       setRecent(chosen);
+    } else if (result === "refused" && sameTarget(getAsideRecentTarget(), chosen)) {
+      clearAsideRecentTarget();
+      setRecent(null);
     }
   };
+
+  const [piProviderId, setPiProviderId] = useState<string | undefined>(undefined);
+  const wantsPi = target?.provider === "pi";
+  useEffect(() => {
+    if (!wantsPi) return;
+    let live = true;
+    void configuredPiProviderId().then((id) => {
+      if (live) setPiProviderId(id);
+    });
+    return () => {
+      live = false;
+    };
+  }, [wantsPi]);
 
   const selectorProps = {
     id: modelId,
@@ -107,9 +153,9 @@ export default function AskAsideControls({ chatProvider, busy, error, onAsk }: P
         type="button"
         aria-pressed={readOnly}
         onClick={toggleReadOnly}
-        title="Read only: the aside asks before writing files or running code"
+        title="Read only: the aside asks you before writing files or running code (no model reviewer answers for you) and never controls the computer"
         style={{
-          ...chipStyle,
+          ...chip,
           ...(readOnly && { background: "var(--accent)", color: "var(--text-on-accent)", borderColor: "var(--accent)" }),
         }}
       >
@@ -120,7 +166,7 @@ export default function AskAsideControls({ chatProvider, busy, error, onAsk }: P
         aria-label="Aside harness"
         value={target?.provider ?? ""}
         onChange={(e) => setTarget(e.target.value ? { provider: e.target.value as ForkProvider } : null)}
-        style={{ ...chipStyle, paddingRight: 4 }}
+        style={{ ...chip, paddingRight: 4 }}
       >
         <option value="">Same as chat ({harnessLabel(chatProvider)})</option>
         {HARNESSES.map((h) => (
@@ -136,11 +182,11 @@ export default function AskAsideControls({ chatProvider, busy, error, onAsk }: P
           </label>
           {target.provider === "claude-code" && <ClaudeModelSelector {...selectorProps} />}
           {target.provider === "codex" && <CodexModelSelector {...selectorProps} />}
-          {target.provider === "pi" && <PiModelSelector {...selectorProps} />}
+          {target.provider === "pi" && <PiModelSelector {...selectorProps} providerId={piProviderId} />}
         </div>
       )}
       {recent && !sameTarget(recent, target) && (
-        <button type="button" onClick={() => setTarget(recent)} title="Use the harness and model of your last aside" style={chipStyle}>
+        <button type="button" onClick={() => setTarget(recent)} title="Use the harness and model of your last aside" style={chip}>
           <History size={12} aria-hidden />
           {targetLabel(recent)}
         </button>
@@ -152,7 +198,7 @@ export default function AskAsideControls({ chatProvider, busy, error, onAsk }: P
         aria-busy={busy}
         title="Ask the composer's question about the quoted passages in a side branch"
         style={{
-          ...chipStyle,
+          ...chip,
           marginLeft: "auto",
           background: "var(--accent)",
           color: "var(--text-on-accent)",

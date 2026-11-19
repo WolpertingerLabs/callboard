@@ -685,6 +685,12 @@ export interface CreateAsideOptions {
   prompt?: string;
   /** Full or partial; capped server-side so nothing is looser than the parent. Omit to inherit. */
   permissions?: Partial<DefaultPermissions>;
+  /**
+   * Read only, decided by the daemon: fileWrite and codeExecution at most
+   * "ask", computerControl "deny", and no inherited model reviewer — so every
+   * write or run is the user's to approve.
+   */
+  readOnly?: boolean;
   /** A different harness: the handoff fork path (tool calls flattened to text). */
   provider?: ForkProvider;
   model?: string;
@@ -745,6 +751,7 @@ export async function createAside(id: string, opts: CreateAsideOptions): Promise
       quotes: opts.quotes,
       ...(opts.prompt && { prompt: opts.prompt }),
       ...(opts.permissions && { permissions: opts.permissions }),
+      ...(opts.readOnly && { readOnly: true }),
       ...(opts.provider && { provider: opts.provider }),
       ...(opts.model && { model: opts.model }),
       ...(opts.effort && { effort: opts.effort }),
