@@ -76,6 +76,11 @@ describe("parseAsideQuotes", () => {
     expect(parseAsideQuotes([ok], "2026-01-01T00:00:00.000Z")).toEqual({ ok: true, quotes: [ok] });
   });
 
+  it("accepts a system message's quote", () => {
+    const system = q("2026-01-01T00:00:00Z", "system", "a notice");
+    expect(parseAsideQuotes([system])).toEqual({ ok: true, quotes: [system] });
+  });
+
   it("drops unknown keys", () => {
     expect(parseAsideQuotes([{ ...ok, messageIndex: 3 }])).toEqual({ ok: true, quotes: [ok] });
   });
@@ -86,7 +91,7 @@ describe("parseAsideQuotes", () => {
     ["too many", Array.from({ length: ASIDE_MAX_QUOTES + 1 }, () => ok), /at most/],
     ["a non-object", [null], /object/],
     ["a bad timestamp", [{ ...ok, timestamp: "yesterday" }], /timestamp/],
-    ["a bad role", [{ ...ok, role: "system" }], /role/],
+    ["a bad role", [{ ...ok, role: "tool" }], /role/],
     ["empty text", [{ ...ok, text: "  " }], /text/],
     ["overlong text", [{ ...ok, text: "x".repeat(ASIDE_MAX_QUOTE_CHARS + 1) }], /longer/],
   ])("refuses %s", (_label, value, error) => {

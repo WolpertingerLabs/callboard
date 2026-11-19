@@ -213,6 +213,14 @@ describe("POST /api/chats/:id/fork kind aside", () => {
     expect(res.chat).not.toHaveProperty("started");
   });
 
+  it("keeps a system message's quote as system, labelled so in the prompt", async () => {
+    setParent({});
+    const res = await aside({ quotes: [{ timestamp: T1, role: "system", text: "notice" }], prompt: "why?" });
+    expect(res.code).toBe(201);
+    expect(res.meta.asideQuotes).toEqual([{ timestamp: T1, role: "system", text: "notice" }]);
+    expect(turns.calls[0].prompt).toMatch(/^> \*\*System, /);
+  });
+
   it("titles off the question, truncated", async () => {
     setParent({});
     const res = await aside({ prompt: `what does ${"x".repeat(100)} mean?` });
@@ -236,6 +244,28 @@ describe("POST /api/chats/:id/fork kind aside", () => {
     it("inherits the parent's when none are given", async () => {
       setParent({ defaultPermissions: parentPerms });
       expect((await aside()).meta.defaultPermissions).toEqual(parentPerms);
+    });
+
+    it("maps readOnly to ask on writes and runs, deny on computer control, and drops the model reviewer", async () => {
+      setParent({ defaultPermissions: { ...parentPerms, computerControl: "allow", webAccess: "allow" }, modelReview: true });
+      const res = await aside({ readOnly: true });
+      expect(res.meta.defaultPermissions).toEqual({ fileRead: "allow", fileWrite: "ask", codeExecution: "ask", webAccess: "allow", computerControl: "deny" });
+      expect(res.meta).not.toHaveProperty("modelReview");
+    });
+
+    it("keeps a parent's stricter axes under readOnly, and the reviewer without it", async () => {
+      setParent({ defaultPermissions: { ...parentPerms, fileWrite: "deny" }, modelReview: true });
+      const ro = await aside({ readOnly: true, permissions: { fileWrite: "allow" } });
+      expect(ro.meta.defaultPermissions).toMatchObject({ fileWrite: "deny", codeExecution: "ask", computerControl: "deny" });
+      const plain = await aside();
+      expect(plain.meta.modelReview).toBe(true);
+    });
+
+    it("re-applies readOnly in the late re-cap", async () => {
+      setParent({ defaultPermissions: parentPerms });
+      effortContexts.mockImplementationOnce(() => setParent({ defaultPermissions: { ...parentPerms, fileRead: "ask" } }));
+      const res = await aside({ readOnly: true });
+      expect(res.meta.defaultPermissions).toEqual({ ...parentPerms, fileRead: "ask", fileWrite: "ask", codeExecution: "ask" });
     });
 
     it("applies a stricter partial set (read only)", async () => {
@@ -333,6 +363,7 @@ describe("POST /api/chats/:id/fork kind aside", () => {
       ["no quotes", { quotes: [] }, /at least one quote/],
       ["missing quotes", { quotes: undefined }, /array/],
       ["a malformed quote", { quotes: [{ timestamp: T0, role: "robot", text: "x" }] }, /role/],
+      ["a non-boolean readOnly", { readOnly: "yes" }, /readOnly must be a boolean/],
       ["too many quotes", { quotes: Array.from({ length: 21 }, () => quote()) }, /at most 20/],
       ["an overlong quote", { quotes: [quote(T0, "x".repeat(10_001))] }, /longer than/],
       ["an overlong question", { prompt: "x".repeat(20_001) }, /longer than/],
@@ -369,6 +400,7 @@ describe("POST /api/chats/:id/fork kind aside", () => {
       expect(calls.forkSession).toHaveLength(0);
       expect(calls.createChat).toHaveLength(0);
       expect((await fork({ activePlugins: ["p"] })).meta.error).toBe('activePlugins is only accepted with kind "aside"');
+      expect((await fork({ readOnly: true })).meta.error).toBe('readOnly is only accepted with kind "aside"');
     });
 
     it("leaves a plain fork as it was", async () => {

@@ -1305,6 +1305,7 @@ chatsRouter.post("/:id/fork", async (req, res) => {
             kind: { type: "string", enum: ["fork", "aside"], description: "fork (default) or aside. quotes, prompt, permissions, activePlugins and timeZone are accepted only with aside." },
             quotes: { type: "array", maxItems: 20, items: { type: "object", required: ["timestamp", "role", "text"], properties: { timestamp: { type: "string" }, role: { type: "string", enum: ["user", "assistant"] }, text: { type: "string", maxLength: 10000 } } }, description: "Aside only, required: the quoted passages. `timestamp` must equal the latest of their timestamps (the fork point)." },
             prompt: { type: "string", maxLength: 20000, description: "Aside only: the question. When given, the first turn is started immediately." },
+            readOnly: { type: "boolean", description: "Aside only: Read only. fileWrite and codeExecution at most ask, computerControl deny (all still capped by this chat), and the model reviewer is not inherited, so every such ask reaches the user." },
             permissions: { type: "object", description: "Aside only: permissions (full or partial — fileRead, fileWrite, codeExecution, webAccess, computerControl; allow/ask/deny). Merged over the permissions of this chat and capped so no category is looser. Omit to inherit them." },
             timeZone: { type: "string", description: "Aside only: IANA time zone for the HH:MM on the quote origin lines (the browser zone). Unknown zones fall back to the daemon zone." },
             activePlugins: { type: "array", items: { type: "string" }, description: "Aside with prompt only: active plugin IDs for the first turn, as on POST /chats/:id/message." },
@@ -1402,7 +1403,7 @@ chatsRouter.post("/:id/fork", async (req, res) => {
   if (asideSpec) {
     const current = findChat(chat.id, false) as any;
     if (current) {
-      const again = resolveAsidePermissions(parseChatMetadata(current.metadata).defaultPermissions, req.body.permissions);
+      const again = resolveAsidePermissions(parseChatMetadata(current.metadata).defaultPermissions, req.body.permissions, asideSpec.readOnly);
       if (again.ok) asidePermissions = again.permissions;
     }
   }
@@ -1449,6 +1450,9 @@ chatsRouter.post("/:id/fork", async (req, res) => {
       asideQuotes: asideSpec.quotes,
       // Inherited unless the request named some, then capped to the parent's.
       defaultPermissions: asidePermissions ?? undefined,
+      // Read only means the user sees every write or run ask: the inherited
+      // model reviewer could approve one without them, so it stays behind.
+      ...(asideSpec.readOnly && { modelReview: undefined }),
     }),
   };
 
@@ -1493,7 +1497,7 @@ chatsRouter.post("/:id/fork", async (req, res) => {
 
 /** A validated `kind: "aside"` request — or `aside: null` for a plain fork. */
 type AsideRequest =
-  | { ok: true; aside: { quotes: AsideQuote[]; prompt?: string; permissions: DefaultPermissions | null; activePlugins?: string[] } | null }
+  | { ok: true; aside: { quotes: AsideQuote[]; prompt?: string; permissions: DefaultPermissions | null; readOnly: boolean; activePlugins?: string[] } | null }
   | { ok: false; error: string };
 
 /**
@@ -1508,7 +1512,7 @@ function parseAsideRequest(body: Record<string, unknown>, timestamp: string, par
   const { kind } = body;
   if (kind !== undefined && kind !== "fork" && kind !== ASIDE_ROLE) return { ok: false, error: 'kind must be "fork" or "aside"' };
   if (kind !== ASIDE_ROLE) {
-    const stray = (["quotes", "prompt", "permissions", "activePlugins", "timeZone"] as const).filter((k) => body[k] !== undefined);
+    const stray = (["quotes", "prompt", "permissions", "readOnly", "activePlugins", "timeZone"] as const).filter((k) => body[k] !== undefined);
     if (stray.length > 0) return { ok: false, error: `${stray.join(", ")} ${stray.length === 1 ? "is" : "are"} only accepted with kind "aside"` };
     return { ok: true, aside: null };
   }
@@ -1526,7 +1530,9 @@ function parseAsideRequest(body: Record<string, unknown>, timestamp: string, par
     if (body.prompt.length > ASIDE_MAX_PROMPT_CHARS) return { ok: false, error: `prompt is longer than ${ASIDE_MAX_PROMPT_CHARS} characters` };
     prompt = body.prompt.trim() || undefined;
   }
-  const permissions = resolveAsidePermissions(parentPermissions, body.permissions);
+  if (body.readOnly !== undefined && typeof body.readOnly !== "boolean") return { ok: false, error: "readOnly must be a boolean" };
+  const readOnly = body.readOnly === true;
+  const permissions = resolveAsidePermissions(parentPermissions, body.permissions, readOnly);
   if (!permissions.ok) return permissions;
   const { activePlugins } = body;
   if (activePlugins !== undefined) {
@@ -1535,7 +1541,13 @@ function parseAsideRequest(body: Record<string, unknown>, timestamp: string, par
   }
   return {
     ok: true,
-    aside: { quotes: quotes.quotes, ...(prompt && { prompt }), permissions: permissions.permissions, ...(activePlugins !== undefined && { activePlugins: activePlugins as string[] }) },
+    aside: {
+      quotes: quotes.quotes,
+      ...(prompt && { prompt }),
+      permissions: permissions.permissions,
+      readOnly,
+      ...(activePlugins !== undefined && { activePlugins: activePlugins as string[] }),
+    },
   };
 }
 

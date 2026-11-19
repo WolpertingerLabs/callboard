@@ -14,7 +14,8 @@ export const ASIDE_ROLE = "aside";
 export interface AsideQuote {
   /** ISO timestamp of the quoted message. Never later than the aside's fork point. */
   timestamp: string;
-  role: "user" | "assistant";
+  /** "system" since this was added: a daemon before it refuses such a quote (400), never mislabels it. */
+  role: "user" | "assistant" | "system";
   text: string;
 }
 
@@ -166,7 +167,7 @@ export function parseAsideQuotes(value: unknown, forkPoint?: string): { ok: true
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ok: false, error: `quotes[${i}] must be an object` };
     const { timestamp, role, text } = raw as Record<string, unknown>;
     if (typeof timestamp !== "string" || isNaN(new Date(timestamp).getTime())) return { ok: false, error: `quotes[${i}].timestamp must be an ISO timestamp` };
-    if (role !== "user" && role !== "assistant") return { ok: false, error: `quotes[${i}].role must be "user" or "assistant"` };
+    if (role !== "user" && role !== "assistant" && role !== "system") return { ok: false, error: `quotes[${i}].role must be "user", "assistant" or "system"` };
     if (typeof text !== "string" || !text.trim()) return { ok: false, error: `quotes[${i}].text must be a non-empty string` };
     if (text.length > ASIDE_MAX_QUOTE_CHARS) return { ok: false, error: `quotes[${i}].text is longer than ${ASIDE_MAX_QUOTE_CHARS} characters` };
     if (limitMs !== undefined && new Date(timestamp).getTime() > limitMs) return { ok: false, error: `quotes[${i}] is after the fork point` };

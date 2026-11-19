@@ -31,17 +31,30 @@ export function asideInstructionFor(meta: Record<string, unknown>): string {
  * inherits them (`null` when the parent has none, which the policy reads as
  * "ask" everywhere). Given → a partial or full set merged over the parent's
  * and then capped per axis so no axis is looser than the parent's — the
- * read-only toggle sends `{ fileWrite: "ask", codeExecution: "ask" }`.
+ * read-only toggle sends `readOnly: true`, which the server maps to
+ * {@link READ_ONLY_CEILING} on top (and, in the route, to dropping the
+ * inherited model reviewer, whose approval would skip the user's prompt).
  */
 export function resolveAsidePermissions(
   parent: DefaultPermissions | null | undefined,
   requested: unknown,
+  readOnly = false,
 ): { ok: true; permissions: DefaultPermissions | null } | { ok: false; error: string } {
-  if (requested === undefined) return { ok: true, permissions: parent ?? null };
-  if (!requested || typeof requested !== "object" || Array.isArray(requested)) return { ok: false, error: "permissions must be an object" };
-  for (const [key, value] of Object.entries(requested)) {
-    if (!isPermissionAxis(key)) return { ok: false, error: `Unknown permission category "${key}"` };
-    if (!isPermissionLevel(value)) return { ok: false, error: `permissions.${key} must be one of: allow, ask, deny` };
+  if (requested !== undefined) {
+    if (!requested || typeof requested !== "object" || Array.isArray(requested)) return { ok: false, error: "permissions must be an object" };
+    for (const [key, value] of Object.entries(requested)) {
+      if (!isPermissionAxis(key)) return { ok: false, error: `Unknown permission category "${key}"` };
+      if (!isPermissionLevel(value)) return { ok: false, error: `permissions.${key} must be one of: allow, ask, deny` };
+    }
   }
-  return { ok: true, permissions: capPermissions(mergePermissions(parent, requested), parent) };
+  if (requested === undefined && !readOnly) return { ok: true, permissions: parent ?? null };
+  const merged = capPermissions(mergePermissions(parent, requested ?? {}), parent);
+  return { ok: true, permissions: readOnly ? capPermissions(merged, READ_ONLY_CEILING) : merged };
 }
+
+/**
+ * The most a Read only aside may do, per axis: it asks before writing files or
+ * running code and never controls the computer. Applied as a cap, so an axis
+ * the parent already holds stricter (a "deny") stays so.
+ */
+export const READ_ONLY_CEILING: DefaultPermissions = { fileRead: "allow", fileWrite: "ask", codeExecution: "ask", webAccess: "allow", computerControl: "deny" };

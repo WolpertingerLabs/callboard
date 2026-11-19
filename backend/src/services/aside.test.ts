@@ -35,6 +35,19 @@ describe("resolveAsidePermissions", () => {
     });
   });
 
+  it("caps to the Read only ceiling, inside the parent's", () => {
+    const loose = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", computerControl: "allow" } as const;
+    expect(resolveAsidePermissions(loose, undefined, true)).toEqual({
+      ok: true,
+      permissions: { fileRead: "allow", fileWrite: "ask", codeExecution: "ask", webAccess: "allow", computerControl: "deny" },
+    });
+    // The parent's own stricter axes stay; a requested loosening cannot beat either cap.
+    expect(resolveAsidePermissions(parent, { codeExecution: "allow", webAccess: "allow" }, true)).toEqual({
+      ok: true,
+      permissions: { ...parent, codeExecution: "ask", fileWrite: "ask" },
+    });
+  });
+
   it("allows stricter than the parent", () => {
     expect(resolveAsidePermissions(parent, { fileRead: "deny" })).toEqual({ ok: true, permissions: { ...parent, fileRead: "deny" } });
   });
