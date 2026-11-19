@@ -124,6 +124,12 @@ interface Props {
    * and marked, and its menu offers Unarchive.
    */
   showArchivedChildren?: boolean;
+  /**
+   * Fold asides into their parent's row (the default). Off while a search is
+   * showing hits: an aside that matched is a hit, and must be a row of its own
+   * to be seen — folded, it would vanish into its parent's count.
+   */
+  foldAsides?: boolean;
 }
 
 /** What one row is told about the selection it is part of. */
@@ -414,7 +420,7 @@ function lineageOf(chat: Chat, byId: Map<string, Chat>): LineageInfo {
  * module is memoised on `chats`, and so is the one in ChatList — both from the
  * same `filteredChats` array.
  */
-export function buildRows(chats: Chat[], activeChatId?: string): Row[] {
+export function buildRows(chats: Chat[], activeChatId?: string, foldAsides = true): Row[] {
   const byId = new Map<string, Chat>(chats.map((c) => [c.id, c]));
   // Chats some loaded chat names as its parent.
   const parents = new Set<string>();
@@ -438,7 +444,7 @@ export function buildRows(chats: Chat[], activeChatId?: string): Row[] {
   for (const chat of chats) {
     const info = lineageOf(chat, byId);
     infoById.set(chat.id, info);
-    if (isFoldedAside(chat, byId, parents, activeChatId)) {
+    if (foldAsides && isFoldedAside(chat, byId, parents, activeChatId)) {
       folded.add(chat.id);
       const meta = chatMeta(chat);
       const parentId = (meta.parentChatId || meta.forkedFrom)!;
@@ -674,6 +680,7 @@ function TreeNodeRow({
   childArchive,
   underArchived = false,
   isRunning,
+  foldAsides = true,
 }: {
   node: ChatTreeNode;
   depth: number;
@@ -685,6 +692,8 @@ function TreeNodeRow({
   underArchived?: boolean;
   /** Whether a chat has a live session — the folded asides' running dot. Falls back to the tree's own status. */
   isRunning?: (chatId: string) => boolean;
+  /** See `Props.foldAsides`: off while a search is up. */
+  foldAsides?: boolean;
 }) {
   const [menu, setMenu] = useState<{ position: PopupMenuPosition; openedByTouch: boolean } | null>(null);
   const rowRef = useRef<HTMLDivElement>(null);
@@ -775,7 +784,12 @@ function TreeNodeRow({
   const faded = (archivedChild || underArchived) && !isActive;
   // Asides are folded into this row (see `Row.asideCount`), unless one has
   // children of its own to hang off it, or is the chat open.
-  const foldedAside = (child: ChatTreeNode) => child.role === ASIDE_ROLE && child.children.length === 0 && child.chatId !== activeChatId;
+  // "Of its own" means visible: an archived child the list is not showing does
+  // not count — the list drops those before it folds (`withoutArchivedChildren`),
+  // so the row and the tree agree on which asides are folded.
+  const hasVisibleChildren = (child: ChatTreeNode) => child.children.some((c) => childArchive?.showArchived || !c.childArchived);
+  const foldedAside = (child: ChatTreeNode) =>
+    foldAsides && child.role === ASIDE_ROLE && !hasVisibleChildren(child) && child.chatId !== activeChatId;
   const asideNodes = node.children.filter((child) => foldedAside(child) && (childArchive?.showArchived || !child.childArchived));
   const asideAttention = sumAttention(asideNodes.map((child) => nodeSignals(child, isRunning?.(child.chatId))));
 
@@ -936,6 +950,7 @@ function TreeNodeRow({
             childArchive={childArchive}
             underArchived={childrenUnderArchived}
             isRunning={isRunning}
+            foldAsides={foldAsides}
           />
         ))}
     </>
@@ -962,6 +977,7 @@ export default function ChatTreeList({
   detachingIds,
   onSetChildArchived,
   showArchivedChildren = false,
+  foldAsides = true,
 }: Props) {
   const navigate = useNavigate();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -971,7 +987,7 @@ export default function ChatTreeList({
   // Group loaded chats by lineage root, preserving the server's recency order:
   // each group appears at the position of its most recently updated member,
   // fronted by its root where that chat is loaded. See `buildRows`.
-  const rows = useMemo(() => buildRows(chats, activeChatId), [chats, activeChatId]);
+  const rows = useMemo(() => buildRows(chats, activeChatId, foldAsides), [chats, activeChatId, foldAsides]);
 
   // Read current expansion/rows from the refresh effect without making it a
   // dependency — the effect must fire on refreshes, not on every expand click.
@@ -1057,7 +1073,9 @@ export default function ChatTreeList({
 
   // Selection mode is list-wide, so any row's props answer it.
   const selectionActive = rows.length > 0 && !!selectionFor?.(rows[0].chat).selectionMode;
-  const splitOff: TreeSplitOff | undefined = onDetach ? { onDetach, isDetaching: (chatId) => !!detachingIds?.has(chatId), selectionActive } : undefined;
+  const splitOff: TreeSplitOff | undefined = onDetach
+    ? { onDetach, isDetaching: (chatId) => !!detachingIds?.has(chatId), selectionActive }
+    : undefined;
 
   /**
    * Flip the node in every fetched tree that holds it, then ask the list to
@@ -1234,9 +1252,7 @@ export default function ChatTreeList({
               onMoveToSpace={onMoveToSpace && (() => onMoveToSpace(chat))}
               // Only when the root is not loaded is a group fronted by a child;
               // that child is then the one row the user can reach it from.
-              onDetach={
-                onDetach && canSplitOff(chatMeta(chat)) ? () => onDetach(chat.id, chatMeta(chat).title || chatMeta(chat).preview || "This chat") : undefined
-              }
+              onDetach={onDetach && canSplitOff(chatMeta(chat)) ? () => onDetach(chat.id, chatMeta(chat).title || chatMeta(chat).preview || "This chat") : undefined}
               detaching={!!detachingIds?.has(chat.id)}
               sessionStatus={groupSessionStatus}
               // Identity above is the root's; the live-work signals are the
@@ -1259,6 +1275,7 @@ export default function ChatTreeList({
               splitOff={splitOff}
               childArchive={childArchive}
               isRunning={isRunning}
+              foldAsides={foldAsides}
             />
           </div>
         )}

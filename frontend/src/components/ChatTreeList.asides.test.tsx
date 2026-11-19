@@ -212,3 +212,23 @@ describe("attention from folded asides (they are not members, but the row speaks
     expect(rows[0]!.members.map((m) => m.id).sort()).toEqual(["a1", "f1", "main"]);
   });
 });
+
+it("folds an aside whose only child is archived and hidden, in the tree as in the row", async () => {
+  vi.mocked(getChatTree).mockResolvedValueOnce({
+    targetChatId: "root",
+    rootChatId: "root",
+    ancestors: [],
+    tree: makeNode("root", "Root chat", {
+      children: [
+        makeNode("child", "Child"),
+        makeNode("a1", "Aside: with an archived fork", { role: "aside", children: [makeNode("f", "Archived fork", { role: "fork", childArchived: true })] }),
+      ],
+    }),
+  });
+  renderList([makeChat("root"), makeChat("child", { parentChatId: "root", rootChatId: "root" })]);
+  (await screen.findByTitle("Expand chat tree")).click();
+  await screen.findByText("Child");
+  const rootNode = screen.getAllByTestId("chat-tree-node").find((el) => el.getAttribute("data-chat-id") === "root")!;
+  expect(within(rootNode).getByRole("img", { name: "1 aside" })).toBeTruthy();
+  expect(screen.queryByText("Aside: with an archived fork")).toBeNull();
+});

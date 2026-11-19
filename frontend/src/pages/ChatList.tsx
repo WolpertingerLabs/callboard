@@ -1150,7 +1150,9 @@ export default function ChatList({
    * saw. The rows inside an expanded group's fetched tree are not in `chats` at
    * all and are likewise not selectable.
    */
-  const rows = useMemo(() => buildRows(filteredChats, activeChatId), [filteredChats, activeChatId]);
+  // A search's hits are rows of their own, asides included (see ChatTreeList's `foldAsides`).
+  const foldAsides = matchingChatIds === null;
+  const rows = useMemo(() => buildRows(filteredChats, activeChatId, foldAsides), [filteredChats, activeChatId, foldAsides]);
   const rowChats = useMemo(() => new Map(rows.map((row) => [row.chat.id, row.chat])), [rows]);
   /**
    * Row ids in the order they RENDER — sectioned (Pinned, folders, Recent) by
@@ -1870,6 +1872,7 @@ export default function ChatList({
           detachingIds={detachingIds}
           onSetChildArchived={handleSetChildArchived}
           showArchivedChildren={showArchivedChildren}
+          foldAsides={foldAsides}
           cardMenuFor={cardMenuFor}
           sessionStatusFor={(chatId) => (activeSessions.has(chatId) ? { active: true, type: activeSessions.get(chatId)!.type } : undefined)}
           isDimmed={isDimmed}
