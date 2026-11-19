@@ -308,13 +308,13 @@ const TREE_REFRESH_MIN_DELAY_MS = 1_000;
 
 /**
  * Whether a prompt is a slash command — which a quote must not be put in front
- * of. Judged against the known commands; before that list has loaded (it is
- * fetched with the chat) anything shaped like one counts, so a command sent
- * in that window still runs. "Shaped like one" ends at whitespace, so a
- * path such as `/tmp/x` is still prose.
+ * of. Judged against the known commands once they have loaded (an empty list
+ * then really is "no commands"); before that, anything shaped like one
+ * counts, so a command sent in that window still runs. "Shaped like one" ends
+ * at whitespace, so a path such as `/tmp/x` is still prose.
  */
-function leadsWithCommand(prompt: string, commands: string[]): boolean {
-  if (commands.length === 0) return /^\s*\/[\w:-]+(?:\s|$)/.test(prompt);
+function leadsWithCommand(prompt: string, commands: string[], loaded: boolean): boolean {
+  if (!loaded) return /^\s*\/[\w:-]+(?:\s|$)/.test(prompt);
   return parseLeadingCommand(prompt, commands).command !== null;
 }
 
@@ -453,6 +453,12 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     mcpToolsLoading,
   } = useChatCommands(id, agentChat);
   const [showSlashCommandsModal, setShowSlashCommandsModal] = useState(false);
+  /**
+   * The chat whose command list has arrived — the list state outlives a
+   * switch of chat, so a bare "is it empty" cannot tell loaded-and-empty from
+   * not-loaded-yet. Set where the list is installed (the getChat effect).
+   */
+  const [commandsLoadedFor, setCommandsLoadedFor] = useState<string | null>(null);
   const [slashCommandsModalTab, setSlashCommandsModalTab] = useState<"commands" | "tools" | "keywords">("commands");
   // Owned here rather than inside the launchpad because SessionInfoNav has to
   // know which shape the launchpad took: with nothing starred the launchpad
@@ -1946,6 +1952,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       // Use slash commands and plugins from chat data if available for faster display
       if (chatData?.slash_commands && chatData.slash_commands.length > 0) {
         setSlashCommands(chatData.slash_commands.map((cmd: any) => (typeof cmd === "string" ? cmd : cmd.name)));
+        setCommandsLoadedFor(id!);
       }
       if (chatData?.plugins && chatData.plugins.length > 0) {
         setPlugins(chatData.plugins);
@@ -1956,7 +1963,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
       // Fetch fresh data if not available
       if (!chatData?.slash_commands?.length && !chatData?.plugins?.length) {
-        loadSlashCommands();
+        loadSlashCommands().then((loaded) => {
+          if (loaded && currentIdRef.current === id) setCommandsLoadedFor(id!);
+        });
       }
     }).catch((err) => {
       console.warn("Failed to load chat:", err);
@@ -2807,7 +2816,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const handleComposerSend = useCallback(
     (prompt: string, images?: File[]) => {
       const quotes = id ? getQuotes(id) : [];
-      if (!id || quotes.length === 0 || sendBlockedReason || leadsWithCommand(prompt, allSlashCommands)) {
+      if (!id || quotes.length === 0 || sendBlockedReason || leadsWithCommand(prompt, allSlashCommands, commandsLoadedFor === id)) {
         return handleSend(prompt, images);
       }
       const chatId = id;
@@ -2819,7 +2828,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       };
       return handleSend(buildQuotedPrompt(quotes, prompt), images, { onRefused });
     },
-    [id, handleSend, sendBlockedReason, allSlashCommands, promptInputSetValue],
+    [id, handleSend, sendBlockedReason, allSlashCommands, commandsLoadedFor, promptInputSetValue],
   );
 
   // Retry the original message with forceBranchChange after user confirms the modal

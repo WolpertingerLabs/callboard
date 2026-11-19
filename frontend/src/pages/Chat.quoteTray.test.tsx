@@ -18,13 +18,16 @@ import type { ReactNode } from "react";
 import Chat from "./Chat";
 import { formatQuoteOrigin } from "../utils/messageQuotes";
 import { getQuotes, resetQuoteTraysForTests } from "../hooks/useQuoteTray";
+import { getSlashCommandsAndPlugins } from "../api";
 
 const Q1 = "2026-01-01T10:00:00.000Z";
 const A1 = "2026-01-01T10:00:01.000Z";
 const S1 = "2026-01-01T10:00:02.000Z";
 const focusComposer = vi.fn();
-/** The chat's commands as the server lists them; empty is "not loaded yet". */
+/** The chat's commands as the chat record lists them. */
 let chatSlashCommands: string[] = ["compact"];
+/** Whether the separate command fetch (used when the record lists none) ever answers. */
+let commandFetchHangs = false;
 
 vi.mock("../api/computerUse", () => ({ computerUseClient: { status: vi.fn(), open: vi.fn(), observe: vi.fn(), control: vi.fn(), action: vi.fn() } }));
 vi.mock("../api", async (importOriginal) => ({
@@ -44,7 +47,7 @@ vi.mock("../api", async (importOriginal) => ({
   getPending: vi.fn(async () => null),
   getActivity: vi.fn(async () => ({ activities: [], conditionWatch: null, awaitingChildren: 0 })),
   markAsRead: vi.fn(async () => ({})),
-  getSlashCommandsAndPlugins: vi.fn(async () => ({ slashCommands: [], plugins: [] })),
+  getSlashCommandsAndPlugins: vi.fn(() => (commandFetchHangs ? new Promise(() => {}) : Promise.resolve({ slashCommands: [], plugins: [] }))),
   getSystemInfo: vi.fn(async () => ({})),
   getMcpTools: vi.fn(async () => ({ tools: [], servers: [] })),
   listKeywords: vi.fn(async () => ({ keywords: [] })),
@@ -144,6 +147,7 @@ const QUOTED = `> **${origin}:**\n> first`;
 beforeEach(() => {
   replies = [];
   chatSlashCommands = ["compact"];
+  commandFetchHangs = false;
   resetQuoteTraysForTests();
   Object.defineProperty(window, "innerWidth", { value: 1200, configurable: true });
   Element.prototype.scrollTo = vi.fn();
@@ -302,6 +306,7 @@ it.each([
 
 it("treats a command-shaped prompt as a command before the command list has loaded", async () => {
   chatSlashCommands = [];
+  commandFetchHangs = true;
   await quoteFromAnswer();
   type("/compact keep the API notes");
   send();
@@ -313,6 +318,19 @@ it("treats a command-shaped prompt as a command before the command list has load
   type("/tmp/x is that path");
   send();
   await waitFor(() => expect(sentPrompts()[1]).toBe(`${QUOTED}\n\n/tmp/x is that path`));
+});
+
+it("quotes a slash-shaped prompt in a chat whose command list loaded empty", async () => {
+  chatSlashCommands = [];
+  await quoteFromAnswer();
+  // Loaded: the record listed none, and the command fetch answered with none.
+  await waitFor(() => expect(vi.mocked(getSlashCommandsAndPlugins)).toHaveBeenCalled());
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 20)));
+  type("/compact keep the API notes");
+  send();
+
+  await waitFor(() => expect(sentPrompts()).toEqual([`${QUOTED}\n\n/compact keep the API notes`]));
+  expect(getQuotes("original")).toHaveLength(0);
 });
 
 it("sends a slash command as typed and leaves the tray alone", async () => {

@@ -25,6 +25,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { SELECTION_TOOLBAR_ATTR, type SelectionRect } from "../hooks/useMessageTextSelection";
+import { isModalOpen } from "../utils/modalOpen";
 
 export interface SelectionToolbarAction {
   key: string;
@@ -50,6 +51,29 @@ const GAP = 8;
 const TOUCH_GAP = 28;
 /** Keep the bar's centre this far from the viewport's sides — about half its width. */
 const EDGE = 72;
+/**
+ * Below the modal layer (ModalOverlay and its kin sit at 1000): an open
+ * dialog must cover the bar, not the other way round. The bar also hides
+ * outright while one is open — see {@link useModalOpen}.
+ */
+const Z_INDEX = 900;
+
+/**
+ * Whether a modal is open, kept current while the bar is mounted. Watched
+ * rather than read once, because a dialog can open over a selection that is
+ * already showing the bar.
+ */
+function useModalOpen(): boolean {
+  const [open, setOpen] = useState(() => isModalOpen());
+  useEffect(() => {
+    const check = () => setOpen(isModalOpen());
+    check();
+    const observer = new MutationObserver(check);
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["aria-modal", "data-modal-overlay"] });
+    return () => observer.disconnect();
+  }, []);
+  return open;
+}
 
 function isCoarsePointer(): boolean {
   return typeof window.matchMedia === "function" && window.matchMedia("(pointer: coarse)").matches;
@@ -66,6 +90,10 @@ export const shortcutLabel = (letter: string) => `Alt+${letter.toUpperCase()}`;
  * produced when that is a plain ASCII letter — so Alt+Q is the key labelled Q
  * on AZERTY too, where it sits at QWERTY's A — and by the physical key only
  * when it is not: macOS Option+letter types a symbol (Option+Q is `œ`).
+ *
+ * Known gap: on a Mac with an AZERTY layout, Option+letter is a symbol too, so
+ * the physical-key fallback swaps Alt+Q and Alt+A there. Accepted — both add
+ * the quote; Ask only also focuses the composer.
  */
 export function matchesShortcutLetter(e: Pick<KeyboardEvent, "key" | "code">, letter: string): boolean {
   const wanted = letter.toUpperCase();
@@ -76,6 +104,7 @@ export function matchesShortcutLetter(e: Pick<KeyboardEvent, "key" | "code">, le
 export default function SelectionQuoteToolbar({ rect, actions }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
   const [active, setActive] = useState(0);
+  const modalOpen = useModalOpen();
   const actionsRef = useRef(actions);
   useEffect(() => {
     actionsRef.current = actions;
@@ -98,6 +127,8 @@ export default function SelectionQuoteToolbar({ rect, actions }: Props) {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || isEditable(e.target)) return;
+      // Nothing behind an open dialog acts on a keypress meant for it.
+      if (isModalOpen()) return;
       if (e.code === FOCUS_SHORTCUT.code) {
         e.preventDefault();
         const root = rootRef.current;
@@ -132,6 +163,7 @@ export default function SelectionQuoteToolbar({ rect, actions }: Props) {
   const top = below ? rect.bottom + (touch ? TOUCH_GAP : GAP) : rect.top - GAP;
   const current = Math.min(active, actions.length - 1);
 
+  if (modalOpen) return null;
   return createPortal(
     <div
       ref={rootRef}
@@ -145,7 +177,7 @@ export default function SelectionQuoteToolbar({ rect, actions }: Props) {
         top,
         left,
         transform: below ? "translateX(-50%)" : "translate(-50%, -100%)",
-        zIndex: 1000,
+        zIndex: Z_INDEX,
         display: "flex",
         gap: 2,
         padding: 3,

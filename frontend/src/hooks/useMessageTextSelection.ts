@@ -187,6 +187,7 @@ export function useMessageTextSelection({ containerRef, originOf, enabled = true
     if (!enabled) return;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let holdTimer: ReturnType<typeof setTimeout> | null = null;
+    let escapeTimer: ReturnType<typeof setTimeout> | null = null;
     let frame: number | null = null;
     let mouseDown = false;
 
@@ -284,7 +285,9 @@ export function useMessageTextSelection({ containerRef, originOf, enabled = true
       // Looked at once the event has been through every listener: an Escape
       // that closed something else (a bubble's copy menu, a popup menu) is
       // that thing's, and listeners added after this one run after it.
-      setTimeout(() => {
+      if (escapeTimer) clearTimeout(escapeTimer);
+      escapeTimer = setTimeout(() => {
+        escapeTimer = null;
         if (e.defaultPrevented || !rangeRef.current) return;
         dismissedRef.current = rangeRef.current;
         dismiss();
@@ -316,8 +319,14 @@ export function useMessageTextSelection({ containerRef, originOf, enabled = true
     return () => {
       if (timer) clearTimeout(timer);
       if (holdTimer) clearTimeout(holdTimer);
+      if (escapeTimer) clearTimeout(escapeTimer);
       if (frame !== null) cancelAnimationFrame(frame);
       holdRef.current = false;
+      // Turned off (or torn down): forget the selection, so turning back on
+      // never shows the bar at a rect measured before.
+      rangeRef.current = null;
+      dismissedRef.current = null;
+      setSelection(null);
       document.removeEventListener("selectionchange", onSelectionChange);
       document.removeEventListener("pointerdown", onPointerDown, true);
       document.removeEventListener("pointerup", onPointerUp, true);

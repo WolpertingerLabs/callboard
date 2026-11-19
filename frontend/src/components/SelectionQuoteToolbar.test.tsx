@@ -17,6 +17,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { useRef } from "react";
 import MessageQuoteSelection, { SELECTION_HINT } from "./MessageQuoteSelection";
 import { matchesShortcutLetter } from "./SelectionQuoteToolbar";
+import ModalOverlay from "./ModalOverlay";
 import QuoteTray from "./QuoteTray";
 import { resolveMessageSelection } from "../hooks/useMessageTextSelection";
 import { addQuote, getQuotes, resetQuoteTraysForTests, restoreQuotes, useQuoteTray } from "../hooks/useQuoteTray";
@@ -33,7 +34,17 @@ const MESSAGES: ParsedMessage[] = [
   { role: "assistant", type: "text", content: "untimestamped text" },
 ];
 
-function Harness({ chatId = "chat-1", messages = MESSAGES, onAsk }: { chatId?: string; messages?: ParsedMessage[]; onAsk?: () => void }) {
+function Harness({
+  chatId = "chat-1",
+  messages = MESSAGES,
+  onAsk,
+  enabled = true,
+}: {
+  chatId?: string;
+  messages?: ParsedMessage[];
+  onAsk?: () => void;
+  enabled?: boolean;
+}) {
   const containerRef = useRef<HTMLDivElement>(null);
   const tray = useQuoteTray(chatId);
   return (
@@ -53,7 +64,7 @@ function Harness({ chatId = "chat-1", messages = MESSAGES, onAsk }: { chatId?: s
         <p data-testid="outside">not a message</p>
         <button type="button">elsewhere</button>
       </div>
-      <MessageQuoteSelection chatId={chatId} messages={messages} containerRef={containerRef} resetKey={chatId} onAsk={onAsk} />
+      <MessageQuoteSelection chatId={chatId} messages={messages} containerRef={containerRef} resetKey={chatId} onAsk={onAsk} enabled={enabled} />
       <QuoteTray quotes={tray.quotes} onRemove={tray.remove} onClear={tray.clear} />
     </>
   );
@@ -413,6 +424,89 @@ describe("selection toolbar and quote tray", () => {
       vi.advanceTimersByTime(0);
     });
     expect(toolbar()).toBeNull();
+  });
+
+  it("steps aside for an open modal: hidden, shortcuts off, and below the modal layer", async () => {
+    const onAsk = vi.fn();
+    const { rerender } = render(<Harness onAsk={onAsk} />);
+    select(para(0), 0, para(0), 5);
+    settle();
+    expect(Number(toolbar()!.style.zIndex)).toBeLessThan(1000);
+
+    const withModal = (open: boolean) => (
+      <>
+        <Harness onAsk={onAsk} />
+        {open && (
+          <ModalOverlay>
+            <div>dialog</div>
+          </ModalOverlay>
+        )}
+      </>
+    );
+    rerender(withModal(true));
+    // The bar watches the DOM; its observer reports after the mutation.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(toolbar()).toBeNull();
+    act(() => {
+      fireEvent.keyDown(document, { key: "q", code: "KeyQ", altKey: true });
+      fireEvent.keyDown(document, { key: "a", code: "KeyA", altKey: true });
+    });
+    expect(getQuotes("chat-1")).toHaveLength(0);
+    expect(onAsk).not.toHaveBeenCalled();
+
+    rerender(withModal(false));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(toolbar()).toBeTruthy();
+    act(() => {
+      fireEvent.keyDown(document, { key: "q", code: "KeyQ", altKey: true });
+    });
+    expect(getQuotes("chat-1")).toHaveLength(1);
+  });
+
+  it("treats any aria-modal dialog as a modal too", async () => {
+    render(<Harness />);
+    select(para(0), 0, para(0), 5);
+    settle();
+    const dialog = document.createElement("div");
+    dialog.setAttribute("aria-modal", "true");
+    document.body.appendChild(dialog);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(toolbar()).toBeNull();
+    dialog.remove();
+  });
+
+  it("forgets the selection when turned off, so turning back on shows no stale bar", () => {
+    const { rerender } = render(<Harness />);
+    select(para(0), 0, para(0), 5);
+    settle();
+    expect(toolbar()).toBeTruthy();
+
+    rerender(<Harness enabled={false} />);
+    rerender(<Harness enabled />);
+    // The text is still selected, but the bar waits to measure it afresh.
+    expect(toolbar()).toBeNull();
+    settle();
+    expect(toolbar()).toBeTruthy();
+  });
+
+  it("drops an Escape still settling when turned off", () => {
+    const { rerender } = render(<Harness />);
+    select(para(0), 0, para(0), 5);
+    settle();
+    act(() => {
+      fireEvent.keyDown(document, { key: "Escape" });
+    });
+    rerender(<Harness enabled={false} />);
+    rerender(<Harness enabled />);
+    settle();
+    // Not dismissed: the pending Escape went with the effect it belonged to.
+    expect(toolbar()).toBeTruthy();
   });
 
   it("ignores the shortcuts with other modifiers held, or with no bar up", () => {

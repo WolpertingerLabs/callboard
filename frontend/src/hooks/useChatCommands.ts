@@ -30,16 +30,19 @@ export function useChatCommands(id: string | undefined, agentChat: boolean | nul
   const [mcpTools, setMcpTools] = useState<McpToolsResponse | null>(null);
   const [mcpToolsLoading, setMcpToolsLoading] = useState(false);
 
-  // Fetch slash commands and plugins for the chat
-  const loadSlashCommands = useCallback(async () => {
-    if (!id) return;
+  // Fetch slash commands and plugins for the chat. Resolves to whether the
+  // list arrived, so a caller can tell "loaded and empty" from "not loaded".
+  const loadSlashCommands = useCallback(async (): Promise<boolean> => {
+    if (!id) return false;
     try {
       const { slashCommands, plugins, appPlugins } = await getSlashCommandsAndPlugins(id);
       setSlashCommands(slashCommands);
       setPlugins(plugins);
       if (appPlugins) setAppPluginsData(appPlugins);
+      return true;
     } catch (error) {
       console.warn("Failed to load slash commands and plugins:", error);
+      return false;
     }
   }, [id]);
 

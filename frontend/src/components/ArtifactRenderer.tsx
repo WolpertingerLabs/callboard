@@ -359,7 +359,9 @@ export default function ArtifactRenderer({ data, maxWidth = "92%", bridgeApi, fi
                 </button>
               )}
             </div>
-            {htmlFullscreen && <div style={FULLSCREEN_BACKDROP} onClick={() => setExpanded(false)} data-testid="artifact-fullscreen-backdrop" />}
+            {htmlFullscreen && (
+              <div style={FULLSCREEN_BACKDROP} onClick={() => setExpanded(false)} data-testid="artifact-fullscreen-backdrop" data-modal-overlay="" />
+            )}
           </div>
         );
       case "svg":
