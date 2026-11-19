@@ -104,6 +104,29 @@ page, without leaving or disturbing the main conversation.
 - **Insert into main chat** on an aside reply: quotes it into the main
   composer tray (reuses PR 1).
 
+### PR 3 — embedded-Chat audit
+
+The panel renders a second `Chat` (`chatId` + `embedded`), keyed per aside,
+inside the main chat's page row. Everything in `Chat.tsx` that is global to the
+page was checked:
+
+| Concern | Finding | Handling |
+|---|---|---|
+| `activeChatViewEntry` (module-scope compose-screen slot) | A second publisher logs an error and could steal a new-chat redirect's claim | The embedded chat never publishes |
+| `location.key`-keyed state (staged model/effort, opened Staging draft, new-chat origin) | Opening the panel is a navigation, so it rotated the key and dropped the main chat's open draft | `useChatViewKey`: an aside-param-only change keeps the view; the embedded chat's view is `embedded:<id>` |
+| Route state, `?folder`, new-chat path | Would leak the main route's state (in-flight handoff, draft prefill) into the aside | Ignored when embedded |
+| `navigate` calls | Fork → whole page goes to the fork (user-chosen); continue/compress/rerun → `onReplaced` puts the replacement in the panel; header back/new-chat redirect are header/new-chat only | — |
+| `window` keydown (scroll latch) | Focus on `<body>` unlatched both transcripts on PageUp | Body-targeted keys belong to the main chat only |
+| `document` visibilitychange, SSE, polls, timers | Per-instance, keyed on each instance's own chat id | Unchanged: both refetch their own chat on resume, both stream |
+| Selection toolbar listeners (`useMessageTextSelection`) | Container-scoped; Escape only acts with its own range | Unchanged |
+| Quote tray / composer drafts | Keyed by chat id | Unchanged; "Insert into main chat" writes the main id's tray |
+| `document.title` | Not set by Chat | — |
+| `CSS.highlights` names | Page-global | Only the main instance paints (embedded passes no asides) |
+| Remount of the main chat | A conditional wrapper would remount it | Page shape is constant: the main chat is always the first child of `.chat-page` |
+| Modals from the embedded chat | `position: fixed`, z-index 1000 | Panel has no `transform`; sheet z-index 40 sits below them |
+
+Nested asides (Ask as aside inside the panel) are not offered.
+
 ## Out of scope (for now)
 
 - Live (non-frozen) asides.
