@@ -4,7 +4,7 @@ import { GitFork } from "lucide-react";
 import type { ChatTreeNode } from "../api";
 import ProviderBadge from "./ProviderBadge";
 import { STATUS_DOT } from "./ChatTreeList";
-import { PRE_COMPRESSION_ROLE, SUPERSEDED_ROLE } from "../utils/chatRewrite";
+import { ASIDE_ROLE, PRE_COMPRESSION_ROLE, SUPERSEDED_ROLE } from "../utils/chatRewrite";
 
 /**
  * Inline marker under a message that one or more forks branched off: a
@@ -21,7 +21,13 @@ import { PRE_COMPRESSION_ROLE, SUPERSEDED_ROLE } from "../utils/chatRewrite";
 export function markerLabel(forks: ChatTreeNode[]): string {
   if (forks.length === 1 && forks[0]!.role === SUPERSEDED_ROLE) return "Original continues";
   if (forks.length === 1 && forks[0]!.role === PRE_COMPRESSION_ROLE) return "Uncompressed original";
-  return `${forks.length} fork${forks.length === 1 ? "" : "s"}`;
+  // Asides are side questions, not branches of the work: counted on their own.
+  const asides = forks.filter((f) => f.role === ASIDE_ROLE).length;
+  const others = forks.length - asides;
+  const count = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  if (asides === 0) return count(others, "fork");
+  if (others === 0) return count(asides, "aside");
+  return `${count(others, "fork")}, ${count(asides, "aside")}`;
 }
 
 export default function ForkPointMarker({ forks, align }: { forks: ChatTreeNode[]; align: "left" | "right" }) {

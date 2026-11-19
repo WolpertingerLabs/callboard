@@ -50,6 +50,12 @@ describe("sidebar row role icon", () => {
     expect(screen.getByRole("img", { name: /before compression/ })).toBeTruthy();
   });
 
+  it("shows the aside icon for an aside", () => {
+    renderRow({ chatRole: "aside", parentChatId: "p" });
+    const icon = screen.getByRole("img", { name: "Aside" });
+    expect(icon.querySelector("svg.lucide-message-square-quote")).not.toBeNull();
+  });
+
   it("shows nothing for a root or a word-only role", () => {
     renderRow({});
     expect(screen.queryByRole("img")).toBeNull();
@@ -77,5 +83,12 @@ describe("fork point marker label", () => {
     expect(markerLabel([n("pre-compression")])).toBe("Uncompressed original");
     expect(markerLabel([n("fork")])).toBe("1 fork");
     expect(markerLabel([n("fork"), n("superseded")])).toBe("2 forks");
+  });
+
+  it("counts asides on their own, and both kinds when mixed", () => {
+    expect(markerLabel([n("aside")])).toBe("1 aside");
+    expect(markerLabel([n("aside"), n("aside")])).toBe("2 asides");
+    expect(markerLabel([n("fork"), n("aside")])).toBe("1 fork, 1 aside");
+    expect(markerLabel([n("fork"), n("engine-switch"), n("aside")])).toBe("2 forks, 1 aside");
   });
 });

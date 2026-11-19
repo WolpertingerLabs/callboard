@@ -1,4 +1,4 @@
-import { handshakeHeaders } from "shared/types/index.js";
+import { asideForkPoint, handshakeHeaders, type AsideQuote } from "shared/types/index.js";
 import type { PermissionReviewSettings, ReasoningCapability } from "shared/types/index.js";
 import { normalizePermissions } from "shared/types/permissions.js";
 import type { SpaceListItem, SpacePatch } from "shared/types/space.js";
@@ -665,11 +665,63 @@ export type ForkProvider = UiAgentProviderKind;
  * calls flattened to text summaries. Omitting it forks within the chat's own
  * harness, which preserves the session log verbatim.
  */
-export async function forkChat(id: string, timestamp: string, opts?: { provider?: ForkProvider; model?: string }): Promise<Chat> {
+export async function forkChat(id: string, timestamp: string, opts?: { provider?: ForkProvider; model?: string; effort?: string }): Promise<Chat> {
   return request(`/chats/${seg(id)}/fork`, {
     method: "POST",
-    json: { timestamp, ...(opts?.provider && { provider: opts.provider }), ...(opts?.model && { model: opts.model }) },
+    json: {
+      timestamp,
+      ...(opts?.provider && { provider: opts.provider }),
+      ...(opts?.model && { model: opts.model }),
+      ...(opts?.effort && { effort: opts.effort }),
+    },
     error: "Failed to fork chat",
+  });
+}
+
+export interface CreateAsideOptions {
+  /** The passages asked about. The fork point is the latest of their timestamps. */
+  quotes: AsideQuote[];
+  /** The question. When given, the aside's first turn starts immediately. */
+  prompt?: string;
+  /** Full or partial; capped server-side so nothing is looser than the parent. Omit to inherit. */
+  permissions?: Partial<DefaultPermissions>;
+  /** A different harness: the handoff fork path (tool calls flattened to text). */
+  provider?: ForkProvider;
+  model?: string;
+  effort?: string;
+  /** The originating browser chat view (`originatingChatView()`), as sent with a message. */
+  chatView?: unknown;
+}
+
+/**
+ * The chat an aside created: the fork's record, plus how its first turn went
+ * when a prompt was sent — `started`, or `runError` with the `promptText` that
+ * could not be sent (the aside exists either way).
+ */
+export type CreateAsideResponse = Chat & { started?: boolean; runError?: string; promptText?: string };
+
+/**
+ * Ask a side question about quoted passages of a chat: a child chat forked at
+ * the latest quoted message, with chatRole "aside" (POST /chats/:id/fork,
+ * kind "aside"). Connect to its stream when `started` is set.
+ */
+export async function createAside(id: string, opts: CreateAsideOptions): Promise<CreateAsideResponse> {
+  const timestamp = asideForkPoint(opts.quotes);
+  if (!timestamp) throw new Error("An aside needs at least one quote");
+  return request(`/chats/${seg(id)}/fork`, {
+    method: "POST",
+    json: {
+      timestamp,
+      kind: "aside",
+      quotes: opts.quotes,
+      ...(opts.prompt && { prompt: opts.prompt }),
+      ...(opts.permissions && { permissions: opts.permissions }),
+      ...(opts.provider && { provider: opts.provider }),
+      ...(opts.model && { model: opts.model }),
+      ...(opts.effort && { effort: opts.effort }),
+      ...(opts.chatView !== undefined && { chatView: opts.chatView }),
+    },
+    error: "Failed to create aside",
   });
 }
 

@@ -1,5 +1,5 @@
-import { ArrowRightLeft, FoldVertical, GitFork, History, type LucideIcon } from "lucide-react";
-import { PRE_COMPRESSION_ROLE, SUPERSEDED_ROLE } from "../utils/chatRewrite";
+import { ArrowRightLeft, FoldVertical, GitFork, History, MessageSquareQuote, type LucideIcon } from "lucide-react";
+import { ASIDE_ROLE, PRE_COMPRESSION_ROLE, SUPERSEDED_ROLE } from "../utils/chatRewrite";
 
 /**
  * Roles shown as an icon rather than a word. Forks and engine switches are the
@@ -9,6 +9,7 @@ import { PRE_COMPRESSION_ROLE, SUPERSEDED_ROLE } from "../utils/chatRewrite";
 const ICON_ROLES: Record<string, { Icon: LucideIcon; label: string }> = {
   fork: { Icon: GitFork, label: "Fork" },
   "engine-switch": { Icon: ArrowRightLeft, label: "Engine switch" },
+  [ASIDE_ROLE]: { Icon: MessageSquareQuote, label: "Aside" },
   [SUPERSEDED_ROLE]: { Icon: History, label: "Original — replaced by a continuation from an earlier message" },
   [PRE_COMPRESSION_ROLE]: { Icon: FoldVertical, label: "Original — before compression" },
 };
