@@ -8,8 +8,8 @@
  * complains about two chat views at once. Harness as Chat.askAside.test.tsx.
  */
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import type { ReactNode } from "react";
 import Chat from "./Chat";
 import { getQuotes, resetQuoteTraysForTests } from "../hooks/useQuoteTray";
@@ -60,16 +60,44 @@ vi.mock("../api", async (importOriginal) => ({
   listKeywords: vi.fn(async () => ({ keywords: [] })),
   getNewChatInfo: vi.fn(async () => ({ folder: "/tmp", slash_commands: [], plugins: [] })),
   stopChat: vi.fn(async () => ({ stopped: true })),
+  deleteDraft: vi.fn(async () => ({})),
 }));
-vi.mock("../contexts/SessionContext", () => ({ useIsSessionActive: () => null, useMetadataVersion: () => 0 }));
+const session = vi.hoisted(() => ({ metadataVersion: 0 }));
+vi.mock("../contexts/SessionContext", () => ({ useIsSessionActive: () => null, useMetadataVersion: () => session.metadataVersion }));
 vi.mock("../components/PromptInput", async (importOriginal) => {
   const { useState } = await import("react");
-  function PromptInputStub({ accessory, chatId }: { accessory?: ReactNode; chatId?: string }) {
+  const { useEffect, useRef } = await import("react");
+  type Update = string | ((current: string) => string);
+  function PromptInputStub({
+    accessory,
+    chatId,
+    onSend,
+    onSetValue,
+    onSnapshotRequest,
+  }: {
+    accessory?: ReactNode;
+    chatId?: string;
+    onSend?: (prompt: string) => void;
+    onSetValue?: (setter: (value: Update) => void) => void;
+    onSnapshotRequest?: (get: (() => { prompt: string; attachments: number }) | null) => void;
+  }) {
     const [text, setText] = useState("");
+    const live = useRef("");
+    live.current = text;
+    useEffect(() => {
+      onSnapshotRequest?.(() => ({ prompt: live.current, attachments: 0 }));
+      return () => onSnapshotRequest?.(null);
+    }, [onSnapshotRequest]);
+    useEffect(() => {
+      onSetValue?.(() => (value: Update) => setText((current) => (typeof value === "function" ? value(current) : value)));
+    }, [onSetValue]);
     return (
       <div data-testid={`composer-${chatId}`}>
         {accessory}
         <input aria-label="Composer" value={text} onChange={(e) => setText(e.target.value)} />
+        <button type="button" onClick={() => onSend?.(text)}>
+          send {chatId}
+        </button>
       </div>
     );
   }
@@ -81,10 +109,19 @@ vi.mock("../components/ChatDebugPanel", () => ({ default: () => <div /> }));
 
 function LocationProbe() {
   const { pathname, search } = useLocation();
-  return <div data-testid="location">{pathname + search}</div>;
+  const navigate = useNavigate();
+  return (
+    <>
+      <div data-testid="location">{pathname + search}</div>
+      <button onClick={() => navigate(-1)}>history back</button>
+      <button onClick={() => navigate(1)}>history forward</button>
+      <button onClick={() => navigate("/chat/original")}>sidebar: this chat</button>
+      <button onClick={() => navigate("/chat/other")}>sidebar: other chat</button>
+    </>
+  );
 }
 
-const page = (entry = "/chat/original") => (
+const page = (entry: string | { pathname: string; state?: unknown } = "/chat/original") => (
   <MemoryRouter initialEntries={[entry]}>
     <Routes>
       <Route
@@ -104,6 +141,7 @@ const panel = () => screen.getByTestId("aside-panel");
 
 let consoleError: ReturnType<typeof vi.spyOn>;
 beforeEach(() => {
+  session.metadataVersion = 0;
   treeChildren = [
     node("aside-1", { role: "aside", title: "Aside: why so?", forkedAt: A1, asideQuotes: [{ timestamp: A1, role: "assistant", text: "first" }] }),
   ];
@@ -227,4 +265,174 @@ it("offers no Ask as aside inside the panel", async () => {
   await within(screen.getByTestId("composer-aside-1")).findByTestId("quote-chip");
   expect(within(panel()).queryByRole("button", { name: /Ask as aside/ })).toBeNull();
   window.getSelection()!.removeAllRanges();
+});
+
+describe("panel lifecycle", () => {
+  const openFromChip = async () => {
+    fireEvent.click(await screen.findByRole("button", { name: "1 aside" }));
+    await within(panel()).findByText("because of reasons");
+  };
+
+  it("closes on Back and reopens on Forward", async () => {
+    render(page());
+    await openFromChip();
+    fireEvent.click(screen.getByText("history back"));
+    await waitFor(() => expect(location()).toBe("/chat/original"));
+    expect(screen.queryByTestId("aside-panel")).toBeNull();
+    fireEvent.click(screen.getByText("history forward"));
+    await waitFor(() => expect(location()).toBe("/chat/original?aside=aside-1"));
+    await within(panel()).findByText("because of reasons");
+  });
+
+  it("switches by replacing, so one close (even clicked twice) leaves the panel", async () => {
+    treeChildren = [...treeChildren, node("aside-2", { role: "aside", title: "Aside: second", forkedAt: Q1 })];
+    render(page());
+    await screen.findByText("first answer");
+    fireEvent.click(await screen.findByRole("button", { name: /^2 asides in this chat/ }));
+    fireEvent.click(within(screen.getByRole("menu", { name: "Asides of this chat" })).getByRole("menuitem", { name: /why so/ }));
+    await waitFor(() => expect(location()).toBe("/chat/original?aside=aside-1"));
+    fireEvent.click(screen.getByRole("button", { name: /^2 asides in this chat/ }));
+    fireEvent.click(within(screen.getByRole("menu", { name: "Asides of this chat" })).getByRole("menuitem", { name: /Aside: second/ }));
+    await waitFor(() => expect(location()).toBe("/chat/original?aside=aside-2"));
+    const close = within(panel()).getByRole("button", { name: "Close aside" });
+    fireEvent.click(close);
+    fireEvent.click(close);
+    await waitFor(() => expect(location()).toBe("/chat/original"));
+    // Popped once: there is no further entry of this page to go back to.
+    expect(screen.getByText("first answer")).toBeTruthy();
+    fireEvent.click(screen.getByText("history forward"));
+    await waitFor(() => expect(location()).toBe("/chat/original?aside=aside-2"));
+  });
+
+  it("closes, in place, an aside id that is this chat", async () => {
+    render(page("/chat/original?aside=original"));
+    await screen.findByText("first answer");
+    await waitFor(() => expect(location()).toBe("/chat/original"));
+    expect(screen.queryByTestId("aside-panel")).toBeNull();
+  });
+
+  it("closes a chat the tree does not list as this chat's aside, and never labels its replies an aside's", async () => {
+    render(page("/chat/original?aside=stranger"));
+    await waitFor(() => expect(location()).toBe("/chat/original"));
+    expect(screen.queryByTestId("aside-panel")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Insert into main chat/ })).toBeNull();
+  });
+
+  it("closes an aside archived while it is open, once a tree says so", async () => {
+    const { rerender } = render(page("/chat/original?aside=aside-1"));
+    await within(panel()).findByText("because of reasons");
+    treeChildren = treeChildren.map((c) => ({ ...c, childArchived: true }));
+    // Past the tree's refresh throttle (one fetch per 10s), so the metadata
+    // event's refetch goes out after the 1s floor rather than 10s.
+    const realNow = Date.now.bind(Date);
+    vi.spyOn(Date, "now").mockImplementation(() => realNow() + 20_000);
+    session.metadataVersion = 1;
+    rerender(page("/chat/original?aside=aside-1"));
+    await waitFor(() => expect(location()).toBe("/chat/original"), { timeout: 4000 });
+    expect(screen.queryByTestId("aside-panel")).toBeNull();
+  });
+
+  it("goes with its chat: switching to another chat leaves no panel", async () => {
+    render(page());
+    await openFromChip();
+    fireEvent.click(screen.getByText("sidebar: other chat"));
+    await waitFor(() => expect(location()).toBe("/chat/other"));
+    expect(screen.queryByTestId("aside-panel")).toBeNull();
+  });
+
+  it("keeps an opened Staging draft open across the panel opening and closing", async () => {
+    const { deleteDraft } = await import("../api");
+    render(page({ pathname: "/chat/original", state: { draft: { id: "draft-1", user_message: "from staging" } } }));
+    await waitFor(() => expect((screen.getAllByLabelText("Composer")[0] as HTMLInputElement).value).toBe("from staging"));
+    await openFromChip();
+    fireEvent.click(within(panel()).getByRole("button", { name: "Close aside" }));
+    await waitFor(() => expect(location()).toBe("/chat/original"));
+    // Still the draft's view: sending it retires the Staging draft.
+    fireEvent.click(screen.getByText("send original"));
+    await waitFor(() => expect(deleteDraft).toHaveBeenCalledWith("draft-1"));
+  });
+
+  it("lets go of the Staging draft on a sidebar click to the same chat, panel open or not", async () => {
+    const { deleteDraft } = await import("../api");
+    render(page({ pathname: "/chat/original", state: { draft: { id: "draft-1", user_message: "from staging" } } }));
+    await waitFor(() => expect((screen.getAllByLabelText("Composer")[0] as HTMLInputElement).value).toBe("from staging"));
+    await openFromChip();
+    fireEvent.click(screen.getByText("sidebar: this chat"));
+    await waitFor(() => expect(location()).toBe("/chat/original"));
+    fireEvent.click(screen.getByText("send original"));
+    await act(async () => {});
+    expect(deleteDraft).not.toHaveBeenCalled();
+  });
+
+  it("saves what is typed in the panel before opening the aside as a full chat", async () => {
+    render(page("/chat/original?aside=aside-1"));
+    await within(panel()).findByText("because of reasons");
+    // Typed, and (in this stub) never saved by a composer debounce of its own.
+    fireEvent.change(within(panel()).getByLabelText("Composer"), { target: { value: "half a follow-up" } });
+    const { getComposerDraft } = await import("../utils/localStorage");
+    expect(getComposerDraft("aside-1")).toBe("");
+    fireEvent.click(within(panel()).getByRole("button", { name: "Open as full chat" }));
+    await waitFor(() => expect(location()).toBe("/chat/aside-1"));
+    expect(getComposerDraft("aside-1")).toBe("half a follow-up");
+  });
+});
+
+describe("clicking a highlight", () => {
+  beforeEach(() => {
+    vi.stubGlobal("CSS", { highlights: new Map() });
+    vi.stubGlobal(
+      "Highlight",
+      class {
+        ranges: Range[];
+        priority = 0;
+        constructor(...ranges: Range[]) {
+          this.ranges = ranges;
+        }
+      },
+    );
+    // jsdom has no layout: every range sits in one box.
+    Object.defineProperty(Range.prototype, "getClientRects", {
+      configurable: true,
+      value: () => [{ left: 10, right: 100, top: 10, bottom: 20 }],
+    });
+  });
+  afterEach(() => {
+    delete (Range.prototype as { getClientRects?: unknown }).getClientRects;
+  });
+
+  const setup = async () => {
+    render(page());
+    const answer = await screen.findByText("first answer");
+    // The quote is painted (one frame).
+    await waitFor(() => expect((globalThis as unknown as { CSS: { highlights: Map<string, unknown> } }).CSS.highlights.has("aside-quote")).toBe(true));
+    return answer;
+  };
+  const press = (el: Element, init: { x?: number; y?: number; detail?: number; downX?: number } = {}) => {
+    fireEvent.mouseDown(el, { clientX: init.downX ?? init.x ?? 20, clientY: 15, button: 0 });
+    fireEvent.click(el, { clientX: init.x ?? 20, clientY: 15, button: 0, detail: init.detail ?? 1 });
+  };
+
+  it("opens the aside on a plain click", async () => {
+    press(await setup());
+    await waitFor(() => expect(location()).toBe("/chat/original?aside=aside-1"));
+  });
+
+  it("does not on a double click, a drag, or the click that clears a selection", async () => {
+    const answer = await setup();
+    press(answer, { detail: 2 });
+    await act(async () => {});
+    expect(location()).toBe("/chat/original");
+    press(answer, { downX: 60, x: 20 });
+    await act(async () => {});
+    expect(location()).toBe("/chat/original");
+    const range = document.createRange();
+    range.selectNodeContents(answer);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+    fireEvent.mouseDown(answer, { clientX: 20, clientY: 15, button: 0 });
+    window.getSelection()!.removeAllRanges(); // the press collapsed it
+    fireEvent.click(answer, { clientX: 20, clientY: 15, button: 0, detail: 1 });
+    await act(async () => {});
+    expect(location()).toBe("/chat/original");
+  });
 });

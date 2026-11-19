@@ -1069,17 +1069,20 @@ export default function PromptInput({
 
   const menuHasActiveItem = menuItems.some((item) => item.active);
 
-  // Close the menu on Escape
+  // Close the menu on Escape — and claim it (capture, preventDefault), so a
+  // container that closes on Escape (the aside panel) sees it was handled:
+  // React's own handlers run at the root, before a bubbling document listener.
   useEffect(() => {
     if (!menuOpen) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        e.preventDefault();
         setMenuOpen(false);
         textareaRef.current?.focus();
       }
     };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => document.removeEventListener("keydown", onKeyDown, true);
   }, [menuOpen]);
 
   return (

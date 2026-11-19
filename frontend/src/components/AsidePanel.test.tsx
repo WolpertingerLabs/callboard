@@ -3,6 +3,7 @@ import { useState } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import AsidePanel from "./AsidePanel";
 import { getAsidePanelWidth } from "../utils/localStorage";
+import { isModalOpen } from "../utils/modalOpen";
 
 afterEach(() => {
   cleanup();
@@ -65,8 +66,10 @@ it("is a full-screen dialog sheet on mobile, with no resize edge", () => {
   );
   const sheet = screen.getByRole("dialog", { name: "Aside: why" });
   expect(sheet.style.position).toBe("fixed");
-  // Not aria-modal: the quote bar would take that for a modal and stand down.
-  expect(sheet.getAttribute("aria-modal")).toBeNull();
+  // Modal to assistive tech — but not to the page's own floating UI: the
+  // quote bar works inside the sheet.
+  expect(sheet.getAttribute("aria-modal")).toBe("true");
+  expect(isModalOpen()).toBe(false);
   expect(screen.queryByRole("separator")).toBeNull();
 });
 
@@ -92,4 +95,62 @@ it("takes focus on open and gives it back on close", async () => {
   expect(document.activeElement).toBe(screen.getByRole("complementary"));
   fireEvent.keyDown(screen.getByText("reply"), { key: "Escape" });
   expect(document.activeElement).toBe(toggle);
+});
+
+it("keeps Tab inside the mobile sheet", () => {
+  render(
+    <AsidePanel label="Aside" isMobile onClose={() => {}}>
+      <button>first</button>
+      <div style={{ display: "none" }}>
+        <button>hidden</button>
+      </div>
+      <button>last</button>
+    </AsidePanel>,
+  );
+  const first = screen.getByText("first");
+  const last = screen.getByText("last");
+  last.focus();
+  fireEvent.keyDown(last, { key: "Tab" });
+  expect(document.activeElement).toBe(first);
+  fireEvent.keyDown(first, { key: "Tab", shiftKey: true });
+  expect(document.activeElement).toBe(last);
+});
+
+it("gives focus back to the opener it is handed when the focused control went away", async () => {
+  function Harness() {
+    const [open, setOpen] = useState(false);
+    const [menu, setMenu] = useState(true);
+    return (
+      <>
+        <button data-testid="trigger">trigger</button>
+        {menu && (
+          <button
+            onClick={() => {
+              setMenu(false);
+              setOpen(true);
+            }}
+          >
+            menu row
+          </button>
+        )}
+        {open && (
+          <AsidePanel
+            label="Aside"
+            isMobile={false}
+            onClose={() => setOpen(false)}
+            getReturnFocus={() => document.querySelector<HTMLElement>('[data-testid="trigger"]')}
+          >
+            <p>reply</p>
+          </AsidePanel>
+        )}
+      </>
+    );
+  }
+  render(<Harness />);
+  const row = screen.getByText("menu row");
+  row.focus();
+  fireEvent.click(row);
+  await act(() => new Promise((resolve) => setTimeout(resolve, 5)));
+  fireEvent.keyDown(screen.getByText("reply"), { key: "Escape" });
+  expect(document.activeElement).toBe(screen.getByTestId("trigger"));
 });

@@ -86,6 +86,12 @@ export default function ForkPointMarker({ forks, align }: { forks: ChatTreeNode[
   const emphasize = (ids: readonly string[] | null) => {
     if (asideActions && asideIds.length > 0) asideActions.emphasizeAsides(ids);
   };
+  // Unmounted while hovered (the transcript re-rendered under the pointer, the
+  // chat switched): the emphasis would otherwise stay on with nothing to end it.
+  const emphasizeRef = useRef(emphasize);
+  emphasizeRef.current = emphasize;
+  useEffect(() => () => emphasizeRef.current(null), []);
+
   // Anything inside the marker hovered or focused emphasises its asides; a row
   // narrows that to its own (see the rows below).
   const wrapHandlers =
@@ -107,10 +113,20 @@ export default function ForkPointMarker({ forks, align }: { forks: ChatTreeNode[
       <button
         ref={triggerRef}
         // A lone aside opens straight away: a one-row menu would be a click for nothing.
-        onClick={() => (loneAside ? asideActions!.openAside(loneAside) : setOpen((v) => !v))}
+        onClick={() => {
+          if (!loneAside) setOpen((v) => !v);
+          // Its aside already open: the chip closes it again.
+          else if (asideActions!.openAsideId === loneAside) asideActions!.closeAside();
+          else asideActions!.openAside(loneAside, { returnFocus: triggerRef.current });
+        }}
         aria-haspopup={loneAside ? undefined : "menu"}
         aria-expanded={loneAside ? undefined : open}
-        title={loneAside ? `Open the aside about this message: ${forks[0]!.title || "Aside"}` : `Branched off this message: ${label}`}
+        aria-pressed={loneAside ? asideActions!.openAsideId === loneAside : undefined}
+        title={
+          loneAside
+            ? `${asideActions!.openAsideId === loneAside ? "Close" : "Open"} the aside about this message: ${forks[0]!.title || "Aside"}`
+            : `Branched off this message: ${label}`
+        }
         style={{
           display: "inline-flex",
           alignItems: "center",
@@ -158,11 +174,12 @@ export default function ForkPointMarker({ forks, align }: { forks: ChatTreeNode[
               className="fork-point-menu-item"
               onClick={() => {
                 setOpen(false);
-                if (node.role === ASIDE_ROLE && asideActions) asideActions.openAside(node.chatId);
+                if (node.role === ASIDE_ROLE && asideActions) asideActions.openAside(node.chatId, { returnFocus: triggerRef.current });
                 else navigate(`/chat/${node.chatId}`);
               }}
-              onMouseEnter={node.role === ASIDE_ROLE ? () => emphasize([node.chatId]) : undefined}
-              onFocus={node.role === ASIDE_ROLE ? () => emphasize([node.chatId]) : undefined}
+              // A fork row is not an aside: nothing of it to emphasise.
+              onMouseEnter={() => emphasize(node.role === ASIDE_ROLE ? [node.chatId] : null)}
+              onFocus={() => emphasize(node.role === ASIDE_ROLE ? [node.chatId] : null)}
               title={node.title || node.folder}
               style={{
                 display: "flex",

@@ -27,6 +27,28 @@ function maxWidth(available: number): number {
   return Math.max(ASIDE_PANEL_MIN_WIDTH, available - MAIN_MIN_WIDTH);
 }
 
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/** Keep Tab inside `root`: from the last focusable to the first, and back. */
+function trapTab(root: HTMLElement, e: React.KeyboardEvent) {
+  // Not inside something switched off (inert, or hidden like the composer under a prompt).
+  const items = [...root.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((el) => !el.closest('[inert], [hidden], [style*="display: none"]'));
+  if (items.length === 0) {
+    e.preventDefault();
+    return;
+  }
+  const first = items[0]!;
+  const last = items[items.length - 1]!;
+  const active = document.activeElement;
+  if (e.shiftKey && (active === first || active === root)) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && active === last) {
+    e.preventDefault();
+    first.focus();
+  }
+}
+
 /** Whether an Escape inside the panel is someone else's to handle. */
 function escapeIsClaimed(panel: HTMLElement, e: React.KeyboardEvent): boolean {
   if (e.defaultPrevented || isModalOpen()) return true;
@@ -42,14 +64,23 @@ export default function AsidePanel({
   label,
   isMobile,
   onClose,
+  getReturnFocus,
   children,
 }: {
   /** Accessible name — the aside's title. */
   label: string;
   isMobile: boolean;
   onClose: () => void;
+  /**
+   * The control that opened the panel, when the one that had focus will be
+   * gone by the time it closes (a menu row): focus goes back there. Read on
+   * close. Without one, focus goes back to whatever had it at open.
+   */
+  getReturnFocus?: () => HTMLElement | null;
   children: ReactNode;
 }) {
+  const getReturnFocusRef = useRef(getReturnFocus);
+  getReturnFocusRef.current = getReturnFocus;
   const panelRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(() => getAsidePanelWidth());
   const widthRef = useRef(width);
@@ -68,7 +99,9 @@ export default function AsidePanel({
       // Only when focus went down with the panel (it is on the body now), not
       // when the user had already moved it somewhere else in the page.
       const active = document.activeElement;
-      if (before?.isConnected && (!active || active === document.body || !active.isConnected)) before.focus({ preventScroll: true });
+      if (active && active !== document.body && active.isConnected) return;
+      const target = [getReturnFocusRef.current?.(), before].find((el) => el?.isConnected);
+      target?.focus({ preventScroll: true });
     };
   }, []);
 
@@ -115,6 +148,11 @@ export default function AsidePanel({
   }, [isMobile, commit]);
 
   const onKeyDown = (e: React.KeyboardEvent) => {
+    // The mobile sheet is modal: Tab cycles inside it.
+    if (e.key === "Tab" && isMobile && panelRef.current) {
+      trapTab(panelRef.current, e);
+      return;
+    }
     if (e.key !== "Escape" || !panelRef.current || escapeIsClaimed(panelRef.current, e)) return;
     e.preventDefault();
     onClose();
@@ -124,6 +162,10 @@ export default function AsidePanel({
     <div
       ref={panelRef}
       role={isMobile ? "dialog" : "complementary"}
+      aria-modal={isMobile ? true : undefined}
+      // Not a modal to the rest of the page's floating UI: the quote bar
+      // works inside the sheet (utils/modalOpen.ts skips this marker).
+      data-aside-panel=""
       aria-label={label}
       data-testid="aside-panel"
       tabIndex={-1}

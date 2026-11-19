@@ -70,17 +70,20 @@ export default function CommandChip({ name, chatId, folder, space, activePlugins
       .finally(() => setLoading(false));
   }, [open, setOpenState, chatId, folder, space, activePlugins, name]);
 
-  // Escape closes the popover without removing the chip.
+  // Escape closes the popover without removing the chip. Claimed in the
+  // capture phase (preventDefault), so a container that closes on Escape —
+  // the aside panel, whose handler React runs at the root before a bubbling
+  // document listener — sees it was this popover's.
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        e.stopPropagation();
+        e.preventDefault();
         setOpenState(false);
       }
     };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => document.removeEventListener("keydown", onKeyDown, true);
   }, [open, setOpenState]);
 
   const subtitle = description || detail?.description || getCommandDescription(name) || null;

@@ -34,7 +34,32 @@ vi.mock("../api", async (importOriginal) => ({
     targetChatId: id,
     rootChatId: id,
     ancestors: [],
-    tree: { chatId: id, title: "Work", provider: "claude-code", status: "stopped", folder: "/tmp", createdAt: "", updatedAt: "", children: [] },
+    tree: {
+      chatId: id,
+      title: "Work",
+      provider: "claude-code",
+      status: "stopped",
+      folder: "/tmp",
+      createdAt: "",
+      updatedAt: "",
+      // Once the daemon has made it, the aside is in its parent's tree — what the panel waits for.
+      children:
+        id === "original" && created.has("aside-1")
+          ? [
+              {
+                chatId: "aside-1",
+                title: "Aside: Why?",
+                role: "aside",
+                provider: "claude-code",
+                status: "ongoing",
+                folder: "/tmp",
+                createdAt: "",
+                updatedAt: "",
+                children: [],
+              },
+            ]
+          : [],
+    },
   })),
   getMessages: vi.fn(async () => [
     { role: "user", type: "text", content: "first question", timestamp: Q1 },
@@ -53,6 +78,8 @@ vi.mock("../api", async (importOriginal) => ({
   stopChat: vi.fn(async () => ({ stopped: true })),
 }));
 /** Chats the session registry reports as running, and attachments in the stub composer. */
+/** Asides the stubbed daemon has created, which its trees then list. */
+const created = vi.hoisted(() => new Set<string>());
 const composerState = vi.hoisted(() => ({ attachments: 0, active: new Set<string>() }));
 vi.mock("../contexts/SessionContext", () => ({
   useIsSessionActive: (id?: string) => (id && composerState.active.has(id) ? { startedAt: 1 } : null),
@@ -189,6 +216,7 @@ const askButton = () => screen.getByRole("button", { name: /Ask as aside|Asking/
 
 beforeEach(() => {
   forkReplies = [];
+  created.clear();
   composerState.attachments = 0;
   composerState.active = new Set();
   resetQuoteTraysForTests();
@@ -213,6 +241,7 @@ beforeEach(() => {
         if (reply === "refuseTarget")
           return { ok: false, status: 400, json: async () => ({ error: 'Unknown target provider "nope"', code: "fork_target_invalid" }) };
         const chatRole = reply === "old" ? "fork" : "aside";
+        if (chatRole === "aside") created.add("aside-1");
         const title = reply === "old" ? "Fork: Work" : "Aside: Why?";
         const outcome = reply === "runError" ? { runError: "engine down", promptText: "> **Assistant:**\n> first\n\nWhy?" } : { started: true };
         return { ok: true, status: 201, json: async () => ({ id: "aside-1", folder: "/tmp", metadata: JSON.stringify({ chatRole, title }), ...outcome }) };

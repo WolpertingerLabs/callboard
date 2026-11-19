@@ -15,7 +15,11 @@
 import { createContext, useContext } from "react";
 
 export interface AsideActions {
-  openAside: (chatId: string) => void;
+  /** `returnFocus`: where focus goes when the panel closes — the chip or list button, when the row clicked is about to vanish with its menu. */
+  openAside: (chatId: string, opts?: { returnFocus?: HTMLElement | null }) => void;
+  /** The aside open in the panel, if any — a lone aside's chip closes it again. */
+  openAsideId: string | null;
+  closeAside: () => void;
   /** Emphasise these asides' passages; `null` (or empty) ends the emphasis. */
   emphasizeAsides: (chatIds: readonly string[] | null) => void;
 }

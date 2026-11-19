@@ -52,7 +52,8 @@ export default function AsideListButton({
   asides: readonly AsideEntry[];
   /** The aside open in the panel, marked in the list. */
   openId: string | null;
-  onOpen: (chatId: string) => void;
+  /** Called with the button, for focus to come back to when the panel closes (the row clicked goes with the menu). */
+  onOpen: (chatId: string, returnFocus: HTMLElement | null) => void;
   onEmphasize: (chatIds: readonly string[] | null) => void;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -176,7 +177,7 @@ export default function AsideListButton({
               aria-current={aside.chatId === openId ? "true" : undefined}
               onClick={() => {
                 close();
-                onOpen(aside.chatId);
+                onOpen(aside.chatId, triggerRef.current);
               }}
               onMouseEnter={() => onEmphasize([aside.chatId])}
               onMouseLeave={() => onEmphasize(null)}

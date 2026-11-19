@@ -47,7 +47,8 @@ it("lists the asides, opens the one picked and emphasises the one hovered", () =
   fireEvent.mouseEnter(within(menu).getByRole("menuitem", { name: /Aside a2/ }));
   expect(onEmphasize).toHaveBeenLastCalledWith(["a2"]);
   fireEvent.click(within(menu).getByRole("menuitem", { name: /Aside a2/ }));
-  expect(onOpen).toHaveBeenCalledWith("a2");
+  // With the button, for focus to return to: the row goes with the menu.
+  expect(onOpen).toHaveBeenCalledWith("a2", button);
   expect(screen.queryByRole("menu")).toBeNull();
 });
 

@@ -39,7 +39,7 @@ function renderMarker(forks: ChatTreeNode[], actions: AsideActions | null) {
     </AsideContext.Provider>,
   );
 }
-const actions = () => ({ openAside: vi.fn(), emphasizeAsides: vi.fn() });
+const actions = (openAsideId: string | null = null) => ({ openAside: vi.fn(), emphasizeAsides: vi.fn(), openAsideId, closeAside: vi.fn() });
 
 it("opens a lone aside straight from the chip", () => {
   const a = actions();
@@ -47,7 +47,8 @@ it("opens a lone aside straight from the chip", () => {
   const chip = screen.getByRole("button", { name: "1 aside" });
   expect(chip.getAttribute("aria-haspopup")).toBeNull();
   fireEvent.click(chip);
-  expect(a.openAside).toHaveBeenCalledWith("a1");
+  // With the chip to give focus back to when the panel closes.
+  expect(a.openAside).toHaveBeenCalledWith("a1", { returnFocus: chip });
   expect(navigate).not.toHaveBeenCalled();
 });
 
@@ -56,7 +57,8 @@ it("opens asides in the panel and navigates to forks from a mixed menu", () => {
   renderMarker([node("f1", "fork"), node("a1", "aside")], a);
   fireEvent.click(screen.getByRole("button", { name: "1 fork, 1 aside" }));
   fireEvent.click(screen.getByRole("menuitem", { name: /aside a1/ }));
-  expect(a.openAside).toHaveBeenCalledWith("a1");
+  // The row goes with the menu: focus comes back to the chip.
+  expect(a.openAside).toHaveBeenCalledWith("a1", { returnFocus: screen.getByRole("button", { name: "1 fork, 1 aside" }) });
   fireEvent.click(screen.getByRole("button", { name: "1 fork, 1 aside" }));
   fireEvent.click(screen.getByRole("menuitem", { name: /fork f1/ }));
   expect(navigate).toHaveBeenCalledWith("/chat/f1");
@@ -83,4 +85,28 @@ it("navigates to an aside, as to any child, where the page has no panel", () => 
   fireEvent.click(screen.getByRole("button", { name: "1 aside" }));
   fireEvent.click(screen.getByRole("menuitem", { name: /aside a1/ }));
   expect(navigate).toHaveBeenCalledWith("/chat/a1");
+});
+
+it("closes its lone aside again when that aside is the one open", () => {
+  const a = actions("a1");
+  renderMarker([node("a1", "aside")], a);
+  const chip = screen.getByRole("button", { name: "1 aside" });
+  expect(chip.getAttribute("aria-pressed")).toBe("true");
+  fireEvent.click(chip);
+  expect(a.closeAside).toHaveBeenCalled();
+  expect(a.openAside).not.toHaveBeenCalled();
+});
+
+it("ends the emphasis on a fork row, and when it unmounts mid-hover", () => {
+  const a = actions();
+  const { container, unmount } = renderMarker([node("f1", "fork"), node("a1", "aside")], a);
+  fireEvent.click(screen.getByRole("button", { name: "1 fork, 1 aside" }));
+  fireEvent.mouseEnter(screen.getByRole("menuitem", { name: /aside a1/ }));
+  expect(a.emphasizeAsides).toHaveBeenLastCalledWith(["a1"]);
+  fireEvent.mouseEnter(screen.getByRole("menuitem", { name: /fork f1/ }));
+  expect(a.emphasizeAsides).toHaveBeenLastCalledWith(null);
+  fireEvent.mouseEnter(container.firstElementChild!);
+  expect(a.emphasizeAsides).toHaveBeenLastCalledWith(["a1"]);
+  unmount();
+  expect(a.emphasizeAsides).toHaveBeenLastCalledWith(null);
 });

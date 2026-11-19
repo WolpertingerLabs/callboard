@@ -772,7 +772,8 @@ function InsertIntoMainButton({ onInsert, align }: { onInsert: () => boolean; al
         padding: "2px 6px",
         borderRadius: 4,
         background: "var(--surface)",
-        color: state === "idle" ? "var(--text-muted)" : "var(--success)",
+        // "Already in main chat" is not a success: muted, like the idle label.
+        color: state === "inserted" ? "var(--success)" : "var(--text-muted)",
         border: "1px solid var(--border)",
         cursor: "pointer",
       }}

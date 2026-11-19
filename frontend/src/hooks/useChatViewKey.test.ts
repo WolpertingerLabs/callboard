@@ -12,18 +12,29 @@ it("asideOnlyChange: the aside param changed and nothing else did", () => {
   expect(asideOnlyChange("?folder=/a", "?folder=/b&aside=x")).toBe(false);
 });
 
-it("keeps the view key across the panel opening and closing, and rotates it on any other navigation", () => {
-  const { result, rerender } = renderHook((loc: { key: string; pathname: string; search: string }) => useChatViewKey(loc), {
-    initialProps: { key: "k1", pathname: "/chat/a", search: "" },
+type Loc = { key: string; pathname: string; search: string; nav?: "PUSH" | "POP" | "REPLACE"; target?: string | null };
+
+it("keeps the view key across the panel's own navigations and Back/Forward over them, and rotates it on any other", () => {
+  const { result, rerender } = renderHook((loc: Loc) => useChatViewKey(loc, loc.nav ?? "PUSH", loc.target ?? null), {
+    initialProps: { key: "k1", pathname: "/chat/a", search: "" } as Loc,
   });
   expect(result.current).toBe("k1");
-  rerender({ key: "k2", pathname: "/chat/a", search: "?aside=x" });
+  // The panel opens (announced).
+  rerender({ key: "k2", pathname: "/chat/a", search: "?aside=x", target: "?aside=x" });
   expect(result.current).toBe("k1");
-  rerender({ key: "k3", pathname: "/chat/a", search: "" });
+  // Back closes it.
+  rerender({ key: "k1", pathname: "/chat/a", search: "", nav: "POP" });
   expect(result.current).toBe("k1");
-  // The same URL again (a sidebar click, a state-stripping replace) is a new view, as before.
-  rerender({ key: "k4", pathname: "/chat/a", search: "" });
-  expect(result.current).toBe("k4");
-  rerender({ key: "k5", pathname: "/chat/b", search: "?aside=x" });
+  // Forward reopens it.
+  rerender({ key: "k2", pathname: "/chat/a", search: "?aside=x", nav: "POP" });
+  expect(result.current).toBe("k1");
+  // A sidebar click on the open chat drops the param too, but is not the panel's: a new view.
+  rerender({ key: "k5", pathname: "/chat/a", search: "", nav: "PUSH" });
   expect(result.current).toBe("k5");
+  // The same URL again (a state-stripping replace) is a new view, as before.
+  rerender({ key: "k6", pathname: "/chat/a", search: "", nav: "REPLACE" });
+  expect(result.current).toBe("k6");
+  // Another chat, even announced, is a new view.
+  rerender({ key: "k7", pathname: "/chat/b", search: "?aside=x", target: "?aside=x" });
+  expect(result.current).toBe("k7");
 });
