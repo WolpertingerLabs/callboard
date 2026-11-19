@@ -903,6 +903,8 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
   // throttle bounds the cost and still lands the change.
   /** `seq`: the request's sequence number — the aside panel trusts only a tree asked for after it opened. */
   const [chatTreeState, setChatTreeState] = useState<{ chatId: string; tree: ChatTreeResponse; seq: number } | null>(null);
+  /** The latest tree request that failed or came back empty, by sequence number. */
+  const [chatTreeFailure, setChatTreeFailure] = useState<{ chatId: string; seq: number } | null>(null);
   /** Bumped per request and on chat switch: only the latest response may land. */
   const treeRequestSeqRef = useRef(0);
   const treeLastFetchAtRef = useRef(0);
@@ -911,12 +913,20 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
   const fetchChatTree = useCallback((chatId: string) => {
     const seq = ++treeRequestSeqRef.current;
     treeLastFetchAtRef.current = Date.now();
+    // A failed or empty answer keeps the last good tree on screen (markers),
+    // but is recorded: the aside panel must not wait on it forever.
+    const failed = () => {
+      if (seq === treeRequestSeqRef.current) setChatTreeFailure({ chatId, seq });
+    };
     getChatTree(chatId)
       .then((tree) => {
-        if (seq === treeRequestSeqRef.current && tree?.tree) setChatTreeState({ chatId, tree, seq });
+        if (seq !== treeRequestSeqRef.current) return;
+        if (tree?.tree) setChatTreeState({ chatId, tree, seq });
+        else failed();
       })
       .catch(() => {
         // No stored record / no tree — no fork markers.
+        failed();
       });
   }, []);
   // Opening a chat fetches at once; leaving it drops any refresh in flight.
@@ -2984,8 +2994,11 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
     dropAsideParam();
   }, [dropAsideParam]);
   // A close has landed (or the param changed some other way): closable again.
+  // And with the panel closed, the open record goes: a Forward back to it is
+  // judged again by a fresh tree, not waved through on the old one.
   useEffect(() => {
     asideClosingRef.current = false;
+    if (!asideId) asideOpenRef.current = null;
   }, [asideId]);
   /** The open aside was replaced (continue-from, compress, rerun in the panel): show its replacement. */
   const replaceAside = useCallback(
@@ -3015,16 +3028,23 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
   // `?aside=` names a chat; it is only shown as this chat's aside once a tree
   // asked for after it opened lists it as one — a direct, unarchived aside of
   // this chat. Not this chat itself, not an unrelated chat, not one archived
-  // or split off while open: those close (in place). No tree yet, or only an
-  // older one, is pending: the panel stays.
-  const asideJudgedBy =
-    chatTreeState && chatTreeState.chatId === id && asideOpenRef.current?.chatId === asideId && chatTreeState.seq > asideOpenRef.current.afterSeq
-      ? chatTreeState
-      : null;
-  const asideInvalid = !!asideId && (asideId === id || (!!asideJudgedBy && !openAsideEntry));
+  // or split off while open: those close. Nor one whose tree, asked for after
+  // it opened, failed or came back empty: no answer is not a yes. Only no
+  // answer YET is pending: the panel stays.
+  const openRecord = asideOpenRef.current?.chatId === asideId ? asideOpenRef.current : null;
+  const treeAfterOpen = !!openRecord && !!chatTreeState && chatTreeState.chatId === id && chatTreeState.seq > openRecord.afterSeq ? chatTreeState : null;
+  const failureAfterOpen =
+    !!openRecord &&
+    !!chatTreeFailure &&
+    chatTreeFailure.chatId === id &&
+    chatTreeFailure.seq > openRecord.afterSeq &&
+    chatTreeFailure.seq > (treeAfterOpen?.seq ?? -1);
+  const asideInvalid = !!asideId && (asideId === id || failureAfterOpen || (!!treeAfterOpen && !openAsideEntry));
+  // Closed the way it came: a pushed entry is popped (no duplicate /chat/X
+  // entry left behind), anything else drops the param in place.
   useEffect(() => {
-    if (asideInvalid) dropAsideParam();
-  }, [asideInvalid, dropAsideParam]);
+    if (asideInvalid) closeAside();
+  }, [asideInvalid, closeAside]);
   // Emphasis: the asides whose chip or list row is hovered or focused, else
   // the one open in the panel.
   const [hoveredAsides, setHoveredAsides] = useState<readonly string[] | null>(null);

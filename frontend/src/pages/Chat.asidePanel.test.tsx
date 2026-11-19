@@ -34,12 +34,15 @@ vi.mock("../api/computerUse", () => ({ computerUseClient: { status: vi.fn(), ope
 vi.mock("../api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../api")>()),
   getChat: vi.fn(async (id: string) => ({ id, title: id, folder: "/tmp", is_git_repo: true, metadata: "{}", slash_commands: ["compact"] })),
-  getChatTree: vi.fn(async (id: string) => ({
-    targetChatId: id,
-    rootChatId: "original",
-    ancestors: [],
-    tree: id === "original" ? node("original", { children: treeChildren }) : node(id),
-  })),
+  getChatTree: vi.fn(async (id: string) => {
+    if (session.treeFails) throw new Error("tree unavailable");
+    return {
+      targetChatId: id,
+      rootChatId: "original",
+      ancestors: [],
+      tree: id === "original" ? node("original", { children: treeChildren }) : node(id),
+    };
+  }),
   getMessages: vi.fn(async (id: string) =>
     id === "aside-boom"
       ? [{ role: "assistant", type: "text", content: "explode", timestamp: "2026-01-01T11:00:01.000Z" }]
@@ -64,7 +67,7 @@ vi.mock("../api", async (importOriginal) => ({
   stopChat: vi.fn(async () => ({ stopped: true })),
   deleteDraft: vi.fn(async () => ({})),
 }));
-const session = vi.hoisted(() => ({ metadataVersion: 0 }));
+const session = vi.hoisted(() => ({ metadataVersion: 0, treeFails: false }));
 vi.mock("../contexts/SessionContext", () => ({ useIsSessionActive: () => null, useMetadataVersion: () => session.metadataVersion }));
 vi.mock("../components/PromptInput", async (importOriginal) => {
   const { useState } = await import("react");
@@ -133,8 +136,8 @@ function LocationProbe() {
   );
 }
 
-const page = (entry: string | { pathname: string; state?: unknown } = "/chat/original") => (
-  <MemoryRouter initialEntries={[entry]}>
+const page = (entry: string | { pathname: string; state?: unknown } = "/chat/original", before: string[] = []) => (
+  <MemoryRouter initialEntries={[...before, entry]} initialIndex={before.length}>
     <Routes>
       <Route
         path="/chat/:id"
@@ -154,6 +157,7 @@ const panel = () => screen.getByTestId("aside-panel");
 let consoleError: ReturnType<typeof vi.spyOn>;
 beforeEach(() => {
   session.metadataVersion = 0;
+  session.treeFails = false;
   treeChildren = [
     node("aside-1", { role: "aside", title: "Aside: why so?", forkedAt: A1, asideQuotes: [{ timestamp: A1, role: "assistant", text: "first" }] }),
   ];
@@ -488,5 +492,51 @@ describe("panel containment", () => {
     expect(await within(panel()).findByTitle("Scroll to bottom and resume auto-scroll")).toBeTruthy();
     const main = document.querySelector(".chat-page > .chat-layout")!;
     expect(within(main as HTMLElement).queryByTitle("Scroll to bottom and resume auto-scroll")).toBeNull();
+  });
+});
+
+describe("judging the open aside (round 2)", () => {
+  /** A metadata event, past the tree's 10s throttle, so the refetch goes out after its 1s floor. */
+  const treeChangedOnServer = (rerender: (ui: React.ReactElement) => void, ui: () => React.ReactElement) => {
+    const realNow = Date.now.bind(Date);
+    vi.spyOn(Date, "now").mockImplementation(() => realNow() + 20_000 * (session.metadataVersion + 1));
+    session.metadataVersion += 1;
+    // A fresh element: the same one again would be skipped, and never read the version.
+    rerender(ui());
+  };
+
+  it("closes an aside opened from the URL whose tree, asked for after, fails — it does not stay pending", async () => {
+    session.treeFails = true;
+    render(page("/chat/original?aside=aside-1"));
+    await waitFor(() => expect(location()).toBe("/chat/original"));
+    expect(screen.queryByTestId("aside-panel")).toBeNull();
+  });
+
+  it("judges a Forward back to an aside by a fresh tree, not the one it was first opened with", async () => {
+    render(page());
+    fireEvent.click(await screen.findByRole("button", { name: "1 aside" }));
+    await within(panel()).findByText("because of reasons");
+    fireEvent.click(screen.getByText("history back"));
+    await waitFor(() => expect(location()).toBe("/chat/original"));
+    // Archived while the panel was closed; this page has not heard yet.
+    treeChildren = treeChildren.map((c) => ({ ...c, childArchived: true }));
+    fireEvent.click(screen.getByText("history forward"));
+    // Popped back off once the fresh tree says it is no aside of this chat's any more.
+    await waitFor(() => expect(location()).toBe("/chat/original"), { timeout: 3000 });
+    expect(screen.queryByTestId("aside-panel")).toBeNull();
+  });
+
+  it("pops the entry it pushed when the opened aside turns out invalid, leaving no duplicate behind", async () => {
+    const ui = () => page("/chat/original", ["/chat/start"]);
+    const { rerender } = render(ui());
+    fireEvent.click(await screen.findByRole("button", { name: "1 aside" }));
+    await waitFor(() => expect(location()).toBe("/chat/original?aside=aside-1"));
+    // Split off on the server while open.
+    treeChildren = [];
+    treeChangedOnServer(rerender, ui);
+    await waitFor(() => expect(location()).toBe("/chat/original"), { timeout: 4000 });
+    // One Back goes to where the user came from — not to a second /chat/original.
+    fireEvent.click(screen.getByText("history back"));
+    await waitFor(() => expect(location()).toBe("/chat/start"));
   });
 });
