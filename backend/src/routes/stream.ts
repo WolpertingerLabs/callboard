@@ -1,8 +1,9 @@
 import { bindChatView, ChatViewError } from "../services/chat-view.js";
 import { isRetiredProvider, RETIRED_PROVIDER_LABELS } from "../agents/ports/AgentProvider.js";
 import { assertReasoningEffort } from "../services/reasoning-capabilities.js";
-import { assertNativeAgentControllable, assertNativeAgentStoppable } from "../services/codex-native-agents.js";
+import { assertNativeAgentStoppable } from "../services/codex-native-agents.js";
 import { Router } from "express";
+import { startChatTurn } from "../services/chat-turn.js";
 import { sendMessage, getActiveSession, stopSession, respondToPermission, hasPendingRequest, getPendingRequest } from "../services/claude.js";
 import { pendingRequestRequiresHuman } from "../services/pending-requests.js";
 import { controlOriginError } from "../auth.js";
@@ -15,21 +16,11 @@ import { anyUploadExists, attachmentNamesOf, loadImageBuffers } from "../service
 import { titleSourceFor } from "../services/file-attachments.js";
 import { statSync, existsSync, readdirSync, watchFile, unwatchFile, openSync, readSync, closeSync } from "fs";
 import { join } from "path";
-import {
-  discardCreatedWorktree,
-  fallbackBranchName,
-  getGitInfo,
-  isAbortError,
-  resolveBranch,
-  uniqueBranchName,
-  type ResolveBranchResult,
-} from "../utils/git.js";
-import { chatFileService } from "../services/chat-file-service.js";
+import { discardCreatedWorktree, fallbackBranchName, isAbortError, resolveBranch, uniqueBranchName, type ResolveBranchResult } from "../utils/git.js";
 import { findSessionLogPath } from "../utils/session-log.js";
 import { isConversationEntry } from "../agents/adapters/claude-code/sessionParser.js";
-import { assertChatContextUnchanged, chatContextFingerprint, ChatContextChangedError } from "../utils/chat-context.js";
-import { parseChatMetadata } from "../utils/chat-metadata.js";
-import { findChatForStatus, withSessionProvider } from "../utils/chat-lookup.js";
+import { ChatContextChangedError } from "../utils/chat-context.js";
+import { findChatForStatus } from "../utils/chat-lookup.js";
 import { createStreamSession } from "../services/stream-session.js";
 import { beginSSE, requiresPromptReload, humanPromptReloadMessage, sendSSE, createSSEHandler, startSSEHeartbeat } from "../utils/sse.js";
 import { createLogger } from "../utils/logger.js";
@@ -485,114 +476,21 @@ streamRouter.post("/:id/message", async (req, res) => {
   }
 
   try {
-    assertNativeAgentControllable(req.params.id);
-  } catch (error) {
-    return res.status(409).json({ error: "native_child_read_only", message: (error as Error).message });
-  }
-
-  try {
-    // ── Branch drift guard ──────────────────────────────────────
-    // If the git branch changed since the last message in this chat,
-    // block unless the client explicitly acknowledges.
-    const storedChat = chatFileService.getChat(req.params.id);
-    const expectedContext = chatContextFingerprint(storedChat);
-    const storedMeta = parseChatMetadata(storedChat?.metadata);
-    const needsProvenance = !storedChat || storedMeta.provider == null;
-    const chatRecord = needsProvenance ? (findChatForStatus(req.params.id) ?? storedChat) : storedChat;
-    if (!chatRecord) return res.status(404).json({ error: "Chat not found" });
-    if (chatRecord._provider_resolution_error) return res.status(409).json({ error: chatRecord._provider_resolution_error });
-    const meta = parseChatMetadata(chatRecord.metadata);
-    if (isRetiredProvider(meta.provider)) {
-      return res
-        .status(410)
-        .json({ error: `This chat ran on ${RETIRED_PROVIDER_LABELS[meta.provider]}, which has been removed. It cannot be resumed.`, code: "retired_provider" });
-    }
-    const ownershipExpectation = { sessionId: chatRecord.session_id, provider: meta.provider };
-    // Validate the merged configuration before any metadata changes. Clearing
-    // effort permits recovery from stale saved overrides without weakening it.
-    if (model !== undefined || effort !== undefined) {
-      try {
-        await assertReasoningEffort({
-          cwd: chatRecord.folder,
-          provider: meta.provider,
-          model: typeof model === "string" ? model.trim() || undefined : meta.model,
-          effort: effort !== undefined ? effort : meta.effort,
-        });
-      } catch (error) {
-        return res.status(400).json({ error: (error as Error).message });
-      }
-    }
-    // Validation awaits may let another run rotate this chat or change its
-    // execution settings. Never repair an old identity or validate one owner
-    // and then write settings onto another. Unrelated metadata may still merge.
-    const fresh = chatFileService.getChat(chatRecord.id);
-    assertChatContextUnchanged(expectedContext, fresh);
-    // Retain validated provenance even if the unpersisted rollout disappears.
-    try {
-      assertNativeAgentControllable(req.params.id, ownershipExpectation);
-    } catch (error) {
-      return res.status(409).json({ error: "native_child_read_only", message: (error as Error).message });
-    }
-    const currentGitInfo = getGitInfo(chatRecord.folder);
-    const currentBranch = currentGitInfo.branch;
-
-    if (meta.lastBranch && currentBranch && meta.lastBranch !== currentBranch && !acknowledgeBranchDrift) {
-      log.warn(`Branch drift detected for chat ${req.params.id}: "${meta.lastBranch}" → "${currentBranch}"`);
-      return res.status(409).json({
-        error: "branch_drift",
-        message: `The branch has changed from "${meta.lastBranch}" to "${currentBranch}" since your last message. Do you want to continue on "${currentBranch}"?`,
-        lastBranch: meta.lastBranch,
-        currentBranch,
-      });
-    }
-
-    // Settings this message persists, before sendMessage re-reads
-    // initialMetadata from disk:
-    //  - lastBranch → the current branch (the drift check above has passed);
-    //  - model → a per-chat override, honored for every harness (each stores
-    //    the identifier its own engine accepts);
-    //  - effort → a per-chat reasoning-effort override.
-    // An empty model/effort clears the override so the chat falls back to the
-    // provider's global default: the key is set to undefined, and
-    // JSON.stringify drops undefined keys.
-    const fields: Record<string, unknown> = {};
-    if (currentBranch) fields.lastBranch = currentBranch;
-    if (typeof model === "string") {
-      const trimmed = model.trim();
-      fields.model = trimmed.length > 0 ? trimmed : undefined;
-    }
-    if (typeof effort === "string") fields.effort = effort.trim() || undefined;
-
-    // One write, not up to four read-modify-writes of the same file. Adopt /
-    // repair only after preflight succeeds. In particular, malformed legacy
-    // JSON must not cause updateChatMetadata to silently drop the validated
-    // effort/model — so the settings ride along with the normalizing write.
-    // Merge fresh fields and preserve explicit routing.
-    if (!fresh) {
-      // The original discovery snapshot is only valid for a still-absent record.
-      chatFileService.upsertChat(chatRecord.id, chatRecord.folder, chatRecord.session_id, { metadata: JSON.stringify({ ...meta, ...fields }) });
-    } else if (needsProvenance) {
-      const routing = parseChatMetadata(withSessionProvider("{}", meta.provider));
-      chatFileService.updateChatMetadata(fresh.id, { ...routing, ...fields }, { normalizeLegacy: true });
-    } else if (Object.keys(fields).length > 0) {
-      chatFileService.updateChatMetadata(req.params.id, fields);
-    }
-    // ── End branch drift guard ──────────────────────────────────
-
-    const imageMetadata = imageIds?.length ? loadImageBuffers(imageIds) : [];
-    if (nothingToSend(prompt, imageIds, imageMetadata)) return res.status(400).json(NOTHING_TO_SEND);
-
-    const emitter = await sendMessage({
-      chatView,
+    // Shared with routes that start a turn for the user (an aside's question).
+    const turn = await startChatTurn({
       chatId: req.params.id,
       prompt,
-      imageMetadata: imageMetadata.length > 0 ? imageMetadata : undefined,
+      imageIds,
       activePlugins,
       maxTurns,
-      // Per-message override; omitted (undefined) inherits the chat's
-      // persisted requireExplicitCompletion setting.
-      ...(typeof requireExplicitCompletion === "boolean" && { requireExplicitCompletion }),
+      acknowledgeBranchDrift,
+      model,
+      effort,
+      requireExplicitCompletion,
+      chatView,
     });
+    if (!turn.ok) return res.status(turn.status).json(turn.body);
+    const { emitter } = turn;
 
     beginSSE(req, res);
 
