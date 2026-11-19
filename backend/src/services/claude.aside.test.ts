@@ -22,10 +22,17 @@ vi.mock("./quick-completion.js", () => ({
   quickCompletion: async () => ({ text: "" }),
 }));
 
-// The codex route probe spawns the CLI; a fixed native route instead.
+// The codex route probe spawns the CLI; a fixed native route instead, whose
+// effective `developer_instructions` (the user's own) each test sets.
+const userConfig = vi.hoisted(() => ({ developerInstructions: null as string | null | undefined }));
 vi.mock("./codex-execution-route.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./codex-execution-route.js")>()),
-  resolveCodexExecutionRoute: async () => ({ route: "codex", injectedOpenRouter: false, uiAliasPresence: { "callboard-ui": false, callboard_ui: false } }),
+  resolveCodexExecutionRoute: async () => ({
+    route: "codex",
+    injectedOpenRouter: false,
+    uiAliasPresence: { "callboard-ui": false, callboard_ui: false },
+    ...(userConfig.developerInstructions !== undefined && { developerInstructions: userConfig.developerInstructions }),
+  }),
 }));
 vi.mock("./reasoning-capabilities.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./reasoning-capabilities.js")>()),
@@ -79,9 +86,22 @@ describe("sendMessage — aside instruction", () => {
   });
 
   it("reaches Codex as developer_instructions, not in the replacing instructions append", async () => {
+    userConfig.developerInstructions = null; // the user's config sets none
     await run({ chatId: storedAside("codex", "stored-aside-codex").id });
     expect(optionsOf().codex.developerInstructions).toBe(ASIDE_INSTRUCTION);
     expect(appendOf()).not.toContain(ASIDE_INSTRUCTION);
+  });
+
+  it("keeps the user's own Codex developer_instructions, with the aside's after them", async () => {
+    userConfig.developerInstructions = "USER RULES";
+    await run({ chatId: storedAside("codex", "stored-aside-codex-user").id });
+    expect(optionsOf().codex.developerInstructions).toBe(`USER RULES\n\n${ASIDE_INSTRUCTION}`);
+  });
+
+  it("sends nothing over an unreadable Codex config rather than risk replacing the user's", async () => {
+    userConfig.developerInstructions = undefined;
+    await run({ chatId: storedAside("codex", "stored-aside-codex-unread").id });
+    expect(optionsOf().codex).not.toHaveProperty("developerInstructions");
   });
 
   it("reaches pi as an appended system prompt", async () => {

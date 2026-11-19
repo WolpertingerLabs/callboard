@@ -121,7 +121,7 @@ export async function buildCodexExtras(ctx: ProviderOptionsContext & { codexRout
     }),
     reasoningRoute: reasoningTarget.route === "openrouter" ? "openrouter" : reasoningTarget.route === "codex" ? "native" : "unknown",
     ...(permissions && { permissions }),
-    ...(ctx.additionalInstructions && { developerInstructions: ctx.additionalInstructions }),
+    ...(ctx.additionalInstructions && codexDeveloperInstructionsFor(codexRoute, ctx.additionalInstructions, trackingId)),
   };
   log.info(
     `Codex chat config — trackingId=${trackingId}, authMode=${useOpenRouter ? "openrouter" : authMode}, ` +
@@ -134,6 +134,22 @@ export async function buildCodexExtras(ctx: ProviderOptionsContext & { codexRout
       `${!useOpenRouter && authMode === "api-key" && agentSettings.codexApiKey ? `, apiKeyTail=…${agentSettings.codexApiKey.trim().slice(-4)}` : ""}`,
   );
   return codex;
+}
+
+/**
+ * `{ developerInstructions }` carrying `addition` AFTER the user's own
+ * `developer_instructions` — our value is a `-c` override, so sending ours
+ * alone would drop theirs for the run. When the probe could not read the
+ * effective config there is no way to tell, so nothing is sent: the user's
+ * setting stands and the addition is skipped. (In practice that turn does not
+ * run at all: the UI-tool reservation refuses an unreadable config.)
+ */
+export function codexDeveloperInstructionsFor(route: CodexExecutionRoute, addition: string, trackingId: string): { developerInstructions?: string } {
+  if (route.developerInstructions === undefined) {
+    log.warn(`Codex chat ${trackingId}: effective config unreadable, so its developer_instructions are unknown; the additional instructions were not sent`);
+    return {};
+  }
+  return { developerInstructions: route.developerInstructions ? `${route.developerInstructions}\n\n${addition}` : addition };
 }
 
 // pi chats. Unlike the Codex builder above — which must collapse permissions
