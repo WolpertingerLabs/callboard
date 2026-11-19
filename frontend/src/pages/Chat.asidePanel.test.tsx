@@ -428,6 +428,24 @@ describe("clicking a highlight", () => {
     fireEvent.click(el, { clientX: init.x ?? 20, clientY: 15, button: 0, detail: init.detail ?? 1 });
   };
 
+  it("keeps a press, and the open it leads to, across a tree refetch landing in between", async () => {
+    const { rerender } = render(page());
+    const answer = await screen.findByText("first answer");
+    await waitFor(() => expect((globalThis as unknown as { CSS: { highlights: Map<string, unknown> } }).CSS.highlights.has("aside-quote")).toBe(true));
+    const { getChatTree } = await import("../api");
+    const fetched = vi.mocked(getChatTree).mock.calls.length;
+    fireEvent.mouseDown(answer, { clientX: 20, clientY: 15, button: 0 });
+    // A metadata tick refetches the tree (past its throttle): a new asides array lands.
+    const realNow = Date.now.bind(Date);
+    vi.spyOn(Date, "now").mockImplementation(() => realNow() + 20_000);
+    session.metadataVersion = 1;
+    rerender(page());
+    await waitFor(() => expect(vi.mocked(getChatTree).mock.calls.length).toBeGreaterThan(fetched), { timeout: 3000 });
+    await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
+    fireEvent.click(answer, { clientX: 20, clientY: 15, button: 0, detail: 1 });
+    await waitFor(() => expect(location()).toBe("/chat/original?aside=aside-1"));
+  });
+
   it("opens the aside on a plain click", async () => {
     press(await setup());
     await waitFor(() => expect(location()).toBe("/chat/original?aside=aside-1"));
@@ -538,5 +556,43 @@ describe("judging the open aside (round 2)", () => {
     // One Back goes to where the user came from — not to a second /chat/original.
     fireEvent.click(screen.getByText("history back"));
     await waitFor(() => expect(location()).toBe("/chat/start"));
+  });
+});
+
+describe("main-chat re-renders leave the panel alone", () => {
+  it("does not re-subscribe the aside's scroll, touch, pointer or key listeners", async () => {
+    const ui = () => page("/chat/original?aside=aside-1");
+    const { rerender } = render(ui());
+    await within(panel()).findByText("because of reasons");
+    await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
+    const added = vi.spyOn(EventTarget.prototype, "addEventListener");
+    const inPanel = () => added.mock.contexts.filter((target) => target instanceof Node && panel().contains(target)).length;
+    // The main chat re-renders (as it does on every streamed frame).
+    for (let i = 0; i < 3; i++) rerender(ui());
+    await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
+    expect(inPanel()).toBe(0);
+    expect(added.mock.calls.filter(([type], i) => type === "keydown" && added.mock.contexts[i] === window)).toHaveLength(0);
+  });
+
+  it("keeps a scrollbar drag in the aside going across a main-chat re-render", async () => {
+    const ui = () => page("/chat/original?aside=aside-1");
+    const { rerender } = render(ui());
+    await within(panel()).findByText("because of reasons");
+    const scroller = within(panel()).getByText("because of reasons").closest<HTMLElement>('div[style*="overflow: auto"]')!;
+    // A tall transcript, scrolled to the bottom.
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 1000 });
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 100 });
+    let top = 900;
+    Object.defineProperty(scroller, "scrollTop", { configurable: true, get: () => top, set: (v: number) => (top = Math.min(v, 900)) });
+    await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
+    // Pressed on the scrollbar (past the client width, which jsdom reports as 0).
+    fireEvent.pointerDown(scroller, { offsetX: 10 });
+    // The main chat re-renders mid-drag.
+    rerender(ui());
+    await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
+    // The drag pulls the view up: the aside unlatches (its jump-to-bottom button shows).
+    top = 400;
+    fireEvent.scroll(scroller);
+    expect(await within(panel()).findByTitle("Scroll to bottom and resume auto-scroll")).toBeTruthy();
   });
 });

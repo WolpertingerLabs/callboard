@@ -1092,6 +1092,8 @@ export default function PromptInput({
   return (
     <div
       ref={composerRootRef}
+      // The page finds "the composer" by this (focus after the aside panel closes).
+      data-composer=""
       style={{
         padding: "8px 12px",
         paddingBottom: "calc(8px + var(--safe-bottom))",

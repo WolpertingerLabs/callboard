@@ -5,7 +5,7 @@ import ComputerUseHeader from "../components/ComputerUseHeader";
 import { usePendingFeedback } from "../hooks/usePendingFeedback";
 import { useComputerUseController } from "../hooks/useComputerUseController";
 import ComputerUsePanel from "../components/ComputerUsePanel";
-import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from "react";
+import { memo, useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from "react";
 import { useParams, useNavigate, useSearchParams, useLocation, useNavigationType } from "react-router-dom";
 import {
   RotateCw,
@@ -383,6 +383,9 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
   const isMobile = useIsMobile();
   const embeddedRef = useRef(embedded);
   embeddedRef.current = embedded;
+  // For effect deps: whether this is the embedded chat, never the options
+  // object itself — a new object would tear the effect down on every render.
+  const isEmbedded = !!embedded;
   // The history entry this view belongs to — see useChatViewKey. The embedded
   // chat is its own view for as long as it is mounted (the panel remounts it
   // per aside).
@@ -1215,7 +1218,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
     return () => {
       if (activeChatViewEntry?.token === token) activeChatViewEntry = null;
     };
-  }, [viewKey, embedded]);
+  }, [viewKey, isEmbedded]);
 
   // The compose screen a new-chat send was fired from. `chat_created` redirects
   // only while the user is still sitting on it — see the handler in readSSE.
@@ -2334,7 +2337,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
       container.removeEventListener("scroll", handleScroll);
       window.clearTimeout(suppressSettleTimer);
     };
-  }, [viewMode, id, latchFollow, unlatch, embedded]);
+  }, [viewMode, id, latchFollow, unlatch, isEmbedded]);
 
   // ── Auto-mark chat as read when user has scrolled to the bottom ──
   // Uses IntersectionObserver on bottomRef (the sentinel div at the end of
@@ -3023,7 +3026,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
 
   // This chat's asides, from the parentage tree (the embedded chat has none
   // to show: asides of asides are not offered).
-  const asides = useMemo(() => (embedded ? asidesOf(null) : asidesOf(chatTree)), [embedded, chatTree]);
+  const asides = useMemo(() => (isEmbedded ? asidesOf(null) : asidesOf(chatTree)), [isEmbedded, chatTree]);
   const openAsideEntry = asideId ? asides.find((a) => a.chatId === asideId) : undefined;
   // `?aside=` names a chat; it is only shown as this chat's aside once a tree
   // asked for after it opened lists it as one — a direct, unarchived aside of
@@ -3045,6 +3048,55 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
   useEffect(() => {
     if (asideInvalid) closeAside();
   }, [asideInvalid, closeAside]);
+  // The embedded chat's options, kept identity-stable: they are its props
+  // (it is memoized), and a new object on every main-chat render — the main
+  // chat re-renders on every streamed frame — would re-render the whole aside
+  // and, through its effects, re-subscribe its scroll and key listeners.
+  const asideTitle = openAsideEntry?.title;
+  const asideConfirmed = !!openAsideEntry;
+  const asideFresh = !!asideId && freshAsideId === asideId;
+  const embeddedOptions = useMemo<EmbeddedChatOptions | null>(
+    () =>
+      id && !isEmbedded
+        ? {
+            mainChatId: id,
+            // Not until a tree confirms it is this chat's aside: a reply
+            // from any other chat is not an "Aside reply" of this one.
+            insertIntoMain: asideConfirmed,
+            refetchOnAttach: asideFresh,
+            onReplaced: replaceAside,
+            title: (
+              <>
+                <MessageSquareQuote size={16} aria-hidden style={{ flexShrink: 0, color: "var(--text-muted)" }} />
+                <span style={{ fontSize: 14, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={asideTitle}>
+                  {asideTitle ?? "Aside"}
+                </span>
+              </>
+            ),
+            actions: (
+              <button
+                type="button"
+                onClick={closeAside}
+                title="Close aside (Esc)"
+                aria-label="Close aside"
+                style={{
+                  background: "var(--bg-secondary)",
+                  color: "var(--text)",
+                  padding: 8,
+                  borderRadius: 6,
+                  border: "1px solid var(--border)",
+                  cursor: "pointer",
+                  display: "flex",
+                }}
+              >
+                <X size={14} />
+              </button>
+            ),
+          }
+        : null,
+    [id, isEmbedded, asideConfirmed, asideFresh, replaceAside, asideTitle, closeAside],
+  );
+
   // Emphasis: the asides whose chip or list row is hovered or focused, else
   // the one open in the panel.
   const [hoveredAsides, setHoveredAsides] = useState<readonly string[] | null>(null);
@@ -3075,9 +3127,16 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
   // Browsers report a double click as a click with detail 1 and then one with
   // detail 2, so the first cannot know yet: the open waits out the
   // double-click interval, and a second press inside it cancels it.
+  // Subscribed on whether there are asides at all, not on the `asides` array:
+  // the tree is refetched (a new array) on metadata ticks, and re-subscribing
+  // would drop a recorded press or cancel an open waiting out the interval.
+  // The painted ranges are read through their ref, the opener through this one.
+  const openAsideRef = useRef(openAside);
+  openAsideRef.current = openAside;
+  const hasAsides = asides.length > 0;
   useEffect(() => {
     const container = chatContainerRef.current;
-    if (embedded || viewMode !== "chat" || !container || asides.length === 0) return;
+    if (isEmbedded || viewMode !== "chat" || !container || !hasAsides) return;
     let press: { x: number; y: number; hadSelection: boolean } | null = null;
     let pending: ReturnType<typeof setTimeout> | null = null;
     const cancelPending = () => {
@@ -3110,7 +3169,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
         // A selection made meanwhile (the double click's word) wins too.
         const now = window.getSelection();
         if (now && !now.isCollapsed) return;
-        openAside(hit);
+        openAsideRef.current(hit);
       }, HIGHLIGHT_CLICK_DELAY_MS);
     };
     container.addEventListener("mousedown", onDown);
@@ -3120,7 +3179,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
       container.removeEventListener("mousedown", onDown);
       container.removeEventListener("click", onClick);
     };
-  }, [embedded, viewMode, asides, highlightRanges, openAside]);
+  }, [isEmbedded, viewMode, hasAsides, highlightRanges]);
 
   // The mobile sheet covers the main chat; nothing under it may take focus or
   // be read out (React 18 has no `inert` prop, so it is set directly).
@@ -4941,62 +5000,18 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
     <AsideContext.Provider value={id ? asideActions : null}>
       <div className="chat-page" style={{ height: "100%", display: "flex", minWidth: 0 }}>
         {page}
-        {asideId && id && !asideInvalid && (
+        {asideId && id && !asideInvalid && embeddedOptions && (
           <AsidePanel
             label={openAsideEntry?.title ?? "Aside"}
             isMobile={isMobile}
             onClose={closeAside}
             getReturnFocus={() => asideReturnFocusRef.current}
             // The opener gone too (Ask as aside empties the tray its button sat in): the main composer.
-            getFallbackFocus={() => pageLayoutRef.current?.querySelector<HTMLElement>("textarea:not([disabled])") ?? null}
+            getFallbackFocus={() => pageLayoutRef.current?.querySelector<HTMLElement>("[data-composer] textarea:not([disabled])") ?? null}
           >
             {/* An aside that crashes takes down the panel, not the chat beside it. */}
             <ErrorBoundary region="This aside" variant="region" resetKey={asideId}>
-              <Chat
-                key={asideId}
-                chatId={asideId}
-                onChatListRefresh={onChatListRefresh}
-                embedded={{
-                  mainChatId: id,
-                  // Not until a tree confirms it is this chat's aside: a reply
-                  // from any other chat is not an "Aside reply" of this one.
-                  insertIntoMain: !!openAsideEntry,
-                  refetchOnAttach: freshAsideId === asideId,
-                  onReplaced: replaceAside,
-                  title: (
-                    <>
-                      <MessageSquareQuote size={16} aria-hidden style={{ flexShrink: 0, color: "var(--text-muted)" }} />
-                      <span
-                        style={{ fontSize: 14, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
-                        title={openAsideEntry?.title}
-                      >
-                        {openAsideEntry?.title ?? "Aside"}
-                      </span>
-                    </>
-                  ),
-                  actions: (
-                    <>
-                      <button
-                        type="button"
-                        onClick={closeAside}
-                        title="Close aside (Esc)"
-                        aria-label="Close aside"
-                        style={{
-                          background: "var(--bg-secondary)",
-                          color: "var(--text)",
-                          padding: 8,
-                          borderRadius: 6,
-                          border: "1px solid var(--border)",
-                          cursor: "pointer",
-                          display: "flex",
-                        }}
-                      >
-                        <X size={14} />
-                      </button>
-                    </>
-                  ),
-                }}
-              />
+              <EmbeddedChat key={asideId} chatId={asideId} onChatListRefresh={onChatListRefresh} embedded={embeddedOptions} />
             </ErrorBoundary>
           </AsidePanel>
         )}
@@ -5004,3 +5019,10 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
     </AsideContext.Provider>
   );
 }
+
+/**
+ * The aside panel's chat. Memoized so the main chat re-rendering (every
+ * streamed frame) does not re-render the aside: its props are a chat id, the
+ * page's stable list-refresh callback and identity-stable options.
+ */
+const EmbeddedChat = memo(Chat);
