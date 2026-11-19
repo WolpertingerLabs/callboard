@@ -12,6 +12,14 @@
  */
 import type { ParsedMessage } from "../api";
 import { hasMarkerSlot } from "./forkMarkers";
+import {
+  formatQuoteBlock as sharedFormatQuoteBlock,
+  formatQuoteOrigin as sharedFormatQuoteOrigin,
+  formatQuoteTime as sharedFormatQuoteTime,
+  quoteRoleLabel as sharedQuoteRoleLabel,
+  quoteTimeFormatter,
+  renderQuotedPrompt,
+} from "shared/types/index.js";
 
 export interface MessageQuote {
   /** Per-tab handle for the tray's chips. Not stable across reloads. */
@@ -85,43 +93,36 @@ export function isSameQuote(a: Pick<MessageQuote, "messageIndex" | "timestamp" |
   return a.messageIndex === b.messageIndex && a.timestamp === b.timestamp && a.text === b.text;
 }
 
-const ROLE_LABEL: Record<ParsedMessage["role"], string> = { user: "User", assistant: "Assistant", system: "System" };
+/*
+ * Rendering is the shared format in shared/types/aside.ts — one
+ * implementation for the main-chat send here and an aside's first turn on the
+ * daemon. These wrappers keep the browser's local zone and an injectable
+ * `now` (tests).
+ */
 
 export function quoteRoleLabel(role: ParsedMessage["role"]): string {
-  return ROLE_LABEL[role] ?? "Message";
+  return sharedQuoteRoleLabel(role);
 }
-
-const pad = (n: number) => String(n).padStart(2, "0");
 
 /**
  * When the quoted message was sent, in local time: `14:02` for today, with
  * the date (`Nov 18, 14:02`) otherwise, and the year too when it differs.
  * Empty for an unparseable timestamp.
  */
-export function formatQuoteTime(timestamp: string, now: Date = new Date()): string {
-  const d = new Date(timestamp);
-  if (Number.isNaN(d.getTime())) return "";
-  const time = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  if (d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate()) return time;
-  const month = d.toLocaleString("en-US", { month: "short" });
-  const year = d.getFullYear() === now.getFullYear() ? "" : ` ${d.getFullYear()}`;
-  return `${month} ${d.getDate()}${year}, ${time}`;
+export function formatQuoteTime(timestamp: string, now?: Date): string {
+  return sharedFormatQuoteTime(timestamp, now ? { now } : {});
 }
+
+const localTimes = (now?: Date) => quoteTimeFormatter(undefined, now);
 
 /** `Assistant, 14:02` — the short origin line a quote is introduced by. */
 export function formatQuoteOrigin(quote: Pick<MessageQuote, "role" | "timestamp">, now?: Date): string {
-  const time = formatQuoteTime(quote.timestamp, now);
-  const role = quoteRoleLabel(quote.role);
-  return time ? `${role}, ${time}` : role;
+  return sharedFormatQuoteOrigin(quote, localTimes(now));
 }
 
 /** One quote as a Markdown blockquote, headed by its origin line. */
 export function formatQuoteBlock(quote: MessageQuote, now?: Date): string {
-  const body = quote.text
-    .split("\n")
-    .map((line) => (line ? `> ${line}` : ">"))
-    .join("\n");
-  return `> **${formatQuoteOrigin(quote, now)}:**\n${body}`;
+  return sharedFormatQuoteBlock(quote, localTimes(now));
 }
 
 /**
@@ -129,7 +130,5 @@ export function formatQuoteBlock(quote: MessageQuote, now?: Date): string {
  * user's own text. With no quotes it is `prompt` unchanged, byte for byte.
  */
 export function buildQuotedPrompt(quotes: readonly MessageQuote[], prompt: string, now?: Date): string {
-  if (quotes.length === 0) return prompt;
-  const blocks = quotes.map((q) => formatQuoteBlock(q, now)).join("\n\n");
-  return prompt ? `${blocks}\n\n${prompt}` : blocks;
+  return renderQuotedPrompt(quotes, prompt, localTimes(now));
 }

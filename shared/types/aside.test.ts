@@ -6,6 +6,8 @@ import {
   asideTitle,
   parseAsideQuotes,
   quoteTimeFormatter,
+  formatQuoteOrigin,
+  formatQuoteTime,
   renderQuotedPrompt,
   type AsideQuote,
 } from "./aside.js";
@@ -16,7 +18,7 @@ describe("renderQuotedPrompt", () => {
   it("renders each quote as a blockquote under an origin line, then the question", () => {
     const out = renderQuotedPrompt(
       [q("2026-01-01T14:02:00Z", "assistant", "line one\n\nline two"), q("2026-01-01T14:00:00Z", "user", "asked")],
-      "  why?  ",
+      "why?",
       () => "14:02",
     );
     expect(out).toBe("> **Assistant, 14:02:**\n> line one\n>\n> line two\n\n> **User, 14:02:**\n> asked\n\nwhy?");
@@ -26,13 +28,25 @@ describe("renderQuotedPrompt", () => {
     expect(renderQuotedPrompt([q("2026-01-01T00:00:00Z", "user", "x")], "", () => null)).toBe("> **User:**\n> x");
   });
 
-  it("normalises CRLF and trims the quote", () => {
-    expect(renderQuotedPrompt([q("2026-01-01T00:00:00Z", "user", "\r\na\r\nb\r\n")], "?", () => null)).toBe("> **User:**\n> a\n> b\n\n?");
+  it("normalises CRLF and drops blank edge lines, keeping indentation", () => {
+    expect(renderQuotedPrompt([q("2026-01-01T00:00:00Z", "user", "\r\n  a\r\nb\r\n")], "?", () => null)).toBe("> **User:**\n>   a\n> b\n\n?");
   });
 
-  it("formats local HH:MM by default", () => {
-    const iso = new Date(2026, 0, 1, 9, 5).toISOString();
+  it("is the question unchanged with no quotes, and keeps it as given", () => {
+    expect(renderQuotedPrompt([], "  just this ")).toBe("  just this ");
+    expect(renderQuotedPrompt([q("2026-01-01T00:00:00Z", "user", "x")], " q ", () => null)).toBe("> **User:**\n> x\n\n q ");
+  });
+
+  it("formats local time by default, with the date when not today", () => {
+    const today = new Date();
+    const iso = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 9, 5).toISOString();
     expect(renderQuotedPrompt([q(iso, "assistant", "x")], "")).toBe("> **Assistant, 09:05:**\n> x");
+    expect(formatQuoteTime(new Date(2020, 2, 4, 23, 59).toISOString())).toBe("Mar 4 2020, 23:59");
+  });
+
+  it("labels a system message and an unknown role", () => {
+    expect(formatQuoteOrigin({ role: "system", timestamp: "x" })).toBe("System");
+    expect(formatQuoteOrigin({ role: "tool", timestamp: "x" })).toBe("Message");
   });
 });
 
@@ -89,16 +103,21 @@ describe("parseAsideQuotes", () => {
 
 describe("quoteTimeFormatter", () => {
   const iso = "2026-01-01T14:02:00Z";
-  it("formats HH:MM in the given IANA zone, on a 24-hour clock", () => {
-    expect(quoteTimeFormatter("UTC")(iso)).toBe("14:02");
-    expect(quoteTimeFormatter("Asia/Kolkata")(iso)).toBe("19:32");
-    expect(quoteTimeFormatter("America/New_York")("2026-01-01T05:00:00Z")).toBe("00:00");
+  const now = new Date("2026-01-01T15:00:00Z");
+  it("formats HH:MM in the given IANA zone, on a 24-hour clock, dated when not that zone's today", () => {
+    expect(quoteTimeFormatter("UTC", now)(iso)).toBe("14:02");
+    expect(quoteTimeFormatter("Asia/Kolkata", now)(iso)).toBe("19:32");
+    // 00:00 on Jan 1 in New York; "now" is still Jan 1 there.
+    expect(quoteTimeFormatter("America/New_York", now)("2026-01-01T05:00:00Z")).toBe("00:00");
+    // Same instant, different calendar day in Tokyo (now = Jan 2 00:00 there).
+    expect(quoteTimeFormatter("Asia/Tokyo", now)("2026-01-01T14:02:00Z")).toBe("Jan 1, 23:02");
+    expect(quoteTimeFormatter("UTC", now)("2025-03-04T23:59:00Z")).toBe("Mar 4 2025, 23:59");
   });
   it("falls back to the local zone for an unknown, empty or non-string zone", () => {
     const local = renderQuotedPrompt([q(iso, "user", "x")], "");
     for (const zone of ["Not/AZone", "", 42, undefined]) expect(renderQuotedPrompt([q(iso, "user", "x")], "", quoteTimeFormatter(zone))).toBe(local);
   });
   it("gives no time for an unreadable timestamp", () => {
-    expect(quoteTimeFormatter("UTC")("nope")).toBeNull();
+    expect(quoteTimeFormatter("UTC")("nope")).toBe("");
   });
 });

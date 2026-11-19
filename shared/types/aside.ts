@@ -36,58 +36,111 @@ export function asideForkPoint(quotes: readonly AsideQuote[]): string | undefine
   return latest?.timestamp;
 }
 
-/** Local `HH:MM` — the default origin-line time. */
-function localTime(iso: string): string | null {
-  const date = new Date(iso);
-  if (isNaN(date.getTime())) return null;
-  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
-}
-
 /**
- * An origin-line time formatter for {@link renderQuotedPrompt}: `HH:MM` in the
- * IANA `timeZone` (the asking browser's), or the local zone of whoever runs
- * this when it is absent or not a zone `Intl` knows.
- */
-export function quoteTimeFormatter(timeZone?: unknown): (iso: string) => string | null {
-  if (typeof timeZone !== "string" || !timeZone) return localTime;
-  let format: Intl.DateTimeFormat;
-  try {
-    format = new Intl.DateTimeFormat("en-US", { timeZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
-  } catch {
-    return localTime;
-  }
-  return (iso) => {
-    const date = new Date(iso);
-    if (isNaN(date.getTime())) return null;
-    const parts = format.formatToParts(date);
-    const hour = parts.find((p) => p.type === "hour")?.value;
-    const minute = parts.find((p) => p.type === "minute")?.value;
-    return hour && minute ? `${hour}:${minute}` : null;
-  };
-}
-
-/**
- * The quotes as Markdown blockquotes, each under an origin line
- * (`> **Assistant, 14:02:**`), then the question. Blockquotes are separated by
- * a blank line so adjacent quotes do not merge into one.
+ * The one quoted-prompt format, shared by the main-chat send (the composer's
+ * quote tray, `frontend/src/utils/messageQuotes.ts`) and an aside's first turn
+ * (`POST /chats/:id/fork`):
  *
- * `formatTime` renders a quote's timestamp; return `null` to leave the time
- * out. Defaults to local `HH:MM`.
+ *     > **Assistant, 14:02:**
+ *     > the passage
+ *
+ *     the question
  */
-export function renderQuotedPrompt(quotes: readonly AsideQuote[], question: string, formatTime: (iso: string) => string | null = localTime): string {
-  const blocks = quotes.map((quote) => {
-    const who = quote.role === "user" ? "User" : "Assistant";
-    const time = formatTime(quote.timestamp);
-    const origin = `> **${who}${time ? `, ${time}` : ""}:**`;
-    const body = quote.text
-      .replace(/\r\n?/g, "\n")
-      .trim()
-      .split("\n")
-      .map((line) => (line ? `> ${line}` : ">"));
-    return [origin, ...body].join("\n");
-  });
-  const ask = question.trim();
-  return [...blocks, ...(ask ? [ask] : [])].join("\n\n");
+
+/** Anything renderable as a quote: an {@link AsideQuote}, or a tray chip (whose role may also be "system"). */
+export interface QuoteLike {
+  timestamp: string;
+  role: string;
+  text: string;
+}
+
+const ROLE_LABEL: Record<string, string> = { user: "User", assistant: "Assistant", system: "System" };
+
+/** `User` / `Assistant` / `System`, or `Message` for anything else. */
+export function quoteRoleLabel(role: string): string {
+  return ROLE_LABEL[role] ?? "Message";
+}
+
+/** A zone `Intl` accepts, or undefined (the runtime's local zone). */
+function validTimeZone(timeZone: unknown): string | undefined {
+  if (typeof timeZone !== "string" || !timeZone) return undefined;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone });
+    return timeZone;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Calendar and clock fields of `date` in `timeZone` (undefined = local). */
+function zonedParts(date: Date, timeZone: string | undefined) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    ...(timeZone && { timeZone }),
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(date);
+  const get = (type: Intl.DateTimeFormatPartTypes) => parts.find((p) => p.type === type)?.value ?? "";
+  return { year: get("year"), month: get("month"), day: get("day"), hour: get("hour").padStart(2, "0"), minute: get("minute").padStart(2, "0") };
+}
+
+/**
+ * When the quoted message was sent: `14:02` on the same day as `now`, with the
+ * date (`Nov 18, 14:02`) otherwise, and the year too when it differs. In the
+ * IANA `timeZone` when given and valid, else the runtime's local zone. Empty
+ * for an unparseable timestamp.
+ */
+export function formatQuoteTime(timestamp: string, opts: { now?: Date; timeZone?: unknown } = {}): string {
+  const date = new Date(timestamp);
+  if (isNaN(date.getTime())) return "";
+  const zone = validTimeZone(opts.timeZone);
+  const at = zonedParts(date, zone);
+  const today = zonedParts(opts.now ?? new Date(), zone);
+  const time = `${at.hour}:${at.minute}`;
+  if (at.year === today.year && at.month === today.month && at.day === today.day) return time;
+  return `${at.month} ${at.day}${at.year === today.year ? "" : ` ${at.year}`}, ${time}`;
+}
+
+/** {@link formatQuoteTime} as a formatter for {@link renderQuotedPrompt}, in `timeZone` (the asker's). */
+export function quoteTimeFormatter(timeZone?: unknown, now?: Date): (iso: string) => string {
+  return (iso) => formatQuoteTime(iso, { timeZone, ...(now && { now }) });
+}
+
+/** `Assistant, 14:02` — the origin line a quote is introduced by; just the role without a time. */
+export function formatQuoteOrigin(quote: Pick<QuoteLike, "role" | "timestamp">, formatTime: (iso: string) => string | null = quoteTimeFormatter()): string {
+  const time = formatTime(quote.timestamp);
+  const role = quoteRoleLabel(quote.role);
+  return time ? `${role}, ${time}` : role;
+}
+
+/**
+ * One quote as a Markdown blockquote under its origin line. Line endings are
+ * unified and blank lines at either end dropped; indentation is kept (code).
+ */
+export function formatQuoteBlock(quote: QuoteLike, formatTime?: (iso: string) => string | null): string {
+  const body = quote.text
+    .replace(/\r\n?/g, "\n")
+    .replace(/^\n+|\n+$/g, "")
+    .split("\n")
+    .map((line) => (line ? `> ${line}` : ">"));
+  return [`> **${formatQuoteOrigin(quote, formatTime)}:**`, ...body].join("\n");
+}
+
+/**
+ * The quotes as blockquotes, in order, separated by a blank line so adjacent
+ * quotes do not merge, then `question` as given. With no quotes it is
+ * `question` unchanged, byte for byte; an empty question adds nothing.
+ *
+ * `formatTime` renders a quote's timestamp (`null`/"" leaves it out);
+ * defaults to {@link formatQuoteTime} in the local zone.
+ */
+export function renderQuotedPrompt(quotes: readonly QuoteLike[], question: string, formatTime?: (iso: string) => string | null): string {
+  if (quotes.length === 0) return question;
+  const blocks = quotes.map((quote) => formatQuoteBlock(quote, formatTime)).join("\n\n");
+  return question ? `${blocks}\n\n${question}` : blocks;
 }
 
 /** `Aside: <question>`, whitespace-collapsed and truncated; just `Aside` with no text. */

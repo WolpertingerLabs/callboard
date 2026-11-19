@@ -279,15 +279,15 @@ describe("POST /api/chats/:id/fork kind aside", () => {
       const turn = turns.calls[0];
       expect(turn.chatId).toBe("fork-chat");
       expect(turn.acknowledgeBranchDrift).toBe(true);
-      expect(turn.prompt).toMatch(/^> \*\*Assistant, \d\d:\d\d:\*\*\n> the passage\n\nwhy this\?$/);
+      expect(turn.prompt).toMatch(/^> \*\*Assistant, (\w+ \d+( \d{4})?, )?\d\d:\d\d:\*\*\n> the passage\n\nwhy this\?$/);
     });
 
     it("writes the origin-line times in the asker's zone, else the daemon's", async () => {
       setParent({});
       await aside({ prompt: "why?", timeZone: "Asia/Kolkata" }); // T1 is 00:05 UTC
-      expect(turns.calls[0].prompt).toMatch(/^> \*\*Assistant, 05:35:\*\*/);
+      expect(turns.calls[0].prompt).toMatch(/^> \*\*Assistant, Jan 1, 05:35:\*\*/);
       await aside({ prompt: "why?", timeZone: "Not/AZone" });
-      expect(turns.calls[1].prompt).toMatch(/^> \*\*Assistant, \d\d:\d\d:\*\*/);
+      expect(turns.calls[1].prompt).toMatch(/^> \*\*Assistant, (\w+ \d+( \d{4})?, )?\d\d:\d\d:\*\*/);
       expect((await fork({ timeZone: "UTC" })).meta.error).toBe('timeZone is only accepted with kind "aside"');
     });
 

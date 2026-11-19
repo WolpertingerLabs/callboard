@@ -93,7 +93,7 @@ export {
   rerunnableReplies,
 } from "./rerun.js";
 
-export type { AsideQuote } from "./aside.js";
+export type { AsideQuote, QuoteLike } from "./aside.js";
 export {
   ASIDE_ROLE,
   ASIDE_MAX_QUOTES,
@@ -104,6 +104,10 @@ export {
   asideTitle,
   asideForkPoint,
   quoteTimeFormatter,
+  formatQuoteTime,
+  formatQuoteOrigin,
+  formatQuoteBlock,
+  quoteRoleLabel,
   parseAsideQuotes,
 } from "./aside.js";
 
