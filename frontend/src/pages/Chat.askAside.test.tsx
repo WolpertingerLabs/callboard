@@ -512,3 +512,29 @@ it("sends which repeat of a passage was selected, so the highlight lands on it",
   await waitFor(() => expect(forkBodies()).toHaveLength(1));
   expect(forkBodies()[0].quotes).toEqual([{ timestamp: A1, role: "assistant", text: "again", occurrence: 1 }]);
 });
+
+it("counts the occurrence across one turn's blocks: the LGTM in block B is the turn's second", async () => {
+  const usual = vi.mocked(getMessages).getMockImplementation()!;
+  onTestFinished(() => {
+    vi.mocked(getMessages).mockImplementation(usual);
+  });
+  vi.mocked(getMessages).mockImplementation(async (id: string) =>
+    id === "original"
+      ? [
+          { role: "user", type: "text", content: "first question", timestamp: Q1 },
+          { role: "assistant", type: "text", content: "LGTM, one nit", timestamp: A1 },
+          { role: "assistant", type: "text", content: "Then LGTM", timestamp: A1 },
+        ]
+      : [],
+  );
+  render(tree());
+  const blockB = await screen.findByText("Then LGTM");
+  const node = firstText(blockB);
+  selectRange(node, 5, node, 9);
+  fireEvent.click(await screen.findByRole("button", { name: "Quote" }));
+  await screen.findByTestId("quote-chip");
+  type("Which one?");
+  fireEvent.click(askButton());
+  await waitFor(() => expect(forkBodies()).toHaveLength(1));
+  expect(forkBodies()[0].quotes).toEqual([{ timestamp: A1, role: "assistant", text: "LGTM", occurrence: 1 }]);
+});

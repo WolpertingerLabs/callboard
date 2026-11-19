@@ -29,7 +29,7 @@
  */
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import type { QuoteOrigin } from "../utils/messageQuotes";
-import { quoteOccurrence } from "../utils/asideHighlights";
+import { quoteOccurrence, turnOccurrence } from "../utils/asideHighlights";
 
 export interface SelectionRect {
   top: number;
@@ -221,7 +221,18 @@ export function useMessageTextSelection({ containerRef, originOf, enabled = true
         return;
       }
       rangeRef.current = range.cloneRange();
-      setSelection({ messageIndex: hit.messageIndex, origin, text: hit.text, occurrence: hit.occurrence, rect: rectOf(range) });
+      // The occurrence is the turn's: count the matches in its earlier blocks
+      // (same timestamp and role, before this one in the transcript) too.
+      const before: Element[] = [];
+      for (const wrapper of container.querySelectorAll(MESSAGE_SELECTOR)) {
+        const index = Number(wrapper.getAttribute("data-message-index"));
+        if (!Number.isInteger(index) || index >= hit.messageIndex) continue;
+        const other = originOfRef.current(index);
+        const content = other && other.timestamp === origin.timestamp && other.role === origin.role ? wrapper.querySelector(CONTENT_SELECTOR) : null;
+        if (content) before.push(content);
+      }
+      const occurrence = turnOccurrence(before, hit.text, hit.occurrence);
+      setSelection({ messageIndex: hit.messageIndex, origin, text: hit.text, occurrence, rect: rectOf(range) });
     };
 
     const schedule = (ms: number) => {

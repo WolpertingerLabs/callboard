@@ -68,6 +68,7 @@ export function useAsideHighlights({
   // a quoted bubble's own text changing is caught by the observer below.
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
+  // quoteCandidates reads a per-transcript index (built once per array), not a scan per quote.
   const placesKey = useMemo(() => asides.map((a) => a.quotes.map((q) => quoteCandidates(messages, q).join(",")).join(";")).join("|"), [messages, asides]);
 
   useEffect(() => {
@@ -106,15 +107,26 @@ export function useAsideHighlights({
     paintRef.current = schedule;
     schedule();
     // A streamed reply mutates the transcript many times a second; most of it
-    // is nowhere near a quote. Re-locate only when a change is inside a
-    // quoted bubble, a painted range has gone stale (its text node replaced),
-    // or a quote is still missing (its bubble may just have rendered).
+    // is nowhere near a quote. Re-locate only when:
+    //  - a change is inside a bubble a quote was looked for in (found or not:
+    //    a quote whose text is not there waits for that bubble to change, or
+    //    for its message to move, which re-runs this effect);
+    //  - a painted range has gone stale (its text node replaced);
+    //  - a quote's bubble had not rendered yet, and a node bringing it is added.
+    const bringsAwaited = (node: Node, awaited: Set<number>) => {
+      if (!(node instanceof Element)) return false;
+      const own = node.closest("[data-message-index]");
+      if (own && awaited.has(Number(own.getAttribute("data-message-index")))) return true;
+      return [...node.querySelectorAll("[data-message-index]")].some((el) => awaited.has(Number(el.getAttribute("data-message-index"))));
+    };
     const isStale = (r: Range) => !r.startContainer.isConnected || !r.endContainer.isConnected;
     const onMutations = (records: MutationRecord[]) => {
       const prev = last;
       const affected =
         !prev ||
-        prev.missing ||
+        // A quote's bubble not rendered yet: only a bubble being added can bring it.
+        (prev.awaitingRender &&
+          records.some((record) => record.type === "childList" && [...record.addedNodes].some((node) => bringsAwaited(node, prev.awaitingIndices)))) ||
         [...prev.ranges.values()].some((list) => list.some(isStale)) ||
         records.some((record) => [...prev.contents].some((content) => content.contains(record.target)));
       if (!affected) return;

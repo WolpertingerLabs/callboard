@@ -143,3 +143,49 @@ it("does not re-find passages for changes outside quoted bubbles, nor for an equ
   expect(registry.get(ASIDE_HIGHLIGHT)!.ranges[0]).not.toBe(first);
   expect(painted(ASIDE_HIGHLIGHT)).toEqual(["alpha"]);
 });
+
+it("does not re-find anything on streamed changes elsewhere while a quote's text is simply gone", async () => {
+  // "zzz" was compressed away: its bubble is there, its text is not.
+  const asides = [aside("a", "alpha"), aside("gone", "zzz")];
+  const { container, rerender } = render(<Transcript asides={asides} activeIds={[]} />);
+  await flush();
+  const first = registry.get(ASIDE_HIGHLIGHT)!.ranges[0];
+  // A reply streaming in elsewhere: nodes added, text changed, again and again.
+  const streaming = document.createElement("div");
+  container.firstElementChild!.appendChild(streaming);
+  for (let i = 0; i < 5; i++) {
+    const p = document.createElement("p");
+    p.textContent = `token ${i}`;
+    streaming.appendChild(p);
+    await flush();
+  }
+  rerender(<Transcript asides={asides} activeIds={["a"]} />);
+  await flush();
+  // Repainted for the emphasis from the same ranges: never re-found.
+  expect(registry.get(ASIDE_HIGHLIGHT)!.ranges[0]).toBe(first);
+});
+
+it("finds a quote whose bubble renders late, once that bubble is added — and only for that", async () => {
+  const late = (chatId: string, text: string): AsideEntry => ({ ...aside(chatId, text), quotes: [{ timestamp: "t2", role: "assistant", text }] });
+  const msgs: ParsedMessage[] = [...messages, { role: "assistant", type: "text", content: "", timestamp: "t2" }];
+  const asides = [aside("a", "alpha"), late("b", "omega")];
+  const { container } = render(<Transcript asides={asides} activeIds={[]} msgs={msgs} />);
+  await flush();
+  expect(painted(ASIDE_HIGHLIGHT)).toEqual(["alpha"]);
+  const first = registry.get(ASIDE_HIGHLIGHT)!.ranges[0];
+
+  // Something else added: not the awaited bubble, nothing re-found.
+  const other = document.createElement("div");
+  other.textContent = "unrelated";
+  container.firstElementChild!.appendChild(other);
+  await flush();
+  expect(registry.get(ASIDE_HIGHLIGHT)!.ranges[0]).toBe(first);
+
+  // The awaited bubble arrives.
+  const wrapper = document.createElement("div");
+  wrapper.setAttribute("data-message-index", "2");
+  wrapper.innerHTML = "<div data-quote-content>the omega point</div>";
+  container.firstElementChild!.appendChild(wrapper);
+  await flush();
+  expect(painted(ASIDE_HIGHLIGHT)).toEqual(["alpha", "omega"]);
+});

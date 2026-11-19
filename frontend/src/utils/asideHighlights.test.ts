@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { ChatTreeNode, ChatTreeResponse, ParsedMessage } from "../api";
-import { asidesOf, findQuoteRange, locateAsideRanges, quoteCandidates, quoteOccurrence } from "./asideHighlights";
+import { asidesOf, findQuoteRange, indexQuotable, locateAsideRanges, quoteCandidates, quoteOccurrence, turnOccurrence } from "./asideHighlights";
 
 const node = (chatId: string, extra: Partial<ChatTreeNode> = {}): ChatTreeNode => ({
   chatId,
@@ -181,5 +181,63 @@ describe("repeated passages (occurrence)", () => {
     ];
     const [range] = locateAsideRanges(document.getElementById("w")!, messages, asides).get("a")!;
     expect(range!.startContainer.textContent).toBe("and run the tests");
+  });
+});
+
+describe("occurrence across one turn's blocks", () => {
+  afterEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  // One engine turn, split: block A, a tool call, block B — one timestamp, one role.
+  const turn: ParsedMessage[] = [
+    { role: "user", type: "text", content: "", timestamp: "t0" },
+    { role: "assistant", type: "text", content: "", timestamp: "t1" },
+    { role: "assistant", type: "tool_use", content: "", timestamp: "t1" },
+    { role: "assistant", type: "text", content: "", timestamp: "t1" },
+  ];
+  const html = `<div id=w>
+    <div data-message-index="0"><div data-quote-content>review it</div></div>
+    <div data-message-index="1"><div data-quote-content>A: LGTM, but one nit</div></div>
+    <div data-message-index="2"><div>tool</div></div>
+    <div data-message-index="3"><div data-quote-content>B: LGTM</div></div>
+  </div>`;
+  const entry = (occurrence?: number) => ({
+    chatId: "a",
+    title: "A",
+    status: "stopped" as const,
+    provider: "claude-code",
+    createdAt: "",
+    updatedAt: "",
+    quotes: [{ timestamp: "t1", role: "assistant" as const, text: "LGTM", ...(occurrence !== undefined && { occurrence }) }],
+  });
+  const blockOf = (range: Range) => range.startContainer.textContent;
+
+  it("counts B's LGTM as the turn's second, and finds it in B", () => {
+    document.body.innerHTML = html;
+    const blockA = document.querySelectorAll("[data-quote-content]")[1]!;
+    expect(turnOccurrence([blockA], "LGTM", 0)).toBe(1);
+    expect(blockOf(locateAsideRanges(document.getElementById("w")!, turn, [entry(1)]).get("a")![0]!)).toBe("B: LGTM");
+  });
+
+  it("finds A's for the first (or no) occurrence, and falls back to the first match only once every block misses", () => {
+    document.body.innerHTML = html;
+    const w = document.getElementById("w")!;
+    expect(blockOf(locateAsideRanges(w, turn, [entry()]).get("a")![0]!)).toBe("A: LGTM, but one nit");
+    expect(blockOf(locateAsideRanges(w, turn, [entry(0)]).get("a")![0]!)).toBe("A: LGTM, but one nit");
+    expect(blockOf(locateAsideRanges(w, turn, [entry(5)]).get("a")![0]!)).toBe("A: LGTM, but one nit");
+  });
+});
+
+describe("indexQuotable", () => {
+  it("indexes a transcript's quotable messages by turn once, cached on the array", () => {
+    const transcript: ParsedMessage[] = [
+      { role: "assistant", type: "text", content: "", timestamp: "t1" },
+      { role: "assistant", type: "tool_use", content: "", timestamp: "t1" },
+      { role: "assistant", type: "text", content: "", timestamp: "t1" },
+    ];
+    const index = indexQuotable(transcript);
+    expect(indexQuotable(transcript)).toBe(index);
+    expect(quoteCandidates(transcript, { timestamp: "t1", role: "assistant" })).toEqual([0, 2]);
   });
 });

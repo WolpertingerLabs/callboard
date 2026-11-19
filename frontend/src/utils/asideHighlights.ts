@@ -73,16 +73,57 @@ export function asidesOf(tree: ChatTreeResponse | null): readonly AsideEntry[] {
  * blocks shares one timestamp, and the passage may be in any of them.
  */
 export function quoteCandidates(messages: readonly ParsedMessage[], quote: Pick<AsideQuote, "timestamp" | "role">): number[] {
-  const out: number[] = [];
-  messages.forEach((message, index) => {
-    if (message.timestamp === quote.timestamp && message.role === quote.role && hasMarkerSlot(message)) out.push(index);
+  return indexQuotable(messages).get(turnKey(quote)) ?? [];
+}
+
+const turnKey = (q: Pick<AsideQuote, "timestamp" | "role">) => `${q.timestamp}\u0000${q.role}`;
+
+const quotableIndexes = new WeakMap<readonly ParsedMessage[], Map<string, number[]>>();
+
+/**
+ * The quotable messages' indices by timestamp and role, built once per
+ * transcript array (cached on it): what every quote's candidates are looked
+ * up in, rather than a scan of the transcript per quote.
+ */
+export function indexQuotable(messages: readonly ParsedMessage[]): Map<string, number[]> {
+  const hit = quotableIndexes.get(messages);
+  if (hit) return hit;
+  const index = new Map<string, number[]>();
+  messages.forEach((message, i) => {
+    if (!hasMarkerSlot(message)) return;
+    const key = turnKey({ timestamp: message.timestamp!, role: message.role as AsideQuote["role"] });
+    const list = index.get(key);
+    if (list) list.push(i);
+    else index.set(key, [i]);
   });
-  return out;
+  quotableIndexes.set(messages, index);
+  return index;
 }
 
 const WHITESPACE = /\s/;
 
 const strip = (text: string) => text.replace(/\s+/g, "");
+
+/** How many times `text` occurs in `content`, whitespace-insensitive (overlapping matches count, as `quoteOccurrence` counts them). */
+export function matchCount(content: Element, text: string): number {
+  const needle = strip(text);
+  if (!needle) return 0;
+  const haystack = strip(content.textContent ?? "");
+  let count = 0;
+  for (let at = haystack.indexOf(needle); at >= 0; at = haystack.indexOf(needle, at + 1)) count++;
+  return count;
+}
+
+/**
+ * A selection's occurrence across one engine turn: the matches in the turn's
+ * earlier blocks (`before`, in transcript order) plus the one within its own
+ * block. A turn split into several text blocks shares one timestamp and role,
+ * and a quote names the turn, not the block — so the count has to be the
+ * turn's, the same way `locateAsides` walks it.
+ */
+export function turnOccurrence(before: readonly Element[], text: string, withinBlock: number): number {
+  return before.reduce((n, el) => n + matchCount(el, text), 0) + withinBlock;
+}
 
 /**
  * Which of the whitespace-insensitive matches of `text` in `content` the
@@ -157,10 +198,21 @@ export function findQuoteRange(root: Element, text: string, occurrence = 0): Ran
 export interface LocatedAsides {
   /** Each aside's ranges, by aside id; asides with none are left out. */
   ranges: Map<string, Range[]>;
-  /** The quotable-content elements the ranges are in — a change elsewhere cannot move them. */
+  /**
+   * The quotable-content elements every quote was looked for in — the ones
+   * with its range, and the ones searched without a match. A change inside
+   * one can move or bring a passage; a change anywhere else cannot.
+   */
   contents: Set<Element>;
-  /** Some quote was not found: a change anywhere (a bubble rendering late) may bring it. */
-  missing: boolean;
+  /**
+   * Some quote's message has no bubble rendered yet (not loaded, or still
+   * rendering): a bubble being ADDED may bring it. A quote whose bubble is
+   * there but whose text is not (compressed away, edited) is not this — no
+   * later mutation elsewhere will bring it back.
+   */
+  awaitingRender: boolean;
+  /** The transcript indices of those not-yet-rendered bubbles. */
+  awaitingIndices: Set<number>;
 }
 
 /**
@@ -176,26 +228,51 @@ export function locateAsides(container: Element, messages: readonly ParsedMessag
   }
   const ranges = new Map<string, Range[]>();
   const contents = new Set<Element>();
-  let missing = false;
+  const awaitingIndices = new Set<number>();
   for (const aside of asides) {
     const found: Range[] = [];
     for (const quote of aside.quotes) {
       let hit = false;
-      for (const index of quoteCandidates(messages, quote)) {
-        const content = contentByIndex.get(index);
-        const range = content && findQuoteRange(content, quote.text, quote.occurrence);
-        if (range) {
-          found.push(range);
-          contents.add(content);
-          hit = true;
+      // The occurrence counts across the turn's blocks in transcript order:
+      // walk them, spending it on the matches each block holds.
+      const candidates = quoteCandidates(messages, quote);
+      const blocks = candidates.map((index) => contentByIndex.get(index));
+      for (const content of blocks) if (content) contents.add(content);
+      candidates.forEach((index, i) => {
+        if (!blocks[i]) awaitingIndices.add(index);
+      });
+      let remaining = quote.occurrence ?? 0;
+      for (const content of blocks) {
+        if (!content) continue;
+        const n = matchCount(content, quote.text);
+        if (remaining < n) {
+          const range = findQuoteRange(content, quote.text, remaining);
+          if (range) {
+            found.push(range);
+            contents.add(content);
+            hit = true;
+          }
           break;
         }
+        remaining -= n;
       }
-      if (!hit) missing = true;
+      // Fewer matches than the occurrence (the text changed since): the
+      // first match anywhere in the turn, only once every block has missed.
+      if (!hit) {
+        for (const content of blocks) {
+          const range = content && findQuoteRange(content, quote.text);
+          if (range) {
+            found.push(range);
+            contents.add(content);
+            hit = true;
+            break;
+          }
+        }
+      }
     }
     if (found.length > 0) ranges.set(aside.chatId, found);
   }
-  return { ranges, contents, missing };
+  return { ranges, contents, awaitingRender: awaitingIndices.size > 0, awaitingIndices };
 }
 
 /** {@link locateAsides}' ranges alone. */
