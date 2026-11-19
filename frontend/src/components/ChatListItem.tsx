@@ -177,6 +177,8 @@ interface Props {
   onLongPress?: () => void;
   /** This chat's asides, which the list folds into this row rather than listing (see `buildRows`). */
   asideCount?: number;
+  /** How many of them have a live session — a dot on the count, not the row's status. */
+  asidesRunning?: number;
 }
 
 /**
@@ -257,6 +259,7 @@ export default function ChatListItem({
   onToggleSelect,
   onLongPress,
   asideCount = 0,
+  asidesRunning = 0,
 }: Props) {
   const [hovered, setHovered] = useState(false);
   // The kebab popup escapes the sidebar's overflow:auto scroll container via
@@ -517,7 +520,7 @@ export default function ChatListItem({
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 2 }}>
           {roleIcon && <ChatRoleBadge role={roleIcon} />}
-          <AsideCount count={asideCount} />
+          <AsideCount count={asideCount} running={asidesRunning} />
           {/* Before the bookmark, and kept even inside the Pinned section: the
               section says where the row is filed, this says why, and the two
               are not the same thing once a section is collapsed or the list is

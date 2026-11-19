@@ -1,4 +1,5 @@
 import { ArrowRightLeft, FoldVertical, GitFork, History, MessageSquareQuote, type LucideIcon } from "lucide-react";
+import RunningDot from "./RunningDot";
 import { ASIDE_ROLE, PRE_COMPRESSION_ROLE, SUPERSEDED_ROLE } from "../utils/chatRewrite";
 
 /**
@@ -51,14 +52,23 @@ export default function ChatRoleBadge({ role }: { role: string }) {
   );
 }
 
+/** `2 asides`, and `, 1 running` when any of them is. */
+export function asideCountLabel(count: number, running = 0): string {
+  const base = `${count} aside${count === 1 ? "" : "s"}`;
+  return running > 0 ? `${base}, ${running} running` : base;
+}
+
 /**
  * How many asides a chat has, where the sidebar shows the chat: asides are
  * folded into their parent's row rather than listed as rows of their own
  * (they open in the chat's side panel). Nothing for none.
+ *
+ * `running` (how many have a live session) adds the running dot to the count
+ * — only to the count: the row's own status stays the parent chat's.
  */
-export function AsideCount({ count }: { count: number }) {
+export function AsideCount({ count, running = 0 }: { count: number; running?: number }) {
   if (count <= 0) return null;
-  const label = `${count} aside${count === 1 ? "" : "s"}`;
+  const label = asideCountLabel(count, running);
   return (
     <span
       role="img"
@@ -69,6 +79,7 @@ export function AsideCount({ count }: { count: number }) {
     >
       <MessageSquareQuote size={11} aria-hidden />
       {count}
+      {running > 0 && <RunningDot style={{ width: 6, height: 6, marginLeft: 2 }} />}
     </span>
   );
 }

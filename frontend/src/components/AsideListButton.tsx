@@ -1,19 +1,38 @@
 /**
  * The chat header's list of this chat's asides: a "N asides" button opening a
  * menu, one row per aside, each opening it in the side panel. Hovering or
- * focusing a row emphasises that aside's highlighted passages.
+ * focusing a row emphasises that aside's highlighted passages. While any
+ * aside has a live session the button carries the running dot (the chat's
+ * own status in the header stays the chat's).
  *
- * Rendered only when the chat has asides. Keyboard: the menu (PopupMenu)
+ * Rendered only when the chat has asides. Keyboard: the menu
  * takes focus on open, arrows move, Escape returns focus here.
  */
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { MessageSquareQuote } from "lucide-react";
 import ProviderBadge from "./ProviderBadge";
 import { STATUS_DOT } from "./ChatTreeList";
+import RunningDot from "./RunningDot";
+import { useIsSessionActive } from "../contexts/SessionContext";
 import type { AsideEntry } from "../utils/asideHighlights";
 
+/** `2 asides`. */
 export function asideCountLabel(n: number): string {
   return `${n} aside${n === 1 ? "" : "s"}`;
+}
+
+/**
+ * Reports whether one aside has a live session. One per aside, because the
+ * session registry is read per chat (`useIsSessionActive`) and hooks cannot
+ * be called in a loop.
+ */
+function RunningProbe({ chatId, onChange }: { chatId: string; onChange: (chatId: string, running: boolean) => void }) {
+  const running = !!useIsSessionActive(chatId);
+  useEffect(() => {
+    onChange(chatId, running);
+    return () => onChange(chatId, false);
+  }, [chatId, running, onChange]);
+  return null;
 }
 
 export default function AsideListButton({
@@ -32,7 +51,18 @@ export default function AsideListButton({
   const menuRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
+  const [running, setRunning] = useState<ReadonlySet<string>>(() => new Set());
+  const onRunningChange = useCallback((chatId: string, on: boolean) => {
+    setRunning((prev) => {
+      if (prev.has(chatId) === on) return prev;
+      const next = new Set(prev);
+      if (on) next.add(chatId);
+      else next.delete(chatId);
+      return next;
+    });
+  }, []);
   const label = asideCountLabel(asides.length);
+  const runningLabel = running.size > 0 ? `, ${running.size} running` : "";
 
   const close = (refocus = false) => {
     setOpen(false);
@@ -82,8 +112,8 @@ export default function AsideListButton({
         onClick={() => (open ? close() : setOpen(true))}
         aria-haspopup="menu"
         aria-expanded={open}
-        aria-label={`${label} in this chat`}
-        title={`This chat's asides: ${label}`}
+        aria-label={`${label} in this chat${runningLabel}`}
+        title={`This chat's asides: ${label}${runningLabel}`}
         style={{
           display: "flex",
           alignItems: "center",
@@ -99,7 +129,11 @@ export default function AsideListButton({
       >
         <MessageSquareQuote size={16} aria-hidden />
         <span>{label}</span>
+        {running.size > 0 && <RunningDot />}
       </button>
+      {asides.map((aside) => (
+        <RunningProbe key={aside.chatId} chatId={aside.chatId} onChange={onRunningChange} />
+      ))}
       {open && (
         <div
           ref={menuRef}
@@ -152,8 +186,14 @@ export default function AsideListButton({
               }}
             >
               <span
-                title={`Status: ${aside.status}`}
-                style={{ width: 7, height: 7, borderRadius: "50%", flexShrink: 0, background: STATUS_DOT[aside.status] || "var(--text-muted)" }}
+                title={`Status: ${running.has(aside.chatId) ? "running" : aside.status}`}
+                style={{
+                  width: 7,
+                  height: 7,
+                  borderRadius: "50%",
+                  flexShrink: 0,
+                  background: running.has(aside.chatId) ? "var(--status-active)" : STATUS_DOT[aside.status] || "var(--text-muted)",
+                }}
               />
               <ProviderBadge provider={aside.provider === "claude-code" ? undefined : aside.provider} compact />
               <span style={{ fontSize: 12, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>

@@ -1,0 +1,58 @@
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { afterEach, expect, it, vi } from "vitest";
+import { SessionContext } from "../contexts/SessionContext";
+import AsideListButton from "./AsideListButton";
+import type { AsideEntry } from "../utils/asideHighlights";
+
+afterEach(cleanup);
+
+const aside = (chatId: string): AsideEntry => ({ chatId, title: `Aside ${chatId}`, status: "stopped", provider: "claude-code", quotes: [], createdAt: "" });
+
+function renderButton(active: string[], onOpen = vi.fn(), onEmphasize = vi.fn()) {
+  const value = {
+    activeSessions: new Map(active.map((id) => [id, { type: "web" as const, startedAt: 1 }])),
+    connected: true,
+    metadataVersion: 0,
+    summonedChatIds: new Set<string>(),
+    staleBuildId: null,
+  };
+  const ui = (
+    <SessionContext.Provider value={value as never}>
+      <AsideListButton asides={[aside("a1"), aside("a2")]} openId="a1" onOpen={onOpen} onEmphasize={onEmphasize} />
+    </SessionContext.Provider>
+  );
+  return { ...render(ui), onOpen, onEmphasize };
+}
+
+it("lists the asides, opens the one picked and emphasises the one hovered", () => {
+  const { onOpen, onEmphasize } = renderButton([]);
+  const button = screen.getByRole("button", { name: "2 asides in this chat" });
+  expect(within(button).queryByTestId("running-dot")).toBeNull();
+  fireEvent.click(button);
+  const menu = screen.getByRole("menu", { name: "Asides of this chat" });
+  expect(
+    within(menu)
+      .getByRole("menuitem", { name: /Aside a1/ })
+      .getAttribute("aria-current"),
+  ).toBe("true");
+  fireEvent.mouseEnter(within(menu).getByRole("menuitem", { name: /Aside a2/ }));
+  expect(onEmphasize).toHaveBeenLastCalledWith(["a2"]);
+  fireEvent.click(within(menu).getByRole("menuitem", { name: /Aside a2/ }));
+  expect(onOpen).toHaveBeenCalledWith("a2");
+  expect(screen.queryByRole("menu")).toBeNull();
+});
+
+it("carries the running dot while an aside has a live session, and drops it when it ends", async () => {
+  const { rerender, onOpen, onEmphasize } = renderButton(["a2"]);
+  const button = await screen.findByRole("button", { name: "2 asides in this chat, 1 running" });
+  expect(within(button).getByTestId("running-dot")).toBeTruthy();
+  const idle = { activeSessions: new Map(), connected: true, metadataVersion: 0, summonedChatIds: new Set<string>(), staleBuildId: null };
+  await act(async () => {
+    rerender(
+      <SessionContext.Provider value={idle as never}>
+        <AsideListButton asides={[aside("a1"), aside("a2")]} openId="a1" onOpen={onOpen} onEmphasize={onEmphasize} />
+      </SessionContext.Provider>,
+    );
+  });
+  expect(screen.getByRole("button", { name: "2 asides in this chat" })).toBeTruthy();
+});

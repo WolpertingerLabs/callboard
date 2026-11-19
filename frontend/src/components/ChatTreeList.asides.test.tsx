@@ -55,7 +55,7 @@ function makeNode(chatId: string, title: string, overrides: Partial<ChatTreeNode
   };
 }
 
-function renderList(chats: Chat[], activeChatId?: string) {
+function renderList(chats: Chat[], activeChatId?: string, running: string[] = []) {
   return render(
     <MemoryRouter>
       <ChatTreeList
@@ -67,7 +67,7 @@ function renderList(chats: Chat[], activeChatId?: string) {
         onToggleBookmark={() => {}}
         onTogglePin={() => {}}
         cardMenuFor={() => ({})}
-        sessionStatusFor={() => undefined}
+        sessionStatusFor={(id) => (running.includes(id) ? { active: true, type: "web" } : undefined)}
       />
     </MemoryRouter>,
   );
@@ -144,5 +144,29 @@ describe("ChatTreeList with asides", () => {
     renderList([makeChat("root"), makeChat("child", { parentChatId: "root", rootChatId: "root" })], "a1");
     (await screen.findByTitle("Expand chat tree")).click();
     expect(await screen.findByText("Aside: one")).toBeTruthy();
+  });
+});
+
+describe("running asides", () => {
+  it("puts the running dot on the row's aside count, not on the row", () => {
+    renderList([makeChat("main"), aside("a1", "main"), aside("a2", "main")], undefined, ["a2"]);
+    const count = screen.getByRole("img", { name: "2 asides, 1 running" });
+    expect(within(count).getByTestId("running-dot")).toBeTruthy();
+    // The row itself reports the parent chat, which is idle.
+    expect(screen.getAllByTestId("running-dot")).toHaveLength(1);
+  });
+
+  it("puts it on a tree node's count too", async () => {
+    vi.mocked(getChatTree).mockResolvedValueOnce({
+      targetChatId: "root",
+      rootChatId: "root",
+      ancestors: [],
+      tree: makeNode("root", "Root chat", { children: [makeNode("child", "Child"), makeNode("a1", "Aside: one", { role: "aside" })] }),
+    });
+    renderList([makeChat("root"), makeChat("child", { parentChatId: "root", rootChatId: "root" })], undefined, ["a1"]);
+    (await screen.findByTitle("Expand chat tree")).click();
+    await screen.findByText("Child");
+    const rootNode = screen.getAllByTestId("chat-tree-node").find((el) => el.getAttribute("data-chat-id") === "root")!;
+    expect(within(rootNode).getByRole("img", { name: "1 aside, 1 running" })).toBeTruthy();
   });
 });

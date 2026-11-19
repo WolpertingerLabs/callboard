@@ -302,6 +302,8 @@ export interface Row {
    * lists them in the chat's tree (`get_chat_tree`), card counts and archive.
    */
   asideCount: number;
+  /** Their ids, for the running dot on the count (see `sessionStatusFor`). */
+  asideIds: readonly string[];
 }
 
 /**
@@ -316,6 +318,8 @@ function isFoldedAside(chat: Chat, byId: Map<string, Chat>): boolean {
   const parentId = meta.parentChatId || meta.forkedFrom;
   return !!parentId && parentId !== chat.id && byId.has(parentId);
 }
+
+const NO_ASIDES: readonly string[] = [];
 
 /** Shared empty bucket, so an unpinned row allocates nothing per render. */
 const NO_PINNED_MEMBERS: Chat[] = [];
@@ -404,7 +408,7 @@ export function buildRows(chats: Chat[]): Row[] {
   const groupPinned = new Map<string, Chat[]>();
   // Folded asides, counted per parent chat; see `Row.asideCount`.
   const folded = new Set<string>();
-  const asideCounts = new Map<string, number>();
+  const asidesOfParent = new Map<string, string[]>();
   for (const chat of chats) {
     const info = lineageOf(chat, byId);
     infoById.set(chat.id, info);
@@ -412,7 +416,9 @@ export function buildRows(chats: Chat[]): Row[] {
       folded.add(chat.id);
       const meta = chatMeta(chat);
       const parentId = (meta.parentChatId || meta.forkedFrom)!;
-      asideCounts.set(parentId, (asideCounts.get(parentId) ?? 0) + 1);
+      const list = asidesOfParent.get(parentId);
+      if (list) list.push(chat.id);
+      else asidesOfParent.set(parentId, [chat.id]);
       continue;
     }
     const members = groupMembers.get(info.rootKey);
@@ -462,7 +468,8 @@ export function buildRows(chats: Chat[]): Row[] {
       pinnedMembers: groupPinned.get(rootKey) ?? NO_PINNED_MEMBERS,
       canFile,
       sidebarFolder: canFile ? readSidebarFolder(frontMeta) : undefined,
-      asideCount: asideCounts.get(front.id) ?? 0,
+      asideCount: asidesOfParent.get(front.id)?.length ?? 0,
+      asideIds: asidesOfParent.get(front.id) ?? NO_ASIDES,
     });
   }
   return result;
@@ -636,6 +643,7 @@ function TreeNodeRow({
   splitOff,
   childArchive,
   underArchived = false,
+  isRunning,
 }: {
   node: ChatTreeNode;
   depth: number;
@@ -645,6 +653,8 @@ function TreeNodeRow({
   childArchive?: TreeChildArchive;
   /** An ancestor of this node is an archived child: it goes (or fades) with it. */
   underArchived?: boolean;
+  /** Whether a chat has a live session — the folded asides' running dot. Falls back to the tree's own status. */
+  isRunning?: (chatId: string) => boolean;
 }) {
   const [menu, setMenu] = useState<{ position: PopupMenuPosition; openedByTouch: boolean } | null>(null);
   const rowRef = useRef<HTMLDivElement>(null);
@@ -736,7 +746,8 @@ function TreeNodeRow({
   // Asides are folded into this row (see `Row.asideCount`), unless one has
   // children of its own to hang off it, or is the chat open.
   const foldedAside = (child: ChatTreeNode) => child.role === ASIDE_ROLE && child.children.length === 0 && child.chatId !== activeChatId;
-  const asideChildren = node.children.filter((child) => foldedAside(child) && (childArchive?.showArchived || !child.childArchived)).length;
+  const asideNodes = node.children.filter((child) => foldedAside(child) && (childArchive?.showArchived || !child.childArchived));
+  const asidesRunning = asideNodes.filter((child) => (isRunning ? isRunning(child.chatId) : child.status === "ongoing")).length;
 
   return (
     <>
@@ -811,7 +822,7 @@ function TreeNodeRow({
         />
         <ProviderBadge provider={node.provider === "claude-code" ? undefined : node.provider} compact />
         {node.role && <ChatRoleBadge role={node.role} />}
-        <AsideCount count={asideChildren} />
+        <AsideCount count={asideNodes.length} running={asidesRunning} />
         <span
           style={{
             fontSize: 13,
@@ -894,6 +905,7 @@ function TreeNodeRow({
             splitOff={splitOff}
             childArchive={childArchive}
             underArchived={childrenUnderArchived}
+            isRunning={isRunning}
           />
         ))}
     </>
@@ -1011,6 +1023,7 @@ export default function ChatTreeList({
   );
 
   const handleNavigate = useCallback((chatId: string) => navigate(`/chat/${chatId}`), [navigate]);
+  const isRunning = (chatId: string) => !!sessionStatusFor(chatId)?.active;
 
   // Selection mode is list-wide, so any row's props answer it.
   const selectionActive = rows.length > 0 && !!selectionFor?.(rows[0].chat).selectionMode;
@@ -1064,7 +1077,9 @@ export default function ChatTreeList({
   const runningIn = (section: ChatSection<Row>) =>
     section.items.reduce((n, row) => n + row.members.filter((member) => sessionStatusFor(member.id)?.active).length, 0);
 
-  const renderRow = ({ chat, rootKey, isGroup, members, activity, pinnedMembers, canFile, sidebarFolder, asideCount }: Row) => {
+  const renderRow = ({ chat, rootKey, isGroup, members, activity, pinnedMembers, canFile, sidebarFolder, asideCount, asideIds }: Row) => {
+    // The asides' live work shows on their count, not as the row's status.
+    const asidesRunning = asideIds.filter(isRunning).length;
     /**
      * Pin the chat this row is labelled with; unpin every member holding a pin.
      *
@@ -1105,6 +1120,7 @@ export default function ChatTreeList({
           sessionStatus={sessionStatusFor(chat.id)}
           dimmed={isDimmed?.(chat)}
           asideCount={asideCount}
+          asidesRunning={asidesRunning}
           {...selectionFor?.(chat)}
         />
       );
@@ -1194,13 +1210,22 @@ export default function ChatTreeList({
               activity={activity}
               dimmed={isDimmed?.(chat)}
               asideCount={asideCount}
+              asidesRunning={asidesRunning}
               {...selectionFor?.(chat)}
             />
           </div>
         </div>
         {isExpanded && tree && (
           <div style={{ borderBottom: "1px solid var(--chatlist-item-border)" }}>
-            <TreeNodeRow node={tree.tree} depth={0} activeChatId={activeChatId} onNavigate={handleNavigate} splitOff={splitOff} childArchive={childArchive} />
+            <TreeNodeRow
+              node={tree.tree}
+              depth={0}
+              activeChatId={activeChatId}
+              onNavigate={handleNavigate}
+              splitOff={splitOff}
+              childArchive={childArchive}
+              isRunning={isRunning}
+            />
           </div>
         )}
       </div>
