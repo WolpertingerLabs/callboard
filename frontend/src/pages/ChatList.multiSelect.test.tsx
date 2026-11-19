@@ -177,7 +177,12 @@ function row(preview: string) {
 /** The count the bar SHOWS — its visually-hidden " selected" is for screen readers; see `announced`. */
 function count() {
   const live = screen.queryByText(/^\d+ chats?$/);
-  return live ? [...live.childNodes].filter((n) => n.nodeType === Node.TEXT_NODE).map((n) => n.textContent).join("") : null;
+  return live
+    ? [...live.childNodes]
+        .filter((n) => n.nodeType === Node.TEXT_NODE)
+        .map((n) => n.textContent)
+        .join("")
+    : null;
 }
 
 /** What the bar's live region announces. */
@@ -982,6 +987,14 @@ describe("bulk delete", () => {
     expect(screen.getByText(/This deletes the selected chats, not the chats forked from them/)).toBeTruthy();
   });
 
+  it("warns for a chat whose only children are folded asides, though its row is lone", async () => {
+    await mount([CHATS[0], makeChat("aside", "chat aside", { chatRole: "aside", parentChatId: "one", rootChatId: "one" }), CHATS[1]], CARDS);
+    expect(screen.queryByTitle("Expand chat tree")).toBeNull();
+    selectAndPressDelete("chat one");
+
+    expect(screen.getByText(/This deletes the selected chats, not the chats forked from them/)).toBeTruthy();
+  });
+
   it("still warns when the group's only child is archived and hidden, so the row looks lone", async () => {
     // The archived child is withheld from the rows, so `one` renders without
     // a chevron — but deleting it still leaves that child behind to regroup.
@@ -1018,7 +1031,13 @@ describe("bulk delete", () => {
     await mount();
     selectAndPressDelete("chat one", "chat two", "chat three");
 
-    mockBulkDelete.mockResolvedValue({ deleted: ["one"], failed: [{ id: "two", error: "native_child_read_only" }, { id: "three", error: "gone" }] });
+    mockBulkDelete.mockResolvedValue({
+      deleted: ["one"],
+      failed: [
+        { id: "two", error: "native_child_read_only" },
+        { id: "three", error: "gone" },
+      ],
+    });
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Delete" }));
     });

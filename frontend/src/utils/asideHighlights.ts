@@ -26,6 +26,10 @@ export interface AsideEntry {
   provider: string;
   quotes: readonly AsideQuote[];
   createdAt: string;
+  /** For its attention signals (utils/asideAttention.ts). */
+  updatedAt: string;
+  lastReadAt?: string;
+  summon?: ChatTreeNode["summon"];
 }
 
 function findNode(node: ChatTreeNode, chatId: string): ChatTreeNode | null {
@@ -55,6 +59,9 @@ export function asidesOf(tree: ChatTreeResponse | null): readonly AsideEntry[] {
       provider: child.provider,
       quotes: child.asideQuotes ?? [],
       createdAt: child.createdAt,
+      updatedAt: child.updatedAt,
+      ...(child.lastReadAt && { lastReadAt: child.lastReadAt }),
+      ...(child.summon && { summon: child.summon }),
     }))
     .sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0));
   return asides.length > 0 ? asides : NO_ASIDES;

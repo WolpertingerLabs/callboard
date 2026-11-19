@@ -1,9 +1,10 @@
 /**
  * The chat header's list of this chat's asides: a "N asides" button opening a
  * menu, one row per aside, each opening it in the side panel. Hovering or
- * focusing a row emphasises that aside's highlighted passages. While any
- * aside has a live session the button carries the running dot (the chat's
- * own status in the header stays the chat's).
+ * focusing a row emphasises that aside's highlighted passages. The button
+ * and each row carry a dot for what an aside needs — a summon, a prompt
+ * waiting, an unread reply, a live run (utils/asideAttention.ts); the chat's
+ * own status in the header stays the chat's.
  *
  * Rendered only when the chat has asides. Keyboard: the menu
  * takes focus on open, arrows move, Escape returns focus here.
@@ -12,14 +13,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { MessageSquareQuote } from "lucide-react";
 import ProviderBadge from "./ProviderBadge";
 import { STATUS_DOT } from "./ChatTreeList";
-import RunningDot from "./RunningDot";
+import { AsideAttentionDot, asideCountLabel } from "./ChatRoleBadge";
 import { useIsSessionActive } from "../contexts/SessionContext";
 import type { AsideEntry } from "../utils/asideHighlights";
-
-/** `2 asides`. */
-export function asideCountLabel(n: number): string {
-  return `${n} aside${n === 1 ? "" : "s"}`;
-}
+import { attentionSuffix, nodeSignals, sumAttention, type AsideSignals } from "../utils/asideAttention";
 
 /**
  * Reports whether one aside has a live session. One per aside, because the
@@ -33,6 +30,17 @@ function RunningProbe({ chatId, onChange }: { chatId: string; onChange: (chatId:
     return () => onChange(chatId, false);
   }, [chatId, running, onChange]);
   return null;
+}
+
+/** One aside's row: a dot and name for what it needs beyond its status dot (which already says running). */
+function RowAttention({ signals }: { signals: AsideSignals }) {
+  const words = [signals.summoned && "calling for you", signals.waiting && "waiting for an answer", signals.unread && "unread"].filter(Boolean).join(", ");
+  if (!words) return null;
+  return (
+    <span role="img" aria-label={words} title={words} style={{ display: "inline-flex" }}>
+      <AsideAttentionDot attention={sumAttention([signals])} />
+    </span>
+  );
 }
 
 export default function AsideListButton({
@@ -62,7 +70,9 @@ export default function AsideListButton({
     });
   }, []);
   const label = asideCountLabel(asides.length);
-  const runningLabel = running.size > 0 ? `, ${running.size} running` : "";
+  const signalsOf = (aside: AsideEntry) => nodeSignals(aside, running.has(aside.chatId));
+  const attention = sumAttention(asides.map(signalsOf));
+  const attentionLabel = attentionSuffix(attention);
 
   const close = (refocus = false) => {
     setOpen(false);
@@ -112,8 +122,8 @@ export default function AsideListButton({
         onClick={() => (open ? close() : setOpen(true))}
         aria-haspopup="menu"
         aria-expanded={open}
-        aria-label={`${label} in this chat${runningLabel}`}
-        title={`This chat's asides: ${label}${runningLabel}`}
+        aria-label={`${label} in this chat${attentionLabel}`}
+        title={`This chat's asides: ${label}${attentionLabel}`}
         style={{
           display: "flex",
           alignItems: "center",
@@ -129,7 +139,7 @@ export default function AsideListButton({
       >
         <MessageSquareQuote size={16} aria-hidden />
         <span>{label}</span>
-        {running.size > 0 && <RunningDot />}
+        <AsideAttentionDot attention={attention} />
       </button>
       {asides.map((aside) => (
         <RunningProbe key={aside.chatId} chatId={aside.chatId} onChange={onRunningChange} />
@@ -195,6 +205,7 @@ export default function AsideListButton({
                   background: running.has(aside.chatId) ? "var(--status-active)" : STATUS_DOT[aside.status] || "var(--text-muted)",
                 }}
               />
+              <RowAttention signals={{ ...signalsOf(aside), running: false }} />
               <ProviderBadge provider={aside.provider === "claude-code" ? undefined : aside.provider} compact />
               <span style={{ fontSize: 12, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
                 {aside.title}

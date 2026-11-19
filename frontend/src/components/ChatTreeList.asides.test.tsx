@@ -170,3 +170,45 @@ describe("running asides", () => {
     expect(within(rootNode).getByRole("img", { name: "1 aside, 1 running" })).toBeTruthy();
   });
 });
+
+describe("attention from folded asides (they are not members, but the row speaks for them)", () => {
+  const T0 = "2026-07-28T10:00:00Z";
+  const T1 = "2026-07-28T11:00:00Z";
+
+  it("rolls an aside's unread reply, summon and recency into a lone parent row", () => {
+    const parent = makeChat("main", { lastReadAt: T0 }, T0);
+    const unread = makeChat("a1", { chatRole: "aside", parentChatId: "main", rootChatId: "main", lastReadAt: T0 }, T1);
+    const called = makeChat(
+      "a2",
+      { chatRole: "aside", parentChatId: "main", rootChatId: "main", summon: { message: "look", urgency: "urgent", createdAt: T1 } },
+      T0,
+    );
+    const [row] = buildRows([unread, parent, called]);
+    expect(row!.members.map((m) => m.id)).toEqual(["main"]);
+    expect(row!.activity).toMatchObject({ hasUnread: true, updatedAt: T1, summonChatId: "a2" });
+
+    renderList([unread, parent, called]);
+    expect(screen.getByTitle("Unread messages")).toBeTruthy();
+    expect(screen.getByRole("img", { name: "2 asides, 1 calling for you, 1 unread" })).toBeTruthy();
+    // The row's time is the aside's — the recency that placed it.
+    expect(screen.getByText(new RegExp(new Date(T1).toLocaleDateString(undefined, { month: "short", day: "numeric" })))).toBeTruthy();
+  });
+
+  it("counts running asides in their section's running total", () => {
+    renderList([makeChat("main", { pinned: true }), aside("a1", "main")], undefined, ["a1"]);
+    expect(screen.getByTestId("section-running").getAttribute("title")).toBe("1 running");
+  });
+
+  it("does not fold the aside that is the open chat: it is a member, in a group with its parent", () => {
+    const rows = buildRows([makeChat("main"), aside("a1", "main")], "a1");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ isGroup: true, asideCount: 0 });
+    expect(rows[0]!.members.map((m) => m.id).sort()).toEqual(["a1", "main"]);
+  });
+
+  it("does not fold an aside with chats of its own, as the tree does not", () => {
+    const rows = buildRows([makeChat("main"), aside("a1", "main"), makeChat("f1", { chatRole: "fork", parentChatId: "a1", rootChatId: "main" })]);
+    expect(rows[0]).toMatchObject({ isGroup: true, asideCount: 0 });
+    expect(rows[0]!.members.map((m) => m.id).sort()).toEqual(["a1", "f1", "main"]);
+  });
+});

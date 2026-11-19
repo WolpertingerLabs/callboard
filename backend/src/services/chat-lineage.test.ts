@@ -206,6 +206,18 @@ describe("buildChatTree", () => {
     expect(byId.get("junk")).not.toHaveProperty("asideQuotes");
   });
 
+  it("carries a node's read mark and open summon, and nothing for a malformed summon", () => {
+    writeChat("root", { lastReadAt: "2026-02-03T00:00:00.000Z" });
+    writeChat("called", { parentChatId: "root", rootChatId: "root", summon: { message: "look", urgency: "urgent", createdAt: "2026-02-03T01:00:00.000Z" } });
+    writeChat("odd", { parentChatId: "root", rootChatId: "root", summon: { message: "no time" } });
+    const result = buildChatTree("root")!;
+    expect(result.tree.lastReadAt).toBe("2026-02-03T00:00:00.000Z");
+    const byId = new Map(result.tree.children.map((c) => [c.chatId, c]));
+    expect(byId.get("called")!.summon).toEqual({ urgency: "urgent", createdAt: "2026-02-03T01:00:00.000Z" });
+    expect(byId.get("called")).not.toHaveProperty("lastReadAt");
+    expect(byId.get("odd")).not.toHaveProperty("summon");
+  });
+
   it("marks statuses stopped when no session registry entries exist", () => {
     writeChat("root");
     const result = buildChatTree("root");

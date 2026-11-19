@@ -127,6 +127,13 @@ function asideQuotesOf(meta: ChatMeta): { asideQuotes?: AsideQuote[] } {
   return parsed.ok ? { asideQuotes: parsed.quotes } : {};
 }
 
+/** An open summon, as `{ summon }` (urgency and when) — or nothing. The message stays on the record. */
+function summonOf(meta: ChatMeta): { summon?: { urgency: string; createdAt: string } } {
+  const summon = meta.summon as { urgency?: unknown; createdAt?: unknown } | undefined;
+  if (!summon || typeof summon !== "object" || typeof summon.createdAt !== "string") return {};
+  return { summon: { urgency: summon.urgency === "urgent" ? "urgent" : "normal", createdAt: summon.createdAt } };
+}
+
 function toNode(chat: Chat, meta: ChatMeta, budget?: LifecycleBudget): ChatTreeNode {
   const native = meta.nativeAgent as ChatTreeNode["nativeAgent"];
   const nativeAgent = native
@@ -148,6 +155,8 @@ function toNode(chat: Chat, meta: ChatMeta, budget?: LifecycleBudget): ChatTreeN
     // Only on a chat that has a parent: a root is archived through its card,
     // and a stray flag on one (hand edit, pre-detach record) means nothing.
     ...(meta.childArchived === true && getParentChatId(meta) && { childArchived: true }),
+    ...(typeof meta.lastReadAt === "string" && meta.lastReadAt && { lastReadAt: meta.lastReadAt }),
+    ...summonOf(meta),
     folder: chat.folder,
     createdAt: chat.created_at,
     updatedAt: chat.updated_at,

@@ -1,5 +1,6 @@
 import { ArrowRightLeft, FoldVertical, GitFork, History, MessageSquareQuote, type LucideIcon } from "lucide-react";
 import RunningDot from "./RunningDot";
+import { attentionDot, attentionSuffix, NO_ATTENTION, type AsideAttention } from "../utils/asideAttention";
 import { ASIDE_ROLE, PRE_COMPRESSION_ROLE, SUPERSEDED_ROLE } from "../utils/chatRewrite";
 
 /**
@@ -52,10 +53,32 @@ export default function ChatRoleBadge({ role }: { role: string }) {
   );
 }
 
-/** `2 asides`, and `, 1 running` when any of them is. */
-export function asideCountLabel(count: number, running = 0): string {
-  const base = `${count} aside${count === 1 ? "" : "s"}`;
-  return running > 0 ? `${base}, ${running} running` : base;
+/** `2 asides` — the one wording of an aside count, wherever it shows. */
+export function asideCountLabel(count: number): string {
+  return `${count} aside${count === 1 ? "" : "s"}`;
+}
+
+const ATTENTION_DOT: Record<Exclude<ReturnType<typeof attentionDot>, null | "running">, string> = {
+  summoned: "var(--warning)",
+  waiting: "var(--warning)",
+  unread: "var(--chatlist-unread-dot)",
+};
+
+/**
+ * The dot an aside count carries for its asides' attention signals — the most
+ * pressing one (see `attentionDot`). Colour alone, so the caller names it.
+ */
+export function AsideAttentionDot({ attention }: { attention: AsideAttention }) {
+  const dot = attentionDot(attention);
+  if (!dot) return null;
+  if (dot === "running") return <RunningDot style={{ width: 6, height: 6, marginLeft: 2 }} />;
+  return (
+    <span
+      aria-hidden
+      data-testid={`aside-attention-${dot}`}
+      style={{ display: "inline-block", width: 6, height: 6, marginLeft: 2, borderRadius: "50%", flexShrink: 0, background: ATTENTION_DOT[dot] }}
+    />
+  );
 }
 
 /**
@@ -63,12 +86,13 @@ export function asideCountLabel(count: number, running = 0): string {
  * folded into their parent's row rather than listed as rows of their own
  * (they open in the chat's side panel). Nothing for none.
  *
- * `running` (how many have a live session) adds the running dot to the count
- * — only to the count: the row's own status stays the parent chat's.
+ * `attention` (utils/asideAttention.ts) adds a dot for what they need — a
+ * summon, a prompt waiting, unread output, a live run — and says so in the
+ * accessible name. Only the count: the row's own status stays the parent's.
  */
-export function AsideCount({ count, running = 0 }: { count: number; running?: number }) {
+export function AsideCount({ count, attention = NO_ATTENTION }: { count: number; attention?: AsideAttention }) {
   if (count <= 0) return null;
-  const label = asideCountLabel(count, running);
+  const label = asideCountLabel(count) + attentionSuffix(attention);
   return (
     <span
       role="img"
@@ -79,7 +103,7 @@ export function AsideCount({ count, running = 0 }: { count: number; running?: nu
     >
       <MessageSquareQuote size={11} aria-hidden />
       {count}
-      {running > 0 && <RunningDot style={{ width: 6, height: 6, marginLeft: 2 }} />}
+      <AsideAttentionDot attention={attention} />
     </span>
   );
 }

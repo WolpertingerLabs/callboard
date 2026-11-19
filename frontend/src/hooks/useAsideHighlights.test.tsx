@@ -42,6 +42,7 @@ const aside = (chatId: string, text: string): AsideEntry => ({
   status: "stopped",
   provider: "claude-code",
   createdAt: "",
+  updatedAt: "",
   quotes: [{ timestamp: "t1", role: "assistant", text }],
 });
 

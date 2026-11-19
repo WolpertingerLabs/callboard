@@ -113,9 +113,17 @@ describe("locateAsideRanges", () => {
       { role: "assistant", type: "text", content: "", timestamp: "t1" },
     ];
     const asides = [
-      { chatId: "a", title: "A", status: "stopped" as const, provider: "claude-code", createdAt: "", quotes: [quote("part two"), quote("compressed away")] },
-      { chatId: "b", title: "B", status: "stopped" as const, provider: "claude-code", createdAt: "", quotes: [quote("metadata")] },
-      { chatId: "c", title: "C", status: "stopped" as const, provider: "claude-code", createdAt: "", quotes: [quote("question", "t0", "user")] },
+      {
+        chatId: "a",
+        title: "A",
+        status: "stopped" as const,
+        provider: "claude-code",
+        createdAt: "",
+        updatedAt: "",
+        quotes: [quote("part two"), quote("compressed away")],
+      },
+      { chatId: "b", title: "B", status: "stopped" as const, provider: "claude-code", createdAt: "", updatedAt: "", quotes: [quote("metadata")] },
+      { chatId: "c", title: "C", status: "stopped" as const, provider: "claude-code", createdAt: "", updatedAt: "", quotes: [quote("question", "t0", "user")] },
     ];
     const located = locateAsideRanges(document.getElementById("c")!, messages, asides);
     expect(located.get("a")!.map((r) => r.toString())).toEqual(["part two"]);

@@ -133,6 +133,15 @@ interface OverrideFields {
 }
 const OVERRIDE_FIELDS = ["pinned", "sidebarFolder"] as const;
 
+/**
+ * Whether deleting a row's chat leaves chats behind that regroup: it fronts a
+ * group, or has asides folded into it (they become rows of their own once
+ * their parent is gone).
+ */
+function frontsGroup(row: { isGroup: boolean; asideCount: number }): boolean {
+  return row.isGroup || row.asideCount > 0;
+}
+
 export default function ChatList({
   activeChatId,
   onRefresh,
@@ -1141,7 +1150,7 @@ export default function ChatList({
    * saw. The rows inside an expanded group's fetched tree are not in `chats` at
    * all and are likewise not selectable.
    */
-  const rows = useMemo(() => buildRows(filteredChats), [filteredChats]);
+  const rows = useMemo(() => buildRows(filteredChats, activeChatId), [filteredChats, activeChatId]);
   const rowChats = useMemo(() => new Map(rows.map((row) => [row.chat.id, row.chat])), [rows]);
   /**
    * Row ids in the order they RENDER — sectioned (Pinned, folders, Recent) by
@@ -1255,8 +1264,8 @@ export default function ChatList({
   // ordinary, unfiltered render pays nothing for this.
   const unfilteredVisibleIds = useMemo(() => {
     if (filteredChats.length === chats.length) return null;
-    return new Set(rowsInRenderOrder(buildRows(chats), sectionExpansion.isExpanded).map((row) => row.chat.id));
-  }, [chats, filteredChats.length, sectionExpansion.isExpanded]);
+    return new Set(rowsInRenderOrder(buildRows(chats, activeChatId), sectionExpansion.isExpanded).map((row) => row.chat.id));
+  }, [chats, filteredChats.length, sectionExpansion.isExpanded, activeChatId]);
   const foldedSelectedKey = [...rawSelectedIds]
     .filter((id) => rowChats.has(id) && !visibleRowChats.has(id) && !(unfilteredVisibleIds?.has(id) ?? false))
     .sort()
@@ -1581,8 +1590,9 @@ export default function ChatList({
   // Group-ness from the UNFILTERED chats: a root whose only children are
   // hidden (archived children, a directory/date filter) renders as a lone row,
   // but deleting it still leaves those children behind to regroup.
-  const groupFrontIds = useMemo(() => new Set(buildRows(chats).filter((row) => row.isGroup).map((row) => row.chat.id)), [chats]);
-  const selectionFrontsAGroup = rows.some((row) => (row.isGroup || groupFrontIds.has(row.chat.id)) && selectedIds.has(row.chat.id));
+  // A chat with folded asides counts too: they stay behind, as rows of their own.
+  const groupFrontIds = useMemo(() => new Set(buildRows(chats, activeChatId).filter(frontsGroup).map((row) => row.chat.id)), [chats, activeChatId]);
+  const selectionFrontsAGroup = rows.some((row) => (frontsGroup(row) || groupFrontIds.has(row.chat.id)) && selectedIds.has(row.chat.id));
   const bulkDeleteMessage = [
     `Are you sure you want to delete ${selectedIds.size === 1 ? "this chat" : `these ${selectedIds.size} chats`}?`,
     selectionFrontsAGroup ? "This deletes the selected chats, not the chats forked from them — those stay, and their group will reappear." : "",
