@@ -248,5 +248,8 @@ describe("ChatRetentionSection", () => {
     render(<ChatRetentionSection engine="claude-code" />);
     expect((await box()).disabled).toBe(true);
     expect(screen.getByText(/Unexpected end of JSON input/)).toBeTruthy();
+    // Not "deletes … in 30 days (Claude's default)": Claude pauses cleanup for a file it cannot parse.
+    expect(screen.getByText(/If Claude can.t either/)).toBeTruthy();
+    expect(screen.queryByText(/Claude's default/)).toBeNull();
   });
 });

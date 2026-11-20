@@ -189,7 +189,16 @@ function ClaudeRetentionEditor({
     }
   };
 
-  const summary = invalidInFile ? (
+  // Claude also pauses its sweep for a settings file it cannot read or parse
+  // (skipReason "settings_unknowable" in the CLI). Callboard's parser may be
+  // stricter than Claude's, so this is worded as a condition, not a fact.
+  const unreadableNotManaged = Boolean(retention.unreadable) && !retention.managedBy;
+  const summary = unreadableNotManaged ? (
+    <>
+      Callboard can&rsquo;t read your Claude settings file. If Claude can&rsquo;t either, it{" "}
+      <strong style={{ color: "var(--text)" }}>skips cleanup and deletes nothing</strong> until the file is fixed; otherwise it uses the value in the file
+    </>
+  ) : invalidInFile ? (
     <>
       Your settings file sets <code style={{ fontSize: 11 }}>cleanupPeriodDays</code> to <code style={{ fontSize: 11 }}>{retention.invalidValue}</code>, which
       Claude rejects, so it currently <strong style={{ color: "var(--text)" }}>skips cleanup and deletes nothing</strong>. Saving any value here turns
@@ -210,7 +219,7 @@ function ClaudeRetentionEditor({
     <>
       <div style={subtitleStyle}>
         {summary}
-        {retention.managedBy ? " (set by your organization's policy)" : retention.configuredDays === null && !invalidInFile ? " (Claude's default)" : ""}. This applies to every
+        {retention.managedBy ? " (set by your organization's policy)" : retention.configuredDays === null && !invalidInFile && !unreadableNotManaged ? " (Claude's default)" : ""}. This applies to every
         Claude chat, bookmarked or not.
       </div>
 
