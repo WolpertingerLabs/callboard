@@ -132,7 +132,7 @@ The `google-*` templates give an agent one Google API at one scope. Drawlatch mi
 
 **Which flavour.** The plain templates use **user OAuth**: one consent from a Google account, stored as a refresh token. The `-sa` twins use a **service account** and have the same scope, allowlist, and test as their twin (a test checks they don't drift). A service account reads only what is shared with its `client_email`. With [domain-wide delegation](#service-account-setup) in a Workspace domain, it can act as a user in that domain instead. Gmail always needs that, so `google-gmail-readonly-sa` is unusable without a `subject`.
 
-**Secrets.** All user-OAuth templates share `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, and `GOOGLE_OAUTH_REFRESH_TOKEN`, and all `-sa` templates share `GOOGLE_SERVICE_ACCOUNT_KEY`. As with every secret, caller `mail-agent` reads them from `MAIL_AGENT_GOOGLE_OAUTH_REFRESH_TOKEN` and so on. They're signer-only: the agent can't reference them as `${NAME}`, and `set_secrets` can replace them only on a caller with `selfManage` allowed. Set [`selfManage: false`](README.md#callers) on callers that use these templates. Otherwise the agent can enable a broader template that reuses the same refresh token, or swap the token for its own.
+**Secrets.** All user-OAuth templates share `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, and `GOOGLE_OAUTH_REFRESH_TOKEN`, and all `-sa` templates share `GOOGLE_SERVICE_ACCOUNT_KEY`. As with every secret, caller `mail-agent` reads them from `MAIL_AGENT_GOOGLE_OAUTH_REFRESH_TOKEN` and so on. They're signer-only: the agent can't reference them as `${NAME}`. Because one refresh token can serve several templates, the agent may not configure any of this itself: on the agent path, `set_connection_enabled` refuses to enable an OAuth2 connection (say `google-drive-file` next to `google-gmail-readonly`, which would inherit the same refresh token) and `set_secrets` refuses to set or delete these secrets, whatever `selfManage` says. Only the dashboard, the admin API, or `remote.config.json` can. Set [`selfManage: false`](README.md#callers) on these callers too, so the agent can't enable other connections either.
 
 **Mixing with `google`.** A caller with both the static `google` template and a scoped one, or two scoped ones for one service (`google-gmail-metadata` and `google-gmail-readonly`, or a template and its `-sa` twin), has two connections that match the same URLs. Because the scoped ones use OAuth2, a request matching both is refused with an error naming them, and the daemon logs a warning naming the pair at boot ([README → Overlapping connections](README.md#overlapping-connections)). Use one connection per Google service.
 
@@ -213,7 +213,10 @@ If Google narrows, one master refresh token serves every template. If it doesn't
       }
     ],
     "callers": {
-      "mail-agent": { "connections": ["google-gmail-readonly", "google-drive-readonly"] }
+      "mail-agent": {
+        "connections": ["google-gmail-readonly", "google-drive-readonly"],
+        "selfManage": false
+      }
     }
   }
   ```
@@ -240,6 +243,7 @@ If the response lists scopes beyond the consented set (for example, ones carried
      "callers": {
        "mail-agent": {
          "connections": ["google-gmail-readonly-sa"],
+         "selfManage": false,
          "oauth2Overrides": { "google-gmail-readonly-sa": { "subject": "alice@example.com" } }
        }
      }
