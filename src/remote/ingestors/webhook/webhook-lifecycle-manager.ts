@@ -15,7 +15,7 @@
  */
 
 import type { WebhookLifecycleConfig, WebhookRegistrationState } from './lifecycle-types.js';
-import { resolvePlaceholders } from '../../../shared/config.js';
+import { resolvePlaceholders, scrubSecrets } from '../../../shared/config.js';
 import { createLogger } from '../../../shared/logger.js';
 import { safeFetch, sameOriginAs } from '../../safe-fetch.js';
 
@@ -93,7 +93,10 @@ export class WebhookLifecycleManager {
         try {
           existingWebhooks = await this.listWebhooks();
         } catch (err) {
-          log.warn('Failed to list existing webhooks, attempting direct registration:', err);
+          log.warn(
+            'Failed to list existing webhooks, attempting direct registration:',
+            this.scrub(err instanceof Error ? err.message : String(err)),
+          );
           // Fall through to register
         }
       }
@@ -151,7 +154,9 @@ export class WebhookLifecycleManager {
       // No register config — can't auto-register
       return { registered: false, error: 'No register config defined', lastAttempt: now };
     } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
+      // Upstream error bodies (and fetch errors) can echo resolved secrets, and
+      // this message reaches the agent through ingestor_status.
+      const error = this.scrub(err instanceof Error ? err.message : String(err));
       log.error('Webhook lifecycle error:', error);
       return { registered: false, error, lastAttempt: now };
     }
@@ -181,16 +186,25 @@ export class WebhookLifecycleManager {
 
       if (!resp.ok) {
         const body = await resp.text().catch(() => '');
-        log.warn(`Webhook unregister failed (${resp.status}): ${body}`);
+        log.warn(`Webhook unregister failed (${resp.status}): ${this.scrub(body)}`);
       } else {
         log.info(`Webhook unregistered (ID: ${webhookId})`);
       }
     } catch (err) {
-      log.warn(`Webhook unregister request failed for ${webhookId}:`, err);
+      log.warn(
+        `Webhook unregister request failed for ${webhookId}:`,
+        this.scrub(err instanceof Error ? err.message : String(err)),
+      );
     }
   }
 
   // ── Private helpers ────────────────────────────────────────────────────
+
+  /** Replace every secret this lifecycle resolves with its placeholder. All
+   *  of them, not only withheld ones: this is error text, not data. */
+  private scrub(text: string): string {
+    return scrubSecrets(text, this.secrets);
+  }
 
   /** Fetch the list of existing webhooks from the external service. */
   private async listWebhooks(): Promise<Record<string, unknown>[]> {
@@ -264,7 +278,7 @@ export class WebhookLifecycleManager {
       const body = await resp.text().catch(() => '');
       return {
         registered: false,
-        error: `Register failed (${resp.status}): ${body}`,
+        error: this.scrub(`Register failed (${resp.status}): ${body}`),
         lastAttempt: now,
       };
     }

@@ -19,6 +19,7 @@ import {
   resolveRoutes,
   resolveSecrets,
   templateSecrets,
+  withheldSecretValues,
   type CallerConfig,
   type IngestorOverrides,
   type RemoteServerConfig,
@@ -242,6 +243,7 @@ export class IngestorManager {
     if (ingestor) {
       const { caller } = parseKey(key);
       ingestor.callerAlias = caller;
+      ingestor.setWithheldSecrets(withheldSecretValues(resolvedRoute));
       this.ingestors.set(key, ingestor);
 
       // Forward events to global listeners (SSE streams, etc.)
@@ -613,6 +615,7 @@ export class IngestorManager {
     }
 
     ingestor.callerAlias = callerAlias;
+    ingestor.setWithheldSecrets(withheldSecretValues(resolvedRoute));
     this.ingestors.set(key, ingestor);
 
     // Forward events to global listeners (SSE streams, etc.)

@@ -25,7 +25,7 @@ import { BaseIngestor } from '../base-ingestor.js';
 import type { WebhookIngestorConfig, IngestorStatus } from '../types.js';
 import type { WebhookRegistrationState } from './lifecycle-types.js';
 import { WebhookLifecycleManager } from './webhook-lifecycle-manager.js';
-import { resolvePlaceholders } from '../../../shared/config.js';
+import { resolvePlaceholders, scrubSecrets } from '../../../shared/config.js';
 import { createLogger } from '../../../shared/logger.js';
 
 const log = createLogger('webhook');
@@ -176,7 +176,11 @@ export abstract class WebhookIngestor extends BaseIngestor {
       status.webhookRegistration = {
         registered: this.registrationState.registered,
         ...(this.registrationState.webhookId && { webhookId: this.registrationState.webhookId }),
-        ...(this.registrationState.error && { error: this.registrationState.error }),
+        // Scrubbed here as well as in the lifecycle manager: this is the one
+        // place every registration error passes on its way to ingestor_status.
+        ...(this.registrationState.error && {
+          error: scrubSecrets(this.registrationState.error, this.secrets),
+        }),
       };
     }
 
