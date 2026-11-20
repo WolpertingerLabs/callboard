@@ -1,4 +1,5 @@
 import type { CSSProperties } from "react";
+import { visuallyHidden } from "../utils/visuallyHidden";
 
 /**
  * The green "something is running" dot — the sidebar's folder headers, chat
@@ -32,4 +33,39 @@ export default function RunningDot({ style }: { style?: CSSProperties }) {
  */
 export function activeSessionLabel(type: string): string {
   return type === "web" ? "Active in web" : "Active in CLI";
+}
+
+/**
+ * The dot with a number beside it, in the dot's colour — "this many working".
+ * The sidebar section headers, a collapsed tree node and a group row all use
+ * it, so a count of running chats reads the same wherever it appears.
+ *
+ * The number is `aria-hidden` and `label` says it in words, because a bare
+ * "2" next to a colour means nothing to a screen reader.
+ */
+export function RunningCount({
+  count,
+  label,
+  testId,
+  title,
+  style,
+}: {
+  count: number;
+  label: string;
+  testId?: string;
+  /** The tooltip; defaults to `label`. */
+  title?: string;
+  style?: CSSProperties;
+}) {
+  return (
+    <span
+      data-testid={testId}
+      title={title ?? label}
+      style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0, color: "var(--status-active)", ...style }}
+    >
+      <RunningDot />
+      <span aria-hidden>{count}</span>
+      <span style={visuallyHidden}>{label}</span>
+    </span>
+  );
 }

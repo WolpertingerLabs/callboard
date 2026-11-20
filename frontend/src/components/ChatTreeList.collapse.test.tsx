@@ -181,3 +181,40 @@ describe("collapsible subtrees", () => {
     expect(mockNavigate).toHaveBeenCalledWith("/chat/mid");
   });
 });
+
+describe("working indicators", () => {
+  it("gives a working child the glowing dot from the live registry, even on a stale snapshot", async () => {
+    mockTree();
+    renderList(["lonely"]);
+    await expand();
+    const lonely = node("lonely")!;
+    expect(within(lonely).getByTestId("running-dot")).toBeTruthy();
+    expect(lonely.getAttribute("aria-label")).toBe("Lonely — working");
+    expect(within(node("mid")!).queryByTestId("running-dot")).toBeNull();
+  });
+
+  it("counts working descendants on a collapsed node, and drops the count once expanded", async () => {
+    mockTree();
+    // The group row's members are root/mid/lonely; deepest is only in the tree.
+    renderList(["deepest", "leaf"]);
+    await expand();
+    expect(screen.queryByTestId("subtree-running")).toBeNull();
+
+    fireEvent.click(toggleFor("Mid")!);
+    const count = within(node("mid")!).getByTestId("subtree-running");
+    expect(count.textContent).toBe("22 working below");
+    expect(within(count).getByTestId("running-dot")).toBeTruthy();
+    expect(node("mid")!.getAttribute("aria-label")).toBe("Mid, 2 working below");
+
+    fireEvent.click(toggleFor("Mid")!);
+    expect(screen.queryByTestId("subtree-running")).toBeNull();
+  });
+
+  it("shows the group row how many of its chats are working", async () => {
+    mockTree();
+    renderList(["mid", "lonely"]);
+    const indicator = await screen.findByTestId("chat-running");
+    expect(indicator.textContent).toContain("2");
+    expect(indicator.getAttribute("title")).toBe("Active in web, 2 working in this tree");
+  });
+});

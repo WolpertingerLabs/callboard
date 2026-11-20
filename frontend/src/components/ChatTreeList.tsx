@@ -20,7 +20,8 @@ import { useChatTreeCollapse, type ChatTreeCollapse } from "../hooks/useChatTree
 import { useIsMobile } from "../hooks/useIsMobile";
 import { withNodeChildArchived } from "../utils/childArchive";
 import { ASIDE_ROLE } from "../utils/chatRewrite";
-import { foldedAsideChildren, isHiddenArchivedChild, visibleChildren, type TreeVisibility } from "../utils/chatTreeNodes";
+import { countRunningBelow, foldedAsideChildren, isHiddenArchivedChild, nodeIsRunning, visibleChildren, type TreeVisibility } from "../utils/chatTreeNodes";
+import RunningDot, { RunningCount } from "./RunningDot";
 import { chatSignals, nodeSignals, sumAttention } from "../utils/asideAttention";
 
 /**
@@ -796,6 +797,13 @@ function TreeNodeRow({
   // already folds the whole tree. Below it, any node with rows to hide does.
   const collapsible = !!treeCollapse && depth > 0 && children.length > 0;
   const collapsed = collapsible && treeCollapse.isCollapsed(node.chatId);
+  const running = nodeIsRunning(node, isRunning);
+  // Only while collapsed: expanded, the working children's own dots are on
+  // screen, and a count beside them would say the same thing twice.
+  const runningBelow = collapsed ? countRunningBelow(node, childrenUnderArchived, visibility, isRunning) : 0;
+  const nodeName = `${node.role ? `${label} (${node.role})` : label}${archivedChild ? " — archived" : ""}${running ? " — working" : ""}${
+    runningBelow > 0 ? `, ${runningBelow} working below` : ""
+  }`;
 
   // The toggle's slot. Every node below the root gets one, so sibling titles
   // line up whether or not they have children: a node with rows to hide shows
@@ -883,7 +891,7 @@ function TreeNodeRow({
           // the badges and timestamp inside would make a noisy computed name.
           role="link"
           tabIndex={0}
-          aria-label={`${node.role ? `${label} (${node.role})` : label}${archivedChild ? " — archived" : ""}`}
+          aria-label={nodeName}
           onKeyUp={(e) => {
             // Not a keyup bubbling out of the (portaled) menu — Enter on its item.
             if (e.key === "Enter" && e.target === e.currentTarget) onNavigate(node.chatId);
@@ -905,19 +913,31 @@ function TreeNodeRow({
             WebkitTouchCallout: hasMenu ? "none" : undefined,
           }}
         >
-          <span
-            title={`Status: ${node.nativeAgent?.lifecycle ?? node.status}`}
-            style={{
-              width: 7,
-              height: 7,
-              borderRadius: "50%",
-              flexShrink: 0,
-              background: STATUS_DOT[node.status] || "var(--text-muted)",
-            }}
-          />
+          {running ? (
+            // The live, glowing dot every other sidebar row uses for a working
+            // chat — so a working child reads as working, not as the plain
+            // status dot's snapshot of it.
+            <span title="Status: working" style={{ display: "flex", flexShrink: 0 }}>
+              <RunningDot />
+            </span>
+          ) : (
+            <span
+              title={`Status: ${node.nativeAgent?.lifecycle ?? node.status}`}
+              style={{
+                width: 7,
+                height: 7,
+                borderRadius: "50%",
+                flexShrink: 0,
+                background: STATUS_DOT[node.status] || "var(--text-muted)",
+              }}
+            />
+          )}
           <ProviderBadge provider={node.provider === "claude-code" ? undefined : node.provider} compact />
           {node.role && <ChatRoleBadge role={node.role} />}
           <AsideCount count={asideNodes.length} attention={asideAttention} />
+          {runningBelow > 0 && (
+            <RunningCount count={runningBelow} label={`${runningBelow} working below`} testId="subtree-running" style={{ fontSize: 11, fontWeight: 600 }} />
+          )}
           <span
             style={{
               fontSize: 13,
@@ -1243,6 +1263,13 @@ export default function ChatTreeList({
      * at all are indistinguishable at the point of use.
      */
     const groupSessionStatus = members.map((member) => sessionStatusFor(member.id)).find((status) => status?.active);
+    /**
+     * How many of those members are working — the number beside that dot,
+     * expanded or not, as the card-level summary. Loaded members only, the
+     * same set `groupSessionStatus` reads, so the dot shows exactly when this
+     * is at least 1. Folded asides keep their own dot on the aside count.
+     */
+    const groupRunningCount = members.filter((member) => sessionStatusFor(member.id)?.active).length;
 
     return (
       <div key={rootKey} style={{ background: isExpanded ? "var(--chatlist-tree-group-bg)" : undefined }}>
@@ -1306,6 +1333,7 @@ export default function ChatTreeList({
               }
               detaching={!!detachingIds?.has(chat.id)}
               sessionStatus={groupSessionStatus}
+              runningCount={groupRunningCount}
               // Identity above is the root's; the live-work signals are the
               // whole group's. See `RowActivity`.
               activity={activity}

@@ -34,7 +34,7 @@ import MenuRow from "./MenuRow";
 import PopupMenu, { placePopupMenu, type PopupMenuPosition } from "./PopupMenu";
 import { splitOffLabelFor, SPLIT_OFF_PENDING_LABEL, SPLIT_OFF_TITLE } from "../utils/splitOffChat";
 import SpaceChip from "./SpaceChip";
-import RunningDot, { activeSessionLabel } from "./RunningDot";
+import RunningDot, { activeSessionLabel, RunningCount } from "./RunningDot";
 import { visuallyHidden } from "../utils/visuallyHidden";
 import type { SpaceListItem } from "shared/types/space.js";
 
@@ -179,6 +179,11 @@ interface Props {
   asideCount?: number;
   /** What those asides need (running, unread, summoned) — a dot on the count, not the row's status. */
   asideAttention?: AsideAttention;
+  /**
+   * A group row's working members — shown as a number beside the running dot.
+   * Absent on lone rows, which are one chat and keep the bare dot.
+   */
+  runningCount?: number;
 }
 
 /**
@@ -260,6 +265,7 @@ export default function ChatListItem({
   onLongPress,
   asideCount = 0,
   asideAttention,
+  runningCount,
 }: Props) {
   const [hovered, setHovered] = useState(false);
   // The kebab popup escapes the sidebar's overflow:auto scroll container via
@@ -630,17 +636,26 @@ export default function ChatListItem({
           >
             {displayName}
           </div>
-          {sessionStatus?.active && (
-            <span
-              data-testid="chat-running"
-              title={activeSessionLabel(sessionStatus.type)}
-              style={{ display: "flex", alignItems: "center", flexShrink: 0, padding: "0 2px" }}
-            >
-              <RunningDot />
-              {/* The dot is colour alone, so the name spells it out. */}
-              <span style={visuallyHidden}>{activeSessionLabel(sessionStatus.type)}</span>
-            </span>
-          )}
+          {sessionStatus?.active &&
+            (runningCount !== undefined && runningCount > 0 ? (
+              // A tree: how many of its chats are working, in the dot's colour.
+              <RunningCount
+                count={runningCount}
+                label={`${activeSessionLabel(sessionStatus.type)}, ${runningCount} working in this tree`}
+                testId="chat-running"
+                style={{ padding: "0 2px", fontSize: 11, fontWeight: 600 }}
+              />
+            ) : (
+              <span
+                data-testid="chat-running"
+                title={activeSessionLabel(sessionStatus.type)}
+                style={{ display: "flex", alignItems: "center", flexShrink: 0, padding: "0 2px" }}
+              >
+                <RunningDot />
+                {/* The dot is colour alone, so the name spells it out. */}
+                <span style={visuallyHidden}>{activeSessionLabel(sessionStatus.type)}</span>
+              </span>
+            ))}
         </div>
         {chatStatus && (
           <div
