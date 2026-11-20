@@ -96,7 +96,8 @@ async function renderExpanded(opts: { selection?: RowSelection } = {}) {
       </Routes>
     </MemoryRouter>,
   );
-  fireEvent.click(await screen.findByTitle("Expand chat tree"));
+  // Tree cards start expanded: the tree fetches on its own.
+  await screen.findByTitle("Collapse chat tree");
   await screen.findByText("Helper");
   const rerender = (selection: RowSelection) =>
     view.rerender(

@@ -1,57 +1,78 @@
 /**
- * Which nodes are collapsed inside the sidebar's expanded chat trees.
+ * Folds in the sidebar's chat trees, two of them:
  *
- * Every node defaults to expanded; only the ones the user folds are stored
- * (see `getChatTreeCollapsedIds`). One module-level store shared through
+ * - {@link useChatTreeCollapse} — nodes folded INSIDE an expanded tree, keyed
+ *   by chat id (the root's own row included: folding it keeps the root and
+ *   hides its children).
+ * - {@link useChatTreeCardCollapse} — top-level tree cards (group rows), keyed
+ *   by the group's `rootKey`. Folding one hides the whole tree under the card.
+ *
+ * Both default to expanded; only what the user folds is stored, each in its
+ * own localStorage record (see `CHAT_TREE_CARDS_COLLAPSED_KEY` for why they
+ * are not one). Each is a module-level store shared through
  * `useSyncExternalStore`, for the same reason as `useChatSectionExpansion`: it
  * is a stored preference, and every reader must see a toggle the moment it
- * happens. The snapshot is cached (it must be referentially stable), so tests
+ * happens. Snapshots are cached (they must be referentially stable), so tests
  * that clear storage must also call {@link resetChatTreeCollapse}.
  */
 
 import { useCallback, useSyncExternalStore } from "react";
-import { getChatTreeCollapsedIds, saveChatTreeNodeCollapsed } from "../utils/localStorage";
-
-let snapshot: ReadonlySet<string> | null = null;
-const listeners = new Set<() => void>();
-
-function getSnapshot(): ReadonlySet<string> {
-  snapshot ??= getChatTreeCollapsedIds();
-  return snapshot;
-}
-
-function subscribe(listener: () => void): () => void {
-  listeners.add(listener);
-  return () => {
-    listeners.delete(listener);
-  };
-}
-
-/** Drop the cached snapshot so the next read comes from storage. Tests only. */
-export function resetChatTreeCollapse(): void {
-  snapshot = null;
-  for (const listener of listeners) listener();
-}
+import { getChatTreeCardCollapsedKeys, getChatTreeCollapsedIds, saveChatTreeCardCollapsed, saveChatTreeNodeCollapsed } from "../utils/localStorage";
 
 export interface ChatTreeCollapse {
-  isCollapsed: (chatId: string) => boolean;
-  toggle: (chatId: string) => void;
+  isCollapsed: (id: string) => boolean;
+  toggle: (id: string) => void;
 }
 
-export function useChatTreeCollapse(): ChatTreeCollapse {
-  const collapsed = useSyncExternalStore(subscribe, getSnapshot);
-
-  const isCollapsed = useCallback((chatId: string) => collapsed.has(chatId), [collapsed]);
-
-  const toggle = useCallback((chatId: string) => {
-    const next = new Set(getSnapshot());
-    const collapse = !next.has(chatId);
-    if (collapse) next.add(chatId);
-    else next.delete(chatId);
-    saveChatTreeNodeCollapsed(chatId, collapse);
-    snapshot = next;
+function createCollapseStore(read: () => Set<string>, save: (id: string, collapsed: boolean) => void) {
+  let snapshot: ReadonlySet<string> | null = null;
+  const listeners = new Set<() => void>();
+  const getSnapshot = (): ReadonlySet<string> => (snapshot ??= read());
+  const subscribe = (listener: () => void) => {
+    listeners.add(listener);
+    return () => {
+      listeners.delete(listener);
+    };
+  };
+  const notify = () => {
     for (const listener of listeners) listener();
-  }, []);
+  };
+  const reset = () => {
+    snapshot = null;
+    notify();
+  };
+  const toggle = (id: string) => {
+    const next = new Set(getSnapshot());
+    const collapse = !next.has(id);
+    if (collapse) next.add(id);
+    else next.delete(id);
+    save(id, collapse);
+    snapshot = next;
+    notify();
+  };
+  const useStore = (): ChatTreeCollapse => {
+    const collapsed = useSyncExternalStore(subscribe, getSnapshot);
+    const isCollapsed = useCallback((id: string) => collapsed.has(id), [collapsed]);
+    return { isCollapsed, toggle };
+  };
+  return { useStore, reset };
+}
 
-  return { isCollapsed, toggle };
+const nodeStore = createCollapseStore(getChatTreeCollapsedIds, saveChatTreeNodeCollapsed);
+const cardStore = createCollapseStore(getChatTreeCardCollapsedKeys, saveChatTreeCardCollapsed);
+
+/** Drop the cached snapshots so the next read comes from storage. Tests only. */
+export function resetChatTreeCollapse(): void {
+  nodeStore.reset();
+  cardStore.reset();
+}
+
+/** Which nodes inside expanded trees are folded, by chat id. */
+export function useChatTreeCollapse(): ChatTreeCollapse {
+  return nodeStore.useStore();
+}
+
+/** Which top-level tree cards are folded, by group `rootKey`. */
+export function useChatTreeCardCollapse(): ChatTreeCollapse {
+  return cardStore.useStore();
 }

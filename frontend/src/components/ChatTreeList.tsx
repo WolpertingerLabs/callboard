@@ -16,11 +16,11 @@ import type { ChatSectionKey } from "../utils/localStorage";
 import { useChatSectionExpansion } from "../hooks/useChatSectionExpansion";
 import type { SpaceListItem } from "shared/types/space.js";
 import { isSidebarFolderEligible, readSidebarFolder } from "shared/types/sidebarFolder.js";
-import { useChatTreeCollapse, type ChatTreeCollapse } from "../hooks/useChatTreeCollapse";
 import { useIsMobile } from "../hooks/useIsMobile";
+import { useChatTreeCardCollapse, useChatTreeCollapse, type ChatTreeCollapse } from "../hooks/useChatTreeCollapse";
 import { treeContains, withNodeChildArchived } from "../utils/childArchive";
 import { ASIDE_ROLE } from "../utils/chatRewrite";
-import { attentionBelow, foldedAsideChildren, nodeIsRunning, visibleChildren, type TreeVisibility } from "../utils/chatTreeNodes";
+import { attentionBelow, countRowsBelow, foldedAsideChildren, nodeIsRunning, visibleChildren, type TreeVisibility } from "../utils/chatTreeNodes";
 import RunningDot, { RunningCount } from "./RunningDot";
 import { attentionSuffix, chatSignals, NO_ATTENTION, nodeSignals, sumAttention } from "../utils/asideAttention";
 
@@ -36,9 +36,11 @@ import { attentionSuffix, chatSignals, NO_ATTENTION, nodeSignals, sumAttention }
  * expanded — as the header row with a chevron, and fall back to the most
  * recently updated member when it is not (see `buildRows`, which owns both the
  * rule and the fallback; in the fallback the header is a child and the tree's
- * depth-0 node is some chat this list does not hold). Expanding fetches the
- * authoritative full tree from GET /api/chats/:id/tree (which includes members
- * outside the currently loaded page) and renders it depth-indented.
+ * depth-0 node is some chat this list does not hold). A group's card starts
+ * EXPANDED — only the cards the user folds are remembered (see
+ * `useChatTreeCardCollapse`) — and an expanded card fetches the authoritative
+ * full tree from GET /api/chats/:id/tree (which includes members outside the
+ * currently loaded page) and renders it depth-indented.
  *
  * The header row is the root and not the group's most recently updated member
  * because the row is a link as much as a label: clicking it opens the chat it
@@ -52,7 +54,8 @@ import { attentionSuffix, chatSignals, NO_ATTENTION, nodeSignals, sumAttention }
  * (and every status change inside it) lands in the refreshed `chats` prop but
  * not in the fetched tree. `refreshToken` — bumped by the parent on every
  * chat-list refresh — is the signal to refetch the expanded groups so the
- * sidebar doesn't need a page reload to show them.
+ * sidebar doesn't need a page reload to show them — though only the trees
+ * that could have changed are refetched (see `wanted` in the component).
  */
 
 interface Props {
@@ -636,6 +639,26 @@ function rollUpActivity(members: Chat[]): RowActivity {
   return { updatedAt, hasUnread, summon, summonChatId, jobAwaitingApproval, jobRunId, jobStepId, chatStatus, chatStatusEmoji };
 }
 
+/**
+ * Whether a fetched tree shows work the chat list cannot see changing: a node
+ * the server reports ongoing or waiting, whose next state arrives only with
+ * the next fetch. That covers a native sub-agent at work (reported ongoing),
+ * which is never in the list; a finished one is not live, or a tree holding
+ * one would be refetched on every poll forever.
+ */
+function treeShowsLiveWork(node: ChatTreeNode): boolean {
+  return node.status !== "stopped" || node.children.some(treeShowsLiveWork);
+}
+
+/** Most tree requests in flight at once; the rest queue, top of the list first. */
+export const TREE_FETCH_CONCURRENCY = 4;
+/**
+ * How long a tree request may hold its slot. A hung request would otherwise
+ * keep one of the {@link TREE_FETCH_CONCURRENCY} slots forever; timing out
+ * counts as a failure (the card shows folded, a click retries).
+ */
+export const TREE_FETCH_TIMEOUT_MS = 20_000;
+
 export const STATUS_DOT: Record<ChatTreeNode["status"], string> = {
   ongoing: "var(--status-active)",
   waiting: "var(--warning)",
@@ -675,6 +698,29 @@ const TREE_MENU_ESTIMATED_HEIGHT = 60;
 const TREE_MENU_ROW_HEIGHT = 44;
 const TREE_MENU_WIDTH = 240;
 
+/** A tree row's left border — the open chat's highlight bar, transparent otherwise. */
+const TREE_ROW_BORDER = 3;
+/**
+ * Where the depth-0 chevron starts, from the row's outer edge: the group
+ * card's chevron column (its button's left padding), so the card's fold and
+ * the root row's fold line up.
+ */
+const TREE_CHEVRON_LEFT = 8;
+/** The chevron's box, which the leaf connector is centred in. */
+const TREE_CHEVRON_BOX = 12;
+/** Indent per depth. */
+const TREE_INDENT = 14;
+/** The gap between a tree row's slot and its link — which a toggle reaches across, too. */
+const TREE_ROW_GAP = 6;
+/**
+ * The root row's toggle on touch, from the row's inner edge: across the
+ * status-dot column as well, up to the provider badge. On a flat tree it is
+ * the one fold there is, so it gets the widest target the row has.
+ */
+const TREE_ROOT_TOUCH_TARGET = 36;
+/** Where the tree's trunk runs: under the centre of the root row's chevron, from the row's inner edge. */
+const TREE_TRUNK_X = TREE_CHEVRON_LEFT - TREE_ROW_BORDER + TREE_CHEVRON_BOX / 2;
+
 function TreeNodeRow({
   node,
   depth,
@@ -683,6 +729,7 @@ function TreeNodeRow({
   splitOff,
   childArchive,
   underArchived = false,
+  trunk,
   isRunning,
   foldAsides = true,
   treeCollapse,
@@ -702,8 +749,14 @@ function TreeNodeRow({
   foldAsides?: boolean;
   /** Which nodes are folded; absent, nothing is collapsible. */
   treeCollapse?: ChatTreeCollapse;
-  /** `useIsMobile()`, read once by the list rather than per node. */
+  /** `useIsMobile()`, read once by the list: the root row's toggle is wider on touch. */
   isMobile?: boolean;
+  /**
+   * Where this row meets the trunk: "through" for a row the trunk passes (a
+   * top-level child before the last, and every row under one), "end" for the
+   * last top-level child, where it stops; absent below that child and at the root.
+   */
+  trunk?: "through" | "end";
 }) {
   const [menu, setMenu] = useState<{ position: PopupMenuPosition; openedByTouch: boolean } | null>(null);
   const rowRef = useRef<HTMLDivElement>(null);
@@ -793,9 +846,13 @@ function TreeNodeRow({
   const asideNodes = foldedAsideChildren(node, visibility);
   const asideAttention = sumAttention(asideNodes.map((child) => nodeSignals(child, nodeIsRunning(child, isRunning))));
   const children = visibleChildren(node, childrenUnderArchived, visibility);
-  // The root (depth 0) has no toggle of its own: the group header above it
-  // already folds the whole tree. Below it, any node with rows to hide does.
-  const collapsible = !!treeCollapse && depth > 0 && children.length > 0;
+  // Any node with rows to hide gets a toggle — the root's own row included.
+  // The group card above folds the WHOLE tree, root row and all; the root's
+  // toggle keeps the root row on screen and folds what hangs off it, which in
+  // a flat tree (root plus direct children, the usual shape) is the only fold
+  // there is. They are different folds, stored apart: see
+  // `CHAT_TREE_CARDS_COLLAPSED_KEY`.
+  const collapsible = !!treeCollapse && children.length > 0;
   // A fold never hides the open chat: a node above it renders expanded while
   // it is open, without touching the stored fold — the same exemption the
   // archived-child filter makes. Its toggle is disabled meanwhile, since a
@@ -811,18 +868,39 @@ function TreeNodeRow({
   // as the one most pressing dot, as on an aside count.
   const hiddenAttention = { ...hidden, running: 0 };
   const hiddenAttentionText = attentionSuffix(hiddenAttention).slice(2);
+  // How many rows the fold hides: shown on a folded node even when nothing
+  // under it is working, so a fold never reads as a leaf. The root's toggle
+  // names it expanded too ("Hide the 10 chats under …").
+  const rowsBelow = collapsible && (collapsed || depth === 0) ? countRowsBelow(node, childrenUnderArchived, visibility) : 0;
+  const hiddenRows = collapsed ? rowsBelow : 0;
   const nodeName = `${node.role ? `${label} (${node.role})` : label}${archivedChild ? " — archived" : ""}${running ? " — working" : ""}${
-    hidden.running > 0 ? `, ${hidden.running} working below` : ""
-  }${hiddenAttentionText ? `, ${hiddenAttentionText} below` : ""}`;
+    hiddenRows > 0 ? `, ${hiddenRows} hidden` : ""
+  }${hidden.running > 0 ? `, ${hidden.running} working below` : ""}${hiddenAttentionText ? `, ${hiddenAttentionText} below` : ""}`;
+  // The root's toggle says what it does to the rows below, so it does not
+  // announce the same "Collapse <title>" as the card toggle right above it,
+  // which folds the whole tree.
+  const chats = `${rowsBelow} chat${rowsBelow === 1 ? "" : "s"}`;
+  const toggleName = depth === 0 ? `${collapsed ? "Show" : "Hide"} the ${chats} under "${label}"` : `${collapsed ? "Expand" : "Collapse"} "${label}"`;
 
-  // The toggle's slot. Every node below the root gets one, so sibling titles
-  // line up whether or not they have children: a node with rows to hide shows
-  // its chevron there, a leaf the tree's "—" connector, both at the slot's
-  // right edge so they share a column (and stay indented past the root's
-  // status dot). The slot grows LEFT into the indent padding, so titles sit
-  // where they always have; on touch it takes most of that padding and the
-  // row gets a 44px minimum height, for a target a thumb can hit.
-  const slotWidth = isMobile ? 36 : 16;
+  // The toggle's slot. Every node gets one, so sibling titles line up whether
+  // or not they have children: a node with rows to hide shows its chevron
+  // there, a leaf below the root the tree's "—" connector, both in the 12px
+  // box at the slot's right edge so they share a column per depth. That box
+  // sits at `TREE_CHEVRON_LEFT + depth * TREE_INDENT` from the row's edge —
+  // at depth 0 that is the group card's own chevron column.
+  //
+  // The slot IS the row's indent: it starts at the row's left edge and spans
+  // its full height, and a toggle reaches across the gap after it too (its
+  // negative margin cancels the extra width, so nothing moves). The target is
+  // the whole strip left of the status dot — as wide as the row allows without
+  // making it any taller.
+  const slotWidth = TREE_CHEVRON_LEFT - TREE_ROW_BORDER + depth * TREE_INDENT + TREE_CHEVRON_BOX;
+  // How far the toggle reaches past its slot: the gap, or on touch at the
+  // root, across the status dot too. Given back in negative margin, so
+  // nothing moves; drawn above the link so that strip taps the toggle.
+  // Not while disabled (it holds the open chat): a dead button over the
+  // status-dot strip would swallow taps meant for the row.
+  const toggleReach = depth === 0 && isMobile && !holdsOpen ? TREE_ROOT_TOUCH_TARGET - slotWidth : TREE_ROW_GAP;
   // Faded like an archived row in the list, unless it is the open chat — the
   // same exemption ChatListItem makes for the open row. On the link and the
   // slot beside it, not their wrapper, which also paints the active highlight.
@@ -834,59 +912,113 @@ function TreeNodeRow({
         style={{
           display: "flex",
           alignItems: "stretch",
-          gap: 6,
-          paddingLeft: 14 + depth * 14 - (depth > 0 ? slotWidth - 10 : 0),
+          gap: TREE_ROW_GAP,
           paddingRight: 14,
-          minHeight: isMobile ? 44 : undefined,
           background: isActive ? "var(--chatlist-item-active-bg)" : "transparent",
-          borderLeft: isActive ? "3px solid var(--chatlist-item-active-border)" : "3px solid transparent",
+          borderLeft: `${TREE_ROW_BORDER}px solid ${isActive ? "var(--chatlist-item-active-border)" : "transparent"}`,
           borderBottom: "1px solid var(--chatlist-item-border)",
           minWidth: 0,
+          position: "relative",
         }}
       >
-        {depth > 0 &&
-          (collapsible ? (
-            // A sibling of the link, not inside it: a button nested in a
-            // `role="link"` is an interactive element inside another, and its
-            // press would start the row's long-press timer.
-            <button
-              type="button"
-              data-testid="tree-node-toggle"
-              className={dimClass}
-              aria-expanded={!collapsed}
-              aria-label={`${collapsed ? "Expand" : "Collapse"} "${label}"${holdsOpen ? " (holds the open chat)" : ""}`}
-              title={holdsOpen ? `"${label}" holds the open chat` : collapsed ? `Expand "${label}"` : `Collapse "${label}"`}
-              disabled={holdsOpen}
-              onClick={(e) => {
-                e.stopPropagation();
-                treeCollapse.toggle(node.chatId);
-              }}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "flex-end",
-                width: slotWidth,
-                flexShrink: 0,
-                padding: 0,
-                background: "none",
-                border: "none",
-                color: "var(--chatlist-icon)",
-                cursor: holdsOpen ? "default" : "pointer",
-                opacity: holdsOpen ? 0.5 : undefined,
-              }}
-            >
-              {collapsed ? <ChevronRight size={12} aria-hidden /> : <ChevronDown size={12} aria-hidden />}
-            </button>
-          ) : (
-            <span
-              aria-hidden
-              className={dimClass}
-              style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", width: slotWidth, flexShrink: 0 }}
-            >
-              {/* Centred in the chevron's 12px box, so the two share a column. */}
-              <span style={{ width: 10, height: 1, margin: "0 1px", background: "var(--chatlist-tree-line)" }} />
-            </span>
-          ))}
+        {/* The tree's trunk, from under the root's chevron down to the root's
+            last child, meeting each top-level child's connector — so the root
+            row reads as the first line of one list rather than as a second
+            header under the card. It passes the rows under earlier children
+            and ends at the last one's connector. */}
+        {trunk && (
+          <span
+            aria-hidden
+            data-testid="tree-trunk"
+            style={{
+              position: "absolute",
+              left: TREE_TRUNK_X,
+              top: 0,
+              bottom: trunk === "end" ? "50%" : -1,
+              width: 1,
+              background: "var(--chatlist-tree-line)",
+              pointerEvents: "none",
+            }}
+          />
+        )}
+        {/* A top-level child with its own chevron gets the same short
+            connector from the trunk as a leaf, up to the chevron. */}
+        {depth === 1 && collapsible && (
+          <span
+            aria-hidden
+            data-testid="tree-trunk-branch"
+            style={{
+              position: "absolute",
+              left: TREE_TRUNK_X,
+              top: "50%",
+              width: slotWidth - TREE_CHEVRON_BOX - TREE_TRUNK_X,
+              height: 1,
+              background: "var(--chatlist-tree-line)",
+              pointerEvents: "none",
+            }}
+          />
+        )}
+        {collapsible ? (
+          // A sibling of the link, not inside it: a button nested in a
+          // `role="link"` is an interactive element inside another, and its
+          // press would start the row's long-press timer.
+          <button
+            type="button"
+            data-testid="tree-node-toggle"
+            className={dimClass}
+            aria-expanded={!collapsed}
+            aria-label={`${toggleName}${holdsOpen ? " (holds the open chat)" : ""}`}
+            title={holdsOpen ? `"${label}" holds the open chat` : toggleName}
+            disabled={holdsOpen}
+            onClick={(e) => {
+              e.stopPropagation();
+              treeCollapse.toggle(node.chatId);
+            }}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "flex-end",
+              boxSizing: "border-box",
+              width: slotWidth + toggleReach,
+              marginRight: -toggleReach,
+              flexShrink: 0,
+              padding: `0 ${toggleReach}px 0 0`,
+              position: "relative",
+              zIndex: holdsOpen ? undefined : 1,
+              // Still a disabled button to assistive tech; taps pass through.
+              pointerEvents: holdsOpen ? "none" : undefined,
+              background: "none",
+              border: "none",
+              color: "var(--chatlist-icon)",
+              cursor: holdsOpen ? "default" : "pointer",
+              opacity: holdsOpen ? 0.5 : undefined,
+            }}
+          >
+            {collapsed ? <ChevronRight size={TREE_CHEVRON_BOX} aria-hidden /> : <ChevronDown size={TREE_CHEVRON_BOX} aria-hidden />}
+          </button>
+        ) : (
+          <span
+            aria-hidden
+            className={dimClass}
+            data-testid="tree-node-slot"
+            style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", width: slotWidth, flexShrink: 0 }}
+          >
+            {/* Centred in the chevron's 12px box, so the two share a column.
+                The root has no parent to connect to: an empty slot. */}
+            {/* A top-level child's reaches back to the trunk. */}
+            {depth > 0 && (
+              <span
+                style={{
+                  // Its right end stays at the chevron column (1px margin).
+                  width: depth === 1 ? slotWidth - 1 - TREE_TRUNK_X : 10,
+                  height: 1,
+                  margin: "0 1px",
+                  background: "var(--chatlist-tree-line)",
+                }}
+              />
+            )}
+          </span>
+        )}
         <div
           ref={rowRef}
           data-testid="chat-tree-node"
@@ -969,6 +1101,15 @@ function TreeNodeRow({
           </span>
           {/* What the fold hides — after the title, so collapsing does not
               push the title right, and where the group card puts its count. */}
+          {hiddenRows > 0 && (
+            <span
+              data-testid="subtree-hidden-count"
+              title={`${hiddenRows} hidden`}
+              style={{ fontSize: 11, fontWeight: 600, color: "var(--text-muted)", flexShrink: 0, whiteSpace: "nowrap" }}
+            >
+              +{hiddenRows}
+            </span>
+          )}
           {hiddenAttentionText && (
             <span data-testid="subtree-attention" title={`${hiddenAttentionText} below`} style={{ display: "flex", alignItems: "center", flexShrink: 0 }}>
               <AsideAttentionDot attention={hiddenAttention} />
@@ -1031,11 +1172,12 @@ function TreeNodeRow({
         </PopupMenu>
       )}
       {!collapsed &&
-        children.map((child) => (
+        children.map((child, i) => (
           <TreeNodeRow
             key={child.chatId}
             node={child}
             depth={depth + 1}
+            trunk={depth === 0 ? (i === children.length - 1 ? "end" : "through") : trunk === "through" ? "through" : undefined}
             activeChatId={activeChatId}
             onNavigate={onNavigate}
             splitOff={splitOff}
@@ -1074,94 +1216,266 @@ export default function ChatTreeList({
   foldAsides = true,
 }: Props) {
   const navigate = useNavigate();
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [trees, setTrees] = useState<Record<string, ChatTreeResponse>>({});
-  const [loading, setLoading] = useState<Set<string>>(new Set());
+  /** Groups with a fetch in flight and no tree to show meanwhile — their chevron spins. */
+  const [loading, setLoading] = useState<ReadonlySet<string>>(new Set());
+  /** Groups whose last fetch failed with no tree in hand; they render folded until clicked. */
+  const [failed, setFailed] = useState<ReadonlySet<string>>(new Set());
 
   // Group loaded chats by lineage root, preserving the server's recency order:
   // each group appears at the position of its most recently updated member,
   // fronted by its root where that chat is loaded. See `buildRows`.
   const rows = useMemo(() => buildRows(chats, activeChatId, foldAsides), [chats, activeChatId, foldAsides]);
+  // Each group is filed as one row — see `sectionRows`.
+  const sections = useMemo(() => sectionRows(rows), [rows]);
 
-  // Read current expansion/rows from the refresh effect without making it a
-  // dependency — the effect must fire on refreshes, not on every expand click.
-  const expandedRef = useRef(expanded);
-  const rowsRef = useRef(rows);
-  // Declared before the refresh effect so the refs are current by the time it
-  // reads them in the same commit.
-  useEffect(() => {
-    expandedRef.current = expanded;
-    rowsRef.current = rows;
-  });
+  /** Collapse state for those headers, persisted via localStorage. */
+  const sectionExpansion = useChatSectionExpansion();
+  /** Collapse state for the nodes inside expanded trees, persisted likewise. */
+  const treeCollapse = useChatTreeCollapse();
+  /** Which top-level tree cards are folded. Cards start expanded. */
+  const cardCollapse = useChatTreeCardCollapse();
+  const isMobile = useIsMobile();
 
-  // The chat list refreshed: every cached tree is now potentially stale.
-  // Refetch the expanded ones in place (no spinner — the rows stay put and
-  // swap content), and drop the collapsed ones so re-expanding refetches
-  // instead of flashing a snapshot from minutes ago.
-  useEffect(() => {
-    if (refreshToken === 0) return; // initial render — nothing fetched yet
-    const expandedNow = expandedRef.current;
-    setTrees((prev) => {
-      const kept: Record<string, ChatTreeResponse> = {};
-      let dropped = false;
-      for (const [rootKey, tree] of Object.entries(prev)) {
-        if (expandedNow.has(rootKey)) kept[rootKey] = tree;
-        else dropped = true;
-      }
-      return dropped ? kept : prev;
-    });
-    if (expandedNow.size === 0) return;
-
-    let cancelled = false;
-    const representativeOf = new Map(rowsRef.current.map((row) => [row.rootKey, row.chat.id]));
-    for (const rootKey of expandedNow) {
-      const representativeChatId = representativeOf.get(rootKey);
-      if (!representativeChatId) continue; // group scrolled out of the loaded window
-      getChatTree(representativeChatId)
-        .then((tree) => {
-          if (!cancelled) setTrees((prev) => ({ ...prev, [rootKey]: tree }));
-        })
-        .catch(() => {
-          // Transient failure — the next refresh retries; keep showing the old tree.
-        });
+  /**
+   * The trees this render wants fetched: every group row actually on screen
+   * (not under a folded section header) whose card is not folded, with the
+   * signature its fetched tree must match.
+   *
+   * A tree not yet in hand is fetched at once. One in hand is refetched only
+   * at a refresh (`refreshToken`, bumped on every chat-list load) — never in
+   * between, so an optimistic edit to the tree (child archive) is not
+   * clobbered by a snapshot taken before the server had it — and then only if
+   * it could have changed. That second condition is what makes
+   * cards-expanded-by-default affordable: the refresh fires every 15 seconds
+   * while any session is active, and refetching every tree in the sidebar
+   * each time would be one request per card per tick. A refresh refetches:
+   *
+   * - an idle tree when its signature moved: one of its LOADED members joined
+   *   or left, or changed `updated_at`/metadata (title, status, read mark,
+   *   archive flag), or a live session started or stopped on one. The list
+   *   carries the members of an on-screen group (`includeLineage`) — except
+   *   those its filters leave out, triggered children above all, since the
+   *   append re-applies `excludeTriggered`. Those never reach the signature;
+   *   a change on one is caught by the rule below while it is working, and
+   *   otherwise when it moves its parent (a spawn or a result written back
+   *   updates the parent, which is loaded).
+   * - a tree whose snapshot shows live work the list cannot see (a node the
+   *   server reports ongoing or waiting — a native sub-agent at work among
+   *   them, which is never in the list) every time, as every expanded tree
+   *   used to be.
+   *
+   * At most {@link TREE_FETCH_CONCURRENCY} tree requests are in flight; the
+   * rest queue and start top of the list first, so a long list (a bookmarked
+   * or filtered view loads every match) does not stall other requests.
+   */
+  const wanted: { rootKey: string; chatId: string; sig: string; live: boolean }[] = [];
+  for (const section of sections ?? [{ key: null, items: rows }]) {
+    if (section.key !== null && !sectionExpansion.isExpanded(section.key)) continue;
+    for (const row of section.items) {
+      if (!row.isGroup || cardCollapse.isCollapsed(row.rootKey)) continue;
+      const tree = trees[row.rootKey];
+      const sig = [...row.members, ...row.foldedAsides]
+        .map((c) => `${c.id}\u0001${c.updated_at}\u0001${c.metadata ?? ""}\u0001${sessionStatusFor(c.id)?.active ? 1 : 0}`)
+        .sort()
+        .join("\u0002");
+      wanted.push({ rootKey: row.rootKey, chatId: row.chat.id, sig, live: !!tree && treeShowsLiveWork(tree.tree) });
     }
+  }
+  // Which groups are wanted, not their signatures: a moved signature is acted
+  // on at the next refresh, not the moment it moves.
+  const wantedKey = wanted.map((w) => `${w.rootKey}\u0003${w.chatId}`).join("\u0004");
+  const wantedRef = useRef(wanted);
+  /** The signature of the tree in hand, in flight or queued, per group. */
+  const fetchedSig = useRef(new Map<string, string>());
+  /**
+   * Groups with a tree in hand, kept in step with `trees` synchronously (a
+   * ref of the state would lag a commit behind a response landing).
+   */
+  const inHand = useRef(new Set<string>());
+  /** Per-group request counter, so only the latest response for a group lands. */
+  const fetchSeq = useRef(new Map<string, number>());
+  /** Fetches waiting for a slot, by group; started in list order. */
+  const queue = useRef(new Map<string, { chatId: string; order: number }>());
+  /** The request in flight per group, so a fold, a newer request or an unmount can abort it. */
+  const controllers = useRef(new Map<string, AbortController>());
+  const active = useRef(0);
+  /** The refresh the fetch effect last ran for — tells a refresh pass from any other. */
+  const lastPassToken = useRef(refreshToken);
+  const mounted = useRef(true);
+  // Declared before the fetch effect so the ref is current when it runs.
+  useEffect(() => {
+    wantedRef.current = wanted;
+  });
+  useEffect(() => {
+    mounted.current = true;
+    const fetched = fetchedSig.current;
+    const held = inHand.current;
+    const waiting = queue.current;
+    const inFlight = controllers.current;
+    const seqs = fetchSeq.current;
     return () => {
-      cancelled = true;
-    };
-  }, [refreshToken]);
-
-  const toggleExpand = useCallback(
-    async (rootKey: string, representativeChatId: string) => {
-      setExpanded((prev) => {
-        const next = new Set(prev);
-        if (next.has(rootKey)) next.delete(rootKey);
-        else next.add(rootKey);
-        return next;
-      });
-      if (expanded.has(rootKey) || trees[rootKey]) return;
-      setLoading((prev) => new Set(prev).add(rootKey));
-      try {
-        // Any member id resolves to the same tree — the server walks to the root.
-        const tree = await getChatTree(representativeChatId);
-        setTrees((prev) => ({ ...prev, [rootKey]: tree }));
-      } catch {
-        // Chat may have no stored record — collapse back silently.
-        setExpanded((prev) => {
-          const next = new Set(prev);
-          next.delete(rootKey);
-          return next;
-        });
-      } finally {
-        setLoading((prev) => {
-          const next = new Set(prev);
-          next.delete(rootKey);
-          return next;
-        });
+      mounted.current = false;
+      // Abort what is in flight and forget what was never answered, so a
+      // remount (StrictMode's included) fetches it again instead of waiting
+      // on a request that is gone.
+      //
+      // StrictMode remounts the SAME instance, so these refs survive: bump
+      // each aborted request's sequence too, or its rejection — landing after
+      // the remount, before the fresh request (still queued behind it for a
+      // slot) has taken a new sequence — would pass as current and mark the
+      // card failed. The orphan still releases its slot once, in its own
+      // `finally`, which then starts the queued replacement.
+      for (const [rootKey, controller] of inFlight) {
+        controller.abort();
+        seqs.set(rootKey, (seqs.get(rootKey) ?? 0) + 1);
+        if (!held.has(rootKey)) fetched.delete(rootKey);
       }
+      inFlight.clear();
+      for (const rootKey of waiting.keys()) if (!held.has(rootKey)) fetched.delete(rootKey);
+      waiting.clear();
+    };
+  }, []);
+
+  const settle = useCallback((set: React.Dispatch<React.SetStateAction<ReadonlySet<string>>>, rootKey: string, on: boolean) => {
+    set((prev) => {
+      if (prev.has(rootKey) === on) return prev;
+      const next = new Set(prev);
+      if (on) next.add(rootKey);
+      else next.delete(rootKey);
+      return next;
+    });
+  }, []);
+
+  /** Start queued fetches, top of the list first, while slots are free. */
+  const pump = useCallback(() => {
+    const run = () => {
+      while (active.current < TREE_FETCH_CONCURRENCY && queue.current.size > 0) {
+        let next: [string, { chatId: string; order: number }] | undefined;
+        for (const entry of queue.current) if (!next || entry[1].order < next[1].order) next = entry;
+        const [rootKey, { chatId }] = next!;
+        queue.current.delete(rootKey);
+        const seq = (fetchSeq.current.get(rootKey) ?? 0) + 1;
+        fetchSeq.current.set(rootKey, seq);
+        active.current++;
+        const current = () => mounted.current && fetchSeq.current.get(rootKey) === seq;
+        // A newer request for the group supersedes this one's predecessor.
+        controllers.current.get(rootKey)?.abort();
+        const controller = new AbortController();
+        controllers.current.set(rootKey, controller);
+        // Our own timer rather than `AbortSignal.timeout`: it releases the
+        // slot even if the request ignores the signal, and fake timers drive it.
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const timedOut = new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            reject(new Error("Timed out loading the chat tree"));
+            controller.abort();
+          }, TREE_FETCH_TIMEOUT_MS);
+        });
+        // Any member id resolves to the same tree — the server walks to the root.
+        Promise.race([getChatTree(chatId, undefined, controller.signal), timedOut])
+          .then((tree) => {
+            if (!current() || !fetchedSig.current.has(rootKey)) return;
+            inHand.current.add(rootKey);
+            setTrees((prev) => ({ ...prev, [rootKey]: tree }));
+            settle(setFailed, rootKey, false);
+          })
+          .catch(() => {
+            // The chat may have no stored record, or the request failed. Keep any
+            // tree already shown — checked NOW, not when the fetch started: an
+            // earlier fetch may have been superseded before it landed. With none,
+            // the card renders folded (without touching the stored fold) and a
+            // click retries. Not retried on its own until the group changes, so a
+            // chat with no record is not re-requested on every poll.
+            if (!current() || !fetchedSig.current.has(rootKey) || inHand.current.has(rootKey)) return;
+            settle(setFailed, rootKey, true);
+          })
+          .finally(() => {
+            clearTimeout(timer);
+            if (controllers.current.get(rootKey) === controller) controllers.current.delete(rootKey);
+            active.current--;
+            if (mounted.current && fetchSeq.current.get(rootKey) === seq) settle(setLoading, rootKey, false);
+            if (mounted.current) run();
+          });
+      }
+    };
+    run();
+  }, [settle]);
+
+  const fetchTree = useCallback(
+    (rootKey: string, chatId: string, sig: string, order: number) => {
+      fetchedSig.current.set(rootKey, sig);
+      // No spinner over a tree already on screen — it stays put and swaps content.
+      if (!inHand.current.has(rootKey)) settle(setLoading, rootKey, true);
+      queue.current.set(rootKey, { chatId, order });
+      pump();
     },
-    [expanded, trees],
+    [settle, pump],
   );
 
+  // Fetch what is wanted and missing, and at a refresh what is stale; forget
+  // what is no longer wanted (folded, under a folded section, or out of the
+  // loaded window) so showing it again refetches instead of flashing a
+  // snapshot from minutes ago.
+  //
+  // Only a refresh pass refetches a tree in hand. This effect also runs when
+  // the set of wanted groups changes (another card or section folded, more
+  // chats loaded), and a signature that moved by then may be an optimistic
+  // edit the server has not answered yet.
+  useEffect(() => {
+    const isRefresh = refreshToken !== lastPassToken.current;
+    lastPassToken.current = refreshToken;
+    const want = new Map(wantedRef.current.map((w, order) => [w.rootKey, { ...w, order }]));
+    const gone = [...fetchedSig.current.keys()].filter((rootKey) => !want.has(rootKey));
+    if (gone.length > 0) {
+      for (const rootKey of gone) {
+        // `fetchSeq` is kept: it must only grow, or a response still in
+        // flight from before the fold could pass for a later request's.
+        fetchedSig.current.delete(rootKey);
+        inHand.current.delete(rootKey);
+        queue.current.delete(rootKey);
+        controllers.current.get(rootKey)?.abort();
+        controllers.current.delete(rootKey);
+      }
+      setTrees((prev) => {
+        if (!gone.some((rootKey) => rootKey in prev)) return prev;
+        const next = { ...prev };
+        for (const rootKey of gone) delete next[rootKey];
+        return next;
+      });
+      const drop = (prev: ReadonlySet<string>) => (gone.some((k) => prev.has(k)) ? new Set([...prev].filter((k) => !gone.includes(k))) : prev);
+      setFailed(drop);
+      setLoading(drop);
+    }
+    for (const { rootKey, chatId, sig, live, order } of want.values()) {
+      // A fetch still waiting for a slot takes the group's current place: the
+      // list may have reordered since it queued.
+      const queued = queue.current.get(rootKey);
+      // A click's retry (order -1) keeps its place at the front.
+      if (queued && queued.order !== -1) queued.order = order;
+      const held = fetchedSig.current.get(rootKey);
+      if (held !== undefined && !(isRefresh && (held !== sig || live))) continue;
+      fetchTree(rootKey, chatId, sig, order);
+    }
+  }, [wantedKey, refreshToken, fetchTree]);
+
+  const toggleExpand = useCallback(
+    (rootKey: string, representativeChatId: string, shownExpanded: boolean) => {
+      if (!cardCollapse.isCollapsed(rootKey) && !shownExpanded) {
+        // Folded only because its fetch failed: retry, leaving the store alone.
+        const w = wantedRef.current.find((x) => x.rootKey === rootKey);
+        setFailed((prev) => {
+          const next = new Set(prev);
+          next.delete(rootKey);
+          return next;
+        });
+        fetchTree(rootKey, representativeChatId, w?.sig ?? "", -1);
+        return;
+      }
+      cardCollapse.toggle(rootKey);
+    },
+    [cardCollapse, fetchTree],
+  );
   const handleNavigate = useCallback((chatId: string) => navigate(`/chat/${chatId}`), [navigate]);
   const isRunning = (chatId: string) => !!sessionStatusFor(chatId)?.active;
 
@@ -1198,16 +1512,6 @@ export default function ChatTreeList({
         selectionActive,
       }
     : undefined;
-
-  // Each group is filed as one row — see `sectionRows`. Cheap enough to redo
-  // per render; `rows` above is the memoized part.
-  const sections = sectionRows(rows);
-
-  /** Collapse state for those headers, persisted via localStorage. */
-  const sectionExpansion = useChatSectionExpansion();
-  /** Collapse state for the nodes inside expanded trees, persisted likewise. */
-  const treeCollapse = useChatTreeCollapse();
-  const isMobile = useIsMobile();
 
   /**
    * Running CHATS in a section, every LOADED member of every group — not rows,
@@ -1273,7 +1577,7 @@ export default function ChatTreeList({
       );
     }
 
-    const isExpanded = expanded.has(rootKey);
+    const isExpanded = !cardCollapse.isCollapsed(rootKey) && !failed.has(rootKey);
     /** Every chat the list holds for this group: what its working signals read. */
     const groupLive = [...members, ...foldedAsides];
     const isLoading = loading.has(rootKey);
@@ -1307,7 +1611,7 @@ export default function ChatTreeList({
       <div key={rootKey} style={{ background: isExpanded ? "var(--chatlist-tree-group-bg)" : undefined }}>
         <div style={{ display: "flex", alignItems: "stretch", minWidth: 0 }}>
           <button
-            onClick={() => toggleExpand(rootKey, chat.id)}
+            onClick={() => toggleExpand(rootKey, chat.id, isExpanded)}
             title={isExpanded ? "Collapse chat tree" : "Expand chat tree"}
             aria-expanded={isExpanded}
             aria-label={`${isExpanded ? "Collapse" : "Expand"} "${chatMeta(chat).title || chatMeta(chat).preview || "This chat"}"`}
@@ -1315,7 +1619,7 @@ export default function ChatTreeList({
               display: "flex",
               alignItems: "center",
               gap: 2,
-              padding: "0 2px 0 8px",
+              padding: `0 2px 0 ${TREE_CHEVRON_LEFT}px`,
               background: "none",
               border: "none",
               borderBottom: "1px solid var(--chatlist-item-border)",

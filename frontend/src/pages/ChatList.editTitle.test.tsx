@@ -292,7 +292,7 @@ describe("ChatList edit title", () => {
     await act(async () => {
       refresh();
     });
-    await screen.findByTitle("Expand chat tree");
+    await screen.findByTitle(/^(Expand|Collapse) chat tree$/);
 
     // Still open, still locked, still holding what was typed.
     expect(screen.getByText("Edit Title")).toBeTruthy();

@@ -99,7 +99,8 @@ it("shows a matching aside while a search is up, instead of folding it into its 
   fireEvent.keyDown(search, { key: "Enter" });
   // Both matched. Unfolded, the aside is a member of its parent's group, as a
   // matching fork would be — and the group's tree shows it.
-  fireEvent.click(await screen.findByTitle("Expand chat tree"));
+  // Tree cards start expanded: the tree fetches on its own.
+  await screen.findByTitle("Collapse chat tree");
   const node = await screen.findByText("chat aside");
   expect(node.closest('[data-testid="chat-tree-node"]')?.getAttribute("data-chat-id")).toBe("aside");
   expect(screen.queryByText("chat other")).toBeNull();
