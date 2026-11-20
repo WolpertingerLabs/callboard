@@ -187,6 +187,7 @@ The daemon must be reachable from the service. Use `drawlatch start --tunnel` (n
 - **GitHub** needs `GITHUB_TOKEN` (with permission to manage hooks), `GITHUB_WEBHOOK_URL`, and a `repoFilter` (repo hook) or `orgFilter` (org hook) param. The registered hook subscribes to `push`, `pull_request`, `issues`, `issue_comment`, `create`, `delete`, `release`, `workflow_run`, and `check_run`. The listener's event filter also offers `star`, `fork`, and `deployment`, but those never arrive through an auto-registered hook. Without a filter, register the webhook yourself: point it at `https://<host>/webhooks/github`, use your `GITHUB_WEBHOOK_SECRET`, and choose content type `application/json`.
 - **Trello** needs a `boardId` param and `TRELLO_CALLBACK_URL` set to `https://<host>/webhooks/trello`. Trello signs with the API secret from the [Power-Up admin page](https://trello.com/power-ups/admin).
 - **Stripe** is manual: add `https://<host>/webhooks/stripe` under Dashboard → Developers → Webhooks.
+- **URL checks.** Each list, register, and unregister URL is checked like a [poll URL](#polling) after listener params (`repoFilter`, `boardId`) and the webhook ID from the service's list response are substituted: no control characters or `.`/`..` segments, and the parsed URL must match the connection's `allowedEndpoints`. A refused URL at start puts the listener in `error` with nothing sent (the usual cause is a listener param); a refused unregister on shutdown is logged and skipped. Other lifecycle failures still leave the listener running unregistered, as before.
 
 ## Polling
 
@@ -195,8 +196,10 @@ Each cycle makes the configured request with the connection's headers, reads the
 - **First poll:** it runs at start and emits every item in the response.
 - **Changes to known items:** after that, only new IDs are emitted. A later edit to an item already seen (a Notion page, a Linear issue) isn't re-emitted until the listener restarts.
 - **Dedup memory:** up to 10,000 IDs are remembered, and the oldest half is pruned when that fills. Items without the dedup field are always emitted.
+- **URL checks:** listener params (which an agent can set with `set_listener_params`) are substituted into the poll URL as written. The result must contain no control characters and no `.` or `..` path segment, and once parsed must match the connection's `allowedEndpoints`; the parsed URL is what is polled. Otherwise the listener goes to `error` without sending anything, and the error says to fix the listener params.
 - **Redirects:** followed only on the poll URL's own origin (same scheme, host, and port), never from `https` to `http`, and at most 5 hops. A redirect anywhere else isn't followed, so the connection's headers never reach another host. It counts as an error, reported as `redirect not followed` with its `Location`. Webhook auto-registration requests follow the same rule.
 - **Errors:** an error sets the state to `reconnecting`. After 10 consecutive errors (non-2xx, or no array at `responsePath`) the listener stops in `error`. A success resets the count.
+- **OAuth2 connections:** on a connection with an [`oauth2`](README.md#oauth2-token-minting) block, each poll gets a managed token from the same token manager (and cache) as `secure_request`, minted for the caller that owns the listener. It replaces any `Authorization` in the poll config's `headers`. A `401` mints a fresh token and polls again once; a second `401` counts as one ordinary error. A terminal token failure (`invalid_grant`, refused scopes, and the other codes listed in the README) stops the listener in `error` at once rather than retrying ten times. Fix the credential, then restart the listener. The listener's own secrets don't include the OAuth2 credentials, so `${VAR}` in a poll `url`, `body`, or `headers` can't reference them, and the token is scrubbed from buffered events and error messages like any withheld secret. A `401` on a token under 30 s old doesn't re-mint and counts as an ordinary error. Only poll listeners get managed tokens: an `oauth2` connection with any other listener type is refused when it loads. No built-in template combines `oauth2` with a listener yet.
 
 ## Template reference
 
@@ -221,7 +224,7 @@ These fields go in a connection template's `ingestor` block, or in a custom conn
 | | `responsePath` | Dot path to the item array. Omit if the response is an array. |
 | | `deduplicateBy` | Item field (dot path) for dedup. Omit to emit every item each cycle. |
 | | `eventType` | Default `poll`. |
-| | `headers` | Extra headers; `${VAR}` placeholders resolve from secrets. These override the connection's headers with the same name. |
+| | `headers` | Extra headers; `${VAR}` placeholders resolve from secrets. These override the connection's headers with the same name, except `Authorization` on an `oauth2` connection, which is always the managed token. |
 | | `etag` | Send `If-None-Match`; a `304` counts as an empty success. |
 
 Listener fields shown in the dashboard come from the template's `listenerConfig`, and `testIngestor` defines what `test_ingestor` does.

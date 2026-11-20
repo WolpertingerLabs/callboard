@@ -2,8 +2,9 @@
  * Unit tests for the IngestorManager.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { IngestorManager, makeKey, parseKey, DEFAULT_INSTANCE_ID } from './manager.js';
+import { resetSharedTokenManager } from '../oauth/shared-token-manager.js';
 import type { RemoteServerConfig } from '../../shared/config.js';
 import type { IngestorConfig } from './types.js';
 import type { IngestorOverrides, ListenerConfigField } from '../../shared/config.js';
@@ -1107,5 +1108,172 @@ describe('IngestorManager — header-only secrets', () => {
     });
 
     await manager.stopOne('test-caller', 'header-hook');
+  });
+});
+
+describe('IngestorManager — oauth2 poll routes', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    resetSharedTokenManager();
+  });
+
+  it('gives the poller the route and caller, but not the credentials', async () => {
+    const fetchMock = vi.fn((url: string) => {
+      const body = url.includes('/token')
+        ? { access_token: 'managed-poll-token', expires_in: 3600, scope: 'items.read' }
+        : [];
+      return Promise.resolve(
+        new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } }),
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const config: RemoteServerConfig = {
+      host: '127.0.0.1',
+      port: 9999,
+      connectors: [
+        {
+          alias: 'oauth-poll',
+          secrets: { CID: 'client-id-v', CSECRET: 'client-secret-v', RT: 'refresh-v' },
+          allowedEndpoints: ['https://api.example.com/**'],
+          oauth2: {
+            tokenUrl: 'https://auth.example.com/token',
+            grant: 'refresh_token',
+            clientAuth: 'body',
+            secretRefs: { clientId: 'CID', clientSecret: 'CSECRET', refreshToken: 'RT' },
+            scopes: ['items.read'],
+          },
+          ingestor: {
+            type: 'poll',
+            poll: { url: 'https://api.example.com/items', intervalMs: 60_000 },
+          },
+        },
+      ],
+      callers: { alice: { connections: ['oauth-poll'] } },
+      rateLimitPerMinute: 60,
+    };
+    const manager = new IngestorManager(config);
+    const result = await manager.startOne('alice', 'oauth-poll');
+    expect(result.success).toBe(true);
+
+    const [ingestor] = [
+      ...(
+        manager as unknown as {
+          ingestors: Map<string, { secrets: unknown; oauth2?: { caller: string } }>;
+        }
+      ).ingestors.values(),
+    ];
+    // Signer-only: the listener's own secret map has none of them.
+    expect(ingestor.secrets).toEqual({});
+    expect(ingestor.oauth2?.caller).toBe('alice');
+
+    const apiCall = fetchMock.mock.calls.find(([u]) => u.includes('/items'));
+    const headers = (apiCall?.[1] as RequestInit | undefined)?.headers as Record<string, string>;
+    expect(headers.Authorization).toBe('Bearer managed-poll-token');
+
+    await manager.stopOne('alice', 'oauth-poll');
+  });
+});
+
+describe('IngestorManager — poll URLs built from listener params', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('refuses a param that walks out of the allowlist', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(new Response('[]')));
+    vi.stubGlobal('fetch', fetchMock);
+    const config: RemoteServerConfig = {
+      host: '127.0.0.1',
+      port: 9999,
+      connectors: [
+        {
+          alias: 'cal',
+          headers: { Authorization: 'Bearer ${TOKEN}' },
+          secrets: { TOKEN: 'static-token-value' },
+          allowedEndpoints: ['https://www.example.com/calendar/v3/**'],
+          ingestor: {
+            type: 'poll',
+            poll: {
+              url: 'https://www.example.com/calendar/v3/calendars/${CAL_ID}/events',
+              intervalMs: 60_000,
+            },
+          },
+          listenerConfig: {
+            name: 'Calendar',
+            fields: [{ key: 'calId', label: 'Calendar', type: 'text', overrideKey: 'CAL_ID' }],
+          },
+        },
+      ],
+      callers: {
+        alice: {
+          connections: ['cal'],
+          ingestorOverrides: { cal: { params: { calId: '../../drive/v3/files#' } } },
+        },
+      },
+      rateLimitPerMinute: 60,
+    };
+    const manager = new IngestorManager(config);
+    await manager.startOne('alice', 'cal');
+    const [status] = manager.getStatuses('alice');
+    expect(status.state).toBe('error');
+    expect(fetchMock).not.toHaveBeenCalled();
+    await manager.stopAll();
+  });
+});
+
+describe('IngestorManager — webhook lifecycle URLs built from listener params', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function config(repoFilter: string[]): RemoteServerConfig {
+    return {
+      host: '127.0.0.1',
+      port: 9999,
+      callers: {
+        alice: {
+          connections: ['github'],
+          env: {
+            GITHUB_TOKEN: 'gh-token-value',
+            GITHUB_WEBHOOK_SECRET: 'gh-webhook-secret',
+            GITHUB_WEBHOOK_URL: 'https://tunnel.example/webhooks/github',
+          },
+          ingestorOverrides: { github: { params: { repoFilter } } },
+        },
+      },
+      rateLimitPerMinute: 60,
+    };
+  }
+
+  it('puts the github listener in error, sending nothing, for a repoFilter that escapes', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(new Response('[]')));
+    vi.stubGlobal('fetch', fetchMock);
+    const manager = new IngestorManager(config(['../../user']));
+    await manager.startOne('alice', 'github');
+    const [status] = manager.getStatuses('alice');
+    expect(status.state).toBe('error');
+    expect(status.error).toMatch(/Webhook lifecycle request refused/);
+    expect(fetchMock).not.toHaveBeenCalled();
+    await manager.stopAll();
+  });
+
+  it('still registers for a normal owner/repo filter', async () => {
+    const fetchMock = vi.fn((url: string, init?: RequestInit) =>
+      Promise.resolve(
+        new Response(init?.method === 'POST' ? JSON.stringify({ id: 7 }) : '[]', {
+          headers: { 'content-type': 'application/json' },
+        }),
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const manager = new IngestorManager(config(['octo/hello-world']));
+    await manager.startOne('alice', 'github');
+    const [status] = manager.getStatuses('alice');
+    expect(status.state).toBe('connected');
+    expect(fetchMock.mock.calls.map((c) => c[0])).toContain(
+      'https://api.github.com/repos/octo/hello-world/hooks',
+    );
+    await manager.stopAll();
   });
 });

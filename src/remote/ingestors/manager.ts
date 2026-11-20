@@ -231,7 +231,9 @@ export class IngestorManager {
     if (effectiveConfig.type === 'poll') {
       // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-explicit-any -- private property consumed by poll factory
       (effectiveConfig as any)._resolvedRouteHeaders = resolvedRoute.headers;
+      IngestorManager.attachOAuth2(effectiveConfig, resolvedRoute, parseKey(key).caller);
     }
+    IngestorManager.attachWebhookAllowlist(effectiveConfig, resolvedRoute);
 
     const ingestor = createIngestor(
       connectionAlias,
@@ -267,6 +269,47 @@ export class IngestorManager {
    * Subscribes to 'event' emissions from matching ingestors and dispatches
    * to Claude Code remote triggers.
    */
+  /**
+   * For a poll ingestor, attach the route's allowlist; on an oauth2 route,
+   * also attach the resolved route (whose
+   * full `secrets` carry the signer-only oauth2 credentials the listener's own
+   * secret map leaves out) and the caller, so the poller can mint tokens
+   * through the shared TokenManager under the same identity as http_request.
+   */
+  private static attachOAuth2(
+    effectiveConfig: IngestorConfig,
+    resolvedRoute: ResolvedRoute,
+    caller: string,
+  ): void {
+    // Every poll URL is checked against the connection's allowlist: listener
+    // params (agent-settable through set_listener_params) are substituted
+    // into it.
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-explicit-any -- private property consumed by poll factory
+    (effectiveConfig as any)._allowedEndpoints = resolvedRoute.allowedEndpoints;
+    if (!resolvedRoute.oauth2) return;
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-explicit-any -- private property consumed by poll factory
+    (effectiveConfig as any)._oauth2Route = resolvedRoute;
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-explicit-any -- ditto
+    (effectiveConfig as any)._caller = caller;
+  }
+
+  /**
+   * Give a webhook listener's lifecycle requests (list / register /
+   * unregister) the connection's allowlist. Their URLs carry agent-set
+   * listener params (GitHub's repoFilter) and upstream-supplied webhook IDs.
+   * A copy of the webhook block, so a shared template object isn't mutated.
+   */
+  private static attachWebhookAllowlist(
+    effectiveConfig: IngestorConfig,
+    resolvedRoute: ResolvedRoute,
+  ): void {
+    if (!effectiveConfig.webhook) return;
+    effectiveConfig.webhook = {
+      ...effectiveConfig.webhook,
+      _allowedEndpoints: resolvedRoute.allowedEndpoints,
+    } as typeof effectiveConfig.webhook;
+  }
+
   private initTriggerEngines(): void {
     const config = this.getConfig();
 
@@ -606,7 +649,9 @@ export class IngestorManager {
     if (effectiveConfig.type === 'poll') {
       // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-explicit-any
       (effectiveConfig as any)._resolvedRouteHeaders = resolvedRoute.headers;
+      IngestorManager.attachOAuth2(effectiveConfig, resolvedRoute, callerAlias);
     }
+    IngestorManager.attachWebhookAllowlist(effectiveConfig, resolvedRoute);
 
     const ingestor = createIngestor(
       connectionAlias,

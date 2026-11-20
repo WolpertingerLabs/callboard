@@ -26,12 +26,14 @@ import {
   resolvePlaceholders,
   scrubSecrets,
   scrubSecretsDeep,
+  compileSecretScrubber,
   signerOnlySecretNames,
   substitutableSecrets,
   templateSecrets,
   withheldSecretValues,
   DEFAULT_OUTBOUND_TIMEOUT_MS,
   MAX_OUTBOUND_TIMEOUT_MS,
+  OAUTH2_TOKEN_TIMEOUT_MS,
   type CallerConfig,
   type IngestorOverrides,
   type ResolvedRoute,
@@ -45,66 +47,24 @@ import {
   signProxyRequest,
 } from './aws-sigv4.js';
 import { ingestLogs } from './audit-log.js';
+import {
+  OAUTH2_ACCESS_TOKEN_PLACEHOLDER,
+  OAUTH2_RESERVED_HEADERS,
+  OAUTH2_RESERVED_QUERY_PARAMS,
+  isOAuth2Route,
+  oauth2Authorize,
+  type OAuth2AuthResult,
+  type OAuth2Route,
+} from './oauth/authenticate.js';
 import type { IngestorManager } from './ingestors/index.js';
 import { safeFetch } from './safe-fetch.js';
+import { assertNoControlChars, isEndpointAllowed, normalizeOutboundUrl } from './url-policy.js';
 import { waitForEvents } from './wait-for-events.js';
 
 // ── Endpoint matching ────────────────────────────────────────────────────────
 
-export function isEndpointAllowed(url: string, patterns: string[]): boolean {
-  if (patterns.length === 0) return true; // no restrictions if empty
-  return patterns.some((pattern) => {
-    // Support simple glob patterns: * matches anything within a segment, ** matches across segments
-    const regex = new RegExp(
-      '^' +
-        pattern
-          .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
-          .replace(/\*\*/g, '.__DOUBLE_STAR__.')
-          .replace(/\*/g, '[^/]*')
-          .replace(/\.__DOUBLE_STAR__\./g, '.*') +
-        '$',
-    );
-    return regex.test(url) && wildcardHostMatches(url, pattern);
-  });
-}
-
-/**
- * Re-check a pattern whose host contains a wildcard against the host the URL
- * actually parses to.
- *
- * In the string match, a `*` in the host also matches `?`, `#`, and `@`, so
- * `https://*.amazonaws.com/**` alone would accept
- * `https://evil.example?.amazonaws.com/`, which fetch() sends to evil.example.
- * Here a host wildcard only matches characters a parsed host can contain.
- * Patterns without a scheme or without a host wildcard pass through unchanged.
- */
-function wildcardHostMatches(url: string, pattern: string): boolean {
-  const m = /^([a-z][a-z0-9+.-]*):\/\/([^/]*)/i.exec(pattern);
-  if (!m?.[2].includes('*')) return true;
-
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return false;
-  }
-  const scheme = m[1].toLowerCase();
-  if (parsed.protocol !== `${scheme}:`) return false;
-
-  // `parsed.host` omits a default port, so drop one written into the pattern.
-  const defaultPort = scheme === 'https' ? ':443' : scheme === 'http' ? ':80' : null;
-  let authority = m[2].toLowerCase();
-  if (defaultPort && authority.endsWith(defaultPort)) {
-    authority = authority.slice(0, -defaultPort.length);
-  }
-
-  const hostRegex = new RegExp(
-    '^' +
-      authority.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*+/g, '[a-z0-9_.:[\\]-]*') +
-      '$',
-  );
-  return hostRegex.test(parsed.host);
-}
+// The URL policy lives in url-policy.ts (the poll ingestor shares it).
+export { isEndpointAllowed, normalizeOutboundUrl, pathHasDotSegment } from './url-policy.js';
 
 /**
  * Find the first route whose allowedEndpoints match the given URL.
@@ -252,8 +212,11 @@ function leaksSecret(err: Error, secrets: Record<string, string>): boolean {
 
 /** Secret names a route withholds from caller-supplied strings, split by why. */
 interface WithheldNames {
-  /** Consumed by drawlatch's own auth machinery (AWS SigV4 signing keys). */
+  /** Consumed by drawlatch's own auth machinery (AWS SigV4 signing keys,
+   *  OAuth2 client credentials and refresh token). */
   signerOnly: Set<string>;
+  /** Which auth mode owns `signerOnly`, for the error message. */
+  signerMode?: 'sigv4' | 'oauth2';
   /** Every other withheld secret: ones the route's headers inject, the webhook
    *  `signatureSecret`, the route's `withheldSecrets`, and any secret whose
    *  value contains one of those. */
@@ -278,9 +241,13 @@ function assertNoWithheldSecrets(
     const name = match[1];
     if (names.signerOnly.has(name)) {
       throw new Error(
-        `${where} references \${${name}}, a signing credential of this AWS SigV4 route. ` +
-          'Signing credentials are only used to sign requests and are never substituted ' +
-          'into URLs, headers, or bodies.',
+        names.signerMode === 'oauth2'
+          ? `${where} references \${${name}}, an OAuth2 credential of this route. ` +
+              'drawlatch uses it only for OAuth2 token minting and never substitutes it ' +
+              'into URLs, headers, or bodies; the minted access token is injected for you.'
+          : `${where} references \${${name}}, a signing credential of this AWS SigV4 route. ` +
+              'Signing credentials are only used to sign requests and are never substituted ' +
+              'into URLs, headers, or bodies.',
       );
     }
     if (names.withheld.has(name)) {
@@ -340,6 +307,8 @@ export interface ProxyRequestResult {
   body: unknown;
   /** Final URL, present only when redirects were followed. */
   url?: string;
+  /** Extra guidance from drawlatch, e.g. which OAuth2 scopes a 403'd token carries. */
+  hint?: string;
 }
 
 /**
@@ -397,6 +366,9 @@ export interface ProxyRequestOptions {
    *  sends its app token in place of the bot token. The response is still
    *  scrubbed of withheld values. */
   templateAuthored?: boolean;
+  /** Caller the request is made for. Required on an oauth2 route: it is part
+   *  of the token identity. */
+  caller?: string;
 }
 
 export async function executeProxyRequest(
@@ -405,11 +377,16 @@ export async function executeProxyRequest(
   outboundBudgetMs?: number,
   options: ProxyRequestOptions = {},
 ): Promise<ProxyRequestResult> {
+  const { caller } = options;
   const { method, url, headers = {}, body, files, bodyFieldName, timeoutMs } = input;
   const templateAuthored = options.templateAuthored === true;
   /** What this request may substitute on a given route. */
   const usable = (route: ResolvedRoute) =>
     templateAuthored ? templateSecrets(route) : substitutableSecrets(route);
+
+  // Step 0: refuse control characters before anything else looks at the URL
+  // (Step 6 checks the resolved form again).
+  assertNoControlChars(url, url);
 
   // Step 1: Find matching route — try raw URL first
   let matched: ResolvedRoute | null = matchRoute(url, routes);
@@ -440,10 +417,11 @@ export async function executeProxyRequest(
   // it would otherwise be resolved is rejected outright.
   const secrets = usable(matched);
   const signerOnly = signerOnlySecretNames(matched);
-  const noneWithheld: WithheldNames = { signerOnly, withheld: new Set() };
+  const signerMode = matched.oauth2 ? 'oauth2' : 'sigv4';
+  const noneWithheld: WithheldNames = { signerOnly, signerMode, withheld: new Set() };
   const withheld: WithheldNames = templateAuthored
     ? noneWithheld
-    : { signerOnly, withheld: new Set(Object.keys(withheldSecretValues(matched))) };
+    : { signerOnly, signerMode, withheld: new Set(Object.keys(withheldSecretValues(matched))) };
   for (const name of signerOnly) withheld.withheld.delete(name);
   const connection = matched.alias;
   assertNoWithheldSecrets(url, withheld, 'The request URL', connection);
@@ -493,6 +471,32 @@ export async function executeProxyRequest(
       if (SIGV4_RESERVED_QUERY_PARAMS.has(key.toLowerCase())) {
         throw new Error(
           `Query parameter "${key}" is not allowed on an AWS SigV4 route: drawlatch signs the request itself.`,
+        );
+      }
+    }
+  }
+
+  // Step 3c: On an oauth2 route drawlatch owns the credential. A caller-sent
+  // Authorization header or access_token parameter would replace or shadow
+  // the minted token with one of the caller's choosing.
+  if (matched.oauth2) {
+    for (const clientKey of Object.keys(resolvedHeaders)) {
+      if (OAUTH2_RESERVED_HEADERS.has(clientKey.toLowerCase())) {
+        throw new Error(
+          `Header conflict: "${clientKey}" is set by drawlatch on this OAuth2 route (it mints the access token itself). Remove it from the request.`,
+        );
+      }
+    }
+    let params: URLSearchParams | undefined;
+    try {
+      params = new URL(resolvedUrl).searchParams;
+    } catch {
+      // Unparseable URLs fail at fetch() with their own error.
+    }
+    for (const key of params?.keys() ?? []) {
+      if (OAUTH2_RESERVED_QUERY_PARAMS.has(key.toLowerCase())) {
+        throw new Error(
+          `Query parameter "${key}" is not allowed on an OAuth2 route: drawlatch supplies the access token itself.`,
         );
       }
     }
@@ -579,9 +583,32 @@ export async function executeProxyRequest(
     }
   }
 
-  // Step 6: Final endpoint check on fully resolved URL
-  if (!isEndpointAllowed(resolvedUrl, matched.allowedEndpoints)) {
-    throw new Error(`Endpoint not allowed after resolution: ${url}`);
+  // Step 6: Final endpoint check on the fully resolved URL, after parsing it
+  // the way fetch() will. From here on `resolvedUrl` is the normalized href:
+  // the string the allowlist accepted is exactly the string sent.
+  resolvedUrl = normalizeOutboundUrl(resolvedUrl, matched.allowedEndpoints, url);
+
+  // Step 6a: Overlapping connections. Normally the first match wins, but when
+  // an OAuth2 connection is among the matches, which token (and which
+  // scopes) a request carries would silently depend on list order. Refuse.
+  // Checked on the normalized href, so `https://WWW.host/…`, an explicit
+  // port, or a percent-encoded host can't dodge it. Best-effort: a path
+  // written differently (`/%63alendar/`) still matches only as written.
+  const overlapping = routes.filter(
+    (route) =>
+      route !== matched &&
+      route.allowedEndpoints.length > 0 &&
+      (isEndpointAllowed(url, route.allowedEndpoints) ||
+        isEndpointAllowed(resolvedUrl, route.allowedEndpoints)),
+  );
+  if (overlapping.length > 0 && [matched, ...overlapping].some((route) => route.oauth2)) {
+    const names = [matched, ...overlapping].map((route) => `"${route.alias ?? '(unnamed)'}"`);
+    throw new Error(
+      `Ambiguous endpoint: ${url} matches the allowlists of connections ${names.join(', ')}, ` +
+        'and at least one of them uses OAuth2, so which credential the request carries would ' +
+        'depend on their order. Ask the operator to narrow the allowlists or remove one of ' +
+        'the connections for this caller.',
+    );
   }
 
   // Step 6b: AWS SigV4. Last, so the signature covers the final URL, headers,
@@ -607,6 +634,41 @@ export async function executeProxyRequest(
   // would leave the upstream call running after the caller gave up.
   const connectionCeiling = resolveOutboundTimeout(timeoutMs, matched.requestTimeoutMs);
   const effectiveTimeout = applyOutboundBudget(connectionCeiling, outboundBudgetMs);
+  // One deadline for the whole call: token minting (and a 401 re-mint) spend
+  // the same budget as the API request itself.
+  const deadline = Date.now() + effectiveTimeout;
+  const remainingMs = () => Math.max(1, deadline - Date.now());
+
+  // Step 6c: OAuth2. After every check, so a rejected request never mints.
+  // The minted token is scrubbed from everything returned, like a withheld
+  // secret: `tokenScrub` holds every token this request has sent.
+  const oauth2Route: OAuth2Route | undefined = isOAuth2Route(matched) ? matched : undefined;
+  const tokenScrub: Record<string, string> = {};
+  let auth: OAuth2AuthResult | undefined;
+  /** Mint (or reuse) a token; after a 401, returns whether it is a new one. */
+  const mint = async (forceRefresh: boolean): Promise<boolean> => {
+    if (!oauth2Route) return false;
+    if (!caller) {
+      throw new Error(
+        `Connection "${oauth2Route.alias ?? '(unnamed)'}" uses OAuth2, which needs the caller's identity; this request path did not supply one.`,
+      );
+    }
+    const previous = auth?.accessToken;
+    if (previous !== undefined) {
+      tokenScrub[`${OAUTH2_ACCESS_TOKEN_PLACEHOLDER}_PREVIOUS`] = previous;
+    }
+    auth = await oauth2Authorize(oauth2Route, caller, {
+      timeoutMs: Math.min(OAUTH2_TOKEN_TIMEOUT_MS, remainingMs()),
+      forceRefresh,
+      ...(previous !== undefined && { rejectedToken: previous }),
+    });
+    Object.assign(tokenScrub, auth.scrub);
+    outboundHeaders = { ...outboundHeaders, Authorization: auth.authorization };
+    return auth.accessToken !== previous;
+  };
+  await mint(false);
+  /** Everything scrubbed from headers, URLs, and errors. */
+  const allSecrets = () => ({ ...matched.secrets, ...tokenScrub });
 
   try {
     // The signal is one wall-clock budget spanning connect, headers, *and*
@@ -620,22 +682,33 @@ export async function executeProxyRequest(
     // 307/308 resend of a body with substituted secrets). Anything else comes
     // back to the caller as the 3xx itself.
     const routeAllowlist = matched.allowedEndpoints;
-    const {
-      response: resp,
-      url: finalUrl,
-      redirects,
-    } = await safeFetch(resolvedUrl, {
-      method,
-      headers: outboundHeaders,
-      body: outboundBody,
-      signal: AbortSignal.timeout(effectiveTimeout),
-      isAllowed: (target) => isEndpointAllowed(target.href, routeAllowlist),
-      crossOriginHeaders: crossOriginSafeHeaders(outboundHeaders, matched.secrets),
-      bodyCarriesSecrets,
-      // A signed request is never replayed, even same-origin: the signature
-      // covers the original path, so a re-sent copy would need re-signing.
-      ...(matched.awsSigV4 && { maxRedirects: 0 }),
-    });
+    const send = () =>
+      safeFetch(resolvedUrl, {
+        method,
+        headers: outboundHeaders,
+        body: outboundBody,
+        // Non-oauth2 routes arm exactly the effective timeout; nothing else
+        // has spent any of it.
+        signal: AbortSignal.timeout(oauth2Route ? remainingMs() : effectiveTimeout),
+        isAllowed: (target) => isEndpointAllowed(target.href, routeAllowlist),
+        crossOriginHeaders: crossOriginSafeHeaders(outboundHeaders, allSecrets()),
+        bodyCarriesSecrets,
+        // A signed request is never replayed, even same-origin: the signature
+        // covers the original path, so a re-sent copy would need re-signing.
+        ...(matched.awsSigV4 && { maxRedirects: 0 }),
+      });
+    let { response: resp, url: finalUrl, redirects } = await send();
+
+    // A 401 on an oauth2 route usually means the cached token was revoked or
+    // expired early: mint a fresh one and resend, exactly once. The body is a
+    // string or FormData (SigV4, the only Uint8Array producer, can't combine
+    // with oauth2), so it can be sent again.
+    // The token manager skips the re-mint when the token is very new (a 401
+    // an agent provoked on purpose), and then there is nothing to resend.
+    if (oauth2Route && resp.status === 401 && deadline - Date.now() > 0 && (await mint(true))) {
+      await resp.body?.cancel().catch(() => undefined);
+      ({ response: resp, url: finalUrl, redirects } = await send());
+    }
 
     // `application/json` and structured-syntax `+json` types
     // (`application/problem+json`, `application/vnd.api+json`) are parsed,
@@ -662,24 +735,34 @@ export async function executeProxyRequest(
     // write the caller reads back), and many are plain config values
     // (REDDIT_SUBREDDIT, TWITCH_USER_ID) that legitimately appear in
     // responses; scrubbing those would corrupt data and protect nothing.
-    const withheldValues = withheldSecretValues(matched);
+    // The minted OAuth2 token counts as withheld too.
+    const withheldValues = { ...withheldSecretValues(matched), ...tokenScrub };
     const responseBody =
       Object.keys(withheldValues).length > 0 ? scrubSecretsDeep(rawBody, withheldValues) : rawBody;
+    // Every route secret plus the minted token(s), compiled once for all the
+    // strings below.
+    const scrubAll = compileSecretScrubber(allSecrets());
 
     return {
       status: resp.status,
       // A reason phrase is upstream-controlled text like any other.
-      statusText: scrubSecrets(resp.statusText, matched.secrets),
+      statusText: scrubAll(resp.statusText),
       // A refused redirect's `Location` can carry a substituted secret back
       // (`?key=sk-…`), and so can any header an upstream echoes. The body is
       // scrubbed above, of withheld secrets only.
-      headers: Object.fromEntries(
-        [...resp.headers.entries()].map(([k, v]) => [k, scrubSecrets(v, matched.secrets)]),
-      ),
+      headers: Object.fromEntries([...resp.headers.entries()].map(([k, v]) => [k, scrubAll(v)])),
       body: responseBody,
       // A same-origin `Location` can echo the original query back, and that
       // can carry substituted secrets.
-      ...(redirects > 0 && { url: scrubSecrets(finalUrl, matched.secrets) }),
+      ...(redirects > 0 && { url: scrubAll(finalUrl) }),
+      // A 403 is not retried: a fresh token has the same scopes.
+      ...(oauth2Route &&
+        resp.status === 403 && {
+          hint:
+            `This OAuth2 connection's token is limited to the scopes ` +
+            `[${oauth2Route.oauth2.effectiveScopes.join(', ') || 'none requested'}]. A 403 may ` +
+            "mean the request needs a scope this connection doesn't grant; ask the operator.",
+        }),
     };
   } catch (err) {
     // Every message below reports the caller's own URL, never `resolvedUrl` —
@@ -716,8 +799,9 @@ export async function executeProxyRequest(
     // message can sit above a leaking one. In-process hosts importing this
     // module log the error object directly, which prints `[cause]`. Rethrowing
     // as a fresh Error drops the chain, which is the point.
-    if (err instanceof Error && leaksSecret(err, matched.secrets)) {
-      throw new Error(scrubSecrets(err.message, matched.secrets));
+    const scrubMap = allSecrets();
+    if (err instanceof Error && leaksSecret(err, scrubMap)) {
+      throw new Error(scrubSecrets(err.message, scrubMap));
     }
     throw err;
   }
@@ -818,6 +902,7 @@ export const toolHandlers: Record<string, ToolHandler> = {
       input as unknown as ProxyRequestInput,
       routes,
       context.outboundBudgetMs,
+      { caller: context.callerAlias },
     );
   },
 
@@ -845,6 +930,14 @@ export const toolHandlers: Record<string, ToolHandler> = {
       const withheldNames = Object.keys(withheldSecretValues(route));
       if (withheldNames.length > 0) info.withheldSecretNames = withheldNames;
       if (route.awsSigV4) info.awsSigV4 = route.awsSigV4;
+      // Names only: never a token, expiry, or credential fingerprint.
+      if (route.oauth2) {
+        info.auth = {
+          type: 'oauth2',
+          grant: route.oauth2.grant,
+          scopes: route.oauth2.effectiveScopes,
+        };
+      }
 
       // Timeouts. The budget clamp is otherwise silent, so report what a call
       // would actually get *right now* rather than only the connection's
@@ -938,6 +1031,44 @@ export const toolHandlers: Record<string, ToolHandler> = {
       return { success: false, connection, error: `Unknown connection: ${connection}` };
     }
 
+    // OAuth2: always mint first, so a credential problem is reported as one
+    // rather than as a failed API call. Scope names only.
+    let oauth2Report: Record<string, unknown> | undefined;
+    // Minting spends part of the caller's budget; the test request gets the rest.
+    const startedAt = Date.now();
+    const remainingBudget = (): number | undefined =>
+      context.outboundBudgetMs === undefined
+        ? undefined
+        : Math.max(1, context.outboundBudgetMs - (Date.now() - startedAt));
+    if (isOAuth2Route(route)) {
+      try {
+        const auth = await oauth2Authorize(route, context.callerAlias, {
+          timeoutMs: applyOutboundBudget(OAUTH2_TOKEN_TIMEOUT_MS, context.outboundBudgetMs),
+        });
+        oauth2Report = {
+          tokenMinted: true,
+          requestedScopes: route.oauth2.effectiveScopes,
+          ...(auth.grantedScopes && { grantedScopes: auth.grantedScopes }),
+          ...(auth.missingScopes && { missingScopes: auth.missingScopes }),
+        };
+      } catch (err) {
+        return {
+          success: false,
+          connection,
+          oauth2: { tokenMinted: false, requestedScopes: route.oauth2.effectiveScopes },
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+      if (!route.testConnection) {
+        return {
+          success: true,
+          connection,
+          oauth2: oauth2Report,
+          description: 'Minted an OAuth2 access token (this connection has no test request).',
+        };
+      }
+    }
+
     if (!route.testConnection) {
       return {
         success: false,
@@ -962,8 +1093,8 @@ export const toolHandlers: Record<string, ToolHandler> = {
         // The template's own request: its route only, and it may use withheld
         // secrets (see ProxyRequestOptions).
         [route],
-        context.outboundBudgetMs,
-        { templateAuthored: true },
+        remainingBudget(),
+        { templateAuthored: true, caller: context.callerAlias },
       );
 
       const isSuccess = expectedStatus.includes(result.status);
@@ -973,6 +1104,7 @@ export const toolHandlers: Record<string, ToolHandler> = {
         status: result.status,
         statusText: result.statusText,
         description: testConfig.description,
+        ...(oauth2Report && { oauth2: oauth2Report }),
         ...(isSuccess
           ? {}
           : {
@@ -984,6 +1116,7 @@ export const toolHandlers: Record<string, ToolHandler> = {
         success: false,
         connection,
         description: testConfig.description,
+        ...(oauth2Report && { oauth2: oauth2Report }),
         error: err instanceof Error ? err.message : String(err),
       };
     }
@@ -1085,7 +1218,7 @@ export const toolHandlers: Record<string, ToolHandler> = {
             },
             [route],
             context.outboundBudgetMs,
-            { templateAuthored: true },
+            { templateAuthored: true, caller: context.callerAlias },
           );
 
           const isSuccess = expectedStatus.includes(result.status);
@@ -1172,7 +1305,7 @@ export const toolHandlers: Record<string, ToolHandler> = {
         // secrets (see ProxyRequestOptions).
         [route],
         context.outboundBudgetMs,
-        { templateAuthored: true },
+        { templateAuthored: true, caller: context.callerAlias },
       );
 
       // Navigate to the response path to find the items array

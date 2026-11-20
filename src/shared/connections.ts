@@ -12,7 +12,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { AWS_SIGV4_REQUIRED_SECRETS, type Route, type ConnectionCategory } from './config.js';
+import { isEndpointAllowed } from '../remote/url-policy.js';
+import {
+  AWS_SIGV4_REQUIRED_SECRETS,
+  MAX_OAUTH2_REFRESH_SKEW_MS,
+  type ConnectionCategory,
+  type OAuth2Config,
+  type OAuth2Grant,
+  type Route,
+} from './config.js';
 
 /** Metadata about a built-in connection template — used by UIs to render
  *  connection cards, form fields, and badges without parsing raw JSON. */
@@ -33,7 +41,8 @@ export interface ConnectionTemplateInfo {
   category: ConnectionCategory;
   /** Secret names every request authenticates with — placeholders in route
    *  headers, plus AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY on an `awsSigV4`
-   *  route — so they must always be configured. */
+   *  route and the `secretRefs` of an `oauth2` route — so they must always be
+   *  configured. */
   requiredSecrets: string[];
   /** Secret names defined in the template but not required for auth.
    *  Used by ingestors, URL placeholders, body templates, AWS_SESSION_TOKEN, etc. */
@@ -53,6 +62,9 @@ export interface ConnectionTemplateInfo {
   supportsMultiInstance: boolean;
   /** Allowlisted URL patterns (glob). */
   allowedEndpoints: string[];
+  /** How the connection authenticates, when drawlatch mints the credential
+   *  itself. Names only: no secret values. */
+  auth?: { type: 'oauth2'; grant: OAuth2Grant; scopes: string[] };
 }
 
 /** Directory containing connection template JSON files. */
@@ -123,7 +135,214 @@ export function loadConnection(name: string): Route {
   }
 
   const raw = fs.readFileSync(filePath, 'utf-8');
-  return JSON.parse(raw) as Route;
+  const route = JSON.parse(raw) as Route;
+  if (route.oauth2 !== undefined) {
+    try {
+      validateOAuth2Route(route);
+    } catch (err) {
+      throw new Error(`Connection template "${name}": ${(err as Error).message}`);
+    }
+  }
+  return route;
+}
+
+// ── OAuth2 validation ─────────────────────────────────────────────────────
+
+const OAUTH2_FIELDS = new Set([
+  'tokenUrl',
+  'grant',
+  'clientAuth',
+  'secretRefs',
+  'scopes',
+  'verifyGrantedScopes',
+  'refreshSkewMs',
+]);
+const OAUTH2_SECRET_REF_FIELDS = new Set(['clientId', 'clientSecret', 'refreshToken']);
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+/**
+ * Validate an `oauth2` block on its own. Templates and custom connectors are
+ * hand-written JSON, so every field is checked at runtime, and unknown fields
+ * are rejected rather than ignored (a misspelt `scopes` must not silently
+ * mean "no scopes").
+ */
+export function validateOAuth2Config(oauth2: unknown): asserts oauth2 is OAuth2Config {
+  if (oauth2 === null || typeof oauth2 !== 'object' || Array.isArray(oauth2)) {
+    throw new Error('oauth2 must be an object');
+  }
+  const raw = oauth2 as Record<string, unknown>;
+  for (const key of Object.keys(raw)) {
+    if (!OAUTH2_FIELDS.has(key)) throw new Error(`oauth2: unknown field "${key}"`);
+  }
+
+  if (typeof raw.tokenUrl !== 'string' || !raw.tokenUrl) {
+    throw new Error('oauth2: tokenUrl is required');
+  }
+  let tokenUrl: URL;
+  try {
+    tokenUrl = new URL(raw.tokenUrl);
+  } catch {
+    throw new Error('oauth2: tokenUrl is not a valid URL');
+  }
+  const loopbackHttp = tokenUrl.protocol === 'http:' && LOOPBACK_HOSTS.has(tokenUrl.hostname);
+  if (tokenUrl.protocol !== 'https:' && !loopbackHttp) {
+    throw new Error('oauth2: tokenUrl must be https (http only on a loopback host)');
+  }
+  if (tokenUrl.username || tokenUrl.password) {
+    throw new Error('oauth2: tokenUrl may not contain credentials');
+  }
+
+  if (raw.grant !== 'refresh_token' && raw.grant !== 'client_credentials') {
+    throw new Error(
+      `oauth2: grant must be 'refresh_token' or 'client_credentials' (got ${JSON.stringify(raw.grant)})`,
+    );
+  }
+  if (raw.clientAuth !== 'basic' && raw.clientAuth !== 'body') {
+    throw new Error(
+      `oauth2: clientAuth must be 'basic' or 'body' (got ${JSON.stringify(raw.clientAuth)})`,
+    );
+  }
+
+  const refs = raw.secretRefs;
+  if (refs === null || typeof refs !== 'object' || Array.isArray(refs)) {
+    throw new Error('oauth2: secretRefs is required');
+  }
+  for (const [key, value] of Object.entries(refs)) {
+    if (!OAUTH2_SECRET_REF_FIELDS.has(key)) {
+      throw new Error(`oauth2: unknown secretRefs field "${key}"`);
+    }
+    if (typeof value !== 'string' || !/^\w+$/.test(value)) {
+      throw new Error(`oauth2: secretRefs.${key} must be a secret name`);
+    }
+  }
+  const { clientId, clientSecret, refreshToken } = refs as Partial<OAuth2Config['secretRefs']>;
+  if (!clientId) throw new Error('oauth2: secretRefs.clientId is required');
+  if (!clientSecret) throw new Error('oauth2: secretRefs.clientSecret is required');
+  if (raw.grant === 'refresh_token' && !refreshToken) {
+    throw new Error("oauth2: secretRefs.refreshToken is required for the 'refresh_token' grant");
+  }
+  if (raw.grant === 'client_credentials' && refreshToken) {
+    throw new Error(
+      "oauth2: secretRefs.refreshToken is not used by the 'client_credentials' grant",
+    );
+  }
+
+  if (raw.scopes !== undefined) {
+    if (
+      !Array.isArray(raw.scopes) ||
+      !raw.scopes.every((s) => typeof s === 'string' && /^[\x21\x23-\x5b\x5d-\x7e]+$/.test(s))
+    ) {
+      // RFC 6749 §3.3 scope-token characters: no spaces, quotes, or backslashes.
+      throw new Error('oauth2: scopes must be an array of scope strings (no spaces)');
+    }
+  }
+  if (raw.verifyGrantedScopes !== undefined) {
+    if (typeof raw.verifyGrantedScopes !== 'boolean') {
+      throw new Error('oauth2: verifyGrantedScopes must be a boolean');
+    }
+    if (raw.verifyGrantedScopes && !(raw.scopes as string[] | undefined)?.length) {
+      throw new Error('oauth2: verifyGrantedScopes needs scopes to verify against');
+    }
+  }
+  if (raw.refreshSkewMs !== undefined) {
+    if (
+      typeof raw.refreshSkewMs !== 'number' ||
+      !Number.isFinite(raw.refreshSkewMs) ||
+      raw.refreshSkewMs < 0 ||
+      raw.refreshSkewMs > MAX_OAUTH2_REFRESH_SKEW_MS
+    ) {
+      throw new Error(
+        `oauth2: refreshSkewMs must be a number from 0 to ${MAX_OAUTH2_REFRESH_SKEW_MS}`,
+      );
+    }
+  }
+}
+
+/**
+ * The URLs an agent could use to reach the token endpoint: the normalized
+ * token URL, with any query, with a trailing slash, and with its host written
+ * with or without a trailing dot (DNS treats `host.` as `host`).
+ */
+function tokenEndpointVariants(tokenUrl: string): string[] {
+  const u = new URL(tokenUrl);
+  const hosts = u.hostname.endsWith('.')
+    ? [u.hostname, u.hostname.slice(0, -1)]
+    : [u.hostname, `${u.hostname}.`];
+  const variants: string[] = [];
+  for (const hostname of hosts) {
+    const v = new URL(u.href);
+    v.hostname = hostname;
+    v.search = '';
+    v.hash = '';
+    const base = v.href;
+    variants.push(base, `${base}?x=1`, base.endsWith('/') ? base : `${base}/`);
+    if (u.search) variants.push(`${base}${u.search}`);
+  }
+  return variants;
+}
+
+/**
+ * Validate an `oauth2` route: the block itself, plus how it combines with the
+ * rest of the route.
+ *
+ *   - Every `secretRefs` name must be a key of `secrets`.
+ *   - No `Authorization` header (the minted token is the authorization), and
+ *     no header may reference an oauth2 credential.
+ *   - Not combined with `awsSigV4` or `resolveSecretsInBody`.
+ *   - No `allowedEndpoints` pattern may match the token endpoint URL: the
+ *     agent could otherwise call it directly. Other paths on the same host
+ *     are fine (Dropbox, Box, and X serve their APIs and token endpoints from
+ *     one host). A pattern without `scheme://host` can match any host and is
+ *     refused.
+ *   - Only a `poll` listener, which gets managed tokens. Webhook and
+ *     websocket listeners would make their requests (webhook
+ *     auto-registration, gateway connects) with the static headers only, so
+ *     unauthenticated, and are refused until supported.
+ */
+export function validateOAuth2Route(route: Route): void {
+  validateOAuth2Config(route.oauth2);
+  const oauth2 = route.oauth2;
+  const secrets = route.secrets ?? {};
+  const refNames = Object.values(oauth2.secretRefs).filter((n): n is string => !!n);
+  for (const name of refNames) {
+    if (!(name in secrets)) {
+      throw new Error(`oauth2: secretRefs names "${name}", which is not in the route's secrets`);
+    }
+  }
+  for (const [key, value] of Object.entries(route.headers ?? {})) {
+    if (key.toLowerCase() === 'authorization') {
+      throw new Error(
+        'oauth2: the route may not set an Authorization header; the minted token is injected',
+      );
+    }
+    for (const name of extractPlaceholderNames(value)) {
+      if (refNames.includes(name)) {
+        throw new Error(`oauth2: header "${key}" references the oauth2 credential \${${name}}`);
+      }
+    }
+  }
+  if (route.awsSigV4 !== undefined) {
+    throw new Error('oauth2 cannot be combined with awsSigV4');
+  }
+  if (route.resolveSecretsInBody) {
+    throw new Error('oauth2 cannot be combined with resolveSecretsInBody');
+  }
+  const tokenUrls = tokenEndpointVariants(oauth2.tokenUrl);
+  for (const pattern of route.allowedEndpoints) {
+    // A pattern without a scheme://host prefix can match any host.
+    const scoped = /^[a-z][a-z0-9+.-]*:\/\/[^/?#]+/i.test(pattern);
+    if (!scoped || tokenUrls.some((url) => isEndpointAllowed(url, [pattern]))) {
+      throw new Error(
+        `oauth2: allowedEndpoints pattern "${pattern}" can reach the token endpoint ${oauth2.tokenUrl}`,
+      );
+    }
+  }
+  if (route.ingestor !== undefined && route.ingestor.type !== 'poll') {
+    throw new Error(
+      `oauth2: a ${route.ingestor.type} listener is not supported on an oauth2 route (only poll ` +
+        'listeners get managed tokens)',
+    );
+  }
 }
 
 /**
@@ -157,9 +376,9 @@ function extractPlaceholderNames(str: string): Set<string> {
  * allowed endpoints.
  *
  * Secret categorization:
- *   - **required** — referenced in route `headers` values, or the signing
- *     keys of an `awsSigV4` route (used on every outgoing request, so they
- *     must always be configured).
+ *   - **required** — referenced in route `headers` values, the signing
+ *     keys of an `awsSigV4` route, or the `secretRefs` of an `oauth2` route
+ *     (used on every outgoing request, so they must always be configured).
  *   - **optional** — every other entry in the template's `secrets` map (used
  *     by ingestors, URL placeholders, an AWS session token, etc.).
  *
@@ -169,43 +388,58 @@ function extractPlaceholderNames(str: string): Set<string> {
  *   - the drawlatch CLI (bin/drawlatch.js)
  */
 export function listConnectionTemplates(): ConnectionTemplateInfo[] {
-  return listAvailableConnections().map((alias) => {
-    const route = loadConnection(alias);
+  return listAvailableConnections().map((alias) =>
+    describeConnectionTemplate(alias, loadConnection(alias)),
+  );
+}
 
-    // Collect secret names every request authenticates with: placeholders in
-    // header values, plus the signing keys of an awsSigV4 route
-    const authSecretNames = new Set<string>();
-    for (const value of Object.values(route.headers ?? {})) {
-      for (const name of extractPlaceholderNames(value)) {
-        authSecretNames.add(name);
-      }
+/** The ConnectionTemplateInfo for one template. Exported for tests. */
+export function describeConnectionTemplate(alias: string, route: Route): ConnectionTemplateInfo {
+  // Collect secret names every request authenticates with: placeholders in
+  // header values, plus the signing keys of an awsSigV4 route
+  const authSecretNames = new Set<string>();
+  for (const value of Object.values(route.headers ?? {})) {
+    for (const name of extractPlaceholderNames(value)) {
+      authSecretNames.add(name);
     }
-    if (route.awsSigV4) {
-      for (const name of AWS_SIGV4_REQUIRED_SECRETS) authSecretNames.add(name);
+  }
+  if (route.awsSigV4) {
+    for (const name of AWS_SIGV4_REQUIRED_SECRETS) authSecretNames.add(name);
+  }
+  if (route.oauth2) {
+    for (const name of Object.values(route.oauth2.secretRefs)) {
+      if (name) authSecretNames.add(name);
     }
+  }
 
-    // Partition secrets into required (used for auth) vs optional (elsewhere)
-    const allSecretNames = Object.keys(route.secrets ?? {});
-    const requiredSecrets = allSecretNames.filter((s) => authSecretNames.has(s));
-    const optionalSecrets = allSecretNames.filter((s) => !authSecretNames.has(s));
+  // Partition secrets into required (used for auth) vs optional (elsewhere)
+  const allSecretNames = Object.keys(route.secrets ?? {});
+  const requiredSecrets = allSecretNames.filter((s) => authSecretNames.has(s));
+  const optionalSecrets = allSecretNames.filter((s) => !authSecretNames.has(s));
 
-    return {
-      alias,
-      name: route.name ?? alias,
-      ...(route.description !== undefined && { description: route.description }),
-      ...(route.docsUrl !== undefined && { docsUrl: route.docsUrl }),
-      ...(route.openApiUrl !== undefined && { openApiUrl: route.openApiUrl }),
-      stability: route.stability ?? 'dev',
-      category: route.category!,
-      requiredSecrets,
-      optionalSecrets,
-      hasIngestor: route.ingestor !== undefined,
-      ...(route.ingestor !== undefined && { ingestorType: route.ingestor.type }),
-      hasTestConnection: route.testConnection !== undefined,
-      hasTestIngestor: route.testIngestor !== undefined && route.testIngestor !== null,
-      hasListenerConfig: route.listenerConfig !== undefined,
-      supportsMultiInstance: route.listenerConfig?.supportsMultiInstance ?? false,
-      allowedEndpoints: route.allowedEndpoints,
-    };
-  });
+  return {
+    alias,
+    name: route.name ?? alias,
+    ...(route.description !== undefined && { description: route.description }),
+    ...(route.docsUrl !== undefined && { docsUrl: route.docsUrl }),
+    ...(route.openApiUrl !== undefined && { openApiUrl: route.openApiUrl }),
+    stability: route.stability ?? 'dev',
+    category: route.category!,
+    requiredSecrets,
+    optionalSecrets,
+    hasIngestor: route.ingestor !== undefined,
+    ...(route.ingestor !== undefined && { ingestorType: route.ingestor.type }),
+    hasTestConnection: route.testConnection !== undefined,
+    hasTestIngestor: route.testIngestor !== undefined && route.testIngestor !== null,
+    hasListenerConfig: route.listenerConfig !== undefined,
+    supportsMultiInstance: route.listenerConfig?.supportsMultiInstance ?? false,
+    allowedEndpoints: route.allowedEndpoints,
+    ...(route.oauth2 !== undefined && {
+      auth: {
+        type: 'oauth2' as const,
+        grant: route.oauth2.grant,
+        scopes: [...new Set(route.oauth2.scopes ?? [])].sort(),
+      },
+    }),
+  };
 }

@@ -113,6 +113,33 @@ export abstract class BaseIngestor extends EventEmitter {
   }
 
   /**
+   * Further values (name → value) to scrub from events, computed when each
+   * event is pushed. For credentials an ingestor obtains at run time, such as
+   * a poller's minted OAuth2 access token. Default: none.
+   */
+  protected extraScrubValues(): Record<string, string> {
+    return {};
+  }
+
+  /** The withheld + extra scrubber, recompiled only when the extra values change. */
+  private scrubWithExtra?: { key: string; scrub: SecretScrubber };
+
+  private scrubEventData(data: unknown): unknown {
+    const extra = this.extraScrubValues();
+    if (Object.keys(extra).length === 0) {
+      return this.scrubWithheld ? scrubSecretsDeep(data, this.scrubWithheld) : data;
+    }
+    const key = JSON.stringify(extra);
+    if (this.scrubWithExtra?.key !== key) {
+      this.scrubWithExtra = {
+        key,
+        scrub: compileSecretScrubber({ ...this.withheldValues, ...extra }),
+      };
+    }
+    return scrubSecretsDeep(data, this.scrubWithExtra.scrub);
+  }
+
+  /**
    * Push a new event into the ring buffer.
    * Called by subclasses when they receive data from an external service.
    *
@@ -142,7 +169,7 @@ export abstract class BaseIngestor extends EventEmitter {
       source: this.connectionAlias,
       ...(this.instanceId !== undefined && { instanceId: this.instanceId }),
       eventType,
-      data: this.scrubWithheld ? scrubSecretsDeep(data, this.scrubWithheld) : data,
+      data: this.scrubEventData(data),
     };
     this.buffer.push(event);
     this.lastEventAt = event.receivedAt;

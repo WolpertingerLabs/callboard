@@ -83,9 +83,9 @@ The local MCP server exposes these tools. Every call goes through the encrypted 
 
 | Tool | Purpose |
 | --- | --- |
-| `secure_request` | HTTP request to an allowlisted URL. Connection headers are injected for you. `${VAR}` placeholders in the URL and headers resolve server-side from the matched connection's secrets (in the body only if the connection sets `resolveSecretsInBody`). Secrets the connection injects itself are [withheld](#header-only-secrets): a request that references one is rejected, and their values are scrubbed from the response body. Redirects are followed only within the connection's allowlist ([Redirects](#redirects)). Supports multipart uploads from local files (25 MB per file, 50 MB per base64-encoded request): with `files`, the JSON `body` is sent as a form part named `payload_json` (change it with `bodyFieldName`). Also takes a per-call `timeoutMs`. |
-| `list_routes` | The caller's connections: docs links, allowed endpoint patterns, the *names* of secrets that are set, auto-injected header names, `withheldSecretNames` (secrets the connection uses itself, which a request may not reference), `awsSigV4` settings, timeouts, listener info. |
-| `test_connection` | Run a connection's built-in credential check. Some cost a little credit; see [CONNECTIONS.md](CONNECTIONS.md#available-connections). |
+| `secure_request` | HTTP request to an allowlisted URL. Connection headers are injected for you. `${VAR}` placeholders in the URL and headers resolve server-side from the matched connection's secrets (in the body only if the connection sets `resolveSecretsInBody`). Secrets the connection injects itself are [withheld](#header-only-secrets): a request that references one is rejected, and their values are scrubbed from the response body. Redirects are followed only within the connection's allowlist ([Redirects](#redirects)). On an [OAuth2](#oauth2-token-minting) connection the daemon mints the access token itself, and a request may not send `Authorization` or an `access_token` query parameter. Supports multipart uploads from local files (25 MB per file, 50 MB per base64-encoded request): with `files`, the JSON `body` is sent as a form part named `payload_json` (change it with `bodyFieldName`). Also takes a per-call `timeoutMs`. |
+| `list_routes` | The caller's connections: docs links, allowed endpoint patterns, the *names* of secrets that are set, auto-injected header names, `withheldSecretNames` (secrets the connection uses itself, which a request may not reference), `awsSigV4` settings, `auth` (`{ "type": "oauth2", "grant", "scopes" }` on an [OAuth2](#oauth2-token-minting) connection, with the scopes after the caller's override; never a token or expiry), timeouts, listener info. |
+| `test_connection` | Run a connection's built-in credential check. Some cost a little credit; see [CONNECTIONS.md](CONNECTIONS.md#available-connections). On an [OAuth2](#oauth2-token-minting) connection it mints a token first and reports `oauth2: { tokenMinted, requestedScopes, grantedScopes, missingScopes }` (scope names only); without a test request that is the whole test. |
 | `list_connection_templates` | All built-in templates, with which are enabled for this caller and which secrets are set (booleans). Custom connectors aren't listed. Each entry's `selfManageable` says whether the two tools below will work for this caller. |
 | `set_connection_enabled` | Enable or disable a connection for this caller. Refused when the caller has `selfManage: false`. |
 | `set_secrets` | Set or delete (empty string) this caller's secrets. Write-only. Refused when the caller has `selfManage: false`. |
@@ -159,6 +159,7 @@ The daemon re-reads `remote.config.json` for each new session and after dashboar
 | `ingestorOverrides`, `listenerInstances` | Listener settings ([INGESTORS.md](INGESTORS.md#per-caller-listener-settings)). |
 | `triggerRules` | Forward matching events to Claude Code remote triggers ([INGESTORS.md](INGESTORS.md#trigger-rules-experimental)). |
 | `selfManage` | Whether the caller's agent may run `set_connection_enabled` and `set_secrets` on itself ([MCP tools](#mcp-tools)). Absent means `true`. Callers drawlatch creates are written with `false`. The admin API and dashboard aren't affected. |
+| `oauth2Overrides` | Per-connection narrowing of [OAuth2](#oauth2-token-minting) scopes: `{ "<alias>": { "scopes": [...] } }`. The scopes must be a non-empty subset of the connection's `oauth2.scopes`. An invalid entry drops that connection for this caller and is logged at boot. Only `remote.config.json` sets it: no tool, and not the dashboard, can write it. |
 
 Caller public keys are read from `keys/callers/<alias>/`. Aliases must match `^[a-zA-Z0-9][a-zA-Z0-9_-]*$`.
 
@@ -171,7 +172,7 @@ Connections reference secrets as `${NAME}` (for example, `${GITHUB_TOKEN}`). For
 
 A bare `GITHUB_TOKEN` is never used. This keeps one caller from picking up another's credentials. The daemon loads `.env` at startup, so restart after editing it by hand. The dashboard and `set_secrets` write `<ALIAS>_<NAME>` to `.env` and apply the change immediately.
 
-If a secret isn't set, its placeholder is sent literally (for example, `Authorization: Bearer ${GITHUB_TOKEN}`), and the upstream API will usually answer `401`. An [`awsSigV4`](#aws-sigv4-signing) connection without its signing keys fails the request instead of sending it. `drawlatch doctor`, `drawlatch config`, and the dashboard's Secrets page show what's missing. They check only built-in templates, and only secrets used in a template's headers or, for an `awsSigV4` template, its signing keys: custom connectors are skipped, and a token that goes in the URL (Telegram, Trello) isn't flagged. `doctor` also prints the unprefixed name ("Set GITHUB_TOKEN in …/.env"); whatever it says, set `<ALIAS>_<NAME>` (`DEFAULT_GITHUB_TOKEN` for the default caller).
+If a secret isn't set, its placeholder is sent literally (for example, `Authorization: Bearer ${GITHUB_TOKEN}`), and the upstream API will usually answer `401`. An [`awsSigV4`](#aws-sigv4-signing) connection without its signing keys fails the request instead of sending it. `drawlatch doctor`, `drawlatch config`, and the dashboard's Secrets page show what's missing. They check only built-in templates, and only secrets used in a template's headers or, for an `awsSigV4` or `oauth2` template, its signing keys or `secretRefs`: custom connectors are skipped, and a token that goes in the URL (Telegram, Trello) isn't flagged. `doctor` also prints the unprefixed name ("Set GITHUB_TOKEN in …/.env"); whatever it says, set `<ALIAS>_<NAME>` (`DEFAULT_GITHUB_TOKEN` for the default caller).
 
 > **Known issue:** an `env` value that redirects to another variable, such as `"GITHUB_TOKEN": "${ALICE_TOKEN}"`, is ignored; the prefixed variable (`<ALIAS>_GITHUB_TOKEN`) is used if set. Status checks still report the redirected secret as set. Use a literal value or the prefixed variable instead.
 
@@ -179,9 +180,9 @@ If a secret isn't set, its placeholder is sent literally (for example, `Authoriz
 
 A secret that a connection's own `headers` reference is **header-only**: it is injected into those headers, and nowhere else. A request may not reference it as `${NAME}` in its URL, its headers, or a `resolveSecretsInBody` body; such a request is rejected before anything is sent, and the daemon logs the connection and secret name. Upstreams echo identifiers back in error messages, so `GET https://www.googleapis.com/drive/v3/files/${GOOGLE_API_TOKEN}` would otherwise answer `File not found: ya29…` and hand the token to the agent.
 
-Header-only secrets are one kind of **withheld** secret. The others are a webhook listener's `signatureSecret`, anything a connector lists in `withheldSecrets` (the `slack` template lists `SLACK_APP_TOKEN`, which Socket Mode reads directly), any secret whose value contains a withheld value of 4 or more characters, and [AWS SigV4](#aws-sigv4-signing) signing keys, which, unlike the others, don't resolve in `headers` either. `list_routes` reports them as `withheldSecretNames`. `placeholderSecrets` releases only header-only secrets, not the other kinds.
+Header-only secrets are one kind of **withheld** secret. The others are a webhook listener's `signatureSecret`, anything a connector lists in `withheldSecrets` (the `slack` template lists `SLACK_APP_TOKEN`, which Socket Mode reads directly), any secret whose value contains a withheld value of 4 or more characters, and [AWS SigV4](#aws-sigv4-signing) signing keys and [OAuth2](#oauth2-token-minting) credentials, which, unlike the others, don't resolve in `headers` or listener configs either: only drawlatch's signer or token manager reads them. `list_routes` reports them as `withheldSecretNames`. `placeholderSecrets` releases only header-only secrets, not the other kinds.
 
-**Scrubbing.** Withheld values are replaced with `${NAME}` in response bodies, `statusText`, and listener output: buffered events (`poll_events`, `wait_for_events`, triggers) and `ingestor_status` errors, which are scrubbed of every secret. JSON bodies, including `+json` types such as `application/problem+json`, are parsed and their string values and keys scrubbed. Text bodies are scrubbed of each value as-is, URL-encoded, and JSON-string-escaped (with and without `\/`). Scrubbing is best-effort defense in depth: base64, case-changed, or otherwise transformed copies aren't recognised. Secrets a request may reference are left alone in bodies and events, since the caller can use them by design and many are ordinary values (`REDDIT_SUBREDDIT`, `TWITCH_USER_ID`) that appear in real responses. Values that are public but sent in a header are withheld too: Twitch's `Client-Id` and Reddit's `User-Agent` show up as `${TWITCH_CLIENT_ID}` and `${REDDIT_USER_AGENT}` in responses. A custom connector that needs them verbatim lists them in `placeholderSecrets`.
+**Scrubbing.** Withheld values, and on an OAuth2 connection the minted access token (as `${OAUTH2_ACCESS_TOKEN}`), are replaced with `${NAME}` in response bodies, `statusText`, and listener output: buffered events (`poll_events`, `wait_for_events`, triggers) and `ingestor_status` errors, which are scrubbed of every secret. JSON bodies, including `+json` types such as `application/problem+json`, are parsed and their string values and keys scrubbed. Text bodies are scrubbed of each value as-is, URL-encoded, and JSON-string-escaped (with and without `\/`). Scrubbing is best-effort defense in depth: base64, case-changed, or otherwise transformed copies aren't recognised. Secrets a request may reference are left alone in bodies and events, since the caller can use them by design and many are ordinary values (`REDDIT_SUBREDDIT`, `TWITCH_USER_ID`) that appear in real responses. Values that are public but sent in a header are withheld too: Twitch's `Client-Id` and Reddit's `User-Agent` show up as `${TWITCH_CLIENT_ID}` and `${REDDIT_USER_AGENT}` in responses. A custom connector that needs them verbatim lists them in `placeholderSecrets`.
 
 Built-in templates that authenticate in the URL keep working, because their tokens aren't in `headers`: Trello (`?key=${TRELLO_API_KEY}&token=${TRELLO_TOKEN}`) and Telegram (`/bot${TELEGRAM_BOT_TOKEN}/`). An upstream can still echo those back.
 
@@ -212,9 +213,10 @@ With this connector, caller `default` reads `ADMIN_KEY` from `DEFAULT_ADMIN_KEY`
 | Field | Description |
 | --- | --- |
 | `alias` | Required. Name referenced from a caller's `connections`. |
-| `allowedEndpoints` | Required. URL globs: `*` matches within a path segment, `**` across segments. An empty list matches nothing. |
+| `allowedEndpoints` | Required. URL globs: `*` matches within a path segment, `**` across segments. An empty list matches nothing. Matched against the request URL in parsed form (see below). |
 | `headers` | Headers injected into every request. `${VAR}` resolves against `secrets`. A request that sets the same header itself is rejected. |
 | `awsSigV4` | Sign every request with AWS Signature Version 4: `{}`, or `{ "service": "…", "region": "…" }` to override what's inferred from the hostname. See [AWS SigV4 signing](#aws-sigv4-signing). |
+| `oauth2` | Mint the bearer token from OAuth2 client credentials instead of a static header. See [OAuth2 token minting](#oauth2-token-minting). |
 | `secrets` | `NAME → value`. The value is a literal, or `${VAR}` resolved per caller as in [Secrets](#secrets). A secret referenced in `headers` is [header-only](#header-only-secrets). |
 | `withheldSecrets` | Extra secret names to withhold from request URLs, headers, and bodies, like header-only ones. They still resolve in `headers` and listener configs. |
 | `placeholderSecrets` | Header secrets that requests may also reference as `${NAME}`, for an API that needs the same credential in a header and the URL or body. The upstream can echo these back. Releases only header-only secrets, not a `signatureSecret`, a `withheldSecrets` entry, or SigV4 signing keys. |
@@ -223,6 +225,8 @@ With this connector, caller `default` reads `ADMIN_KEY` from `DEFAULT_ADMIN_KEY`
 | `name`, `description`, `docsUrl`, `openApiUrl` | Shown to agents by `list_routes`. |
 | `testConnection`, `ingestor`, `listenerConfig`, `testIngestor` | Credential test and event listener definitions. Built-in templates in `src/connections/` are the reference. |
 
+**Upgrading: URL matching.** Request URLs are matched, and sent, in the form the URL parser produces (see [Security model](#security-model)). A pattern's scheme and host are compared the same way (case-insensitive, `:443`/`:80` and a trailing dot ignored), so `https://API.example.com:443/**` keeps working. Paths and queries are not rewritten in patterns, though, and the parser percent-encodes some characters in requests: a space becomes `%20`, `{` and `}` become `%7B`/`%7D`, `"`, `<`, `>` and `` ` `` are encoded, and `'` is encoded in the query. A custom pattern that spells one of those literally (`https://api.example.com/search?q=a b*`) no longer matches; write the encoded form (`q=a%20b*`) or use a wildcard.
+
 #### AWS SigV4 signing
 
 AWS APIs need a signature computed per request, so a static header can't authenticate them. A connector with `awsSigV4` gets one from the daemon instead. After the URL, headers, and body are final, the daemon signs the exact bytes it sends and adds `Authorization`, `X-Amz-Date`, `X-Amz-Content-Sha256` (the SHA-256 of the body), and `X-Amz-Security-Token` when a session token is set. The built-in [`aws`](CONNECTIONS.md#notes-by-connection) template uses it.
@@ -230,8 +234,81 @@ AWS APIs need a signature computed per request, so a static header can't authent
 - **Credentials** are the connector's `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` secrets, plus `AWS_SESSION_TOKEN` for temporary credentials. They resolve per caller like any other secret, so `"AWS_ACCESS_KEY_ID": "${PROD_AWS_ACCESS_KEY_ID}"` in `secrets` points a connector at different variables. The first two count as required. If either is missing, the request fails without being sent. Only the signer reads these three. They, and any other secret whose value contains one of them, are never substituted for `${VAR}` in a URL, a header, a connector's own `headers`, a body with `resolveSecretsInBody`, or a listener's requests; a request that references one is rejected.
 - **Service and region** come from the request hostname: `<service>.<region>.amazonaws.com`, `<id>.<service>.<region>.amazonaws.com` (API Gateway, SageMaker runtime), `<id>.<region>.<service>.amazonaws.com` (OpenSearch), interface VPC endpoints (`vpce-….<service>.<region>.vpce.amazonaws.com`), and S3's virtual-hosted, path-style, dual-stack, and legacy `s3-<region>` hosts, with `s3-outposts` and `s3-object-lambda` as their own signing names. A global endpoint such as `sts.amazonaws.com` or `iam.amazonaws.com` signs for `us-east-1`, and `iam.us-gov.amazonaws.com` for `us-gov-west-1`. A few endpoint prefixes map to a different signing name (`bedrock-runtime` and `bedrock-agent*` → `bedrock`, `email` → `ses`, `aps-workspaces` → `aps`). For anything else, set `service` and `region` explicitly, which overrides the inference for every request on that connector.
 - **Reserved names.** A request may not set `Authorization`, `Host`, `X-Amz-Date`, `X-Amz-Content-Sha256`, or `X-Amz-Security-Token`, or carry presigned-URL query parameters (`X-Amz-Signature`, `X-Amz-Credential`, and so on). Such a request is rejected. Other `x-amz-*` headers, such as `X-Amz-Target` or `x-amz-meta-*`, are sent and signed.
-- **What's signed:** `host`, every header sent except hop-by-hop ones (`connection`, `user-agent`, `content-length`, and similar), and the body. A string body is sent as UTF-8, with fetch's default `text/plain;charset=UTF-8` content type unless you set one. Multipart uploads are serialized before signing. Paths are normalized and encoded per segment as SigV4 requires. S3 paths are encoded once and not normalized. The URL itself is parsed first, which already resolves `.` and `..` segments (including `%2E%2E`), so S3 keys containing those segments can't be reached.
+- **What's signed:** `host`, every header sent except hop-by-hop ones (`connection`, `user-agent`, `content-length`, and similar), and the body. A string body is sent as UTF-8, with fetch's default `text/plain;charset=UTF-8` content type unless you set one. Multipart uploads are serialized before signing. Paths are normalized and encoded per segment as SigV4 requires. S3 paths are encoded once and not normalized. S3 keys with a `.` or `..` path segment (including `%2E%2E` forms) are unsupported: every request with one is refused before it is parsed or signed (see [Security model](#security-model)).
 - **Redirects** aren't followed, even to the same host: the signature covers the original URL. A 3xx comes back to the caller with its `Location` header (see [Redirects](#redirects)).
+
+#### OAuth2 token minting
+
+A connector with an `oauth2` block gets its `Authorization: Bearer` token from the daemon, which runs an OAuth2 grant against the provider's token endpoint and caches the result. The agent never sees the client credentials, the refresh token, or the minted access token.
+
+```json
+{
+  "connectors": [
+    {
+      "alias": "acme",
+      "allowedEndpoints": ["https://api.acme.example/v2/**"],
+      "secrets": {
+        "ACME_CLIENT_ID": "${ACME_CLIENT_ID}",
+        "ACME_CLIENT_SECRET": "${ACME_CLIENT_SECRET}",
+        "ACME_REFRESH_TOKEN": "${ACME_REFRESH_TOKEN}"
+      },
+      "oauth2": {
+        "tokenUrl": "https://auth.acme.example/oauth/token",
+        "grant": "refresh_token",
+        "clientAuth": "body",
+        "secretRefs": {
+          "clientId": "ACME_CLIENT_ID",
+          "clientSecret": "ACME_CLIENT_SECRET",
+          "refreshToken": "ACME_REFRESH_TOKEN"
+        },
+        "scopes": ["items.read", "items.write"]
+      },
+      "testConnection": { "url": "https://api.acme.example/v2/me" }
+    }
+  ]
+}
+```
+
+| Field | Description |
+| --- | --- |
+| `tokenUrl` | Required. The token endpoint. Must be `https` (`http` only on `localhost`, `127.0.0.1`, or `[::1]`). |
+| `grant` | Required. `refresh_token` (user OAuth: trade a long-lived refresh token for access tokens) or `client_credentials` (the client acting as itself). |
+| `clientAuth` | Required. `basic` sends `Authorization: Basic base64(client_id:client_secret)`; `body` sends `client_id` and `client_secret` as form fields. |
+| `secretRefs` | Required. Names of keys in `secrets`: `clientId`, `clientSecret`, and, for `refresh_token` only, `refreshToken`. |
+| `scopes` | Scopes to request. Sent as `scope` on every grant, sorted and de-duplicated. |
+| `verifyGrantedScopes` | Refuse a token whose response doesn't say which scopes it grants. Default `true` when `scopes` is set. |
+| `refreshSkewMs` | Mint a new token this long before the cached one expires. Default `300000`, at most `3600000`. For each token it is capped at half the token's lifetime, so short-lived tokens aren't re-minted on every request. |
+
+Unknown fields are rejected. An invalid block on a built-in template fails when it loads; on a custom connector it drops that connection for each caller, with a message in the daemon log at boot.
+
+- **Credentials are signer-only.** Every `secretRefs` secret, and any secret whose value contains one, is never substituted for `${VAR}` anywhere: not in a request URL, header, or body, not in the connector's own `headers`, not in a listener config. A request that references one is rejected. They count as required secrets for a built-in template.
+- **Not combinable** with an `Authorization` entry in `headers`, a header that references a credential, `awsSigV4`, or `resolveSecretsInBody`. No `allowedEndpoints` pattern may match the token endpoint URL: checked against the URL with a query, with a trailing slash, and with its host written with or without a trailing dot. Other paths on the same host are fine (Dropbox, Box, and X serve their API and token endpoint from one host). A pattern without `scheme://host` matches every host and is refused. Only a `poll` listener is allowed: a webhook or websocket listener would make its own requests (webhook auto-registration, a gateway connect) without the token, so it is refused until supported.
+- **Requests:** a request may not send `Authorization` (any case) or an `access_token` query parameter. The token is minted after every other check, so a rejected request never mints one.
+- **Scopes:** a token whose granted `scope` includes anything not requested is refused, whatever `verifyGrantedScopes` says, and so is one without `scope` when verification is on. Fewer scopes than requested is accepted, and `test_connection` lists the missing ones. Per caller, [`oauth2Overrides`](#callers) narrows the requested scopes; widening them takes a custom connector.
+- **Caching:** tokens are kept in memory only, per caller, connection, grant, token URL, credentials, and scopes, so rotating a secret or changing scopes mints a new token instead of serving the old one. Verification and skew settings are part of the key too. A rotated refresh token returned by the provider is used until the configured one changes; it is lost on restart, and forgotten after 30 days unused. Concurrent requests for the same token share one token-endpoint call, and `refresh_token` requests that share a refresh token (two callers, two connections, two scope sets) go one at a time, each sending the latest rotation, so a provider that rotates (or revokes a reused token's family) never sees the same refresh token twice.
+- **Retries:** a `401` from the API mints a fresh token and resends the request once. It doesn't when the current token is under 30 s old (an agent can make any allowlisted URL answer `401`, and must not be able to turn that into a token request per call) or when another request already replaced the token that got the `401`; the `401` is returned as is. Anything else, `403` included, isn't retried. A `403` result carries a `hint` naming the token's scopes.
+- **Scrubbing:** the minted token is replaced with `${OAUTH2_ACCESS_TOKEN}` in response bodies, headers, the final URL, and error messages, like a [withheld secret](#header-only-secrets).
+- **Token endpoint:** called without following redirects, with a timeout, and reading at most 64 KiB of response. Errors name the connection, the HTTP status, and a recognised OAuth2 error code (`invalid_grant`, `invalid_scope`, `invalid_client`, `unauthorized_client`, `access_denied`, `admin_policy_enforced`, Google's `invalid_rapt`) with a fixed hint. They never include the response body. Those codes are terminal: the same credentials aren't tried again for 60 s.
+- **Listeners:** poll listeners on an `oauth2` connection get managed tokens too ([INGESTORS.md](INGESTORS.md#polling)). Other listener types are refused (see above).
+- **Overlapping connections:** if more than one of a caller's connections matches a request URL and any of them is OAuth2, the request is refused with an error naming them, rather than using whichever is listed first. See [Overlapping connections](#overlapping-connections).
+
+| Constant (`src/shared/config.ts`) | Value | Meaning |
+| --- | --- | --- |
+| `OAUTH2_TOKEN_TIMEOUT_MS` | `10000` | Longest one token-endpoint request may take. A request's remaining budget can make it shorter. |
+| `OAUTH2_TERMINAL_BACKOFF_MS` | `60000` | How long a terminal token failure is remembered before the same credentials are tried again. Changing a secret or scopes clears it. |
+| `DEFAULT_OAUTH2_REFRESH_SKEW_MS` | `300000` | Default `refreshSkewMs`. |
+| `MAX_OAUTH2_REFRESH_SKEW_MS` | `3600000` | Largest `refreshSkewMs` accepted. |
+| `OAUTH2_MIN_REMINT_INTERVAL_MS` | `30000` | A `401` doesn't re-mint a token younger than this. |
+| `OAUTH2_ROTATED_TOKEN_IDLE_MS` | `2592000000` (30 days) | A rotated refresh token unused this long is forgotten. |
+| `OAUTH2_TOKEN_RESPONSE_MAX_BYTES` | `65536` | Largest token-endpoint response read. |
+
+#### Overlapping connections
+
+A request goes to the first of the caller's connections whose `allowedEndpoints` match its URL, in `connections` order. When two connections can match the same URL, that order silently decides which credential the request carries.
+
+- The daemon logs a warning at boot for each pair of a caller's connections whose allowlists name overlapping hosts (a wildcard host, or a pattern without `scheme://host`, overlaps more). Among the built-in templates only `discord-bot` and `discord-oauth` overlap: they are two ways to authenticate to the same API, so enable one per caller.
+- If an [OAuth2](#oauth2-token-minting) connection is among the matches for a request, the request is refused with an error naming the connections. Narrow the allowlists or remove one of the connections. The check compares the URL in parsed form, so host case, an explicit default port, or a trailing dot don't dodge it, but it is best-effort: a path spelled differently (`/%63alendar/` for `/calendar/`) matches patterns only as written, so don't rely on the refusal to keep two connections apart. Non-overlapping allowlists do.
+- Between connections without OAuth2, the first match still wins, as before.
 
 ### Proxy config (`proxy.config.json`)
 
@@ -258,6 +335,7 @@ A proxied call has three nested deadlines. The innermost fires first, because on
 - The MCP server sends the daemon an outbound budget of its own deadline minus 5 s, so the outbound leg always finishes first. Passing `timeoutMs` widens the local deadline to match.
 - `exa`, `firecrawl`, and `parallel` allow up to 120 s, and `perplexity` up to 180 s. All four exceed the MCP client's 60 s default, so raise `MCP_TOOL_TIMEOUT` to use the full ceiling. They already fit under the default `requestTimeout`. For long jobs, prefer the API's async submit-and-poll endpoints.
 - `list_routes` reports each connection's `defaultTimeoutMs` and `maxTimeoutMs` under the current budget.
+- On an [OAuth2](#oauth2-token-minting) connection, minting the token (and re-minting after a `401`) comes out of the same deadline as the API call, and a single token request is further capped at `OAUTH2_TOKEN_TIMEOUT_MS` (10 s). `test_connection` does the same: its test request gets what minting left of the budget.
 - The 290 s outbound maximum sits below undici's internal 300 s headers timeout, which would otherwise fire first with an opaque error.
 - A timed-out call is cancelled at the socket and reported as `Upstream request timed out after <n>ms`. If the local budget was the binding limit, the error names the setting to raise. A host that never accepts the connection is reported as `Upstream never accepted the connection`.
 - The MCP server accepts `timeoutMs` only as a positive integer up to 290000. The daemon treats invalid values from other clients as unset. A malformed `requestTimeoutMs` on a connection falls back to 25 s; it doesn't remove the ceiling.
@@ -274,7 +352,7 @@ The daemon follows redirects itself rather than leaving them to fetch, whose def
 
 A hop that fails a check isn't followed and isn't an error. The 3xx comes back as the result, with its `Location` header, and the target is never contacted. Secrets in response header values, such as a refused `Location` that echoes `?key=…` back, are shown as `${NAME}`, both as-is and URL-encoded. Response bodies are scrubbed of [withheld secrets](#header-only-secrets) only. When redirects were followed, the result has a `url` field with the final URL, scrubbed the same way.
 
-`awsSigV4` connections never follow redirects. Listener requests (polls, webhook auto-registration, Slack Socket Mode connect) and trigger dispatch follow redirects only on the request URL's own origin; see [INGESTORS.md](INGESTORS.md#polling).
+`awsSigV4` connections never follow redirects, and an OAuth2 token endpoint is never followed either. Listener requests (polls, webhook auto-registration, Slack Socket Mode connect) and trigger dispatch follow redirects only on the request URL's own origin; see [INGESTORS.md](INGESTORS.md#polling).
 
 ### Audit log
 
@@ -402,9 +480,10 @@ set-password             Set the dashboard password (alias: change-password)
 
 ## Security model
 
-- **Endpoint allowlisting:** requests go only to URLs matching the caller's connections. Redirects are followed only to allowlisted URLs, never from `https` to `http`, and without credential headers across origins ([Redirects](#redirects)).
+- **Endpoint allowlisting:** requests go only to URLs matching the caller's connections. A URL with a control character (tab, CR, LF, NUL, DEL), which URL parsing would silently delete, and a path with a `.` or `..` segment (including `%2e` forms, and `%2f`, `%5c`, or `\` as separators), are refused on every connection, since either would change the path after it was checked. The allowlist is matched against the URL as parsed, and that parsed form is exactly what is sent. Double-encoded forms (`%252e%252e`) and `..;` aren't resolved by drawlatch or fetch, so they reach the upstream as written. Poll listener URLs get the same checks after listener params are substituted ([INGESTORS.md](INGESTORS.md#polling)). Redirects are followed only to allowlisted URLs, never from `https` to `http`, and without credential headers across origins ([Redirects](#redirects)).
 - **Per-caller isolation:** each caller sees only its connections, and secrets resolve only from its own `env` or `<ALIAS>_`-prefixed variables.
 - **No secrets on the client:** the MCP server never holds API credentials. Secret placeholders resolve server-side, in request bodies only when a connection opts in. Secrets a connection injects in its own headers can't be placed in a request at all, and are scrubbed from response bodies ([Header-only secrets](#header-only-secrets)).
+- **OAuth2:** on an [`oauth2`](#oauth2-token-minting) connection the agent never sees the client credentials, refresh token, or minted access token, and only the operator chooses scopes. That holds only while the agent can't reconfigure itself: with `selfManage` allowed, it can enable another connection that reuses the same credentials under broader scopes, or replace a credential with `set_secrets`. Set [`selfManage: false`](#callers) on callers with OAuth2 connections. Scopes bound what a token can reach, not what the agent does with it.
 - **Mutual authentication:** Ed25519-signed handshake against a pinned server key and registered caller keys.
 - **Encryption:** AES-256-GCM with per-session X25519 ECDH keys, and monotonic counters against replay.
 - **Sessions** expire after 30 minutes idle.

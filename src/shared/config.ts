@@ -14,7 +14,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { loadConnection } from './connections.js';
+import { loadConnection, validateOAuth2Route } from './connections.js';
+import { ownEntry } from './safe-keys.js';
 import type { IngestorConfig } from '../remote/ingestors/types.js';
 import type { TriggerRule } from '../remote/triggers/types.js';
 import type {
@@ -122,6 +123,7 @@ export const AWS_SIGV4_CREDENTIAL_SECRETS: readonly string[] = [
 /** Shape the withholding helpers read. Both `Route` and `ResolvedRoute` fit. */
 interface WithholdingRouteFields {
   awsSigV4?: AwsSigV4Config;
+  oauth2?: Pick<OAuth2Config, 'secretRefs'>;
   secrets?: Record<string, string>;
   /** Precomputed tier-2 names (ResolvedRoute). Absent on a raw Route. */
   withheldSecrets?: readonly string[];
@@ -130,13 +132,26 @@ interface WithholdingRouteFields {
 /**
  * Tier 1: secret names only drawlatch's own auth machinery may read.
  *
+ *   - AWS SigV4: the signing credentials.
+ *   - OAuth2: every `secretRefs` entry (client ID, client secret, refresh
+ *     token). Only the token manager reads them; the minted access token is
+ *     what reaches the upstream.
+ *
  * A new auth mode that consumes credentials daemon-side (signing, token
  * minting) adds its names here; everything else (header resolution, caller
  * substitution, body scrubbing, list_routes) picks them up automatically.
  */
-export function signerOnlySecretNames(route: { awsSigV4?: AwsSigV4Config }): Set<string> {
+export function signerOnlySecretNames(route: {
+  awsSigV4?: AwsSigV4Config;
+  oauth2?: Pick<OAuth2Config, 'secretRefs'>;
+}): Set<string> {
   const names = new Set<string>();
   if (route.awsSigV4) for (const name of AWS_SIGV4_CREDENTIAL_SECRETS) names.add(name);
+  if (route.oauth2) {
+    for (const name of Object.values(route.oauth2.secretRefs)) {
+      if (typeof name === 'string' && name) names.add(name);
+    }
+  }
   return names;
 }
 
@@ -347,6 +362,85 @@ export interface AwsSigV4Config {
   region?: string;
 }
 
+// ── OAuth2 ──────────────────────────────────────────────────────────────────
+
+/** Grant flows the token manager can run. */
+export type OAuth2Grant = 'refresh_token' | 'client_credentials';
+
+/** Names (never values) of the secrets an `oauth2` route mints tokens with.
+ *  Each must be a key of the route's `secrets`. All are signer-only: never
+ *  substituted into any URL, header, or body, the route's own included. */
+export interface OAuth2SecretRefs {
+  /** Secret holding the OAuth2 client ID. */
+  clientId: string;
+  /** Secret holding the OAuth2 client secret. */
+  clientSecret: string;
+  /** Secret holding the refresh token. Required for, and only allowed with,
+   *  the `refresh_token` grant. */
+  refreshToken?: string;
+}
+
+/**
+ * A route whose bearer token the daemon mints itself from OAuth2 client
+ * credentials, instead of a static `Authorization` header. The agent never
+ * sees the credentials or the minted token. Validated by
+ * validateOAuth2Config() (shared/connections.ts).
+ */
+export interface OAuth2Config {
+  /** Token endpoint. https, or http on a loopback host. */
+  tokenUrl: string;
+  /** Grant flow used to obtain access tokens. */
+  grant: OAuth2Grant;
+  /** How the client credentials reach the token endpoint:
+   *   - 'basic': `Authorization: Basic base64(client_id:client_secret)`
+   *   - 'body':  `client_id` / `client_secret` form fields */
+  clientAuth: 'basic' | 'body';
+  secretRefs: OAuth2SecretRefs;
+  /** Scopes to request. Sent as `scope` on every grant. Admin-controlled: a
+   *  caller's `oauth2Overrides` can narrow them, never widen. */
+  scopes?: string[];
+  /** Refuse a token whose response omits `scope`. A granted scope outside the
+   *  requested set is always refused. Default: true when `scopes` is set. */
+  verifyGrantedScopes?: boolean;
+  /** Refresh this long (ms) before the token expires.
+   *  Default DEFAULT_OAUTH2_REFRESH_SKEW_MS. */
+  refreshSkewMs?: number;
+}
+
+/** An `oauth2` block after the caller's override is applied. */
+export interface ResolvedOAuth2Config extends OAuth2Config {
+  /** Sorted, de-duplicated scopes sent to the token endpoint. */
+  effectiveScopes: string[];
+}
+
+/** Admin-only per-caller narrowing of an `oauth2` route. No tool writes it. */
+export interface OAuth2CallerOverride {
+  /** Non-empty subset of the route's `oauth2.scopes`. */
+  scopes?: string[];
+}
+
+/** Longest (ms) one token-endpoint request may take. A request's own
+ *  remaining budget can make it shorter. */
+export const OAUTH2_TOKEN_TIMEOUT_MS = 10_000;
+/** How long (ms) a terminal token failure (`invalid_grant`, refused scopes…)
+ *  is remembered before the token endpoint is tried again with the same
+ *  credentials. Changing the secret or scopes clears it. */
+export const OAUTH2_TERMINAL_BACKOFF_MS = 60_000;
+/** Default `refreshSkewMs`. Clamped per token to half its lifetime. */
+export const DEFAULT_OAUTH2_REFRESH_SKEW_MS = 300_000;
+/** Largest `refreshSkewMs` validation accepts. */
+export const MAX_OAUTH2_REFRESH_SKEW_MS = 3_600_000;
+/** A 401 doesn't force a new token if the current one is younger than this:
+ *  an agent can make any allowlisted endpoint answer 401, and must not be
+ *  able to make the daemon mint on every request. */
+export const OAUTH2_MIN_REMINT_INTERVAL_MS = 30_000;
+/** A rotated refresh token unused this long is forgotten (the configured one
+ *  is used next), so rotated state can't grow without bound. Comparable to a
+ *  daemon restart, which also forgets rotations. */
+export const OAUTH2_ROTATED_TOKEN_IDLE_MS = 30 * 24 * 60 * 60 * 1000;
+/** Largest token-endpoint response body read, in bytes. */
+export const OAUTH2_TOKEN_RESPONSE_MAX_BYTES = 64 * 1024;
+
 /** A single route / connector definition — scopes secrets and headers to a set of endpoints */
 export interface Route {
   /** Alias for referencing this connector from caller connection lists.
@@ -380,6 +474,10 @@ export interface Route {
    *  Callers may not send Authorization, Host, X-Amz-Date, X-Amz-Content-Sha256,
    *  or X-Amz-Security-Token on such a route. See AwsSigV4Config. */
   awsSigV4?: AwsSigV4Config;
+  /** Mint the bearer token from OAuth2 client credentials. The route may not
+   *  also set an `Authorization` header, `awsSigV4`, or `resolveSecretsInBody`.
+   *  See OAuth2Config. */
+  oauth2?: OAuth2Config;
   /** Secrets available for ${VAR} placeholder resolution in this route only.
    *  Values can be literals or "${ENV_VAR}" references resolved at startup. */
   secrets?: Record<string, string>;
@@ -452,6 +550,10 @@ export interface ResolvedRoute {
   headers: Record<string, string>;
   /** AWS SigV4 signing settings (carried from config). Credentials stay in `secrets`. */
   awsSigV4?: AwsSigV4Config;
+  /** OAuth2 settings (carried from config, after the caller's override).
+   *  `effectiveScopes` is the sorted, de-duplicated scope list actually
+   *  requested. Credentials stay in `secrets`. */
+  oauth2?: ResolvedOAuth2Config;
   secrets: Record<string, string>;
   /** Names of secrets a caller may not reference in a URL, request header, or
    *  request body (tiers 1 and 2; see withheldSecretNames()). Names only. */
@@ -551,6 +653,12 @@ export interface CallerConfig {
    *  created by drawlatch (dashboard, `issue-caller`, local auto-provisioning)
    *  are written with `false`. See callerMaySelfManage(). */
   selfManage?: boolean;
+  /** Per-connection narrowing of `oauth2` routes, keyed by connection alias.
+   *  Admin config only: no tool reads or writes it (the dashboard does not
+   *  edit it either yet). `scopes` must be a non-empty subset of the route's
+   *  `oauth2.scopes`; an invalid entry drops that connection for this caller
+   *  and is logged. To widen scopes, define a custom connector. */
+  oauth2Overrides?: Record<string, OAuth2CallerOverride>;
 }
 
 /** Whether a caller's agent may run set_connection_enabled / set_secrets on
@@ -824,8 +932,32 @@ export function saveRemoteConfig(config: RemoteServerConfig): void {
  * Returns an array of Route objects ready for `resolveRoutes()`.
  */
 export function resolveCallerRoutes(config: RemoteServerConfig, callerAlias: string): Route[] {
-  if (!(callerAlias in config.callers)) return [];
+  const { routes, problems } = resolveCallerRoutesChecked(config, callerAlias);
+  for (const problem of problems) logConfigProblemOnce(problem);
+  return routes;
+}
+
+/** Config problems already logged, so a per-request re-resolve doesn't spam. */
+const loggedConfigProblems = new Set<string>();
+function logConfigProblemOnce(problem: string): void {
+  if (loggedConfigProblems.has(problem)) return;
+  loggedConfigProblems.add(problem);
+  console.error(`[config] ${problem}`);
+}
+
+/**
+ * resolveCallerRoutes(), also returning the problems it found. A connection
+ * with an invalid `oauth2` block (custom connector) or an invalid
+ * `oauth2Overrides` entry is dropped for this caller rather than crashing the
+ * daemon or running with the wrong scopes.
+ */
+export function resolveCallerRoutesChecked(
+  config: RemoteServerConfig,
+  callerAlias: string,
+): { routes: Route[]; problems: string[] } {
+  if (!(callerAlias in config.callers)) return { routes: [], problems: [] };
   const caller = config.callers[callerAlias];
+  const problems: string[] = [];
 
   // Build lookup map for custom connectors by alias
   const connectorsByAlias = new Map<string, Route>();
@@ -833,13 +965,150 @@ export function resolveCallerRoutes(config: RemoteServerConfig, callerAlias: str
     if (c.alias) connectorsByAlias.set(c.alias, c);
   }
 
-  return caller.connections.map((name) => {
+  const overrides = caller.oauth2Overrides ?? {};
+  for (const alias of Object.keys(overrides)) {
+    if (!caller.connections.includes(alias)) {
+      problems.push(
+        `Caller "${callerAlias}": oauth2Overrides["${alias}"] names a connection this caller does not have; ignored.`,
+      );
+    }
+  }
+
+  const routes: Route[] = [];
+  for (const name of caller.connections) {
     // Custom connectors take precedence over built-in templates
     const custom = connectorsByAlias.get(name);
-    const route = custom ?? loadConnection(name);
+    let route = custom ?? loadConnection(name);
     // Ensure every route carries its alias so it survives resolution
-    return route.alias === name ? route : { ...route, alias: name };
-  });
+    if (route.alias !== name) route = { ...route, alias: name };
+
+    try {
+      // Templates are validated by loadConnection(); custom connectors here.
+      if (custom && route.oauth2 !== undefined) validateOAuth2Route(route);
+      // Own-property lookup: a connection named `__proto__` or `constructor`
+      // must not pick up Object.prototype as its override.
+      route = applyOAuth2Override(route, ownEntry(overrides, name));
+    } catch (err) {
+      problems.push(
+        `Caller "${callerAlias}": connection "${name}" dropped: ${(err as Error).message}`,
+      );
+      continue;
+    }
+    routes.push(route);
+  }
+  return { routes, problems };
+}
+
+/**
+ * Every oauth2 problem in a remote config, across all callers. Run at daemon
+ * boot so a misconfiguration shows up in the log before the first request.
+ */
+export function validateRemoteConfig(config: RemoteServerConfig): string[] {
+  const problems: string[] = [];
+  for (const alias of Object.keys(config.callers)) {
+    try {
+      problems.push(...resolveCallerRoutesChecked(config, alias).problems);
+    } catch (err) {
+      problems.push(`Caller "${alias}": ${(err as Error).message}`);
+    }
+  }
+  // The caller logs these; don't repeat them on the next resolve.
+  for (const problem of problems) loggedConfigProblems.add(problem);
+  return problems;
+}
+
+/** The `scheme://host` part of an allowlist pattern, or null if it has none
+ *  (such a pattern can match any host). */
+function patternHost(pattern: string): string | null {
+  const m = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]+)/i.exec(pattern);
+  return m ? m[1].toLowerCase() : null;
+}
+
+/** Whether two host globs can name the same host (`*` matches anything). */
+function hostGlobsOverlap(a: string | null, b: string | null): boolean {
+  if (a === null || b === null || a === b) return true;
+  const matches = (glob: string, host: string) =>
+    new RegExp('^' + glob.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*+/g, '.*') + '$').test(
+      host.replace(/\*/g, 'x'),
+    );
+  return matches(a, b) || matches(b, a);
+}
+
+/**
+ * Warnings for callers whose connections have allowlists on overlapping
+ * hosts. A request goes to the first connection whose allowlist matches, so
+ * an overlap means list order silently decides which credential is used;
+ * where an OAuth2 connection is involved, executeProxyRequest refuses such
+ * requests outright. Logged at daemon boot.
+ */
+export function connectionOverlapWarnings(config: RemoteServerConfig): string[] {
+  const warnings: string[] = [];
+  for (const alias of Object.keys(config.callers)) {
+    let routes: Route[];
+    try {
+      routes = resolveCallerRoutesChecked(config, alias).routes;
+    } catch {
+      continue; // reported by validateRemoteConfig()
+    }
+    for (let i = 0; i < routes.length; i++) {
+      for (let j = i + 1; j < routes.length; j++) {
+        const a = routes[i];
+        const b = routes[j];
+        const shared = a.allowedEndpoints.flatMap((pa) =>
+          b.allowedEndpoints
+            .filter((pb) => hostGlobsOverlap(patternHost(pa), patternHost(pb)))
+            .map(() => patternHost(pa) ?? '(any host)'),
+        );
+        if (shared.length === 0) continue;
+        const oauth = a.oauth2 || b.oauth2 ? ' Requests matching both are refused (OAuth2).' : '';
+        warnings.push(
+          `Caller "${alias}": connections "${a.alias}" and "${b.alias}" both allow ` +
+            `${[...new Set(shared)].join(', ')}; a request matching both uses whichever is ` +
+            `listed first.${oauth}`,
+        );
+      }
+    }
+  }
+  return warnings;
+}
+
+/**
+ * Narrow a route's `oauth2.scopes` to a caller's override. Throws when the
+ * override is malformed, targets a route without `oauth2`, or is not a
+ * non-empty subset of the route's scopes.
+ */
+function applyOAuth2Override(route: Route, override: OAuth2CallerOverride | undefined): Route {
+  if (override === undefined) return route;
+  // Hand-edited JSON: the declared type is not a guarantee.
+  const raw: unknown = override;
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error('oauth2Overrides entry must be an object');
+  }
+  for (const key of Object.keys(override)) {
+    if (key !== 'scopes') {
+      throw new Error(`oauth2Overrides entry has unknown field "${key}"`);
+    }
+  }
+  if (!route.oauth2) {
+    throw new Error('oauth2Overrides is set but the connection has no oauth2 block');
+  }
+  if (override.scopes === undefined) return route;
+  const scopes: unknown = override.scopes;
+  if (
+    !Array.isArray(scopes) ||
+    scopes.length === 0 ||
+    !scopes.every((s) => typeof s === 'string' && s !== '')
+  ) {
+    throw new Error('oauth2Overrides scopes must be a non-empty array of strings');
+  }
+  const allowed = new Set(route.oauth2.scopes ?? []);
+  const extra = (scopes as string[]).filter((s) => !allowed.has(s));
+  if (extra.length > 0) {
+    throw new Error(
+      `oauth2Overrides scopes may only narrow the connection's scopes; not allowed: ${extra.join(', ')}`,
+    );
+  }
+  return { ...route, oauth2: { ...route.oauth2, scopes: [...new Set(scopes as string[])] } };
 }
 
 // ── Secret / placeholder resolution ──────────────────────────────────────────
@@ -1048,6 +1317,12 @@ export function resolveRoutes(
       ...(route.category !== undefined && { category: route.category }),
       headers: resolvedHeaders,
       ...(route.awsSigV4 !== undefined && { awsSigV4: route.awsSigV4 }),
+      ...(route.oauth2 !== undefined && {
+        oauth2: {
+          ...route.oauth2,
+          effectiveScopes: [...new Set(route.oauth2.scopes ?? [])].sort(),
+        },
+      }),
       secrets: resolvedSecrets,
       withheldSecrets: [...withheldSecretNames(route)],
       allowedEndpoints: route.allowedEndpoints,
