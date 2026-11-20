@@ -4,13 +4,7 @@
  * are stored, so absence is "expanded" — the default the user asked for.
  */
 import { beforeEach, describe, expect, it } from "vitest";
-import {
-  CHAT_TREE_COLLAPSED_KEY,
-  CHAT_TREE_COLLAPSED_MAX,
-  CHAT_TREE_COLLAPSED_MAX_AGE_MS,
-  getChatTreeCollapsedIds,
-  saveChatTreeNodeCollapsed,
-} from "./localStorage";
+import { CHAT_TREE_COLLAPSED_KEY, CHAT_TREE_COLLAPSED_MAX, getChatTreeCollapsedIds, saveChatTreeNodeCollapsed } from "./localStorage";
 
 const SETTINGS_KEY = "claude-code-settings";
 
@@ -36,11 +30,12 @@ describe("chat tree collapsed ids", () => {
     expect(localStorage.getItem(CHAT_TREE_COLLAPSED_KEY)).toBeNull();
   });
 
-  it("drops folds older than the max age on the next write", () => {
+  it("never expires a fold by age — only the count cap evicts", () => {
     const now = 1_000_000_000_000;
-    saveChatTreeNodeCollapsed("old", true, now - CHAT_TREE_COLLAPSED_MAX_AGE_MS - 1);
+    const yearAgo = now - 365 * 24 * 60 * 60 * 1000;
+    saveChatTreeNodeCollapsed("old", true, yearAgo);
     saveChatTreeNodeCollapsed("fresh", true, now);
-    expect([...getChatTreeCollapsedIds()]).toEqual(["fresh"]);
+    expect([...getChatTreeCollapsedIds()].sort()).toEqual(["fresh", "old"]);
   });
 
   it("keeps at most the newest MAX, dropping the oldest first", () => {

@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from "vitest";
 import type { ChatTreeNode } from "../api";
-import { countRunningBelow, nodeIsRunning, visibleChildren, type TreeVisibility } from "./chatTreeNodes";
+import { attentionBelow, countRunningBelow, nodeIsRunning, visibleChildren, type TreeVisibility } from "./chatTreeNodes";
 
 function makeNode(chatId: string, overrides: Partial<ChatTreeNode> = {}): ChatTreeNode {
   return { chatId, title: chatId, provider: "claude-code", status: "stopped", folder: "/f", createdAt: "", updatedAt: "", children: [], ...overrides };
@@ -16,9 +16,13 @@ const live =
     ids.includes(id);
 
 describe("nodeIsRunning", () => {
-  it("prefers the live registry over the snapshot", () => {
+  it("is running when the live registry says so, even on a stale stopped snapshot", () => {
     expect(nodeIsRunning(makeNode("a", { status: "stopped" }), live("a"))).toBe(true);
-    expect(nodeIsRunning(makeNode("a", { status: "ongoing" }), live())).toBe(false);
+  });
+
+  it("is running when the snapshot says ongoing, though the registry does not know it (a native sub-agent)", () => {
+    expect(nodeIsRunning(makeNode("a", { status: "ongoing" }), live())).toBe(true);
+    expect(nodeIsRunning(makeNode("a", { status: "stopped" }), live())).toBe(false);
   });
 
   it("falls back to the snapshot without a registry", () => {
@@ -53,6 +57,24 @@ describe("countRunningBelow", () => {
 
   it("is zero when nothing below is working", () => {
     expect(countRunningBelow(tree, false, OPTS, live("n", "ownAside"))).toBe(0);
+  });
+});
+
+describe("attentionBelow", () => {
+  it("sums what the fold hides — unread, summons, waiting — not the node's own asides", () => {
+    const tree = makeNode("n", {
+      children: [
+        makeNode("ownAside", { role: "aside", updatedAt: "2026-01-02", lastReadAt: "2026-01-01" }),
+        makeNode("c", {
+          status: "waiting",
+          children: [
+            makeNode("gc", { updatedAt: "2026-01-02", lastReadAt: "2026-01-01" }),
+            makeNode("gc2", { summon: { urgency: "normal", createdAt: "2026-01-01" } }),
+          ],
+        }),
+      ],
+    });
+    expect(attentionBelow(tree, false, OPTS, live())).toEqual({ running: 0, waiting: 1, unread: 1, summoned: 1 });
   });
 });
 

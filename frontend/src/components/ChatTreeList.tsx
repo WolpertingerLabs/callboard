@@ -6,7 +6,7 @@ import { chatMeta } from "../utils/chatMeta";
 import ChatListItem, { type ChatCardMenu } from "./ChatListItem";
 import ChatSectionHeader from "./ChatSectionHeader";
 import ProviderBadge from "./ProviderBadge";
-import ChatRoleBadge, { AsideCount } from "./ChatRoleBadge";
+import ChatRoleBadge, { AsideAttentionDot, AsideCount } from "./ChatRoleBadge";
 import MenuRow from "./MenuRow";
 import { useLongPress } from "../hooks/useLongPress";
 import PopupMenu, { placePopupMenu, type PopupMenuPosition } from "./PopupMenu";
@@ -18,11 +18,11 @@ import type { SpaceListItem } from "shared/types/space.js";
 import { isSidebarFolderEligible, readSidebarFolder } from "shared/types/sidebarFolder.js";
 import { useChatTreeCollapse, type ChatTreeCollapse } from "../hooks/useChatTreeCollapse";
 import { useIsMobile } from "../hooks/useIsMobile";
-import { withNodeChildArchived } from "../utils/childArchive";
+import { treeContains, withNodeChildArchived } from "../utils/childArchive";
 import { ASIDE_ROLE } from "../utils/chatRewrite";
-import { countRunningBelow, foldedAsideChildren, isHiddenArchivedChild, nodeIsRunning, visibleChildren, type TreeVisibility } from "../utils/chatTreeNodes";
+import { attentionBelow, foldedAsideChildren, isHiddenArchivedChild, nodeIsRunning, visibleChildren, type TreeVisibility } from "../utils/chatTreeNodes";
 import RunningDot, { RunningCount } from "./RunningDot";
-import { chatSignals, nodeSignals, sumAttention } from "../utils/asideAttention";
+import { attentionSuffix, chatSignals, NO_ATTENTION, nodeSignals, sumAttention } from "../utils/asideAttention";
 
 /**
  * The sidebar chat list.
@@ -686,6 +686,7 @@ function TreeNodeRow({
   isRunning,
   foldAsides = true,
   treeCollapse,
+  isMobile = false,
 }: {
   node: ChatTreeNode;
   depth: number;
@@ -701,8 +702,9 @@ function TreeNodeRow({
   foldAsides?: boolean;
   /** Which nodes are folded; absent, nothing is collapsible. */
   treeCollapse?: ChatTreeCollapse;
+  /** `useIsMobile()`, read once by the list rather than per node. */
+  isMobile?: boolean;
 }) {
-  const isMobile = useIsMobile();
   const [menu, setMenu] = useState<{ position: PopupMenuPosition; openedByTouch: boolean } | null>(null);
   const rowRef = useRef<HTMLDivElement>(null);
   /** Where a right-click put the pointer; a long press and the keyboard fall back to the row. */
@@ -791,25 +793,38 @@ function TreeNodeRow({
   const faded = (archivedChild || underArchived) && !isActive;
   // Asides are folded into this row (see `Row.asideCount`) — `foldedAsideChildren`.
   const asideNodes = foldedAsideChildren(node, visibility);
-  const asideAttention = sumAttention(asideNodes.map((child) => nodeSignals(child, isRunning?.(child.chatId))));
+  const asideAttention = sumAttention(asideNodes.map((child) => nodeSignals(child, nodeIsRunning(child, isRunning))));
   const children = visibleChildren(node, childrenUnderArchived, visibility);
   // The root (depth 0) has no toggle of its own: the group header above it
   // already folds the whole tree. Below it, any node with rows to hide does.
   const collapsible = !!treeCollapse && depth > 0 && children.length > 0;
-  const collapsed = collapsible && treeCollapse.isCollapsed(node.chatId);
+  // A fold never hides the open chat: a node above it renders expanded while
+  // it is open, without touching the stored fold — the same exemption the
+  // archived-child filter makes. Its toggle is disabled meanwhile, since a
+  // click could not visibly do anything.
+  const holdsOpen = collapsible && node.chatId !== activeChatId && treeContains(node, activeChatId);
+  const storedCollapsed = collapsible && treeCollapse.isCollapsed(node.chatId);
+  const collapsed = storedCollapsed && !holdsOpen;
   const running = nodeIsRunning(node, isRunning);
-  // Only while collapsed: expanded, the working children's own dots are on
-  // screen, and a count beside them would say the same thing twice.
-  const runningBelow = collapsed ? countRunningBelow(node, childrenUnderArchived, visibility, isRunning) : 0;
+  // Only while collapsed: expanded, the children's own dots are on screen,
+  // and a summary beside them would say the same thing twice.
+  const hidden = collapsed ? attentionBelow(node, childrenUnderArchived, visibility, isRunning) : NO_ATTENTION;
+  // The running count shows as a number; the rest (summoned, waiting, unread)
+  // as the one most pressing dot, as on an aside count.
+  const hiddenAttention = { ...hidden, running: 0 };
+  const hiddenAttentionText = attentionSuffix(hiddenAttention).slice(2);
   const nodeName = `${node.role ? `${label} (${node.role})` : label}${archivedChild ? " — archived" : ""}${running ? " — working" : ""}${
-    runningBelow > 0 ? `, ${runningBelow} working below` : ""
-  }`;
+    hidden.running > 0 ? `, ${hidden.running} working below` : ""
+  }${hiddenAttentionText ? `, ${hiddenAttentionText} below` : ""}`;
 
   // The toggle's slot. Every node below the root gets one, so sibling titles
   // line up whether or not they have children: a node with rows to hide shows
-  // its chevron there, a leaf the tree's "—" connector. Full row height, and
-  // wider on touch, where a 16px target would be a miss more than a tap.
-  const slotWidth = isMobile ? 28 : 16;
+  // its chevron there, a leaf the tree's "—" connector, both at the slot's
+  // right edge so they share a column (and stay indented past the root's
+  // status dot). The slot grows LEFT into the indent padding, so titles sit
+  // where they always have; on touch it takes most of that padding and the
+  // row gets a 44px minimum height, for a target a thumb can hit.
+  const slotWidth = isMobile ? 36 : 16;
   // Faded like an archived row in the list, unless it is the open chat — the
   // same exemption ChatListItem makes for the open row. On the link and the
   // slot beside it, not their wrapper, which also paints the active highlight.
@@ -824,6 +839,7 @@ function TreeNodeRow({
           gap: 6,
           paddingLeft: 14 + depth * 14 - (depth > 0 ? slotWidth - 10 : 0),
           paddingRight: 14,
+          minHeight: isMobile ? 44 : undefined,
           background: isActive ? "var(--chatlist-item-active-bg)" : "transparent",
           borderLeft: isActive ? "3px solid var(--chatlist-item-active-border)" : "3px solid transparent",
           borderBottom: "1px solid var(--chatlist-item-border)",
@@ -841,7 +857,8 @@ function TreeNodeRow({
               className={dimClass}
               aria-expanded={!collapsed}
               aria-label={`${collapsed ? "Expand" : "Collapse"} "${label}"`}
-              title={collapsed ? `Expand "${label}"` : `Collapse "${label}"`}
+              title={holdsOpen ? `"${label}" holds the open chat` : collapsed ? `Expand "${label}"` : `Collapse "${label}"`}
+              disabled={holdsOpen}
               onClick={(e) => {
                 e.stopPropagation();
                 treeCollapse.toggle(node.chatId);
@@ -849,14 +866,15 @@ function TreeNodeRow({
               style={{
                 display: "flex",
                 alignItems: "center",
-                justifyContent: "center",
+                justifyContent: "flex-end",
                 width: slotWidth,
                 flexShrink: 0,
                 padding: 0,
                 background: "none",
                 border: "none",
                 color: "var(--chatlist-icon)",
-                cursor: "pointer",
+                cursor: holdsOpen ? "default" : "pointer",
+                opacity: holdsOpen ? 0.5 : undefined,
               }}
             >
               {collapsed ? <ChevronRight size={12} aria-hidden /> : <ChevronDown size={12} aria-hidden />}
@@ -867,7 +885,8 @@ function TreeNodeRow({
               className={dimClass}
               style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", width: slotWidth, flexShrink: 0 }}
             >
-              <span style={{ width: 10, height: 1, background: "var(--chatlist-tree-line)" }} />
+              {/* Centred in the chevron's 12px box, so the two share a column. */}
+              <span style={{ width: 10, height: 1, margin: "0 1px", background: "var(--chatlist-tree-line)" }} />
             </span>
           ))}
         <div
@@ -935,9 +954,6 @@ function TreeNodeRow({
           <ProviderBadge provider={node.provider === "claude-code" ? undefined : node.provider} compact />
           {node.role && <ChatRoleBadge role={node.role} />}
           <AsideCount count={asideNodes.length} attention={asideAttention} />
-          {runningBelow > 0 && (
-            <RunningCount count={runningBelow} label={`${runningBelow} working below`} testId="subtree-running" style={{ fontSize: 11, fontWeight: 600 }} />
-          )}
           <span
             style={{
               fontSize: 13,
@@ -953,6 +969,16 @@ function TreeNodeRow({
             {node.title || folderName}
             {node.nativeAgent && <small title={node.nativeAgent.controlNote}> · {node.nativeAgent.lifecycle} · read-only</small>}
           </span>
+          {/* What the fold hides — after the title, so collapsing does not
+              push the title right, and where the group card puts its count. */}
+          {hiddenAttentionText && (
+            <span data-testid="subtree-attention" title={`${hiddenAttentionText} below`} style={{ display: "flex", alignItems: "center", flexShrink: 0 }}>
+              <AsideAttentionDot attention={hiddenAttention} />
+            </span>
+          )}
+          {hidden.running > 0 && (
+            <RunningCount count={hidden.running} label={`${hidden.running} working below`} testId="subtree-running" style={{ fontSize: 11, fontWeight: 600 }} />
+          )}
           {/* A glyph as well as the fade — opacity alone is not a state. */}
           {archivedChild && (
             <span title="Archived" style={{ display: "flex", flexShrink: 0, color: "var(--chatlist-icon)" }}>
@@ -1020,6 +1046,7 @@ function TreeNodeRow({
             isRunning={isRunning}
             foldAsides={foldAsides}
             treeCollapse={treeCollapse}
+            isMobile={isMobile}
           />
         ))}
     </>
@@ -1182,6 +1209,7 @@ export default function ChatTreeList({
   const sectionExpansion = useChatSectionExpansion();
   /** Collapse state for the nodes inside expanded trees, persisted likewise. */
   const treeCollapse = useChatTreeCollapse();
+  const isMobile = useIsMobile();
 
   /**
    * Running CHATS in a section, every LOADED member of every group — not rows,
@@ -1248,6 +1276,8 @@ export default function ChatTreeList({
     }
 
     const isExpanded = expanded.has(rootKey);
+    /** Every chat the list holds for this group: what its working signals read. */
+    const groupLive = [...members, ...foldedAsides];
     const isLoading = loading.has(rootKey);
     const tree = trees[rootKey];
     /**
@@ -1262,14 +1292,16 @@ export default function ChatTreeList({
      * `.type` inside that guard, so a status with `active` falsy and no status
      * at all are indistinguishable at the point of use.
      */
-    const groupSessionStatus = members.map((member) => sessionStatusFor(member.id)).find((status) => status?.active);
+    const groupSessionStatus = groupLive.map((member) => sessionStatusFor(member.id)).find((status) => status?.active);
     /**
-     * How many of those members are working — the number beside that dot,
-     * expanded or not, as the card-level summary. Loaded members only, the
-     * same set `groupSessionStatus` reads, so the dot shows exactly when this
-     * is at least 1. Folded asides keep their own dot on the aside count.
+     * How many of those chats are working — the number beside that dot,
+     * expanded or not, as the card-level summary. Chats LOADED in the list
+     * only, members plus their folded asides: the same set the section
+     * header's `runningIn` counts (so a tree reads the same number in both
+     * places) and the same set `groupSessionStatus` reads (so the dot shows
+     * exactly when this is at least 1).
      */
-    const groupRunningCount = members.filter((member) => sessionStatusFor(member.id)?.active).length;
+    const groupRunningCount = groupLive.filter((member) => sessionStatusFor(member.id)?.active).length;
 
     return (
       <div key={rootKey} style={{ background: isExpanded ? "var(--chatlist-tree-group-bg)" : undefined }}>
@@ -1277,6 +1309,8 @@ export default function ChatTreeList({
           <button
             onClick={() => toggleExpand(rootKey, chat.id)}
             title={isExpanded ? "Collapse chat tree" : "Expand chat tree"}
+            aria-expanded={isExpanded}
+            aria-label={`${isExpanded ? "Collapse" : "Expand"} "${chatMeta(chat).title || chatMeta(chat).preview || "This chat"}"`}
             style={{
               display: "flex",
               alignItems: "center",
@@ -1356,6 +1390,7 @@ export default function ChatTreeList({
               isRunning={isRunning}
               foldAsides={foldAsides}
               treeCollapse={treeCollapse}
+              isMobile={isMobile}
             />
           </div>
         )}

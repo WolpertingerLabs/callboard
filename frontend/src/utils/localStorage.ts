@@ -359,10 +359,12 @@ export function saveComposerDraft(key: string, text: string, now = Date.now()): 
  * the composer drafts, so a click does not re-serialise the settings blob.
  */
 export const CHAT_TREE_COLLAPSED_KEY = "callboard-chat-tree-collapsed";
-/** Most collapsed nodes remembered; past it the least recently collapsed go first. */
+/**
+ * Most collapsed nodes remembered; past it the least recently collapsed go
+ * first. A count cap and no age limit: a fold the user made should not quietly
+ * reopen because they were away for a while.
+ */
 export const CHAT_TREE_COLLAPSED_MAX = 200;
-/** A fold this old is dropped on the next write — usually a chat long finished or deleted. */
-export const CHAT_TREE_COLLAPSED_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
 
 /** chatId → epoch ms it was collapsed at (what eviction orders by). */
 function readChatTreeCollapsed(): Record<string, number> {
@@ -385,8 +387,9 @@ export function getChatTreeCollapsedIds(): Set<string> {
  * Remember (or forget) that a tree node is collapsed.
  *
  * Read-modify-write of the whole record, so another tab's folds survive.
- * Bounded on every write: entries older than {@link CHAT_TREE_COLLAPSED_MAX_AGE_MS}
- * go, then the oldest past {@link CHAT_TREE_COLLAPSED_MAX}.
+ * Bounded on every write to the {@link CHAT_TREE_COLLAPSED_MAX} most recently
+ * collapsed; a deleted chat's fold is never read again, and this is how it
+ * eventually leaves.
  */
 export function saveChatTreeNodeCollapsed(chatId: string, collapsed: boolean, now = Date.now()): void {
   const entries = readChatTreeCollapsed();
@@ -394,7 +397,6 @@ export function saveChatTreeNodeCollapsed(chatId: string, collapsed: boolean, no
   else if (chatId in entries) delete entries[chatId];
   else return;
   const kept = Object.entries(entries)
-    .filter(([, at]) => now - at <= CHAT_TREE_COLLAPSED_MAX_AGE_MS)
     .sort(([, a], [, b]) => b - a)
     .slice(0, CHAT_TREE_COLLAPSED_MAX);
   if (kept.length === 0) removeStorageItem(CHAT_TREE_COLLAPSED_KEY);

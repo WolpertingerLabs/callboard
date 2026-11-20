@@ -11,6 +11,7 @@ import type { Chat, ChatTreeNode } from "../api";
 import { getChatTree } from "../api";
 import { resetChatSectionExpansion } from "../hooks/useChatSectionExpansion";
 import { resetChatTreeCollapse } from "../hooks/useChatTreeCollapse";
+import { getChatTreeCollapsedIds } from "../utils/localStorage";
 import ChatTreeList from "./ChatTreeList";
 
 const mockNavigate = vi.fn();
@@ -19,12 +20,16 @@ vi.mock("react-router-dom", async (importOriginal) => ({
   useNavigate: () => mockNavigate,
 }));
 
+let mobile = false;
+vi.mock("../hooks/useIsMobile", () => ({ useIsMobile: () => mobile }));
+
 vi.mock("../api", () => ({
   getChatTree: vi.fn(),
   dismissSummon: vi.fn().mockResolvedValue(undefined),
 }));
 
 beforeEach(() => {
+  mobile = false;
   localStorage.clear();
   resetChatSectionExpansion();
   resetChatTreeCollapse();
@@ -89,12 +94,13 @@ function mockTree(tree: ChatTreeNode = TREE) {
   vi.mocked(getChatTree).mockResolvedValue({ targetChatId: "root", rootChatId: "root", ancestors: [], tree });
 }
 
-function renderList(running: string[] = [], chats: Chat[] = CHATS) {
+function renderList(running: string[] = [], chats: Chat[] = CHATS, activeChatId?: string) {
   return render(
     <MemoryRouter>
       <ChatTreeList
         chats={chats}
         refreshToken={0}
+        activeChatId={activeChatId}
         onChatClick={() => {}}
         onDelete={() => {}}
         onToggleBookmark={() => {}}
@@ -109,7 +115,7 @@ function renderList(running: string[] = [], chats: Chat[] = CHATS) {
 }
 
 async function expand() {
-  fireEvent.click(await screen.findByTitle("Expand chat tree"));
+  fireEvent.click(await screen.findByRole("button", { name: 'Expand "chat root"' }));
   await screen.findByText("Mid");
 }
 
@@ -216,5 +222,109 @@ describe("working indicators", () => {
     const indicator = await screen.findByTestId("chat-running");
     expect(indicator.textContent).toContain("2");
     expect(indicator.getAttribute("title")).toBe("Active in web, 2 working in this tree");
+  });
+});
+
+describe("review follow-ups", () => {
+  it("keeps the open chat visible under a collapsed node, without changing the stored fold", async () => {
+    mockTree();
+    renderList();
+    await expand();
+    fireEvent.click(toggleFor("Mid")!);
+    expect(node("leaf")).toBeUndefined();
+
+    cleanup();
+    renderList([], CHATS, "leaf");
+    await expand();
+    expect(node("leaf")).toBeTruthy();
+    const toggle = toggleFor("Mid") as HTMLButtonElement;
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(toggle.disabled).toBe(true);
+    expect(getChatTreeCollapsedIds().has("mid")).toBe(true);
+    // The open chat itself still folds what is under it.
+    cleanup();
+    renderList([], CHATS, "mid");
+    await expand();
+    expect(node("leaf")).toBeUndefined();
+  });
+
+  it("counts a working aside folded under a non-front member on the group row", async () => {
+    mockTree();
+    const asideOfMid = makeChat("midAside", { chatRole: "aside", parentChatId: "mid", rootChatId: "root" });
+    renderList(["midAside"], [...CHATS, asideOfMid]);
+    const indicator = await screen.findByTestId("chat-running");
+    expect(indicator.getAttribute("title")).toBe("Active in web, 1 working in this tree");
+    expect(within(indicator).getByTestId("running-dot")).toBeTruthy();
+  });
+
+  it("surfaces unread and summoned chats a collapsed node hides, and not once expanded", async () => {
+    mockTree(
+      makeNode("root", "Root", {
+        children: [
+          makeNode("mid", "Mid", {
+            children: [
+              makeNode("leaf", "Leaf", { updatedAt: "2026-07-28T10:00:00Z", lastReadAt: "2026-07-27T10:00:00Z" }),
+              makeNode("deep", "Deep", { summon: { urgency: "normal", createdAt: "2026-07-28T10:00:00Z" } }),
+            ],
+          }),
+        ],
+      }),
+    );
+    renderList();
+    await expand();
+    expect(screen.queryByTestId("subtree-attention")).toBeNull();
+    fireEvent.click(toggleFor("Mid")!);
+    const attention = within(node("mid")!).getByTestId("subtree-attention");
+    expect(attention.getAttribute("title")).toBe("1 calling for you, 1 unread below");
+    expect(within(attention).getByTestId("aside-attention-summoned")).toBeTruthy();
+    expect(node("mid")!.getAttribute("aria-label")).toBe("Mid, 1 calling for you, 1 unread below");
+    fireEvent.click(toggleFor("Mid")!);
+    expect(screen.queryByTestId("subtree-attention")).toBeNull();
+  });
+
+  it("puts a collapsed node's count after its title", async () => {
+    mockTree();
+    renderList(["leaf"]);
+    await expand();
+    fireEvent.click(toggleFor("Mid")!);
+    const count = within(node("mid")!).getByTestId("subtree-running");
+    const title = within(node("mid")!).getByText("Mid");
+    expect(title.compareDocumentPosition(count) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("names the top-level toggle and reports its state", async () => {
+    mockTree();
+    renderList();
+    const toggle = await screen.findByRole("button", { name: 'Expand "chat root"' });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(toggle);
+    await screen.findByText("Mid");
+    expect(screen.getByRole("button", { name: 'Collapse "chat root"' }).getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("gives touch a 44px row and a wide toggle slot without moving titles", async () => {
+    const slotOf = () => {
+      const row = node("mid")!.parentElement!;
+      return { row, slot: within(row).getByTestId("tree-node-toggle"), leafSlot: node("lonely")!.previousElementSibling as HTMLElement };
+    };
+    mockTree();
+    renderList();
+    await expand();
+    const desk = slotOf();
+    const deskTitleX = parseInt(desk.row.style.paddingLeft) + parseInt(desk.slot.style.width);
+    expect(desk.row.style.minHeight).toBe("");
+    cleanup();
+
+    mobile = true;
+    renderList();
+    await expand();
+    const touch = slotOf();
+    expect(touch.row.style.minHeight).toBe("44px");
+    expect(touch.slot.style.width).toBe("36px");
+    expect(parseInt(touch.row.style.paddingLeft) + parseInt(touch.slot.style.width)).toBe(deskTitleX);
+    // Chevrons and leaf connectors share one column.
+    expect(touch.slot.style.justifyContent).toBe("flex-end");
+    expect(touch.leafSlot.style.justifyContent).toBe("flex-end");
+    expect(touch.leafSlot.style.width).toBe("36px");
   });
 });

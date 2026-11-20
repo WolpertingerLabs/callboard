@@ -10,6 +10,7 @@
 import type { ChatTreeNode } from "../api";
 import { treeContains } from "./childArchive";
 import { ASIDE_ROLE } from "./chatRewrite";
+import { nodeSignals, sumAttention, type AsideAttention, type AsideSignals } from "./asideAttention";
 
 export interface TreeVisibility {
   /** Whether archived children render at all (`Props.showArchivedChildren`). */
@@ -60,28 +61,43 @@ export function visibleChildren(node: ChatTreeNode, underArchived: boolean, opts
 }
 
 /**
- * Whether a node's chat is working: the live session registry when the caller
- * has one (it moves the moment a session starts, without waiting for the tree
- * to be refetched), else the fetched snapshot's own status — the same rule as
- * `nodeSignals`.
+ * Whether a node's chat is working: the live session registry says so (it
+ * moves the moment a session starts, without waiting for the tree to be
+ * refetched), OR the fetched snapshot does. Either, not one over the other: a
+ * native sub-agent's node is never in the live registry, so the snapshot's
+ * `ongoing` is the only word on it.
  */
 export function nodeIsRunning(node: ChatTreeNode, isRunning?: (chatId: string) => boolean): boolean {
-  return isRunning ? isRunning(node.chatId) : node.status === "ongoing";
+  return !!isRunning?.(node.chatId) || node.status === "ongoing";
 }
 
 /**
- * Working chats among what collapsing `node` hides: every rendered descendant
- * at any depth, plus the asides folded into those descendants' rows. Not
- * `node` itself, and not `node`'s own folded asides — its `AsideCount` stays on
- * screen when it is collapsed and already carries their running dot. Archived
- * subtrees the list is not showing are not counted, as they are not drawn.
+ * The signals of everything collapsing `node` hides: every rendered
+ * descendant at any depth, plus the asides folded into those descendants'
+ * rows. Not `node` itself, and not `node`'s own folded asides — its
+ * `AsideCount` stays on screen when it is collapsed and already carries them.
+ * Archived subtrees the list is not showing are not counted, as they are not
+ * drawn.
  */
+export function hiddenBelow(node: ChatTreeNode, underArchived: boolean, opts: TreeVisibility, isRunning?: (chatId: string) => boolean): AsideSignals[] {
+  const out: AsideSignals[] = [];
+  const walk = (parent: ChatTreeNode, parentUnderArchived: boolean) => {
+    for (const child of visibleChildren(parent, parentUnderArchived, opts)) {
+      out.push(nodeSignals(child, nodeIsRunning(child, isRunning)));
+      for (const aside of foldedAsideChildren(child, opts)) out.push(nodeSignals(aside, nodeIsRunning(aside, isRunning)));
+      walk(child, parentUnderArchived || child.childArchived === true);
+    }
+  };
+  walk(node, underArchived);
+  return out;
+}
+
+/** What a collapsed `node` hides that needs the user — see {@link hiddenBelow}. */
+export function attentionBelow(node: ChatTreeNode, underArchived: boolean, opts: TreeVisibility, isRunning?: (chatId: string) => boolean): AsideAttention {
+  return sumAttention(hiddenBelow(node, underArchived, opts, isRunning));
+}
+
+/** Working chats among what collapsing `node` hides. */
 export function countRunningBelow(node: ChatTreeNode, underArchived: boolean, opts: TreeVisibility, isRunning?: (chatId: string) => boolean): number {
-  let n = 0;
-  for (const child of visibleChildren(node, underArchived, opts)) {
-    if (nodeIsRunning(child, isRunning)) n++;
-    n += foldedAsideChildren(child, opts).filter((aside) => nodeIsRunning(aside, isRunning)).length;
-    n += countRunningBelow(child, underArchived || child.childArchived === true, opts, isRunning);
-  }
-  return n;
+  return attentionBelow(node, underArchived, opts, isRunning).running;
 }
