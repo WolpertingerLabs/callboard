@@ -23,7 +23,8 @@
     ]
   },
   "allowedEndpoints": [
-    "https://www.googleapis.com/calendar/v3/freeBusy"
+    "https://www.googleapis.com/calendar/v3/freeBusy",
+    "https://www.googleapis.com/calendar/v3/freeBusy?**"
   ],
   "testConnection": {
     "method": "POST",

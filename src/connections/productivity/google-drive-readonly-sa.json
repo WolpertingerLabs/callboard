@@ -2,7 +2,7 @@
   "name": "Google Drive (read-only, service account)",
   "stability": "beta",
   "category": "productivity",
-  "description": "Google Drive, read-only (scope drive.readonly): list, search, read metadata, download (alt=media) and export every file the account can see, plus shared drives. Cannot upload, change, share, or delete. Auth: drawlatch signs a JWT with GOOGLE_SERVICE_ACCOUNT_KEY (base64 of the service-account JSON key file) and mints short-lived access tokens for exactly this scope; the agent never sees the key. Without a subject it reads files shared with the service account; with one (domain-wide delegation) it reads that user's. See CONNECTIONS.md \"Google (scoped)\".",
+  "description": "Google Drive, read-only (scope drive.readonly): list, search, read metadata, download (alt=media) and export every file the account can see, plus shared drives, revisions, and the changes feed. Cannot upload, change, share, or delete. Auth: drawlatch signs a JWT with GOOGLE_SERVICE_ACCOUNT_KEY (base64 of the service-account JSON key file) and mints short-lived access tokens for exactly this scope; the agent never sees the key. Without a subject it reads files shared with the service account; with one (domain-wide delegation) it reads that user's. See CONNECTIONS.md \"Google (scoped)\".",
   "docsUrl": "https://developers.google.com/workspace/drive/api/reference/rest/v3",
   "secrets": {
     "GOOGLE_SERVICE_ACCOUNT_KEY": "${GOOGLE_SERVICE_ACCOUNT_KEY}"
@@ -18,9 +18,26 @@
     ]
   },
   "allowedEndpoints": [
-    "https://www.googleapis.com/drive/v3/files**",
-    "https://www.googleapis.com/drive/v3/about**",
-    "https://www.googleapis.com/drive/v3/drives**"
+    "https://www.googleapis.com/drive/v3/files",
+    "https://www.googleapis.com/drive/v3/files?**",
+    "https://www.googleapis.com/drive/v3/files/*",
+    "https://www.googleapis.com/drive/v3/files/*?**",
+    "https://www.googleapis.com/drive/v3/files/*/export",
+    "https://www.googleapis.com/drive/v3/files/*/export?**",
+    "https://www.googleapis.com/drive/v3/files/*/revisions",
+    "https://www.googleapis.com/drive/v3/files/*/revisions?**",
+    "https://www.googleapis.com/drive/v3/files/*/revisions/*",
+    "https://www.googleapis.com/drive/v3/files/*/revisions/*?**",
+    "https://www.googleapis.com/drive/v3/about",
+    "https://www.googleapis.com/drive/v3/about?**",
+    "https://www.googleapis.com/drive/v3/drives",
+    "https://www.googleapis.com/drive/v3/drives?**",
+    "https://www.googleapis.com/drive/v3/drives/*",
+    "https://www.googleapis.com/drive/v3/drives/*?**",
+    "https://www.googleapis.com/drive/v3/changes",
+    "https://www.googleapis.com/drive/v3/changes?**",
+    "https://www.googleapis.com/drive/v3/changes/startPageToken",
+    "https://www.googleapis.com/drive/v3/changes/startPageToken?**"
   ],
   "testConnection": {
     "url": "https://www.googleapis.com/drive/v3/about?fields=user",

@@ -113,11 +113,8 @@ describe('scoped Google templates', () => {
   it.each(ALL)('%s has a read-only test request inside its own allowlist', (alias) => {
     const route = loadConnection(alias);
     const test = route.testConnection;
-    if (!test) {
-      // Sheets has no ID-free read call: test_connection only mints a token.
-      expect(alias).toMatch(/^google-sheets-readonly/);
-      return;
-    }
+    expect(test).toBeDefined();
+    if (!test) return;
     expect(isEndpointAllowed(test.url, route.allowedEndpoints)).toBe(true);
     expect(test.url).not.toContain('${');
     if (alias === 'google-calendar-freebusy') {
@@ -129,10 +126,26 @@ describe('scoped Google templates', () => {
     }
   });
 
+  const WATCH_AND_CHANNELS = [
+    `${CAL}/calendars/primary/events/watch`,
+    `${CAL}/calendars/primary/events/watch?alt=json`,
+    `${CAL}/calendars/primary/events/w%61tch`,
+    `${CAL}/users/me/calendarList/watch`,
+    `${CAL}/users/me/settings/watch`,
+    `${CAL}/channels/stop`,
+    `${DRIVE}/files/1AbC/watch`,
+    `${DRIVE}/files/1AbC/watch?supportsAllDrives=true`,
+    `${DRIVE}/changes/watch?pageToken=1`,
+    `${DRIVE}/channels/stop`,
+    `${GMAIL}/watch`,
+    `${GMAIL}/stop`,
+  ];
+
   const cases: Record<string, { allow: string[]; deny: string[] }> = {
     'google-gmail-metadata': {
       allow: [
         `${GMAIL}/profile`,
+        `${GMAIL}/profile?alt=json`,
         `${GMAIL}/labels`,
         `${GMAIL}/labels/INBOX`,
         `${GMAIL}/messages?maxResults=10&labelIds=INBOX`,
@@ -145,6 +158,7 @@ describe('scoped Google templates', () => {
         `${GMAIL}/messages/18c0ffee/attachments/ANGjdJ`,
         `${GMAIL}/drafts`,
         `${GMAIL}/settings/filters`,
+        `${GMAIL}/messagesX`,
         'https://gmail.googleapis.com/gmail/v1/users/someone@example.com/messages',
         `${DRIVE}/files`,
       ],
@@ -160,8 +174,13 @@ describe('scoped Google templates', () => {
       deny: [`${GMAIL}/settings/sendAs`, `${CAL}/users/me/calendarList`],
     },
     'google-calendar-freebusy': {
-      allow: [`${CAL}/freeBusy`],
-      deny: [`${CAL}/users/me/calendarList`, `${CAL}/calendars/primary/events`, `${CAL}/colors`],
+      allow: [`${CAL}/freeBusy`, `${CAL}/freeBusy?alt=json`],
+      deny: [
+        `${CAL}/users/me/calendarList`,
+        `${CAL}/calendars/primary/events`,
+        `${CAL}/colors`,
+        `${CAL}/freeBusyX`,
+      ],
     },
     'google-calendar-readonly': {
       allow: [
@@ -173,11 +192,22 @@ describe('scoped Google templates', () => {
         `${CAL}/calendars/primary`,
         `${CAL}/calendars/primary/events?timeMin=2026-01-01T00:00:00Z&singleEvents=true`,
         `${CAL}/calendars/someone%40example.com/events/evt123`,
+        `${CAL}/calendars/primary/events/evt123?timeZone=Europe/Paris`,
         `${CAL}/calendars/primary/events/evt123/instances`,
         `${CAL}/freeBusy`,
+        `${CAL}/freeBusy?alt=json`,
         `${CAL}/colors`,
+        `${CAL}/colors?alt=json`,
       ],
-      deny: [`${CAL}/calendars/primary/acl`, `${DRIVE}/files`, `${GMAIL}/profile`],
+      deny: [
+        `${CAL}/calendars/primary/acl`,
+        `${CAL}/calendars/primary/acl/watch`,
+        `${CAL}/users/me/calendarListX`,
+        `${CAL}/calendars/primary/eventsX`,
+        `${CAL}/calendars/primary/events/evt123/instancesX`,
+        `${DRIVE}/files`,
+        `${GMAIL}/profile`,
+      ],
     },
     'google-drive-readonly': {
       allow: [
@@ -185,11 +215,20 @@ describe('scoped Google templates', () => {
         `${DRIVE}/files?q=name%20contains%20'x'&fields=files(id,name)`,
         `${DRIVE}/files/1AbC?alt=media`,
         `${DRIVE}/files/1AbC/export?mimeType=text/plain`,
+        `${DRIVE}/files/1AbC/revisions`,
+        `${DRIVE}/files/1AbC/revisions/2`,
         `${DRIVE}/about?fields=user`,
         `${DRIVE}/drives`,
+        `${DRIVE}/drives/0AbC`,
+        `${DRIVE}/changes?pageToken=123`,
+        `${DRIVE}/changes/startPageToken`,
+        `${DRIVE}/changes/startPageToken?supportsAllDrives=true`,
       ],
       deny: [
         'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart',
+        `${DRIVE}/filesX`,
+        `${DRIVE}/aboutX`,
+        `${DRIVE}/files/1AbC/permissions`,
         `${CAL}/colors`,
         'https://www.googleapis.com/drive/v2/files',
       ],
@@ -197,12 +236,24 @@ describe('scoped Google templates', () => {
     'google-drive-file': {
       allow: [
         `${DRIVE}/files`,
+        `${DRIVE}/files?q=trashed%3Dfalse`,
         `${DRIVE}/files/1AbC`,
+        `${DRIVE}/files/1AbC?fields=id,name`,
+        `${DRIVE}/files/1AbC/export?mimeType=text/plain`,
+        `${DRIVE}/files/1AbC/copy`,
         'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart',
         'https://www.googleapis.com/upload/drive/v3/files/1AbC?uploadType=media',
         `${DRIVE}/about?fields=user`,
       ],
-      deny: [`${DRIVE}/drives`, `${CAL}/colors`],
+      deny: [
+        // Sharing a file (publicly) goes through the permissions endpoints.
+        `${DRIVE}/files/1AbC/permissions`,
+        `${DRIVE}/files/1AbC/permissions?sendNotificationEmail=false`,
+        `${DRIVE}/files/1AbC/permissions/anyoneWithLink`,
+        `${DRIVE}/filesX`,
+        `${DRIVE}/drives`,
+        `${CAL}/colors`,
+      ],
     },
     'google-sheets-readonly': {
       allow: [
@@ -211,9 +262,22 @@ describe('scoped Google templates', () => {
         `${SHEETS}/1AbC/values/Sheet1!A1:B2`,
         `${SHEETS}/1AbC/values:batchGet?ranges=A1:B2`,
       ],
-      deny: [`${DRIVE}/files`, 'https://docs.googleapis.com/v1/documents/1AbC'],
+      deny: [`${DRIVE}/files`, `${SHEETS}X/1AbC`, 'https://docs.googleapis.com/v1/documents/1AbC'],
     },
   };
+
+  it.each(ALL)('%s cannot register or stop push channels (watch endpoints)', (alias) => {
+    const { allowedEndpoints } = loadConnection(alias);
+    for (const url of WATCH_AND_CHANNELS) {
+      expect(isEndpointAllowed(url, allowedEndpoints), url).toBe(false);
+    }
+  });
+
+  it.each(ALL)('%s uses ** only after a boundary (x?** or x/**)', (alias) => {
+    for (const pattern of loadConnection(alias).allowedEndpoints) {
+      expect(pattern.replace(/[?/]\*\*/g, ''), pattern).not.toContain('**');
+    }
+  });
 
   for (const [alias, { allow, deny }] of Object.entries(cases)) {
     for (const variant of SA_TWINS.includes(alias) ? [alias, `${alias}-sa`] : [alias]) {

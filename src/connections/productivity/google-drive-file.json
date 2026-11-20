@@ -2,7 +2,7 @@
   "name": "Google Drive (app-created files)",
   "stability": "beta",
   "category": "productivity",
-  "description": "Google Drive, per-file access (scope drive.file): only files this OAuth client created or the user opened with it. Can create, upload, update, share, and delete those files. Auth: drawlatch mints short-lived access tokens from GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET and GOOGLE_OAUTH_REFRESH_TOKEN (user OAuth; the agent never sees them) and refuses any token broader than this scope. See CONNECTIONS.md \"Google (scoped)\".",
+  "description": "Google Drive, per-file access (scope drive.file): only files this OAuth client created or the user opened with it. Can create, upload, update, copy, export, and delete those files; cannot share them (the permissions endpoints are not allowlisted). Auth: drawlatch mints short-lived access tokens from GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET and GOOGLE_OAUTH_REFRESH_TOKEN (user OAuth; the agent never sees them) and refuses any token broader than this scope. See CONNECTIONS.md \"Google (scoped)\".",
   "docsUrl": "https://developers.google.com/workspace/drive/api/reference/rest/v3",
   "secrets": {
     "GOOGLE_OAUTH_CLIENT_ID": "${GOOGLE_OAUTH_CLIENT_ID}",
@@ -23,9 +23,20 @@
     ]
   },
   "allowedEndpoints": [
-    "https://www.googleapis.com/drive/v3/files**",
-    "https://www.googleapis.com/upload/drive/v3/files**",
-    "https://www.googleapis.com/drive/v3/about**"
+    "https://www.googleapis.com/drive/v3/files",
+    "https://www.googleapis.com/drive/v3/files?**",
+    "https://www.googleapis.com/drive/v3/files/*",
+    "https://www.googleapis.com/drive/v3/files/*?**",
+    "https://www.googleapis.com/drive/v3/files/*/export",
+    "https://www.googleapis.com/drive/v3/files/*/export?**",
+    "https://www.googleapis.com/drive/v3/files/*/copy",
+    "https://www.googleapis.com/drive/v3/files/*/copy?**",
+    "https://www.googleapis.com/upload/drive/v3/files",
+    "https://www.googleapis.com/upload/drive/v3/files?**",
+    "https://www.googleapis.com/upload/drive/v3/files/*",
+    "https://www.googleapis.com/upload/drive/v3/files/*?**",
+    "https://www.googleapis.com/drive/v3/about",
+    "https://www.googleapis.com/drive/v3/about?**"
   ],
   "testConnection": {
     "url": "https://www.googleapis.com/drive/v3/about?fields=user",

@@ -2,7 +2,7 @@
   "name": "Google Sheets (read-only)",
   "stability": "beta",
   "category": "productivity",
-  "description": "Google Sheets, read-only (scope spreadsheets.readonly): spreadsheets.get and values.get / values:batchGet by spreadsheet ID. Cannot edit. Sheets has no ID-free read call, so test_connection only mints a token. Auth: drawlatch mints short-lived access tokens from GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET and GOOGLE_OAUTH_REFRESH_TOKEN (user OAuth; the agent never sees them) and refuses any token broader than this scope. See CONNECTIONS.md \"Google (scoped)\".",
+  "description": "Google Sheets, read-only (scope spreadsheets.readonly): spreadsheets.get and values.get / values:batchGet by spreadsheet ID. Cannot edit. Auth: drawlatch mints short-lived access tokens from GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET and GOOGLE_OAUTH_REFRESH_TOKEN (user OAuth; the agent never sees them) and refuses any token broader than this scope. See CONNECTIONS.md \"Google (scoped)\".",
   "docsUrl": "https://developers.google.com/workspace/sheets/api/reference/rest",
   "secrets": {
     "GOOGLE_OAUTH_CLIENT_ID": "${GOOGLE_OAUTH_CLIENT_ID}",
@@ -24,5 +24,9 @@
   },
   "allowedEndpoints": [
     "https://sheets.googleapis.com/v4/spreadsheets/**"
-  ]
+  ],
+  "testConnection": {
+    "url": "https://sheets.googleapis.com/v4/spreadsheets/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms?fields=spreadsheetId",
+    "description": "Reads the ID of Google's public sample spreadsheet (needs the Sheets API enabled)"
+  }
 }

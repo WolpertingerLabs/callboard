@@ -58,7 +58,7 @@ Then set the secrets for that caller. Caller `default` reads `GITHUB_TOKEN` from
 | `vercel` | [Vercel](https://vercel.com/docs/rest-api) | **`VERCEL_TOKEN`** | Bearer | |
 | `x` | [X API v2](https://developer.x.com/en/docs/x-api) | **`X_BEARER_TOKEN`**, `X_SEARCH_QUERY` | Bearer | poll |
 
-Every template has a built-in `test_connection` request, except `google-sheets-readonly` and its `-sa` twin: Sheets has no read call that doesn't need a spreadsheet ID, so their test only mints a token. Three tests cost a little credit: the Anthropic test sends a 1-token message, Exa runs a one-result search, and Parallel runs a small `turbo` search.
+Every template has a built-in `test_connection` request. Three tests cost a little credit: the Anthropic test sends a 1-token message, Exa runs a one-result search, and Parallel runs a small `turbo` search.
 
 A secret that isn't set is sent as the literal placeholder (for example, `Bearer ${LICHESS_API_TOKEN}`). The `aws` connection and the OAuth2 templates refuse to send a request without their credentials instead. Set every bold secret even for APIs with public endpoints.
 
@@ -125,10 +125,10 @@ The `google-*` templates give an agent one Google API at one scope. Drawlatch mi
 | `google-gmail-metadata` | `gmail.metadata` | `users/me`: `profile`, `labels`, `messages`, `threads`, `history` | `GET users/me/profile` |
 | `google-gmail-readonly`, `-sa` | `gmail.readonly` | The above, plus `messages/*/attachments/*` and `drafts` | `GET users/me/profile` |
 | `google-calendar-freebusy` | `calendar.freebusy` | `POST /freeBusy` only | `POST /freeBusy` for `primary` over a fixed hour |
-| `google-calendar-readonly`, `-sa` | `calendar.readonly` | `users/me/calendarList`, `users/me/settings`, `calendars/*`, `calendars/*/events…`, `freeBusy`, `colors` | `GET users/me/calendarList?maxResults=1` |
-| `google-drive-readonly`, `-sa` | `drive.readonly` | `drive/v3/files…`, `about`, `drives` | `GET about?fields=user` |
-| `google-drive-file` | `drive.file` | `drive/v3/files…`, `upload/drive/v3/files…`, `about` | `GET about?fields=user` |
-| `google-sheets-readonly`, `-sa` | `spreadsheets.readonly` | `sheets.googleapis.com/v4/spreadsheets/**` | mints a token only |
+| `google-calendar-readonly`, `-sa` | `calendar.readonly` | `users/me/calendarList`, `users/me/settings`, `calendars/{id}`, `calendars/{id}/events`, `events/{id}`, `events/{id}/instances`, `freeBusy`, `colors` | `GET users/me/calendarList?maxResults=1` |
+| `google-drive-readonly`, `-sa` | `drive.readonly` | `files`, `files/{id}`, `files/{id}/export`, `files/{id}/revisions`, `about`, `drives`, `changes`, `changes/startPageToken` | `GET about?fields=user` |
+| `google-drive-file` | `drive.file` | `files`, `files/{id}`, `files/{id}/export`, `files/{id}/copy`, `upload/drive/v3/files`, `about` (not `permissions`) | `GET about?fields=user` |
+| `google-sheets-readonly`, `-sa` | `spreadsheets.readonly` | `sheets.googleapis.com/v4/spreadsheets/**` | `GET` Google's public sample spreadsheet, `fields=spreadsheetId` |
 
 **Which flavour.** The plain templates use **user OAuth**: one consent from a Google account, stored as a refresh token. The `-sa` twins use a **service account** and have the same scope, allowlist, and test as their twin (a test checks they don't drift). A service account reads only what is shared with its `client_email`. With [domain-wide delegation](#service-account-setup) in a Workspace domain, it can act as a user in that domain instead. Gmail always needs that, so `google-gmail-readonly-sa` is unusable without a `subject`.
 
@@ -262,16 +262,17 @@ The 100-token limit doesn't apply to service accounts.
 
 #### Template notes
 
-- **Scopes bound reach, not intent.** A read-only template can still read everything in that scope, including mail an attacker sent to the account. `drive.file` can create, upload, share, and delete the files it covers, so an agent could share a file publicly. Prefer the read-only templates.
+- **Scopes bound reach, not intent.** A read-only template can still read everything in that scope, including mail an attacker sent to the account. `drive.file` can create, upload, overwrite, and delete the files it covers. The template leaves out the `permissions` endpoints, so the agent can't share a file (publicly or with anyone), but it can still put data into files it creates. Prefer the read-only templates.
 - **Methods aren't restricted by the allowlist.** Read-only is enforced by Google through the scope, so a `POST` to an allowlisted path that needs a broader scope gets `403`. A `403` from drawlatch carries a hint naming the token's scopes.
-- **`watch` endpoints.** Read scopes allow registering push channels (`calendars/*/events/watch`, `files/*/watch`). Those deliver change notifications, not content, to an `https` URL the caller chooses.
+- **No push channels.** Read scopes would let an agent register a push channel (`events/watch`, `calendarList/watch`, `settings/watch`, `files/{id}/watch`, `changes/watch`) that sends change notifications to any `https` URL it names. No template allows the `watch` or `channels/stop` endpoints. Calendar event IDs and the literal `watch` are both one path segment, so the Calendar templates refuse `watch` with [exclusion entries](README.md#custom-connectors) (`!…/events/watch`). Exclusions are also checked with unreserved percent-escapes decoded, so `w%61tch` is refused too.
+- **Path boundaries.** `**` appears only after `?` or `/`, so a pattern for `files` can't match `filesX`.
 - **`gmail.metadata`:**
   - `messages.list` and `threads.list` refuse `q=` (no search).
   - `format=full` and `format=raw` are refused. Use `format=metadata` (with `metadataHeaders`) or `minimal`.
   - No attachments or drafts.
 - **`drive.file`** sees only files this OAuth client created, or that the user opened with it through the Google Picker. With a refresh token minted as above, that means only the files the agent created. It uploads through `https://www.googleapis.com/upload/drive/v3/files`.
 - **Calendar.** `calendars/*/acl` isn't allowlisted: listing ACLs needs more than `calendar.readonly`. `google-calendar-freebusy`'s test queries a fixed past hour and returns busy times only.
-- **Sheets** has no ID-free read call, so `test_connection` only mints a token. Read with `GET …/v4/spreadsheets/{id}` or `…/values/{range}`.
+- **Sheets** has no read call that doesn't take a spreadsheet ID. `test_connection` reads `spreadsheetId` from Google's public sample spreadsheet (`1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms`), which also catches a project where the Sheets API isn't enabled. This hasn't been run against Google yet: if the sample sheet ever disappears, the test fails with `404` while real reads still work. Read with `GET …/v4/spreadsheets/{id}` or `…/values/{range}`.
 - **The rest of Google** (Docs, Tasks, People, a Gmail listener) isn't templated yet. Use a [custom connector](README.md#oauth2-token-minting) with the same secrets and an `oauth2` block for one scope.
 
 ### Web search and fetch

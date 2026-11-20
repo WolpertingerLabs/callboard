@@ -24,6 +24,7 @@
   },
   "allowedEndpoints": [
     "https://gmail.googleapis.com/gmail/v1/users/me/profile",
+    "https://gmail.googleapis.com/gmail/v1/users/me/profile?**",
     "https://gmail.googleapis.com/gmail/v1/users/me/labels",
     "https://gmail.googleapis.com/gmail/v1/users/me/labels?**",
     "https://gmail.googleapis.com/gmail/v1/users/me/labels/*",
