@@ -20,7 +20,7 @@ import { useChatTreeCollapse, type ChatTreeCollapse } from "../hooks/useChatTree
 import { useIsMobile } from "../hooks/useIsMobile";
 import { treeContains, withNodeChildArchived } from "../utils/childArchive";
 import { ASIDE_ROLE } from "../utils/chatRewrite";
-import { attentionBelow, foldedAsideChildren, isHiddenArchivedChild, nodeIsRunning, visibleChildren, type TreeVisibility } from "../utils/chatTreeNodes";
+import { attentionBelow, foldedAsideChildren, nodeIsRunning, visibleChildren, type TreeVisibility } from "../utils/chatTreeNodes";
 import RunningDot, { RunningCount } from "./RunningDot";
 import { attentionSuffix, chatSignals, NO_ATTENTION, nodeSignals, sumAttention } from "../utils/asideAttention";
 
@@ -781,11 +781,9 @@ function TreeNodeRow({
     : {};
 
   const visibility: TreeVisibility = { showArchived: !!childArchive?.showArchived, activeChatId, foldAsides };
-  // Hidden archived children take their whole subtree with them: the
-  // recursion below never runs for a node that returns here. Except the one
-  // holding the open chat (the dim makes the same exemption). Its other
-  // descendants are still cut below.
-  if (depth > 0 && isHiddenArchivedChild(node, visibility)) return null;
+  // Hidden archived children (and their whole subtrees) never reach here:
+  // the parent renders only `visibleChildren`, which drops them — except the
+  // one holding the open chat (the dim makes the same exemption).
   // What its children inherit: they are under an archived child too.
   const childrenUnderArchived = underArchived || archivedChild;
   // Faded with an archived ancestor as well as for its own flag, so a shown
@@ -856,7 +854,7 @@ function TreeNodeRow({
               data-testid="tree-node-toggle"
               className={dimClass}
               aria-expanded={!collapsed}
-              aria-label={`${collapsed ? "Expand" : "Collapse"} "${label}"`}
+              aria-label={`${collapsed ? "Expand" : "Collapse"} "${label}"${holdsOpen ? " (holds the open chat)" : ""}`}
               title={holdsOpen ? `"${label}" holds the open chat` : collapsed ? `Expand "${label}"` : `Collapse "${label}"`}
               disabled={holdsOpen}
               onClick={(e) => {
@@ -1299,7 +1297,9 @@ export default function ChatTreeList({
      * only, members plus their folded asides: the same set the section
      * header's `runningIn` counts (so a tree reads the same number in both
      * places) and the same set `groupSessionStatus` reads (so the dot shows
-     * exactly when this is at least 1).
+     * exactly when this is at least 1). Live-registry sessions only: a native
+     * sub-agent is never in the list or the registry, so one shown working
+     * (from the tree snapshot) inside an expanded tree is not in this count.
      */
     const groupRunningCount = groupLive.filter((member) => sessionStatusFor(member.id)?.active).length;
 

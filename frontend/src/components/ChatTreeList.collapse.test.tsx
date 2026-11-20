@@ -237,7 +237,8 @@ describe("review follow-ups", () => {
     renderList([], CHATS, "leaf");
     await expand();
     expect(node("leaf")).toBeTruthy();
-    const toggle = toggleFor("Mid") as HTMLButtonElement;
+    // The reason is in the accessible name, not only the tooltip.
+    const toggle = screen.getByRole("button", { name: 'Collapse "Mid" (holds the open chat)' }) as HTMLButtonElement;
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
     expect(toggle.disabled).toBe(true);
     expect(getChatTreeCollapsedIds().has("mid")).toBe(true);
