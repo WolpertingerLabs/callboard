@@ -318,6 +318,35 @@ function assertNoWithheldSecrets(
   }
 }
 
+/**
+ * Reject a URL whose path contains a dot segment (`.` or `..`), counting the
+ * forms a URL parser or an upstream treats the same way: `%2e` for `.`, and
+ * `%2f`, `%5c`, or `\` for `/`.
+ *
+ * Allowlist patterns are matched against the URL string as written, but
+ * fetch() normalizes `/calendar/v3/../../drive/v3/files` (and `%2e%2e`) to
+ * `/drive/v3/files` before sending it. Without this check a path-scoped
+ * pattern like `https://www.googleapis.com/calendar/v3/**` would let a request
+ * reach another API on the same host. No API needs a dot segment, so it is
+ * refused on every route. A lone `%2F` (GitLab's `group%2Fproject`) is fine.
+ */
+export function pathHasDotSegment(url: string): boolean {
+  const m = /^[a-z][a-z0-9+.-]*:\/\/[^/?#\\]*([^?#]*)/i.exec(url);
+  const rawPath = m ? m[1] : (/^[^?#]*/.exec(url)?.[0] ?? '');
+  const decoded = rawPath.replace(/%2e/gi, '.').replace(/%2f|%5c|\\/gi, '/');
+  return decoded.split('/').some((segment) => segment === '.' || segment === '..');
+}
+
+function assertNoDotSegments(url: string, shownUrl: string): void {
+  if (pathHasDotSegment(url)) {
+    throw new Error(
+      `Endpoint not allowed: ${shownUrl}. The path contains a "." or ".." segment ` +
+        '(possibly percent-encoded), which would be resolved before sending and could ' +
+        'reach a path the allowlist does not cover. Send the normalized path instead.',
+    );
+  }
+}
+
 /** Header values fetch() rejects — and echoes back in full when it does. */
 const INVALID_HEADER_VALUE = /[\r\n\0]/;
 
@@ -630,6 +659,7 @@ export async function executeProxyRequest(
   }
 
   // Step 6: Final endpoint check on fully resolved URL
+  assertNoDotSegments(resolvedUrl, url);
   if (!isEndpointAllowed(resolvedUrl, matched.allowedEndpoints)) {
     throw new Error(`Endpoint not allowed after resolution: ${url}`);
   }
