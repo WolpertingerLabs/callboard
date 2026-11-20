@@ -566,6 +566,35 @@ describe("top-level tree cards", () => {
     expect([...getChatTreeCardExpandedKeys()]).toEqual(["root"]);
   });
 
+  it("closes and forgets a card whose clicked retry fails too, so it rests closed", async () => {
+    mockGetChatTree.mockRejectedValue(new Error("no record"));
+    openCards("root");
+    renderTree({ refreshToken: 0 });
+    // The first failure, on load: shown folded, still saved as open.
+    const folded = await screen.findByTitle("Expand chat tree");
+    await flush();
+    expect([...getChatTreeCardExpandedKeys()]).toEqual(["root"]);
+    // The retry fails as well: the card closes and leaves the saved set.
+    folded.click();
+    await flush();
+    expect(mockGetChatTree).toHaveBeenCalledTimes(2);
+    expect(getChatTreeCardExpandedKeys().size).toBe(0);
+    expect(localStorage.getItem(CHAT_TREE_CARDS_EXPANDED_KEY)).toBeNull();
+    expect(screen.getByTitle("Expand chat tree").getAttribute("aria-expanded")).toBe("false");
+    // Nothing more is requested for it — not on a refresh, not on a reload.
+    cleanup();
+    resetChatTreeCollapse();
+    renderTree({ refreshToken: 0 });
+    await screen.findByTitle("Expand chat tree");
+    await flush();
+    expect(mockGetChatTree).toHaveBeenCalledTimes(2);
+    // Opening it again is a fresh choice: saved, and its first failure keeps it.
+    screen.getByTitle("Expand chat tree").click();
+    await flush();
+    expect(mockGetChatTree).toHaveBeenCalledTimes(3);
+    expect([...getChatTreeCardExpandedKeys()]).toEqual(["root"]);
+  });
+
   it("highlights a closed card holding the open chat, without opening it", async () => {
     render(
       <MemoryRouter>

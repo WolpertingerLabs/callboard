@@ -17,7 +17,7 @@ import { useChatSectionExpansion } from "../hooks/useChatSectionExpansion";
 import type { SpaceListItem } from "shared/types/space.js";
 import { isSidebarFolderEligible, readSidebarFolder } from "shared/types/sidebarFolder.js";
 import { useIsMobile } from "../hooks/useIsMobile";
-import { useChatTreeCardExpansion, useChatTreeCollapse, type ChatTreeCollapse } from "../hooks/useChatTreeCollapse";
+import { closeChatTreeCard, useChatTreeCardExpansion, useChatTreeCollapse, type ChatTreeCollapse } from "../hooks/useChatTreeCollapse";
 import { treeContains, withNodeChildArchived } from "../utils/childArchive";
 import { ASIDE_ROLE } from "../utils/chatRewrite";
 import { attentionBelow, countRowsBelow, foldedAsideChildren, nodeIsRunning, visibleChildren, type TreeVisibility } from "../utils/chatTreeNodes";
@@ -1293,6 +1293,12 @@ export default function ChatTreeList({
    * ref of the state would lag a commit behind a response landing).
    */
   const inHand = useRef(new Set<string>());
+  /**
+   * Groups whose current fetch is a retry the user clicked for, after a
+   * failure. If that fails too, the card is closed and forgotten (see the
+   * `.catch` below).
+   */
+  const retrying = useRef(new Set<string>());
   /** Per-group request counter, so only the latest response for a group lands. */
   const fetchSeq = useRef(new Map<string, number>());
   /** Fetches waiting for a slot, by group; started in list order. */
@@ -1314,8 +1320,11 @@ export default function ChatTreeList({
     const waiting = queue.current;
     const inFlight = controllers.current;
     const seqs = fetchSeq.current;
+    const retries = retrying.current;
     return () => {
       mounted.current = false;
+      // A remount's fetch is not one the user clicked to retry.
+      retries.clear();
       // Abort what is in flight and forget what was never answered, so a
       // remount (StrictMode's included) fetches it again instead of waiting
       // on a request that is gone.
@@ -1379,6 +1388,7 @@ export default function ChatTreeList({
             inHand.current.add(rootKey);
             setTrees((prev) => ({ ...prev, [rootKey]: tree }));
             settle(setFailed, rootKey, false);
+            retrying.current.delete(rootKey);
           })
           .catch(() => {
             // The chat may have no stored record, or the request failed. Keep any
@@ -1387,7 +1397,17 @@ export default function ChatTreeList({
             // the card renders folded (without touching the stored fold) and a
             // click retries. Not retried on its own until the group changes, so a
             // chat with no record is not re-requested on every poll.
+            //
+            // The first failure keeps the card saved as open: it may be
+            // transient, and should not forget the user's choice. A retry the
+            // user clicked for that fails again closes the card and drops it
+            // from the saved set, so a card that cannot load rests closed
+            // instead of costing a request on every page load.
             if (!current() || !fetchedSig.current.has(rootKey) || inHand.current.has(rootKey)) return;
+            if (retrying.current.delete(rootKey)) {
+              closeChatTreeCard(rootKey);
+              return;
+            }
             settle(setFailed, rootKey, true);
           })
           .finally(() => {
@@ -1433,6 +1453,7 @@ export default function ChatTreeList({
         // flight from before the fold could pass for a later request's.
         fetchedSig.current.delete(rootKey);
         inHand.current.delete(rootKey);
+        retrying.current.delete(rootKey);
         queue.current.delete(rootKey);
         controllers.current.get(rootKey)?.abort();
         controllers.current.delete(rootKey);
@@ -1463,8 +1484,9 @@ export default function ChatTreeList({
     (rootKey: string, representativeChatId: string, shownExpanded: boolean) => {
       if (cardExpansion.isExpanded(rootKey) && !shownExpanded) {
         // Shown folded only because its fetch failed: retry, leaving the
-        // card in the saved open set.
+        // card in the saved open set — unless the retry fails too.
         const w = wantedRef.current.find((x) => x.rootKey === rootKey);
+        retrying.current.add(rootKey);
         setFailed((prev) => {
           const next = new Set(prev);
           next.delete(rootKey);

@@ -50,12 +50,16 @@ function createCollapseStore(read: () => Set<string>, save: (id: string, collaps
     snapshot = next;
     notify();
   };
+  /** Take `id` out of the set, if it is in it. Stable, so callbacks need no dependency on it. */
+  const remove = (id: string) => {
+    if (getSnapshot().has(id)) toggle(id);
+  };
   const useStore = (): ChatTreeCollapse => {
     const collapsed = useSyncExternalStore(subscribe, getSnapshot);
     const isCollapsed = useCallback((id: string) => collapsed.has(id), [collapsed]);
     return { isCollapsed, toggle };
   };
-  return { useStore, reset };
+  return { useStore, reset, remove };
 }
 
 const nodeStore = createCollapseStore(getChatTreeCollapsedIds, saveChatTreeNodeCollapsed);
@@ -76,6 +80,11 @@ export function useChatTreeCollapse(): ChatTreeCollapse {
 export interface ChatTreeCardExpansion {
   isExpanded: (rootKey: string) => boolean;
   toggle: (rootKey: string) => void;
+}
+
+/** Close a top-level tree card, forgetting it was open. A no-op if it is closed. */
+export function closeChatTreeCard(rootKey: string): void {
+  cardStore.remove(rootKey);
 }
 
 /** Which top-level tree cards are open, by group `rootKey`. Cards start closed. */

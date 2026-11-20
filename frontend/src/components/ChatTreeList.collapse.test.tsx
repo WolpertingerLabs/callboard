@@ -114,7 +114,6 @@ function renderList(running: string[] = [], chats: Chat[] = CHATS, activeChatId?
   );
 }
 
-/** Tree cards start expanded: wait for the tree to arrive. */
 /**
  * Open the tree card — cards start closed — or, after a remount, find it
  * still open: an opened card is remembered.
