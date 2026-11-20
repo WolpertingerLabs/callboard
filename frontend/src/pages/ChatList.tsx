@@ -1812,10 +1812,12 @@ export default function ChatList({
           //
           // On mobile, outside selection mode, a small gap plus the safe-area
           // inset keeps the last chat clear of the home indicator / native
-          // browser chrome. Padding on a scroll container only shows once the
-          // content overflows, so a short list is unaffected. Skipped while
-          // "Load next page" is shown: its own wrapper padding already ends
-          // the list clear of the edge.
+          // browser chrome. The padding is always there but can only be seen
+          // once the content overflows, so a short list looks unchanged.
+          // Skipped while "Load next page" is shown — a deliberate choice: the
+          // button's own 16px wrapper is room enough, even though it does not
+          // add the safe-area inset itself. Keyed on the same `showLoadMore`
+          // that renders the button, so the two cannot disagree.
           paddingBottom: selectionMode
             ? (barHeight ?? SELECTION_BAR_FALLBACK_CLEARANCE)
             : isMobile && !showLoadMore
