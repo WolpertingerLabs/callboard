@@ -152,30 +152,33 @@ The `google-*` templates give an agent one Google API at one scope. Drawlatch mi
    SCOPES="https://www.googleapis.com/auth/gmail.metadata https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/calendar.freebusy https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/spreadsheets.readonly"
    CODE_VERIFIER=$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=\n')
    CODE_CHALLENGE=$(printf '%s' "$CODE_VERIFIER" | openssl dgst -sha256 -binary | base64 | tr '+/' '-_' | tr -d '=\n')
-   echo "https://accounts.google.com/o/oauth2/v2/auth?client_id=$CLIENT_ID&redirect_uri=http://127.0.0.1:8085&response_type=code&access_type=offline&prompt=consent&code_challenge=$CODE_CHALLENGE&code_challenge_method=S256&scope=${SCOPES// /%20}"
+   STATE=$(openssl rand -hex 16)
+   echo "https://accounts.google.com/o/oauth2/v2/auth?client_id=$CLIENT_ID&redirect_uri=http://127.0.0.1:8085&response_type=code&access_type=offline&prompt=consent&state=$STATE&code_challenge=$CODE_CHALLENGE&code_challenge_method=S256&scope=${SCOPES// /%20}"
    ```
 
-   Open the printed URL in a browser. `access_type=offline` asks for a refresh token. `prompt=consent` makes Google issue a new one even if you consented before. On the consent screen, tick every scope: Google lets users decline individual ones. Nothing listens on `127.0.0.1:8085`, so the browser then shows a connection error. Copy the `code` parameter from its address bar, and exchange it, with the verifier, within a few minutes. The response contains the refresh token, so write it to a private file rather than the terminal:
+   Open the printed URL in a browser. `access_type=offline` asks for a refresh token. `prompt=consent` makes Google issue a new one even if you consented before. On the consent screen, tick every scope: Google lets users decline individual ones. Nothing listens on `127.0.0.1:8085`, so the browser then shows a connection error. Copy the whole URL from its address bar and exchange the code, with the verifier, within a few minutes. The snippet checks that `state` came back unchanged, and passes the code as it appears in the URL (already URL-encoded). The client secret goes to `curl` on stdin rather than in its arguments, where other users could see it in the process list. (Use `printf '%s'`: a `<<<` here-string adds a newline that would become part of the secret.) The response contains the refresh token, so it goes to a private file rather than the terminal:
 
    ```bash
-   read -r -p 'Code: ' CODE
-   (umask 077; curl -s https://oauth2.googleapis.com/token \
-     -d client_id="$CLIENT_ID" -d client_secret="$CLIENT_SECRET" \
-     --data-urlencode code="$CODE" -d code_verifier="$CODE_VERIFIER" \
+   read -r -p 'Redirected URL: ' REDIRECT
+   CODE=$(sed -n 's/.*[?&]code=\([^&#]*\).*/\1/p' <<<"$REDIRECT")
+   [ "$(sed -n 's/.*[?&]state=\([^&#]*\).*/\1/p' <<<"$REDIRECT")" = "$STATE" ] || echo 'state mismatch: start over'
+   (umask 077; printf '%s' "$CLIENT_SECRET" | curl -s https://oauth2.googleapis.com/token \
+     -d client_id="$CLIENT_ID" --data-urlencode client_secret@- \
+     -d code="$CODE" -d code_verifier="$CODE_VERIFIER" \
      -d grant_type=authorization_code -d redirect_uri=http://127.0.0.1:8085 \
      -o token.json)
    jq -r '.scope // .error' token.json   # the granted scopes (not secret), or the error
    ```
 
-   The response's `refresh_token` (`1//…`) is the secret. Append the three secrets for the caller to drawlatch's `.env` (here `~/.drawlatch/.env`; use your config directory) without printing them, then delete the response and restart the daemon. Or paste them into the dashboard instead:
+   The response's `refresh_token` (`1//…`) is the secret. Append the three secrets for the caller to drawlatch's `.env` (here `~/.drawlatch/.env`; use your config directory) without printing them, with a umask that keeps a newly created `.env` private. Then delete the response and restart the daemon. Or paste the secrets into the dashboard instead:
 
    ```bash
-   {
+   (umask 077; {
      printf 'MAIL_AGENT_GOOGLE_OAUTH_CLIENT_ID=%s\n' "$CLIENT_ID"
      printf 'MAIL_AGENT_GOOGLE_OAUTH_CLIENT_SECRET=%s\n' "$CLIENT_SECRET"
      printf 'MAIL_AGENT_GOOGLE_OAUTH_REFRESH_TOKEN=%s\n' "$(jq -r .refresh_token token.json)"
-   } >> ~/.drawlatch/.env
-   rm token.json; unset CLIENT_SECRET CODE CODE_VERIFIER
+   } >> ~/.drawlatch/.env)
+   rm token.json; unset CLIENT_SECRET CODE CODE_VERIFIER STATE REDIRECT
    drawlatch restart
    ```
 
@@ -245,7 +248,7 @@ If the response lists scopes beyond the consented set (for example, ones carried
 2. **Store the key as base64.** This has no quotes or newlines to break `.env`. Write it straight into drawlatch's `.env` (here `~/.drawlatch/.env`; use your config directory) rather than printing it, then delete the key file and restart the daemon:
 
    ```bash
-   printf 'MAIL_AGENT_GOOGLE_SERVICE_ACCOUNT_KEY=%s\n' "$(base64 -w0 key.json)" >> ~/.drawlatch/.env
+   (umask 077; printf 'MAIL_AGENT_GOOGLE_SERVICE_ACCOUNT_KEY=%s\n' "$(base64 -w0 key.json)" >> ~/.drawlatch/.env)
    # macOS: "$(base64 -i key.json)" (no line wrapping by default)
    rm key.json
    drawlatch restart
