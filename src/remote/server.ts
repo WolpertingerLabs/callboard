@@ -26,6 +26,7 @@ import {
   resolveRoutes,
   connectorWithholdingWarnings,
   resolveCallerRoutes,
+  validateRemoteConfig,
   resolveSecrets,
   getEnvFilePath,
   getRemoteConfigPath,
@@ -489,6 +490,13 @@ export function createApp(options: CreateAppOptions = {}) {
       }
       console.log(`[remote] Set missing secrets in ${getEnvFilePath()}`);
     }
+  }
+
+  // Boot-time oauth2 check: invalid custom-connector oauth2 blocks and
+  // oauth2Overrides entries. Each one drops only that connection for that
+  // caller (see resolveCallerRoutesChecked), so log them up front.
+  for (const problem of validateRemoteConfig(config)) {
+    console.error(`[remote] ${problem}`);
   }
 
   // ── Handshake init ─────────────────────────────────────────────────────
