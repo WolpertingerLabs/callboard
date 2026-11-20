@@ -126,6 +126,9 @@ type ChatScope = "open" | "archived";
  */
 const SELECTION_BAR_FALLBACK_CLEARANCE = 120;
 
+/** Bottom breathing room for the scrolled chat list on mobile, on top of the device's safe-area inset. */
+const MOBILE_LIST_BOTTOM_GAP = "calc(24px + var(--safe-bottom))";
+
 /** A pending metadata write on one chat, per field, each stamped with its own epoch. See `pinOverridesRef`. */
 interface OverrideFields {
   pinned?: { value: boolean; epoch: number };
@@ -349,6 +352,8 @@ export default function ChatList({
 
   // Determine if any filter is active (advanced filters, content search, or bookmarks)
   const anyFilterActive = hasActiveFilters(filters) || matchingChatIds !== null;
+  /** Whether the "Load next page" footer is rendered at the end of the list. */
+  const showLoadMore = hasMore && !anyFilterActive;
 
   /**
    * A content search is on the wire, which widens the request scope — see
@@ -1804,7 +1809,20 @@ export default function ChatList({
           // constant was 76 and the bar is 84px at the 350px minimum. The
           // fallback only applies before the first measurement (or in an
           // environment with no layout at all).
-          paddingBottom: selectionMode ? (barHeight ?? SELECTION_BAR_FALLBACK_CLEARANCE) : undefined,
+          //
+          // On mobile, outside selection mode, a small gap plus the safe-area
+          // inset keeps the last chat clear of the home indicator / native
+          // browser chrome. The padding is always there but can only be seen
+          // once the content overflows, so a short list looks unchanged.
+          // Skipped while "Load next page" is shown — a deliberate choice: the
+          // button's own 16px wrapper is room enough, even though it does not
+          // add the safe-area inset itself. Keyed on the same `showLoadMore`
+          // that renders the button, so the two cannot disagree.
+          paddingBottom: selectionMode
+            ? (barHeight ?? SELECTION_BAR_FALLBACK_CLEARANCE)
+            : isMobile && !showLoadMore
+              ? MOBILE_LIST_BOTTOM_GAP
+              : undefined,
         }}
       >
         {drafts.length > 0 && (
@@ -1918,7 +1936,7 @@ export default function ChatList({
           </div>
         )}
 
-        {hasMore && !anyFilterActive && (
+        {showLoadMore && (
           <div style={{ padding: "16px 20px", borderTop: "1px solid var(--chatlist-item-border)" }}>
             <button
               onClick={loadMore}
