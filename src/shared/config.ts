@@ -1123,8 +1123,10 @@ export function connectionOverlapWarnings(config: RemoteServerConfig): string[] 
         const a = routes[i];
         const b = routes[j];
         let pair: [string, string] | undefined;
-        for (const pa of a.allowedEndpoints) {
-          const pb = b.allowedEndpoints.find((p) => allowlistPatternsOverlap(pa, p));
+        // Exclusions (`!pattern`) only subtract; compare what each allows.
+        const positive = (patterns: string[]) => patterns.filter((p) => !p.startsWith('!'));
+        for (const pa of positive(a.allowedEndpoints)) {
+          const pb = positive(b.allowedEndpoints).find((p) => allowlistPatternsOverlap(pa, p));
           if (pb !== undefined) {
             pair = [pa, pb];
             break;

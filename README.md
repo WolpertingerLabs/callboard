@@ -213,7 +213,7 @@ With this connector, caller `default` reads `ADMIN_KEY` from `DEFAULT_ADMIN_KEY`
 | Field | Description |
 | --- | --- |
 | `alias` | Required. Name referenced from a caller's `connections`. |
-| `allowedEndpoints` | Required. URL globs: `*` matches within a path segment, `**` across segments. An empty list matches nothing. Matched against the request URL in parsed form (see below). |
+| `allowedEndpoints` | Required. URL globs: `*` matches within a path segment, `**` across segments. An entry starting with `!` is an exclusion: a URL it matches is refused even when another entry allows it (the Calendar templates use `!…/events/watch` next to `…/events/*`). Exclusions are also checked with unreserved percent-escapes decoded (`w%61tch` is `watch`), and only subtract: a list of nothing but exclusions allows nothing. An empty list matches nothing. Matched against the request URL in parsed form (see below). |
 | `headers` | Headers injected into every request. `${VAR}` resolves against `secrets`. A request that sets the same header itself is rejected. |
 | `awsSigV4` | Sign every request with AWS Signature Version 4: `{}`, or `{ "service": "…", "region": "…" }` to override what's inferred from the hostname. See [AWS SigV4 signing](#aws-sigv4-signing). |
 | `oauth2` | Mint the bearer token from OAuth2 client credentials instead of a static header. See [OAuth2 token minting](#oauth2-token-minting). |

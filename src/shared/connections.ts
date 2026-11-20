@@ -12,7 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { isEndpointAllowed } from '../remote/url-policy.js';
+import { isEndpointAllowed, isExclusionPattern } from '../remote/url-policy.js';
 import {
   AWS_SIGV4_REQUIRED_SECRETS,
   MAX_OAUTH2_REFRESH_SKEW_MS,
@@ -409,6 +409,8 @@ export function validateOAuth2Route(
   }
   const tokenUrls = tokenEndpointVariants(oauth2.tokenUrl);
   for (const pattern of route.allowedEndpoints) {
+    // Exclusions only subtract from what the route reaches.
+    if (isExclusionPattern(pattern)) continue;
     // A pattern without a scheme://host prefix can match any host.
     const scoped = /^[a-z][a-z0-9+.-]*:\/\/[^/?#]+/i.test(pattern);
     if (!scoped || tokenUrls.some((url) => isEndpointAllowed(url, [pattern]))) {

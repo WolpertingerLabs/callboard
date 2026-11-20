@@ -8,14 +8,49 @@
 
 // ── Allowlist matching ──────────────────────────────────────────────────────
 
-/** Whether `url` matches one of the glob `patterns`. An empty list allows
- *  everything; callers that need "nothing" check for it themselves. */
+/** Prefix that turns an allowlist pattern into an exclusion. */
+export const ALLOWLIST_EXCLUSION_PREFIX = '!';
+
+/** Whether an allowlist entry is an exclusion (`!pattern`). */
+export function isExclusionPattern(pattern: string): boolean {
+  return pattern.startsWith(ALLOWLIST_EXCLUSION_PREFIX);
+}
+
+/**
+ * Whether `url` matches one of the glob `patterns` and none of its exclusions.
+ * An entry starting with `!` is an exclusion, as in .gitignore: a URL it
+ * matches is refused even when another entry allows it (Calendar's
+ * `!…/events/watch` next to `…/events/*`, since a glob can't tell an event ID
+ * from the literal segment `watch`). Exclusions only subtract: a list of
+ * nothing but exclusions allows nothing. An empty list allows everything;
+ * callers that need "nothing" check for it themselves.
+ */
 export function isEndpointAllowed(url: string, patterns: string[]): boolean {
   if (patterns.length === 0) return true; // no restrictions if empty
   // Callers pass parsed hrefs, which are canonical already; this keeps a raw
   // URL (`https://Host:443/…`) matching the same way.
   url = canonicalAuthority(url);
-  return patterns.map(canonicalPattern).some((pattern) => {
+  const exclusions = patterns
+    .filter(isExclusionPattern)
+    .map((p) => canonicalPattern(p.slice(ALLOWLIST_EXCLUSION_PREFIX.length)));
+  const inclusions = patterns.filter((p) => !isExclusionPattern(p)).map(canonicalPattern);
+  if (!matchesAny(url, inclusions)) return false;
+  // An upstream decodes `w%61tch` to `watch`, so an exclusion also checks the
+  // URL with unreserved-character escapes decoded.
+  return !matchesAny(url, exclusions) && !matchesAny(decodeUnreserved(url), exclusions);
+}
+
+/** Decode percent-escapes of RFC 3986 unreserved characters (`%61` → `a`). */
+function decodeUnreserved(url: string): string {
+  return url.replace(/%([0-9a-f]{2})/gi, (escape, hex: string) => {
+    const ch = String.fromCharCode(parseInt(hex, 16));
+    return /[A-Za-z0-9\-._~]/.test(ch) ? ch : escape;
+  });
+}
+
+/** Whether `url` matches one of `patterns` (already canonical). */
+function matchesAny(url: string, patterns: string[]): boolean {
+  return patterns.some((pattern) => {
     // Support simple glob patterns: * matches anything within a segment, ** matches across segments
     const regex = new RegExp(
       '^' +
