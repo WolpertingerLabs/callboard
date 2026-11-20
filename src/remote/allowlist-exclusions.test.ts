@@ -40,6 +40,13 @@ describe('allowlist exclusions', () => {
     expect(isEndpointAllowed(`${E}/abc`, patterns)).toBe(true);
   });
 
+  it('gives the same answer on repeated calls (cached regexes are stateless)', () => {
+    for (let i = 0; i < 3; i++) {
+      expect(isEndpointAllowed(`${E}/abc`, PATTERNS)).toBe(true);
+      expect(isEndpointAllowed(`${E}/watch`, PATTERNS)).toBe(false);
+    }
+  });
+
   it('does not decode reserved escapes for the exclusion check', () => {
     // %2F stays an escape: `watch%2Fx` is a different segment from `watch`.
     expect(isEndpointAllowed(`${E}/watch%2Fx`, PATTERNS)).toBe(true);

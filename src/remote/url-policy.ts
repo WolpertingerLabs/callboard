@@ -18,11 +18,12 @@ export function isExclusionPattern(pattern: string): boolean {
 
 /**
  * Whether `url` matches one of the glob `patterns` and none of its exclusions.
- * An entry starting with `!` is an exclusion, as in .gitignore: a URL it
- * matches is refused even when another entry allows it (Calendar's
- * `!…/events/watch` next to `…/events/*`, since a glob can't tell an event ID
- * from the literal segment `watch`). Exclusions only subtract: a list of
- * nothing but exclusions allows nothing. An empty list allows everything;
+ * An entry starting with `!` is an exclusion: a URL it matches is refused
+ * even when another entry allows it (Calendar's `!…/events/watch` next to
+ * `…/events/*`, since a glob can't tell an event ID from the literal segment
+ * `watch`). Unlike .gitignore, order doesn't matter and nothing re-includes:
+ * a URL is allowed iff some inclusion matches and no exclusion does. A list
+ * of nothing but exclusions allows nothing. An empty list allows everything;
  * callers that need "nothing" check for it themselves.
  */
 export function isEndpointAllowed(url: string, patterns: string[]): boolean {
@@ -59,9 +60,22 @@ function decodeUnreserved(url: string): string {
 
 /** Whether `url` matches one of `patterns` (already canonical). */
 function matchesAny(url: string, patterns: string[]): boolean {
-  return patterns.some((pattern) => {
-    // Support simple glob patterns: * matches anything within a segment, ** matches across segments
-    const regex = new RegExp(
+  return patterns.some(
+    (pattern) => patternRegex(pattern).test(url) && wildcardHostMatches(url, pattern),
+  );
+}
+
+const compiledPatterns = new Map<string, RegExp>();
+
+/**
+ * The anchored regex for a canonical glob pattern: `*` matches within a path
+ * segment, `**` across segments. Compiled once per pattern string; patterns
+ * come from config and templates, so the cache stays small.
+ */
+function patternRegex(pattern: string): RegExp {
+  let regex = compiledPatterns.get(pattern);
+  if (!regex) {
+    regex = new RegExp(
       '^' +
         pattern
           .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
@@ -70,8 +84,9 @@ function matchesAny(url: string, patterns: string[]): boolean {
           .replace(/\.__DOUBLE_STAR__\./g, '.*') +
         '$',
     );
-    return regex.test(url) && wildcardHostMatches(url, pattern);
-  });
+    compiledPatterns.set(pattern, regex);
+  }
+  return regex;
 }
 
 const canonicalPatterns = new Map<string, string>();
