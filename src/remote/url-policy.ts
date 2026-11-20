@@ -27,6 +27,9 @@ export function isExclusionPattern(pattern: string): boolean {
  */
 export function isEndpointAllowed(url: string, patterns: string[]): boolean {
   if (patterns.length === 0) return true; // no restrictions if empty
+  // A fragment is never sent: fetch drops it. Matching it anyway would let
+  // `…/events/watch#x` match `…/events/*` and dodge `!…/events/watch`.
+  url = stripFragment(url);
   // Callers pass parsed hrefs, which are canonical already; this keeps a raw
   // URL (`https://Host:443/…`) matching the same way.
   url = canonicalAuthority(url);
@@ -38,6 +41,12 @@ export function isEndpointAllowed(url: string, patterns: string[]): boolean {
   // An upstream decodes `w%61tch` to `watch`, so an exclusion also checks the
   // URL with unreserved-character escapes decoded.
   return !matchesAny(url, exclusions) && !matchesAny(decodeUnreserved(url), exclusions);
+}
+
+/** `url` without its fragment (from the first `#`). */
+export function stripFragment(url: string): string {
+  const hash = url.indexOf('#');
+  return hash === -1 ? url : url.slice(0, hash);
 }
 
 /** Decode percent-escapes of RFC 3986 unreserved characters (`%61` → `a`). */
@@ -217,6 +226,9 @@ export function normalizeOutboundUrl(url: string, patterns: string[], shownUrl: 
   }
   // `host.` and `host` are the same host to DNS; send (and match) one form.
   if (parsed.hostname.endsWith('.')) parsed.hostname = parsed.hostname.slice(0, -1);
+  // The fragment is never sent, so it is neither matched nor kept: the string
+  // matched stays the string sent.
+  parsed.hash = '';
   if (!isEndpointAllowed(parsed.href, patterns)) {
     throw new Error(`Endpoint not allowed after resolution: ${shownUrl}`);
   }

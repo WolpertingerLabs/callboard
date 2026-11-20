@@ -2,11 +2,18 @@
  * `!pattern` exclusions in allowedEndpoints: a URL an exclusion matches is
  * refused even when another entry allows it.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 
-import { connectionOverlapWarnings, type RemoteServerConfig } from '../shared/config.js';
-import { validateOAuth2Route } from '../shared/connections.js';
-import { isEndpointAllowed } from './url-policy.js';
+import {
+  connectionOverlapWarnings,
+  resolveRoutes,
+  type RemoteServerConfig,
+} from '../shared/config.js';
+import { loadConnection, validateOAuth2Route } from '../shared/connections.js';
+import { executeProxyRequest } from './tool-dispatch.js';
+import { isEndpointAllowed, normalizeOutboundUrl } from './url-policy.js';
 
 const E = 'https://api.example.com/v1/events';
 const PATTERNS = [E, `${E}/*`, `${E}/*?**`, `!${E}/watch`, `!${E}/watch?**`];
@@ -74,5 +81,107 @@ describe('allowlist exclusions', () => {
       callers: { c: { connections: ['a', 'b'] } },
     };
     expect(connectionOverlapWarnings(config)).toEqual([]);
+  });
+});
+
+// ── Fragments ───────────────────────────────────────────────────────────────
+
+describe('fragments never take part in matching', () => {
+  const CAL = 'https://www.googleapis.com/calendar/v3';
+  const calendar = loadConnection('google-calendar-readonly').allowedEndpoints;
+
+  it.each([
+    `${CAL}/calendars/primary/events/watch#x`,
+    `${CAL}/calendars/primary/events/watch?#`,
+    `${CAL}/calendars/primary/events/watch#`,
+    `${CAL}/calendars/primary/events/w%61tch#x`,
+    `${CAL}/users/me/calendarList/watch#x`,
+    `${CAL}/users/me/settings/watch#/x`,
+  ])('refuses %s (isEndpointAllowed and normalizeOutboundUrl)', (url) => {
+    expect(isEndpointAllowed(url, calendar)).toBe(false);
+    expect(() => normalizeOutboundUrl(url, calendar, url)).toThrow(/not allowed/);
+  });
+
+  it('strips a fragment from an allowed URL instead of refusing it', () => {
+    const url = `${CAL}/calendars/primary/events/evt123#section`;
+    expect(isEndpointAllowed(url, calendar)).toBe(true);
+    expect(normalizeOutboundUrl(url, calendar, url)).toBe(`${CAL}/calendars/primary/events/evt123`);
+    expect(normalizeOutboundUrl(`${CAL}/colors?#`, calendar, 'x')).toBe(`${CAL}/colors?`);
+  });
+
+  describe('on the request path', () => {
+    let server: http.Server;
+    let base: string;
+    let seen: string[] = [];
+
+    beforeAll(async () => {
+      server = http.createServer((req, res) => {
+        seen.push(`${req.method} ${req.url}`);
+        if (req.url === '/api/events/bounce') {
+          res.writeHead(302, { location: `${base}/api/events/watch#x` });
+          res.end();
+          return;
+        }
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ url: req.url }));
+      });
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+      base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    });
+    afterAll(() => new Promise<void>((resolve) => server.close(() => resolve())));
+    beforeEach(() => {
+      seen = [];
+    });
+
+    const routes = () =>
+      resolveRoutes(
+        [
+          {
+            alias: 'cal',
+            // As the Calendar template writes it: the bare path and its `?**` form.
+            allowedEndpoints: [
+              `${base}/api/events/*`,
+              `!${base}/api/events/watch`,
+              `!${base}/api/events/watch?**`,
+            ],
+          },
+        ],
+        {},
+        'alice',
+      );
+
+    it.each(['#x', '?#', '#'])('refuses POST …/events/watch%s and sends nothing', async (tail) => {
+      await expect(
+        executeProxyRequest(
+          { method: 'POST', url: `${base}/api/events/watch${tail}`, body: {} },
+          routes(),
+          undefined,
+          { caller: 'alice' },
+        ),
+      ).rejects.toThrow(/not allowed/);
+      expect(seen).toEqual([]);
+    });
+
+    it('does not follow a redirect to …/events/watch#x', async () => {
+      const result = await executeProxyRequest(
+        { method: 'GET', url: `${base}/api/events/bounce` },
+        routes(),
+        undefined,
+        { caller: 'alice' },
+      );
+      expect(result.status).toBe(302);
+      expect(seen).toEqual(['GET /api/events/bounce']);
+    });
+
+    it('sends an allowed URL without its fragment', async () => {
+      const result = await executeProxyRequest(
+        { method: 'GET', url: `${base}/api/events/evt1#frag` },
+        routes(),
+        undefined,
+        { caller: 'alice' },
+      );
+      expect(result.status).toBe(200);
+      expect(seen).toEqual(['GET /api/events/evt1']);
+    });
   });
 });
