@@ -25,6 +25,7 @@ import { OAUTH2_TOKEN_TIMEOUT_MS, scrubSecrets } from '../../../shared/config.js
 import { createLogger } from '../../../shared/logger.js';
 import { safeFetch, sameOriginAs } from '../../safe-fetch.js';
 import { oauth2Authorize, type OAuth2Route } from '../../oauth/authenticate.js';
+import { normalizeOutboundUrl } from '../../url-policy.js';
 import type { TokenManager } from '../../oauth/token-manager.js';
 
 const log = createLogger('poll');
@@ -64,6 +65,8 @@ export class PollIngestor extends BaseIngestor {
 
   /** OAuth2 wiring, when the connection mints its own tokens (injected by manager). */
   private readonly oauth2?: OAuth2PollOptions;
+  /** Why the resolved poll URL was refused, if it was. Nothing is sent then. */
+  private readonly urlError?: string;
   /** The token on the most recent poll. */
   private currentToken?: string;
   /** The last few tokens this poller has sent, for scrubbing error text. */
@@ -79,12 +82,28 @@ export class PollIngestor extends BaseIngestor {
     instanceId?: string,
     /** Omitted for non-oauth2 routes, whose behaviour is unchanged. */
     oauth2?: OAuth2PollOptions,
+    /** The connection's allowlist; the resolved poll URL must match it. */
+    allowedEndpoints: string[] = [],
   ) {
     super(connectionAlias, 'poll', secrets, bufferSize, instanceId);
     this.oauth2 = oauth2;
 
     // Resolve ${VAR} placeholders in URL
-    this.url = PollIngestor.resolvePlaceholders(pollConfig.url, secrets);
+    // Listener params (agent-settable through set_listener_params) land in
+    // `secrets` and so in the URL, unencoded. Apply the same checks as a
+    // proxied request: no control characters or dot segments, and the
+    // normalized URL must be allowlisted. `CAL_ID=../../drive/v3/files#`
+    // would otherwise send the connection's token elsewhere on the host and
+    // hand back the response as events.
+    const resolvedUrl = PollIngestor.resolvePlaceholders(pollConfig.url, secrets);
+    try {
+      this.url = normalizeOutboundUrl(resolvedUrl, allowedEndpoints, pollConfig.url);
+    } catch (err) {
+      this.url = resolvedUrl;
+      this.urlError =
+        `${(err as Error).message} (after listener params were substituted). ` +
+        'Fix the listener params; the listener will not poll.';
+    }
     this.intervalMs = Math.max(pollConfig.intervalMs, MIN_INTERVAL_MS);
     this.method = (pollConfig.method ?? 'GET').toUpperCase();
     this.body = pollConfig.body;
@@ -106,6 +125,12 @@ export class PollIngestor extends BaseIngestor {
   // ── Lifecycle ──────────────────────────────────────────────────────
 
   async start(): Promise<void> {
+    if (this.urlError) {
+      this.state = 'error';
+      this.errorMessage = this.urlError;
+      log.error(`${this.connectionAlias}: ${this.urlError}`);
+      return;
+    }
     this.state = 'starting';
     log.info(
       `Starting poll ingestor for ${this.connectionAlias} ` +
@@ -478,5 +503,7 @@ registerIngestorFactory('poll', (connectionAlias, config, secrets, bufferSize, i
     bufferSize,
     instanceId,
     oauth2Route?.oauth2 && caller ? { route: oauth2Route, caller } : undefined,
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-explicit-any -- attached by the manager
+    ((config as any)._allowedEndpoints as string[] | undefined) ?? [],
   );
 });

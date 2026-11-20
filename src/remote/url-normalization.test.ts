@@ -12,7 +12,12 @@ import type { AddressInfo } from 'node:net';
 
 import { resolveRoutes, type ResolvedRoute } from '../shared/config.js';
 import { listConnectionTemplates, loadConnection } from '../shared/connections.js';
-import { executeProxyRequest, isEndpointAllowed, pathHasDotSegment } from './tool-dispatch.js';
+import {
+  executeProxyRequest,
+  isEndpointAllowed,
+  normalizeOutboundUrl,
+  pathHasDotSegment,
+} from './tool-dispatch.js';
 
 describe('dot segments in request paths', () => {
   let server: http.Server;
@@ -170,6 +175,25 @@ describe('dot segments in request paths', () => {
       ];
       for (const url of urls) {
         if (url && pathHasDotSegment(url)) offenders.push(`${alias}: ${url}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+});
+
+describe('built-in poll listeners', () => {
+  it('every template poll URL passes the outbound URL checks', () => {
+    const offenders: string[] = [];
+    for (const { alias } of listConnectionTemplates()) {
+      const route = loadConnection(alias);
+      const poll = route.ingestor?.poll;
+      if (!poll) continue;
+      // Resolve placeholders with a plausible value, as a listener would.
+      const url = poll.url.replace(/\$\{\w+\}/g, 'sample-value');
+      try {
+        normalizeOutboundUrl(url, route.allowedEndpoints, poll.url);
+      } catch (err) {
+        offenders.push(`${alias}: ${(err as Error).message}`);
       }
     }
     expect(offenders).toEqual([]);

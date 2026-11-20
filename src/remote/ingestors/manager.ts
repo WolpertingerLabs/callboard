@@ -269,7 +269,8 @@ export class IngestorManager {
    * to Claude Code remote triggers.
    */
   /**
-   * For a poll ingestor on an oauth2 route, attach the resolved route (whose
+   * For a poll ingestor, attach the route's allowlist; on an oauth2 route,
+   * also attach the resolved route (whose
    * full `secrets` carry the signer-only oauth2 credentials the listener's own
    * secret map leaves out) and the caller, so the poller can mint tokens
    * through the shared TokenManager under the same identity as http_request.
@@ -279,6 +280,11 @@ export class IngestorManager {
     resolvedRoute: ResolvedRoute,
     caller: string,
   ): void {
+    // Every poll URL is checked against the connection's allowlist: listener
+    // params (agent-settable through set_listener_params) are substituted
+    // into it.
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-explicit-any -- private property consumed by poll factory
+    (effectiveConfig as any)._allowedEndpoints = resolvedRoute.allowedEndpoints;
     if (!resolvedRoute.oauth2) return;
     // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-explicit-any -- private property consumed by poll factory
     (effectiveConfig as any)._oauth2Route = resolvedRoute;

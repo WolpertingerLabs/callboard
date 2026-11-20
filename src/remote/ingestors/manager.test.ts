@@ -1174,3 +1174,50 @@ describe('IngestorManager — oauth2 poll routes', () => {
     await manager.stopOne('alice', 'oauth-poll');
   });
 });
+
+describe('IngestorManager — poll URLs built from listener params', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('refuses a param that walks out of the allowlist', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(new Response('[]')));
+    vi.stubGlobal('fetch', fetchMock);
+    const config: RemoteServerConfig = {
+      host: '127.0.0.1',
+      port: 9999,
+      connectors: [
+        {
+          alias: 'cal',
+          headers: { Authorization: 'Bearer ${TOKEN}' },
+          secrets: { TOKEN: 'static-token-value' },
+          allowedEndpoints: ['https://www.example.com/calendar/v3/**'],
+          ingestor: {
+            type: 'poll',
+            poll: {
+              url: 'https://www.example.com/calendar/v3/calendars/${CAL_ID}/events',
+              intervalMs: 60_000,
+            },
+          },
+          listenerConfig: {
+            name: 'Calendar',
+            fields: [{ key: 'calId', label: 'Calendar', type: 'text', overrideKey: 'CAL_ID' }],
+          },
+        },
+      ],
+      callers: {
+        alice: {
+          connections: ['cal'],
+          ingestorOverrides: { cal: { params: { calId: '../../drive/v3/files#' } } },
+        },
+      },
+      rateLimitPerMinute: 60,
+    };
+    const manager = new IngestorManager(config);
+    await manager.startOne('alice', 'cal');
+    const [status] = manager.getStatuses('alice');
+    expect(status.state).toBe('error');
+    expect(fetchMock).not.toHaveBeenCalled();
+    await manager.stopAll();
+  });
+});

@@ -1098,3 +1098,76 @@ describe('PollIngestor — OAuth2 token injection', () => {
     errSpy.mockRestore();
   });
 });
+
+// ── Resolved poll URL checks ─────────────────────────────────────────
+
+describe('PollIngestor — resolved URL checks', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    fetchMock = vi.fn().mockResolvedValue(mockResponse([]));
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  const allowlist = ['https://www.example.com/calendar/v3/**'];
+
+  function make(calId: string) {
+    return new PollIngestor(
+      'cal',
+      { CAL_ID: calId },
+      defaultConfig({ url: 'https://www.example.com/calendar/v3/calendars/${CAL_ID}/events' }),
+      {},
+      undefined,
+      undefined,
+      undefined,
+      allowlist,
+    );
+  }
+
+  it.each([
+    ['dot segments', '../../../drive/v3/files#'],
+    ['encoded dot segments', '%2e%2e/%2e%2e/%2e%2e/drive/v3/files#'],
+    ['a tab trick', '.\t./.\t./.\t./drive/v3/files#'],
+    ['a newline', 'primary\n'],
+  ])('refuses %s from a listener param and never polls', async (_label, calId) => {
+    const ingestor = make(calId);
+    await ingestor.start();
+    expect(ingestor.getStatus().state).toBe('error');
+    expect(ingestor.getStatus().error).toMatch(/listener params/);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a URL outside the allowlist', async () => {
+    const ingestor = new PollIngestor(
+      'cal',
+      { HOST: 'evil.example' },
+      defaultConfig({ url: 'https://${HOST}/calendar/v3/x' }),
+      {},
+      undefined,
+      undefined,
+      undefined,
+      allowlist,
+    );
+    await ingestor.start();
+    expect(ingestor.getStatus().state).toBe('error');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('polls a normal param value, sending the normalized URL', async () => {
+    const ingestor = make('primary calendar');
+    await ingestor.start();
+    expect(ingestor.getStatus().state).toBe('connected');
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'https://www.example.com/calendar/v3/calendars/primary%20calendar/events',
+    );
+    await ingestor.stop();
+  });
+});
