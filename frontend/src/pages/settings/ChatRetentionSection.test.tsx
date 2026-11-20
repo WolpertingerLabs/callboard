@@ -173,17 +173,36 @@ describe("ChatRetentionSection", () => {
     expect(saveButton().disabled).toBe(false);
   });
 
-  it("explains an invalid value in the file, and treats saving anything as turning cleanup on", async () => {
+  it("explains an invalid value in the file, quietly until the user acts, and treats saving anything as turning cleanup on", async () => {
     h.getEngineRetention.mockResolvedValue(all(claude({ invalidValue: "0", canShorten: false })));
     render(<ChatRetentionSection engine="claude-code" />);
     expect(await screen.findByText(/skips cleanup and deletes nothing/)).toBeTruthy();
     expect(screen.queryByText(/Claude's default/)).toBeNull();
-    // Blank (the default) is a real change here, and a reduction from "nothing is deleted".
+    // On load: nothing looks like an unsaved edit, and Default is not claimed.
+    expect(screen.queryByText(/Shorter than now/)).toBeNull();
+    expect(saveButton().disabled).toBe(true);
+    expect(screen.getByRole("button", { name: "Default" }).style.background).toBe("var(--surface)");
+    // Picking Default is a real change, and a reduction from "nothing is deleted".
+    fireEvent.click(screen.getByRole("button", { name: "Default" }));
     expect(screen.getByText(/Shorter than now/)).toBeTruthy();
     expect(saveButton().disabled).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "Forever" }));
     expect(screen.queryByText(/Shorter than now/)).toBeNull();
     expect(saveButton().disabled).toBe(false);
+  });
+
+  it("keeps the shrink gate after a successful save", async () => {
+    h.getEngineRetention.mockResolvedValue(all(claude({ configuredDays: 365, effectiveDays: 365, canShorten: false })));
+    // What the daemon answers: the PUT carries canShorten too.
+    h.setClaudeRetention.mockResolvedValue(claude({ configuredDays: 36500, effectiveDays: 36500, canShorten: false }));
+    render(<ChatRetentionSection engine="claude-code" />);
+    fireEvent.click(await screen.findByRole("button", { name: "Forever" }));
+    fireEvent.click(saveButton());
+    await waitFor(() => expect(h.setClaudeRetention).toHaveBeenCalledWith(36500));
+    await screen.findByText("keep chats indefinitely");
+    fireEvent.click(screen.getByRole("button", { name: "90 days" }));
+    expect(screen.getByText(/which is how this page is connected/)).toBeTruthy();
+    expect(saveButton().disabled).toBe(true);
   });
 
   it("clears a save error once the user edits again, and does not show Saved! beside a later failure", async () => {

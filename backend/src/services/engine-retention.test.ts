@@ -143,7 +143,7 @@ describe("setClaudeCleanupPeriodDays", () => {
       expect(readJson()).toEqual({ cleanupPeriodDays: 36500 });
     });
 
-    it.each([0, "90", -5, 1.5])("treats an invalid current value %j as 'nothing is deleted', so any write needs allowShrink", async (raw) => {
+    it.each([0, "90", -5, 1.5])("treats an invalid current value %j as 'nothing is deleted', so any write below the ceiling needs allowShrink", async (raw) => {
       writeFileSync(settingsFile(), JSON.stringify({ cleanupPeriodDays: raw }));
       await expect(setClaudeCleanupPeriodDays(31, deps())).rejects.toMatchObject({ status: 403 });
       await expect(setClaudeCleanupPeriodDays(null, deps())).rejects.toMatchObject({ status: 403 });
@@ -185,7 +185,7 @@ describe("setClaudeCleanupPeriodDays", () => {
       symlinkSync(real, settingsFile());
       chmodSync(store, 0o555);
       try {
-        await expect(setClaudeCleanupPeriodDays(90, deps())).rejects.toMatchObject({ status: 409, message: expect.stringMatching(/not writable/) });
+        await expect(setClaudeCleanupPeriodDays(90, deps())).rejects.toMatchObject({ status: 409, message: expect.stringMatching(/could not be written/) });
       } finally {
         chmodSync(store, 0o755);
       }

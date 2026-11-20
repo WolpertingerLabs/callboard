@@ -86,9 +86,9 @@ describe("GET /api/engines/retention", () => {
 });
 
 describe("PUT /api/engines/claude-code/retention", () => {
-  it("passes a number through and returns the service's result", async () => {
+  it("passes a number through and returns the service's result with canShorten", async () => {
     const r = await put({ cleanupPeriodDays: 90 });
-    expect(r).toEqual({ status: 200, body: { engine: "claude-code", configuredDays: 90 } });
+    expect(r).toEqual({ status: 200, body: { engine: "claude-code", configuredDays: 90, canShorten: true } });
     expect(mocks.setClaudeCleanupPeriodDays).toHaveBeenCalledWith(90, { allowShrink: true });
   });
 
@@ -97,9 +97,10 @@ describe("PUT /api/engines/claude-code/retention", () => {
     expect(mocks.setClaudeCleanupPeriodDays).toHaveBeenCalledWith(null, { allowShrink: true });
   });
 
-  it("does not allow shrinking for a client reached through a proxy", async () => {
-    await put({ cleanupPeriodDays: 90 }, REMOTE_REQ);
+  it("does not allow shrinking for a client reached through a proxy, and says so in the answer", async () => {
+    const r = await put({ cleanupPeriodDays: 90 }, REMOTE_REQ);
     expect(mocks.setClaudeCleanupPeriodDays).toHaveBeenCalledWith(90, { allowShrink: false });
+    expect(r.body.canShorten).toBe(false);
   });
 
   it.each([[{}], [{ cleanupPeriodDays: "90" }], [{ cleanupPeriodDays: true }], [undefined]])("rejects body %j with a 400 without writing", async (body) => {

@@ -178,7 +178,10 @@ enginesRouter.put("/claude-code/retention", async (req, res) => {
     return res.status(400).json({ error: "cleanupPeriodDays must be a number, or null for the default." });
   }
   try {
-    const retention = await setClaudeCleanupPeriodDays(value, { allowShrink: isDirectLocalClient(req) });
+    const local = isDirectLocalClient(req);
+    // canShorten too, like the GET: the page replaces its state with this
+    // answer, and dropping the flag would un-gate the next edit.
+    const retention = { ...(await setClaudeCleanupPeriodDays(value, { allowShrink: local })), canShorten: local };
     log.info(`Claude cleanupPeriodDays set to ${value === null ? "default" : value}`);
     return res.json(retention);
   } catch (err) {

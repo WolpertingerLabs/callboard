@@ -130,6 +130,9 @@ function ClaudeRetentionEditor({
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
+  // Has the user changed anything since load or the last save? Only matters
+  // for an invalid value in the file, where the blank box is not "unchanged".
+  const [touched, setTouched] = useState(false);
   const savedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   useEffect(() => () => clearTimeout(savedTimer.current), []);
@@ -140,10 +143,11 @@ function ClaudeRetentionEditor({
   // Untouched: the box still shows what the file says. That can be out of the
   // range Callboard writes (a hand-edited 99999), which is not the user's
   // mistake to be told about until they edit it.
-  // An invalid value in the file shows as a blank box, but blank is then a
-  // real change (it would turn deletion on), so it is never pristine.
+  // An invalid value in the file shows as a blank box, but saving blank is then
+  // a real change (it would turn deletion on) — so in that state "pristine"
+  // means "not touched yet" rather than "box matches the file".
   const invalidInFile = retention.invalidValue !== undefined && !retention.managedBy;
-  const pristine = draft === toDraft(retention.configuredDays) && !invalidInFile;
+  const pristine = invalidInFile ? !touched : draft === toDraft(retention.configuredDays);
   const showInvalid = !parsed.valid && !pristine;
   const dirty = !pristine && (!parsed.valid || invalidInFile || days !== retention.configuredDays);
   const nextEffective = days === null ? retention.defaultDays : days;
@@ -173,6 +177,7 @@ function ClaudeRetentionEditor({
       // This editor is the only writer, so the draft is re-synced here rather
       // than from an effect on the prop.
       setDraft(toDraft(next.configuredDays));
+      setTouched(false);
       setSaved(true);
       clearTimeout(savedTimer.current);
       savedTimer.current = setTimeout(() => setSaved(false), 2000);
@@ -234,6 +239,7 @@ function ClaudeRetentionEditor({
           readOnly={saving}
           onChange={(e) => {
             setDraft(e.target.value);
+            setTouched(true);
             setError("");
           }}
           onKeyDown={(e) => {
@@ -243,7 +249,8 @@ function ClaudeRetentionEditor({
         />
         <span style={{ fontSize: 13, color: "var(--text-muted)" }}>days</span>
         {PRESETS.map(({ label, days: presetDays }) => {
-          const active = parsed.valid && parsed.days === presetDays;
+          // A blank box over an invalid file value is not "Default" until the user picks it.
+          const active = parsed.valid && parsed.days === presetDays && !(invalidInFile && !touched);
           return (
             <button
               key={label}
@@ -251,6 +258,7 @@ function ClaudeRetentionEditor({
               disabled={locked || saving}
               onClick={() => {
                 setDraft(toDraft(presetDays));
+                setTouched(true);
                 setError("");
               }}
               style={{

@@ -164,7 +164,10 @@ function configuredDaysIn(read: UserSettingsRead): number | null {
 /**
  * A `cleanupPeriodDays` that is present but one Claude rejects. Claude does not
  * fall back to its default for it: an invalid key fails validation and the CLI
- * skips the sweep altogether — nothing is deleted.
+ * skips the sweep altogether — nothing is deleted. (Measured in the bundled
+ * CLI: the sweep records `skipReason: "settings_invalid_key_set"` and prints
+ * "Transcript retention cleanup is paused until the settings errors above are
+ * fixed".)
  */
 function invalidValueIn(read: UserSettingsRead): string | undefined {
   if (read.kind !== "ok" || !("cleanupPeriodDays" in read.settings)) return undefined;
@@ -309,7 +312,7 @@ export async function setClaudeCleanupPeriodDays(days: number | null, opts: SetC
       // Typically a link into a read-only store (nix/home-manager): the file is
       // managed somewhere else, and that is where it has to change.
       throw new RetentionUpdateError(
-        `${target === settingsPath ? settingsPath : `${settingsPath} (→ ${target})`} is not writable by Callboard (${code}). If a dotfiles tool manages it, change cleanupPeriodDays there.`,
+        `${target === settingsPath ? settingsPath : `${settingsPath} (→ ${target})`} could not be written (${code}): it is read-only, or another program has it locked. If a dotfiles tool manages it, change cleanupPeriodDays there.`,
         409,
       );
     }
