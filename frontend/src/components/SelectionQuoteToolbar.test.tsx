@@ -100,6 +100,9 @@ const toolbar = () => screen.queryByRole("toolbar");
 
 beforeEach(() => {
   vi.useFakeTimers();
+  // The same day as TS, so the chip's "today drops the date" rule reads it as
+  // today: without a pinned clock this file passed only on 2026-11-19.
+  vi.setSystemTime(new Date(2026, 10, 19, 16, 0));
   resetQuoteTraysForTests();
 });
 
