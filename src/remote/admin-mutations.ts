@@ -16,12 +16,7 @@
 import express from 'express';
 import rateLimit from 'express-rate-limit';
 
-import {
-  saveRemoteConfig,
-  type CallerConfig,
-  type RemoteServerConfig,
-  type ResolvedRoute,
-} from '../shared/config.js';
+import { saveRemoteConfig, type RemoteServerConfig, type ResolvedRoute } from '../shared/config.js';
 import { dispatchTool, type ToolContext } from './tool-dispatch.js';
 import {
   createCallerWithKeys,
@@ -78,7 +73,8 @@ export function mountAdminMutations(router: express.Router, deps: AdminMutationD
 
   /** Guard: 404 unless the caller exists in config. */
   function callerExists(alias: string): boolean {
-    return alias in deps.loadConfig().callers;
+    // Own properties only: `__proto__` or `constructor` is not a caller.
+    return Object.hasOwn(deps.loadConfig().callers, alias);
   }
 
   /** Run a tool and send its result, mapping thrown errors to HTTP codes. */
@@ -251,7 +247,11 @@ export function mountAdminMutations(router: express.Router, deps: AdminMutationD
       return;
     }
     const config = deps.loadConfig();
-    const caller = config.callers[req.params.alias] as CallerConfig | undefined;
+    // Own properties only: `config.callers["__proto__"]` is Object.prototype,
+    // and writing selfManage onto it would set it for every object.
+    const caller = Object.hasOwn(config.callers, req.params.alias)
+      ? config.callers[req.params.alias]
+      : undefined;
     if (!caller) {
       res.status(404).json({ error: `Unknown caller: ${req.params.alias}` });
       return;

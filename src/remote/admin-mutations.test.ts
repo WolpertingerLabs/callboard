@@ -537,6 +537,19 @@ describe('mutating admin API', () => {
     expect(loadRemoteConfig().callers.default.selfManage).toBe(true);
   });
 
+  it('treats __proto__ / constructor as unknown callers (no prototype writes)', async () => {
+    for (const alias of ['__proto__', 'constructor']) {
+      const put = await req('PUT', `/api/admin/callers/${alias}/self-manage`, { enabled: false });
+      expect(put.status).toBe(404);
+      const tool = await req('POST', `/api/admin/callers/${alias}/connections/github`, {
+        enabled: true,
+      });
+      expect(tool.status).toBe(404);
+    }
+    expect(({} as { selfManage?: unknown }).selfManage).toBeUndefined();
+    expect(Object.hasOwn(Object.prototype, 'selfManage')).toBe(false);
+  });
+
   it('rejects PUT /self-manage for an unknown caller (404) or a non-boolean (400)', async () => {
     expect(
       (await req('PUT', '/api/admin/callers/ghost/self-manage', { enabled: true })).status,
