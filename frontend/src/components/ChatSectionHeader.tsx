@@ -32,8 +32,7 @@
  */
 
 import { ChevronDown, ChevronRight, Folder } from "lucide-react";
-import { visuallyHidden } from "../utils/visuallyHidden";
-import RunningDot from "./RunningDot";
+import { RunningCount } from "./RunningDot";
 
 export default function ChatSectionHeader({
   label,
@@ -85,18 +84,8 @@ export default function ChatSectionHeader({
       <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
       {/* The leading space keeps the accessible name "Label (n)"; the flex gap does the visual spacing. */}
       <span style={{ flexShrink: 0 }}> ({count})</span>
-      {runningCount > 0 && (
-        <span
-          data-testid="section-running"
-          title={`${runningCount} running`}
-          style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0, marginLeft: 2, color: "var(--status-active)" }}
-        >
-          <RunningDot />
-          <span aria-hidden>{runningCount}</span>
-          {/* The dot is colour alone, so the name spells it out: "Label (n) 2 running". */}
-          <span style={visuallyHidden}>{runningCount} running</span>
-        </span>
-      )}
+      {/* The dot is colour alone, so the name spells it out: "Label (n) 2 running". */}
+      {runningCount > 0 && <RunningCount count={runningCount} label={`${runningCount} running`} testId="section-running" style={{ marginLeft: 2 }} />}
     </button>
   );
 }

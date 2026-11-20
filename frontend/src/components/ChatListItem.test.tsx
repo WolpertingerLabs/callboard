@@ -463,6 +463,20 @@ describe("ChatListItem running dot", () => {
     render(<ChatListItem chat={makeChat()} onClick={() => {}} onDelete={() => {}} sessionStatus={{ active: false, type: "web" }} />);
     expect(screen.queryByTestId("chat-running")).toBeNull();
   });
+
+  it("adds a group row's working count beside the dot, in words for screen readers", () => {
+    render(<ChatListItem chat={makeChat()} onClick={() => {}} onDelete={() => {}} sessionStatus={{ active: true, type: "web" }} runningCount={2} />);
+    const indicator = screen.getByTestId("chat-running");
+    expect(indicator.getAttribute("title")).toBe("Active in web, 2 working in this tree");
+    expect(indicator.textContent).toBe("2Active in web, 2 working in this tree");
+    expect(indicator.style.color).toBe("var(--status-active)");
+    expect(screen.getByTestId("running-dot")).toBeTruthy();
+  });
+
+  it("keeps the bare dot when no count is passed", () => {
+    render(<ChatListItem chat={makeChat()} onClick={() => {}} onDelete={() => {}} sessionStatus={{ active: true, type: "web" }} />);
+    expect(screen.getByTestId("chat-running").textContent).toBe("Active in web");
+  });
 });
 
 /**

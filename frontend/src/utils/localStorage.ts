@@ -349,6 +349,60 @@ export function saveComposerDraft(key: string, text: string, now = Date.now()): 
   else writeStorageItem(COMPOSER_DRAFTS_KEY, JSON.stringify(Object.fromEntries(kept)));
 }
 
+/**
+ * Nodes the user has collapsed inside an expanded sidebar chat tree — see
+ * {@link getChatTreeCollapsedIds}.
+ *
+ * Only the COLLAPSED ids are stored, so every node defaults to expanded and an
+ * empty store means "nothing folded". Keyed by chat id: the fold is about one
+ * chat's node, not about its directory (`cwd`) or workspace. Its own key, like
+ * the composer drafts, so a click does not re-serialise the settings blob.
+ */
+export const CHAT_TREE_COLLAPSED_KEY = "callboard-chat-tree-collapsed";
+/**
+ * Most collapsed nodes remembered; past it the least recently collapsed go
+ * first. A count cap and no age limit: a fold the user made should not quietly
+ * reopen because they were away for a while.
+ */
+export const CHAT_TREE_COLLAPSED_MAX = 200;
+
+/** chatId → epoch ms it was collapsed at (what eviction orders by). */
+function readChatTreeCollapsed(): Record<string, number> {
+  try {
+    const parsed: unknown = JSON.parse(readStorageItem(CHAT_TREE_COLLAPSED_KEY) ?? "{}");
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    // Shared with other bundles and hand edits: keep only well-formed entries.
+    return Object.fromEntries(Object.entries(parsed).filter((e): e is [string, number] => typeof e[1] === "number" && Number.isFinite(e[1])));
+  } catch {
+    return {};
+  }
+}
+
+/** The chat ids whose nodes are collapsed in the sidebar's expanded trees. */
+export function getChatTreeCollapsedIds(): Set<string> {
+  return new Set(Object.keys(readChatTreeCollapsed()));
+}
+
+/**
+ * Remember (or forget) that a tree node is collapsed.
+ *
+ * Read-modify-write of the whole record, so another tab's folds survive.
+ * Bounded on every write to the {@link CHAT_TREE_COLLAPSED_MAX} most recently
+ * collapsed; a deleted chat's fold is never read again, and this is how it
+ * eventually leaves.
+ */
+export function saveChatTreeNodeCollapsed(chatId: string, collapsed: boolean, now = Date.now()): void {
+  const entries = readChatTreeCollapsed();
+  if (collapsed) entries[chatId] = now;
+  else if (chatId in entries) delete entries[chatId];
+  else return;
+  const kept = Object.entries(entries)
+    .sort(([, a], [, b]) => b - a)
+    .slice(0, CHAT_TREE_COLLAPSED_MAX);
+  if (kept.length === 0) removeStorageItem(CHAT_TREE_COLLAPSED_KEY);
+  else writeStorageItem(CHAT_TREE_COLLAPSED_KEY, JSON.stringify(Object.fromEntries(kept)));
+}
+
 export function getDefaultPermissions(): DefaultPermissions {
   const data = getStorageData();
   return normalizePermissions(data.defaultPermissions);
