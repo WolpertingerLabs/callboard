@@ -1184,6 +1184,39 @@ describe("the list's own layout", () => {
     expect(bar.style.position).toBe("absolute");
     expect((bar.parentElement as HTMLElement).style.position).toBe("relative");
   });
+
+  describe("bottom gap on mobile", () => {
+    const MOBILE_GAP = "calc(24px + var(--safe-bottom))";
+
+    it("ends the list clear of the phone's bottom edge when there is no next page", async () => {
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: 375 });
+      const { container } = await mount();
+      expect(scroller(container).style.paddingBottom).toBe(MOBILE_GAP);
+    });
+
+    it("adds no gap while 'Load next page' already ends the list", async () => {
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: 375 });
+      const { container } = await mount();
+      mockListChats.mockResolvedValue(listResponse(CHATS, true));
+      await act(async () => {
+        refreshList();
+      });
+      await screen.findByText("Load next page");
+      expect(scroller(container).style.paddingBottom).toBe("");
+    });
+
+    it("adds no gap on desktop", async () => {
+      const { container } = await mount();
+      expect(scroller(container).style.paddingBottom).toBe("");
+    });
+
+    it("gives way to the selection bar's clearance on mobile", async () => {
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: 375 });
+      const { container } = await mount();
+      fireEvent.click(row("chat one"), { metaKey: true });
+      await waitFor(() => expect(Number.parseInt(scroller(container).style.paddingBottom, 10)).toBeGreaterThanOrEqual(111));
+    });
+  });
 });
 
 /**
