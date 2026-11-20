@@ -248,10 +248,7 @@ export class PollIngestor extends BaseIngestor {
     } catch (err) {
       this.consecutiveErrors++;
       const raw = err instanceof Error ? err.message : String(err);
-      const tokenScrub = Object.fromEntries(
-        this.recentTokens.map((t, i) => [`OAUTH2_ACCESS_TOKEN_${i}`, t]),
-      );
-      const message = scrubSecrets(raw, { ...this.secrets, ...tokenScrub });
+      const message = scrubSecrets(raw, { ...this.secrets, ...this.extraScrubValues() });
       this.errorMessage = message;
       // A terminal OAuth2 failure (invalid_grant, refused scopes…) will fail
       // the same way on every poll: stop now rather than spin.
@@ -393,6 +390,12 @@ export class PollIngestor extends BaseIngestor {
   }
 
   // ── OAuth2 ─────────────────────────────────────────────────────────
+
+  /** The minted tokens are withheld like any header secret: scrub them from
+   *  events (an upstream may echo the request) and from error text. */
+  protected override extraScrubValues(): Record<string, string> {
+    return Object.fromEntries(this.recentTokens.map((t, i) => [`OAUTH2_ACCESS_TOKEN_${i}`, t]));
+  }
 
   /** Mint (or reuse) the token and set `Authorization`, replacing any casing. */
   private async applyToken(headers: Record<string, string>, forceRefresh: boolean): Promise<void> {

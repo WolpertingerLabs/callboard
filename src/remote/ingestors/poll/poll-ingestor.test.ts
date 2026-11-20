@@ -1042,6 +1042,20 @@ describe('PollIngestor — OAuth2 token injection', () => {
     await ingestor.stop();
   });
 
+  it('scrubs the token from buffered events that echo it', async () => {
+    fetchMock.mockResolvedValue(
+      mockResponse([
+        { id: 'a', echo: 'Bearer echoed-token-value', nested: ['echoed-token-value'] },
+      ]),
+    );
+    const { ingestor } = makeIngestor(['echoed-token-value']);
+    await ingestor.start();
+    const events = JSON.stringify(ingestor.getEvents());
+    expect(events).not.toContain('echoed-token-value');
+    expect(events).toContain('Bearer ${OAUTH2_ACCESS_TOKEN_0}');
+    await ingestor.stop();
+  });
+
   it('does not mint for a non-oauth2 poll route', async () => {
     fetchMock.mockResolvedValue(mockResponse([]));
     const ingestor = new PollIngestor('plain', {}, defaultConfig(), {
