@@ -16,7 +16,12 @@ import type { IngestedEvent, IngestorState, IngestorStatus } from './types.js';
 import { RingBuffer } from './ring-buffer.js';
 import { DEFAULT_BUFFER_SIZE } from './types.js';
 import { createLogger } from '../../shared/logger.js';
-import { scrubSecrets, scrubSecretsDeep } from '../../shared/config.js';
+import {
+  compileSecretScrubber,
+  scrubSecrets,
+  scrubSecretsDeep,
+  type SecretScrubber,
+} from '../../shared/config.js';
 
 const log = createLogger('ingestor');
 
@@ -58,6 +63,9 @@ export abstract class BaseIngestor extends EventEmitter {
    *  from every buffered event. Set by IngestorManager; see
    *  setWithheldSecrets(). */
   private withheldValues: Record<string, string> = {};
+  /** withheldValues compiled once, reused for every event. Undefined when
+   *  nothing is withheld. */
+  private scrubWithheld?: SecretScrubber;
 
   /** Recently seen idempotency keys for deduplication. */
   private readonly seenKeys = new Set<string>();
@@ -101,6 +109,7 @@ export abstract class BaseIngestor extends EventEmitter {
    */
   setWithheldSecrets(values: Record<string, string>): void {
     this.withheldValues = values;
+    this.scrubWithheld = Object.keys(values).length > 0 ? compileSecretScrubber(values) : undefined;
   }
 
   /**
@@ -133,10 +142,7 @@ export abstract class BaseIngestor extends EventEmitter {
       source: this.connectionAlias,
       ...(this.instanceId !== undefined && { instanceId: this.instanceId }),
       eventType,
-      data:
-        Object.keys(this.withheldValues).length > 0
-          ? scrubSecretsDeep(data, this.withheldValues)
-          : data,
+      data: this.scrubWithheld ? scrubSecretsDeep(data, this.scrubWithheld) : data,
     };
     this.buffer.push(event);
     this.lastEventAt = event.receivedAt;

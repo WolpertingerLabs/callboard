@@ -838,19 +838,24 @@ export const MIN_SCRUBBED_SECRET_LENGTH = 4;
  */
 export function scrubSecretsDeep(
   value: unknown,
-  secrets: Record<string, string>,
-  depth = 0,
+  secrets: Record<string, string> | SecretScrubber,
 ): unknown {
-  if (typeof value === 'string') return scrubSecrets(value, secrets);
-  if (value === null || typeof value !== 'object') return value;
-  if (depth >= 64) return scrubSecrets(JSON.stringify(value), secrets);
-  if (Array.isArray(value)) return value.map((v) => scrubSecretsDeep(v, secrets, depth + 1));
-  return Object.fromEntries(
-    Object.entries(value as Record<string, unknown>).map(([k, v]) => [
-      scrubSecrets(k, secrets),
-      scrubSecretsDeep(v, secrets, depth + 1),
-    ]),
-  );
+  // Compile the forms once for the whole tree, not once per string: a large
+  // body has hundreds of thousands of leaves.
+  const scrub = typeof secrets === 'function' ? secrets : compileSecretScrubber(secrets);
+  const walk = (v: unknown, depth: number): unknown => {
+    if (typeof v === 'string') return scrub(v);
+    if (v === null || typeof v !== 'object') return v;
+    if (depth >= 64) return scrub(JSON.stringify(v));
+    if (Array.isArray(v)) return v.map((item) => walk(item, depth + 1));
+    return Object.fromEntries(
+      Object.entries(v as Record<string, unknown>).map(([k, item]) => [
+        scrub(k),
+        walk(item, depth + 1),
+      ]),
+    );
+  };
+  return walk(value, 0);
 }
 
 /**
@@ -889,6 +894,19 @@ export function scrubSecretsDeep(
  * `tok-OUT` and `tok-OUTER-VALUE` would scrub to `${INNER}ER-VALUE`).
  */
 export function scrubSecrets(text: string, secrets: Record<string, string>): string {
+  return compileSecretScrubber(secrets)(text);
+}
+
+/** A scrubSecrets() with its secret forms precomputed. */
+export type SecretScrubber = (text: string) => string;
+
+/**
+ * Build the forms scrubSecrets() looks for once, and return a function that
+ * applies them. Use it when scrubbing many strings with the same secrets (a
+ * JSON tree, every event a listener buffers); the output is identical to
+ * calling scrubSecrets() on each string.
+ */
+export function compileSecretScrubber(secrets: Record<string, string>): SecretScrubber {
   const forms: [name: string, form: string][] = [];
   for (const [name, value] of Object.entries(secrets)) {
     if (typeof value !== 'string' || value.length < MIN_SCRUBBED_SECRET_LENGTH) continue;
@@ -908,12 +926,16 @@ export function scrubSecrets(text: string, secrets: Record<string, string>): str
     add(jsonEscaped.replace(/\//g, '\\/'));
   }
   forms.sort(([, a], [, b]) => b.length - a.length);
+  const replacements = forms.map(([name, form]) => [form, `\${${name}}`] as const);
+  if (replacements.length === 0) return (text) => text;
 
-  let out = text;
-  for (const [name, form] of forms) {
-    out = out.split(form).join(`\${${name}}`);
-  }
-  return out;
+  return (text) => {
+    let out = text;
+    for (const [form, placeholder] of replacements) {
+      if (out.includes(form)) out = out.split(form).join(placeholder);
+    }
+    return out;
+  };
 }
 
 /**
