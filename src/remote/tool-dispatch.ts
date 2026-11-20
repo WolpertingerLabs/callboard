@@ -873,16 +873,33 @@ function oauth2Connection(config: RemoteServerConfig, alias: string): Route | un
   }
 }
 
-/** Secret names that are signer-only for some OAuth2 connection (built-in or custom). */
-function oauth2CredentialNames(config: RemoteServerConfig): Set<string> {
+/**
+ * Names an agent may not set: for every connection that signs or mints with
+ * daemon-held credentials (OAuth2, AWS SigV4), built-in or custom, each
+ * signer-only secret key plus every `${VAR}` its value refers to. The second
+ * part matters for a custom connector whose key and variable differ
+ * (`secrets: { RT: "${ACME_REFRESH}" }`): set_secrets writes variables, so
+ * `ACME_REFRESH` is what an agent would set to replace `RT`. A literal value
+ * refers to nothing settable.
+ */
+function signingCredentialNames(config: RemoteServerConfig): Set<string> {
   const names = new Set<string>();
   const routes: Route[] = [...(config.connectors ?? [])];
   for (const t of listConnectionTemplates()) {
-    if (t.auth?.type === 'oauth2') routes.push(loadConnection(t.alias));
+    try {
+      const route = loadConnection(t.alias);
+      if (route.oauth2 || route.awsSigV4) routes.push(route);
+    } catch {
+      // listConnectionTemplates() already loaded it; nothing to add
+    }
   }
   for (const route of routes) {
-    if (!route.oauth2) continue;
-    for (const name of signerOnlySecretNames(route)) names.add(name);
+    for (const name of signerOnlySecretNames(route)) {
+      names.add(name);
+      const value = route.secrets?.[name];
+      if (typeof value !== 'string') continue;
+      for (const m of value.matchAll(/\$\{(\w+)\}/g)) names.add(m[1]);
+    }
   }
   return names;
 }
@@ -906,13 +923,13 @@ function assertAgentMaySetSecrets(
   context: ToolContext,
 ): void {
   if (context.origin === 'admin') return;
-  const credentials = oauth2CredentialNames(config);
+  const credentials = signingCredentialNames(config);
   const refused = names.filter((name) => credentials.has(name));
   if (refused.length === 0) return;
   throw new Error(
-    `set_secrets cannot set or delete ${refused.join(', ')} from the agent: OAuth2 ` +
-      'credentials are operator-only. Ask the operator to set them (drawlatch dashboard or ' +
-      '.env).',
+    `set_secrets cannot set or delete ${refused.join(', ')} from the agent: OAuth2 and ` +
+      'AWS signing credentials are operator-only. Ask the operator to set them (drawlatch ' +
+      'dashboard or .env).',
   );
 }
 

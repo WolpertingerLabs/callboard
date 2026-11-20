@@ -875,7 +875,7 @@ server.tool(
 // eslint-disable-next-line @typescript-eslint/no-deprecated -- registerTool is not available in this SDK version
 server.tool(
   'set_secrets',
-  'Set or delete secrets for the authenticated caller. Pass secret name → value pairs. Use empty string to delete a secret. Returns boolean status per secret (never values). Refused when the operator has disabled self-management for this caller (selfManageable: false in list_connection_templates). Setting or deleting a secret that an OAuth2 connection mints tokens from (its client ID, client secret, refresh token, or service-account key) is always refused.',
+  'Set or delete secrets for the authenticated caller. Pass secret name → value pairs. Use empty string to delete a secret. Returns boolean status per secret (never values). Refused when the operator has disabled self-management for this caller (selfManageable: false in list_connection_templates). Setting or deleting a signing credential (the client ID, client secret, refresh token, or service-account key of an OAuth2 connection, or the signing keys of an AWS SigV4 connection) is always refused.',
   {
     secrets: z
       .record(z.string(), z.string())

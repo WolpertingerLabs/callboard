@@ -288,3 +288,102 @@ describe('list_connection_templates reports oauth2 auth', () => {
     }
   });
 });
+
+describe('set_secrets refuses the variables behind signing credentials', () => {
+  let dir: string;
+  const ctx = (origin: 'agent' | 'admin'): ToolContext => ({
+    callerAlias: 'open',
+    origin,
+    ingestorManager: {} as IngestorManager,
+    refreshRoutes: () => undefined,
+  });
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'drawlatch-signing-vars-'));
+    process.env.MCP_CONFIG_DIR = dir;
+    saveRemoteConfig({
+      host: '127.0.0.1',
+      port: 0,
+      rateLimitPerMinute: 60,
+      connectors: [
+        {
+          // Keys and variables differ; one credential is a literal.
+          alias: 'renamed',
+          allowedEndpoints: ['https://api.acme.example/**'],
+          secrets: {
+            ID: '${ACME_CLIENT}',
+            SEC: 'LITERAL_CLIENT_SECRET',
+            RT: '${ACME_REFRESH}',
+            REGION: '${ACME_REGION}',
+          },
+          oauth2: {
+            tokenUrl: 'https://auth.acme.example/token',
+            grant: 'refresh_token',
+            clientAuth: 'body',
+            secretRefs: { clientId: 'ID', clientSecret: 'SEC', refreshToken: 'RT' },
+          },
+        },
+        {
+          alias: 'team-aws',
+          allowedEndpoints: ['https://sts.us-east-1.amazonaws.com/**'],
+          awsSigV4: {},
+          secrets: {
+            AWS_ACCESS_KEY_ID: '${TEAM_AWS_KEY}',
+            AWS_SECRET_ACCESS_KEY: '${TEAM_AWS_SECRET}',
+          },
+        },
+      ],
+      callers: { open: { connections: ['github'], selfManage: true } },
+    });
+  });
+
+  afterEach(() => {
+    delete process.env.MCP_CONFIG_DIR;
+    for (const k of Object.keys(process.env)) {
+      if (k.startsWith('OPEN_')) Reflect.deleteProperty(process.env, k);
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it.each([
+    'ACME_REFRESH',
+    'ACME_CLIENT',
+    'RT',
+    'TEAM_AWS_KEY',
+    'TEAM_AWS_SECRET',
+    'AWS_ACCESS_KEY_ID',
+  ])('refuses %s from the agent', async (name) => {
+    await expect(
+      dispatchTool('set_secrets', { secrets: { [name]: 'attacker' } }, [], ctx('agent')),
+    ).rejects.toThrow(new RegExp(`cannot set or delete ${name}`));
+    expect(loadRemoteConfig().callers.open.env).toBeUndefined();
+  });
+
+  it('a literal credential refers to no variable, so nothing more is blocked', async () => {
+    // SEC is a literal: its value isn't a settable name. ACME_REGION is a
+    // non-credential variable of the same connector.
+    await dispatchTool(
+      'set_secrets',
+      { secrets: { ACME_REGION: 'eu', LITERAL_CLIENT_SECRET: 'x' } },
+      [],
+      ctx('agent'),
+    );
+    expect(Object.keys(loadRemoteConfig().callers.open.env ?? {}).sort()).toEqual([
+      'ACME_REGION',
+      'LITERAL_CLIENT_SECRET',
+    ]);
+  });
+
+  it('the admin origin may set them', async () => {
+    await dispatchTool(
+      'set_secrets',
+      { secrets: { ACME_REFRESH: 'admin', TEAM_AWS_KEY: 'admin' } },
+      [],
+      ctx('admin'),
+    );
+    expect(Object.keys(loadRemoteConfig().callers.open.env ?? {}).sort()).toEqual([
+      'ACME_REFRESH',
+      'TEAM_AWS_KEY',
+    ]);
+  });
+});
