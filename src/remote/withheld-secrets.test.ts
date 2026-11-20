@@ -612,6 +612,46 @@ describe('withholding edge cases', () => {
     expect(connectorWithholdingWarnings({ ...route, placeholderSecrets: ['API_KEY'] })).toEqual([]);
   });
 
+  it('does not suggest placeholderSecrets for a secret it cannot release', () => {
+    const route: Route = {
+      alias: 'both',
+      description: 'Pass ?k=${EXTRA} and sign with ${HOOK}',
+      secrets: { EXTRA: 'extra-secret', HOOK: 'hook-secret' },
+      withheldSecrets: ['EXTRA'],
+      placeholderSecrets: ['EXTRA'],
+      ingestor: { type: 'webhook', webhook: { path: 'p', signatureSecret: 'HOOK' } },
+      allowedEndpoints: [],
+    };
+    const warnings = connectorWithholdingWarnings(route);
+    const about = (name: string) => warnings.filter((w) => w.includes(`\${${name}}`));
+    expect(about('EXTRA')).toHaveLength(1);
+    expect(about('EXTRA')[0]).toContain('it is listed in withheldSecrets');
+    expect(about('EXTRA')[0]).toContain("can't be released with placeholderSecrets");
+    expect(about('EXTRA')[0]).not.toContain('add "EXTRA"');
+    expect(about('HOOK')[0]).toContain('signatureSecret');
+    expect(about('HOOK')[0]).not.toContain('add "HOOK"');
+    // The placeholderSecrets entry itself is reported with the same reason.
+    expect(
+      warnings.some((w) =>
+        w.includes('placeholderSecrets lists "EXTRA", but it is listed in withheldSecrets'),
+      ),
+    ).toBe(true);
+  });
+
+  it('scans listenerConfig.description too', () => {
+    const route: Route = {
+      alias: 'lst',
+      headers: { Authorization: 'Bearer ${TOK}' },
+      secrets: { TOK: 'tok-123456' },
+      allowedEndpoints: [],
+      listenerConfig: { name: 'L', description: 'Poll /feed?token=${TOK}', fields: [] },
+    };
+    const warnings = connectorWithholdingWarnings(route);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('${TOK}');
+    expect(warnings[0]).toContain('add "TOK" to the connector\'s placeholderSecrets');
+  });
+
   it('the rejection points at withheldSecretNames and logs the connection for the operator', async () => {
     const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     try {

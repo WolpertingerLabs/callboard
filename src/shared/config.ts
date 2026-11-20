@@ -194,14 +194,33 @@ export function withheldSecretNames(route: Route): Set<string> {
   return new Set([...names].filter((name) => name in defined));
 }
 
+type WithholdingReason = 'signer' | 'signature' | 'explicit' | 'header';
+
+const WITHHOLDING_REASON_TEXT: Record<WithholdingReason, string> = {
+  signer: 'it is a signing credential',
+  signature: "it is the webhook listener's signatureSecret",
+  explicit: 'it is listed in withheldSecrets',
+  header: 'its headers inject it',
+};
+
+/** Why a withheld secret is withheld, most binding reason first. */
+function withholdingReason(route: Route, name: string): WithholdingReason {
+  if (signerOnlySecretNames(route).has(name)) return 'signer';
+  if (route.ingestor?.webhook?.signatureSecret === name) return 'signature';
+  if ((route.withheldSecrets ?? []).includes(name)) return 'explicit';
+  return 'header';
+}
+
 /**
  * Configuration problems the withholding rules can cause in a connector, as
  * human-readable warnings naming the connector and secret. Meant for custom
  * connectors (built-in templates are checked by tests), logged once at daemon
  * startup and shown by `drawlatch doctor`.
  *
- *   - Its `description` or `name` tells agents to write `${NAME}` for a
- *     secret that is now withheld, so those requests will be rejected.
+ *   - Its `description`, `name`, or `listenerConfig.description` tells agents
+ *     to write `${NAME}` for a secret that is now withheld, so those requests
+ *     will be rejected. placeholderSecrets is suggested only when it would
+ *     help, i.e. for a secret withheld because the headers use it.
  *   - A `placeholderSecrets` entry that can't take effect: the secret is
  *     withheld for another reason (signatureSecret, withheldSecrets, signing
  *     credential), or the headers don't reference it at all.
@@ -210,25 +229,37 @@ export function connectorWithholdingWarnings(route: Route): string[] {
   const label = `Connector "${route.alias ?? route.name ?? '(unnamed)'}"`;
   const warnings: string[] = [];
   const withheld = withheldSecretNames(route);
-  const agentFacing = placeholderNames([route.description ?? '', route.name ?? '']);
+  // The same agent-facing text the built-in template audit checks.
+  const agentFacing = placeholderNames([
+    route.description ?? '',
+    route.name ?? '',
+    route.listenerConfig?.description ?? '',
+  ]);
   for (const name of agentFacing) {
-    if (withheld.has(name)) {
-      warnings.push(
-        `${label}: its description references \${${name}}, but that secret is withheld ` +
-          'from requests (its headers inject it), so agents that follow it will be ' +
-          `rejected. If the API needs it in the URL or body too, add "${name}" to the ` +
-          "connector's placeholderSecrets.",
-      );
-    }
+    if (!withheld.has(name)) continue;
+    const reason = withholdingReason(route, name);
+    // Only a header-derived secret can be released, so only then is
+    // placeholderSecrets worth suggesting.
+    const advice =
+      reason === 'header'
+        ? `If the API needs it in the URL or body too, add "${name}" to the connector's ` +
+          'placeholderSecrets.'
+        : `It can't be released with placeholderSecrets; remove the reference from the ` +
+          'description.';
+    warnings.push(
+      `${label}: its description references \${${name}}, but that secret is withheld from ` +
+        `requests (${WITHHOLDING_REASON_TEXT[reason]}), so agents that follow it will be ` +
+        `rejected. ${advice}`,
+    );
   }
   const always = alwaysWithheldSecretNames(route);
   const inHeaders = placeholderNames(Object.values(route.headers ?? {}));
   for (const name of route.placeholderSecrets ?? []) {
     if (always.has(name)) {
       warnings.push(
-        `${label}: placeholderSecrets lists "${name}", which is a signing credential, ` +
-          'webhook signatureSecret, or withheldSecrets entry. It stays withheld; remove it ' +
-          'from placeholderSecrets.',
+        `${label}: placeholderSecrets lists "${name}", but ` +
+          `${WITHHOLDING_REASON_TEXT[withholdingReason(route, name)]}, so it stays withheld; ` +
+          'remove it from placeholderSecrets.',
       );
     } else if (!inHeaders.has(name)) {
       warnings.push(
