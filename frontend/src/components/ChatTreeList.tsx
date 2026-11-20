@@ -17,7 +17,7 @@ import { useChatSectionExpansion } from "../hooks/useChatSectionExpansion";
 import type { SpaceListItem } from "shared/types/space.js";
 import { isSidebarFolderEligible, readSidebarFolder } from "shared/types/sidebarFolder.js";
 import { useIsMobile } from "../hooks/useIsMobile";
-import { useChatTreeCardCollapse, useChatTreeCollapse, type ChatTreeCollapse } from "../hooks/useChatTreeCollapse";
+import { closeChatTreeCard, useChatTreeCardExpansion, useChatTreeCollapse, type ChatTreeCollapse } from "../hooks/useChatTreeCollapse";
 import { treeContains, withNodeChildArchived } from "../utils/childArchive";
 import { ASIDE_ROLE } from "../utils/chatRewrite";
 import { attentionBelow, countRowsBelow, foldedAsideChildren, nodeIsRunning, visibleChildren, type TreeVisibility } from "../utils/chatTreeNodes";
@@ -37,8 +37,8 @@ import { attentionSuffix, chatSignals, NO_ATTENTION, nodeSignals, sumAttention }
  * recently updated member when it is not (see `buildRows`, which owns both the
  * rule and the fallback; in the fallback the header is a child and the tree's
  * depth-0 node is some chat this list does not hold). A group's card starts
- * EXPANDED — only the cards the user folds are remembered (see
- * `useChatTreeCardCollapse`) — and an expanded card fetches the authoritative
+ * CLOSED — only the cards the user opens are remembered (see
+ * `useChatTreeCardExpansion`) — and an open card fetches the authoritative
  * full tree from GET /api/chats/:id/tree (which includes members outside the
  * currently loaded page) and renders it depth-indented.
  *
@@ -851,7 +851,7 @@ function TreeNodeRow({
   // toggle keeps the root row on screen and folds what hangs off it, which in
   // a flat tree (root plus direct children, the usual shape) is the only fold
   // there is. They are different folds, stored apart: see
-  // `CHAT_TREE_CARDS_COLLAPSED_KEY`.
+  // `CHAT_TREE_CARDS_EXPANDED_KEY`.
   const collapsible = !!treeCollapse && children.length > 0;
   // A fold never hides the open chat: a node above it renders expanded while
   // it is open, without touching the stored fold — the same exemption the
@@ -1233,8 +1233,8 @@ export default function ChatTreeList({
   const sectionExpansion = useChatSectionExpansion();
   /** Collapse state for the nodes inside expanded trees, persisted likewise. */
   const treeCollapse = useChatTreeCollapse();
-  /** Which top-level tree cards are folded. Cards start expanded. */
-  const cardCollapse = useChatTreeCardCollapse();
+  /** Which top-level tree cards are open. Cards start closed. */
+  const cardExpansion = useChatTreeCardExpansion();
   const isMobile = useIsMobile();
 
   /**
@@ -1246,10 +1246,10 @@ export default function ChatTreeList({
    * at a refresh (`refreshToken`, bumped on every chat-list load) — never in
    * between, so an optimistic edit to the tree (child archive) is not
    * clobbered by a snapshot taken before the server had it — and then only if
-   * it could have changed. That second condition is what makes
-   * cards-expanded-by-default affordable: the refresh fires every 15 seconds
-   * while any session is active, and refetching every tree in the sidebar
-   * each time would be one request per card per tick. A refresh refetches:
+   * it could have changed. That second condition keeps open cards cheap: the
+   * refresh fires every 15 seconds while any session is active, and
+   * refetching every open tree each time would be one request per card per
+   * tick. A refresh refetches:
    *
    * - an idle tree when its signature moved: one of its LOADED members joined
    *   or left, or changed `updated_at`/metadata (title, status, read mark,
@@ -1273,7 +1273,7 @@ export default function ChatTreeList({
   for (const section of sections ?? [{ key: null, items: rows }]) {
     if (section.key !== null && !sectionExpansion.isExpanded(section.key)) continue;
     for (const row of section.items) {
-      if (!row.isGroup || cardCollapse.isCollapsed(row.rootKey)) continue;
+      if (!row.isGroup || !cardExpansion.isExpanded(row.rootKey)) continue;
       const tree = trees[row.rootKey];
       const sig = [...row.members, ...row.foldedAsides]
         .map((c) => `${c.id}\u0001${c.updated_at}\u0001${c.metadata ?? ""}\u0001${sessionStatusFor(c.id)?.active ? 1 : 0}`)
@@ -1293,6 +1293,12 @@ export default function ChatTreeList({
    * ref of the state would lag a commit behind a response landing).
    */
   const inHand = useRef(new Set<string>());
+  /**
+   * Groups whose current fetch is a retry the user clicked for, after a
+   * failure. If that fails too, the card is closed and forgotten (see the
+   * `.catch` below).
+   */
+  const retrying = useRef(new Set<string>());
   /** Per-group request counter, so only the latest response for a group lands. */
   const fetchSeq = useRef(new Map<string, number>());
   /** Fetches waiting for a slot, by group; started in list order. */
@@ -1314,8 +1320,11 @@ export default function ChatTreeList({
     const waiting = queue.current;
     const inFlight = controllers.current;
     const seqs = fetchSeq.current;
+    const retries = retrying.current;
     return () => {
       mounted.current = false;
+      // A remount's fetch is not one the user clicked to retry.
+      retries.clear();
       // Abort what is in flight and forget what was never answered, so a
       // remount (StrictMode's included) fetches it again instead of waiting
       // on a request that is gone.
@@ -1379,6 +1388,7 @@ export default function ChatTreeList({
             inHand.current.add(rootKey);
             setTrees((prev) => ({ ...prev, [rootKey]: tree }));
             settle(setFailed, rootKey, false);
+            retrying.current.delete(rootKey);
           })
           .catch(() => {
             // The chat may have no stored record, or the request failed. Keep any
@@ -1387,7 +1397,17 @@ export default function ChatTreeList({
             // the card renders folded (without touching the stored fold) and a
             // click retries. Not retried on its own until the group changes, so a
             // chat with no record is not re-requested on every poll.
+            //
+            // The first failure keeps the card saved as open: it may be
+            // transient, and should not forget the user's choice. A retry the
+            // user clicked for that fails again closes the card and drops it
+            // from the saved set, so a card that cannot load rests closed
+            // instead of costing a request on every page load.
             if (!current() || !fetchedSig.current.has(rootKey) || inHand.current.has(rootKey)) return;
+            if (retrying.current.delete(rootKey)) {
+              closeChatTreeCard(rootKey);
+              return;
+            }
             settle(setFailed, rootKey, true);
           })
           .finally(() => {
@@ -1433,6 +1453,7 @@ export default function ChatTreeList({
         // flight from before the fold could pass for a later request's.
         fetchedSig.current.delete(rootKey);
         inHand.current.delete(rootKey);
+        retrying.current.delete(rootKey);
         queue.current.delete(rootKey);
         controllers.current.get(rootKey)?.abort();
         controllers.current.delete(rootKey);
@@ -1461,9 +1482,11 @@ export default function ChatTreeList({
 
   const toggleExpand = useCallback(
     (rootKey: string, representativeChatId: string, shownExpanded: boolean) => {
-      if (!cardCollapse.isCollapsed(rootKey) && !shownExpanded) {
-        // Folded only because its fetch failed: retry, leaving the store alone.
+      if (cardExpansion.isExpanded(rootKey) && !shownExpanded) {
+        // Shown folded only because its fetch failed: retry, leaving the
+        // card in the saved open set — unless the retry fails too.
         const w = wantedRef.current.find((x) => x.rootKey === rootKey);
+        retrying.current.add(rootKey);
         setFailed((prev) => {
           const next = new Set(prev);
           next.delete(rootKey);
@@ -1472,9 +1495,9 @@ export default function ChatTreeList({
         fetchTree(rootKey, representativeChatId, w?.sig ?? "", -1);
         return;
       }
-      cardCollapse.toggle(rootKey);
+      cardExpansion.toggle(rootKey);
     },
-    [cardCollapse, fetchTree],
+    [cardExpansion, fetchTree],
   );
   const handleNavigate = useCallback((chatId: string) => navigate(`/chat/${chatId}`), [navigate]);
   const isRunning = (chatId: string) => !!sessionStatusFor(chatId)?.active;
@@ -1577,7 +1600,7 @@ export default function ChatTreeList({
       );
     }
 
-    const isExpanded = !cardCollapse.isCollapsed(rootKey) && !failed.has(rootKey);
+    const isExpanded = cardExpansion.isExpanded(rootKey) && !failed.has(rootKey);
     /** Every chat the list holds for this group: what its working signals read. */
     const groupLive = [...members, ...foldedAsides];
     const isLoading = loading.has(rootKey);

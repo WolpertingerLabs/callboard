@@ -12,6 +12,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
+import { resetChatTreeCollapse } from "../hooks/useChatTreeCollapse";
 import type { Chat, ChatListResponse, ChatTreeNode } from "../api";
 import { detachChat, getChatTree, listChats, listCards, getDrafts } from "../api";
 import ChatList from "./ChatList";
@@ -85,8 +86,7 @@ async function renderAndExpand(children: ChatTreeNode[] = [makeNode("child", "He
       <ChatList onRefresh={() => {}} />
     </MemoryRouter>,
   );
-  // Tree cards start expanded: the tree fetches on its own.
-  await screen.findByTitle("Collapse chat tree");
+  fireEvent.click(await screen.findByTitle("Expand chat tree"));
   await screen.findByText(children[0].title!);
 }
 
@@ -100,6 +100,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // Opened tree cards persist in a module-level store; start each test with every card closed.
+  localStorage.removeItem("callboard-chat-tree-cards-expanded");
+  resetChatTreeCollapse();
   cleanup();
   vi.clearAllMocks();
 });
@@ -185,8 +188,7 @@ describe("ChatList split off — tree node context menu", () => {
 
 describe("ChatList split off — row kebab", () => {
   /** The row element ChatListItem renders as its root — see ChatList.editTitle.test.tsx. */
-  // The first match: the card. Cards start expanded, so its tree node repeats the title below.
-  const rowOf = (title: string) => screen.getAllByText(title)[0].parentElement!.parentElement!.parentElement!;
+  const rowOf = (title: string) => screen.getByText(title).parentElement!.parentElement!.parentElement!;
   const openKebab = (title: string) => {
     fireEvent.mouseEnter(rowOf(title));
     fireEvent.click(screen.getByTitle("Chat actions"));

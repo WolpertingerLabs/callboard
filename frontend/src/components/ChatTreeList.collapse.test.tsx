@@ -114,9 +114,13 @@ function renderList(running: string[] = [], chats: Chat[] = CHATS, activeChatId?
   );
 }
 
-/** Tree cards start expanded: wait for the tree to arrive. */
+/**
+ * Open the tree card — cards start closed — or, after a remount, find it
+ * still open: an opened card is remembered.
+ */
 async function expand() {
-  await screen.findByRole("button", { name: 'Collapse "chat root"' });
+  const card = await screen.findByRole("button", { name: /^(Expand|Collapse) "chat root"$/ });
+  if (card.getAttribute("aria-expanded") === "false") fireEvent.click(card);
   await screen.findByText("Mid");
 }
 
@@ -366,12 +370,11 @@ describe("review follow-ups", () => {
   it("names the top-level toggle and reports its state", async () => {
     mockTree();
     renderList();
-    const toggle = await screen.findByRole("button", { name: 'Collapse "chat root"' });
-    expect(toggle.getAttribute("aria-expanded")).toBe("true");
-    await screen.findByText("Mid");
+    const toggle = await screen.findByRole("button", { name: 'Expand "chat root"' });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
     fireEvent.click(toggle);
-    expect(screen.getByRole("button", { name: 'Expand "chat root"' }).getAttribute("aria-expanded")).toBe("false");
-    expect(screen.queryByText("Mid")).toBeNull();
+    await screen.findByText("Mid");
+    expect(screen.getByRole("button", { name: 'Collapse "chat root"' }).getAttribute("aria-expanded")).toBe("true");
   });
 
   it("adds no height on touch, and keeps chevrons, connectors and titles in their columns", async () => {
@@ -484,6 +487,7 @@ describe("#564 polish", () => {
       }),
     );
     renderList([], [makeChat("root"), child("first"), child("last")]);
+    fireEvent.click(await screen.findByRole("button", { name: 'Expand "chat root"' }));
     await screen.findByText("Under last");
     const trunkOf = (id: string) => within(node(id)!.parentElement!).queryByTestId("tree-trunk");
     expect(trunkOf("first")!.style.bottom).toBe("-1px");

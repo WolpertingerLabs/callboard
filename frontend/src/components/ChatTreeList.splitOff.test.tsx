@@ -11,6 +11,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
+import { resetChatTreeCollapse } from "../hooks/useChatTreeCollapse";
 import type { Chat, ChatTreeNode } from "../api";
 import { getChatTree } from "../api";
 import { resetChatSectionExpansion } from "../hooks/useChatSectionExpansion";
@@ -25,6 +26,9 @@ const FOLDER = "/home/cybil/projects/callboard";
 const SPLIT = "Split off as standalone chat";
 
 afterEach(() => {
+  // Opened tree cards persist in a module-level store; start each test with every card closed.
+  localStorage.removeItem("callboard-chat-tree-cards-expanded");
+  resetChatTreeCollapse();
   cleanup();
   vi.clearAllMocks();
   vi.useRealTimers();
@@ -96,8 +100,7 @@ async function renderExpanded(opts: { selection?: RowSelection } = {}) {
       </Routes>
     </MemoryRouter>,
   );
-  // Tree cards start expanded: the tree fetches on its own.
-  await screen.findByTitle("Collapse chat tree");
+  fireEvent.click(await screen.findByTitle("Expand chat tree"));
   await screen.findByText("Helper");
   const rerender = (selection: RowSelection) =>
     view.rerender(

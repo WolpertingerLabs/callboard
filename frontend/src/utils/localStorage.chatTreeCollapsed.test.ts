@@ -5,12 +5,12 @@
  */
 import { beforeEach, describe, expect, it } from "vitest";
 import {
-  CHAT_TREE_CARDS_COLLAPSED_KEY,
+  CHAT_TREE_CARDS_EXPANDED_KEY,
   CHAT_TREE_COLLAPSED_KEY,
   CHAT_TREE_COLLAPSED_MAX,
-  getChatTreeCardCollapsedKeys,
+  getChatTreeCardExpandedKeys,
   getChatTreeCollapsedIds,
-  saveChatTreeCardCollapsed,
+  saveChatTreeCardExpanded,
   saveChatTreeNodeCollapsed,
 } from "./localStorage";
 
@@ -71,29 +71,36 @@ describe("chat tree collapsed ids", () => {
   });
 });
 
-describe("chat tree card folds", () => {
-  it("defaults to every card expanded, and clears its key once nothing is folded", () => {
-    expect(getChatTreeCardCollapsedKeys().size).toBe(0);
-    saveChatTreeCardCollapsed("root", true);
-    expect([...getChatTreeCardCollapsedKeys()]).toEqual(["root"]);
-    saveChatTreeCardCollapsed("root", false);
-    expect(localStorage.getItem(CHAT_TREE_CARDS_COLLAPSED_KEY)).toBeNull();
+describe("chat tree cards opened", () => {
+  it("defaults to every card closed, and clears its key once nothing is open", () => {
+    expect(getChatTreeCardExpandedKeys().size).toBe(0);
+    saveChatTreeCardExpanded("root", true);
+    expect([...getChatTreeCardExpandedKeys()]).toEqual(["root"]);
+    saveChatTreeCardExpanded("root", false);
+    expect(localStorage.getItem(CHAT_TREE_CARDS_EXPANDED_KEY)).toBeNull();
   });
 
-  it("is a separate record from the node folds, so one root id can be folded in either without the other", () => {
-    saveChatTreeCardCollapsed("root", true);
+  it("is a separate record from the node folds, so one root id can be in either without the other", () => {
+    saveChatTreeCardExpanded("root", true);
     expect(getChatTreeCollapsedIds().has("root")).toBe(false);
     saveChatTreeNodeCollapsed("root", true);
-    saveChatTreeCardCollapsed("root", false);
+    saveChatTreeCardExpanded("root", false);
     expect(getChatTreeCollapsedIds().has("root")).toBe(true);
-    expect(getChatTreeCardCollapsedKeys().has("root")).toBe(false);
+    expect(getChatTreeCardExpandedKeys().has("root")).toBe(false);
   });
 
-  it("is bounded like the node folds", () => {
+  it("is bounded like the node folds, the least recently opened going first", () => {
     const now = Date.now();
-    for (let i = 0; i <= CHAT_TREE_COLLAPSED_MAX; i++) saveChatTreeCardCollapsed(`k${i}`, true, now + i);
-    const keys = getChatTreeCardCollapsedKeys();
+    for (let i = 0; i <= CHAT_TREE_COLLAPSED_MAX; i++) saveChatTreeCardExpanded(`k${i}`, true, now + i);
+    const keys = getChatTreeCardExpandedKeys();
     expect(keys.size).toBe(CHAT_TREE_COLLAPSED_MAX);
     expect(keys.has("k0")).toBe(false);
+    expect(keys.has(`k${CHAT_TREE_COLLAPSED_MAX}`)).toBe(true);
+  });
+
+  it("drops the legacy folded-cards record on read, and does not read it as anything", () => {
+    localStorage.setItem("callboard-chat-tree-cards-collapsed", JSON.stringify({ root: 1 }));
+    expect(getChatTreeCardExpandedKeys().size).toBe(0);
+    expect(localStorage.getItem("callboard-chat-tree-cards-collapsed")).toBeNull();
   });
 });

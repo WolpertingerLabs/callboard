@@ -4,12 +4,12 @@
  * - {@link useChatTreeCollapse} — nodes folded INSIDE an expanded tree, keyed
  *   by chat id (the root's own row included: folding it keeps the root and
  *   hides its children).
- * - {@link useChatTreeCardCollapse} — top-level tree cards (group rows), keyed
- *   by the group's `rootKey`. Folding one hides the whole tree under the card.
+ * - {@link useChatTreeCardExpansion} — top-level tree cards (group rows),
+ *   keyed by the group's `rootKey`. Opening one shows the tree under the card.
  *
- * Both default to expanded; only what the user folds is stored, each in its
- * own localStorage record (see `CHAT_TREE_CARDS_COLLAPSED_KEY` for why they
- * are not one). Each is a module-level store shared through
+ * Nodes default to expanded and only folds are stored; cards default to
+ * closed and only opened cards are stored. Each has its own localStorage
+ * record (see `CHAT_TREE_CARDS_EXPANDED_KEY` for why they are not one). Each is a module-level store shared through
  * `useSyncExternalStore`, for the same reason as `useChatSectionExpansion`: it
  * is a stored preference, and every reader must see a toggle the moment it
  * happens. Snapshots are cached (they must be referentially stable), so tests
@@ -17,7 +17,7 @@
  */
 
 import { useCallback, useSyncExternalStore } from "react";
-import { getChatTreeCardCollapsedKeys, getChatTreeCollapsedIds, saveChatTreeCardCollapsed, saveChatTreeNodeCollapsed } from "../utils/localStorage";
+import { getChatTreeCardExpandedKeys, getChatTreeCollapsedIds, saveChatTreeCardExpanded, saveChatTreeNodeCollapsed } from "../utils/localStorage";
 
 export interface ChatTreeCollapse {
   isCollapsed: (id: string) => boolean;
@@ -50,16 +50,21 @@ function createCollapseStore(read: () => Set<string>, save: (id: string, collaps
     snapshot = next;
     notify();
   };
+  /** Take `id` out of the set, if it is in it. Stable, so callbacks need no dependency on it. */
+  const remove = (id: string) => {
+    if (getSnapshot().has(id)) toggle(id);
+  };
   const useStore = (): ChatTreeCollapse => {
     const collapsed = useSyncExternalStore(subscribe, getSnapshot);
     const isCollapsed = useCallback((id: string) => collapsed.has(id), [collapsed]);
     return { isCollapsed, toggle };
   };
-  return { useStore, reset };
+  return { useStore, reset, remove };
 }
 
 const nodeStore = createCollapseStore(getChatTreeCollapsedIds, saveChatTreeNodeCollapsed);
-const cardStore = createCollapseStore(getChatTreeCardCollapsedKeys, saveChatTreeCardCollapsed);
+// The same set-of-ids store; for cards the set holds the OPEN ones.
+const cardStore = createCollapseStore(getChatTreeCardExpandedKeys, saveChatTreeCardExpanded);
 
 /** Drop the cached snapshots so the next read comes from storage. Tests only. */
 export function resetChatTreeCollapse(): void {
@@ -72,7 +77,18 @@ export function useChatTreeCollapse(): ChatTreeCollapse {
   return nodeStore.useStore();
 }
 
-/** Which top-level tree cards are folded, by group `rootKey`. */
-export function useChatTreeCardCollapse(): ChatTreeCollapse {
-  return cardStore.useStore();
+export interface ChatTreeCardExpansion {
+  isExpanded: (rootKey: string) => boolean;
+  toggle: (rootKey: string) => void;
+}
+
+/** Close a top-level tree card, forgetting it was open. A no-op if it is closed. */
+export function closeChatTreeCard(rootKey: string): void {
+  cardStore.remove(rootKey);
+}
+
+/** Which top-level tree cards are open, by group `rootKey`. Cards start closed. */
+export function useChatTreeCardExpansion(): ChatTreeCardExpansion {
+  const { isCollapsed: isExpanded, toggle } = cardStore.useStore();
+  return { isExpanded, toggle };
 }
