@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { History } from "lucide-react";
 import type { EngineRetention } from "shared/types/index.js";
 import { getEngineRetention, setClaudeRetention } from "../../api";
@@ -20,9 +20,26 @@ const PRESETS: { label: string; days: number | null }[] = [
   { label: "Forever", days: FOREVER_DAYS },
 ];
 
+/** "90 days", "1 day". Callers handle the forever case themselves, because no sentence reads well with "forever" dropped into a day count. */
 export function describeDays(days: number): string {
-  if (days >= FOREVER_DAYS) return "forever";
   return days === 1 ? "1 day" : `${days} days`;
+}
+
+const isForever = (days: number) => days >= FOREVER_DAYS;
+
+const toDraft = (days: number | null) => (days === null ? "" : String(days));
+
+/**
+ * Parse the days box. Digits only: `Number()` would accept "1e3", "0x10" and
+ * "90.0", and a number input would report anything it cannot parse as "",
+ * which reads as "use the default" and would save as exactly that.
+ */
+export function parseDays(draft: string): { valid: true; days: number | null } | { valid: false } {
+  const trimmed = draft.trim();
+  if (trimmed === "") return { valid: true, days: null };
+  if (!/^\d+$/.test(trimmed)) return { valid: false };
+  const days = Number(trimmed);
+  return days >= 1 && days <= FOREVER_DAYS ? { valid: true, days } : { valid: false };
 }
 
 /**
@@ -39,7 +56,8 @@ export function describeDays(days: number): string {
  * so their tabs say so and offer nothing to change.
  */
 export default function ChatRetentionSection({ engine }: { engine: RetentionEngine }) {
-  const [retention, setRetention] = useState<EngineRetention | null>(null);
+  // undefined: still loading. null: loaded, but the server did not report this engine.
+  const [retention, setRetention] = useState<EngineRetention | null | undefined>(undefined);
   const [loadError, setLoadError] = useState("");
 
   useEffect(() => {
@@ -58,6 +76,17 @@ export default function ChatRetentionSection({ engine }: { engine: RetentionEngi
     };
   }, [engine]);
 
+  /** Re-read after a failed save, so a file that changed underneath (now unparseable, now policy-locked) shows as such. */
+  const reload = async () => {
+    try {
+      const all = await getEngineRetention();
+      const next = all.find((r) => r.engine === engine);
+      if (next) setRetention(next);
+    } catch {
+      /* the save error is already on screen; a failed re-read adds nothing */
+    }
+  };
+
   return (
     <div style={sectionStyle}>
       <div style={headerStyle}>
@@ -66,10 +95,12 @@ export default function ChatRetentionSection({ engine }: { engine: RetentionEngi
       </div>
       {loadError ? (
         <div style={{ color: "var(--danger)", fontSize: 13 }}>{loadError}</div>
-      ) : !retention ? (
+      ) : retention === undefined ? (
         <div style={subtitleStyle}>Checking…</div>
+      ) : retention === null ? (
+        <div style={subtitleStyle}>This server doesn&rsquo;t report chat retention for {ENGINE_LABEL[engine]}.</div>
       ) : retention.engine === "claude-code" ? (
-        <ClaudeRetentionEditor retention={retention} onSaved={setRetention} />
+        <ClaudeRetentionEditor retention={retention} onSaved={setRetention} onSaveFailed={reload} />
       ) : (
         <>
           <div style={{ ...subtitleStyle, marginBottom: 6 }}>
@@ -85,54 +116,84 @@ export default function ChatRetentionSection({ engine }: { engine: RetentionEngi
   );
 }
 
-function ClaudeRetentionEditor({ retention, onSaved }: { retention: ClaudeRetention; onSaved: (r: ClaudeRetention) => void }) {
+function ClaudeRetentionEditor({
+  retention,
+  onSaved,
+  onSaveFailed,
+}: {
+  retention: ClaudeRetention;
+  onSaved: (r: ClaudeRetention) => void;
+  onSaveFailed: () => Promise<void>;
+}) {
   // The text box holds the configured value; blank means "use the default".
-  const [draft, setDraft] = useState(retention.configuredDays === null ? "" : String(retention.configuredDays));
+  const [draft, setDraft] = useState(toDraft(retention.configuredDays));
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  useEffect(() => () => clearTimeout(savedTimer.current), []);
 
   const locked = Boolean(retention.managedBy || retention.unreadable);
-  const trimmed = draft.trim();
-  const parsed = trimmed === "" ? null : Number(trimmed);
-  const valid = parsed === null || (Number.isInteger(parsed) && parsed >= 1 && parsed <= FOREVER_DAYS);
-  const dirty = parsed !== retention.configuredDays;
-  const nextEffective = parsed ?? retention.defaultDays;
+  const parsed = parseDays(draft);
+  const days = parsed.valid ? parsed.days : undefined;
+  // Untouched: the box still shows what the file says. That can be out of the
+  // range Callboard writes (a hand-edited 99999), which is not the user's
+  // mistake to be told about until they edit it.
+  const pristine = draft === toDraft(retention.configuredDays);
+  const showInvalid = !parsed.valid && !pristine;
+  const dirty = !pristine && (!parsed.valid || days !== retention.configuredDays);
+  const canSave = parsed.valid && dirty && !locked && !saving;
+  const nextEffective = days === null ? retention.defaultDays : days;
   // Lowering the period is the one edit that destroys data — on Claude's next
-  // start, not on Save — so it is the one that gets a warning.
-  const shrinking = valid && dirty && nextEffective < retention.effectiveDays;
+  // start, not on Save — so it is the one that gets a warning. Two "forever"
+  // values (a hand-written 99999 and the 36500 preset) are not a reduction.
+  const shrinking =
+    parsed.valid && dirty && nextEffective !== undefined && nextEffective < retention.effectiveDays && !(isForever(nextEffective) && isForever(retention.effectiveDays));
 
   const save = async () => {
-    if (!valid || !dirty || locked) return;
+    if (!canSave || !parsed.valid) return;
     setSaving(true);
     setError("");
     try {
-      const next = await setClaudeRetention(parsed);
+      const next = await setClaudeRetention(parsed.days);
       onSaved(next);
       // This editor is the only writer, so the draft is re-synced here rather
       // than from an effect on the prop.
-      setDraft(next.configuredDays === null ? "" : String(next.configuredDays));
+      setDraft(toDraft(next.configuredDays));
       setSaved(true);
-      setTimeout(() => setSaved(false), 2000);
+      clearTimeout(savedTimer.current);
+      savedTimer.current = setTimeout(() => setSaved(false), 2000);
     } catch (err) {
       setError(errorMessage(err, "Failed to save chat retention"));
+      await onSaveFailed();
     } finally {
       setSaving(false);
     }
   };
 
+  const summary = isForever(retention.effectiveDays) ? (
+    <>
+      Claude is set to <strong style={{ color: "var(--text)" }}>keep chats indefinitely</strong>
+    </>
+  ) : (
+    <>
+      Every time Claude starts, including the sessions Callboard launches, it deletes chats that haven&rsquo;t been written to in{" "}
+      <strong style={{ color: "var(--text)" }}>{describeDays(retention.effectiveDays)}</strong>
+    </>
+  );
+
   return (
     <>
       <div style={subtitleStyle}>
-        Every time Claude starts, including the sessions Callboard launches, it deletes chats that haven&rsquo;t been written to in{" "}
-        <strong style={{ color: "var(--text)" }}>{describeDays(retention.effectiveDays)}</strong>
+        {summary}
         {retention.managedBy ? " (set by your organization's policy)" : retention.configuredDays === null ? " (Claude's default)" : ""}. This applies to every
         Claude chat, bookmarked or not.
       </div>
 
       {retention.managedBy && (
         <div style={{ ...helpStyle, marginBottom: 10 }}>
-          Locked: managed policy in <code style={{ fontSize: 11 }}>{retention.managedBy}</code> sets this, and it overrides your own settings.
+          Locked: this is set by <code style={{ fontSize: 11 }}>{retention.managedBy}</code>, which overrides your own settings.
         </div>
       )}
       {retention.unreadable && (
@@ -144,30 +205,30 @@ function ClaudeRetentionEditor({ retention, onSaved }: { retention: ClaudeRetent
 
       <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
         <input
-          type="number"
-          min={1}
-          max={FOREVER_DAYS}
-          step={1}
+          type="text"
           inputMode="numeric"
           aria-label="Days to keep Claude chats"
+          aria-invalid={showInvalid}
           placeholder={`${retention.defaultDays} (default)`}
           value={draft}
-          disabled={locked || saving}
+          disabled={locked}
+          // readOnly rather than disabled while saving, so Enter-to-save keeps focus here.
+          readOnly={saving}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter") void save();
           }}
-          style={{ ...inputStyle, width: 140, borderColor: valid ? "var(--border)" : "var(--danger)" }}
+          style={{ ...inputStyle, width: 140, borderColor: showInvalid ? "var(--danger)" : "var(--border)" }}
         />
         <span style={{ fontSize: 13, color: "var(--text-muted)" }}>days</span>
-        {PRESETS.map(({ label, days }) => {
-          const active = parsed === days;
+        {PRESETS.map(({ label, days: presetDays }) => {
+          const active = parsed.valid && parsed.days === presetDays;
           return (
             <button
               key={label}
               type="button"
               disabled={locked || saving}
-              onClick={() => setDraft(days === null ? "" : String(days))}
+              onClick={() => setDraft(presetDays === null ? "" : String(presetDays))}
               style={{
                 padding: "6px 10px",
                 borderRadius: 6,
@@ -185,7 +246,7 @@ function ClaudeRetentionEditor({ retention, onSaved }: { retention: ClaudeRetent
         <button
           type="button"
           onClick={() => void save()}
-          disabled={locked || saving || !dirty || !valid}
+          disabled={!canSave}
           style={{
             marginLeft: "auto",
             padding: "6px 14px",
@@ -193,16 +254,20 @@ function ClaudeRetentionEditor({ retention, onSaved }: { retention: ClaudeRetent
             fontSize: 13,
             fontWeight: 500,
             border: "none",
-            background: locked || !dirty || !valid ? "var(--surface)" : "var(--accent)",
-            color: locked || !dirty || !valid ? "var(--text-muted)" : "var(--text-on-accent)",
-            cursor: locked || saving || !dirty || !valid ? "not-allowed" : "pointer",
+            background: canSave || saving ? "var(--accent)" : "var(--surface)",
+            color: canSave || saving ? "var(--text-on-accent)" : "var(--text-muted)",
+            cursor: canSave ? "pointer" : "not-allowed",
           }}
         >
           {saving ? "Saving..." : saved ? "Saved!" : "Save"}
         </button>
       </div>
 
-      {!valid && <div style={{ color: "var(--danger)", fontSize: 12, marginTop: 6 }}>Enter a whole number from 1 to {FOREVER_DAYS}, or leave it blank for the default.</div>}
+      {showInvalid && (
+        <div style={{ color: "var(--danger)", fontSize: 12, marginTop: 6 }}>
+          Enter a whole number of days from 1 to {FOREVER_DAYS}, or leave it blank for the default.
+        </div>
+      )}
       {shrinking && (
         <div style={{ color: "var(--warning)", fontSize: 12, marginTop: 6 }}>
           Shorter than now: the next time Claude starts, it will delete any Claude chat not written to in the last {describeDays(nextEffective)}.
@@ -212,8 +277,8 @@ function ClaudeRetentionEditor({ retention, onSaved }: { retention: ClaudeRetent
 
       <div style={{ ...helpStyle, marginTop: 8 }}>
         Saved as <code style={{ fontSize: 11 }}>cleanupPeriodDays</code> in <code style={{ fontSize: 11 }}>{retention.settingsPath}</code>, so it also applies
-        to Claude outside Callboard. Leave it blank to remove the key and use the default. A repository&rsquo;s{" "}
-        <code style={{ fontSize: 11 }}>.claude/settings.json</code> can also set this key.
+        to Claude outside Callboard. Leave it blank to use the default. A repository&rsquo;s own <code style={{ fontSize: 11 }}>.claude/settings.json</code> can
+        set a different value for Claude sessions started there. Shortening it is only allowed from a browser on the local network.
       </div>
     </>
   );

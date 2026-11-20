@@ -4,36 +4,59 @@
  *
  * Only Claude expires chats on its own. Its CLI sweeps `~/.claude/projects/` at
  * every start (the Agent SDK spawns count), deleting transcripts not written to
- * for `cleanupPeriodDays` days — a key in the *user* settings file, default 30,
- * minimum 1. Codex (`$CODEX_HOME/sessions`) and pi (Callboard's
- * `pi-sessions` dir) have no automatic expiry at all, which was checked against
- * the bundled versions rather than assumed: neither has a setting to surface, so
- * they are reported read-only.
+ * for `cleanupPeriodDays` days — default 30, minimum 1. Codex
+ * (`$CODEX_HOME/sessions`) and pi (Callboard's `pi-sessions` dir) have no
+ * automatic expiry at all, which was checked against the bundled versions
+ * rather than assumed: neither has a setting to surface, so they are reported
+ * read-only.
+ *
+ * ## Where Claude's value comes from
+ *
+ * The sweep uses the settings the starting process merged, which is more than
+ * the user file:
+ *
+ * - **Managed policy** outranks everything. It is not only
+ *   `managed-settings.json`: drop-ins, server-managed settings, macOS MDM and
+ *   the Windows registry all feed it, with their own precedence. Rather than
+ *   re-implement that merge, the policy tier is read through the SDK's
+ *   `resolveSettings({ settingSources: [] })`, which runs the CLI's own merge
+ *   without spawning it.
+ * - **Project and local settings** (`<repo>/.claude/settings{,.local}.json`)
+ *   also outrank the user file, for a `claude` started in that repo — and
+ *   Callboard starts sessions with them enabled. They are per-directory, so
+ *   there is no single answer to report; the UI says they can override this.
+ * - **The user file** is what this service reads and writes.
  *
  * ## Writing someone else's settings file
  *
- * `~/.claude/settings.json` belongs to Claude Code, and the user may have
- * anything in it — permissions, hooks, env. So the write is deliberately narrow:
+ * `settings.json` belongs to Claude Code, and the user may have anything in it
+ * — permissions, hooks, env. So the write is deliberately narrow:
  *
- * - it touches exactly one key and round-trips every other one;
+ * - it touches exactly one key and round-trips every other one (the file is
+ *   re-serialised as 2-space JSON, which is how Claude writes it; numbers
+ *   beyond double precision would not survive, but Claude's schema has none);
  * - it re-reads the file immediately before writing, rather than trusting a
  *   copy from the GET, to keep the window against a concurrent `/config` small;
  * - it refuses to write a file that exists but does not parse — rewriting it
  *   from `{}` would silently drop the user's configuration;
- * - it writes atomically and keeps the file's existing permission bits.
+ * - it writes atomically, keeps the file's permission bits, and writes
+ *   *through* a symlink rather than replacing it, so a settings file managed by
+ *   a dotfiles tool stays managed.
  *
- * `0` is refused rather than passed through: in Claude it does not mean
- * "never expire", it disables transcript writes entirely, which would break
- * every Callboard chat on the engine. "Keep for a very long time" is a large
- * number, and the UI offers one.
+ * `0` is refused: Claude itself rejects it as invalid (it once meant "write no
+ * transcripts at all"). "Keep for a very long time" is a large number, and the
+ * UI offers one.
  */
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { EngineRetention } from "shared/types/index.js";
 import { resolvePiSessionsRoot } from "../agents/adapters/pi/paths.js";
 import { resolveCodexSessionsRoot } from "../agents/adapters/codex/sessionParser.js";
 import { atomicWriteFileSync } from "../utils/atomic-write.js";
+import { createLogger } from "../utils/logger.js";
+
+const log = createLogger("engine-retention");
 
 /** Claude's own default when `cleanupPeriodDays` is absent. */
 export const CLAUDE_DEFAULT_CLEANUP_DAYS = 30;
@@ -44,66 +67,67 @@ export const CLAUDE_DEFAULT_CLEANUP_DAYS = 30;
  */
 export const CLAUDE_MAX_CLEANUP_DAYS = 36500;
 
-export interface ClaudeRetentionPaths {
-  /** Claude's config dir — `~/.claude` unless a test says otherwise. */
+type ClaudeRetention = Extract<EngineRetention, { engine: "claude-code" }>;
+
+/** A managed-policy `cleanupPeriodDays`, and a human-readable name for where it came from. */
+export interface PolicyRetention {
+  days: number;
+  source: string;
+}
+
+export interface ClaudeRetentionDeps {
+  /** Claude's config dir. Defaults to `$CLAUDE_CONFIG_DIR`, else `~/.claude` — what the CLI uses. */
   claudeDir?: string;
-  /** Managed-policy files to check, highest precedence first. Defaults to the platform's documented locations. */
-  managedFiles?: string[];
+  /** The managed-policy value, if any. Defaults to asking the SDK's settings resolver. */
+  resolvePolicy?: () => Promise<PolicyRetention | undefined>;
 }
 
 /** Thrown for a request the caller should fix — mapped to a 4xx by the route. */
 export class RetentionUpdateError extends Error {
   constructor(
     message: string,
-    readonly status: 400 | 409,
+    readonly status: 400 | 403 | 409,
   ) {
     super(message);
   }
 }
 
-function claudeDir(paths: ClaudeRetentionPaths): string {
-  return paths.claudeDir ?? join(homedir(), ".claude");
-}
-
-/**
- * Where Claude Code reads managed (org policy) settings, per its docs. A
- * `managed-settings.d/` drop-in directory beside the file is read too.
- */
-function defaultManagedFiles(): string[] {
-  const base =
-    process.platform === "darwin"
-      ? "/Library/Application Support/ClaudeCode"
-      : process.platform === "win32"
-        ? "C:\\Program Files\\ClaudeCode"
-        : "/etc/claude-code";
-  const files = [join(base, "managed-settings.json")];
-  const dropIns = join(base, "managed-settings.d");
-  try {
-    for (const name of readdirSync(dropIns).sort()) {
-      if (name.endsWith(".json")) files.push(join(dropIns, name));
-    }
-  } catch {
-    /* no drop-in directory — the common case */
-  }
-  return files;
+function claudeDir(deps: ClaudeRetentionDeps): string {
+  return deps.claudeDir ?? (process.env.CLAUDE_CONFIG_DIR?.trim() || join(homedir(), ".claude"));
 }
 
 function isValidDays(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 1;
 }
 
-/** The first managed file that pins a valid `cleanupPeriodDays`, if any. Unreadable policy files are skipped, not fatal. */
-function managedCleanupDays(files: string[]): { days: number; file: string } | undefined {
-  for (const file of files) {
-    try {
-      const parsed: unknown = JSON.parse(readFileSync(file, "utf8"));
-      const days = (parsed as Record<string, unknown> | null)?.cleanupPeriodDays;
-      if (isValidDays(days)) return { days, file };
-    } catch {
-      /* absent or unparseable — not ours to report on */
-    }
+const POLICY_ORIGIN_LABEL: Record<string, string> = {
+  remote: "server-managed settings",
+  plist: "a macOS configuration profile",
+  hklm: "the Windows registry (HKLM)",
+  hkcu: "the Windows registry (HKCU)",
+  helper: "a policy helper",
+  parent: "the parent process's managed settings",
+};
+
+/**
+ * The policy tier's `cleanupPeriodDays`, through the CLI's own merge. With no
+ * filesystem sources enabled, anything left in `effective` came from policy.
+ * A resolver failure is logged and treated as "no policy": the field is then
+ * editable, which is the state the user can at least act on.
+ */
+async function resolvePolicyFromSdk(): Promise<PolicyRetention | undefined> {
+  try {
+    const { resolveSettings } = await import("@anthropic-ai/claude-agent-sdk");
+    const resolved = await resolveSettings({ settingSources: [] });
+    const days = (resolved.effective as Record<string, unknown>).cleanupPeriodDays;
+    if (!isValidDays(days)) return undefined;
+    const prov = resolved.provenance.cleanupPeriodDays;
+    const source = prov?.path ?? (prov?.policyOrigin ? POLICY_ORIGIN_LABEL[prov.policyOrigin] : undefined) ?? "managed policy";
+    return { days, source };
+  } catch (err) {
+    log.warn(`could not resolve Claude managed settings: ${err instanceof Error ? err.message : String(err)}`);
+    return undefined;
   }
-  return undefined;
 }
 
 type UserSettingsRead = { kind: "missing" } | { kind: "ok"; settings: Record<string, unknown> } | { kind: "unreadable"; reason: string };
@@ -129,34 +153,67 @@ function readUserSettings(file: string): UserSettingsRead {
   }
 }
 
-export function getClaudeRetention(paths: ClaudeRetentionPaths = {}): Extract<EngineRetention, { engine: "claude-code" }> {
-  const dir = claudeDir(paths);
-  const settingsPath = join(dir, "settings.json");
-  const read = readUserSettings(settingsPath);
+function configuredDaysIn(read: UserSettingsRead): number | null {
   const raw = read.kind === "ok" ? read.settings.cleanupPeriodDays : undefined;
   // An invalid value in the file (0, a string) is reported as "not configured"
   // — what Claude itself would do with it is not something to guess at here.
-  const configuredDays = isValidDays(raw) ? raw : null;
-  const managed = managedCleanupDays(paths.managedFiles ?? defaultManagedFiles());
+  return isValidDays(raw) ? raw : null;
+}
+
+export async function getClaudeRetention(deps: ClaudeRetentionDeps = {}): Promise<ClaudeRetention> {
+  const dir = claudeDir(deps);
+  const settingsPath = join(dir, "settings.json");
+  const read = readUserSettings(settingsPath);
+  const configuredDays = configuredDaysIn(read);
+  const policy = await (deps.resolvePolicy ?? resolvePolicyFromSdk)();
   return {
     engine: "claude-code",
     expires: true,
     configuredDays,
     defaultDays: CLAUDE_DEFAULT_CLEANUP_DAYS,
-    effectiveDays: managed?.days ?? configuredDays ?? CLAUDE_DEFAULT_CLEANUP_DAYS,
+    effectiveDays: policy?.days ?? configuredDays ?? CLAUDE_DEFAULT_CLEANUP_DAYS,
     settingsPath,
-    ...(managed ? { managedBy: managed.file } : {}),
+    ...(policy ? { managedBy: policy.source } : {}),
     ...(read.kind === "unreadable" ? { unreadable: read.reason } : {}),
     storagePath: join(dir, "projects"),
   };
 }
 
-export function getEngineRetention(paths: ClaudeRetentionPaths = {}): EngineRetention[] {
+export async function getEngineRetention(deps: ClaudeRetentionDeps = {}): Promise<EngineRetention[]> {
   return [
-    getClaudeRetention(paths),
+    await getClaudeRetention(deps),
     { engine: "codex", expires: false, storagePath: resolveCodexSessionsRoot() },
     { engine: "pi", expires: false, storagePath: resolvePiSessionsRoot() },
   ];
+}
+
+/**
+ * The real file to write: `settingsPath` itself, or what it links to. A
+ * dangling link is refused rather than replaced — whatever it pointed at is
+ * the user's, and putting a plain file in its place would detach it.
+ */
+function writeTarget(settingsPath: string): string {
+  let isLink = false;
+  try {
+    isLink = lstatSync(settingsPath).isSymbolicLink();
+  } catch {
+    return settingsPath; // does not exist yet
+  }
+  if (!isLink) return settingsPath;
+  try {
+    return realpathSync(settingsPath);
+  } catch {
+    throw new RetentionUpdateError(`${settingsPath} is a symlink to a file that does not exist. Fix the link and try again.`, 409);
+  }
+}
+
+export interface SetClaudeRetentionOptions extends ClaudeRetentionDeps {
+  /**
+   * May this call shorten retention? Shortening is the only edit that deletes
+   * data — every transcript past the new period goes at Claude's next start —
+   * so the route only allows it from a local client.
+   */
+  allowShrink?: boolean;
 }
 
 /**
@@ -164,15 +221,21 @@ export function getEngineRetention(paths: ClaudeRetentionPaths = {}): EngineRete
  * Every other key is preserved. Throws {@link RetentionUpdateError} for a value
  * or a file state the caller can fix.
  */
-export function setClaudeCleanupPeriodDays(days: number | null, paths: ClaudeRetentionPaths = {}): Extract<EngineRetention, { engine: "claude-code" }> {
+export async function setClaudeCleanupPeriodDays(days: number | null, opts: SetClaudeRetentionOptions = {}): Promise<ClaudeRetention> {
   if (days !== null && (!isValidDays(days) || days > CLAUDE_MAX_CLEANUP_DAYS)) {
     throw new RetentionUpdateError(
-      `cleanupPeriodDays must be a whole number from 1 to ${CLAUDE_MAX_CLEANUP_DAYS}, or null for Claude's default. (0 is not "never" — it turns off saving chats.)`,
+      `cleanupPeriodDays must be a whole number from 1 to ${CLAUDE_MAX_CLEANUP_DAYS}, or null for Claude's default. Claude rejects 0; for "keep forever", use ${CLAUDE_MAX_CLEANUP_DAYS}.`,
       400,
     );
   }
-  const dir = claudeDir(paths);
+  const dir = claudeDir(opts);
   const settingsPath = join(dir, "settings.json");
+
+  const policy = await (opts.resolvePolicy ?? resolvePolicyFromSdk)();
+  if (policy) {
+    throw new RetentionUpdateError(`Claude's chat retention is set by ${policy.source}, which overrides your own settings, so changing it here would have no effect.`, 409);
+  }
+
   const read = readUserSettings(settingsPath);
   if (read.kind === "unreadable") {
     throw new RetentionUpdateError(
@@ -180,23 +243,34 @@ export function setClaudeCleanupPeriodDays(days: number | null, paths: ClaudeRet
       409,
     );
   }
-  if (read.kind === "missing" && days === null) return getClaudeRetention(paths);
+
+  const currentDays = configuredDaysIn(read) ?? CLAUDE_DEFAULT_CLEANUP_DAYS;
+  const nextDays = days ?? CLAUDE_DEFAULT_CLEANUP_DAYS;
+  if (nextDays < currentDays && !opts.allowShrink) {
+    throw new RetentionUpdateError(
+      "Shortening Claude's chat retention can only be done from a client on the local network: it deletes every Claude chat older than the new period the next time Claude starts. Lengthening it is allowed from anywhere.",
+      403,
+    );
+  }
+
+  if (read.kind === "missing" && days === null) return getClaudeRetention(opts);
+  if (!existsSync(dir)) {
+    // No config dir at all means Claude has never run as this user; creating it
+    // on its behalf is not this setting's job.
+    throw new RetentionUpdateError(`${dir} does not exist — run Claude once so it creates its config directory, then try again.`, 409);
+  }
 
   const settings = read.kind === "ok" ? { ...read.settings } : {};
   if (days === null) delete settings.cleanupPeriodDays;
   else settings.cleanupPeriodDays = days;
 
+  const target = writeTarget(settingsPath);
   let mode: number | undefined;
   try {
-    mode = statSync(settingsPath).mode & 0o777;
+    mode = statSync(target).mode & 0o777;
   } catch {
     mode = undefined;
   }
-  if (!existsSync(dir)) {
-    // No ~/.claude at all means Claude has never run as this user; creating its
-    // config dir on its behalf is not this setting's job.
-    throw new RetentionUpdateError(`${dir} does not exist — run Claude once so it creates its config directory, then try again.`, 409);
-  }
-  atomicWriteFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, mode !== undefined ? { mode } : {});
-  return getClaudeRetention(paths);
+  atomicWriteFileSync(target, `${JSON.stringify(settings, null, 2)}\n`, mode !== undefined ? { mode } : {});
+  return getClaudeRetention(opts);
 }
