@@ -432,6 +432,50 @@ describe('oauth2 routes on the request path', () => {
     expect(apiRequests).toHaveLength(0);
   });
 
+  describe('overlapping connections', () => {
+    const staticRoute = (alias: string, allowedEndpoints: string[]): Route => ({
+      alias,
+      headers: { Authorization: 'Bearer ${STATIC_TOKEN}' },
+      secrets: { STATIC_TOKEN: 'static-token-value' },
+      allowedEndpoints,
+    });
+
+    it('refuses a URL two connections match when one is OAuth2', async () => {
+      const both = resolveRoutes(
+        [staticRoute('static', [`${apiBase}/api/**`]), routeDef()],
+        {},
+        'alice',
+      );
+      await expect(
+        executeProxyRequest(GET('/api/a'), both, undefined, { caller: 'alice' }),
+      ).rejects.toThrow(/Ambiguous endpoint.*"static", "svc"/);
+      expect(apiRequests).toHaveLength(0);
+      expect(tokenRequests).toHaveLength(0);
+    });
+
+    it('still serves URLs only one of them matches', async () => {
+      const both = resolveRoutes(
+        [staticRoute('static', [`${apiBase}/other/**`]), routeDef()],
+        {},
+        'alice',
+      );
+      const result = await executeProxyRequest(GET('/api/a'), both, undefined, {
+        caller: 'alice',
+      });
+      expect(result.status).toBe(200);
+    });
+
+    it('keeps first-match-wins between static connections', async () => {
+      const two = resolveRoutes([
+        staticRoute('first', [`${apiBase}/api/**`]),
+        staticRoute('second', [`${apiBase}/**`]),
+      ]);
+      const result = await executeProxyRequest(GET('/api/a'), two);
+      expect(result.status).toBe(200);
+      expect(apiRequests[0].authorization).toBe('Bearer static-token-value');
+    });
+  });
+
   describe('tools', () => {
     it('list_routes reports the auth shape and no secret values', async () => {
       const [info] = (await dispatchTool('list_routes', {}, routes(), context())) as Record<

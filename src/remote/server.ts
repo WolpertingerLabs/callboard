@@ -27,6 +27,7 @@ import {
   connectorWithholdingWarnings,
   resolveCallerRoutes,
   validateRemoteConfig,
+  connectionOverlapWarnings,
   resolveSecrets,
   getEnvFilePath,
   getRemoteConfigPath,
@@ -497,6 +498,9 @@ export function createApp(options: CreateAppOptions = {}) {
   // caller (see resolveCallerRoutesChecked), so log them up front.
   for (const problem of validateRemoteConfig(config)) {
     console.error(`[remote] ${problem}`);
+  }
+  for (const warning of connectionOverlapWarnings(config)) {
+    console.warn(`[remote] Warning: ${warning}`);
   }
 
   // ── Handshake init ─────────────────────────────────────────────────────

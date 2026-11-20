@@ -13,6 +13,7 @@ import {
   substitutableSecrets,
   templateSecrets,
   validateRemoteConfig,
+  connectionOverlapWarnings,
   withheldSecretValues,
   type OAuth2Config,
   type RemoteServerConfig,
@@ -411,5 +412,45 @@ describe('oauth2Overrides lookup', () => {
     // taken as the override and the connection dropped as malformed.
     expect(problems).toEqual([]);
     expect(routes.map((r) => r.alias)).toEqual(['constructor']);
+  });
+});
+
+describe('connectionOverlapWarnings', () => {
+  const cfg = (connections: string[], connectors: Route[] = []): RemoteServerConfig => ({
+    host: '127.0.0.1',
+    port: 0,
+    rateLimitPerMinute: 60,
+    connectors,
+    callers: { alice: { connections } },
+  });
+
+  it('is quiet for every built-in template together, but one of each overlapping pair', () => {
+    const all = listConnectionTemplates()
+      .map((t) => t.alias)
+      .filter((alias) => alias !== 'discord-oauth');
+    expect(connectionOverlapWarnings(cfg(all))).toEqual([]);
+  });
+
+  it('flags discord-bot with discord-oauth (two auth modes for one API)', () => {
+    const [warning] = connectionOverlapWarnings(cfg(['discord-bot', 'discord-oauth']));
+    expect(warning).toContain('"discord-bot" and "discord-oauth"');
+  });
+
+  it('flags a wildcard host overlapping an exact one, and says OAuth2 requests are refused', () => {
+    const warnings = connectionOverlapWarnings(
+      cfg(
+        ['example', 'wide'],
+        [route(), { alias: 'wide', allowedEndpoints: ['https://*.example.com/v2/**'] }],
+      ),
+    );
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('refused (OAuth2)');
+  });
+
+  it('treats a pattern without a host as overlapping everything', () => {
+    const warnings = connectionOverlapWarnings(
+      cfg(['github', 'any'], [{ alias: 'any', allowedEndpoints: ['**'] }]),
+    );
+    expect(warnings).toHaveLength(1);
   });
 });

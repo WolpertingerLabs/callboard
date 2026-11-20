@@ -1017,6 +1017,61 @@ export function validateRemoteConfig(config: RemoteServerConfig): string[] {
   return problems;
 }
 
+/** The `scheme://host` part of an allowlist pattern, or null if it has none
+ *  (such a pattern can match any host). */
+function patternHost(pattern: string): string | null {
+  const m = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]+)/i.exec(pattern);
+  return m ? m[1].toLowerCase() : null;
+}
+
+/** Whether two host globs can name the same host (`*` matches anything). */
+function hostGlobsOverlap(a: string | null, b: string | null): boolean {
+  if (a === null || b === null || a === b) return true;
+  const matches = (glob: string, host: string) =>
+    new RegExp('^' + glob.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*+/g, '.*') + '$').test(
+      host.replace(/\*/g, 'x'),
+    );
+  return matches(a, b) || matches(b, a);
+}
+
+/**
+ * Warnings for callers whose connections have allowlists on overlapping
+ * hosts. A request goes to the first connection whose allowlist matches, so
+ * an overlap means list order silently decides which credential is used;
+ * where an OAuth2 connection is involved, executeProxyRequest refuses such
+ * requests outright. Logged at daemon boot.
+ */
+export function connectionOverlapWarnings(config: RemoteServerConfig): string[] {
+  const warnings: string[] = [];
+  for (const alias of Object.keys(config.callers)) {
+    let routes: Route[];
+    try {
+      routes = resolveCallerRoutesChecked(config, alias).routes;
+    } catch {
+      continue; // reported by validateRemoteConfig()
+    }
+    for (let i = 0; i < routes.length; i++) {
+      for (let j = i + 1; j < routes.length; j++) {
+        const a = routes[i];
+        const b = routes[j];
+        const shared = a.allowedEndpoints.flatMap((pa) =>
+          b.allowedEndpoints
+            .filter((pb) => hostGlobsOverlap(patternHost(pa), patternHost(pb)))
+            .map(() => patternHost(pa) ?? '(any host)'),
+        );
+        if (shared.length === 0) continue;
+        const oauth = a.oauth2 || b.oauth2 ? ' Requests matching both are refused (OAuth2).' : '';
+        warnings.push(
+          `Caller "${alias}": connections "${a.alias}" and "${b.alias}" both allow ` +
+            `${[...new Set(shared)].join(', ')}; a request matching both uses whichever is ` +
+            `listed first.${oauth}`,
+        );
+      }
+    }
+  }
+  return warnings;
+}
+
 /**
  * Narrow a route's `oauth2.scopes` to a caller's override. Throws when the
  * override is malformed, targets a route without `oauth2`, or is not a

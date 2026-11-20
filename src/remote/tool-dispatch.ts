@@ -412,6 +412,26 @@ export async function executeProxyRequest(
     throw new Error(`Endpoint not allowed: ${url}`);
   }
 
+  // Step 1b: Overlapping connections. Normally the first match wins, but when
+  // an OAuth2 connection is among the matches, which token (and which
+  // scopes) a request carries would silently depend on list order. Refuse.
+  const overlapping = routes.filter(
+    (route) =>
+      route !== matched &&
+      route.allowedEndpoints.length > 0 &&
+      (isEndpointAllowed(url, route.allowedEndpoints) ||
+        isEndpointAllowed(resolvedUrl, route.allowedEndpoints)),
+  );
+  if (overlapping.length > 0 && [matched, ...overlapping].some((route) => route.oauth2)) {
+    const names = [matched, ...overlapping].map((route) => `"${route.alias ?? '(unnamed)'}"`);
+    throw new Error(
+      `Ambiguous endpoint: ${url} matches the allowlists of connections ${names.join(', ')}, ` +
+        'and at least one of them uses OAuth2, so which credential the request carries would ' +
+        'depend on their order. Ask the operator to narrow the allowlists or remove one of ' +
+        'the connections for this caller.',
+    );
+  }
+
   // Secrets this route may substitute, and the ones it withholds (signing
   // credentials, header-only secrets). A reference to a withheld one anywhere
   // it would otherwise be resolved is rejected outright.
