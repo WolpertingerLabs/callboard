@@ -430,10 +430,27 @@ describe('connectionOverlapWarnings', () => {
   });
 
   it('is quiet for every built-in template together, but one of each overlapping pair', () => {
+    // Alternatives for one API overlap by design: keep one of each. The scoped
+    // Google templates for different services share www.googleapis.com but
+    // not paths, so they stay in.
+    const alternatives = new Set([
+      'discord-oauth',
+      'google', // static, all of Google
+      'google-gmail-metadata', // vs google-gmail-readonly
+      'google-calendar-freebusy', // vs google-calendar-readonly
+      'google-drive-file', // vs google-drive-readonly
+    ]);
     const all = listConnectionTemplates()
       .map((t) => t.alias)
-      // The Google templates share www.googleapis.com (host-level check).
-      .filter((alias) => alias !== 'discord-oauth' && !alias.startsWith('google'));
+      .filter((alias) => !alternatives.has(alias) && !alias.endsWith('-sa'));
+    expect(all).toEqual(
+      expect.arrayContaining([
+        'google-gmail-readonly',
+        'google-calendar-readonly',
+        'google-drive-readonly',
+        'google-sheets-readonly',
+      ]),
+    );
     expect(connectionOverlapWarnings(cfg(all))).toEqual([]);
   });
 

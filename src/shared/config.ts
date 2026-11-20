@@ -1051,29 +1051,62 @@ export function validateRemoteConfig(config: RemoteServerConfig): string[] {
   return problems;
 }
 
-/** The `scheme://host` part of an allowlist pattern, or null if it has none
- *  (such a pattern can match any host). */
-function patternHost(pattern: string): string | null {
-  const m = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]+)/i.exec(pattern);
-  return m ? m[1].toLowerCase() : null;
-}
-
-/** Whether two host globs can name the same host (`*` matches anything). */
-function hostGlobsOverlap(a: string | null, b: string | null): boolean {
-  if (a === null || b === null || a === b) return true;
-  const matches = (glob: string, host: string) =>
-    new RegExp('^' + glob.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*+/g, '.*') + '$').test(
-      host.replace(/\*/g, 'x'),
-    );
-  return matches(a, b) || matches(b, a);
+/** Glob (`*` within a segment, `**` across) → anchored regex, as matchRoute uses. */
+function allowlistGlobRegex(glob: string, star = '[^/]*'): RegExp {
+  return new RegExp(
+    '^' +
+      glob
+        .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
+        .replace(/\*\*/g, '\0')
+        .replace(/\*/g, star)
+        .replace(/\0/g, '.*') +
+      '$',
+    'i',
+  );
 }
 
 /**
- * Warnings for callers whose connections have allowlists on overlapping
- * hosts. A request goes to the first connection whose allowlist matches, so
- * an overlap means list order silently decides which credential is used;
- * where an OAuth2 connection is involved, executeProxyRequest refuses such
- * requests outright. Logged at daemon boot.
+ * Whether two allowlist patterns can match a common URL. Hosts are compared
+ * as globs; paths by their literal prefix up to the first wildcard (or by an
+ * exact match when one side has none). Conservative: two wildcard hosts, or a
+ * pattern without `scheme://host`, count as overlapping. Used only for the
+ * boot warning; executeProxyRequest checks real URLs.
+ */
+export function allowlistPatternsOverlap(a: string, b: string): boolean {
+  const split = (p: string) => /^([a-z][a-z0-9+.-]*):\/\/([^/?#]*)(.*)$/i.exec(p);
+  const ma = split(a);
+  const mb = split(b);
+  if (!ma || !mb) return true;
+  if (ma[1].toLowerCase() !== mb[1].toLowerCase()) return false;
+  const [hostA, hostB] = [ma[2], mb[2]];
+  const hostOverlap =
+    hostA.includes('*') && hostB.includes('*')
+      ? true
+      : hostA.includes('*')
+        ? allowlistGlobRegex(hostA, '.*').test(hostB)
+        : hostB.includes('*')
+          ? allowlistGlobRegex(hostB, '.*').test(hostA)
+          : hostA.toLowerCase() === hostB.toLowerCase();
+  if (!hostOverlap) return false;
+  const [pathA, pathB] = [ma[3], mb[3]];
+  const wildA = pathA.includes('*');
+  const wildB = pathB.includes('*');
+  if (!wildA && !wildB) return pathA === pathB;
+  if (!wildA) return allowlistGlobRegex(pathB).test(pathA);
+  if (!wildB) return allowlistGlobRegex(pathA).test(pathB);
+  const prefixA = pathA.slice(0, pathA.indexOf('*'));
+  const prefixB = pathB.slice(0, pathB.indexOf('*'));
+  return prefixA.startsWith(prefixB) || prefixB.startsWith(prefixA);
+}
+
+/**
+ * Warnings for callers whose connections have overlapping allowlists. A
+ * request goes to the first connection whose allowlist matches, so an overlap
+ * means list order silently decides which credential is used; where an OAuth2
+ * connection is involved, executeProxyRequest refuses such requests outright.
+ * Paths count, not just hosts: the scoped Google templates share
+ * `www.googleapis.com` (Calendar, Drive) without overlapping. Logged at
+ * daemon boot.
  */
 export function connectionOverlapWarnings(config: RemoteServerConfig): string[] {
   const warnings: string[] = [];
@@ -1088,17 +1121,20 @@ export function connectionOverlapWarnings(config: RemoteServerConfig): string[] 
       for (let j = i + 1; j < routes.length; j++) {
         const a = routes[i];
         const b = routes[j];
-        const shared = a.allowedEndpoints.flatMap((pa) =>
-          b.allowedEndpoints
-            .filter((pb) => hostGlobsOverlap(patternHost(pa), patternHost(pb)))
-            .map(() => patternHost(pa) ?? '(any host)'),
-        );
-        if (shared.length === 0) continue;
+        let pair: [string, string] | undefined;
+        for (const pa of a.allowedEndpoints) {
+          const pb = b.allowedEndpoints.find((p) => allowlistPatternsOverlap(pa, p));
+          if (pb !== undefined) {
+            pair = [pa, pb];
+            break;
+          }
+        }
+        if (!pair) continue;
         const oauth = a.oauth2 || b.oauth2 ? ' Requests matching both are refused (OAuth2).' : '';
         warnings.push(
-          `Caller "${alias}": connections "${a.alias}" and "${b.alias}" both allow ` +
-            `${[...new Set(shared)].join(', ')}; a request matching both uses whichever is ` +
-            `listed first.${oauth}`,
+          `Caller "${alias}": connections "${a.alias}" and "${b.alias}" have overlapping ` +
+            `allowlists ("${pair[0]}" / "${pair[1]}"); a request matching both uses whichever ` +
+            `is listed first.${oauth}`,
         );
       }
     }
