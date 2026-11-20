@@ -12,6 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isEndpointAllowed } from '../remote/url-policy.js';
 import {
   AWS_SIGV4_REQUIRED_SECRETS,
   MAX_OAUTH2_REFRESH_SKEW_MS,
@@ -137,7 +138,7 @@ export function loadConnection(name: string): Route {
   const route = JSON.parse(raw) as Route;
   if (route.oauth2 !== undefined) {
     try {
-      validateOAuth2Route(route, 'template');
+      validateOAuth2Route(route);
     } catch (err) {
       throw new Error(`Connection template "${name}": ${(err as Error).message}`);
     }
@@ -257,13 +258,27 @@ export function validateOAuth2Config(oauth2: unknown): asserts oauth2 is OAuth2C
   }
 }
 
-/** Glob → regex for the host part of an allowlist pattern (`*` = any host chars). */
-function hostGlobMatches(hostGlob: string, host: string): boolean {
-  const re = new RegExp(
-    '^' + hostGlob.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*+/g, '.*') + '$',
-    'i',
-  );
-  return re.test(host);
+/**
+ * The URLs an agent could use to reach the token endpoint: the normalized
+ * token URL, with any query, with a trailing slash, and with its host written
+ * with or without a trailing dot (DNS treats `host.` as `host`).
+ */
+function tokenEndpointVariants(tokenUrl: string): string[] {
+  const u = new URL(tokenUrl);
+  const hosts = u.hostname.endsWith('.')
+    ? [u.hostname, u.hostname.slice(0, -1)]
+    : [u.hostname, `${u.hostname}.`];
+  const variants: string[] = [];
+  for (const hostname of hosts) {
+    const v = new URL(u.href);
+    v.hostname = hostname;
+    v.search = '';
+    v.hash = '';
+    const base = v.href;
+    variants.push(base, `${base}?x=1`, base.endsWith('/') ? base : `${base}/`);
+    if (u.search) variants.push(`${base}${u.search}`);
+  }
+  return variants;
 }
 
 /**
@@ -274,10 +289,17 @@ function hostGlobMatches(hostGlob: string, host: string): boolean {
  *   - No `Authorization` header (the minted token is the authorization), and
  *     no header may reference an oauth2 credential.
  *   - Not combined with `awsSigV4` or `resolveSecretsInBody`.
- *   - No `allowedEndpoints` pattern may reach the token endpoint's host: the
- *     agent could otherwise call it directly.
+ *   - No `allowedEndpoints` pattern may match the token endpoint URL: the
+ *     agent could otherwise call it directly. Other paths on the same host
+ *     are fine (Dropbox, Box, and X serve their APIs and token endpoints from
+ *     one host). A pattern without `scheme://host` can match any host and is
+ *     refused.
+ *   - Only a `poll` listener, which gets managed tokens. Webhook and
+ *     websocket listeners would make their requests (webhook
+ *     auto-registration, gateway connects) with the static headers only, so
+ *     unauthenticated, and are refused until supported.
  */
-export function validateOAuth2Route(route: Route, _source: 'template' | 'connector'): void {
+export function validateOAuth2Route(route: Route): void {
   validateOAuth2Config(route.oauth2);
   const oauth2 = route.oauth2;
   const secrets = route.secrets ?? {};
@@ -305,15 +327,21 @@ export function validateOAuth2Route(route: Route, _source: 'template' | 'connect
   if (route.resolveSecretsInBody) {
     throw new Error('oauth2 cannot be combined with resolveSecretsInBody');
   }
-  const tokenHost = new URL(oauth2.tokenUrl).host;
+  const tokenUrls = tokenEndpointVariants(oauth2.tokenUrl);
   for (const pattern of route.allowedEndpoints) {
-    const m = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)/i.exec(pattern);
     // A pattern without a scheme://host prefix can match any host.
-    if (!m || hostGlobMatches(m[1], tokenHost)) {
+    const scoped = /^[a-z][a-z0-9+.-]*:\/\/[^/?#]+/i.test(pattern);
+    if (!scoped || tokenUrls.some((url) => isEndpointAllowed(url, [pattern]))) {
       throw new Error(
-        `oauth2: allowedEndpoints pattern "${pattern}" can reach the token endpoint host ${tokenHost}`,
+        `oauth2: allowedEndpoints pattern "${pattern}" can reach the token endpoint ${oauth2.tokenUrl}`,
       );
     }
+  }
+  if (route.ingestor !== undefined && route.ingestor.type !== 'poll') {
+    throw new Error(
+      `oauth2: a ${route.ingestor.type} listener is not supported on an oauth2 route (only poll ` +
+        'listeners get managed tokens)',
+    );
   }
 }
 

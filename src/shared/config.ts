@@ -984,7 +984,7 @@ export function resolveCallerRoutesChecked(
 
     try {
       // Templates are validated by loadConnection(); custom connectors here.
-      if (custom && route.oauth2 !== undefined) validateOAuth2Route(route, 'connector');
+      if (custom && route.oauth2 !== undefined) validateOAuth2Route(route);
       // Own-property lookup: a connection named `__proto__` or `constructor`
       // must not pick up Object.prototype as its override.
       route = applyOAuth2Override(route, ownEntry(overrides, name));

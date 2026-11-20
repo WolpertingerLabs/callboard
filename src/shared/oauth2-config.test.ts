@@ -135,7 +135,7 @@ describe('validateOAuth2Config', () => {
 
 describe('validateOAuth2Route', () => {
   it('accepts a well-formed route', () => {
-    expect(() => validateOAuth2Route(route(), 'connector')).not.toThrow();
+    expect(() => validateOAuth2Route(route())).not.toThrow();
   });
 
   it.each([
@@ -160,14 +160,63 @@ describe('validateOAuth2Route', () => {
     ],
     ['a scheme-less pattern', { allowedEndpoints: ['**'] }, 'token endpoint'],
   ])('rejects %s', (_label, overrides, message) => {
-    expect(() => validateOAuth2Route(route(overrides as Partial<Route>), 'connector')).toThrow(
-      message,
+    expect(() => validateOAuth2Route(route(overrides as Partial<Route>))).toThrow(message);
+  });
+
+  it.each([
+    'https://auth.example.com/api/**',
+    'https://auth.example.com/2/**',
+    'https://*.example.com/drive/**',
+  ])('allows %s: same host as the token endpoint, but not its URL', (pattern) => {
+    expect(() => validateOAuth2Route(route({ allowedEndpoints: [pattern] }))).not.toThrow();
+  });
+
+  it.each([
+    'https://auth.example.com/oauth/token',
+    'https://auth.example.com/oauth/*',
+    'https://auth.example.com/oauth/token?**',
+    'https://auth.example.com/oauth/token/**',
+    'https://auth.example.com./oauth/**',
+    'https://*/oauth/token',
+  ])('refuses %s, which reaches the token URL', (pattern) => {
+    expect(() => validateOAuth2Route(route({ allowedEndpoints: [pattern] }))).toThrow(
+      'token endpoint',
     );
+  });
+
+  it('refuses a trailing-dot token host matched by a dotless pattern', () => {
+    expect(() =>
+      validateOAuth2Route(
+        route({
+          oauth2: oauth2({ tokenUrl: 'https://auth.example.com./oauth/token' }),
+          allowedEndpoints: ['https://auth.example.com/oauth/**'],
+        }),
+      ),
+    ).toThrow('token endpoint');
+  });
+
+  it.each(['webhook', 'websocket'])('refuses a %s listener', (type) => {
+    expect(() =>
+      validateOAuth2Route(route({ ingestor: { type } as unknown as Route['ingestor'] })),
+    ).toThrow(`a ${type} listener is not supported`);
+  });
+
+  it('allows a poll listener', () => {
+    expect(() =>
+      validateOAuth2Route(
+        route({
+          ingestor: {
+            type: 'poll',
+            poll: { url: 'https://api.example.com/x', intervalMs: 60_000 },
+          },
+        }),
+      ),
+    ).not.toThrow();
   });
 
   it('allows other headers that reference non-credential secrets', () => {
     expect(() =>
-      validateOAuth2Route(route({ headers: { 'X-Region': '${EX_REGION}' } }), 'connector'),
+      validateOAuth2Route(route({ headers: { 'X-Region': '${EX_REGION}' } })),
     ).not.toThrow();
   });
 });
