@@ -697,6 +697,21 @@ export type EngineRetention =
       unreadable?: string;
       /** Where the transcripts this applies to live. */
       storagePath: string;
+      /**
+       * Set when the user file has a `cleanupPeriodDays` Claude rejects (`0`, a
+       * string, a fraction) — the raw value, JSON-encoded. Claude does not fall
+       * back to the default then: it skips the sweep entirely, so *nothing* is
+       * being deleted, and writing any valid value here turns deletion on.
+       * `configuredDays` is `null` in this case.
+       */
+      invalidValue?: string;
+      /**
+       * Whether *this* client may shorten retention (`PUT` answers 403
+       * otherwise): only a browser connected directly to this machine or its
+       * LAN, not through a proxy. Absent from older daemons, which had no such
+       * gate.
+       */
+      canShorten?: boolean;
     }
   | {
       engine: "codex" | "pi";

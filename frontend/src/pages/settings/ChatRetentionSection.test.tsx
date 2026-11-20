@@ -161,6 +161,61 @@ describe("ChatRetentionSection", () => {
     expect(screen.getByText(/isn.t valid JSON \(Unexpected token\)/)).toBeTruthy();
   });
 
+  it("disables Save for a shortening this client may not make, and says why before Save", async () => {
+    h.getEngineRetention.mockResolvedValue(all(claude({ configuredDays: 365, effectiveDays: 365, canShorten: false })));
+    render(<ChatRetentionSection engine="claude-code" />);
+    const input = await box();
+    fireEvent.change(input, { target: { value: "90" } });
+    expect(screen.getByText(/through a proxy \(Tailscale included\), which is how this page is connected/)).toBeTruthy();
+    expect(saveButton().disabled).toBe(true);
+    // Lengthening is still allowed from the same client.
+    fireEvent.change(input, { target: { value: "400" } });
+    expect(saveButton().disabled).toBe(false);
+  });
+
+  it("explains an invalid value in the file, and treats saving anything as turning cleanup on", async () => {
+    h.getEngineRetention.mockResolvedValue(all(claude({ invalidValue: "0", canShorten: false })));
+    render(<ChatRetentionSection engine="claude-code" />);
+    expect(await screen.findByText(/skips cleanup and deletes nothing/)).toBeTruthy();
+    expect(screen.queryByText(/Claude's default/)).toBeNull();
+    // Blank (the default) is a real change here, and a reduction from "nothing is deleted".
+    expect(screen.getByText(/Shorter than now/)).toBeTruthy();
+    expect(saveButton().disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Forever" }));
+    expect(screen.queryByText(/Shorter than now/)).toBeNull();
+    expect(saveButton().disabled).toBe(false);
+  });
+
+  it("clears a save error once the user edits again, and does not show Saved! beside a later failure", async () => {
+    h.getEngineRetention.mockResolvedValue(all());
+    h.setClaudeRetention.mockResolvedValueOnce(claude({ configuredDays: 90, effectiveDays: 90 })).mockRejectedValueOnce(new Error("refused"));
+    render(<ChatRetentionSection engine="claude-code" />);
+    const input = await box();
+    fireEvent.change(input, { target: { value: "90" } });
+    fireEvent.click(saveButton());
+    expect(await screen.findByRole("button", { name: "Saved!" })).toBeTruthy();
+    fireEvent.change(input, { target: { value: "120" } });
+    fireEvent.click(saveButton());
+    expect(await screen.findByText("refused")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Saved!" })).toBeNull();
+    fireEvent.change(input, { target: { value: "121" } });
+    expect(screen.queryByText("refused")).toBeNull();
+  });
+
+  it("keeps the box focusable (readOnly, not disabled) while saving", async () => {
+    h.getEngineRetention.mockResolvedValue(all());
+    let resolve: (v: unknown) => void = () => undefined;
+    h.setClaudeRetention.mockReturnValue(new Promise((r) => (resolve = r)));
+    render(<ChatRetentionSection engine="claude-code" />);
+    const input = await box();
+    fireEvent.change(input, { target: { value: "90" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(input.readOnly).toBe(true));
+    expect(input.disabled).toBe(false);
+    resolve(claude({ configuredDays: 90, effectiveDays: 90 }));
+    await waitFor(() => expect(input.readOnly).toBe(false));
+  });
+
   it("locks the field under managed policy", async () => {
     h.getEngineRetention.mockResolvedValue(all(claude({ effectiveDays: 14, managedBy: "/etc/claude-code/managed-settings.json" })));
     render(<ChatRetentionSection engine="claude-code" />);

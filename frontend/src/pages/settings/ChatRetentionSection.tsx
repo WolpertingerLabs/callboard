@@ -140,21 +140,33 @@ function ClaudeRetentionEditor({
   // Untouched: the box still shows what the file says. That can be out of the
   // range Callboard writes (a hand-edited 99999), which is not the user's
   // mistake to be told about until they edit it.
-  const pristine = draft === toDraft(retention.configuredDays);
+  // An invalid value in the file shows as a blank box, but blank is then a
+  // real change (it would turn deletion on), so it is never pristine.
+  const invalidInFile = retention.invalidValue !== undefined && !retention.managedBy;
+  const pristine = draft === toDraft(retention.configuredDays) && !invalidInFile;
   const showInvalid = !parsed.valid && !pristine;
-  const dirty = !pristine && (!parsed.valid || days !== retention.configuredDays);
-  const canSave = parsed.valid && dirty && !locked && !saving;
+  const dirty = !pristine && (!parsed.valid || invalidInFile || days !== retention.configuredDays);
   const nextEffective = days === null ? retention.defaultDays : days;
+  // What the sweep keeps today. With an invalid value Claude skips the sweep,
+  // so nothing is deleted — any valid value is a reduction from that.
+  const currentKeep = invalidInFile ? Number.POSITIVE_INFINITY : retention.effectiveDays;
   // Lowering the period is the one edit that destroys data — on Claude's next
   // start, not on Save — so it is the one that gets a warning. Two "forever"
-  // values (a hand-written 99999 and the 36500 preset) are not a reduction.
+  // values (a hand-written 99999 and the 36500 preset) are not a reduction;
+  // this mirrors `isShortening` on the backend.
   const shrinking =
-    parsed.valid && dirty && nextEffective !== undefined && nextEffective < retention.effectiveDays && !(isForever(nextEffective) && isForever(retention.effectiveDays));
+    parsed.valid && dirty && nextEffective !== undefined && nextEffective < currentKeep && !(isForever(nextEffective) && isForever(currentKeep));
+  // The backend refuses a reduction from a client behind a proxy or off the
+  // LAN; say so before Save rather than after it. Older daemons omit the flag.
+  const shrinkBlocked = shrinking && retention.canShorten === false;
+  const canSave = parsed.valid && dirty && !locked && !saving && !shrinkBlocked;
 
   const save = async () => {
     if (!canSave || !parsed.valid) return;
     setSaving(true);
     setError("");
+    setSaved(false);
+    clearTimeout(savedTimer.current);
     try {
       const next = await setClaudeRetention(parsed.days);
       onSaved(next);
@@ -172,7 +184,13 @@ function ClaudeRetentionEditor({
     }
   };
 
-  const summary = isForever(retention.effectiveDays) ? (
+  const summary = invalidInFile ? (
+    <>
+      Your settings file sets <code style={{ fontSize: 11 }}>cleanupPeriodDays</code> to <code style={{ fontSize: 11 }}>{retention.invalidValue}</code>, which
+      Claude rejects, so it currently <strong style={{ color: "var(--text)" }}>skips cleanup and deletes nothing</strong>. Saving any value here turns
+      cleanup on
+    </>
+  ) : isForever(retention.effectiveDays) ? (
     <>
       Claude is set to <strong style={{ color: "var(--text)" }}>keep chats indefinitely</strong>
     </>
@@ -187,7 +205,7 @@ function ClaudeRetentionEditor({
     <>
       <div style={subtitleStyle}>
         {summary}
-        {retention.managedBy ? " (set by your organization's policy)" : retention.configuredDays === null ? " (Claude's default)" : ""}. This applies to every
+        {retention.managedBy ? " (set by your organization's policy)" : retention.configuredDays === null && !invalidInFile ? " (Claude's default)" : ""}. This applies to every
         Claude chat, bookmarked or not.
       </div>
 
@@ -214,7 +232,10 @@ function ClaudeRetentionEditor({
           disabled={locked}
           // readOnly rather than disabled while saving, so Enter-to-save keeps focus here.
           readOnly={saving}
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={(e) => {
+            setDraft(e.target.value);
+            setError("");
+          }}
           onKeyDown={(e) => {
             if (e.key === "Enter") void save();
           }}
@@ -228,7 +249,10 @@ function ClaudeRetentionEditor({
               key={label}
               type="button"
               disabled={locked || saving}
-              onClick={() => setDraft(presetDays === null ? "" : String(presetDays))}
+              onClick={() => {
+                setDraft(toDraft(presetDays));
+                setError("");
+              }}
               style={{
                 padding: "6px 10px",
                 borderRadius: 6,
@@ -271,6 +295,8 @@ function ClaudeRetentionEditor({
       {shrinking && (
         <div style={{ color: "var(--warning)", fontSize: 12, marginTop: 6 }}>
           Shorter than now: the next time Claude starts, it will delete any Claude chat not written to in the last {describeDays(nextEffective)}.
+          {shrinkBlocked &&
+            " Shortening can only be saved from a browser connected directly to this machine or its LAN — not from off the LAN or through a proxy (Tailscale included), which is how this page is connected."}
         </div>
       )}
       {error && <div style={{ color: "var(--danger)", fontSize: 12, marginTop: 6 }}>{error}</div>}
@@ -278,7 +304,8 @@ function ClaudeRetentionEditor({
       <div style={{ ...helpStyle, marginTop: 8 }}>
         Saved as <code style={{ fontSize: 11 }}>cleanupPeriodDays</code> in <code style={{ fontSize: 11 }}>{retention.settingsPath}</code>, so it also applies
         to Claude outside Callboard. Leave it blank to use the default. A repository&rsquo;s own <code style={{ fontSize: 11 }}>.claude/settings.json</code> can
-        set a different value for Claude sessions started there. Shortening it is only allowed from a browser on the local network.
+        set a different value for Claude sessions started there. Shortening it is only allowed from a browser connected directly to this machine or its
+        LAN, not through a proxy.
       </div>
     </>
   );

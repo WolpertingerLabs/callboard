@@ -46,6 +46,15 @@ describe("getClaudeRetention", () => {
     expect(await getClaudeRetention(deps())).toMatchObject({ configuredDays: 400, effectiveDays: 14, managedBy: policy.source });
   });
 
+  it("reports an invalid value Claude would reject, rather than pretending the default applies", async () => {
+    writeFileSync(settingsFile(), JSON.stringify({ cleanupPeriodDays: 0 }));
+    expect(await getClaudeRetention(deps())).toMatchObject({ configuredDays: null, invalidValue: "0" });
+    writeFileSync(settingsFile(), JSON.stringify({ cleanupPeriodDays: "90" }));
+    expect((await getClaudeRetention(deps())).invalidValue).toBe('"90"');
+    writeFileSync(settingsFile(), JSON.stringify({ cleanupPeriodDays: 90 }));
+    expect((await getClaudeRetention(deps())).invalidValue).toBeUndefined();
+  });
+
   it("flags an unparseable settings file", async () => {
     writeFileSync(settingsFile(), "{ not json");
     expect((await getClaudeRetention(deps())).unreadable).toBeTruthy();
@@ -128,6 +137,21 @@ describe("setClaudeCleanupPeriodDays", () => {
       expect(readJson()).toEqual({ cleanupPeriodDays: 90 });
     });
 
+    it("treats two values at or past the ceiling as equal, not as shortening", async () => {
+      writeFileSync(settingsFile(), JSON.stringify({ cleanupPeriodDays: 99999 }));
+      await setClaudeCleanupPeriodDays(36500, deps());
+      expect(readJson()).toEqual({ cleanupPeriodDays: 36500 });
+    });
+
+    it.each([0, "90", -5, 1.5])("treats an invalid current value %j as 'nothing is deleted', so any write needs allowShrink", async (raw) => {
+      writeFileSync(settingsFile(), JSON.stringify({ cleanupPeriodDays: raw }));
+      await expect(setClaudeCleanupPeriodDays(31, deps())).rejects.toMatchObject({ status: 403 });
+      await expect(setClaudeCleanupPeriodDays(null, deps())).rejects.toMatchObject({ status: 403 });
+      expect(readJson()).toEqual({ cleanupPeriodDays: raw });
+      await setClaudeCleanupPeriodDays(31, deps({ allowShrink: true }));
+      expect(readJson()).toEqual({ cleanupPeriodDays: 31 });
+    });
+
     it("does not gate lengthening", async () => {
       await setClaudeCleanupPeriodDays(36500, deps());
       expect(readJson()).toEqual({ cleanupPeriodDays: 36500 });
@@ -151,6 +175,20 @@ describe("setClaudeCleanupPeriodDays", () => {
       await setClaudeCleanupPeriodDays(90, deps());
       expect(lstatSync(settingsFile()).isSymbolicLink()).toBe(true);
       expect(readJson(real)).toEqual({ model: "opus", cleanupPeriodDays: 90 });
+    });
+
+    it.skipIf(process.getuid?.() === 0)("maps a non-writable target to a 409 that says so", async () => {
+      const store = join(root, "store");
+      mkdirSync(store);
+      const real = join(store, "settings.json");
+      writeFileSync(real, "{}");
+      symlinkSync(real, settingsFile());
+      chmodSync(store, 0o555);
+      try {
+        await expect(setClaudeCleanupPeriodDays(90, deps())).rejects.toMatchObject({ status: 409, message: expect.stringMatching(/not writable/) });
+      } finally {
+        chmodSync(store, 0o755);
+      }
     });
 
     it("refuses a dangling symlink", async () => {

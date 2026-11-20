@@ -112,6 +112,9 @@ const POLICY_ORIGIN_LABEL: Record<string, string> = {
 /**
  * The policy tier's `cleanupPeriodDays`, through the CLI's own merge. With no
  * filesystem sources enabled, anything left in `effective` came from policy.
+ * Known blind spot, per the SDK: an admin `policyHelper` is never executed
+ * here, so a value only it supplies is not detected — the field then stays
+ * editable and a write has no effect, which loses nothing.
  * A resolver failure is logged and treated as "no policy": the field is then
  * editable, which is the state the user can at least act on.
  */
@@ -155,9 +158,35 @@ function readUserSettings(file: string): UserSettingsRead {
 
 function configuredDaysIn(read: UserSettingsRead): number | null {
   const raw = read.kind === "ok" ? read.settings.cleanupPeriodDays : undefined;
-  // An invalid value in the file (0, a string) is reported as "not configured"
-  // — what Claude itself would do with it is not something to guess at here.
   return isValidDays(raw) ? raw : null;
+}
+
+/**
+ * A `cleanupPeriodDays` that is present but one Claude rejects. Claude does not
+ * fall back to its default for it: an invalid key fails validation and the CLI
+ * skips the sweep altogether — nothing is deleted.
+ */
+function invalidValueIn(read: UserSettingsRead): string | undefined {
+  if (read.kind !== "ok" || !("cleanupPeriodDays" in read.settings)) return undefined;
+  const raw = read.settings.cleanupPeriodDays;
+  return isValidDays(raw) ? undefined : JSON.stringify(raw) ?? String(raw);
+}
+
+/**
+ * Days the sweep currently keeps transcripts for, for the shrink comparison:
+ * the configured value, Claude's default when absent, and *unbounded* when the
+ * value is invalid — because then nothing is deleted, and any valid write
+ * turns deletion on.
+ */
+function currentKeepDays(read: UserSettingsRead): number {
+  if (invalidValueIn(read) !== undefined) return Number.POSITIVE_INFINITY;
+  return configuredDaysIn(read) ?? CLAUDE_DEFAULT_CLEANUP_DAYS;
+}
+
+/** Does going from `current` to `next` shorten retention? Two values at or past the ceiling are both "forever", not a reduction. */
+export function isShortening(current: number, next: number): boolean {
+  if (current >= CLAUDE_MAX_CLEANUP_DAYS && next >= CLAUDE_MAX_CLEANUP_DAYS) return false;
+  return next < current;
 }
 
 export async function getClaudeRetention(deps: ClaudeRetentionDeps = {}): Promise<ClaudeRetention> {
@@ -165,6 +194,7 @@ export async function getClaudeRetention(deps: ClaudeRetentionDeps = {}): Promis
   const settingsPath = join(dir, "settings.json");
   const read = readUserSettings(settingsPath);
   const configuredDays = configuredDaysIn(read);
+  const invalidValue = invalidValueIn(read);
   const policy = await (deps.resolvePolicy ?? resolvePolicyFromSdk)();
   return {
     engine: "claude-code",
@@ -175,6 +205,7 @@ export async function getClaudeRetention(deps: ClaudeRetentionDeps = {}): Promis
     settingsPath,
     ...(policy ? { managedBy: policy.source } : {}),
     ...(read.kind === "unreadable" ? { unreadable: read.reason } : {}),
+    ...(invalidValue !== undefined ? { invalidValue } : {}),
     storagePath: join(dir, "projects"),
   };
 }
@@ -244,11 +275,10 @@ export async function setClaudeCleanupPeriodDays(days: number | null, opts: SetC
     );
   }
 
-  const currentDays = configuredDaysIn(read) ?? CLAUDE_DEFAULT_CLEANUP_DAYS;
   const nextDays = days ?? CLAUDE_DEFAULT_CLEANUP_DAYS;
-  if (nextDays < currentDays && !opts.allowShrink) {
+  if (isShortening(currentKeepDays(read), nextDays) && !opts.allowShrink) {
     throw new RetentionUpdateError(
-      "Shortening Claude's chat retention can only be done from a client on the local network: it deletes every Claude chat older than the new period the next time Claude starts. Lengthening it is allowed from anywhere.",
+      "Shortening Claude's chat retention can only be done from a browser connected directly to this machine or its LAN — not from off the LAN or through a proxy (Tailscale included) — because it deletes every Claude chat older than the new period the next time Claude starts. Lengthening it is allowed from anywhere.",
       403,
     );
   }
@@ -271,6 +301,19 @@ export async function setClaudeCleanupPeriodDays(days: number | null, opts: SetC
   } catch {
     mode = undefined;
   }
-  atomicWriteFileSync(target, `${JSON.stringify(settings, null, 2)}\n`, mode !== undefined ? { mode } : {});
+  try {
+    atomicWriteFileSync(target, `${JSON.stringify(settings, null, 2)}\n`, mode !== undefined ? { mode } : {});
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "EACCES" || code === "EPERM" || code === "EROFS") {
+      // Typically a link into a read-only store (nix/home-manager): the file is
+      // managed somewhere else, and that is where it has to change.
+      throw new RetentionUpdateError(
+        `${target === settingsPath ? settingsPath : `${settingsPath} (→ ${target})`} is not writable by Callboard (${code}). If a dotfiles tool manages it, change cleanupPeriodDays there.`,
+        409,
+      );
+    }
+    throw err;
+  }
   return getClaudeRetention(opts);
 }

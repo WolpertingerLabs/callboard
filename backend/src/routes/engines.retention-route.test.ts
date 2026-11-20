@@ -68,6 +68,15 @@ describe("GET /api/engines/retention", () => {
     expect(r).toEqual({ status: 200, body: { engines: [{ engine: "codex", expires: false, storagePath: "/x" }] } });
   });
 
+  it("tells the client whether it may shorten Claude's retention", async () => {
+    mocks.getEngineRetention.mockResolvedValue([{ engine: "claude-code", configuredDays: null }, { engine: "pi", expires: false, storagePath: "/p" }]);
+    const local = await call(getHandler, LOCAL_REQ);
+    expect(local.body.engines[0].canShorten).toBe(true);
+    expect(local.body.engines[1]).not.toHaveProperty("canShorten");
+    const remote = await call(getHandler, REMOTE_REQ);
+    expect(remote.body.engines[0].canShorten).toBe(false);
+  });
+
   it("maps a service failure to a 500 with a message", async () => {
     mocks.getEngineRetention.mockRejectedValue(new Error("boom"));
     const r = await call(getHandler, LOCAL_REQ);

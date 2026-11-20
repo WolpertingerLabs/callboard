@@ -133,13 +133,17 @@ enginesRouter.get("/binary-check", async (req, res) => {
  * before deleting them itself. Only Claude has a policy; Codex and pi are
  * reported as keeping sessions indefinitely. See `services/engine-retention.ts`.
  */
-enginesRouter.get("/retention", async (_req, res) => {
+enginesRouter.get("/retention", async (req, res) => {
   // #swagger.tags = ['System']
   // #swagger.summary = 'Native chat-retention policy per engine'
   // #swagger.description = 'Claude deletes transcripts not written to for cleanupPeriodDays days (in ~/.claude/settings.json, default 30) every time a claude process starts. Codex and pi have no automatic expiry. Reports the configured, default and effective values for Claude, plus any managed policy that pins it (resolved with the CLI\'s own merge), and each engine\'s storage location. A repository\'s own .claude/settings.json can override the value for sessions started there.'
   /* #swagger.responses[200] = { description: 'Retention per engine' } */
   try {
-    return res.json({ engines: await getEngineRetention() });
+    // The shrink gate is per client, so the GET says which side of it this one
+    // is on — the page can then disable Save instead of failing after it.
+    const canShorten = isDirectLocalClient(req);
+    const engines = (await getEngineRetention()).map((r) => (r.engine === "claude-code" ? { ...r, canShorten } : r));
+    return res.json({ engines });
   } catch (err) {
     log.error(`failed to read engine retention: ${err instanceof Error ? err.message : String(err)}`);
     return res.status(500).json({ error: "Failed to read engine retention settings" });
