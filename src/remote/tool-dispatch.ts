@@ -37,6 +37,7 @@ import {
   type ResolvedRoute,
 } from '../shared/config.js';
 import { listConnectionTemplates } from '../shared/connections.js';
+import { assertSafeConnectionKey, assertSafeInstanceId, ownEntry } from '../shared/safe-keys.js';
 import { isSecretSetForCaller, setCallerSecrets } from '../shared/env-utils.js';
 import {
   SIGV4_RESERVED_HEADERS,
@@ -725,6 +726,28 @@ export async function executeProxyRequest(
 // ── Tool handlers ──────────────────────────────────────────────────────────
 
 /**
+ * Validate the agent-supplied keys a listener tool uses to index caller config
+ * maps. Returns an error message, or undefined when they're safe. An absent,
+ * null, or empty `instanceId` means "no instance", as the handlers treat it.
+ * See shared/safe-keys.ts for why `__proto__` matters here.
+ */
+function invalidListenerKeys(
+  connection: unknown,
+  instanceId: unknown,
+  requireInstance = false,
+): string | undefined {
+  try {
+    assertSafeConnectionKey(connection);
+    if (requireInstance || (instanceId !== undefined && instanceId !== null && instanceId !== '')) {
+      assertSafeInstanceId(instanceId);
+    }
+    return undefined;
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
+}
+
+/**
  * Refuse a self-management tool (set_connection_enabled, set_secrets) on the
  * agent path when the caller has `selfManage: false`. Without this, an agent
  * could enable any connection template for itself, and because secrets
@@ -1194,6 +1217,9 @@ export const toolHandlers: Record<string, ToolHandler> = {
       instance_id?: string;
     };
 
+    const keyError = invalidListenerKeys(connection, instance_id);
+    if (keyError) return { success: false, connection, action, error: keyError };
+
     const mgr = context.ingestorManager;
 
     try {
@@ -1226,6 +1252,8 @@ export const toolHandlers: Record<string, ToolHandler> = {
       connection: string;
       instance_id?: string;
     };
+    const keyError = invalidListenerKeys(connection, instance_id);
+    if (keyError) return Promise.resolve({ success: false, connection, error: keyError });
 
     // Find the route for this connection
     const route = routes.find((r) => r.alias === connection);
@@ -1268,7 +1296,10 @@ export const toolHandlers: Record<string, ToolHandler> = {
 
     if (instance_id) {
       // Multi-instance: read from listenerInstances
-      const instanceOverrides = callerConfig.listenerInstances?.[connection]?.[instance_id];
+      const instanceOverrides = ownEntry(
+        ownEntry(callerConfig.listenerInstances, connection),
+        instance_id,
+      );
       if (!instanceOverrides) {
         return Promise.resolve({
           success: false,
@@ -1280,7 +1311,7 @@ export const toolHandlers: Record<string, ToolHandler> = {
       params = instanceOverrides.params ?? {};
     } else {
       // Single-instance: read from ingestorOverrides
-      const overrides = callerConfig.ingestorOverrides?.[connection];
+      const overrides = ownEntry(callerConfig.ingestorOverrides, connection);
       params = overrides?.params ?? {};
     }
 
@@ -1289,7 +1320,7 @@ export const toolHandlers: Record<string, ToolHandler> = {
     // without needing a separate list_listener_instances call.
     let instances: string[] | undefined;
     if (!instance_id && route.listenerConfig.supportsMultiInstance) {
-      const instanceMap = callerConfig.listenerInstances?.[connection] ?? {};
+      const instanceMap = ownEntry(callerConfig.listenerInstances, connection) ?? {};
       instances = Object.keys(instanceMap);
     }
 
@@ -1316,6 +1347,16 @@ export const toolHandlers: Record<string, ToolHandler> = {
       params: Record<string, unknown>;
       create_instance?: boolean;
     };
+    const keyError = invalidListenerKeys(connection, instance_id);
+    if (keyError) return { success: false, connection, error: keyError };
+    // Runtime check: `params` is untrusted input despite its declared type.
+    if (
+      (params as unknown) === null ||
+      typeof (params as unknown) !== 'object' ||
+      Array.isArray(params)
+    ) {
+      return { success: false, connection, error: 'params must be an object.' };
+    }
 
     // Find the route for this connection
     const route = routes.find((r) => r.alias === connection);
@@ -1357,12 +1398,13 @@ export const toolHandlers: Record<string, ToolHandler> = {
 
     if (instance_id) {
       // Multi-instance: write to listenerInstances
+      // Own-property lookups throughout: see shared/safe-keys.ts.
       callerConfig.listenerInstances ??= {};
-      callerConfig.listenerInstances[connection] ??= {};
+      const connInstances =
+        ownEntry(callerConfig.listenerInstances, connection) ??
+        (callerConfig.listenerInstances[connection] = {});
 
-      const existing = callerConfig.listenerInstances[connection][instance_id] as
-        | IngestorOverrides
-        | undefined;
+      const existing: IngestorOverrides | undefined = ownEntry(connInstances, instance_id);
 
       if (!existing && !create_instance) {
         return {
@@ -1377,14 +1419,15 @@ export const toolHandlers: Record<string, ToolHandler> = {
         existing.params = { ...(existing.params ?? {}), ...params };
         mergedParams = existing.params;
       } else {
-        callerConfig.listenerInstances[connection][instance_id] = { params };
+        connInstances[instance_id] = { params };
         mergedParams = params;
       }
     } else {
       // Single-instance: write to ingestorOverrides
       callerConfig.ingestorOverrides ??= {};
-      callerConfig.ingestorOverrides[connection] ??= {};
-      const overrides = callerConfig.ingestorOverrides[connection];
+      const overrides =
+        ownEntry(callerConfig.ingestorOverrides, connection) ??
+        (callerConfig.ingestorOverrides[connection] = {});
       overrides.params = { ...(overrides.params ?? {}), ...params };
       mergedParams = overrides.params;
     }
@@ -1429,6 +1472,8 @@ export const toolHandlers: Record<string, ToolHandler> = {
    */
   list_listener_instances(input, routes, context) {
     const { connection } = input as { connection: string };
+    const keyError = invalidListenerKeys(connection, undefined);
+    if (keyError) return Promise.resolve({ success: false, connection, error: keyError });
 
     // Find the route for this connection
     const route = routes.find((r) => r.alias === connection);
@@ -1459,7 +1504,7 @@ export const toolHandlers: Record<string, ToolHandler> = {
       });
     }
 
-    const instanceMap = callerConfig.listenerInstances?.[connection] ?? {};
+    const instanceMap = ownEntry(callerConfig.listenerInstances, connection) ?? {};
     const instances = Object.entries(instanceMap).map(([instanceId, overrides]) => ({
       instanceId,
       disabled: overrides.disabled ?? false,
@@ -1482,6 +1527,8 @@ export const toolHandlers: Record<string, ToolHandler> = {
       connection: string;
       instance_id: string;
     };
+    const keyError = invalidListenerKeys(connection, instance_id, true);
+    if (keyError) return { success: false, connection, instance_id, error: keyError };
 
     // Load config
     const config = loadRemoteConfig();
@@ -1495,8 +1542,8 @@ export const toolHandlers: Record<string, ToolHandler> = {
       };
     }
 
-    const instances = callerConfig.listenerInstances?.[connection];
-    if (!instances || !(instance_id in instances)) {
+    const instances = ownEntry(callerConfig.listenerInstances, connection);
+    if (!instances || !Object.hasOwn(instances, instance_id)) {
       return {
         success: false,
         connection,

@@ -121,7 +121,7 @@ Set these in the caller's entry in `remote.config.json`, keyed by connection:
 | `intents` | Discord | Gateway intents bitmask. |
 | `params` | listener fields | Values for the connection's listener fields (see below). |
 
-`listenerInstances` runs several copies of a multi-instance listener (`github`, `reddit`, `trello`), keyed by instance ID. Each value takes the same fields as `ingestorOverrides`. If a connection has any instances, its `ingestorOverrides` entry is ignored.
+`listenerInstances` runs several copies of a multi-instance listener (`github`, `reddit`, `trello`), keyed by instance ID. Instance IDs must match `^[a-zA-Z0-9_-]+$` and can't be `__proto__`, `constructor`, or `prototype`; the listener tools reject anything else. Each value takes the same fields as `ingestorOverrides`. If a connection has any instances, its `ingestorOverrides` entry is ignored.
 
 **Which `params` take effect.** Only these change listener behaviour:
 
