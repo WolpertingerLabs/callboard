@@ -144,28 +144,42 @@ The `google-*` templates give an agent one Google API at one scope. Drawlatch mi
 2. **Publish the app.** Under **Audience**, move an External app from *Testing* to **In production**. In Testing, refresh tokens for these scopes expire after 7 days.
    - An unverified External app that requests restricted scopes (`gmail.*`, `drive.readonly`) shows a "Google hasn't verified this app" warning and is limited to 100 users. That's fine for your own account: choose **Advanced → Go to … (unsafe)**.
    - An Internal app needs neither verification nor publishing.
-3. **Consent once, for every scope you'll use.** One refresh token can serve all the templates if it was granted the superset of their scopes. Open this URL in a browser, with your client ID filled in and the scopes trimmed to the templates you'll enable:
-
-   ```text
-   https://accounts.google.com/o/oauth2/v2/auth?client_id=CLIENT_ID&redirect_uri=http://127.0.0.1:8085&response_type=code&access_type=offline&prompt=consent&scope=https://www.googleapis.com/auth/gmail.metadata%20https://www.googleapis.com/auth/gmail.readonly%20https://www.googleapis.com/auth/calendar.freebusy%20https://www.googleapis.com/auth/calendar.readonly%20https://www.googleapis.com/auth/drive.readonly%20https://www.googleapis.com/auth/drive.file%20https://www.googleapis.com/auth/spreadsheets.readonly
-   ```
-
-   `access_type=offline` asks for a refresh token. `prompt=consent` makes Google issue a new one even if you consented before. On the consent screen, tick every scope: Google lets users decline individual ones. Nothing listens on `127.0.0.1:8085`, so the browser then shows a connection error. Copy the `code` parameter from its address bar, and exchange it within a few minutes:
+3. **Consent once, for every scope you'll use.** One refresh token can serve all the templates if it was granted the superset of their scopes. In a shell (bash), set the client ID, the scopes trimmed to the templates you'll enable, and a [PKCE](https://www.rfc-editor.org/rfc/rfc7636) verifier and challenge. `read -rs` keeps the client secret out of your shell history:
 
    ```bash
-   curl -s https://oauth2.googleapis.com/token \
+   CLIENT_ID=1234-abc.apps.googleusercontent.com
+   read -rs -p 'Client secret: ' CLIENT_SECRET; echo
+   SCOPES="https://www.googleapis.com/auth/gmail.metadata https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/calendar.freebusy https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/spreadsheets.readonly"
+   CODE_VERIFIER=$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=\n')
+   CODE_CHALLENGE=$(printf '%s' "$CODE_VERIFIER" | openssl dgst -sha256 -binary | base64 | tr '+/' '-_' | tr -d '=\n')
+   echo "https://accounts.google.com/o/oauth2/v2/auth?client_id=$CLIENT_ID&redirect_uri=http://127.0.0.1:8085&response_type=code&access_type=offline&prompt=consent&code_challenge=$CODE_CHALLENGE&code_challenge_method=S256&scope=${SCOPES// /%20}"
+   ```
+
+   Open the printed URL in a browser. `access_type=offline` asks for a refresh token. `prompt=consent` makes Google issue a new one even if you consented before. On the consent screen, tick every scope: Google lets users decline individual ones. Nothing listens on `127.0.0.1:8085`, so the browser then shows a connection error. Copy the `code` parameter from its address bar, and exchange it, with the verifier, within a few minutes. The response contains the refresh token, so write it to a private file rather than the terminal:
+
+   ```bash
+   read -r -p 'Code: ' CODE
+   (umask 077; curl -s https://oauth2.googleapis.com/token \
      -d client_id="$CLIENT_ID" -d client_secret="$CLIENT_SECRET" \
-     --data-urlencode code="$CODE" -d grant_type=authorization_code \
-     -d redirect_uri=http://127.0.0.1:8085
+     --data-urlencode code="$CODE" -d code_verifier="$CODE_VERIFIER" \
+     -d grant_type=authorization_code -d redirect_uri=http://127.0.0.1:8085 \
+     -o token.json)
+   jq -r '.scope // .error' token.json   # the granted scopes (not secret), or the error
    ```
 
-   The response's `refresh_token` (`1//…`) is the secret, and its `scope` lists what was granted. Set the three secrets for the caller, from the dashboard or in `.env`:
+   The response's `refresh_token` (`1//…`) is the secret. Append the three secrets for the caller to drawlatch's `.env` (here `~/.drawlatch/.env`; use your config directory) without printing them, then delete the response and restart the daemon. Or paste them into the dashboard instead:
 
    ```bash
-   MAIL_AGENT_GOOGLE_OAUTH_CLIENT_ID=1234-abc.apps.googleusercontent.com
-   MAIL_AGENT_GOOGLE_OAUTH_CLIENT_SECRET=GOCSPX-...
-   MAIL_AGENT_GOOGLE_OAUTH_REFRESH_TOKEN=1//0g...
+   {
+     printf 'MAIL_AGENT_GOOGLE_OAUTH_CLIENT_ID=%s\n' "$CLIENT_ID"
+     printf 'MAIL_AGENT_GOOGLE_OAUTH_CLIENT_SECRET=%s\n' "$CLIENT_SECRET"
+     printf 'MAIL_AGENT_GOOGLE_OAUTH_REFRESH_TOKEN=%s\n' "$(jq -r .refresh_token token.json)"
+   } >> ~/.drawlatch/.env
+   rm token.json; unset CLIENT_SECRET CODE CODE_VERIFIER
+   drawlatch restart
    ```
+
+   If a refresh token did end up on screen (a `curl` without `-o`, say), clear the terminal's scrollback.
 
    Then run `test_connection` on each template. It reports the scopes Google granted.
 
@@ -228,13 +242,16 @@ If the response lists scopes beyond the consented set (for example, ones carried
 #### Service-account setup
 
 1. **Create the service account and a key.** In the Cloud console, open **IAM & Admin → Service Accounts**, create an account, and choose **Keys → Add key → JSON**. Your organization's policy may forbid key creation (`iam.disableServiceAccountKeyCreation`). Enable the APIs the templates use in that project.
-2. **Store the key as base64.** This has no quotes or newlines to break `.env`:
+2. **Store the key as base64.** This has no quotes or newlines to break `.env`. Write it straight into drawlatch's `.env` (here `~/.drawlatch/.env`; use your config directory) rather than printing it, then delete the key file and restart the daemon:
 
    ```bash
-   base64 -w0 key.json        # macOS: base64 -i key.json
+   printf 'MAIL_AGENT_GOOGLE_SERVICE_ACCOUNT_KEY=%s\n' "$(base64 -w0 key.json)" >> ~/.drawlatch/.env
+   # macOS: "$(base64 -i key.json)" (no line wrapping by default)
+   rm key.json
+   drawlatch restart
    ```
 
-   Set the output as the caller's `GOOGLE_SERVICE_ACCOUNT_KEY`, for example `MAIL_AGENT_GOOGLE_SERVICE_ACCOUNT_KEY=ewogICJ0eXBlIjog…`. You can also paste the key file's JSON into the dashboard field. Delete `key.json` afterwards.
+   You can also paste the key file's JSON, or its base64, into the dashboard field.
 3. **Without delegation**, the account reads only what is shared with its `client_email`: calendars, files, and spreadsheets. `test_connection` on `google-calendar-readonly-sa` lists the account's own (often empty) calendar list.
 4. **With domain-wide delegation** (Workspace only), the account can act as a domain user. In the [Admin console](https://admin.google.com/), open **Security → Access and data control → API controls → Manage Domain Wide Delegation → Add new**. Enter the service account's numeric client ID (`client_id` in the key file), and under OAuth scopes enter exactly the scopes of the templates you'll use, comma-separated. For example, `https://www.googleapis.com/auth/gmail.readonly,https://www.googleapis.com/auth/calendar.readonly`. Then name the user per caller:
 
