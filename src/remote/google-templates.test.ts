@@ -4,6 +4,12 @@
  */
 import { describe, it, expect } from 'vitest';
 
+import {
+  resolveCallerRoutesChecked,
+  resolveRoutes,
+  type RemoteServerConfig,
+  type Route,
+} from '../shared/config.js';
 import { describeConnectionTemplate, loadConnection } from '../shared/connections.js';
 import { isEndpointAllowed } from './tool-dispatch.js';
 
@@ -225,5 +231,50 @@ describe('scoped Google templates', () => {
     expect(route.headers).toEqual({ Authorization: 'Bearer ${GOOGLE_API_TOKEN}' });
     expect(route.allowedEndpoints).toContain('https://www.googleapis.com/**');
     expect(route.oauth2).toBeUndefined();
+  });
+});
+
+describe('one refresh token per scope set (documented fallback)', () => {
+  it('a custom connector overriding a template alias can use its own refresh-token secret', () => {
+    const template = loadConnection('google-gmail-readonly');
+    const override: Route = {
+      ...template,
+      alias: 'google-gmail-readonly',
+      secrets: {
+        GOOGLE_OAUTH_CLIENT_ID: '${GOOGLE_OAUTH_CLIENT_ID}',
+        GOOGLE_OAUTH_CLIENT_SECRET: '${GOOGLE_OAUTH_CLIENT_SECRET}',
+        GMAIL_RO_REFRESH_TOKEN: '${GMAIL_RO_REFRESH_TOKEN}',
+      },
+      oauth2: {
+        ...template.oauth2!,
+        secretRefs: { ...template.oauth2!.secretRefs, refreshToken: 'GMAIL_RO_REFRESH_TOKEN' },
+      },
+    };
+    const config = {
+      host: '127.0.0.1',
+      port: 0,
+      rateLimitPerMinute: 60,
+      connectors: [override],
+      callers: {
+        'mail-agent': { connections: ['google-gmail-readonly', 'google-drive-readonly'] },
+      },
+    } as RemoteServerConfig;
+    const env = {
+      MAIL_AGENT_GOOGLE_OAUTH_CLIENT_ID: 'cid',
+      MAIL_AGENT_GOOGLE_OAUTH_CLIENT_SECRET: 'csecret',
+      MAIL_AGENT_GOOGLE_OAUTH_REFRESH_TOKEN: 'rt-drive',
+      MAIL_AGENT_GMAIL_RO_REFRESH_TOKEN: 'rt-gmail',
+    };
+    Object.assign(process.env, env);
+    try {
+      const { routes, problems } = resolveCallerRoutesChecked(config, 'mail-agent');
+      expect(problems).toEqual([]);
+      const [gmail, drive] = resolveRoutes(routes, {}, 'mail-agent');
+      const refreshTokenOf = (r: typeof gmail) => r.secrets[r.oauth2!.secretRefs.refreshToken!];
+      expect(refreshTokenOf(gmail)).toBe('rt-gmail');
+      expect(refreshTokenOf(drive)).toBe('rt-drive');
+    } finally {
+      for (const k of Object.keys(env)) Reflect.deleteProperty(process.env, k);
+    }
   });
 });
