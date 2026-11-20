@@ -187,7 +187,7 @@ Built-in templates that authenticate in the URL keep working, because their toke
 
 **Template requests.** `testConnection`, `testIngestor`, and `listenerConfig` option lookups come from the connection, not the agent. They run against their own connection only, may use withheld secrets (never signing keys), and their headers override the connection's headers of the same name, so Slack's listener test sends its app token instead of the bot token. Their responses are still scrubbed. Listeners also receive withheld secrets (the Discord gateway needs its bot token).
 
-**Upgrading custom connectors.** A custom connector whose agents were told to write a header secret into a URL, body, or request header now has those requests rejected. If the API really needs the secret there, list it in `placeholderSecrets`. At startup the daemon logs a warning, and `drawlatch doctor` fails a check, for a connector whose `description` references a withheld secret, or whose `placeholderSecrets` entry can't take effect.
+**Upgrading custom connectors.** A custom connector whose agents were told to write a header secret into a URL, body, or request header now has those requests rejected. If the API really needs the secret there, list it in `placeholderSecrets`. At startup the daemon logs a warning, and `drawlatch doctor` fails a check, for a connector whose `description`, `name`, or `listenerConfig.description` references a withheld secret, or whose `placeholderSecrets` entry can't take effect. It suggests `placeholderSecrets` only for a secret withheld because the headers use it; the other kinds can't be released.
 
 ### Custom connectors
 
@@ -384,7 +384,8 @@ logs                     Show the log (~/.drawlatch/logs/drawlatch.log)
 watch [connection]       Stream listener events live (loopback only)
     --full                 Print full payloads instead of a 100-character preview
 config                   Show effective config and per-caller secret status (--path: config file path)
-doctor                   Check config, keys, required secrets and daemon health
+doctor                   Check config, keys, required secrets, custom connectors' withheld
+                         secrets and daemon health; exits 1 if any check fails
 generate-keys caller [alias]   Caller keypair in keys/callers/<alias>/ (default alias "default")
 generate-keys server           Server keypair in keys/server/
 generate-keys show <path>      Fingerprint of an existing keypair
