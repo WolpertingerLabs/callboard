@@ -110,7 +110,8 @@ describe("POST /:id/fork kind aside — first turn through the real startChatTur
     // The mock provider received the rendered question, with the aside instruction.
     await vi.waitFor(() => expect(provider.queryRecords).toHaveLength(1));
     const request = provider.queryRecords[0]!.request as any;
-    expect(await promptText(request.prompt)).toBe("> **Assistant, Jan 1, 00:05:**\n> the passage\n\nwhy?");
+    // The year appears once T is no longer this year (from 2027), hence optional.
+    expect(await promptText(request.prompt)).toMatch(/^> \*\*Assistant, Jan 1( 2026)?, 00:05:\*\*\n> the passage\n\nwhy\?$/);
     expect(request.options.systemPrompt.append).toContain(ASIDE_INSTRUCTION);
 
     // Drift acknowledged: the aside now records the branch it actually ran on;

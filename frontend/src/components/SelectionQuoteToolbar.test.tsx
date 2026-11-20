@@ -100,8 +100,8 @@ const toolbar = () => screen.queryByRole("toolbar");
 
 beforeEach(() => {
   vi.useFakeTimers();
-  // The same day as TS, so the chip's "today drops the date" rule reads it as
-  // today: without a pinned clock this file passed only on 2026-11-19.
+  // Pinned to TS's day: the chip drops the date only for a message sent today,
+  // so the expected "Assistant, 14:02" depends on what "today" is.
   vi.setSystemTime(new Date(2026, 10, 19, 16, 0));
   resetQuoteTraysForTests();
 });
