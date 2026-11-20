@@ -54,6 +54,8 @@ import type {
   EngineStatus,
   EngineStatusResponse,
   EngineRefreshResponse,
+  EngineRetention,
+  EngineRetentionResponse,
   EngineBinaryCheckResponse,
   EngineInstallStartResponse,
   EngineInstallEvent,
@@ -152,6 +154,8 @@ export type {
   EngineStatus,
   EngineStatusResponse,
   EngineRefreshResponse,
+  EngineRetention,
+  EngineRetentionResponse,
   EngineBinaryCheckResponse,
   EngineBinaryOverride,
   EngineOverrideState,
@@ -1888,6 +1892,20 @@ export async function checkEngineBinary(path: string, engineId: string, signal?:
 export async function refreshEngines(): Promise<EngineRefreshResponse> {
   const data = await request<EngineRefreshResponse>("/engines/refresh", { method: "POST", error: "Failed to re-check engine status" });
   return { engines: Array.isArray(data.engines) ? data.engines : [], probed: data.probed !== false, retryAfterMs: data.retryAfterMs };
+}
+
+/**
+ * Each engine's native chat-retention policy — only Claude expires chats on its
+ * own (`cleanupPeriodDays`); Codex and pi keep sessions until deleted.
+ */
+export async function getEngineRetention(): Promise<EngineRetention[]> {
+  const data = await request<EngineRetentionResponse>("/engines/retention", { error: "Failed to read chat retention" });
+  return Array.isArray(data.engines) ? data.engines : [];
+}
+
+/** Set Claude's `cleanupPeriodDays` in `~/.claude/settings.json`; `null` restores the default. */
+export async function setClaudeRetention(cleanupPeriodDays: number | null): Promise<Extract<EngineRetention, { engine: "claude-code" }>> {
+  return request("/engines/claude-code/retention", { method: "PUT", json: { cleanupPeriodDays }, error: "Failed to save chat retention" });
 }
 
 /**

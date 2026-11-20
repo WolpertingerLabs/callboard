@@ -24,6 +24,7 @@ import {
   type CodexCredentialMode,
 } from "./credentialMode";
 import EngineStatusCard, { EngineStatusDot } from "./EngineStatusCard";
+import ChatRetentionSection from "./ChatRetentionSection";
 import type { EngineRecheckOutcome } from "./EngineStatusCard";
 import type { AgentSettings, OpenRouterModelInfo } from "shared/types/index.js";
 import type { SystemInfo, EngineStatus, EngineBinaryCheckResponse } from "../../api";
@@ -1366,6 +1367,8 @@ export default function ApiSettings() {
 
           <ReferenceLinksSection provider="claude-code" />
 
+          <ChatRetentionSection engine="claude-code" />
+
           <OpenRouterRoutingSection
             harness="Claude Code"
             inactiveNote={claudeInactiveNote}
@@ -1842,6 +1845,8 @@ export default function ApiSettings() {
 
           <ReferenceLinksSection provider="codex" />
 
+          <ChatRetentionSection engine="codex" />
+
           <OpenRouterRoutingSection
             harness="Codex"
             inactiveNote={codexInactiveNote}
@@ -2100,6 +2105,7 @@ export default function ApiSettings() {
         <>
           <EngineStatusCard engine={engineFor("pi")} loading={enginesLoading} onRecheck={handleRecheckEngines} onEnginesUpdated={handleEnginesUpdated} />
           <ReferenceLinksSection provider="pi" />
+          <ChatRetentionSection engine="pi" />
 
           <div style={sectionStyle}>
             <div style={headerStyle}>

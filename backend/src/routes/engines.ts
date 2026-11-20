@@ -25,6 +25,7 @@ import {
   startEngineInstall,
   subscribeToInstallRun,
 } from "../services/engine-install.js";
+import { getEngineRetention, RetentionUpdateError, setClaudeCleanupPeriodDays } from "../services/engine-retention.js";
 import { getEngineStatuses, refreshEngineStatuses } from "../services/engine-status.js";
 import { BINARY_OVERRIDE_PHRASING, checkBinaryPathAsync } from "../utils/binary-path.js";
 import { getClientKey, isDirectLocalClient } from "../utils/client-ip.js";
@@ -125,6 +126,69 @@ enginesRouter.get("/binary-check", async (req, res) => {
   // for `which` and `--version`, only cheaper per call.
   const { path, state, detail } = await checkBinaryPathAsync(raw, what, fallback);
   return res.json({ path, state, detail });
+});
+
+/**
+ * `GET /api/engines/retention` — how long each engine keeps its own chats
+ * before deleting them itself. Only Claude has a policy; Codex and pi are
+ * reported as keeping sessions indefinitely. See `services/engine-retention.ts`.
+ */
+enginesRouter.get("/retention", async (req, res) => {
+  // #swagger.tags = ['System']
+  // #swagger.summary = 'Native chat-retention policy per engine'
+  // #swagger.description = 'Claude deletes transcripts not written to for cleanupPeriodDays days (in ~/.claude/settings.json, default 30) every time a claude process starts. Codex and pi have no automatic expiry. Reports the configured, default and effective values for Claude, plus any managed policy that pins it (resolved with the CLI\'s own merge), and each engine\'s storage location. A repository\'s own .claude/settings.json can override the value for sessions started there.'
+  /* #swagger.responses[200] = { description: 'Retention per engine' } */
+  try {
+    // The shrink gate is per client, so the GET says which side of it this one
+    // is on — the page can then disable Save instead of failing after it.
+    const canShorten = isDirectLocalClient(req);
+    const engines = (await getEngineRetention()).map((r) => (r.engine === "claude-code" ? { ...r, canShorten } : r));
+    return res.json({ engines });
+  } catch (err) {
+    log.error(`failed to read engine retention: ${err instanceof Error ? err.message : String(err)}`);
+    return res.status(500).json({ error: "Failed to read engine retention settings" });
+  }
+});
+
+/**
+ * `PUT /api/engines/claude-code/retention` — set Claude's `cleanupPeriodDays`
+ * in the user settings file, or remove it with `null`. Writes that one key and
+ * preserves the rest of the file.
+ *
+ * Shortening is held to the same scope as the binary-override fields: it is
+ * the one edit here that destroys data (every transcript past the new period
+ * goes at Claude's next start), so a remote client may lengthen retention but
+ * not shorten it.
+ */
+enginesRouter.put("/claude-code/retention", async (req, res) => {
+  // #swagger.tags = ['System']
+  // #swagger.summary = "Set Claude's chat retention (cleanupPeriodDays)"
+  // #swagger.description = 'Writes cleanupPeriodDays to ~/.claude/settings.json, leaving every other key untouched. A whole number from 1 to 36500, or null to remove the key and fall back to the default of 30. 0 is refused, as Claude itself rejects it. Shortening the period deletes older transcripts the next time a claude process starts, so it is only accepted from a client on the local network; lengthening it is accepted from any authenticated client. Writes through a symlinked settings file. Refused with 409 when the file cannot be parsed, ~/.claude does not exist, or managed policy pins the value.'
+  /* #swagger.parameters['body'] = { in: 'body', required: true, schema: { cleanupPeriodDays: 365 } } */
+  /* #swagger.responses[200] = { description: 'The updated Claude retention' } */
+  /* #swagger.responses[400] = { description: 'Invalid value' } */
+  /* #swagger.responses[403] = { description: 'Shortening retention from a client outside the local network' } */
+  /* #swagger.responses[409] = { description: 'The settings file could not be parsed, ~/.claude does not exist, or managed policy pins the value' } */
+  const body = (req.body ?? {}) as { cleanupPeriodDays?: unknown };
+  if (!("cleanupPeriodDays" in body)) {
+    return res.status(400).json({ error: "Body must include cleanupPeriodDays (a number, or null for the default)." });
+  }
+  const value = body.cleanupPeriodDays;
+  if (value !== null && typeof value !== "number") {
+    return res.status(400).json({ error: "cleanupPeriodDays must be a number, or null for the default." });
+  }
+  try {
+    const local = isDirectLocalClient(req);
+    // canShorten too, like the GET: the page replaces its state with this
+    // answer, and dropping the flag would un-gate the next edit.
+    const retention = { ...(await setClaudeCleanupPeriodDays(value, { allowShrink: local })), canShorten: local };
+    log.info(`Claude cleanupPeriodDays set to ${value === null ? "default" : value}`);
+    return res.json(retention);
+  } catch (err) {
+    if (err instanceof RetentionUpdateError) return res.status(err.status).json({ error: err.message });
+    log.error(`failed to write Claude retention: ${err instanceof Error ? err.message : String(err)}`);
+    return res.status(500).json({ error: "Failed to write Claude settings" });
+  }
 });
 
 /**
