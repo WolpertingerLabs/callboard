@@ -24,7 +24,7 @@
 import { BaseIngestor } from '../base-ingestor.js';
 import type { WebhookIngestorConfig, IngestorStatus } from '../types.js';
 import type { WebhookRegistrationState } from './lifecycle-types.js';
-import { WebhookLifecycleManager } from './webhook-lifecycle-manager.js';
+import { LifecycleUrlError, WebhookLifecycleManager } from './webhook-lifecycle-manager.js';
 import { resolvePlaceholders, scrubSecrets } from '../../../shared/config.js';
 import { createLogger } from '../../../shared/logger.js';
 
@@ -74,7 +74,12 @@ export abstract class WebhookIngestor extends BaseIngestor {
 
     // Initialize lifecycle manager if lifecycle config is present
     if (webhookConfig.lifecycle) {
-      this.lifecycleManager = new WebhookLifecycleManager(webhookConfig.lifecycle, secrets);
+      this.lifecycleManager = new WebhookLifecycleManager(
+        webhookConfig.lifecycle,
+        secrets,
+        // Attached by IngestorManager.attachWebhookAllowlist.
+        (webhookConfig as { _allowedEndpoints?: string[] })._allowedEndpoints ?? [],
+      );
     } else {
       this.lifecycleManager = null;
     }
@@ -108,6 +113,15 @@ export abstract class WebhookIngestor extends BaseIngestor {
           );
         }
       } catch (err) {
+        // A lifecycle URL that fails the URL policy is a configuration error
+        // (usually a listener param): nothing was sent, and the listener
+        // stays down rather than silently running unregistered.
+        if (err instanceof LifecycleUrlError) {
+          this.state = 'error';
+          this.errorMessage = err.message;
+          log.error(`${this.connectionAlias}: ${err.message}`);
+          return;
+        }
         log.warn(`Webhook lifecycle error for ${this.connectionAlias}:`, err);
         this.registrationState = {
           registered: false,

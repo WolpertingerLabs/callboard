@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { WebhookLifecycleManager } from './webhook-lifecycle-manager.js';
+import { LifecycleUrlError, WebhookLifecycleManager } from './webhook-lifecycle-manager.js';
 import type { WebhookLifecycleConfig } from './lifecycle-types.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────────
@@ -533,5 +533,97 @@ describe('WebhookLifecycleManager', () => {
       expect(result.registered).toBe(false);
       expect(result.error).toBeDefined();
     });
+  });
+});
+
+// ── URL policy on lifecycle requests ────────────────────────────────────
+
+describe('WebhookLifecycleManager — URL policy', () => {
+  let fetchSpy: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  const TRELLO_ALLOW = ['https://api.trello.com/1/**'];
+
+  function github(repoFilter: string) {
+    const url = 'https://api.github.com/repos/${repoFilter}/hooks';
+    return new WebhookLifecycleManager(
+      {
+        list: { method: 'GET', url, callbackUrlField: 'config.url', idField: 'id' },
+        register: { method: 'POST', url, idField: 'id' },
+        unregister: { method: 'DELETE', url: `${url}/\${_webhookId}` },
+      },
+      { repoFilter, GITHUB_TOKEN: 'gh-token-value' },
+      ['https://api.github.com/**'],
+    );
+  }
+
+  it.each([
+    ['dot segments', '../../user'],
+    ['encoded dot segments', '%2e%2e/%2e%2e/user'],
+    ['a tab trick', 'a/.\t./.\t./user'],
+  ])('refuses a repoFilter with %s and sends nothing', async (_label, repoFilter) => {
+    await expect(github(repoFilter).ensureRegistered(CALLBACK_URL)).rejects.toBeInstanceOf(
+      LifecycleUrlError,
+    );
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('refuses a lifecycle URL outside the allowlist', async () => {
+    const mgr = new WebhookLifecycleManager(makeConfig(), TEST_SECRETS, [
+      'https://api.trello.com/2/**',
+    ]);
+    await expect(mgr.ensureRegistered(CALLBACK_URL, BOARD_ID)).rejects.toThrow(
+      /Webhook lifecycle request refused.*Nothing was sent/,
+    );
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('refuses a stale-webhook ID from the upstream that walks out of the path', async () => {
+    fetchSpy.mockResolvedValueOnce(
+      mockFetchResponse([
+        { id: '../../../members/me', callbackURL: 'https://old.example/hook', idModel: BOARD_ID },
+      ]),
+    );
+    const mgr = new WebhookLifecycleManager(makeConfig(), TEST_SECRETS, TRELLO_ALLOW);
+    await expect(mgr.ensureRegistered(CALLBACK_URL, BOARD_ID)).rejects.toBeInstanceOf(
+      LifecycleUrlError,
+    );
+    expect(fetchSpy).toHaveBeenCalledTimes(1); // the list, nothing after it
+  });
+
+  it('unregister() with a refused URL logs and sends nothing', async () => {
+    const mgr = new WebhookLifecycleManager(makeConfig(), TEST_SECRETS, TRELLO_ALLOW);
+    await expect(mgr.unregister('../../x')).resolves.toBeUndefined();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('Trello lifecycle still registers within its allowlist', async () => {
+    fetchSpy
+      .mockResolvedValueOnce(mockFetchResponse([]))
+      .mockResolvedValueOnce(mockFetchResponse({ id: WEBHOOK_ID }));
+    const mgr = new WebhookLifecycleManager(makeConfig(), TEST_SECRETS, [
+      'https://api.trello.com/**',
+    ]);
+    const state = await mgr.ensureRegistered(CALLBACK_URL, BOARD_ID);
+    expect(state).toMatchObject({ registered: true, webhookId: WEBHOOK_ID });
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('GitHub lifecycle still registers an owner/repo filter', async () => {
+    fetchSpy
+      .mockResolvedValueOnce(mockFetchResponse([]))
+      .mockResolvedValueOnce(mockFetchResponse({ id: 42 }));
+    const state = await github('octo/hello-world').ensureRegistered(CALLBACK_URL);
+    expect(state).toMatchObject({ registered: true, webhookId: '42' });
+    expect(fetchSpy.mock.calls[0][0]).toBe('https://api.github.com/repos/octo/hello-world/hooks');
   });
 });

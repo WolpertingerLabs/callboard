@@ -1221,3 +1221,59 @@ describe('IngestorManager — poll URLs built from listener params', () => {
     await manager.stopAll();
   });
 });
+
+describe('IngestorManager — webhook lifecycle URLs built from listener params', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function config(repoFilter: string[]): RemoteServerConfig {
+    return {
+      host: '127.0.0.1',
+      port: 9999,
+      callers: {
+        alice: {
+          connections: ['github'],
+          env: {
+            GITHUB_TOKEN: 'gh-token-value',
+            GITHUB_WEBHOOK_SECRET: 'gh-webhook-secret',
+            GITHUB_WEBHOOK_URL: 'https://tunnel.example/webhooks/github',
+          },
+          ingestorOverrides: { github: { params: { repoFilter } } },
+        },
+      },
+      rateLimitPerMinute: 60,
+    };
+  }
+
+  it('puts the github listener in error, sending nothing, for a repoFilter that escapes', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(new Response('[]')));
+    vi.stubGlobal('fetch', fetchMock);
+    const manager = new IngestorManager(config(['../../user']));
+    await manager.startOne('alice', 'github');
+    const [status] = manager.getStatuses('alice');
+    expect(status.state).toBe('error');
+    expect(status.error).toMatch(/Webhook lifecycle request refused/);
+    expect(fetchMock).not.toHaveBeenCalled();
+    await manager.stopAll();
+  });
+
+  it('still registers for a normal owner/repo filter', async () => {
+    const fetchMock = vi.fn((url: string, init?: RequestInit) =>
+      Promise.resolve(
+        new Response(init?.method === 'POST' ? JSON.stringify({ id: 7 }) : '[]', {
+          headers: { 'content-type': 'application/json' },
+        }),
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const manager = new IngestorManager(config(['octo/hello-world']));
+    await manager.startOne('alice', 'github');
+    const [status] = manager.getStatuses('alice');
+    expect(status.state).toBe('connected');
+    expect(fetchMock.mock.calls.map((c) => c[0])).toContain(
+      'https://api.github.com/repos/octo/hello-world/hooks',
+    );
+    await manager.stopAll();
+  });
+});

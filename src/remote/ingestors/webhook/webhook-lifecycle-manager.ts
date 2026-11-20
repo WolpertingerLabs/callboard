@@ -8,16 +8,21 @@
  * webhooks on start, clean up stale registrations (e.g., after tunnel URL changes),
  * and unregister on permanent shutdown or instance deletion.
  *
- * HTTP requests bypass proxy routes, since secrets are already resolved and
- * lifecycle URLs may not match the connection's `allowedEndpoints` patterns.
- * They go through `safeFetch()`, which follows a redirect only on the request
- * URL's own origin, so resolved credentials never reach another host.
+ * HTTP requests bypass proxy routes, since secrets are already resolved, but
+ * each resolved URL must pass the same URL policy as a proxied request
+ * (normalizeOutboundUrl: no control characters or dot segments, normalized
+ * href in the connection's `allowedEndpoints`), because it carries agent-set
+ * listener params (GitHub's `repoFilter`) and upstream-supplied webhook IDs.
+ * A refused URL raises LifecycleUrlError and nothing is sent. Requests go
+ * through `safeFetch()`, which follows a redirect only on the request URL's
+ * own origin, so resolved credentials never reach another host.
  */
 
 import type { WebhookLifecycleConfig, WebhookRegistrationState } from './lifecycle-types.js';
 import { resolvePlaceholders, scrubSecrets } from '../../../shared/config.js';
 import { createLogger } from '../../../shared/logger.js';
 import { safeFetch, sameOriginAs } from '../../safe-fetch.js';
+import { normalizeOutboundUrl } from '../../url-policy.js';
 
 const log = createLogger('webhook-lifecycle');
 
@@ -61,13 +66,42 @@ function getByPath(obj: unknown, path: string): unknown {
 
 // ── Lifecycle Manager ────────────────────────────────────────────────────
 
+/** A lifecycle URL failed the URL policy; the request was not sent. */
+export class LifecycleUrlError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'LifecycleUrlError';
+  }
+}
+
 export class WebhookLifecycleManager {
   private readonly config: WebhookLifecycleConfig;
   private readonly secrets: Record<string, string>;
+  private readonly allowedEndpoints: string[];
 
-  constructor(config: WebhookLifecycleConfig, secrets: Record<string, string>) {
+  constructor(
+    config: WebhookLifecycleConfig,
+    secrets: Record<string, string>,
+    /** The connection's allowlist. Empty allows any URL that passes the
+     *  other checks (the manager always passes the route's list). */
+    allowedEndpoints: string[] = [],
+  ) {
     this.config = config;
     this.secrets = secrets;
+    this.allowedEndpoints = allowedEndpoints;
+  }
+
+  /** The URL to send, or LifecycleUrlError. `template` (unresolved) is what
+   *  error messages show, since the resolved URL can carry secrets. */
+  private checkedUrl(url: string, template: string): string {
+    try {
+      return normalizeOutboundUrl(url, this.allowedEndpoints, template);
+    } catch (err) {
+      throw new LifecycleUrlError(
+        `Webhook lifecycle request refused: ${(err as Error).message} (after listener ` +
+          'params and webhook IDs were substituted). Nothing was sent.',
+      );
+    }
   }
 
   /**
@@ -93,6 +127,7 @@ export class WebhookLifecycleManager {
         try {
           existingWebhooks = await this.listWebhooks();
         } catch (err) {
+          if (err instanceof LifecycleUrlError) throw err;
           log.warn(
             'Failed to list existing webhooks, attempting direct registration:',
             this.scrub(err instanceof Error ? err.message : String(err)),
@@ -138,8 +173,9 @@ export class WebhookLifecycleManager {
             const staleId = String(getByPath(staleWh, listConfig.idField));
             log.info(`Cleaning up stale webhook (ID: ${staleId})`);
             try {
-              await this.unregister(staleId);
+              await this.unregister(staleId, { throwOnRefusedUrl: true });
             } catch (err) {
+              if (err instanceof LifecycleUrlError) throw err;
               log.warn(`Failed to clean up stale webhook ${staleId}:`, err);
             }
           }
@@ -154,6 +190,7 @@ export class WebhookLifecycleManager {
       // No register config — can't auto-register
       return { registered: false, error: 'No register config defined', lastAttempt: now };
     } catch (err) {
+      if (err instanceof LifecycleUrlError) throw err;
       // Upstream error bodies (and fetch errors) can echo resolved secrets, and
       // this message reaches the agent through ingestor_status.
       const error = this.scrub(err instanceof Error ? err.message : String(err));
@@ -167,14 +204,25 @@ export class WebhookLifecycleManager {
    * Replaces `${_webhookId}` in the unregister URL with the given ID.
    * Errors are logged but never thrown.
    */
-  async unregister(webhookId: string): Promise<void> {
+  async unregister(webhookId: string, opts: { throwOnRefusedUrl?: boolean } = {}): Promise<void> {
     if (!this.config.unregister) {
       log.warn('No unregister config defined, skipping');
       return;
     }
 
     const mergedSecrets = { ...this.secrets, _webhookId: webhookId };
-    const url = resolvePlaceholders(this.config.unregister.url, mergedSecrets);
+    let url: string;
+    try {
+      // The webhook ID comes from the upstream's list response.
+      url = this.checkedUrl(
+        resolvePlaceholders(this.config.unregister.url, mergedSecrets),
+        this.config.unregister.url,
+      );
+    } catch (err) {
+      if (opts.throwOnRefusedUrl) throw err;
+      log.warn((err as Error).message);
+      return;
+    }
     const headers = this.resolveHeaders(this.config.unregister.headers, mergedSecrets);
 
     try {
@@ -209,7 +257,7 @@ export class WebhookLifecycleManager {
   /** Fetch the list of existing webhooks from the external service. */
   private async listWebhooks(): Promise<Record<string, unknown>[]> {
     const listConfig = this.config.list!;
-    const url = resolvePlaceholders(listConfig.url, this.secrets);
+    const url = this.checkedUrl(resolvePlaceholders(listConfig.url, this.secrets), listConfig.url);
     const headers = this.resolveHeaders(listConfig.headers);
 
     const { response: resp } = await safeFetch(url, {
@@ -252,7 +300,10 @@ export class WebhookLifecycleManager {
     if (callbackUrl) mergedSecrets.CALLBACK_URL = callbackUrl;
     if (modelId) mergedSecrets.MODEL_ID = modelId;
 
-    const url = resolvePlaceholders(registerConfig.url, mergedSecrets);
+    const url = this.checkedUrl(
+      resolvePlaceholders(registerConfig.url, mergedSecrets),
+      registerConfig.url,
+    );
     const headers = this.resolveHeaders(registerConfig.headers, mergedSecrets);
 
     const fetchOptions: { method: string; headers: Record<string, string>; body?: string } = {
