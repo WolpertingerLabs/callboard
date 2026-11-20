@@ -197,6 +197,7 @@ Each cycle makes the configured request with the connection's headers, reads the
 - **Dedup memory:** up to 10,000 IDs are remembered, and the oldest half is pruned when that fills. Items without the dedup field are always emitted.
 - **Redirects:** followed only on the poll URL's own origin (same scheme, host, and port), never from `https` to `http`, and at most 5 hops. A redirect anywhere else isn't followed, so the connection's headers never reach another host. It counts as an error, reported as `redirect not followed` with its `Location`. Webhook auto-registration requests follow the same rule.
 - **Errors:** an error sets the state to `reconnecting`. After 10 consecutive errors (non-2xx, or no array at `responsePath`) the listener stops in `error`. A success resets the count.
+- **OAuth2 connections:** on a connection with an [`oauth2`](README.md#oauth2-token-minting) block, each poll gets a managed token from the same token manager (and cache) as `secure_request`, minted for the caller that owns the listener. It replaces any `Authorization` in the poll config's `headers`. A `401` mints a fresh token and polls again once; a second `401` counts as one ordinary error. A terminal token failure (`invalid_grant`, refused scopes, and the other codes listed in the README) stops the listener in `error` at once rather than retrying ten times. Fix the credential, then restart the listener. The listener's own secrets don't include the OAuth2 credentials, so `${VAR}` in a poll `url`, `body`, or `headers` can't reference them, and the token is scrubbed from error messages. Only poll listeners get managed tokens; no built-in template combines `oauth2` with a listener yet.
 
 ## Template reference
 
@@ -221,7 +222,7 @@ These fields go in a connection template's `ingestor` block, or in a custom conn
 | | `responsePath` | Dot path to the item array. Omit if the response is an array. |
 | | `deduplicateBy` | Item field (dot path) for dedup. Omit to emit every item each cycle. |
 | | `eventType` | Default `poll`. |
-| | `headers` | Extra headers; `${VAR}` placeholders resolve from secrets. These override the connection's headers with the same name. |
+| | `headers` | Extra headers; `${VAR}` placeholders resolve from secrets. These override the connection's headers with the same name, except `Authorization` on an `oauth2` connection, which is always the managed token. |
 | | `etag` | Send `If-None-Match`; a `304` counts as an empty success. |
 
 Listener fields shown in the dashboard come from the template's `listenerConfig`, and `testIngestor` defines what `test_ingestor` does.
