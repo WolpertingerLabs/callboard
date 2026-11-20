@@ -7,6 +7,7 @@
  *
  * `../api` is mocked so getChatTree resolves without network.
  */
+import { StrictMode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
@@ -421,6 +422,47 @@ describe("tree fetching (#564 polish)", () => {
     pending.get("g1")!.resolve(makeTree(makeNode("g1", "Tree g1")));
     await flush();
     expect(mockGetChatTree.mock.calls.map(([id]) => id)).toEqual(["g1", "g2", "g3", "g4", "g6"]);
+  });
+});
+
+describe("tree fetching under StrictMode", () => {
+  it("ignores the requests the remount aborted: no card shows folded, every tree loads, the limit holds", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const live = new Map<string, () => void>();
+    mockGetChatTree.mockImplementation(
+      (id, _space, signal) =>
+        new Promise<ChatTreeResponse>((resolve, reject) => {
+          inFlight++;
+          maxInFlight = Math.max(maxInFlight, inFlight);
+          const done = () => inFlight--;
+          signal?.addEventListener("abort", () => {
+            done();
+            reject(new DOMException("Aborted", "AbortError"));
+          });
+          live.set(id, () => {
+            done();
+            resolve(makeTree(makeNode(id, `Tree ${id}`, { children: [makeNode(`${id}-c`, `Child of ${id}`)] })));
+          });
+        }),
+    );
+    const ids = Array.from({ length: TREE_FETCH_CONCURRENCY + 2 }, (_, i) => `g${i + 1}`);
+    const chats = ids.flatMap((id) => [makeChat(id), makeChat(`${id}-c`, { parentChatId: id, rootChatId: id })]);
+    render(<StrictMode>{treeList({ chats, refreshToken: 0 })}</StrictMode>);
+    await flush();
+    // The remount aborted the first round; its rejections must not fold anything.
+    expect(screen.queryByTitle("Expand chat tree")).toBeNull();
+    expect(inFlight).toBe(TREE_FETCH_CONCURRENCY);
+    // Answer whatever is in flight until every tree is in.
+    for (let round = 0; round < ids.length && screen.queryAllByText(/^Child of /).length < ids.length; round++) {
+      const pending = [...live.entries()];
+      live.clear();
+      for (const [, answer] of pending) answer();
+      await flush();
+      expect(screen.queryByTitle("Expand chat tree")).toBeNull();
+    }
+    for (const id of ids) expect(screen.getByText(`Child of ${id}`)).toBeTruthy();
+    expect(maxInFlight).toBeLessThanOrEqual(TREE_FETCH_CONCURRENCY);
   });
 });
 

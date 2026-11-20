@@ -1313,13 +1313,22 @@ export default function ChatTreeList({
     const held = inHand.current;
     const waiting = queue.current;
     const inFlight = controllers.current;
+    const seqs = fetchSeq.current;
     return () => {
       mounted.current = false;
       // Abort what is in flight and forget what was never answered, so a
       // remount (StrictMode's included) fetches it again instead of waiting
       // on a request that is gone.
+      //
+      // StrictMode remounts the SAME instance, so these refs survive: bump
+      // each aborted request's sequence too, or its rejection — landing after
+      // the remount, before the fresh request (still queued behind it for a
+      // slot) has taken a new sequence — would pass as current and mark the
+      // card failed. The orphan still releases its slot once, in its own
+      // `finally`, which then starts the queued replacement.
       for (const [rootKey, controller] of inFlight) {
         controller.abort();
+        seqs.set(rootKey, (seqs.get(rootKey) ?? 0) + 1);
         if (!held.has(rootKey)) fetched.delete(rootKey);
       }
       inFlight.clear();
@@ -1442,7 +1451,8 @@ export default function ChatTreeList({
       // A fetch still waiting for a slot takes the group's current place: the
       // list may have reordered since it queued.
       const queued = queue.current.get(rootKey);
-      if (queued) queued.order = order;
+      // A click's retry (order -1) keeps its place at the front.
+      if (queued && queued.order !== -1) queued.order = order;
       const held = fetchedSig.current.get(rootKey);
       if (held !== undefined && !(isRefresh && (held !== sig || live))) continue;
       fetchTree(rootKey, chatId, sig, order);
