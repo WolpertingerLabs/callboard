@@ -25,6 +25,8 @@ export function isOAuth2Route(route: ResolvedRoute): route is OAuth2Route {
 }
 
 export interface OAuth2AuthResult {
+  /** The access token itself (for comparing after a re-mint; never log it). */
+  accessToken: string;
   /** `Bearer <token>`, for the Authorization header. */
   authorization: string;
   /** Add to every scrub map for this request: `{ OAUTH2_ACCESS_TOKEN: token }`. */
@@ -38,8 +40,12 @@ export interface OAuth2AuthResult {
 export interface OAuth2AuthorizeOptions {
   /** How long this caller may wait for a token (ms). Capped at OAUTH2_TOKEN_TIMEOUT_MS. */
   timeoutMs?: number;
-  /** Mint a new token even if a cached one is still valid (after a 401). */
+  /** Mint a new token even if a cached one is still valid (after a 401).
+   *  Pass `rejectedToken` too; see GetAccessTokenOptions.forceRefresh for
+   *  when the force is skipped. */
   forceRefresh?: boolean;
+  /** The access token the API answered 401 to. */
+  rejectedToken?: string;
   /** Defaults to the process-wide shared manager. */
   tokenManager?: TokenManager;
 }
@@ -70,10 +76,12 @@ export async function oauth2Authorize(
     (name) => route.secrets[name],
     {
       forceRefresh: opts.forceRefresh ?? false,
+      ...(opts.rejectedToken !== undefined && { rejectedToken: opts.rejectedToken }),
       timeoutMs: Math.min(opts.timeoutMs ?? OAUTH2_TOKEN_TIMEOUT_MS, OAUTH2_TOKEN_TIMEOUT_MS),
     },
   );
   return {
+    accessToken: token.accessToken,
     authorization: `Bearer ${token.accessToken}`,
     scrub: { [OAUTH2_ACCESS_TOKEN_PLACEHOLDER]: token.accessToken },
     ...(token.grantedScopes && { grantedScopes: token.grantedScopes }),

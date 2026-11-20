@@ -426,8 +426,18 @@ export const OAUTH2_TOKEN_TIMEOUT_MS = 10_000;
  *  is remembered before the token endpoint is tried again with the same
  *  credentials. Changing the secret or scopes clears it. */
 export const OAUTH2_TERMINAL_BACKOFF_MS = 60_000;
-/** Default `refreshSkewMs`. */
+/** Default `refreshSkewMs`. Clamped per token to half its lifetime. */
 export const DEFAULT_OAUTH2_REFRESH_SKEW_MS = 300_000;
+/** Largest `refreshSkewMs` validation accepts. */
+export const MAX_OAUTH2_REFRESH_SKEW_MS = 3_600_000;
+/** A 401 doesn't force a new token if the current one is younger than this:
+ *  an agent can make any allowlisted endpoint answer 401, and must not be
+ *  able to make the daemon mint on every request. */
+export const OAUTH2_MIN_REMINT_INTERVAL_MS = 30_000;
+/** A rotated refresh token unused this long is forgotten (the configured one
+ *  is used next), so rotated state can't grow without bound. Comparable to a
+ *  daemon restart, which also forgets rotations. */
+export const OAUTH2_ROTATED_TOKEN_IDLE_MS = 30 * 24 * 60 * 60 * 1000;
 /** Largest token-endpoint response body read, in bytes. */
 export const OAUTH2_TOKEN_RESPONSE_MAX_BYTES = 64 * 1024;
 

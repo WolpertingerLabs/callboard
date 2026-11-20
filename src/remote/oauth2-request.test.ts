@@ -12,7 +12,12 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 
-import { resolveRoutes, type ResolvedRoute, type Route } from '../shared/config.js';
+import {
+  OAUTH2_MIN_REMINT_INTERVAL_MS,
+  resolveRoutes,
+  type ResolvedRoute,
+  type Route,
+} from '../shared/config.js';
 import { dispatchTool, executeProxyRequest, type ToolContext } from './tool-dispatch.js';
 import { TokenManager } from './oauth/token-manager.js';
 import { resetSharedTokenManager, setSharedTokenManager } from './oauth/shared-token-manager.js';
@@ -68,6 +73,8 @@ describe('oauth2 routes on the request path', () => {
   /** Tokens the API rejects with 401. */
   let revoked = new Set<string>();
   let apiDelayMs = 0;
+  /** Added to the token manager's clock, to step past OAUTH2_MIN_REMINT_INTERVAL_MS. */
+  let clockOffsetMs = 0;
 
   beforeAll(async () => {
     ({ server: tokenServer, base: tokenBase } = await listen((req, res) => {
@@ -148,7 +155,8 @@ describe('oauth2 routes on the request path', () => {
     tokenDelayMs = 0;
     apiDelayMs = 0;
     revoked = new Set();
-    setSharedTokenManager(new TokenManager());
+    clockOffsetMs = 0;
+    setSharedTokenManager(new TokenManager({ now: () => Date.now() + clockOffsetMs }));
   });
 
   function routeDef(overrides: Partial<Route> = {}): Route {
@@ -292,6 +300,7 @@ describe('oauth2 routes on the request path', () => {
   it('on 401 re-mints and resends exactly once', async () => {
     await executeProxyRequest(GET('/api/a'), routes(), undefined, { caller: 'alice' });
     revoked.add('minted-access-token-1');
+    clockOffsetMs += OAUTH2_MIN_REMINT_INTERVAL_MS;
     const result = await executeProxyRequest(
       { method: 'POST', url: `${apiBase}/api/notes`, body: { n: 1 } },
       routes(),
@@ -317,13 +326,28 @@ describe('oauth2 routes on the request path', () => {
     expect(apiRequests).toHaveLength(0);
   });
 
+  it('a 401 on a freshly minted token is returned without re-minting', async () => {
+    // An agent can make any allowlisted URL answer 401; it must not be able to
+    // turn that into a token-endpoint call per request.
+    for (let i = 0; i < 3; i++) {
+      const result = await executeProxyRequest(GET('/api/always401'), routes(), undefined, {
+        caller: 'alice',
+      });
+      expect(result.status).toBe(401);
+    }
+    expect(tokenRequests).toHaveLength(1);
+    expect(apiRequests).toHaveLength(3);
+  });
+
   it('does not loop on a persistent 401', async () => {
+    await executeProxyRequest(GET('/api/a'), routes(), undefined, { caller: 'alice' });
+    clockOffsetMs += OAUTH2_MIN_REMINT_INTERVAL_MS;
     const result = await executeProxyRequest(GET('/api/always401'), routes(), undefined, {
       caller: 'alice',
     });
     expect(result.status).toBe(401);
-    expect(apiRequests).toHaveLength(2);
-    expect(tokenRequests).toHaveLength(2);
+    expect(apiRequests).toHaveLength(3); // the first request, the 401, one resend
+    expect(tokenRequests).toHaveLength(2); // the first mint, one re-mint, never a third
   });
 
   it('does not retry a 403, and hints at the scopes', async () => {

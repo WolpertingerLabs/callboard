@@ -64,6 +64,8 @@ export class PollIngestor extends BaseIngestor {
 
   /** OAuth2 wiring, when the connection mints its own tokens (injected by manager). */
   private readonly oauth2?: OAuth2PollOptions;
+  /** The token on the most recent poll. */
+  private currentToken?: string;
   /** The last few tokens this poller has sent, for scrubbing error text. */
   private readonly recentTokens: string[] = [];
 
@@ -179,9 +181,9 @@ export class PollIngestor extends BaseIngestor {
 
       // A 401 on an oauth2 route: mint a fresh token and poll again, once. A
       // second 401 falls through to the normal error handling below.
-      if (this.oauth2 && response.status === 401) {
+      // Skipped when the token manager declines to re-mint (token too new).
+      if (this.oauth2 && response.status === 401 && (await this.applyToken(headers, true))) {
         await response.body?.cancel().catch(() => undefined);
-        await this.applyToken(headers, true);
         ({ response } = await send());
       }
 
@@ -398,13 +400,20 @@ export class PollIngestor extends BaseIngestor {
   }
 
   /** Mint (or reuse) the token and set `Authorization`, replacing any casing. */
-  private async applyToken(headers: Record<string, string>, forceRefresh: boolean): Promise<void> {
+  /** Mint (or reuse) the token and set it; returns whether it changed. */
+  private async applyToken(
+    headers: Record<string, string>,
+    forceRefresh: boolean,
+  ): Promise<boolean> {
     const opts = this.oauth2!;
+    const previous = this.currentToken;
     const auth = await oauth2Authorize(opts.route, opts.caller, {
       timeoutMs: OAUTH2_TOKEN_TIMEOUT_MS,
       forceRefresh,
+      ...(forceRefresh && previous !== undefined && { rejectedToken: previous }),
       ...(opts.tokenManager && { tokenManager: opts.tokenManager }),
     });
+    this.currentToken = auth.accessToken;
     for (const token of Object.values(auth.scrub)) {
       if (this.recentTokens.includes(token)) continue;
       this.recentTokens.push(token);
@@ -414,6 +423,7 @@ export class PollIngestor extends BaseIngestor {
       if (k.toLowerCase() === 'authorization') Reflect.deleteProperty(headers, k);
     }
     headers.Authorization = auth.authorization;
+    return auth.accessToken !== previous;
   }
 
   // ── Helpers ────────────────────────────────────────────────────────

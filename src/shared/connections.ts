@@ -14,6 +14,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   AWS_SIGV4_REQUIRED_SECRETS,
+  MAX_OAUTH2_REFRESH_SKEW_MS,
   type ConnectionCategory,
   type OAuth2Config,
   type OAuth2Grant,
@@ -246,9 +247,12 @@ export function validateOAuth2Config(oauth2: unknown): asserts oauth2 is OAuth2C
     if (
       typeof raw.refreshSkewMs !== 'number' ||
       !Number.isFinite(raw.refreshSkewMs) ||
-      raw.refreshSkewMs < 0
+      raw.refreshSkewMs < 0 ||
+      raw.refreshSkewMs > MAX_OAUTH2_REFRESH_SKEW_MS
     ) {
-      throw new Error('oauth2: refreshSkewMs must be a non-negative number');
+      throw new Error(
+        `oauth2: refreshSkewMs must be a number from 0 to ${MAX_OAUTH2_REFRESH_SKEW_MS}`,
+      );
     }
   }
 }

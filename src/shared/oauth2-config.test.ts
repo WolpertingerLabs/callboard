@@ -118,6 +118,7 @@ describe('validateOAuth2Config', () => {
       'needs scopes',
     ],
     ['negative skew', { ...oauth2(), refreshSkewMs: -1 }, 'refreshSkewMs'],
+    ['skew above an hour', { ...oauth2(), refreshSkewMs: 3_600_001 }, 'refreshSkewMs'],
   ])('rejects %s', (_label, value, message) => {
     expect(() => validateOAuth2Config(value)).toThrow(message);
   });

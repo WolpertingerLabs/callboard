@@ -993,6 +993,17 @@ describe('PollIngestor — OAuth2 token injection', () => {
     await ingestor.stop();
   });
 
+  it('does not poll again when the re-mint is skipped (token too new)', async () => {
+    fetchMock.mockResolvedValue(mockResponse({ error: 'unauthorized' }, 401));
+    // The manager hands back the same token: it declined to re-mint.
+    const { ingestor, calls } = makeIngestor(['same', 'same']);
+    await ingestor.start();
+    expect(calls.map((c) => c.forceRefresh)).toEqual([false, true]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(ingestor.getStatus().state).toBe('reconnecting');
+    await ingestor.stop();
+  });
+
   it('a persistent 401 retries only once and surfaces as a single poll error', async () => {
     fetchMock.mockResolvedValue(mockResponse({ error: 'unauthorized' }, 401));
     const { ingestor, calls } = makeIngestor(['t1', 't2']);

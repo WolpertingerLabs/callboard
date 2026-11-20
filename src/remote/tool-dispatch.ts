@@ -622,22 +622,26 @@ export async function executeProxyRequest(
   const oauth2Route: OAuth2Route | undefined = isOAuth2Route(matched) ? matched : undefined;
   const tokenScrub: Record<string, string> = {};
   let auth: OAuth2AuthResult | undefined;
-  const mint = async (forceRefresh: boolean): Promise<void> => {
-    if (!oauth2Route) return;
+  /** Mint (or reuse) a token; after a 401, returns whether it is a new one. */
+  const mint = async (forceRefresh: boolean): Promise<boolean> => {
+    if (!oauth2Route) return false;
     if (!caller) {
       throw new Error(
         `Connection "${oauth2Route.alias ?? '(unnamed)'}" uses OAuth2, which needs the caller's identity; this request path did not supply one.`,
       );
     }
-    if (auth)
-      tokenScrub[`${OAUTH2_ACCESS_TOKEN_PLACEHOLDER}_PREVIOUS`] =
-        auth.scrub[OAUTH2_ACCESS_TOKEN_PLACEHOLDER];
+    const previous = auth?.accessToken;
+    if (previous !== undefined) {
+      tokenScrub[`${OAUTH2_ACCESS_TOKEN_PLACEHOLDER}_PREVIOUS`] = previous;
+    }
     auth = await oauth2Authorize(oauth2Route, caller, {
       timeoutMs: Math.min(OAUTH2_TOKEN_TIMEOUT_MS, remainingMs()),
       forceRefresh,
+      ...(previous !== undefined && { rejectedToken: previous }),
     });
     Object.assign(tokenScrub, auth.scrub);
     outboundHeaders = { ...outboundHeaders, Authorization: auth.authorization };
+    return auth.accessToken !== previous;
   };
   await mint(false);
   /** Everything scrubbed from headers, URLs, and errors. */
@@ -676,9 +680,10 @@ export async function executeProxyRequest(
     // expired early: mint a fresh one and resend, exactly once. The body is a
     // string or FormData (SigV4, the only Uint8Array producer, can't combine
     // with oauth2), so it can be sent again.
-    if (oauth2Route && resp.status === 401 && deadline - Date.now() > 0) {
+    // The token manager skips the re-mint when the token is very new (a 401
+    // an agent provoked on purpose), and then there is nothing to resend.
+    if (oauth2Route && resp.status === 401 && deadline - Date.now() > 0 && (await mint(true))) {
       await resp.body?.cancel().catch(() => undefined);
-      await mint(true);
       ({ response: resp, url: finalUrl, redirects } = await send());
     }
 

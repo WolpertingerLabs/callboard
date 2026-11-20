@@ -39,6 +39,8 @@ import crypto from 'node:crypto';
 
 import {
   DEFAULT_OAUTH2_REFRESH_SKEW_MS,
+  OAUTH2_MIN_REMINT_INTERVAL_MS,
+  OAUTH2_ROTATED_TOKEN_IDLE_MS,
   OAUTH2_TERMINAL_BACKOFF_MS,
   OAUTH2_TOKEN_RESPONSE_MAX_BYTES,
   OAUTH2_TOKEN_TIMEOUT_MS,
@@ -48,9 +50,6 @@ import { createLogger } from '../../shared/logger.js';
 import { safeFetch } from '../safe-fetch.js';
 
 const log = createLogger('oauth');
-
-/** Alias of DEFAULT_OAUTH2_REFRESH_SKEW_MS (PR #26's name). */
-export const DEFAULT_REFRESH_SKEW_MS = DEFAULT_OAUTH2_REFRESH_SKEW_MS;
 
 // ── Injected collaborators ──────────────────────────────────────────────────
 
@@ -76,7 +75,7 @@ export interface TokenManagerOptions {
 
 /** Who a token is for. Both fields are required: there is no shared slot. */
 export interface TokenKey {
-  /** Connection alias (e.g. "spotify"). */
+  /** Connection alias (e.g. "acme"). */
   connection: string;
   /** Caller alias the token is scoped to. */
   caller: string;
@@ -84,11 +83,19 @@ export interface TokenKey {
 
 export interface GetAccessTokenOptions {
   /**
-   * Force a refresh even if a cached token is still valid. Used by the request
-   * path after a surprise 401. Single-flight-safe: a forced refresh that finds
-   * one already in flight joins it.
+   * Mint a new token even if a cached one is still valid: the request path
+   * and poller pass the token an API just answered 401 to. Single-flight-safe:
+   * a forced refresh that finds one already in flight joins it.
+   *
+   * A 401 is agent-triggerable (any allowlisted URL that answers 401 will
+   * do), so the force is skipped, and the cached token returned, when the
+   * cached token is no longer `rejectedToken` (someone already re-minted) or
+   * was minted less than OAUTH2_MIN_REMINT_INTERVAL_MS ago. The caller
+   * compares the result with the token it sent to decide whether to resend.
    */
   forceRefresh?: boolean;
+  /** The token that got the 401. See forceRefresh. */
+  rejectedToken?: string;
   /**
    * How long this caller is willing to wait (ms). Capped at
    * OAUTH2_TOKEN_TIMEOUT_MS. Only this caller stops waiting when it runs out:
@@ -101,6 +108,8 @@ export interface GetAccessTokenOptions {
 /** A minted token plus what the provider says it covers. */
 export interface OAuth2Token {
   accessToken: string;
+  /** Epoch-ms at which the token was minted. */
+  mintedAt: number;
   /** Absolute epoch-ms at which the token hard-expires. */
   expiresAt: number;
   /** Scopes the token endpoint reported granting, sorted. Absent when it
@@ -161,7 +170,7 @@ export class OAuth2TerminalError extends OAuth2Error {
   }
 }
 
-/** Terminal `invalid_grant`. Kept as its own class for PR #26's callers. */
+/** Terminal `invalid_grant`: the refresh token is dead (revoked, expired, rotated away). */
 export class OAuth2InvalidGrantError extends OAuth2TerminalError {
   constructor(connection: string, status = 400) {
     super(
@@ -220,6 +229,14 @@ interface PreparedRequest {
   configuredRefreshToken?: string;
   requestedScopes: string[];
   verifyScopes: boolean;
+  /** Configured refresh skew (ms), before the per-token clamp. */
+  skewMs: number;
+}
+
+/** A rotated refresh token and when it was last used. */
+interface RotatedEntry {
+  refreshToken: string;
+  usedAt: number;
 }
 
 function sha256(text: string): string {
@@ -242,7 +259,17 @@ export class TokenManager {
   /** In-flight refresh promises keyed identically — the single-flight latch. */
   private readonly inFlight = new Map<string, Promise<OAuth2Token>>();
   /** Rotated refresh tokens keyed by credential fingerprint. */
-  private readonly rotated = new Map<string, string>();
+  private readonly rotated = new Map<string, RotatedEntry>();
+  /**
+   * Tail of the queue of refresh_token requests per credential fingerprint.
+   * Single-flight is per full identity, but several identities (two callers,
+   * two connections, two scope sets) can share one refresh token. With a
+   * provider that rotates, two concurrent requests would both send the same
+   * refresh token and the loser would get invalid_grant (or, with reuse
+   * detection, revoke the whole token family). So refresh_token requests for
+   * one credential go one at a time, each reading the latest rotation.
+   */
+  private readonly credentialQueue = new Map<string, Promise<void>>();
   /** Recent terminal failures keyed by full identity. */
   private readonly terminal = new Map<string, TerminalEntry>();
 
@@ -251,22 +278,13 @@ export class TokenManager {
     this.now = options.now ?? (() => Date.now());
   }
 
-  /** {@link getToken}, returning only the access token string. */
-  async getAccessToken(
-    key: TokenKey,
-    oauth2: OAuth2Config,
-    resolveSecret: SecretResolver,
-    options: GetAccessTokenOptions = {},
-  ): Promise<string> {
-    return (await this.getToken(key, oauth2, resolveSecret, options)).accessToken;
-  }
-
   /**
    * Return a valid token for this identity, minting one if needed.
    *
-   * Valid means `now + refreshSkewMs < expiresAt`. On a miss (cold, expired,
-   * or `forceRefresh`) one token-endpoint request is made; concurrent callers
-   * for the same identity share it.
+   * Valid means `now + skew < expiresAt`, where skew is `refreshSkewMs`
+   * clamped to half the token's lifetime. On a miss (cold, expired, or a
+   * `forceRefresh` that isn't skipped) one token-endpoint request is made;
+   * concurrent callers for the same identity share it.
    *
    * @throws OAuth2TerminalError (incl. OAuth2InvalidGrantError,
    *   OAuth2ScopeError) — do not retry.
@@ -289,9 +307,13 @@ export class TokenManager {
     const blocked = this.terminal.get(cacheKey);
     if (blocked) throw blocked.error;
 
-    if (!options.forceRefresh) {
-      const cached = this.cache.get(cacheKey);
-      if (cached && this.isValid(cached, oauth2)) return cached.token;
+    const cached = this.cache.get(cacheKey);
+    if (cached && this.isValid(cached, prepared)) {
+      if (!options.forceRefresh) return cached.token;
+      const alreadyReplaced =
+        options.rejectedToken !== undefined && cached.token.accessToken !== options.rejectedToken;
+      const tooRecent = this.now() - cached.token.mintedAt < OAUTH2_MIN_REMINT_INTERVAL_MS;
+      if (alreadyReplaced || tooRecent) return cached.token;
     }
 
     let flight = this.inFlight.get(cacheKey);
@@ -316,29 +338,50 @@ export class TokenManager {
     return this.raceDeadline(flight, wait, key.connection);
   }
 
-  /** Drop every cached token for (connection, caller). In-flight requests are untouched. */
-  invalidate(key: TokenKey): void {
-    const prefix = TokenManager.ownerPrefix(key);
-    for (const k of this.cache.keys()) if (k.startsWith(prefix)) this.cache.delete(k);
-  }
-
   // ── Internals ─────────────────────────────────────────────────────────────
 
-  private isValid(entry: CacheEntry, oauth2: OAuth2Config): boolean {
-    const skew = oauth2.refreshSkewMs ?? DEFAULT_OAUTH2_REFRESH_SKEW_MS;
+  /**
+   * Whether a cached token is still usable. The skew is clamped to half the
+   * token's lifetime: a provider issuing 5-minute tokens against the default
+   * 5-minute skew would otherwise make every request mint.
+   */
+  private isValid(entry: CacheEntry, p: PreparedRequest): boolean {
+    const lifetime = entry.token.expiresAt - entry.token.mintedAt;
+    const skew = Math.min(p.skewMs, lifetime / 2);
     return this.now() + skew < entry.token.expiresAt;
   }
 
-  /** Drop expired tokens and lapsed terminal backoffs. */
+  /** Drop expired tokens, lapsed terminal backoffs, and idle rotated tokens. */
   private sweep(): void {
     const now = this.now();
     for (const [k, v] of this.cache) if (v.token.expiresAt <= now) this.cache.delete(k);
     for (const [k, v] of this.terminal) if (v.until <= now) this.terminal.delete(k);
+    for (const [k, v] of this.rotated) {
+      if (now - v.usedAt > OAUTH2_ROTATED_TOKEN_IDLE_MS) this.rotated.delete(k);
+    }
   }
 
-  /** Owner prefix of every cache key, so invalidate() can find them. */
+  /** Per-(caller, connection) prefix of every cache key. */
   private static ownerPrefix(key: TokenKey): string {
     return `${sha256(JSON.stringify([key.caller, key.connection]))}:`;
+  }
+
+  /** Run `fn` after every earlier queued call for `credential` has settled. */
+  private async queued<T>(credential: string, fn: () => Promise<T>): Promise<T> {
+    const previous = this.credentialQueue.get(credential) ?? Promise.resolve();
+    let release!: () => void;
+    const mine = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = previous.then(() => mine);
+    this.credentialQueue.set(credential, tail);
+    await previous;
+    try {
+      return await fn();
+    } finally {
+      release();
+      if (this.credentialQueue.get(credential) === tail) this.credentialQueue.delete(credential);
+    }
   }
 
   /** Look up secrets and compute the cache identity. */
@@ -367,12 +410,18 @@ export class TokenManager {
         : `client_credentials\0${clientId}\0${clientSecret}`,
     );
     const requestedScopes = normalizeScopes(oauth2.scopes);
+    const verifyScopes = oauth2.verifyGrantedScopes ?? requestedScopes.length > 0;
+    const skewMs = oauth2.refreshSkewMs ?? DEFAULT_OAUTH2_REFRESH_SKEW_MS;
+    // Everything that changes which token is acceptable is part of the key,
+    // so changing it never serves a token minted under the old settings.
     const identity = JSON.stringify([
       oauth2.grant,
       oauth2.tokenUrl,
       oauth2.clientAuth,
       credential,
       requestedScopes.join(' '),
+      verifyScopes,
+      skewMs,
     ]);
     return {
       cacheKey: TokenManager.ownerPrefix(key) + sha256(identity),
@@ -381,7 +430,8 @@ export class TokenManager {
       clientSecret,
       ...(configuredRefreshToken !== undefined && { configuredRefreshToken }),
       requestedScopes,
-      verifyScopes: oauth2.verifyGrantedScopes ?? requestedScopes.length > 0,
+      verifyScopes,
+      skewMs,
     };
   }
 
@@ -415,12 +465,36 @@ export class TokenManager {
     oauth2: OAuth2Config,
     p: PreparedRequest,
   ): Promise<OAuth2Token> {
+    if (oauth2.grant !== 'refresh_token') return this.requestToken(key, oauth2, p);
+    // Read the rotation only once the queue reaches this request, after any
+    // earlier request for this credential has stored its result. (Queueing
+    // makes "the rotation changed during the call" impossible within this
+    // process, so there is no retry-on-invalid_grant path.)
+    return this.queued(p.credential, () =>
+      this.requestToken(key, oauth2, p, this.currentRefreshToken(p)),
+    );
+  }
+
+  /** The refresh token to send: the latest rotation, else the configured one. */
+  private currentRefreshToken(p: PreparedRequest): string {
+    const entry = this.rotated.get(p.credential);
+    if (entry) {
+      entry.usedAt = this.now();
+      return entry.refreshToken;
+    }
+    return p.configuredRefreshToken!;
+  }
+
+  /** One token-endpoint request. */
+  private async requestToken(
+    key: TokenKey,
+    oauth2: OAuth2Config,
+    p: PreparedRequest,
+    refreshToken?: string,
+  ): Promise<OAuth2Token> {
     const body = new URLSearchParams();
     body.set('grant_type', oauth2.grant);
-    if (oauth2.grant === 'refresh_token') {
-      // Prefer the in-memory rotated token for these exact credentials.
-      body.set('refresh_token', this.rotated.get(p.credential) ?? p.configuredRefreshToken!);
-    }
+    if (oauth2.grant === 'refresh_token') body.set('refresh_token', refreshToken!);
     if (p.requestedScopes.length > 0) body.set('scope', p.requestedScopes.join(' '));
 
     const headers: Record<string, string> = {
@@ -500,7 +574,7 @@ export class TokenManager {
     if (oauth2.grant === 'refresh_token') {
       const returned = (parsed as Record<string, unknown>).refresh_token;
       if (typeof returned === 'string' && returned.length > 0) {
-        this.rotated.set(p.credential, returned);
+        this.rotated.set(p.credential, { refreshToken: returned, usedAt: this.now() });
       }
     }
 
@@ -634,9 +708,11 @@ export class TokenManager {
       if (missing.length > 0) missingScopes = missing;
     }
 
+    const mintedAt = this.now();
     return {
       accessToken,
-      expiresAt: this.now() + expiresIn * 1000,
+      mintedAt,
+      expiresAt: mintedAt + expiresIn * 1000,
       ...(granted && { grantedScopes: granted }),
       ...(missingScopes && { missingScopes }),
     };
