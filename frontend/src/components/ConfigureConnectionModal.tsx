@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import type { AdminConnectionStatus } from "drawlatch-admin-types";
 import { api } from "../api";
+import { AuthSummary, SECRET_HELP } from "./AuthSummary";
 import "./ConfigureConnectionModal.css";
 
 interface ConfigureConnectionModalProps {
@@ -144,6 +145,15 @@ export default function ConfigureConnectionModal({
             </div>
             {connection.description && (
               <p className="dl-secrets-desc">{connection.description}</p>
+            )}
+            {(connection.auth || connection.problem) && (
+              <div className="dl-secrets-auth">
+                <AuthSummary
+                  auth={connection.auth}
+                  callerAuth={connection.callerAuth}
+                  problem={connection.problem}
+                />
+              </div>
             )}
             {connection.docsUrl && (
               <a
@@ -386,6 +396,9 @@ function SecretField({
           </button>
         )}
       </div>
+      {SECRET_HELP[name] && (
+        <p className="dl-secrets-help">{SECRET_HELP[name]}</p>
+      )}
     </div>
   );
 }

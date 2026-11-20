@@ -27,6 +27,7 @@ import {
   getServerKeysDir,
   getEnvFilePath,
   getRemoteConfigPath,
+  resolveCallerRoutesChecked,
   type RemoteServerConfig,
 } from '../shared/config.js';
 import { listConnectionTemplates, loadConnection } from '../shared/connections.js';
@@ -51,6 +52,7 @@ import type {
   AdminSecret,
   AdminEvent,
   AdminConnectionStatus,
+  AdminConnectionAuth,
 } from './admin-types.js';
 import path from 'node:path';
 
@@ -134,6 +136,38 @@ export function createAdminRouter(deps: AdminRouterDeps): express.Router {
     res.json(out);
   });
 
+  /**
+   * Per-connection auth for one caller, after its oauth2Overrides, plus the
+   * connections the daemon drops for it. Scope names and the admin-set
+   * subject only; never a secret, token, or fingerprint.
+   */
+  function callerAuthView(config: RemoteServerConfig, alias: string) {
+    const caller = config.callers[alias];
+    const auth = new Map<string, AdminConnectionAuth>();
+    let resolved: ReturnType<typeof resolveCallerRoutesChecked>;
+    try {
+      resolved = resolveCallerRoutesChecked(config, alias);
+    } catch {
+      // e.g. a connection name that is neither a template nor a connector;
+      // the rest of the payload still renders.
+      return { auth, dropped: new Map<string, string>() };
+    }
+    const { routes, dropped } = resolved;
+    for (const route of routes) {
+      if (!route.alias || !route.oauth2) continue;
+      const o = route.oauth2;
+      auth.set(route.alias, {
+        type: 'oauth2',
+        grant: o.grant,
+        scopes: [...new Set(o.scopes ?? [])].sort(),
+        narrowed: caller.oauth2Overrides?.[route.alias]?.scopes !== undefined,
+        ...(o.subject !== undefined && { subject: o.subject }),
+        ...(o.subjectRequired === true && { subjectRequired: true }),
+      });
+    }
+    return { auth, dropped: new Map(Object.entries(dropped)) };
+  }
+
   // ── /admin/connections ─────────────────────────────────────────────────
   // listConnectionTemplates already returns names-only — safe as-is.
   router.get('/connections', (_req, res) => {
@@ -152,6 +186,7 @@ export function createAdminRouter(deps: AdminRouterDeps): express.Router {
     }
     const caller = config.callers[req.params.alias];
     const enabled = new Set(caller.connections);
+    const { auth, dropped } = callerAuthView(config, req.params.alias);
     const out: AdminConnectionStatus[] = listConnectionTemplates().map((t) => {
       const requiredSecretsSet: Record<string, boolean> = {};
       for (const s of t.requiredSecrets) {
@@ -166,6 +201,8 @@ export function createAdminRouter(deps: AdminRouterDeps): express.Router {
         enabled: enabled.has(t.alias),
         requiredSecretsSet,
         optionalSecretsSet,
+        ...(enabled.has(t.alias) && auth.has(t.alias) && { callerAuth: auth.get(t.alias) }),
+        ...(enabled.has(t.alias) && dropped.has(t.alias) && { problem: dropped.get(t.alias) }),
       };
     });
     res.json(out);
@@ -183,6 +220,7 @@ export function createAdminRouter(deps: AdminRouterDeps): express.Router {
     const templates = listConnectionTemplates();
     const tplMap = new Map(templates.map((t) => [t.alias, t]));
     const customMap = new Map((config.connectors ?? []).map((c) => [c.alias, c]));
+    const { auth, dropped } = callerAuthView(config, req.params.alias);
 
     const out: AdminCallerConnection[] = caller.connections.map((connectionAlias) => {
       const tpl = tplMap.get(connectionAlias);
@@ -261,6 +299,8 @@ export function createAdminRouter(deps: AdminRouterDeps): express.Router {
         optionalSecrets,
         hasIngestor: tpl?.hasIngestor ?? customMap.get(connectionAlias)?.ingestor !== undefined,
         instances,
+        ...(auth.has(connectionAlias) && { auth: auth.get(connectionAlias) }),
+        ...(dropped.has(connectionAlias) && { problem: dropped.get(connectionAlias) }),
       };
     });
 

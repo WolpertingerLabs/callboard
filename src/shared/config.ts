@@ -982,10 +982,12 @@ function logConfigProblemOnce(problem: string): void {
 export function resolveCallerRoutesChecked(
   config: RemoteServerConfig,
   callerAlias: string,
-): { routes: Route[]; problems: string[] } {
-  if (!(callerAlias in config.callers)) return { routes: [], problems: [] };
+): { routes: Route[]; problems: string[]; dropped: Record<string, string> } {
+  if (!(callerAlias in config.callers)) return { routes: [], problems: [], dropped: {} };
   const caller = config.callers[callerAlias];
   const problems: string[] = [];
+  /** Connection alias → why it was dropped for this caller. */
+  const dropped: Record<string, string> = {};
 
   // Build lookup map for custom connectors by alias
   const connectorsByAlias = new Map<string, Route>();
@@ -1023,14 +1025,13 @@ export function resolveCallerRoutesChecked(
         );
       }
     } catch (err) {
-      problems.push(
-        `Caller "${callerAlias}": connection "${name}" dropped: ${(err as Error).message}`,
-      );
+      dropped[name] = (err as Error).message;
+      problems.push(`Caller "${callerAlias}": connection "${name}" dropped: ${dropped[name]}`);
       continue;
     }
     routes.push(route);
   }
-  return { routes, problems };
+  return { routes, problems, dropped };
 }
 
 /**

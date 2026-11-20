@@ -94,6 +94,31 @@ export interface AdminConnectionTemplate {
   hasListenerConfig: boolean;
   supportsMultiInstance: boolean;
   allowedEndpoints: string[];
+  /** Present when drawlatch mints the token itself (names only). */
+  auth?: {
+    type: 'oauth2';
+    grant: AdminOAuth2Grant;
+    /** The template's scopes, sorted. */
+    scopes: string[];
+    /** jwt_bearer: unusable until a caller sets oauth2Overrides[alias].subject. */
+    subjectRequired?: boolean;
+  };
+}
+
+export type AdminOAuth2Grant = 'refresh_token' | 'client_credentials' | 'jwt_bearer';
+
+/** How one caller's connection authenticates, after the caller's
+ *  `oauth2Overrides`. Read-only: overrides are edited in remote.config.json. */
+export interface AdminConnectionAuth {
+  type: 'oauth2';
+  grant: AdminOAuth2Grant;
+  /** Scopes requested for this caller, sorted. */
+  scopes: string[];
+  /** The caller's oauth2Overrides narrowed the connection's scopes. */
+  narrowed: boolean;
+  /** jwt_bearer: the user the service account acts as (admin config). */
+  subject?: string;
+  subjectRequired?: boolean;
 }
 
 // ── /admin/callers/:alias/connection-status ──────────────────────────────
@@ -104,6 +129,11 @@ export interface AdminConnectionStatus extends AdminConnectionTemplate {
   enabled: boolean;
   requiredSecretsSet: Record<string, boolean>;
   optionalSecretsSet: Record<string, boolean>;
+  /** Enabled oauth2 connections: the auth this caller actually gets. */
+  callerAuth?: AdminConnectionAuth;
+  /** Enabled but dropped for this caller (e.g. an invalid oauth2Overrides
+   *  entry, or a subjectRequired connection without a subject). */
+  problem?: string;
 }
 
 // ── /admin/callers/:alias/connections ────────────────────────────────────
@@ -126,6 +156,10 @@ export interface AdminCallerConnection {
   optionalSecrets: AdminSecretRef[];
   hasIngestor: boolean;
   instances: AdminListenerInstance[];
+  /** oauth2 connections: the auth this caller gets (after oauth2Overrides). */
+  auth?: AdminConnectionAuth;
+  /** Why the daemon drops this connection for this caller, if it does. */
+  problem?: string;
 }
 
 // ── /admin/ingestors ─────────────────────────────────────────────────────
