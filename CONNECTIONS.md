@@ -10,7 +10,7 @@ Then set the secrets for that caller. Caller `default` reads `GITHUB_TOKEN` from
 
 ## Available connections
 
-**Bold** secrets are needed for API calls. The others are used only by the event listener, if at all. `doctor`, `config`, and the dashboard flag missing secrets only for built-in templates, and only those used in headers, so they won't catch a missing Telegram or Trello token. (`aws` is the exception: its signing keys count as required.) Set `<ALIAS>_<NAME>` even where `doctor` prints the bare name. Listener types are described in [INGESTORS.md](INGESTORS.md).
+**Bold** secrets are needed for API calls. The others are used only by the event listener, if at all. `doctor`, `config`, and the dashboard flag missing secrets only for built-in templates, and only those used in headers, so they won't catch a missing Telegram or Trello token. (`aws` is the exception: its signing keys count as required.) Set `<ALIAS>_<NAME>` even where `doctor` prints the bare name. Header secrets, and listener `signatureSecret`s, are [header-only](README.md#header-only-secrets): the agent can't reference them as `${NAME}` in a request, and they're scrubbed from response bodies. Listener types are described in [INGESTORS.md](INGESTORS.md).
 
 | Connection | API | Secrets | Auth | Listener |
 | --- | --- | --- | --- | --- |
@@ -97,7 +97,7 @@ Some GitHub endpoints answer with a 302 to another host: release-asset downloads
 
 **Telegram.** The token goes in the URL path: `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`. The placeholder resolves server-side. Create a bot with [@BotFather](https://t.me/BotFather). The listener uses `getUpdates`, which Telegram disables while a webhook is set.
 
-**Trello.** Auth goes in the query string: `?key=${TRELLO_API_KEY}&token=${TRELLO_TOKEN}`. The placeholders resolve server-side. The webhook listener also needs `TRELLO_API_SECRET`, `TRELLO_CALLBACK_URL`, and a `boardId` param. See [INGESTORS.md](INGESTORS.md#webhooks).
+**Trello.** Auth goes in the query string: `?key=${TRELLO_API_KEY}&token=${TRELLO_TOKEN}`. The placeholders resolve server-side. The webhook listener also needs `TRELLO_API_SECRET` (withheld from requests, since it only verifies webhook signatures), `TRELLO_CALLBACK_URL`, and a `boardId` param. See [INGESTORS.md](INGESTORS.md#webhooks).
 
 **Twitch.** Every request carries `Authorization: Bearer` and `Client-Id`. Register an app in the [developer console](https://dev.twitch.tv/console/apps). The listener polls followed streams, which needs a *user* access token and `TWITCH_USER_ID` (from `GET /helix/users`). Rate limit: 800 requests per minute.
 

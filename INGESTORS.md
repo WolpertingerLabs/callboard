@@ -211,7 +211,7 @@ These fields go in a connection template's `ingestor` block, or in a custom conn
 | | `intents`, `eventFilter`, `guildIds`, `channelIds`, `userIds` | Defaults for the per-caller fields above. |
 | `webhook` | `path` | Serves `/webhooks/<path>`. |
 | | `protocol` | `stripe`, `trello`, or omitted (GitHub-style). |
-| | `signatureHeader`, `signatureSecret` | Enable verification. `signatureSecret` names a secret. |
+| | `signatureHeader`, `signatureSecret` | Enable verification. `signatureSecret` names a secret, which requests can't reference ([header-only secrets](README.md#header-only-secrets)). |
 | | `callbackUrl` | Public URL, usually `${SOME_URL_VAR}`. Trello signs with it; lifecycle registration uses it. |
 | | `lifecycle` | `list` / `register` / `unregister` request templates for auto-registration. |
 | `poll` | `url`, `intervalMs` | Required. `${VAR}` placeholders in `url` and `body` resolve from secrets (not URL-encoded). |

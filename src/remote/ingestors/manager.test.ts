@@ -1066,3 +1066,46 @@ describe('IngestorManager — awsSigV4 routes', () => {
     await manager.stopOne('test-caller', 'signed-hook');
   });
 });
+
+describe('IngestorManager — header-only secrets', () => {
+  it('should still hand header-only and signature secrets to a listener', async () => {
+    const config: RemoteServerConfig = {
+      host: '127.0.0.1',
+      port: 9999,
+      connectors: [
+        {
+          alias: 'header-hook',
+          headers: { Authorization: 'Bearer ${API_TOKEN}' },
+          secrets: { API_TOKEN: 'header-only-token', HOOK_SECRET: 'hook-secret' },
+          allowedEndpoints: ['https://api.example.com/**'],
+          ingestor: {
+            type: 'webhook',
+            webhook: {
+              path: 'header-hook',
+              signatureHeader: 'X-Signature',
+              signatureSecret: 'HOOK_SECRET',
+            },
+          },
+        },
+      ],
+      callers: {
+        'test-caller': { connections: ['header-hook'] },
+      },
+      rateLimitPerMinute: 60,
+    };
+    const manager = new IngestorManager(config);
+    const result = await manager.startOne('test-caller', 'header-hook');
+    expect(result.success).toBe(true);
+
+    // Withheld from callers' requests, but listener configs are template-authored.
+    const ingestors = (manager as unknown as { ingestors: Map<string, { secrets: unknown }> })
+      .ingestors;
+    const [ingestor] = [...ingestors.values()];
+    expect(ingestor.secrets).toEqual({
+      API_TOKEN: 'header-only-token',
+      HOOK_SECRET: 'hook-secret',
+    });
+
+    await manager.stopOne('test-caller', 'header-hook');
+  });
+});

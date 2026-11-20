@@ -83,8 +83,8 @@ The local MCP server exposes these tools. Every call goes through the encrypted 
 
 | Tool | Purpose |
 | --- | --- |
-| `secure_request` | HTTP request to an allowlisted URL. Connection headers are injected for you. `${VAR}` placeholders in the URL and headers resolve server-side from the matched connection's secrets (in the body only if the connection sets `resolveSecretsInBody`). Redirects are followed only within the connection's allowlist ([Redirects](#redirects)). Supports multipart uploads from local files (25 MB per file, 50 MB per base64-encoded request): with `files`, the JSON `body` is sent as a form part named `payload_json` (change it with `bodyFieldName`). Also takes a per-call `timeoutMs`. |
-| `list_routes` | The caller's connections: docs links, allowed endpoint patterns, the *names* of secrets that are set, auto-injected header names, `awsSigV4` settings, timeouts, listener info. |
+| `secure_request` | HTTP request to an allowlisted URL. Connection headers are injected for you. `${VAR}` placeholders in the URL and headers resolve server-side from the matched connection's secrets (in the body only if the connection sets `resolveSecretsInBody`). Secrets the connection injects itself are [withheld](#header-only-secrets): a request that references one is rejected, and their values are scrubbed from the response body. Redirects are followed only within the connection's allowlist ([Redirects](#redirects)). Supports multipart uploads from local files (25 MB per file, 50 MB per base64-encoded request): with `files`, the JSON `body` is sent as a form part named `payload_json` (change it with `bodyFieldName`). Also takes a per-call `timeoutMs`. |
+| `list_routes` | The caller's connections: docs links, allowed endpoint patterns, the *names* of secrets that are set, auto-injected header names, `withheldSecretNames` (secrets the connection uses itself, which a request may not reference), `awsSigV4` settings, timeouts, listener info. |
 | `test_connection` | Run a connection's built-in credential check. Some cost a little credit; see [CONNECTIONS.md](CONNECTIONS.md#available-connections). |
 | `list_connection_templates` | All built-in templates, with which are enabled for this caller and which secrets are set (booleans). Custom connectors aren't listed. |
 | `set_connection_enabled` | Enable or disable a connection for this caller. |
@@ -174,6 +174,16 @@ If a secret isn't set, its placeholder is sent literally (for example, `Authoriz
 
 > **Known issue:** an `env` value that redirects to another variable, such as `"GITHUB_TOKEN": "${ALICE_TOKEN}"`, is ignored; the prefixed variable (`<ALIAS>_GITHUB_TOKEN`) is used if set. Status checks still report the redirected secret as set. Use a literal value or the prefixed variable instead.
 
+#### Header-only secrets
+
+A secret that a connection's own `headers` reference is **header-only**: it is injected into those headers, and nowhere else. A request may not reference it as `${NAME}` in its URL, its headers, or a `resolveSecretsInBody` body; such a request is rejected before anything is sent. Upstreams echo identifiers back in error messages, so `GET https://www.googleapis.com/drive/v3/files/${GOOGLE_API_TOKEN}` would otherwise answer `File not found: ya29…` and hand the token to the agent. The same applies to a webhook listener's `signatureSecret`, to anything a connector lists in `withheldSecrets`, to any secret whose value contains a withheld one, and to [AWS SigV4](#aws-sigv4-signing) signing keys (which, unlike the others, don't resolve in `headers` either). `list_routes` reports them as `withheldSecretNames`.
+
+Withheld values are also replaced with `${NAME}` (as-is and URL-encoded) in response bodies: JSON string values and keys, and text bodies. Secrets a request may reference are left alone in bodies, since the caller can use them by design and many are ordinary values (`REDDIT_SUBREDDIT`, `TWITCH_USER_ID`) that appear in real responses.
+
+Built-in templates that authenticate in the URL keep working, because their tokens aren't in `headers`: Trello (`?key=${TRELLO_API_KEY}&token=${TRELLO_TOKEN}`) and Telegram (`/bot${TELEGRAM_BOT_TOKEN}/`). An upstream can still echo those back. A custom connector that needs one secret in both a header and the URL lists it in `placeholderSecrets`.
+
+Listener configs, `testConnection`, and `listenerConfig` option lookups come from the template rather than the caller. Listeners still receive header-only secrets (the Discord gateway needs its bot token); no built-in test or option lookup references one in a URL.
+
 ### Custom connectors
 
 Use these for APIs without a built-in template, or to override one: a connector whose `alias` matches a built-in name replaces that template.
@@ -200,7 +210,9 @@ With this connector, caller `default` reads `ADMIN_KEY` from `DEFAULT_ADMIN_KEY`
 | `allowedEndpoints` | Required. URL globs: `*` matches within a path segment, `**` across segments. An empty list matches nothing. |
 | `headers` | Headers injected into every request. `${VAR}` resolves against `secrets`. A request that sets the same header itself is rejected. |
 | `awsSigV4` | Sign every request with AWS Signature Version 4: `{}`, or `{ "service": "…", "region": "…" }` to override what's inferred from the hostname. See [AWS SigV4 signing](#aws-sigv4-signing). |
-| `secrets` | `NAME → value`. The value is a literal, or `${VAR}` resolved per caller as in [Secrets](#secrets). |
+| `secrets` | `NAME → value`. The value is a literal, or `${VAR}` resolved per caller as in [Secrets](#secrets). A secret referenced in `headers` is [header-only](#header-only-secrets). |
+| `withheldSecrets` | Extra secret names to withhold from request URLs, headers, and bodies, like header-only ones. They still resolve in `headers` and listener configs. |
+| `placeholderSecrets` | Header secrets that requests may also reference as `${NAME}`, for an API that needs the same credential in a header and the URL or body. The upstream can echo these back. Can't release SigV4 signing keys. |
 | `resolveSecretsInBody` | Resolve `${VAR}` in request bodies. Default `false`, which stops an agent from writing a placeholder into a resource and reading the secret back. |
 | `requestTimeoutMs` | Default outbound timeout for this API, and the most a caller may request (see [Request timeouts](#request-timeouts)). |
 | `name`, `description`, `docsUrl`, `openApiUrl` | Shown to agents by `list_routes`. |
@@ -255,7 +267,7 @@ The daemon follows redirects itself rather than leaving them to fetch, whose def
 - **Method and body:** 301 and 302 turn a `POST` into a `GET`, 303 turns anything but `GET` or `HEAD` into a `GET`, and both drop the body and its content headers. 307 and 308 resend the method and body, multipart uploads included. If `resolveSecretsInBody` substituted a secret into the body, a 307 or 308 to another origin isn't followed, since the body would go there as-is.
 - **Limit:** at most 5 hops.
 
-A hop that fails a check isn't followed and isn't an error. The 3xx comes back as the result, with its `Location` header, and the target is never contacted. Secrets in response header values, such as a refused `Location` that echoes `?key=…` back, are shown as `${NAME}`, both as-is and URL-encoded. When redirects were followed, the result has a `url` field with the final URL, scrubbed the same way.
+A hop that fails a check isn't followed and isn't an error. The 3xx comes back as the result, with its `Location` header, and the target is never contacted. Secrets in response header values, such as a refused `Location` that echoes `?key=…` back, are shown as `${NAME}`, both as-is and URL-encoded. Response bodies are scrubbed of [withheld secrets](#header-only-secrets) only. When redirects were followed, the result has a `url` field with the final URL, scrubbed the same way.
 
 `awsSigV4` connections never follow redirects. Listener requests (polls, webhook auto-registration, Slack Socket Mode connect) and trigger dispatch follow redirects only on the request URL's own origin; see [INGESTORS.md](INGESTORS.md#polling).
 
@@ -385,7 +397,7 @@ set-password             Set the dashboard password (alias: change-password)
 
 - **Endpoint allowlisting:** requests go only to URLs matching the caller's connections. Redirects are followed only to allowlisted URLs, never from `https` to `http`, and without credential headers across origins ([Redirects](#redirects)).
 - **Per-caller isolation:** each caller sees only its connections, and secrets resolve only from its own `env` or `<ALIAS>_`-prefixed variables.
-- **No secrets on the client:** the MCP server never holds API credentials. Secret placeholders resolve server-side, in request bodies only when a connection opts in.
+- **No secrets on the client:** the MCP server never holds API credentials. Secret placeholders resolve server-side, in request bodies only when a connection opts in. Secrets a connection injects in its own headers can't be placed in a request at all, and are scrubbed from response bodies ([Header-only secrets](#header-only-secrets)).
 - **Mutual authentication:** Ed25519-signed handshake against a pinned server key and registered caller keys.
 - **Encryption:** AES-256-GCM with per-session X25519 ECDH keys, and monotonic counters against replay.
 - **Sessions** expire after 30 minutes idle.

@@ -263,7 +263,7 @@ const server = new McpServer({
 // eslint-disable-next-line @typescript-eslint/no-deprecated -- registerTool is not available in this SDK version
 server.tool(
   'secure_request',
-  "Make an authenticated HTTP request through the encrypted proxy. Route-level headers (e.g., Authorization) are injected automatically by the server — do not send them yourself. You may use ${VAR_NAME} placeholders for other secrets in the URL, headers, or body — they are resolved server-side using the matched route's secrets and never exposed to the client.",
+  "Make an authenticated HTTP request through the encrypted proxy. Route-level headers (e.g., Authorization) are injected automatically by the server — do not send them yourself. You may use ${VAR_NAME} placeholders for other secrets in the URL, headers, or body — they are resolved server-side using the matched route's secrets and never exposed to the client. Secrets a route injects through its own headers (and signing/webhook secrets) are withheld: list_routes reports them as withheldSecretNames, and a request that references one is rejected.",
   {
     method: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']).describe('HTTP method'),
     url: z.string().describe('Full URL, may contain ${VAR} placeholders'),
@@ -377,7 +377,7 @@ server.tool(
 // eslint-disable-next-line @typescript-eslint/no-deprecated -- registerTool is not available in this SDK version
 server.tool(
   'list_routes',
-  'List all available routes on the remote server. Returns metadata (name, description, docs link), allowed endpoint patterns, available secret placeholder names (not values), and auto-injected header names for each route. Use this to discover which APIs are available and how to call them.',
+  'List all available routes on the remote server. Returns metadata (name, description, docs link), allowed endpoint patterns, available secret placeholder names (not values), and auto-injected header names for each route, plus withheldSecretNames: secrets the route uses itself that requests may not reference. Use this to discover which APIs are available and how to call them.',
   // Empty schema — no input needed
   { _: z.string().optional().describe('unused') },
   async () => {

@@ -98,36 +98,140 @@ export const AWS_SIGV4_CREDENTIAL_SECRETS: readonly string[] = [
   AWS_SIGV4_SESSION_TOKEN_SECRET,
 ];
 
-/**
- * The secrets a route may substitute for `${VAR}` placeholders in URLs, headers,
- * and bodies.
- *
- * On an `awsSigV4` route the signing credentials are left out, along with any
- * other entry whose value contains one, so they can only reach the signer.
- * `*.amazonaws.com` includes hosts anyone can own (EC2 public DNS, load
- * balancers, API Gateway), and a substituted `${AWS_SECRET_ACCESS_KEY}` would
- * be sent to them.
- */
-export function substitutableSecrets(route: {
+// ── Withheld secrets ─────────────────────────────────────────────────────────
+//
+// A route's secrets fall into three tiers by where a `${NAME}` placeholder for
+// them may be resolved:
+//
+//   1. Signer-only: credentials an auth mode consumes itself (AWS SigV4 signing
+//      keys). Never substituted anywhere, not even into the route's own
+//      `headers`. See signerOnlySecretNames().
+//   2. Withheld from callers: substituted into the route's own `headers` and
+//      template-authored strings (listener configs), but never into a string
+//      the caller supplies (request URL, request headers, request body).
+//      See withheldSecretNames().
+//   3. Substitutable: everything else. A caller may write `${NAME}` in a URL,
+//      header, or (on a `resolveSecretsInBody` route) body. Trello's
+//      `?key=${TRELLO_API_KEY}` and Telegram's `/bot${TELEGRAM_BOT_TOKEN}/` are
+//      the built-in cases.
+//
+// Tier 2 exists because upstreams echo identifiers back in error messages:
+// `GET /drive/v3/files/${GOOGLE_API_TOKEN}` answers `File not found: ya29…`.
+// A token the route already injects through a header has no business in a URL.
+
+/** Shape the withholding helpers read. Both `Route` and `ResolvedRoute` fit. */
+interface WithholdingRouteFields {
   awsSigV4?: AwsSigV4Config;
   secrets?: Record<string, string>;
-}): Record<string, string> {
-  const secrets = route.secrets ?? {};
-  if (!route.awsSigV4) return secrets;
-  const credentialValues = new Set(
-    AWS_SIGV4_CREDENTIAL_SECRETS.map((name) => secrets[name]).filter(
-      (v): v is string => typeof v === 'string' && v !== '',
-    ),
-  );
-  // Containment, not equality: `WRAPPED = "pre-<secret>"` would leak it too.
-  // Empty values were filtered out above, since "" is contained in everything.
-  const holdsCredential = (value: string) =>
-    typeof value === 'string' && [...credentialValues].some((cred) => value.includes(cred));
+  /** Precomputed tier-2 names (ResolvedRoute). Absent on a raw Route. */
+  withheldSecrets?: readonly string[];
+}
+
+/**
+ * Tier 1: secret names only drawlatch's own auth machinery may read.
+ *
+ * A new auth mode that consumes credentials daemon-side (signing, token
+ * minting) adds its names here; everything else (header resolution, caller
+ * substitution, body scrubbing, list_routes) picks them up automatically.
+ */
+export function signerOnlySecretNames(route: { awsSigV4?: AwsSigV4Config }): Set<string> {
+  const names = new Set<string>();
+  if (route.awsSigV4) for (const name of AWS_SIGV4_CREDENTIAL_SECRETS) names.add(name);
+  return names;
+}
+
+/** `${NAME}` references in a set of strings. */
+function placeholderNames(values: Iterable<string>): Set<string> {
+  const names = new Set<string>();
+  for (const value of values) {
+    if (typeof value !== 'string') continue;
+    for (const match of value.matchAll(/\$\{(\w+)\}/g)) names.add(match[1]);
+  }
+  return names;
+}
+
+/**
+ * Tier 1 + 2: secret names a caller may not reference in a URL, request
+ * header, or request body on this route. Computed from the raw `Route`
+ * (before header resolution) by resolveRoutes() and carried on
+ * `ResolvedRoute.withheldSecrets`.
+ *
+ *   - every signer-only secret (tier 1);
+ *   - every secret the route's own `headers` reference: the route already
+ *     injects it, so a caller never needs to write it;
+ *   - the webhook ingestor's `signatureSecret`, which only verifies signatures;
+ *   - every name in the route's `withheldSecrets`;
+ *   - minus names in `placeholderSecrets`, the escape hatch for a connector
+ *     whose API needs a header secret in the URL or body as well. It cannot
+ *     release a signer-only secret.
+ */
+export function withheldSecretNames(route: Route): Set<string> {
+  const signerOnly = signerOnlySecretNames(route);
+  const names = placeholderNames(Object.values(route.headers ?? {}));
+  const signatureSecret = route.ingestor?.webhook?.signatureSecret;
+  if (signatureSecret) names.add(signatureSecret);
+  for (const name of route.withheldSecrets ?? []) names.add(name);
+  for (const name of route.placeholderSecrets ?? []) names.delete(name);
+  for (const name of signerOnly) names.add(name);
+  // Only names the route actually defines; a header placeholder for a
+  // non-secret (unresolved) name withholds nothing.
+  const defined = route.secrets ?? {};
+  return new Set([...names].filter((name) => name in defined));
+}
+
+/**
+ * `secrets` minus the entries named in `withheld`, and minus any entry whose
+ * value *contains* a withheld value: `WRAPPED = "pre-<secret>"` would leak it
+ * just the same. Empty values are not considered, since "" is contained in
+ * everything.
+ */
+function secretsExcept(
+  secrets: Record<string, string>,
+  withheld: ReadonlySet<string>,
+): Record<string, string> {
+  if (withheld.size === 0) return secrets;
+  const withheldValues = [...withheld]
+    .map((name) => secrets[name])
+    .filter((v): v is string => typeof v === 'string' && v !== '');
+  const holdsWithheld = (value: string) =>
+    typeof value === 'string' && withheldValues.some((w) => value.includes(w));
   return Object.fromEntries(
-    Object.entries(secrets).filter(
-      ([name, value]) => !AWS_SIGV4_CREDENTIAL_SECRETS.includes(name) && !holdsCredential(value),
-    ),
+    Object.entries(secrets).filter(([name, value]) => !withheld.has(name) && !holdsWithheld(value)),
   );
+}
+
+/**
+ * The secrets a caller-supplied string (request URL, request headers, request
+ * body) may substitute for `${VAR}` placeholders: tier 3 only.
+ *
+ * On a `ResolvedRoute` the tier-2 names come from `withheldSecrets`; a route
+ * object without it (a hand-built one) falls back to withholding only the
+ * signer-only names.
+ */
+export function substitutableSecrets(route: WithholdingRouteFields): Record<string, string> {
+  const withheld = signerOnlySecretNames(route);
+  for (const name of route.withheldSecrets ?? []) withheld.add(name);
+  return secretsExcept(route.secrets ?? {}, withheld);
+}
+
+/**
+ * The secrets a template-authored string may substitute: the route's own
+ * `headers`, and listener (ingestor) configs. Everything except tier 1, so
+ * SigV4 signing credentials still only reach the signer.
+ */
+export function templateSecrets(route: WithholdingRouteFields): Record<string, string> {
+  return secretsExcept(route.secrets ?? {}, signerOnlySecretNames(route));
+}
+
+/**
+ * The secrets withheld from callers, as a name → value map: the complement of
+ * substitutableSecrets(). Used to scrub response bodies, where an upstream may
+ * echo a header-injected token back.
+ */
+export function withheldSecretValues(route: WithholdingRouteFields): Record<string, string> {
+  const secrets = route.secrets ?? {};
+  const substitutable = substitutableSecrets(route);
+  return Object.fromEntries(Object.entries(secrets).filter(([name]) => !(name in substitutable)));
 }
 
 /** Per-request AWS Signature Version 4 signing for a route.
@@ -181,6 +285,17 @@ export interface Route {
   /** Secrets available for ${VAR} placeholder resolution in this route only.
    *  Values can be literals or "${ENV_VAR}" references resolved at startup. */
   secrets?: Record<string, string>;
+  /** Extra secret names to withhold from caller-supplied URLs, headers, and
+   *  bodies, on top of the automatic ones (every secret `headers` references,
+   *  the webhook `signatureSecret`, and signing credentials). Withheld secrets
+   *  still resolve in `headers` and listener configs. See withheldSecretNames(). */
+  withheldSecrets?: string[];
+  /** Escape hatch: secrets `headers` reference that callers may *also* write as
+   *  `${NAME}` in URLs, headers, and (with `resolveSecretsInBody`) bodies,
+   *  for an API that needs the same credential in both places. Anything listed
+   *  here can be echoed back by the upstream, so list only what the API
+   *  requires. Cannot release AWS SigV4 signing credentials. */
+  placeholderSecrets?: string[];
   /** Allowlisted URL patterns (glob). A request must match at least one pattern
    *  in this route's list to use this route. Empty = matches nothing. */
   allowedEndpoints: string[];
@@ -240,6 +355,9 @@ export interface ResolvedRoute {
   /** AWS SigV4 signing settings (carried from config). Credentials stay in `secrets`. */
   awsSigV4?: AwsSigV4Config;
   secrets: Record<string, string>;
+  /** Names of secrets a caller may not reference in a URL, request header, or
+   *  request body (tiers 1 and 2; see withheldSecretNames()). Names only. */
+  withheldSecrets: string[];
   allowedEndpoints: string[];
   /** Whether to resolve ${VAR} placeholders in request bodies (default: false) */
   resolveSecretsInBody: boolean;
@@ -738,9 +856,10 @@ export function resolveRoutes(
 ): ResolvedRoute[] {
   return routes.map((route) => {
     const resolvedSecrets = resolveSecrets(route.secrets ?? {}, envOverrides, callerAlias);
-    // Signing credentials are never substituted, so a header that references
-    // one keeps its literal placeholder and executeProxyRequest rejects it.
-    const headerSecrets = substitutableSecrets({ ...route, secrets: resolvedSecrets });
+    // Header-only secrets resolve here, and only here. Signing credentials are
+    // never substituted, so a header that references one keeps its literal
+    // placeholder and executeProxyRequest rejects it.
+    const headerSecrets = templateSecrets({ ...route, secrets: resolvedSecrets });
     const resolvedHeaders: Record<string, string> = {};
     for (const [key, value] of Object.entries(route.headers ?? {})) {
       resolvedHeaders[key] = resolvePlaceholders(value, headerSecrets);
@@ -756,6 +875,7 @@ export function resolveRoutes(
       headers: resolvedHeaders,
       ...(route.awsSigV4 !== undefined && { awsSigV4: route.awsSigV4 }),
       secrets: resolvedSecrets,
+      withheldSecrets: [...withheldSecretNames(route)],
       allowedEndpoints: route.allowedEndpoints,
       resolveSecretsInBody: route.resolveSecretsInBody ?? false,
       ...(route.requestTimeoutMs !== undefined && { requestTimeoutMs: route.requestTimeoutMs }),

@@ -24,7 +24,9 @@ import {
   saveRemoteConfig,
   resolvePlaceholders,
   scrubSecrets,
+  signerOnlySecretNames,
   substitutableSecrets,
+  withheldSecretValues,
   DEFAULT_OUTBOUND_TIMEOUT_MS,
   MAX_OUTBOUND_TIMEOUT_MS,
   type CallerConfig,
@@ -244,23 +246,66 @@ function leaksSecret(err: Error, secrets: Record<string, string>): boolean {
   return false;
 }
 
+/** Secret names a route withholds from caller-supplied strings, split by why. */
+interface WithheldNames {
+  /** Consumed by drawlatch's own auth machinery (AWS SigV4 signing keys). */
+  signerOnly: Set<string>;
+  /** Everything else withheld: header-only secrets, webhook signing secrets,
+   *  and the route's explicit `withheldSecrets`. */
+  headerOnly: Set<string>;
+}
+
 /**
  * Reject `text` if it references a secret the route withholds from
- * substitution (an `awsSigV4` route's signing credentials). Failing loudly
- * beats sending the literal placeholder: the caller learns why, and nothing
- * leaves the daemon.
+ * substitution. Failing loudly beats sending the literal placeholder: the
+ * caller learns why, and nothing leaves the daemon.
  */
-function assertNoWithheldSecrets(text: string, withheld: Set<string>, where: string): void {
-  if (withheld.size === 0) return;
+function assertNoWithheldSecrets(text: string, withheld: WithheldNames, where: string): void {
+  if (withheld.signerOnly.size === 0 && withheld.headerOnly.size === 0) return;
   for (const match of text.matchAll(/\$\{(\w+)\}/g)) {
-    if (withheld.has(match[1])) {
+    const name = match[1];
+    if (withheld.signerOnly.has(name)) {
       throw new Error(
-        `${where} references \${${match[1]}}, a signing credential of this AWS SigV4 route. ` +
+        `${where} references \${${name}}, a signing credential of this AWS SigV4 route. ` +
           'Signing credentials are only used to sign requests and are never substituted ' +
           'into URLs, headers, or bodies.',
       );
     }
+    if (withheld.headerOnly.has(name)) {
+      throw new Error(
+        `${where} references \${${name}}, a secret this connection withholds from requests. ` +
+          'Header-only secrets are injected by the connection itself (see autoHeaders in ' +
+          'list_routes) and are never substituted into request URLs, headers, or bodies, ' +
+          'where an upstream could echo the value back. Remove the placeholder: the ' +
+          'connection already authenticates the request.',
+      );
+    }
   }
+}
+
+/**
+ * Replace withheld secret values in a response body with their placeholders.
+ *
+ * Defense in depth behind assertNoWithheldSecrets(): even when the caller never
+ * names a header-only token, an upstream can still return it (an echoed
+ * request, a token-introspection endpoint). JSON bodies are walked rather than
+ * serialized and re-parsed, so a value that happens to contain JSON syntax
+ * can't corrupt the structure; string leaves and object keys are scrubbed.
+ */
+function scrubBody(body: unknown, secrets: Record<string, string>, depth = 0): unknown {
+  if (typeof body === 'string') return scrubSecrets(body, secrets);
+  if (body === null || typeof body !== 'object') return body;
+  // Pathologically deep JSON: stop recursing, but still scrub, by returning
+  // the subtree as scrubbed JSON text. Failing open here would hide a token
+  // behind 65 levels of nesting.
+  if (depth >= 64) return scrubSecrets(JSON.stringify(body), secrets);
+  if (Array.isArray(body)) return body.map((v) => scrubBody(v, secrets, depth + 1));
+  return Object.fromEntries(
+    Object.entries(body as Record<string, unknown>).map(([k, v]) => [
+      scrubSecrets(k, secrets),
+      scrubBody(v, secrets, depth + 1),
+    ]),
+  );
 }
 
 /** Header values fetch() rejects — and echoes back in full when it does. */
@@ -382,13 +427,22 @@ export async function executeProxyRequest(
   }
 
   // Secrets this route may substitute, and the ones it withholds (signing
-  // credentials). A reference to a withheld one anywhere it would otherwise
-  // be resolved is rejected outright.
+  // credentials, header-only secrets). A reference to a withheld one anywhere
+  // it would otherwise be resolved is rejected outright.
   const secrets = substitutableSecrets(matched);
-  const withheld = new Set(Object.keys(matched.secrets).filter((name) => !(name in secrets)));
+  const signerOnly = signerOnlySecretNames(matched);
+  const withheld: WithheldNames = {
+    signerOnly,
+    headerOnly: new Set(
+      Object.keys(matched.secrets).filter((name) => !(name in secrets) && !signerOnly.has(name)),
+    ),
+  };
   assertNoWithheldSecrets(url, withheld, 'The request URL');
+  // Route headers were resolved with everything but the signer-only secrets,
+  // so a placeholder left in one can only name a signing credential.
+  const signerOnlyOnly: WithheldNames = { signerOnly, headerOnly: new Set() };
   for (const [k, v] of Object.entries(matched.headers)) {
-    assertNoWithheldSecrets(v, withheld, `Connection header "${k}"`);
+    assertNoWithheldSecrets(v, signerOnlyOnly, `Connection header "${k}"`);
   }
 
   // Step 2: Resolve client headers using matched route's secrets
@@ -573,16 +627,24 @@ export async function executeProxyRequest(
     });
 
     const contentType = resp.headers.get('content-type') ?? '';
-    const responseBody: unknown = contentType.includes('application/json')
+    const rawBody: unknown = contentType.includes('application/json')
       ? await resp.json()
       : await resp.text();
+    // Withheld secrets only. The substitutable ones are the caller's to use by
+    // design (Trello's `?token=`, Telegram's bot token, a resolveSecretsInBody
+    // write the caller reads back), and many are plain config values
+    // (REDDIT_SUBREDDIT, TWITCH_USER_ID) that legitimately appear in
+    // responses; scrubbing those would corrupt data and protect nothing.
+    const withheldValues = withheldSecretValues(matched);
+    const responseBody =
+      Object.keys(withheldValues).length > 0 ? scrubBody(rawBody, withheldValues) : rawBody;
 
     return {
       status: resp.status,
       statusText: resp.statusText,
       // A refused redirect's `Location` can carry a substituted secret back
       // (`?key=sk-…`), and so can any header an upstream echoes. The body is
-      // left alone; resolveSecretsInBody's opt-in already covers read-back.
+      // scrubbed above, of withheld secrets only.
       headers: Object.fromEntries(
         [...resp.headers.entries()].map(([k, v]) => [k, scrubSecrets(v, matched.secrets)]),
       ),
@@ -699,6 +761,10 @@ export const toolHandlers: Record<string, ToolHandler> = {
       info.allowedEndpoints = route.allowedEndpoints;
       info.secretNames = Object.keys(route.secrets);
       info.autoHeaders = Object.keys(route.headers);
+      // Secrets the connection injects itself (or uses to sign / verify) and
+      // that a request may therefore not reference as ${NAME}.
+      const withheldNames = Object.keys(withheldSecretValues(route));
+      if (withheldNames.length > 0) info.withheldSecretNames = withheldNames;
       if (route.awsSigV4) info.awsSigV4 = route.awsSigV4;
 
       // Timeouts. The budget clamp is otherwise silent, so report what a call

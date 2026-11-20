@@ -18,7 +18,7 @@ import {
   resolveCallerRoutes,
   resolveRoutes,
   resolveSecrets,
-  substitutableSecrets,
+  templateSecrets,
   type CallerConfig,
   type IngestorOverrides,
   type RemoteServerConfig,
@@ -209,8 +209,12 @@ export class IngestorManager {
     const effectiveConfig = IngestorManager.mergeIngestorConfig(rawRoute.ingestor!, overrides);
 
     // Apply instance params to config and secrets
-    // Listeners substitute ${VAR}s too, so withhold SigV4 signing credentials.
-    const instanceSecrets = { ...substitutableSecrets(resolvedRoute) };
+    // Listener configs are template-authored, so they get header-only secrets
+    // (the Discord gateway needs DISCORD_BOT_TOKEN), but never SigV4 signing
+    // credentials. Caller-supplied params only ever land as *values* in this
+    // map, and placeholder resolution is single-pass, so a param can't name a
+    // secret.
+    const instanceSecrets = { ...templateSecrets(resolvedRoute) };
     if (overrides?.params && rawRoute.listenerConfig) {
       IngestorManager.applyInstanceParams(
         effectiveConfig,
@@ -571,8 +575,12 @@ export class IngestorManager {
     const effectiveConfig = IngestorManager.mergeIngestorConfig(rawRoute.ingestor!, overrides);
 
     // Apply instance params
-    // Listeners substitute ${VAR}s too, so withhold SigV4 signing credentials.
-    const instanceSecrets = { ...substitutableSecrets(resolvedRoute) };
+    // Listener configs are template-authored, so they get header-only secrets
+    // (the Discord gateway needs DISCORD_BOT_TOKEN), but never SigV4 signing
+    // credentials. Caller-supplied params only ever land as *values* in this
+    // map, and placeholder resolution is single-pass, so a param can't name a
+    // secret.
+    const instanceSecrets = { ...templateSecrets(resolvedRoute) };
     if (overrides?.params && rawRoute.listenerConfig) {
       IngestorManager.applyInstanceParams(
         effectiveConfig,
