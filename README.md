@@ -213,7 +213,7 @@ With this connector, caller `default` reads `ADMIN_KEY` from `DEFAULT_ADMIN_KEY`
 | Field | Description |
 | --- | --- |
 | `alias` | Required. Name referenced from a caller's `connections`. |
-| `allowedEndpoints` | Required. URL globs: `*` matches within a path segment, `**` across segments. An empty list matches nothing. |
+| `allowedEndpoints` | Required. URL globs: `*` matches within a path segment, `**` across segments. An empty list matches nothing. Matched against the request URL in parsed form (see below). |
 | `headers` | Headers injected into every request. `${VAR}` resolves against `secrets`. A request that sets the same header itself is rejected. |
 | `awsSigV4` | Sign every request with AWS Signature Version 4: `{}`, or `{ "service": "…", "region": "…" }` to override what's inferred from the hostname. See [AWS SigV4 signing](#aws-sigv4-signing). |
 | `oauth2` | Mint the bearer token from OAuth2 client credentials instead of a static header. See [OAuth2 token minting](#oauth2-token-minting). |
@@ -224,6 +224,8 @@ With this connector, caller `default` reads `ADMIN_KEY` from `DEFAULT_ADMIN_KEY`
 | `requestTimeoutMs` | Default outbound timeout for this API, and the most a caller may request (see [Request timeouts](#request-timeouts)). |
 | `name`, `description`, `docsUrl`, `openApiUrl` | Shown to agents by `list_routes`. |
 | `testConnection`, `ingestor`, `listenerConfig`, `testIngestor` | Credential test and event listener definitions. Built-in templates in `src/connections/` are the reference. |
+
+**Upgrading: URL matching.** Request URLs are matched, and sent, in the form the URL parser produces (see [Security model](#security-model)). A pattern's scheme and host are compared the same way (case-insensitive, `:443`/`:80` and a trailing dot ignored), so `https://API.example.com:443/**` keeps working. Paths and queries are not rewritten in patterns, though, and the parser percent-encodes some characters in requests: a space becomes `%20`, `{` and `}` become `%7B`/`%7D`, `"`, `<`, `>` and `` ` `` are encoded, and `'` is encoded in the query. A custom pattern that spells one of those literally (`https://api.example.com/search?q=a b*`) no longer matches; write the encoded form (`q=a%20b*`) or use a wildcard.
 
 #### AWS SigV4 signing
 
@@ -305,7 +307,7 @@ Unknown fields are rejected. An invalid block on a built-in template fails when 
 A request goes to the first of the caller's connections whose `allowedEndpoints` match its URL, in `connections` order. When two connections can match the same URL, that order silently decides which credential the request carries.
 
 - The daemon logs a warning at boot for each pair of a caller's connections whose allowlists name overlapping hosts (a wildcard host, or a pattern without `scheme://host`, overlaps more). Among the built-in templates only `discord-bot` and `discord-oauth` overlap: they are two ways to authenticate to the same API, so enable one per caller.
-- If an [OAuth2](#oauth2-token-minting) connection is among the matches for a request, the request is refused with an error naming the connections. Narrow the allowlists or remove one of the connections.
+- If an [OAuth2](#oauth2-token-minting) connection is among the matches for a request, the request is refused with an error naming the connections. Narrow the allowlists or remove one of the connections. The check compares the URL in parsed form, so host case, an explicit default port, or a trailing dot don't dodge it, but it is best-effort: a path spelled differently (`/%63alendar/` for `/calendar/`) matches patterns only as written, so don't rely on the refusal to keep two connections apart. Non-overlapping allowlists do.
 - Between connections without OAuth2, the first match still wins, as before.
 
 ### Proxy config (`proxy.config.json`)
