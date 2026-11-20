@@ -77,7 +77,12 @@ describe("ChatListItem card menu", () => {
   it("offers Archive chat for a chat on an open card", () => {
     const chat = makeChat({ metadata: JSON.stringify({ title: "My Chat", rootChatId: "card-1" }) });
     const { container } = render(
-      <ChatListItem chat={chat} onClick={() => {}} onDelete={() => {}} cardMenu={{ ...CARD_MENU, card: { title: "Ship it", lifecycle: "open", chatCount: 1 } }} />,
+      <ChatListItem
+        chat={chat}
+        onClick={() => {}}
+        onDelete={() => {}}
+        cardMenu={{ ...CARD_MENU, card: { title: "Ship it", lifecycle: "open", chatCount: 1 } }}
+      />,
     );
     openRowMenu(container);
 
@@ -90,7 +95,12 @@ describe("ChatListItem card menu", () => {
   it("flips the label to Unarchive for a chat on an archived card", () => {
     const chat = makeChat({ metadata: JSON.stringify({ rootChatId: "card-1" }) });
     const { container } = render(
-      <ChatListItem chat={chat} onClick={() => {}} onDelete={() => {}} cardMenu={{ ...CARD_MENU, card: { title: "Shipped", lifecycle: "closed", chatCount: 1 } }} />,
+      <ChatListItem
+        chat={chat}
+        onClick={() => {}}
+        onDelete={() => {}}
+        cardMenu={{ ...CARD_MENU, card: { title: "Shipped", lifecycle: "closed", chatCount: 1 } }}
+      />,
     );
     openRowMenu(container);
 
@@ -111,7 +121,12 @@ describe("ChatListItem card menu", () => {
     };
     const renderWithCard = (card: { title: string; lifecycle: "open" | "closed"; chatCount: number }) =>
       render(
-        <ChatListItem chat={makeChat({ metadata: JSON.stringify({ rootChatId: "card-1" }) })} onClick={() => {}} onDelete={() => {}} cardMenu={{ ...CARD_MENU, card }} />,
+        <ChatListItem
+          chat={makeChat({ metadata: JSON.stringify({ rootChatId: "card-1" }) })}
+          onClick={() => {}}
+          onDelete={() => {}}
+          cardMenu={{ ...CARD_MENU, card }}
+        />,
       ).container;
 
     it("counts the chats a multi-chat card would take with it", () => {
@@ -160,7 +175,12 @@ describe("ChatListItem card menu", () => {
       const chat = makeChat({ metadata: JSON.stringify({ title: "Discord thread", triggered: true }) });
       const onToggleLifecycle = vi.fn();
       const { container } = render(
-        <ChatListItem chat={chat} onClick={() => {}} onDelete={() => {}} cardMenu={{ onToggleLifecycle, tree: { archived: false, chatCount: 1, isRoot: true } }} />,
+        <ChatListItem
+          chat={chat}
+          onClick={() => {}}
+          onDelete={() => {}}
+          cardMenu={{ onToggleLifecycle, tree: { archived: false, chatCount: 1, isRoot: true } }}
+        />,
       );
       openRowMenu(container);
 
@@ -194,7 +214,13 @@ describe("ChatListItem card menu", () => {
     it("offers Unarchive when its tree is archived", () => {
       const chat = makeChat({ metadata: JSON.stringify({ title: "Discord thread", triggered: true }) });
       const { container } = render(
-        <ChatListItem chat={chat} onClick={() => {}} onDelete={() => {}} cardMenu={{ ...CARD_MENU, tree: { archived: true, chatCount: 3, isRoot: true } }} dimmed />,
+        <ChatListItem
+          chat={chat}
+          onClick={() => {}}
+          onDelete={() => {}}
+          cardMenu={{ ...CARD_MENU, tree: { archived: true, chatCount: 3, isRoot: true } }}
+          dimmed
+        />,
       );
       openRowMenu(container);
 
@@ -237,7 +263,12 @@ describe("ChatListItem card menu", () => {
   it("does not open the chat when a menu entry is clicked", () => {
     const onClick = vi.fn();
     const { container } = render(
-      <ChatListItem chat={makeChat()} onClick={onClick} onDelete={() => {}} cardMenu={{ ...CARD_MENU, card: { title: "Ship it", lifecycle: "open", chatCount: 1 } }} />,
+      <ChatListItem
+        chat={makeChat()}
+        onClick={onClick}
+        onDelete={() => {}}
+        cardMenu={{ ...CARD_MENU, card: { title: "Ship it", lifecycle: "open", chatCount: 1 } }}
+      />,
     );
     openRowMenu(container);
 
@@ -383,9 +414,7 @@ describe("ChatListItem dimming", () => {
     // The control is another step chat of the same run: it carries the runId
     // and the status, but not the representative's flag, so it still fades.
     const { container: parked } = render(<ChatListItem chat={jobChat({ needsYou: true })} onClick={() => {}} onDelete={() => {}} dimmed />);
-    const { container: control } = render(
-      <ChatListItem chat={jobChat({ id: "chat-2", needsYou: false })} onClick={() => {}} onDelete={() => {}} dimmed />,
-    );
+    const { container: control } = render(<ChatListItem chat={jobChat({ id: "chat-2", needsYou: false })} onClick={() => {}} onDelete={() => {}} dimmed />);
 
     expect(row(parked).className).not.toContain(DIM_CLASS);
     expect(row(control).className).toContain(DIM_CLASS);
@@ -523,16 +552,39 @@ describe("ChatListItem folder pill", () => {
 });
 
 describe("ChatListItem agent badge", () => {
-  const agentChat = () => makeChat({ metadata: JSON.stringify({ title: "My Chat", agentAlias: "forge" }) });
+  const agentChat = (overrides: Partial<Chat> = {}) => makeChat({ metadata: JSON.stringify({ title: "My Chat", agentAlias: "forge" }), ...overrides });
+  const TIME = new Date("2026-06-21T00:00:00.000Z").toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 
-  it("shows the agent above the title in place of the branch and folder", () => {
+  it("shows the agent on the timestamp line in place of the branch and folder", () => {
     render(<ChatListItem chat={agentChat()} onClick={() => {}} onDelete={() => {}} />);
     const badge = screen.getByTitle(`Agent: forge — ${FULL_PATH}`);
     expect(badge.textContent).toBe("forge");
     expect(screen.queryByText("main")).toBeNull();
     expect(screen.queryByText("my-cool-repo")).toBeNull();
-    // On the meta line with the timestamp, not the title line.
-    expect(badge.parentElement!.textContent).not.toContain("My Chat");
+    // Shares the meta line with the timestamp; the title line no longer carries it.
+    const metaLine = screen.getByText(TIME).parentElement!;
+    expect(metaLine.contains(badge)).toBe(true);
+    expect(screen.getByText("My Chat").parentElement!.contains(badge)).toBe(false);
+  });
+
+  it("hides a worktree's branch too — the agent stands in for both", () => {
+    render(<ChatListItem chat={agentChat({ folder: "/wt/forge-fix", git_branch: "fix/thing" })} onClick={() => {}} onDelete={() => {}} />);
+    expect(screen.queryByText("fix/thing")).toBeNull();
+    expect(screen.getByText("forge")).toBeTruthy();
+  });
+
+  it("reveals the folder on tap without opening the chat", () => {
+    const onClick = vi.fn();
+    render(<ChatListItem chat={agentChat()} onClick={onClick} onDelete={() => {}} />);
+    expect(screen.queryByText(FULL_PATH)).toBeNull();
+    fireEvent.click(screen.getByText("forge"));
+    expect(screen.getByText(FULL_PATH)).toBeTruthy();
+    expect(onClick).not.toHaveBeenCalled();
   });
 
   it("keeps the branch and folder for a chat without an agent", () => {
