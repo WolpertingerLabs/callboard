@@ -521,3 +521,23 @@ describe("ChatListItem folder pill", () => {
     expect(screen.queryByText(FULL_PATH)).toBeNull();
   });
 });
+
+describe("ChatListItem agent badge", () => {
+  const agentChat = () => makeChat({ metadata: JSON.stringify({ title: "My Chat", agentAlias: "forge" }) });
+
+  it("shows the agent above the title in place of the branch and folder", () => {
+    render(<ChatListItem chat={agentChat()} onClick={() => {}} onDelete={() => {}} />);
+    const badge = screen.getByTitle(`Agent: forge — ${FULL_PATH}`);
+    expect(badge.textContent).toBe("forge");
+    expect(screen.queryByText("main")).toBeNull();
+    expect(screen.queryByText("my-cool-repo")).toBeNull();
+    // On the meta line with the timestamp, not the title line.
+    expect(badge.parentElement!.textContent).not.toContain("My Chat");
+  });
+
+  it("keeps the branch and folder for a chat without an agent", () => {
+    render(<ChatListItem chat={makeChat()} onClick={() => {}} onDelete={() => {}} />);
+    expect(screen.getByText("main")).toBeTruthy();
+    expect(screen.getByText("my-cool-repo")).toBeTruthy();
+  });
+});

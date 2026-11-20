@@ -493,7 +493,37 @@ export default function ChatListItem({
         >
           <span style={{ flexShrink: 0, whiteSpace: "nowrap" }}>{time}</span>
           {spaceChip && <SpaceChip space={spaceChip} />}
-          {chat.git_branch && (
+          {/* An agent chat names its agent here, in place of the branch and
+              folder: the agent's working directory is a property of the agent,
+              so the folder pill would repeat the same thing on every one of its
+              chats while pushing the agent name down beside the title. The
+              folder stays in the tooltip. */}
+          {agentAlias && (
+            <span
+              title={displayPath ? `Agent: ${agentAlias} — ${displayPath}` : `Agent: ${agentAlias}`}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 3,
+                fontSize: 10,
+                fontWeight: 600,
+                padding: "0 5px",
+                borderRadius: 3,
+                background: "var(--chatlist-badge-agent-bg)",
+                color: "var(--chatlist-badge-agent-text)",
+                maxWidth: 160,
+                minWidth: 0,
+                flexShrink: 1,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              <Bot size={10} style={{ flexShrink: 0, color: "var(--chatlist-badge-agent-text)" }} />
+              {agentAlias}
+            </span>
+          )}
+          {!agentAlias && chat.git_branch && (
             <span
               title={chat.folder !== chat.displayFolder ? `Worktree: ${chat.git_branch}` : `Branch: ${chat.git_branch}`}
               style={{
@@ -517,7 +547,7 @@ export default function ChatListItem({
               {chat.git_branch}
             </span>
           )}
-          {displayPath && <FolderPathPill path={displayPath} />}
+          {!agentAlias && displayPath && <FolderPathPill path={displayPath} />}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 2 }}>
           {roleIcon && <ChatRoleBadge role={roleIcon} />}
@@ -530,26 +560,6 @@ export default function ChatListItem({
               not display — see {@link Props.pinned}. */}
           {isPinned && <Pin size={14} style={{ color: "var(--chatlist-pin-icon)", flexShrink: 0 }} fill="var(--chatlist-pin-icon)" />}
           {isBookmarked && <Bookmark size={14} style={{ color: "var(--chatlist-bookmark-icon)", flexShrink: 0 }} fill="var(--chatlist-bookmark-icon)" />}
-          {agentAlias && (
-            <span
-              title={`Agent: ${agentAlias}`}
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 3,
-                fontSize: 10,
-                fontWeight: 600,
-                padding: "1px 6px",
-                borderRadius: 4,
-                background: "var(--chatlist-badge-agent-bg)",
-                color: "var(--chatlist-badge-agent-text)",
-                flexShrink: 0,
-              }}
-            >
-              <Bot size={10} style={{ color: "var(--chatlist-badge-agent-text)" }} />
-              {agentAlias}
-            </span>
-          )}
           {jobRunId && (
             <span
               title={
