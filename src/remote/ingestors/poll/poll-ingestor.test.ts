@@ -12,6 +12,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { PollIngestor } from './poll-ingestor.js';
 import { createIngestor } from '../registry.js';
 import type { PollIngestorConfig, IngestorConfig } from '../types.js';
+import type { OAuth2Route } from '../../oauth/authenticate.js';
+import {
+  OAuth2InvalidGrantError,
+  OAuth2RefreshError,
+  type TokenManager,
+} from '../../oauth/token-manager.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -858,5 +864,212 @@ describe('Poll factory registration', () => {
     };
     const ingestor = createIngestor('test-poll', config, {});
     expect(ingestor).toBeNull();
+  });
+});
+
+// ── OAuth2 token injection (ported from PR #26, Card 3) ──────────────
+
+describe('PollIngestor — OAuth2 token injection', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  const SECRETS = { ID: 'id-val-123', SECRET: 'secret-val-456', RT: 'rt-val-789' };
+
+  const ROUTE: OAuth2Route = {
+    alias: 'fixture',
+    headers: {},
+    secrets: SECRETS,
+    withheldSecrets: ['ID', 'SECRET', 'RT'],
+    allowedEndpoints: ['https://api.fixture.com/**'],
+    resolveSecretsInBody: false,
+    oauth2: {
+      tokenUrl: 'https://accounts.fixture.com/token',
+      grant: 'refresh_token',
+      clientAuth: 'basic',
+      secretRefs: { clientId: 'ID', clientSecret: 'SECRET', refreshToken: 'RT' },
+      scopes: ['items.read'],
+      effectiveScopes: ['items.read'],
+    },
+  };
+
+  /** Fake TokenManager handing out queued tokens (or errors), recording calls. */
+  function fakeTokenManager(tokens: (string | Error)[]) {
+    const calls: { key: unknown; forceRefresh: boolean; scopes: unknown }[] = [];
+    let i = 0;
+    const getToken = vi.fn(
+      (
+        key: unknown,
+        oauth2: { scopes?: string[] },
+        resolve: (n: string) => string | undefined,
+        opts?: { forceRefresh?: boolean },
+      ) => {
+        calls.push({ key, forceRefresh: opts?.forceRefresh ?? false, scopes: oauth2.scopes });
+        // The poller resolves credentials from the full route secrets.
+        expect(resolve('SECRET')).toBe(SECRETS.SECRET);
+        const t = tokens[Math.min(i, tokens.length - 1)];
+        i++;
+        return t instanceof Error
+          ? Promise.reject(t)
+          : Promise.resolve({ accessToken: t, expiresAt: Date.now() + 3_600_000 });
+      },
+    );
+    return { manager: { getToken } as unknown as TokenManager, getToken, calls };
+  }
+
+  function makeIngestor(tokens: (string | Error)[], pollHeaders?: Record<string, string>) {
+    const { manager, getToken, calls } = fakeTokenManager(tokens);
+    const ingestor = new PollIngestor(
+      'fixture',
+      {}, // listener secrets: the oauth2 credentials are signer-only, not here
+      defaultConfig({
+        url: 'https://api.fixture.com/items',
+        deduplicateBy: 'id',
+        ...(pollHeaders && { headers: pollHeaders }),
+      }),
+      {},
+      undefined,
+      undefined,
+      { route: ROUTE, caller: 'alice', tokenManager: manager },
+    );
+    return { ingestor, getToken, calls };
+  }
+
+  const authOf = (call: unknown[]) =>
+    ((call[1] as RequestInit).headers as Record<string, string>).Authorization;
+
+  it('injects Authorization: Bearer <token> before polling', async () => {
+    fetchMock.mockResolvedValue(mockResponse([{ id: 'a' }]));
+    const { ingestor, calls } = makeIngestor(['poll-token']);
+
+    await ingestor.start();
+    await ingestor.stop();
+
+    expect(calls[0]).toMatchObject({ forceRefresh: false, scopes: ['items.read'] });
+    expect(authOf(fetchMock.mock.calls[0])).toBe('Bearer poll-token');
+  });
+
+  it('overrides an Authorization header from the poll config', async () => {
+    fetchMock.mockResolvedValue(mockResponse([]));
+    const { ingestor } = makeIngestor(['managed'], { authorization: 'Bearer static' });
+    await ingestor.start();
+    await ingestor.stop();
+    const headers = (fetchMock.mock.calls[0][1] as RequestInit).headers as Record<string, string>;
+    expect(headers.authorization).toBeUndefined();
+    expect(headers.Authorization).toBe('Bearer managed');
+  });
+
+  it('keys the token to (connection, caller)', async () => {
+    fetchMock.mockResolvedValue(mockResponse([]));
+    const { ingestor, calls } = makeIngestor(['t']);
+    await ingestor.start();
+    await ingestor.stop();
+    expect(calls[0].key).toEqual({ connection: 'fixture', caller: 'alice' });
+  });
+
+  it('on a 401 poll, force-refreshes once and retries the poll once', async () => {
+    fetchMock
+      .mockResolvedValueOnce(mockResponse({ error: 'unauthorized' }, 401))
+      .mockResolvedValueOnce(mockResponse([{ id: 'a' }], 200));
+    const { ingestor, calls } = makeIngestor(['stale', 'fresh']);
+
+    await ingestor.start();
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(calls.map((c) => c.forceRefresh)).toEqual([false, true]);
+    expect(authOf(fetchMock.mock.calls[1])).toBe('Bearer fresh');
+    expect(ingestor.getStatus().state).toBe('connected');
+
+    await ingestor.stop();
+  });
+
+  it('a persistent 401 retries only once and surfaces as a single poll error', async () => {
+    fetchMock.mockResolvedValue(mockResponse({ error: 'unauthorized' }, 401));
+    const { ingestor, calls } = makeIngestor(['t1', 't2']);
+
+    await ingestor.start();
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(calls.map((c) => c.forceRefresh)).toEqual([false, true]);
+    expect(ingestor.getStatus().state).toBe('reconnecting');
+
+    await ingestor.stop();
+  });
+
+  it('a terminal token error stops the poller in the error state', async () => {
+    const terminal = new OAuth2InvalidGrantError('fixture');
+    const { ingestor } = makeIngestor([terminal]);
+
+    await ingestor.start();
+    expect(ingestor.getStatus().state).toBe('error');
+    expect(ingestor.getStatus().error).toContain('invalid_grant');
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    // The timer is gone: no further polls.
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fetchMock).not.toHaveBeenCalled();
+    await ingestor.stop();
+  });
+
+  it('a transient token error keeps retrying', async () => {
+    const { ingestor } = makeIngestor([new OAuth2RefreshError('fixture', 503), 'ok']);
+    fetchMock.mockResolvedValue(mockResponse([]));
+
+    await ingestor.start();
+    expect(ingestor.getStatus().state).toBe('reconnecting');
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(ingestor.getStatus().state).toBe('connected');
+    await ingestor.stop();
+  });
+
+  it('scrubs the token from a logged error', async () => {
+    fetchMock.mockRejectedValue(new Error('socket hang up sending Bearer leaky-token-value'));
+    const { ingestor } = makeIngestor(['leaky-token-value']);
+    await ingestor.start();
+    const error = ingestor.getStatus().error ?? '';
+    expect(error).not.toContain('leaky-token-value');
+    expect(error).toContain('${OAUTH2_ACCESS_TOKEN_0}');
+    await ingestor.stop();
+  });
+
+  it('does not mint for a non-oauth2 poll route', async () => {
+    fetchMock.mockResolvedValue(mockResponse([]));
+    const ingestor = new PollIngestor('plain', {}, defaultConfig(), {
+      Authorization: 'Bearer static',
+    });
+    await ingestor.start();
+    await ingestor.stop();
+    expect(authOf(fetchMock.mock.calls[0])).toBe('Bearer static');
+  });
+
+  it('the factory wires the route and caller the manager attached', () => {
+    const config = {
+      type: 'poll',
+      poll: defaultConfig(),
+      _oauth2Route: ROUTE,
+      _caller: 'alice',
+    } as unknown as IngestorConfig;
+    expect(createIngestor('fixture', config, {})).toBeInstanceOf(PollIngestor);
+  });
+
+  it('the factory refuses an oauth2 route without a caller', () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const config = {
+      type: 'poll',
+      poll: defaultConfig(),
+      _oauth2Route: ROUTE,
+    } as unknown as IngestorConfig;
+    expect(createIngestor('fixture', config, {})).toBeNull();
+    errSpy.mockRestore();
   });
 });

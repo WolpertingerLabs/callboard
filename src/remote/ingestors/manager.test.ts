@@ -2,8 +2,9 @@
  * Unit tests for the IngestorManager.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { IngestorManager, makeKey, parseKey, DEFAULT_INSTANCE_ID } from './manager.js';
+import { resetSharedTokenManager } from '../oauth/shared-token-manager.js';
 import type { RemoteServerConfig } from '../../shared/config.js';
 import type { IngestorConfig } from './types.js';
 import type { IngestorOverrides, ListenerConfigField } from '../../shared/config.js';
@@ -1107,5 +1108,69 @@ describe('IngestorManager — header-only secrets', () => {
     });
 
     await manager.stopOne('test-caller', 'header-hook');
+  });
+});
+
+describe('IngestorManager — oauth2 poll routes', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    resetSharedTokenManager();
+  });
+
+  it('gives the poller the route and caller, but not the credentials', async () => {
+    const fetchMock = vi.fn((url: string) => {
+      const body = url.includes('/token')
+        ? { access_token: 'managed-poll-token', expires_in: 3600, scope: 'items.read' }
+        : [];
+      return Promise.resolve(
+        new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } }),
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const config: RemoteServerConfig = {
+      host: '127.0.0.1',
+      port: 9999,
+      connectors: [
+        {
+          alias: 'oauth-poll',
+          secrets: { CID: 'client-id-v', CSECRET: 'client-secret-v', RT: 'refresh-v' },
+          allowedEndpoints: ['https://api.example.com/**'],
+          oauth2: {
+            tokenUrl: 'https://auth.example.com/token',
+            grant: 'refresh_token',
+            clientAuth: 'body',
+            secretRefs: { clientId: 'CID', clientSecret: 'CSECRET', refreshToken: 'RT' },
+            scopes: ['items.read'],
+          },
+          ingestor: {
+            type: 'poll',
+            poll: { url: 'https://api.example.com/items', intervalMs: 60_000 },
+          },
+        },
+      ],
+      callers: { alice: { connections: ['oauth-poll'] } },
+      rateLimitPerMinute: 60,
+    };
+    const manager = new IngestorManager(config);
+    const result = await manager.startOne('alice', 'oauth-poll');
+    expect(result.success).toBe(true);
+
+    const [ingestor] = [
+      ...(
+        manager as unknown as {
+          ingestors: Map<string, { secrets: unknown; oauth2?: { caller: string } }>;
+        }
+      ).ingestors.values(),
+    ];
+    // Signer-only: the listener's own secret map has none of them.
+    expect(ingestor.secrets).toEqual({});
+    expect(ingestor.oauth2?.caller).toBe('alice');
+
+    const apiCall = fetchMock.mock.calls.find(([u]) => u.includes('/items'));
+    const headers = (apiCall?.[1] as RequestInit | undefined)?.headers as Record<string, string>;
+    expect(headers.Authorization).toBe('Bearer managed-poll-token');
+
+    await manager.stopOne('alice', 'oauth-poll');
   });
 });

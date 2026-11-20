@@ -21,9 +21,11 @@
 import { BaseIngestor } from '../base-ingestor.js';
 import type { PollIngestorConfig } from '../types.js';
 import { registerIngestorFactory } from '../registry.js';
-import { scrubSecrets } from '../../../shared/config.js';
+import { OAUTH2_TOKEN_TIMEOUT_MS, scrubSecrets } from '../../../shared/config.js';
 import { createLogger } from '../../../shared/logger.js';
 import { safeFetch, sameOriginAs } from '../../safe-fetch.js';
+import { oauth2Authorize, type OAuth2Route } from '../../oauth/authenticate.js';
+import type { TokenManager } from '../../oauth/token-manager.js';
 
 const log = createLogger('poll');
 
@@ -60,6 +62,11 @@ export class PollIngestor extends BaseIngestor {
   /** Resolved headers from the parent connection route (injected by manager). */
   private readonly routeHeaders: Record<string, string>;
 
+  /** OAuth2 wiring, when the connection mints its own tokens (injected by manager). */
+  private readonly oauth2?: OAuth2PollOptions;
+  /** The last few tokens this poller has sent, for scrubbing error text. */
+  private readonly recentTokens: string[] = [];
+
   constructor(
     connectionAlias: string,
     secrets: Record<string, string>,
@@ -68,8 +75,11 @@ export class PollIngestor extends BaseIngestor {
     routeHeaders: Record<string, string>,
     bufferSize?: number,
     instanceId?: string,
+    /** Omitted for non-oauth2 routes, whose behaviour is unchanged. */
+    oauth2?: OAuth2PollOptions,
   ) {
     super(connectionAlias, 'poll', secrets, bufferSize, instanceId);
+    this.oauth2 = oauth2;
 
     // Resolve ${VAR} placeholders in URL
     this.url = PollIngestor.resolvePlaceholders(pollConfig.url, secrets);
@@ -156,12 +166,24 @@ export class PollIngestor extends BaseIngestor {
         }
       }
 
+      // OAuth2 routes: put a managed token on the request. The route itself
+      // can't set Authorization (validation), but a template's poll headers
+      // could; the minted token wins.
+      if (this.oauth2) await this.applyToken(headers, false);
+
       // Route headers carry the connection's credentials, so a redirect is
       // only followed on the poll URL's own origin; any other 3xx is an error.
-      const { response } = await safeFetch(this.url, {
-        ...fetchOptions,
-        isAllowed: sameOriginAs(this.url),
-      });
+      const send = () =>
+        safeFetch(this.url, { ...fetchOptions, isAllowed: sameOriginAs(this.url) });
+      let { response } = await send();
+
+      // A 401 on an oauth2 route: mint a fresh token and poll again, once. A
+      // second 401 falls through to the normal error handling below.
+      if (this.oauth2 && response.status === 401) {
+        await response.body?.cancel().catch(() => undefined);
+        await this.applyToken(headers, true);
+        ({ response } = await send());
+      }
 
       // Handle ETag 304 Not Modified — no new data, not an error
       if (this.useEtag && response.status === 304) {
@@ -225,13 +247,22 @@ export class PollIngestor extends BaseIngestor {
       );
     } catch (err) {
       this.consecutiveErrors++;
-      const message = err instanceof Error ? err.message : String(err);
+      const raw = err instanceof Error ? err.message : String(err);
+      const tokenScrub = Object.fromEntries(
+        this.recentTokens.map((t, i) => [`OAUTH2_ACCESS_TOKEN_${i}`, t]),
+      );
+      const message = scrubSecrets(raw, { ...this.secrets, ...tokenScrub });
       this.errorMessage = message;
+      // A terminal OAuth2 failure (invalid_grant, refused scopes…) will fail
+      // the same way on every poll: stop now rather than spin.
+      const terminal = (err as { terminal?: unknown } | null)?.terminal === true;
 
-      if (this.consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+      if (terminal || this.consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
         this.state = 'error';
         log.error(
-          `${this.connectionAlias}: ${MAX_CONSECUTIVE_ERRORS} consecutive errors, giving up: ${message}`,
+          terminal
+            ? `${this.connectionAlias}: OAuth2 token failure, giving up: ${message}`
+            : `${this.connectionAlias}: ${MAX_CONSECUTIVE_ERRORS} consecutive errors, giving up: ${message}`,
         );
         // Stop the timer on permanent error
         if (this.pollTimer) {
@@ -361,6 +392,27 @@ export class PollIngestor extends BaseIngestor {
     return `poll:${this.connectionAlias}:${id}`;
   }
 
+  // ── OAuth2 ─────────────────────────────────────────────────────────
+
+  /** Mint (or reuse) the token and set `Authorization`, replacing any casing. */
+  private async applyToken(headers: Record<string, string>, forceRefresh: boolean): Promise<void> {
+    const opts = this.oauth2!;
+    const auth = await oauth2Authorize(opts.route, opts.caller, {
+      timeoutMs: OAUTH2_TOKEN_TIMEOUT_MS,
+      forceRefresh,
+      ...(opts.tokenManager && { tokenManager: opts.tokenManager }),
+    });
+    for (const token of Object.values(auth.scrub)) {
+      if (this.recentTokens.includes(token)) continue;
+      this.recentTokens.push(token);
+      if (this.recentTokens.length > 4) this.recentTokens.shift();
+    }
+    for (const k of Object.keys(headers)) {
+      if (k.toLowerCase() === 'authorization') Reflect.deleteProperty(headers, k);
+    }
+    headers.Authorization = auth.authorization;
+  }
+
   // ── Helpers ────────────────────────────────────────────────────────
 
   /**
@@ -374,11 +426,33 @@ export class PollIngestor extends BaseIngestor {
   }
 }
 
+/** What a poller on an oauth2 route needs to mint tokens. */
+export interface OAuth2PollOptions {
+  /** The resolved route (full secrets: the oauth2 credentials are signer-only
+   *  and absent from the listener's own secret map). */
+  route: OAuth2Route;
+  /** Caller the token is minted for. */
+  caller: string;
+  /** Defaults to the shared manager. */
+  tokenManager?: TokenManager;
+}
+
 // ── Self-registration ──────────────────────────────────────────────────
 
 registerIngestorFactory('poll', (connectionAlias, config, secrets, bufferSize, instanceId) => {
   if (!config.poll) {
     log.error(`Missing poll config for ${connectionAlias}`);
+    return null;
+  }
+
+  // OAuth2 wiring the manager attached (see IngestorManager.attachOAuth2).
+  const { _oauth2Route: oauth2Route, _caller: caller } = config as {
+    _oauth2Route?: OAuth2Route;
+    _caller?: string;
+  };
+  if (oauth2Route?.oauth2 && !caller) {
+    // Never mint without an identity, and never poll an oauth2 route unauthenticated.
+    log.error(`Poll ingestor for ${connectionAlias}: oauth2 route without a caller; not started`);
     return null;
   }
 
@@ -390,5 +464,6 @@ registerIngestorFactory('poll', (connectionAlias, config, secrets, bufferSize, i
     ((config as any)._resolvedRouteHeaders as Record<string, string>) ?? {},
     bufferSize,
     instanceId,
+    oauth2Route?.oauth2 && caller ? { route: oauth2Route, caller } : undefined,
   );
 });
