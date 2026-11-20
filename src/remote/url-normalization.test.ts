@@ -141,6 +141,46 @@ describe('dot segments in request paths', () => {
     expect(received).toEqual(['/calendar/v3/a%20b|c']);
   });
 
+  it.each([
+    ['https://API.example.com/**', 'https://api.example.com/v1/x'],
+    ['https://api.example.com:443/**', 'https://api.example.com/v1/x'],
+    ['HTTP://api.example.com:80/v1/**', 'http://api.example.com/v1/x'],
+    ['https://api.example.com./**', 'https://api.example.com/v1/x'],
+    ['https://*.EXAMPLE.com:443/**', 'https://api.example.com/v1/x'],
+  ])('pattern %s matches the parsed URL %s', (pattern, href) => {
+    expect(normalizeOutboundUrl(href, [pattern], href)).toBe(href);
+  });
+
+  it.each([
+    ['https://API.Example.com:443/v1/x', 'https://api.example.com/v1/x'],
+    ['https://api.example.com./v1/x', 'https://api.example.com/v1/x'],
+  ])('sends %s as %s', (url, href) => {
+    expect(normalizeOutboundUrl(url, ['https://api.example.com/**'], url)).toBe(href);
+  });
+
+  it('still tells a non-default port apart', () => {
+    expect(() =>
+      normalizeOutboundUrl('https://api.example.com:8443/x', ['https://api.example.com/**'], 'u'),
+    ).toThrow(/not allowed/);
+    expect(
+      normalizeOutboundUrl(
+        'https://api.example.com:8443/x',
+        ['https://API.example.com:8443/**'],
+        'u',
+      ),
+    ).toBe('https://api.example.com:8443/x');
+  });
+
+  it('routes an upper-case-host request through a lower-case pattern', async () => {
+    const upper = base.replace('http://', 'HTTP://');
+    const result = await executeProxyRequest(
+      { method: 'GET', url: `${upper}/calendar/v3/events` },
+      calendarOnly(),
+    );
+    expect(result.status).toBe(200);
+    expect(received).toEqual(['/calendar/v3/events']);
+  });
+
   it('keeps a %2F inside a segment as sent', async () => {
     await executeProxyRequest(
       { method: 'GET', url: `${base}/calendar/v3/projects/group%2Fproject/issues` },

@@ -12,7 +12,10 @@
  *  everything; callers that need "nothing" check for it themselves. */
 export function isEndpointAllowed(url: string, patterns: string[]): boolean {
   if (patterns.length === 0) return true; // no restrictions if empty
-  return patterns.some((pattern) => {
+  // Callers pass parsed hrefs, which are canonical already; this keeps a raw
+  // URL (`https://Host:443/…`) matching the same way.
+  url = canonicalAuthority(url);
+  return patterns.map(canonicalPattern).some((pattern) => {
     // Support simple glob patterns: * matches anything within a segment, ** matches across segments
     const regex = new RegExp(
       '^' +
@@ -25,6 +28,41 @@ export function isEndpointAllowed(url: string, patterns: string[]): boolean {
     );
     return regex.test(url) && wildcardHostMatches(url, pattern);
   });
+}
+
+const canonicalPatterns = new Map<string, string>();
+
+/**
+ * A pattern with its scheme and host written the way a parsed URL writes them:
+ * lower-case, no default port (`:443` for https, `:80` for http), no trailing
+ * dot on the host. Outbound URLs are matched in parsed form (see
+ * normalizeOutboundUrl), so `https://API.example.com:443/**` must still match
+ * `https://api.example.com/x`. Only the scheme://authority prefix changes;
+ * the path and query are matched as written. Cached per pattern string.
+ */
+export function canonicalPattern(pattern: string): string {
+  const cached = canonicalPatterns.get(pattern);
+  if (cached !== undefined) return cached;
+  const out = canonicalAuthority(pattern);
+  canonicalPatterns.set(pattern, out);
+  return out;
+}
+
+/** canonicalPattern() without the cache, for URLs. */
+function canonicalAuthority(value: string): string {
+  let out = value;
+  const m = /^([a-z][a-z0-9+.-]*):\/\/([^/?#]*)(.*)$/is.exec(value);
+  if (m) {
+    const scheme = m[1].toLowerCase();
+    let authority = m[2].toLowerCase();
+    const defaultPort = scheme === 'https' ? ':443' : scheme === 'http' ? ':80' : null;
+    if (defaultPort && authority.endsWith(defaultPort)) {
+      authority = authority.slice(0, -defaultPort.length);
+    }
+    authority = authority.replace(/\.(?=(:\d+)?$)/, '');
+    out = `${scheme}://${authority}${m[3]}`;
+  }
+  return out;
 }
 
 /**
@@ -142,6 +180,8 @@ export function normalizeOutboundUrl(url: string, patterns: string[], shownUrl: 
   } catch {
     throw new Error(`Endpoint not allowed: ${shownUrl}. It is not a valid absolute URL.`);
   }
+  // `host.` and `host` are the same host to DNS; send (and match) one form.
+  if (parsed.hostname.endsWith('.')) parsed.hostname = parsed.hostname.slice(0, -1);
   if (!isEndpointAllowed(parsed.href, patterns)) {
     throw new Error(`Endpoint not allowed after resolution: ${shownUrl}`);
   }
