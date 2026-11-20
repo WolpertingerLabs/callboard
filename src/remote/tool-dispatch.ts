@@ -936,6 +936,8 @@ export const toolHandlers: Record<string, ToolHandler> = {
           type: 'oauth2',
           grant: route.oauth2.grant,
           scopes: route.oauth2.effectiveScopes,
+          // Whether it acts as a delegated user; never who.
+          ...(route.oauth2.subject !== undefined && { delegated: true }),
         };
       }
 

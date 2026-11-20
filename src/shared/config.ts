@@ -14,7 +14,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { loadConnection, validateOAuth2Route } from './connections.js';
+import { isValidOAuth2Subject, loadConnection, validateOAuth2Route } from './connections.js';
 import { ownEntry } from './safe-keys.js';
 import type { IngestorConfig } from '../remote/ingestors/types.js';
 import type { TriggerRule } from '../remote/triggers/types.js';
@@ -364,20 +364,29 @@ export interface AwsSigV4Config {
 
 // ── OAuth2 ──────────────────────────────────────────────────────────────────
 
-/** Grant flows the token manager can run. */
-export type OAuth2Grant = 'refresh_token' | 'client_credentials';
+/** Grant flows the token manager can run.
+ *   - `refresh_token`: exchange a stored refresh token (user OAuth).
+ *   - `client_credentials`: the client's own credentials (no user).
+ *   - `jwt_bearer`: a signed JWT assertion (RFC 7523), e.g. a Google service
+ *     account. RS256 only. */
+export type OAuth2Grant = 'refresh_token' | 'client_credentials' | 'jwt_bearer';
 
 /** Names (never values) of the secrets an `oauth2` route mints tokens with.
  *  Each must be a key of the route's `secrets`. All are signer-only: never
  *  substituted into any URL, header, or body, the route's own included. */
 export interface OAuth2SecretRefs {
-  /** Secret holding the OAuth2 client ID. */
-  clientId: string;
-  /** Secret holding the OAuth2 client secret. */
-  clientSecret: string;
+  /** Secret holding the OAuth2 client ID. Required for `refresh_token` and
+   *  `client_credentials`; not used by `jwt_bearer`. */
+  clientId?: string;
+  /** Secret holding the OAuth2 client secret. Same grants as `clientId`. */
+  clientSecret?: string;
   /** Secret holding the refresh token. Required for, and only allowed with,
    *  the `refresh_token` grant. */
   refreshToken?: string;
+  /** Secret holding a Google service-account key: base64 of the JSON key file
+   *  (documented form) or the JSON itself. Required for, and only allowed
+   *  with, the `jwt_bearer` grant. Only the JWT signer reads it. */
+  serviceAccountKey?: string;
 }
 
 /**
@@ -387,27 +396,43 @@ export interface OAuth2SecretRefs {
  * validateOAuth2Config() (shared/connections.ts).
  */
 export interface OAuth2Config {
-  /** Token endpoint. https, or http on a loopback host. */
+  /** Token endpoint. https, or http on a loopback host. For `jwt_bearer` it
+   *  is also the assertion's `aud` (never the key file's `token_uri`). */
   tokenUrl: string;
   /** Grant flow used to obtain access tokens. */
   grant: OAuth2Grant;
   /** How the client credentials reach the token endpoint:
    *   - 'basic': `Authorization: Basic base64(client_id:client_secret)`
-   *   - 'body':  `client_id` / `client_secret` form fields */
-  clientAuth: 'basic' | 'body';
+   *   - 'body':  `client_id` / `client_secret` form fields
+   *  Required for `refresh_token` and `client_credentials`; not allowed with
+   *  `jwt_bearer` (the signed assertion is the client authentication). */
+  clientAuth?: 'basic' | 'body';
   secretRefs: OAuth2SecretRefs;
-  /** Scopes to request. Sent as `scope` on every grant. Admin-controlled: a
-   *  caller's `oauth2Overrides` can narrow them, never widen. */
+  /** Scopes to request. Sent as `scope` on every grant (the `scope` claim for
+   *  `jwt_bearer`). Admin-controlled: a caller's `oauth2Overrides` can
+   *  narrow them, never widen. Required for `jwt_bearer`. */
   scopes?: string[];
   /** Refuse a token whose response omits `scope`. A granted scope outside the
-   *  requested set is always refused. Default: true when `scopes` is set. */
+   *  requested set is always refused. Default: true when `scopes` is set,
+   *  except for `jwt_bearer`, where the scopes are in the signed assertion and
+   *  Google's response does not echo them (default false). */
   verifyGrantedScopes?: boolean;
+  /** `jwt_bearer` only: the user to act as (the JWT `sub`, Google domain-wide
+   *  delegation). Policy, not a secret, and admin-only: set it on a custom
+   *  connector or in `CallerConfig.oauth2Overrides[alias].subject`. A
+   *  template may not set it. */
+  subject?: string;
+  /** `jwt_bearer` only: the connection is unusable without a `subject`
+   *  (e.g. Gmail, which has no mailbox of its own for a service account).
+   *  A caller without one has the connection dropped at resolve time. */
+  subjectRequired?: boolean;
   /** Refresh this long (ms) before the token expires.
    *  Default DEFAULT_OAUTH2_REFRESH_SKEW_MS. */
   refreshSkewMs?: number;
 }
 
-/** An `oauth2` block after the caller's override is applied. */
+/** An `oauth2` block after the caller's override is applied. `subject` is
+ *  already merged in. */
 export interface ResolvedOAuth2Config extends OAuth2Config {
   /** Sorted, de-duplicated scopes sent to the token endpoint. */
   effectiveScopes: string[];
@@ -417,6 +442,9 @@ export interface ResolvedOAuth2Config extends OAuth2Config {
 export interface OAuth2CallerOverride {
   /** Non-empty subset of the route's `oauth2.scopes`. */
   scopes?: string[];
+  /** `jwt_bearer` only: the user to act as (domain-wide delegation). Replaces
+   *  a custom connector's `oauth2.subject`. */
+  subject?: string;
 }
 
 /** Longest (ms) one token-endpoint request may take. A request's own
@@ -984,10 +1012,16 @@ export function resolveCallerRoutesChecked(
 
     try {
       // Templates are validated by loadConnection(); custom connectors here.
-      if (custom && route.oauth2 !== undefined) validateOAuth2Route(route);
+      if (custom && route.oauth2 !== undefined) validateOAuth2Route(route, 'connector');
       // Own-property lookup: a connection named `__proto__` or `constructor`
       // must not pick up Object.prototype as its override.
       route = applyOAuth2Override(route, ownEntry(overrides, name));
+      if (route.oauth2?.subjectRequired && !route.oauth2.subject) {
+        throw new Error(
+          'oauth2: this connection acts as a user (subjectRequired) and no subject is set; ' +
+            `add oauth2Overrides["${name}"].subject to the caller's config`,
+        );
+      }
     } catch (err) {
       problems.push(
         `Caller "${callerAlias}": connection "${name}" dropped: ${(err as Error).message}`,
@@ -1073,9 +1107,10 @@ export function connectionOverlapWarnings(config: RemoteServerConfig): string[] 
 }
 
 /**
- * Narrow a route's `oauth2.scopes` to a caller's override. Throws when the
- * override is malformed, targets a route without `oauth2`, or is not a
- * non-empty subset of the route's scopes.
+ * Apply a caller's override to a route's `oauth2` block: narrow its scopes,
+ * set its `subject`. Throws when the override is malformed, targets a route
+ * without `oauth2`, is not a non-empty subset of the route's scopes, or sets a
+ * subject on a grant other than `jwt_bearer`.
  */
 function applyOAuth2Override(route: Route, override: OAuth2CallerOverride | undefined): Route {
   if (override === undefined) return route;
@@ -1085,12 +1120,21 @@ function applyOAuth2Override(route: Route, override: OAuth2CallerOverride | unde
     throw new Error('oauth2Overrides entry must be an object');
   }
   for (const key of Object.keys(override)) {
-    if (key !== 'scopes') {
+    if (key !== 'scopes' && key !== 'subject') {
       throw new Error(`oauth2Overrides entry has unknown field "${key}"`);
     }
   }
   if (!route.oauth2) {
     throw new Error('oauth2Overrides is set but the connection has no oauth2 block');
+  }
+  if (override.subject !== undefined) {
+    if (route.oauth2.grant !== 'jwt_bearer') {
+      throw new Error("oauth2Overrides subject is only used by the 'jwt_bearer' grant");
+    }
+    if (!isValidOAuth2Subject(override.subject)) {
+      throw new Error('oauth2Overrides subject must be an email address');
+    }
+    route = { ...route, oauth2: { ...route.oauth2, subject: override.subject } };
   }
   if (override.scopes === undefined) return route;
   const scopes: unknown = override.scopes;
@@ -1101,14 +1145,15 @@ function applyOAuth2Override(route: Route, override: OAuth2CallerOverride | unde
   ) {
     throw new Error('oauth2Overrides scopes must be a non-empty array of strings');
   }
-  const allowed = new Set(route.oauth2.scopes ?? []);
+  const oauth2 = route.oauth2!;
+  const allowed = new Set(oauth2.scopes ?? []);
   const extra = (scopes as string[]).filter((s) => !allowed.has(s));
   if (extra.length > 0) {
     throw new Error(
       `oauth2Overrides scopes may only narrow the connection's scopes; not allowed: ${extra.join(', ')}`,
     );
   }
-  return { ...route, oauth2: { ...route.oauth2, scopes: [...new Set(scopes as string[])] } };
+  return { ...route, oauth2: { ...oauth2, scopes: [...new Set(scopes as string[])] } };
 }
 
 // ── Secret / placeholder resolution ──────────────────────────────────────────

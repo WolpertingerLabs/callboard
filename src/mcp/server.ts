@@ -377,7 +377,7 @@ server.tool(
 // eslint-disable-next-line @typescript-eslint/no-deprecated -- registerTool is not available in this SDK version
 server.tool(
   'list_routes',
-  'List all available routes on the remote server. Returns metadata (name, description, docs link), allowed endpoint patterns, available secret placeholder names (not values), and auto-injected header names for each route, plus withheldSecretNames: secrets the route uses itself that requests may not reference, and auth ({ type: "oauth2", grant, scopes }) on routes whose token drawlatch mints itself. Use this to discover which APIs are available and how to call them.',
+  'List all available routes on the remote server. Returns metadata (name, description, docs link), allowed endpoint patterns, available secret placeholder names (not values), and auto-injected header names for each route, plus withheldSecretNames: secrets the route uses itself that requests may not reference, and auth ({ type: "oauth2", grant, scopes, delegated? }) on routes whose token drawlatch mints itself (delegated: true when a service account acts as a user). Use this to discover which APIs are available and how to call them.',
   // Empty schema — no input needed
   { _: z.string().optional().describe('unused') },
   async () => {

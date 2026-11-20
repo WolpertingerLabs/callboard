@@ -48,6 +48,14 @@ import {
 } from '../../shared/config.js';
 import { createLogger } from '../../shared/logger.js';
 import { safeFetch } from '../safe-fetch.js';
+import {
+  INVALID_SERVICE_ACCOUNT_KEY_MESSAGE,
+  JWT_BEARER_GRANT_TYPE,
+  parseServiceAccountKey,
+  serviceAccountKeyFingerprint,
+  signJwtAssertion,
+  type ParsedServiceAccountKey,
+} from './google-jwt.js';
 
 const log = createLogger('oauth');
 
@@ -137,6 +145,23 @@ const TERMINAL_ERROR_HINTS: Record<string, string> = {
   invalid_rapt: 'the account requires re-authentication (reauth proof token); re-authorize',
 };
 
+/** Hints that read differently for a service-account (`jwt_bearer`) grant. */
+const JWT_BEARER_ERROR_HINTS: Record<string, string> = {
+  invalid_grant:
+    'the assertion was rejected: the key is revoked or deleted, the subject is not a user in ' +
+    "the domain, or the daemon's clock is off",
+  unauthorized_client:
+    'the service account is not authorized for domain-wide delegation in the Admin console ' +
+    '(or this grant needs a subject)',
+  access_denied:
+    'the requested scopes are not authorized for this client ID in the Admin console ' +
+    '(domain-wide delegation)',
+};
+
+function errorHint(code: string, grant: OAuth2Config['grant']): string {
+  return (grant === 'jwt_bearer' && JWT_BEARER_ERROR_HINTS[code]) || TERMINAL_ERROR_HINTS[code];
+}
+
 /** Base class for every token failure. Carries no secret material. */
 export class OAuth2Error extends Error {
   /** Whether retrying with the same credentials can succeed. */
@@ -172,12 +197,11 @@ export class OAuth2TerminalError extends OAuth2Error {
 
 /** Terminal `invalid_grant`: the refresh token is dead (revoked, expired, rotated away). */
 export class OAuth2InvalidGrantError extends OAuth2TerminalError {
-  constructor(connection: string, status = 400) {
-    super(
-      `OAuth2 token request failed for connection "${connection}": invalid_grant ` +
-        `(${TERMINAL_ERROR_HINTS.invalid_grant})`,
-      { status, oauth2Error: 'invalid_grant' },
-    );
+  constructor(connection: string, status = 400, hint = TERMINAL_ERROR_HINTS.invalid_grant) {
+    super(`OAuth2 token request failed for connection "${connection}": invalid_grant (${hint})`, {
+      status,
+      oauth2Error: 'invalid_grant',
+    });
     this.name = 'OAuth2InvalidGrantError';
   }
 }
@@ -223,10 +247,13 @@ interface PreparedRequest {
   cacheKey: string;
   /** Fingerprint of the configured credentials; keys rotation state. */
   credential: string;
-  clientId: string;
-  clientSecret: string;
+  /** refresh_token / client_credentials only. */
+  clientId?: string;
+  clientSecret?: string;
   /** The refresh token as configured (before any rotation). */
   configuredRefreshToken?: string;
+  /** jwt_bearer only: the parsed service-account key. */
+  serviceAccount?: ParsedServiceAccountKey;
   requestedScopes: string[];
   verifyScopes: boolean;
   /** Configured refresh skew (ms), before the per-token clamp. */
@@ -272,6 +299,9 @@ export class TokenManager {
   private readonly credentialQueue = new Map<string, Promise<void>>();
   /** Recent terminal failures keyed by full identity. */
   private readonly terminal = new Map<string, TerminalEntry>();
+  /** Parsed service-account keys keyed by a hash of the secret value, so a
+   *  key is imported once rather than on every request. */
+  private readonly parsedKeys = new Map<string, ParsedServiceAccountKey>();
 
   constructor(options: TokenManagerOptions = {}) {
     this.fetchImpl = options.fetchImpl ?? ((...args) => globalThis.fetch(...args));
@@ -390,27 +420,43 @@ export class TokenManager {
     oauth2: OAuth2Config,
     resolveSecret: SecretResolver,
   ): PreparedRequest {
-    const clientId = this.requireSecret(resolveSecret, oauth2.secretRefs.clientId, key.connection);
-    const clientSecret = this.requireSecret(
-      resolveSecret,
-      oauth2.secretRefs.clientSecret,
-      key.connection,
-    );
+    let clientId: string | undefined;
+    let clientSecret: string | undefined;
     let configuredRefreshToken: string | undefined;
-    if (oauth2.grant === 'refresh_token') {
-      configuredRefreshToken = this.requireSecret(
+    let serviceAccount: ParsedServiceAccountKey | undefined;
+    let credential: string;
+    if (oauth2.grant === 'jwt_bearer') {
+      serviceAccount = this.serviceAccountKey(
         resolveSecret,
-        oauth2.secretRefs.refreshToken,
+        oauth2.secretRefs.serviceAccountKey,
         key.connection,
       );
+      credential = serviceAccountKeyFingerprint(serviceAccount);
+    } else {
+      clientId = this.requireSecret(resolveSecret, oauth2.secretRefs.clientId, key.connection);
+      clientSecret = this.requireSecret(
+        resolveSecret,
+        oauth2.secretRefs.clientSecret,
+        key.connection,
+      );
+      if (oauth2.grant === 'refresh_token') {
+        configuredRefreshToken = this.requireSecret(
+          resolveSecret,
+          oauth2.secretRefs.refreshToken,
+          key.connection,
+        );
+      }
+      credential = sha256(
+        oauth2.grant === 'refresh_token'
+          ? `refresh_token\0${clientId}\0${configuredRefreshToken}\0${clientSecret}`
+          : `client_credentials\0${clientId}\0${clientSecret}`,
+      );
     }
-    const credential = sha256(
-      oauth2.grant === 'refresh_token'
-        ? `refresh_token\0${clientId}\0${configuredRefreshToken}\0${clientSecret}`
-        : `client_credentials\0${clientId}\0${clientSecret}`,
-    );
     const requestedScopes = normalizeScopes(oauth2.scopes);
-    const verifyScopes = oauth2.verifyGrantedScopes ?? requestedScopes.length > 0;
+    // jwt_bearer: the scopes are in the assertion we signed, and the response
+    // need not echo them. A reported extra scope is still refused.
+    const verifyScopes =
+      oauth2.verifyGrantedScopes ?? (oauth2.grant !== 'jwt_bearer' && requestedScopes.length > 0);
     const skewMs = oauth2.refreshSkewMs ?? DEFAULT_OAUTH2_REFRESH_SKEW_MS;
     // Everything that changes which token is acceptable is part of the key,
     // so changing it never serves a token minted under the old settings.
@@ -422,13 +468,15 @@ export class TokenManager {
       requestedScopes.join(' '),
       verifyScopes,
       skewMs,
+      oauth2.subject ?? null,
     ]);
     return {
       cacheKey: TokenManager.ownerPrefix(key) + sha256(identity),
       credential,
-      clientId,
-      clientSecret,
+      ...(clientId !== undefined && { clientId }),
+      ...(clientSecret !== undefined && { clientSecret }),
       ...(configuredRefreshToken !== undefined && { configuredRefreshToken }),
+      ...(serviceAccount !== undefined && { serviceAccount }),
       requestedScopes,
       verifyScopes,
       skewMs,
@@ -493,22 +541,39 @@ export class TokenManager {
     refreshToken?: string,
   ): Promise<OAuth2Token> {
     const body = new URLSearchParams();
-    body.set('grant_type', oauth2.grant);
-    if (oauth2.grant === 'refresh_token') body.set('refresh_token', refreshToken!);
-    if (p.requestedScopes.length > 0) body.set('scope', p.requestedScopes.join(' '));
-
     const headers: Record<string, string> = {
       'Content-Type': 'application/x-www-form-urlencoded',
       Accept: 'application/json',
     };
-    if (oauth2.clientAuth === 'basic') {
+    if (oauth2.grant === 'jwt_bearer') {
+      // The scopes and subject ride in the signed assertion; `aud` is the
+      // route's tokenUrl, never the key file's token_uri.
+      body.set('grant_type', JWT_BEARER_GRANT_TYPE);
+      body.set(
+        'assertion',
+        signJwtAssertion(p.serviceAccount!, {
+          scope: p.requestedScopes.join(' '),
+          aud: oauth2.tokenUrl,
+          ...(oauth2.subject !== undefined && { sub: oauth2.subject }),
+          nowSec: this.now() / 1000,
+        }),
+      );
+    } else {
+      body.set('grant_type', oauth2.grant);
+      if (oauth2.grant === 'refresh_token') body.set('refresh_token', refreshToken!);
+      if (p.requestedScopes.length > 0) body.set('scope', p.requestedScopes.join(' '));
+    }
+
+    if (oauth2.grant === 'jwt_bearer') {
+      // No client authentication beyond the assertion.
+    } else if (oauth2.clientAuth === 'basic') {
       // Raw `id:secret`, as most clients send it. (RFC 6749 §2.3.1 asks for
       // form-encoding each part first, which many providers don't decode.)
-      const basic = Buffer.from(`${p.clientId}:${p.clientSecret}`).toString('base64');
+      const basic = Buffer.from(`${p.clientId!}:${p.clientSecret!}`).toString('base64');
       headers.Authorization = `Basic ${basic}`;
     } else {
-      body.set('client_id', p.clientId);
-      body.set('client_secret', p.clientSecret);
+      body.set('client_id', p.clientId!);
+      body.set('client_secret', p.clientSecret!);
     }
 
     log.debug(`Requesting access token for ${key.connection} (caller ${key.caller})`);
@@ -540,7 +605,7 @@ export class TokenManager {
     const text = await this.readCapped(resp, key.connection);
 
     if (!resp.ok) {
-      const error = this.classifyErrorResponse(resp.status, text, key.connection);
+      const error = this.classifyErrorResponse(resp.status, text, key.connection, oauth2.grant);
       if (error.terminal) {
         this.terminal.set(p.cacheKey, {
           until: this.now() + OAUTH2_TERMINAL_BACKOFF_MS,
@@ -617,7 +682,12 @@ export class TokenManager {
    * recognised `error` code (or Google's `error_subtype: invalid_rapt`); the
    * body itself is never included — it can echo submitted credentials.
    */
-  private classifyErrorResponse(status: number, text: string, connection: string): OAuth2Error {
+  private classifyErrorResponse(
+    status: number,
+    text: string,
+    connection: string,
+    grant: OAuth2Config['grant'],
+  ): OAuth2Error {
     let code: string | undefined;
     try {
       const data = JSON.parse(text) as { error?: unknown; error_subtype?: unknown };
@@ -628,11 +698,13 @@ export class TokenManager {
     } catch {
       code = undefined;
     }
-    if (code === 'invalid_grant') return new OAuth2InvalidGrantError(connection, status);
+    if (code === 'invalid_grant') {
+      return new OAuth2InvalidGrantError(connection, status, errorHint(code, grant));
+    }
     if (code) {
       return new OAuth2TerminalError(
         `OAuth2 token request failed for connection "${connection}" (HTTP ${status}): ${code} ` +
-          `(${TERMINAL_ERROR_HINTS[code]})`,
+          `(${errorHint(code, grant)})`,
         { status, oauth2Error: code },
       );
     }
@@ -716,6 +788,36 @@ export class TokenManager {
       ...(granted && { grantedScopes: granted }),
       ...(missingScopes && { missingScopes }),
     };
+  }
+
+  /**
+   * Resolve and parse a service-account key secret. A malformed key is a
+   * fixed-message error naming only the secret; parsed keys are memoized by
+   * a hash of the value.
+   */
+  private serviceAccountKey(
+    resolveSecret: SecretResolver,
+    name: string | undefined,
+    connection: string,
+  ): ParsedServiceAccountKey {
+    const raw = this.requireSecret(resolveSecret, name, connection);
+    const memoKey = sha256(raw);
+    const memo = this.parsedKeys.get(memoKey);
+    if (memo) return memo;
+    let parsed: ParsedServiceAccountKey;
+    try {
+      parsed = parseServiceAccountKey(raw);
+    } catch {
+      throw new OAuth2RefreshError(
+        connection,
+        undefined,
+        `secret ${name ?? '(unnamed)'} is ${INVALID_SERVICE_ACCOUNT_KEY_MESSAGE}`,
+      );
+    }
+    // A handful of keys per daemon at most; bound it anyway.
+    if (this.parsedKeys.size >= 64) this.parsedKeys.clear();
+    this.parsedKeys.set(memoKey, parsed);
+    return parsed;
   }
 
   /** Resolve a required secret by name; a transient (misconfiguration) error if missing. */

@@ -88,12 +88,12 @@ describe('validateOAuth2Config', () => {
       { ...oauth2(), tokenUrl: 'https://u:p@auth.example.com/t' },
       'credentials',
     ],
-    ['jwt_bearer (Phase 1b)', { ...oauth2(), grant: 'jwt_bearer' }, 'grant must be'],
+    ['an unknown grant', { ...oauth2(), grant: 'implicit' }, 'grant must be'],
     ['bad clientAuth', { ...oauth2(), clientAuth: 'header' }, 'clientAuth must be'],
     ['no secretRefs', { ...oauth2(), secretRefs: undefined }, 'secretRefs is required'],
     [
       'unknown secretRef',
-      { ...oauth2(), secretRefs: { ...oauth2().secretRefs, serviceAccountKey: 'K' } },
+      { ...oauth2(), secretRefs: { ...oauth2().secretRefs, privateKey: 'K' } },
       'unknown secretRefs field',
     ],
     [
@@ -229,7 +229,7 @@ describe('templates', () => {
     _resetConnectionIndex();
   });
 
-  it('every built-in template with an oauth2 block validates (none ship in 1a)', () => {
+  it('every built-in template with an oauth2 block validates', () => {
     for (const info of listConnectionTemplates()) {
       if (info.auth) expect(() => loadConnection(info.alias)).not.toThrow();
     }
@@ -309,7 +309,12 @@ describe('oauth2Overrides', () => {
     ['a scope outside the route', { example: { scopes: ['read', 'admin'] } }, 'admin'],
     ['an empty scope list', { example: { scopes: [] } }, 'non-empty'],
     ['a non-object entry', { example: 'read' }, 'must be an object'],
-    ['an unknown field', { example: { subject: 'ceo@example.com' } }, 'unknown field "subject"'],
+    ['an unknown field', { example: { audience: 'x' } }, 'unknown field "audience"'],
+    [
+      'a subject on a non-jwt_bearer route',
+      { example: { subject: 'ceo@example.com' } },
+      "only used by the 'jwt_bearer' grant",
+    ],
     ['a route without oauth2', { plain: { scopes: ['read'] } }, 'no oauth2 block'],
   ])('drops only that connection for %s', (_label, overrides, message) => {
     const { routes, problems } = resolveCallerRoutesChecked(config(overrides), 'alice');
@@ -452,5 +457,166 @@ describe('connectionOverlapWarnings', () => {
       cfg(['github', 'any'], [{ alias: 'any', allowedEndpoints: ['**'] }]),
     );
     expect(warnings).toHaveLength(1);
+  });
+});
+
+// ── jwt_bearer (service accounts) ─────────────────────────────────────────
+
+function sa(overrides: Partial<OAuth2Config> = {}): OAuth2Config {
+  return {
+    tokenUrl: 'https://oauth2.googleapis.com/token',
+    grant: 'jwt_bearer',
+    secretRefs: { serviceAccountKey: 'SA_KEY' },
+    scopes: ['https://www.googleapis.com/auth/drive.readonly'],
+    ...overrides,
+  };
+}
+
+function saRoute(overrides: Partial<Route> = {}): Route {
+  return {
+    alias: 'gsa',
+    allowedEndpoints: ['https://www.googleapis.com/drive/v3/files**'],
+    secrets: { SA_KEY: '${SA_KEY}' },
+    oauth2: sa(),
+    ...overrides,
+  };
+}
+
+describe('jwt_bearer validation', () => {
+  it('accepts a service-account block, with or without subject/subjectRequired', () => {
+    expect(() => validateOAuth2Config(sa())).not.toThrow();
+    expect(() => validateOAuth2Config(sa({ subjectRequired: true }))).not.toThrow();
+    expect(() => validateOAuth2Config(sa({ subject: 'ceo@example.com' }))).not.toThrow();
+  });
+
+  it.each([
+    ['clientAuth', sa({ clientAuth: 'body' }), 'clientAuth is not used'],
+    ['no serviceAccountKey', sa({ secretRefs: {} }), 'serviceAccountKey is required'],
+    [
+      'a clientId',
+      sa({ secretRefs: { serviceAccountKey: 'K', clientId: 'C' } }),
+      'clientId is not used',
+    ],
+    [
+      'a refreshToken',
+      sa({ secretRefs: { serviceAccountKey: 'K', refreshToken: 'R' } }),
+      'refreshToken is not used',
+    ],
+    ['no scopes', sa({ scopes: undefined }), 'scopes are required'],
+    ['empty scopes', sa({ scopes: [] }), 'scopes are required'],
+    ['a non-email subject', sa({ subject: 'ceo' }), 'subject must be an email'],
+    ['a subject with whitespace', sa({ subject: 'c eo@example.com' }), 'subject must be'],
+    ['a subject with a newline', sa({ subject: 'ceo@example.com\nX: y' }), 'subject must be'],
+    ['a non-boolean subjectRequired', sa({ subjectRequired: 'yes' as never }), 'boolean'],
+  ])('rejects %s', (_label, value, message) => {
+    expect(() => validateOAuth2Config(value)).toThrow(message);
+  });
+
+  it.each([
+    [
+      'serviceAccountKey',
+      oauth2({ secretRefs: { ...oauth2().secretRefs, serviceAccountKey: 'K' } }),
+    ],
+    ['subject', oauth2({ subject: 'ceo@example.com' })],
+    ['subjectRequired', oauth2({ subjectRequired: true })],
+  ])('rejects %s on a refresh_token grant', (_label, value) => {
+    expect(() => validateOAuth2Config(value)).toThrow("only used by the 'jwt_bearer' grant");
+  });
+
+  it('a template may not set subject; a custom connector may', () => {
+    const withSubject = saRoute({ oauth2: sa({ subject: 'ceo@example.com' }) });
+    expect(() => validateOAuth2Route(withSubject, 'template')).toThrow(
+      'a template may not set subject',
+    );
+    expect(() => validateOAuth2Route(withSubject, 'connector')).not.toThrow();
+  });
+
+  it('counts the key as a required, signer-only secret', () => {
+    const info = describeConnectionTemplate(
+      'gsa',
+      saRoute({ oauth2: sa({ subjectRequired: true }) }),
+    );
+    expect(info.requiredSecrets).toEqual(['SA_KEY']);
+    expect(info.auth).toEqual({
+      type: 'oauth2',
+      grant: 'jwt_bearer',
+      scopes: ['https://www.googleapis.com/auth/drive.readonly'],
+      subjectRequired: true,
+    });
+    expect([...signerOnlySecretNames(saRoute())]).toEqual(['SA_KEY']);
+    const [r] = resolveRoutes([saRoute({ secrets: { SA_KEY: 'key-value-abc' } })], {}, 'alice');
+    expect(Object.keys(substitutableSecrets(r))).toEqual([]);
+    expect(Object.keys(templateSecrets(r))).toEqual([]);
+    expect(Object.keys(withheldSecretValues(r))).toEqual(['SA_KEY']);
+  });
+});
+
+describe('jwt_bearer subject (oauth2Overrides)', () => {
+  let errSpy: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  });
+  afterEach(() => errSpy.mockRestore());
+
+  function config(
+    override: Record<string, unknown> | undefined,
+    oauth2Patch: Partial<OAuth2Config> = {},
+  ): RemoteServerConfig {
+    return {
+      host: '127.0.0.1',
+      port: 0,
+      rateLimitPerMinute: 60,
+      connectors: [saRoute({ oauth2: sa(oauth2Patch) })],
+      callers: {
+        alice: { connections: ['gsa'], ...(override && { oauth2Overrides: { gsa: override } }) },
+      },
+    } as RemoteServerConfig;
+  }
+
+  it('merges the override subject (and scopes) into the route', () => {
+    const { routes, problems } = resolveCallerRoutesChecked(
+      config({ subject: 'ceo@example.com' }),
+      'alice',
+    );
+    expect(problems).toEqual([]);
+    expect(routes[0].oauth2?.subject).toBe('ceo@example.com');
+    const [resolved] = resolveRoutes(routes, {}, 'alice');
+    expect(resolved.oauth2?.subject).toBe('ceo@example.com');
+  });
+
+  it('the override subject replaces a connector subject', () => {
+    const { routes } = resolveCallerRoutesChecked(
+      config({ subject: 'b@example.com' }, { subject: 'a@example.com' }),
+      'alice',
+    );
+    expect(routes[0].oauth2?.subject).toBe('b@example.com');
+  });
+
+  it('drops a subjectRequired connection for a caller without a subject', () => {
+    const { routes, problems } = resolveCallerRoutesChecked(
+      config(undefined, { subjectRequired: true }),
+      'alice',
+    );
+    expect(routes).toEqual([]);
+    expect(problems.join('\n')).toMatch(/subjectRequired.*oauth2Overrides\["gsa"\]\.subject/);
+    const ok = resolveCallerRoutesChecked(
+      config({ subject: 'ceo@example.com' }, { subjectRequired: true }),
+      'alice',
+    );
+    expect(ok.routes).toHaveLength(1);
+  });
+
+  it('a connector subject satisfies subjectRequired', () => {
+    const { routes } = resolveCallerRoutesChecked(
+      config(undefined, { subjectRequired: true, subject: 'a@example.com' }),
+      'alice',
+    );
+    expect(routes).toHaveLength(1);
+  });
+
+  it('drops the connection for an invalid override subject', () => {
+    const { routes, problems } = resolveCallerRoutesChecked(config({ subject: 'nobody' }), 'alice');
+    expect(routes).toEqual([]);
+    expect(problems.join('\n')).toContain('subject must be an email address');
   });
 });
