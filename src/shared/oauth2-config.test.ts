@@ -432,7 +432,8 @@ describe('connectionOverlapWarnings', () => {
   it('is quiet for every built-in template together, but one of each overlapping pair', () => {
     const all = listConnectionTemplates()
       .map((t) => t.alias)
-      .filter((alias) => alias !== 'discord-oauth');
+      // The Google templates share www.googleapis.com (host-level check).
+      .filter((alias) => alias !== 'discord-oauth' && !alias.startsWith('google'));
     expect(connectionOverlapWarnings(cfg(all))).toEqual([]);
   });
 
@@ -618,5 +619,34 @@ describe('jwt_bearer subject (oauth2Overrides)', () => {
     const { routes, problems } = resolveCallerRoutesChecked(config({ subject: 'nobody' }), 'alice');
     expect(routes).toEqual([]);
     expect(problems.join('\n')).toContain('subject must be an email address');
+  });
+
+  it('applies to the built-in Gmail service-account template', () => {
+    const base = {
+      host: '127.0.0.1',
+      port: 0,
+      rateLimitPerMinute: 60,
+    };
+    const without = resolveCallerRoutesChecked(
+      {
+        ...base,
+        callers: { a: { connections: ['google-gmail-readonly-sa'] } },
+      } as RemoteServerConfig,
+      'a',
+    );
+    expect(without.routes).toEqual([]);
+    const withSubject = resolveCallerRoutesChecked(
+      {
+        ...base,
+        callers: {
+          a: {
+            connections: ['google-gmail-readonly-sa'],
+            oauth2Overrides: { 'google-gmail-readonly-sa': { subject: 'me@example.com' } },
+          },
+        },
+      } as RemoteServerConfig,
+      'a',
+    );
+    expect(withSubject.routes.map((r) => r.alias)).toEqual(['google-gmail-readonly-sa']);
   });
 });

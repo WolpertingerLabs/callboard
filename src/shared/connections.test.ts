@@ -923,9 +923,11 @@ describe('listConnectionTemplates — new boolean fields (unit)', () => {
 
 describe('listConnectionTemplates — new boolean fields (integration)', () => {
   it('should report hasTestConnection=true for all bundled templates', () => {
-    // All bundled templates now have testConnection
+    // All bundled templates have testConnection, except oauth2 templates for
+    // APIs with no ID-free read call (Sheets): test_connection mints a token.
     const templates = listConnectionTemplates();
     for (const t of templates) {
+      if (t.auth && !t.hasTestConnection) continue;
       expect(t.hasTestConnection).toBe(true);
     }
   });
@@ -1083,6 +1085,7 @@ describe('connection template JSON structure validation', () => {
   it('should have valid testConnection URL for all templates', () => {
     for (const t of templates) {
       const route = loadConnection(t.alias);
+      if (route.oauth2 && !route.testConnection) continue; // token-only test
       expect(route.testConnection).toBeDefined();
       expect(route.testConnection!.url).toBeTruthy();
       expect(typeof route.testConnection!.url).toBe('string');

@@ -2,7 +2,7 @@
   "name": "Google APIs",
   "stability": "dev",
   "category": "productivity",
-  "description": "Google APIs — Sheets, Docs, Drive, Calendar, Gmail, and more. Auth is handled automatically via the GOOGLE_API_TOKEN environment variable (OAuth2 access token or service account token). Multiple Google API domains are allowlisted.",
+  "description": "Static token, full access: prefer the scoped google-* templates (google-gmail-readonly, google-calendar-readonly, google-drive-readonly, …), whose tokens drawlatch mints for one scope. Google APIs — Sheets, Docs, Drive, Calendar, Gmail, and more. Auth is handled automatically via the GOOGLE_API_TOKEN environment variable (OAuth2 access token or service account token). Multiple Google API domains are allowlisted.",
   "docsUrl": "https://developers.google.com/apis-explorer",
   "headers": {
     "Authorization": "Bearer ${GOOGLE_API_TOKEN}"

@@ -1,0 +1,23 @@
+{
+  "name": "Google Sheets (read-only, service account)",
+  "stability": "beta",
+  "category": "productivity",
+  "description": "Google Sheets, read-only (scope spreadsheets.readonly): spreadsheets.get and values.get / values:batchGet by spreadsheet ID. Cannot edit. Sheets has no ID-free read call, so test_connection only mints a token. Auth: drawlatch signs a JWT with GOOGLE_SERVICE_ACCOUNT_KEY (base64 of the service-account JSON key file) and mints short-lived access tokens for exactly this scope; the agent never sees the key. Without a subject it reads spreadsheets shared with the service account; with one (domain-wide delegation) that user's. See CONNECTIONS.md \"Google (scoped)\".",
+  "docsUrl": "https://developers.google.com/workspace/sheets/api/reference/rest",
+  "secrets": {
+    "GOOGLE_SERVICE_ACCOUNT_KEY": "${GOOGLE_SERVICE_ACCOUNT_KEY}"
+  },
+  "oauth2": {
+    "tokenUrl": "https://oauth2.googleapis.com/token",
+    "grant": "jwt_bearer",
+    "secretRefs": {
+      "serviceAccountKey": "GOOGLE_SERVICE_ACCOUNT_KEY"
+    },
+    "scopes": [
+      "https://www.googleapis.com/auth/spreadsheets.readonly"
+    ]
+  },
+  "allowedEndpoints": [
+    "https://sheets.googleapis.com/v4/spreadsheets/**"
+  ]
+}
