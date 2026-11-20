@@ -159,7 +159,13 @@ const JWT_BEARER_ERROR_HINTS: Record<string, string> = {
 };
 
 function errorHint(code: string, grant: OAuth2Config['grant']): string {
-  return (grant === 'jwt_bearer' && JWT_BEARER_ERROR_HINTS[code]) || TERMINAL_ERROR_HINTS[code];
+  // Own properties only: `toString` must not resolve to Object.prototype's.
+  if (grant === 'jwt_bearer' && Object.hasOwn(JWT_BEARER_ERROR_HINTS, code)) {
+    return JWT_BEARER_ERROR_HINTS[code];
+  }
+  return Object.hasOwn(TERMINAL_ERROR_HINTS, code)
+    ? TERMINAL_ERROR_HINTS[code]
+    : 'unrecognised error';
 }
 
 /** Base class for every token failure. Carries no secret material. */
@@ -453,8 +459,9 @@ export class TokenManager {
       );
     }
     const requestedScopes = normalizeScopes(oauth2.scopes);
-    // jwt_bearer: the scopes are in the assertion we signed, and the response
-    // need not echo them. A reported extra scope is still refused.
+    // jwt_bearer: the scopes are bound by the signed assertion, and the
+    // response may omit them. Reported scopes are still checked, and an extra
+    // one is refused.
     const verifyScopes =
       oauth2.verifyGrantedScopes ?? (oauth2.grant !== 'jwt_bearer' && requestedScopes.length > 0);
     const skewMs = oauth2.refreshSkewMs ?? DEFAULT_OAUTH2_REFRESH_SKEW_MS;
@@ -692,7 +699,9 @@ export class TokenManager {
     try {
       const data = JSON.parse(text) as { error?: unknown; error_subtype?: unknown };
       if (data.error_subtype === 'invalid_rapt') code = 'invalid_rapt';
-      else if (typeof data.error === 'string' && data.error in TERMINAL_ERROR_HINTS) {
+      // Own properties only: `in` would accept inherited keys such as
+      // `toString`, and put a native function's source into the message.
+      else if (typeof data.error === 'string' && Object.hasOwn(TERMINAL_ERROR_HINTS, data.error)) {
         code = data.error;
       }
     } catch {

@@ -414,8 +414,9 @@ export interface OAuth2Config {
   scopes?: string[];
   /** Refuse a token whose response omits `scope`. A granted scope outside the
    *  requested set is always refused. Default: true when `scopes` is set,
-   *  except for `jwt_bearer`, where the scopes are in the signed assertion and
-   *  Google's response does not echo them (default false). */
+   *  except for `jwt_bearer` (default false): its scopes are bound by the
+   *  signed assertion, and the response may omit them. When the response does
+   *  report scopes, they are still checked. */
   verifyGrantedScopes?: boolean;
   /** `jwt_bearer` only: the user to act as (the JWT `sub`, Google domain-wide
    *  delegation). Policy, not a secret, and admin-only: set it on a custom
