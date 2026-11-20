@@ -151,28 +151,43 @@ function placeholderNames(values: Iterable<string>): Set<string> {
 }
 
 /**
+ * Secrets withheld because the route's own `headers` reference them, after the
+ * `placeholderSecrets` escape hatch. Only this set is subject to the escape
+ * hatch: it can't release a `signatureSecret`, a `withheldSecrets` entry, or a
+ * signing credential.
+ */
+function headerOnlySecretNames(route: Route): Set<string> {
+  const names = placeholderNames(Object.values(route.headers ?? {}));
+  for (const name of route.placeholderSecrets ?? []) names.delete(name);
+  return names;
+}
+
+/** Names withheld for reasons `placeholderSecrets` can't override. */
+function alwaysWithheldSecretNames(route: Route): Set<string> {
+  const names = signerOnlySecretNames(route);
+  const signatureSecret = route.ingestor?.webhook?.signatureSecret;
+  if (signatureSecret) names.add(signatureSecret);
+  for (const name of route.withheldSecrets ?? []) names.add(name);
+  return names;
+}
+
+/**
  * Tier 1 + 2: secret names a caller may not reference in a URL, request
  * header, or request body on this route. Computed from the raw `Route`
  * (before header resolution) by resolveRoutes() and carried on
  * `ResolvedRoute.withheldSecrets`.
  *
- *   - every signer-only secret (tier 1);
- *   - every secret the route's own `headers` reference: the route already
- *     injects it, so a caller never needs to write it;
- *   - the webhook ingestor's `signatureSecret`, which only verifies signatures;
- *   - every name in the route's `withheldSecrets`;
- *   - minus names in `placeholderSecrets`, the escape hatch for a connector
- *     whose API needs a header secret in the URL or body as well. It cannot
- *     release a signer-only secret.
+ *   - every secret the route's own `headers` reference (the route already
+ *     injects it, so a caller never needs to write it), minus names in
+ *     `placeholderSecrets`, the escape hatch for a connector whose API needs
+ *     a header secret in the URL or body as well;
+ *   - plus, regardless of `placeholderSecrets`: every signer-only secret
+ *     (tier 1), the webhook ingestor's `signatureSecret` (it only verifies
+ *     signatures), and every name in the route's `withheldSecrets`.
  */
 export function withheldSecretNames(route: Route): Set<string> {
-  const signerOnly = signerOnlySecretNames(route);
-  const names = placeholderNames(Object.values(route.headers ?? {}));
-  const signatureSecret = route.ingestor?.webhook?.signatureSecret;
-  if (signatureSecret) names.add(signatureSecret);
-  for (const name of route.withheldSecrets ?? []) names.add(name);
-  for (const name of route.placeholderSecrets ?? []) names.delete(name);
-  for (const name of signerOnly) names.add(name);
+  const names = headerOnlySecretNames(route);
+  for (const name of alwaysWithheldSecretNames(route)) names.add(name);
   // Only names the route actually defines; a header placeholder for a
   // non-secret (unresolved) name withholds nothing.
   const defined = route.secrets ?? {};
@@ -180,10 +195,62 @@ export function withheldSecretNames(route: Route): Set<string> {
 }
 
 /**
+ * Configuration problems the withholding rules can cause in a connector, as
+ * human-readable warnings naming the connector and secret. Meant for custom
+ * connectors (built-in templates are checked by tests), logged once at daemon
+ * startup and shown by `drawlatch doctor`.
+ *
+ *   - Its `description` or `name` tells agents to write `${NAME}` for a
+ *     secret that is now withheld, so those requests will be rejected.
+ *   - A `placeholderSecrets` entry that can't take effect: the secret is
+ *     withheld for another reason (signatureSecret, withheldSecrets, signing
+ *     credential), or the headers don't reference it at all.
+ */
+export function connectorWithholdingWarnings(route: Route): string[] {
+  const label = `Connector "${route.alias ?? route.name ?? '(unnamed)'}"`;
+  const warnings: string[] = [];
+  const withheld = withheldSecretNames(route);
+  const agentFacing = placeholderNames([route.description ?? '', route.name ?? '']);
+  for (const name of agentFacing) {
+    if (withheld.has(name)) {
+      warnings.push(
+        `${label}: its description references \${${name}}, but that secret is withheld ` +
+          'from requests (its headers inject it), so agents that follow it will be ' +
+          `rejected. If the API needs it in the URL or body too, add "${name}" to the ` +
+          "connector's placeholderSecrets.",
+      );
+    }
+  }
+  const always = alwaysWithheldSecretNames(route);
+  const inHeaders = placeholderNames(Object.values(route.headers ?? {}));
+  for (const name of route.placeholderSecrets ?? []) {
+    if (always.has(name)) {
+      warnings.push(
+        `${label}: placeholderSecrets lists "${name}", which is a signing credential, ` +
+          'webhook signatureSecret, or withheldSecrets entry. It stays withheld; remove it ' +
+          'from placeholderSecrets.',
+      );
+    } else if (!inHeaders.has(name)) {
+      warnings.push(
+        `${label}: placeholderSecrets lists "${name}", which its headers don't reference, ` +
+          'so it is substitutable already and the entry has no effect.',
+      );
+    }
+  }
+  return warnings;
+}
+
+/**
  * `secrets` minus the entries named in `withheld`, and minus any entry whose
  * value *contains* a withheld value: `WRAPPED = "pre-<secret>"` would leak it
- * just the same. Empty values are not considered, since "" is contained in
- * everything.
+ * just the same.
+ *
+ * Containment only considers withheld values of at least
+ * MIN_SCRUBBED_SECRET_LENGTH characters, the same floor scrubSecrets() uses.
+ * Header secrets include short non-credentials (`API_VERSION = "2"`), and
+ * without a floor one would withhold every secret whose value happens to
+ * contain a "2". A value that short carries no protection worth keeping, and
+ * scrubbing couldn't hide it anyway.
  */
 function secretsExcept(
   secrets: Record<string, string>,
@@ -192,7 +259,7 @@ function secretsExcept(
   if (withheld.size === 0) return secrets;
   const withheldValues = [...withheld]
     .map((name) => secrets[name])
-    .filter((v): v is string => typeof v === 'string' && v !== '');
+    .filter((v): v is string => typeof v === 'string' && v.length >= MIN_SCRUBBED_SECRET_LENGTH);
   const holdsWithheld = (value: string) =>
     typeof value === 'string' && withheldValues.some((w) => value.includes(w));
   return Object.fromEntries(
@@ -758,6 +825,34 @@ export function resolvePlaceholders(str: string, secretsMap: Record<string, stri
   });
 }
 
+/** Secret values shorter than this are neither scrubbed nor used for
+ *  containment checks; see scrubSecrets(). */
+export const MIN_SCRUBBED_SECRET_LENGTH = 4;
+
+/**
+ * scrubSecrets() applied to every string in a JSON-shaped value: string
+ * leaves and object keys. The tree is walked rather than serialized and
+ * re-parsed, so a secret containing JSON syntax can't corrupt the structure.
+ * Past 64 levels of nesting the subtree comes back as scrubbed JSON text
+ * rather than unscrubbed: failing open would hide a token behind deep nesting.
+ */
+export function scrubSecretsDeep(
+  value: unknown,
+  secrets: Record<string, string>,
+  depth = 0,
+): unknown {
+  if (typeof value === 'string') return scrubSecrets(value, secrets);
+  if (value === null || typeof value !== 'object') return value;
+  if (depth >= 64) return scrubSecrets(JSON.stringify(value), secrets);
+  if (Array.isArray(value)) return value.map((v) => scrubSecretsDeep(v, secrets, depth + 1));
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([k, v]) => [
+      scrubSecrets(k, secrets),
+      scrubSecretsDeep(v, secrets, depth + 1),
+    ]),
+  );
+}
+
 /**
  * Replace every resolved secret value found in `text` with its `${NAME}`
  * placeholder.
@@ -777,9 +872,11 @@ export function resolvePlaceholders(str: string, secretsMap: Record<string, stri
  * same goes for a redirect's `Location` and the final URL reported after
  * redirects, which can echo a substituted query parameter back.
  *
- * Each secret is scrubbed both as-is and in its `encodeURIComponent` form,
- * which is how it appears once a server (or a URL parser) has re-encoded a
- * query string.
+ * Each secret is scrubbed as-is, in its `encodeURIComponent` form (how it
+ * appears once a server or URL parser has re-encoded a query string), and in
+ * its JSON-string-escaped forms (with and without `\/`). This is best-effort
+ * defense in depth, not a guarantee: base64, case-folded, truncated, or
+ * otherwise transformed copies are not recognised.
  *
  * Values shorter than 4 characters are skipped: they are not meaningful
  * secrets, and substring-replacing them would shred the message (a secret
@@ -794,10 +891,21 @@ export function resolvePlaceholders(str: string, secretsMap: Record<string, stri
 export function scrubSecrets(text: string, secrets: Record<string, string>): string {
   const forms: [name: string, form: string][] = [];
   for (const [name, value] of Object.entries(secrets)) {
-    if (typeof value !== 'string' || value.length < 4) continue;
-    forms.push([name, value]);
-    const encoded = encodeURIComponent(value);
-    if (encoded !== value) forms.push([name, encoded]);
+    if (typeof value !== 'string' || value.length < MIN_SCRUBBED_SECRET_LENGTH) continue;
+    const seen = new Set<string>();
+    const add = (form: string) => {
+      if (seen.has(form)) return;
+      seen.add(form);
+      forms.push([name, form]);
+    };
+    add(value);
+    add(encodeURIComponent(value));
+    // How the value appears inside a JSON string in a body that wasn't parsed
+    // (a text/plain or HTML error page quoting JSON): `"` → `\"`, control
+    // characters → `\uXXXX`, and, from some encoders, `/` → `\/`.
+    const jsonEscaped = JSON.stringify(value).slice(1, -1);
+    add(jsonEscaped);
+    add(jsonEscaped.replace(/\//g, '\\/'));
   }
   forms.sort(([, a], [, b]) => b.length - a.length);
 

@@ -10,12 +10,15 @@
  *   - Templates that put secrets in URLs or bodies on purpose (Trello, Telegram)
  *     keep working, and `placeholderSecrets` releases a header secret.
  */
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 
 import {
+  connectorWithholdingWarnings,
+  resolvePlaceholders,
   resolveRoutes,
+  scrubSecrets,
   substitutableSecrets,
   templateSecrets,
   withheldSecretNames,
@@ -23,7 +26,12 @@ import {
   type Route,
 } from '../shared/config.js';
 import { listConnectionTemplates, loadConnection } from '../shared/connections.js';
-import { dispatchTool, executeProxyRequest, type ToolContext } from './tool-dispatch.js';
+import {
+  dispatchTool,
+  executeProxyRequest,
+  matchRoute,
+  type ToolContext,
+} from './tool-dispatch.js';
 
 const TOKEN = 'ya29.header-only-token+/=value';
 const OTHER = 'plain-config-value-1234';
@@ -275,23 +283,65 @@ describe('built-in templates under header-only withholding', () => {
   });
 
   it.each(templates)(
-    '$alias: placeholders its own description, tests, and option lookups use stay substitutable',
+    '$alias: placeholders its description tells agents to write stay substitutable',
     ({ route }) => {
-      // Strings an agent is told to send, or that drawlatch sends through
-      // executeProxyRequest on the caller's behalf: test_connection,
-      // test_ingestor, resolve_listener_options.
-      const callerFacing = JSON.stringify([
-        route.description,
-        route.listenerConfig?.description,
-        route.testConnection,
-        route.testIngestor,
-        route.listenerConfig?.fields.map((f) => f.dynamicOptions),
-      ]);
-      const referenced = [...callerFacing.matchAll(/\$\{(\w+)\}/g)]
+      const agentFacing = JSON.stringify([route.description, route.listenerConfig?.description]);
+      const referenced = [...agentFacing.matchAll(/\$\{(\w+)\}/g)]
         .map((m) => m[1])
         .filter((name) => name in (route.secrets ?? {}));
       const withheld = withheldSecretNames(route);
       for (const name of referenced) expect(withheld.has(name)).toBe(false);
+    },
+  );
+
+  it.each(templates)(
+    '$alias: its test and option-lookup URLs match its own allowlist (they run on that route only)',
+    ({ route }) => {
+      const secrets = Object.fromEntries(
+        Object.keys(route.secrets ?? {}).map((k) => [k, `value-of-${k}`]),
+      );
+      const [resolved] = resolveRoutes([{ ...route, secrets }]);
+      const urls = [
+        route.testConnection?.url,
+        route.testIngestor?.request?.url,
+        ...(route.listenerConfig?.fields ?? []).map((f) => f.dynamicOptions?.url),
+      ].filter((u): u is string => typeof u === 'string');
+      for (const url of urls) {
+        expect(matchRoute(resolvePlaceholders(url, templateSecrets(resolved)), [resolved])).toBe(
+          resolved,
+        );
+      }
+    },
+  );
+
+  /**
+   * Every built-in template secret is withheld unless it's listed here with
+   * the reason agents must be able to write it. A secret that ingestor code
+   * reads directly from `secrets` (Slack Socket Mode's SLACK_APP_TOKEN) never
+   * appears in a `${}` the withholding rules can see, so a new one has to be
+   * caught here: add it to the template's `withheldSecrets`, or list it below.
+   */
+  const INTENTIONALLY_SUBSTITUTABLE: Record<string, Record<string, string>> = {
+    trello: {
+      TRELLO_API_KEY: 'query-param auth: ?key=${TRELLO_API_KEY}',
+      TRELLO_TOKEN: 'query-param auth: &token=${TRELLO_TOKEN}',
+      TRELLO_CALLBACK_URL: 'public webhook URL, not a credential',
+    },
+    telegram: { TELEGRAM_BOT_TOKEN: 'path auth: /bot${TELEGRAM_BOT_TOKEN}/' },
+    github: { GITHUB_WEBHOOK_URL: 'public webhook URL, not a credential' },
+    reddit: { REDDIT_SUBREDDIT: 'listener config value, not a credential' },
+    twitch: { TWITCH_USER_ID: 'listener config value, not a credential' },
+    x: { X_SEARCH_QUERY: 'listener config value, not a credential' },
+  };
+
+  it.each(templates)(
+    '$alias: every secret is withheld unless intentionally substitutable',
+    ({ alias, route }) => {
+      const withheld = withheldSecretNames(route);
+      const substitutable = Object.keys(route.secrets ?? {})
+        .filter((name) => !withheld.has(name))
+        .sort();
+      expect(substitutable).toEqual(Object.keys(INTENTIONALLY_SUBSTITUTABLE[alias] ?? {}).sort());
     },
   );
 
@@ -302,6 +352,7 @@ describe('built-in templates under header-only withholding', () => {
     expect(w('github').has('GITHUB_WEBHOOK_SECRET')).toBe(true);
     expect(w('discord-oauth').has('DISCORD_OAUTH_TOKEN')).toBe(true);
     expect(w('slack').has('SLACK_BOT_TOKEN')).toBe(true);
+    expect(w('slack').has('SLACK_APP_TOKEN')).toBe(true);
     expect(w('stripe').has('STRIPE_WEBHOOK_SECRET')).toBe(true);
     // Query-param / path auth: must stay substitutable.
     expect(w('trello').has('TRELLO_API_KEY')).toBe(false);
@@ -379,5 +430,248 @@ describe('URL-auth templates still substitute through executeProxyRequest', () =
     await expect(
       executeProxyRequest({ method: 'GET', url: `${base}/repos/\${GITHUB_TOKEN}` }, r),
     ).rejects.toThrow('withholds');
+  });
+});
+
+// ── Review follow-ups ────────────────────────────────────────────────────
+
+describe('withholding edge cases', () => {
+  let server: http.Server;
+  let base: string;
+  let received: Received[] = [];
+  /** Response the server sends next: status, reason phrase, type, raw body. */
+  let reply: { status?: number; reason?: string; type: string; body: string };
+
+  beforeAll(async () => {
+    server = http.createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (c: Buffer) => chunks.push(c));
+      req.on('end', () => {
+        received.push({
+          url: req.url!,
+          headers: req.headers,
+          body: Buffer.concat(chunks).toString(),
+        });
+        res.statusCode = reply.status ?? 200;
+        if (reply.reason) res.statusMessage = reply.reason;
+        res.setHeader('content-type', reply.type);
+        res.end(reply.body);
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  beforeEach(() => {
+    received = [];
+    reply = { type: 'application/json', body: '{"ok":true}' };
+  });
+
+  function routes(overrides: Partial<Route> = {}): ResolvedRoute[] {
+    return resolveRoutes([
+      {
+        alias: 'svc',
+        headers: { Authorization: 'Bearer ${API_TOKEN}' },
+        secrets: { API_TOKEN: TOKEN, ACCOUNT_ID: OTHER },
+        allowedEndpoints: [`${base}/**`],
+        ...overrides,
+      },
+    ]);
+  }
+
+  /** A built-in template, pointed at the local server. */
+  function template(alias: string, secrets: Record<string, string>): ResolvedRoute[] {
+    const raw = loadConnection(alias);
+    const rewrite = (u: string) => u.replace(/^https:\/\/[^/]+/, base);
+    return resolveRoutes([
+      {
+        ...raw,
+        alias,
+        secrets,
+        allowedEndpoints: [`${base}/**`],
+        ...(raw.testIngestor?.request && {
+          testIngestor: {
+            ...raw.testIngestor,
+            request: { ...raw.testIngestor.request, url: rewrite(raw.testIngestor.request.url) },
+          },
+        }),
+      },
+    ]);
+  }
+
+  const ctx = { callerAlias: 'x' } as ToolContext;
+
+  it('slack: SLACK_APP_TOKEN is withheld, so a postMessage echo is rejected', async () => {
+    const r = template('slack', {
+      SLACK_BOT_TOKEN: 'xoxb-bot-123',
+      SLACK_APP_TOKEN: 'xapp-app-456',
+    });
+    await expect(
+      executeProxyRequest(
+        {
+          method: 'POST',
+          url: `${base}/api/chat.postMessage?channel=C1&text=\${SLACK_APP_TOKEN}`,
+        },
+        r,
+      ),
+    ).rejects.toThrow('withholds');
+    expect(received).toHaveLength(0);
+  });
+
+  it("slack: test_ingestor sends the app token in place of the route's bot token", async () => {
+    const r = template('slack', {
+      SLACK_BOT_TOKEN: 'xoxb-bot-123',
+      SLACK_APP_TOKEN: 'xapp-app-456',
+    });
+    const result = (await dispatchTool('test_ingestor', { connection: 'slack' }, r, ctx)) as {
+      success: boolean;
+    };
+    expect(result.success).toBe(true);
+    expect(received).toHaveLength(1);
+    expect(received[0].url).toBe('/api/apps.connections.open');
+    expect(received[0].headers.authorization).toBe('Bearer xapp-app-456');
+  });
+
+  it('a template test request may use a withheld secret; the agent may not', async () => {
+    const r = routes({
+      testConnection: { url: `${base}/check?t=\${API_TOKEN}`, description: 'test' },
+    });
+    reply = { type: 'application/json', body: JSON.stringify({ echoed: TOKEN }) };
+    const result = (await dispatchTool('test_connection', { connection: 'svc' }, r, ctx)) as {
+      success: boolean;
+    };
+    expect(result.success).toBe(true);
+    expect(decodeURIComponent(received[0].url)).toBe(`/check?t=${TOKEN}`);
+    expect(JSON.stringify(result)).not.toContain(TOKEN);
+    await expect(
+      executeProxyRequest({ method: 'GET', url: `${base}/check?t=\${API_TOKEN}` }, r),
+    ).rejects.toThrow('withholds');
+  });
+
+  it('a template test request runs on its own route only', async () => {
+    // `first` matches every URL and would win routes-wide matching.
+    const [first] = resolveRoutes([
+      {
+        alias: 'first',
+        secrets: { API_TOKEN: 'first-route-token' },
+        allowedEndpoints: [`${base}/**`],
+      },
+    ]);
+    const own = routes({ testConnection: { url: `${base}/own`, description: 'test' } });
+    await dispatchTool('test_connection', { connection: 'svc' }, [first, ...own], ctx);
+    expect(received[0].headers.authorization).toBe(`Bearer ${TOKEN}`);
+  });
+
+  it('a short header value does not withhold or scrub unrelated secrets (containment floor)', async () => {
+    const r = routes({
+      headers: { Authorization: 'Bearer ${API_TOKEN}', 'X-Api-Version': '${API_VERSION}' },
+      secrets: { API_TOKEN: TOKEN, API_VERSION: '2', ACCOUNT_ID: 'acct-12345' },
+    });
+    expect(Object.keys(substitutableSecrets(r[0]))).toEqual(['ACCOUNT_ID']);
+    reply = { type: 'application/json', body: JSON.stringify({ id: 'acct-12345', v: 2 }) };
+    const res = await executeProxyRequest({ method: 'GET', url: `${base}/a/\${ACCOUNT_ID}` }, r);
+    expect(received[0].url).toBe('/a/acct-12345');
+    expect(res.body).toEqual({ id: 'acct-12345', v: 2 });
+  });
+
+  it('placeholderSecrets cannot release a signatureSecret or a withheldSecrets entry', () => {
+    const route: Route = {
+      alias: 'hook',
+      headers: { Authorization: 'Bearer ${API_TOKEN}' },
+      secrets: { API_TOKEN: TOKEN, HOOK: 'hook-secret', EXTRA: 'extra-secret' },
+      withheldSecrets: ['EXTRA'],
+      placeholderSecrets: ['API_TOKEN', 'HOOK', 'EXTRA'],
+      ingestor: { type: 'webhook', webhook: { path: 'p', signatureSecret: 'HOOK' } },
+      allowedEndpoints: [],
+    };
+    expect([...withheldSecretNames(route)].sort()).toEqual(['EXTRA', 'HOOK']);
+    const warnings = connectorWithholdingWarnings(route);
+    expect(warnings).toHaveLength(2);
+    expect(warnings.join('\n')).toContain('placeholderSecrets lists "HOOK"');
+    expect(warnings.join('\n')).toContain('placeholderSecrets lists "EXTRA"');
+  });
+
+  it('warns about a custom connector whose description uses a withheld secret', () => {
+    const route: Route = {
+      alias: 'legacy',
+      description: 'Call https://api.example.com/v1/items?key=${API_KEY}',
+      headers: { 'X-Api-Key': '${API_KEY}' },
+      secrets: { API_KEY: 'k-123456', OTHER: 'o-123456' },
+      placeholderSecrets: ['OTHER'],
+      allowedEndpoints: [],
+    };
+    const warnings = connectorWithholdingWarnings(route);
+    expect(warnings).toHaveLength(2);
+    expect(warnings[0]).toMatch(/Connector "legacy".*\$\{API_KEY\}.*placeholderSecrets/);
+    expect(warnings[1]).toContain('"OTHER", which its headers don\'t reference');
+    // Fixed by the escape hatch.
+    expect(connectorWithholdingWarnings({ ...route, placeholderSecrets: ['API_KEY'] })).toEqual([]);
+  });
+
+  it('the rejection points at withheldSecretNames and logs the connection for the operator', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const r = routes({
+        secrets: { API_TOKEN: TOKEN, HOOK: 'hook-secret' },
+        ingestor: { type: 'webhook', webhook: { path: 'p', signatureSecret: 'HOOK' } },
+      });
+      const err = await executeProxyRequest({ method: 'GET', url: `${base}/\${HOOK}` }, r).catch(
+        (e: unknown) => e as Error,
+      );
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).message).toContain('withheldSecretNames in list_routes');
+      expect((err as Error).message).not.toContain('Header-only');
+      expect(spy.mock.calls.flat().join(' ')).toMatch(
+        /connection "svc".*\$\{HOOK\}.*placeholderSecrets/,
+      );
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('scrubs statusText', async () => {
+    reply = {
+      status: 404,
+      reason: `No file ${TOKEN.replace(/[^\x21-\x7e]/g, '')}`,
+      type: 'text/plain',
+      body: '',
+    };
+    const res = await executeProxyRequest({ method: 'GET', url: `${base}/x` }, routes());
+    expect(res.statusText).toBe('No file ${API_TOKEN}');
+  });
+
+  it('parses +json bodies so \\u escapes are decoded and scrubbed', async () => {
+    // TOKEN is ASCII, so one UTF-16 code unit per character.
+    const escaped = Array.from(
+      { length: TOKEN.length },
+      (_, i) => `\\u${TOKEN.charCodeAt(i).toString(16).padStart(4, '0')}`,
+    ).join('');
+    reply = {
+      type: 'application/problem+json; charset=utf-8',
+      body: `{"title":"Not found","detail":"${escaped}"}`,
+    };
+    const res = await executeProxyRequest({ method: 'GET', url: `${base}/x` }, routes());
+    expect(res.body).toEqual({ title: 'Not found', detail: '${API_TOKEN}' });
+  });
+
+  it('returns a +json body that does not parse as text, still scrubbed', async () => {
+    reply = { type: 'application/vnd.api+json', body: `not json ${TOKEN}` };
+    const res = await executeProxyRequest({ method: 'GET', url: `${base}/x` }, routes());
+    expect(res.body).toBe('not json ${API_TOKEN}');
+  });
+
+  it('scrubs JSON-escaped and \\/-escaped forms from text bodies', async () => {
+    const quoted = 'tok"en/with\\specials';
+    const r = routes({ secrets: { API_TOKEN: quoted } });
+    const jsonForm = JSON.stringify(quoted).slice(1, -1);
+    const slashForm = jsonForm.replace(/\//g, '\\/');
+    reply = { type: 'text/html', body: `<pre>{"a":"${jsonForm}","b":"${slashForm}"}</pre>` };
+    const res = await executeProxyRequest({ method: 'GET', url: `${base}/x` }, r);
+    expect(res.body).toBe('<pre>{"a":"${API_TOKEN}","b":"${API_TOKEN}"}</pre>');
+    expect(scrubSecrets(slashForm, { API_TOKEN: quoted })).toBe('${API_TOKEN}');
   });
 });

@@ -28,7 +28,7 @@ const SERVER_ENTRY = join(PKG_ROOT, "dist/remote/server.js");
 const GENERATE_KEYS_ENTRY = join(PKG_ROOT, "dist/cli/generate-keys.js");
 
 // Import config helpers from compiled drawlatch code
-const { getConfigDir, getEnvFilePath, getCallerKeysDir, getServerKeysDir, getProxyConfigPath, getRemoteConfigPath, loadProxyConfig, loadRemoteConfig, STOP_KILL_AFTER_MS } = await import(
+const { getConfigDir, getEnvFilePath, getCallerKeysDir, getServerKeysDir, getProxyConfigPath, getRemoteConfigPath, loadProxyConfig, loadRemoteConfig, connectorWithholdingWarnings, STOP_KILL_AFTER_MS } = await import(
   join(PKG_ROOT, "dist/shared/config.js")
 );
 
@@ -844,6 +844,22 @@ async function cmdDoctor() {
             check(`  ${callerAlias}/${connName}: ${secret}`, isSet, `Set ${secret} in ${ENV_FILE}`);
           }
         }
+      }
+    } catch { /* skip */ }
+  }
+
+  // 9b. Custom connectors affected by secret withholding (header secrets
+  // can't be referenced in requests; placeholderSecrets is the escape hatch).
+  if (hasRemoteConfig) {
+    try {
+      const config = loadRemoteConfig();
+      for (const connector of config.connectors ?? []) {
+        const warnings = connectorWithholdingWarnings(connector);
+        check(
+          `Connector "${connector.alias ?? connector.name ?? "(unnamed)"}": withheld secrets`,
+          warnings.length === 0,
+          warnings.join("\n    -> "),
+        );
       }
     } catch { /* skip */ }
   }

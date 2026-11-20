@@ -10,7 +10,7 @@ Then set the secrets for that caller. Caller `default` reads `GITHUB_TOKEN` from
 
 ## Available connections
 
-**Bold** secrets are needed for API calls. The others are used only by the event listener, if at all. `doctor`, `config`, and the dashboard flag missing secrets only for built-in templates, and only those used in headers, so they won't catch a missing Telegram or Trello token. (`aws` is the exception: its signing keys count as required.) Set `<ALIAS>_<NAME>` even where `doctor` prints the bare name. Header secrets, and listener `signatureSecret`s, are [header-only](README.md#header-only-secrets): the agent can't reference them as `${NAME}` in a request, and they're scrubbed from response bodies. Listener types are described in [INGESTORS.md](INGESTORS.md).
+**Bold** secrets are needed for API calls. The others are used only by the event listener, if at all. `doctor`, `config`, and the dashboard flag missing secrets only for built-in templates, and only those used in headers, so they won't catch a missing Telegram or Trello token. (`aws` is the exception: its signing keys count as required.) Set `<ALIAS>_<NAME>` even where `doctor` prints the bare name. Header secrets, listener `signatureSecret`s, and Slack's `SLACK_APP_TOKEN` are [withheld](README.md#header-only-secrets): the agent can't reference them as `${NAME}` in a request, and they're scrubbed from response bodies and listener events. That includes public values sent in headers, such as Twitch's `TWITCH_CLIENT_ID` and Reddit's `REDDIT_USER_AGENT`, which appear in responses as `${NAME}`; a custom connector can opt one out with `placeholderSecrets`. Listener types are described in [INGESTORS.md](INGESTORS.md).
 
 | Connection | API | Secrets | Auth | Listener |
 | --- | --- | --- | --- | --- |
@@ -91,7 +91,7 @@ Some GitHub endpoints answer with a 302 to another host: release-asset downloads
 
 **Reddit.** Set `REDDIT_USER_AGENT` to something like `platform:myapp:v1.0 (by /u/you)`. Register a "script" app at [reddit.com/prefs/apps](https://www.reddit.com/prefs/apps), then get a token from `https://www.reddit.com/api/v1/access_token` using HTTP Basic auth and `grant_type=client_credentials` (or `password`). Tokens last 1 hour; rotate them yourself. The listener polls `/r/<subreddit>/new`. It takes the subreddit from the `subreddit` listener param or `REDDIT_SUBREDDIT`, and fails without one. Disable it with `ingestorOverrides` if you don't need it. Rate limit: 100 requests per minute.
 
-**Slack.** `SLACK_BOT_TOKEN` (`xoxb-…`) is used for API calls. The Socket Mode listener also needs `SLACK_APP_TOKEN` (`xapp-…`, an app-level token with `connections:write`) and Socket Mode enabled in the [app settings](https://api.slack.com/apps).
+**Slack.** `SLACK_BOT_TOKEN` (`xoxb-…`) is used for API calls. The Socket Mode listener also needs `SLACK_APP_TOKEN` (`xapp-…`, an app-level token with `connections:write`) and Socket Mode enabled in the [app settings](https://api.slack.com/apps). The app token is withheld from requests (`withheldSecrets`), since only the listener uses it.
 
 **Stripe.** For the webhook listener, set `STRIPE_WEBHOOK_SECRET` (`whsec_…`) and point a Stripe webhook at `https://<host>/webhooks/stripe`.
 

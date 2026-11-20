@@ -12,6 +12,7 @@
     "SLACK_BOT_TOKEN": "${SLACK_BOT_TOKEN}",
     "SLACK_APP_TOKEN": "${SLACK_APP_TOKEN}"
   },
+  "withheldSecrets": ["SLACK_APP_TOKEN"],
   "allowedEndpoints": [
     "https://slack.com/api/**"
   ],

@@ -25,8 +25,10 @@ import {
   saveRemoteConfig,
   resolvePlaceholders,
   scrubSecrets,
+  scrubSecretsDeep,
   signerOnlySecretNames,
   substitutableSecrets,
+  templateSecrets,
   withheldSecretValues,
   DEFAULT_OUTBOUND_TIMEOUT_MS,
   MAX_OUTBOUND_TIMEOUT_MS,
@@ -251,62 +253,51 @@ function leaksSecret(err: Error, secrets: Record<string, string>): boolean {
 interface WithheldNames {
   /** Consumed by drawlatch's own auth machinery (AWS SigV4 signing keys). */
   signerOnly: Set<string>;
-  /** Everything else withheld: header-only secrets, webhook signing secrets,
-   *  and the route's explicit `withheldSecrets`. */
-  headerOnly: Set<string>;
+  /** Every other withheld secret: ones the route's headers inject, the webhook
+   *  `signatureSecret`, the route's `withheldSecrets`, and any secret whose
+   *  value contains one of those. */
+  withheld: Set<string>;
 }
 
 /**
  * Reject `text` if it references a secret the route withholds from
  * substitution. Failing loudly beats sending the literal placeholder: the
- * caller learns why, and nothing leaves the daemon.
+ * caller learns why, and nothing leaves the daemon. The daemon log names the
+ * connection too, so an operator whose custom connector relied on the old
+ * behaviour can find it (and the `placeholderSecrets` escape hatch).
  */
-function assertNoWithheldSecrets(text: string, withheld: WithheldNames, where: string): void {
-  if (withheld.signerOnly.size === 0 && withheld.headerOnly.size === 0) return;
+function assertNoWithheldSecrets(
+  text: string,
+  names: WithheldNames,
+  where: string,
+  connection: string | undefined,
+): void {
+  if (names.signerOnly.size === 0 && names.withheld.size === 0) return;
   for (const match of text.matchAll(/\$\{(\w+)\}/g)) {
     const name = match[1];
-    if (withheld.signerOnly.has(name)) {
+    if (names.signerOnly.has(name)) {
       throw new Error(
         `${where} references \${${name}}, a signing credential of this AWS SigV4 route. ` +
           'Signing credentials are only used to sign requests and are never substituted ' +
           'into URLs, headers, or bodies.',
       );
     }
-    if (withheld.headerOnly.has(name)) {
+    if (names.withheld.has(name)) {
+      console.error(
+        `[tool-dispatch] Rejected a request on connection "${connection ?? '?'}": ` +
+          `it references withheld secret \${${name}}. If this connection's API needs it ` +
+          "in the URL or body, list it in the connector's placeholderSecrets.",
+      );
       throw new Error(
         `${where} references \${${name}}, a secret this connection withholds from requests. ` +
-          'Header-only secrets are injected by the connection itself (see autoHeaders in ' +
-          'list_routes) and are never substituted into request URLs, headers, or bodies, ' +
-          'where an upstream could echo the value back. Remove the placeholder: the ' +
-          'connection already authenticates the request.',
+          'Withheld secrets (withheldSecretNames in list_routes) are used by the connection ' +
+          'itself, for example injected through its own headers or used to verify webhooks, ' +
+          'and are never substituted into request URLs, headers, or bodies, where an ' +
+          'upstream could echo the value back. Remove the placeholder; if the connection ' +
+          'injects it, the request is already authenticated.',
       );
     }
   }
-}
-
-/**
- * Replace withheld secret values in a response body with their placeholders.
- *
- * Defense in depth behind assertNoWithheldSecrets(): even when the caller never
- * names a header-only token, an upstream can still return it (an echoed
- * request, a token-introspection endpoint). JSON bodies are walked rather than
- * serialized and re-parsed, so a value that happens to contain JSON syntax
- * can't corrupt the structure; string leaves and object keys are scrubbed.
- */
-function scrubBody(body: unknown, secrets: Record<string, string>, depth = 0): unknown {
-  if (typeof body === 'string') return scrubSecrets(body, secrets);
-  if (body === null || typeof body !== 'object') return body;
-  // Pathologically deep JSON: stop recursing, but still scrub, by returning
-  // the subtree as scrubbed JSON text. Failing open here would hide a token
-  // behind 65 levels of nesting.
-  if (depth >= 64) return scrubSecrets(JSON.stringify(body), secrets);
-  if (Array.isArray(body)) return body.map((v) => scrubBody(v, secrets, depth + 1));
-  return Object.fromEntries(
-    Object.entries(body as Record<string, unknown>).map(([k, v]) => [
-      scrubSecrets(k, secrets),
-      scrubBody(v, secrets, depth + 1),
-    ]),
-  );
 }
 
 /** Header values fetch() rejects — and echoes back in full when it does. */
@@ -396,12 +387,28 @@ function crossOriginSafeHeaders(
  * `test_connection` that expose no `timeoutMs` of their own. Omitted means
  * "no clamp": see applyOutboundBudget.
  */
+export interface ProxyRequestOptions {
+  /** The request comes from the connection's own template (testConnection,
+   *  testIngestor, listenerConfig dynamicOptions), not from the agent. Pass
+   *  only the owning route. Such a request may use withheld secrets (never
+   *  signing credentials), and its headers override the route's headers of
+   *  the same name instead of conflicting with them: Slack's testIngestor
+   *  sends its app token in place of the bot token. The response is still
+   *  scrubbed of withheld values. */
+  templateAuthored?: boolean;
+}
+
 export async function executeProxyRequest(
   input: ProxyRequestInput,
   routes: ResolvedRoute[],
   outboundBudgetMs?: number,
+  options: ProxyRequestOptions = {},
 ): Promise<ProxyRequestResult> {
   const { method, url, headers = {}, body, files, bodyFieldName, timeoutMs } = input;
+  const templateAuthored = options.templateAuthored === true;
+  /** What this request may substitute on a given route. */
+  const usable = (route: ResolvedRoute) =>
+    templateAuthored ? templateSecrets(route) : substitutableSecrets(route);
 
   // Step 1: Find matching route — try raw URL first
   let matched: ResolvedRoute | null = matchRoute(url, routes);
@@ -409,12 +416,12 @@ export async function executeProxyRequest(
 
   if (matched) {
     // Resolve URL placeholders using matched route's secrets
-    resolvedUrl = resolvePlaceholders(url, substitutableSecrets(matched));
+    resolvedUrl = resolvePlaceholders(url, usable(matched));
   } else {
     // Try resolving URL with each route's secrets to find a match
     for (const route of routes) {
       if (route.allowedEndpoints.length === 0) continue;
-      const candidateUrl = resolvePlaceholders(url, substitutableSecrets(route));
+      const candidateUrl = resolvePlaceholders(url, usable(route));
       if (isEndpointAllowed(candidateUrl, route.allowedEndpoints)) {
         matched = route;
         resolvedUrl = candidateUrl;
@@ -430,33 +437,34 @@ export async function executeProxyRequest(
   // Secrets this route may substitute, and the ones it withholds (signing
   // credentials, header-only secrets). A reference to a withheld one anywhere
   // it would otherwise be resolved is rejected outright.
-  const secrets = substitutableSecrets(matched);
+  const secrets = usable(matched);
   const signerOnly = signerOnlySecretNames(matched);
-  const withheld: WithheldNames = {
-    signerOnly,
-    headerOnly: new Set(
-      Object.keys(matched.secrets).filter((name) => !(name in secrets) && !signerOnly.has(name)),
-    ),
-  };
-  assertNoWithheldSecrets(url, withheld, 'The request URL');
+  const noneWithheld: WithheldNames = { signerOnly, withheld: new Set() };
+  const withheld: WithheldNames = templateAuthored
+    ? noneWithheld
+    : { signerOnly, withheld: new Set(Object.keys(withheldSecretValues(matched))) };
+  for (const name of signerOnly) withheld.withheld.delete(name);
+  const connection = matched.alias;
+  assertNoWithheldSecrets(url, withheld, 'The request URL', connection);
   // Route headers were resolved with everything but the signer-only secrets,
   // so a placeholder left in one can only name a signing credential.
-  const signerOnlyOnly: WithheldNames = { signerOnly, headerOnly: new Set() };
   for (const [k, v] of Object.entries(matched.headers)) {
-    assertNoWithheldSecrets(v, signerOnlyOnly, `Connection header "${k}"`);
+    assertNoWithheldSecrets(v, noneWithheld, `Connection header "${k}"`, connection);
   }
 
   // Step 2: Resolve client headers using matched route's secrets
   const resolvedHeaders: Record<string, string> = {};
   for (const [k, v] of Object.entries(headers)) {
-    assertNoWithheldSecrets(v, withheld, `Header "${k}"`);
+    assertNoWithheldSecrets(v, withheld, `Header "${k}"`, connection);
     resolvedHeaders[k] = resolvePlaceholders(v, secrets);
   }
 
   // Step 3: Check for header conflicts — reject if client provides a header
-  // that conflicts with a route-level header (case-insensitive)
+  // that conflicts with a route-level header (case-insensitive). A template's
+  // own request overrides the route header instead (see ProxyRequestOptions).
   const routeHeaderKeys = new Set(Object.keys(matched.headers).map((k) => k.toLowerCase()));
-  for (const clientKey of Object.keys(resolvedHeaders)) {
+  const clientHeaderKeys = new Set(Object.keys(resolvedHeaders).map((k) => k.toLowerCase()));
+  for (const clientKey of templateAuthored ? [] : Object.keys(resolvedHeaders)) {
     if (routeHeaderKeys.has(clientKey.toLowerCase())) {
       throw new Error(
         `Header conflict: client-provided header "${clientKey}" conflicts with a route-level header. Remove it from the request.`,
@@ -491,6 +499,7 @@ export async function executeProxyRequest(
 
   // Step 4: Merge route-level headers (they take effect after conflict check)
   for (const [k, v] of Object.entries(matched.headers)) {
+    if (templateAuthored && clientHeaderKeys.has(k.toLowerCase())) continue;
     resolvedHeaders[k] = v;
   }
 
@@ -525,7 +534,7 @@ export async function executeProxyRequest(
     if (body !== null && body !== undefined) {
       const serialized = typeof body === 'string' ? body : JSON.stringify(body);
       if (matched.resolveSecretsInBody) {
-        assertNoWithheldSecrets(serialized, withheld, 'The request body');
+        assertNoWithheldSecrets(serialized, withheld, 'The request body', connection);
       }
       const resolvedPayload = matched.resolveSecretsInBody
         ? resolvePlaceholders(serialized, secrets)
@@ -550,14 +559,14 @@ export async function executeProxyRequest(
     // ── Standard JSON/string body ──
     if (typeof body === 'string') {
       if (matched.resolveSecretsInBody) {
-        assertNoWithheldSecrets(body, withheld, 'The request body');
+        assertNoWithheldSecrets(body, withheld, 'The request body', connection);
       }
       fetchBody = matched.resolveSecretsInBody ? resolvePlaceholders(body, secrets) : body;
       bodyCarriesSecrets = fetchBody !== body;
     } else if (body !== null && body !== undefined) {
       const serialized = JSON.stringify(body);
       if (matched.resolveSecretsInBody) {
-        assertNoWithheldSecrets(serialized, withheld, 'The request body');
+        assertNoWithheldSecrets(serialized, withheld, 'The request body', connection);
       }
       fetchBody = matched.resolveSecretsInBody
         ? resolvePlaceholders(serialized, secrets)
@@ -627,10 +636,26 @@ export async function executeProxyRequest(
       ...(matched.awsSigV4 && { maxRedirects: 0 }),
     });
 
-    const contentType = resp.headers.get('content-type') ?? '';
-    const rawBody: unknown = contentType.includes('application/json')
-      ? await resp.json()
-      : await resp.text();
+    // `application/json` and structured-syntax `+json` types
+    // (`application/problem+json`, `application/vnd.api+json`) are parsed,
+    // which also decodes `\uXXXX` escapes so the scrub below sees the real
+    // characters. A `+json` body that doesn't parse comes back as text, as it
+    // did before; invalid `application/json` still throws, as resp.json() did.
+    const contentType = (resp.headers.get('content-type') ?? '').toLowerCase();
+    const mediaType = contentType.split(';')[0].trim();
+    let rawBody: unknown;
+    if (contentType.includes('application/json')) {
+      rawBody = JSON.parse(await resp.text());
+    } else if (mediaType.endsWith('+json')) {
+      const text = await resp.text();
+      try {
+        rawBody = JSON.parse(text);
+      } catch {
+        rawBody = text;
+      }
+    } else {
+      rawBody = await resp.text();
+    }
     // Withheld secrets only. The substitutable ones are the caller's to use by
     // design (Trello's `?token=`, Telegram's bot token, a resolveSecretsInBody
     // write the caller reads back), and many are plain config values
@@ -638,11 +663,12 @@ export async function executeProxyRequest(
     // responses; scrubbing those would corrupt data and protect nothing.
     const withheldValues = withheldSecretValues(matched);
     const responseBody =
-      Object.keys(withheldValues).length > 0 ? scrubBody(rawBody, withheldValues) : rawBody;
+      Object.keys(withheldValues).length > 0 ? scrubSecretsDeep(rawBody, withheldValues) : rawBody;
 
     return {
       status: resp.status,
-      statusText: resp.statusText,
+      // A reason phrase is upstream-controlled text like any other.
+      statusText: scrubSecrets(resp.statusText, matched.secrets),
       // A refused redirect's `Location` can carry a substituted secret back
       // (`?key=sk-…`), and so can any header an upstream echoes. The body is
       // scrubbed above, of withheld secrets only.
@@ -910,8 +936,11 @@ export const toolHandlers: Record<string, ToolHandler> = {
           headers: testConfig.headers,
           body: testConfig.body,
         },
-        routes,
+        // The template's own request: its route only, and it may use withheld
+        // secrets (see ProxyRequestOptions).
+        [route],
         context.outboundBudgetMs,
+        { templateAuthored: true },
       );
 
       const isSuccess = expectedStatus.includes(result.status);
@@ -1031,8 +1060,9 @@ export const toolHandlers: Record<string, ToolHandler> = {
               headers: testConfig.request.headers,
               body: testConfig.request.body,
             },
-            routes,
+            [route],
             context.outboundBudgetMs,
+            { templateAuthored: true },
           );
 
           const isSuccess = expectedStatus.includes(result.status);
@@ -1115,8 +1145,11 @@ export const toolHandlers: Record<string, ToolHandler> = {
     try {
       const result = await executeProxyRequest(
         { method, url, headers: {}, body },
-        routes,
+        // The template's own request: its route only, and it may use withheld
+        // secrets (see ProxyRequestOptions).
+        [route],
         context.outboundBudgetMs,
+        { templateAuthored: true },
       );
 
       // Navigate to the response path to find the items array
