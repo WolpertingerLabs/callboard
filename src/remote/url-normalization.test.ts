@@ -91,6 +91,66 @@ describe('dot segments in request paths', () => {
     expect(received).toHaveLength(1);
   });
 
+  it.each([
+    ['a tab inside a dot segment', '/calendar/v3/.\t./.\t./drive/v3/files'],
+    ['a newline inside a dot segment', '/calendar/v3/.\n./.\n./drive/v3/files'],
+    ['a carriage return inside a dot segment', '/calendar/v3/.\r./.\r./drive/v3/files'],
+    ['a tab in the host', '/calendar/v3/events'.replace('/calendar', '\t/calendar')],
+    ['a NUL', '/calendar/v3/events\u0000'],
+    ['a DEL', '/calendar/v3/ev\u007fents'],
+  ])('rejects %s without sending anything', async (_label, path) => {
+    // The bypass: once parsed, the control characters are gone.
+    if (path.includes('.\t.')) {
+      expect(new URL(`${base}${path}`).pathname).toBe('/drive/v3/files');
+      expect(isEndpointAllowed(`${base}${path}`, [`${base}/calendar/v3/**`])).toBe(true);
+    }
+    await expect(
+      executeProxyRequest({ method: 'GET', url: `${base}${path}` }, calendarOnly()),
+    ).rejects.toThrow(/control character/);
+    expect(received).toEqual([]);
+  });
+
+  it('rejects control characters that arrive through a substituted secret', async () => {
+    const routes = resolveRoutes([
+      {
+        alias: 'calendar',
+        secrets: { SEG: '.\t.' },
+        allowedEndpoints: [`${base}/calendar/v3/**`],
+      },
+    ]);
+    await expect(
+      executeProxyRequest(
+        { method: 'GET', url: `${base}/calendar/v3/\${SEG}/\${SEG}/drive/v3/files` },
+        routes,
+      ),
+    ).rejects.toThrow(/control character/);
+    expect(received).toEqual([]);
+  });
+
+  it('sends exactly the normalized URL it checked', async () => {
+    const host = base.replace('127.0.0.1', '127.0.0.1');
+    await executeProxyRequest(
+      { method: 'GET', url: `${host.toUpperCase().replace('HTTP', 'http')}/calendar/v3/a b|c` },
+      calendarOnly(),
+    );
+    expect(received).toEqual(['/calendar/v3/a%20b|c']);
+  });
+
+  it('keeps a %2F inside a segment as sent', async () => {
+    await executeProxyRequest(
+      { method: 'GET', url: `${base}/calendar/v3/projects/group%2Fproject/issues` },
+      calendarOnly(),
+    );
+    expect(received).toEqual(['/calendar/v3/projects/group%2Fproject/issues']);
+  });
+
+  it('refuses a URL that does not parse', async () => {
+    const routes = resolveRoutes([{ alias: 'any', allowedEndpoints: ['**'] }]);
+    await expect(
+      executeProxyRequest({ method: 'GET', url: '/relative/path' }, routes),
+    ).rejects.toThrow(/not a valid absolute URL/);
+  });
+
   it('applies on routes without a path in their patterns too', async () => {
     const routes = resolveRoutes([{ alias: 'any', allowedEndpoints: [`${base}/**`] }]);
     await expect(

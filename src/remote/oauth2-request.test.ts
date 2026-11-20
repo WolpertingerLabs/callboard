@@ -309,6 +309,14 @@ describe('oauth2 routes on the request path', () => {
     expectNoCredentials(result);
   });
 
+  it('refuses a control-character path trick without minting', async () => {
+    await expect(
+      executeProxyRequest(GET('/api/.\t./.\t./admin'), routes(), undefined, { caller: 'alice' }),
+    ).rejects.toThrow(/control character/);
+    expect(tokenRequests).toHaveLength(0);
+    expect(apiRequests).toHaveLength(0);
+  });
+
   it('does not loop on a persistent 401', async () => {
     const result = await executeProxyRequest(GET('/api/always401'), routes(), undefined, {
       caller: 'alice',

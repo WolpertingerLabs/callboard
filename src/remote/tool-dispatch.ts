@@ -58,64 +58,13 @@ import {
 } from './oauth/authenticate.js';
 import type { IngestorManager } from './ingestors/index.js';
 import { safeFetch } from './safe-fetch.js';
+import { assertNoControlChars, isEndpointAllowed, normalizeOutboundUrl } from './url-policy.js';
 import { waitForEvents } from './wait-for-events.js';
 
 // ── Endpoint matching ────────────────────────────────────────────────────────
 
-export function isEndpointAllowed(url: string, patterns: string[]): boolean {
-  if (patterns.length === 0) return true; // no restrictions if empty
-  return patterns.some((pattern) => {
-    // Support simple glob patterns: * matches anything within a segment, ** matches across segments
-    const regex = new RegExp(
-      '^' +
-        pattern
-          .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
-          .replace(/\*\*/g, '.__DOUBLE_STAR__.')
-          .replace(/\*/g, '[^/]*')
-          .replace(/\.__DOUBLE_STAR__\./g, '.*') +
-        '$',
-    );
-    return regex.test(url) && wildcardHostMatches(url, pattern);
-  });
-}
-
-/**
- * Re-check a pattern whose host contains a wildcard against the host the URL
- * actually parses to.
- *
- * In the string match, a `*` in the host also matches `?`, `#`, and `@`, so
- * `https://*.amazonaws.com/**` alone would accept
- * `https://evil.example?.amazonaws.com/`, which fetch() sends to evil.example.
- * Here a host wildcard only matches characters a parsed host can contain.
- * Patterns without a scheme or without a host wildcard pass through unchanged.
- */
-function wildcardHostMatches(url: string, pattern: string): boolean {
-  const m = /^([a-z][a-z0-9+.-]*):\/\/([^/]*)/i.exec(pattern);
-  if (!m?.[2].includes('*')) return true;
-
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return false;
-  }
-  const scheme = m[1].toLowerCase();
-  if (parsed.protocol !== `${scheme}:`) return false;
-
-  // `parsed.host` omits a default port, so drop one written into the pattern.
-  const defaultPort = scheme === 'https' ? ':443' : scheme === 'http' ? ':80' : null;
-  let authority = m[2].toLowerCase();
-  if (defaultPort && authority.endsWith(defaultPort)) {
-    authority = authority.slice(0, -defaultPort.length);
-  }
-
-  const hostRegex = new RegExp(
-    '^' +
-      authority.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*+/g, '[a-z0-9_.:[\\]-]*') +
-      '$',
-  );
-  return hostRegex.test(parsed.host);
-}
+// The URL policy lives in url-policy.ts (the poll ingestor shares it).
+export { isEndpointAllowed, normalizeOutboundUrl, pathHasDotSegment } from './url-policy.js';
 
 /**
  * Find the first route whose allowedEndpoints match the given URL.
@@ -319,35 +268,6 @@ function assertNoWithheldSecrets(
   }
 }
 
-/**
- * Reject a URL whose path contains a dot segment (`.` or `..`), counting the
- * forms a URL parser or an upstream treats the same way: `%2e` for `.`, and
- * `%2f`, `%5c`, or `\` for `/`.
- *
- * Allowlist patterns are matched against the URL string as written, but
- * fetch() normalizes `/calendar/v3/../../drive/v3/files` (and `%2e%2e`) to
- * `/drive/v3/files` before sending it. Without this check a path-scoped
- * pattern like `https://www.googleapis.com/calendar/v3/**` would let a request
- * reach another API on the same host. No API needs a dot segment, so it is
- * refused on every route. A lone `%2F` (GitLab's `group%2Fproject`) is fine.
- */
-export function pathHasDotSegment(url: string): boolean {
-  const m = /^[a-z][a-z0-9+.-]*:\/\/[^/?#\\]*([^?#]*)/i.exec(url);
-  const rawPath = m ? m[1] : (/^[^?#]*/.exec(url)?.[0] ?? '');
-  const decoded = rawPath.replace(/%2e/gi, '.').replace(/%2f|%5c|\\/gi, '/');
-  return decoded.split('/').some((segment) => segment === '.' || segment === '..');
-}
-
-function assertNoDotSegments(url: string, shownUrl: string): void {
-  if (pathHasDotSegment(url)) {
-    throw new Error(
-      `Endpoint not allowed: ${shownUrl}. The path contains a "." or ".." segment ` +
-        '(possibly percent-encoded), which would be resolved before sending and could ' +
-        'reach a path the allowlist does not cover. Send the normalized path instead.',
-    );
-  }
-}
-
 /** Header values fetch() rejects — and echoes back in full when it does. */
 const INVALID_HEADER_VALUE = /[\r\n\0]/;
 
@@ -463,6 +383,10 @@ export async function executeProxyRequest(
   /** What this request may substitute on a given route. */
   const usable = (route: ResolvedRoute) =>
     templateAuthored ? templateSecrets(route) : substitutableSecrets(route);
+
+  // Step 0: refuse control characters before anything else looks at the URL
+  // (Step 6 checks the resolved form again).
+  assertNoControlChars(url, url);
 
   // Step 1: Find matching route — try raw URL first
   let matched: ResolvedRoute | null = matchRoute(url, routes);
@@ -659,11 +583,10 @@ export async function executeProxyRequest(
     }
   }
 
-  // Step 6: Final endpoint check on fully resolved URL
-  assertNoDotSegments(resolvedUrl, url);
-  if (!isEndpointAllowed(resolvedUrl, matched.allowedEndpoints)) {
-    throw new Error(`Endpoint not allowed after resolution: ${url}`);
-  }
+  // Step 6: Final endpoint check on the fully resolved URL, after parsing it
+  // the way fetch() will. From here on `resolvedUrl` is the normalized href:
+  // the string the allowlist accepted is exactly the string sent.
+  resolvedUrl = normalizeOutboundUrl(resolvedUrl, matched.allowedEndpoints, url);
 
   // Step 6b: AWS SigV4. Last, so the signature covers the final URL, headers,
   // and body bytes exactly as sent.
