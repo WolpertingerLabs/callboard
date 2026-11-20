@@ -1,9 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Folder } from "lucide-react";
+import { Bot, Folder } from "lucide-react";
 
 interface Props {
   path: string;
+  /**
+   * Label the pill with this agent instead of the folder. ChatListItem shows
+   * an agent chat's agent in place of its branch and folder; the path is
+   * still one hover or tap away in the same bubble, which is how a touch
+   * device — no `title` tooltips — gets to see it at all.
+   */
+  agent?: string;
 }
 
 /**
@@ -14,7 +21,7 @@ interface Props {
  */
 const BUBBLE_MAX_WIDTH = 360;
 
-export default function FolderPathPill({ path }: Props) {
+export default function FolderPathPill({ path, agent }: Props) {
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLSpanElement>(null);
   const triggerRef = useRef<HTMLSpanElement>(null);
@@ -75,7 +82,7 @@ export default function FolderPathPill({ path }: Props) {
     <span ref={wrapperRef} style={{ position: "relative", display: "inline-flex", minWidth: 0 }}>
       <span
         ref={triggerRef}
-        title={path}
+        title={agent ? `Agent: ${agent} — ${path}` : path}
         onMouseEnter={() => setOpen(true)}
         onMouseLeave={() => setOpen(false)}
         onClick={(e) => {
@@ -91,16 +98,18 @@ export default function FolderPathPill({ path }: Props) {
           padding: "0 5px",
           borderRadius: 3,
           background: "var(--chatlist-badge-agent-bg)",
-          color: "var(--chatlist-item-time-text)",
-          maxWidth: 120,
+          fontWeight: agent ? 600 : undefined,
+          color: agent ? "var(--chatlist-badge-agent-text)" : "var(--chatlist-item-time-text)",
+          maxWidth: agent ? 160 : 120,
+          minWidth: 0,
           overflow: "hidden",
-          textOverflow: "ellipsis",
           whiteSpace: "nowrap",
           cursor: "pointer",
         }}
       >
-        <Folder size={10} style={{ flexShrink: 0 }} />
-        {folderName}
+        {agent ? <Bot size={10} style={{ flexShrink: 0 }} /> : <Folder size={10} style={{ flexShrink: 0 }} />}
+        {/* Its own box: `text-overflow` does nothing on a flex container's bare text. */}
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}>{agent ?? folderName}</span>
       </span>
       {/*
        * Portaled to the body for the same reason it is `fixed`: to be governed
