@@ -453,6 +453,29 @@ describe('oauth2 routes on the request path', () => {
       expect(tokenRequests).toHaveLength(0);
     });
 
+    it.each([
+      ['an upper-case host', 'https://WWW.googleapis.example/calendar/v3/users/me'],
+      ['an explicit default port', 'https://www.googleapis.example:443/calendar/v3/users/me'],
+      ['a percent-encoded host', 'https://www%2Egoogleapis.example/calendar/v3/users/me'],
+      ['a trailing-dot host', 'https://www.googleapis.example./calendar/v3/users/me'],
+    ])('refuses the ambiguity written with %s', async (_label, url) => {
+      const both = resolveRoutes(
+        [
+          staticRoute('static', ['https://*.googleapis.example/**']),
+          routeDef({ allowedEndpoints: ['https://www.googleapis.example/calendar/v3/**'] }),
+        ],
+        {},
+        'alice',
+      );
+      await expect(
+        executeProxyRequest({ method: 'GET', url }, both, undefined, { caller: 'alice' }),
+        // A percent-encoded host matches no pattern as written, so it is
+        // refused even before the ambiguity check. Either way nothing is sent.
+      ).rejects.toThrow(/Ambiguous endpoint|Endpoint not allowed/);
+      expect(tokenRequests).toHaveLength(0);
+      expect(apiRequests).toHaveLength(0);
+    });
+
     it('still serves URLs only one of them matches', async () => {
       const both = resolveRoutes(
         [staticRoute('static', [`${apiBase}/other/**`]), routeDef()],

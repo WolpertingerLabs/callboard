@@ -412,26 +412,6 @@ export async function executeProxyRequest(
     throw new Error(`Endpoint not allowed: ${url}`);
   }
 
-  // Step 1b: Overlapping connections. Normally the first match wins, but when
-  // an OAuth2 connection is among the matches, which token (and which
-  // scopes) a request carries would silently depend on list order. Refuse.
-  const overlapping = routes.filter(
-    (route) =>
-      route !== matched &&
-      route.allowedEndpoints.length > 0 &&
-      (isEndpointAllowed(url, route.allowedEndpoints) ||
-        isEndpointAllowed(resolvedUrl, route.allowedEndpoints)),
-  );
-  if (overlapping.length > 0 && [matched, ...overlapping].some((route) => route.oauth2)) {
-    const names = [matched, ...overlapping].map((route) => `"${route.alias ?? '(unnamed)'}"`);
-    throw new Error(
-      `Ambiguous endpoint: ${url} matches the allowlists of connections ${names.join(', ')}, ` +
-        'and at least one of them uses OAuth2, so which credential the request carries would ' +
-        'depend on their order. Ask the operator to narrow the allowlists or remove one of ' +
-        'the connections for this caller.',
-    );
-  }
-
   // Secrets this route may substitute, and the ones it withholds (signing
   // credentials, header-only secrets). A reference to a withheld one anywhere
   // it would otherwise be resolved is rejected outright.
@@ -607,6 +587,29 @@ export async function executeProxyRequest(
   // the way fetch() will. From here on `resolvedUrl` is the normalized href:
   // the string the allowlist accepted is exactly the string sent.
   resolvedUrl = normalizeOutboundUrl(resolvedUrl, matched.allowedEndpoints, url);
+
+  // Step 6a: Overlapping connections. Normally the first match wins, but when
+  // an OAuth2 connection is among the matches, which token (and which
+  // scopes) a request carries would silently depend on list order. Refuse.
+  // Checked on the normalized href, so `https://WWW.host/…`, an explicit
+  // port, or a percent-encoded host can't dodge it. Best-effort: a path
+  // written differently (`/%63alendar/`) still matches only as written.
+  const overlapping = routes.filter(
+    (route) =>
+      route !== matched &&
+      route.allowedEndpoints.length > 0 &&
+      (isEndpointAllowed(url, route.allowedEndpoints) ||
+        isEndpointAllowed(resolvedUrl, route.allowedEndpoints)),
+  );
+  if (overlapping.length > 0 && [matched, ...overlapping].some((route) => route.oauth2)) {
+    const names = [matched, ...overlapping].map((route) => `"${route.alias ?? '(unnamed)'}"`);
+    throw new Error(
+      `Ambiguous endpoint: ${url} matches the allowlists of connections ${names.join(', ')}, ` +
+        'and at least one of them uses OAuth2, so which credential the request carries would ' +
+        'depend on their order. Ask the operator to narrow the allowlists or remove one of ' +
+        'the connections for this caller.',
+    );
+  }
 
   // Step 6b: AWS SigV4. Last, so the signature covers the final URL, headers,
   // and body bytes exactly as sent.
