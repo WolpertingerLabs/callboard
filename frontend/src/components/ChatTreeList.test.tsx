@@ -8,7 +8,7 @@
  * `../api` is mocked so getChatTree resolves without network.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import type { Chat, CardSummary, ChatTreeNode, ChatTreeResponse } from "../api";
 import { dismissSummon, getChatTree } from "../api";
@@ -22,7 +22,7 @@ import {
   saveChatSectionExpanded,
   saveChatTreeCardCollapsed,
 } from "../utils/localStorage";
-import ChatTreeList, { buildRows } from "./ChatTreeList";
+import ChatTreeList, { buildRows, TREE_FETCH_CONCURRENCY } from "./ChatTreeList";
 
 vi.mock("../api", () => ({
   getChatTree: vi.fn(),
@@ -101,6 +101,25 @@ function treeList(props: { chats?: Chat[]; refreshToken: number; running?: strin
 
 function renderTree(props: { chats?: Chat[]; refreshToken: number; running?: string[] }) {
   return render(treeList(props));
+}
+
+/**
+ * Settle every pending promise chain (responses, their `finally`, the queue
+ * starting the next fetch). Fetches start synchronously in an effect, so once
+ * this returns, a request that was going to be made has been.
+ */
+async function flush() {
+  await act(async () => {
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+  });
+}
+
+/** A promise settled from outside. */
+function deferred<T>() {
+  let resolve!: (v: T) => void;
+  let reject!: (e: unknown) => void;
+  const promise = new Promise<T>((res, rej) => ((resolve = res), (reject = rej)));
+  return { promise, resolve, reject };
 }
 
 /** Cards start expanded: wait for the card to say so (its tree fetches on its own). */
@@ -197,7 +216,7 @@ describe("ChatTreeList refresh", () => {
     // The 15-second poll, with nothing new in this tree.
     rerender(treeList({ refreshToken: 1 }));
     rerender(treeList({ refreshToken: 2 }));
-    await new Promise((r) => setTimeout(r, 20));
+    await flush();
     expect(mockGetChatTree).toHaveBeenCalledTimes(1);
   });
 
@@ -206,7 +225,7 @@ describe("ChatTreeList refresh", () => {
     const { rerender } = renderTree({ refreshToken: 0 });
     await screen.findByText("Implementer");
     rerender(treeList({ refreshToken: 0, running: ["child-1"] }));
-    await new Promise((r) => setTimeout(r, 20));
+    await flush();
     expect(mockGetChatTree).toHaveBeenCalledTimes(1);
     rerender(treeList({ refreshToken: 1, running: ["child-1"] }));
     await waitFor(() => expect(mockGetChatTree).toHaveBeenCalledTimes(2));
@@ -234,8 +253,102 @@ describe("ChatTreeList refresh", () => {
     ];
     renderTree({ chats, refreshToken: 0 });
     await screen.findByText("Child of a");
-    await new Promise((r) => setTimeout(r, 20));
+    await flush();
     expect(mockGetChatTree.mock.calls.map(([id]) => id)).toEqual(["a"]);
+  });
+});
+
+describe("tree fetching (#564 review)", () => {
+  const TREE = makeTree(makeNode("root", "Root chat", { children: [makeNode("child-1", "Implementer")] }));
+
+  it("folds a card whose newer fetch failed while an older one was in flight, and retries on click", async () => {
+    const first = deferred<ChatTreeResponse>();
+    mockGetChatTree.mockReturnValueOnce(first.promise).mockRejectedValueOnce(new Error("nope"));
+    const { rerender } = renderTree({ refreshToken: 0 });
+    // A second list load lands before the first tree: its group moved.
+    rerender(treeList({ refreshToken: 1, chats: [makeChat("root", {}, "2026-07-28T11:00:00Z"), GROUP_CHATS[1]] }));
+    await flush();
+    expect(mockGetChatTree).toHaveBeenCalledTimes(2);
+    expect(screen.getByTitle("Expand chat tree")).toBeTruthy();
+    // The superseded first response does not revive it either.
+    first.resolve(TREE);
+    await flush();
+    expect(screen.queryByText("Implementer")).toBeNull();
+    expect(getChatTreeCardCollapsedKeys().size).toBe(0);
+    // A click retries, rather than storing a fold.
+    mockGetChatTree.mockResolvedValueOnce(TREE);
+    fireEvent.click(screen.getByTitle("Expand chat tree"));
+    await screen.findByText("Implementer");
+    expect(mockGetChatTree).toHaveBeenCalledTimes(3);
+    expect(getChatTreeCardCollapsedKeys().size).toBe(0);
+  });
+
+  it("does not refetch a tree holding a finished native sub-agent on every refresh", async () => {
+    mockGetChatTree.mockResolvedValue(
+      makeTree(
+        makeNode("root", "Root chat", {
+          children: [
+            makeNode("child-1", "Pasteur", {
+              provider: "codex",
+              nativeAgent: { parentThreadId: "root", management: "read-only", lifecycle: "complete", controlNote: "read-only" },
+            }),
+          ],
+        }),
+      ),
+    );
+    const { rerender } = renderTree({ refreshToken: 0 });
+    await screen.findByText("Pasteur");
+    rerender(treeList({ refreshToken: 1 }));
+    rerender(treeList({ refreshToken: 2 }));
+    await flush();
+    expect(mockGetChatTree).toHaveBeenCalledTimes(1);
+  });
+
+  it(`keeps at most ${TREE_FETCH_CONCURRENCY} tree requests in flight, starting from the top of the list`, async () => {
+    const pending = new Map<string, ReturnType<typeof deferred<ChatTreeResponse>>>();
+    mockGetChatTree.mockImplementation((id) => {
+      const d = deferred<ChatTreeResponse>();
+      pending.set(id, d);
+      return d.promise;
+    });
+    const ids = ["g1", "g2", "g3", "g4", "g5", "g6"];
+    const chats = ids.flatMap((id) => [makeChat(id), makeChat(`${id}-c`, { parentChatId: id, rootChatId: id })]);
+    renderTree({ chats, refreshToken: 0 });
+    await flush();
+    expect(mockGetChatTree.mock.calls.map(([id]) => id)).toEqual(ids.slice(0, TREE_FETCH_CONCURRENCY));
+    pending.get("g2")!.resolve(makeTree(makeNode("g2", "Tree g2")));
+    await flush();
+    expect(mockGetChatTree.mock.calls.map(([id]) => id)).toEqual(ids.slice(0, 5));
+    pending.get("g1")!.reject(new Error("nope"));
+    await flush();
+    expect(mockGetChatTree.mock.calls.map(([id]) => id)).toEqual(ids);
+  });
+
+  it("does not refetch a tree whose group moved when the pass is not a refresh", async () => {
+    mockGetChatTree.mockImplementation(async (id) => makeTree(makeNode(id, `Tree ${id}`, { children: [makeNode(`${id}-c`, `Child of ${id}`)] })));
+    const chats = (aUpdated: string) => [
+      makeChat("a", {}, aUpdated),
+      makeChat("a-c", { parentChatId: "a", rootChatId: "a" }),
+      makeChat("b"),
+      makeChat("b-c", { parentChatId: "b", rootChatId: "b" }),
+    ];
+    const { rerender } = renderTree({ chats: chats("2026-07-28T10:00:00Z"), refreshToken: 0 });
+    await screen.findByText("Child of b");
+    expect(mockGetChatTree).toHaveBeenCalledTimes(2);
+    // A refresh that changed nothing: no refetch, so neither tree was fetched at this refresh.
+    rerender(treeList({ chats: chats("2026-07-28T10:00:00Z"), refreshToken: 1 }));
+    await flush();
+    expect(mockGetChatTree).toHaveBeenCalledTimes(2);
+    // An optimistic edit moves a's signature; then the user folds b, which
+    // reruns the fetch pass without a refresh.
+    rerender(treeList({ chats: chats("2026-07-28T12:00:00Z"), refreshToken: 1 }));
+    fireEvent.click(screen.getByRole("button", { name: 'Collapse "chat b"' }));
+    await flush();
+    expect(mockGetChatTree).toHaveBeenCalledTimes(2);
+    // The next refresh picks the move up.
+    rerender(treeList({ chats: chats("2026-07-28T12:00:00Z"), refreshToken: 2 }));
+    await flush();
+    expect(mockGetChatTree.mock.calls.map(([id]) => id)).toEqual(["a", "b", "a"]);
   });
 });
 
@@ -270,7 +383,7 @@ describe("top-level tree cards", () => {
     renderTree({ refreshToken: 0 });
     await screen.findByText("Implementer");
     // The root row's own fold: the root stays, its children go.
-    fireEvent.click(screen.getByRole("button", { name: 'Collapse "Root chat"' }));
+    fireEvent.click(screen.getByRole("button", { name: 'Hide the 1 chat under "Root chat"' }));
     expect(screen.queryByText("Implementer")).toBeNull();
     expect(screen.getByText("Root chat")).toBeTruthy();
     expect(getChatTreeCollapsedIds().has("root")).toBe(true);

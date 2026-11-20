@@ -101,3 +101,14 @@ export function attentionBelow(node: ChatTreeNode, underArchived: boolean, opts:
 export function countRunningBelow(node: ChatTreeNode, underArchived: boolean, opts: TreeVisibility, isRunning?: (chatId: string) => boolean): number {
   return attentionBelow(node, underArchived, opts, isRunning).running;
 }
+
+/**
+ * How many rows collapsing `node` hides: its rendered descendants at every
+ * depth (the walk {@link hiddenBelow} makes, without the folded asides, which
+ * are counts on those rows rather than rows of their own).
+ */
+export function countRowsBelow(node: ChatTreeNode, underArchived: boolean, opts: TreeVisibility): number {
+  let n = 0;
+  for (const child of visibleChildren(node, underArchived, opts)) n += 1 + countRowsBelow(child, underArchived || child.childArchived === true, opts);
+  return n;
+}
