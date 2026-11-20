@@ -142,7 +142,6 @@ export function createAdminRouter(deps: AdminRouterDeps): express.Router {
    * subject only; never a secret, token, or fingerprint.
    */
   function callerAuthView(config: RemoteServerConfig, alias: string) {
-    const caller = config.callers[alias];
     const auth = new Map<string, AdminConnectionAuth>();
     let resolved: ReturnType<typeof resolveCallerRoutesChecked>;
     try {
@@ -153,19 +152,34 @@ export function createAdminRouter(deps: AdminRouterDeps): express.Router {
       return { auth, dropped: new Map<string, string>() };
     }
     const { routes, dropped } = resolved;
+    const sorted = (scopes: string[] | undefined) => [...new Set(scopes ?? [])].sort();
     for (const route of routes) {
       if (!route.alias || !route.oauth2) continue;
       const o = route.oauth2;
+      const scopes = sorted(o.scopes);
+      // Narrowed means fewer scopes than the connection declares, not merely
+      // that an override exists (an override can repeat every scope).
+      const declared = connectionScopes(config, route.alias);
       auth.set(route.alias, {
         type: 'oauth2',
         grant: o.grant,
-        scopes: [...new Set(o.scopes ?? [])].sort(),
-        narrowed: caller.oauth2Overrides?.[route.alias]?.scopes !== undefined,
+        scopes,
+        narrowed: declared !== undefined && sorted(declared).join(' ') !== scopes.join(' '),
         ...(o.subject !== undefined && { subject: o.subject }),
         ...(o.subjectRequired === true && { subjectRequired: true }),
       });
     }
     return { auth, dropped: new Map(Object.entries(dropped)) };
+  }
+
+  /** A connection's own `oauth2.scopes`, before any caller override. */
+  function connectionScopes(config: RemoteServerConfig, alias: string): string[] | undefined {
+    const custom = (config.connectors ?? []).find((c) => c.alias === alias);
+    try {
+      return (custom ?? loadConnection(alias)).oauth2?.scopes;
+    } catch {
+      return undefined;
+    }
   }
 
   // ── /admin/connections ─────────────────────────────────────────────────

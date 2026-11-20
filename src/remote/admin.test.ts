@@ -294,6 +294,39 @@ describe('oauth2 auth on caller connections (read-only)', () => {
     expect(JSON.stringify(body)).not.toContain(SA_KEY_VALUE);
   });
 
+  it('narrowed compares the caller scopes to the connection scopes', async () => {
+    const connector = {
+      alias: 'acme-oauth',
+      allowedEndpoints: ['https://api.acme.example/**'],
+      secrets: { A: 'a', B: 'b', R: 'r' },
+      oauth2: {
+        tokenUrl: 'https://auth.acme.example/token',
+        grant: 'refresh_token' as const,
+        clientAuth: 'body' as const,
+        secretRefs: { clientId: 'A', clientSecret: 'B', refreshToken: 'R' },
+        scopes: ['write', 'read'],
+      },
+    };
+    testConfig.connectors = [...(testConfig.connectors ?? []), connector];
+    const saved = structuredClone(testConfig.callers.gcorp);
+    const narrowedFor = async (scopes: string[] | undefined) => {
+      testConfig.callers.gcorp.connections = ['acme-oauth'];
+      testConfig.callers.gcorp.oauth2Overrides = scopes ? { 'acme-oauth': { scopes } } : {};
+      const resp = await fetch(`${baseUrl}/admin/callers/gcorp/connections`);
+      const [row] = (await resp.json()) as AdminCallerConnection[];
+      return row.auth?.narrowed;
+    };
+    try {
+      expect(await narrowedFor(undefined)).toBe(false);
+      // An override repeating every scope (any order) narrows nothing.
+      expect(await narrowedFor(['read', 'write'])).toBe(false);
+      expect(await narrowedFor(['read'])).toBe(true);
+    } finally {
+      testConfig.connectors = testConfig.connectors.filter((c) => c.alias !== 'acme-oauth');
+      testConfig.callers.gcorp = saved;
+    }
+  });
+
   it('connection-status: template auth, plus callerAuth for enabled connections', async () => {
     const resp = await fetch(`${baseUrl}/admin/callers/gcorp/connection-status`);
     const body = (await resp.json()) as AdminConnectionStatus[];

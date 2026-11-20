@@ -42,7 +42,8 @@ export function AuthSummary({
 }) {
   const grant = callerAuth?.grant ?? auth?.grant;
   if (!grant && !problem) {
-    return compact ? <span className="cell-muted">static</span> : null;
+    // Not minted by drawlatch: headers, a signature (aws), or nothing at all.
+    return compact ? <span className="cell-muted">—</span> : null;
   }
   const scopes = callerAuth?.scopes ?? auth?.scopes ?? [];
   const subjectRequired =
