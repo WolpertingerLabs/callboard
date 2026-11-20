@@ -67,6 +67,8 @@ export interface SafeFetchOptions {
   bodyCarriesSecrets?: boolean;
   /** Hop limit. 0 never follows: every 3xx comes straight back. */
   maxRedirects?: number;
+  /** fetch() to use. Defaults to the global; injectable for tests. */
+  fetchImpl?: typeof fetch;
 }
 
 export interface SafeFetchResult {
@@ -137,9 +139,10 @@ export async function safeFetch(url: string, options: SafeFetchOptions): Promise
   let headers = options.headers;
   let body = options.body;
   let redirects = 0;
+  const doFetch = options.fetchImpl ?? fetch;
 
   for (;;) {
-    const response = await fetch(currentHref, {
+    const response = await doFetch(currentHref, {
       method,
       headers,
       body,

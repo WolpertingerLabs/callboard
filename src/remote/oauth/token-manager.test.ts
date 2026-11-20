@@ -1,5 +1,7 @@
 /**
- * Unit tests for the generic OAuth2 TokenManager (Card 2).
+ * Unit tests for the generic OAuth2 TokenManager (ported from PR #26, Card 2,
+ * plus the drawlatch hardening: identity keys, scope verification, transport
+ * limits, error classification, terminal backoff).
  *
  * Drives an injected fetch + clock for determinism. Asserts cache behaviour,
  * single-flight coalescing, refresh-token rotation, both grant flows, both
@@ -8,15 +10,22 @@
  * error messages.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
 import {
   TokenManager,
   OAuth2InvalidGrantError,
   OAuth2RefreshError,
+  OAuth2ScopeError,
+  OAuth2TerminalError,
   DEFAULT_REFRESH_SKEW_MS,
   type TokenKey,
 } from './token-manager.js';
-import type { OAuth2Config } from '../../shared/config.js';
+import {
+  OAUTH2_TERMINAL_BACKOFF_MS,
+  OAUTH2_TOKEN_RESPONSE_MAX_BYTES,
+  OAUTH2_TOKEN_TIMEOUT_MS,
+  type OAuth2Config,
+} from '../../shared/config.js';
 
 // ── Secret material (used to assert non-leakage) ────────────────────────────
 
@@ -37,12 +46,15 @@ const ALL_SECRET_VALUES = [
 // ── Helpers ──────────────────────────────────────────────────────────────
 
 function mockTokenResponse(body: unknown, status = 200): Response {
-  return {
-    ok: status >= 200 && status < 300,
+  return new Response(JSON.stringify(body), {
     status,
-    statusText: status === 200 ? 'OK' : 'Error',
-    json: () => Promise.resolve(body),
-  } as unknown as Response;
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
+/** A fetch implementation answering every call with a fresh copy of `body`. */
+function alwaysRespond(body: unknown, status = 200): () => Promise<Response> {
+  return () => Promise.resolve(mockTokenResponse(body, status));
 }
 
 const secrets: Record<string, string> = {
@@ -94,25 +106,23 @@ function headers(call: unknown[]): Record<string, string> {
 }
 
 describe('TokenManager', () => {
-  let fetchMock: ReturnType<typeof vi.fn>;
+  let fetchMock: Mock<typeof fetch>;
   let clock: number;
   const now = () => clock;
 
   beforeEach(() => {
     clock = 1_000_000;
-    fetchMock = vi.fn();
+    fetchMock = vi.fn<typeof fetch>();
   });
 
   function makeManager(): TokenManager {
-    return new TokenManager({ fetchImpl: fetchMock as unknown as typeof fetch, now });
+    return new TokenManager({ fetchImpl: fetchMock, now });
   }
 
   // ── Caching ─────────────────────────────────────────────────────────────
 
   it('refreshes on a cold cache then serves a cached token without re-fetching', async () => {
-    fetchMock.mockResolvedValue(
-      mockTokenResponse({ access_token: ACCESS_TOKEN, expires_in: 3600 }),
-    );
+    fetchMock.mockImplementation(alwaysRespond({ access_token: ACCESS_TOKEN, expires_in: 3600 }));
     const tm = makeManager();
 
     const first = await tm.getAccessToken(KEY, refreshConfig(), resolveSecret);
@@ -141,7 +151,7 @@ describe('TokenManager', () => {
   });
 
   it('honours a custom refreshSkewMs from the config', async () => {
-    fetchMock.mockResolvedValue(mockTokenResponse({ access_token: ACCESS_TOKEN, expires_in: 100 }));
+    fetchMock.mockImplementation(alwaysRespond({ access_token: ACCESS_TOKEN, expires_in: 100 }));
     const tm = makeManager();
     const cfg = refreshConfig({ refreshSkewMs: 10_000 }); // 10s skew, 100s token
 
@@ -270,9 +280,7 @@ describe('TokenManager', () => {
   // ── Request shape ─────────────────────────────────────────────────────────
 
   it('refresh_token grant with basic auth produces the exact request shape', async () => {
-    fetchMock.mockResolvedValue(
-      mockTokenResponse({ access_token: ACCESS_TOKEN, expires_in: 3600 }),
-    );
+    fetchMock.mockImplementation(alwaysRespond({ access_token: ACCESS_TOKEN, expires_in: 3600 }));
     const tm = makeManager();
 
     await tm.getAccessToken(KEY, refreshConfig(), resolveSecret);
@@ -294,9 +302,7 @@ describe('TokenManager', () => {
   });
 
   it('client_auth=body sends credentials in the form, no Authorization header', async () => {
-    fetchMock.mockResolvedValue(
-      mockTokenResponse({ access_token: ACCESS_TOKEN, expires_in: 3600 }),
-    );
+    fetchMock.mockImplementation(alwaysRespond({ access_token: ACCESS_TOKEN, expires_in: 3600 }));
     const tm = makeManager();
 
     await tm.getAccessToken(KEY, refreshConfig({ clientAuth: 'body' }), resolveSecret);
@@ -308,8 +314,8 @@ describe('TokenManager', () => {
   });
 
   it('client_credentials grant omits refresh_token and joins scopes', async () => {
-    fetchMock.mockResolvedValue(
-      mockTokenResponse({ access_token: ACCESS_TOKEN, expires_in: 3600 }),
+    fetchMock.mockImplementation(
+      alwaysRespond({ access_token: ACCESS_TOKEN, expires_in: 3600, scope: 'read write' }),
     );
     const tm = makeManager();
     const catalogKey: TokenKey = { connection: 'spotify-catalog', caller: 'default' };
@@ -330,33 +336,11 @@ describe('TokenManager', () => {
   });
 
   it('never sends a JSON content-type', async () => {
-    fetchMock.mockResolvedValue(
-      mockTokenResponse({ access_token: ACCESS_TOKEN, expires_in: 3600 }),
-    );
+    fetchMock.mockImplementation(alwaysRespond({ access_token: ACCESS_TOKEN, expires_in: 3600 }));
     const tm = makeManager();
     await tm.getAccessToken(KEY, refreshConfig(), resolveSecret);
     const ct = headers(fetchMock.mock.calls[0])['Content-Type'];
     expect(ct).not.toContain('json');
-  });
-
-  // ── Response mapping ──────────────────────────────────────────────────────
-
-  it('honours responseMapping field overrides', async () => {
-    fetchMock.mockResolvedValue(
-      mockTokenResponse({ tok: ACCESS_TOKEN, ttl: 3600, newRt: ROTATED_REFRESH_TOKEN }),
-    );
-    const tm = makeManager();
-    const cfg = refreshConfig({
-      responseMapping: {
-        accessTokenField: 'tok',
-        expiresInField: 'ttl',
-        refreshTokenField: 'newRt',
-      },
-    });
-
-    expect(await tm.getAccessToken(KEY, cfg, resolveSecret)).toBe(ACCESS_TOKEN);
-    await tm.getAccessToken(KEY, cfg, resolveSecret, { forceRefresh: true });
-    expect(bodyParams(fetchMock.mock.calls[1]).get('refresh_token')).toBe(ROTATED_REFRESH_TOKEN);
   });
 
   // ── Per-key isolation ─────────────────────────────────────────────────────
@@ -384,9 +368,7 @@ describe('TokenManager', () => {
   });
 
   it('treats the same connection for two callers as separate keys', async () => {
-    fetchMock.mockResolvedValue(
-      mockTokenResponse({ access_token: ACCESS_TOKEN, expires_in: 3600 }),
-    );
+    fetchMock.mockImplementation(alwaysRespond({ access_token: ACCESS_TOKEN, expires_in: 3600 }));
     const tm = makeManager();
 
     await tm.getAccessToken(
@@ -413,7 +395,7 @@ describe('TokenManager', () => {
   // ── Errors ──────────────────────────────────────────────────────────────
 
   it('throws a terminal OAuth2InvalidGrantError on 400 invalid_grant, no retry', async () => {
-    fetchMock.mockResolvedValue(mockTokenResponse({ error: 'invalid_grant' }, 400));
+    fetchMock.mockImplementation(alwaysRespond({ error: 'invalid_grant' }, 400));
     const tm = makeManager();
 
     await expect(tm.getAccessToken(KEY, refreshConfig(), resolveSecret)).rejects.toBeInstanceOf(
@@ -423,7 +405,7 @@ describe('TokenManager', () => {
   });
 
   it('surfaces a transient OAuth2RefreshError on a 500', async () => {
-    fetchMock.mockResolvedValue(mockTokenResponse({ error: 'server_error' }, 500));
+    fetchMock.mockImplementation(alwaysRespond({ error: 'server_error' }, 500));
     const tm = makeManager();
 
     const err = await tm
@@ -510,8 +492,8 @@ describe('TokenManager', () => {
     process.env.LOG_LEVEL = 'debug';
 
     try {
-      fetchMock.mockResolvedValue(
-        mockTokenResponse({
+      fetchMock.mockImplementation(
+        alwaysRespond({
           access_token: ACCESS_TOKEN,
           expires_in: 3600,
           refresh_token: ROTATED_REFRESH_TOKEN,
@@ -533,5 +515,352 @@ describe('TokenManager', () => {
       errSpy.mockRestore();
       warnSpy.mockRestore();
     }
+  });
+
+  // ── Hardening (drawlatch) ─────────────────────────────────────────────────
+
+  describe('scopes', () => {
+    it('sends scope on the refresh_token grant, sorted and de-duplicated', async () => {
+      fetchMock.mockImplementation(
+        alwaysRespond({ access_token: ACCESS_TOKEN, expires_in: 3600, scope: 'a b' }),
+      );
+      await makeManager().getAccessToken(
+        KEY,
+        refreshConfig({ scopes: ['b', 'a', 'b'] }),
+        resolveSecret,
+      );
+      expect(bodyParams(fetchMock.mock.calls[0]).get('scope')).toBe('a b');
+    });
+
+    it('omits scope when none are configured', async () => {
+      fetchMock.mockImplementation(alwaysRespond({ access_token: ACCESS_TOKEN, expires_in: 3600 }));
+      await makeManager().getAccessToken(KEY, refreshConfig(), resolveSecret);
+      expect(bodyParams(fetchMock.mock.calls[0]).has('scope')).toBe(false);
+    });
+
+    it('refuses a token whose granted scopes exceed the request, and does not cache it', async () => {
+      fetchMock.mockImplementation(
+        alwaysRespond({ access_token: ACCESS_TOKEN, expires_in: 3600, scope: 'read drive.full' }),
+      );
+      const tm = makeManager();
+      const err = await tm
+        .getAccessToken(KEY, refreshConfig({ scopes: ['read'] }), resolveSecret)
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(OAuth2ScopeError);
+      expect((err as Error).message).toContain('drive.full');
+      expect((err as Error).message).not.toContain(ACCESS_TOKEN);
+      // Not cached: a later call (after the backoff) asks again.
+      clock += OAUTH2_TERMINAL_BACKOFF_MS + 1;
+      fetchMock.mockImplementation(
+        alwaysRespond({ access_token: 'tok-ok', expires_in: 3600, scope: 'read' }),
+      );
+      expect(await tm.getAccessToken(KEY, refreshConfig({ scopes: ['read'] }), resolveSecret)).toBe(
+        'tok-ok',
+      );
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('refuses a response without scope when scopes are set (verification on by default)', async () => {
+      fetchMock.mockImplementation(alwaysRespond({ access_token: ACCESS_TOKEN, expires_in: 3600 }));
+      await expect(
+        makeManager().getAccessToken(KEY, refreshConfig({ scopes: ['read'] }), resolveSecret),
+      ).rejects.toBeInstanceOf(OAuth2ScopeError);
+    });
+
+    it('accepts a response without scope when verifyGrantedScopes is false', async () => {
+      fetchMock.mockImplementation(alwaysRespond({ access_token: ACCESS_TOKEN, expires_in: 3600 }));
+      expect(
+        await makeManager().getAccessToken(
+          KEY,
+          refreshConfig({ scopes: ['read'], verifyGrantedScopes: false }),
+          resolveSecret,
+        ),
+      ).toBe(ACCESS_TOKEN);
+    });
+
+    it('still refuses broader scopes when verifyGrantedScopes is false', async () => {
+      fetchMock.mockImplementation(
+        alwaysRespond({ access_token: ACCESS_TOKEN, expires_in: 3600, scope: 'read write' }),
+      );
+      // verifyGrantedScopes:false only tolerates a *missing* scope field.
+      await expect(
+        makeManager().getAccessToken(
+          KEY,
+          refreshConfig({ scopes: ['read'], verifyGrantedScopes: false }),
+          resolveSecret,
+        ),
+      ).rejects.toBeInstanceOf(OAuth2ScopeError);
+    });
+
+    it('allows fewer scopes than requested and reports the missing ones', async () => {
+      fetchMock.mockImplementation(
+        alwaysRespond({ access_token: ACCESS_TOKEN, expires_in: 3600, scope: 'read' }),
+      );
+      const token = await makeManager().getToken(
+        KEY,
+        refreshConfig({ scopes: ['read', 'write'] }),
+        resolveSecret,
+      );
+      expect(token.grantedScopes).toEqual(['read']);
+      expect(token.missingScopes).toEqual(['write']);
+    });
+  });
+
+  describe('cache identity', () => {
+    it('re-mints when the configured refresh token changes (no stale token)', async () => {
+      fetchMock
+        .mockImplementationOnce(alwaysRespond({ access_token: 'tok-1', expires_in: 3600 }))
+        .mockImplementationOnce(alwaysRespond({ access_token: 'tok-2', expires_in: 3600 }));
+      const tm = makeManager();
+      expect(await tm.getAccessToken(KEY, refreshConfig(), resolveSecret)).toBe('tok-1');
+      const rotatedByAdmin = (name: string) =>
+        name === 'SPOTIFY_REFRESH_TOKEN' ? 'admin-new-refresh-token' : secrets[name];
+      expect(await tm.getAccessToken(KEY, refreshConfig(), rotatedByAdmin)).toBe('tok-2');
+    });
+
+    it('re-mints when the scopes change', async () => {
+      fetchMock
+        .mockImplementationOnce(
+          alwaysRespond({ access_token: 'tok-1', expires_in: 3600, scope: 'a' }),
+        )
+        .mockImplementationOnce(
+          alwaysRespond({ access_token: 'tok-2', expires_in: 3600, scope: 'b' }),
+        );
+      const tm = makeManager();
+      expect(await tm.getAccessToken(KEY, refreshConfig({ scopes: ['a'] }), resolveSecret)).toBe(
+        'tok-1',
+      );
+      expect(await tm.getAccessToken(KEY, refreshConfig({ scopes: ['b'] }), resolveSecret)).toBe(
+        'tok-2',
+      );
+    });
+
+    it('drops a rotated refresh token once the configured one changes', async () => {
+      fetchMock
+        .mockImplementationOnce(
+          alwaysRespond({
+            access_token: 'tok-1',
+            expires_in: 3600,
+            refresh_token: ROTATED_REFRESH_TOKEN,
+          }),
+        )
+        .mockImplementation(alwaysRespond({ access_token: 'tok-2', expires_in: 3600 }));
+      const tm = makeManager();
+      await tm.getAccessToken(KEY, refreshConfig(), resolveSecret);
+      const reconfigured = (name: string) =>
+        name === 'SPOTIFY_REFRESH_TOKEN' ? 'admin-new-refresh-token' : secrets[name];
+      await tm.getAccessToken(KEY, refreshConfig(), reconfigured, { forceRefresh: true });
+      expect(bodyParams(fetchMock.mock.calls[1]).get('refresh_token')).toBe(
+        'admin-new-refresh-token',
+      );
+    });
+
+    it('requires a caller identity', async () => {
+      const err = await makeManager()
+        .getAccessToken({ connection: 'spotify', caller: '' }, refreshConfig(), resolveSecret)
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(OAuth2RefreshError);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('terminal backoff', () => {
+    it('remembers a terminal failure instead of calling the endpoint again', async () => {
+      fetchMock.mockImplementation(alwaysRespond({ error: 'invalid_grant' }, 400));
+      const tm = makeManager();
+      await expect(tm.getAccessToken(KEY, refreshConfig(), resolveSecret)).rejects.toBeInstanceOf(
+        OAuth2InvalidGrantError,
+      );
+      await expect(
+        tm.getAccessToken(KEY, refreshConfig(), resolveSecret, { forceRefresh: true }),
+      ).rejects.toBeInstanceOf(OAuth2InvalidGrantError);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      clock += OAUTH2_TERMINAL_BACKOFF_MS + 1;
+      await expect(tm.getAccessToken(KEY, refreshConfig(), resolveSecret)).rejects.toBeInstanceOf(
+        OAuth2InvalidGrantError,
+      );
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('a new credential is tried straight away', async () => {
+      fetchMock
+        .mockImplementationOnce(alwaysRespond({ error: 'invalid_grant' }, 400))
+        .mockImplementationOnce(alwaysRespond({ access_token: 'tok-new', expires_in: 3600 }));
+      const tm = makeManager();
+      await expect(tm.getAccessToken(KEY, refreshConfig(), resolveSecret)).rejects.toThrow();
+      const fixed = (name: string) =>
+        name === 'SPOTIFY_REFRESH_TOKEN' ? 'freshly-consented-token' : secrets[name];
+      expect(await tm.getAccessToken(KEY, refreshConfig(), fixed)).toBe('tok-new');
+    });
+
+    it('does not back off after a transient failure', async () => {
+      fetchMock
+        .mockImplementationOnce(alwaysRespond({}, 503))
+        .mockImplementationOnce(alwaysRespond({ access_token: 'tok', expires_in: 3600 }));
+      const tm = makeManager();
+      await expect(tm.getAccessToken(KEY, refreshConfig(), resolveSecret)).rejects.toBeInstanceOf(
+        OAuth2RefreshError,
+      );
+      expect(await tm.getAccessToken(KEY, refreshConfig(), resolveSecret)).toBe('tok');
+    });
+  });
+
+  describe('transport', () => {
+    it("gives up on its own deadline without cancelling a joined caller's wait", async () => {
+      vi.useFakeTimers();
+      try {
+        let resolveFetch!: (r: Response) => void;
+        fetchMock.mockReturnValue(
+          new Promise<Response>((res) => {
+            resolveFetch = res;
+          }),
+        );
+        const tm = makeManager();
+        const impatient = tm
+          .getAccessToken(KEY, refreshConfig(), resolveSecret, { timeoutMs: 50 })
+          .catch((e: unknown) => e);
+        const patient = tm.getAccessToken(KEY, refreshConfig(), resolveSecret, {
+          timeoutMs: 5_000,
+        });
+        await vi.advanceTimersByTimeAsync(60);
+        const err = await impatient;
+        expect(err).toBeInstanceOf(OAuth2RefreshError);
+        expect((err as Error).message).toContain('within 50ms');
+
+        resolveFetch(mockTokenResponse({ access_token: ACCESS_TOKEN, expires_in: 3600 }));
+        expect(await patient).toBe(ACCESS_TOKEN);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('never waits longer than OAUTH2_TOKEN_TIMEOUT_MS', async () => {
+      vi.useFakeTimers();
+      try {
+        fetchMock.mockReturnValue(new Promise<Response>(() => undefined));
+        const pending = makeManager()
+          .getAccessToken(KEY, refreshConfig(), resolveSecret, { timeoutMs: 10 * 60_000 })
+          .catch((e: unknown) => e);
+        await vi.advanceTimersByTimeAsync(OAUTH2_TOKEN_TIMEOUT_MS + 1);
+        expect(await pending).toBeInstanceOf(OAuth2RefreshError);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('passes a timeout signal to the token request', async () => {
+      fetchMock.mockImplementation(alwaysRespond({ access_token: ACCESS_TOKEN, expires_in: 3600 }));
+      await makeManager().getAccessToken(KEY, refreshConfig(), resolveSecret);
+      const init = fetchMock.mock.calls[0][1]!;
+      expect(init.signal).toBeInstanceOf(AbortSignal);
+      expect(init.redirect).toBe('manual');
+    });
+
+    it('does not follow a redirect from the token endpoint', async () => {
+      fetchMock.mockImplementation(() =>
+        Promise.resolve(
+          new Response(null, { status: 302, headers: { location: 'https://evil.example/token' } }),
+        ),
+      );
+      const err = await makeManager()
+        .getAccessToken(KEY, refreshConfig(), resolveSecret)
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(OAuth2RefreshError);
+      expect((err as OAuth2RefreshError).status).toBe(302);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('caps the response body', async () => {
+      const big = JSON.stringify({
+        access_token: ACCESS_TOKEN,
+        expires_in: 3600,
+        pad: 'x'.repeat(OAUTH2_TOKEN_RESPONSE_MAX_BYTES),
+      });
+      // No content-length: the streaming cap has to catch it.
+      fetchMock.mockImplementation(() =>
+        Promise.resolve(
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode(big));
+                controller.close();
+              },
+            }),
+            { status: 200 },
+          ),
+        ),
+      );
+      const err = await makeManager()
+        .getAccessToken(KEY, refreshConfig(), resolveSecret)
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(OAuth2RefreshError);
+      expect((err as Error).message).toContain('exceeds');
+    });
+
+    it('refuses a non-Bearer token_type and a token that cannot be a header value', async () => {
+      for (const body of [
+        { access_token: ACCESS_TOKEN, expires_in: 3600, token_type: 'mac' },
+        { access_token: `${ACCESS_TOKEN}\r\nX-Evil: 1`, expires_in: 3600 },
+        { access_token: ACCESS_TOKEN },
+      ]) {
+        fetchMock.mockImplementation(alwaysRespond(body));
+        await expect(
+          makeManager().getAccessToken(KEY, refreshConfig(), resolveSecret),
+        ).rejects.toBeInstanceOf(OAuth2RefreshError);
+      }
+    });
+  });
+
+  describe('error classification', () => {
+    const codes = [
+      'invalid_grant',
+      'invalid_scope',
+      'invalid_client',
+      'unauthorized_client',
+      'access_denied',
+      'admin_policy_enforced',
+    ];
+
+    it.each(codes)('%s is terminal and reported by code only', async (code) => {
+      fetchMock.mockImplementation(
+        alwaysRespond(
+          {
+            error: code,
+            error_description: `echo ${CLIENT_SECRET} ${REFRESH_TOKEN} ${CLIENT_ID}`,
+          },
+          code === 'invalid_client' ? 401 : 400,
+        ),
+      );
+      const err = await makeManager()
+        .getAccessToken(KEY, refreshConfig({ clientAuth: 'body' }), resolveSecret)
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(OAuth2TerminalError);
+      expect((err as OAuth2TerminalError).oauth2Error).toBe(code);
+      const text = `${(err as Error).message}\n${(err as Error).stack ?? ''}`;
+      expect(text).toContain(code);
+      for (const secret of ALL_SECRET_VALUES) expect(text).not.toContain(secret);
+    });
+
+    it("recognises Google's error_subtype invalid_rapt", async () => {
+      fetchMock.mockImplementation(
+        alwaysRespond({ error: 'invalid_grant', error_subtype: 'invalid_rapt' }, 400),
+      );
+      const err = await makeManager()
+        .getAccessToken(KEY, refreshConfig(), resolveSecret)
+        .catch((e: unknown) => e);
+      expect((err as OAuth2TerminalError).oauth2Error).toBe('invalid_rapt');
+      expect((err as OAuth2TerminalError).terminal).toBe(true);
+    });
+
+    it('does not echo an unrecognised error code', async () => {
+      fetchMock.mockImplementation(alwaysRespond({ error: `weird_${CLIENT_SECRET}` }, 400));
+      const err = await makeManager()
+        .getAccessToken(KEY, refreshConfig(), resolveSecret)
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(OAuth2RefreshError);
+      expect((err as Error).message).not.toContain('weird');
+    });
   });
 });

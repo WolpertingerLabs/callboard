@@ -3,51 +3,61 @@
  *
  * Owns access-token acquisition, caching, single-flight refresh, and
  * refresh-token rotation for any route carrying an {@link OAuth2Config}
- * declaration. Spotify is the first consumer, but nothing here is
- * Spotify-specific — the behaviour is driven entirely by the declarative
- * config + Card 0 findings (see plans/spotify-oauth2-refresh.md).
+ * declaration. Nothing here is provider-specific: behaviour is driven by the
+ * declarative config.
+ *
+ * Ported from PR #26 (Card 2). Hardened for drawlatch's withheld-secret model:
+ *
+ *   - **Cache identity.** A token is cached under the full identity it was
+ *     minted for (caller, connection, grant, token URL, client auth, a
+ *     fingerprint of the credentials, the requested scopes), never just
+ *     (connection, caller). Rotating a refresh token or changing scopes changes
+ *     the key, so a stale token is never served.
+ *   - **Rotation** is stored per credential fingerprint, so a rotated refresh
+ *     token never outlives the configured one it replaced.
+ *   - **Scopes** are sent on every grant. The granted `scope` must be a subset
+ *     of what was requested, and must be present when `verifyGrantedScopes`
+ *     (default: on whenever scopes are set). Anything else is refused and not
+ *     cached: fail closed.
+ *   - **Transport.** The token endpoint is called through safeFetch with no
+ *     redirects, a fixed timeout (OAUTH2_TOKEN_TIMEOUT_MS) and a response-body
+ *     cap (OAUTH2_TOKEN_RESPONSE_MAX_BYTES).
+ *   - **Errors** carry only the connection alias, HTTP status, a recognised
+ *     OAuth2 error code, and a fixed hint. Terminal failures are remembered
+ *     for OAUTH2_TERMINAL_BACKOFF_MS per identity.
  *
  * Secret-boundary invariants (HARD, non-negotiable):
  *   - Access tokens, client secrets, and refresh tokens are NEVER logged.
  *   - They NEVER appear in thrown error messages.
- *   - They are NEVER serialized into any return value beyond the bare
- *     access-token string the caller explicitly asks for.
+ *   - They are NEVER serialized into any return value beyond the access token
+ *     the caller explicitly asks for.
  *   - State is memory-only; nothing is persisted to disk. A rotated refresh
- *     token lives only for the lifetime of this process and is re-derived
- *     from the configured refresh-token secret on restart.
- *
- * Card 3 (request-path wiring) consumes this module; this card is a
- * self-contained, fully unit-tested unit and deliberately does NOT reach
- * into env/process, the config loader, or the request path.
+ *     token lives only for the lifetime of this process.
  */
 
-import type { OAuth2Config } from '../../shared/config.js';
+import crypto from 'node:crypto';
+
+import {
+  DEFAULT_OAUTH2_REFRESH_SKEW_MS,
+  OAUTH2_TERMINAL_BACKOFF_MS,
+  OAUTH2_TOKEN_RESPONSE_MAX_BYTES,
+  OAUTH2_TOKEN_TIMEOUT_MS,
+  type OAuth2Config,
+} from '../../shared/config.js';
 import { createLogger } from '../../shared/logger.js';
+import { safeFetch } from '../safe-fetch.js';
 
 const log = createLogger('oauth');
 
-// ── Constants ─────────────────────────────────────────────────────────────
-
-/**
- * Default skew (ms) before a token's hard expiry at which it is treated as
- * stale and refreshed proactively, when {@link OAuth2Config.refreshSkewMs} is
- * absent. Spotify (and most providers) issue 3600s tokens; a 5-minute skew
- * refreshes well ahead of expiry without churning, per Card 0 (~3300s / skew
- * ≥ 300s). The plan's "~60_000" is a floor, not a target — we pick the
- * larger, safer default and document it here.
- */
-export const DEFAULT_REFRESH_SKEW_MS = 300_000;
+/** Alias of DEFAULT_OAUTH2_REFRESH_SKEW_MS (PR #26's name). */
+export const DEFAULT_REFRESH_SKEW_MS = DEFAULT_OAUTH2_REFRESH_SKEW_MS;
 
 // ── Injected collaborators ──────────────────────────────────────────────────
 
 /**
- * Resolve a secret *name* to its value, or `undefined` if unset.
- *
- * Mirrors how the request path already resolves caller-scoped secrets: a
- * {@link ResolvedRoute} carries a `secrets: Record<string, string>` map keyed
- * by secret name, so Card 3 can pass `(name) => route.secrets[name]`. The
- * TokenManager never touches process.env or the config loader itself — the
- * caller owns secret resolution and the caller scoping that comes with it.
+ * Resolve a secret *name* to its value, or `undefined` if unset. The request
+ * path passes `(name) => route.secrets[name]`; the TokenManager never touches
+ * process.env or the config loader itself.
  */
 export type SecretResolver = (secretName: string) => string | undefined;
 
@@ -60,13 +70,13 @@ export type ClockFn = () => number;
 export interface TokenManagerOptions {
   /** HTTP client. Defaults to `globalThis.fetch`. */
   fetchImpl?: FetchFn;
-  /** Monotonic-ish epoch-ms clock. Defaults to `Date.now`. */
+  /** Epoch-ms clock. Defaults to `Date.now`. */
   now?: ClockFn;
 }
 
-/** Identifies a distinct token cache slot: (connection alias, caller). */
+/** Who a token is for. Both fields are required: there is no shared slot. */
 export interface TokenKey {
-  /** Connection alias (e.g., "spotify", "spotify-catalog"). */
+  /** Connection alias (e.g. "spotify"). */
   connection: string;
   /** Caller alias the token is scoped to. */
   caller: string;
@@ -75,62 +85,150 @@ export interface TokenKey {
 export interface GetAccessTokenOptions {
   /**
    * Force a refresh even if a cached token is still valid. Used by the request
-   * path after a surprise 401. Single-flight-safe: concurrent forced refreshes
-   * for the same key still coalesce into one token-endpoint call.
+   * path after a surprise 401. Single-flight-safe: a forced refresh that finds
+   * one already in flight joins it.
    */
   forceRefresh?: boolean;
+  /**
+   * How long this caller is willing to wait (ms). Capped at
+   * OAUTH2_TOKEN_TIMEOUT_MS. Only this caller stops waiting when it runs out:
+   * the shared token-endpoint request keeps running for anyone else joined
+   * to it, under its own OAUTH2_TOKEN_TIMEOUT_MS ceiling.
+   */
+  timeoutMs?: number;
+}
+
+/** A minted token plus what the provider says it covers. */
+export interface OAuth2Token {
+  accessToken: string;
+  /** Absolute epoch-ms at which the token hard-expires. */
+  expiresAt: number;
+  /** Scopes the token endpoint reported granting, sorted. Absent when it
+   *  reported none (and verification was off). */
+  grantedScopes?: string[];
+  /** Requested scopes the provider did not grant (fewer is allowed). */
+  missingScopes?: string[];
 }
 
 // ── Errors ────────────────────────────────────────────────────────────────
 
 /**
- * Terminal refresh failure: the refresh/credentials grant is dead (revoked,
- * expired, or invalid — `400 {error:"invalid_grant"}`). The caller must NOT
- * retry; the connection needs human re-auth. Carries no secret material.
+ * OAuth2 error codes recognised in a token-endpoint error body. Only these are
+ * ever reported: an unrecognised `error` value is provider-controlled text and
+ * is not echoed. Each maps to a fixed hint. All are terminal: retrying the
+ * same request with the same credentials will fail the same way.
  */
-export class OAuth2InvalidGrantError extends Error {
-  /** Discriminator for callers that prefer a flag over `instanceof`. */
-  readonly terminal = true as const;
-  readonly oauth2Error = 'invalid_grant' as const;
-  constructor(connection: string) {
-    super(`OAuth2 refresh failed for connection "${connection}": invalid_grant (needs re-auth)`);
-    this.name = 'OAuth2InvalidGrantError';
+const TERMINAL_ERROR_HINTS: Record<string, string> = {
+  invalid_grant: 'the refresh token or grant is expired, revoked, or invalid; re-authorize',
+  invalid_scope: 'the requested scopes exceed what this credential was granted',
+  invalid_client: 'the client ID or client secret is wrong, or client authentication failed',
+  unauthorized_client: 'this client is not authorized to use this grant type',
+  access_denied: 'the authorization server denied the request',
+  admin_policy_enforced: 'an administrator policy blocks this client or scope',
+  invalid_rapt: 'the account requires re-authentication (reauth proof token); re-authorize',
+};
+
+/** Base class for every token failure. Carries no secret material. */
+export class OAuth2Error extends Error {
+  /** Whether retrying with the same credentials can succeed. */
+  readonly terminal: boolean;
+  /** HTTP status from the token endpoint, when there was one. */
+  readonly status?: number;
+  /** A recognised OAuth2 error code (see TERMINAL_ERROR_HINTS), when present. */
+  readonly oauth2Error?: string;
+  constructor(
+    message: string,
+    opts: { terminal: boolean; status?: number; oauth2Error?: string } = { terminal: false },
+  ) {
+    super(message);
+    this.name = 'OAuth2Error';
+    this.terminal = opts.terminal;
+    if (opts.status !== undefined) this.status = opts.status;
+    if (opts.oauth2Error !== undefined) this.oauth2Error = opts.oauth2Error;
   }
 }
 
 /**
- * Transient refresh failure (non-2xx that isn't `invalid_grant`, or a network
- * error). The caller may decide to retry; there is no internal retry loop in
- * Card 2. Carries only the HTTP status (when known), never the response body —
- * token-endpoint error bodies can echo back submitted credentials.
+ * Terminal failure: the token endpoint rejected the grant with a recognised
+ * error code (`invalid_grant`, `invalid_client`, …), or granted scopes this
+ * connection may not hold. Do not retry; an admin has to act. Remembered for
+ * OAUTH2_TERMINAL_BACKOFF_MS so callers don't hammer the endpoint.
  */
-export class OAuth2RefreshError extends Error {
-  readonly terminal = false as const;
-  /** HTTP status code, or `undefined` for a network-level failure. */
-  readonly status?: number;
-  constructor(connection: string, status?: number) {
-    super(
-      `OAuth2 refresh failed for connection "${connection}"` +
-        (status !== undefined ? ` (HTTP ${status})` : ' (network error)'),
-    );
-    this.name = 'OAuth2RefreshError';
-    this.status = status;
+export class OAuth2TerminalError extends OAuth2Error {
+  constructor(message: string, opts: { status?: number; oauth2Error?: string } = {}) {
+    super(message, { ...opts, terminal: true });
+    this.name = 'OAuth2TerminalError';
   }
 }
 
-// ── Internal cache entry ────────────────────────────────────────────────────
+/** Terminal `invalid_grant`. Kept as its own class for PR #26's callers. */
+export class OAuth2InvalidGrantError extends OAuth2TerminalError {
+  constructor(connection: string, status = 400) {
+    super(
+      `OAuth2 token request failed for connection "${connection}": invalid_grant ` +
+        `(${TERMINAL_ERROR_HINTS.invalid_grant})`,
+      { status, oauth2Error: 'invalid_grant' },
+    );
+    this.name = 'OAuth2InvalidGrantError';
+  }
+}
+
+/** The token endpoint granted scopes outside the requested set, or none at all. */
+export class OAuth2ScopeError extends OAuth2TerminalError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'OAuth2ScopeError';
+  }
+}
+
+/**
+ * Transient failure: a non-2xx without a recognised error code, a network
+ * error, a timeout, a malformed response, or a missing secret. No internal
+ * retry loop.
+ */
+export class OAuth2RefreshError extends OAuth2Error {
+  constructor(connection: string, status?: number, reason?: string) {
+    super(
+      `OAuth2 token request failed for connection "${connection}"` +
+        (status !== undefined ? ` (HTTP ${status})` : '') +
+        (reason ? `: ${reason}` : status === undefined ? ' (network error)' : ''),
+      { terminal: false, ...(status !== undefined && { status }) },
+    );
+    this.name = 'OAuth2RefreshError';
+  }
+}
+
+// ── Internal state ──────────────────────────────────────────────────────────
 
 interface CacheEntry {
-  /** The current access token (memory-only). */
-  accessToken: string;
-  /** Absolute epoch-ms at which the access token hard-expires. */
-  expiresAt: number;
-  /**
-   * The rotated refresh token, if the provider has ever returned one for this
-   * key. `undefined` means "fall back to the configured refresh-token secret".
-   * Memory-only — never persisted.
-   */
-  rotatedRefreshToken?: string;
+  token: OAuth2Token;
+}
+
+interface TerminalEntry {
+  until: number;
+  error: OAuth2TerminalError;
+}
+
+/** Everything a token request needs, with secrets already looked up. */
+interface PreparedRequest {
+  cacheKey: string;
+  /** Fingerprint of the configured credentials; keys rotation state. */
+  credential: string;
+  clientId: string;
+  clientSecret: string;
+  /** The refresh token as configured (before any rotation). */
+  configuredRefreshToken?: string;
+  requestedScopes: string[];
+  verifyScopes: boolean;
+}
+
+function sha256(text: string): string {
+  return crypto.createHash('sha256').update(text).digest('hex');
+}
+
+/** Sorted, de-duplicated scope list. */
+export function normalizeScopes(scopes: readonly string[] | undefined): string[] {
+  return [...new Set(scopes ?? [])].sort();
 }
 
 // ── TokenManager ────────────────────────────────────────────────────────────
@@ -139,237 +237,426 @@ export class TokenManager {
   private readonly fetchImpl: FetchFn;
   private readonly now: ClockFn;
 
-  /** Cached tokens keyed by serialized (connection, caller). */
+  /** Cached tokens keyed by full identity (see prepare()). */
   private readonly cache = new Map<string, CacheEntry>();
   /** In-flight refresh promises keyed identically — the single-flight latch. */
-  private readonly inFlight = new Map<string, Promise<string>>();
+  private readonly inFlight = new Map<string, Promise<OAuth2Token>>();
+  /** Rotated refresh tokens keyed by credential fingerprint. */
+  private readonly rotated = new Map<string, string>();
+  /** Recent terminal failures keyed by full identity. */
+  private readonly terminal = new Map<string, TerminalEntry>();
 
   constructor(options: TokenManagerOptions = {}) {
-    // Bind so a stubbed global.fetch resolved at construction time is honoured,
-    // but default lazily to whatever `fetch` is at call time when not injected.
     this.fetchImpl = options.fetchImpl ?? ((...args) => globalThis.fetch(...args));
     this.now = options.now ?? (() => Date.now());
   }
 
-  /**
-   * Return a valid access token for (connection, caller), refreshing if needed.
-   *
-   * Valid means `now + refreshSkewMs < expiresAt`. On a miss (cold, expired, or
-   * `forceRefresh`) a single token-endpoint refresh is performed; concurrent
-   * callers for the same key share that one in-flight request.
-   *
-   * @throws OAuth2InvalidGrantError on a terminal `invalid_grant` (do not retry).
-   * @throws OAuth2RefreshError on transient HTTP/network failures.
-   */
+  /** {@link getToken}, returning only the access token string. */
   async getAccessToken(
     key: TokenKey,
     oauth2: OAuth2Config,
     resolveSecret: SecretResolver,
     options: GetAccessTokenOptions = {},
   ): Promise<string> {
-    const cacheKey = TokenManager.cacheKey(key);
-
-    if (!options.forceRefresh) {
-      const cached = this.cache.get(cacheKey);
-      if (cached && this.isValid(cached, oauth2)) {
-        return cached.accessToken;
-      }
-    }
-
-    // Single-flight: if a refresh is already running for this key, await it.
-    // A forceRefresh that arrives while a refresh is in flight intentionally
-    // joins that one rather than stampeding a second request.
-    const existing = this.inFlight.get(cacheKey);
-    if (existing) return existing;
-
-    const flight = this.refreshAndCache(key, cacheKey, oauth2, resolveSecret).finally(() => {
-      this.inFlight.delete(cacheKey);
-    });
-    this.inFlight.set(cacheKey, flight);
-    return flight;
+    return (await this.getToken(key, oauth2, resolveSecret, options)).accessToken;
   }
 
   /**
-   * Drop the cached token for a key so the next {@link getAccessToken} refreshes.
-   * Does not touch any in-flight refresh. Provided as an alternative force-path;
-   * `getAccessToken(..., { forceRefresh: true })` is the primary 401-recovery API.
+   * Return a valid token for this identity, minting one if needed.
+   *
+   * Valid means `now + refreshSkewMs < expiresAt`. On a miss (cold, expired,
+   * or `forceRefresh`) one token-endpoint request is made; concurrent callers
+   * for the same identity share it.
+   *
+   * @throws OAuth2TerminalError (incl. OAuth2InvalidGrantError,
+   *   OAuth2ScopeError) — do not retry.
+   * @throws OAuth2RefreshError on transient failures.
    */
+  async getToken(
+    key: TokenKey,
+    oauth2: OAuth2Config,
+    resolveSecret: SecretResolver,
+    options: GetAccessTokenOptions = {},
+  ): Promise<OAuth2Token> {
+    if (!key.connection || !key.caller) {
+      // Two unidentified callers must never share a slot.
+      throw new OAuth2RefreshError(key.connection || '(unnamed)', undefined, 'no caller identity');
+    }
+    const prepared = this.prepare(key, oauth2, resolveSecret);
+    const { cacheKey } = prepared;
+    this.sweep();
+
+    const blocked = this.terminal.get(cacheKey);
+    if (blocked) throw blocked.error;
+
+    if (!options.forceRefresh) {
+      const cached = this.cache.get(cacheKey);
+      if (cached && this.isValid(cached, oauth2)) return cached.token;
+    }
+
+    let flight = this.inFlight.get(cacheKey);
+    if (!flight) {
+      flight = this.refreshAndCache(key, oauth2, prepared)
+        .catch((err: unknown) => {
+          // Anything that isn't one of ours is unexpected; its message could
+          // carry the request, so it is replaced, never passed through.
+          if (err instanceof OAuth2Error) throw err;
+          throw new OAuth2RefreshError(key.connection, undefined, 'unexpected error');
+        })
+        .finally(() => {
+          this.inFlight.delete(cacheKey);
+        });
+      // Every waiter may give up on its own deadline; keep an abandoned
+      // flight's rejection from surfacing as unhandled.
+      flight.catch(() => undefined);
+      this.inFlight.set(cacheKey, flight);
+    }
+
+    const wait = Math.min(options.timeoutMs ?? OAUTH2_TOKEN_TIMEOUT_MS, OAUTH2_TOKEN_TIMEOUT_MS);
+    return this.raceDeadline(flight, wait, key.connection);
+  }
+
+  /** Drop every cached token for (connection, caller). In-flight requests are untouched. */
   invalidate(key: TokenKey): void {
-    this.cache.delete(TokenManager.cacheKey(key));
+    const prefix = TokenManager.ownerPrefix(key);
+    for (const k of this.cache.keys()) if (k.startsWith(prefix)) this.cache.delete(k);
   }
 
   // ── Internals ─────────────────────────────────────────────────────────────
 
   private isValid(entry: CacheEntry, oauth2: OAuth2Config): boolean {
-    const skew = oauth2.refreshSkewMs ?? DEFAULT_REFRESH_SKEW_MS;
-    return this.now() + skew < entry.expiresAt;
+    const skew = oauth2.refreshSkewMs ?? DEFAULT_OAUTH2_REFRESH_SKEW_MS;
+    return this.now() + skew < entry.token.expiresAt;
   }
 
-  private async refreshAndCache(
+  /** Drop expired tokens and lapsed terminal backoffs. */
+  private sweep(): void {
+    const now = this.now();
+    for (const [k, v] of this.cache) if (v.token.expiresAt <= now) this.cache.delete(k);
+    for (const [k, v] of this.terminal) if (v.until <= now) this.terminal.delete(k);
+  }
+
+  /** Owner prefix of every cache key, so invalidate() can find them. */
+  private static ownerPrefix(key: TokenKey): string {
+    return `${sha256(JSON.stringify([key.caller, key.connection]))}:`;
+  }
+
+  /** Look up secrets and compute the cache identity. */
+  private prepare(
     key: TokenKey,
-    cacheKey: string,
     oauth2: OAuth2Config,
     resolveSecret: SecretResolver,
-  ): Promise<string> {
+  ): PreparedRequest {
     const clientId = this.requireSecret(resolveSecret, oauth2.secretRefs.clientId, key.connection);
     const clientSecret = this.requireSecret(
       resolveSecret,
       oauth2.secretRefs.clientSecret,
       key.connection,
     );
+    let configuredRefreshToken: string | undefined;
+    if (oauth2.grant === 'refresh_token') {
+      configuredRefreshToken = this.requireSecret(
+        resolveSecret,
+        oauth2.secretRefs.refreshToken,
+        key.connection,
+      );
+    }
+    const credential = sha256(
+      oauth2.grant === 'refresh_token'
+        ? `refresh_token\0${clientId}\0${configuredRefreshToken}\0${clientSecret}`
+        : `client_credentials\0${clientId}\0${clientSecret}`,
+    );
+    const requestedScopes = normalizeScopes(oauth2.scopes);
+    const identity = JSON.stringify([
+      oauth2.grant,
+      oauth2.tokenUrl,
+      oauth2.clientAuth,
+      credential,
+      requestedScopes.join(' '),
+    ]);
+    return {
+      cacheKey: TokenManager.ownerPrefix(key) + sha256(identity),
+      credential,
+      clientId,
+      clientSecret,
+      ...(configuredRefreshToken !== undefined && { configuredRefreshToken }),
+      requestedScopes,
+      verifyScopes: oauth2.verifyGrantedScopes ?? requestedScopes.length > 0,
+    };
+  }
 
+  /** Resolve with `flight`, or reject once this caller's own wait runs out. */
+  private raceDeadline<T>(flight: Promise<T>, waitMs: number, connection: string): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(
+          new OAuth2RefreshError(
+            connection,
+            undefined,
+            `the token endpoint did not answer within ${waitMs}ms`,
+          ),
+        );
+      }, waitMs);
+      flight.then(
+        (v) => {
+          clearTimeout(timer);
+          resolve(v);
+        },
+        (e: unknown) => {
+          clearTimeout(timer);
+          reject(e as Error);
+        },
+      );
+    });
+  }
+
+  private async refreshAndCache(
+    key: TokenKey,
+    oauth2: OAuth2Config,
+    p: PreparedRequest,
+  ): Promise<OAuth2Token> {
     const body = new URLSearchParams();
     body.set('grant_type', oauth2.grant);
-
     if (oauth2.grant === 'refresh_token') {
-      // Prefer the in-memory rotated token; fall back to the configured secret.
-      const prior = this.cache.get(cacheKey)?.rotatedRefreshToken;
-      const refreshToken =
-        prior ?? this.requireRefreshTokenSecret(oauth2, resolveSecret, key.connection);
-      body.set('refresh_token', refreshToken);
-    } else {
-      // client_credentials — optionally request scopes (space-joined).
-      if (oauth2.scopes && oauth2.scopes.length > 0) {
-        body.set('scope', oauth2.scopes.join(' '));
-      }
+      // Prefer the in-memory rotated token for these exact credentials.
+      body.set('refresh_token', this.rotated.get(p.credential) ?? p.configuredRefreshToken!);
     }
+    if (p.requestedScopes.length > 0) body.set('scope', p.requestedScopes.join(' '));
 
     const headers: Record<string, string> = {
       'Content-Type': 'application/x-www-form-urlencoded',
       Accept: 'application/json',
     };
-
     if (oauth2.clientAuth === 'basic') {
-      const basic = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+      // Raw `id:secret`, as most clients send it. (RFC 6749 §2.3.1 asks for
+      // form-encoding each part first, which many providers don't decode.)
+      const basic = Buffer.from(`${p.clientId}:${p.clientSecret}`).toString('base64');
       headers.Authorization = `Basic ${basic}`;
     } else {
-      body.set('client_id', clientId);
-      body.set('client_secret', clientSecret);
+      body.set('client_id', p.clientId);
+      body.set('client_secret', p.clientSecret);
     }
 
-    log.debug(`Refreshing access token for ${key.connection} (caller ${key.caller})`);
+    log.debug(`Requesting access token for ${key.connection} (caller ${key.caller})`);
 
     let resp: Response;
     try {
-      resp = await this.fetchImpl(oauth2.tokenUrl, {
+      ({ response: resp } = await safeFetch(oauth2.tokenUrl, {
         method: 'POST',
         headers,
         body: body.toString(),
-      });
-    } catch {
-      // Network-level failure — never surface the underlying error (it may
-      // carry the request, which contains credentials). Status unknown.
-      throw new OAuth2RefreshError(key.connection);
+        signal: AbortSignal.timeout(OAUTH2_TOKEN_TIMEOUT_MS),
+        // A token endpoint that redirects is not followed: the request carries
+        // client credentials, and the token URL is fixed admin config.
+        isAllowed: () => false,
+        maxRedirects: 0,
+        fetchImpl: this.fetchImpl,
+      }));
+    } catch (err) {
+      // Never surface the underlying error: it may carry the request.
+      const timedOut =
+        err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError');
+      throw new OAuth2RefreshError(
+        key.connection,
+        undefined,
+        timedOut ? `the token endpoint did not answer within ${OAUTH2_TOKEN_TIMEOUT_MS}ms` : '',
+      );
     }
 
+    const text = await this.readCapped(resp, key.connection);
+
     if (!resp.ok) {
-      await this.handleErrorResponse(resp, key.connection);
+      const error = this.classifyErrorResponse(resp.status, text, key.connection);
+      if (error.terminal) {
+        this.terminal.set(p.cacheKey, {
+          until: this.now() + OAUTH2_TERMINAL_BACKOFF_MS,
+          error: error as OAuth2TerminalError,
+        });
+      }
+      throw error;
     }
 
     let parsed: unknown;
     try {
-      parsed = await resp.json();
+      parsed = JSON.parse(text);
     } catch {
-      throw new OAuth2RefreshError(key.connection, resp.status);
+      throw new OAuth2RefreshError(key.connection, resp.status, 'response is not JSON');
     }
 
-    const entry = this.buildEntry(parsed, oauth2, cacheKey, key.connection);
-    this.cache.set(cacheKey, entry);
-    return entry.accessToken;
+    let token: OAuth2Token;
+    try {
+      token = this.buildToken(parsed, p, key.connection, resp.status);
+    } catch (err) {
+      if (err instanceof OAuth2TerminalError) {
+        this.terminal.set(p.cacheKey, {
+          until: this.now() + OAUTH2_TERMINAL_BACKOFF_MS,
+          error: err,
+        });
+      }
+      throw err;
+    }
+
+    // Rotation: keep a returned refresh token for these credentials only.
+    if (oauth2.grant === 'refresh_token') {
+      const returned = (parsed as Record<string, unknown>).refresh_token;
+      if (typeof returned === 'string' && returned.length > 0) {
+        this.rotated.set(p.credential, returned);
+      }
+    }
+
+    this.cache.set(p.cacheKey, { token });
+    return token;
+  }
+
+  /** Read at most OAUTH2_TOKEN_RESPONSE_MAX_BYTES of the body as text. */
+  private async readCapped(resp: Response, connection: string): Promise<string> {
+    const max = OAUTH2_TOKEN_RESPONSE_MAX_BYTES;
+    const declared = Number(resp.headers.get('content-length'));
+    if (Number.isFinite(declared) && declared > max) {
+      await resp.body?.cancel().catch(() => undefined);
+      throw new OAuth2RefreshError(connection, resp.status, `response exceeds ${max} bytes`);
+    }
+    if (!resp.body) return '';
+    const reader = resp.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.byteLength;
+        if (total > max) {
+          await reader.cancel().catch(() => undefined);
+          throw new OAuth2RefreshError(connection, resp.status, `response exceeds ${max} bytes`);
+        }
+        chunks.push(value);
+      }
+    } catch (err) {
+      if (err instanceof OAuth2Error) throw err;
+      throw new OAuth2RefreshError(connection, resp.status, 'response body could not be read');
+    }
+    return Buffer.concat(chunks).toString('utf8');
   }
 
   /**
-   * Inspect a non-2xx token-endpoint response and throw the right error type.
-   * Reads the body only to detect `invalid_grant`; never includes the body in
-   * the thrown message (it can echo back submitted credentials).
+   * Map a non-2xx token response to an error. Reads the body only for a
+   * recognised `error` code (or Google's `error_subtype: invalid_rapt`); the
+   * body itself is never included — it can echo submitted credentials.
    */
-  private async handleErrorResponse(resp: Response, connection: string): Promise<never> {
-    if (resp.status === 400) {
-      let errorCode: unknown;
-      try {
-        const data = (await resp.json()) as { error?: unknown };
-        errorCode = data.error;
-      } catch {
-        errorCode = undefined;
+  private classifyErrorResponse(status: number, text: string, connection: string): OAuth2Error {
+    let code: string | undefined;
+    try {
+      const data = JSON.parse(text) as { error?: unknown; error_subtype?: unknown };
+      if (data.error_subtype === 'invalid_rapt') code = 'invalid_rapt';
+      else if (typeof data.error === 'string' && data.error in TERMINAL_ERROR_HINTS) {
+        code = data.error;
       }
-      if (errorCode === 'invalid_grant') {
-        throw new OAuth2InvalidGrantError(connection);
-      }
+    } catch {
+      code = undefined;
     }
-    throw new OAuth2RefreshError(connection, resp.status);
+    if (code === 'invalid_grant') return new OAuth2InvalidGrantError(connection, status);
+    if (code) {
+      return new OAuth2TerminalError(
+        `OAuth2 token request failed for connection "${connection}" (HTTP ${status}): ${code} ` +
+          `(${TERMINAL_ERROR_HINTS[code]})`,
+        { status, oauth2Error: code },
+      );
+    }
+    return new OAuth2RefreshError(connection, status);
   }
 
-  /** Parse a successful token response into a cache entry, applying mappings + rotation. */
-  private buildEntry(
+  /** Validate a successful token response, including the granted scopes. */
+  private buildToken(
     parsed: unknown,
-    oauth2: OAuth2Config,
-    cacheKey: string,
+    p: PreparedRequest,
     connection: string,
-  ): CacheEntry {
-    if (parsed === null || typeof parsed !== 'object') {
-      throw new OAuth2RefreshError(connection);
+    status: number,
+  ): OAuth2Token {
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new OAuth2RefreshError(connection, status, 'response is not a JSON object');
     }
     const data = parsed as Record<string, unknown>;
 
-    const accessField = oauth2.responseMapping?.accessTokenField ?? 'access_token';
-    const expiresField = oauth2.responseMapping?.expiresInField ?? 'expires_in';
-    const refreshField = oauth2.responseMapping?.refreshTokenField ?? 'refresh_token';
-
-    const accessToken = data[accessField];
-    const expiresIn = data[expiresField];
+    const accessToken = data.access_token;
     if (typeof accessToken !== 'string' || accessToken.length === 0) {
-      throw new OAuth2RefreshError(connection);
+      throw new OAuth2RefreshError(connection, status, 'response has no access_token');
     }
-    if (typeof expiresIn !== 'number' || !Number.isFinite(expiresIn)) {
-      throw new OAuth2RefreshError(connection);
+    // The token goes into a header; a CR/LF/NUL would be rejected by fetch()
+    // with the value echoed in the error.
+    if (/[\r\n\0]/.test(accessToken)) {
+      throw new OAuth2RefreshError(connection, status, 'access_token is not a valid header value');
+    }
+    const tokenType = data.token_type;
+    if (
+      tokenType !== undefined &&
+      (typeof tokenType !== 'string' || !/^bearer$/i.test(tokenType))
+    ) {
+      throw new OAuth2RefreshError(connection, status, 'token_type is not Bearer');
+    }
+    const expiresIn =
+      typeof data.expires_in === 'string' ? Number(data.expires_in) : data.expires_in;
+    if (typeof expiresIn !== 'number' || !Number.isFinite(expiresIn) || expiresIn <= 0) {
+      throw new OAuth2RefreshError(connection, status, 'response has no usable expires_in');
     }
 
-    const expiresAt = this.now() + expiresIn * 1000;
+    // Scope check. RFC 6749 §5.1 lets a server omit `scope` when it equals
+    // the request, but that is exactly the case we cannot tell apart from
+    // "ignored the scope parameter and returned the full grant", so with
+    // verification on, a missing scope is refused.
+    let granted: string[] | undefined;
+    if (typeof data.scope === 'string') {
+      granted = normalizeScopes(data.scope.split(/\s+/).filter(Boolean));
+    } else if (Array.isArray(data.scope) && data.scope.every((s) => typeof s === 'string')) {
+      granted = normalizeScopes(data.scope);
+    }
 
-    // Refresh-token rotation: persist a returned refresh token; if absent,
-    // keep whatever we had (rotated value or the configured secret fallback).
-    const prior = this.cache.get(cacheKey)?.rotatedRefreshToken;
-    const returnedRefresh = data[refreshField];
-    const rotatedRefreshToken =
-      typeof returnedRefresh === 'string' && returnedRefresh.length > 0 ? returnedRefresh : prior;
+    let missingScopes: string[] | undefined;
+    if (p.verifyScopes && !granted) {
+      throw new OAuth2ScopeError(
+        `OAuth2 token for connection "${connection}" refused: the token endpoint did not ` +
+          'report which scopes it granted, so they cannot be verified',
+      );
+    }
+    // A granted scope outside the request is refused whether or not
+    // verification is on: verifyGrantedScopes only tolerates a missing field.
+    if (granted && p.requestedScopes.length > 0) {
+      const requested = new Set(p.requestedScopes);
+      const extra = granted.filter((s) => !requested.has(s));
+      if (extra.length > 0) {
+        throw new OAuth2ScopeError(
+          `OAuth2 token for connection "${connection}" refused: the token endpoint granted ` +
+            `scopes broader than this connection allows (${extra.join(', ')}). Mint a ` +
+            "dedicated refresh token with exactly the connection's scopes.",
+        );
+      }
+      const grantedSet = new Set(granted);
+      const missing = p.requestedScopes.filter((s) => !grantedSet.has(s));
+      if (missing.length > 0) missingScopes = missing;
+    }
 
     return {
       accessToken,
-      expiresAt,
-      ...(rotatedRefreshToken !== undefined && { rotatedRefreshToken }),
+      expiresAt: this.now() + expiresIn * 1000,
+      ...(granted && { grantedScopes: granted }),
+      ...(missingScopes && { missingScopes }),
     };
   }
 
-  /** Resolve a required secret by name; throw a transient error if it's missing. */
-  private requireSecret(resolveSecret: SecretResolver, name: string, connection: string): string {
-    const value = resolveSecret(name);
-    if (value === undefined || value === '') {
-      // Surface as transient (misconfiguration), not as a dead-grant terminal.
-      // The secret *name* is config, not a secret value — safe to omit anyway.
-      throw new OAuth2RefreshError(connection);
-    }
-    return value;
-  }
-
-  private requireRefreshTokenSecret(
-    oauth2: OAuth2Config,
+  /** Resolve a required secret by name; a transient (misconfiguration) error if missing. */
+  private requireSecret(
     resolveSecret: SecretResolver,
+    name: string | undefined,
     connection: string,
   ): string {
-    const name = oauth2.secretRefs.refreshToken;
-    if (!name) {
-      throw new OAuth2RefreshError(connection);
-    }
-    const value = resolveSecret(name);
+    const value = name ? resolveSecret(name) : undefined;
     if (value === undefined || value === '') {
-      throw new OAuth2RefreshError(connection);
+      // The secret *name* is config, not a value, so it is safe to report.
+      throw new OAuth2RefreshError(
+        connection,
+        undefined,
+        `secret ${name ?? '(unnamed)'} is not set for this caller`,
+      );
     }
     return value;
-  }
-
-  private static cacheKey(key: TokenKey): string {
-    // JSON.stringify of the two fixed string fields — unambiguous and
-    // collision-free for our (connection, caller) tuple.
-    return JSON.stringify([key.connection, key.caller]);
   }
 }
