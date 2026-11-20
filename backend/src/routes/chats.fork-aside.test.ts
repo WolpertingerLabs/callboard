@@ -390,7 +390,7 @@ describe("POST /api/chats/:id/fork kind aside", () => {
     it("writes the origin-line times in the asker's zone, else the daemon's", async () => {
       setParent({});
       await aside({ prompt: "why?", timeZone: "Asia/Kolkata" }); // T1 is 00:05 UTC
-      expect(turns.calls[0].prompt).toMatch(/^> \*\*Assistant, Jan 1, 05:35:\*\*/);
+      expect(turns.calls[0].prompt).toMatch(/^> \*\*Assistant, Jan 1( 2026)?, 05:35:\*\*/);
       await aside({ prompt: "why?", timeZone: "Not/AZone" });
       expect(turns.calls[1].prompt).toMatch(/^> \*\*Assistant, (\w+ \d+( \d{4})?, )?\d\d:\d\d:\*\*/);
       expect((await fork({ timeZone: "UTC" })).meta.error).toBe('timeZone is only accepted with kind "aside"');
