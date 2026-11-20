@@ -11,6 +11,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
+import crypto from 'node:crypto';
 import {
   TokenManager,
   OAuth2InvalidGrantError,
@@ -1022,3 +1023,50 @@ describe('TokenManager', () => {
     expect(bodyParams(fetchMock.mock.calls[1]).get('refresh_token')).toBe(REFRESH_TOKEN);
   });
 });
+
+describe('error codes are matched as own properties only', () => {
+  it.each(['toString', 'constructor', '__proto__', 'hasOwnProperty', 'valueOf'])(
+    'treats error "%s" as unrecognised (transient), with no native source in the message',
+    async (code) => {
+      const tm = new TokenManager({
+        fetchImpl: alwaysRespond({ error: code, error_description: 'x' }, 400) as typeof fetch,
+      });
+      for (const config of [
+        refreshConfig(),
+        {
+          tokenUrl: 'https://oauth2.googleapis.com/token',
+          grant: 'jwt_bearer' as const,
+          secretRefs: { serviceAccountKey: 'SA' },
+          scopes: ['s'],
+        },
+      ]) {
+        let error: unknown;
+        try {
+          await tm.getToken(
+            KEY,
+            config,
+            config.grant === 'jwt_bearer' ? () => SA_KEY_B64 : resolveSecret,
+          );
+        } catch (err) {
+          error = err;
+        }
+        expect(error).toBeInstanceOf(OAuth2RefreshError);
+        expect((error as OAuth2RefreshError).terminal).toBe(false);
+        const message = (error as Error).message;
+        expect(message).toContain('HTTP 400');
+        expect(message).not.toMatch(/native code|function|\[object/);
+        expect(message).not.toContain(code);
+      }
+    },
+  );
+});
+
+const SA_KEY_B64 = Buffer.from(
+  JSON.stringify({
+    type: 'service_account',
+    client_email: 'robot@proj.iam.gserviceaccount.com',
+    private_key: crypto
+      .generateKeyPairSync('rsa', { modulusLength: 2048 })
+      .privateKey.export({ type: 'pkcs8', format: 'pem' }),
+  }),
+).toString('base64');

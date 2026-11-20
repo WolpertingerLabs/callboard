@@ -11,6 +11,7 @@ import { useDaemon } from "../contexts/DaemonContext";
 import { KeysDirBadge, SourceBadge } from "./CallerList";
 import IssueCredentialsModal from "../components/IssueCredentialsModal";
 import ConfirmDialog from "../components/ConfirmDialog";
+import { AuthSummary } from "../components/AuthSummary";
 
 type FetchState =
   | { status: "loading" }
@@ -296,6 +297,7 @@ export default function CallerDetail() {
                 <tr>
                   <th>Connection</th>
                   <th>Status</th>
+                  <th>Auth</th>
                   <th>Required secrets</th>
                   <th>Optional secrets</th>
                   <th>Ingestor</th>
@@ -317,6 +319,13 @@ export default function CallerDetail() {
                           <span className="tag tag-custom">custom</span>
                         )}
                       </div>
+                    </td>
+                    <td>
+                      <AuthSummary
+                        callerAuth={c.auth}
+                        problem={c.problem}
+                        compact
+                      />
                     </td>
                     <td>
                       <SecretRefList

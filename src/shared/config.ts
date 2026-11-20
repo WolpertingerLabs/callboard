@@ -14,7 +14,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { loadConnection, validateOAuth2Route } from './connections.js';
+import { isValidOAuth2Subject, loadConnection, validateOAuth2Route } from './connections.js';
 import { ownEntry } from './safe-keys.js';
 import type { IngestorConfig } from '../remote/ingestors/types.js';
 import type { TriggerRule } from '../remote/triggers/types.js';
@@ -364,20 +364,29 @@ export interface AwsSigV4Config {
 
 // ── OAuth2 ──────────────────────────────────────────────────────────────────
 
-/** Grant flows the token manager can run. */
-export type OAuth2Grant = 'refresh_token' | 'client_credentials';
+/** Grant flows the token manager can run.
+ *   - `refresh_token`: exchange a stored refresh token (user OAuth).
+ *   - `client_credentials`: the client's own credentials (no user).
+ *   - `jwt_bearer`: a signed JWT assertion (RFC 7523), e.g. a Google service
+ *     account. RS256 only. */
+export type OAuth2Grant = 'refresh_token' | 'client_credentials' | 'jwt_bearer';
 
 /** Names (never values) of the secrets an `oauth2` route mints tokens with.
  *  Each must be a key of the route's `secrets`. All are signer-only: never
  *  substituted into any URL, header, or body, the route's own included. */
 export interface OAuth2SecretRefs {
-  /** Secret holding the OAuth2 client ID. */
-  clientId: string;
-  /** Secret holding the OAuth2 client secret. */
-  clientSecret: string;
+  /** Secret holding the OAuth2 client ID. Required for `refresh_token` and
+   *  `client_credentials`; not used by `jwt_bearer`. */
+  clientId?: string;
+  /** Secret holding the OAuth2 client secret. Same grants as `clientId`. */
+  clientSecret?: string;
   /** Secret holding the refresh token. Required for, and only allowed with,
    *  the `refresh_token` grant. */
   refreshToken?: string;
+  /** Secret holding a Google service-account key: base64 of the JSON key file
+   *  (documented form) or the JSON itself. Required for, and only allowed
+   *  with, the `jwt_bearer` grant. Only the JWT signer reads it. */
+  serviceAccountKey?: string;
 }
 
 /**
@@ -387,27 +396,44 @@ export interface OAuth2SecretRefs {
  * validateOAuth2Config() (shared/connections.ts).
  */
 export interface OAuth2Config {
-  /** Token endpoint. https, or http on a loopback host. */
+  /** Token endpoint. https, or http on a loopback host. For `jwt_bearer` it
+   *  is also the assertion's `aud` (never the key file's `token_uri`). */
   tokenUrl: string;
   /** Grant flow used to obtain access tokens. */
   grant: OAuth2Grant;
   /** How the client credentials reach the token endpoint:
    *   - 'basic': `Authorization: Basic base64(client_id:client_secret)`
-   *   - 'body':  `client_id` / `client_secret` form fields */
-  clientAuth: 'basic' | 'body';
+   *   - 'body':  `client_id` / `client_secret` form fields
+   *  Required for `refresh_token` and `client_credentials`; not allowed with
+   *  `jwt_bearer` (the signed assertion is the client authentication). */
+  clientAuth?: 'basic' | 'body';
   secretRefs: OAuth2SecretRefs;
-  /** Scopes to request. Sent as `scope` on every grant. Admin-controlled: a
-   *  caller's `oauth2Overrides` can narrow them, never widen. */
+  /** Scopes to request. Sent as `scope` on every grant (the `scope` claim for
+   *  `jwt_bearer`). Admin-controlled: a caller's `oauth2Overrides` can
+   *  narrow them, never widen. Required for `jwt_bearer`. */
   scopes?: string[];
   /** Refuse a token whose response omits `scope`. A granted scope outside the
-   *  requested set is always refused. Default: true when `scopes` is set. */
+   *  requested set is always refused. Default: true when `scopes` is set,
+   *  except for `jwt_bearer` (default false): its scopes are bound by the
+   *  signed assertion, and the response may omit them. When the response does
+   *  report scopes, they are still checked. */
   verifyGrantedScopes?: boolean;
+  /** `jwt_bearer` only: the user to act as (the JWT `sub`, Google domain-wide
+   *  delegation). Policy, not a secret, and admin-only: set it on a custom
+   *  connector or in `CallerConfig.oauth2Overrides[alias].subject`. A
+   *  template may not set it. */
+  subject?: string;
+  /** `jwt_bearer` only: the connection is unusable without a `subject`
+   *  (e.g. Gmail, which has no mailbox of its own for a service account).
+   *  A caller without one has the connection dropped at resolve time. */
+  subjectRequired?: boolean;
   /** Refresh this long (ms) before the token expires.
    *  Default DEFAULT_OAUTH2_REFRESH_SKEW_MS. */
   refreshSkewMs?: number;
 }
 
-/** An `oauth2` block after the caller's override is applied. */
+/** An `oauth2` block after the caller's override is applied. `subject` is
+ *  already merged in. */
 export interface ResolvedOAuth2Config extends OAuth2Config {
   /** Sorted, de-duplicated scopes sent to the token endpoint. */
   effectiveScopes: string[];
@@ -417,6 +443,9 @@ export interface ResolvedOAuth2Config extends OAuth2Config {
 export interface OAuth2CallerOverride {
   /** Non-empty subset of the route's `oauth2.scopes`. */
   scopes?: string[];
+  /** `jwt_bearer` only: the user to act as (domain-wide delegation). Replaces
+   *  a custom connector's `oauth2.subject`. */
+  subject?: string;
 }
 
 /** Longest (ms) one token-endpoint request may take. A request's own
@@ -954,10 +983,12 @@ function logConfigProblemOnce(problem: string): void {
 export function resolveCallerRoutesChecked(
   config: RemoteServerConfig,
   callerAlias: string,
-): { routes: Route[]; problems: string[] } {
-  if (!(callerAlias in config.callers)) return { routes: [], problems: [] };
+): { routes: Route[]; problems: string[]; dropped: Record<string, string> } {
+  if (!(callerAlias in config.callers)) return { routes: [], problems: [], dropped: {} };
   const caller = config.callers[callerAlias];
   const problems: string[] = [];
+  /** Connection alias → why it was dropped for this caller. */
+  const dropped: Record<string, string> = {};
 
   // Build lookup map for custom connectors by alias
   const connectorsByAlias = new Map<string, Route>();
@@ -984,19 +1015,24 @@ export function resolveCallerRoutesChecked(
 
     try {
       // Templates are validated by loadConnection(); custom connectors here.
-      if (custom && route.oauth2 !== undefined) validateOAuth2Route(route);
+      if (custom && route.oauth2 !== undefined) validateOAuth2Route(route, 'connector');
       // Own-property lookup: a connection named `__proto__` or `constructor`
       // must not pick up Object.prototype as its override.
       route = applyOAuth2Override(route, ownEntry(overrides, name));
+      if (route.oauth2?.subjectRequired && !route.oauth2.subject) {
+        throw new Error(
+          'oauth2: this connection acts as a user (subjectRequired) and no subject is set; ' +
+            `add oauth2Overrides["${name}"].subject to the caller's config`,
+        );
+      }
     } catch (err) {
-      problems.push(
-        `Caller "${callerAlias}": connection "${name}" dropped: ${(err as Error).message}`,
-      );
+      dropped[name] = (err as Error).message;
+      problems.push(`Caller "${callerAlias}": connection "${name}" dropped: ${dropped[name]}`);
       continue;
     }
     routes.push(route);
   }
-  return { routes, problems };
+  return { routes, problems, dropped };
 }
 
 /**
@@ -1017,29 +1053,62 @@ export function validateRemoteConfig(config: RemoteServerConfig): string[] {
   return problems;
 }
 
-/** The `scheme://host` part of an allowlist pattern, or null if it has none
- *  (such a pattern can match any host). */
-function patternHost(pattern: string): string | null {
-  const m = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]+)/i.exec(pattern);
-  return m ? m[1].toLowerCase() : null;
-}
-
-/** Whether two host globs can name the same host (`*` matches anything). */
-function hostGlobsOverlap(a: string | null, b: string | null): boolean {
-  if (a === null || b === null || a === b) return true;
-  const matches = (glob: string, host: string) =>
-    new RegExp('^' + glob.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*+/g, '.*') + '$').test(
-      host.replace(/\*/g, 'x'),
-    );
-  return matches(a, b) || matches(b, a);
+/** Glob (`*` within a segment, `**` across) → anchored regex, as matchRoute uses. */
+function allowlistGlobRegex(glob: string, star = '[^/]*'): RegExp {
+  return new RegExp(
+    '^' +
+      glob
+        .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
+        .replace(/\*\*/g, '\0')
+        .replace(/\*/g, star)
+        .replace(/\0/g, '.*') +
+      '$',
+    'i',
+  );
 }
 
 /**
- * Warnings for callers whose connections have allowlists on overlapping
- * hosts. A request goes to the first connection whose allowlist matches, so
- * an overlap means list order silently decides which credential is used;
- * where an OAuth2 connection is involved, executeProxyRequest refuses such
- * requests outright. Logged at daemon boot.
+ * Whether two allowlist patterns can match a common URL. Hosts are compared
+ * as globs; paths by their literal prefix up to the first wildcard (or by an
+ * exact match when one side has none). Conservative: two wildcard hosts, or a
+ * pattern without `scheme://host`, count as overlapping. Used only for the
+ * boot warning; executeProxyRequest checks real URLs.
+ */
+export function allowlistPatternsOverlap(a: string, b: string): boolean {
+  const split = (p: string) => /^([a-z][a-z0-9+.-]*):\/\/([^/?#]*)(.*)$/i.exec(p);
+  const ma = split(a);
+  const mb = split(b);
+  if (!ma || !mb) return true;
+  if (ma[1].toLowerCase() !== mb[1].toLowerCase()) return false;
+  const [hostA, hostB] = [ma[2], mb[2]];
+  const hostOverlap =
+    hostA.includes('*') && hostB.includes('*')
+      ? true
+      : hostA.includes('*')
+        ? allowlistGlobRegex(hostA, '.*').test(hostB)
+        : hostB.includes('*')
+          ? allowlistGlobRegex(hostB, '.*').test(hostA)
+          : hostA.toLowerCase() === hostB.toLowerCase();
+  if (!hostOverlap) return false;
+  const [pathA, pathB] = [ma[3], mb[3]];
+  const wildA = pathA.includes('*');
+  const wildB = pathB.includes('*');
+  if (!wildA && !wildB) return pathA === pathB;
+  if (!wildA) return allowlistGlobRegex(pathB).test(pathA);
+  if (!wildB) return allowlistGlobRegex(pathA).test(pathB);
+  const prefixA = pathA.slice(0, pathA.indexOf('*'));
+  const prefixB = pathB.slice(0, pathB.indexOf('*'));
+  return prefixA.startsWith(prefixB) || prefixB.startsWith(prefixA);
+}
+
+/**
+ * Warnings for callers whose connections have overlapping allowlists. A
+ * request goes to the first connection whose allowlist matches, so an overlap
+ * means list order silently decides which credential is used; where an OAuth2
+ * connection is involved, executeProxyRequest refuses such requests outright.
+ * Paths count, not just hosts: the scoped Google templates share
+ * `www.googleapis.com` (Calendar, Drive) without overlapping. Logged at
+ * daemon boot.
  */
 export function connectionOverlapWarnings(config: RemoteServerConfig): string[] {
   const warnings: string[] = [];
@@ -1054,17 +1123,22 @@ export function connectionOverlapWarnings(config: RemoteServerConfig): string[] 
       for (let j = i + 1; j < routes.length; j++) {
         const a = routes[i];
         const b = routes[j];
-        const shared = a.allowedEndpoints.flatMap((pa) =>
-          b.allowedEndpoints
-            .filter((pb) => hostGlobsOverlap(patternHost(pa), patternHost(pb)))
-            .map(() => patternHost(pa) ?? '(any host)'),
-        );
-        if (shared.length === 0) continue;
+        let pair: [string, string] | undefined;
+        // Exclusions (`!pattern`) only subtract; compare what each allows.
+        const positive = (patterns: string[]) => patterns.filter((p) => !p.startsWith('!'));
+        for (const pa of positive(a.allowedEndpoints)) {
+          const pb = positive(b.allowedEndpoints).find((p) => allowlistPatternsOverlap(pa, p));
+          if (pb !== undefined) {
+            pair = [pa, pb];
+            break;
+          }
+        }
+        if (!pair) continue;
         const oauth = a.oauth2 || b.oauth2 ? ' Requests matching both are refused (OAuth2).' : '';
         warnings.push(
-          `Caller "${alias}": connections "${a.alias}" and "${b.alias}" both allow ` +
-            `${[...new Set(shared)].join(', ')}; a request matching both uses whichever is ` +
-            `listed first.${oauth}`,
+          `Caller "${alias}": connections "${a.alias}" and "${b.alias}" have overlapping ` +
+            `allowlists ("${pair[0]}" / "${pair[1]}"); a request matching both uses whichever ` +
+            `is listed first.${oauth}`,
         );
       }
     }
@@ -1073,9 +1147,10 @@ export function connectionOverlapWarnings(config: RemoteServerConfig): string[] 
 }
 
 /**
- * Narrow a route's `oauth2.scopes` to a caller's override. Throws when the
- * override is malformed, targets a route without `oauth2`, or is not a
- * non-empty subset of the route's scopes.
+ * Apply a caller's override to a route's `oauth2` block: narrow its scopes,
+ * set its `subject`. Throws when the override is malformed, targets a route
+ * without `oauth2`, is not a non-empty subset of the route's scopes, or sets a
+ * subject on a grant other than `jwt_bearer`.
  */
 function applyOAuth2Override(route: Route, override: OAuth2CallerOverride | undefined): Route {
   if (override === undefined) return route;
@@ -1085,12 +1160,21 @@ function applyOAuth2Override(route: Route, override: OAuth2CallerOverride | unde
     throw new Error('oauth2Overrides entry must be an object');
   }
   for (const key of Object.keys(override)) {
-    if (key !== 'scopes') {
+    if (key !== 'scopes' && key !== 'subject') {
       throw new Error(`oauth2Overrides entry has unknown field "${key}"`);
     }
   }
   if (!route.oauth2) {
     throw new Error('oauth2Overrides is set but the connection has no oauth2 block');
+  }
+  if (override.subject !== undefined) {
+    if (route.oauth2.grant !== 'jwt_bearer') {
+      throw new Error("oauth2Overrides subject is only used by the 'jwt_bearer' grant");
+    }
+    if (!isValidOAuth2Subject(override.subject)) {
+      throw new Error('oauth2Overrides subject must be an email address');
+    }
+    route = { ...route, oauth2: { ...route.oauth2, subject: override.subject } };
   }
   if (override.scopes === undefined) return route;
   const scopes: unknown = override.scopes;
@@ -1101,14 +1185,15 @@ function applyOAuth2Override(route: Route, override: OAuth2CallerOverride | unde
   ) {
     throw new Error('oauth2Overrides scopes must be a non-empty array of strings');
   }
-  const allowed = new Set(route.oauth2.scopes ?? []);
+  const oauth2 = route.oauth2!;
+  const allowed = new Set(oauth2.scopes ?? []);
   const extra = (scopes as string[]).filter((s) => !allowed.has(s));
   if (extra.length > 0) {
     throw new Error(
       `oauth2Overrides scopes may only narrow the connection's scopes; not allowed: ${extra.join(', ')}`,
     );
   }
-  return { ...route, oauth2: { ...route.oauth2, scopes: [...new Set(scopes as string[])] } };
+  return { ...route, oauth2: { ...oauth2, scopes: [...new Set(scopes as string[])] } };
 }
 
 // ── Secret / placeholder resolution ──────────────────────────────────────────

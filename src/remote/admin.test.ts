@@ -23,6 +23,7 @@ import type { IngestorManager } from './ingestors/index.js';
 import type { IngestorStatus } from './ingestors/types.js';
 import type { RemoteServerConfig } from '../shared/config.js';
 import type { SessionSnapshot } from './server.js';
+import type { AdminCallerConnection, AdminConnectionStatus } from './admin-types.js';
 
 // ── requireLoopback unit tests ────────────────────────────────────────────
 
@@ -250,6 +251,99 @@ describe('/admin/callers/:alias/connections', () => {
     // Critical: the secret value must NEVER appear anywhere in the response.
     const raw = JSON.stringify(body);
     expect(raw.includes(LISTENER_SECRET_VALUE)).toBe(false);
+  });
+});
+
+describe('oauth2 auth on caller connections (read-only)', () => {
+  const SA_KEY_VALUE = 'service-account-key-must-not-leak-abc';
+  beforeAll(() => {
+    process.env.GCORP_SA = SA_KEY_VALUE;
+    testConfig.callers.gcorp = {
+      connections: [
+        'google-drive-readonly',
+        'google-calendar-readonly-sa',
+        'google-gmail-readonly-sa',
+      ],
+      env: { GOOGLE_SERVICE_ACCOUNT_KEY: '${GCORP_SA}' },
+      oauth2Overrides: {
+        'google-calendar-readonly-sa': { subject: 'ceo@example.com' },
+      },
+    };
+  });
+  afterAll(() => {
+    delete testConfig.callers.gcorp;
+    delete process.env.GCORP_SA;
+  });
+
+  it('connections: grant, effective scopes, subject, and the subjectRequired drop', async () => {
+    const resp = await fetch(`${baseUrl}/admin/callers/gcorp/connections`);
+    const body = (await resp.json()) as AdminCallerConnection[];
+    const by = Object.fromEntries(body.map((c) => [c.connectionAlias, c]));
+    expect(by['google-drive-readonly'].auth).toEqual({
+      type: 'oauth2',
+      grant: 'refresh_token',
+      scopes: ['https://www.googleapis.com/auth/drive.readonly'],
+      narrowed: false,
+    });
+    expect(by['google-calendar-readonly-sa'].auth).toMatchObject({
+      grant: 'jwt_bearer',
+      subject: 'ceo@example.com',
+    });
+    expect(by['google-gmail-readonly-sa'].auth).toBeUndefined();
+    expect(by['google-gmail-readonly-sa'].problem).toMatch(/subjectRequired/);
+    expect(JSON.stringify(body)).not.toContain(SA_KEY_VALUE);
+  });
+
+  it('narrowed compares the caller scopes to the connection scopes', async () => {
+    const connector = {
+      alias: 'acme-oauth',
+      allowedEndpoints: ['https://api.acme.example/**'],
+      secrets: { A: 'a', B: 'b', R: 'r' },
+      oauth2: {
+        tokenUrl: 'https://auth.acme.example/token',
+        grant: 'refresh_token' as const,
+        clientAuth: 'body' as const,
+        secretRefs: { clientId: 'A', clientSecret: 'B', refreshToken: 'R' },
+        scopes: ['write', 'read'],
+      },
+    };
+    testConfig.connectors = [...(testConfig.connectors ?? []), connector];
+    const saved = structuredClone(testConfig.callers.gcorp);
+    const narrowedFor = async (scopes: string[] | undefined) => {
+      testConfig.callers.gcorp.connections = ['acme-oauth'];
+      testConfig.callers.gcorp.oauth2Overrides = scopes ? { 'acme-oauth': { scopes } } : {};
+      const resp = await fetch(`${baseUrl}/admin/callers/gcorp/connections`);
+      const [row] = (await resp.json()) as AdminCallerConnection[];
+      return row.auth?.narrowed;
+    };
+    try {
+      expect(await narrowedFor(undefined)).toBe(false);
+      // An override repeating every scope (any order) narrows nothing.
+      expect(await narrowedFor(['read', 'write'])).toBe(false);
+      expect(await narrowedFor(['read'])).toBe(true);
+    } finally {
+      testConfig.connectors = testConfig.connectors.filter((c) => c.alias !== 'acme-oauth');
+      testConfig.callers.gcorp = saved;
+    }
+  });
+
+  it('connection-status: template auth, plus callerAuth for enabled connections', async () => {
+    const resp = await fetch(`${baseUrl}/admin/callers/gcorp/connection-status`);
+    const body = (await resp.json()) as AdminConnectionStatus[];
+    const by = Object.fromEntries(body.map((c) => [c.alias, c]));
+    expect(by['google-gmail-readonly-sa'].auth).toEqual({
+      type: 'oauth2',
+      grant: 'jwt_bearer',
+      scopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+      subjectRequired: true,
+    });
+    expect(by['google-gmail-readonly-sa'].problem).toMatch(/subjectRequired/);
+    expect(by['google-calendar-readonly-sa'].callerAuth?.subject).toBe('ceo@example.com');
+    // Not enabled for this caller: template auth only.
+    expect(by['google-sheets-readonly'].auth?.grant).toBe('refresh_token');
+    expect(by['google-sheets-readonly'].callerAuth).toBeUndefined();
+    expect(by.github.auth).toBeUndefined();
+    expect(JSON.stringify(body)).not.toContain(SA_KEY_VALUE);
   });
 });
 

@@ -8,16 +8,74 @@
 
 // ── Allowlist matching ──────────────────────────────────────────────────────
 
-/** Whether `url` matches one of the glob `patterns`. An empty list allows
- *  everything; callers that need "nothing" check for it themselves. */
+/** Prefix that turns an allowlist pattern into an exclusion. */
+export const ALLOWLIST_EXCLUSION_PREFIX = '!';
+
+/** Whether an allowlist entry is an exclusion (`!pattern`). */
+export function isExclusionPattern(pattern: string): boolean {
+  return pattern.startsWith(ALLOWLIST_EXCLUSION_PREFIX);
+}
+
+/**
+ * Whether `url` matches one of the glob `patterns` and none of its exclusions.
+ * An entry starting with `!` is an exclusion: a URL it matches is refused
+ * even when another entry allows it (Calendar's `!…/events/watch` next to
+ * `…/events/*`, since a glob can't tell an event ID from the literal segment
+ * `watch`). Unlike .gitignore, order doesn't matter and nothing re-includes:
+ * a URL is allowed iff some inclusion matches and no exclusion does. A list
+ * of nothing but exclusions allows nothing. An empty list allows everything;
+ * callers that need "nothing" check for it themselves.
+ */
 export function isEndpointAllowed(url: string, patterns: string[]): boolean {
   if (patterns.length === 0) return true; // no restrictions if empty
+  // A fragment is never sent: fetch drops it. Matching it anyway would let
+  // `…/events/watch#x` match `…/events/*` and dodge `!…/events/watch`.
+  url = stripFragment(url);
   // Callers pass parsed hrefs, which are canonical already; this keeps a raw
   // URL (`https://Host:443/…`) matching the same way.
   url = canonicalAuthority(url);
-  return patterns.map(canonicalPattern).some((pattern) => {
-    // Support simple glob patterns: * matches anything within a segment, ** matches across segments
-    const regex = new RegExp(
+  const exclusions = patterns
+    .filter(isExclusionPattern)
+    .map((p) => canonicalPattern(p.slice(ALLOWLIST_EXCLUSION_PREFIX.length)));
+  const inclusions = patterns.filter((p) => !isExclusionPattern(p)).map(canonicalPattern);
+  if (!matchesAny(url, inclusions)) return false;
+  // An upstream decodes `w%61tch` to `watch`, so an exclusion also checks the
+  // URL with unreserved-character escapes decoded.
+  return !matchesAny(url, exclusions) && !matchesAny(decodeUnreserved(url), exclusions);
+}
+
+/** `url` without its fragment (from the first `#`). */
+export function stripFragment(url: string): string {
+  const hash = url.indexOf('#');
+  return hash === -1 ? url : url.slice(0, hash);
+}
+
+/** Decode percent-escapes of RFC 3986 unreserved characters (`%61` → `a`). */
+function decodeUnreserved(url: string): string {
+  return url.replace(/%([0-9a-f]{2})/gi, (escape, hex: string) => {
+    const ch = String.fromCharCode(parseInt(hex, 16));
+    return /[A-Za-z0-9\-._~]/.test(ch) ? ch : escape;
+  });
+}
+
+/** Whether `url` matches one of `patterns` (already canonical). */
+function matchesAny(url: string, patterns: string[]): boolean {
+  return patterns.some(
+    (pattern) => patternRegex(pattern).test(url) && wildcardHostMatches(url, pattern),
+  );
+}
+
+const compiledPatterns = new Map<string, RegExp>();
+
+/**
+ * The anchored regex for a canonical glob pattern: `*` matches within a path
+ * segment, `**` across segments. Compiled once per pattern string; patterns
+ * come from config and templates, so the cache stays small.
+ */
+function patternRegex(pattern: string): RegExp {
+  let regex = compiledPatterns.get(pattern);
+  if (!regex) {
+    regex = new RegExp(
       '^' +
         pattern
           .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
@@ -26,8 +84,9 @@ export function isEndpointAllowed(url: string, patterns: string[]): boolean {
           .replace(/\.__DOUBLE_STAR__\./g, '.*') +
         '$',
     );
-    return regex.test(url) && wildcardHostMatches(url, pattern);
-  });
+    compiledPatterns.set(pattern, regex);
+  }
+  return regex;
 }
 
 const canonicalPatterns = new Map<string, string>();
@@ -182,6 +241,9 @@ export function normalizeOutboundUrl(url: string, patterns: string[], shownUrl: 
   }
   // `host.` and `host` are the same host to DNS; send (and match) one form.
   if (parsed.hostname.endsWith('.')) parsed.hostname = parsed.hostname.slice(0, -1);
+  // The fragment is never sent, so it is neither matched nor kept: the string
+  // matched stays the string sent.
+  parsed.hash = '';
   if (!isEndpointAllowed(parsed.href, patterns)) {
     throw new Error(`Endpoint not allowed after resolution: ${shownUrl}`);
   }

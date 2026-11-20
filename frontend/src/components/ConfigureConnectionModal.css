@@ -431,3 +431,14 @@
     gap: 20px;
   }
 }
+
+.dl-secrets-auth {
+  margin-top: 10px;
+}
+
+.dl-secrets-help {
+  margin: 6px 0 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: #8b8b94;
+}

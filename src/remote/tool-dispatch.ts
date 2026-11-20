@@ -36,9 +36,11 @@ import {
   OAUTH2_TOKEN_TIMEOUT_MS,
   type CallerConfig,
   type IngestorOverrides,
+  type RemoteServerConfig,
   type ResolvedRoute,
+  type Route,
 } from '../shared/config.js';
-import { listConnectionTemplates } from '../shared/connections.js';
+import { listConnectionTemplates, loadConnection } from '../shared/connections.js';
 import { assertSafeConnectionKey, assertSafeInstanceId, ownEntry } from '../shared/safe-keys.js';
 import { isSecretSetForCaller, setCallerSecrets } from '../shared/env-utils.js';
 import {
@@ -852,6 +854,85 @@ function assertMaySelfManage(
   );
 }
 
+/**
+ * OAuth2 connections are operator-only on the agent path, whatever
+ * `selfManage` says. Their credentials are shared by name across templates
+ * (every google-* user template reads GOOGLE_OAUTH_REFRESH_TOKEN), so an agent
+ * that could enable one more OAuth2 connection would inherit the caller's
+ * credentials at that connection's scopes, and one that could set an oauth2
+ * credential could swap in its own grant.
+ */
+function oauth2Connection(config: RemoteServerConfig, alias: string): Route | undefined {
+  const custom = (config.connectors ?? []).find((c) => c.alias === alias);
+  if (custom) return custom.oauth2 ? custom : undefined;
+  try {
+    const route = loadConnection(alias);
+    return route.oauth2 ? route : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Names an agent may not set: for every connection that signs or mints with
+ * daemon-held credentials (OAuth2, AWS SigV4), built-in or custom, each
+ * signer-only secret key plus every `${VAR}` its value refers to. The second
+ * part matters for a custom connector whose key and variable differ
+ * (`secrets: { RT: "${ACME_REFRESH}" }`): set_secrets writes variables, so
+ * `ACME_REFRESH` is what an agent would set to replace `RT`. A literal value
+ * refers to nothing settable.
+ */
+function signingCredentialNames(config: RemoteServerConfig): Set<string> {
+  const names = new Set<string>();
+  const routes: Route[] = [...(config.connectors ?? [])];
+  for (const t of listConnectionTemplates()) {
+    try {
+      const route = loadConnection(t.alias);
+      if (route.oauth2 || route.awsSigV4) routes.push(route);
+    } catch {
+      // listConnectionTemplates() already loaded it; nothing to add
+    }
+  }
+  for (const route of routes) {
+    for (const name of signerOnlySecretNames(route)) {
+      names.add(name);
+      const value = route.secrets?.[name];
+      if (typeof value !== 'string') continue;
+      for (const m of value.matchAll(/\$\{(\w+)\}/g)) names.add(m[1]);
+    }
+  }
+  return names;
+}
+
+function assertAgentMayEnable(
+  config: RemoteServerConfig,
+  connection: string,
+  context: ToolContext,
+) {
+  if (context.origin === 'admin' || !oauth2Connection(config, connection)) return;
+  throw new Error(
+    `set_connection_enabled cannot enable "${connection}" from the agent: it is an OAuth2 ` +
+      'connection, whose tokens drawlatch mints from operator-held credentials. Ask the ' +
+      'operator to enable it (drawlatch dashboard or remote.config.json). Disabling is allowed.',
+  );
+}
+
+function assertAgentMaySetSecrets(
+  config: RemoteServerConfig,
+  names: string[],
+  context: ToolContext,
+): void {
+  if (context.origin === 'admin') return;
+  const credentials = signingCredentialNames(config);
+  const refused = names.filter((name) => credentials.has(name));
+  if (refused.length === 0) return;
+  throw new Error(
+    `set_secrets cannot set or delete ${refused.join(', ')} from the agent: OAuth2 and ` +
+      'AWS signing credentials are operator-only. Ask the operator to set them (drawlatch ' +
+      'dashboard or .env).',
+  );
+}
+
 /** Context passed to every tool handler, providing caller identity and shared services. */
 export interface ToolContext {
   /** The caller alias for the session making this request. */
@@ -936,6 +1017,8 @@ export const toolHandlers: Record<string, ToolHandler> = {
           type: 'oauth2',
           grant: route.oauth2.grant,
           scopes: route.oauth2.effectiveScopes,
+          // Whether it acts as a delegated user; never who.
+          ...(route.oauth2.subject !== undefined && { delegated: true }),
         };
       }
 
@@ -1764,6 +1847,8 @@ export const toolHandlers: Record<string, ToolHandler> = {
         hasIngestor: t.hasIngestor,
         ...(t.ingestorType !== undefined && { ingestorType: t.ingestorType }),
         allowedEndpoints: t.allowedEndpoints,
+        // OAuth2 (names only). The agent can't enable these itself.
+        ...(t.auth !== undefined && { auth: t.auth }),
         enabled: enabledSet.has(t.alias),
         requiredSecretsSet,
         optionalSecretsSet,
@@ -1798,6 +1883,7 @@ export const toolHandlers: Record<string, ToolHandler> = {
     if (!connectorAliases.has(connection) && !templateAliases.has(connection)) {
       throw new Error(`Unknown connection: ${connection}`);
     }
+    if (enabled) assertAgentMayEnable(config, connection, context);
 
     const connectionSet = new Set(caller.connections);
 
@@ -1837,6 +1923,7 @@ export const toolHandlers: Record<string, ToolHandler> = {
 
     const config = loadRemoteConfig();
     assertMaySelfManage('set_secrets', config.callers[context.callerAlias], context);
+    assertAgentMaySetSecrets(config, Object.keys(secrets), context);
 
     const { config: updatedConfig, status } = setCallerSecrets(
       secrets,

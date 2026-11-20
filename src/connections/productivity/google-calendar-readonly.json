@@ -1,0 +1,57 @@
+{
+  "name": "Google Calendar (read-only)",
+  "stability": "beta",
+  "category": "productivity",
+  "description": "Google Calendar, read-only (scope calendar.readonly): calendar list, calendars, events, event instances, free/busy, colors, and settings. Cannot create, change, or delete events. Auth: drawlatch mints short-lived access tokens from GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET and GOOGLE_OAUTH_REFRESH_TOKEN (user OAuth; the agent never sees them) and refuses any token broader than this scope. See CONNECTIONS.md \"Google (scoped)\".",
+  "docsUrl": "https://developers.google.com/workspace/calendar/api/v3/reference",
+  "secrets": {
+    "GOOGLE_OAUTH_CLIENT_ID": "${GOOGLE_OAUTH_CLIENT_ID}",
+    "GOOGLE_OAUTH_CLIENT_SECRET": "${GOOGLE_OAUTH_CLIENT_SECRET}",
+    "GOOGLE_OAUTH_REFRESH_TOKEN": "${GOOGLE_OAUTH_REFRESH_TOKEN}"
+  },
+  "oauth2": {
+    "tokenUrl": "https://oauth2.googleapis.com/token",
+    "grant": "refresh_token",
+    "clientAuth": "body",
+    "secretRefs": {
+      "clientId": "GOOGLE_OAUTH_CLIENT_ID",
+      "clientSecret": "GOOGLE_OAUTH_CLIENT_SECRET",
+      "refreshToken": "GOOGLE_OAUTH_REFRESH_TOKEN"
+    },
+    "scopes": [
+      "https://www.googleapis.com/auth/calendar.readonly"
+    ]
+  },
+  "allowedEndpoints": [
+    "https://www.googleapis.com/calendar/v3/users/me/calendarList",
+    "https://www.googleapis.com/calendar/v3/users/me/calendarList?**",
+    "https://www.googleapis.com/calendar/v3/users/me/calendarList/*",
+    "https://www.googleapis.com/calendar/v3/users/me/calendarList/*?**",
+    "!https://www.googleapis.com/calendar/v3/users/me/calendarList/watch",
+    "!https://www.googleapis.com/calendar/v3/users/me/calendarList/watch?**",
+    "https://www.googleapis.com/calendar/v3/users/me/settings",
+    "https://www.googleapis.com/calendar/v3/users/me/settings?**",
+    "https://www.googleapis.com/calendar/v3/users/me/settings/*",
+    "https://www.googleapis.com/calendar/v3/users/me/settings/*?**",
+    "!https://www.googleapis.com/calendar/v3/users/me/settings/watch",
+    "!https://www.googleapis.com/calendar/v3/users/me/settings/watch?**",
+    "https://www.googleapis.com/calendar/v3/calendars/*",
+    "https://www.googleapis.com/calendar/v3/calendars/*?**",
+    "https://www.googleapis.com/calendar/v3/calendars/*/events",
+    "https://www.googleapis.com/calendar/v3/calendars/*/events?**",
+    "https://www.googleapis.com/calendar/v3/calendars/*/events/*",
+    "https://www.googleapis.com/calendar/v3/calendars/*/events/*?**",
+    "https://www.googleapis.com/calendar/v3/calendars/*/events/*/instances",
+    "https://www.googleapis.com/calendar/v3/calendars/*/events/*/instances?**",
+    "!https://www.googleapis.com/calendar/v3/calendars/*/events/watch",
+    "!https://www.googleapis.com/calendar/v3/calendars/*/events/watch?**",
+    "https://www.googleapis.com/calendar/v3/freeBusy",
+    "https://www.googleapis.com/calendar/v3/freeBusy?**",
+    "https://www.googleapis.com/calendar/v3/colors",
+    "https://www.googleapis.com/calendar/v3/colors?**"
+  ],
+  "testConnection": {
+    "url": "https://www.googleapis.com/calendar/v3/users/me/calendarList?maxResults=1",
+    "description": "Lists one entry of the user's calendar list"
+  }
+}

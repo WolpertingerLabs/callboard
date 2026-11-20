@@ -31,6 +31,7 @@ import {
   type ProxyRequest,
   type ProxyResponse,
 } from '../shared/protocol/index.js';
+import { checkEnvVars, loadE2EEnv } from './ingestors/e2e/setup.js';
 
 // ── Test fixtures ─────────────────────────────────────────────────────────
 
@@ -3169,5 +3170,202 @@ describe('list_listener_configs, resolve_listener_options, control_listener, and
     const routes = response.result as Record<string, unknown>[];
     expect(routes[0].alias).toBeTruthy();
     expect(routes[1].alias).toBeTruthy();
+  });
+});
+
+// ── Scoped Google templates (live; skipped unless .env.e2e has credentials) ──
+//
+// Needs GOOGLE_OAUTH_CLIENT_ID / _CLIENT_SECRET / _REFRESH_TOKEN, with the
+// refresh token consented for the superset of the user templates' scopes (see
+// CONNECTIONS.md "Google (scoped)"). This is also the live check of scope
+// narrowing on refresh: if Google ignores the requested scope, every template
+// fails with "granted scopes broader than this connection allows".
+// Optional: GOOGLE_SERVICE_ACCOUNT_KEY (base64 key file) for the -sa
+// templates, and GOOGLE_E2E_SUBJECT (a domain user the service account may
+// impersonate via domain-wide delegation) for google-gmail-readonly-sa.
+
+loadE2EEnv();
+const GOOGLE_USER_VARS = [
+  'GOOGLE_OAUTH_CLIENT_ID',
+  'GOOGLE_OAUTH_CLIENT_SECRET',
+  'GOOGLE_OAUTH_REFRESH_TOKEN',
+];
+const googleMissing = checkEnvVars(GOOGLE_USER_VARS);
+const googleSaKey = process.env.GOOGLE_SERVICE_ACCOUNT_KEY;
+const googleSubject = process.env.GOOGLE_E2E_SUBJECT;
+
+const GOOGLE_USER_TEMPLATES: Record<string, string> = {
+  'google-gmail-metadata': 'gmail.metadata',
+  'google-gmail-readonly': 'gmail.readonly',
+  'google-calendar-freebusy': 'calendar.freebusy',
+  'google-calendar-readonly': 'calendar.readonly',
+  'google-drive-readonly': 'drive.readonly',
+  'google-drive-file': 'drive.file',
+  'google-sheets-readonly': 'spreadsheets.readonly',
+};
+const GOOGLE_SA_TEMPLATES: Record<string, string> = {
+  'google-calendar-readonly-sa': 'calendar.readonly',
+  'google-drive-readonly-sa': 'drive.readonly',
+  'google-sheets-readonly-sa': 'spreadsheets.readonly',
+  ...(googleSubject && { 'google-gmail-readonly-sa': 'gmail.readonly' }),
+};
+
+describe.skipIf(googleMissing.length > 0)('Scoped Google templates (live)', () => {
+  let googleServer: Server;
+  let googleUrl: string;
+  /** Every decrypted response, for the no-credential sweep at the end. */
+  const outputs: unknown[] = [];
+
+  beforeAll(async () => {
+    const connections = [
+      ...Object.keys(GOOGLE_USER_TEMPLATES),
+      ...(googleSaKey ? Object.keys(GOOGLE_SA_TEMPLATES) : []),
+      'google-scope-probe',
+    ];
+    const config: RemoteServerConfig = {
+      host: '127.0.0.1',
+      port: 0,
+      connectors: [
+        {
+          // A Calendar-scoped token pointed at a Gmail URL: Google must refuse.
+          alias: 'google-scope-probe',
+          secrets: {
+            GOOGLE_OAUTH_CLIENT_ID: '${GOOGLE_OAUTH_CLIENT_ID}',
+            GOOGLE_OAUTH_CLIENT_SECRET: '${GOOGLE_OAUTH_CLIENT_SECRET}',
+            GOOGLE_OAUTH_REFRESH_TOKEN: '${GOOGLE_OAUTH_REFRESH_TOKEN}',
+          },
+          oauth2: {
+            tokenUrl: 'https://oauth2.googleapis.com/token',
+            grant: 'refresh_token',
+            clientAuth: 'body',
+            secretRefs: {
+              clientId: 'GOOGLE_OAUTH_CLIENT_ID',
+              clientSecret: 'GOOGLE_OAUTH_CLIENT_SECRET',
+              refreshToken: 'GOOGLE_OAUTH_REFRESH_TOKEN',
+            },
+            scopes: ['https://www.googleapis.com/auth/calendar.readonly'],
+          },
+          allowedEndpoints: ['https://gmail.googleapis.com/gmail/v1/users/me/profile'],
+          testConnection: {
+            url: 'https://gmail.googleapis.com/gmail/v1/users/me/profile',
+            expectedStatus: [403],
+          },
+        },
+      ],
+      callers: {
+        'test-client': {
+          connections,
+          env: {
+            GOOGLE_OAUTH_CLIENT_ID: process.env.GOOGLE_OAUTH_CLIENT_ID!,
+            GOOGLE_OAUTH_CLIENT_SECRET: process.env.GOOGLE_OAUTH_CLIENT_SECRET!,
+            GOOGLE_OAUTH_REFRESH_TOKEN: process.env.GOOGLE_OAUTH_REFRESH_TOKEN!,
+            ...(googleSaKey && { GOOGLE_SERVICE_ACCOUNT_KEY: googleSaKey }),
+          },
+          ...(googleSubject && {
+            oauth2Overrides: { 'google-gmail-readonly-sa': { subject: googleSubject } },
+          }),
+        },
+      },
+      rateLimitPerMinute: 600,
+    };
+    const app = createApp({
+      config,
+      ownKeys: serverKeys,
+      authorizedPeers: [{ alias: 'test-client', keys: clientPub }],
+    });
+    await new Promise<void>((resolve) => {
+      googleServer = app.listen(0, '127.0.0.1', () => {
+        googleUrl = `http://127.0.0.1:${(googleServer.address() as AddressInfo).port}`;
+        resolve();
+      });
+    });
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => googleServer.close(() => resolve()));
+  });
+
+  async function googleRequest(
+    toolName: string,
+    toolInput: Record<string, unknown>,
+  ): Promise<ProxyResponse> {
+    const initiator = new HandshakeInitiator(clientKeys, serverPub);
+    const initResp = await fetch(`${googleUrl}/handshake/init`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(initiator.createInit()),
+    });
+    const sessionKeys = initiator.processReply((await initResp.json()) as HandshakeReply);
+    const channel = new EncryptedChannel(sessionKeys);
+    await fetch(`${googleUrl}/handshake/finish`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Session-Id': sessionKeys.sessionId },
+      body: JSON.stringify(initiator.createFinish(sessionKeys)),
+    });
+    const request: ProxyRequest = {
+      type: 'proxy_request',
+      id: crypto.randomUUID(),
+      toolName,
+      toolInput,
+      timestamp: Date.now(),
+    };
+    const resp = await fetch(`${googleUrl}/request`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream', 'X-Session-Id': channel.sessionId },
+      body: new Uint8Array(channel.encryptJSON(request)),
+    });
+    expect(resp.ok).toBe(true);
+    const response = channel.decryptJSON<ProxyResponse>(Buffer.from(await resp.arrayBuffer()));
+    outputs.push(response);
+    return response;
+  }
+
+  const SCOPE = 'https://www.googleapis.com/auth/';
+
+  it.each(Object.entries(GOOGLE_USER_TEMPLATES))(
+    '%s: test_connection mints a token for exactly %s',
+    async (alias, scope) => {
+      const { result } = await googleRequest('test_connection', { connection: alias });
+      const r = result as Record<string, unknown> & { oauth2?: Record<string, unknown> };
+      expect(r.error).toBeUndefined();
+      expect(r.success).toBe(true);
+      expect(r.oauth2).toMatchObject({ tokenMinted: true, grantedScopes: [SCOPE + scope] });
+    },
+  );
+
+  it.skipIf(!googleSaKey).each(Object.entries(GOOGLE_SA_TEMPLATES))(
+    '%s: test_connection mints a service-account token for %s',
+    async (alias, scope) => {
+      const { result } = await googleRequest('test_connection', { connection: alias });
+      const r = result as Record<string, unknown> & { oauth2?: Record<string, unknown> };
+      expect(r.error).toBeUndefined();
+      expect(r.success).toBe(true);
+      expect(r.oauth2).toMatchObject({ tokenMinted: true });
+      const granted = r.oauth2?.grantedScopes as string[] | undefined;
+      if (granted) expect(granted).toEqual([SCOPE + scope]);
+    },
+  );
+
+  it('a token for one scope is refused by another Google API (403)', async () => {
+    const { result } = await googleRequest('test_connection', {
+      connection: 'google-scope-probe',
+    });
+    expect(result).toMatchObject({ success: true, status: 403 });
+  });
+
+  it('list_routes reports the auth of every Google connection, names only', async () => {
+    const { result } = await googleRequest('list_routes', {});
+    const routes = result as { alias: string; auth?: { grant: string; scopes: string[] } }[];
+    for (const [alias, scope] of Object.entries(GOOGLE_USER_TEMPLATES)) {
+      const route = routes.find((r) => r.alias === alias);
+      expect(route?.auth).toMatchObject({ grant: 'refresh_token', scopes: [SCOPE + scope] });
+    }
+  });
+
+  it('no credential or access token appears in any tool output', () => {
+    const text = JSON.stringify(outputs);
+    for (const name of GOOGLE_USER_VARS) expect(text).not.toContain(process.env[name]!);
+    if (googleSaKey) expect(text).not.toContain(googleSaKey.slice(0, 64));
+    expect(text).not.toMatch(/ya29\.[\w-]{10,}/);
   });
 });

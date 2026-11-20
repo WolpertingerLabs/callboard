@@ -1,0 +1,43 @@
+{
+  "name": "Google Calendar (free/busy only)",
+  "stability": "beta",
+  "category": "productivity",
+  "description": "Google Calendar free/busy only (scope calendar.freebusy): POST /freeBusy returns busy intervals for calendars, never event details. Auth: drawlatch mints short-lived access tokens from GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET and GOOGLE_OAUTH_REFRESH_TOKEN (user OAuth; the agent never sees them) and refuses any token broader than this scope. See CONNECTIONS.md \"Google (scoped)\".",
+  "docsUrl": "https://developers.google.com/workspace/calendar/api/v3/reference/freebusy/query",
+  "secrets": {
+    "GOOGLE_OAUTH_CLIENT_ID": "${GOOGLE_OAUTH_CLIENT_ID}",
+    "GOOGLE_OAUTH_CLIENT_SECRET": "${GOOGLE_OAUTH_CLIENT_SECRET}",
+    "GOOGLE_OAUTH_REFRESH_TOKEN": "${GOOGLE_OAUTH_REFRESH_TOKEN}"
+  },
+  "oauth2": {
+    "tokenUrl": "https://oauth2.googleapis.com/token",
+    "grant": "refresh_token",
+    "clientAuth": "body",
+    "secretRefs": {
+      "clientId": "GOOGLE_OAUTH_CLIENT_ID",
+      "clientSecret": "GOOGLE_OAUTH_CLIENT_SECRET",
+      "refreshToken": "GOOGLE_OAUTH_REFRESH_TOKEN"
+    },
+    "scopes": [
+      "https://www.googleapis.com/auth/calendar.freebusy"
+    ]
+  },
+  "allowedEndpoints": [
+    "https://www.googleapis.com/calendar/v3/freeBusy",
+    "https://www.googleapis.com/calendar/v3/freeBusy?**"
+  ],
+  "testConnection": {
+    "method": "POST",
+    "url": "https://www.googleapis.com/calendar/v3/freeBusy",
+    "body": {
+      "timeMin": "2026-01-01T00:00:00Z",
+      "timeMax": "2026-01-01T01:00:00Z",
+      "items": [
+        {
+          "id": "primary"
+        }
+      ]
+    },
+    "description": "Queries free/busy for the primary calendar over a fixed one-hour window (read-only)"
+  }
+}

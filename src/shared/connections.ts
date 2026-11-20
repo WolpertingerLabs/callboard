@@ -12,7 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { isEndpointAllowed } from '../remote/url-policy.js';
+import { isEndpointAllowed, isExclusionPattern } from '../remote/url-policy.js';
 import {
   AWS_SIGV4_REQUIRED_SECRETS,
   MAX_OAUTH2_REFRESH_SKEW_MS,
@@ -64,7 +64,7 @@ export interface ConnectionTemplateInfo {
   allowedEndpoints: string[];
   /** How the connection authenticates, when drawlatch mints the credential
    *  itself. Names only: no secret values. */
-  auth?: { type: 'oauth2'; grant: OAuth2Grant; scopes: string[] };
+  auth?: { type: 'oauth2'; grant: OAuth2Grant; scopes: string[]; subjectRequired?: boolean };
 }
 
 /** Directory containing connection template JSON files. */
@@ -138,7 +138,7 @@ export function loadConnection(name: string): Route {
   const route = JSON.parse(raw) as Route;
   if (route.oauth2 !== undefined) {
     try {
-      validateOAuth2Route(route);
+      validateOAuth2Route(route, 'template');
     } catch (err) {
       throw new Error(`Connection template "${name}": ${(err as Error).message}`);
     }
@@ -155,10 +155,31 @@ const OAUTH2_FIELDS = new Set([
   'secretRefs',
   'scopes',
   'verifyGrantedScopes',
+  'subject',
+  'subjectRequired',
   'refreshSkewMs',
 ]);
-const OAUTH2_SECRET_REF_FIELDS = new Set(['clientId', 'clientSecret', 'refreshToken']);
+const OAUTH2_SECRET_REF_FIELDS = new Set([
+  'clientId',
+  'clientSecret',
+  'refreshToken',
+  'serviceAccountKey',
+]);
+const OAUTH2_GRANTS = new Set(['refresh_token', 'client_credentials', 'jwt_bearer']);
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+/**
+ * Whether `subject` is usable as a `jwt_bearer` `sub` (the delegated user):
+ * an email address, no whitespace or control characters.
+ */
+export function isValidOAuth2Subject(subject: unknown): subject is string {
+  return (
+    typeof subject === 'string' &&
+    subject.length <= 320 &&
+    // eslint-disable-next-line no-control-regex -- refusing control characters is the point
+    /^[^\s@\x00-\x1f\x7f]+@[^\s@\x00-\x1f\x7f]+$/.test(subject)
+  );
+}
 
 /**
  * Validate an `oauth2` block on its own. Templates and custom connectors are
@@ -192,12 +213,20 @@ export function validateOAuth2Config(oauth2: unknown): asserts oauth2 is OAuth2C
     throw new Error('oauth2: tokenUrl may not contain credentials');
   }
 
-  if (raw.grant !== 'refresh_token' && raw.grant !== 'client_credentials') {
+  if (typeof raw.grant !== 'string' || !OAUTH2_GRANTS.has(raw.grant)) {
     throw new Error(
-      `oauth2: grant must be 'refresh_token' or 'client_credentials' (got ${JSON.stringify(raw.grant)})`,
+      "oauth2: grant must be 'refresh_token', 'client_credentials', or 'jwt_bearer' " +
+        `(got ${JSON.stringify(raw.grant)})`,
     );
   }
-  if (raw.clientAuth !== 'basic' && raw.clientAuth !== 'body') {
+  const jwtBearer = raw.grant === 'jwt_bearer';
+  if (jwtBearer) {
+    if (raw.clientAuth !== undefined) {
+      throw new Error(
+        "oauth2: clientAuth is not used by the 'jwt_bearer' grant (the signed assertion authenticates)",
+      );
+    }
+  } else if (raw.clientAuth !== 'basic' && raw.clientAuth !== 'body') {
     throw new Error(
       `oauth2: clientAuth must be 'basic' or 'body' (got ${JSON.stringify(raw.clientAuth)})`,
     );
@@ -215,9 +244,32 @@ export function validateOAuth2Config(oauth2: unknown): asserts oauth2 is OAuth2C
       throw new Error(`oauth2: secretRefs.${key} must be a secret name`);
     }
   }
-  const { clientId, clientSecret, refreshToken } = refs as Partial<OAuth2Config['secretRefs']>;
-  if (!clientId) throw new Error('oauth2: secretRefs.clientId is required');
-  if (!clientSecret) throw new Error('oauth2: secretRefs.clientSecret is required');
+  const { clientId, clientSecret, refreshToken, serviceAccountKey } = refs as Partial<
+    OAuth2Config['secretRefs']
+  >;
+  if (jwtBearer) {
+    if (!serviceAccountKey) {
+      throw new Error(
+        "oauth2: secretRefs.serviceAccountKey is required for the 'jwt_bearer' grant",
+      );
+    }
+    for (const [name, value] of [
+      ['clientId', clientId],
+      ['clientSecret', clientSecret],
+      ['refreshToken', refreshToken],
+    ] as const) {
+      if (value)
+        throw new Error(`oauth2: secretRefs.${name} is not used by the 'jwt_bearer' grant`);
+    }
+  } else {
+    if (!clientId) throw new Error('oauth2: secretRefs.clientId is required');
+    if (!clientSecret) throw new Error('oauth2: secretRefs.clientSecret is required');
+    if (serviceAccountKey) {
+      throw new Error(
+        "oauth2: secretRefs.serviceAccountKey is only used by the 'jwt_bearer' grant",
+      );
+    }
+  }
   if (raw.grant === 'refresh_token' && !refreshToken) {
     throw new Error("oauth2: secretRefs.refreshToken is required for the 'refresh_token' grant");
   }
@@ -225,6 +277,21 @@ export function validateOAuth2Config(oauth2: unknown): asserts oauth2 is OAuth2C
     throw new Error(
       "oauth2: secretRefs.refreshToken is not used by the 'client_credentials' grant",
     );
+  }
+
+  if (raw.subject !== undefined) {
+    if (!jwtBearer) throw new Error("oauth2: subject is only used by the 'jwt_bearer' grant");
+    if (!isValidOAuth2Subject(raw.subject)) {
+      throw new Error('oauth2: subject must be an email address');
+    }
+  }
+  if (raw.subjectRequired !== undefined) {
+    if (!jwtBearer) {
+      throw new Error("oauth2: subjectRequired is only used by the 'jwt_bearer' grant");
+    }
+    if (typeof raw.subjectRequired !== 'boolean') {
+      throw new Error('oauth2: subjectRequired must be a boolean');
+    }
   }
 
   if (raw.scopes !== undefined) {
@@ -235,6 +302,10 @@ export function validateOAuth2Config(oauth2: unknown): asserts oauth2 is OAuth2C
       // RFC 6749 §3.3 scope-token characters: no spaces, quotes, or backslashes.
       throw new Error('oauth2: scopes must be an array of scope strings (no spaces)');
     }
+  }
+  if (jwtBearer && !(raw.scopes as string[] | undefined)?.length) {
+    // The scope claim is required, and is the only thing bounding the token.
+    throw new Error("oauth2: scopes are required for the 'jwt_bearer' grant");
   }
   if (raw.verifyGrantedScopes !== undefined) {
     if (typeof raw.verifyGrantedScopes !== 'boolean') {
@@ -298,10 +369,19 @@ function tokenEndpointVariants(tokenUrl: string): string[] {
  *     websocket listeners would make their requests (webhook
  *     auto-registration, gateway connects) with the static headers only, so
  *     unauthenticated, and are refused until supported.
+ *   - A template may not set `subject` (who a service account acts as is
+ *     per-deployment admin config).
  */
-export function validateOAuth2Route(route: Route): void {
+export function validateOAuth2Route(
+  route: Route,
+  source: 'template' | 'connector' = 'connector',
+): void {
   validateOAuth2Config(route.oauth2);
   const oauth2 = route.oauth2;
+  if (source === 'template' && oauth2.subject !== undefined) {
+    // Who a service account acts as is per-deployment policy: admin config only.
+    throw new Error('oauth2: a template may not set subject; set it per caller in oauth2Overrides');
+  }
   const secrets = route.secrets ?? {};
   const refNames = Object.values(oauth2.secretRefs).filter((n): n is string => !!n);
   for (const name of refNames) {
@@ -329,6 +409,8 @@ export function validateOAuth2Route(route: Route): void {
   }
   const tokenUrls = tokenEndpointVariants(oauth2.tokenUrl);
   for (const pattern of route.allowedEndpoints) {
+    // Exclusions only subtract from what the route reaches.
+    if (isExclusionPattern(pattern)) continue;
     // A pattern without a scheme://host prefix can match any host.
     const scoped = /^[a-z][a-z0-9+.-]*:\/\/[^/?#]+/i.test(pattern);
     if (!scoped || tokenUrls.some((url) => isEndpointAllowed(url, [pattern]))) {
@@ -439,6 +521,7 @@ export function describeConnectionTemplate(alias: string, route: Route): Connect
         type: 'oauth2' as const,
         grant: route.oauth2.grant,
         scopes: [...new Set(route.oauth2.scopes ?? [])].sort(),
+        ...(route.oauth2.subjectRequired === true && { subjectRequired: true }),
       },
     }),
   };

@@ -84,11 +84,11 @@ The local MCP server exposes these tools. Every call goes through the encrypted 
 | Tool | Purpose |
 | --- | --- |
 | `secure_request` | HTTP request to an allowlisted URL. Connection headers are injected for you. `${VAR}` placeholders in the URL and headers resolve server-side from the matched connection's secrets (in the body only if the connection sets `resolveSecretsInBody`). Secrets the connection injects itself are [withheld](#header-only-secrets): a request that references one is rejected, and their values are scrubbed from the response body. Redirects are followed only within the connection's allowlist ([Redirects](#redirects)). On an [OAuth2](#oauth2-token-minting) connection the daemon mints the access token itself, and a request may not send `Authorization` or an `access_token` query parameter. Supports multipart uploads from local files (25 MB per file, 50 MB per base64-encoded request): with `files`, the JSON `body` is sent as a form part named `payload_json` (change it with `bodyFieldName`). Also takes a per-call `timeoutMs`. |
-| `list_routes` | The caller's connections: docs links, allowed endpoint patterns, the *names* of secrets that are set, auto-injected header names, `withheldSecretNames` (secrets the connection uses itself, which a request may not reference), `awsSigV4` settings, `auth` (`{ "type": "oauth2", "grant", "scopes" }` on an [OAuth2](#oauth2-token-minting) connection, with the scopes after the caller's override; never a token or expiry), timeouts, listener info. |
+| `list_routes` | The caller's connections: docs links, allowed endpoint patterns, the *names* of secrets that are set, auto-injected header names, `withheldSecretNames` (secrets the connection uses itself, which a request may not reference), `awsSigV4` settings, `auth` (`{ "type": "oauth2", "grant", "scopes", "delegated"? }` on an [OAuth2](#oauth2-token-minting) connection, with the scopes after the caller's override, and `delegated: true` when a service account acts as a user; never a token, expiry, or who the user is), timeouts, listener info. |
 | `test_connection` | Run a connection's built-in credential check. Some cost a little credit; see [CONNECTIONS.md](CONNECTIONS.md#available-connections). On an [OAuth2](#oauth2-token-minting) connection it mints a token first and reports `oauth2: { tokenMinted, requestedScopes, grantedScopes, missingScopes }` (scope names only); without a test request that is the whole test. |
 | `list_connection_templates` | All built-in templates, with which are enabled for this caller and which secrets are set (booleans). Custom connectors aren't listed. Each entry's `selfManageable` says whether the two tools below will work for this caller. |
-| `set_connection_enabled` | Enable or disable a connection for this caller. Refused when the caller has `selfManage: false`. |
-| `set_secrets` | Set or delete (empty string) this caller's secrets. Write-only. Refused when the caller has `selfManage: false`. |
+| `set_connection_enabled` | Enable or disable a connection for this caller. Refused when the caller has `selfManage: false`. Enabling an [OAuth2](#oauth2-token-minting) connection is always refused to the agent, whatever `selfManage` says; disabling one is allowed. |
+| `set_secrets` | Set or delete (empty string) this caller's secrets. Write-only. Refused when the caller has `selfManage: false`. A call that sets or deletes a signing credential is always refused to the agent, and nothing in it is written. That means a name in any [OAuth2](#oauth2-token-minting) connection's `secretRefs` or an [AWS SigV4](#aws-sigv4-signing) connection's signing keys, built-in or custom, plus any variable such a secret's value refers to (`RT` defined as `${ACME_REFRESH}` makes `ACME_REFRESH` refused too). |
 | `get_secret_status` | Which required and optional secrets are set for a built-in connection (booleans). |
 | `poll_events` | Read buffered listener events after a cursor. |
 | `ingestor_status` | State, buffer size, event counts, and errors for this caller's listeners. |
@@ -99,7 +99,7 @@ The local MCP server exposes these tools. Every call goes through the encrypted 
 | `list_listener_instances` / `delete_listener_instance` | Manage multi-instance listeners. |
 | `test_ingestor` | Check a listener's configuration and credentials. |
 
-`set_secrets` and `set_connection_enabled` let an agent change its own caller's configuration, which can grant it more access: secrets resolve per caller by name, so a connection the agent enables for itself starts with any secret it shares a name with (a second `google-*` connector picks up the existing `GOOGLE_API_TOKEN`). The agent still can't read secret values or reach URLs outside the allowlists. Set [`selfManage: false`](#callers) on a caller to refuse both tools to its agent. The dashboard can still make the change. Callers that drawlatch creates (dashboard **New caller**, `issue-caller` for a new alias, local Callboard provisioning) start with `selfManage: false`. A caller entry without the field allows both tools, so existing configs behave as before.
+`set_secrets` and `set_connection_enabled` let an agent change its own caller's configuration, which can grant it more access: secrets resolve per caller by name, so a connection the agent enables for itself starts with any secret it shares a name with (a second `google-*` connector picks up the existing `GOOGLE_API_TOKEN`). The agent still can't read secret values or reach URLs outside the allowlists, and OAuth2 connections are operator-only even with `selfManage` allowed: the agent can't enable one or set its credentials, because OAuth2 credentials are shared by name (every user-OAuth `google-*` template reads `GOOGLE_OAUTH_REFRESH_TOKEN`). Set [`selfManage: false`](#callers) on a caller to refuse both tools to its agent. The dashboard can still make the change. Callers that drawlatch creates (dashboard **New caller**, `issue-caller` for a new alias, local Callboard provisioning) start with `selfManage: false`. A caller entry without the field allows both tools, so existing configs behave as before.
 
 The daemon also accepts `wait_for_events`, a long-poll over all of a caller's event streams. The local MCP server doesn't expose it; long-running clients such as Callboard call it over the encrypted channel. See [INGESTORS.md](INGESTORS.md#reading-events).
 
@@ -153,13 +153,13 @@ The daemon re-reads `remote.config.json` for each new session and after dashboar
 
 | Field | Description |
 | --- | --- |
-| `connections` | Required. Built-in connection names or custom connector aliases. |
+| `connections` | Required. Built-in connection names or custom connector aliases. See [Overlapping connections](#overlapping-connections) for two whose allowlists overlap. |
 | `name` | Display name for logs and the dashboard. |
 | `env` | Per-caller secret values (see [Secrets](#secrets)). |
 | `ingestorOverrides`, `listenerInstances` | Listener settings ([INGESTORS.md](INGESTORS.md#per-caller-listener-settings)). |
 | `triggerRules` | Forward matching events to Claude Code remote triggers ([INGESTORS.md](INGESTORS.md#trigger-rules-experimental)). |
 | `selfManage` | Whether the caller's agent may run `set_connection_enabled` and `set_secrets` on itself ([MCP tools](#mcp-tools)). Absent means `true`. Callers drawlatch creates are written with `false`. The admin API and dashboard aren't affected. |
-| `oauth2Overrides` | Per-connection narrowing of [OAuth2](#oauth2-token-minting) scopes: `{ "<alias>": { "scopes": [...] } }`. The scopes must be a non-empty subset of the connection's `oauth2.scopes`. An invalid entry drops that connection for this caller and is logged at boot. Only `remote.config.json` sets it: no tool, and not the dashboard, can write it. |
+| `oauth2Overrides` | Per-connection [OAuth2](#oauth2-token-minting) settings: `{ "<alias>": { "scopes": [...], "subject": "user@example.com" } }`. `scopes` narrows the requested scopes and must be a non-empty subset of the connection's `oauth2.scopes`. `subject` is the user a `jwt_bearer` (service-account) connection acts as, through domain-wide delegation; it replaces a connector's `oauth2.subject`. An invalid entry drops that connection for this caller and is logged at boot. Only `remote.config.json` sets it: no tool can write it, and the dashboard only displays it. |
 
 Caller public keys are read from `keys/callers/<alias>/`. Aliases must match `^[a-zA-Z0-9][a-zA-Z0-9_-]*$`.
 
@@ -213,7 +213,7 @@ With this connector, caller `default` reads `ADMIN_KEY` from `DEFAULT_ADMIN_KEY`
 | Field | Description |
 | --- | --- |
 | `alias` | Required. Name referenced from a caller's `connections`. |
-| `allowedEndpoints` | Required. URL globs: `*` matches within a path segment, `**` across segments. An empty list matches nothing. Matched against the request URL in parsed form (see below). |
+| `allowedEndpoints` | Required. URL globs: `*` matches within a path segment, `**` across segments. An entry starting with `!` is an exclusion: a URL it matches is refused even when another entry allows it (the Calendar templates use `!…/events/watch` next to `…/events/*`). Exclusions are also checked with unreserved percent-escapes decoded (`w%61tch` is `watch`), and only subtract: a list of nothing but exclusions allows nothing. A URL's fragment (`#…`) is never matched or sent: fetch would drop it anyway, so `…/events/watch#x` is `…/events/watch`. An empty list matches nothing. Matched against the request URL in parsed form (see below). |
 | `headers` | Headers injected into every request. `${VAR}` resolves against `secrets`. A request that sets the same header itself is rejected. |
 | `awsSigV4` | Sign every request with AWS Signature Version 4: `{}`, or `{ "service": "…", "region": "…" }` to override what's inferred from the hostname. See [AWS SigV4 signing](#aws-sigv4-signing). |
 | `oauth2` | Mint the bearer token from OAuth2 client credentials instead of a static header. See [OAuth2 token minting](#oauth2-token-minting). |
@@ -239,7 +239,7 @@ AWS APIs need a signature computed per request, so a static header can't authent
 
 #### OAuth2 token minting
 
-A connector with an `oauth2` block gets its `Authorization: Bearer` token from the daemon, which runs an OAuth2 grant against the provider's token endpoint and caches the result. The agent never sees the client credentials, the refresh token, or the minted access token.
+A connector with an `oauth2` block gets its `Authorization: Bearer` token from the daemon, which runs an OAuth2 grant against the provider's token endpoint and caches the result. The agent never sees the client credentials, the refresh token, the service-account key, or the minted access token. The scoped Google templates (`google-gmail-readonly`, `google-drive-readonly-sa`, …) are built on this; see [CONNECTIONS.md → Google (scoped)](CONNECTIONS.md#google-scoped).
 
 ```json
 {
@@ -272,11 +272,13 @@ A connector with an `oauth2` block gets its `Authorization: Bearer` token from t
 | Field | Description |
 | --- | --- |
 | `tokenUrl` | Required. The token endpoint. Must be `https` (`http` only on `localhost`, `127.0.0.1`, or `[::1]`). |
-| `grant` | Required. `refresh_token` (user OAuth: trade a long-lived refresh token for access tokens) or `client_credentials` (the client acting as itself). |
-| `clientAuth` | Required. `basic` sends `Authorization: Basic base64(client_id:client_secret)`; `body` sends `client_id` and `client_secret` as form fields. |
-| `secretRefs` | Required. Names of keys in `secrets`: `clientId`, `clientSecret`, and, for `refresh_token` only, `refreshToken`. |
-| `scopes` | Scopes to request. Sent as `scope` on every grant, sorted and de-duplicated. |
-| `verifyGrantedScopes` | Refuse a token whose response doesn't say which scopes it grants. Default `true` when `scopes` is set. |
+| `grant` | Required. `refresh_token` (user OAuth: trade a long-lived refresh token for access tokens), `client_credentials` (the client acting as itself), or `jwt_bearer` (a Google service account: a signed JWT assertion, [below](#service-accounts-jwt_bearer)). |
+| `clientAuth` | Required for `refresh_token` and `client_credentials`, not allowed with `jwt_bearer`. `basic` sends `Authorization: Basic base64(client_id:client_secret)`; `body` sends `client_id` and `client_secret` as form fields. |
+| `secretRefs` | Required. Names of keys in `secrets`: `clientId` and `clientSecret` (not for `jwt_bearer`), `refreshToken` (`refresh_token` only), `serviceAccountKey` (`jwt_bearer` only). |
+| `scopes` | Scopes to request. Sent as `scope` on every grant, sorted and de-duplicated (for `jwt_bearer`, as the assertion's `scope` claim, and required). |
+| `verifyGrantedScopes` | Refuse a token whose response doesn't say which scopes it grants. Default `true` when `scopes` is set, except for `jwt_bearer` (default `false`: its scopes are bound by the signed assertion, and the response may omit them; scopes it does report are still checked). |
+| `subject` | `jwt_bearer` only: the user to act as (the JWT `sub`, domain-wide delegation). An email address. Custom connectors only: a built-in template may not set it. Per caller, use `oauth2Overrides`. |
+| `subjectRequired` | `jwt_bearer` only: the connection is dropped for any caller without a `subject` (logged at boot). The `google-gmail-readonly-sa` template sets it. |
 | `refreshSkewMs` | Mint a new token this long before the cached one expires. Default `300000`, at most `3600000`. For each token it is capped at half the token's lifetime, so short-lived tokens aren't re-minted on every request. |
 
 Unknown fields are rejected. An invalid block on a built-in template fails when it loads; on a custom connector it drops that connection for each caller, with a message in the daemon log at boot.
@@ -292,6 +294,15 @@ Unknown fields are rejected. An invalid block on a built-in template fails when 
 - **Listeners:** poll listeners on an `oauth2` connection get managed tokens too ([INGESTORS.md](INGESTORS.md#polling)). Other listener types are refused (see above).
 - **Overlapping connections:** if more than one of a caller's connections matches a request URL and any of them is OAuth2, the request is refused with an error naming them, rather than using whichever is listed first. See [Overlapping connections](#overlapping-connections).
 
+##### Service accounts (`jwt_bearer`)
+
+The daemon signs an RS256 JWT assertion with the service-account key ([RFC 7523](https://www.rfc-editor.org/rfc/rfc7523)) and exchanges it at `tokenUrl` for an access token; there is no refresh token.
+
+- **Key format:** the `serviceAccountKey` secret holds base64 of the JSON key file (`base64 -w0 key.json`), which survives `.env` files and the dashboard's single-line input. The JSON itself is accepted too, including after a `.env` round trip has turned its `\n` escapes into real newlines. A malformed key fails with one fixed message naming only the secret, never its content. Only the signer reads the key: like every `secretRefs` secret it is never substituted anywhere.
+- **Claims:** `iss` is the key's `client_email`, `scope` the connection's scopes, `aud` the connection's `tokenUrl` (never the key file's `token_uri`), `iat` now, and `exp` an hour later. `sub` is present only when `subject` is set, which only admin config can do: a custom connector's `oauth2.subject` or the caller's `oauth2Overrides[alias].subject`.
+- **Caching:** the token cache key includes the subject and a fingerprint of `client_email`, `private_key_id`, and a hash of the private key, so a new key or subject mints a new token.
+- **Errors** carry service-account hints: `unauthorized_client` means the service account isn't authorized for domain-wide delegation in the Admin console; `access_denied` means the requested scopes aren't authorized for its client ID there; `invalid_grant` means the key is revoked, the subject isn't a user in the domain, or the daemon's clock is off.
+
 | Constant (`src/shared/config.ts`) | Value | Meaning |
 | --- | --- | --- |
 | `OAUTH2_TOKEN_TIMEOUT_MS` | `10000` | Longest one token-endpoint request may take. A request's remaining budget can make it shorter. |
@@ -306,7 +317,7 @@ Unknown fields are rejected. An invalid block on a built-in template fails when 
 
 A request goes to the first of the caller's connections whose `allowedEndpoints` match its URL, in `connections` order. When two connections can match the same URL, that order silently decides which credential the request carries.
 
-- The daemon logs a warning at boot for each pair of a caller's connections whose allowlists name overlapping hosts (a wildcard host, or a pattern without `scheme://host`, overlaps more). Among the built-in templates only `discord-bot` and `discord-oauth` overlap: they are two ways to authenticate to the same API, so enable one per caller.
+- The daemon logs a warning at boot for each pair of a caller's connections with a pair of allowlist patterns that can match a common URL, naming the patterns. Hosts are compared as globs and paths by their literal prefix up to the first wildcard; a wildcard host on both sides, or a pattern without `scheme://host`, counts as overlapping. Among the built-in templates, the overlapping ones are alternatives for one API: `discord-bot` and `discord-oauth`; the static `google` and any scoped `google-*` template; two scoped templates for one Google service (`google-gmail-metadata` and `google-gmail-readonly`, a template and its `-sa` twin). Enable one per caller. Scoped templates for different services (`google-calendar-readonly` and `google-drive-readonly`, both on `www.googleapis.com`) don't overlap.
 - If an [OAuth2](#oauth2-token-minting) connection is among the matches for a request, the request is refused with an error naming the connections. Narrow the allowlists or remove one of the connections. The check compares the URL in parsed form, so host case, an explicit default port, or a trailing dot don't dodge it, but it is best-effort: a path spelled differently (`/%63alendar/` for `/calendar/`) matches patterns only as written, so don't rely on the refusal to keep two connections apart. Non-overlapping allowlists do.
 - Between connections without OAuth2, the first match still wins, as before.
 
@@ -419,7 +430,9 @@ The daemon serves a web dashboard and its JSON API from the same port as the MCP
   - `/api/admin`: 300/min, with credential issuance limited to 10/min
 - Without a password, the MCP protocol still works. Login, auth checks, and `/api/admin/*` return `503`.
 
-**API.** The dashboard is a client of `/api/admin/*` (paths below are relative to it). Read endpoints report secrets as booleans only:
+**OAuth2 connections.** The caller page and the configure dialog show each OAuth2 connection's grant and the scopes that caller gets (after its `oauth2Overrides`), the service-account subject if one is set, and why the daemon drops a connection for that caller, if it does. They are read-only: edit `oauth2Overrides` in `remote.config.json`.
+
+**API.** The dashboard is a client of `/api/admin/*` (paths below are relative to it). Read endpoints report secrets as booleans only. `/connections` includes each template's `auth`; `/callers/:alias/connections` and `/callers/:alias/connection-status` add the caller's effective `auth`/`callerAuth` and a `problem` for a dropped connection:
 
 - `GET /meta`, `/health`, `/connections`, `/callers`, `/ingestors`, `/sessions`, `/secrets`
 - `GET /callers/:alias/connections`, `/callers/:alias/connection-status`, `/callers/:alias/ingestors`, `/callers/:alias/events`, `/callers/:alias/listener-configs`
@@ -483,7 +496,7 @@ set-password             Set the dashboard password (alias: change-password)
 - **Endpoint allowlisting:** requests go only to URLs matching the caller's connections. A URL with a control character (tab, CR, LF, NUL, DEL), which URL parsing would silently delete, and a path with a `.` or `..` segment (including `%2e` forms, and `%2f`, `%5c`, or `\` as separators), are refused on every connection, since either would change the path after it was checked. The allowlist is matched against the URL as parsed, and that parsed form is exactly what is sent. Double-encoded forms (`%252e%252e`) and `..;` aren't resolved by drawlatch or fetch, so they reach the upstream as written. Poll listener URLs get the same checks after listener params are substituted ([INGESTORS.md](INGESTORS.md#polling)). Redirects are followed only to allowlisted URLs, never from `https` to `http`, and without credential headers across origins ([Redirects](#redirects)).
 - **Per-caller isolation:** each caller sees only its connections, and secrets resolve only from its own `env` or `<ALIAS>_`-prefixed variables.
 - **No secrets on the client:** the MCP server never holds API credentials. Secret placeholders resolve server-side, in request bodies only when a connection opts in. Secrets a connection injects in its own headers can't be placed in a request at all, and are scrubbed from response bodies ([Header-only secrets](#header-only-secrets)).
-- **OAuth2:** on an [`oauth2`](#oauth2-token-minting) connection the agent never sees the client credentials, refresh token, or minted access token, and only the operator chooses scopes. That holds only while the agent can't reconfigure itself: with `selfManage` allowed, it can enable another connection that reuses the same credentials under broader scopes, or replace a credential with `set_secrets`. Set [`selfManage: false`](#callers) on callers with OAuth2 connections. Scopes bound what a token can reach, not what the agent does with it.
+- **OAuth2:** on an [`oauth2`](#oauth2-token-minting) connection the agent never sees the client credentials, refresh token, service-account key, or minted access token, and only the operator chooses scopes and the user a service account acts as. The agent can't reconfigure that: on the agent path, `set_connection_enabled` refuses to enable any OAuth2 connection (one that reuses the same credentials at broader scopes, say) and `set_secrets` refuses to set or delete an OAuth2 credential, whatever `selfManage` says. The dashboard and admin API can. Set [`selfManage: false`](#callers) on these callers anyway, so the agent can't add other connections either. Scopes bound what a token can reach, not what the agent does with it.
 - **Mutual authentication:** Ed25519-signed handshake against a pinned server key and registered caller keys.
 - **Encryption:** AES-256-GCM with per-session X25519 ECDH keys, and monotonic counters against replay.
 - **Sessions** expire after 30 minutes idle.

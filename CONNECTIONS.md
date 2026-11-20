@@ -10,7 +10,7 @@ Then set the secrets for that caller. Caller `default` reads `GITHUB_TOKEN` from
 
 ## Available connections
 
-**Bold** secrets are needed for API calls. The others are used only by the event listener, if at all. `doctor`, `config`, and the dashboard flag missing secrets only for built-in templates, and only those used in headers, so they won't catch a missing Telegram or Trello token. (`aws` is the exception: its signing keys count as required.) Set `<ALIAS>_<NAME>` even where `doctor` prints the bare name. Header secrets, listener `signatureSecret`s, and Slack's `SLACK_APP_TOKEN` are [withheld](README.md#header-only-secrets): the agent can't reference them as `${NAME}` in a request, and they're scrubbed from response bodies and listener events. That includes public values sent in headers, such as Twitch's `TWITCH_CLIENT_ID` and Reddit's `REDDIT_USER_AGENT`, which appear in responses as `${NAME}`; a custom connector can opt one out with `placeholderSecrets`. Listener types are described in [INGESTORS.md](INGESTORS.md).
+**Bold** secrets are needed for API calls. The others are used only by the event listener, if at all. `doctor`, `config`, and the dashboard flag missing secrets only for built-in templates, and only those used in headers, so they won't catch a missing Telegram or Trello token. (`aws` and the OAuth2 templates are the exceptions: their signing keys and `secretRefs` count as required.) Set `<ALIAS>_<NAME>` even where `doctor` prints the bare name. Header secrets, listener `signatureSecret`s, and Slack's `SLACK_APP_TOKEN` are [withheld](README.md#header-only-secrets): the agent can't reference them as `${NAME}` in a request, and they're scrubbed from response bodies and listener events. That includes public values sent in headers, such as Twitch's `TWITCH_CLIENT_ID` and Reddit's `REDDIT_USER_AGENT`, which appear in responses as `${NAME}`; a custom connector can opt one out with `placeholderSecrets`. Listener types are described in [INGESTORS.md](INGESTORS.md).
 
 | Connection | API | Secrets | Auth | Listener |
 | --- | --- | --- | --- | --- |
@@ -29,6 +29,17 @@ Then set the secrets for that caller. Caller `default` reads `GITHUB_TOKEN` from
 | `github` | [GitHub REST](https://docs.github.com/en/rest) | **`GITHUB_TOKEN`**, `GITHUB_WEBHOOK_SECRET`, `GITHUB_WEBHOOK_URL` | Bearer | webhook |
 | `google` | [Google Workspace APIs](https://developers.google.com/apis-explorer) | **`GOOGLE_API_TOKEN`** | Bearer | |
 | `google-ai` | [Google AI (Gemini)](https://ai.google.dev/api) | **`GOOGLE_AI_API_KEY`** | `x-goog-api-key` | |
+| `google-calendar-freebusy` | [Google Calendar, free/busy](https://developers.google.com/workspace/calendar/api/v3/reference) | **`GOOGLE_OAUTH_CLIENT_ID`**, **`GOOGLE_OAUTH_CLIENT_SECRET`**, **`GOOGLE_OAUTH_REFRESH_TOKEN`** | OAuth2, minted (`calendar.freebusy`) | |
+| `google-calendar-readonly` | [Google Calendar, read-only](https://developers.google.com/workspace/calendar/api/v3/reference) | **`GOOGLE_OAUTH_CLIENT_ID`**, **`GOOGLE_OAUTH_CLIENT_SECRET`**, **`GOOGLE_OAUTH_REFRESH_TOKEN`** | OAuth2, minted (`calendar.readonly`) | |
+| `google-calendar-readonly-sa` | [Google Calendar, read-only](https://developers.google.com/workspace/calendar/api/v3/reference) | **`GOOGLE_SERVICE_ACCOUNT_KEY`** | service account (`calendar.readonly`) | |
+| `google-drive-file` | [Google Drive, app-created files](https://developers.google.com/workspace/drive/api/reference/rest/v3) | **`GOOGLE_OAUTH_CLIENT_ID`**, **`GOOGLE_OAUTH_CLIENT_SECRET`**, **`GOOGLE_OAUTH_REFRESH_TOKEN`** | OAuth2, minted (`drive.file`) | |
+| `google-drive-readonly` | [Google Drive, read-only](https://developers.google.com/workspace/drive/api/reference/rest/v3) | **`GOOGLE_OAUTH_CLIENT_ID`**, **`GOOGLE_OAUTH_CLIENT_SECRET`**, **`GOOGLE_OAUTH_REFRESH_TOKEN`** | OAuth2, minted (`drive.readonly`) | |
+| `google-drive-readonly-sa` | [Google Drive, read-only](https://developers.google.com/workspace/drive/api/reference/rest/v3) | **`GOOGLE_SERVICE_ACCOUNT_KEY`** | service account (`drive.readonly`) | |
+| `google-gmail-metadata` | [Gmail, metadata only](https://developers.google.com/workspace/gmail/api/reference/rest) | **`GOOGLE_OAUTH_CLIENT_ID`**, **`GOOGLE_OAUTH_CLIENT_SECRET`**, **`GOOGLE_OAUTH_REFRESH_TOKEN`** | OAuth2, minted (`gmail.metadata`) | |
+| `google-gmail-readonly` | [Gmail, read-only](https://developers.google.com/workspace/gmail/api/reference/rest) | **`GOOGLE_OAUTH_CLIENT_ID`**, **`GOOGLE_OAUTH_CLIENT_SECRET`**, **`GOOGLE_OAUTH_REFRESH_TOKEN`** | OAuth2, minted (`gmail.readonly`) | |
+| `google-gmail-readonly-sa` | [Gmail, read-only](https://developers.google.com/workspace/gmail/api/reference/rest) | **`GOOGLE_SERVICE_ACCOUNT_KEY`** | service account (`gmail.readonly`), needs `subject` | |
+| `google-sheets-readonly` | [Google Sheets, read-only](https://developers.google.com/workspace/sheets/api/reference/rest) | **`GOOGLE_OAUTH_CLIENT_ID`**, **`GOOGLE_OAUTH_CLIENT_SECRET`**, **`GOOGLE_OAUTH_REFRESH_TOKEN`** | OAuth2, minted (`spreadsheets.readonly`) | |
+| `google-sheets-readonly-sa` | [Google Sheets, read-only](https://developers.google.com/workspace/sheets/api/reference/rest) | **`GOOGLE_SERVICE_ACCOUNT_KEY`** | service account (`spreadsheets.readonly`) | |
 | `hex` | [Hex](https://learn.hex.tech/docs/api/api-overview) | **`HEX_TOKEN`** | Bearer | |
 | `lichess` | [Lichess](https://lichess.org/api) | **`LICHESS_API_TOKEN`** | Bearer | |
 | `linear` | [Linear (GraphQL)](https://developers.linear.app/docs/graphql/working-with-the-graphql-api) | **`LINEAR_API_KEY`** | `Authorization` (no prefix) | poll |
@@ -47,9 +58,9 @@ Then set the secrets for that caller. Caller `default` reads `GITHUB_TOKEN` from
 | `vercel` | [Vercel](https://vercel.com/docs/rest-api) | **`VERCEL_TOKEN`** | Bearer | |
 | `x` | [X API v2](https://developer.x.com/en/docs/x-api) | **`X_BEARER_TOKEN`**, `X_SEARCH_QUERY` | Bearer | poll |
 
-Every template has a built-in `test_connection` request. Three of them cost a little credit: the Anthropic test sends a 1-token message, Exa runs a one-result search, and Parallel runs a small `turbo` search.
+Every template has a built-in `test_connection` request. Three tests cost a little credit: the Anthropic test sends a 1-token message, Exa runs a one-result search, and Parallel runs a small `turbo` search.
 
-A secret that isn't set is sent as the literal placeholder (for example, `Bearer ${LICHESS_API_TOKEN}`). The `aws` connection refuses to send a request without its keys instead. Set every bold secret even for APIs with public endpoints.
+A secret that isn't set is sent as the literal placeholder (for example, `Bearer ${LICHESS_API_TOKEN}`). The `aws` connection and the OAuth2 templates refuse to send a request without their credentials instead. Set every bold secret even for APIs with public endpoints.
 
 ## Notes by connection
 
@@ -79,7 +90,7 @@ A secret that isn't set is sent as the literal placeholder (for example, `Bearer
 
 Some GitHub endpoints answer with a 302 to another host: release-asset downloads with `Accept: application/octet-stream` (to a `*.githubusercontent.com` host), `tarball` and `zipball` (to `codeload.github.com`), and Actions log and artifact downloads (to a storage host). Those hosts aren't allowlisted, so drawlatch [doesn't follow](README.md#redirects) the redirect: you get the 302, and its `Location` is a short-lived, pre-signed URL you can download without credentials. Don't add those hosts to `allowedEndpoints` to make the redirect work: every request to an allowlisted URL gets the connection's `Authorization: Bearer ${GITHUB_TOKEN}` header, and those hosts would then receive the token on direct requests.
 
-**Google / Google AI.** `google` covers Workspace and other Google APIs with an OAuth token. Allowlisted hosts: `www`, `sheets`, `docs`, `drive`, `calendar-json`, `gmail`, `slides`, `people`, `tasks`, `admin`, `chat`, `forms`, `youtube`, `youtubeanalytics`, and `cloudresourcemanager` `.googleapis.com`. Add others with a custom connector that uses the same secret. `google-ai` is Gemini (`generativelanguage.googleapis.com`, both `v1` and `v1beta`).
+**Google / Google AI.** `google` covers Workspace and other Google APIs with a static OAuth token you supply and refresh yourself, with whatever scopes it has. Prefer the [scoped Google templates](#google-scoped), whose tokens drawlatch mints for one scope and one service. Allowlisted hosts: `www`, `sheets`, `docs`, `drive`, `calendar-json`, `gmail`, `slides`, `people`, `tasks`, `admin`, `chat`, `forms`, `youtube`, `youtubeanalytics`, and `cloudresourcemanager` `.googleapis.com`. Add others with a custom connector that uses the same secret. `google-ai` is Gemini (`generativelanguage.googleapis.com`, both `v1` and `v1beta`).
 
 **Lichess.** Allowlists `explorer.lichess.ovh` (opening explorer) and `lichess.org/api`. The token is sent on every request. Lichess rejects an invalid token even on public endpoints, so set a [personal access token](https://lichess.org/account/oauth/token).
 
@@ -104,6 +115,185 @@ Some GitHub endpoints answer with a 302 to another host: release-asset downloads
 **Vercel.** Create a token on the [Tokens page](https://vercel.com/account/tokens), where you also pick its scope. Requests act on your personal account by default. For a team's resources, add `teamId=<team id>` (or `slug=<team slug>`) to the query string, for example `https://api.vercel.com/v9/projects?teamId=team_abc123`. The built-in test calls `/v2/user`.
 
 **X.** Uses an app-only Bearer token from the [developer portal](https://developer.x.com/en/portal/dashboard). `api.x.com` and `api.twitter.com` are allowlisted. Use `api.x.com`: if `api.twitter.com` redirects there, it's a [cross-origin redirect](README.md#redirects), and the `Authorization` header doesn't follow it, so the request fails with 401. The listener searches recent tweets for `X_SEARCH_QUERY`, which is not URL-encoded, so encode it yourself. It fails without one. API access and limits depend on your X tier.
+
+### Google (scoped)
+
+The `google-*` templates give an agent one Google API at one scope. Drawlatch mints short-lived access tokens itself through [OAuth2 token minting](README.md#oauth2-token-minting). The agent never sees the client secret, the refresh token, the service-account key, or the access token, and can't ask for more scope than the template's. Each allowlist covers only that service's REST paths. None allows `oauth2.googleapis.com`, `tokeninfo`, `userinfo`, or a `/batch` endpoint (a batch request carries sub-requests that path rules can't see).
+
+| Template | Scope (`https://www.googleapis.com/auth/…`) | Reaches | `test_connection` |
+| --- | --- | --- | --- |
+| `google-gmail-metadata` | `gmail.metadata` | `users/me`: `profile`, `labels`, `messages`, `threads`, `history` | `GET users/me/profile` |
+| `google-gmail-readonly`, `-sa` | `gmail.readonly` | The above, plus `messages/*/attachments/*` and `drafts` | `GET users/me/profile` |
+| `google-calendar-freebusy` | `calendar.freebusy` | `POST /freeBusy` only | `POST /freeBusy` for `primary` over a fixed hour |
+| `google-calendar-readonly`, `-sa` | `calendar.readonly` | `users/me/calendarList`, `users/me/settings`, `calendars/{id}`, `calendars/{id}/events`, `events/{id}`, `events/{id}/instances`, `freeBusy`, `colors` | `GET users/me/calendarList?maxResults=1` |
+| `google-drive-readonly`, `-sa` | `drive.readonly` | `files`, `files/{id}`, `files/{id}/export`, `files/{id}/revisions`, `about`, `drives`, `changes`, `changes/startPageToken` | `GET about?fields=user` |
+| `google-drive-file` | `drive.file` | `files`, `files/{id}`, `files/{id}/export`, `files/{id}/copy`, `upload/drive/v3/files`, `about` (not `permissions`) | `GET about?fields=user` |
+| `google-sheets-readonly`, `-sa` | `spreadsheets.readonly` | `sheets.googleapis.com/v4/spreadsheets/**` | `GET` Google's public sample spreadsheet, `fields=spreadsheetId` |
+
+**Which flavour.** The plain templates use **user OAuth**: one consent from a Google account, stored as a refresh token. The `-sa` twins use a **service account** and have the same scope, allowlist, and test as their twin (a test checks they don't drift). A service account reads only what is shared with its `client_email`. With [domain-wide delegation](#service-account-setup) in a Workspace domain, it can act as a user in that domain instead. Gmail always needs that, so `google-gmail-readonly-sa` is unusable without a `subject`.
+
+**Secrets.** All user-OAuth templates share `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, and `GOOGLE_OAUTH_REFRESH_TOKEN`, and all `-sa` templates share `GOOGLE_SERVICE_ACCOUNT_KEY`. As with every secret, caller `mail-agent` reads them from `MAIL_AGENT_GOOGLE_OAUTH_REFRESH_TOKEN` and so on. They're signer-only: the agent can't reference them as `${NAME}`. Because one refresh token can serve several templates, the agent may not configure any of this itself: on the agent path, `set_connection_enabled` refuses to enable an OAuth2 connection (say `google-drive-file` next to `google-gmail-readonly`, which would inherit the same refresh token) and `set_secrets` refuses to set or delete these secrets, whatever `selfManage` says. Only the dashboard, the admin API, or `remote.config.json` can. Set [`selfManage: false`](README.md#callers) on these callers too, so the agent can't enable other connections either.
+
+**Mixing with `google`.** A caller with both the static `google` template and a scoped one, or two scoped ones for one service (`google-gmail-metadata` and `google-gmail-readonly`, or a template and its `-sa` twin), has two connections that match the same URLs. Because the scoped ones use OAuth2, a request matching both is refused with an error naming them, and the daemon logs a warning naming the pair at boot ([README → Overlapping connections](README.md#overlapping-connections)). Use one connection per Google service.
+
+#### User OAuth setup
+
+1. **Create the client.** In the [Google Cloud console](https://console.cloud.google.com/), pick or create a project and enable the APIs you'll use: Gmail API, Google Calendar API, Google Drive API, Google Sheets API.
+   - Under **Google Auth Platform**, set up the consent screen. Choose **Internal** if every user is in your Workspace domain, otherwise **External**.
+   - Under **Clients**, create an OAuth client of type **Desktop app** and note its client ID and secret.
+2. **Publish the app.** Under **Audience**, move an External app from *Testing* to **In production**. In Testing, refresh tokens for these scopes expire after 7 days.
+   - An unverified External app that requests restricted scopes (`gmail.*`, `drive.readonly`) shows a "Google hasn't verified this app" warning and is limited to 100 users. That's fine for your own account: choose **Advanced → Go to … (unsafe)**.
+   - An Internal app needs neither verification nor publishing.
+3. **Consent once, for every scope you'll use.** One refresh token can serve all the templates if it was granted the superset of their scopes. In a shell (bash), set the client ID, the scopes trimmed to the templates you'll enable, and a [PKCE](https://www.rfc-editor.org/rfc/rfc7636) verifier and challenge. `read -rs` keeps the client secret out of your shell history:
+
+   ```bash
+   CLIENT_ID=1234-abc.apps.googleusercontent.com
+   read -rs -p 'Client secret: ' CLIENT_SECRET; echo
+   SCOPES="https://www.googleapis.com/auth/gmail.metadata https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/calendar.freebusy https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/spreadsheets.readonly"
+   CODE_VERIFIER=$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=\n')
+   CODE_CHALLENGE=$(printf '%s' "$CODE_VERIFIER" | openssl dgst -sha256 -binary | base64 | tr '+/' '-_' | tr -d '=\n')
+   STATE=$(openssl rand -hex 16)
+   echo "https://accounts.google.com/o/oauth2/v2/auth?client_id=$CLIENT_ID&redirect_uri=http://127.0.0.1:8085&response_type=code&access_type=offline&prompt=consent&state=$STATE&code_challenge=$CODE_CHALLENGE&code_challenge_method=S256&scope=${SCOPES// /%20}"
+   ```
+
+   Open the printed URL in a browser. `access_type=offline` asks for a refresh token. `prompt=consent` makes Google issue a new one even if you consented before. On the consent screen, tick every scope: Google lets users decline individual ones. Nothing listens on `127.0.0.1:8085`, so the browser then shows a connection error. Copy the whole URL from its address bar and exchange the code, with the verifier, within a few minutes. The snippet checks that `state` came back unchanged, and passes the code as it appears in the URL (already URL-encoded). The client secret goes to `curl` on stdin rather than in its arguments, where other users could see it in the process list. (Use `printf '%s'`: a `<<<` here-string adds a newline that would become part of the secret.) The response contains the refresh token, so it goes to a private file rather than the terminal:
+
+   ```bash
+   read -r -p 'Redirected URL: ' REDIRECT
+   CODE=$(sed -n 's/.*[?&]code=\([^&#]*\).*/\1/p' <<<"$REDIRECT")
+   [ "$(sed -n 's/.*[?&]state=\([^&#]*\).*/\1/p' <<<"$REDIRECT")" = "$STATE" ] || echo 'state mismatch: start over'
+   (umask 077; printf '%s' "$CLIENT_SECRET" | curl -s https://oauth2.googleapis.com/token \
+     -d client_id="$CLIENT_ID" --data-urlencode client_secret@- \
+     -d code="$CODE" -d code_verifier="$CODE_VERIFIER" \
+     -d grant_type=authorization_code -d redirect_uri=http://127.0.0.1:8085 \
+     -o token.json)
+   jq -r '.scope // .error' token.json   # the granted scopes (not secret), or the error
+   ```
+
+   The response's `refresh_token` (`1//…`) is the secret. Append the three secrets for the caller to drawlatch's `.env` (here `~/.drawlatch/.env`; use your config directory) without printing them, with a umask that keeps a newly created `.env` private. Then delete the response and restart the daemon. Or paste the secrets into the dashboard instead:
+
+   ```bash
+   (umask 077; {
+     printf 'MAIL_AGENT_GOOGLE_OAUTH_CLIENT_ID=%s\n' "$CLIENT_ID"
+     printf 'MAIL_AGENT_GOOGLE_OAUTH_CLIENT_SECRET=%s\n' "$CLIENT_SECRET"
+     printf 'MAIL_AGENT_GOOGLE_OAUTH_REFRESH_TOKEN=%s\n' "$(jq -r .refresh_token token.json)"
+   } >> ~/.drawlatch/.env)
+   rm token.json; unset CLIENT_SECRET CODE CODE_VERIFIER STATE REDIRECT
+   drawlatch restart
+   ```
+
+   If a refresh token did end up on screen (a `curl` without `-o`, say), clear the terminal's scrollback.
+
+   Then run `test_connection` on each template. It reports the scopes Google granted.
+
+**Ways a refresh token dies** (each then fails as `invalid_grant`; mint a new one):
+
+- The app is External and in *Testing*: 7 days.
+- Six months unused. Any template's token refresh counts as use.
+- You change your password, if the token includes Gmail scopes.
+- You revoke access at [myaccount.google.com/permissions](https://myaccount.google.com/permissions), or a Workspace admin's policy does.
+- The limit of 100 refresh tokens per Google account per OAuth client: minting a 101st silently revokes the oldest. Keep that in mind if you mint one per scope set (below).
+
+**Narrowing on refresh is not verified.** Google doesn't document whether a refresh request's `scope` parameter narrows the access token to a subset of the grant. Drawlatch handles either outcome safely:
+
+- On every refresh, the engine requests exactly the template's scopes (after the caller's `oauth2Overrides`).
+- It refuses any token whose reported `scope` includes something else, and any token that doesn't report a `scope`.
+
+If Google narrows, one master refresh token serves every template. If it doesn't, every request fails closed with *"the token endpoint granted scopes broader than this connection allows (…)"*, and nothing leaks. The fix is then **one refresh token per scope set**, each consented (step 3) with only that template's scopes:
+
+- **One scope set per caller:** nothing to configure. Each caller already has its own `<ALIAS>_GOOGLE_OAUTH_REFRESH_TOKEN`, so give each caller a token minted for its template.
+- **Several Google templates on one caller:** override all but one of them with a [custom connector](README.md#custom-connectors) under the same alias that reads a differently named refresh token. Copy the template from `src/connections/productivity/`, add `alias`, and rename the refresh-token secret:
+
+  ```json
+  {
+    "connectors": [
+      {
+        "alias": "google-gmail-readonly",
+        "secrets": {
+          "GOOGLE_OAUTH_CLIENT_ID": "${GOOGLE_OAUTH_CLIENT_ID}",
+          "GOOGLE_OAUTH_CLIENT_SECRET": "${GOOGLE_OAUTH_CLIENT_SECRET}",
+          "GMAIL_RO_REFRESH_TOKEN": "${GMAIL_RO_REFRESH_TOKEN}"
+        },
+        "oauth2": {
+          "tokenUrl": "https://oauth2.googleapis.com/token",
+          "grant": "refresh_token",
+          "clientAuth": "body",
+          "secretRefs": {
+            "clientId": "GOOGLE_OAUTH_CLIENT_ID",
+            "clientSecret": "GOOGLE_OAUTH_CLIENT_SECRET",
+            "refreshToken": "GMAIL_RO_REFRESH_TOKEN"
+          },
+          "scopes": ["https://www.googleapis.com/auth/gmail.readonly"]
+        },
+        "allowedEndpoints": ["…copied from google-gmail-readonly.json…"],
+        "testConnection": { "url": "https://gmail.googleapis.com/gmail/v1/users/me/profile" }
+      }
+    ],
+    "callers": {
+      "mail-agent": {
+        "connections": ["google-gmail-readonly", "google-drive-readonly"],
+        "selfManage": false
+      }
+    }
+  }
+  ```
+
+  `mail-agent` then reads the Gmail token from `MAIL_AGENT_GMAIL_RO_REFRESH_TOKEN` and the Drive token from `MAIL_AGENT_GOOGLE_OAUTH_REFRESH_TOKEN`. (Redirecting a secret through the caller's `env`, as in `"GOOGLE_OAUTH_REFRESH_TOKEN": "${GMAIL_RO_REFRESH_TOKEN}"`, doesn't work today; see [README → Secrets](README.md#secrets).)
+
+If the response lists scopes beyond the consented set (for example, ones carried over by `include_granted_scopes` from an earlier grant), the token is refused the same way. Mint a token for this client without them.
+
+#### Service-account setup
+
+1. **Create the service account and a key.** In the Cloud console, open **IAM & Admin → Service Accounts**, create an account, and choose **Keys → Add key → JSON**. Your organization's policy may forbid key creation (`iam.disableServiceAccountKeyCreation`). Enable the APIs the templates use in that project.
+2. **Store the key as base64.** This has no quotes or newlines to break `.env`. Write it straight into drawlatch's `.env` (here `~/.drawlatch/.env`; use your config directory) rather than printing it, then delete the key file and restart the daemon:
+
+   ```bash
+   (umask 077; printf 'MAIL_AGENT_GOOGLE_SERVICE_ACCOUNT_KEY=%s\n' "$(base64 -w0 key.json)" >> ~/.drawlatch/.env)
+   # macOS: "$(base64 -i key.json)" (no line wrapping by default)
+   rm key.json
+   drawlatch restart
+   ```
+
+   You can also paste the key file's JSON, or its base64, into the dashboard field.
+3. **Without delegation**, the account reads only what is shared with its `client_email`: calendars, files, and spreadsheets. `test_connection` on `google-calendar-readonly-sa` lists the account's own (often empty) calendar list.
+4. **With domain-wide delegation** (Workspace only), the account can act as a domain user. In the [Admin console](https://admin.google.com/), open **Security → Access and data control → API controls → Manage Domain Wide Delegation → Add new**. Enter the service account's numeric client ID (`client_id` in the key file), and under OAuth scopes enter exactly the scopes of the templates you'll use, comma-separated. For example, `https://www.googleapis.com/auth/gmail.readonly,https://www.googleapis.com/auth/calendar.readonly`. Then name the user per caller:
+
+   ```json
+   {
+     "callers": {
+       "mail-agent": {
+         "connections": ["google-gmail-readonly-sa"],
+         "selfManage": false,
+         "oauth2Overrides": { "google-gmail-readonly-sa": { "subject": "alice@example.com" } }
+       }
+     }
+   }
+   ```
+
+   `subject` is admin-only config: templates can't set it, and no tool or dashboard control writes it. `list_routes` tells the agent only that the connection is `delegated`, not who the user is. `google-gmail-readonly-sa` without a subject is dropped for that caller with a boot-log message. With a subject, `users/me` in the Gmail URLs means that user.
+
+Errors carry service-account hints:
+
+- `unauthorized_client`: delegation isn't set up for this client ID.
+- `access_denied`: the template's scopes aren't in the client ID's delegated scope list.
+- `invalid_grant`: the key was deleted, the subject isn't a user in the domain, or the daemon's clock is off.
+
+The 100-token limit doesn't apply to service accounts.
+
+#### Template notes
+
+- **Scopes bound reach, not intent.** A read-only template can still read everything in that scope, including mail an attacker sent to the account. `drive.file` can create, upload, overwrite, and delete the files it covers. The template leaves out the `permissions` endpoints, so the agent can't share a file (publicly or with anyone), but it can still put data into files it creates. Prefer the read-only templates.
+- **Methods aren't restricted by the allowlist.** Read-only is enforced by Google through the scope, so a `POST` to an allowlisted path that needs a broader scope gets `403`. A `403` from drawlatch carries a hint naming the token's scopes.
+- **No push channels.** Read scopes would let an agent register a push channel (`events/watch`, `calendarList/watch`, `settings/watch`, `files/{id}/watch`, `changes/watch`) that sends change notifications to any `https` URL it names. No template allows the `watch` or `channels/stop` endpoints. Calendar event IDs and the literal `watch` are both one path segment, so the Calendar templates refuse `watch` with [exclusion entries](README.md#custom-connectors) (`!…/events/watch`). Exclusions are also checked with unreserved percent-escapes decoded, so `w%61tch` is refused too, and a fragment is dropped before matching, so `watch#x` is too.
+- **Path boundaries.** `**` appears only after `?` or `/`, so a pattern for `files` can't match `filesX`.
+- **`gmail.metadata`:**
+  - `messages.list` and `threads.list` refuse `q=` (no search).
+  - `format=full` and `format=raw` are refused. Use `format=metadata` (with `metadataHeaders`) or `minimal`.
+  - No attachments or drafts.
+- **`drive.file`** sees only files this OAuth client created, or that the user opened with it through the Google Picker. With a refresh token minted as above, that means only the files the agent created. It uploads through `https://www.googleapis.com/upload/drive/v3/files`.
+- **Calendar.** `calendars/*/acl` isn't allowlisted: listing ACLs needs more than `calendar.readonly`. `google-calendar-freebusy`'s test queries a fixed past hour and returns busy times only.
+- **Sheets** has no read call that doesn't take a spreadsheet ID. `test_connection` reads `spreadsheetId` from Google's public sample spreadsheet (`1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms`), which also catches a project where the Sheets API isn't enabled. This hasn't been run against Google yet: if the sample sheet ever disappears, the test fails with `404` while real reads still work. Read with `GET …/v4/spreadsheets/{id}` or `…/values/{range}`.
+- **The rest of Google** (Docs, Tasks, People, a Gmail listener) isn't templated yet. Use a [custom connector](README.md#oauth2-token-minting) with the same secrets and an `oauth2` block for one scope.
 
 ### Web search and fetch
 
