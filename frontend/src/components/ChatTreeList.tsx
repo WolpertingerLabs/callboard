@@ -16,8 +16,11 @@ import type { ChatSectionKey } from "../utils/localStorage";
 import { useChatSectionExpansion } from "../hooks/useChatSectionExpansion";
 import type { SpaceListItem } from "shared/types/space.js";
 import { isSidebarFolderEligible, readSidebarFolder } from "shared/types/sidebarFolder.js";
-import { treeContains, withNodeChildArchived } from "../utils/childArchive";
+import { useChatTreeCollapse, type ChatTreeCollapse } from "../hooks/useChatTreeCollapse";
+import { useIsMobile } from "../hooks/useIsMobile";
+import { withNodeChildArchived } from "../utils/childArchive";
 import { ASIDE_ROLE } from "../utils/chatRewrite";
+import { foldedAsideChildren, isHiddenArchivedChild, visibleChildren, type TreeVisibility } from "../utils/chatTreeNodes";
 import { chatSignals, nodeSignals, sumAttention } from "../utils/asideAttention";
 
 /**
@@ -681,6 +684,7 @@ function TreeNodeRow({
   underArchived = false,
   isRunning,
   foldAsides = true,
+  treeCollapse,
 }: {
   node: ChatTreeNode;
   depth: number;
@@ -694,7 +698,10 @@ function TreeNodeRow({
   isRunning?: (chatId: string) => boolean;
   /** See `Props.foldAsides`: off while a search is up. */
   foldAsides?: boolean;
+  /** Which nodes are folded; absent, nothing is collapsible. */
+  treeCollapse?: ChatTreeCollapse;
 }) {
+  const isMobile = useIsMobile();
   const [menu, setMenu] = useState<{ position: PopupMenuPosition; openedByTouch: boolean } | null>(null);
   const rowRef = useRef<HTMLDivElement>(null);
   /** Where a right-click put the pointer; a long press and the keyboard fall back to the row. */
@@ -770,125 +777,170 @@ function TreeNodeRow({
       }
     : {};
 
+  const visibility: TreeVisibility = { showArchived: !!childArchive?.showArchived, activeChatId, foldAsides };
   // Hidden archived children take their whole subtree with them: the
   // recursion below never runs for a node that returns here. Except the one
-  // holding the open chat — archiving the chat you are reading must not take
-  // its node out from under you (the dim makes the same exemption). Its other
+  // holding the open chat (the dim makes the same exemption). Its other
   // descendants are still cut below.
-  const holdsActive = archivedChild && treeContains(node, activeChatId);
-  if (archivedChild && !childArchive?.showArchived && !holdsActive) return null;
+  if (depth > 0 && isHiddenArchivedChild(node, visibility)) return null;
   // What its children inherit: they are under an archived child too.
   const childrenUnderArchived = underArchived || archivedChild;
   // Faded with an archived ancestor as well as for its own flag, so a shown
   // archived subtree reads as one archived thing.
   const faded = (archivedChild || underArchived) && !isActive;
-  // Asides are folded into this row (see `Row.asideCount`), unless one has
-  // children of its own to hang off it, or is the chat open.
-  // "Of its own" means visible: an archived child the list is not showing does
-  // not count — the list drops those before it folds (`withoutArchivedChildren`),
-  // so the row and the tree agree on which asides are folded.
-  const hasVisibleChildren = (child: ChatTreeNode) => child.children.some((c) => childArchive?.showArchived || !c.childArchived);
-  const foldedAside = (child: ChatTreeNode) =>
-    foldAsides && child.role === ASIDE_ROLE && !hasVisibleChildren(child) && child.chatId !== activeChatId;
-  const asideNodes = node.children.filter((child) => foldedAside(child) && (childArchive?.showArchived || !child.childArchived));
+  // Asides are folded into this row (see `Row.asideCount`) — `foldedAsideChildren`.
+  const asideNodes = foldedAsideChildren(node, visibility);
   const asideAttention = sumAttention(asideNodes.map((child) => nodeSignals(child, isRunning?.(child.chatId))));
+  const children = visibleChildren(node, childrenUnderArchived, visibility);
+  // The root (depth 0) has no toggle of its own: the group header above it
+  // already folds the whole tree. Below it, any node with rows to hide does.
+  const collapsible = !!treeCollapse && depth > 0 && children.length > 0;
+  const collapsed = collapsible && treeCollapse.isCollapsed(node.chatId);
+
+  // The toggle's slot. Every node below the root gets one, so sibling titles
+  // line up whether or not they have children: a node with rows to hide shows
+  // its chevron there, a leaf the tree's "—" connector. Full row height, and
+  // wider on touch, where a 16px target would be a miss more than a tap.
+  const slotWidth = isMobile ? 28 : 16;
+  // Faded like an archived row in the list, unless it is the open chat — the
+  // same exemption ChatListItem makes for the open row. On the link and the
+  // slot beside it, not their wrapper, which also paints the active highlight.
+  const dimClass = faded ? "chatlist-item-dimmed" : undefined;
 
   return (
     <>
       <div
-        ref={rowRef}
-        data-testid="chat-tree-node"
-        data-chat-id={node.chatId}
-        data-child-archived={archivedChild || undefined}
-        // Faded like an archived row in the list, unless it is the open chat —
-        // the same exemption ChatListItem makes for the open row.
-        className={faded ? "chatlist-item-dimmed" : undefined}
-        onClick={() => {
-          // The click a long press or right-click leaves behind opens the
-          // menu, not the chat.
-          if (hasMenu && consumeClickSuppression()) return;
-          onNavigate(node.chatId);
-        }}
-        {...menuProps}
-        // Focusable so the keyboard can reach the context menu, and so Enter
-        // opens the chat the way a click does. A link, not a treeitem: what
-        // the row does is navigate, and nothing around it is tree markup (the
-        // group header and these rows are plain divs), so a lone treeitem
-        // would announce a structure that is not there. Named by its title —
-        // the badges and timestamp inside would make a noisy computed name.
-        role="link"
-        tabIndex={0}
-        aria-label={`${node.role ? `${label} (${node.role})` : label}${archivedChild ? " — archived" : ""}`}
-        onKeyUp={(e) => {
-          // Not a keyup bubbling out of the (portaled) menu — Enter on its item.
-          if (e.key === "Enter" && e.target === e.currentTarget) onNavigate(node.chatId);
-        }}
-        aria-haspopup={hasMenu ? "menu" : undefined}
-        title={label}
         style={{
           display: "flex",
-          alignItems: "center",
+          alignItems: "stretch",
           gap: 6,
-          padding: "6px 14px 6px",
-          paddingLeft: 14 + depth * 14,
-          cursor: "pointer",
+          paddingLeft: 14 + depth * 14 - (depth > 0 ? slotWidth - 10 : 0),
+          paddingRight: 14,
           background: isActive ? "var(--chatlist-item-active-bg)" : "transparent",
           borderLeft: isActive ? "3px solid var(--chatlist-item-active-border)" : "3px solid transparent",
           borderBottom: "1px solid var(--chatlist-item-border)",
           minWidth: 0,
-          // A long press opens our menu; without these iOS selects the title
-          // and raises its own callout over it. Not `touch-action: none` —
-          // see useLongPress.
-          userSelect: hasMenu ? "none" : undefined,
-          WebkitTouchCallout: hasMenu ? "none" : undefined,
         }}
       >
-        {depth > 0 && (
-          <span
-            aria-hidden
-            style={{
-              width: 10,
-              height: 1,
-              flexShrink: 0,
-              background: "var(--chatlist-tree-line)",
-            }}
-          />
-        )}
-        <span
-          title={`Status: ${node.nativeAgent?.lifecycle ?? node.status}`}
-          style={{
-            width: 7,
-            height: 7,
-            borderRadius: "50%",
-            flexShrink: 0,
-            background: STATUS_DOT[node.status] || "var(--text-muted)",
+        {depth > 0 &&
+          (collapsible ? (
+            // A sibling of the link, not inside it: a button nested in a
+            // `role="link"` is an interactive element inside another, and its
+            // press would start the row's long-press timer.
+            <button
+              type="button"
+              data-testid="tree-node-toggle"
+              className={dimClass}
+              aria-expanded={!collapsed}
+              aria-label={`${collapsed ? "Expand" : "Collapse"} "${label}"`}
+              title={collapsed ? `Expand "${label}"` : `Collapse "${label}"`}
+              onClick={(e) => {
+                e.stopPropagation();
+                treeCollapse.toggle(node.chatId);
+              }}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                width: slotWidth,
+                flexShrink: 0,
+                padding: 0,
+                background: "none",
+                border: "none",
+                color: "var(--chatlist-icon)",
+                cursor: "pointer",
+              }}
+            >
+              {collapsed ? <ChevronRight size={12} aria-hidden /> : <ChevronDown size={12} aria-hidden />}
+            </button>
+          ) : (
+            <span
+              aria-hidden
+              className={dimClass}
+              style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", width: slotWidth, flexShrink: 0 }}
+            >
+              <span style={{ width: 10, height: 1, background: "var(--chatlist-tree-line)" }} />
+            </span>
+          ))}
+        <div
+          ref={rowRef}
+          data-testid="chat-tree-node"
+          data-chat-id={node.chatId}
+          data-child-archived={archivedChild || undefined}
+          className={dimClass}
+          onClick={() => {
+            // The click a long press or right-click leaves behind opens the
+            // menu, not the chat.
+            if (hasMenu && consumeClickSuppression()) return;
+            onNavigate(node.chatId);
           }}
-        />
-        <ProviderBadge provider={node.provider === "claude-code" ? undefined : node.provider} compact />
-        {node.role && <ChatRoleBadge role={node.role} />}
-        <AsideCount count={asideNodes.length} attention={asideAttention} />
-        <span
+          {...menuProps}
+          // Focusable so the keyboard can reach the context menu, and so Enter
+          // opens the chat the way a click does. A link, not a treeitem: what
+          // the row does is navigate, and nothing around it is tree markup (the
+          // group header and these rows are plain divs), so a lone treeitem
+          // would announce a structure that is not there. Named by its title —
+          // the badges and timestamp inside would make a noisy computed name.
+          role="link"
+          tabIndex={0}
+          aria-label={`${node.role ? `${label} (${node.role})` : label}${archivedChild ? " — archived" : ""}`}
+          onKeyUp={(e) => {
+            // Not a keyup bubbling out of the (portaled) menu — Enter on its item.
+            if (e.key === "Enter" && e.target === e.currentTarget) onNavigate(node.chatId);
+          }}
+          aria-haspopup={hasMenu ? "menu" : undefined}
+          title={label}
           style={{
-            fontSize: 13,
-            fontWeight: 500,
-            color: "var(--chatlist-item-title-text)",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-            minWidth: 0,
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
             flex: 1,
+            padding: "6px 0",
+            cursor: "pointer",
+            minWidth: 0,
+            // A long press opens our menu; without these iOS selects the title
+            // and raises its own callout over it. Not `touch-action: none` —
+            // see useLongPress.
+            userSelect: hasMenu ? "none" : undefined,
+            WebkitTouchCallout: hasMenu ? "none" : undefined,
           }}
         >
-          {node.title || folderName}
-          {node.nativeAgent && <small title={node.nativeAgent.controlNote}> · {node.nativeAgent.lifecycle} · read-only</small>}
-        </span>
-        {/* A glyph as well as the fade — opacity alone is not a state. */}
-        {archivedChild && (
-          <span title="Archived" style={{ display: "flex", flexShrink: 0, color: "var(--chatlist-icon)" }}>
-            <Archive size={11} aria-hidden />
+          <span
+            title={`Status: ${node.nativeAgent?.lifecycle ?? node.status}`}
+            style={{
+              width: 7,
+              height: 7,
+              borderRadius: "50%",
+              flexShrink: 0,
+              background: STATUS_DOT[node.status] || "var(--text-muted)",
+            }}
+          />
+          <ProviderBadge provider={node.provider === "claude-code" ? undefined : node.provider} compact />
+          {node.role && <ChatRoleBadge role={node.role} />}
+          <AsideCount count={asideNodes.length} attention={asideAttention} />
+          <span
+            style={{
+              fontSize: 13,
+              fontWeight: 500,
+              color: "var(--chatlist-item-title-text)",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              minWidth: 0,
+              flex: 1,
+            }}
+          >
+            {node.title || folderName}
+            {node.nativeAgent && <small title={node.nativeAgent.controlNote}> · {node.nativeAgent.lifecycle} · read-only</small>}
           </span>
-        )}
-        <span style={{ fontSize: 10, color: "var(--chatlist-item-time-text)", flexShrink: 0, whiteSpace: "nowrap" }}>{time}</span>
+          {/* A glyph as well as the fade — opacity alone is not a state. */}
+          {archivedChild && (
+            <span title="Archived" style={{ display: "flex", flexShrink: 0, color: "var(--chatlist-icon)" }}>
+              <Archive size={11} aria-hidden />
+            </span>
+          )}
+          <span style={{ fontSize: 10, color: "var(--chatlist-item-time-text)", flexShrink: 0, whiteSpace: "nowrap" }}>{time}</span>
+        </div>
       </div>
       {/* The context menu: right-click on desktop, long press on touch,
           Shift+F10 / the Menu key from the keyboard. Its entries are "split
@@ -934,12 +986,8 @@ function TreeNodeRow({
           )}
         </PopupMenu>
       )}
-      {node.children
-        // Under an archived child that is only showing because it holds the
-        // open chat: its other children stay hidden, as they would be anyway.
-        .filter((child) => childArchive?.showArchived || !childrenUnderArchived || treeContains(child, activeChatId))
-        .filter((child) => !foldedAside(child))
-        .map((child) => (
+      {!collapsed &&
+        children.map((child) => (
           <TreeNodeRow
             key={child.chatId}
             node={child}
@@ -951,6 +999,7 @@ function TreeNodeRow({
             underArchived={childrenUnderArchived}
             isRunning={isRunning}
             foldAsides={foldAsides}
+            treeCollapse={treeCollapse}
           />
         ))}
     </>
@@ -1073,9 +1122,7 @@ export default function ChatTreeList({
 
   // Selection mode is list-wide, so any row's props answer it.
   const selectionActive = rows.length > 0 && !!selectionFor?.(rows[0].chat).selectionMode;
-  const splitOff: TreeSplitOff | undefined = onDetach
-    ? { onDetach, isDetaching: (chatId) => !!detachingIds?.has(chatId), selectionActive }
-    : undefined;
+  const splitOff: TreeSplitOff | undefined = onDetach ? { onDetach, isDetaching: (chatId) => !!detachingIds?.has(chatId), selectionActive } : undefined;
 
   /**
    * Flip the node in every fetched tree that holds it, then ask the list to
@@ -1113,6 +1160,8 @@ export default function ChatTreeList({
 
   /** Collapse state for those headers, persisted via localStorage. */
   const sectionExpansion = useChatSectionExpansion();
+  /** Collapse state for the nodes inside expanded trees, persisted likewise. */
+  const treeCollapse = useChatTreeCollapse();
 
   /**
    * Running CHATS in a section, every LOADED member of every group — not rows,
@@ -1252,7 +1301,9 @@ export default function ChatTreeList({
               onMoveToSpace={onMoveToSpace && (() => onMoveToSpace(chat))}
               // Only when the root is not loaded is a group fronted by a child;
               // that child is then the one row the user can reach it from.
-              onDetach={onDetach && canSplitOff(chatMeta(chat)) ? () => onDetach(chat.id, chatMeta(chat).title || chatMeta(chat).preview || "This chat") : undefined}
+              onDetach={
+                onDetach && canSplitOff(chatMeta(chat)) ? () => onDetach(chat.id, chatMeta(chat).title || chatMeta(chat).preview || "This chat") : undefined
+              }
               detaching={!!detachingIds?.has(chat.id)}
               sessionStatus={groupSessionStatus}
               // Identity above is the root's; the live-work signals are the
@@ -1276,6 +1327,7 @@ export default function ChatTreeList({
               childArchive={childArchive}
               isRunning={isRunning}
               foldAsides={foldAsides}
+              treeCollapse={treeCollapse}
             />
           </div>
         )}
