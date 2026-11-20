@@ -30,7 +30,9 @@ const shouldSkip = missing.length > 0;
 
 describe.skipIf(shouldSkip)('Trello webhook e2e', () => {
   if (shouldSkip) {
-    it.skip(`skipped — missing env vars: ${missing.join(', ')}`, () => { /* noop */ });
+    it.skip(`skipped — missing env vars: ${missing.join(', ')}`, () => {
+      /* noop */
+    });
     return;
   }
 
@@ -165,9 +167,7 @@ describe.skipIf(shouldSkip)('Trello webhook e2e', () => {
 
     // Count events with this specific action ID
     const events = e2e.ingestorManager.getEvents('e2e-client', 'trello');
-    const matching = events.filter(
-      (e) => (e.data as any)?.actionId === actionId,
-    );
+    const matching = events.filter((e) => (e.data as any)?.actionId === actionId);
     expect(matching).toHaveLength(1);
   });
 });

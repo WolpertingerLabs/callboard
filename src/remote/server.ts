@@ -24,6 +24,7 @@ import { fileURLToPath } from 'node:url';
 import {
   loadRemoteConfig,
   resolveRoutes,
+  connectorWithholdingWarnings,
   resolveCallerRoutes,
   resolveSecrets,
   getEnvFilePath,
@@ -640,6 +641,7 @@ export function createApp(options: CreateAppOptions = {}) {
 
       const context: ToolContext = {
         callerAlias: session.callerAlias,
+        origin: 'agent',
         ingestorManager: app.locals.ingestorManager as IngestorManager,
         refreshRoutes: () => refreshCallerSessions(session.callerAlias),
         sessionId,
@@ -1051,6 +1053,14 @@ export function main(): void {
   }
 
   const config = loadRemoteConfig();
+
+  // Custom connectors that the header-only withholding rules affect. Warn,
+  // don't fail: the connector still works for everything else.
+  for (const connector of config.connectors ?? []) {
+    for (const warning of connectorWithholdingWarnings(connector)) {
+      console.error(`[remote] Warning: ${warning}`);
+    }
+  }
 
   const serverKeysDirPath = getServerKeysDir();
   const requiredKeyFiles = [

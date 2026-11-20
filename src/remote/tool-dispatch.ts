@@ -20,11 +20,16 @@
  */
 
 import {
+  callerMaySelfManage,
   loadRemoteConfig,
   saveRemoteConfig,
   resolvePlaceholders,
   scrubSecrets,
+  scrubSecretsDeep,
+  signerOnlySecretNames,
   substitutableSecrets,
+  templateSecrets,
+  withheldSecretValues,
   DEFAULT_OUTBOUND_TIMEOUT_MS,
   MAX_OUTBOUND_TIMEOUT_MS,
   type CallerConfig,
@@ -32,6 +37,7 @@ import {
   type ResolvedRoute,
 } from '../shared/config.js';
 import { listConnectionTemplates } from '../shared/connections.js';
+import { assertSafeConnectionKey, assertSafeInstanceId, ownEntry } from '../shared/safe-keys.js';
 import { isSecretSetForCaller, setCallerSecrets } from '../shared/env-utils.js';
 import {
   SIGV4_RESERVED_HEADERS,
@@ -244,20 +250,52 @@ function leaksSecret(err: Error, secrets: Record<string, string>): boolean {
   return false;
 }
 
+/** Secret names a route withholds from caller-supplied strings, split by why. */
+interface WithheldNames {
+  /** Consumed by drawlatch's own auth machinery (AWS SigV4 signing keys). */
+  signerOnly: Set<string>;
+  /** Every other withheld secret: ones the route's headers inject, the webhook
+   *  `signatureSecret`, the route's `withheldSecrets`, and any secret whose
+   *  value contains one of those. */
+  withheld: Set<string>;
+}
+
 /**
  * Reject `text` if it references a secret the route withholds from
- * substitution (an `awsSigV4` route's signing credentials). Failing loudly
- * beats sending the literal placeholder: the caller learns why, and nothing
- * leaves the daemon.
+ * substitution. Failing loudly beats sending the literal placeholder: the
+ * caller learns why, and nothing leaves the daemon. The daemon log names the
+ * connection too, so an operator whose custom connector relied on the old
+ * behaviour can find it (and the `placeholderSecrets` escape hatch).
  */
-function assertNoWithheldSecrets(text: string, withheld: Set<string>, where: string): void {
-  if (withheld.size === 0) return;
+function assertNoWithheldSecrets(
+  text: string,
+  names: WithheldNames,
+  where: string,
+  connection: string | undefined,
+): void {
+  if (names.signerOnly.size === 0 && names.withheld.size === 0) return;
   for (const match of text.matchAll(/\$\{(\w+)\}/g)) {
-    if (withheld.has(match[1])) {
+    const name = match[1];
+    if (names.signerOnly.has(name)) {
       throw new Error(
-        `${where} references \${${match[1]}}, a signing credential of this AWS SigV4 route. ` +
+        `${where} references \${${name}}, a signing credential of this AWS SigV4 route. ` +
           'Signing credentials are only used to sign requests and are never substituted ' +
           'into URLs, headers, or bodies.',
+      );
+    }
+    if (names.withheld.has(name)) {
+      console.error(
+        `[tool-dispatch] Rejected a request on connection "${connection ?? '?'}": ` +
+          `it references withheld secret \${${name}}. If this connection's API needs it ` +
+          "in the URL or body, list it in the connector's placeholderSecrets.",
+      );
+      throw new Error(
+        `${where} references \${${name}}, a secret this connection withholds from requests. ` +
+          'Withheld secrets (withheldSecretNames in list_routes) are used by the connection ' +
+          'itself, for example injected through its own headers or used to verify webhooks, ' +
+          'and are never substituted into request URLs, headers, or bodies, where an ' +
+          'upstream could echo the value back. Remove the placeholder; if the connection ' +
+          'injects it, the request is already authenticated.',
       );
     }
   }
@@ -350,12 +388,28 @@ function crossOriginSafeHeaders(
  * `test_connection` that expose no `timeoutMs` of their own. Omitted means
  * "no clamp": see applyOutboundBudget.
  */
+export interface ProxyRequestOptions {
+  /** The request comes from the connection's own template (testConnection,
+   *  testIngestor, listenerConfig dynamicOptions), not from the agent. Pass
+   *  only the owning route. Such a request may use withheld secrets (never
+   *  signing credentials), and its headers override the route's headers of
+   *  the same name instead of conflicting with them: Slack's testIngestor
+   *  sends its app token in place of the bot token. The response is still
+   *  scrubbed of withheld values. */
+  templateAuthored?: boolean;
+}
+
 export async function executeProxyRequest(
   input: ProxyRequestInput,
   routes: ResolvedRoute[],
   outboundBudgetMs?: number,
+  options: ProxyRequestOptions = {},
 ): Promise<ProxyRequestResult> {
   const { method, url, headers = {}, body, files, bodyFieldName, timeoutMs } = input;
+  const templateAuthored = options.templateAuthored === true;
+  /** What this request may substitute on a given route. */
+  const usable = (route: ResolvedRoute) =>
+    templateAuthored ? templateSecrets(route) : substitutableSecrets(route);
 
   // Step 1: Find matching route — try raw URL first
   let matched: ResolvedRoute | null = matchRoute(url, routes);
@@ -363,12 +417,12 @@ export async function executeProxyRequest(
 
   if (matched) {
     // Resolve URL placeholders using matched route's secrets
-    resolvedUrl = resolvePlaceholders(url, substitutableSecrets(matched));
+    resolvedUrl = resolvePlaceholders(url, usable(matched));
   } else {
     // Try resolving URL with each route's secrets to find a match
     for (const route of routes) {
       if (route.allowedEndpoints.length === 0) continue;
-      const candidateUrl = resolvePlaceholders(url, substitutableSecrets(route));
+      const candidateUrl = resolvePlaceholders(url, usable(route));
       if (isEndpointAllowed(candidateUrl, route.allowedEndpoints)) {
         matched = route;
         resolvedUrl = candidateUrl;
@@ -382,26 +436,36 @@ export async function executeProxyRequest(
   }
 
   // Secrets this route may substitute, and the ones it withholds (signing
-  // credentials). A reference to a withheld one anywhere it would otherwise
-  // be resolved is rejected outright.
-  const secrets = substitutableSecrets(matched);
-  const withheld = new Set(Object.keys(matched.secrets).filter((name) => !(name in secrets)));
-  assertNoWithheldSecrets(url, withheld, 'The request URL');
+  // credentials, header-only secrets). A reference to a withheld one anywhere
+  // it would otherwise be resolved is rejected outright.
+  const secrets = usable(matched);
+  const signerOnly = signerOnlySecretNames(matched);
+  const noneWithheld: WithheldNames = { signerOnly, withheld: new Set() };
+  const withheld: WithheldNames = templateAuthored
+    ? noneWithheld
+    : { signerOnly, withheld: new Set(Object.keys(withheldSecretValues(matched))) };
+  for (const name of signerOnly) withheld.withheld.delete(name);
+  const connection = matched.alias;
+  assertNoWithheldSecrets(url, withheld, 'The request URL', connection);
+  // Route headers were resolved with everything but the signer-only secrets,
+  // so a placeholder left in one can only name a signing credential.
   for (const [k, v] of Object.entries(matched.headers)) {
-    assertNoWithheldSecrets(v, withheld, `Connection header "${k}"`);
+    assertNoWithheldSecrets(v, noneWithheld, `Connection header "${k}"`, connection);
   }
 
   // Step 2: Resolve client headers using matched route's secrets
   const resolvedHeaders: Record<string, string> = {};
   for (const [k, v] of Object.entries(headers)) {
-    assertNoWithheldSecrets(v, withheld, `Header "${k}"`);
+    assertNoWithheldSecrets(v, withheld, `Header "${k}"`, connection);
     resolvedHeaders[k] = resolvePlaceholders(v, secrets);
   }
 
   // Step 3: Check for header conflicts — reject if client provides a header
-  // that conflicts with a route-level header (case-insensitive)
+  // that conflicts with a route-level header (case-insensitive). A template's
+  // own request overrides the route header instead (see ProxyRequestOptions).
   const routeHeaderKeys = new Set(Object.keys(matched.headers).map((k) => k.toLowerCase()));
-  for (const clientKey of Object.keys(resolvedHeaders)) {
+  const clientHeaderKeys = new Set(Object.keys(resolvedHeaders).map((k) => k.toLowerCase()));
+  for (const clientKey of templateAuthored ? [] : Object.keys(resolvedHeaders)) {
     if (routeHeaderKeys.has(clientKey.toLowerCase())) {
       throw new Error(
         `Header conflict: client-provided header "${clientKey}" conflicts with a route-level header. Remove it from the request.`,
@@ -436,6 +500,7 @@ export async function executeProxyRequest(
 
   // Step 4: Merge route-level headers (they take effect after conflict check)
   for (const [k, v] of Object.entries(matched.headers)) {
+    if (templateAuthored && clientHeaderKeys.has(k.toLowerCase())) continue;
     resolvedHeaders[k] = v;
   }
 
@@ -470,7 +535,7 @@ export async function executeProxyRequest(
     if (body !== null && body !== undefined) {
       const serialized = typeof body === 'string' ? body : JSON.stringify(body);
       if (matched.resolveSecretsInBody) {
-        assertNoWithheldSecrets(serialized, withheld, 'The request body');
+        assertNoWithheldSecrets(serialized, withheld, 'The request body', connection);
       }
       const resolvedPayload = matched.resolveSecretsInBody
         ? resolvePlaceholders(serialized, secrets)
@@ -495,14 +560,14 @@ export async function executeProxyRequest(
     // ── Standard JSON/string body ──
     if (typeof body === 'string') {
       if (matched.resolveSecretsInBody) {
-        assertNoWithheldSecrets(body, withheld, 'The request body');
+        assertNoWithheldSecrets(body, withheld, 'The request body', connection);
       }
       fetchBody = matched.resolveSecretsInBody ? resolvePlaceholders(body, secrets) : body;
       bodyCarriesSecrets = fetchBody !== body;
     } else if (body !== null && body !== undefined) {
       const serialized = JSON.stringify(body);
       if (matched.resolveSecretsInBody) {
-        assertNoWithheldSecrets(serialized, withheld, 'The request body');
+        assertNoWithheldSecrets(serialized, withheld, 'The request body', connection);
       }
       fetchBody = matched.resolveSecretsInBody
         ? resolvePlaceholders(serialized, secrets)
@@ -572,17 +637,42 @@ export async function executeProxyRequest(
       ...(matched.awsSigV4 && { maxRedirects: 0 }),
     });
 
-    const contentType = resp.headers.get('content-type') ?? '';
-    const responseBody: unknown = contentType.includes('application/json')
-      ? await resp.json()
-      : await resp.text();
+    // `application/json` and structured-syntax `+json` types
+    // (`application/problem+json`, `application/vnd.api+json`) are parsed,
+    // which also decodes `\uXXXX` escapes so the scrub below sees the real
+    // characters. A `+json` body that doesn't parse comes back as text, as it
+    // did before; invalid `application/json` still throws, as resp.json() did.
+    const contentType = (resp.headers.get('content-type') ?? '').toLowerCase();
+    const mediaType = contentType.split(';')[0].trim();
+    let rawBody: unknown;
+    if (contentType.includes('application/json')) {
+      rawBody = JSON.parse(await resp.text());
+    } else if (mediaType.endsWith('+json')) {
+      const text = await resp.text();
+      try {
+        rawBody = JSON.parse(text);
+      } catch {
+        rawBody = text;
+      }
+    } else {
+      rawBody = await resp.text();
+    }
+    // Withheld secrets only. The substitutable ones are the caller's to use by
+    // design (Trello's `?token=`, Telegram's bot token, a resolveSecretsInBody
+    // write the caller reads back), and many are plain config values
+    // (REDDIT_SUBREDDIT, TWITCH_USER_ID) that legitimately appear in
+    // responses; scrubbing those would corrupt data and protect nothing.
+    const withheldValues = withheldSecretValues(matched);
+    const responseBody =
+      Object.keys(withheldValues).length > 0 ? scrubSecretsDeep(rawBody, withheldValues) : rawBody;
 
     return {
       status: resp.status,
-      statusText: resp.statusText,
+      // A reason phrase is upstream-controlled text like any other.
+      statusText: scrubSecrets(resp.statusText, matched.secrets),
       // A refused redirect's `Location` can carry a substituted secret back
       // (`?key=sk-…`), and so can any header an upstream echoes. The body is
-      // left alone; resolveSecretsInBody's opt-in already covers read-back.
+      // scrubbed above, of withheld secrets only.
       headers: Object.fromEntries(
         [...resp.headers.entries()].map(([k, v]) => [k, scrubSecrets(v, matched.secrets)]),
       ),
@@ -635,10 +725,61 @@ export async function executeProxyRequest(
 
 // ── Tool handlers ──────────────────────────────────────────────────────────
 
+/**
+ * Validate the agent-supplied keys a listener tool uses to index caller config
+ * maps. Returns an error message, or undefined when they're safe. An absent,
+ * null, or empty `instanceId` means "no instance", as the handlers treat it.
+ * See shared/safe-keys.ts for why `__proto__` matters here.
+ */
+function invalidListenerKeys(
+  connection: unknown,
+  instanceId: unknown,
+  requireInstance = false,
+): string | undefined {
+  try {
+    assertSafeConnectionKey(connection);
+    if (requireInstance || (instanceId !== undefined && instanceId !== null && instanceId !== '')) {
+      assertSafeInstanceId(instanceId);
+    }
+    return undefined;
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
+}
+
+/**
+ * Refuse a self-management tool (set_connection_enabled, set_secrets) on the
+ * agent path when the caller has `selfManage: false`. Without this, an agent
+ * could enable any connection template for itself, and because secrets
+ * resolve per caller *by name*, a newly enabled connection sharing a secret
+ * name with an existing one (another google-* connector) would come up with
+ * the existing token already attached.
+ */
+function assertMaySelfManage(
+  tool: string,
+  caller: CallerConfig | undefined,
+  context: ToolContext,
+): void {
+  if (context.origin === 'admin' || callerMaySelfManage(caller)) return;
+  throw new Error(
+    `${tool} is not available to this agent: caller "${context.callerAlias}" has ` +
+      'selfManage disabled, so its connections and secrets can only be changed by the ' +
+      'operator (drawlatch dashboard or remote.config.json).',
+  );
+}
+
 /** Context passed to every tool handler, providing caller identity and shared services. */
 export interface ToolContext {
   /** The caller alias for the session making this request. */
   callerAlias: string;
+  /** Which door the call came through:
+   *   - 'agent' — the encrypted `/request` path, i.e. the caller's own agent.
+   *   - 'admin' — the password-gated admin API (dashboard), acting for the
+   *     operator on this caller's behalf.
+   *  Absent is treated as 'agent', so a context built without it gets the
+   *  more restricted behaviour. Gates set_connection_enabled / set_secrets
+   *  when the caller has `selfManage: false`. */
+  origin?: 'agent' | 'admin';
   /** The shared ingestor manager (for poll_events / ingestor_status). */
   ingestorManager: IngestorManager;
   /** Re-resolve routes for all sessions belonging to this caller.
@@ -699,6 +840,10 @@ export const toolHandlers: Record<string, ToolHandler> = {
       info.allowedEndpoints = route.allowedEndpoints;
       info.secretNames = Object.keys(route.secrets);
       info.autoHeaders = Object.keys(route.headers);
+      // Secrets the connection injects itself (or uses to sign / verify) and
+      // that a request may therefore not reference as ${NAME}.
+      const withheldNames = Object.keys(withheldSecretValues(route));
+      if (withheldNames.length > 0) info.withheldSecretNames = withheldNames;
       if (route.awsSigV4) info.awsSigV4 = route.awsSigV4;
 
       // Timeouts. The budget clamp is otherwise silent, so report what a call
@@ -814,8 +959,11 @@ export const toolHandlers: Record<string, ToolHandler> = {
           headers: testConfig.headers,
           body: testConfig.body,
         },
-        routes,
+        // The template's own request: its route only, and it may use withheld
+        // secrets (see ProxyRequestOptions).
+        [route],
         context.outboundBudgetMs,
+        { templateAuthored: true },
       );
 
       const isSuccess = expectedStatus.includes(result.status);
@@ -935,8 +1083,9 @@ export const toolHandlers: Record<string, ToolHandler> = {
               headers: testConfig.request.headers,
               body: testConfig.request.body,
             },
-            routes,
+            [route],
             context.outboundBudgetMs,
+            { templateAuthored: true },
           );
 
           const isSuccess = expectedStatus.includes(result.status);
@@ -1019,8 +1168,11 @@ export const toolHandlers: Record<string, ToolHandler> = {
     try {
       const result = await executeProxyRequest(
         { method, url, headers: {}, body },
-        routes,
+        // The template's own request: its route only, and it may use withheld
+        // secrets (see ProxyRequestOptions).
+        [route],
         context.outboundBudgetMs,
+        { templateAuthored: true },
       );
 
       // Navigate to the response path to find the items array
@@ -1065,6 +1217,9 @@ export const toolHandlers: Record<string, ToolHandler> = {
       instance_id?: string;
     };
 
+    const keyError = invalidListenerKeys(connection, instance_id);
+    if (keyError) return { success: false, connection, action, error: keyError };
+
     const mgr = context.ingestorManager;
 
     try {
@@ -1097,6 +1252,8 @@ export const toolHandlers: Record<string, ToolHandler> = {
       connection: string;
       instance_id?: string;
     };
+    const keyError = invalidListenerKeys(connection, instance_id);
+    if (keyError) return Promise.resolve({ success: false, connection, error: keyError });
 
     // Find the route for this connection
     const route = routes.find((r) => r.alias === connection);
@@ -1139,7 +1296,10 @@ export const toolHandlers: Record<string, ToolHandler> = {
 
     if (instance_id) {
       // Multi-instance: read from listenerInstances
-      const instanceOverrides = callerConfig.listenerInstances?.[connection]?.[instance_id];
+      const instanceOverrides = ownEntry(
+        ownEntry(callerConfig.listenerInstances, connection),
+        instance_id,
+      );
       if (!instanceOverrides) {
         return Promise.resolve({
           success: false,
@@ -1151,7 +1311,7 @@ export const toolHandlers: Record<string, ToolHandler> = {
       params = instanceOverrides.params ?? {};
     } else {
       // Single-instance: read from ingestorOverrides
-      const overrides = callerConfig.ingestorOverrides?.[connection];
+      const overrides = ownEntry(callerConfig.ingestorOverrides, connection);
       params = overrides?.params ?? {};
     }
 
@@ -1160,7 +1320,7 @@ export const toolHandlers: Record<string, ToolHandler> = {
     // without needing a separate list_listener_instances call.
     let instances: string[] | undefined;
     if (!instance_id && route.listenerConfig.supportsMultiInstance) {
-      const instanceMap = callerConfig.listenerInstances?.[connection] ?? {};
+      const instanceMap = ownEntry(callerConfig.listenerInstances, connection) ?? {};
       instances = Object.keys(instanceMap);
     }
 
@@ -1187,6 +1347,16 @@ export const toolHandlers: Record<string, ToolHandler> = {
       params: Record<string, unknown>;
       create_instance?: boolean;
     };
+    const keyError = invalidListenerKeys(connection, instance_id);
+    if (keyError) return { success: false, connection, error: keyError };
+    // Runtime check: `params` is untrusted input despite its declared type.
+    if (
+      (params as unknown) === null ||
+      typeof (params as unknown) !== 'object' ||
+      Array.isArray(params)
+    ) {
+      return { success: false, connection, error: 'params must be an object.' };
+    }
 
     // Find the route for this connection
     const route = routes.find((r) => r.alias === connection);
@@ -1228,12 +1398,13 @@ export const toolHandlers: Record<string, ToolHandler> = {
 
     if (instance_id) {
       // Multi-instance: write to listenerInstances
+      // Own-property lookups throughout: see shared/safe-keys.ts.
       callerConfig.listenerInstances ??= {};
-      callerConfig.listenerInstances[connection] ??= {};
+      const connInstances =
+        ownEntry(callerConfig.listenerInstances, connection) ??
+        (callerConfig.listenerInstances[connection] = {});
 
-      const existing = callerConfig.listenerInstances[connection][instance_id] as
-        | IngestorOverrides
-        | undefined;
+      const existing: IngestorOverrides | undefined = ownEntry(connInstances, instance_id);
 
       if (!existing && !create_instance) {
         return {
@@ -1248,14 +1419,15 @@ export const toolHandlers: Record<string, ToolHandler> = {
         existing.params = { ...(existing.params ?? {}), ...params };
         mergedParams = existing.params;
       } else {
-        callerConfig.listenerInstances[connection][instance_id] = { params };
+        connInstances[instance_id] = { params };
         mergedParams = params;
       }
     } else {
       // Single-instance: write to ingestorOverrides
       callerConfig.ingestorOverrides ??= {};
-      callerConfig.ingestorOverrides[connection] ??= {};
-      const overrides = callerConfig.ingestorOverrides[connection];
+      const overrides =
+        ownEntry(callerConfig.ingestorOverrides, connection) ??
+        (callerConfig.ingestorOverrides[connection] = {});
       overrides.params = { ...(overrides.params ?? {}), ...params };
       mergedParams = overrides.params;
     }
@@ -1300,6 +1472,8 @@ export const toolHandlers: Record<string, ToolHandler> = {
    */
   list_listener_instances(input, routes, context) {
     const { connection } = input as { connection: string };
+    const keyError = invalidListenerKeys(connection, undefined);
+    if (keyError) return Promise.resolve({ success: false, connection, error: keyError });
 
     // Find the route for this connection
     const route = routes.find((r) => r.alias === connection);
@@ -1330,7 +1504,7 @@ export const toolHandlers: Record<string, ToolHandler> = {
       });
     }
 
-    const instanceMap = callerConfig.listenerInstances?.[connection] ?? {};
+    const instanceMap = ownEntry(callerConfig.listenerInstances, connection) ?? {};
     const instances = Object.entries(instanceMap).map(([instanceId, overrides]) => ({
       instanceId,
       disabled: overrides.disabled ?? false,
@@ -1353,6 +1527,8 @@ export const toolHandlers: Record<string, ToolHandler> = {
       connection: string;
       instance_id: string;
     };
+    const keyError = invalidListenerKeys(connection, instance_id, true);
+    if (keyError) return { success: false, connection, instance_id, error: keyError };
 
     // Load config
     const config = loadRemoteConfig();
@@ -1366,8 +1542,8 @@ export const toolHandlers: Record<string, ToolHandler> = {
       };
     }
 
-    const instances = callerConfig.listenerInstances?.[connection];
-    if (!instances || !(instance_id in instances)) {
+    const instances = ownEntry(callerConfig.listenerInstances, connection);
+    if (!instances || !Object.hasOwn(instances, instance_id)) {
       return {
         success: false,
         connection,
@@ -1427,6 +1603,7 @@ export const toolHandlers: Record<string, ToolHandler> = {
     const config = loadRemoteConfig();
     const caller = config.callers[context.callerAlias];
     const enabledSet = new Set(caller.connections);
+    const selfManageable = context.origin === 'admin' || callerMaySelfManage(caller);
 
     const templates = listConnectionTemplates();
 
@@ -1457,6 +1634,8 @@ export const toolHandlers: Record<string, ToolHandler> = {
         enabled: enabledSet.has(t.alias),
         requiredSecretsSet,
         optionalSecretsSet,
+        // Whether set_connection_enabled / set_secrets will work for this caller.
+        selfManageable,
       };
     });
   },
@@ -1478,6 +1657,7 @@ export const toolHandlers: Record<string, ToolHandler> = {
 
     const config = loadRemoteConfig();
     const caller = config.callers[context.callerAlias];
+    assertMaySelfManage('set_connection_enabled', caller, context);
 
     // Verify the connection template exists (built-in or custom connector)
     const connectorAliases = new Set((config.connectors ?? []).map((c) => c.alias).filter(Boolean));
@@ -1523,6 +1703,7 @@ export const toolHandlers: Record<string, ToolHandler> = {
     }
 
     const config = loadRemoteConfig();
+    assertMaySelfManage('set_secrets', config.callers[context.callerAlias], context);
 
     const { config: updatedConfig, status } = setCallerSecrets(
       secrets,

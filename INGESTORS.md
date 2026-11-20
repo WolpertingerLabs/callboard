@@ -54,6 +54,8 @@ Every event has this shape:
 
 `data` is the raw item for poll and Discord events. Webhook listeners wrap the body: GitHub `{ deliveryId, event, payload }`, Stripe `{ eventId, type, payload }`, Trello `{ actionId, actionType, payload }`. Slack stores the envelope's `payload`.
 
+The connection's [withheld secrets](README.md#header-only-secrets) are replaced with `${NAME}` in `data` before an event is buffered, so `poll_events`, `wait_for_events`, and trigger rules never see them. A listener's error text in `ingestor_status` is scrubbed of every secret.
+
 - **`id`** increases monotonically within one listener instance. It is `epoch × 1,000,000 + counter`, and within one daemon process each new instance (including after a listener restart) claims a higher `epoch` than every earlier one. So every ID from a newer listener is larger than every ID from an older one. After a daemon restart, buffers start empty.
 - **`idempotencyKey`** comes from the service where possible: GitHub delivery ID, Stripe event ID, Slack envelope ID, Trello action ID, Discord session and sequence number, or the poll dedup field. A listener drops events whose key it has recently seen.
 - **`instanceId`** is present only for multi-instance listeners.
@@ -119,7 +121,7 @@ Set these in the caller's entry in `remote.config.json`, keyed by connection:
 | `intents` | Discord | Gateway intents bitmask. |
 | `params` | listener fields | Values for the connection's listener fields (see below). |
 
-`listenerInstances` runs several copies of a multi-instance listener (`github`, `reddit`, `trello`), keyed by instance ID. Each value takes the same fields as `ingestorOverrides`. If a connection has any instances, its `ingestorOverrides` entry is ignored.
+`listenerInstances` runs several copies of a multi-instance listener (`github`, `reddit`, `trello`), keyed by instance ID. Instance IDs must match `^[a-zA-Z0-9_-]+$` and can't be `__proto__`, `constructor`, or `prototype`; the listener tools reject anything else. Each value takes the same fields as `ingestorOverrides`. If a connection has any instances, its `ingestorOverrides` entry is ignored.
 
 **Which `params` take effect.** Only these change listener behaviour:
 
@@ -211,7 +213,7 @@ These fields go in a connection template's `ingestor` block, or in a custom conn
 | | `intents`, `eventFilter`, `guildIds`, `channelIds`, `userIds` | Defaults for the per-caller fields above. |
 | `webhook` | `path` | Serves `/webhooks/<path>`. |
 | | `protocol` | `stripe`, `trello`, or omitted (GitHub-style). |
-| | `signatureHeader`, `signatureSecret` | Enable verification. `signatureSecret` names a secret. |
+| | `signatureHeader`, `signatureSecret` | Enable verification. `signatureSecret` names a secret, which requests can't reference ([header-only secrets](README.md#header-only-secrets)). |
 | | `callbackUrl` | Public URL, usually `${SOME_URL_VAR}`. Trello signs with it; lifecycle registration uses it. |
 | | `lifecycle` | `list` / `register` / `unregister` request templates for auto-registration. |
 | `poll` | `url`, `intervalMs` | Required. `${VAR}` placeholders in `url` and `body` resolve from secrets (not URL-encoded). |

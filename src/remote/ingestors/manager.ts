@@ -18,7 +18,8 @@ import {
   resolveCallerRoutes,
   resolveRoutes,
   resolveSecrets,
-  substitutableSecrets,
+  templateSecrets,
+  withheldSecretValues,
   type CallerConfig,
   type IngestorOverrides,
   type RemoteServerConfig,
@@ -26,6 +27,7 @@ import {
   type ResolvedRoute,
   type ListenerConfigField,
 } from '../../shared/config.js';
+import { assertSafeInstanceId, ownEntry } from '../../shared/safe-keys.js';
 import { createLogger } from '../../shared/logger.js';
 import { TriggerRuleEngine } from '../triggers/rule-engine.js';
 
@@ -137,7 +139,7 @@ export class IngestorManager {
         if (!rawRoute.ingestor) continue;
 
         // Check if this connection has multi-instance definitions
-        const instances = callerConfig.listenerInstances?.[connectionAlias];
+        const instances = ownEntry(callerConfig.listenerInstances, connectionAlias);
 
         if (instances && Object.keys(instances).length > 0) {
           // Multi-instance: spawn one ingestor per instanceId
@@ -163,7 +165,7 @@ export class IngestorManager {
           }
         } else {
           // Single-instance (backward compatible)
-          const overrides = callerConfig.ingestorOverrides?.[connectionAlias];
+          const overrides = ownEntry(callerConfig.ingestorOverrides, connectionAlias);
 
           if (overrides?.disabled) {
             log.info(`Skipping disabled ingestor for ${callerAlias}:${connectionAlias}`);
@@ -209,8 +211,12 @@ export class IngestorManager {
     const effectiveConfig = IngestorManager.mergeIngestorConfig(rawRoute.ingestor!, overrides);
 
     // Apply instance params to config and secrets
-    // Listeners substitute ${VAR}s too, so withhold SigV4 signing credentials.
-    const instanceSecrets = { ...substitutableSecrets(resolvedRoute) };
+    // Listener configs are template-authored, so they get header-only secrets
+    // (the Discord gateway needs DISCORD_BOT_TOKEN), but never SigV4 signing
+    // credentials. Caller-supplied params only ever land as *values* in this
+    // map, and placeholder resolution is single-pass, so a param can't name a
+    // secret.
+    const instanceSecrets = { ...templateSecrets(resolvedRoute) };
     if (overrides?.params && rawRoute.listenerConfig) {
       IngestorManager.applyInstanceParams(
         effectiveConfig,
@@ -238,6 +244,7 @@ export class IngestorManager {
     if (ingestor) {
       const { caller } = parseKey(key);
       ingestor.callerAlias = caller;
+      ingestor.setWithheldSecrets(withheldSecretValues(resolvedRoute));
       this.ingestors.set(key, ingestor);
 
       // Forward events to global listeners (SSE streams, etc.)
@@ -496,6 +503,15 @@ export class IngestorManager {
 
     // If a specific instanceId is given, start just that one
     if (instanceId) {
+      try {
+        assertSafeInstanceId(instanceId);
+      } catch (err) {
+        return {
+          success: false,
+          connection: connectionAlias,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
       return this.startOneInstance(
         callerAlias,
         connectionAlias,
@@ -507,7 +523,7 @@ export class IngestorManager {
     }
 
     // If listenerInstances is defined, start all instances
-    const instances = callerConfig.listenerInstances?.[connectionAlias];
+    const instances = ownEntry(callerConfig.listenerInstances, connectionAlias);
     if (instances && Object.keys(instances).length > 0) {
       const results: LifecycleResult[] = [];
       for (const [instId, instOverrides] of Object.entries(instances)) {
@@ -564,15 +580,20 @@ export class IngestorManager {
     }
 
     const callerCfg = config.callers[callerAlias];
+    // Own-property lookups: instanceId arrives from control_listener.
     const overrides = instanceId
-      ? callerCfg.listenerInstances?.[connectionAlias]?.[instanceId]
-      : callerCfg.ingestorOverrides?.[connectionAlias];
+      ? ownEntry(ownEntry(callerCfg.listenerInstances, connectionAlias), instanceId)
+      : ownEntry(callerCfg.ingestorOverrides, connectionAlias);
 
     const effectiveConfig = IngestorManager.mergeIngestorConfig(rawRoute.ingestor!, overrides);
 
     // Apply instance params
-    // Listeners substitute ${VAR}s too, so withhold SigV4 signing credentials.
-    const instanceSecrets = { ...substitutableSecrets(resolvedRoute) };
+    // Listener configs are template-authored, so they get header-only secrets
+    // (the Discord gateway needs DISCORD_BOT_TOKEN), but never SigV4 signing
+    // credentials. Caller-supplied params only ever land as *values* in this
+    // map, and placeholder resolution is single-pass, so a param can't name a
+    // secret.
+    const instanceSecrets = { ...templateSecrets(resolvedRoute) };
     if (overrides?.params && rawRoute.listenerConfig) {
       IngestorManager.applyInstanceParams(
         effectiveConfig,
@@ -605,6 +626,7 @@ export class IngestorManager {
     }
 
     ingestor.callerAlias = callerAlias;
+    ingestor.setWithheldSecrets(withheldSecretValues(resolvedRoute));
     this.ingestors.set(key, ingestor);
 
     // Forward events to global listeners (SSE streams, etc.)

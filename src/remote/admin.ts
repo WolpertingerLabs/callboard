@@ -22,6 +22,7 @@ import express from 'express';
 import fs from 'node:fs';
 
 import {
+  callerMaySelfManage,
   getCallerKeysDir,
   getServerKeysDir,
   getEnvFilePath,
@@ -127,6 +128,7 @@ export function createAdminRouter(deps: AdminRouterDeps): express.Router {
         fingerprint,
         keysDirExists,
         source: caller.source ?? null,
+        selfManage: callerMaySelfManage(caller),
       };
     });
     res.json(out);

@@ -145,6 +145,14 @@ export const api = {
   setTunnel: (enabled: boolean) =>
     mutate<{ tunnel: boolean }>("PUT", "/api/admin/tunnel", { enabled }),
 
+  // Whether the caller's agent may enable connections / set secrets for itself.
+  setCallerSelfManage: (alias: string, enabled: boolean) =>
+    mutate<{ alias: string; selfManage: boolean }>(
+      "PUT",
+      `/api/admin/callers/${enc(alias)}/self-manage`,
+      { enabled },
+    ),
+
   // ── Connection enable / secrets / test ────────────────────────────────
   setConnectionEnabled: (
     alias: string,

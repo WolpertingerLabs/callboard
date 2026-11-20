@@ -16,6 +16,12 @@ import type { IngestedEvent, IngestorState, IngestorStatus } from './types.js';
 import { RingBuffer } from './ring-buffer.js';
 import { DEFAULT_BUFFER_SIZE } from './types.js';
 import { createLogger } from '../../shared/logger.js';
+import {
+  compileSecretScrubber,
+  scrubSecrets,
+  scrubSecretsDeep,
+  type SecretScrubber,
+} from '../../shared/config.js';
 
 const log = createLogger('ingestor');
 
@@ -53,6 +59,14 @@ export abstract class BaseIngestor extends EventEmitter {
    *  Each instance claims a unique epoch so IDs never collide across restarts. */
   private readonly bootEpoch: number;
 
+  /** Values of the connection's withheld secrets (name → value), scrubbed
+   *  from every buffered event. Set by IngestorManager; see
+   *  setWithheldSecrets(). */
+  private withheldValues: Record<string, string> = {};
+  /** withheldValues compiled once, reused for every event. Undefined when
+   *  nothing is withheld. */
+  private scrubWithheld?: SecretScrubber;
+
   /** Recently seen idempotency keys for deduplication. */
   private readonly seenKeys = new Set<string>();
 
@@ -87,6 +101,18 @@ export abstract class BaseIngestor extends EventEmitter {
   abstract stop(permanent?: boolean): Promise<void>;
 
   /**
+   * Scrub these secret values (name → value) from every event this ingestor
+   * buffers, replacing them with `${NAME}`. The manager passes the
+   * connection's withheld secrets: an event payload that echoes a header
+   * token would otherwise hand it to the agent through poll_events,
+   * wait_for_events, or a trigger.
+   */
+  setWithheldSecrets(values: Record<string, string>): void {
+    this.withheldValues = values;
+    this.scrubWithheld = Object.keys(values).length > 0 ? compileSecretScrubber(values) : undefined;
+  }
+
+  /**
    * Push a new event into the ring buffer.
    * Called by subclasses when they receive data from an external service.
    *
@@ -116,7 +142,7 @@ export abstract class BaseIngestor extends EventEmitter {
       source: this.connectionAlias,
       ...(this.instanceId !== undefined && { instanceId: this.instanceId }),
       eventType,
-      data,
+      data: this.scrubWithheld ? scrubSecretsDeep(data, this.scrubWithheld) : data,
     };
     this.buffer.push(event);
     this.lastEventAt = event.receivedAt;
@@ -168,7 +194,9 @@ export abstract class BaseIngestor extends EventEmitter {
       bufferedEvents: this.buffer.size,
       totalEventsReceived: this.counter,
       lastEventAt: this.lastEventAt,
-      ...(this.errorMessage && { error: this.errorMessage }),
+      // Error text can quote an upstream response or a resolved URL; it reaches
+      // the agent through ingestor_status, so scrub every secret from it.
+      ...(this.errorMessage && { error: scrubSecrets(this.errorMessage, this.secrets) }),
     };
   }
 }

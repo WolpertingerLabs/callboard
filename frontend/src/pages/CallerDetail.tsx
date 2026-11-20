@@ -37,6 +37,8 @@ export default function CallerDetail() {
   const [confirmRevoke, setConfirmRevoke] = useState(false);
   const [revoking, setRevoking] = useState(false);
   const [revokeError, setRevokeError] = useState<string | null>(null);
+  const [selfManageSaving, setSelfManageSaving] = useState(false);
+  const [selfManageError, setSelfManageError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!alias) return;
@@ -83,6 +85,19 @@ export default function CallerDetail() {
       cancelled = true;
     };
   }, [daemon]);
+
+  const handleSelfManage = async (enabled: boolean) => {
+    if (!alias) return;
+    setSelfManageSaving(true);
+    setSelfManageError(null);
+    const res = await api.setCallerSelfManage(alias, enabled);
+    setSelfManageSaving(false);
+    if (!res.ok) {
+      setSelfManageError(res.error);
+      return;
+    }
+    await load();
+  };
 
   const handleRevoke = async () => {
     if (!alias) return;
@@ -237,6 +252,33 @@ export default function CallerDetail() {
             )}
           </div>
         </div>
+      </section>
+
+      <section className="detail-section">
+        <h2 className="section-title">Agent permissions</h2>
+        <label className="secret-matrix-toggle">
+          <input
+            type="checkbox"
+            checked={caller.selfManage}
+            disabled={selfManageSaving}
+            onChange={(e) => void handleSelfManage(e.target.checked)}
+          />
+          <span>
+            Let this caller&apos;s agent enable connections and set its own
+            secrets (<code>set_connection_enabled</code>,{" "}
+            <code>set_secrets</code>)
+          </span>
+        </label>
+        <p className="detail-note">
+          When off, only this dashboard can change the caller&apos;s connections
+          and secrets. An agent that can enable connections for itself can pick
+          up any existing secret that a newly enabled connection shares by name.
+        </p>
+        {selfManageError && (
+          <p className="detail-note" role="alert">
+            {selfManageError}
+          </p>
+        )}
       </section>
 
       <section className="detail-section">
