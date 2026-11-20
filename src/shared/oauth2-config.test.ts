@@ -346,3 +346,20 @@ describe('oauth2 credentials are signer-only', () => {
     expect(r.headers['X-Leak']).toBe('${EX_CLIENT_SECRET}');
   });
 });
+
+describe('oauth2Overrides lookup', () => {
+  it('ignores inherited keys such as constructor', () => {
+    const config = {
+      host: '127.0.0.1',
+      port: 0,
+      rateLimitPerMinute: 60,
+      connectors: [{ ...route(), alias: 'constructor' }],
+      callers: { alice: { connections: ['constructor'], oauth2Overrides: {} } },
+    } as RemoteServerConfig;
+    const { routes, problems } = resolveCallerRoutesChecked(config, 'alice');
+    // Without an own-property lookup, Object.prototype.constructor would be
+    // taken as the override and the connection dropped as malformed.
+    expect(problems).toEqual([]);
+    expect(routes.map((r) => r.alias)).toEqual(['constructor']);
+  });
+});

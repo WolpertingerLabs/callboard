@@ -26,6 +26,7 @@ import {
   resolvePlaceholders,
   scrubSecrets,
   scrubSecretsDeep,
+  compileSecretScrubber,
   signerOnlySecretNames,
   substitutableSecrets,
   templateSecrets,
@@ -787,22 +788,22 @@ export async function executeProxyRequest(
     const withheldValues = { ...withheldSecretValues(matched), ...tokenScrub };
     const responseBody =
       Object.keys(withheldValues).length > 0 ? scrubSecretsDeep(rawBody, withheldValues) : rawBody;
-    const scrubMap = allSecrets();
+    // Every route secret plus the minted token(s), compiled once for all the
+    // strings below.
+    const scrubAll = compileSecretScrubber(allSecrets());
 
     return {
       status: resp.status,
       // A reason phrase is upstream-controlled text like any other.
-      statusText: scrubSecrets(resp.statusText, scrubMap),
+      statusText: scrubAll(resp.statusText),
       // A refused redirect's `Location` can carry a substituted secret back
       // (`?key=sk-…`), and so can any header an upstream echoes. The body is
       // scrubbed above, of withheld secrets only.
-      headers: Object.fromEntries(
-        [...resp.headers.entries()].map(([k, v]) => [k, scrubSecrets(v, scrubMap)]),
-      ),
+      headers: Object.fromEntries([...resp.headers.entries()].map(([k, v]) => [k, scrubAll(v)])),
       body: responseBody,
       // A same-origin `Location` can echo the original query back, and that
       // can carry substituted secrets.
-      ...(redirects > 0 && { url: scrubSecrets(finalUrl, scrubMap) }),
+      ...(redirects > 0 && { url: scrubAll(finalUrl) }),
       // A 403 is not retried: a fresh token has the same scopes.
       ...(oauth2Route &&
         resp.status === 403 && {

@@ -15,6 +15,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { loadConnection, validateOAuth2Route } from './connections.js';
+import { ownEntry } from './safe-keys.js';
 import type { IngestorConfig } from '../remote/ingestors/types.js';
 import type { TriggerRule } from '../remote/triggers/types.js';
 import type {
@@ -974,7 +975,9 @@ export function resolveCallerRoutesChecked(
     try {
       // Templates are validated by loadConnection(); custom connectors here.
       if (custom && route.oauth2 !== undefined) validateOAuth2Route(route, 'connector');
-      route = applyOAuth2Override(route, overrides[name]);
+      // Own-property lookup: a connection named `__proto__` or `constructor`
+      // must not pick up Object.prototype as its override.
+      route = applyOAuth2Override(route, ownEntry(overrides, name));
     } catch (err) {
       problems.push(
         `Caller "${callerAlias}": connection "${name}" dropped: ${(err as Error).message}`,
