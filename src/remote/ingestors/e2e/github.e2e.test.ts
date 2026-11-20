@@ -30,7 +30,9 @@ const shouldSkip = missing.length > 0;
 
 describe.skipIf(shouldSkip)('GitHub webhook e2e', () => {
   if (shouldSkip) {
-    it.skip(`skipped — missing env vars: ${missing.join(', ')}`, () => { /* noop */ });
+    it.skip(`skipped — missing env vars: ${missing.join(', ')}`, () => {
+      /* noop */
+    });
     return;
   }
 
@@ -102,7 +104,8 @@ describe.skipIf(shouldSkip)('GitHub webhook e2e', () => {
         'Content-Type': 'application/json',
         'X-GitHub-Event': 'push',
         'X-GitHub-Delivery': crypto.randomUUID(),
-        'X-Hub-Signature-256': 'sha256=0000000000000000000000000000000000000000000000000000000000000000',
+        'X-Hub-Signature-256':
+          'sha256=0000000000000000000000000000000000000000000000000000000000000000',
       },
       body,
     });
@@ -137,9 +140,7 @@ describe.skipIf(shouldSkip)('GitHub webhook e2e', () => {
 
     // Count events with this specific delivery ID
     const events = e2e.ingestorManager.getEvents('e2e-client', 'github');
-    const matching = events.filter(
-      (e) => (e.data as any)?.deliveryId === deliveryId,
-    );
+    const matching = events.filter((e) => (e.data as any)?.deliveryId === deliveryId);
     expect(matching).toHaveLength(1);
   });
 });

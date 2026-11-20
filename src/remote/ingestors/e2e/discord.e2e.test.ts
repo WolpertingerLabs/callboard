@@ -30,7 +30,9 @@ const shouldSkip = missing.length > 0;
 
 describe.skipIf(shouldSkip)('Discord Gateway e2e', () => {
   if (shouldSkip) {
-    it.skip(`skipped — missing env vars: ${missing.join(', ')}`, () => { /* noop */ });
+    it.skip(`skipped — missing env vars: ${missing.join(', ')}`, () => {
+      /* noop */
+    });
     return;
   }
 
@@ -56,20 +58,23 @@ describe.skipIf(shouldSkip)('Discord Gateway e2e', () => {
     e2e = await bootServer(config);
 
     // Wait for the Gateway to reach "connected" state (READY received)
-    await waitForIngestorState(e2e.ingestorManager, 'e2e-client', 'discord-bot', 'connected', 20_000);
+    await waitForIngestorState(
+      e2e.ingestorManager,
+      'e2e-client',
+      'discord-bot',
+      'connected',
+      20_000,
+    );
   }, 30_000);
 
   afterAll(async () => {
     // Clean up the test message
     if (testMessageId) {
       try {
-        await fetch(
-          `https://discord.com/api/v10/channels/${channelId}/messages/${testMessageId}`,
-          {
-            method: 'DELETE',
-            headers: { Authorization: `Bot ${botToken}` },
-          },
-        );
+        await fetch(`https://discord.com/api/v10/channels/${channelId}/messages/${testMessageId}`, {
+          method: 'DELETE',
+          headers: { Authorization: `Bot ${botToken}` },
+        });
       } catch {
         // Best-effort cleanup
       }
@@ -81,31 +86,23 @@ describe.skipIf(shouldSkip)('Discord Gateway e2e', () => {
     const nonce = `e2e-${Date.now()}`;
 
     // Send a message to the test channel via REST API
-    const sendRes = await fetch(
-      `https://discord.com/api/v10/channels/${channelId}/messages`,
-      {
-        method: 'POST',
-        headers: {
-          Authorization: `Bot ${botToken}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          content: `Drawlatch E2E test message (${nonce})`,
-        }),
+    const sendRes = await fetch(`https://discord.com/api/v10/channels/${channelId}/messages`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bot ${botToken}`,
+        'Content-Type': 'application/json',
       },
-    );
+      body: JSON.stringify({
+        content: `Drawlatch E2E test message (${nonce})`,
+      }),
+    });
 
     expect(sendRes.ok).toBe(true);
     const messageData = (await sendRes.json()) as { id: string };
     testMessageId = messageData.id;
 
     // Poll until the MESSAGE_CREATE event arrives via the Gateway
-    const events = await pollUntilEvent(
-      e2e.ingestorManager,
-      'e2e-client',
-      'discord-bot',
-      15_000,
-    );
+    const events = await pollUntilEvent(e2e.ingestorManager, 'e2e-client', 'discord-bot', 15_000);
 
     const msgEvent = events.find(
       (e) => e.eventType === 'MESSAGE_CREATE' && (e.data as any)?.content?.includes(nonce),

@@ -140,7 +140,10 @@ export function signTrelloPayload(
   secret: string,
 ): string {
   const bodyStr = typeof rawBody === 'string' ? rawBody : rawBody.toString('utf-8');
-  return crypto.createHmac('sha1', secret).update(bodyStr + callbackUrl).digest('base64');
+  return crypto
+    .createHmac('sha1', secret)
+    .update(bodyStr + callbackUrl)
+    .digest('base64');
 }
 
 // ── Polling helpers ─────────────────────────────────────────────────────

@@ -188,8 +188,7 @@ export function issueCallerBundle(opts: IssueCallerOptions): CallerBundleV1 {
 
   // Resolve name + connections (preserve existing values on re-issue).
   const name = opts.name ?? existing?.name ?? alias;
-  const connections =
-    opts.connections ?? existing?.connections ?? defaultConnections(config);
+  const connections = opts.connections ?? existing?.connections ?? defaultConnections(config);
 
   // Register/update the caller, preserving any unrelated fields (env, overrides…).
   config.callers[alias] = {
@@ -212,7 +211,12 @@ export function issueCallerBundle(opts: IssueCallerOptions): CallerBundleV1 {
   let callerSigningPriv = serialized.signing.privateKey;
   let callerExchangePriv = serialized.exchange.privateKey;
   if (passphrase !== undefined && passphrase !== '') {
-    encryption = { kdf: 'scrypt', salt: generateBundleSalt(), ...DEFAULT_SCRYPT_PARAMS, alg: 'aes-256-gcm' };
+    encryption = {
+      kdf: 'scrypt',
+      salt: generateBundleSalt(),
+      ...DEFAULT_SCRYPT_PARAMS,
+      alg: 'aes-256-gcm',
+    };
     const key = deriveBundleKey(passphrase, encryption);
     callerSigningPriv = encryptBundleField(serialized.signing.privateKey, key);
     callerExchangePriv = encryptBundleField(serialized.exchange.privateKey, key);
@@ -297,8 +301,7 @@ export function issueLocalCaller(opts: IssueLocalCallerOptions): IssueLocalCalle
   const publicKeys = serializePublicKeys(extractPublicKeys(bundleKeys));
   const callerFp = fingerprint(extractPublicKeys(bundleKeys));
 
-  const connections =
-    opts.connections ?? existing?.connections ?? defaultConnections(config);
+  const connections = opts.connections ?? existing?.connections ?? defaultConnections(config);
   const name = opts.name ?? existing?.name ?? alias;
 
   config.callers[alias] = {
@@ -315,10 +318,18 @@ export function issueLocalCaller(opts: IssueLocalCallerOptions): IssueLocalCalle
   // Write the unpacked key files into callboard's keys dir.
   const callerKeysDir = path.join(opts.keysDir, 'callers', alias);
   fs.mkdirSync(callerKeysDir, { recursive: true, mode: 0o700 });
-  fs.writeFileSync(path.join(callerKeysDir, 'signing.pub.pem'), serialized.signing.publicKey, { mode: 0o644 });
-  fs.writeFileSync(path.join(callerKeysDir, 'exchange.pub.pem'), serialized.exchange.publicKey, { mode: 0o644 });
-  fs.writeFileSync(path.join(callerKeysDir, 'signing.key.pem'), serialized.signing.privateKey, { mode: 0o600 });
-  fs.writeFileSync(path.join(callerKeysDir, 'exchange.key.pem'), serialized.exchange.privateKey, { mode: 0o600 });
+  fs.writeFileSync(path.join(callerKeysDir, 'signing.pub.pem'), serialized.signing.publicKey, {
+    mode: 0o644,
+  });
+  fs.writeFileSync(path.join(callerKeysDir, 'exchange.pub.pem'), serialized.exchange.publicKey, {
+    mode: 0o644,
+  });
+  fs.writeFileSync(path.join(callerKeysDir, 'signing.key.pem'), serialized.signing.privateKey, {
+    mode: 0o600,
+  });
+  fs.writeFileSync(path.join(callerKeysDir, 'exchange.key.pem'), serialized.exchange.privateKey, {
+    mode: 0o600,
+  });
 
   // And the server's public keys so callboard can pin the server identity.
   const serverPub = exportServerPublicKeys();
@@ -355,7 +366,10 @@ export function maybeIssueLocalCaller(): IssueLocalCallerResult | null {
 
   const connectionsEnv = process.env.DRAWLATCH_LOCAL_CALLER_CONNECTIONS;
   const connections = connectionsEnv
-    ? connectionsEnv.split(',').map((c) => c.trim()).filter(Boolean)
+    ? connectionsEnv
+        .split(',')
+        .map((c) => c.trim())
+        .filter(Boolean)
     : undefined;
 
   try {

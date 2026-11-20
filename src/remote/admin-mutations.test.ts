@@ -39,10 +39,7 @@ import { migrateKeyLayout } from '../shared/migrations.js';
 import { createAdminRouter } from './admin.js';
 import { createCaller } from '../shared/crypto/key-manager.js';
 import { generateKeyBundle, saveKeyBundle } from '../shared/crypto/keys.js';
-import {
-  deriveBundleKey,
-  decryptBundleField,
-} from '../shared/protocol/caller-bundle-crypto.js';
+import { deriveBundleKey, decryptBundleField } from '../shared/protocol/caller-bundle-crypto.js';
 import type { CallerBundleV1 } from '../shared/protocol/caller-bundle.js';
 import type { IngestorManager } from './ingestors/index.js';
 import type { IngestorStatus } from './ingestors/types.js';
@@ -111,7 +108,6 @@ describe('caller bootstrap', () => {
   it('refuses to delete the default caller', () => {
     expect(() => deleteCaller('default')).toThrow(/Cannot delete/);
   });
-
 });
 
 // ── credential issuance primitive ──────────────────────────────────────────
@@ -334,7 +330,11 @@ describe('mutating admin API', () => {
       const cfg = loadRemoteConfig();
       const caller = cfg.callers[alias] as RemoteServerConfig['callers'][string] | undefined;
       if (!caller) return [];
-      return resolveRoutes(resolveCallerRoutes(cfg, alias), resolveSecrets(caller.env ?? {}), alias);
+      return resolveRoutes(
+        resolveCallerRoutes(cfg, alias),
+        resolveSecrets(caller.env ?? {}),
+        alias,
+      );
     };
 
     const app = express();
