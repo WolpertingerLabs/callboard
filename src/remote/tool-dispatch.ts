@@ -1011,6 +1011,12 @@ export const toolHandlers: Record<string, ToolHandler> = {
     // OAuth2: always mint first, so a credential problem is reported as one
     // rather than as a failed API call. Scope names only.
     let oauth2Report: Record<string, unknown> | undefined;
+    // Minting spends part of the caller's budget; the test request gets the rest.
+    const startedAt = Date.now();
+    const remainingBudget = (): number | undefined =>
+      context.outboundBudgetMs === undefined
+        ? undefined
+        : Math.max(1, context.outboundBudgetMs - (Date.now() - startedAt));
     if (isOAuth2Route(route)) {
       try {
         const auth = await oauth2Authorize(route, context.callerAlias, {
@@ -1064,7 +1070,7 @@ export const toolHandlers: Record<string, ToolHandler> = {
         // The template's own request: its route only, and it may use withheld
         // secrets (see ProxyRequestOptions).
         [route],
-        context.outboundBudgetMs,
+        remainingBudget(),
         { templateAuthored: true, caller: context.callerAlias },
       );
 

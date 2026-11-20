@@ -387,17 +387,39 @@ describe('oauth2 routes on the request path', () => {
     expect(apiRequests).toHaveLength(0);
   });
 
+  // Timing: the API answers in 450ms. With the full 600ms it would succeed;
+  // with what a 300ms mint leaves (~300ms) it can't. No wall-clock assertion,
+  // so a slow machine can't flake it: only "did it time out" is checked, and
+  // the control case shows 600ms on its own is enough.
   it('spends one deadline across minting and the API call', async () => {
-    tokenDelayMs = 400;
-    apiDelayMs = 400;
-    const started = Date.now();
+    apiDelayMs = 450;
+    await executeProxyRequest(GET('/api/warm'), routes(), undefined, { caller: 'alice' });
+    // Control: token cached, the API call alone fits in 600ms.
+    await expect(
+      executeProxyRequest(GET('/api/a', { timeoutMs: 600 }), routes(), undefined, {
+        caller: 'alice',
+      }),
+    ).resolves.toMatchObject({ status: 200 });
+    // Same call, but the token has to be minted first.
+    setSharedTokenManager(new TokenManager());
+    tokenDelayMs = 300;
     await expect(
       executeProxyRequest(GET('/api/a', { timeoutMs: 600 }), routes(), undefined, {
         caller: 'alice',
       }),
     ).rejects.toThrow(/timed out/);
-    // Not 400 + 600: the API call only got what minting left over.
-    expect(Date.now() - started).toBeLessThan(900);
+    expect(apiRequests.at(-1)?.url).toBe('/api/a');
+  });
+
+  it('test_connection gives the test request only what minting left', async () => {
+    tokenDelayMs = 300;
+    apiDelayMs = 450;
+    const result = (await dispatchTool('test_connection', { connection: 'svc' }, routes(), {
+      ...context(),
+      outboundBudgetMs: 600,
+    })) as Record<string, unknown>;
+    expect(result).toMatchObject({ success: false, oauth2: { tokenMinted: true } });
+    expect(String(result.error)).toMatch(/timed out/);
   });
 
   it('times out minting within the request budget', async () => {
