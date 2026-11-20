@@ -8,6 +8,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
+import { resetChatTreeCollapse } from "../hooks/useChatTreeCollapse";
 import type { Chat, ChatListResponse } from "../api";
 import { listChats, listCards, searchChatContents } from "../api";
 import ChatList from "./ChatList";
@@ -54,6 +55,9 @@ vi.mock("../components/SidebarHeader", () => ({ default: () => <div /> }));
 vi.mock("../components/NewChatPanel", () => ({ default: () => <div /> }));
 
 afterEach(() => {
+  // Opened tree cards persist in a module-level store; start each test with every card closed.
+  localStorage.removeItem("callboard-chat-tree-cards-expanded");
+  resetChatTreeCollapse();
   cleanup();
   vi.clearAllMocks();
   localStorage.clear();
@@ -99,8 +103,7 @@ it("shows a matching aside while a search is up, instead of folding it into its 
   fireEvent.keyDown(search, { key: "Enter" });
   // Both matched. Unfolded, the aside is a member of its parent's group, as a
   // matching fork would be — and the group's tree shows it.
-  // Tree cards start expanded: the tree fetches on its own.
-  await screen.findByTitle("Collapse chat tree");
+  fireEvent.click(await screen.findByTitle("Expand chat tree"));
   const node = await screen.findByText("chat aside");
   expect(node.closest('[data-testid="chat-tree-node"]')?.getAttribute("data-chat-id")).toBe("aside");
   expect(screen.queryByText("chat other")).toBeNull();

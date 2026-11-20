@@ -9,6 +9,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
+import { resetChatTreeCollapse } from "../hooks/useChatTreeCollapse";
 import type { Chat, ChatTreeNode } from "../api";
 import { getChatTree } from "../api";
 import { resetChatSectionExpansion } from "../hooks/useChatSectionExpansion";
@@ -20,6 +21,9 @@ vi.mock("../api", () => ({
 }));
 
 afterEach(() => {
+  // Opened tree cards persist in a module-level store; start each test with every card closed.
+  localStorage.removeItem("callboard-chat-tree-cards-expanded");
+  resetChatTreeCollapse();
   cleanup();
   vi.clearAllMocks();
   localStorage.clear();
@@ -106,7 +110,7 @@ describe("ChatTreeList with asides", () => {
     renderList([makeChat("main"), aside("a1", "main"), aside("a2", "main")]);
     expect(screen.getByRole("img", { name: "2 asides" })).toBeTruthy();
     expect(screen.queryByText("chat a1")).toBeNull();
-    expect(screen.queryByTitle(/^(Expand|Collapse) chat tree$/)).toBeNull();
+    expect(screen.queryByTitle("Expand chat tree")).toBeNull();
   });
 
   it("folds aside leaves of an expanded tree into a count on their parent's node", async () => {
@@ -124,7 +128,7 @@ describe("ChatTreeList with asides", () => {
       }),
     });
     renderList([makeChat("root"), makeChat("child", { parentChatId: "root", rootChatId: "root" })]);
-    await screen.findByTitle("Collapse chat tree"); // cards start expanded
+    (await screen.findByTitle("Expand chat tree")).click();
     await screen.findByText("Child");
     const rootNode = screen.getAllByTestId("chat-tree-node").find((el) => el.getAttribute("data-chat-id") === "root")!;
     // a1 folded; a2 has a child so it stays; a3 is archived (hidden either way).
@@ -142,7 +146,7 @@ describe("ChatTreeList with asides", () => {
       tree: makeNode("root", "Root chat", { children: [makeNode("child", "Child"), makeNode("a1", "Aside: one", { role: "aside" })] }),
     });
     renderList([makeChat("root"), makeChat("child", { parentChatId: "root", rootChatId: "root" })], "a1");
-    await screen.findByTitle("Collapse chat tree"); // cards start expanded
+    (await screen.findByTitle("Expand chat tree")).click();
     expect(await screen.findByText("Aside: one")).toBeTruthy();
   });
 });
@@ -164,7 +168,7 @@ describe("running asides", () => {
       tree: makeNode("root", "Root chat", { children: [makeNode("child", "Child"), makeNode("a1", "Aside: one", { role: "aside" })] }),
     });
     renderList([makeChat("root"), makeChat("child", { parentChatId: "root", rootChatId: "root" })], undefined, ["a1"]);
-    await screen.findByTitle("Collapse chat tree"); // cards start expanded
+    (await screen.findByTitle("Expand chat tree")).click();
     await screen.findByText("Child");
     const rootNode = screen.getAllByTestId("chat-tree-node").find((el) => el.getAttribute("data-chat-id") === "root")!;
     expect(within(rootNode).getByRole("img", { name: "1 aside, 1 running" })).toBeTruthy();
@@ -226,7 +230,7 @@ it("folds an aside whose only child is archived and hidden, in the tree as in th
     }),
   });
   renderList([makeChat("root"), makeChat("child", { parentChatId: "root", rootChatId: "root" })]);
-  await screen.findByTitle("Collapse chat tree"); // cards start expanded
+  (await screen.findByTitle("Expand chat tree")).click();
   await screen.findByText("Child");
   const rootNode = screen.getAllByTestId("chat-tree-node").find((el) => el.getAttribute("data-chat-id") === "root")!;
   expect(within(rootNode).getByRole("img", { name: "1 aside" })).toBeTruthy();

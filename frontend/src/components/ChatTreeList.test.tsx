@@ -17,11 +17,11 @@ import { isChatDimmed } from "../utils/chatDimming";
 import { resetChatSectionExpansion } from "../hooks/useChatSectionExpansion";
 import { resetChatTreeCollapse } from "../hooks/useChatTreeCollapse";
 import {
-  CHAT_TREE_CARDS_COLLAPSED_KEY,
-  getChatTreeCardCollapsedKeys,
+  CHAT_TREE_CARDS_EXPANDED_KEY,
+  getChatTreeCardExpandedKeys,
   getChatTreeCollapsedIds,
   saveChatSectionExpanded,
-  saveChatTreeCardCollapsed,
+  saveChatTreeCardExpanded,
 } from "../utils/localStorage";
 import ChatTreeList, { buildRows, TREE_FETCH_CONCURRENCY, TREE_FETCH_TIMEOUT_MS } from "./ChatTreeList";
 
@@ -124,8 +124,19 @@ function deferred<T>() {
 }
 
 /** Cards start expanded: wait for the card to say so (its tree fetches on its own). */
+/** Open the (closed by default) tree card. */
 async function expandGroup() {
-  await screen.findByTitle("Collapse chat tree");
+  fireEvent.click(await screen.findByTitle("Expand chat tree"));
+}
+
+/**
+ * Open these cards before rendering, through the real store — as if the user
+ * had opened them in an earlier session. The fetch tests below are about what
+ * an OPEN card fetches, and start from there.
+ */
+function openCards(...rootKeys: string[]) {
+  for (const rootKey of rootKeys) saveChatTreeCardExpanded(rootKey, true);
+  resetChatTreeCollapse();
 }
 
 describe("ChatTreeList role badges", () => {
@@ -185,8 +196,7 @@ describe("ChatTreeList refresh", () => {
     expect(mockGetChatTree).toHaveBeenCalledTimes(2);
   });
 
-  it("fetches nothing for a folded card, on load or on refresh", async () => {
-    saveChatTreeCardCollapsed("root", true);
+  it("fetches nothing for a closed card — the default — on load or on refresh", async () => {
     const { rerender } = renderTree({ refreshToken: 0 });
     expect(await screen.findByTitle("Expand chat tree")).toBeTruthy();
     rerender(treeList({ refreshToken: 1 }));
@@ -212,6 +222,7 @@ describe("ChatTreeList refresh", () => {
 
   it("does not refetch an idle tree on a refresh that changed nothing in its group", async () => {
     mockGetChatTree.mockResolvedValue(makeTree(makeNode("root", "Root chat", { children: [makeNode("child-1", "Implementer")] })));
+    openCards("root");
     const { rerender } = renderTree({ refreshToken: 0 });
     await screen.findByText("Implementer");
     // The 15-second poll, with nothing new in this tree.
@@ -223,6 +234,7 @@ describe("ChatTreeList refresh", () => {
 
   it("refetches on a refresh once a member's session starts, and not before the refresh", async () => {
     mockGetChatTree.mockResolvedValue(makeTree(makeNode("root", "Root chat", { children: [makeNode("child-1", "Implementer")] })));
+    openCards("root");
     const { rerender } = renderTree({ refreshToken: 0 });
     await screen.findByText("Implementer");
     rerender(treeList({ refreshToken: 0, running: ["child-1"] }));
@@ -234,6 +246,7 @@ describe("ChatTreeList refresh", () => {
 
   it("refetches a tree showing work the list cannot see on every refresh", async () => {
     mockGetChatTree.mockResolvedValue(makeTree(makeNode("root", "Root chat", { children: [makeNode("child-1", "Implementer", { status: "ongoing" })] })));
+    openCards("root");
     const { rerender } = renderTree({ refreshToken: 0 });
     await screen.findByText("Implementer");
     rerender(treeList({ refreshToken: 1 }));
@@ -252,6 +265,7 @@ describe("ChatTreeList refresh", () => {
       makeChat("b", { pinned: true }),
       makeChat("b-c", { parentChatId: "b", rootChatId: "b" }),
     ];
+    openCards("a", "b");
     renderTree({ chats, refreshToken: 0 });
     await screen.findByText("Child of a");
     await flush();
@@ -265,6 +279,7 @@ describe("tree fetching (#564 review)", () => {
   it("folds a card whose newer fetch failed while an older one was in flight, and retries on click", async () => {
     const first = deferred<ChatTreeResponse>();
     mockGetChatTree.mockReturnValueOnce(first.promise).mockRejectedValueOnce(new Error("nope"));
+    openCards("root");
     const { rerender } = renderTree({ refreshToken: 0 });
     // A second list load lands before the first tree: its group moved.
     rerender(treeList({ refreshToken: 1, chats: [makeChat("root", {}, "2026-07-28T11:00:00Z"), GROUP_CHATS[1]] }));
@@ -275,13 +290,14 @@ describe("tree fetching (#564 review)", () => {
     first.resolve(TREE);
     await flush();
     expect(screen.queryByText("Implementer")).toBeNull();
-    expect(getChatTreeCardCollapsedKeys().size).toBe(0);
-    // A click retries, rather than storing a fold.
+    // Shown folded, but still saved as open.
+    expect([...getChatTreeCardExpandedKeys()]).toEqual(["root"]);
+    // A click retries, rather than closing the card.
     mockGetChatTree.mockResolvedValueOnce(TREE);
     fireEvent.click(screen.getByTitle("Expand chat tree"));
     await screen.findByText("Implementer");
     expect(mockGetChatTree).toHaveBeenCalledTimes(3);
-    expect(getChatTreeCardCollapsedKeys().size).toBe(0);
+    expect([...getChatTreeCardExpandedKeys()]).toEqual(["root"]);
   });
 
   it("does not refetch a tree holding a finished native sub-agent on every refresh", async () => {
@@ -297,6 +313,7 @@ describe("tree fetching (#564 review)", () => {
         }),
       ),
     );
+    openCards("root");
     const { rerender } = renderTree({ refreshToken: 0 });
     await screen.findByText("Pasteur");
     rerender(treeList({ refreshToken: 1 }));
@@ -314,6 +331,7 @@ describe("tree fetching (#564 review)", () => {
     });
     const ids = ["g1", "g2", "g3", "g4", "g5", "g6"];
     const chats = ids.flatMap((id) => [makeChat(id), makeChat(`${id}-c`, { parentChatId: id, rootChatId: id })]);
+    openCards(...ids);
     renderTree({ chats, refreshToken: 0 });
     await flush();
     expect(mockGetChatTree.mock.calls.map(([id]) => id)).toEqual(ids.slice(0, TREE_FETCH_CONCURRENCY));
@@ -333,6 +351,7 @@ describe("tree fetching (#564 review)", () => {
       makeChat("b"),
       makeChat("b-c", { parentChatId: "b", rootChatId: "b" }),
     ];
+    openCards("a", "b");
     const { rerender } = renderTree({ chats: chats("2026-07-28T10:00:00Z"), refreshToken: 0 });
     await screen.findByText("Child of b");
     expect(mockGetChatTree).toHaveBeenCalledTimes(2);
@@ -365,6 +384,7 @@ describe("tree fetching (#564 polish)", () => {
         return new Promise(() => {}); // never settles
       });
       const ids = ["g1", "g2", "g3", "g4", "g5"];
+      openCards(...ids);
       renderTree({ chats: groups(ids), refreshToken: 0 });
       await flush();
       expect(mockGetChatTree.mock.calls.map(([id]) => id)).toEqual(ids.slice(0, TREE_FETCH_CONCURRENCY));
@@ -382,7 +402,8 @@ describe("tree fetching (#564 polish)", () => {
       expect(signals.slice(0, TREE_FETCH_CONCURRENCY).every((sg) => sg.aborted)).toBe(true);
       // A timeout is a failure: folded, nothing stored, and a click retries.
       expect(screen.getAllByTitle("Expand chat tree")).toHaveLength(TREE_FETCH_CONCURRENCY);
-      expect(getChatTreeCardCollapsedKeys().size).toBe(0);
+      // Still saved as open: a timeout does not close a card.
+      expect(getChatTreeCardExpandedKeys().size).toBe(ids.length);
       mockGetChatTree.mockImplementationOnce(async (id) => makeTree(makeNode(id, `Tree ${id}`, { children: [makeNode(`${id}-c`, `Child of ${id}`)] })));
       fireEvent.click(screen.getByRole("button", { name: 'Expand "chat g1"' }));
       await flush();
@@ -398,6 +419,7 @@ describe("tree fetching (#564 polish)", () => {
       signal = sg;
       return new Promise(() => {});
     });
+    openCards("root");
     renderTree({ refreshToken: 0 });
     await flush();
     expect(signal?.aborted).toBe(false);
@@ -414,6 +436,7 @@ describe("tree fetching (#564 polish)", () => {
       return d.promise;
     });
     const ids = ["g1", "g2", "g3", "g4", "g5", "g6"];
+    openCards(...ids);
     const { rerender } = renderTree({ chats: groups(ids), refreshToken: 0 });
     await flush();
     // g6 moves to the top while g5 and g6 are still waiting for a slot.
@@ -448,6 +471,7 @@ describe("tree fetching under StrictMode", () => {
     );
     const ids = Array.from({ length: TREE_FETCH_CONCURRENCY + 2 }, (_, i) => `g${i + 1}`);
     const chats = ids.flatMap((id) => [makeChat(id), makeChat(`${id}-c`, { parentChatId: id, rootChatId: id })]);
+    openCards(...ids);
     render(<StrictMode>{treeList({ chats, refreshToken: 0 })}</StrictMode>);
     await flush();
     // The remount aborted the first round; its rejections must not fold anything.
@@ -467,53 +491,101 @@ describe("tree fetching under StrictMode", () => {
 });
 
 describe("top-level tree cards", () => {
-  it("start expanded, and remember a fold across a reload", async () => {
-    mockGetChatTree.mockResolvedValue(makeTree(makeNode("root", "Root chat", { children: [makeNode("child-1", "Implementer")] })));
+  const TREE = () => makeTree(makeNode("root", "Root chat", { children: [makeNode("child-1", "Implementer")] }));
+
+  it("start closed and fetch nothing; an opened card is remembered across a reload", async () => {
+    mockGetChatTree.mockResolvedValue(TREE());
     renderTree({ refreshToken: 0 });
-    const card = await screen.findByTitle("Collapse chat tree");
-    expect(card.getAttribute("aria-expanded")).toBe("true");
-    await screen.findByText("Implementer");
+    const card = await screen.findByTitle("Expand chat tree");
+    expect(card.getAttribute("aria-expanded")).toBe("false");
+    await flush();
+    expect(mockGetChatTree).not.toHaveBeenCalled();
 
     card.click();
-    await waitFor(() => expect(screen.queryByText("Implementer")).toBeNull());
-    expect([...getChatTreeCardCollapsedKeys()]).toEqual(["root"]);
+    await screen.findByText("Implementer");
+    expect([...getChatTreeCardExpandedKeys()]).toEqual(["root"]);
 
     cleanup();
     resetChatTreeCollapse(); // a fresh read from storage, as on a reload
     mockGetChatTree.mockClear();
     renderTree({ refreshToken: 0 });
-    const folded = await screen.findByTitle("Expand chat tree");
-    expect(folded.getAttribute("aria-expanded")).toBe("false");
-    expect(mockGetChatTree).not.toHaveBeenCalled();
-
-    // Reopening forgets the fold — nothing but folds is stored.
-    folded.click();
+    expect((await screen.findByTitle("Collapse chat tree")).getAttribute("aria-expanded")).toBe("true");
     await screen.findByText("Implementer");
-    expect(localStorage.getItem(CHAT_TREE_CARDS_COLLAPSED_KEY)).toBeNull();
+    expect(mockGetChatTree).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps the card's fold apart from the root row's, though both are keyed by the root's id", async () => {
-    mockGetChatTree.mockResolvedValue(makeTree(makeNode("root", "Root chat", { children: [makeNode("child-1", "Implementer")] })));
+  it("forgets a card when it is closed — nothing but opened cards is stored", async () => {
+    mockGetChatTree.mockResolvedValue(TREE());
+    openCards("root");
     renderTree({ refreshToken: 0 });
     await screen.findByText("Implementer");
-    // The root row's own fold: the root stays, its children go.
+    (await screen.findByTitle("Collapse chat tree")).click();
+    await waitFor(() => expect(screen.queryByText("Implementer")).toBeNull());
+    expect(getChatTreeCardExpandedKeys().size).toBe(0);
+    expect(localStorage.getItem(CHAT_TREE_CARDS_EXPANDED_KEY)).toBeNull();
+  });
+
+  it("clears the folded-cards record #564 left behind", async () => {
+    localStorage.setItem("callboard-chat-tree-cards-collapsed", JSON.stringify({ root: 1 }));
+    resetChatTreeCollapse();
+    renderTree({ refreshToken: 0 });
+    expect(await screen.findByTitle("Expand chat tree")).toBeTruthy();
+    expect(localStorage.getItem("callboard-chat-tree-cards-collapsed")).toBeNull();
+  });
+
+  it("keeps the card's state apart from the root row's fold, though both are keyed by the root's id", async () => {
+    mockGetChatTree.mockResolvedValue(TREE());
+    renderTree({ refreshToken: 0 });
+    await expandGroup();
+    await screen.findByText("Implementer");
+    // The root row's own fold: the root stays, its children go — and the card stays open.
     fireEvent.click(screen.getByRole("button", { name: 'Hide the 1 chat under "Root chat"' }));
     expect(screen.queryByText("Implementer")).toBeNull();
     expect(screen.getByText("Root chat")).toBeTruthy();
     expect(getChatTreeCollapsedIds().has("root")).toBe(true);
-    expect(getChatTreeCardCollapsedKeys().size).toBe(0);
+    expect([...getChatTreeCardExpandedKeys()]).toEqual(["root"]);
     expect(screen.getByTitle("Collapse chat tree").getAttribute("aria-expanded")).toBe("true");
+    // Closing the card leaves the root row's fold alone, and vice versa.
+    screen.getByTitle("Collapse chat tree").click();
+    await waitFor(() => expect(screen.queryByText("Root chat")).toBeNull());
+    expect(getChatTreeCardExpandedKeys().size).toBe(0);
+    expect(getChatTreeCollapsedIds().has("root")).toBe(true);
   });
 
-  it("renders a card folded when its tree cannot be fetched, without storing a fold, and retries on click", async () => {
+  it("shows an opened card folded when its tree cannot be fetched, keeps it saved as open, and retries on click", async () => {
     mockGetChatTree.mockRejectedValueOnce(new Error("no record"));
+    openCards("root");
     renderTree({ refreshToken: 0 });
     const folded = await screen.findByTitle("Expand chat tree");
-    expect(getChatTreeCardCollapsedKeys().size).toBe(0);
-    mockGetChatTree.mockResolvedValueOnce(makeTree(makeNode("root", "Root chat", { children: [makeNode("child-1", "Implementer")] })));
+    await flush();
+    expect([...getChatTreeCardExpandedKeys()]).toEqual(["root"]);
+    mockGetChatTree.mockResolvedValueOnce(TREE());
     folded.click();
     await screen.findByText("Implementer");
     expect(mockGetChatTree).toHaveBeenCalledTimes(2);
+    expect([...getChatTreeCardExpandedKeys()]).toEqual(["root"]);
+  });
+
+  it("highlights a closed card holding the open chat, without opening it", async () => {
+    render(
+      <MemoryRouter>
+        <ChatTreeList
+          chats={GROUP_CHATS}
+          refreshToken={0}
+          activeChatId="child-1"
+          onChatClick={() => {}}
+          onDelete={() => {}}
+          onToggleBookmark={() => {}}
+          onTogglePin={() => {}}
+          cardMenuFor={() => ({})}
+          sessionStatusFor={() => undefined}
+        />
+      </MemoryRouter>,
+    );
+    expect((await screen.findByTitle("Expand chat tree")).getAttribute("aria-expanded")).toBe("false");
+    await flush();
+    expect(mockGetChatTree).not.toHaveBeenCalled();
+    expect(getChatTreeCardExpandedKeys().size).toBe(0);
   });
 });
 

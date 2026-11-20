@@ -984,7 +984,7 @@ describe("bulk delete", () => {
 
   it("warns for a chat whose only children are folded asides, though its row is lone", async () => {
     await mount([CHATS[0], makeChat("aside", "chat aside", { chatRole: "aside", parentChatId: "one", rootChatId: "one" }), CHATS[1]], CARDS);
-    expect(screen.queryByTitle(/^(Expand|Collapse) chat tree$/)).toBeNull();
+    expect(screen.queryByTitle("Expand chat tree")).toBeNull();
     selectAndPressDelete("chat one");
 
     expect(screen.getByText(/This deletes the selected chats, not the chats forked from them/)).toBeTruthy();
@@ -996,7 +996,7 @@ describe("bulk delete", () => {
     await mount([CHATS[0], makeChat("child", "chat child", { parentChatId: "one", rootChatId: "one", childArchived: true }), CHATS[1]], CARDS, {
       chatsShowArchived: false,
     });
-    expect(screen.queryByTitle(/^(Expand|Collapse) chat tree$/)).toBeNull();
+    expect(screen.queryByTitle("Expand chat tree")).toBeNull();
     selectAndPressDelete("chat one");
 
     expect(screen.getByText(/This deletes the selected chats, not the chats forked from them/)).toBeTruthy();
