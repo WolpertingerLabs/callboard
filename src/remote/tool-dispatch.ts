@@ -20,6 +20,7 @@
  */
 
 import {
+  callerMaySelfManage,
   loadRemoteConfig,
   saveRemoteConfig,
   resolvePlaceholders,
@@ -697,10 +698,39 @@ export async function executeProxyRequest(
 
 // ── Tool handlers ──────────────────────────────────────────────────────────
 
+/**
+ * Refuse a self-management tool (set_connection_enabled, set_secrets) on the
+ * agent path when the caller has `selfManage: false`. Without this, an agent
+ * could enable any connection template for itself, and because secrets
+ * resolve per caller *by name*, a newly enabled connection sharing a secret
+ * name with an existing one (another google-* connector) would come up with
+ * the existing token already attached.
+ */
+function assertMaySelfManage(
+  tool: string,
+  caller: CallerConfig | undefined,
+  context: ToolContext,
+): void {
+  if (context.origin === 'admin' || callerMaySelfManage(caller)) return;
+  throw new Error(
+    `${tool} is not available to this agent: caller "${context.callerAlias}" has ` +
+      'selfManage disabled, so its connections and secrets can only be changed by the ' +
+      'operator (drawlatch dashboard or remote.config.json).',
+  );
+}
+
 /** Context passed to every tool handler, providing caller identity and shared services. */
 export interface ToolContext {
   /** The caller alias for the session making this request. */
   callerAlias: string;
+  /** Which door the call came through:
+   *   - 'agent' — the encrypted `/request` path, i.e. the caller's own agent.
+   *   - 'admin' — the password-gated admin API (dashboard), acting for the
+   *     operator on this caller's behalf.
+   *  Absent is treated as 'agent', so a context built without it gets the
+   *  more restricted behaviour. Gates set_connection_enabled / set_secrets
+   *  when the caller has `selfManage: false`. */
+  origin?: 'agent' | 'admin';
   /** The shared ingestor manager (for poll_events / ingestor_status). */
   ingestorManager: IngestorManager;
   /** Re-resolve routes for all sessions belonging to this caller.
@@ -1493,6 +1523,7 @@ export const toolHandlers: Record<string, ToolHandler> = {
     const config = loadRemoteConfig();
     const caller = config.callers[context.callerAlias];
     const enabledSet = new Set(caller.connections);
+    const selfManageable = context.origin === 'admin' || callerMaySelfManage(caller);
 
     const templates = listConnectionTemplates();
 
@@ -1523,6 +1554,8 @@ export const toolHandlers: Record<string, ToolHandler> = {
         enabled: enabledSet.has(t.alias),
         requiredSecretsSet,
         optionalSecretsSet,
+        // Whether set_connection_enabled / set_secrets will work for this caller.
+        selfManageable,
       };
     });
   },
@@ -1544,6 +1577,7 @@ export const toolHandlers: Record<string, ToolHandler> = {
 
     const config = loadRemoteConfig();
     const caller = config.callers[context.callerAlias];
+    assertMaySelfManage('set_connection_enabled', caller, context);
 
     // Verify the connection template exists (built-in or custom connector)
     const connectorAliases = new Set((config.connectors ?? []).map((c) => c.alias).filter(Boolean));
@@ -1589,6 +1623,7 @@ export const toolHandlers: Record<string, ToolHandler> = {
     }
 
     const config = loadRemoteConfig();
+    assertMaySelfManage('set_secrets', config.callers[context.callerAlias], context);
 
     const { config: updatedConfig, status } = setCallerSecrets(
       secrets,

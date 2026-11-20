@@ -640,6 +640,7 @@ export function createApp(options: CreateAppOptions = {}) {
 
       const context: ToolContext = {
         callerAlias: session.callerAlias,
+        origin: 'agent',
         ingestorManager: app.locals.ingestorManager as IngestorManager,
         refreshRoutes: () => refreshCallerSessions(session.callerAlias),
         sessionId,

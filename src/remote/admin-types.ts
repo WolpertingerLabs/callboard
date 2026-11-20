@@ -62,6 +62,9 @@ export interface AdminCaller {
   /** How this caller's keypair was provisioned (drives the source badge).
    *  null for callers created before issuance existed. */
   source: 'local-auto' | 'bundle-issued' | null;
+  /** Whether the caller's agent may run set_connection_enabled / set_secrets
+   *  on itself (config `selfManage`, absent = true). */
+  selfManage: boolean;
 }
 
 // ── /admin/connections ───────────────────────────────────────────────────

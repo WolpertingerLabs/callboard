@@ -446,6 +446,19 @@ export interface CallerConfig {
    *  When an ingestor event matches a rule's criteria (source, event type, filter),
    *  the engine dispatches the event to the configured remote trigger. */
   triggerRules?: TriggerRule[];
+  /** Whether this caller's agent may change its own configuration over the
+   *  encrypted channel: `set_connection_enabled` and `set_secrets`. When false,
+   *  those tools refuse on the agent path and only the admin dashboard/API can
+   *  make the change. Absent = true, so existing configs keep working; callers
+   *  created by drawlatch (dashboard, `issue-caller`, local auto-provisioning)
+   *  are written with `false`. See callerMaySelfManage(). */
+  selfManage?: boolean;
+}
+
+/** Whether a caller's agent may run set_connection_enabled / set_secrets on
+ *  itself. Absent means allowed, for configs written before the flag existed. */
+export function callerMaySelfManage(caller: CallerConfig | undefined): boolean {
+  return caller?.selfManage !== false;
 }
 
 /** Remote server configuration */

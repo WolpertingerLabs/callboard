@@ -86,9 +86,9 @@ The local MCP server exposes these tools. Every call goes through the encrypted 
 | `secure_request` | HTTP request to an allowlisted URL. Connection headers are injected for you. `${VAR}` placeholders in the URL and headers resolve server-side from the matched connection's secrets (in the body only if the connection sets `resolveSecretsInBody`). Secrets the connection injects itself are [withheld](#header-only-secrets): a request that references one is rejected, and their values are scrubbed from the response body. Redirects are followed only within the connection's allowlist ([Redirects](#redirects)). Supports multipart uploads from local files (25 MB per file, 50 MB per base64-encoded request): with `files`, the JSON `body` is sent as a form part named `payload_json` (change it with `bodyFieldName`). Also takes a per-call `timeoutMs`. |
 | `list_routes` | The caller's connections: docs links, allowed endpoint patterns, the *names* of secrets that are set, auto-injected header names, `withheldSecretNames` (secrets the connection uses itself, which a request may not reference), `awsSigV4` settings, timeouts, listener info. |
 | `test_connection` | Run a connection's built-in credential check. Some cost a little credit; see [CONNECTIONS.md](CONNECTIONS.md#available-connections). |
-| `list_connection_templates` | All built-in templates, with which are enabled for this caller and which secrets are set (booleans). Custom connectors aren't listed. |
-| `set_connection_enabled` | Enable or disable a connection for this caller. |
-| `set_secrets` | Set or delete (empty string) this caller's secrets. Write-only. |
+| `list_connection_templates` | All built-in templates, with which are enabled for this caller and which secrets are set (booleans). Custom connectors aren't listed. Each entry's `selfManageable` says whether the two tools below will work for this caller. |
+| `set_connection_enabled` | Enable or disable a connection for this caller. Refused when the caller has `selfManage: false`. |
+| `set_secrets` | Set or delete (empty string) this caller's secrets. Write-only. Refused when the caller has `selfManage: false`. |
 | `get_secret_status` | Which required and optional secrets are set for a built-in connection (booleans). |
 | `poll_events` | Read buffered listener events after a cursor. |
 | `ingestor_status` | State, buffer size, event counts, and errors for this caller's listeners. |
@@ -99,7 +99,7 @@ The local MCP server exposes these tools. Every call goes through the encrypted 
 | `list_listener_instances` / `delete_listener_instance` | Manage multi-instance listeners. |
 | `test_ingestor` | Check a listener's configuration and credentials. |
 
-Note that `set_secrets` and `set_connection_enabled` let an agent change its own caller's configuration. It still can't read secret values or reach URLs outside the allowlists.
+`set_secrets` and `set_connection_enabled` let an agent change its own caller's configuration, which can grant it more access: secrets resolve per caller by name, so a connection the agent enables for itself starts with any secret it shares a name with (a second `google-*` connector picks up the existing `GOOGLE_API_TOKEN`). The agent still can't read secret values or reach URLs outside the allowlists. Set [`selfManage: false`](#callers) on a caller to refuse both tools to its agent. The dashboard can still make the change. Callers that drawlatch creates (dashboard **New caller**, `issue-caller` for a new alias, local Callboard provisioning) start with `selfManage: false`. A caller entry without the field allows both tools, so existing configs behave as before.
 
 The daemon also accepts `wait_for_events`, a long-poll over all of a caller's event streams. The local MCP server doesn't expose it; long-running clients such as Callboard call it over the encrypted channel. See [INGESTORS.md](INGESTORS.md#reading-events).
 
@@ -158,6 +158,7 @@ The daemon re-reads `remote.config.json` for each new session and after dashboar
 | `env` | Per-caller secret values (see [Secrets](#secrets)). |
 | `ingestorOverrides`, `listenerInstances` | Listener settings ([INGESTORS.md](INGESTORS.md#per-caller-listener-settings)). |
 | `triggerRules` | Forward matching events to Claude Code remote triggers ([INGESTORS.md](INGESTORS.md#trigger-rules-experimental)). |
+| `selfManage` | Whether the caller's agent may run `set_connection_enabled` and `set_secrets` on itself ([MCP tools](#mcp-tools)). Absent means `true`. Callers drawlatch creates are written with `false`. The admin API and dashboard aren't affected. |
 
 Caller public keys are read from `keys/callers/<alias>/`. Aliases must match `^[a-zA-Z0-9][a-zA-Z0-9_-]*$`.
 
@@ -319,7 +320,7 @@ Webhook listeners (GitHub, Stripe, Trello) receive `POST /webhooks/<path>` on th
 
 ## Admin dashboard
 
-The daemon serves a web dashboard and its JSON API from the same port as the MCP protocol: `http://127.0.0.1:9999/` by default. From it you can create, issue, and delete callers; enable connections; set secrets; configure, test, and control listeners; and watch events, ingestors, sessions, and a secrets matrix. Connection and secret changes apply to open sessions immediately. Running listeners pick up new secrets, or a newly enabled connection, only when they are (re)started: use the listener controls or `drawlatch restart`. Listener parameter changes restart the listener.
+The daemon serves a web dashboard and its JSON API from the same port as the MCP protocol: `http://127.0.0.1:9999/` by default. From it you can create, issue, and delete callers; choose whether a caller's agent may manage its own connections and secrets (**Agent permissions** on the caller page); enable connections; set secrets; configure, test, and control listeners; and watch events, ingestors, sessions, and a secrets matrix. Connection and secret changes apply to open sessions immediately. Running listeners pick up new secrets, or a newly enabled connection, only when they are (re)started: use the listener controls or `drawlatch restart`. Listener parameter changes restart the listener.
 
 **Password.** The dashboard stays locked until a password is set. `drawlatch set-password` (alias `change-password`) prompts on a TTY or reads the password twice from stdin (`printf '%s\n%s\n' "$PW" "$PW" | drawlatch set-password`). It stores a scrypt hash and salt in `.env` as `AUTH_PASSWORD_HASH` / `AUTH_PASSWORD_SALT`. Restart the daemon after setting it from the CLI. Changing it from the dashboard (**Change password**, `/settings/password`) applies immediately and signs out every other session.
 
@@ -348,6 +349,7 @@ Write endpoints (`…` = `/callers/:alias/connections/:connection`):
 | `POST /callers` `{alias, name?, connections?}` | Create a caller with a keypair on drawlatch's disk |
 | `POST /callers/:alias/issue` `{connections?, endpointUrl?, passphrase?, name?}` | Issue or rotate a credential bundle (10/min) |
 | `DELETE /callers/:alias` | Delete a caller, its keys, and the secrets recorded in its `env` map (set via the dashboard or `set_secrets`; hand-added `.env` lines remain). `default` is protected |
+| `PUT /callers/:alias/self-manage` `{enabled}` | Set the caller's `selfManage` flag (applies immediately). `GET /callers` reports it |
 | `PUT /tunnel` `{enabled}` | Persist the tunnel flag (applies on restart) |
 | `POST …` `{enabled}` | Enable or disable a connection |
 | `PUT …/secrets` `{secrets}` | Set secrets; empty string deletes |

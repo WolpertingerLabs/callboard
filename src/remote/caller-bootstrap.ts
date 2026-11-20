@@ -110,7 +110,9 @@ export function createCallerWithKeys(
   const name = opts.name ?? alias;
   const connections = opts.connections ?? defaultConnections(config);
 
-  config.callers[alias] = { name, connections };
+  // New callers start locked: their agent can't enable connections or set
+  // secrets for itself. The operator flips it in the dashboard if wanted.
+  config.callers[alias] = { name, connections, selfManage: false };
   saveRemoteConfig(config);
 
   log.info(
@@ -192,7 +194,9 @@ export function issueCallerBundle(opts: IssueCallerOptions): CallerBundleV1 {
 
   // Register/update the caller, preserving any unrelated fields (env, overrides…).
   config.callers[alias] = {
-    ...(existing ?? {}),
+    // New callers start locked (selfManage: false); a re-issue keeps whatever
+    // the existing entry has, including an absent (permissive) flag.
+    ...(existing ?? { selfManage: false }),
     name,
     connections,
     source: 'bundle-issued',
@@ -305,7 +309,8 @@ export function issueLocalCaller(opts: IssueLocalCallerOptions): IssueLocalCalle
   const name = opts.name ?? existing?.name ?? alias;
 
   config.callers[alias] = {
-    ...(existing ?? {}),
+    // New callers start locked; an existing entry keeps its own setting.
+    ...(existing ?? { selfManage: false }),
     name,
     connections,
     source: 'local-auto',

@@ -79,8 +79,9 @@ describe('caller bootstrap', () => {
     expect(res.connections).toEqual(['github']);
     // Keypair written to disk
     expect(fs.existsSync(path.join(getCallerKeysDir(), 'alice', 'signing.key.pem'))).toBe(true);
-    // Registered in config
+    // Registered in config, locked against agent self-management
     expect('alice' in loadRemoteConfig().callers).toBe(true);
+    expect(loadRemoteConfig().callers.alice.selfManage).toBe(false);
   });
 
   it('honors explicit connections + name', () => {
@@ -123,6 +124,21 @@ describe('issueCallerBundle', () => {
   afterEach(() => {
     delete process.env.MCP_CONFIG_DIR;
     fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('locks a newly issued caller, but a re-issue keeps the existing setting', () => {
+    issueCallerBundle({ alias: 'fresh', endpointUrl: 'https://drawlatch.example.com' });
+    expect(loadRemoteConfig().callers.fresh.selfManage).toBe(false);
+
+    // `default` predates the flag (absent = permissive); re-issuing keeps that.
+    issueCallerBundle({ alias: 'default', endpointUrl: 'https://drawlatch.example.com' });
+    expect(loadRemoteConfig().callers.default.selfManage).toBeUndefined();
+
+    const cfg = loadRemoteConfig();
+    cfg.callers.fresh.selfManage = true;
+    saveRemoteConfig(cfg);
+    issueCallerBundle({ alias: 'fresh', endpointUrl: 'https://drawlatch.example.com' });
+    expect(loadRemoteConfig().callers.fresh.selfManage).toBe(true);
   });
 
   it('assembles a v1 bundle and persists ONLY the public keys to disk', () => {
@@ -257,6 +273,7 @@ describe('issueLocalCaller', () => {
     expect(fs.existsSync(path.join(ownDir, 'signing.key.pem'))).toBe(false);
 
     expect(loadRemoteConfig().callers['callboard-local'].source).toBe('local-auto');
+    expect(loadRemoteConfig().callers['callboard-local'].selfManage).toBe(false);
     expect(res.fingerprint).toMatch(/.+/);
   });
 });
@@ -486,6 +503,47 @@ describe('mutating admin API', () => {
     expect(off.status).toBe(200);
     expect((off.json as { tunnel: boolean }).tunnel).toBe(false);
     expect(loadRemoteConfig().tunnel).toBe(false);
+  });
+
+  it('locks a caller with PUT /self-manage; the admin path still mutates it', async () => {
+    const list = async () =>
+      (
+        (await req('GET', '/api/admin/callers')).json as { alias: string; selfManage: boolean }[]
+      ).find((c) => c.alias === 'default')!.selfManage;
+    expect(await list()).toBe(true); // absent = permissive
+
+    const lock = await req('PUT', '/api/admin/callers/default/self-manage', { enabled: false });
+    expect(lock.status).toBe(200);
+    expect(loadRemoteConfig().callers.default.selfManage).toBe(false);
+    expect(await list()).toBe(false);
+
+    // The dashboard acts for the operator, so the lock doesn't apply to it.
+    const off = await req('POST', '/api/admin/callers/default/connections/github', {
+      enabled: false,
+    });
+    expect(off.status).toBe(200);
+    const on = await req('POST', '/api/admin/callers/default/connections/github', {
+      enabled: true,
+    });
+    expect(on.status).toBe(200);
+    const sec = await req('PUT', '/api/admin/callers/default/connections/github/secrets', {
+      secrets: { GITHUB_TOKEN: SECRET_VALUE },
+    });
+    expect(sec.status).toBe(200);
+    expect(sec.text.includes(SECRET_VALUE)).toBe(false);
+
+    const unlock = await req('PUT', '/api/admin/callers/default/self-manage', { enabled: true });
+    expect(unlock.status).toBe(200);
+    expect(loadRemoteConfig().callers.default.selfManage).toBe(true);
+  });
+
+  it('rejects PUT /self-manage for an unknown caller (404) or a non-boolean (400)', async () => {
+    expect(
+      (await req('PUT', '/api/admin/callers/ghost/self-manage', { enabled: true })).status,
+    ).toBe(404);
+    expect(
+      (await req('PUT', '/api/admin/callers/default/self-manage', { enabled: 'no' })).status,
+    ).toBe(400);
   });
 
   it('rejects PUT /tunnel without a boolean enabled (400)', async () => {

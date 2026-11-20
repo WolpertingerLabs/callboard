@@ -842,7 +842,7 @@ server.tool(
 // eslint-disable-next-line @typescript-eslint/no-deprecated -- registerTool is not available in this SDK version
 server.tool(
   'set_connection_enabled',
-  'Enable or disable a connection for the authenticated caller. When disabling, any running ingestors for the connection are stopped.',
+  'Enable or disable a connection for the authenticated caller. When disabling, any running ingestors for the connection are stopped. Refused when the operator has disabled self-management for this caller (selfManageable: false in list_connection_templates).',
   {
     connection: z.string().describe('Connection alias (e.g., "github", "discord-bot")'),
     enabled: z.boolean().describe('Whether to enable (true) or disable (false) the connection'),
@@ -875,7 +875,7 @@ server.tool(
 // eslint-disable-next-line @typescript-eslint/no-deprecated -- registerTool is not available in this SDK version
 server.tool(
   'set_secrets',
-  'Set or delete secrets for the authenticated caller. Pass secret name → value pairs. Use empty string to delete a secret. Returns boolean status per secret (never values).',
+  'Set or delete secrets for the authenticated caller. Pass secret name → value pairs. Use empty string to delete a secret. Returns boolean status per secret (never values). Refused when the operator has disabled self-management for this caller (selfManageable: false in list_connection_templates).',
   {
     secrets: z
       .record(z.string(), z.string())

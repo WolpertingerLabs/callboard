@@ -16,7 +16,12 @@
 import express from 'express';
 import rateLimit from 'express-rate-limit';
 
-import { saveRemoteConfig, type RemoteServerConfig, type ResolvedRoute } from '../shared/config.js';
+import {
+  saveRemoteConfig,
+  type CallerConfig,
+  type RemoteServerConfig,
+  type ResolvedRoute,
+} from '../shared/config.js';
 import { dispatchTool, type ToolContext } from './tool-dispatch.js';
 import {
   createCallerWithKeys,
@@ -64,6 +69,8 @@ export function mountAdminMutations(router: express.Router, deps: AdminMutationD
   function ctx(alias: string): ToolContext {
     return {
       callerAlias: alias,
+      // The operator acting through the dashboard: not subject to selfManage.
+      origin: 'admin',
       ingestorManager: deps.ingestorManager(),
       refreshRoutes: () => deps.refreshCaller(alias),
     };
@@ -230,6 +237,28 @@ export function mountAdminMutations(router: express.Router, deps: AdminMutationD
       const message = err instanceof Error ? err.message : String(err);
       res.status(errorStatus(message)).json({ error: message });
     }
+  });
+
+  // ── Caller self-management lock ────────────────────────────────────────
+  //
+  // PUT /api/admin/callers/:alias/self-manage  { enabled: boolean }
+  // Writes `selfManage` on the caller. Read per call by set_connection_enabled
+  // / set_secrets, so no reload is needed.
+  router.put('/callers/:alias/self-manage', (req, res) => {
+    const { enabled } = (req.body ?? {}) as { enabled?: unknown };
+    if (typeof enabled !== 'boolean') {
+      res.status(400).json({ error: 'enabled must be a boolean' });
+      return;
+    }
+    const config = deps.loadConfig();
+    const caller = config.callers[req.params.alias] as CallerConfig | undefined;
+    if (!caller) {
+      res.status(404).json({ error: `Unknown caller: ${req.params.alias}` });
+      return;
+    }
+    caller.selfManage = enabled;
+    saveRemoteConfig(config);
+    res.json({ alias: req.params.alias, selfManage: enabled });
   });
 
   // ── Tunnel (cloudflared) config-only toggle ────────────────────────────
