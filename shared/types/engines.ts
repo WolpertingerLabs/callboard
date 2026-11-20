@@ -646,3 +646,64 @@ export interface EngineRefreshResponse extends EngineStatusResponse {
   /** Roughly how long until a probe would run, when `probed` is false. */
   retryAfterMs?: number;
 }
+
+/**
+ * How long an engine keeps its own chat transcripts before it deletes them
+ * itself — `GET /api/engines/retention`, shown on each engine's tab in
+ * Settings → API.
+ *
+ * This reports the engine's **native** policy, not anything Callboard adds on
+ * top. The three engines differ in kind, not just in number:
+ *
+ * - **Claude** sweeps `~/.claude/projects/` every time a `claude` process
+ *   starts (including the ones the Agent SDK spawns for Callboard), deleting
+ *   transcripts not written to for `cleanupPeriodDays` days. That key lives in
+ *   `~/.claude/settings.json`, defaults to 30 and has a minimum of 1. `0` is
+ *   *not* "never" — it disables writing transcripts at all — so it is refused.
+ * - **Codex** and **pi** have no automatic expiry: their session files stay
+ *   until something deletes them. There is no setting to show, so the entry is
+ *   read-only and says so instead of inventing one.
+ */
+export type EngineRetention =
+  | {
+      engine: "claude-code";
+      expires: true;
+      /** `cleanupPeriodDays` as written in the user settings file, or `null` when the key is absent (the default applies). */
+      configuredDays: number | null;
+      /** What Claude uses when the key is absent. */
+      defaultDays: number;
+      /** What is actually in force: a managed-policy value when there is one, else `configuredDays ?? defaultDays`. */
+      effectiveDays: number;
+      /** The file Callboard reads and writes the setting in. */
+      settingsPath: string;
+      /**
+       * Set when org/managed policy pins `cleanupPeriodDays`, which outranks
+       * the user file — editing it would change nothing, so the UI locks the
+       * field. The path of the policy file that sets it.
+       */
+      managedBy?: string;
+      /**
+       * Set when the user settings file exists but is not valid JSON. Callboard
+       * will not rewrite a file it could not parse (it would drop whatever the
+       * user had in it), so the field is read-only until it is fixed.
+       */
+      unreadable?: string;
+      /** Where the transcripts this applies to live. */
+      storagePath: string;
+    }
+  | {
+      engine: "codex" | "pi";
+      expires: false;
+      /** Where the engine keeps its sessions. */
+      storagePath: string;
+    };
+
+/** `GET /api/engines/retention`. */
+export interface EngineRetentionResponse {
+  engines: EngineRetention[];
+}
+
+/** `PUT /api/engines/claude-code/retention`. `null` removes the key, restoring Claude's default. */
+export interface ClaudeRetentionUpdate {
+  cleanupPeriodDays: number | null;
+}

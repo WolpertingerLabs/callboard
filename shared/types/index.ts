@@ -232,6 +232,9 @@ export type {
   EngineStatus,
   EngineStatusResponse,
   EngineRefreshResponse,
+  EngineRetention,
+  EngineRetentionResponse,
+  ClaudeRetentionUpdate,
 } from "./engines.js";
 
 export type { HarnessProvider, ModelAlias, ModelAliasInfo } from "./modelAlias.js";
