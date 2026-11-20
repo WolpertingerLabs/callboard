@@ -114,7 +114,8 @@ async function renderAndExpand(tree: ChatTreeNode, activeChatId?: string) {
       <ChatList onRefresh={() => {}} activeChatId={activeChatId} />
     </MemoryRouter>,
   );
-  fireEvent.click(await screen.findByTitle("Expand chat tree"));
+  // Tree cards start expanded: the tree fetches on its own.
+  await screen.findByTitle("Collapse chat tree");
   await screen.findByText("Root thread", { selector: "[data-testid='chat-tree-node'] *" });
 }
 
@@ -261,7 +262,7 @@ describe("ChatList child archive — the loaded rows", () => {
       </MemoryRouter>,
     );
     await screen.findByText("Root thread");
-    expect(screen.queryByTitle("Expand chat tree")).toBeNull();
+    expect(screen.queryByTitle(/^(Expand|Collapse) chat tree$/)).toBeNull();
   });
 
   it("keeps the tree expandable when archived chats are shown", async () => {
@@ -272,7 +273,7 @@ describe("ChatList child archive — the loaded rows", () => {
         <ChatList onRefresh={() => {}} />
       </MemoryRouter>,
     );
-    expect(await screen.findByTitle("Expand chat tree")).toBeDefined();
+    expect(await screen.findByTitle(/^(Expand|Collapse) chat tree$/)).toBeDefined();
   });
 });
 
@@ -358,7 +359,7 @@ describe("ChatList child archive — optimistic rows and filters", () => {
 
     await screen.findByText("Root thread");
     // The grandchild did not leak back in as a member: the root is a lone row.
-    expect(screen.queryByTitle("Expand chat tree")).toBeNull();
+    expect(screen.queryByTitle(/^(Expand|Collapse) chat tree$/)).toBeNull();
     expect(screen.queryByText("Grandchild")).toBeNull();
   });
 });

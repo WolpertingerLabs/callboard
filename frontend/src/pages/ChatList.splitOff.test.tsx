@@ -85,7 +85,8 @@ async function renderAndExpand(children: ChatTreeNode[] = [makeNode("child", "He
       <ChatList onRefresh={() => {}} />
     </MemoryRouter>,
   );
-  fireEvent.click(await screen.findByTitle("Expand chat tree"));
+  // Tree cards start expanded: the tree fetches on its own.
+  await screen.findByTitle("Collapse chat tree");
   await screen.findByText(children[0].title!);
 }
 
@@ -184,7 +185,8 @@ describe("ChatList split off — tree node context menu", () => {
 
 describe("ChatList split off — row kebab", () => {
   /** The row element ChatListItem renders as its root — see ChatList.editTitle.test.tsx. */
-  const rowOf = (title: string) => screen.getByText(title).parentElement!.parentElement!.parentElement!;
+  // The first match: the card. Cards start expanded, so its tree node repeats the title below.
+  const rowOf = (title: string) => screen.getAllByText(title)[0].parentElement!.parentElement!.parentElement!;
   const openKebab = (title: string) => {
     fireEvent.mouseEnter(rowOf(title));
     fireEvent.click(screen.getByTitle("Chat actions"));

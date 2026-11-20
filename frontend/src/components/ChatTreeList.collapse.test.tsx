@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 /**
- * Collapsing subtrees inside an expanded chat tree. Every node below the root
- * that has rows to hide gets a chevron; each starts expanded, and a fold is
- * remembered across remounts (localStorage).
+ * Collapsing subtrees inside an expanded chat tree. Every node that has rows
+ * to hide — the root's own row included — gets a chevron; each starts
+ * expanded, and a fold is remembered across remounts (localStorage).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
@@ -114,8 +114,9 @@ function renderList(running: string[] = [], chats: Chat[] = CHATS, activeChatId?
   );
 }
 
+/** Tree cards start expanded: wait for the tree to arrive. */
 async function expand() {
-  fireEvent.click(await screen.findByRole("button", { name: 'Expand "chat root"' }));
+  await screen.findByRole("button", { name: 'Collapse "chat root"' });
   await screen.findByText("Mid");
 }
 
@@ -124,18 +125,40 @@ const toggleFor = (label: string) =>
   screen.queryByRole("button", { name: `Collapse "${label}"` }) ?? screen.queryByRole("button", { name: `Expand "${label}"` });
 
 describe("collapsible subtrees", () => {
-  it("puts an expanded toggle only on non-root nodes with rows to hide", async () => {
+  it("puts an expanded toggle only on nodes with rows to hide, the root's included", async () => {
     mockTree();
     renderList();
     await expand();
+    expect(toggleFor("Root")?.getAttribute("aria-expanded")).toBe("true");
     expect(toggleFor("Mid")?.getAttribute("aria-expanded")).toBe("true");
     expect(toggleFor("Deep")?.getAttribute("aria-expanded")).toBe("true");
-    expect(toggleFor("Root")).toBeNull();
     expect(toggleFor("Lonely")).toBeNull();
     expect(toggleFor("Leaf")).toBeNull();
     expect(toggleFor("Aside parent")).toBeNull();
     expect(toggleFor("Arch parent")).toBeNull();
-    expect(screen.getAllByTestId("tree-node-toggle")).toHaveLength(2);
+    expect(screen.getAllByTestId("tree-node-toggle")).toHaveLength(3);
+  });
+
+  it("folds the root's children from its own row, keeping the root and the card", async () => {
+    mockTree();
+    renderList();
+    await expand();
+    fireEvent.click(toggleFor("Root")!);
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(node("root")).toBeTruthy();
+    expect(screen.getAllByTestId("chat-tree-node")).toHaveLength(1);
+    expect(toggleFor("Root")?.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.getByRole("button", { name: 'Collapse "chat root"' }).getAttribute("aria-expanded")).toBe("true");
+    expect([...getChatTreeCollapsedIds()]).toEqual(["root"]);
+
+    cleanup();
+    resetChatTreeCollapse();
+    renderList();
+    await screen.findByRole("button", { name: 'Expand "Root"' });
+    expect(screen.getAllByTestId("chat-tree-node")).toHaveLength(1);
+    // The children's own folds are untouched underneath.
+    fireEvent.click(toggleFor("Root")!);
+    expect(node("deepest")).toBeTruthy();
   });
 
   it("is not inside the node's link", async () => {
@@ -216,6 +239,29 @@ describe("working indicators", () => {
     expect(screen.queryByTestId("subtree-running")).toBeNull();
   });
 
+  it("counts everything a folded root row hides, at every depth", async () => {
+    mockTree(
+      makeNode("root", "Root", {
+        children: [
+          makeNode("mid", "Mid", {
+            children: [makeNode("leaf", "Leaf", { summon: { urgency: "normal", createdAt: "2026-07-28T10:00:00Z" } }), makeNode("deep", "Deep")],
+          }),
+          makeNode("lonely", "Lonely"),
+        ],
+      }),
+    );
+    renderList(["deep", "lonely"]);
+    await expand();
+    fireEvent.click(toggleFor("Root")!);
+    const root = node("root")!;
+    expect(within(root).getByTestId("subtree-running").textContent).toBe("22 working below");
+    expect(within(root).getByTestId("subtree-attention").getAttribute("title")).toBe("1 calling for you below");
+    expect(root.getAttribute("aria-label")).toBe("Root, 2 working below, 1 calling for you below");
+    fireEvent.click(toggleFor("Root")!);
+    expect(screen.queryByTestId("subtree-running")).toBeNull();
+    expect(screen.queryByTestId("subtree-attention")).toBeNull();
+  });
+
   it("shows the group row how many of its chats are working", async () => {
     mockTree();
     renderList(["mid", "lonely"]);
@@ -247,6 +293,29 @@ describe("review follow-ups", () => {
     renderList([], CHATS, "mid");
     await expand();
     expect(node("leaf")).toBeUndefined();
+  });
+
+  it("keeps the open chat visible under a folded root row, without changing the stored fold", async () => {
+    mockTree();
+    renderList();
+    await expand();
+    fireEvent.click(toggleFor("Root")!);
+    expect(node("lonely")).toBeUndefined();
+
+    cleanup();
+    renderList([], CHATS, "lonely");
+    await expand();
+    expect(node("lonely")).toBeTruthy();
+    expect(node("mid")).toBeTruthy();
+    const toggle = screen.getByRole("button", { name: 'Collapse "Root" (holds the open chat)' }) as HTMLButtonElement;
+    expect(toggle.disabled).toBe(true);
+    expect(within(node("root")!).queryByTestId("subtree-running")).toBeNull();
+    expect(getChatTreeCollapsedIds().has("root")).toBe(true);
+    // With the root itself open, its fold applies.
+    cleanup();
+    renderList([], CHATS, "root");
+    await screen.findByRole("button", { name: 'Expand "Root"' });
+    expect(node("mid")).toBeUndefined();
   });
 
   it("counts a working aside folded under a non-front member on the group row", async () => {
@@ -296,36 +365,56 @@ describe("review follow-ups", () => {
   it("names the top-level toggle and reports its state", async () => {
     mockTree();
     renderList();
-    const toggle = await screen.findByRole("button", { name: 'Expand "chat root"' });
-    expect(toggle.getAttribute("aria-expanded")).toBe("false");
-    fireEvent.click(toggle);
+    const toggle = await screen.findByRole("button", { name: 'Collapse "chat root"' });
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
     await screen.findByText("Mid");
-    expect(screen.getByRole("button", { name: 'Collapse "chat root"' }).getAttribute("aria-expanded")).toBe("true");
+    fireEvent.click(toggle);
+    expect(screen.getByRole("button", { name: 'Expand "chat root"' }).getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText("Mid")).toBeNull();
   });
 
-  it("gives touch a 44px row and a wide toggle slot without moving titles", async () => {
-    const slotOf = () => {
-      const row = node("mid")!.parentElement!;
-      return { row, slot: within(row).getByTestId("tree-node-toggle"), leafSlot: node("lonely")!.previousElementSibling as HTMLElement };
+  it("adds no height on touch, and keeps chevrons, connectors and titles in their columns", async () => {
+    const measure = () => {
+      const rowOf = (id: string) => node(id)!.parentElement!;
+      const slotOf = (id: string) => node(id)!.previousElementSibling as HTMLElement;
+      return { rowOf, slotOf };
     };
+    /** Where the slot ends in layout: a toggle is wider, by the gap it reaches across, and gives it back in margin. */
+    const layoutWidth = (slot: HTMLElement) => parseInt(slot.style.width) + (parseInt(slot.style.marginRight) || 0);
     mockTree();
     renderList();
     await expand();
-    const desk = slotOf();
-    const deskTitleX = parseInt(desk.row.style.paddingLeft) + parseInt(desk.slot.style.width);
-    expect(desk.row.style.minHeight).toBe("");
+    const desk = measure();
+    const deskWidths = ["root", "mid", "lonely", "leaf", "deep"].map((id) => desk.slotOf(id).style.width);
+    // The toggle's target reaches across the 6px gap before the status dot.
+    expect(desk.slotOf("root").style.width).toBe("23px");
+    expect(desk.slotOf("root").style.marginRight).toBe("-6px");
+    expect(desk.rowOf("mid").style.minHeight).toBe("");
     cleanup();
 
     mobile = true;
     renderList();
     await expand();
-    const touch = slotOf();
-    expect(touch.row.style.minHeight).toBe("44px");
-    expect(touch.slot.style.width).toBe("36px");
-    expect(parseInt(touch.row.style.paddingLeft) + parseInt(touch.slot.style.width)).toBe(deskTitleX);
-    // Chevrons and leaf connectors share one column.
-    expect(touch.slot.style.justifyContent).toBe("flex-end");
-    expect(touch.leafSlot.style.justifyContent).toBe("flex-end");
-    expect(touch.leafSlot.style.width).toBe("36px");
+    const { rowOf, slotOf } = measure();
+    for (const id of ["root", "mid", "lonely", "leaf"]) {
+      expect(rowOf(id).style.minHeight).toBe("");
+      expect(rowOf(id).style.paddingLeft).toBe("");
+      // The slot spans the row's height, so the target is the full row strip.
+      expect(rowOf(id).style.alignItems).toBe("stretch");
+    }
+    // Same layout on touch as on desktop.
+    expect(["root", "mid", "lonely", "leaf", "deep"].map((id) => slotOf(id).style.width)).toEqual(deskWidths);
+    // Siblings — a parent and a leaf — put their titles in the same place.
+    expect(layoutWidth(slotOf("mid"))).toBe(layoutWidth(slotOf("lonely")));
+    expect(layoutWidth(slotOf("leaf"))).toBe(layoutWidth(slotOf("deep")));
+    // The root's chevron sits in the card chevron's column: 8px from the row
+    // edge (3px border + a slot ending 12px later).
+    expect(slotOf("root").getAttribute("data-testid")).toBe("tree-node-toggle");
+    expect(layoutWidth(slotOf("root"))).toBe(17);
+    expect(screen.getByRole("button", { name: 'Collapse "chat root"' }).style.padding).toBe("0px 2px 0px 8px");
+    // Chevrons and leaf connectors share one column: both at the slot's right edge.
+    expect(slotOf("mid").style.justifyContent).toBe("flex-end");
+    expect(slotOf("lonely").style.justifyContent).toBe("flex-end");
+    expect(slotOf("lonely").getAttribute("data-testid")).toBe("tree-node-slot");
   });
 });

@@ -366,10 +366,25 @@ export const CHAT_TREE_COLLAPSED_KEY = "callboard-chat-tree-collapsed";
  */
 export const CHAT_TREE_COLLAPSED_MAX = 200;
 
-/** chatId → epoch ms it was collapsed at (what eviction orders by). */
-function readChatTreeCollapsed(): Record<string, number> {
+/**
+ * Top-level tree CARDS (the sidebar's group rows) the user has folded. Cards
+ * start expanded; only the folded ones are stored, bounded like
+ * {@link CHAT_TREE_COLLAPSED_KEY} and by the same cap.
+ *
+ * A key of its own rather than a namespace inside that store: a card is keyed
+ * by its group's `rootKey`, which is usually the ROOT's chat id — the very id
+ * the root's own node is folded under there. The two are different folds (one
+ * hides the whole tree under the card, the other keeps the root row and hides
+ * its children), so sharing ids in one record would make either toggle flip
+ * the other. Two keys also keep an older bundle, which reads the node store
+ * as plain chat ids, from misreading a prefixed entry.
+ */
+export const CHAT_TREE_CARDS_COLLAPSED_KEY = "callboard-chat-tree-cards-collapsed";
+
+/** id → epoch ms it was collapsed at (what eviction orders by). */
+function readCollapsedRecord(key: string): Record<string, number> {
   try {
-    const parsed: unknown = JSON.parse(readStorageItem(CHAT_TREE_COLLAPSED_KEY) ?? "{}");
+    const parsed: unknown = JSON.parse(readStorageItem(key) ?? "{}");
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
     // Shared with other bundles and hand edits: keep only well-formed entries.
     return Object.fromEntries(Object.entries(parsed).filter((e): e is [string, number] => typeof e[1] === "number" && Number.isFinite(e[1])));
@@ -378,29 +393,42 @@ function readChatTreeCollapsed(): Record<string, number> {
   }
 }
 
-/** The chat ids whose nodes are collapsed in the sidebar's expanded trees. */
-export function getChatTreeCollapsedIds(): Set<string> {
-  return new Set(Object.keys(readChatTreeCollapsed()));
-}
-
 /**
- * Remember (or forget) that a tree node is collapsed.
- *
  * Read-modify-write of the whole record, so another tab's folds survive.
  * Bounded on every write to the {@link CHAT_TREE_COLLAPSED_MAX} most recently
  * collapsed; a deleted chat's fold is never read again, and this is how it
  * eventually leaves.
  */
-export function saveChatTreeNodeCollapsed(chatId: string, collapsed: boolean, now = Date.now()): void {
-  const entries = readChatTreeCollapsed();
-  if (collapsed) entries[chatId] = now;
-  else if (chatId in entries) delete entries[chatId];
+function saveCollapsedRecord(key: string, id: string, collapsed: boolean, now: number): void {
+  const entries = readCollapsedRecord(key);
+  if (collapsed) entries[id] = now;
+  else if (id in entries) delete entries[id];
   else return;
   const kept = Object.entries(entries)
     .sort(([, a], [, b]) => b - a)
     .slice(0, CHAT_TREE_COLLAPSED_MAX);
-  if (kept.length === 0) removeStorageItem(CHAT_TREE_COLLAPSED_KEY);
-  else writeStorageItem(CHAT_TREE_COLLAPSED_KEY, JSON.stringify(Object.fromEntries(kept)));
+  if (kept.length === 0) removeStorageItem(key);
+  else writeStorageItem(key, JSON.stringify(Object.fromEntries(kept)));
+}
+
+/** The chat ids whose nodes are collapsed in the sidebar's expanded trees. */
+export function getChatTreeCollapsedIds(): Set<string> {
+  return new Set(Object.keys(readCollapsedRecord(CHAT_TREE_COLLAPSED_KEY)));
+}
+
+/** Remember (or forget) that a tree node is collapsed. */
+export function saveChatTreeNodeCollapsed(chatId: string, collapsed: boolean, now = Date.now()): void {
+  saveCollapsedRecord(CHAT_TREE_COLLAPSED_KEY, chatId, collapsed, now);
+}
+
+/** The group `rootKey`s whose top-level tree cards the user has folded. */
+export function getChatTreeCardCollapsedKeys(): Set<string> {
+  return new Set(Object.keys(readCollapsedRecord(CHAT_TREE_CARDS_COLLAPSED_KEY)));
+}
+
+/** Remember (or forget) that a top-level tree card is folded. */
+export function saveChatTreeCardCollapsed(rootKey: string, collapsed: boolean, now = Date.now()): void {
+  saveCollapsedRecord(CHAT_TREE_CARDS_COLLAPSED_KEY, rootKey, collapsed, now);
 }
 
 export function getDefaultPermissions(): DefaultPermissions {

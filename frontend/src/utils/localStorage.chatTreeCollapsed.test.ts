@@ -4,7 +4,15 @@
  * are stored, so absence is "expanded" — the default the user asked for.
  */
 import { beforeEach, describe, expect, it } from "vitest";
-import { CHAT_TREE_COLLAPSED_KEY, CHAT_TREE_COLLAPSED_MAX, getChatTreeCollapsedIds, saveChatTreeNodeCollapsed } from "./localStorage";
+import {
+  CHAT_TREE_CARDS_COLLAPSED_KEY,
+  CHAT_TREE_COLLAPSED_KEY,
+  CHAT_TREE_COLLAPSED_MAX,
+  getChatTreeCardCollapsedKeys,
+  getChatTreeCollapsedIds,
+  saveChatTreeCardCollapsed,
+  saveChatTreeNodeCollapsed,
+} from "./localStorage";
 
 const SETTINGS_KEY = "claude-code-settings";
 
@@ -60,5 +68,32 @@ describe("chat tree collapsed ids", () => {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify({ theme: "dark" }));
     saveChatTreeNodeCollapsed("a", true);
     expect(JSON.parse(localStorage.getItem(SETTINGS_KEY)!)).toEqual({ theme: "dark" });
+  });
+});
+
+describe("chat tree card folds", () => {
+  it("defaults to every card expanded, and clears its key once nothing is folded", () => {
+    expect(getChatTreeCardCollapsedKeys().size).toBe(0);
+    saveChatTreeCardCollapsed("root", true);
+    expect([...getChatTreeCardCollapsedKeys()]).toEqual(["root"]);
+    saveChatTreeCardCollapsed("root", false);
+    expect(localStorage.getItem(CHAT_TREE_CARDS_COLLAPSED_KEY)).toBeNull();
+  });
+
+  it("is a separate record from the node folds, so one root id can be folded in either without the other", () => {
+    saveChatTreeCardCollapsed("root", true);
+    expect(getChatTreeCollapsedIds().has("root")).toBe(false);
+    saveChatTreeNodeCollapsed("root", true);
+    saveChatTreeCardCollapsed("root", false);
+    expect(getChatTreeCollapsedIds().has("root")).toBe(true);
+    expect(getChatTreeCardCollapsedKeys().has("root")).toBe(false);
+  });
+
+  it("is bounded like the node folds", () => {
+    const now = Date.now();
+    for (let i = 0; i <= CHAT_TREE_COLLAPSED_MAX; i++) saveChatTreeCardCollapsed(`k${i}`, true, now + i);
+    const keys = getChatTreeCardCollapsedKeys();
+    expect(keys.size).toBe(CHAT_TREE_COLLAPSED_MAX);
+    expect(keys.has("k0")).toBe(false);
   });
 });
