@@ -475,3 +475,37 @@ describe("#564 review", () => {
     expect(leafConnector.style.width).toBe("10px");
   });
 });
+
+describe("#564 polish", () => {
+  it("ends the trunk at the root's last child, and branches it to a top-level chevron", async () => {
+    mockTree(
+      makeNode("root", "Root", {
+        children: [makeNode("first", "First"), makeNode("last", "Last", { children: [makeNode("under", "Under last")] })],
+      }),
+    );
+    renderList([], [makeChat("root"), child("first"), child("last")]);
+    await screen.findByText("Under last");
+    const trunkOf = (id: string) => within(node(id)!.parentElement!).queryByTestId("tree-trunk");
+    expect(trunkOf("first")!.style.bottom).toBe("-1px");
+    // Stops at the last child's connector, and does not run on through its rows.
+    expect(trunkOf("last")!.style.bottom).toBe("50%");
+    expect(trunkOf("under")).toBeNull();
+    // A top-level child with a chevron gets a short branch from the trunk up to it.
+    const branch = within(node("last")!.parentElement!).getByTestId("tree-trunk-branch");
+    expect(branch.style.left).toBe("11px");
+    expect(branch.style.width).toBe("8px"); // 31px slot − 12px chevron box − 11px trunk
+    expect(within(node("first")!.parentElement!).queryByTestId("tree-trunk-branch")).toBeNull();
+  });
+
+  it("does not widen a disabled root toggle over the row on touch, so taps reach the link", async () => {
+    mobile = true;
+    mockTree();
+    renderList([], CHATS, "lonely");
+    await expand();
+    const toggle = screen.getByRole("button", { name: 'Hide the 7 chats under "Root" (holds the open chat)' }) as HTMLButtonElement;
+    expect(toggle.disabled).toBe(true);
+    expect(toggle.style.width).toBe("23px"); // the slot and the gap, not across the status dot
+    expect(toggle.style.pointerEvents).toBe("none");
+    expect(toggle.style.zIndex).toBe("");
+  });
+});

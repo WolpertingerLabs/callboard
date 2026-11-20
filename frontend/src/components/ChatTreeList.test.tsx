@@ -22,7 +22,7 @@ import {
   saveChatSectionExpanded,
   saveChatTreeCardCollapsed,
 } from "../utils/localStorage";
-import ChatTreeList, { buildRows, TREE_FETCH_CONCURRENCY } from "./ChatTreeList";
+import ChatTreeList, { buildRows, TREE_FETCH_CONCURRENCY, TREE_FETCH_TIMEOUT_MS } from "./ChatTreeList";
 
 vi.mock("../api", () => ({
   getChatTree: vi.fn(),
@@ -349,6 +349,78 @@ describe("tree fetching (#564 review)", () => {
     rerender(treeList({ chats: chats("2026-07-28T12:00:00Z"), refreshToken: 2 }));
     await flush();
     expect(mockGetChatTree.mock.calls.map(([id]) => id)).toEqual(["a", "b", "a"]);
+  });
+});
+
+describe("tree fetching (#564 polish)", () => {
+  const groups = (ids: string[]) => ids.flatMap((id) => [makeChat(id), makeChat(`${id}-c`, { parentChatId: id, rootChatId: id })]);
+
+  it("times out a hung request, freeing its slot and showing its card folded until clicked", async () => {
+    vi.useFakeTimers();
+    try {
+      const signals: AbortSignal[] = [];
+      mockGetChatTree.mockImplementation((_id, _space, signal) => {
+        signals.push(signal!);
+        return new Promise(() => {}); // never settles
+      });
+      const ids = ["g1", "g2", "g3", "g4", "g5"];
+      renderTree({ chats: groups(ids), refreshToken: 0 });
+      await flush();
+      expect(mockGetChatTree.mock.calls.map(([id]) => id)).toEqual(ids.slice(0, TREE_FETCH_CONCURRENCY));
+      await act(async () => {
+        vi.advanceTimersByTime(TREE_FETCH_TIMEOUT_MS - 1);
+      });
+      await flush();
+      expect(mockGetChatTree).toHaveBeenCalledTimes(TREE_FETCH_CONCURRENCY);
+      await act(async () => {
+        vi.advanceTimersByTime(1);
+      });
+      await flush();
+      // The four slots came back: the fifth started, and the hung requests were aborted.
+      expect(mockGetChatTree.mock.calls.map(([id]) => id)).toEqual(ids);
+      expect(signals.slice(0, TREE_FETCH_CONCURRENCY).every((sg) => sg.aborted)).toBe(true);
+      // A timeout is a failure: folded, nothing stored, and a click retries.
+      expect(screen.getAllByTitle("Expand chat tree")).toHaveLength(TREE_FETCH_CONCURRENCY);
+      expect(getChatTreeCardCollapsedKeys().size).toBe(0);
+      mockGetChatTree.mockImplementationOnce(async (id) => makeTree(makeNode(id, `Tree ${id}`, { children: [makeNode(`${id}-c`, `Child of ${id}`)] })));
+      fireEvent.click(screen.getByRole("button", { name: 'Expand "chat g1"' }));
+      await flush();
+      expect(screen.getByText("Child of g1")).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("aborts a request when its card is folded away", async () => {
+    let signal: AbortSignal | undefined;
+    mockGetChatTree.mockImplementation((_id, _space, sg) => {
+      signal = sg;
+      return new Promise(() => {});
+    });
+    renderTree({ refreshToken: 0 });
+    await flush();
+    expect(signal?.aborted).toBe(false);
+    fireEvent.click(screen.getByTitle("Collapse chat tree"));
+    await flush();
+    expect(signal?.aborted).toBe(true);
+  });
+
+  it("starts queued fetches in the list's current order after a reorder", async () => {
+    const pending = new Map<string, ReturnType<typeof deferred<ChatTreeResponse>>>();
+    mockGetChatTree.mockImplementation((id) => {
+      const d = deferred<ChatTreeResponse>();
+      pending.set(id, d);
+      return d.promise;
+    });
+    const ids = ["g1", "g2", "g3", "g4", "g5", "g6"];
+    const { rerender } = renderTree({ chats: groups(ids), refreshToken: 0 });
+    await flush();
+    // g6 moves to the top while g5 and g6 are still waiting for a slot.
+    rerender(treeList({ chats: groups(["g6", ...ids.slice(0, 5)]), refreshToken: 0 }));
+    await flush();
+    pending.get("g1")!.resolve(makeTree(makeNode("g1", "Tree g1")));
+    await flush();
+    expect(mockGetChatTree.mock.calls.map(([id]) => id)).toEqual(["g1", "g2", "g3", "g4", "g6"]);
   });
 });
 

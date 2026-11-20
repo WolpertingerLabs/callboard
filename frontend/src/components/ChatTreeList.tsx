@@ -652,6 +652,12 @@ function treeShowsLiveWork(node: ChatTreeNode): boolean {
 
 /** Most tree requests in flight at once; the rest queue, top of the list first. */
 export const TREE_FETCH_CONCURRENCY = 4;
+/**
+ * How long a tree request may hold its slot. A hung request would otherwise
+ * keep one of the {@link TREE_FETCH_CONCURRENCY} slots forever; timing out
+ * counts as a failure (the card shows folded, a click retries).
+ */
+export const TREE_FETCH_TIMEOUT_MS = 20_000;
 
 export const STATUS_DOT: Record<ChatTreeNode["status"], string> = {
   ongoing: "var(--status-active)",
@@ -723,6 +729,7 @@ function TreeNodeRow({
   splitOff,
   childArchive,
   underArchived = false,
+  trunk,
   isRunning,
   foldAsides = true,
   treeCollapse,
@@ -744,6 +751,12 @@ function TreeNodeRow({
   treeCollapse?: ChatTreeCollapse;
   /** `useIsMobile()`, read once by the list: the root row's toggle is wider on touch. */
   isMobile?: boolean;
+  /**
+   * Where this row meets the trunk: "through" for a row the trunk passes (a
+   * top-level child before the last, and every row under one), "end" for the
+   * last top-level child, where it stops; absent below that child and at the root.
+   */
+  trunk?: "through" | "end";
 }) {
   const [menu, setMenu] = useState<{ position: PopupMenuPosition; openedByTouch: boolean } | null>(null);
   const rowRef = useRef<HTMLDivElement>(null);
@@ -885,7 +898,9 @@ function TreeNodeRow({
   // How far the toggle reaches past its slot: the gap, or on touch at the
   // root, across the status dot too. Given back in negative margin, so
   // nothing moves; drawn above the link so that strip taps the toggle.
-  const toggleReach = depth === 0 && isMobile ? TREE_ROOT_TOUCH_TARGET - slotWidth : TREE_ROW_GAP;
+  // Not while disabled (it holds the open chat): a dead button over the
+  // status-dot strip would swallow taps meant for the row.
+  const toggleReach = depth === 0 && isMobile && !holdsOpen ? TREE_ROOT_TOUCH_TARGET - slotWidth : TREE_ROW_GAP;
   // Faded like an archived row in the list, unless it is the open chat — the
   // same exemption ChatListItem makes for the open row. On the link and the
   // slot beside it, not their wrapper, which also paints the active highlight.
@@ -906,15 +921,41 @@ function TreeNodeRow({
           position: "relative",
         }}
       >
-        {/* The tree's trunk, from under the root's chevron down every row
-            below it, meeting each top-level child's connector — so the root
+        {/* The tree's trunk, from under the root's chevron down to the root's
+            last child, meeting each top-level child's connector — so the root
             row reads as the first line of one list rather than as a second
-            header under the card. */}
-        {depth > 0 && (
+            header under the card. It passes the rows under earlier children
+            and ends at the last one's connector. */}
+        {trunk && (
           <span
             aria-hidden
             data-testid="tree-trunk"
-            style={{ position: "absolute", left: TREE_TRUNK_X, top: 0, bottom: -1, width: 1, background: "var(--chatlist-tree-line)", pointerEvents: "none" }}
+            style={{
+              position: "absolute",
+              left: TREE_TRUNK_X,
+              top: 0,
+              bottom: trunk === "end" ? "50%" : -1,
+              width: 1,
+              background: "var(--chatlist-tree-line)",
+              pointerEvents: "none",
+            }}
+          />
+        )}
+        {/* A top-level child with its own chevron gets the same short
+            connector from the trunk as a leaf, up to the chevron. */}
+        {depth === 1 && collapsible && (
+          <span
+            aria-hidden
+            data-testid="tree-trunk-branch"
+            style={{
+              position: "absolute",
+              left: TREE_TRUNK_X,
+              top: "50%",
+              width: slotWidth - TREE_CHEVRON_BOX - TREE_TRUNK_X,
+              height: 1,
+              background: "var(--chatlist-tree-line)",
+              pointerEvents: "none",
+            }}
           />
         )}
         {collapsible ? (
@@ -943,7 +984,9 @@ function TreeNodeRow({
               flexShrink: 0,
               padding: `0 ${toggleReach}px 0 0`,
               position: "relative",
-              zIndex: 1,
+              zIndex: holdsOpen ? undefined : 1,
+              // Still a disabled button to assistive tech; taps pass through.
+              pointerEvents: holdsOpen ? "none" : undefined,
               background: "none",
               border: "none",
               color: "var(--chatlist-icon)",
@@ -1129,11 +1172,12 @@ function TreeNodeRow({
         </PopupMenu>
       )}
       {!collapsed &&
-        children.map((child) => (
+        children.map((child, i) => (
           <TreeNodeRow
             key={child.chatId}
             node={child}
             depth={depth + 1}
+            trunk={depth === 0 ? (i === children.length - 1 ? "end" : "through") : trunk === "through" ? "through" : undefined}
             activeChatId={activeChatId}
             onNavigate={onNavigate}
             splitOff={splitOff}
@@ -1210,8 +1254,12 @@ export default function ChatTreeList({
    * - an idle tree when its signature moved: one of its LOADED members joined
    *   or left, or changed `updated_at`/metadata (title, status, read mark,
    *   archive flag), or a live session started or stopped on one. The list
-   *   carries every member of an on-screen group (`includeLineage`), so that
-   *   is every change the tree can show.
+   *   carries the members of an on-screen group (`includeLineage`) — except
+   *   those its filters leave out, triggered children above all, since the
+   *   append re-applies `excludeTriggered`. Those never reach the signature;
+   *   a change on one is caught by the rule below while it is working, and
+   *   otherwise when it moves its parent (a spawn or a result written back
+   *   updates the parent, which is loaded).
    * - a tree whose snapshot shows live work the list cannot see (a node the
    *   server reports ongoing or waiting — a native sub-agent at work among
    *   them, which is never in the list) every time, as every expanded tree
@@ -1249,6 +1297,8 @@ export default function ChatTreeList({
   const fetchSeq = useRef(new Map<string, number>());
   /** Fetches waiting for a slot, by group; started in list order. */
   const queue = useRef(new Map<string, { chatId: string; order: number }>());
+  /** The request in flight per group, so a fold, a newer request or an unmount can abort it. */
+  const controllers = useRef(new Map<string, AbortController>());
   const active = useRef(0);
   /** The refresh the fetch effect last ran for — tells a refresh pass from any other. */
   const lastPassToken = useRef(refreshToken);
@@ -1259,8 +1309,22 @@ export default function ChatTreeList({
   });
   useEffect(() => {
     mounted.current = true;
+    const fetched = fetchedSig.current;
+    const held = inHand.current;
+    const waiting = queue.current;
+    const inFlight = controllers.current;
     return () => {
       mounted.current = false;
+      // Abort what is in flight and forget what was never answered, so a
+      // remount (StrictMode's included) fetches it again instead of waiting
+      // on a request that is gone.
+      for (const [rootKey, controller] of inFlight) {
+        controller.abort();
+        if (!held.has(rootKey)) fetched.delete(rootKey);
+      }
+      inFlight.clear();
+      for (const rootKey of waiting.keys()) if (!held.has(rootKey)) fetched.delete(rootKey);
+      waiting.clear();
     };
   }, []);
 
@@ -1286,8 +1350,21 @@ export default function ChatTreeList({
         fetchSeq.current.set(rootKey, seq);
         active.current++;
         const current = () => mounted.current && fetchSeq.current.get(rootKey) === seq;
+        // A newer request for the group supersedes this one's predecessor.
+        controllers.current.get(rootKey)?.abort();
+        const controller = new AbortController();
+        controllers.current.set(rootKey, controller);
+        // Our own timer rather than `AbortSignal.timeout`: it releases the
+        // slot even if the request ignores the signal, and fake timers drive it.
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const timedOut = new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            reject(new Error("Timed out loading the chat tree"));
+            controller.abort();
+          }, TREE_FETCH_TIMEOUT_MS);
+        });
         // Any member id resolves to the same tree — the server walks to the root.
-        getChatTree(chatId)
+        Promise.race([getChatTree(chatId, undefined, controller.signal), timedOut])
           .then((tree) => {
             if (!current() || !fetchedSig.current.has(rootKey)) return;
             inHand.current.add(rootKey);
@@ -1305,6 +1382,8 @@ export default function ChatTreeList({
             settle(setFailed, rootKey, true);
           })
           .finally(() => {
+            clearTimeout(timer);
+            if (controllers.current.get(rootKey) === controller) controllers.current.delete(rootKey);
             active.current--;
             if (mounted.current && fetchSeq.current.get(rootKey) === seq) settle(setLoading, rootKey, false);
             if (mounted.current) run();
@@ -1346,6 +1425,8 @@ export default function ChatTreeList({
         fetchedSig.current.delete(rootKey);
         inHand.current.delete(rootKey);
         queue.current.delete(rootKey);
+        controllers.current.get(rootKey)?.abort();
+        controllers.current.delete(rootKey);
       }
       setTrees((prev) => {
         if (!gone.some((rootKey) => rootKey in prev)) return prev;
@@ -1358,6 +1439,10 @@ export default function ChatTreeList({
       setLoading(drop);
     }
     for (const { rootKey, chatId, sig, live, order } of want.values()) {
+      // A fetch still waiting for a slot takes the group's current place: the
+      // list may have reordered since it queued.
+      const queued = queue.current.get(rootKey);
+      if (queued) queued.order = order;
       const held = fetchedSig.current.get(rootKey);
       if (held !== undefined && !(isRefresh && (held !== sig || live))) continue;
       fetchTree(rootKey, chatId, sig, order);

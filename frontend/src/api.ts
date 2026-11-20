@@ -382,10 +382,10 @@ export async function listChats(
 }
 
 /** `space` (an id, not "all") makes a tree from another space 404 rather than leak into this one. */
-export async function getChatTree(id: string, space?: string): Promise<ChatTreeResponse> {
+export async function getChatTree(id: string, space?: string, signal?: AbortSignal): Promise<ChatTreeResponse> {
   const params = new URLSearchParams();
   if (space && space !== "all") params.set("space", space);
-  return request(`/chats/${seg(id)}/tree${query(params)}`, { error: "Failed to get chat tree" });
+  return request(`/chats/${seg(id)}/tree${query(params)}`, { error: "Failed to get chat tree", signal });
 }
 
 /**
@@ -403,7 +403,11 @@ export async function detachChat(id: string): Promise<Chat> {
  * `bulkArchiveChats`). The server refuses a root and a native Codex subagent.
  */
 export async function setChildArchived(id: string, archived: boolean): Promise<Chat> {
-  return request(`/chats/${seg(id)}/child-archive`, { method: "PATCH", json: { archived }, error: archived ? "Failed to archive chat" : "Failed to unarchive chat" });
+  return request(`/chats/${seg(id)}/child-archive`, {
+    method: "PATCH",
+    json: { archived },
+    error: archived ? "Failed to archive chat" : "Failed to unarchive chat",
+  });
 }
 
 export async function searchChatContents(query: string): Promise<{ chatIds: string[] }> {
