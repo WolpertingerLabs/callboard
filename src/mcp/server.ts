@@ -971,7 +971,7 @@ const VAULT_CONTEXT_NOTE =
 // eslint-disable-next-line @typescript-eslint/no-deprecated -- registerTool is not available in this SDK version
 server.tool(
   'vault_list',
-  `List your vault items: name, kind, exposure, field names, notes, tags, metadata and connections binding. Never returns values. ${VAULT_PLAINTEXT_NOTE}`,
+  `List your vault items: name, kind, exposure, field names, notes, tags, metadata and connections binding. Never returns values. "shared" lists other callers' items the operator has granted you: owner, name, kind, field names, connections binding, and mode ("inject": use it as \${vault:owner/name} in secure_request; "reveal": vault_get with owner can read it too). ${VAULT_PLAINTEXT_NOTE}`,
   {
     tag: z.string().optional().describe('Only items carrying this tag'),
   },
@@ -1031,7 +1031,7 @@ server.tool(
 // eslint-disable-next-line @typescript-eslint/no-deprecated -- registerTool is not available in this SDK version
 server.tool(
   'vault_get',
-  'Read the values of one of your vault items whose exposure is "reveal". Every read is recorded in your audit log before the value is returned. Inject-only items are refused: use them as ${vault:name} in secure_request.',
+  'Read the values of one of your vault items whose exposure is "reveal", or (with owner) of another caller\'s item the operator granted you at mode "reveal". Every read is recorded in the owner\'s audit log before the value is returned. Inject-only items are refused: use them as ${vault:name} (or ${vault:owner/name}) in secure_request.',
   {
     name: z.string().describe('Item name'),
     field: z.string().optional().describe('Return just this field'),
@@ -1041,6 +1041,40 @@ server.tool(
       .describe("Another caller's alias, to read an item shared with you (needs a grant)"),
   },
   async (input) => forwardVaultTool('vault_get', input),
+);
+
+// eslint-disable-next-line @typescript-eslint/no-deprecated -- registerTool is not available in this SDK version
+server.tool(
+  'vault_request_access',
+  'Ask the operator for access to another caller\'s vault item. Only the human operator can grant it, on the drawlatch dashboard; this tool grants nothing. The answer is { requestId, status: "pending" } whether or not that caller or item exists. Asking again while a request is pending returns the same request; if a grant already covers it, status is "granted". At most 20 pending requests. Once granted, use the item as ${vault:owner/name} in secure_request (and, at mode "reveal", read it with vault_get and owner). The operator sees your reason as text written by you.',
+  {
+    owner: z.string().describe("The item owner's caller alias"),
+    name: z.string().describe("Item name in that caller's vault"),
+    reason: z.string().describe('Why you need it (at most 1 KiB; shown to the operator)'),
+    mode: z
+      .string()
+      .optional()
+      .describe('"inject" (default: use it in requests only) or "reveal" (also read it)'),
+  },
+  async (input) => forwardVaultTool('vault_request_access', input),
+);
+
+// eslint-disable-next-line @typescript-eslint/no-deprecated -- registerTool is not available in this SDK version
+server.tool(
+  'vault_list_requests',
+  'List your own vault access requests: id, owner, item name, mode, status (pending, granted, denied, cancelled, withdrawn), and the operator\'s note when one was given. status is the operator\'s decision on the request and stays "granted" even after the grant is revoked: what you can use now is the shared section of vault_list.',
+  {},
+  async () => forwardVaultTool('vault_list_requests', {}),
+);
+
+// eslint-disable-next-line @typescript-eslint/no-deprecated -- registerTool is not available in this SDK version
+server.tool(
+  'vault_cancel_request',
+  'Cancel one of your own pending vault access requests.',
+  {
+    requestId: z.string().describe('The id vault_request_access returned'),
+  },
+  async ({ requestId }) => forwardVaultTool('vault_cancel_request', { requestId }),
 );
 
 // ── Start ──────────────────────────────────────────────────────────────────

@@ -1,15 +1,16 @@
 /**
- * Vault page (`/vault?caller=<alias>&tab=items`).
+ * Vault page (`/vault?caller=<alias>&tab=items|requests|grants`).
  *
- * Tabs are a list so later tabs (access requests, grants) slot in beside
- * Items without restructuring the page.
+ * Items is per caller (the selector); Requests and Grants span every caller.
  */
 import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import type { AdminCaller, AdminVaultStatus } from "drawlatch-admin-types";
 import { api, isDaemonDown } from "../api";
 import { useDaemon } from "../contexts/DaemonContext";
+import GrantsTab from "./vault/GrantsTab";
 import ItemsTab from "./vault/ItemsTab";
+import RequestsTab from "./vault/RequestsTab";
 import "./CallerList.css";
 import "./Vault.css";
 
@@ -18,7 +19,11 @@ interface TabDef {
   label: string;
 }
 
-const TABS: TabDef[] = [{ id: "items", label: "Items" }];
+const TABS: TabDef[] = [
+  { id: "items", label: "Items" },
+  { id: "requests", label: "Requests" },
+  { id: "grants", label: "Grants" },
+];
 
 export default function VaultPage() {
   const { daemon } = useDaemon();
@@ -71,7 +76,7 @@ export default function VaultPage() {
             {status && status.revision !== null && <> · revision {status.revision}</>}
           </div>
         </div>
-        {callers && callers.length > 0 && (
+        {tab === "items" && callers && callers.length > 0 && (
           <label className="dl-vault-caller-select">
             <span className="dl-vault-caller-label">Caller</span>
             <select
@@ -123,6 +128,11 @@ export default function VaultPage() {
             onClick={() => select({ tab: t.id })}
           >
             {t.label}
+            {t.id === "requests" && status !== null && status.pendingRequests > 0 && (
+              <span className="dl-vault-count" aria-label={`${status.pendingRequests} pending`}>
+                {status.pendingRequests}
+              </span>
+            )}
           </button>
         ))}
       </div>
@@ -130,7 +140,7 @@ export default function VaultPage() {
       {callers === null && daemon === "up" && !error && (
         <div className="banner banner-loading">Loading…</div>
       )}
-      {callers !== null && caller === undefined && (
+      {tab === "items" && callers !== null && caller === undefined && (
         <div className="placeholder">
           <span className="placeholder-title">
             {requested !== null ? `No caller named "${requested}"` : "No callers"}
@@ -141,6 +151,10 @@ export default function VaultPage() {
       {tab === "items" && caller && (
         <ItemsTab key={caller.alias} caller={caller} onChanged={() => void loadCallers()} />
       )}
+      {tab === "requests" && daemon === "up" && (
+        <RequestsTab onChanged={() => void loadCallers()} />
+      )}
+      {tab === "grants" && daemon === "up" && <GrantsTab onChanged={() => void loadCallers()} />}
     </>
   );
 }

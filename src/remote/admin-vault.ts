@@ -8,6 +8,14 @@
  *   PATCH  /callers/:alias/vault/items/:name        (If-Match: <revision>)
  *   DELETE /callers/:alias/vault/items/:name        (If-Match: <revision>)
  *   POST   /callers/:alias/vault/items/:name/reveal { field? }
+ *   GET    /vault/requests?status=pending
+ *   POST   /vault/requests/:id/grant                { mode? }  (default inject)
+ *   POST   /vault/requests/:id/deny                 { note? }
+ *   GET    /vault/grants?status=active
+ *   DELETE /vault/grants/:id
+ *
+ * Grant, deny and revoke exist only here, behind requireAuth: no
+ * toolHandlers entry can reach them (invariant 6).
  *
  * Every handler is a thin wrapper over src/remote/vault/service.ts with
  * `origin: "admin"`, so the operator may loosen an item (exposure, binding)
@@ -28,17 +36,29 @@ import rateLimit from 'express-rate-limit';
 import type { RemoteServerConfig } from '../shared/config.js';
 import { createLogger } from '../shared/logger.js';
 import type {
+  AdminVaultDecision,
+  AdminVaultGrant,
   AdminVaultItemChange,
   AdminVaultItems,
+  AdminVaultRequest,
   AdminVaultReveal,
+  AdminVaultRevoke,
   AdminVaultStatus,
 } from './admin-types.js';
 import {
+  VaultConflict,
+  VaultNotFound,
   VaultRevisionMismatch,
   adminRevealItem,
   createItem,
   deleteItem,
+  denyRequest,
+  grantRequest,
+  grantsByItem,
+  listGrants,
   listItems,
+  listRequests,
+  revokeGrant,
   updateItem,
   type ChangeOptions,
 } from './vault/service.js';
@@ -90,6 +110,10 @@ function errorResponse(err: unknown): { status: number; body: Record<string, unk
   if (err instanceof VaultRevisionMismatch) {
     return { status: 409, body: { error: err.message, revision: err.current } };
   }
+  if (err instanceof VaultConflict) {
+    return { status: 409, body: { error: err.message, status: err.status } };
+  }
+  if (err instanceof VaultNotFound) return { status: 404, body: { error: err.message } };
   if (err instanceof VaultError) {
     const m = err.message;
     if (m === MISSING_KEY_MESSAGE) return { status: 503, body: { error: m } };
@@ -167,10 +191,10 @@ export function mountAdminVault(router: express.Router, deps: AdminVaultDeps): v
     const alias = req.params.alias as string;
     try {
       const revision = readVault().revision;
+      const grants = grantsByItem(alias);
       const body: AdminVaultItems = {
         revision,
-        // Grants arrive with access requests; until then nothing is shared.
-        items: listItems(alias, {}).items.map((i) => ({ ...i, grants: [] })),
+        items: listItems(alias, {}).items.map((i) => ({ ...i, grants: grants.get(i.id) ?? [] })),
       };
       res.json(body);
     } catch (err) {
@@ -248,6 +272,87 @@ export function mountAdminVault(router: express.Router, deps: AdminVaultDeps): v
         item: name,
         ...(field !== undefined && { field }),
       });
+      res.json(body);
+    } catch (err) {
+      send(res, err);
+    }
+  });
+
+  // ── Access requests and grants ─────────────────────────────────────────
+  // The only door that grants, denies or revokes (invariant 6).
+
+  /** `?status=` as a string, or undefined (an array or object is refused by the service). */
+  const statusQuery = (req: express.Request): unknown => req.query.status;
+
+  // ── GET /vault/requests?status= ────────────────────────────────────────
+  router.get('/vault/requests', noStore, (req, res) => {
+    try {
+      const body: AdminVaultRequest[] = listRequests({ status: statusQuery(req) });
+      res.json(body);
+    } catch (err) {
+      send(res, err);
+    }
+  });
+
+  // ── POST /vault/requests/:id/grant { mode? } ───────────────────────────
+  router.post('/vault/requests/:id/grant', noStore, async (req, res) => {
+    const id = req.params.id as string;
+    const { mode } = pick(req.body, ['mode']);
+    try {
+      const body: AdminVaultDecision = await grantRequest(id, { mode });
+      deps.audit?.('vault_grant', {
+        requestId: id,
+        grantId: body.grant?.id,
+        owner: body.request.owner,
+        grantee: body.request.requester,
+        mode: body.grant?.mode,
+      });
+      res.json(body);
+    } catch (err) {
+      send(res, err);
+    }
+  });
+
+  // ── POST /vault/requests/:id/deny { note? } ────────────────────────────
+  router.post('/vault/requests/:id/deny', noStore, async (req, res) => {
+    const id = req.params.id as string;
+    const { note } = pick(req.body, ['note']);
+    try {
+      const body: AdminVaultDecision = await denyRequest(id, { note });
+      deps.audit?.('vault_deny', {
+        requestId: id,
+        owner: body.request.owner,
+        requester: body.request.requester,
+      });
+      res.json(body);
+    } catch (err) {
+      send(res, err);
+    }
+  });
+
+  // ── GET /vault/grants?status= ──────────────────────────────────────────
+  router.get('/vault/grants', noStore, (req, res) => {
+    try {
+      const body: AdminVaultGrant[] = listGrants({ status: statusQuery(req) });
+      res.json(body);
+    } catch (err) {
+      send(res, err);
+    }
+  });
+
+  // ── DELETE /vault/grants/:id ───────────────────────────────────────────
+  // Revoking a revoked grant is a no-op 200 (`changed: false`).
+  router.delete('/vault/grants/:id', noStore, async (req, res) => {
+    const id = req.params.id as string;
+    try {
+      const body: AdminVaultRevoke = await revokeGrant(id);
+      if (body.changed) {
+        deps.audit?.('vault_revoke', {
+          grantId: id,
+          owner: body.grant.owner,
+          grantee: body.grant.grantee,
+        });
+      }
       res.json(body);
     } catch (err) {
       send(res, err);

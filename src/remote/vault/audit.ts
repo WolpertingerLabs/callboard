@@ -12,12 +12,20 @@ export type VaultEventName =
   | 'vault.item.created'
   | 'vault.item.updated'
   | 'vault.item.deleted'
-  | 'vault.reveal';
+  | 'vault.reveal'
+  | 'vault.inject'
+  | 'vault.request.created'
+  | 'vault.request.cancelled'
+  | 'vault.request.denied'
+  | 'vault.request.withdrawn'
+  | 'vault.grant.created'
+  | 'vault.grant.revoked';
 
 /** Fields every vault event may carry, unprefixed. */
 export interface VaultEventFields {
   item: string;
-  item_id: string;
+  /** Null for a request naming an item the owner doesn't have. */
+  item_id: string | null;
   actor: string;
   via: string;
   kind?: string;
@@ -26,6 +34,16 @@ export interface VaultEventFields {
   changed?: string[];
   renamed_from?: string;
   grant_id?: string;
+  grantee?: string;
+  connection?: string;
+  request_id?: string;
+  requester?: string;
+  mode?: string;
+  /** Agent-written request reason, cut at 1 KiB. */
+  reason?: string;
+  /** The operator's deny note. */
+  note?: string;
+  revoked_reason?: string;
 }
 
 /** Render the line fields for `event` (exported for the canary test). */

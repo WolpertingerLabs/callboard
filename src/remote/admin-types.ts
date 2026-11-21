@@ -237,10 +237,13 @@ export interface AdminVaultStatus {
   error?: string;
 }
 
-/** Who an item is shared with. Always empty until access grants ship. */
+/** Who an item is shared with (an active grant). */
 export interface AdminVaultItemGrant {
   grantee: string;
+  /** The mode granted. */
   mode: AdminVaultExposure;
+  /** What it allows now: min(mode, the item's exposure). */
+  effectiveMode: AdminVaultExposure;
 }
 
 /** An item's metadata: everything but its values, plus the field names. */
@@ -277,6 +280,66 @@ export interface AdminVaultItemChange {
 export type AdminVaultReveal =
   | { name: string; owner: string; kind: AdminVaultKind; values: Record<string, string> }
   | { name: string; owner: string; kind: AdminVaultKind; field: string; value: string };
+
+export type AdminVaultRequestStatus = 'pending' | 'granted' | 'denied' | 'cancelled' | 'withdrawn';
+
+/** An item as it is now, for a request or grant row. Null: no such item (any more). */
+export interface AdminVaultItemRef {
+  name: string;
+  kind: AdminVaultKind;
+  exposure: AdminVaultExposure;
+  /** Connections the item may be used on; absent = any the grantee has enabled. */
+  connections?: string[];
+}
+
+/** GET /vault/requests. `reason` is agent-written text. */
+export interface AdminVaultRequest {
+  id: string;
+  requester: string;
+  owner: string;
+  /** The name as asked. */
+  itemName: string;
+  /** Null: the owner had no such item when it was asked; it can only be denied. */
+  itemId: string | null;
+  mode: AdminVaultExposure;
+  /** Written by the requesting agent, not by the owner. Render as plain text. */
+  reason: string;
+  status: AdminVaultRequestStatus;
+  createdAt: string;
+  decidedAt?: string;
+  decidedNote?: string;
+  grantId?: string;
+  item: AdminVaultItemRef | null;
+}
+
+/** GET /vault/grants. */
+export interface AdminVaultGrant {
+  id: string;
+  owner: string;
+  itemId: string;
+  grantee: string;
+  mode: AdminVaultExposure;
+  status: 'active' | 'revoked';
+  requestId?: string;
+  grantedAt: string;
+  revokedAt?: string;
+  revokedReason?: 'admin' | 'item_deleted' | 'caller_deleted';
+  item: AdminVaultItemRef | null;
+  /** min(mode, item exposure) for an active grant; null once revoked or the item is gone. */
+  effectiveMode: AdminVaultExposure | null;
+}
+
+/** POST /vault/requests/:id/grant and …/deny. `grant` only on a grant. */
+export interface AdminVaultDecision {
+  request: Omit<AdminVaultRequest, 'item'>;
+  grant?: Omit<AdminVaultGrant, 'item' | 'effectiveMode'>;
+}
+
+/** DELETE /vault/grants/:id. `changed: false` when it was already revoked. */
+export interface AdminVaultRevoke {
+  grant: Omit<AdminVaultGrant, 'item' | 'effectiveMode'>;
+  changed: boolean;
+}
 
 // ── Daemon reachability envelope ─────────────────────────────────────────
 /**

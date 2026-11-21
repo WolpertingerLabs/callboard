@@ -39,9 +39,17 @@ import { generateKeyBundle } from '../shared/crypto/index.js';
 import { generateSalt, hashPassword } from '../auth/password.js';
 import { SESSION_COOKIE_NAME } from '../auth/auth.js';
 import { createSession } from '../auth/sessions.js';
-import { createItem } from './vault/service.js';
+import { createItem, requestAccess, updateItem } from './vault/service.js';
 import { VAULT_KEY_LABEL, readVault, resetVaultCache } from './vault/store.js';
-import type { AdminCaller, AdminVaultItems, AdminVaultStatus } from './admin-types.js';
+import type {
+  AdminCaller,
+  AdminVaultDecision,
+  AdminVaultGrant,
+  AdminVaultItems,
+  AdminVaultRequest,
+  AdminVaultRevoke,
+  AdminVaultStatus,
+} from './admin-types.js';
 
 const CANARY = `admin-canary-${crypto.randomUUID()}`;
 const CANARY2 = `admin-canary2-${crypto.randomUUID()}`;
@@ -173,6 +181,7 @@ describe('auth', () => {
     process.env.AUTH_PASSWORD_SALT = salt;
     process.env.AUTH_PASSWORD_HASH = await hashPassword('fake-admin-pass', salt);
     await createItem('alice', { ...injectItem }, 'admin');
+    const { requestId } = await requestAccess('bob', { owner: 'alice', name: 'gh', reason: 'r' });
     const app = createApp({
       config: config(),
       ownKeys: generateKeyBundle(),
@@ -193,6 +202,11 @@ describe('auth', () => {
       ['PATCH', '/callers/alice/vault/items/gh', { tags: ['t'] }],
       ['POST', '/callers/alice/vault/items/gh/reveal', {}],
       ['DELETE', '/callers/alice/vault/items/gh'],
+      ['GET', '/vault/requests'],
+      ['POST', `/vault/requests/${requestId}/grant`, {}],
+      ['POST', `/vault/requests/${requestId}/deny`, {}],
+      ['GET', '/vault/grants'],
+      ['DELETE', '/vault/grants/some-id'],
     ];
     for (const [method, p, body] of endpoints) {
       const res = await req(method, p, body);
@@ -201,6 +215,7 @@ describe('auth', () => {
     }
     // Nothing changed.
     expect(Object.keys(readVault().callers.alice.items)).toEqual(['gh']);
+    expect(readVault().requests[0].status).toBe('pending');
 
     const token = crypto.randomBytes(16).toString('hex');
     createSession(token, Date.now() + 60_000);
@@ -548,6 +563,12 @@ describe('vault admin router', () => {
       ['POST', '/callers/alice/vault/items/missing/reveal', {}],
       ['DELETE', '/callers/alice/vault/items/n2'],
       ['DELETE', '/callers/alice/vault/items/n2'],
+      ['GET', '/vault/requests'],
+      ['GET', '/vault/requests?status=nope'],
+      ['POST', '/vault/requests/nope/grant', {}],
+      ['POST', '/vault/requests/nope/deny', {}],
+      ['GET', '/vault/grants?status=active'],
+      ['DELETE', '/vault/grants/nope'],
     ];
     for (const [method, p, body, headers] of calls) {
       const res = await req(method, p, body, headers);
@@ -576,5 +597,207 @@ describe('vault admin router', () => {
     // Nothing was written, so no vault (or key) was created.
     expect(fs.existsSync(path.join(configDir, 'keys'))).toBe(false);
     expect({}.constructor).toBe(Object);
+  });
+});
+
+// ── Access requests and grants ─────────────────────────────────────────────
+
+describe('access requests and grants', () => {
+  beforeEach(async () => {
+    await startRouter();
+  });
+
+  const ask = (name: string, extra: Record<string, unknown> = {}) =>
+    requestAccess('bob', { owner: 'alice', name, reason: 'Need to push release tags', ...extra });
+
+  it('GET /vault/requests lists every request with the agent reason and the item as it is now', async () => {
+    await createItem('alice', { ...injectItem }, 'admin');
+    const a = await ask('gh');
+    const b = await ask('missing');
+    const all = (await req('GET', '/vault/requests')).body as AdminVaultRequest[];
+    expect(all.map((r) => r.id).sort()).toEqual([a.requestId, b.requestId].sort());
+    const byId = Object.fromEntries(all.map((r) => [r.id, r]));
+    expect(byId[a.requestId]).toMatchObject({
+      requester: 'bob',
+      owner: 'alice',
+      itemName: 'gh',
+      itemId: expect.any(String) as string,
+      reason: 'Need to push release tags',
+      status: 'pending',
+      // The binding is shown so the operator sees where the grantee could use it.
+      item: { name: 'gh', kind: 'token', exposure: 'inject', connections: ['github'] },
+    });
+    expect(byId[b.requestId]).toMatchObject({ itemId: null, item: null });
+    expect(((await req('GET', '/vault/status')).body as AdminVaultStatus).pendingRequests).toBe(2);
+    expect(JSON.stringify(all)).not.toContain(CANARY);
+    expect((await req('GET', '/vault/requests?status=denied')).body).toEqual([]);
+    expect((await req('GET', '/vault/requests?status=bogus')).status).toBe(400);
+  });
+
+  it('grant defaults to inject, shows in items and grants, and is audited (daemon log and file)', async () => {
+    await createItem('alice', { ...injectItem }, 'admin');
+    const { requestId } = await ask('gh', { mode: 'reveal' });
+    const res = await req('POST', `/vault/requests/${requestId}/grant`, {});
+    expect(res.status).toBe(200);
+    const body = res.body as AdminVaultDecision;
+    expect(body.request).toMatchObject({ id: requestId, status: 'granted' });
+    expect(body.grant).toMatchObject({ grantee: 'bob', owner: 'alice', mode: 'inject' });
+    expect(audited.at(-1)).toEqual({
+      action: 'vault_grant',
+      details: {
+        requestId,
+        grantId: body.grant?.id,
+        owner: 'alice',
+        grantee: 'bob',
+        mode: 'inject',
+      },
+    });
+    expect(auditLines('alice').at(-1)).toMatchObject({
+      'drawlatch.event': 'vault.grant.created',
+      'vault.actor': 'admin',
+    });
+    const items = (await req('GET', '/callers/alice/vault/items')).body as AdminVaultItems;
+    expect(items.items[0].grants).toEqual([
+      { grantee: 'bob', mode: 'inject', effectiveMode: 'inject' },
+    ]);
+    const grants = (await req('GET', '/vault/grants?status=active')).body as AdminVaultGrant[];
+    expect(grants).toHaveLength(1);
+    expect(grants[0]).toMatchObject({
+      id: body.grant?.id,
+      effectiveMode: 'inject',
+      item: { name: 'gh', exposure: 'inject' },
+    });
+    expect(JSON.stringify([body, items, grants])).not.toContain(CANARY);
+  });
+
+  it('reveal is allowed only on a reveal item', async () => {
+    await createItem('alice', { ...injectItem }, 'admin');
+    await createItem(
+      'alice',
+      { name: 'pw', kind: 'token', values: { value: CANARY2 }, exposure: 'reveal' },
+      'admin',
+    );
+    const a = await ask('gh', { mode: 'reveal' });
+    const refused = await req('POST', `/vault/requests/${a.requestId}/grant`, { mode: 'reveal' });
+    expect(refused.status).toBe(400);
+    expect(readVault().requests.find((r) => r.id === a.requestId)?.status).toBe('pending');
+    const b = await ask('pw', { mode: 'reveal' });
+    const ok = await req('POST', `/vault/requests/${b.requestId}/grant`, { mode: 'reveal' });
+    expect(ok.status).toBe(200);
+    expect((ok.body as AdminVaultDecision).grant?.mode).toBe('reveal');
+    expect(ok.text).not.toContain(CANARY2);
+    // The item tightens later: the grant reports the effective mode.
+    await updateItem('alice', { name: 'pw', exposure: 'inject' }, 'agent');
+    const items = (await req('GET', '/callers/alice/vault/items')).body as AdminVaultItems;
+    expect(items.items.find((i) => i.name === 'pw')?.grants).toEqual([
+      { grantee: 'bob', mode: 'reveal', effectiveMode: 'inject' },
+    ]);
+    expect((await req('POST', `/vault/requests/${a.requestId}/grant`, { mode: 'x' })).status).toBe(
+      400,
+    );
+  });
+
+  it('grant or deny on a non-pending request is 409 with the current status; unknown is 404', async () => {
+    await createItem('alice', { ...injectItem }, 'admin');
+    const { requestId } = await ask('gh');
+    expect((await req('POST', `/vault/requests/${requestId}/deny`, { note: 'no' })).status).toBe(
+      200,
+    );
+    for (const action of ['grant', 'deny']) {
+      const res = await req('POST', `/vault/requests/${requestId}/${action}`, {});
+      expect(res.status, action).toBe(409);
+      expect(res.body).toMatchObject({ status: 'denied' });
+    }
+    expect((await req('POST', '/vault/requests/nope/grant', {})).status).toBe(404);
+    expect((await req('POST', '/vault/requests/nope/deny', {})).status).toBe(404);
+    expect(readVault().grants).toEqual([]);
+  });
+
+  it('a "no such item" request: grant is 409, deny with a note works', async () => {
+    const { requestId } = await ask('nothing');
+    const res = await req('POST', `/vault/requests/${requestId}/grant`, {});
+    expect(res.status).toBe(409);
+    expect((res.body as { error: string }).error).toMatch(/deny/);
+    const denied = await req('POST', `/vault/requests/${requestId}/deny`, {
+      note: 'no such item; ask for "gh"',
+    });
+    expect(denied.status).toBe(200);
+    expect((denied.body as AdminVaultDecision).request).toMatchObject({
+      status: 'denied',
+      decidedNote: 'no such item; ask for "gh"',
+    });
+    expect(audited.at(-1)?.action).toBe('vault_deny');
+  });
+
+  it('granting again on an active grant updates its mode rather than adding one', async () => {
+    await createItem(
+      'alice',
+      { name: 'pw', kind: 'token', values: { value: CANARY2 }, exposure: 'reveal' },
+      'admin',
+    );
+    const a = await ask('pw');
+    await req('POST', `/vault/requests/${a.requestId}/grant`, {});
+    const b = await ask('pw', { mode: 'reveal' });
+    expect(b.status).toBe('pending');
+    const res = await req('POST', `/vault/requests/${b.requestId}/grant`, { mode: 'reveal' });
+    const grants = (await req('GET', '/vault/grants')).body as AdminVaultGrant[];
+    expect(grants).toHaveLength(1);
+    expect(grants[0]).toMatchObject({
+      id: (res.body as AdminVaultDecision).grant?.id,
+      mode: 'reveal',
+    });
+  });
+
+  it('DELETE /vault/grants/:id revokes; again is a no-op 200; unknown is 404', async () => {
+    await createItem('alice', { ...injectItem }, 'admin');
+    const { requestId } = await ask('gh');
+    const granted = (await req('POST', `/vault/requests/${requestId}/grant`, {}))
+      .body as AdminVaultDecision;
+    const id = granted.grant?.id ?? '';
+    const first = await req('DELETE', `/vault/grants/${id}`);
+    expect(first.status).toBe(200);
+    expect(first.body as AdminVaultRevoke).toMatchObject({
+      changed: true,
+      grant: { status: 'revoked', revokedReason: 'admin' },
+    });
+    expect(audited.at(-1)).toEqual({
+      action: 'vault_revoke',
+      details: { grantId: id, owner: 'alice', grantee: 'bob' },
+    });
+    const n = audited.length;
+    const again = await req('DELETE', `/vault/grants/${id}`);
+    expect(again.status).toBe(200);
+    expect((again.body as AdminVaultRevoke).changed).toBe(false);
+    expect(audited).toHaveLength(n);
+    expect((await req('DELETE', '/vault/grants/nope')).status).toBe(404);
+    expect((await req('GET', '/vault/grants?status=active')).body).toEqual([]);
+    expect(((await req('GET', '/vault/grants?status=revoked')).body as unknown[]).length).toBe(1);
+    const items = (await req('GET', '/callers/alice/vault/items')).body as AdminVaultItems;
+    expect(items.items[0].grants).toEqual([]);
+  });
+
+  it('a missing key is 503 on the request and grant endpoints too, and changes nothing', async () => {
+    await createItem('alice', { ...injectItem }, 'admin');
+    const { requestId } = await ask('gh');
+    fs.rmSync(path.join(configDir, VAULT_KEY_LABEL));
+    resetVaultCache();
+    for (const [method, p, body] of [
+      ['GET', '/vault/requests', undefined],
+      ['GET', '/vault/grants', undefined],
+      ['POST', `/vault/requests/${requestId}/grant`, {}],
+      ['POST', `/vault/requests/${requestId}/deny`, {}],
+      ['DELETE', '/vault/grants/some-id', undefined],
+    ] as const) {
+      const res = await req(method, p, body);
+      expect(res.status, `${method} ${p}`).toBe(503);
+      expect((res.body as { error: string }).error).toMatch(/restore it from backup/);
+    }
+    expect(fs.existsSync(path.join(configDir, VAULT_KEY_LABEL))).toBe(false);
+  });
+
+  it('reads create nothing: no vault and no key before the first write', async () => {
+    expect((await req('GET', '/vault/requests')).body).toEqual([]);
+    expect((await req('GET', '/vault/grants')).body).toEqual([]);
+    expect(fs.existsSync(path.join(configDir, 'keys'))).toBe(false);
   });
 });

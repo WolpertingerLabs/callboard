@@ -454,9 +454,10 @@ describe('reveal', () => {
     const a = await errorOf(revealItem('bob', { name: 'r', owner: 'alice' }));
     const b = await errorOf(revealItem('bob', { name: 'nope', owner: 'alice' }));
     const c = await errorOf(revealItem('bob', { name: 'r', owner: 'nobody' }));
-    expect(a).toBe(b);
-    expect(a).toBe(c);
+    expect(b.replace('"nope"', '"r"')).toBe(a);
+    expect(c.replace('"nobody"', '"alice"')).toBe(a);
     expect(a).toMatch(/grant/);
+    expect(a).toMatch(/vault_request_access/);
   });
 
   it('refuses an unknown field', async () => {
@@ -562,7 +563,17 @@ describe('delete and purgeCaller', () => {
     expect(doc.requests.find((r) => r.id === 'r1')?.status).toBe('withdrawn');
     expect(doc.grants.find((g) => g.id === 'g2')?.status).toBe('active');
     expect(listItems('alice', {}).items).toEqual([]);
-    expect(auditLines('alice').at(-1)).toMatchObject({ 'drawlatch.event': 'vault.item.deleted' });
+    expect(auditLines('alice').map((l) => l['drawlatch.event'])).toEqual([
+      'vault.item.created',
+      'vault.item.deleted',
+      'vault.grant.revoked',
+      'vault.request.withdrawn',
+    ]);
+    expect(auditLines('alice').at(-2)).toMatchObject({
+      'vault.grant_id': 'g1',
+      'vault.revoked_reason': 'item_deleted',
+      'vault.actor': 'alice',
+    });
     await expect(deleteItem('alice', { name: 'gh' })).rejects.toThrow('No vault item "gh"');
   });
 
@@ -584,6 +595,14 @@ describe('delete and purgeCaller', () => {
     expect(doc.requests.filter((r) => r.status === 'pending').map((r) => r.id)).toEqual(['r3']);
     // A new caller with the same alias inherits nothing.
     expect(listItems('alice', {}).items).toEqual([]);
+    // The revoke/withdraw events are appended in the background, to each owner's log.
+    await vi.waitFor(() => {
+      expect(auditLines('alice').map((l) => l['drawlatch.event'])).toContain('vault.grant.revoked');
+      expect(auditLines('alice').map((l) => l['drawlatch.event'])).toContain(
+        'vault.request.withdrawn',
+      );
+      expect(auditLines('carol').map((l) => l['drawlatch.event'])).toEqual(['vault.grant.revoked']);
+    });
   });
 
   it('purgeCaller on an absent vault creates nothing', () => {

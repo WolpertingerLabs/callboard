@@ -18,7 +18,8 @@
 import { resolvePlaceholders } from '../../shared/config.js';
 import { isReservedKey } from '../../shared/safe-keys.js';
 import { CALLER_ALIAS_REGEX } from '../caller-bootstrap.js';
-import { FIELD_REGEX, NAME_REGEX } from './service.js';
+import { appendVaultEvent } from './audit.js';
+import { FIELD_REGEX, NAME_REGEX, sharedItem } from './service.js';
 import { readVault, type VaultItem } from './store.js';
 
 /** What starts a vault token. Its presence anywhere in a URL's origin is refused. */
@@ -113,11 +114,31 @@ export interface VaultSource {
  */
 const URL_DELIMITER = /[#?&]/;
 
+/** One use of another caller's item through a grant, for its `vault.inject` event. */
+export interface CrossCallerUse {
+  owner: string;
+  item: string;
+  itemId: string;
+  grantId: string;
+  /** Field names used, sorted. */
+  fields: string[];
+}
+
 export interface VaultResolution {
   /** spec (the text after `vault:`) → value. */
   values: Map<string, string>;
   /** `vault:<owner>/<name>.<field>` → value, for every substituted value. */
   scrub: Record<string, string>;
+  /** Another caller's items used through a grant, one entry per grant. */
+  crossCaller: CrossCallerUse[];
+}
+
+export function emptyVaultResolution(): VaultResolution {
+  return {
+    values: new Map(),
+    scrub: Object.create(null) as Record<string, string>,
+    crossCaller: [],
+  };
 }
 
 /**
@@ -131,10 +152,7 @@ export function resolveVaultTokens(opts: {
   connection: string | undefined;
   sources: VaultSource[];
 }): VaultResolution {
-  const resolution: VaultResolution = {
-    values: new Map(),
-    scrub: Object.create(null) as Record<string, string>,
-  };
+  const resolution = emptyVaultResolution();
   const found = opts.sources.flatMap(({ where, text, url }) =>
     vaultSpecs(text).map((spec) => ({ where, spec, url: url === true })),
   );
@@ -170,18 +188,42 @@ export function resolveVaultTokens(opts: {
 
   const doc = readVault();
   const own = Object.hasOwn(doc.callers, caller) ? doc.callers[caller].items : undefined;
+  const uses = new Map<string, CrossCallerUse>();
   for (const { where, spec, ref, url } of refs) {
     const known = resolution.values.get(spec);
     if (known !== undefined) {
       checkPosition(where, spec, url, known);
       continue;
     }
-    if (ref.owner !== undefined && ref.owner !== caller) {
-      refuse(where, spec, 'cross-caller access needs a grant (available in a later version)');
+    const owner: string = ref.owner ?? caller;
+    const label = owner === caller ? ref.name : `${owner}/${ref.name}`;
+    let item: VaultItem | undefined;
+    if (owner === caller) {
+      item = own && Object.hasOwn(own, ref.name) ? own[ref.name] : undefined;
+      if (!item) refuse(where, spec, `no such item "${ref.name}" in your vault`);
+    } else {
+      // One answer for "no such item" and "not shared with you": no oracle
+      // for which items other callers have.
+      const shared = sharedItem(doc, caller, owner, ref.name);
+      if (!shared) {
+        refuse(
+          where,
+          spec,
+          `no such item "${ref.name}" shared with you by "${owner}" (using another ` +
+            "caller's item needs a grant from the operator; ask with vault_request_access)",
+        );
+      }
+      item = shared.item;
+      const use: CrossCallerUse = uses.get(shared.grant.id) ?? {
+        owner,
+        item: item.name,
+        itemId: item.id,
+        grantId: shared.grant.id,
+        fields: [],
+      };
+      if (!use.fields.includes(ref.field)) use.fields = [...use.fields, ref.field].sort();
+      uses.set(shared.grant.id, use);
     }
-    const item: VaultItem | undefined =
-      own && Object.hasOwn(own, ref.name) ? own[ref.name] : undefined;
-    if (!item) refuse(where, spec, `no such item "${ref.name}" in your vault`);
     const bound = item.connections;
     if (
       bound !== undefined &&
@@ -190,7 +232,7 @@ export function resolveVaultTokens(opts: {
       refuse(
         where,
         spec,
-        `item "${ref.name}" is not allowed on connection "${opts.connection ?? '(unnamed)'}" ` +
+        `item "${label}" is not allowed on connection "${opts.connection ?? '(unnamed)'}" ` +
           `(it is bound to ${bound.map((c) => `"${c}"`).join(', ') || 'no connection'})`,
       );
     }
@@ -199,15 +241,16 @@ export function resolveVaultTokens(opts: {
         where,
         spec,
         ref.explicitField
-          ? `item "${ref.name}" has no field "${ref.field}"`
-          : `item "${ref.name}" has no "value" field; name one, as \${vault:${ref.name}.<field>}`,
+          ? `item "${label}" has no field "${ref.field}"`
+          : `item "${label}" has no "value" field; name one, as \${vault:${label}.<field>}`,
       );
     }
     const value = item.values[ref.field];
     checkPosition(where, spec, url, value);
     resolution.values.set(spec, value);
-    resolution.scrub[`vault:${caller}/${ref.name}.${ref.field}`] = value;
+    resolution.scrub[`vault:${owner}/${ref.name}.${ref.field}`] = value;
   }
+  resolution.crossCaller = [...uses.values()];
   return resolution;
 }
 
@@ -237,4 +280,61 @@ export function substitutePlaceholders(
     if (value === undefined) throw new Error('internal error: unresolved ${vault:…} placeholder');
     return opts.jsonEscape ? JSON.stringify(value).slice(1, -1) : value;
   });
+}
+
+/**
+ * Append `vault.inject` to each owner's audit log for every cross-caller use
+ * in `resolution`, before the request is sent. Fail-closed: if a line can't
+ * be written, the request is refused and nothing is sent.
+ */
+export async function recordCrossCallerUse(
+  resolution: VaultResolution,
+  caller: string,
+  connection: string | undefined,
+): Promise<void> {
+  for (const use of resolution.crossCaller) {
+    try {
+      await appendVaultEvent(use.owner, 'vault.inject', {
+        item: use.item,
+        item_id: use.itemId,
+        actor: caller,
+        via: 'mcp',
+        grantee: caller,
+        grant_id: use.grantId,
+        connection: connection ?? '(unnamed)',
+        fields: use.fields,
+      });
+    } catch (err) {
+      throw new Error(
+        `secure_request refused: the vault.inject audit line for \${vault:${use.owner}/${use.item}} ` +
+          `could not be written (${(err as Error).message}); nothing was sent.`,
+      );
+    }
+  }
+}
+
+/**
+ * Resolve the same sources again, synchronously, right before sending, and
+ * refuse unless every token still resolves to the same value through the same
+ * grants. Between the first resolution and the send there are awaits (the
+ * audit append, signing, token minting): a revoke, delete, rename, rebind or
+ * rotation that lands in one of them is honoured rather than sent past.
+ */
+export function assertVaultUnchanged(
+  before: VaultResolution,
+  opts: Parameters<typeof resolveVaultTokens>[0],
+): void {
+  if (before.values.size === 0) return;
+  const now = resolveVaultTokens(opts);
+  const same =
+    now.values.size === before.values.size &&
+    [...before.values].every(([spec, value]) => now.values.get(spec) === value) &&
+    now.crossCaller.map((u) => u.grantId).join() ===
+      before.crossCaller.map((u) => u.grantId).join();
+  if (!same) {
+    throw new Error(
+      'A vault item or grant this request uses changed while it was being prepared; ' +
+        'nothing was sent. Try again.',
+    );
+  }
 }

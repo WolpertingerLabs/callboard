@@ -27,6 +27,22 @@ import {
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
+
+const hooks = vi.hoisted(() => ({
+  /** Runs before each real vault audit append (to race a revoke against it). */
+  before: null as null | ((owner: string, event: string) => void),
+}));
+
+vi.mock('./audit.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./audit.js')>();
+  return {
+    ...actual,
+    appendVaultEvent: async (...args: Parameters<typeof actual.appendVaultEvent>) => {
+      hooks.before?.(args[0], args[1]);
+      await actual.appendVaultEvent(...args);
+    },
+  };
+});
 import os from 'node:os';
 import path from 'node:path';
 import type { AddressInfo } from 'node:net';
@@ -34,8 +50,15 @@ import type { AddressInfo } from 'node:net';
 import { resolveRoutes, type ResolvedRoute, type Route } from '../../shared/config.js';
 import { resetAuditLogState } from '../audit-log.js';
 import { executeProxyRequest, toolHandlers, type ToolContext } from '../tool-dispatch.js';
-import { createItem, updateItem } from './service.js';
-import { resetVaultCache } from './store.js';
+import {
+  createItem,
+  deleteItem,
+  grantRequest,
+  requestAccess,
+  revokeGrant,
+  updateItem,
+} from './service.js';
+import { mutateVault, resetVaultCache } from './store.js';
 
 const CANARY = `vault-canary-${crypto.randomUUID()}`;
 const USER_CANARY = `user-canary-${crypto.randomUUID()}`;
@@ -75,6 +98,8 @@ interface Received {
   url: string;
   headers: http.IncomingHttpHeaders;
   body: string;
+  /** bob's vault.inject audit lines when the request arrived. */
+  bobInjects: number;
 }
 
 let server: http.Server;
@@ -96,6 +121,20 @@ function listen(handler: http.RequestListener): Promise<{ srv: http.Server; url:
   });
 }
 
+/** `owner`'s audit lines (the test reads them; no tool ever does). */
+function auditLines(owner: string): Record<string, unknown>[] {
+  const d = path.join(configDir, 'audit', owner);
+  if (!fs.existsSync(d) || !fs.statSync(d).isDirectory()) return [];
+  return fs
+    .readdirSync(d)
+    .flatMap((f) => fs.readFileSync(path.join(d, f), 'utf8').trim().split('\n'))
+    .filter(Boolean)
+    .map((l) => JSON.parse(l) as Record<string, unknown>);
+}
+
+const injectLines = (owner: string) =>
+  auditLines(owner).filter((l) => l['drawlatch.event'] === 'vault.inject');
+
 /** decodeURIComponent, or the input when it holds a stray `%` (`%+d`). */
 function safeDecode(text: string): string {
   try {
@@ -109,7 +148,12 @@ function collect(req: http.IncomingMessage, into: Received[], then: (r: Received
   const chunks: Buffer[] = [];
   req.on('data', (c: Buffer) => chunks.push(c));
   req.on('end', () => {
-    const r = { url: req.url!, headers: req.headers, body: Buffer.concat(chunks).toString() };
+    const r = {
+      url: req.url!,
+      headers: req.headers,
+      body: Buffer.concat(chunks).toString(),
+      bobInjects: injectLines('bob').length,
+    };
     into.push(r);
     then(r);
   });
@@ -265,6 +309,7 @@ afterAll(async () => {
 beforeEach(() => {
   received = [];
   otherReceived = [];
+  hooks.before = null;
 });
 
 function routes(overrides: Partial<Route> = {}): ResolvedRoute[] {
@@ -513,11 +558,14 @@ describe('refused before anything is sent', () => {
     expect(received).toHaveLength(0);
   });
 
-  it("another caller's item is refused with the needs-a-grant message, whether or not it exists", async () => {
+  it("another caller's item without a grant: one answer whether or not it exists", async () => {
     const real = await errorOf(send({ method: 'GET', url: `${base}/x?v=\${vault:bob/tok}` }));
+    const missing = await errorOf(send({ method: 'GET', url: `${base}/x?v=\${vault:bob/nope}` }));
     const fake = await errorOf(send({ method: 'GET', url: `${base}/x?v=\${vault:carol/tok}` }));
-    expect(real).toContain('cross-caller access needs a grant (available in a later version)');
-    expect(fake.replace('carol', 'bob')).toBe(real);
+    expect(real).toContain('no such item "tok" shared with you by "bob"');
+    expect(real).toContain('vault_request_access');
+    expect(missing.replaceAll('nope', 'tok')).toBe(real);
+    expect(fake.replaceAll('carol', 'bob')).toBe(real);
     expect(received).toHaveLength(0);
     expectNoCanary(real);
   });
@@ -556,6 +604,202 @@ describe('refused before anything is sent', () => {
     expect(msg).toContain('no such item "before"');
     await send({ method: 'GET', url: `${base}/x?v=\${vault:after}` });
     expect(received.map((r) => r.url)).toEqual([`/x?v=${CANARY}`]);
+  });
+});
+
+describe('cross-caller ${vault:owner/name} through a grant', () => {
+  /** A fresh bob item, requested by alice and granted by the operator. */
+  async function shareBob(name: string, extra: Record<string, unknown> = {}) {
+    await createItem(
+      'bob',
+      { name, kind: 'token', values: { value: BOB_CANARY }, ...extra },
+      'agent',
+    );
+    const { requestId } = await requestAccess('alice', {
+      owner: 'bob',
+      name,
+      reason: 'test',
+    });
+    return (await grantRequest(requestId)).grant;
+  }
+  const asBobItem = (name: string) => `\${vault:bob/${name}}`;
+  const ctx = { callerAlias: 'alice' } as ToolContext;
+
+  it('with a grant it resolves, is scrubbed to ${vault:bob/…}, and vault_get is still refused', async () => {
+    const grant = await shareBob('x1');
+    const injectsBefore = injectLines('bob').length;
+    const res = await send({
+      method: 'GET',
+      url: `${base}/x?v=${asBobItem('x1')}`,
+      headers: { 'X-Key': asBobItem('x1') },
+    });
+    expect(received).toHaveLength(1);
+    expect(received[0].url).toBe(`/x?v=${BOB_CANARY}`);
+    expect(received[0].headers['x-key']).toBe(BOB_CANARY);
+    expectNoCanary(res);
+    expect(JSON.stringify(res)).toContain('${vault:bob/x1.value}');
+    // One vault.inject line in the OWNER's log, written before the request arrived.
+    const lines = injectLines('bob');
+    expect(lines).toHaveLength(injectsBefore + 1);
+    expect(received[0].bobInjects).toBe(injectsBefore + 1);
+    expect(lines.at(-1)).toMatchObject({
+      'vault.owner': 'bob',
+      'vault.item': 'x1',
+      'vault.actor': 'alice',
+      'vault.grantee': 'alice',
+      'vault.grant_id': grant.id,
+      'vault.connection': 'svc',
+      'vault.fields': ['value'],
+      'drawlatch.source': 'daemon',
+    });
+    expect(injectLines('alice')).toEqual([]);
+    expectNoCanary(auditLines('bob'));
+    // Inject-only: vault_get refuses it.
+    await expect(toolHandlers.vault_get({ owner: 'bob', name: 'x1' }, [], ctx)).rejects.toThrow(
+      /inject-only/,
+    );
+  });
+
+  it('revoke stops both the placeholder and vault_get at once', async () => {
+    const grant = await shareBob('x2', { exposure: 'reveal' });
+    // A reveal item, granted inject: vault_get refused, placeholder works.
+    await send({ method: 'GET', url: `${base}/x?v=${asBobItem('x2')}` });
+    expect(received).toHaveLength(1);
+    await revokeGrant(grant.id);
+    const msg = await errorOf(send({ method: 'GET', url: `${base}/x?v=${asBobItem('x2')}` }));
+    expect(msg).toContain('no such item "x2" shared with you by "bob"');
+    expect(received).toHaveLength(1);
+    await expect(toolHandlers.vault_get({ owner: 'bob', name: 'x2' }, [], ctx)).rejects.toThrow(
+      /shared with you/,
+    );
+  });
+
+  it('own-item injections are not logged per request', async () => {
+    const before = injectLines('alice').length;
+    await send({ method: 'GET', url: `${base}/x?v=\${vault:tok}` });
+    expect(injectLines('alice')).toHaveLength(before);
+  });
+
+  it('after a rename the old name says no such item; the new name works', async () => {
+    await shareBob('x3');
+    await updateItem('bob', { name: 'x3', rename: 'x3b' }, 'agent');
+    const msg = await errorOf(send({ method: 'GET', url: `${base}/x?v=${asBobItem('x3')}` }));
+    expect(msg).toContain('no such item "x3"');
+    await send({ method: 'GET', url: `${base}/x?v=${asBobItem('x3b')}` });
+    expect(received.map((r) => r.url)).toEqual([`/x?v=${BOB_CANARY}`]);
+  });
+
+  it('after a delete it is refused, and re-creating the name shares nothing', async () => {
+    await shareBob('x4');
+    await deleteItem('bob', { name: 'x4' });
+    await createItem('bob', { name: 'x4', kind: 'token', values: { value: BOB_CANARY } }, 'agent');
+    const msg = await errorOf(send({ method: 'GET', url: `${base}/x?v=${asBobItem('x4')}` }));
+    expect(msg).toContain('no such item "x4" shared with you by "bob"');
+    expect(received).toHaveLength(0);
+  });
+
+  it("respects the item's connections binding", async () => {
+    await shareBob('x5', { connections: ['other'] });
+    await shareBob('x6', { connections: ['svc'] });
+    const msg = await errorOf(send({ method: 'GET', url: `${base}/x?v=${asBobItem('x5')}` }));
+    expect(msg).toContain('item "bob/x5" is not allowed on connection "svc"');
+    expect(received).toHaveLength(0);
+    await send({ method: 'GET', url: `${base}/x?v=${asBobItem('x6')}` });
+    expect(received).toHaveLength(1);
+  });
+
+  it('a grant to alice gives carol nothing', async () => {
+    await shareBob('x7');
+    const msg = await errorOf(
+      executeProxyRequest(
+        { method: 'GET', url: `${base}/x?v=${asBobItem('x7')}` },
+        routes(),
+        undefined,
+        {
+          caller: 'carol',
+        },
+      ),
+    );
+    expect(msg).toContain('shared with you by "bob"');
+    expect(received).toHaveLength(0);
+  });
+
+  it('fails closed, sending nothing, when the vault.inject line cannot be written', async () => {
+    await shareBob('x8');
+    const bobAudit = path.join(configDir, 'audit', 'bob');
+    const aside = `${bobAudit}.aside`;
+    fs.renameSync(bobAudit, aside);
+    fs.writeFileSync(bobAudit, 'not a directory');
+    try {
+      const msg = await errorOf(send({ method: 'GET', url: `${base}/x?v=${asBobItem('x8')}` }));
+      expect(msg).toMatch(/vault\.inject audit line .* could not be written/);
+      expect(msg).toContain('nothing was sent');
+      expect(received).toHaveLength(0);
+    } finally {
+      fs.rmSync(bobAudit);
+      fs.renameSync(aside, bobAudit);
+      resetAuditLogState();
+    }
+  });
+
+  it('a revoke that lands while the inject line is being written is honoured', async () => {
+    const grant = await shareBob('x9');
+    hooks.before = (_owner, event) => {
+      if (event !== 'vault.inject') return;
+      hooks.before = null;
+      mutateVault((doc) => {
+        const g = doc.grants.find((x) => x.id === grant.id);
+        if (g) g.status = 'revoked';
+      });
+    };
+    const msg = await errorOf(send({ method: 'GET', url: `${base}/x?v=${asBobItem('x9')}` }));
+    expect(msg).toContain('no such item "x9" shared with you by "bob"');
+    expect(received).toHaveLength(0);
+  });
+
+  it('a granted value with a URL delimiter: refused in the URL before any audit, sent in a header', async () => {
+    await shareBob('dl1', { values: { value: `${BOB_CANARY}&admin=1` } });
+    const before = injectLines('bob').length;
+    const msg = await errorOf(send({ method: 'GET', url: `${base}/x?v=${asBobItem('dl1')}` }));
+    expect(msg).toContain('The request URL references ${vault:bob/dl1}');
+    expect(msg).toContain('URL delimiter');
+    expectNoCanary(msg);
+    // Refused before anything is sent and before the vault.inject line.
+    expect(received).toHaveLength(0);
+    expect(injectLines('bob')).toHaveLength(before);
+
+    // In a header it is fine: sent, recorded once, and not echoed back.
+    const res = await send({
+      method: 'GET',
+      url: `${base}/x`,
+      headers: { 'X-Key': asBobItem('dl1') },
+    });
+    expect(received).toHaveLength(1);
+    expect(received[0].headers['x-key']).toBe(`${BOB_CANARY}&admin=1`);
+    expect(injectLines('bob')).toHaveLength(before + 1);
+    expect(injectLines('bob').at(-1)).toMatchObject({
+      'vault.item': 'dl1',
+      'vault.grantee': 'alice',
+    });
+    expectNoCanary(res);
+    expect(JSON.stringify(res)).toContain('${vault:bob/dl1.value}');
+  });
+
+  it('a rotation that lands meanwhile is refused rather than sending the stale value', async () => {
+    await shareBob('x10');
+    hooks.before = (_owner, event) => {
+      if (event !== 'vault.inject') return;
+      hooks.before = null;
+      mutateVault((doc) => {
+        doc.callers.bob.items.x10.values = Object.assign(Object.create(null), {
+          value: `${BOB_CANARY}-rotated`,
+        }) as Record<string, string>;
+      });
+    };
+    const msg = await errorOf(send({ method: 'GET', url: `${base}/x?v=${asBobItem('x10')}` }));
+    expect(msg).toContain('changed while it was being prepared');
+    expect(received).toHaveLength(0);
+    expectNoCanary(msg);
   });
 });
 
