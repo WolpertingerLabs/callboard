@@ -56,6 +56,7 @@
 import type { DefaultPermissions } from "shared/types/index.js";
 import { normalizePermissions, normalizeReviewSettings } from "shared/types/index.js";
 import { pendingRequests, type PendingRequest } from "./pending-requests.js";
+import { redactToolInputForReview } from "./tool-input-redaction.js";
 import { parentApprovalRefusal } from "./permission-ceiling.js";
 import { chatFileService } from "./chat-file-service.js";
 import { listActivities, releaseActivity } from "./chat-activity.js";
@@ -132,7 +133,8 @@ export function listAnswerableRequests(callerChatId: string, callerPermissions: 
       title: typeof title === "string" ? title : null,
       requestId: entry.requestId,
       toolName: entry.toolName,
-      input: entry.input,
+      // Another agent reads this: secret vault values are redacted.
+      input: redactToolInputForReview(entry.toolName, entry.input),
       category: entry.category ?? null,
       canApprove: parentApprovalRefusal(entry.category, callerPermissions) === null,
       ...(entry.reviewerNotes && { reviewerNotes: entry.reviewerNotes }),

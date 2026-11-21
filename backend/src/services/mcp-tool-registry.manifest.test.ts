@@ -38,8 +38,9 @@ vi.mock("./claude.js", () => ({ getActiveSession: () => undefined }));
 const { getMcpToolsManifest } = await import("./mcp-tool-registry.js");
 const { buildCallboardToolsSpec } = await import("./callboard-tools.js");
 const { buildAgentToolsSpec } = await import("./agent-tools.js");
+const { buildProxyToolsSpec } = await import("./proxy-tools.js");
 
-/** Every tool the two documented servers actually register, by name. */
+/** Every tool the documented in-process servers actually register, by name. */
 function realTools(): Map<string, AnyToolDefinition> {
   const specs = [
     buildCallboardToolsSpec(
@@ -47,6 +48,7 @@ function realTools(): Map<string, AnyToolDefinition> {
       () => "agent",
     ),
     buildAgentToolsSpec("agent", () => "chat-1"),
+    buildProxyToolsSpec("default"),
   ];
   const byName = new Map<string, AnyToolDefinition>();
   for (const spec of specs) for (const tool of spec.tools) byName.set(tool.name, tool);
@@ -80,9 +82,9 @@ describe("the MCP tool manifest matches the schemas it describes", () => {
   const tools = realTools();
 
   it("describes tools that exist (or are declared by a server this test does not build)", () => {
-    // Proxy and external servers are assembled elsewhere and legitimately absent
-    // here; the platform/agent tools are the ones this file can check.
-    const checkable = manifest.filter((t) => t.serverName === "callboard-tools" || t.serverName === "callboard");
+    // External servers are assembled elsewhere and legitimately absent here;
+    // the platform, agent and proxy tools are the ones this file can check.
+    const checkable = manifest.filter((t) => t.serverName === "callboard-tools" || t.serverName === "callboard" || t.serverName === "mcp-proxy");
     expect(checkable.length).toBeGreaterThan(20);
     const missing = checkable.filter((t) => !tools.has(t.name)).map((t) => `${t.serverName}/${t.name}`);
     expect(missing).toEqual([]);
@@ -116,6 +118,13 @@ describe("the MCP tool manifest matches the schemas it describes", () => {
     const agentTools = names(buildAgentToolsSpec("agent", () => "chat-1").tools);
     expect(listed("agent", "callboard")).toEqual(agentTools);
     expect(toolCount("agent", "callboard")).toBe(agentTools.length);
+
+    // The proxy server is the same in both contexts.
+    const proxyTools = names(buildProxyToolsSpec("default").tools);
+    for (const context of ["chat", "agent"] as const) {
+      expect(listed(context, "mcp-proxy")).toEqual(proxyTools);
+      expect(toolCount(context, "mcp-proxy")).toBe(proxyTools.length);
+    }
   });
 
   it("names no parameter the schema does not have", () => {

@@ -190,6 +190,28 @@ const EXACT_CATEGORIES: ReadonlyMap<string, PermissionCategory> = new Map<string
   ["delete_storage_key", "fileWrite"],
   ["save_artifact", "fileWrite"],
   ["delete_artifact", "fileWrite"],
+
+  // drawlatch vault tools (proxy-tools.ts), pinned so no name falls to the
+  // token table by accident: `vault_get` tokenizes to nothing and would land on
+  // `codeExecution` only as the unknown-name default, and `vault_request_access`
+  // tokenizes to `webAccess` ("request") though it reaches no outside service.
+  // A tool's inputs, including secret `values`, can leave the chat on "ask"
+  // (reviewer, audit log, parent) — tool-input-redaction.ts covers that.
+  // Listing names and request status, never values: a read of stored metadata.
+  ["vault_list", "fileRead"],
+  ["vault_list_requests", "fileRead"],
+  // Change what is stored in the caller's vault, like the storage tools above.
+  ["vault_create", "fileWrite"],
+  ["vault_update", "fileWrite"],
+  ["vault_delete", "fileWrite"],
+  // Create or withdraw a request record in drawlatch for the operator to see.
+  // Grants nothing itself, so it is a stored write, not a web call.
+  ["vault_request_access", "fileWrite"],
+  ["vault_cancel_request", "fileWrite"],
+  // Puts a secret value into this chat's transcript. That is worth as much as
+  // whatever the secret unlocks, so it gets the strictest built-in axis rather
+  // than `fileRead`, which chats commonly allow outright.
+  ["vault_get", "codeExecution"],
 ]);
 
 /**

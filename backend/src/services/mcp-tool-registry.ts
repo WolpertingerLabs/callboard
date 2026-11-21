@@ -959,15 +959,93 @@ const AGENT_JOB_TOOLS = jobToolDefs("callboard", "Callboard Agent", "agent");
 
 // ─── Proxy Tools (injected when proxy is configured) ────────────────
 
+// Vault tools: compact UI copy for the drawlatch vault (proxy-tools.ts carries
+// the model-facing descriptions, copied from drawlatch's own MCP server).
+const VAULT_TOOLS: McpToolDefinition[] = (
+  [
+    {
+      name: "vault_list",
+      description: "List your vault items and the items shared with you. Never returns values.",
+      parameters: [{ name: "tag", type: "string", description: "Only items carrying this tag", required: false }],
+    },
+    {
+      name: "vault_create",
+      description: "Save a new item in your vault, for use as ${vault:name} in secure_request.",
+      parameters: [
+        { name: "name", type: "string", description: "Item name, unique in your vault", required: true },
+        { name: "kind", type: "string", description: '"password", "token", "note" or "key-value"', required: true },
+        { name: "values", type: "object", description: "Field name → secret value", required: true },
+        { name: "exposure", type: "string", description: '"inject" (default) or "reveal"', required: false },
+        { name: "notes", type: "string", description: "Plain-text description (not secret)", required: false },
+        { name: "tags", type: "array", description: "Plain-text tags (not secret)", required: false },
+        { name: "metadata", type: "object", description: "Plain-text key → value pairs (not secret)", required: false },
+        { name: "connections", type: "array", description: "Connection aliases this item may be used on", required: false },
+      ],
+    },
+    {
+      name: "vault_update",
+      description: "Change one of your vault items (exposure and connections can only tighten).",
+      parameters: [
+        { name: "name", type: "string", description: "Current item name", required: true },
+        { name: "values", type: "object", description: "New field name → value map", required: false },
+        { name: "rename", type: "string", description: "New name", required: false },
+        { name: "exposure", type: "string", description: '"inject" or "reveal" (tighten only)', required: false },
+        { name: "notes", type: "string", description: 'New notes ("" clears)', required: false },
+        { name: "tags", type: "array", description: "New tags", required: false },
+        { name: "metadata", type: "object", description: "New metadata", required: false },
+        { name: "connections", type: "array", description: "New, narrower connections binding", required: false },
+      ],
+    },
+    {
+      name: "vault_delete",
+      description: "Delete one of your vault items.",
+      parameters: [{ name: "name", type: "string", description: "Item name", required: true }],
+    },
+    {
+      name: "vault_get",
+      description: 'Read the values of a "reveal" vault item (yours, or one shared with you). Every read is audit-logged.',
+      parameters: [
+        { name: "name", type: "string", description: "Item name", required: true },
+        { name: "field", type: "string", description: "Return just this field", required: false },
+        { name: "owner", type: "string", description: "Another caller's alias, for an item shared with you", required: false },
+        { name: "purpose", type: "string", description: "Label recorded in the audit log", required: false },
+      ],
+    },
+    {
+      name: "vault_request_access",
+      description: "Ask the operator for access to another caller's vault item. Grants nothing by itself.",
+      parameters: [
+        { name: "owner", type: "string", description: "The item owner's caller alias", required: true },
+        { name: "name", type: "string", description: "Item name in that caller's vault", required: true },
+        { name: "reason", type: "string", description: "Why you need it (shown to the operator)", required: true },
+        { name: "mode", type: "string", description: '"inject" (default) or "reveal"', required: false },
+      ],
+    },
+    {
+      name: "vault_list_requests",
+      description: "List your own vault access requests and their status.",
+      parameters: [],
+    },
+    {
+      name: "vault_cancel_request",
+      description: "Cancel one of your own pending vault access requests.",
+      parameters: [{ name: "requestId", type: "string", description: "The id vault_request_access returned", required: true }],
+    },
+  ] satisfies Omit<McpToolDefinition, "qualifiedName" | "serverName" | "serverLabel" | "category">[]
+).map((def) => ({ ...def, qualifiedName: `mcp__mcp-proxy__${def.name}`, serverName: "mcp-proxy", serverLabel: "Proxy", category: "proxy" as const }));
+
+// ─── Core proxy tools ────────────────
+
 const PROXY_TOOLS: McpToolDefinition[] = [
   {
     name: "secure_request",
     qualifiedName: "mcp__mcp-proxy__secure_request",
-    description: "Make an authenticated HTTP request through a configured connection.",
+    description:
+      "Make an authenticated HTTP request through a configured connection. Secrets resolve server-side from ${VAR} and ${vault:name} placeholders and never come back.",
     parameters: [
       { name: "method", type: "enum", description: "HTTP method", required: true, enumValues: ["GET", "POST", "PUT", "PATCH", "DELETE"] },
-      { name: "url", type: "string", description: "Full URL, may contain ${VAR} placeholders", required: true },
-      { name: "headers", type: "object", description: "Request headers, may contain ${VAR} placeholders", required: false },
+      { name: "url", type: "string", description: "Full URL, may contain ${VAR} and (in the path or query) ${vault:name} placeholders", required: true },
+      { name: "headers", type: "object", description: "Request headers, may contain ${VAR} and ${vault:name} placeholders", required: false },
       { name: "body", type: "object", description: "Request body (object for JSON, string for raw)", required: false },
       { name: "files", type: "array", description: "File attachments for multipart upload", required: false },
       { name: "bodyFieldName", type: "string", description: "Form field name for the JSON body", required: false },
@@ -1106,6 +1184,7 @@ const PROXY_TOOLS: McpToolDefinition[] = [
     serverLabel: "Proxy",
     category: "proxy",
   },
+  ...VAULT_TOOLS,
 ];
 
 // ─── Agent Tools (injected only in agent sessions) ──────────────────
