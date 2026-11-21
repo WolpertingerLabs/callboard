@@ -447,9 +447,9 @@ Everything in `values` is secret, `username` included, and only field names ever
 
 **Exposure.** `inject` (the default) means no tool ever returns the value: not `vault_list`, not `vault_get`, not any other tool. `reveal` means the caller's agent can read it back with `vault_get`, and every such read is written to the caller's [audit log](#audit-log) first; if that write fails, `vault_get` fails and returns nothing. Items of either exposure can be used in requests as `${vault:<name>}` ([below](#using-vault-items-in-requests)).
 
-**Agents can only tighten.** On the agent's side, `vault_update` may change `exposure` from `reveal` to `inject` but never back, and may add a `connections` list or narrow one but never widen or remove it. Otherwise an `inject` item could be switched to `reveal` and read. Only the operator can loosen an item.
+**Agents can only tighten.** On the agent's side, `vault_update` may change `exposure` from `reveal` to `inject` but never back, and may add a `connections` list or narrow one but never widen or remove it. Otherwise an `inject` item could be switched to `reveal` and read. Only the operator can loosen an item, on the dashboard's [Vault page](#admin-dashboard) or through the admin API.
 
-What the agent saves passes through its own context: `vault_create` and `vault_update` carry the values. `inject` keeps a saved value out of later responses, not out of the conversation that saved it.
+What the agent saves passes through its own context: `vault_create` and `vault_update` carry the values. `inject` keeps a saved value out of later responses, not out of the conversation that saved it. For a secret the agent should never see, create the item on the dashboard instead (**Vault → New item**): it is stored with `createdBy: "admin"` and the agent can only use it by reference.
 
 **Limits** (errors name the field and the limit, never the value): 64 KiB per field, 128 KiB per item, 500 items per caller, 32 MiB for the whole vault; `notes` 4 KiB; 16 tags of up to 64 characters; 32 `metadata` entries, keys up to 64 and values up to 256 characters. Every field of an `inject` item must be at least 4 characters long.
 
@@ -473,7 +473,7 @@ If `keys/vault.key` is missing while `vault.enc.json` exists, every vault tool f
 
 **Deleting a caller** (dashboard, `DELETE /api/admin/callers/:alias`) deletes its vault items too, so a new caller with the same alias starts empty. If the vault can't be read (its key is missing, say), the deletion fails and the caller is left in place.
 
-**Audit events.** Vault events are daemon lines (`drawlatch.source: "daemon"`) in the owner's audit log, with `drawlatch.event` set to `vault.item.created`, `vault.item.updated`, `vault.item.deleted`, or `vault.reveal`. They carry `vault.owner`, `vault.item` (the name at the time), `vault.item_id`, `vault.actor`, `vault.via` (`mcp`), `vault.fields` (field names), and for changes `vault.kind`, `vault.exposure`, `vault.changed` (which properties an update set), and `vault.renamed_from`. They never carry a value, ciphertext, or key. They don't count against the caller's `ingest_logs` byte budget.
+**Audit events.** Vault events are daemon lines (`drawlatch.source: "daemon"`) in the owner's audit log, with `drawlatch.event` set to `vault.item.created`, `vault.item.updated`, `vault.item.deleted`, or `vault.reveal`. They carry `vault.owner`, `vault.item` (the name at the time), `vault.item_id`, `vault.actor` (the caller's alias, or `admin` for a dashboard change or reveal), `vault.via` (`mcp` or `admin`), `vault.fields` (field names), and for changes `vault.kind`, `vault.exposure`, `vault.changed` (which properties an update set), and `vault.renamed_from`. They never carry a value, ciphertext, or key. They don't count against the caller's `ingest_logs` byte budget.
 
 #### Using vault items in requests
 
@@ -512,7 +512,7 @@ Webhook listeners (GitHub, Stripe, Trello) receive `POST /webhooks/<path>` on th
 
 ## Admin dashboard
 
-The daemon serves a web dashboard and its JSON API from the same port as the MCP protocol: `http://127.0.0.1:9999/` by default. From it you can create, issue, and delete callers; choose whether a caller's agent may manage its own connections and secrets (**Agent permissions** on the caller page); enable connections; set secrets; configure, test, and control listeners; and watch events, ingestors, sessions, and a secrets matrix. Connection and secret changes apply to open sessions immediately. Running listeners pick up new secrets, or a newly enabled connection, only when they are (re)started: use the listener controls or `drawlatch restart`. Listener parameter changes restart the listener.
+The daemon serves a web dashboard and its JSON API from the same port as the MCP protocol: `http://127.0.0.1:9999/` by default. From it you can create, issue, and delete callers; choose whether a caller's agent may manage its own connections and secrets (**Agent permissions** on the caller page); enable connections; set secrets; configure, test, and control listeners; manage each caller's [vault](#vault) items; and watch events, ingestors, sessions, and a secrets matrix. Connection and secret changes apply to open sessions immediately. Running listeners pick up new secrets, or a newly enabled connection, only when they are (re)started: use the listener controls or `drawlatch restart`. Listener parameter changes restart the listener.
 
 **Password.** The dashboard stays locked until a password is set. `drawlatch set-password` (alias `change-password`) prompts on a TTY or reads the password twice from stdin (`printf '%s\n%s\n' "$PW" "$PW" | drawlatch set-password`). It stores a scrypt hash and salt in `.env` as `AUTH_PASSWORD_HASH` / `AUTH_PASSWORD_SALT`. Restart the daemon after setting it from the CLI. Changing it from the dashboard (**Change password**, `/settings/password`) applies immediately and signs out every other session.
 
@@ -526,8 +526,18 @@ The daemon serves a web dashboard and its JSON API from the same port as the MCP
   - `/handshake`: 30/min
   - `/webhooks`: 120/min
   - `/health`: 60/min
-  - `/api/admin`: 300/min, with credential issuance limited to 10/min
+  - `/api/admin`: 300/min, with credential issuance and vault reveal each limited to 10/min (separate counters)
 - Without a password, the MCP protocol still works. Login, auth checks, and `/api/admin/*` return `503`.
+
+**Vault.** The **Vault** page (`/vault?caller=<alias>`, also linked from each caller page as "Vault: N items") lists a caller's items: name, kind, exposure, tags, bound connections, and when each changed, never a value. From it you can:
+
+- **New item**: an item created by the admin (`createdBy: "admin"`). It defaults to `inject` and to being bound to one of the caller's enabled connections; keep the binding unless the item really needs every connection ([Round trips](#using-vault-items-in-requests)).
+- **Edit** the name, exposure, binding, tags, notes, and metadata. Unlike the agent, the admin may loosen an item: `inject` → `reveal`, or a wider or removed binding.
+- **Replace value**: write-only inputs with a show/hide toggle while typing. The current value is never shown.
+- **Delete**, after a confirmation.
+- **Reveal**, after a confirmation that says it is recorded: the values appear in masked fields with show and copy buttons, and are cleared when you close the panel, after 60 seconds, or when you navigate away. A reveal works on `inject` items too, since the admin could loosen them anyway, and writes `vault.reveal` with `vault.actor: "admin"` to the caller's [audit log](#audit-log) before anything is returned; if that write fails, the reveal fails.
+
+Edits and deletes are sent with the vault revision the page loaded (`If-Match`), so a change made meanwhile by the agent or another tab fails with `409` and a prompt to reload instead of being overwritten.
 
 **OAuth2 connections.** The caller page and the configure dialog show each OAuth2 connection's grant and the scopes that caller gets (after its `oauth2Overrides`), the service-account subject if one is set, and why the daemon drops a connection for that caller, if it does. They are read-only: edit `oauth2Overrides` in `remote.config.json`.
 
@@ -535,6 +545,10 @@ The daemon serves a web dashboard and its JSON API from the same port as the MCP
 
 - `GET /meta`, `/health`, `/connections`, `/callers`, `/ingestors`, `/sessions`, `/secrets`
 - `GET /callers/:alias/connections`, `/callers/:alias/connection-status`, `/callers/:alias/ingestors`, `/callers/:alias/events`, `/callers/:alias/listener-configs`
+- `GET /vault/status`: `{keyPresent, keyId, fileExists, revision, callers: {alias: itemCount}, pendingRequests}`, plus `error` when the vault can't be read. `keyId` is the key's public fingerprint, never the key.
+- `GET /callers/:alias/vault/items`: `{revision, items}`, each item's metadata and `fields` (names only) with `grants: []`. Never a value.
+
+`GET /callers` includes `vaultItems` per caller (`null` when the vault can't be read).
 
 Write endpoints (`…` = `/callers/:alias/connections/:connection`):
 
@@ -552,6 +566,12 @@ Write endpoints (`…` = `/callers/:alias/connections/:connection`):
 | `GET`/`PUT …/listener/params` | Read or set listener params |
 | `GET`/`POST …/listener/instances`, `DELETE …/listener/instances/:instanceId` | Manage listener instances |
 | `POST …/listener/resolve-options` `{paramKey}` | Fetch dynamic field options |
+| `POST /callers/:alias/vault/items` `{name, kind, values, exposure?, notes?, tags?, metadata?, connections?}` | Create an item (`createdBy: "admin"`). `201` with its metadata; `409` if the name exists |
+| `PATCH /callers/:alias/vault/items/:name` `{values?, rename?, exposure?, notes?, tags?, metadata?, connections?}` | Update an item. The admin may loosen it; `connections: null` removes the binding, `notes: null` clears notes |
+| `DELETE /callers/:alias/vault/items/:name` | Delete an item |
+| `POST /callers/:alias/vault/items/:name/reveal` `{field?}` | Return the item's values (or one field), after writing `vault.reveal` to the caller's audit log; fails if that write fails. 10/min |
+
+The vault endpoints answer with `Cache-Control: no-store`, errors included. `PATCH` and `DELETE` take an optional `If-Match: <revision>` (from `GET …/vault/items`) and answer `409` with the current `revision` when the vault has changed since. Only `…/reveal` ever returns a value. A missing vault key gives `503` on the item endpoints.
 
 Connection and listener operations share their implementation with the MCP tools (`src/remote/tool-dispatch.ts`). The unauthenticated `GET /health` returns status, active session count, uptime, and the tunnel URL.
 
@@ -603,6 +623,7 @@ set-password             Set the dashboard password (alias: change-password)
 - **Request log:** every request and response is logged with caller and session (`drawlatch logs --requests`).
 - **Caller audit log:** `ingest_logs` is append-only and write-only over the protocol, stamped with the authenticated caller ([Audit log](#audit-log)).
 - **Vault:** each caller's [vault](#vault) is encrypted at rest under a key file only the daemon reads. No tool returns a vault value except `vault_get` on the caller's own `reveal` item, which is audit-logged first, and none returns the vault file, its ciphertext, or the key. A value injected with `${vault:…}` is scrubbed from the response like a withheld secret and can't choose the request's host. An agent can only tighten an item's exposure, never loosen it.
+- **Vault on the dashboard:** no admin API response carries a vault value except the explicit `POST …/reveal`, which needs a confirmation in the UI, is limited to 10/min, is `no-store`, and is written to the owner's audit log (`actor: "admin"`) before it answers. The dashboard keeps a revealed value only in the reveal panel's state, never in a shared cache or storage, and clears it on close, after 60 seconds, and on navigation. Values are write-only everywhere else on the dashboard. Anyone with the dashboard password can reveal every caller's items.
 
 ## Package exports
 
