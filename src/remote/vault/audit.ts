@@ -28,6 +28,8 @@ export interface VaultEventFields {
   item_id: string | null;
   actor: string;
   via: string;
+  /** Set when `via` is a client-asserted `vault_get` purpose the daemon can't check. */
+  via_asserted?: true;
   kind?: string;
   exposure?: string;
   fields?: string[];

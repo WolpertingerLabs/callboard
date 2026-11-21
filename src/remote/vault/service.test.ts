@@ -467,6 +467,48 @@ describe('reveal', () => {
     );
   });
 
+  it('records a purpose as an asserted via, and without one via stays "mcp"', async () => {
+    await token('r', 'fake-0000', { exposure: 'reveal' });
+    await revealItem('alice', { name: 'r', purpose: 'git-credential' });
+    await revealItem('alice', { name: 'r' });
+    const reveals = auditLines('alice').filter((l) => l['drawlatch.event'] === 'vault.reveal');
+    expect(reveals[0]).toMatchObject({
+      'vault.actor': 'alice',
+      'vault.via': 'git-credential',
+      'vault.via_asserted': true,
+    });
+    expect(reveals[1]['vault.via']).toBe('mcp');
+    expect(reveals[1]).not.toHaveProperty('vault.via_asserted');
+  });
+
+  it('refuses a bad purpose before reading, without echoing it', async () => {
+    await token('r', 'fake-0000', { exposure: 'reveal' });
+    const bad = [
+      CANARY.toUpperCase(),
+      `x${'a'.repeat(32)}`,
+      'git credential',
+      'git-credential\n"vault.actor":"admin"',
+      '',
+      'mcp',
+      'admin',
+      42,
+      ['git-credential'],
+    ];
+    for (const purpose of bad) {
+      const msg = await errorOf(revealItem('alice', { name: 'r', purpose }));
+      expect(msg).toMatch(/^purpose must be 1-32 lowercase letters/);
+      // The message is fixed text: it names the reserved words, never the input.
+      if (typeof purpose === 'string' && purpose.length > 5) {
+        expect(msg).not.toContain(purpose);
+      }
+    }
+    // Refused for another owner's item too, before the grant lookup.
+    expect(await errorOf(revealItem('bob', { name: 'r', owner: 'alice', purpose: 'A' }))).toMatch(
+      /^purpose must/,
+    );
+    expect(auditLines('alice').filter((l) => l['drawlatch.event'] === 'vault.reveal')).toEqual([]);
+  });
+
   it('fails, returning nothing, when the audit append fails', async () => {
     await token('r', CANARY, { exposure: 'reveal' });
     // Make the audit root unusable: a file where the directory should be.

@@ -823,6 +823,12 @@ server.tool(
       .string()
       .optional()
       .describe("Another caller's alias, to read an item shared with you (needs a grant)"),
+    purpose: z
+      .string()
+      .optional()
+      .describe(
+        'Optional label for what the value is for, recorded in the audit log as "via" and marked as your claim (1-32 lowercase letters, digits or "-")',
+      ),
   },
   async (input) => forwardVaultTool('vault_get', input),
 );
