@@ -274,6 +274,7 @@ describe("NewChatPanel — recent folders in the folder browser", () => {
     expect(within(section).getByTitle("/work/repo")).toBeTruthy();
     await waitFor(() => expect(browseDirectory).toHaveBeenCalled());
     expect(vi.mocked(browseDirectory).mock.calls[0][0]).toBe("/work");
+    expect(within(section).getByTestId("recent-last-used")).toBeTruthy();
   });
 
   it("removing one in a space removes it from that space's list", async () => {

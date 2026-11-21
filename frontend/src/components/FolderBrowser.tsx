@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { X, Home, Folder, GitBranch, Eye, EyeOff, ChevronRight, ChevronDown, ArrowUp, RefreshCw, History } from "lucide-react";
+import { X, Home, Folder, GitBranch, Eye, EyeOff, ChevronRight, ChevronDown, ArrowUp, RefreshCw } from "lucide-react";
 import { browseDirectory, getFolderSuggestions, clearFolderCache, type BrowseResult, type FolderItem, type FolderSuggestion } from "../api";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { readStorageItem, writeStorageItem } from "../utils/localStorage";
@@ -7,6 +7,7 @@ import { errorMessage } from "../utils/errorMessage";
 import { parentDir } from "../utils/paths";
 import ModalOverlay from "./ModalOverlay";
 import ConfirmRemoveRecentDirectory from "./ConfirmRemoveRecentDirectory";
+import RecentDirectoryRow from "./RecentDirectoryRow";
 
 /** Its own key rather than a field in the settings blob — kept as-is so existing preferences survive. */
 const SHOW_HIDDEN_KEY = "folderBrowser.showHidden";
@@ -16,6 +17,12 @@ interface FolderBrowserProps {
   onClose: () => void;
   onSelect: (path: string) => void;
   initialPath?: string;
+  /**
+   * A folder inside `initialPath` to mark as the one picked last time — it is
+   * highlighted in the listing (and scrolled to) and tagged in "Previously
+   * used". Like `initialPath`, it is read when the browser opens.
+   */
+  focusPath?: string;
   /**
    * Folders this picker has been used for before, most recent first — shown as
    * a "Previously used" section. Omitted (or empty), the section is not shown.
@@ -28,10 +35,15 @@ interface FolderBrowserProps {
   onRemoveRecentDirectory?: (path: string) => void;
 }
 
-/** Last path segment, for a row's title line. */
-const baseName = (path: string) => path.replace(/\/+$/, "").split("/").pop() || "/";
-
-export default function FolderBrowser({ isOpen, onClose, onSelect, initialPath = "/", recentDirectories, onRemoveRecentDirectory }: FolderBrowserProps) {
+export default function FolderBrowser({
+  isOpen,
+  onClose,
+  onSelect,
+  initialPath = "/",
+  focusPath,
+  recentDirectories,
+  onRemoveRecentDirectory,
+}: FolderBrowserProps) {
   const isMobile = useIsMobile();
   const [currentPath, setCurrentPath] = useState(initialPath);
   const [browseResult, setBrowseResult] = useState<BrowseResult | null>(null);
@@ -54,6 +66,24 @@ export default function FolderBrowser({ isOpen, onClose, onSelect, initialPath =
    * listing. Navigation after that is the user's and is shown as-is.
    */
   const openedAtRef = useRef<string | null>(null);
+  /**
+   * The start props as of the latest render, read only when the browser opens.
+   * They are derived from the recent list (FolderSelector), which changes while
+   * the browser is open — a removal, a space refresh — and that must not yank
+   * the user back to wherever the new list would have started.
+   */
+  const startPropsRef = useRef({ initialPath, focusPath });
+  /** `focusPath` as it was when the browser opened. */
+  const [openedFocus, setOpenedFocus] = useState<string | null>(null);
+  /** Scroll the `openedFocus` row into view once the first listing is shown. */
+  const scrollToFocusRef = useRef(false);
+  /**
+   * What the displayed `browseResult` is a listing of. A browse that resolves
+   * to a different path (walk-up, symlinks) sets `currentPath` to the resolved
+   * one; without this, that would fetch the same listing again.
+   */
+  const shownRef = useRef<{ path: string; showHidden: boolean } | null>(null);
+  const listRef = useRef<HTMLDivElement>(null);
   const showRecent = !!recentDirectories && recentDirectories.length > 0;
   // The server's own "recent" suggestions are a different, older list; with
   // the section shown they would only duplicate or contradict it.
@@ -75,28 +105,39 @@ export default function FolderBrowser({ isOpen, onClose, onSelect, initialPath =
     }
   }, [isOpen]);
 
-  // Reset state when modal opens. Declared before the browse effect so that,
-  // in the commit that opens the modal, the start path is recorded before the
-  // first browse reads it.
+  useEffect(() => {
+    startPropsRef.current = { initialPath, focusPath };
+  });
+
+  // Reset state when modal opens — on the closed→open transition only. Declared
+  // before the browse effect so that, in the commit that opens the modal, the
+  // start path is recorded before the first browse reads it.
   useEffect(() => {
     if (isOpen) {
-      const start = initialPath || "/";
+      const start = startPropsRef.current.initialPath || "/";
       openedAtRef.current = start;
+      shownRef.current = null;
+      scrollToFocusRef.current = true;
+      setOpenedFocus(startPropsRef.current.focusPath ?? null);
       setCurrentPath(start);
       setError(null);
       setConfirmRemovePath(null);
     }
-  }, [isOpen, initialPath]);
+  }, [isOpen]);
 
   // Browse directory when path changes
   useEffect(() => {
     let cancelled = false;
     const browse = async () => {
       if (!isOpen || !currentPath) return;
+      // Already showing this exact listing — see shownRef.
+      const shown = shownRef.current;
+      if (shown && shown.path === currentPath && shown.showHidden === showHidden) return;
 
-      // Only the browse of the path the modal opened at may walk up.
+      // Only the browse of the path the modal opened at may walk up. The mark
+      // is cleared once such a browse completes, not when it starts, so one
+      // cancelled midway (hidden files toggled) still walks up when it re-runs.
       const firstBrowse = openedAtRef.current === currentPath;
-      if (firstBrowse) openedAtRef.current = null;
 
       setIsLoading(true);
       setError(null);
@@ -108,10 +149,12 @@ export default function FolderBrowser({ isOpen, onClose, onSelect, initialPath =
             result = await browseDirectory(currentPath, showHidden);
             let path = currentPath;
             while (!result.exists && path !== "/") {
+              if (cancelled) return;
               path = parentDir(path) ?? "/";
               result = await browseDirectory(path, showHidden);
             }
           } catch {
+            if (cancelled) return;
             // Fall back to the root once; an error there is reported as usual.
             result = await browseDirectory("/", showHidden);
           }
@@ -119,10 +162,14 @@ export default function FolderBrowser({ isOpen, onClose, onSelect, initialPath =
           result = await browseDirectory(currentPath, showHidden);
         }
         if (cancelled) return;
+        if (firstBrowse) openedAtRef.current = null;
+        shownRef.current = { path: result.currentPath, showHidden };
         setBrowseResult(result);
         setCurrentPath(result.currentPath); // Update with resolved path
       } catch (err) {
         if (cancelled) return;
+        if (firstBrowse) openedAtRef.current = null;
+        shownRef.current = null;
         setError(errorMessage(err, "Failed to browse directory"));
         setBrowseResult(null);
       } finally {
@@ -136,6 +183,14 @@ export default function FolderBrowser({ isOpen, onClose, onSelect, initialPath =
     };
   }, [currentPath, showHidden, isOpen]);
 
+  // Bring the folder picked last time into view in the first listing shown.
+  useEffect(() => {
+    if (!browseResult || !scrollToFocusRef.current) return;
+    scrollToFocusRef.current = false;
+    const row = listRef.current?.querySelector<HTMLElement>('[data-focus-row="true"]');
+    row?.scrollIntoView?.({ block: "nearest" });
+  }, [browseResult]);
+
   const handleToggleHidden = () => {
     const newValue = !showHidden;
     setShowHidden(newValue);
@@ -148,6 +203,7 @@ export default function FolderBrowser({ isOpen, onClose, onSelect, initialPath =
     try {
       await clearFolderCache();
       const result = await browseDirectory(currentPath, showHidden);
+      shownRef.current = { path: result.currentPath, showHidden };
       setBrowseResult(result);
       setCurrentPath(result.currentPath);
     } catch (err) {
@@ -184,35 +240,18 @@ export default function FolderBrowser({ isOpen, onClose, onSelect, initialPath =
     ];
   };
 
-  const renderRemoveButton = (dir: string, size: number, onAccent: boolean) =>
-    onRemoveRecentDirectory && (
-      <button
-        type="button"
-        onClick={(e) => {
-          e.stopPropagation();
-          setConfirmRemovePath(dir);
-        }}
-        onDoubleClick={(e) => e.stopPropagation()}
-        aria-label={`Remove ${dir} from recent directories`}
-        title={`Remove ${dir} from recent directories`}
-        style={{
-          background: "none",
-          border: "none",
-          padding: 4,
-          borderRadius: 4,
-          cursor: "pointer",
-          color: onAccent ? "var(--text-on-accent)" : "var(--text-muted)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          flexShrink: 0,
-          minWidth: size,
-          minHeight: size,
-        }}
-      >
-        <X size={14} />
-      </button>
-    );
+  const renderRecentRow = (dir: string, compact: boolean) => (
+    <RecentDirectoryRow
+      key={dir}
+      path={dir}
+      compact={compact}
+      isCurrent={currentPath === dir}
+      isLastUsed={openedFocus === dir}
+      onNavigate={handleNavigate}
+      onSelect={onSelect}
+      onRemove={onRemoveRecentDirectory && setConfirmRemovePath}
+    />
+  );
 
   if (!isOpen) return null;
 
@@ -355,56 +394,7 @@ export default function FolderBrowser({ isOpen, onClose, onSelect, initialPath =
               {showRecent && (
                 <div style={{ padding: "16px 16px 0 16px" }} data-testid="folder-browser-recent">
                   <div style={{ fontSize: 13, fontWeight: 500, color: "var(--text-muted)", marginBottom: 8 }}>Previously used</div>
-                  {recentDirectories.map((dir) => {
-                    const isCurrent = currentPath === dir;
-                    return (
-                      <div
-                        key={dir}
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          background: isCurrent ? "var(--accent)" : "none",
-                          color: isCurrent ? "var(--text-on-accent)" : "var(--text)",
-                          borderRadius: 6,
-                          marginBottom: 2,
-                        }}
-                      >
-                        <button
-                          type="button"
-                          onClick={() => handleNavigate(dir)}
-                          onDoubleClick={() => onSelect(dir)}
-                          title={dir}
-                          style={{
-                            flex: 1,
-                            minWidth: 0,
-                            textAlign: "left",
-                            background: "none",
-                            color: "inherit",
-                            border: "none",
-                            padding: "8px 4px 8px 12px",
-                            cursor: "pointer",
-                            fontSize: 13,
-                          }}
-                        >
-                          <div style={{ fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{baseName(dir)}</div>
-                          <div
-                            style={{
-                              fontSize: 11,
-                              opacity: 0.7,
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                              whiteSpace: "nowrap",
-                              direction: "rtl",
-                              textAlign: "left",
-                            }}
-                          >
-                            {dir}
-                          </div>
-                        </button>
-                        {renderRemoveButton(dir, 24, isCurrent)}
-                      </div>
-                    );
-                  })}
+                  {recentDirectories.map((dir) => renderRecentRow(dir, false))}
                 </div>
               )}
               <div style={{ padding: "16px 16px 12px 16px" }}>
@@ -460,7 +450,7 @@ export default function FolderBrowser({ isOpen, onClose, onSelect, initialPath =
                     alignItems: "center",
                     gap: 6,
                     width: "100%",
-                    minHeight: 36,
+                    minHeight: 44,
                     background: "none",
                     border: "none",
                     padding: "4px 0",
@@ -474,50 +464,7 @@ export default function FolderBrowser({ isOpen, onClose, onSelect, initialPath =
                   {recentOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                   Previously used ({recentDirectories.length})
                 </button>
-                {recentOpen &&
-                  recentDirectories.map((dir) => {
-                    const isCurrent = currentPath === dir;
-                    return (
-                      <div
-                        key={dir}
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          minHeight: 44,
-                          borderRadius: 6,
-                          marginBottom: 2,
-                          background: isCurrent ? "var(--accent)" : "none",
-                          color: isCurrent ? "var(--text-on-accent)" : "var(--text)",
-                        }}
-                      >
-                        <button
-                          type="button"
-                          onClick={() => handleNavigate(dir)}
-                          onDoubleClick={() => onSelect(dir)}
-                          title={dir}
-                          style={{
-                            flex: 1,
-                            minWidth: 0,
-                            minHeight: 44,
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 6,
-                            textAlign: "left",
-                            background: "none",
-                            color: "inherit",
-                            border: "none",
-                            padding: "0 4px 0 10px",
-                            cursor: "pointer",
-                            fontSize: 13,
-                          }}
-                        >
-                          <History size={14} style={{ color: isCurrent ? "inherit" : "var(--text-muted)", flexShrink: 0 }} />
-                          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", direction: "rtl", textAlign: "left" }}>{dir}</span>
-                        </button>
-                        {renderRemoveButton(dir, 44, isCurrent)}
-                      </div>
-                    );
-                  })}
+                {recentOpen && recentDirectories.map((dir) => renderRecentRow(dir, true))}
                 <div style={{ borderBottom: "1px solid var(--border)", marginTop: 4 }} />
               </div>
             )}
@@ -544,7 +491,7 @@ export default function FolderBrowser({ isOpen, onClose, onSelect, initialPath =
                 {error}
               </div>
             ) : browseResult ? (
-              <div style={{ padding: isMobile ? "8px 12px" : "12px 16px" }}>
+              <div ref={listRef} style={{ padding: isMobile ? "8px 12px" : "12px 16px" }}>
                 {/* Parent directory link */}
                 {browseResult.parent && (
                   <div
@@ -568,44 +515,56 @@ export default function FolderBrowser({ isOpen, onClose, onSelect, initialPath =
                 )}
 
                 {/* Directories */}
-                {browseResult.directories.map((item) => (
-                  <div
-                    key={item.path}
-                    onClick={() => handleItemClick(item)}
-                    onDoubleClick={() => handleItemDoubleClick(item)}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: isMobile ? 8 : 12,
-                      padding: isMobile ? "8px 10px" : "8px 12px",
-                      borderRadius: 6,
-                      cursor: "pointer",
-                      marginBottom: 2,
-                      opacity: item.isHidden ? 0.6 : 1,
-                      minHeight: isMobile ? 44 : 40, // Better touch target on mobile
-                    }}
-                    onMouseOver={(e) => (e.currentTarget.style.background = "var(--surface)")}
-                    onMouseOut={(e) => (e.currentTarget.style.background = "transparent")}
-                  >
-                    <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 6 : 8, flex: 1, minWidth: 0 }}>
-                      {item.isGitRepo ? (
-                        <GitBranch size={isMobile ? 14 : 16} style={{ color: "var(--accent-text)", flexShrink: 0 }} />
-                      ) : (
-                        <Folder size={isMobile ? 14 : 16} style={{ color: "var(--accent-text)", flexShrink: 0 }} />
-                      )}
-                      <span
-                        style={{
-                          fontSize: isMobile ? 13 : 14,
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap",
-                        }}
-                      >
-                        {item.name}
-                      </span>
+                {browseResult.directories.map((item) => {
+                  // The folder picked last time, shown among its siblings.
+                  const isFocus = item.path === openedFocus;
+                  const restingBackground = isFocus ? "var(--accent)" : "transparent";
+                  return (
+                    <div
+                      key={item.path}
+                      onClick={() => handleItemClick(item)}
+                      onDoubleClick={() => handleItemDoubleClick(item)}
+                      aria-current={isFocus ? "true" : undefined}
+                      data-focus-row={isFocus ? "true" : undefined}
+                      title={isFocus ? "Last used" : undefined}
+                      style={{
+                        background: restingBackground,
+                        color: isFocus ? "var(--text-on-accent)" : undefined,
+                        display: "flex",
+                        alignItems: "center",
+                        gap: isMobile ? 8 : 12,
+                        padding: isMobile ? "8px 10px" : "8px 12px",
+                        borderRadius: 6,
+                        cursor: "pointer",
+                        marginBottom: 2,
+                        opacity: item.isHidden ? 0.6 : 1,
+                        minHeight: isMobile ? 44 : 40, // Better touch target on mobile
+                      }}
+                      onMouseOver={(e) => {
+                        if (!isFocus) e.currentTarget.style.background = "var(--surface)";
+                      }}
+                      onMouseOut={(e) => (e.currentTarget.style.background = restingBackground)}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 6 : 8, flex: 1, minWidth: 0 }}>
+                        {item.isGitRepo ? (
+                          <GitBranch size={isMobile ? 14 : 16} style={{ color: isFocus ? "inherit" : "var(--accent-text)", flexShrink: 0 }} />
+                        ) : (
+                          <Folder size={isMobile ? 14 : 16} style={{ color: isFocus ? "inherit" : "var(--accent-text)", flexShrink: 0 }} />
+                        )}
+                        <span
+                          style={{
+                            fontSize: isMobile ? 13 : 14,
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {item.name}
+                        </span>
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
 
                 {browseResult.directories.length === 0 && browseResult.files.length === 0 && (
                   <div

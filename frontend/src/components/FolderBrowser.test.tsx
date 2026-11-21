@@ -55,6 +55,13 @@ function renderBrowser(props: Partial<React.ComponentProps<typeof FolderBrowser>
 /** The "remove?" dialog — its own overlay, nested inside the browser's. */
 const confirmDialog = () => screen.getByText("Remove Recent Directory").closest("[data-modal-overlay]") as HTMLElement;
 
+/** A row of the main directory listing (not the Previously used section), by folder name. */
+const listedRow = async (name: string) => {
+  await waitFor(() => expect(screen.getAllByText(name).some((el) => !el.closest('[data-testid="folder-browser-recent"]'))).toBe(true));
+  const label = screen.getAllByText(name).find((el) => !el.closest('[data-testid="folder-browser-recent"]'))!;
+  return label.parentElement!.parentElement as HTMLElement;
+};
+
 const RECENT = ["/home/me/code/app", "/home/me/code/lib"];
 
 describe("FolderBrowser — Previously used", () => {
@@ -76,11 +83,35 @@ describe("FolderBrowser — Previously used", () => {
     expect(onSelect).toHaveBeenCalledWith("/home/me/code/lib");
   });
 
-  it("highlights the folder being shown", async () => {
-    renderBrowser({ recentDirectories: RECENT, initialPath: "/home/me/code/app" });
+  it("highlights the folder being shown once the user goes into it", async () => {
+    // As FolderSelector opens it: above the last-used folder.
+    renderBrowser({ recentDirectories: RECENT, initialPath: "/home/me/code", focusPath: "/home/me/code/app" });
     const section = await screen.findByTestId("folder-browser-recent");
-    await waitFor(() => expect((within(section).getByTitle("/home/me/code/app").parentElement as HTMLElement).style.background).toBe("var(--accent)"));
+    await listedRow("lib");
+    const appRow = within(section).getByTitle("/home/me/code/app");
+    expect(appRow.getAttribute("aria-current")).toBeNull();
+    fireEvent.click(appRow);
+    await waitFor(() => expect(appRow.getAttribute("aria-current")).toBe("location"));
+    expect((appRow.parentElement as HTMLElement).style.background).toBe("var(--accent)");
     expect((within(section).getByTitle("/home/me/code/lib").parentElement as HTMLElement).style.background).not.toBe("var(--accent)");
+  });
+
+  it("opened above a folder, marks that folder in the listing and in Previously used", async () => {
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    renderBrowser({ recentDirectories: RECENT, initialPath: "/home/me/code", focusPath: "/home/me/code/app" });
+    const listed = await listedRow("app");
+    expect(listed.getAttribute("aria-current")).toBe("true");
+    expect(listed.style.background).toBe("var(--accent)");
+    expect((await listedRow("lib")).getAttribute("aria-current")).toBeNull();
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledTimes(1));
+    expect(scrollIntoView.mock.contexts[0]).toBe(listed);
+    const section = screen.getByTestId("folder-browser-recent");
+    const tags = within(section).getAllByTestId("recent-last-used");
+    expect(tags).toHaveLength(1);
+    expect(within(section).getByTitle("/home/me/code/app").contains(tags[0])).toBe(true);
+    // @ts-expect-error -- jsdom has no scrollIntoView; remove the stub again.
+    delete Element.prototype.scrollIntoView;
   });
 
   it("hides the server's own recent suggestions while the section is shown", async () => {
@@ -123,6 +154,67 @@ describe("FolderBrowser — Previously used", () => {
     fireEvent.click(toggle);
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
     expect(screen.queryByTitle("/home/me/code/app")).toBeNull();
+  });
+});
+
+describe("FolderBrowser — start path is read on open only", () => {
+  it("ignores a changed initialPath while open (a recent folder removed, a space refresh)", async () => {
+    const props = { isOpen: true, onClose: () => {}, onSelect: () => {}, recentDirectories: RECENT };
+    const { rerender } = render(<FolderBrowser {...props} initialPath="/home/me/code" focusPath="/home/me/code/app" />);
+    fireEvent.click(await screen.findByTitle("/home/me/code/lib"));
+    await waitFor(() => expect(browsed()).toContain("/home/me/code/lib"));
+    vi.mocked(browseDirectory).mockClear();
+    rerender(<FolderBrowser {...props} recentDirectories={["/home/me/code/lib"]} initialPath="/home/me" focusPath="/home/me/code" />);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(browsed()).toEqual([]);
+    expect(screen.getByTitle("/home/me/code/lib").getAttribute("aria-current")).toBe("location");
+    // ...but the next open does use it.
+    rerender(<FolderBrowser {...props} isOpen={false} initialPath="/home/me" />);
+    rerender(<FolderBrowser {...props} initialPath="/home/me" />);
+    await waitFor(() => expect(browsed()).toContain("/home/me"));
+  });
+});
+
+/** A promise resolved from outside, for responses that arrive out of order. */
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => (resolve = r));
+  return { promise, resolve };
+}
+
+describe("FolderBrowser — browse responses", () => {
+  it("ignores a response that arrives after the user has moved on", async () => {
+    renderBrowser({ initialPath: "/home/me", recentDirectories: RECENT });
+    await screen.findByText("code");
+    const slow = deferred<BrowseResult>();
+    vi.mocked(browseDirectory).mockImplementation(async (path: string) => (path === "/home/me/code/app" ? slow.promise : listing(path)));
+    fireEvent.click(screen.getByTitle("/home/me/code/app"));
+    fireEvent.click(screen.getByTitle("/home/me/code/lib"));
+    await waitFor(() => expect(screen.getByTitle("/home/me/code/lib").getAttribute("aria-current")).toBe("location"));
+    slow.resolve({ ...listing("/home/me/code"), currentPath: "/home/me/code/app" });
+    await new Promise((r) => setTimeout(r, 20));
+    // Still lib: app's late listing (which would list app & lib) was dropped.
+    expect(screen.getByTitle("/home/me/code/lib").getAttribute("aria-current")).toBe("location");
+    expect(screen.getByText("This directory is empty")).toBeTruthy();
+  });
+
+  it("fetches the folder it walked up to once, not again for the resolved path", async () => {
+    renderBrowser({ initialPath: "/home/me/gone" });
+    await screen.findByText("code");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(browsed().filter((p) => p === "/home/me")).toHaveLength(1);
+  });
+
+  it("stops walking up once the user has navigated away", async () => {
+    const slow = deferred<BrowseResult>();
+    vi.mocked(browseDirectory).mockImplementation(async (path: string) => (path === "/home/me/gone/deeper" ? slow.promise : listing(path)));
+    renderBrowser({ initialPath: "/home/me/gone/deeper", recentDirectories: RECENT });
+    fireEvent.click(await screen.findByTitle("/home/me/code/lib"));
+    await waitFor(() => expect(browsed()).toContain("/home/me/code/lib"));
+    slow.resolve(listing("/home/me/gone/deeper"));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(browsed()).not.toContain("/home/me/gone");
+    expect(screen.getByTitle("/home/me/code/lib").getAttribute("aria-current")).toBe("location");
   });
 });
 

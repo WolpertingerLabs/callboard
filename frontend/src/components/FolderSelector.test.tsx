@@ -57,6 +57,25 @@ describe("FolderSelector — browser start path", () => {
     expect(openAt("/srv")).toBe("/");
   });
 
+  it("marks the folder it opened above", () => {
+    openAt("", ["/home/me/code/app"]);
+    expect(browserProps.last?.focusPath).toBe("/home/me/code/app");
+    cleanup();
+    openAt("/srv/site/");
+    expect(browserProps.last?.focusPath).toBe("/srv/site");
+  });
+
+  it("marks nothing when opening at the root for want of a folder", () => {
+    openAt("");
+    expect(browserProps.last?.focusPath).toBeUndefined();
+    cleanup();
+    openAt("code/app");
+    expect(browserProps.last?.focusPath).toBeUndefined();
+    cleanup();
+    openAt("/");
+    expect(browserProps.last?.focusPath).toBeUndefined();
+  });
+
   it("passes the recent list and remove handler through", () => {
     const onRemove = vi.fn();
     render(<FolderSelector value="" onChange={() => {}} recentDirectories={["/a/b"]} onRemoveRecentDirectory={onRemove} />);

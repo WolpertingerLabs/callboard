@@ -674,7 +674,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
                     }}
                     title={`Open chat in ${displayPath}`}
                   >
-                    {displayPath}
+                    <bdi dir="ltr">{displayPath}</bdi>
                   </span>
                 ) : displayPath ? (
                   <span
@@ -686,7 +686,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
                       flex: 1,
                     }}
                   >
-                    {displayPath}
+                    <bdi dir="ltr">{displayPath}</bdi>
                   </span>
                 ) : null}
               </div>
@@ -723,7 +723,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
                               direction: "rtl",
                             }}
                           >
-                            {dir}
+                            <bdi dir="ltr">{dir}</bdi>
                           </button>
                           <button
                             onClick={() => handleRemoveRecentDir(dir)}

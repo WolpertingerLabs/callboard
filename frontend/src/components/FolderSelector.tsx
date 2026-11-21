@@ -28,6 +28,11 @@ export default function FolderSelector({
   const [validation, setValidation] = useState<ValidateResult | null>(null);
   const [isValidating, setIsValidating] = useState(false);
   const [showBrowser, setShowBrowser] = useState(false);
+  // The browser opens one level above the folder in the field — or, with the
+  // field empty, the folder picked last time — so that folder is in view among
+  // its siblings, marked, rather than its own contents filling the list.
+  const startFrom = (value.trim() || recentDirectories?.[0] || "").replace(/(.)\/+$/, "$1");
+  const startParent = parentDir(startFrom);
 
   // Validate path when value changes
   useEffect(() => {
@@ -201,10 +206,8 @@ export default function FolderSelector({
           onChange(path);
           setShowBrowser(false);
         }}
-        // Open one level above the folder in the field — or, with the field
-        // empty, the folder picked last time — so it and its siblings are in
-        // view rather than the folder's own contents.
-        initialPath={parentDir(value.trim() || recentDirectories?.[0]) ?? "/"}
+        initialPath={startParent ?? "/"}
+        focusPath={startParent && startFrom !== "/" ? startFrom : undefined}
         recentDirectories={recentDirectories}
         onRemoveRecentDirectory={onRemoveRecentDirectory}
       />
