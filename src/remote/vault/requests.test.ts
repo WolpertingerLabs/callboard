@@ -603,7 +603,8 @@ describe('rename, delete and purgeCaller', () => {
     await ask('alice', 'gh2');
     expect(purgeCaller('bob')).toEqual({ items: 0, revokedGrants: 1, withdrawnRequests: 1 });
     expect(listGrants()[0]).toMatchObject({ revokedReason: 'caller_deleted' });
-    expect(listOwnRequests('bob').requests[0].status).toBe('withdrawn');
+    // Withdrawn, then dropped with the rest of bob's request history.
+    expect(listOwnRequests('bob').requests).toEqual([]);
     // A new bob inherits nothing.
     expect(listItems('bob', {}).shared).toEqual([]);
     // The events land in the owner's log (appended in the background).
@@ -611,6 +612,22 @@ describe('rename, delete and purgeCaller', () => {
       expect(events('alice')).toEqual(
         expect.arrayContaining(['vault.grant.revoked', 'vault.request.withdrawn']),
       );
+    });
+  });
+});
+
+describe('a re-created alias inherits no request history', () => {
+  it('purgeCaller drops the requester’s decided requests too', async () => {
+    await aliceItem('gh');
+    const { requestId } = await ask('alice', 'gh');
+    await denyRequest(requestId, { note: 'operator note for the old bob' });
+    await requestAccess('carol', { owner: 'alice', name: 'gh', reason: 'r' });
+    purgeCaller('bob');
+    expect(listOwnRequests('bob').requests).toEqual([]);
+    expect(listRequests().map((r) => r.requester)).toEqual(['carol']);
+    // And the history is still in the owner's audit log.
+    await vi.waitFor(() => {
+      expect(events('alice')).toContain('vault.request.denied');
     });
   });
 });

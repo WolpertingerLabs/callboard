@@ -474,7 +474,7 @@ If `keys/vault.key` is missing while `vault.enc.json` exists, every vault tool f
 - **Lose the key and the vault is gone.** There's no recovery. To start over, move the old file aside (`mv vault.enc.json vault.enc.json.lost`); the next save creates a new key and an empty vault.
 - Syncing the whole config dir also syncs the key (and `.env`, which is already plaintext). Exclude `keys/` from sync if you want the vault backup to be safe.
 
-**Deleting a caller** (dashboard, `DELETE /api/admin/callers/:alias`) deletes its vault items too, revokes every grant to or from it, and withdraws every pending request by it or for its items, so a new caller with the same alias starts empty and inherits no access. If the vault can't be read (its key is missing, say), the deletion fails and the caller is left in place.
+**Deleting a caller** (dashboard, `DELETE /api/admin/callers/:alias`) deletes its vault items too, revokes every grant to or from it, withdraws every pending request by it or for its items, and drops its own request history, so a new caller with the same alias starts empty and inherits no access. If the vault can't be read (its key is missing, say), the deletion fails and the caller is left in place.
 
 **Audit events.** Vault events are daemon lines (`drawlatch.source: "daemon"`) in the **owner's** audit log, whoever acted. They carry `vault.owner`, `vault.item` (the name at the time), `vault.item_id`, `vault.actor` (a caller's alias, or `admin` for the dashboard), and `vault.via` (`mcp` or `admin`), plus:
 

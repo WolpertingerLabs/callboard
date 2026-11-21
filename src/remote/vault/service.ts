@@ -871,7 +871,12 @@ export function purgeCaller(alias: string): {
   if (!vaultExists()) return { items: 0, revokedGrants: 0, withdrawnRequests: 0 };
   const before = readVault();
   const t0 = touches(before);
-  if (!Object.hasOwn(before.callers, alias) && t0.grants.length === 0 && t0.requests.length === 0) {
+  if (
+    !Object.hasOwn(before.callers, alias) &&
+    t0.grants.length === 0 &&
+    t0.requests.length === 0 &&
+    !before.requests.some((r) => r.requester === alias)
+  ) {
     return { items: 0, revokedGrants: 0, withdrawnRequests: 0 };
   }
   const done = mutateVault((doc) => {
@@ -896,6 +901,10 @@ export function purgeCaller(alias: string): {
     });
     // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- own-key map
     delete doc.callers[alias];
+    // Its own request history goes too: a later caller with the same alias
+    // must not see the old one's requests or the operator's notes in
+    // vault_list_requests. (The owner's audit log keeps the record.)
+    doc.requests = doc.requests.filter((r) => r.requester !== alias);
     pruneHistory(doc);
     return { items: t.items, grants, requests };
   });
