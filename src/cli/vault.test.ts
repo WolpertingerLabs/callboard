@@ -511,6 +511,10 @@ describe.skipIf(!built)('drawlatch vault (CLI against a test daemon)', () => {
       expect(r.status).toBe(0);
       expect(r.stdout).toContain('drawlatch vault list [--caller <alias>]');
       expect(r.stdout).toContain('drawlatch vault git-credential --item <name>');
+      // The check that shows helper order, not the --get-all one that can't.
+      expect(r.stdout).toContain("git config --show-origin --get-regexp '^credential\\..*helper$'");
+      expect(r.stdout).toContain('GIT_TRACE=1 git credential reject');
+      expect(r.stdout).not.toContain('--get-all');
       // The example resets inherited helpers for the URL before adding this one.
       expect(r.stdout).toContain(
         "git config --global credential.https://forgejo.example.com.helper ''",
@@ -645,10 +649,22 @@ describe.skipIf(!built)('drawlatch vault (CLI against a test daemon)', () => {
      * line clears the inherited list for the URL; without it the token lands
      * in ~/.git-credentials.
      */
-    async function fillAndApprove(reset: boolean): Promise<{ home: string; fill: Run }> {
+    const KEY = 'credential.https://forgejo.example.com.helper';
+    type GitConfig = (...args: string[]) => Promise<void>;
+
+    /**
+     * A throwaway HOME whose temp GIT_CONFIG_GLOBAL starts as `initialGlobal`;
+     * `setup` runs `git config …` inside a fresh repo, then git fills and
+     * approves a credential for forgejo.example.com. Returns the HOME so the
+     * caller can look for ~/.git-credentials (where `store` writes).
+     */
+    async function fillAndApprove(
+      initialGlobal: string,
+      setup: (config: GitConfig) => Promise<void>,
+    ): Promise<{ home: string; fill: Run }> {
       const h = fs.mkdtempSync(path.join(os.tmpdir(), 'drawlatch-vault-cli-store-'));
       const globalConfig = path.join(h, 'temp-global-gitconfig');
-      fs.writeFileSync(globalConfig, '[credential]\n\thelper = store\n');
+      fs.writeFileSync(globalConfig, initialGlobal);
       const env = {
         ...gitEnv(),
         HOME: h,
@@ -658,16 +674,9 @@ describe.skipIf(!built)('drawlatch vault (CLI against a test daemon)', () => {
       const r = path.join(h, 'repo');
       fs.mkdirSync(r);
       expect((await run('git', ['init', '-q'], { cwd: r, env })).status).toBe(0);
-      const key = 'credential.https://forgejo.example.com.helper';
-      if (reset) {
-        expect((await run('git', ['config', '--local', key, ''], { cwd: r, env })).status).toBe(0);
-      }
-      const add = await run(
-        'git',
-        ['config', '--local', '--add', key, helper('forgejo.example.com')],
-        { cwd: r, env },
-      );
-      expect(add.status).toBe(0);
+      await setup(async (...args) => {
+        expect((await run('git', ['config', ...args], { cwd: r, env })).status).toBe(0);
+      });
       const fill = await run('git', ['credential', 'fill'], {
         cwd: r,
         env,
@@ -683,19 +692,57 @@ describe.skipIf(!built)('drawlatch vault (CLI against a test daemon)', () => {
       return { home: h, fill };
     }
 
-    it('with the reset line, another configured helper (store) writes nothing', async () => {
-      const { home: h, fill } = await fillAndApprove(true);
-      try {
-        expect(fill.stdout).toContain(`password=${REVEAL_TOKEN}\n`);
-        expect(fs.existsSync(path.join(h, '.git-credentials'))).toBe(false);
-        expectNoCredentialFiles(h);
-      } finally {
-        fs.rmSync(h, { recursive: true, force: true });
-      }
-    });
+    const EARLIER_STORE = '[credential]\n\thelper = store\n';
+    const resetAndAdd =
+      (scope: '--global' | '--local') =>
+      async (config: GitConfig): Promise<void> => {
+        await config(scope, KEY, '');
+        await config(scope, '--add', KEY, helper('forgejo.example.com'));
+      };
 
-    it('without the reset line, the inherited store helper persists the token', async () => {
-      const { home: h, fill } = await fillAndApprove(false);
+    it.each([
+      ['the documented --global lines, store above them in the same file', resetAndAdd('--global')],
+      ['repo-local reset lines, store in the global file', resetAndAdd('--local')],
+    ])(
+      'with the reset line, an earlier store helper writes nothing (%s)',
+      async (_label, setup) => {
+        const { home: h, fill } = await fillAndApprove(EARLIER_STORE, setup);
+        try {
+          expect(fill.stdout).toContain(`password=${REVEAL_TOKEN}\n`);
+          expect(fs.existsSync(path.join(h, '.git-credentials'))).toBe(false);
+          expectNoCredentialFiles(h);
+        } finally {
+          fs.rmSync(h, { recursive: true, force: true });
+        }
+      },
+    );
+
+    // The reset clears only helpers git has read before it. These pin what the
+    // README says it doesn't cover, next to the control without any reset.
+    it.each([
+      [
+        'without the reset line',
+        EARLIER_STORE,
+        async (config: GitConfig) => config('--local', '--add', KEY, helper('forgejo.example.com')),
+      ],
+      [
+        'with the reset line, but a general store helper added later in the same file',
+        '',
+        async (config: GitConfig) => {
+          await resetAndAdd('--global')(config);
+          await config('--global', 'credential.helper', 'store');
+        },
+      ],
+      [
+        "with the reset line, but a general store helper in the repo's .git/config",
+        '',
+        async (config: GitConfig) => {
+          await resetAndAdd('--global')(config);
+          await config('--local', 'credential.helper', 'store');
+        },
+      ],
+    ])('%s, the store helper persists the token', async (_label, initialGlobal, setup) => {
+      const { home: h, fill } = await fillAndApprove(initialGlobal, setup);
       try {
         expect(fill.stdout).toContain(`password=${REVEAL_TOKEN}\n`);
         const stored = path.join(h, '.git-credentials');
@@ -830,6 +877,24 @@ describe('git request reading (in process)', () => {
     expect(connect).not.toHaveBeenCalled();
   });
 
+  it('answers a CRLF request for the matching host, stdin still open', async () => {
+    const send = vi.fn().mockResolvedValue({ values: { value: 'fake-crlf-0000' } });
+    const connect = vi.fn(() => ({ send }));
+    const streams = io(openStdin('protocol=https\r\nhost=forgejo.example.com\r\n\r\n'), connect);
+    const code = await runVaultCli(
+      ['git-credential', '--item', 'forgejo-token', '--host', 'forgejo.example.com', 'get'],
+      streams,
+    );
+    expect(code).toBe(0);
+    expect(send).toHaveBeenCalledWith('vault_get', {
+      name: 'forgejo-token',
+      purpose: 'git-credential',
+    });
+    expect(String(streams.stdout.read())).toBe(
+      'username=x-access-token\npassword=fake-crlf-0000\n',
+    );
+  });
+
   it('refuses a CRLF request for another host without connecting, stdin still open', async () => {
     const connect = vi.fn();
     const code = await runVaultCli(
@@ -837,6 +902,18 @@ describe('git request reading (in process)', () => {
       io(openStdin('protocol=https\r\nhost=evil.example.net\r\n\r\n'), connect),
     );
     expect(code).toBe(1);
+    expect(connect).not.toHaveBeenCalled();
+  });
+
+  it('gives up after 64 KiB without a blank line, stdin still open', async () => {
+    const connect = vi.fn();
+    const streams = io(openStdin(`host=forgejo.example.com\n${'a'.repeat(70_000)}`), connect);
+    const code = await runVaultCli(
+      ['git-credential', '--item', 'forgejo-token', '--host', 'forgejo.example.com', 'get'],
+      streams,
+    );
+    expect(code).toBe(1);
+    expect(String(streams.stderr.read())).toMatch(/more input than expected/);
     expect(connect).not.toHaveBeenCalled();
   });
 });
