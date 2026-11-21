@@ -16,15 +16,18 @@ import crypto from 'node:crypto';
 import { MIN_SCRUBBED_SECRET_LENGTH } from '../../shared/config.js';
 import { createLogger } from '../../shared/logger.js';
 import { isReservedKey } from '../../shared/safe-keys.js';
-import { appendVaultEvent, type VaultEventName } from './audit.js';
+import { appendVaultEvent, type VaultEventFields, type VaultEventName } from './audit.js';
 import {
   VaultError,
   mutateVault,
   readVault,
   vaultExists,
+  type AccessRequest,
   type Actor,
   type Exposure,
+  type Grant,
   type ItemKind,
+  type RequestStatus,
   type VaultDocument,
   type VaultItem,
 } from './store.js';
@@ -58,14 +61,33 @@ export type Origin = 'agent' | 'admin';
 /** An item as tools show it: everything but `values`, plus the field names. */
 export type ItemMeta = Omit<VaultItem, 'values'> & { fields: string[] };
 
-/** What a caller may see of an item shared with it (PR 3 fills this in). */
+/**
+ * What a grantee sees of an item shared with it: never notes, tags,
+ * metadata or values. `mode` is the effective mode, `min(grant, exposure)`.
+ * `connections` is the item's binding, since it limits where the grantee
+ * may use it (a refused request names it anyway).
+ */
 export interface SharedMeta {
   owner: string;
   name: string;
   kind: ItemKind;
   fields: string[];
   mode: Exposure;
+  connections?: string[];
 }
+
+// ── Request / grant limits ─────────────────────────────────────────────────
+
+export const MAX_PENDING_PER_REQUESTER = 20;
+export const MAX_REASON_BYTES = 1024;
+export const MAX_NOTE_BYTES = 1024;
+/** Terminal (non-pending) requests kept; the oldest are pruned on write. */
+export const MAX_REQUEST_HISTORY = 500;
+/** How long a revoked grant is kept. */
+export const REVOKED_GRANT_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
+/** Mirrors CALLER_ALIAS_REGEX (caller-bootstrap.ts imports this module, so it isn't imported). */
+export const OWNER_REGEX = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
+export const MAX_OWNER_CHARS = 128;
 
 // ── Validation ─────────────────────────────────────────────────────────────
 
@@ -281,30 +303,172 @@ function actorFor(owner: string, origin: Origin): { actor: string; via: string }
   return origin === 'admin' ? { actor: 'admin', via: 'admin' } : { actor: owner, via: 'mcp' };
 }
 
+function findItemById(doc: VaultDocument, owner: string, id: string): VaultItem | undefined {
+  return Object.values(ownItems(doc, owner) ?? {}).find((i) => i.id === id);
+}
+
+/** What a grant lets its grantee do now: `min(grant.mode, item.exposure)`. */
+export function effectiveMode(
+  grant: Pick<Grant, 'mode'>,
+  item: Pick<VaultItem, 'exposure'>,
+): Exposure {
+  return grant.mode === 'reveal' && item.exposure === 'reveal' ? 'reveal' : 'inject';
+}
+
+function activeGrantFor(
+  doc: VaultDocument,
+  owner: string,
+  itemId: string,
+  grantee: string,
+): Grant | undefined {
+  return doc.grants.find(
+    (g) =>
+      g.status === 'active' && g.owner === owner && g.itemId === itemId && g.grantee === grantee,
+  );
+}
+
 /**
- * Record an item change. The change has already been written, so a failed
- * append is logged (no values) rather than failing a call that did happen.
+ * `owner`'s item `name` with the active grant that shares it with `grantee`,
+ * or undefined when there is no such item or no such grant. Callers must not
+ * tell those two apart in what they return to an agent: that would let it
+ * learn which items other callers have.
  */
+export function sharedItem(
+  doc: VaultDocument,
+  grantee: string,
+  owner: string,
+  name: string,
+): { item: VaultItem; grant: Grant } | undefined {
+  const item = findItem(doc, owner, name);
+  const grant = item && activeGrantFor(doc, owner, item.id, grantee);
+  return item && grant ? { item, grant } : undefined;
+}
+
+/**
+ * Append an event. The change has already been written, so a failed append
+ * is logged (no values) rather than failing a call that did happen.
+ */
+async function record(
+  owner: string,
+  event: VaultEventName,
+  fields: VaultEventFields,
+): Promise<void> {
+  try {
+    await appendVaultEvent(owner, event, fields);
+  } catch (err) {
+    log.error(`vault audit event ${event} for "${owner}" not written: ${(err as Error).message}`);
+  }
+}
+
+/** Record an item change (see record()). */
 async function recordChange(
   event: VaultEventName,
   owner: string,
   origin: Origin,
   item: VaultItem,
-  extra: Record<string, unknown> = {},
+  extra: Partial<VaultEventFields> = {},
 ): Promise<void> {
-  try {
-    await appendVaultEvent(owner, event, {
-      item: item.name,
-      item_id: item.id,
-      ...actorFor(owner, origin),
-      kind: item.kind,
-      exposure: item.exposure,
-      fields: fieldNames(item),
-      ...extra,
-    });
-  } catch (err) {
-    log.error(`vault audit event ${event} for "${owner}" not written: ${(err as Error).message}`);
+  await record(owner, event, {
+    item: item.name,
+    item_id: item.id,
+    ...actorFor(owner, origin),
+    kind: item.kind,
+    exposure: item.exposure,
+    fields: fieldNames(item),
+    ...extra,
+  });
+}
+
+/** The fields of a request event. `item` is the name at the time. */
+function requestEventFields(
+  r: AccessRequest,
+  itemName: string,
+  actor: { actor: string; via: string },
+): VaultEventFields {
+  return {
+    item: itemName,
+    item_id: r.itemId,
+    ...actor,
+    request_id: r.id,
+    requester: r.requester,
+    mode: r.mode,
+    reason: cutBytes(r.reason, MAX_REASON_BYTES),
+    ...(r.decidedNote !== undefined && { note: r.decidedNote }),
+  };
+}
+
+function grantEventFields(
+  g: Grant,
+  itemName: string,
+  actor: { actor: string; via: string },
+): VaultEventFields {
+  return {
+    item: itemName,
+    item_id: g.itemId,
+    ...actor,
+    grant_id: g.id,
+    grantee: g.grantee,
+    mode: g.mode,
+    ...(g.requestId !== undefined && { request_id: g.requestId }),
+    ...(g.revokedReason !== undefined && { revoked_reason: g.revokedReason }),
+  };
+}
+
+/** `text` cut to at most `max` UTF-8 bytes, never splitting a character. */
+function cutBytes(text: string, max: number): string {
+  if (Buffer.byteLength(text) <= max) return text;
+  let out = '';
+  for (const ch of text) {
+    if (Buffer.byteLength(out + ch) > max) break;
+    out += ch;
   }
+  return out;
+}
+
+/**
+ * Drop old history (on every request/grant write): keep the newest
+ * MAX_REQUEST_HISTORY terminal requests and revoked grants for 90 days.
+ * Pending requests and active grants are never pruned.
+ */
+function pruneHistory(doc: VaultDocument, now = Date.now()): void {
+  const terminal = doc.requests.filter((r) => r.status !== 'pending');
+  if (terminal.length > MAX_REQUEST_HISTORY) {
+    const when = (r: AccessRequest) => Date.parse(r.decidedAt ?? r.createdAt) || 0;
+    const keep = new Set(terminal.sort((a, b) => when(b) - when(a)).slice(0, MAX_REQUEST_HISTORY));
+    doc.requests = doc.requests.filter((r) => r.status === 'pending' || keep.has(r));
+  }
+  doc.grants = doc.grants.filter(
+    (g) =>
+      g.status === 'active' ||
+      now - (Date.parse(g.revokedAt ?? '') || now) <= REVOKED_GRANT_RETENTION_MS,
+  );
+}
+
+/** Revoke `owner`'s grants on `itemId` and withdraw its pending requests (item deleted). */
+function detachItem(
+  doc: VaultDocument,
+  owner: string,
+  item: VaultItem,
+  now: string,
+): { grants: Grant[]; requests: AccessRequest[] } {
+  const grants: Grant[] = [];
+  for (const g of doc.grants) {
+    if (g.status === 'active' && g.owner === owner && g.itemId === item.id) {
+      g.status = 'revoked';
+      g.revokedAt = now;
+      g.revokedReason = 'item_deleted';
+      grants.push({ ...g });
+    }
+  }
+  const requests: AccessRequest[] = [];
+  for (const r of doc.requests) {
+    if (r.status === 'pending' && r.owner === owner && r.itemId === item.id) {
+      r.status = 'withdrawn';
+      r.decidedAt = now;
+      requests.push({ ...r });
+    }
+  }
+  return { grants, requests };
 }
 
 // ── Items ──────────────────────────────────────────────────────────────────
@@ -315,11 +479,53 @@ export function listItems(
   opts: { tag?: unknown },
 ): { items: ItemMeta[]; shared: SharedMeta[] } {
   if (opts.tag !== undefined && typeof opts.tag !== 'string') fail('tag must be a string');
-  const items = Object.values(ownItems(readVault(), owner) ?? {})
+  const doc = readVault();
+  const items = Object.values(ownItems(doc, owner) ?? {})
     .filter((i) => opts.tag === undefined || i.tags.includes(opts.tag as string))
     .sort((a, b) => a.name.localeCompare(b.name))
     .map(toMeta);
-  return { items, shared: [] };
+  return { items, shared: sharedWith(doc, owner) };
+}
+
+/** Every item shared with `grantee` by an active grant, under its current name. */
+function sharedWith(doc: VaultDocument, grantee: string): SharedMeta[] {
+  const out: SharedMeta[] = [];
+  for (const g of doc.grants) {
+    if (g.status !== 'active' || g.grantee !== grantee) continue;
+    const item = findItemById(doc, g.owner, g.itemId);
+    if (!item) continue;
+    out.push({
+      owner: g.owner,
+      name: item.name,
+      kind: item.kind,
+      fields: fieldNames(item),
+      mode: effectiveMode(g, item),
+      ...(item.connections && { connections: [...item.connections] }),
+    });
+  }
+  return out.sort((a, b) => a.owner.localeCompare(b.owner) || a.name.localeCompare(b.name));
+}
+
+/** One grantee of an item, for the dashboard: the granted and the effective mode. */
+export interface ItemGrantee {
+  grantee: string;
+  mode: Exposure;
+  effectiveMode: Exposure;
+}
+
+/** Who each of `owner`'s items is shared with (active grants), keyed by item id. */
+export function grantsByItem(owner: string): Map<string, ItemGrantee[]> {
+  const doc = readVault();
+  const out = new Map<string, ItemGrantee[]>();
+  for (const g of doc.grants) {
+    if (g.status !== 'active' || g.owner !== owner) continue;
+    const item = findItemById(doc, owner, g.itemId);
+    if (!item) continue;
+    const list = out.get(item.id) ?? [];
+    list.push({ grantee: g.grantee, mode: g.mode, effectiveMode: effectiveMode(g, item) });
+    out.set(item.id, list);
+  }
+  return out;
 }
 
 export async function createItem(
@@ -460,33 +666,28 @@ export async function deleteItem(
   opts: ChangeOptions = {},
 ): Promise<{ success: true; deleted: string; revokedGrants: number; withdrawnRequests: number }> {
   const name = checkName(input.name);
-  const { item, revokedGrants, withdrawnRequests } = mutateVault((doc) => {
+  const { item, grants, requests } = mutateVault((doc) => {
     checkRevision(doc, opts);
     const found = requireItem(doc, owner, name);
-    const now = new Date().toISOString();
-    let revoked = 0;
-    for (const g of doc.grants) {
-      if (g.status === 'active' && g.owner === owner && g.itemId === found.id) {
-        g.status = 'revoked';
-        g.revokedAt = now;
-        g.revokedReason = 'item_deleted';
-        revoked++;
-      }
-    }
-    let withdrawn = 0;
-    for (const r of doc.requests) {
-      if (r.status === 'pending' && r.owner === owner && r.itemId === found.id) {
-        r.status = 'withdrawn';
-        r.decidedAt = now;
-        withdrawn++;
-      }
-    }
+    const detached = detachItem(doc, owner, found, new Date().toISOString());
     // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- own-key map, validated name
     delete ensureCaller(doc, owner)[name];
-    return { item: found, revokedGrants: revoked, withdrawnRequests: withdrawn };
+    pruneHistory(doc);
+    return { item: found, ...detached };
   });
+  const actor = actorFor(owner, origin);
   await recordChange('vault.item.deleted', owner, origin, item);
-  return { success: true, deleted: name, revokedGrants, withdrawnRequests };
+  for (const g of grants)
+    await record(owner, 'vault.grant.revoked', grantEventFields(g, name, actor));
+  for (const r of requests) {
+    await record(owner, 'vault.request.withdrawn', requestEventFields(r, name, actor));
+  }
+  return {
+    success: true,
+    deleted: name,
+    revokedGrants: grants.length,
+    withdrawnRequests: requests.length,
+  };
 }
 
 export type RevealResult =
@@ -494,23 +695,25 @@ export type RevealResult =
   | { name: string; owner: string; kind: ItemKind; field: string; value: string };
 
 /**
- * Return the values of an item the caller may reveal. The `vault.reveal`
- * audit line is written first: if it can't be, nothing is returned.
+ * Return the values of an item the caller may reveal: its own `reveal` item,
+ * or another caller's item shared with it by a grant whose effective mode is
+ * `reveal`. The `vault.reveal` audit line (in the owner's log) is written
+ * first: if it can't be, nothing is returned.
  *
- * Cross-caller reads need a grant (a later version). Until then any other
- * `owner` gets one answer, whether or not that caller or item exists.
+ * A cross-caller read without a grant gets one answer, whether or not that
+ * caller or item exists.
  */
 export async function revealItem(
   caller: string,
   input: { name?: unknown; owner?: unknown; field?: unknown },
 ): Promise<RevealResult> {
-  if (input.owner !== undefined && input.owner !== caller) {
-    fail(
-      "Reading another caller's vault item needs a grant from the operator, " +
-        "and grants aren't available in this version.",
-    );
+  if (input.owner === undefined || input.owner === caller) {
+    return reveal({ owner: caller, actor: caller }, input, 'agent');
   }
-  return reveal(caller, input, 'agent');
+  const name = checkName(input.name);
+  const owner = input.owner;
+  if (typeof owner !== 'string' || !isOwnerAlias(owner)) fail(notSharedMessage(name, undefined));
+  return reveal({ owner, actor: caller }, input, 'agent');
 }
 
 /**
@@ -523,11 +726,78 @@ export async function adminRevealItem(
   owner: string,
   input: { name?: unknown; field?: unknown },
 ): Promise<RevealResult> {
-  return reveal(owner, input, 'admin');
+  return reveal({ owner, actor: 'admin' }, input, 'admin');
 }
 
+function isOwnerAlias(v: string): boolean {
+  return v.length <= MAX_OWNER_CHARS && OWNER_REGEX.test(v) && !isReservedKey(v);
+}
+
+/** The one answer for another caller's item that isn't shared with the caller. */
+function notSharedMessage(name: string, owner: string | undefined): string {
+  return (
+    `No item "${name}"${owner === undefined ? '' : ` from "${owner}"`} is shared with you. ` +
+    "Using another caller's item needs a grant from the operator: ask for one with " +
+    'vault_request_access.'
+  );
+}
+
+/** What a reveal may read, as decided from one snapshot of the vault. */
+interface RevealDecision {
+  item: VaultItem;
+  grant?: Grant;
+  fields: string[];
+}
+
+/**
+ * Decide whether `who.actor` may reveal `name` (and `field`) from `who.owner`
+ * in `doc`. Synchronous and pure, so it can run again right before the value
+ * is returned.
+ */
+function decideReveal(
+  doc: VaultDocument,
+  who: { owner: string; actor: string },
+  name: string,
+  field: string | undefined,
+  origin: Origin,
+): RevealDecision {
+  const crossCaller = who.owner !== who.actor && origin === 'agent';
+  let item: VaultItem;
+  let grant: Grant | undefined;
+  if (crossCaller) {
+    const shared = sharedItem(doc, who.actor, who.owner, name);
+    if (!shared) fail(notSharedMessage(name, who.owner));
+    ({ item, grant } = shared);
+    if (effectiveMode(grant, item) !== 'reveal') {
+      fail(
+        `Item "${who.owner}/${name}" is shared with you inject-only: reference it as ` +
+          `\${vault:${who.owner}/${name}} in secure_request.`,
+      );
+    }
+  } else {
+    item = requireItem(doc, who.owner, name);
+    if (origin === 'agent' && item.exposure !== 'reveal') {
+      fail(`Item "${name}" is inject-only: reference it as \${vault:${name}} in secure_request.`);
+    }
+  }
+  if (field !== undefined && !Object.hasOwn(item.values, field)) {
+    fail(`Item "${name}" has no field "${field}"`);
+  }
+  return {
+    item,
+    ...(grant && { grant }),
+    fields: field === undefined ? fieldNames(item) : [field],
+  };
+}
+
+/**
+ * Check, audit, check again, return. The second check runs on a fresh read
+ * after the audit append, with no await between it and the return, so a
+ * revoke, tighten, rename or delete that lands while the line is being
+ * written is honoured: the value read is the value the second check allowed.
+ */
 async function reveal(
-  owner: string,
+  who: { owner: string; actor: string },
   input: { name?: unknown; field?: unknown },
   origin: Origin,
 ): Promise<RevealResult> {
@@ -539,25 +809,30 @@ async function reveal(
     }
     field = input.field;
   }
-  const item = requireItem(readVault(), owner, name);
-  if (origin === 'agent' && item.exposure !== 'reveal') {
-    fail(`Item "${name}" is inject-only: reference it as \${vault:${name}} in secure_request.`);
-  }
-  if (field !== undefined && !Object.hasOwn(item.values, field)) {
-    fail(`Item "${name}" has no field "${field}"`);
-  }
-  const fields = field === undefined ? fieldNames(item) : [field];
+  const { owner } = who;
+  const before = decideReveal(readVault(), who, name, field, origin);
   try {
     await appendVaultEvent(owner, 'vault.reveal', {
-      item: item.name,
-      item_id: item.id,
-      ...actorFor(owner, origin),
-      fields,
+      item: before.item.name,
+      item_id: before.item.id,
+      ...(origin === 'admin' ? actorFor(owner, origin) : { actor: who.actor, via: 'mcp' }),
+      fields: before.fields,
+      ...(before.grant && { grant_id: before.grant.id }),
     });
   } catch (err) {
     const what = origin === 'admin' ? 'reveal' : 'vault_get';
     fail(`${what} refused: ${(err as Error).message}; the value was not returned`);
   }
+  // No await from here to the return.
+  const now = decideReveal(readVault(), who, name, field, origin);
+  if (
+    now.item.id !== before.item.id ||
+    now.grant?.id !== before.grant?.id ||
+    now.fields.join() !== before.fields.join()
+  ) {
+    fail(`Item "${name}" changed while it was being read; the value was not returned. Try again.`);
+  }
+  const { item } = now;
   if (field !== undefined) {
     return { name, owner, kind: item.kind, field, value: item.values[field] };
   }
@@ -599,20 +874,435 @@ export function purgeCaller(alias: string): {
   if (!Object.hasOwn(before.callers, alias) && t0.grants.length === 0 && t0.requests.length === 0) {
     return { items: 0, revokedGrants: 0, withdrawnRequests: 0 };
   }
-  return mutateVault((doc) => {
+  const done = mutateVault((doc) => {
     const t = touches(doc);
     const now = new Date().toISOString();
-    for (const g of t.grants) {
+    const nameOf = (owner: string, itemId: string) =>
+      findItemById(doc, owner, itemId)?.name ?? '(deleted)';
+    const grants = t.grants.map((g) => {
       g.status = 'revoked';
       g.revokedAt = now;
       g.revokedReason = 'caller_deleted';
-    }
-    for (const r of t.requests) {
+      return { grant: { ...g }, item: nameOf(g.owner, g.itemId) };
+    });
+    const requests = t.requests.map((r) => {
       r.status = 'withdrawn';
       r.decidedAt = now;
-    }
+      return {
+        request: { ...r },
+        item: r.itemId ? nameOf(r.owner, r.itemId) : r.itemName,
+        audit: ownerHasVault(doc, r.owner),
+      };
+    });
     // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- own-key map
     delete doc.callers[alias];
-    return { items: t.items, revokedGrants: t.grants.length, withdrawnRequests: t.requests.length };
+    pruneHistory(doc);
+    return { items: t.items, grants, requests };
   });
+  // deleteCaller is synchronous: the events are appended in the background
+  // (record() logs a failure, without values).
+  const admin = actorFor(alias, 'admin');
+  void (async () => {
+    for (const { grant, item } of done.grants) {
+      await record(grant.owner, 'vault.grant.revoked', grantEventFields(grant, item, admin));
+    }
+    for (const { request, item, audit } of done.requests) {
+      if (!audit) continue;
+      await record(
+        request.owner,
+        'vault.request.withdrawn',
+        requestEventFields(request, item, admin),
+      );
+    }
+  })();
+  return {
+    items: done.items,
+    revokedGrants: done.grants.length,
+    withdrawnRequests: done.requests.length,
+  };
+}
+
+// ── Access requests (agent side) ───────────────────────────────────────────
+//
+// An agent may create, list and cancel its own requests. Nothing on the agent
+// side grants, denies or revokes: those are the operator's, on the admin API
+// (invariant 6).
+
+/** What vault_request_access returns: the same shape whatever the owner has. */
+export interface RequestAccessResult {
+  requestId: string;
+  status: 'pending' | 'granted';
+}
+
+/** A request as its requester sees it: never the item id (null would say "no such item"). */
+export interface OwnRequest {
+  id: string;
+  owner: string;
+  itemName: string;
+  mode: Exposure;
+  status: RequestStatus;
+  createdAt: string;
+  decidedAt?: string;
+  decidedNote?: string;
+}
+
+function checkReason(v: unknown): string {
+  if (typeof v !== 'string' || v.trim().length === 0) {
+    fail('reason is required: say why you need the item (the operator reads it)');
+  }
+  if (Buffer.byteLength(v) > MAX_REASON_BYTES) fail(`reason exceeds ${MAX_REASON_BYTES} bytes`);
+  return v;
+}
+
+function checkMode(v: unknown, what = 'mode'): Exposure {
+  if (v === undefined) return 'inject';
+  if (v !== 'inject' && v !== 'reveal') fail(`${what} must be "inject" or "reveal"`);
+  return v;
+}
+
+/** Whether a grant at `granted` already covers a request for `asked`. */
+function covers(granted: Exposure, asked: Exposure): boolean {
+  return granted === 'reveal' || asked === 'inject';
+}
+
+/** Only write an owner's request events when it has a vault (no audit dirs for made-up aliases). */
+function ownerHasVault(doc: VaultDocument, owner: string): boolean {
+  return Object.hasOwn(doc.callers, owner);
+}
+
+/**
+ * Ask the operator for access to `owner`'s item `name`. Same answer whether
+ * or not the owner exists or has that item (no existence oracle). One pending
+ * request per (requester, owner, name): asking again returns it unchanged. An
+ * active grant that already covers the mode returns `granted` and creates
+ * nothing.
+ */
+export async function requestAccess(
+  requester: string,
+  input: { owner?: unknown; name?: unknown; reason?: unknown; mode?: unknown },
+): Promise<RequestAccessResult> {
+  const { owner } = input;
+  if (typeof owner !== 'string' || !isOwnerAlias(owner)) {
+    fail('owner must be a caller alias (letters, digits, "_" or "-")');
+  }
+  const name = checkName(input.name);
+  const reason = checkReason(input.reason);
+  const mode = checkMode(input.mode);
+  if (owner === requester) {
+    fail(
+      `"${name}" would be your own item: use it as \${vault:${name}} directly. ` +
+        'Access requests are for items of another caller.',
+    );
+  }
+
+  const snapshot = readVault();
+  const existing = findItem(snapshot, owner, name);
+  const grant = existing && activeGrantFor(snapshot, owner, existing.id, requester);
+  if (grant && covers(grant.mode, mode)) {
+    return { requestId: grant.requestId ?? grant.id, status: 'granted' };
+  }
+  const pending = snapshot.requests.find(
+    (r) =>
+      r.status === 'pending' &&
+      r.requester === requester &&
+      r.owner === owner &&
+      r.itemName === name,
+  );
+  if (pending) return { requestId: pending.id, status: 'pending' };
+  const mine = snapshot.requests.filter((r) => r.status === 'pending' && r.requester === requester);
+  if (mine.length >= MAX_PENDING_PER_REQUESTER) {
+    fail(
+      `You have ${MAX_PENDING_PER_REQUESTER} pending requests, the most allowed: wait for the ` +
+        'operator to decide, or cancel one with vault_cancel_request.',
+    );
+  }
+
+  const request: AccessRequest = {
+    id: crypto.randomUUID(),
+    requester,
+    owner,
+    itemName: name,
+    itemId: existing?.id ?? null,
+    mode,
+    reason,
+    status: 'pending',
+    createdAt: new Date().toISOString(),
+  };
+  const audit = mutateVault((doc) => {
+    // Synchronous since the snapshot, so its decisions still hold.
+    doc.requests.push(request);
+    pruneHistory(doc);
+    return ownerHasVault(doc, owner);
+  });
+  if (audit) {
+    await record(
+      owner,
+      'vault.request.created',
+      requestEventFields(request, name, { actor: requester, via: 'mcp' }),
+    );
+  }
+  return { requestId: request.id, status: 'pending' };
+}
+
+function toOwnRequest(r: AccessRequest): OwnRequest {
+  return {
+    id: r.id,
+    owner: r.owner,
+    itemName: r.itemName,
+    mode: r.mode,
+    status: r.status,
+    createdAt: r.createdAt,
+    ...(r.decidedAt !== undefined && { decidedAt: r.decidedAt }),
+    ...(r.decidedNote !== undefined && { decidedNote: r.decidedNote }),
+  };
+}
+
+/** The caller's own requests (as requester), newest first. */
+export function listOwnRequests(requester: string): { requests: OwnRequest[] } {
+  const requests = readVault()
+    .requests.filter((r) => r.requester === requester)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .map(toOwnRequest);
+  return { requests };
+}
+
+/**
+ * Cancel one of the caller's own pending requests. Another caller's request
+ * answers exactly like a missing one. Cancelling a cancelled request is a
+ * no-op success.
+ */
+export async function cancelRequest(
+  requester: string,
+  input: { requestId?: unknown },
+): Promise<{ success: true; status: 'cancelled' }> {
+  const id = input.requestId;
+  const notFound = 'No such request of yours';
+  if (typeof id !== 'string' || id.length === 0 || id.length > 64) fail(notFound);
+  const snapshot = readVault().requests.find((r) => r.id === id && r.requester === requester);
+  if (!snapshot) fail(notFound);
+  if (snapshot.status === 'cancelled') return { success: true, status: 'cancelled' };
+  if (snapshot.status !== 'pending') {
+    fail(`That request is ${snapshot.status}; only a pending request can be cancelled.`);
+  }
+  const { request, itemName, audit } = mutateVault((doc) => {
+    const r = doc.requests.find((x) => x.id === id) ?? fail(notFound);
+    r.status = 'cancelled';
+    r.decidedAt = new Date().toISOString();
+    const item = r.itemId ? findItemById(doc, r.owner, r.itemId) : undefined;
+    pruneHistory(doc);
+    return {
+      request: { ...r },
+      itemName: item?.name ?? r.itemName,
+      audit: ownerHasVault(doc, r.owner),
+    };
+  });
+  if (audit) {
+    await record(
+      request.owner,
+      'vault.request.cancelled',
+      requestEventFields(request, itemName, { actor: requester, via: 'mcp' }),
+    );
+  }
+  return { success: true, status: 'cancelled' };
+}
+
+// ── Access requests and grants (operator side, admin API only) ─────────────
+
+/** The current state of a request's or grant's item, for the dashboard. */
+export interface ItemRef {
+  name: string;
+  kind: ItemKind;
+  exposure: Exposure;
+}
+
+/** A request as the operator sees it: everything, plus the item as it is now. */
+export type AdminRequest = AccessRequest & { item: ItemRef | null };
+
+/** A grant as the operator sees it, plus the item now and the effective mode. */
+export type AdminGrant = Grant & { item: ItemRef | null; effectiveMode: Exposure | null };
+
+/** An operator decision on a request that isn't pending (HTTP 409). */
+export class VaultConflict extends VaultError {
+  constructor(
+    message: string,
+    readonly status?: string,
+  ) {
+    super(message);
+    this.name = 'VaultConflict';
+  }
+}
+
+/** An unknown request or grant id (HTTP 404). */
+export class VaultNotFound extends VaultError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'VaultNotFound';
+  }
+}
+
+function itemRef(item: VaultItem | undefined): ItemRef | null {
+  return item ? { name: item.name, kind: item.kind, exposure: item.exposure } : null;
+}
+
+const REQUEST_STATUSES: readonly RequestStatus[] = [
+  'pending',
+  'granted',
+  'denied',
+  'cancelled',
+  'withdrawn',
+];
+
+function checkStatusFilter<T extends string>(v: unknown, allowed: readonly T[]): T | undefined {
+  if (v === undefined || v === '') return undefined;
+  if (typeof v !== 'string' || !allowed.includes(v as T)) {
+    fail(`status must be one of ${allowed.join(', ')}`);
+  }
+  return v as T;
+}
+
+/** Every request (or those with `status`), newest first. */
+export function listRequests(opts: { status?: unknown } = {}): AdminRequest[] {
+  const status = checkStatusFilter(opts.status, REQUEST_STATUSES);
+  const doc = readVault();
+  return doc.requests
+    .filter((r) => status === undefined || r.status === status)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .map((r) => ({
+      ...r,
+      item: itemRef(r.itemId ? findItemById(doc, r.owner, r.itemId) : undefined),
+    }));
+}
+
+/** Every grant (or those with `status`), newest first. */
+export function listGrants(opts: { status?: unknown } = {}): AdminGrant[] {
+  const status = checkStatusFilter(opts.status, ['active', 'revoked'] as const);
+  const doc = readVault();
+  return doc.grants
+    .filter((g) => status === undefined || g.status === status)
+    .sort((a, b) => b.grantedAt.localeCompare(a.grantedAt))
+    .map((g) => {
+      const item = findItemById(doc, g.owner, g.itemId);
+      return {
+        ...g,
+        item: itemRef(item),
+        effectiveMode: item && g.status === 'active' ? effectiveMode(g, item) : null,
+      };
+    });
+}
+
+const ADMIN = { actor: 'admin', via: 'admin' };
+
+function pendingRequest(doc: VaultDocument, id: string): AccessRequest {
+  const r = doc.requests.find((x) => x.id === id);
+  if (!r) throw new VaultNotFound('No such access request');
+  if (r.status !== 'pending') {
+    throw new VaultConflict(`The request is already ${r.status}`, r.status);
+  }
+  return r;
+}
+
+/**
+ * Grant a pending request (operator only). `mode` defaults to inject;
+ * reveal is allowed only on an item whose exposure is reveal. An active grant
+ * for the same (grantee, item) gets the new mode instead of a second grant.
+ */
+export async function grantRequest(
+  id: string,
+  input: { mode?: unknown } = {},
+): Promise<{ request: AccessRequest; grant: Grant }> {
+  const mode = checkMode(input.mode);
+  const { request, grant, itemName } = mutateVault((doc) => {
+    const r = pendingRequest(doc, id);
+    const item = r.itemId ? findItemById(doc, r.owner, r.itemId) : undefined;
+    if (!item) {
+      throw new VaultConflict(
+        `"${r.owner}" has no item "${r.itemName}", so there is nothing to grant: deny the request`,
+        r.status,
+      );
+    }
+    if (mode === 'reveal' && item.exposure !== 'reveal') {
+      fail(
+        `"${item.name}" is an inject item, so it can only be shared inject. ` +
+          'Change its exposure to reveal first to grant reveal.',
+      );
+    }
+    const now = new Date().toISOString();
+    let g = activeGrantFor(doc, r.owner, item.id, r.requester);
+    if (g) {
+      g.mode = mode;
+      g.requestId = r.id;
+    } else {
+      g = {
+        id: crypto.randomUUID(),
+        owner: r.owner,
+        itemId: item.id,
+        grantee: r.requester,
+        mode,
+        status: 'active',
+        requestId: r.id,
+        grantedAt: now,
+      };
+      doc.grants.push(g);
+    }
+    r.status = 'granted';
+    r.decidedAt = now;
+    r.grantId = g.id;
+    pruneHistory(doc);
+    return { request: { ...r }, grant: { ...g }, itemName: item.name };
+  });
+  await record(request.owner, 'vault.grant.created', grantEventFields(grant, itemName, ADMIN));
+  return { request, grant };
+}
+
+/** Deny a pending request (operator only), with an optional note the requester sees. */
+export async function denyRequest(
+  id: string,
+  input: { note?: unknown } = {},
+): Promise<{ request: AccessRequest }> {
+  let note: string | undefined;
+  if (input.note !== undefined && input.note !== null && input.note !== '') {
+    if (typeof input.note !== 'string') fail('note must be a string');
+    if (Buffer.byteLength(input.note) > MAX_NOTE_BYTES)
+      fail(`note exceeds ${MAX_NOTE_BYTES} bytes`);
+    note = input.note;
+  }
+  const { request, itemName, audit } = mutateVault((doc) => {
+    const r = pendingRequest(doc, id);
+    r.status = 'denied';
+    r.decidedAt = new Date().toISOString();
+    if (note !== undefined) r.decidedNote = note;
+    const item = r.itemId ? findItemById(doc, r.owner, r.itemId) : undefined;
+    pruneHistory(doc);
+    return {
+      request: { ...r },
+      itemName: item?.name ?? r.itemName,
+      audit: ownerHasVault(doc, r.owner),
+    };
+  });
+  if (audit) {
+    await record(
+      request.owner,
+      'vault.request.denied',
+      requestEventFields(request, itemName, ADMIN),
+    );
+  }
+  return { request };
+}
+
+/** Revoke a grant (operator only). Revoking a revoked grant is a no-op. */
+export async function revokeGrant(id: string): Promise<{ grant: Grant; changed: boolean }> {
+  const snapshot = readVault().grants.find((g) => g.id === id);
+  if (!snapshot) throw new VaultNotFound('No such grant');
+  if (snapshot.status === 'revoked') return { grant: snapshot, changed: false };
+  const { grant, itemName } = mutateVault((doc) => {
+    const g = doc.grants.find((x) => x.id === id) ?? fail('No such grant');
+    g.status = 'revoked';
+    g.revokedAt = new Date().toISOString();
+    g.revokedReason = 'admin';
+    const name = findItemById(doc, g.owner, g.itemId)?.name ?? '(deleted)';
+    pruneHistory(doc);
+    return { grant: { ...g }, itemName: name };
+  });
+  await record(grant.owner, 'vault.grant.revoked', grantEventFields(grant, itemName, ADMIN));
+  return { grant, changed: true };
 }
