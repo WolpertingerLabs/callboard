@@ -307,6 +307,9 @@ export function parseGitRequest(text: string): Map<string, string> {
   return out;
 }
 
+/** An empty line, LF or CRLF, at the start of the input or after a line break. */
+const BLANK_LINE = /(?:^|\n)\r?\n/;
+
 async function readStdin(stdin: NodeJS.ReadableStream): Promise<string> {
   const chunks: Buffer[] = [];
   let size = 0;
@@ -315,9 +318,9 @@ async function readStdin(stdin: NodeJS.ReadableStream): Promise<string> {
     size += buf.length;
     if (size > MAX_STDIN_BYTES) throw new CliError('git sent more input than expected');
     chunks.push(buf);
-    // git ends its request with a blank line; don't wait for EOF after it.
+    // git ends its request with a blank line (LF or CRLF); don't wait for EOF after it.
     const text = Buffer.concat(chunks).toString('utf8');
-    if (text.startsWith('\n') || text.includes('\n\n')) return text;
+    if (BLANK_LINE.test(text)) return text;
   }
   return Buffer.concat(chunks).toString('utf8');
 }

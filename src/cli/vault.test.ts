@@ -34,7 +34,8 @@ import { IngestorManager } from '../remote/ingestors/manager.js';
 import { resetAuditLogState } from '../remote/audit-log.js';
 import { createItem, grantRequest, requestAccess } from '../remote/vault/service.js';
 import { readVault, resetVaultCache } from '../remote/vault/store.js';
-import { parseGitRequest } from './vault.js';
+import { PassThrough } from 'node:stream';
+import { parseGitRequest, runVaultCli } from './vault.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '../..');
@@ -93,6 +94,9 @@ function run(
     child.stderr.on('data', (d: Buffer) => (stderr += d.toString()));
     child.on('error', reject);
     child.on('close', (status) => resolve({ status, stdout, stderr }));
+    // A child may exit without reading all of stdin (git does, once it has what it
+    // needs); that EPIPE isn't a test failure, and the exit status is checked.
+    child.stdin.on('error', () => undefined);
     child.stdin.end(opts.input ?? '');
   });
 }
@@ -797,6 +801,45 @@ function mcpSession(
     next();
   });
 }
+
+describe('git request reading (in process)', () => {
+  /** stdin that git has written to but not closed. */
+  function openStdin(text: string): PassThrough {
+    const p = new PassThrough();
+    p.write(text);
+    return p;
+  }
+  const io = (stdin: PassThrough, connect = vi.fn()) => ({
+    stdin,
+    stdout: new PassThrough(),
+    stderr: new PassThrough(),
+    connect,
+  });
+
+  it.each([
+    ['LF', 'protocol=https\nhost=forgejo.example.com\n\n'],
+    ['CRLF', 'protocol=https\r\nhost=forgejo.example.com\r\n\r\n'],
+    ['bare CRLF', '\r\n'],
+  ])('stops at a %s blank line without waiting for EOF', async (_label, text) => {
+    const connect = vi.fn();
+    const code = await runVaultCli(
+      ['git-credential', '--item', 'forgejo-token', 'store'],
+      io(openStdin(text), connect),
+    );
+    expect(code).toBe(0);
+    expect(connect).not.toHaveBeenCalled();
+  });
+
+  it('refuses a CRLF request for another host without connecting, stdin still open', async () => {
+    const connect = vi.fn();
+    const code = await runVaultCli(
+      ['git-credential', '--item', 'forgejo-token', '--host', 'forgejo.example.com', 'get'],
+      io(openStdin('protocol=https\r\nhost=evil.example.net\r\n\r\n'), connect),
+    );
+    expect(code).toBe(1);
+    expect(connect).not.toHaveBeenCalled();
+  });
+});
 
 describe('git request parsing', () => {
   it('reads key=value lines up to the blank line and skips array keys', () => {
