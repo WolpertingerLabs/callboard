@@ -39,7 +39,8 @@ adminDir(join(root, "main/.git/modules/worktrees/sub"), false);
 checkout("sub", "gitdir: ../main/.git/modules/worktrees/sub\n");
 // Unparseable `.git` file.
 checkout("junk", "nonsense\n");
-// Pointer to an admin dir that no longer exists.
+// Pointer to an admin dir that no longer exists (main repo moved or deleted) —
+// intentionally not flagged.
 checkout("dangling", `gitdir: ${join(root, "gone/.git/worktrees/d")}\n`);
 mkdirSync(join(root, "plain"));
 

@@ -288,8 +288,13 @@ export function readGitfilePointer(directory: string): string | undefined {
  * at: git writes one for every linked worktree and never for a submodule's
  * gitdir. Checking for a `worktrees` path segment instead is wrong — a
  * submodule added at `worktrees/foo` gets the gitdir `.git/modules/worktrees/foo`.
- * This also covers worktrees of bare repos and worktrees whose main checkout
- * has gone, both of which {@link resolveWorktreeToMainRepo} rejects.
+ * This also covers worktrees whose admin dir is not under a `.git/` path —
+ * worktrees of a bare repo (`repo.git/worktrees/<n>`) and of a repo made with
+ * `--separate-git-dir` — which {@link resolveWorktreeToMainRepo} rejects.
+ *
+ * A worktree whose main repo was moved or deleted is *not* flagged: its admin
+ * dir lives under `<main>/.git/worktrees/`, so it is gone too and the pointer
+ * dangles. That is intentional — there is no repo left to call it a worktree of.
  *
  * `lstatSync`: a `.git` symlink is not treated as a worktree, matching
  * {@link resolveWorktreeToMainRepo}. Any error → false.

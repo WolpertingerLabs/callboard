@@ -20,6 +20,8 @@ vi.mock("../api", () => ({
 
 const WORKTREES = new Set(["/home/me/code/app-wt", "/home/me/wts/one", "/home/me/wts/two"]);
 const EXISTING = new Set(["/", "/home", "/home/me", "/home/me/code", "/home/me/code/app", "/home/me/code/lib", "/home/me/wts", ...WORKTREES]);
+/** Files in a folder — never listed as rows, only counted in the footer. */
+let FILES: Record<string, string[]> = {};
 const listing = (path: string): BrowseResult => ({
   directories: [...EXISTING]
     .filter((p) => p !== path && p.startsWith(path === "/" ? "/" : path + "/") && !p.slice(path.length + 1).includes("/"))
@@ -30,7 +32,7 @@ const listing = (path: string): BrowseResult => ({
       isHidden: false,
       ...(WORKTREES.has(p) && { isGitRepo: true, isWorktree: true }),
     })),
-  files: [],
+  files: (FILES[path] ?? []).map((name) => ({ name, path: `${path}/${name}`, type: "file" as const, isHidden: false })),
   parent: path === "/" ? null : path.slice(0, path.lastIndexOf("/")) || "/",
   exists: EXISTING.has(path),
   currentPath: path,
@@ -45,6 +47,7 @@ const browsed = () => vi.mocked(browseDirectory).mock.calls.map((c) => c[0]);
 
 beforeEach(() => {
   mobile = false;
+  FILES = {};
   localStorage.clear();
   vi.mocked(browseDirectory).mockImplementation(async (path: string) => listing(path));
   vi.mocked(getFolderSuggestions).mockResolvedValue({ suggestions: SUGGESTIONS } as never);
@@ -319,7 +322,8 @@ describe("FolderBrowser — hide worktrees", () => {
     renderBrowser();
     const row = await listedRow("app-wt");
     expect(within(row).getByTitle("Git worktree")).toBeTruthy();
-    const button = screen.getByTitle("Hide git worktrees");
+    const button = screen.getByRole("button", { name: "Hide worktrees" });
+    expect(button.title).toBe("Hide git worktrees");
     expect(button.textContent).toBe("Hide worktrees");
     expect(button.getAttribute("aria-pressed")).toBe("false");
     expect(footer().textContent).toBe("3 folders");
@@ -334,8 +338,10 @@ describe("FolderBrowser — hide worktrees", () => {
     expect(screen.getByText("lib")).toBeTruthy();
     expect(footer().textContent).toBe("2 folders (1 worktree hidden)");
     expect(localStorage.getItem("folderBrowser.hideWorktrees")).toBe("true");
-    const button = screen.getByTitle("Show git worktrees");
+    // The accessible name stays fixed; only aria-pressed (and the visible text) change.
+    const button = screen.getByRole("button", { name: "Hide worktrees" });
     expect(button.getAttribute("aria-pressed")).toBe("true");
+    expect(button.title).toBe("Show git worktrees");
     expect(button.textContent).toBe("Show worktrees");
     expect(browsed().length).toBe(calls);
 
@@ -380,13 +386,37 @@ describe("FolderBrowser — hide worktrees", () => {
     expect(screen.queryByText(/All folders here are worktrees/)).toBeNull();
   });
 
+  it("still explains an all-worktree listing when the folder also has files", async () => {
+    FILES = { "/home/me/wts": ["README.md"] };
+    localStorage.setItem("folderBrowser.hideWorktrees", "true");
+    renderBrowser({ initialPath: "/home/me/wts" });
+    const empty = await screen.findByText(/All folders here are worktrees/);
+    expect(footer().textContent).toBe("0 folders (2 worktrees hidden), 1 files");
+    fireEvent.click(within(empty).getByRole("button", { name: "Show worktrees" }));
+    await listedRow("one");
+  });
+
   it("is icon-only on mobile", async () => {
     mobile = true;
     renderBrowser();
     await listedRow("lib");
-    const button = screen.getByTitle("Hide git worktrees");
+    const button = screen.getByRole("button", { name: "Hide worktrees" });
     expect(button.textContent).toBe("");
     fireEvent.click(button);
     await waitFor(() => expect(screen.queryByText("app-wt")).toBeNull());
+  });
+});
+
+describe("FolderBrowser — Show hidden", () => {
+  it("has a fixed accessible name and reports its state with aria-pressed", async () => {
+    renderBrowser();
+    await listedRow("lib");
+    const button = screen.getByRole("button", { name: "Show hidden files" });
+    expect(button.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(button);
+    await waitFor(() => expect(button.getAttribute("aria-pressed")).toBe("true"));
+    expect(screen.getByRole("button", { name: "Show hidden files" })).toBe(button);
+    expect(button.textContent).toBe("Hide hidden");
+    expect(localStorage.getItem("folderBrowser.showHidden")).toBe("true");
   });
 });

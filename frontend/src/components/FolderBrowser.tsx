@@ -243,6 +243,20 @@ export default function FolderBrowser({
   }, [browseResult, hideWorktrees, openedFocus]);
   const hiddenWorktreeCount = (browseResult?.directories.length ?? 0) - visibleDirectories.length;
 
+  /** The header's toggle/action buttons; `active` is a toggle that is on. */
+  const headerButtonStyle = (active: boolean): React.CSSProperties => ({
+    background: active ? "var(--accent)" : "var(--surface)",
+    color: active ? "var(--text-on-accent)" : "var(--text)",
+    padding: isMobile ? "4px 8px" : "6px 12px",
+    borderRadius: 6,
+    border: "1px solid var(--border)",
+    cursor: "pointer",
+    display: "flex",
+    alignItems: "center",
+    gap: isMobile ? 4 : 6,
+    fontSize: isMobile ? 11 : 13,
+  });
+
   const handleRefresh = async () => {
     if (isRefreshing || isLoading) return;
     setIsRefreshing(true);
@@ -336,18 +350,9 @@ export default function FolderBrowser({
             <h2 style={{ fontSize: isMobile ? 16 : 18, fontWeight: 600, margin: 0 }}>Select Folder</h2>
             <button
               onClick={handleToggleHidden}
-              style={{
-                background: showHidden ? "var(--accent)" : "var(--surface)",
-                color: showHidden ? "var(--text-on-accent)" : "var(--text)",
-                padding: isMobile ? "4px 8px" : "6px 12px",
-                borderRadius: 6,
-                border: "1px solid var(--border)",
-                cursor: "pointer",
-                display: "flex",
-                alignItems: "center",
-                gap: isMobile ? 4 : 6,
-                fontSize: isMobile ? 11 : 13,
-              }}
+              aria-label="Show hidden files"
+              aria-pressed={showHidden}
+              style={headerButtonStyle(showHidden)}
               title={showHidden ? "Hide hidden files" : "Show hidden files"}
             >
               {showHidden ? <EyeOff size={isMobile ? 12 : 14} /> : <Eye size={isMobile ? 12 : 14} />}
@@ -355,19 +360,9 @@ export default function FolderBrowser({
             </button>
             <button
               onClick={handleToggleWorktrees}
+              aria-label="Hide worktrees"
               aria-pressed={hideWorktrees}
-              style={{
-                background: hideWorktrees ? "var(--accent)" : "var(--surface)",
-                color: hideWorktrees ? "var(--text-on-accent)" : "var(--text)",
-                padding: isMobile ? "4px 8px" : "6px 12px",
-                borderRadius: 6,
-                border: "1px solid var(--border)",
-                cursor: "pointer",
-                display: "flex",
-                alignItems: "center",
-                gap: isMobile ? 4 : 6,
-                fontSize: isMobile ? 11 : 13,
-              }}
+              style={headerButtonStyle(hideWorktrees)}
               title={hideWorktrees ? "Show git worktrees" : "Hide git worktrees"}
             >
               <GitFork size={isMobile ? 12 : 14} />
@@ -377,16 +372,8 @@ export default function FolderBrowser({
               onClick={handleRefresh}
               disabled={isRefreshing || isLoading}
               style={{
-                background: "var(--surface)",
-                color: "var(--text)",
-                padding: isMobile ? "4px 8px" : "6px 12px",
-                borderRadius: 6,
-                border: "1px solid var(--border)",
+                ...headerButtonStyle(false),
                 cursor: isRefreshing || isLoading ? "default" : "pointer",
-                display: "flex",
-                alignItems: "center",
-                gap: isMobile ? 4 : 6,
-                fontSize: isMobile ? 11 : 13,
                 opacity: isRefreshing || isLoading ? 0.6 : 1,
               }}
               title="Refresh directory listing"
@@ -614,7 +601,7 @@ export default function FolderBrowser({
                       <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 6 : 8, flex: 1, minWidth: 0 }}>
                         {item.isWorktree ? (
                           <span title="Git worktree" style={{ display: "flex", flexShrink: 0 }}>
-                            <GitFork size={isMobile ? 14 : 16} style={{ color: "var(--accent-text)", flexShrink: 0 }} />
+                            <GitFork size={isMobile ? 14 : 16} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
                           </span>
                         ) : item.isGitRepo ? (
                           <GitBranch size={isMobile ? 14 : 16} style={{ color: "var(--accent-text)", flexShrink: 0 }} />
@@ -650,7 +637,7 @@ export default function FolderBrowser({
                   </div>
                 )}
 
-                {visibleDirectories.length === 0 && hiddenWorktreeCount > 0 && browseResult.files.length === 0 && (
+                {visibleDirectories.length === 0 && hiddenWorktreeCount > 0 && (
                   <div
                     style={{
                       textAlign: "center",
@@ -697,7 +684,7 @@ export default function FolderBrowser({
             {browseResult && (
               <>
                 {visibleDirectories.length} folders
-                {hideWorktrees && hiddenWorktreeCount > 0 && ` (${hiddenWorktreeCount} ${hiddenWorktreeCount === 1 ? "worktree" : "worktrees"} hidden)`}
+                {hiddenWorktreeCount > 0 && ` (${hiddenWorktreeCount} ${hiddenWorktreeCount === 1 ? "worktree" : "worktrees"} hidden)`}
                 {browseResult.files.length > 0 && `, ${browseResult.files.length} files`}
               </>
             )}
