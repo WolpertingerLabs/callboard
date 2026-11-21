@@ -553,7 +553,6 @@ export default function FolderBrowser({
                       key={item.path}
                       onClick={() => handleItemClick(item)}
                       onDoubleClick={() => handleItemDoubleClick(item)}
-                      aria-current={isFocus ? "true" : undefined}
                       data-focus-row={isFocus ? "true" : undefined}
                       style={{
                         border: `1px solid ${isFocus ? "var(--accent)" : "transparent"}`,

@@ -101,12 +101,14 @@ describe("FolderBrowser — Previously used", () => {
     Element.prototype.scrollIntoView = scrollIntoView;
     renderBrowser({ recentDirectories: RECENT, initialPath: "/home/me/code", focusPath: "/home/me/code/app" });
     const listed = await listedRow("app");
-    expect(listed.getAttribute("aria-current")).toBe("true");
+    // Not aria-current: that belongs to where the browser is, not the folder opened above.
+    expect(listed.getAttribute("aria-current")).toBeNull();
+    expect(listed.getAttribute("data-focus-row")).toBe("true");
     // An outline and a visible tag, not the "selected"-looking accent fill.
     expect(listed.style.border).toBe("1px solid var(--accent)");
     expect(listed.style.background).not.toBe("var(--accent)");
     expect(within(listed).getByTestId("focus-tag").textContent).toBe("last used");
-    expect((await listedRow("lib")).getAttribute("aria-current")).toBeNull();
+    expect((await listedRow("lib")).getAttribute("data-focus-row")).toBeNull();
     await waitFor(() => expect(scrollIntoView).toHaveBeenCalledTimes(1));
     expect(scrollIntoView.mock.contexts[0]).toBe(listed);
     const section = screen.getByTestId("folder-browser-recent");
