@@ -1,5 +1,5 @@
 import { chatSearchValidationError } from "shared/types/chat-filters.js";
-import { useState, type ReactNode } from "react";
+import { useState, type ReactNode, type Ref } from "react";
 import { SlidersHorizontal, Search, Loader2, Archive, Bookmark, Zap } from "lucide-react";
 import ChatFilterModal from "./ChatFilterModal";
 import { HEADER_BUTTON_STYLE, HEADER_ROW_GAP } from "./headerButtonStyle";
@@ -18,6 +18,8 @@ interface ChatFilterBarProps {
   onSearchChange: (query: string) => void;
   onSearchSubmit: () => void;
   isSearching: boolean;
+  /** Attached to the search input, so the parent can focus it (e.g. after clearing a search). */
+  searchInputRef?: Ref<HTMLInputElement>;
   /**
    * Rendered at the start of the row — the compact space picker on mobile.
    * The row becomes `position: relative` so a dropdown inside it can anchor to
@@ -108,7 +110,18 @@ const SCOPE_TOGGLES: {
  * good at kept: telling you at a glance that the list is narrowed by something
  * you cannot see from here.
  */
-export default function ChatFilterBar({ filters, viewOptions, onApply, searchQuery, onSearchChange, onSearchSubmit, isSearching, leading, inset = 20 }: ChatFilterBarProps) {
+export default function ChatFilterBar({
+  filters,
+  viewOptions,
+  onApply,
+  searchQuery,
+  onSearchChange,
+  onSearchSubmit,
+  isSearching,
+  searchInputRef,
+  leading,
+  inset = 20,
+}: ChatFilterBarProps) {
   const [filterModalOpen, setFilterModalOpen] = useState(false);
   const searchError = chatSearchValidationError(searchQuery);
   const submitSearch = () => {
@@ -295,6 +308,7 @@ export default function ChatFilterBar({ filters, viewOptions, onApply, searchQue
           }}
         >
           <input
+            ref={searchInputRef}
             type="text"
             value={searchQuery}
             onChange={(e) => onSearchChange(e.target.value)}
