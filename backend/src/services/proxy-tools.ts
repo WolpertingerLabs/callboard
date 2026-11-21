@@ -12,9 +12,142 @@ import { z } from "zod";
 import { getProxy } from "./proxy-singleton.js";
 import { createLogger } from "../utils/logger.js";
 import { defineTool } from "../agents/ports/tools.js";
-import type { ToolServerSpec } from "../agents/ports/tools.js";
+import type { ToolCallResult, ToolServerSpec } from "../agents/ports/tools.js";
 
 const log = createLogger("proxy-tools");
+
+const NOT_CONFIGURED = "Proxy not configured. Set up proxy in Agent Settings.";
+
+// ── Vault ────────────────────────────────────────────────────────────
+//
+// Mirrors drawlatch's own MCP server (src/mcp/server.ts, the vault section):
+// same names, same loose schemas and the same model-facing copy. The daemon
+// validates every vault input, so these schemas stay loose and a validation
+// message never quotes a value back.
+
+const VAULT_PLAINTEXT_NOTE = "notes, tags and metadata are plain text that vault_list returns: never put secrets in them.";
+const VAULT_CONTEXT_NOTE =
+  "The values you pass here go through your own context. For a secret you should never see, ask the operator to create the item on the drawlatch dashboard instead.";
+
+/**
+ * Forward a vault tool call and render its result or error the way drawlatch's
+ * `forwardVaultTool` does: a string result verbatim, anything else as JSON, and
+ * a thrown error as `Error: <message>` with `isError` set.
+ */
+async function forwardVaultTool(keyAlias: string, toolName: string, input: Record<string, unknown>): Promise<ToolCallResult> {
+  const proxy = getProxy(keyAlias);
+  if (!proxy) {
+    return { content: [{ type: "text" as const, text: NOT_CONFIGURED }], isError: true };
+  }
+  try {
+    const result = await proxy.callTool(toolName, input);
+    return { content: [{ type: "text" as const, text: typeof result === "string" ? result : JSON.stringify(result, null, 2) }] };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log.error(`${toolName} failed: ${message}`);
+    return { content: [{ type: "text" as const, text: `Error: ${message}` }], isError: true };
+  }
+}
+
+function buildVaultTools(keyAlias: string) {
+  return [
+    defineTool(
+      "vault_list",
+      'List your vault items: name, kind, exposure, field names, notes, tags, metadata and connections binding. Never returns values. "shared" lists other callers\' items the operator has granted you: owner, name, kind, field names, connections binding, and mode ("inject": use it as ${vault:owner/name} in secure_request; "reveal": vault_get with owner can read it too). ' +
+        VAULT_PLAINTEXT_NOTE,
+      {
+        tag: z.string().optional().describe("Only items carrying this tag"),
+      },
+      async ({ tag }) => forwardVaultTool(keyAlias, "vault_list", tag === undefined ? {} : { tag }),
+    ),
+
+    defineTool(
+      "vault_create",
+      'Save a new item in your vault. kind "token" and "note" take exactly { value }, "password" takes { value, username? }, "key-value" takes 1-16 named fields. exposure "inject" (the default) means no tool will ever return the value, and you use it as ${vault:name} in secure_request; "reveal" lets vault_get return it to you as well (every read is audit-logged). Fails if the name exists. ' +
+        `${VAULT_CONTEXT_NOTE} ${VAULT_PLAINTEXT_NOTE}`,
+      {
+        name: z.string().describe('Item name: 1-64 letters, digits, "_" or "-", unique in your vault'),
+        kind: z.string().describe('"password", "token", "note" or "key-value"'),
+        values: z.record(z.string(), z.string()).describe("Field name → secret value"),
+        exposure: z.string().optional().describe('"inject" (default) or "reveal"'),
+        notes: z.string().optional().describe("Plain-text description (not secret)"),
+        tags: z.array(z.string()).optional().describe("Plain-text tags (not secret)"),
+        metadata: z.record(z.string(), z.string()).optional().describe("Plain-text key → value pairs, e.g. a URL (not secret)"),
+        connections: z.array(z.string()).optional().describe("Connection aliases this item may be used on; omit for any"),
+      },
+      async (input) => forwardVaultTool(keyAlias, "vault_create", input),
+    ),
+
+    defineTool(
+      "vault_update",
+      'Change one of your vault items. values replaces the whole value map. You can only tighten an item: exposure may go from "reveal" to "inject" but not back, and connections may only narrow (the operator can loosen an item on the drawlatch dashboard). ' +
+        `${VAULT_CONTEXT_NOTE} ${VAULT_PLAINTEXT_NOTE}`,
+      {
+        name: z.string().describe("Current item name"),
+        values: z.record(z.string(), z.string()).optional().describe("New field name → value map"),
+        rename: z.string().optional().describe("New name"),
+        exposure: z.string().optional().describe('"inject" or "reveal" (tighten only)'),
+        notes: z.string().optional().describe('New notes ("" clears)'),
+        tags: z.array(z.string()).optional().describe("New tags"),
+        metadata: z.record(z.string(), z.string()).optional().describe("New metadata"),
+        connections: z.array(z.string()).optional().describe("New, narrower connections binding"),
+      },
+      async (input) => forwardVaultTool(keyAlias, "vault_update", input),
+    ),
+
+    defineTool(
+      "vault_delete",
+      "Delete one of your vault items.",
+      {
+        name: z.string().describe("Item name"),
+      },
+      async ({ name }) => forwardVaultTool(keyAlias, "vault_delete", { name }),
+    ),
+
+    defineTool(
+      "vault_get",
+      'Read the values of one of your vault items whose exposure is "reveal", or (with owner) of another caller\'s item the operator granted you at mode "reveal". Every read is recorded in the owner\'s audit log before the value is returned. Inject-only items are refused: use them as ${vault:name} (or ${vault:owner/name}) in secure_request.',
+      {
+        name: z.string().describe("Item name"),
+        field: z.string().optional().describe("Return just this field"),
+        owner: z.string().optional().describe("Another caller's alias, to read an item shared with you (needs a grant)"),
+        purpose: z
+          .string()
+          .optional()
+          .describe('Optional label for what the value is for, recorded in the audit log as "via" and marked as your claim (1-32 lowercase letters, digits or "-")'),
+      },
+      async (input) => forwardVaultTool(keyAlias, "vault_get", input),
+    ),
+
+    defineTool(
+      "vault_request_access",
+      'Ask the operator for access to another caller\'s vault item. Only the human operator can grant it, on the drawlatch dashboard; this tool grants nothing. The answer is { requestId, status: "pending" } whether or not that caller or item exists. Asking again while a request is pending returns the same request; if a grant already covers it, status is "granted". At most 20 pending requests. Once granted, use the item as ${vault:owner/name} in secure_request (and, at mode "reveal", read it with vault_get and owner). The operator sees your reason as text written by you.',
+      {
+        owner: z.string().describe("The item owner's caller alias"),
+        name: z.string().describe("Item name in that caller's vault"),
+        reason: z.string().describe("Why you need it (at most 1 KiB; shown to the operator)"),
+        mode: z.string().optional().describe('"inject" (default: use it in requests only) or "reveal" (also read it)'),
+      },
+      async (input) => forwardVaultTool(keyAlias, "vault_request_access", input),
+    ),
+
+    defineTool(
+      "vault_list_requests",
+      'List your own vault access requests: id, owner, item name, mode, status (pending, granted, denied, cancelled, withdrawn), and the operator\'s note when one was given. status is the operator\'s decision on the request and stays "granted" even after the grant is revoked: what you can use now is the shared section of vault_list.',
+      {},
+      async () => forwardVaultTool(keyAlias, "vault_list_requests", {}),
+    ),
+
+    defineTool(
+      "vault_cancel_request",
+      "Cancel one of your own pending vault access requests.",
+      {
+        requestId: z.string().describe("The id vault_request_access returned"),
+      },
+      async ({ requestId }) => forwardVaultTool(keyAlias, "vault_cancel_request", { requestId }),
+    ),
+  ];
+}
 
 /**
  * Build a tool-server spec exposing proxy tools.
@@ -33,12 +166,22 @@ export function buildProxyToolsSpec(keyAlias: string): ToolServerSpec {
         "Make an authenticated HTTP request through a configured connection. " +
           "Route-level headers (e.g., Authorization) are injected automatically by the server — " +
           "do not send them yourself. You may use ${VAR_NAME} placeholders for other secrets in " +
-          "the URL, headers, or body. Use list_routes first to discover available APIs. " +
+          "the URL, headers, or body — they are resolved server-side using the matched route's secrets " +
+          "and never exposed to you. Secrets a route injects through its own headers (and signing/webhook " +
+          "secrets) are withheld: list_routes reports them as withheldSecretNames, and a request that " +
+          'references one is rejected. On a route whose list_routes entry has auth.type "oauth2", drawlatch ' +
+          "mints the access token itself: do not send an Authorization header or an access_token query parameter. " +
+          "Your own vault items resolve as ${vault:name} or ${vault:name.field}, and items shared with you as " +
+          "${vault:owner/name}, in the URL path or query and in headers (in the body only where ${VAR} resolves " +
+          "there too), never in the host; a value containing #, ? or & is refused in the URL (send it in a header). " +
+          "The value never comes back to you: echoes are scrubbed to ${vault:<your caller alias>/name.field}. " +
+          "A placeholder for a missing item or field, or one used on a connection outside the item's connections " +
+          "binding, fails the request before anything is sent. Use list_routes first to discover available APIs. " +
           "Supports file attachments via the files parameter for multipart uploads.",
         {
           method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]).describe("HTTP method"),
-          url: z.string().describe("Full URL, may contain ${VAR} placeholders"),
-          headers: z.record(z.string(), z.string()).optional().describe("Request headers, may contain ${VAR} placeholders"),
+          url: z.string().describe("Full URL, may contain ${VAR} and (in the path or query) ${vault:name} placeholders"),
+          headers: z.record(z.string(), z.string()).optional().describe("Request headers, may contain ${VAR} and ${vault:name} placeholders"),
           body: z.any().optional().describe("Request body (object for JSON, string for raw)"),
           files: z
             .array(
@@ -416,6 +559,8 @@ export function buildProxyToolsSpec(keyAlias: string): ToolServerSpec {
           }
         },
       ),
+
+      ...buildVaultTools(keyAlias),
     ],
   };
 }
