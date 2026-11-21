@@ -26,7 +26,7 @@ Listeners run per caller. Each caller gets its own instance for every enabled co
 | `telegram` | Poll, 30 s | `update` | `TELEGRAM_BOT_TOKEN` (`getUpdates`; doesn't work if the bot has a webhook set). **Known issue:** no `offset` is sent, so updates are never confirmed. Once 25 are pending, every poll returns the same 25 and the listener stops emitting new ones. |
 | `twitch` | Poll, 60 s | `stream_online` | `TWITCH_ACCESS_TOKEN`, `TWITCH_CLIENT_ID`, `TWITCH_USER_ID`, and a *user* access token |
 
-Secrets resolve per caller like any other secret (`<ALIAS>_<NAME>`; see [README → Secrets](README.md#secrets)). A listener with missing secrets still starts and then fails:
+Secrets resolve per caller like any other secret (`<ALIAS>_<NAME>`; see [README → Secrets](README.md#secrets)). [Vault](README.md#vault) placeholders (`${vault:…}`) don't resolve in listener configs or params: they're sent as written. A listener with missing secrets still starts and then fails:
 
 - WebSocket listeners go to `error`.
 - Poll requests fail until the listener gives up.
