@@ -369,6 +369,24 @@ describe('operator decisions', () => {
     ]);
   });
 
+  it('request and grant rows carry the item binding: a list, or absent when unbound', async () => {
+    await aliceItem('bound', { connections: ['github'] });
+    await aliceItem('free');
+    await ask('alice', 'bound');
+    await ask('alice', 'free');
+    const rows = Object.fromEntries(listRequests().map((r) => [r.itemName, r.item]));
+    expect(rows.bound).toEqual({
+      name: 'bound',
+      kind: 'token',
+      exposure: 'inject',
+      connections: ['github'],
+    });
+    expect(rows.free).toEqual({ name: 'free', kind: 'token', exposure: 'inject' });
+    await granted('bound');
+    expect(listGrants()[0].item?.connections).toEqual(['github']);
+    expect(JSON.stringify(listRequests())).not.toContain(CANARY);
+  });
+
   it('reveal is refused on an inject item, and the request stays pending', async () => {
     await aliceItem('gh');
     const { requestId } = await ask('alice', 'gh', { mode: 'reveal' });

@@ -149,6 +149,14 @@
   margin-bottom: 2px;
 }
 
+.dl-vault-unbound {
+  color: var(--warning);
+}
+
+.dl-vault-over {
+  color: var(--danger);
+}
+
 .dl-vault-reason-who {
   text-transform: none;
 }

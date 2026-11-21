@@ -288,6 +288,8 @@ export interface AdminVaultItemRef {
   name: string;
   kind: AdminVaultKind;
   exposure: AdminVaultExposure;
+  /** Connections the item may be used on; absent = any the grantee has enabled. */
+  connections?: string[];
 }
 
 /** GET /vault/requests. `reason` is agent-written text. */

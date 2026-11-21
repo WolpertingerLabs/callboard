@@ -7,7 +7,11 @@ import { useCallback, useEffect, useState } from "react";
 import { Check, X } from "lucide-react";
 import type { AdminVaultRequest } from "drawlatch-admin-types";
 import { api, isDaemonDown } from "../../api";
-import { DenyRequestModal, GrantRequestModal } from "../../components/vault/RequestModals";
+import {
+  Binding,
+  DenyRequestModal,
+  GrantRequestModal,
+} from "../../components/vault/RequestModals";
 
 type Load =
   | { status: "loading" }
@@ -31,6 +35,9 @@ function ItemCell({ r }: { r: AdminVaultRequest }) {
           <>
             {r.item.kind} · {r.item.exposure}
             {r.item.name !== r.itemName && <> · asked as {r.itemName}</>}
+            <div>
+              <Binding item={r.item} grantee={r.requester} />
+            </div>
           </>
         )}
       </div>

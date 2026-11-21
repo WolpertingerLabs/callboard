@@ -1128,6 +1128,8 @@ export interface ItemRef {
   name: string;
   kind: ItemKind;
   exposure: Exposure;
+  /** The item's binding; absent = usable on any connection the user of it has. */
+  connections?: string[];
 }
 
 /** A request as the operator sees it: everything, plus the item as it is now. */
@@ -1156,7 +1158,13 @@ export class VaultNotFound extends VaultError {
 }
 
 function itemRef(item: VaultItem | undefined): ItemRef | null {
-  return item ? { name: item.name, kind: item.kind, exposure: item.exposure } : null;
+  if (!item) return null;
+  return {
+    name: item.name,
+    kind: item.kind,
+    exposure: item.exposure,
+    ...(item.connections && { connections: [...item.connections] }),
+  };
 }
 
 const REQUEST_STATUSES: readonly RequestStatus[] = [

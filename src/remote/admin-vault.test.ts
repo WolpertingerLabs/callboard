@@ -624,7 +624,8 @@ describe('access requests and grants', () => {
       itemId: expect.any(String) as string,
       reason: 'Need to push release tags',
       status: 'pending',
-      item: { name: 'gh', kind: 'token', exposure: 'inject' },
+      // The binding is shown so the operator sees where the grantee could use it.
+      item: { name: 'gh', kind: 'token', exposure: 'inject', connections: ['github'] },
     });
     expect(byId[b.requestId]).toMatchObject({ itemId: null, item: null });
     expect(((await req('GET', '/vault/status')).body as AdminVaultStatus).pendingRequests).toBe(2);
