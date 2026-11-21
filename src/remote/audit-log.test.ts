@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
+  appendDaemonEvent,
   auditCallerDir,
   flushQuotaMarkers,
   beginAuditShutdown,
@@ -1178,5 +1179,78 @@ describe('parseIngestRequest', () => {
     const parsed = parseIngestRequest(request([record(), 'bad']));
     expect(parsed.records).toHaveLength(1);
     expect(parsed.rejected).toBe(1);
+  });
+});
+
+describe('appendDaemonEvent', () => {
+  it('appends a stamped daemon line that shares the file sequence with client lines', async () => {
+    await ingest(request([record()]));
+    await appendDaemonEvent(
+      'callboard',
+      { 'drawlatch.event': 'vault.reveal', 'vault.item': 'gh' },
+      { auditRoot: root, now: NOW },
+    );
+    const lines = readLines<Record<string, unknown>>();
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toEqual({
+      'drawlatch.caller': 'callboard',
+      'drawlatch.received_at': NOW.toISOString(),
+      'drawlatch.sequence': 2,
+      'drawlatch.source': 'daemon',
+      'drawlatch.event': 'vault.reveal',
+      'vault.item': 'gh',
+    });
+    expect(fs.statSync(fileFor()).mode & 0o777).toBe(0o600);
+  });
+
+  it('never lets fields override the stamps', async () => {
+    await appendDaemonEvent(
+      'callboard',
+      {
+        'drawlatch.event': 'x',
+        'drawlatch.caller': 'mallory',
+        'drawlatch.source': 'client',
+        'drawlatch.sequence': 99,
+      },
+      { auditRoot: root, now: NOW },
+    );
+    const [line] = readLines<Record<string, unknown>>();
+    expect(line['drawlatch.caller']).toBe('callboard');
+    expect(line['drawlatch.source']).toBe('daemon');
+    expect(line['drawlatch.sequence']).toBe(1);
+  });
+
+  it('is not charged to the caller byte budget', async () => {
+    const budget = { capacityBytes: 1, refillBytesPerMinute: 1 };
+    await ingest(request([record()]), 'callboard', NOW, budget);
+    await appendDaemonEvent('callboard', { 'drawlatch.event': 'x' }, { auditRoot: root, now: NOW });
+    const daemon = readLines<Record<string, unknown>>().filter((l) => l['drawlatch.event'] === 'x');
+    expect(daemon).toHaveLength(1);
+  });
+
+  it('refuses an unsafe caller alias and an oversized line', async () => {
+    await expect(
+      appendDaemonEvent('../x', { 'drawlatch.event': 'x' }, { auditRoot: root }),
+    ).rejects.toThrow(/safe path segment/);
+    await expect(
+      appendDaemonEvent(
+        'callboard',
+        { 'drawlatch.event': 'x', big: 'a'.repeat(MAX_RECORD_BYTES) },
+        { auditRoot: root },
+      ),
+    ).rejects.toThrow(/exceeds/);
+  });
+
+  it('rejects with the error code only when the write fails', async () => {
+    fs.mkdirSync(parent, { recursive: true });
+    fs.writeFileSync(root, 'not a directory');
+    const err = await appendDaemonEvent(
+      'callboard',
+      { 'drawlatch.event': 'x' },
+      { auditRoot: root },
+    ).catch((e: unknown) => e as Error);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toMatch(/^audit write failed \(E[A-Z]+\)$/);
+    expect((err as Error).message).not.toContain(parent);
   });
 });

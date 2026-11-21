@@ -25,6 +25,9 @@
  * at most one per caller per QUOTA_MARKER_INTERVAL_MS, so a flood leaves
  * evidence on the hub rather than a silent gap.
  *
+ * The daemon appends its own events (vault reveals and item changes) with
+ * appendDaemonEvent(), stamped `drawlatch.source: daemon`.
+ *
  * There is deliberately no read, list, update, or delete path here. Callers
  * can append, nothing else; reading happens on the hub box.
  */
@@ -1334,6 +1337,70 @@ export async function ingestLogs(
     ...reasons.kept.map((r) => `kept: ${r}`),
   ].join('; ');
   return { partialSuccess: { rejectedLogRecords: rejected, errorMessage: message } };
+}
+
+// ── Daemon events ──────────────────────────────────────────────────────────
+
+/** A line the daemon writes for its own events (vault reveals, item changes). */
+export interface DaemonEventLine {
+  'drawlatch.caller': string;
+  'drawlatch.received_at': string;
+  'drawlatch.sequence': number;
+  'drawlatch.source': 'daemon';
+  'drawlatch.event': string;
+  [field: string]: unknown;
+}
+
+export interface DaemonEventOptions {
+  /** Override `<config dir>/audit` (tests). */
+  auditRoot?: string;
+  /** Override the receive time (tests). */
+  now?: Date;
+}
+
+/**
+ * Append one daemon-authored line to `callerAlias`'s audit log, under the same
+ * per-file lock and sequence as client lines, fsync'd before it resolves.
+ *
+ * Not charged to the caller's byte budget: these lines record what the daemon
+ * did for the caller (one per tool call at most, so bounded by the request
+ * rate limit), and a caller flooding `ingest_logs` must not be able to block
+ * them. Still refused past MAX_RECORD_BYTES. Rejects with the error code only,
+ * never a path, so callers that must fail closed can surface the message.
+ */
+export async function appendDaemonEvent(
+  callerAlias: string,
+  fields: { 'drawlatch.event': string } & Record<string, unknown>,
+  options: DaemonEventOptions = {},
+): Promise<void> {
+  const auditRoot = options.auditRoot ?? auditRootDir();
+  const callerDir = auditCallerDir(auditRoot, callerAlias);
+  const now = (options.now ?? new Date()).getTime();
+  const render = (sequence: number): string => {
+    const stamps = {
+      'drawlatch.caller': callerAlias,
+      'drawlatch.received_at': new Date(now).toISOString(),
+      'drawlatch.sequence': sequence,
+      'drawlatch.source': 'daemon' as const,
+    };
+    // Stamps first and last: re-assigning keeps them at the front and wins any collision.
+    const line: Plain = { ...stamps, ...fields };
+    Object.assign(line, stamps);
+    return JSON.stringify(line) + '\n';
+  };
+  if (Buffer.byteLength(render(0)) > MAX_RECORD_BYTES) {
+    throw new Error(`audit event exceeds ${MAX_RECORD_BYTES} bytes`);
+  }
+  try {
+    await appendToDayFile(auditRoot, callerDir, utcDay(now), (lastSequence) => ({
+      text: render(lastSequence + 1),
+      lastSequence: lastSequence + 1,
+    }));
+  } catch (err) {
+    logLimited('daemon-event', 'audit event write failed', err);
+    const code = (err as NodeJS.ErrnoException | undefined)?.code;
+    throw new Error(`audit write failed${typeof code === 'string' ? ` (${code})` : ''}`);
+  }
 }
 
 /** Forget all in-memory state: sequences, budgets, pending markers, log limits (tests). */

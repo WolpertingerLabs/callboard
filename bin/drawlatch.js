@@ -47,6 +47,11 @@ const { isSecretSetForCaller, loadEnvFile: loadEnvFileVars } = await import(
   join(PKG_ROOT, "dist/shared/env-utils.js")
 );
 
+// Import the vault health check (doctor). It reads the vault files; this CLI never names them.
+const { vaultDiagnostics } = await import(
+  join(PKG_ROOT, "dist/remote/vault/store.js")
+);
+
 const CONFIG_DIR = getConfigDir();
 const ENV_FILE = getEnvFilePath();
 const PID_FILE = join(CONFIG_DIR, "drawlatch.pid");
@@ -864,6 +869,16 @@ async function cmdDoctor() {
     } catch { /* skip */ }
   }
 
+  // 9c. Vault: key present when the file exists, key mode 0600, file decrypts.
+  try {
+    for (const c of vaultDiagnostics()) {
+      check(c.label, c.ok, c.fix);
+      if (c.ok && c.info) console.log(`    ${c.info}`);
+    }
+  } catch (err) {
+    check("Vault", false, err instanceof Error ? err.message : String(err));
+  }
+
   // 10. Remote server health check
   if (hasRemoteConfig) {
     try {
@@ -1592,7 +1607,7 @@ Options:
   --full         Include a live handshake test (requires server running)
   -h, --help     Show this help message
 
-Checks config files, keys, peer directories, secrets, and server health.
+Checks config files, keys, peer directories, secrets, the vault, and server health.
 Each failure includes the exact command to fix it.
 `);
 }

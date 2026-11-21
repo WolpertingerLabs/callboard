@@ -62,6 +62,7 @@ import type { IngestorManager } from './ingestors/index.js';
 import { safeFetch } from './safe-fetch.js';
 import { assertNoControlChars, isEndpointAllowed, normalizeOutboundUrl } from './url-policy.js';
 import { waitForEvents } from './wait-for-events.js';
+import { createItem, deleteItem, listItems, revealItem, updateItem } from './vault/service.js';
 
 // ── Endpoint matching ────────────────────────────────────────────────────────
 
@@ -1937,6 +1938,44 @@ export const toolHandlers: Record<string, ToolHandler> = {
     context.refreshRoutes();
 
     return { success: true, secretsSet: status };
+  },
+
+  // ── Vault (see src/remote/vault/) ──────────────────────────────────────
+  //
+  // Each acts on the authenticated caller's own namespace, always with
+  // agent rules (tighten only). No handler returns a value except
+  // vault_get for an item the caller may reveal; none returns ciphertext or
+  // key material. The operator's door is the admin API, not these handlers.
+
+  /** The caller's items as metadata: names, kinds, field names, never values. */
+  vault_list(input, _routes, context) {
+    return Promise.resolve(listItems(context.callerAlias, { tag: input.tag }));
+  },
+
+  /** Save a new item. Returns its metadata. */
+  async vault_create(input, _routes, context) {
+    const item = await createItem(context.callerAlias, input, 'agent');
+    return { success: true, item };
+  },
+
+  /** Change an item. Agents may only tighten exposure and narrow connections. */
+  async vault_update(input, _routes, context) {
+    const item = await updateItem(context.callerAlias, input, 'agent');
+    return { success: true, item };
+  },
+
+  /** Delete an item; its grants are revoked and pending requests withdrawn. */
+  vault_delete(input, _routes, context) {
+    return deleteItem(context.callerAlias, input, 'agent');
+  },
+
+  /** Values of a `reveal` item, audit-logged before they are returned. */
+  vault_get(input, _routes, context) {
+    return revealItem(context.callerAlias, {
+      name: input.name,
+      owner: input.owner,
+      field: input.field,
+    });
   },
 
   /**
