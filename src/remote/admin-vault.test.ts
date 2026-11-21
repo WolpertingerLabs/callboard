@@ -775,6 +775,25 @@ describe('access requests and grants', () => {
     expect(items.items[0].grants).toEqual([]);
   });
 
+  it('a missing key is 503 on the request and grant endpoints too, and changes nothing', async () => {
+    await createItem('alice', { ...injectItem }, 'admin');
+    const { requestId } = await ask('gh');
+    fs.rmSync(path.join(configDir, VAULT_KEY_LABEL));
+    resetVaultCache();
+    for (const [method, p, body] of [
+      ['GET', '/vault/requests', undefined],
+      ['GET', '/vault/grants', undefined],
+      ['POST', `/vault/requests/${requestId}/grant`, {}],
+      ['POST', `/vault/requests/${requestId}/deny`, {}],
+      ['DELETE', '/vault/grants/some-id', undefined],
+    ] as const) {
+      const res = await req(method, p, body);
+      expect(res.status, `${method} ${p}`).toBe(503);
+      expect((res.body as { error: string }).error).toMatch(/restore it from backup/);
+    }
+    expect(fs.existsSync(path.join(configDir, VAULT_KEY_LABEL))).toBe(false);
+  });
+
   it('reads create nothing: no vault and no key before the first write', async () => {
     expect((await req('GET', '/vault/requests')).body).toEqual([]);
     expect((await req('GET', '/vault/grants')).body).toEqual([]);
