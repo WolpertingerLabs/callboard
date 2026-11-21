@@ -558,3 +558,39 @@ describe("GET /api/chats — archived card-less trees", () => {
     expect(body.chats.every((c: any) => c.archived === undefined)).toBe(true);
   });
 });
+
+/**
+ * A child archived on its own (`metadata.childArchived`) whose parent was then
+ * deleted: the lineage promotes it to the root of its own card, and the
+ * sidebar keeps hiding it and its subtree because it still has a parent
+ * pointer. Every chat on that card is archived, so the card is too.
+ */
+describe("GET /api/chats — a card root left with a child-archive flag", () => {
+  beforeEach(() => {
+    fileChats.push(
+      chat("stranded", { parentChatId: "deleted-parent", childArchived: true, childArchivedAt: "2026-01-02T00:00:00.000Z" }),
+      chat("stranded-child", { parentChatId: "stranded" }),
+    );
+    sessionIds.push("stranded", "stranded-child");
+  });
+
+  it("is withheld from unarchived with its subtree, and annotated archived", async () => {
+    const unarchived = idsOf(await listChats({ cardLifecycle: "unarchived", includeLineage: "true", limit: "50" }));
+    expect(unarchived).not.toContain("stranded");
+    expect(unarchived).not.toContain("stranded-child");
+
+    const all = await listChats({ includeLineage: "true", limit: "50" });
+    expect(all.chats.find((c: any) => c.id === "stranded").archived).toBe(true);
+    expect(all.chats.find((c: any) => c.id === "stranded-child").archived).toBe(true);
+  });
+
+  it("comes back when the card is reopened, which clears the flag", async () => {
+    patchCardFields("stranded", { lifecycle: "open" });
+    const meta = JSON.parse(fileChats.find((c) => c.id === "stranded").metadata);
+    expect(meta.childArchived).toBeUndefined();
+    expect(meta.childArchivedAt).toBeUndefined();
+    expect(meta.card.lifecycle).toBe("open");
+    const unarchived = idsOf(await listChats({ cardLifecycle: "unarchived", includeLineage: "true", limit: "50" }));
+    expect(unarchived).toEqual(expect.arrayContaining(["stranded", "stranded-child"]));
+  });
+});

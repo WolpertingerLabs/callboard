@@ -267,3 +267,22 @@ describe("update_card", () => {
     });
   });
 });
+
+describe("list_cards", () => {
+  it("reports a card closed by a stranded child-archive flag under lifecycle: closed", async () => {
+    // Archived as a child of a parent that no longer exists: its own card root.
+    writeChat("stranded-root", "2026-08-06T00:00:00.000Z", {
+      parentChatId: "deleted-parent",
+      childArchived: true,
+      childArchivedAt: "2026-08-07T00:00:00.000Z",
+    }, "Stranded");
+
+    const closed = JSON.parse(text(await tool("list_cards").handler({ lifecycle: "closed" })));
+    expect(closed.cards.find((c: any) => c.cardId === "stranded-root")).toMatchObject({
+      lifecycle: "closed",
+      closedAt: "2026-08-07T00:00:00.000Z",
+    });
+    const open = JSON.parse(text(await tool("list_cards").handler({ lifecycle: "open" })));
+    expect(open.cards.map((c: any) => c.cardId)).not.toContain("stranded-root");
+  });
+});

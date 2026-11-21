@@ -203,6 +203,33 @@ describe("POST /api/chats/bulk-archive", () => {
     expect(metaOf(child).pinned).toBe(false);
   });
 
+  it("unarchiving a card left closed by a stranded child-archive flag reopens it and clears the flag", async () => {
+    // Archived as a child, then its parent was deleted: it is the root of its
+    // own card now, and that card reads as closed.
+    const orphan = make({ parentChatId: "deleted-parent", childArchived: true, childArchivedAt: "2026-01-02T00:00:00.000Z" });
+
+    const res = await bulkArchive({ ids: [orphan], archived: false });
+
+    expect(res.body.updated).toEqual([{ id: orphan, rootChatId: orphan, archived: false, isCard: true }]);
+    const meta = metaOf(orphan);
+    expect(meta.childArchived).toBeUndefined();
+    expect(meta.childArchivedAt).toBeUndefined();
+    expect(meta.card.lifecycle).toBe("open");
+    expect(meta.card.closedAt).toBeUndefined();
+  });
+
+  it("archiving a card a stranded flag already closes is not a transition", async () => {
+    const orphan = make({ parentChatId: "deleted-parent", childArchived: true, childArchivedAt: "2026-01-02T00:00:00.000Z", pinned: true });
+
+    await bulkArchive({ ids: [orphan], archived: true });
+
+    const meta = metaOf(orphan);
+    // No restamped closedAt and no unpin: it was already archived.
+    expect(meta.card?.closedAt).toBeUndefined();
+    expect(meta.pinned).toBe(true);
+    expect(meta.childArchived).toBe(true);
+  });
+
   it("unarchiving a hidden card clears hidden too, so the row stops reading as archived", async () => {
     const root = make({});
     patchCardFields(root, { hidden: true });

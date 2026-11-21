@@ -78,7 +78,11 @@ function parseMeta(chat: { metadata?: string | null }): Record<string, unknown> 
 
 /** The raw nested `card` object off a chat's metadata, defaults NOT applied. */
 export function rawCardFields(chat: { metadata?: string | null }): CardFields {
-  const meta = parseMeta(chat);
+  return cardFieldsOfMeta(parseMeta(chat));
+}
+
+/** {@link rawCardFields} over metadata the caller has already parsed. */
+function cardFieldsOfMeta(meta: Record<string, unknown>): CardFields {
   const raw = meta.card;
   return raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as CardFields) : {};
 }
@@ -87,6 +91,43 @@ function chatTitle(chat: { metadata?: string | null }): string | null {
   const meta = parseMeta(chat);
   const raw = (typeof meta.title === "string" && meta.title) || (typeof meta.preview === "string" && meta.preview) || null;
   return raw ? raw.replace(/\s+/g, " ").trim().slice(0, 120) : null;
+}
+
+/**
+ * A child-archive flag stranded on a card root: `metadata.childArchived: true`
+ * on a record that still carries a parent pointer. Returns the flag's
+ * `childArchivedAt` (or `""` when unstamped) when it applies, `undefined`
+ * otherwise.
+ *
+ * The flag is a per-child archive (child-archive.ts) and the route refuses a
+ * root, but it outlives its parent: deleting a chat never cascades, and a
+ * parent that was never stored (or was purged by native retention) is no
+ * lineage node at all. Either way `existingRootIdOf` promotes the archived
+ * child to the root of its own card. The sidebar keeps hiding that child — and
+ * so the whole tree under it — because it only checks that a parent pointer
+ * exists, so every chat on the card is archived. The card reads as closed to
+ * match, with `closedAt` falling back to when the child was archived.
+ *
+ * Only meaningful on a card root; a member's flag is the ordinary child
+ * archive. A truly detached root has no parent pointer (chat-detach.ts clears
+ * the flag too), so it is never caught here. The parent read is inlined from
+ * chat-lineage's `getParentChatId` to keep this module's read half free of
+ * another import edge.
+ */
+export function strandedChildArchiveAt(meta: Record<string, unknown>): string | undefined {
+  if (meta.childArchived !== true) return undefined;
+  const parent = meta.parentChatId ?? meta.forkedFrom;
+  if (typeof parent !== "string" || parent.length === 0) return undefined;
+  return typeof meta.childArchivedAt === "string" ? meta.childArchivedAt : "";
+}
+
+/**
+ * The lifecycle a card's root actually has: its stored lifecycle, or "closed"
+ * when a stranded child-archive flag archives it (`stranded` — see
+ * {@link strandedChildArchiveAt}).
+ */
+function effectiveLifecycle(fields: { lifecycle?: unknown }, stranded: boolean): CardLifecycle {
+  return fields.lifecycle === "closed" || stranded ? "closed" : "open";
 }
 
 /** Default emoji pool used when a card has never set one. */
@@ -107,6 +148,9 @@ function defaultEmoji(id: string): string {
  */
 export function cardFieldsFromChat(chat: ChatLike, fallbackTitle?: string | null | (() => string | null)): Card {
   const fields = rawCardFields(chat);
+  const strandedAt = strandedChildArchiveAt(parseMeta(chat));
+  const lifecycle = effectiveLifecycle(fields, strandedAt !== undefined);
+  const closedAt = typeof fields.closedAt === "string" && fields.lifecycle === "closed" ? fields.closedAt : strandedAt || undefined;
   const storedTitle = (typeof fields.title === "string" && fields.title) || chatTitle(chat);
   const resolvedFallback = storedTitle ? null : typeof fallbackTitle === "function" ? fallbackTitle() : fallbackTitle;
   const normalizedFallback =
@@ -117,22 +161,27 @@ export function cardFieldsFromChat(chat: ChatLike, fallbackTitle?: string | null
     title: storedTitle || normalizedFallback || "Untitled",
     description: typeof fields.description === "string" ? fields.description : "",
     emoji: (typeof fields.emoji === "string" && fields.emoji) || defaultEmoji(chat.id),
-    lifecycle: fields.lifecycle === "closed" ? "closed" : "open",
+    lifecycle,
     ...(fields.hidden === true ? { hidden: true } : {}),
     pinned: fields.pinned === true,
     ...(typeof fields.category === "string" && fields.category ? { category: fields.category } : {}),
     ...(typeof fields.status === "string" && fields.status ? { status: fields.status } : {}),
     ...(typeof fields.statusEmoji === "string" && fields.statusEmoji ? { statusEmoji: fields.statusEmoji } : {}),
     ...(fields.metadata && typeof fields.metadata === "object" ? { metadata: fields.metadata } : {}),
-    ...(fields.lifecycle === "closed" && typeof fields.closedAt === "string" ? { closedAt: fields.closedAt } : {}),
+    ...(lifecycle === "closed" && closedAt ? { closedAt } : {}),
     createdAt: chat.created_at,
     updatedAt: (typeof fields.updatedAt === "string" && fields.updatedAt) || chat.created_at,
   };
 }
 
-/** The card's lifecycle off a chat record — "open" when absent/corrupt. */
+/**
+ * The card's lifecycle off a chat record — "open" when absent/corrupt, and
+ * "closed" when a stranded child-archive flag archives the root (see
+ * {@link strandedChildArchiveAt}).
+ */
 export function cardLifecycleOf(chat: { metadata?: string | null }): CardLifecycle {
-  return rawCardFields(chat).lifecycle === "closed" ? "closed" : "open";
+  const meta = parseMeta(chat);
+  return effectiveLifecycle(cardFieldsOfMeta(meta), strandedChildArchiveAt(meta) !== undefined);
 }
 
 /**
@@ -177,10 +226,12 @@ function mergeCardMetadata(
 /**
  * Whether a card in this state is archived, for the sidebar's purposes: closed
  * or opted out of the board. The two are one state everywhere a pin can be
- * seen — see the header of card-archive-unpin.ts.
+ * seen — see the header of card-archive-unpin.ts. `stranded` is whether a
+ * stranded child-archive flag is (still) closing the card, as for
+ * {@link effectiveLifecycle}.
  */
-function isArchivedState(fields: { lifecycle?: unknown; hidden?: unknown }): boolean {
-  return fields.lifecycle === "closed" || fields.hidden === true;
+function isArchivedState(fields: { lifecycle?: unknown; hidden?: unknown }, stranded: boolean): boolean {
+  return effectiveLifecycle(fields, stranded) === "closed" || fields.hidden === true;
 }
 
 /**
@@ -206,10 +257,16 @@ export function patchCardFields(chatId: string, patch: CardPatch, deps?: { pinne
   const chat = chatFileService.getChat(chatId);
   if (!chat) return null;
 
-  const existing: Record<string, unknown> = { ...rawCardFields(chat) };
+  const meta = parseMeta(chat);
+  const existing: Record<string, unknown> = { ...cardFieldsOfMeta(meta) };
+  // A stranded child-archive flag closes the card without any stored
+  // lifecycle (see strandedChildArchiveAt), so every "what state is it in"
+  // read below goes through the derived lifecycle, not `existing.lifecycle`.
+  const stranded = strandedChildArchiveAt(meta) !== undefined;
+  const currentLifecycle = effectiveLifecycle(existing, stranded);
   // Captured before any field is merged: the unpin below fires on the
   // *transition* into archived, never on a card that was already there.
-  const wasArchived = isArchivedState(existing);
+  const wasArchived = isArchivedState(existing, stranded);
 
   if (patch.title !== undefined) {
     const trimmed = patch.title.trim();
@@ -266,8 +323,10 @@ export function patchCardFields(chatId: string, patch: CardPatch, deps?: { pinne
     }
   }
 
+  // Set when this write opens a card that only a stranded flag was closing:
+  // the flag goes in the same write, or the reopen would change nothing.
+  let clearStranded = false;
   if (patch.lifecycle !== undefined) {
-    const currentLifecycle: CardLifecycle = existing.lifecycle === "closed" ? "closed" : "open";
     // `closedAt` describes the transition, not the most recent idempotent
     // PATCH. Re-sending { lifecycle: "closed" } must not make an old card look
     // newly closed (or reorder the board's Archived strip).
@@ -277,6 +336,7 @@ export function patchCardFields(chatId: string, patch: CardPatch, deps?: { pinne
         existing.closedAt = new Date().toISOString();
       } else {
         delete existing.closedAt;
+        clearStranded = stranded;
       }
     }
   }
@@ -301,9 +361,15 @@ export function patchCardFields(chatId: string, patch: CardPatch, deps?: { pinne
   // so the two reads agree today, but one of them switching to a copy (as
   // mergeCardMetadata already does for its own sub-object) would silently turn
   // the unpin off with nothing to fail.
-  const nowArchived = isArchivedState(existing);
+  // The same predicate as `wasArchived`: a stranded flag that survives this
+  // write still closes the card.
+  const nowArchived = isArchivedState(existing, stranded && !clearStranded);
 
-  const written = chatFileService.updateChatMetadata(chatId, { card: existing }, { touch: false });
+  const written = chatFileService.updateChatMetadata(
+    chatId,
+    clearStranded ? { card: existing, childArchived: undefined, childArchivedAt: undefined } : { card: existing },
+    { touch: false },
+  );
   if (!written) throw new CardFieldWriteError(`Failed to persist card fields for chat "${chatId}"`);
   const updated = readCardFields(chatId);
   if (!updated) throw new CardFieldWriteError(`Card root chat "${chatId}" disappeared while it was being updated`);

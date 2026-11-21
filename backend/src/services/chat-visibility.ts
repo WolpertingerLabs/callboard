@@ -1,7 +1,7 @@
 import { parseChatMetadata, parseChatMetadataRecord } from "../utils/chat-metadata.js";
 import { hasParkedApprovals } from "./job-approval-signal.js";
 import { getRun, latestRunChatId } from "./job-store.js";
-import { cardLifecycleOf, rawCardFields } from "./card-fields.js";
+import { cardLifecycleOf, rawCardFields, strandedChildArchiveAt } from "./card-fields.js";
 export function createTriggeredPredicate(isParkedRow?: (chat: { id: string }, meta: ReturnType<typeof parseChatMetadata>) => boolean) {
   const parked = hasParkedApprovals();
   const cache = new Map<string, ReturnType<typeof getRun>>();
@@ -57,9 +57,17 @@ export function archivedFlagOf(chat: { metadata?: string | null }): boolean {
  * folds in the native-Codex exclusion that `isCardEligible` alone does not —
  * and a second derivation here could disagree with it.
  *
- * Never consults the other representation: a stale flag left on a card root, or
- * a stray `metadata.card` on a non-card root, is ignored rather than allowed to
- * archive a tree nothing in the UI can unarchive.
+ * Never consults the other representation: a stale `treeArchived` flag left on
+ * a card root, or a stray `metadata.card` on a non-card root, is ignored rather
+ * than allowed to archive a tree nothing in the UI can unarchive.
+ *
+ * One deliberate exception, on card roots only: a child-archive flag
+ * (`metadata.childArchived`) stranded on a root whose parent pointer no longer
+ * resolves (`strandedChildArchiveAt` in card-fields.ts) archives the card. It
+ * is not a stale second representation but the same archive the sidebar is
+ * already applying — it hides that chat and everything under it — so ignoring
+ * it would leave an open card whose every chat is archived. And unlike the
+ * cases above it can be undone: unarchiving or reopening the card clears it.
  */
 export function rootIsArchived(root: { metadata?: string | null }, isCard: boolean): boolean {
   return metaIsArchived(parseChatMetadataRecord(root.metadata), isCard);
@@ -69,10 +77,13 @@ export function rootIsArchived(root: { metadata?: string | null }, isCard: boole
  * {@link rootIsArchived} over metadata the caller has already parsed — the
  * same two rules, read off the object: a card is archived when `card` is
  * closed or hidden ({@link cardIsArchived}), a non-card root when it carries
- * the flag ({@link archivedFlagOf}).
+ * the flag ({@link archivedFlagOf}). A card root still carrying a child-archive
+ * flag from before its parent went away is archived too — the same derived
+ * rule as `cardLifecycleOf` (see `strandedChildArchiveAt` in card-fields.ts).
  */
 export function metaIsArchived(meta: Record<string, unknown>, isCard: boolean): boolean {
   if (!isCard) return meta.treeArchived === true;
+  if (strandedChildArchiveAt(meta) !== undefined) return true;
   const card = meta.card;
   if (!card || typeof card !== "object" || Array.isArray(card)) return false;
   const fields = card as { lifecycle?: unknown; hidden?: unknown };

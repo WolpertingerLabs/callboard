@@ -295,6 +295,24 @@ describe("sendMessage — a job step respects an archive made after its run star
     expect(metaOf(root.id).treeArchived).toBeUndefined();
   });
 
+  // A child archived on its own whose parent is gone is the root of its own
+  // card, closed by the flag (`strandedChildArchiveAt`); its closedAt is the
+  // flag's childArchivedAt, so the job-step rule is keyed on that.
+  it("reopens a stranded root's card archived BEFORE the run started, clearing the flag", async () => {
+    const root = chatFileService.createChat(workDir, "respect-stranded-1", JSON.stringify({ parentChatId: "deleted", childArchived: true, childArchivedAt: T0 }));
+    expect(readCardFields(root.id)!.lifecycle).toBe("closed");
+    await step(root.id, T1);
+    expect(readCardFields(root.id)!.lifecycle).toBe("open");
+    expect(metaOf(root.id).childArchived).toBeUndefined();
+  });
+
+  it("leaves a stranded root's card archived AFTER the run started closed", async () => {
+    const root = chatFileService.createChat(workDir, "respect-stranded-2", JSON.stringify({ parentChatId: "deleted", childArchived: true, childArchivedAt: T2 }));
+    await step(root.id, T1);
+    expect(readCardFields(root.id)).toMatchObject({ lifecycle: "closed", closedAt: T2 });
+    expect(metaOf(root.id).childArchived).toBe(true);
+  });
+
   it("still lets the user reopen a tree archived mid-run, by messaging it", async () => {
     const root = chatFileService.createChat(workDir, "respect-flag-3", JSON.stringify({ triggered: true, treeArchived: true, treeArchivedAt: T2 }));
     await messageChat(root.id);
@@ -331,5 +349,36 @@ describe("sendMessage — unarchive an archived child on new message", () => {
 
     expect(metaOf(child.id).childArchived).toBeUndefined();
     expect(metaOf(sibling.id).childArchived).toBe(true);
+  });
+});
+
+/**
+ * An archived child whose parent is gone has been promoted to the root of its
+ * own card, which the stranded flag closes. A message reopens that card like
+ * any other, and the reopen clears the flag in the same write.
+ */
+describe("sendMessage — reopen a card closed by a stranded child-archive flag", () => {
+  const metaOf = (id: string) => JSON.parse(chatFileService.getChat(id)!.metadata || "{}");
+  const ARCHIVED = { parentChatId: "deleted-parent", childArchived: true, childArchivedAt: "2026-01-01T00:00:00.000Z" };
+
+  it("reopens the card and clears the flag when the stranded root receives a message", async () => {
+    const root = chatFileService.createChat(workDir, "stranded-1", JSON.stringify(ARCHIVED));
+    expect(readCardFields(root.id)!.lifecycle).toBe("closed");
+
+    await messageChat(root.id);
+
+    expect(readCardFields(root.id)!.lifecycle).toBe("open");
+    expect(metaOf(root.id).childArchived).toBeUndefined();
+    expect(metaOf(root.id).childArchivedAt).toBeUndefined();
+  });
+
+  it("does the same when a chat under the stranded root receives a message", async () => {
+    const root = chatFileService.createChat(workDir, "stranded-2", JSON.stringify(ARCHIVED));
+    const child = chatFileService.createChat(workDir, "stranded-2-child", JSON.stringify({ parentChatId: root.id }));
+
+    await messageChat(child.id);
+
+    expect(readCardFields(root.id)!.lifecycle).toBe("open");
+    expect(metaOf(root.id).childArchived).toBeUndefined();
   });
 });
