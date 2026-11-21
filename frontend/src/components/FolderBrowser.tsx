@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef } from "react";
-import { X, Home, Folder, GitBranch, Eye, EyeOff, ChevronRight, ChevronDown, ArrowUp, RefreshCw } from "lucide-react";
+import { useState, useEffect, useRef, useMemo } from "react";
+import { X, Home, Folder, GitBranch, GitFork, Eye, EyeOff, ChevronRight, ChevronDown, ArrowUp, RefreshCw } from "lucide-react";
 import { browseDirectory, getFolderSuggestions, clearFolderCache, type BrowseResult, type FolderItem, type FolderSuggestion } from "../api";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { readStorageItem, writeStorageItem } from "../utils/localStorage";
@@ -11,6 +11,11 @@ import RecentDirectoryRow, { FocusTag } from "./RecentDirectoryRow";
 
 /** Its own key rather than a field in the settings blob — kept as-is so existing preferences survive. */
 const SHOW_HIDDEN_KEY = "folderBrowser.showHidden";
+/**
+ * Hiding worktrees filters the listing client-side, so (unlike `showHidden`) it
+ * never takes part in fetching: not in the browse effect, its refs, or refresh.
+ */
+const HIDE_WORKTREES_KEY = "folderBrowser.hideWorktrees";
 
 interface FolderBrowserProps {
   isOpen: boolean;
@@ -61,6 +66,9 @@ export default function FolderBrowser({
   const [error, setError] = useState<string | null>(null);
   const [showHidden, setShowHidden] = useState(() => {
     return readStorageItem(SHOW_HIDDEN_KEY) === "true";
+  });
+  const [hideWorktrees, setHideWorktrees] = useState(() => {
+    return readStorageItem(HIDE_WORKTREES_KEY) === "true";
   });
   const [suggestions, setSuggestions] = useState<FolderSuggestion[]>([]);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -221,6 +229,20 @@ export default function FolderBrowser({
     writeStorageItem(SHOW_HIDDEN_KEY, newValue.toString());
   };
 
+  const handleToggleWorktrees = () => {
+    const newValue = !hideWorktrees;
+    setHideWorktrees(newValue);
+    writeStorageItem(HIDE_WORKTREES_KEY, newValue.toString());
+  };
+
+  // The rows actually listed. The focus row is kept even when it is a
+  // worktree, so its outline and scroll-into-view still have something to land on.
+  const visibleDirectories = useMemo(() => {
+    const dirs = browseResult?.directories ?? [];
+    return hideWorktrees ? dirs.filter((d) => !d.isWorktree || d.path === openedFocus?.path) : dirs;
+  }, [browseResult, hideWorktrees, openedFocus]);
+  const hiddenWorktreeCount = (browseResult?.directories.length ?? 0) - visibleDirectories.length;
+
   const handleRefresh = async () => {
     if (isRefreshing || isLoading) return;
     setIsRefreshing(true);
@@ -330,6 +352,26 @@ export default function FolderBrowser({
             >
               {showHidden ? <EyeOff size={isMobile ? 12 : 14} /> : <Eye size={isMobile ? 12 : 14} />}
               {!isMobile && (showHidden ? "Hide hidden" : "Show hidden")}
+            </button>
+            <button
+              onClick={handleToggleWorktrees}
+              aria-pressed={hideWorktrees}
+              style={{
+                background: hideWorktrees ? "var(--accent)" : "var(--surface)",
+                color: hideWorktrees ? "var(--text-on-accent)" : "var(--text)",
+                padding: isMobile ? "4px 8px" : "6px 12px",
+                borderRadius: 6,
+                border: "1px solid var(--border)",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                gap: isMobile ? 4 : 6,
+                fontSize: isMobile ? 11 : 13,
+              }}
+              title={hideWorktrees ? "Show git worktrees" : "Hide git worktrees"}
+            >
+              <GitFork size={isMobile ? 12 : 14} />
+              {!isMobile && (hideWorktrees ? "Show worktrees" : "Hide worktrees")}
             </button>
             <button
               onClick={handleRefresh}
@@ -543,7 +585,7 @@ export default function FolderBrowser({
                 )}
 
                 {/* Directories */}
-                {browseResult.directories.map((item) => {
+                {visibleDirectories.map((item) => {
                   // The folder opened above, shown among its siblings. Marked
                   // with an outline, not a fill: a fill would read as
                   // "selected", but Select Folder picks the folder shown.
@@ -570,7 +612,11 @@ export default function FolderBrowser({
                       onMouseOut={(e) => (e.currentTarget.style.background = "transparent")}
                     >
                       <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 6 : 8, flex: 1, minWidth: 0 }}>
-                        {item.isGitRepo ? (
+                        {item.isWorktree ? (
+                          <span title="Git worktree" style={{ display: "flex", flexShrink: 0 }}>
+                            <GitFork size={isMobile ? 14 : 16} style={{ color: "var(--accent-text)", flexShrink: 0 }} />
+                          </span>
+                        ) : item.isGitRepo ? (
                           <GitBranch size={isMobile ? 14 : 16} style={{ color: "var(--accent-text)", flexShrink: 0 }} />
                         ) : (
                           <Folder size={isMobile ? 14 : 16} style={{ color: "var(--accent-text)", flexShrink: 0 }} />
@@ -603,6 +649,33 @@ export default function FolderBrowser({
                     This directory is empty
                   </div>
                 )}
+
+                {visibleDirectories.length === 0 && hiddenWorktreeCount > 0 && browseResult.files.length === 0 && (
+                  <div
+                    style={{
+                      textAlign: "center",
+                      color: "var(--text-muted)",
+                      padding: isMobile ? 30 : 40,
+                      fontSize: isMobile ? 13 : 14,
+                    }}
+                  >
+                    All folders here are worktrees.{" "}
+                    <button
+                      onClick={handleToggleWorktrees}
+                      style={{
+                        background: "none",
+                        border: "none",
+                        padding: 0,
+                        color: "var(--accent-text)",
+                        textDecoration: "underline",
+                        cursor: "pointer",
+                        font: "inherit",
+                      }}
+                    >
+                      Show worktrees
+                    </button>
+                  </div>
+                )}
               </div>
             ) : null}
           </div>
@@ -623,7 +696,8 @@ export default function FolderBrowser({
           <div style={{ fontSize: isMobile ? 12 : 13, color: "var(--text-muted)" }}>
             {browseResult && (
               <>
-                {browseResult.directories.length} folders
+                {visibleDirectories.length} folders
+                {hideWorktrees && hiddenWorktreeCount > 0 && ` (${hiddenWorktreeCount} ${hiddenWorktreeCount === 1 ? "worktree" : "worktrees"} hidden)`}
                 {browseResult.files.length > 0 && `, ${browseResult.files.length} files`}
               </>
             )}

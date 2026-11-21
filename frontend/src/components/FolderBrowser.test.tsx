@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 /**
- * The folder browser's "Previously used" section and where it opens.
+ * The folder browser's "Previously used" section, where it opens, and the
+ * "Hide worktrees" toggle.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -17,11 +18,18 @@ vi.mock("../api", () => ({
   clearFolderCache: vi.fn(async () => {}),
 }));
 
-const EXISTING = new Set(["/", "/home", "/home/me", "/home/me/code", "/home/me/code/app", "/home/me/code/lib"]);
+const WORKTREES = new Set(["/home/me/code/app-wt", "/home/me/wts/one", "/home/me/wts/two"]);
+const EXISTING = new Set(["/", "/home", "/home/me", "/home/me/code", "/home/me/code/app", "/home/me/code/lib", "/home/me/wts", ...WORKTREES]);
 const listing = (path: string): BrowseResult => ({
   directories: [...EXISTING]
     .filter((p) => p !== path && p.startsWith(path === "/" ? "/" : path + "/") && !p.slice(path.length + 1).includes("/"))
-    .map((p) => ({ name: p.split("/").pop()!, path: p, type: "directory" as const, isHidden: false })),
+    .map((p) => ({
+      name: p.split("/").pop()!,
+      path: p,
+      type: "directory" as const,
+      isHidden: false,
+      ...(WORKTREES.has(p) && { isGitRepo: true, isWorktree: true }),
+    })),
   files: [],
   parent: path === "/" ? null : path.slice(0, path.lastIndexOf("/")) || "/",
   exists: EXISTING.has(path),
@@ -301,5 +309,84 @@ describe("FolderBrowser — opening at a folder that is gone", () => {
     renderBrowser({ initialPath: "/home/me/code" });
     await waitFor(() => expect(screen.getByText("home")).toBeTruthy());
     expect(screen.queryByText("boom")).toBeNull();
+  });
+});
+
+describe("FolderBrowser — hide worktrees", () => {
+  const footer = () => screen.getByText(/\d+ folders/);
+
+  it("shows worktrees by default, marked with a worktree icon", async () => {
+    renderBrowser();
+    const row = await listedRow("app-wt");
+    expect(within(row).getByTitle("Git worktree")).toBeTruthy();
+    const button = screen.getByTitle("Hide git worktrees");
+    expect(button.textContent).toBe("Hide worktrees");
+    expect(button.getAttribute("aria-pressed")).toBe("false");
+    expect(footer().textContent).toBe("3 folders");
+  });
+
+  it("toggling on hides them, persists, and does not refetch", async () => {
+    renderBrowser();
+    await listedRow("app-wt");
+    const calls = browsed().length;
+    fireEvent.click(screen.getByTitle("Hide git worktrees"));
+    await waitFor(() => expect(screen.queryByText("app-wt")).toBeNull());
+    expect(screen.getByText("lib")).toBeTruthy();
+    expect(footer().textContent).toBe("2 folders (1 worktree hidden)");
+    expect(localStorage.getItem("folderBrowser.hideWorktrees")).toBe("true");
+    const button = screen.getByTitle("Show git worktrees");
+    expect(button.getAttribute("aria-pressed")).toBe("true");
+    expect(button.textContent).toBe("Show worktrees");
+    expect(browsed().length).toBe(calls);
+
+    fireEvent.click(button);
+    await listedRow("app-wt");
+    expect(localStorage.getItem("folderBrowser.hideWorktrees")).toBe("false");
+    expect(browsed().length).toBe(calls);
+  });
+
+  it("reads the persisted preference on first render", async () => {
+    localStorage.setItem("folderBrowser.hideWorktrees", "true");
+    renderBrowser();
+    await listedRow("lib");
+    expect(screen.queryByText("app-wt")).toBeNull();
+  });
+
+  it("keeps the focus row even when it is a worktree", async () => {
+    localStorage.setItem("folderBrowser.hideWorktrees", "true");
+    renderBrowser({ focusPath: "/home/me/code/app-wt" });
+    const row = await listedRow("app-wt");
+    expect(row.getAttribute("data-focus-row")).toBe("true");
+    expect(footer().textContent).toBe("3 folders");
+  });
+
+  it("does not filter Previously used", async () => {
+    localStorage.setItem("folderBrowser.hideWorktrees", "true");
+    renderBrowser({ recentDirectories: ["/home/me/code/app-wt"] });
+    const section = await screen.findByTestId("folder-browser-recent");
+    await listedRow("lib");
+    expect(within(section).getByTitle("/home/me/code/app-wt")).toBeTruthy();
+  });
+
+  it("explains a listing that is all worktrees, with a way to show them", async () => {
+    localStorage.setItem("folderBrowser.hideWorktrees", "true");
+    renderBrowser({ initialPath: "/home/me/wts" });
+    const empty = await screen.findByText(/All folders here are worktrees/);
+    expect(screen.queryByText("This directory is empty")).toBeNull();
+    expect(footer().textContent).toBe("0 folders (2 worktrees hidden)");
+    fireEvent.click(within(empty).getByRole("button", { name: "Show worktrees" }));
+    await listedRow("one");
+    expect(screen.getByText("two")).toBeTruthy();
+    expect(screen.queryByText(/All folders here are worktrees/)).toBeNull();
+  });
+
+  it("is icon-only on mobile", async () => {
+    mobile = true;
+    renderBrowser();
+    await listedRow("lib");
+    const button = screen.getByTitle("Hide git worktrees");
+    expect(button.textContent).toBe("");
+    fireEvent.click(button);
+    await waitFor(() => expect(screen.queryByText("app-wt")).toBeNull());
   });
 });

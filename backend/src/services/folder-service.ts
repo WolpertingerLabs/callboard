@@ -2,6 +2,7 @@ import { readdirSync, statSync, existsSync } from "fs";
 import { join, dirname, resolve, basename } from "path";
 import { homedir } from "os";
 import { WORKSPACES_DIR } from "../utils/paths.js";
+import { isLinkedWorktree } from "../utils/git.js";
 import { getSessionProviders } from "../agents/factory.js";
 import type { FolderItem, BrowseResult, ValidateResult, FolderSuggestion } from "shared/types/index.js";
 
@@ -95,7 +96,10 @@ class FolderService {
 
           // Check if directory is a git repository
           if (itemStat.isDirectory()) {
-            folderItem.isGitRepo = existsSync(join(itemPath, ".git"));
+            const isGitRepo = existsSync(join(itemPath, ".git"));
+            folderItem.isGitRepo = isGitRepo;
+            // Only set when true, so ordinary folders don't grow the payload.
+            if (isGitRepo && isLinkedWorktree(itemPath)) folderItem.isWorktree = true;
             result.directories.push(folderItem);
           } else {
             result.files.push(folderItem);

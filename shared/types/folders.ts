@@ -6,6 +6,8 @@ export interface FolderItem {
   size?: number;
   modified?: string;
   isGitRepo?: boolean;
+  /** A linked git worktree (`.git` file → an admin dir with `commondir`). Absent = not one, or unknown. */
+  isWorktree?: boolean;
 }
 
 export interface BrowseResult {
