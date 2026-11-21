@@ -6,10 +6,10 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useEffect } from "react";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import type { SpaceListItem } from "shared/types/space.js";
-import { updateSpace } from "../api";
+import { browseDirectory, updateSpace } from "../api";
 import { SpaceContext } from "../contexts/SpaceContext";
 import { makeSpaceContext } from "../testing/spaceContext";
 import NewChatPanel from "./NewChatPanel";
@@ -17,6 +17,8 @@ import NewChatPanel from "./NewChatPanel";
 vi.mock("../api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../api")>()),
   updateSpace: vi.fn(async () => ({})),
+  browseDirectory: vi.fn(async (path: string) => ({ directories: [], files: [], parent: null, exists: true, currentPath: path })),
+  getFolderSuggestions: vi.fn(async () => ({ suggestions: [] })),
 }));
 
 const SPACES: SpaceListItem[] = [
@@ -220,8 +222,24 @@ describe("NewChatPanel — General's recent folders are the browser's", () => {
   it("ignores a server recent-folder list on General and shows the browser list", async () => {
     localStorage.setItem("claude-code-settings", JSON.stringify({ recentDirectories: [{ path: "/old/a", lastUsed: "2026-01-01" }] }));
     const spaces: SpaceListItem[] = [
-      { id: "default", name: "General", order: 0, chatCount: 0, createdAt: "", updatedAt: "", defaults: { recentDirectories: [{ path: "/server/only", lastUsed: "2026-02-01" }] } },
-      { id: "sp_work", name: "Work", order: 1, chatCount: 0, createdAt: "", updatedAt: "", defaults: { recentDirectories: [{ path: "/work/repo", lastUsed: "2026-01-01" }] } },
+      {
+        id: "default",
+        name: "General",
+        order: 0,
+        chatCount: 0,
+        createdAt: "",
+        updatedAt: "",
+        defaults: { recentDirectories: [{ path: "/server/only", lastUsed: "2026-02-01" }] },
+      },
+      {
+        id: "sp_work",
+        name: "Work",
+        order: 1,
+        chatCount: 0,
+        createdAt: "",
+        updatedAt: "",
+        defaults: { recentDirectories: [{ path: "/work/repo", lastUsed: "2026-01-01" }] },
+      },
     ];
     render(
       <MemoryRouter>
@@ -239,3 +257,50 @@ describe("NewChatPanel — General's recent folders are the browser's", () => {
   });
 });
 
+describe("NewChatPanel — recent folders in the folder browser", () => {
+  /** Opens the browser and removes `dir` from its "Previously used" section. */
+  const removeFromBrowser = async (dir: string) => {
+    fireEvent.click(screen.getByTitle("Browse folders"));
+    const section = await screen.findByTestId("folder-browser-recent");
+    fireEvent.click(within(section).getByLabelText(`Remove ${dir} from previously used folders`));
+    const dialog = screen.getByText("Remove Recent Directory").closest("[data-modal-overlay]") as HTMLElement;
+    fireEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
+  };
+
+  it("opens above the folder chosen last time, listing the space's recent folders", async () => {
+    renderPanel("sp_work");
+    fireEvent.click(screen.getByTitle("Browse folders"));
+    const section = await screen.findByTestId("folder-browser-recent");
+    expect(within(section).getByTitle("/work/repo")).toBeTruthy();
+    await waitFor(() => expect(browseDirectory).toHaveBeenCalled());
+    expect(vi.mocked(browseDirectory).mock.calls[0][0]).toBe("/work");
+    expect(within(section).getByTestId("focus-tag")).toBeTruthy();
+  });
+
+  it("removing one in a space removes it from that space's list", async () => {
+    renderPanel("sp_work");
+    await removeFromBrowser("/work/repo");
+    expect(updateSpace).toHaveBeenCalledWith("sp_work", { removeRecentDirectory: "/work/repo" });
+  });
+
+  it("removing one in General removes it from this browser's list, here and in the panel", async () => {
+    localStorage.setItem(
+      "claude-code-settings",
+      JSON.stringify({
+        recentDirectories: [
+          { path: "/old/a", lastUsed: "2026-02-01" },
+          { path: "/old/b", lastUsed: "2026-01-01" },
+        ],
+      }),
+    );
+    renderPanel("default");
+    expect(await screen.findByTitle("/old/a")).toBeTruthy();
+    await removeFromBrowser("/old/a");
+    const stored = JSON.parse(localStorage.getItem("claude-code-settings") ?? "{}").recentDirectories.map((d: { path: string }) => d.path);
+    expect(stored).toEqual(["/old/b"]);
+    const section = screen.getByTestId("folder-browser-recent");
+    await waitFor(() => expect(within(section).queryByTitle("/old/a")).toBeNull());
+    expect(within(section).getByTitle("/old/b")).toBeTruthy();
+    expect(updateSpace).not.toHaveBeenCalled();
+  });
+});

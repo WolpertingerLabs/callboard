@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { AlertCircle, CheckCircle, Search } from "lucide-react";
 import { validatePath, type ValidateResult } from "../api";
+import { parentDir } from "../utils/paths";
 import FolderBrowser from "./FolderBrowser";
 
 interface FolderSelectorProps {
@@ -9,6 +10,10 @@ interface FolderSelectorProps {
   placeholder?: string;
   autoFocus?: boolean;
   disabled?: boolean;
+  /** Passed to the browser's "Previously used" section, most recent first. */
+  recentDirectories?: string[];
+  /** Passed to the browser; removes a folder from `recentDirectories` once confirmed. */
+  onRemoveRecentDirectory?: (path: string) => void;
 }
 
 export default function FolderSelector({
@@ -17,10 +22,18 @@ export default function FolderSelector({
   placeholder = "Project folder path (e.g. /home/user/myproject)",
   autoFocus = false,
   disabled = false,
+  recentDirectories,
+  onRemoveRecentDirectory,
 }: FolderSelectorProps) {
   const [validation, setValidation] = useState<ValidateResult | null>(null);
   const [isValidating, setIsValidating] = useState(false);
   const [showBrowser, setShowBrowser] = useState(false);
+  // The browser opens one level above the folder in the field — or, with the
+  // field empty, the folder picked last time — so that folder is in view among
+  // its siblings, marked, rather than its own contents filling the list.
+  const fromField = value.trim() !== "";
+  const startFrom = (fromField ? value.trim() : recentDirectories?.[0] || "").replace(/(.)\/+$/, "$1");
+  const startParent = parentDir(startFrom);
 
   // Validate path when value changes
   useEffect(() => {
@@ -194,7 +207,11 @@ export default function FolderSelector({
           onChange(path);
           setShowBrowser(false);
         }}
-        initialPath={value || undefined}
+        initialPath={startParent ?? "/"}
+        focusPath={startParent && startFrom !== "/" ? startFrom : undefined}
+        focusKind={fromField ? "current" : "last-used"}
+        recentDirectories={recentDirectories}
+        onRemoveRecentDirectory={onRemoveRecentDirectory}
       />
     </div>
   );
