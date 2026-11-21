@@ -1,18 +1,17 @@
 import { Worker } from "node:worker_threads";
-import type { Chat } from "shared";
 import type { OwnedSession } from "./chat-discovery.js";
-import { parseChatMetadata } from "../utils/chat-metadata.js";
 
 let running = 0;
 /** Search the discovered corpus off-thread, under one response-wide deadline.
- * No provider's folder-hit cap is applied; aliases are reconciled without reads/writes.
+ * No provider's folder-hit cap is applied. Returns `[provider, sessionId]` keys only.
  * Overload/time/byte-budget failures are explicit incomplete coverage.
  */
-export async function collectContentMatches(query: string, sessions: OwnedSession[], stored: Chat[] = []) {
-  if (running >= 2) return { keys: new Set<string>(), chatIds: new Set<string>(), warnings: ["Content search workers busy; retry this query"] };
+export async function collectContentMatches(query: string, sessions: OwnedSession[]) {
+  if (running >= 2)
+    return { keys: new Set<string>(), labelOnlyKeys: new Set<string>(), warnings: ["Content search workers busy; retry this query"] };
   running++;
   try {
-    const result = await new Promise<{ keys: string[]; warnings: string[] }>((resolve) => {
+    const result = await new Promise<{ keys: string[]; warnings: string[]; labelOnlyKeys?: string[] }>((resolve) => {
       const source = import.meta.url.endsWith(".ts");
       const moduleURL = new URL(source ? "./chat-content-worker.ts" : "./chat-content-worker.js", import.meta.url).href;
       // tsx is a devDependency and only a .ts run needs it, so its specifier travels
@@ -51,30 +50,12 @@ export async function collectContentMatches(query: string, sessions: OwnedSessio
         if (code !== 0) resolve({ keys: [], warnings: ["Content search worker terminated before completion"] });
       });
     });
-    // Session identities are `[provider, sessionId]`. Logical chat IDs
-    // must never enter this set: a chat ID can spell another session's ID.
-    // Only the legacy REST response flattens these separate namespaces.
+    // Session identities are `[provider, sessionId]`. Mapping them to chat
+    // rows is the caller's job (see services/chat-row-index.ts).
     const keys = new Set(result.keys);
-    const chatIds = new Set<string>();
-    const owners = new Map<string, Chat[]>();
-    for (const chat of stored) {
-      const meta = parseChatMetadata(chat.metadata);
-      for (const sid of new Set([chat.session_id, ...(Array.isArray(meta.session_ids) ? meta.session_ids : [])])) {
-        if (typeof sid !== "string") continue;
-        const entries = owners.get(sid) ?? [];
-        entries.push(chat);
-        owners.set(sid, entries);
-      }
-    }
-    for (const key of result.keys) {
-      const [provider, sid] = JSON.parse(key) as [string, string];
-      const compatible = (owners.get(sid) ?? []).filter((chat) => {
-        const meta = parseChatMetadata(chat.metadata);
-        return !meta.provider || meta.provider === provider || chat.session_id !== sid;
-      });
-      if (compatible.length === 1) chatIds.add(compatible[0].id);
-    }
-    return { keys, chatIds, warnings: result.warnings };
+    // Codex native-agent hits that matched only the nickname/agent path.
+    const labelOnlyKeys = new Set(result.labelOnlyKeys ?? []);
+    return { keys, labelOnlyKeys, warnings: result.warnings };
   } finally {
     running--;
   }

@@ -38,12 +38,14 @@ import type {
 import { createLogger } from "../../../utils/logger.js";
 import { bundledPackageVersion } from "../../../utils/package-version.js";
 import { isIgnoredProjectFolder } from "../../../utils/paths.js";
+import { CONTENT_SEARCH_MAX_FILE_BYTES } from "../../../utils/content-search-budget.js";
 import {
   EXPECTED_CODEX_CLI_VERSION,
   extractThreadIdFromFilename,
   parseCodexRollout,
   readCodexSessionMeta,
   readFirstUserPrompt,
+  deriveCodexSearchText,
   resolveCodexSessionsRoot,
 } from "./sessionParser.js";
 
@@ -475,7 +477,8 @@ export class CodexSessionProvider implements SessionProvider {
     // Codex rollouts carry no callboard-native metadata (agentAlias, triggered,
     // gitBranch) — those live on callboard's own chat records and are joined in
     // by routes/chats.ts. The provider supports `folder` (exact cwd match),
-    // `grep` (substring over the first user prompt), and date filters over the
+    // `grep` (substring over every genuine user/assistant message — the
+    // same text content search reads, see deriveCodexSearchText), and date filters over the
     // rollout file's mtime.
     const { folder, grep, updatedAfter, updatedBefore, limit = 50 } = filters;
 
@@ -498,8 +501,17 @@ export class CodexSessionProvider implements SessionProvider {
       if (updatedBefore && updatedAt > new Date(updatedBefore)) continue;
 
       if (grep) {
-        const prompt = readFirstUserPrompt(entry.filePath) ?? "";
-        if (!prompt.toLowerCase().includes(grep.toLowerCase())) continue;
+        // The worker's byte cap, so a caller here cannot slurp an outsized
+        // rollout on the main thread. Over the cap (or unstat-able) is skipped,
+        // as the worker skips it.
+        let size: number;
+        try {
+          size = statSync(entry.filePath).size;
+        } catch {
+          continue;
+        }
+        if (size > CONTENT_SEARCH_MAX_FILE_BYTES) continue;
+        if (!deriveCodexSearchText(entry.filePath).toLowerCase().includes(grep.toLowerCase())) continue;
       }
 
       matches.push({

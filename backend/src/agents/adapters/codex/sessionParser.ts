@@ -973,6 +973,54 @@ export function readFirstUserPrompt(filePath: string): string | null {
   );
 }
 
+/**
+ * The text content search matches a rollout against: every genuine user and
+ * assistant message, newline-joined.
+ *
+ * Uses the same own-history rule as {@link parseCodexRollout}, so a search hit
+ * is something the transcript view actually shows. A native fork copies its
+ * parent's history ahead of its own; only lines from `historyStartOrdinal` on
+ * are the fork's, and a fork that does not record the ordinal contributes no
+ * transcript text at all (it fails closed, as the transcript does) — otherwise
+ * every fork would match whatever its parent said. A native agent's
+ * nickname/agent path leads the text because that is what the list shows as
+ * its title. Synthetic user-channel messages ({@link SYNTHETIC_MESSAGE_PREFIXES})
+ * and developer messages are skipped for the same reason the transcript skips
+ * them.
+ */
+export function deriveCodexSearchText(filePath: string): string {
+  const { label, messages } = readCodexSearchParts(filePath);
+  return label === null ? messages : messages ? `${label}\n${messages}` : label;
+}
+
+/**
+ * {@link deriveCodexSearchText}'s two halves, kept apart so a caller can say
+ * whether a hit was in the conversation or only in a native agent's
+ * nickname/agent path (`label`, `null` for a root thread). `messages` is the
+ * newline-joined conversational text.
+ */
+export function readCodexSearchParts(filePath: string): { label: string | null; messages: string } {
+  const rawLines = readRolloutLines(filePath);
+  const meta = readCodexSessionMeta(filePath);
+  if (!meta && rawLines.some((line) => line.type === "session_meta")) return { label: null, messages: "" };
+  const lines = meta?.isNativeThread ? (meta.historyStartOrdinal === undefined ? [] : rawLines.slice(meta.historyStartOrdinal)) : rawLines;
+  const label = (meta?.nativeAgent && (meta.nativeAgent.nickname || meta.nativeAgent.agentPath)) || null;
+  const parts: string[] = [];
+  for (const line of lines) {
+    if (line.type !== "response_item") continue;
+    const p = line.payload;
+    if (!p || p.type !== "message" || (p.role !== "user" && p.role !== "assistant")) continue;
+    const { text } = extractTextAndImages(p.content);
+    if (!text) continue;
+    if (p.role === "user") {
+      const head = text.trimStart().toLowerCase();
+      if (SYNTHETIC_MESSAGE_PREFIXES.some((pre) => head.startsWith(pre))) continue;
+    }
+    parts.push(text);
+  }
+  return { label, messages: parts.join("\n") };
+}
+
 /** Captured Codex 0.153.4 direct MCP output envelope. Called ONLY after
  * trusted call-id pairing. No searching JSON/text, no exec-result inspection. */
 function directUiResultText(output: unknown): string | undefined {

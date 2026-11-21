@@ -131,14 +131,24 @@ export const searchChatsSchema = {
  * command finds claude-code chats and no pi chats, and the honest reading of
  * that is "pi was searched less deeply", not "no pi session touched it".
  *
- * Codex native children are the exception handled at the call site: their
- * "first prompt" is the agent's nickname or path, which is metadata.
+ * codex goes through `deriveCodexSearchText`: every genuine user and assistant
+ * message (the transcript view's own-history rule, so a native fork does not
+ * match its parent's copied history), no tool traffic — the same depth as pi,
+ * hence the same `"messages"`. A native child's text also leads with its
+ * nickname/agent path, the title the list shows for it.
+ *
+ * The exception, handled at the call site: a native child whose hit is only in
+ * that nickname/path (no message matched — e.g. a fork whose own history is
+ * unknowable) is `"metadata"`.
+ *
+ * `"first-prompt"` is no longer produced. It stays in the union because the
+ * value is on the wire to agents that may branch on it.
  */
 export type MatchKind = "transcript" | "messages" | "first-prompt" | "metadata" | "unknown";
 const MATCH_KIND: Record<AgentProviderKind, MatchKind> = {
   "claude-code": "transcript",
   pi: "messages",
-  codex: "first-prompt",
+  codex: "messages",
   mock: "unknown",
 };
 
@@ -584,7 +594,7 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
     const selectedSessions = discovery.sessions.filter((session) =>
       eligibleKeys.has(JSON.stringify([session.providerKind, session.sessionId])),
     );
-    const content = selectedSessions.length ? await collectContentMatches(term, selectedSessions) : { keys: new Set<string>(), warnings: [] };
+    const content = selectedSessions.length ? await collectContentMatches(term, selectedSessions) : { keys: new Set<string>(), labelOnlyKeys: new Set<string>(), warnings: [] };
     // The shared pool reports saturation as a warning and an empty result set,
     // which reads from the outside exactly like "nothing matched". The sibling
     // worker pool (`matchAdvanced`) throws for the same condition; so does this
@@ -595,21 +605,28 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
     warnings.push(...content.warnings);
     let unsearchable = 0;
     const hits = new Map<string, string>();
+    // Chats whose hit, in THIS call, was only a Codex native agent's
+    // nickname/agent path. Per call: one searchChats can run two searches (the
+    // bound view's submitted search, then grep) and a verdict from one must
+    // not label the other's hit.
+    const labelOnly = new Set<string>();
     candidates = candidates.filter((chat) => {
       const keys = keysByChat.get(chat.id) ?? [];
       if (!keys.length) {
         unsearchable++;
         return false;
       }
-      const hit = keys.find((key) => content.keys.has(key));
+      // A conversational hit outranks one on a native agent's label alone.
+      const hit = keys.find((key) => content.keys.has(key) && !content.labelOnlyKeys.has(key)) ?? keys.find((key) => content.keys.has(key));
       if (hit === undefined) return false;
       hits.set(chat.id, hit);
+      if (content.labelOnlyKeys.has(hit)) labelOnly.add(chat.id);
       return true;
     });
     if (unsearchable) {
       warnings.push(`${unsearchable} chats have no readable transcript on disk; ${label} could not evaluate them`);
     }
-    return hits;
+    return { hits, labelOnly };
   };
   if (view?.available) {
     const advanced = await matchAdvanced(candidates, view.filters);
@@ -624,18 +641,13 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
   // run under the shared worker's time, heap and per-file byte budgets.
   const matchKinds = new Map<string, MatchKind>();
   if (args.grep !== undefined) {
-    const hits = await contentSearch(args.grep, "grep");
+    const { hits, labelOnly } = await contentSearch(args.grep, "grep");
     for (const [chatId, hit] of hits) {
       const providerKind = String(JSON.parse(hit)[0]);
-      const chat = rows.get(chatId);
-      // A Codex native child's "first prompt" is the agent's nickname or path.
-      // That is metadata, and saying so is the difference between a real hit
-      // and one the caller would read as conversation.
-      const native = !!parseChatMetadata(chat?.metadata).nativeAgent;
-      matchKinds.set(
-        chatId,
-        providerKind === "codex" && native ? "metadata" : (MATCH_KIND[providerKind as AgentProviderKind] ?? "unknown"),
-      );
+      // A Codex native child's search text leads with its nickname/agent path.
+      // A hit there and nowhere in its own messages is a metadata match, and
+      // saying so keeps it from reading as conversation.
+      matchKinds.set(chatId, labelOnly.has(chatId) ? "metadata" : (MATCH_KIND[providerKind as AgentProviderKind] ?? "unknown"));
     }
   }
   const sortKey = args.sort === "created" ? (chat: Chat) => Date.parse(chat.created_at) : (chat: Chat) => Date.parse(chat.updated_at);
@@ -735,7 +747,7 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
       ...((view?.available || args.grep !== undefined) && {
         contentSearchSemantics:
           "Provider-specific and not a full-text index. claude-code greps the raw session JSONL, tool calls and results included (matchKind 'transcript'); " +
-          "Pi searches derived conversational text only, no tool traffic (matchKind 'messages'); Codex matches the first user prompt, or a native child's nickname/path (matchKind 'first-prompt'/'metadata'). " +
+          "Pi and Codex search conversational text only, no tool traffic (matchKind 'messages'; a Codex native child matched only on its nickname/path is 'metadata'). " +
           "Read matchKind on each row before concluding a chat did not mention something.",
       }),
     },
