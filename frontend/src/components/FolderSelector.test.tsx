@@ -60,9 +60,11 @@ describe("FolderSelector — browser start path", () => {
   it("marks the folder it opened above", () => {
     openAt("", ["/home/me/code/app"]);
     expect(browserProps.last?.focusPath).toBe("/home/me/code/app");
+    expect(browserProps.last?.focusKind).toBe("last-used");
     cleanup();
-    openAt("/srv/site/");
+    openAt("/srv/site/", ["/home/me/code/app"]);
     expect(browserProps.last?.focusPath).toBe("/srv/site");
+    expect(browserProps.last?.focusKind).toBe("current");
   });
 
   it("marks nothing when opening at the root for want of a folder", () => {

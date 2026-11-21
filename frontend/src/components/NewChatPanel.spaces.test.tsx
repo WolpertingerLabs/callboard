@@ -262,7 +262,7 @@ describe("NewChatPanel — recent folders in the folder browser", () => {
   const removeFromBrowser = async (dir: string) => {
     fireEvent.click(screen.getByTitle("Browse folders"));
     const section = await screen.findByTestId("folder-browser-recent");
-    fireEvent.click(within(section).getByLabelText(`Remove ${dir} from recent directories`));
+    fireEvent.click(within(section).getByLabelText(`Remove ${dir} from previously used folders`));
     const dialog = screen.getByText("Remove Recent Directory").closest("[data-modal-overlay]") as HTMLElement;
     fireEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
   };
@@ -274,7 +274,7 @@ describe("NewChatPanel — recent folders in the folder browser", () => {
     expect(within(section).getByTitle("/work/repo")).toBeTruthy();
     await waitFor(() => expect(browseDirectory).toHaveBeenCalled());
     expect(vi.mocked(browseDirectory).mock.calls[0][0]).toBe("/work");
-    expect(within(section).getByTestId("recent-last-used")).toBeTruthy();
+    expect(within(section).getByTestId("focus-tag")).toBeTruthy();
   });
 
   it("removing one in a space removes it from that space's list", async () => {

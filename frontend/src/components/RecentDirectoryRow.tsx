@@ -7,8 +7,8 @@ interface RecentDirectoryRowProps {
   compact: boolean;
   /** The folder the browser is showing right now. */
   isCurrent: boolean;
-  /** The folder the browser was opened above — the one picked last time. */
-  isLastUsed: boolean;
+  /** A tag for the folder the browser was opened above ("last used", "current"). */
+  tag?: string;
   onNavigate: (path: string) => void;
   onSelect: (path: string) => void;
   /** Omitted, the row has no remove button. */
@@ -18,13 +18,18 @@ interface RecentDirectoryRowProps {
 /** Last path segment, for a row's title line. */
 const baseName = (path: string) => path.replace(/\/+$/, "").split("/").pop() || "/";
 
-/** One entry of the folder browser's "Previously used" section. Click navigates, double-click selects. */
-export default function RecentDirectoryRow({ path, compact, isCurrent, isLastUsed, onNavigate, onSelect, onRemove }: RecentDirectoryRowProps) {
-  const lastUsedTag = isLastUsed && (
-    <span style={{ fontSize: 10, fontWeight: 500, opacity: 0.8, flexShrink: 0, whiteSpace: "nowrap" }} data-testid="recent-last-used">
-      last used
+/** The small "last used" / "current" badge, shared with the directory listing. */
+export function FocusTag({ label }: { label: string }) {
+  return (
+    <span data-testid="focus-tag" style={{ fontSize: 10, fontWeight: 500, opacity: 0.8, flexShrink: 0, whiteSpace: "nowrap" }}>
+      {label}
     </span>
   );
+}
+
+/** One entry of the folder browser's "Previously used" section. Click navigates, double-click selects. */
+export default function RecentDirectoryRow({ path, compact, isCurrent, tag, onNavigate, onSelect, onRemove }: RecentDirectoryRowProps) {
+  const lastUsedTag = tag && <FocusTag label={tag} />;
   return (
     <div
       style={{
@@ -83,8 +88,8 @@ export default function RecentDirectoryRow({ path, compact, isCurrent, isLastUse
             onRemove(path);
           }}
           onDoubleClick={(e) => e.stopPropagation()}
-          aria-label={`Remove ${path} from recent directories`}
-          title={`Remove ${path} from recent directories`}
+          aria-label={`Remove ${path} from previously used folders`}
+          title={`Remove ${path} from previously used folders`}
           style={{
             background: "none",
             border: "none",
@@ -96,8 +101,8 @@ export default function RecentDirectoryRow({ path, compact, isCurrent, isLastUse
             alignItems: "center",
             justifyContent: "center",
             flexShrink: 0,
-            minWidth: compact ? 44 : 24,
-            minHeight: compact ? 44 : 24,
+            minWidth: compact ? 44 : 28,
+            minHeight: compact ? 44 : 28,
           }}
         >
           <X size={14} />

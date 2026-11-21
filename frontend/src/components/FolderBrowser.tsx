@@ -7,7 +7,7 @@ import { errorMessage } from "../utils/errorMessage";
 import { parentDir } from "../utils/paths";
 import ModalOverlay from "./ModalOverlay";
 import ConfirmRemoveRecentDirectory from "./ConfirmRemoveRecentDirectory";
-import RecentDirectoryRow from "./RecentDirectoryRow";
+import RecentDirectoryRow, { FocusTag } from "./RecentDirectoryRow";
 
 /** Its own key rather than a field in the settings blob — kept as-is so existing preferences survive. */
 const SHOW_HIDDEN_KEY = "folderBrowser.showHidden";
@@ -24,6 +24,12 @@ interface FolderBrowserProps {
    */
   focusPath?: string;
   /**
+   * What `focusPath` is, for its tag: the folder picked last time
+   * (`"last-used"`, the default) or the one already in the caller's field
+   * (`"current"`).
+   */
+  focusKind?: FocusKind;
+  /**
    * Folders this picker has been used for before, most recent first — shown as
    * a "Previously used" section. Omitted (or empty), the section is not shown.
    */
@@ -35,12 +41,16 @@ interface FolderBrowserProps {
   onRemoveRecentDirectory?: (path: string) => void;
 }
 
+export type FocusKind = "last-used" | "current";
+const FOCUS_LABEL: Record<FocusKind, string> = { "last-used": "last used", current: "current" };
+
 export default function FolderBrowser({
   isOpen,
   onClose,
   onSelect,
   initialPath = "/",
   focusPath,
+  focusKind = "last-used",
   recentDirectories,
   onRemoveRecentDirectory,
 }: FolderBrowserProps) {
@@ -72,9 +82,15 @@ export default function FolderBrowser({
    * the browser is open — a removal, a space refresh — and that must not yank
    * the user back to wherever the new list would have started.
    */
-  const startPropsRef = useRef({ initialPath, focusPath });
-  /** `focusPath` as it was when the browser opened. */
-  const [openedFocus, setOpenedFocus] = useState<string | null>(null);
+  const startPropsRef = useRef({ initialPath, focusPath, focusKind });
+  /** `focusPath` and its tag as they were when the browser opened. */
+  const [openedFocus, setOpenedFocus] = useState<{ path: string; label: string } | null>(null);
+  /**
+   * The listing the user is asking for right now. A refresh started before
+   * they navigated (or toggled hidden files) must not land on top of the
+   * listing they moved to.
+   */
+  const wantedRef = useRef({ currentPath, showHidden });
   /** Scroll the `openedFocus` row into view once the first listing is shown. */
   const scrollToFocusRef = useRef(false);
   /**
@@ -106,7 +122,8 @@ export default function FolderBrowser({
   }, [isOpen]);
 
   useEffect(() => {
-    startPropsRef.current = { initialPath, focusPath };
+    startPropsRef.current = { initialPath, focusPath, focusKind };
+    wantedRef.current = { currentPath, showHidden };
   });
 
   // Reset state when modal opens — on the closed→open transition only. Declared
@@ -118,7 +135,8 @@ export default function FolderBrowser({
       openedAtRef.current = start;
       shownRef.current = null;
       scrollToFocusRef.current = true;
-      setOpenedFocus(startPropsRef.current.focusPath ?? null);
+      const { focusPath: focus, focusKind: kind } = startPropsRef.current;
+      setOpenedFocus(focus ? { path: focus, label: FOCUS_LABEL[kind] } : null);
       setCurrentPath(start);
       setError(null);
       setConfirmRemovePath(null);
@@ -132,7 +150,13 @@ export default function FolderBrowser({
       if (!isOpen || !currentPath) return;
       // Already showing this exact listing — see shownRef.
       const shown = shownRef.current;
-      if (shown && shown.path === currentPath && shown.showHidden === showHidden) return;
+      if (shown && shown.path === currentPath && shown.showHidden === showHidden) {
+        // A browse cancelled on the way here (hidden files toggled on and back
+        // off, a navigation away and back) never cleared its loading state.
+        setIsLoading(false);
+        setError(null);
+        return;
+      }
 
       // Only the browse of the path the modal opened at may walk up. The mark
       // is cleared once such a browse completes, not when it starts, so one
@@ -200,13 +224,17 @@ export default function FolderBrowser({
   const handleRefresh = async () => {
     if (isRefreshing || isLoading) return;
     setIsRefreshing(true);
+    const requested = { currentPath, showHidden };
+    const stillWanted = () => wantedRef.current.currentPath === requested.currentPath && wantedRef.current.showHidden === requested.showHidden;
     try {
       await clearFolderCache();
-      const result = await browseDirectory(currentPath, showHidden);
-      shownRef.current = { path: result.currentPath, showHidden };
+      const result = await browseDirectory(requested.currentPath, requested.showHidden);
+      if (!stillWanted()) return;
+      shownRef.current = { path: result.currentPath, showHidden: requested.showHidden };
       setBrowseResult(result);
       setCurrentPath(result.currentPath);
     } catch (err) {
+      if (!stillWanted()) return;
       setError(errorMessage(err, "Failed to refresh directory"));
     } finally {
       setIsRefreshing(false);
@@ -246,7 +274,7 @@ export default function FolderBrowser({
       path={dir}
       compact={compact}
       isCurrent={currentPath === dir}
-      isLastUsed={openedFocus === dir}
+      tag={openedFocus?.path === dir ? openedFocus.label : undefined}
       onNavigate={handleNavigate}
       onSelect={onSelect}
       onRemove={onRemoveRecentDirectory && setConfirmRemovePath}
@@ -516,9 +544,10 @@ export default function FolderBrowser({
 
                 {/* Directories */}
                 {browseResult.directories.map((item) => {
-                  // The folder picked last time, shown among its siblings.
-                  const isFocus = item.path === openedFocus;
-                  const restingBackground = isFocus ? "var(--accent)" : "transparent";
+                  // The folder opened above, shown among its siblings. Marked
+                  // with an outline, not a fill: a fill would read as
+                  // "selected", but Select Folder picks the folder shown.
+                  const isFocus = item.path === openedFocus?.path;
                   return (
                     <div
                       key={item.path}
@@ -526,10 +555,8 @@ export default function FolderBrowser({
                       onDoubleClick={() => handleItemDoubleClick(item)}
                       aria-current={isFocus ? "true" : undefined}
                       data-focus-row={isFocus ? "true" : undefined}
-                      title={isFocus ? "Last used" : undefined}
                       style={{
-                        background: restingBackground,
-                        color: isFocus ? "var(--text-on-accent)" : undefined,
+                        border: `1px solid ${isFocus ? "var(--accent)" : "transparent"}`,
                         display: "flex",
                         alignItems: "center",
                         gap: isMobile ? 8 : 12,
@@ -540,16 +567,14 @@ export default function FolderBrowser({
                         opacity: item.isHidden ? 0.6 : 1,
                         minHeight: isMobile ? 44 : 40, // Better touch target on mobile
                       }}
-                      onMouseOver={(e) => {
-                        if (!isFocus) e.currentTarget.style.background = "var(--surface)";
-                      }}
-                      onMouseOut={(e) => (e.currentTarget.style.background = restingBackground)}
+                      onMouseOver={(e) => (e.currentTarget.style.background = "var(--surface)")}
+                      onMouseOut={(e) => (e.currentTarget.style.background = "transparent")}
                     >
                       <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 6 : 8, flex: 1, minWidth: 0 }}>
                         {item.isGitRepo ? (
-                          <GitBranch size={isMobile ? 14 : 16} style={{ color: isFocus ? "inherit" : "var(--accent-text)", flexShrink: 0 }} />
+                          <GitBranch size={isMobile ? 14 : 16} style={{ color: "var(--accent-text)", flexShrink: 0 }} />
                         ) : (
-                          <Folder size={isMobile ? 14 : 16} style={{ color: isFocus ? "inherit" : "var(--accent-text)", flexShrink: 0 }} />
+                          <Folder size={isMobile ? 14 : 16} style={{ color: "var(--accent-text)", flexShrink: 0 }} />
                         )}
                         <span
                           style={{
@@ -561,6 +586,7 @@ export default function FolderBrowser({
                         >
                           {item.name}
                         </span>
+                        {isFocus && <FocusTag label={openedFocus.label} />}
                       </div>
                     </div>
                   );

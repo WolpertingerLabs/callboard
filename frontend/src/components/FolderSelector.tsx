@@ -31,7 +31,8 @@ export default function FolderSelector({
   // The browser opens one level above the folder in the field — or, with the
   // field empty, the folder picked last time — so that folder is in view among
   // its siblings, marked, rather than its own contents filling the list.
-  const startFrom = (value.trim() || recentDirectories?.[0] || "").replace(/(.)\/+$/, "$1");
+  const fromField = value.trim() !== "";
+  const startFrom = (fromField ? value.trim() : recentDirectories?.[0] || "").replace(/(.)\/+$/, "$1");
   const startParent = parentDir(startFrom);
 
   // Validate path when value changes
@@ -208,6 +209,7 @@ export default function FolderSelector({
         }}
         initialPath={startParent ?? "/"}
         focusPath={startParent && startFrom !== "/" ? startFrom : undefined}
+        focusKind={fromField ? "current" : "last-used"}
         recentDirectories={recentDirectories}
         onRemoveRecentDirectory={onRemoveRecentDirectory}
       />

@@ -102,16 +102,28 @@ describe("FolderBrowser — Previously used", () => {
     renderBrowser({ recentDirectories: RECENT, initialPath: "/home/me/code", focusPath: "/home/me/code/app" });
     const listed = await listedRow("app");
     expect(listed.getAttribute("aria-current")).toBe("true");
-    expect(listed.style.background).toBe("var(--accent)");
+    // An outline and a visible tag, not the "selected"-looking accent fill.
+    expect(listed.style.border).toBe("1px solid var(--accent)");
+    expect(listed.style.background).not.toBe("var(--accent)");
+    expect(within(listed).getByTestId("focus-tag").textContent).toBe("last used");
     expect((await listedRow("lib")).getAttribute("aria-current")).toBeNull();
     await waitFor(() => expect(scrollIntoView).toHaveBeenCalledTimes(1));
     expect(scrollIntoView.mock.contexts[0]).toBe(listed);
     const section = screen.getByTestId("folder-browser-recent");
-    const tags = within(section).getAllByTestId("recent-last-used");
+    const tags = within(section).getAllByTestId("focus-tag");
     expect(tags).toHaveLength(1);
+    expect(tags[0].textContent).toBe("last used");
     expect(within(section).getByTitle("/home/me/code/app").contains(tags[0])).toBe(true);
     // @ts-expect-error -- jsdom has no scrollIntoView; remove the stub again.
     delete Element.prototype.scrollIntoView;
+  });
+
+  it("tags the folder 'current' when it came from the caller's field", async () => {
+    renderBrowser({ recentDirectories: RECENT, initialPath: "/home/me/code", focusPath: "/home/me/code/lib", focusKind: "current" });
+    const listed = await listedRow("lib");
+    expect(within(listed).getByTestId("focus-tag").textContent).toBe("current");
+    const section = screen.getByTestId("folder-browser-recent");
+    expect(within(within(section).getByTitle("/home/me/code/lib")).getByTestId("focus-tag").textContent).toBe("current");
   });
 
   it("hides the server's own recent suggestions while the section is shown", async () => {
@@ -123,20 +135,20 @@ describe("FolderBrowser — Previously used", () => {
   it("has no remove buttons without a remove handler", async () => {
     renderBrowser({ recentDirectories: RECENT });
     await screen.findByTestId("folder-browser-recent");
-    expect(screen.queryByLabelText(/^Remove .* from recent directories$/)).toBeNull();
+    expect(screen.queryByLabelText(/^Remove .* from previously used folders$/)).toBeNull();
   });
 
   it("removes a folder only once the user confirms", async () => {
     const onRemove = vi.fn();
     const { onSelect } = renderBrowser({ recentDirectories: RECENT, onRemoveRecentDirectory: onRemove });
-    fireEvent.click(await screen.findByLabelText("Remove /home/me/code/app from recent directories"));
+    fireEvent.click(await screen.findByLabelText("Remove /home/me/code/app from previously used folders"));
     fireEvent.click(within(confirmDialog()).getByRole("button", { name: "Cancel" }));
     expect(onRemove).not.toHaveBeenCalled();
     // The browser is still open behind it.
     expect(screen.getByText("Select Folder", { selector: "h2" })).toBeTruthy();
 
     const callsBefore = browsed().length;
-    fireEvent.click(screen.getByLabelText("Remove /home/me/code/app from recent directories"));
+    fireEvent.click(screen.getByLabelText("Remove /home/me/code/app from previously used folders"));
     fireEvent.click(within(confirmDialog()).getByRole("button", { name: "Remove" }));
     expect(onRemove).toHaveBeenCalledWith("/home/me/code/app");
     expect(screen.queryByText("Remove Recent Directory")).toBeNull();
@@ -196,6 +208,50 @@ describe("FolderBrowser — browse responses", () => {
     // Still lib: app's late listing (which would list app & lib) was dropped.
     expect(screen.getByTitle("/home/me/code/lib").getAttribute("aria-current")).toBe("location");
     expect(screen.getByText("This directory is empty")).toBeTruthy();
+  });
+
+  it("does not stick on Loading when hidden files are toggled on and back off mid-fetch", async () => {
+    renderBrowser({ initialPath: "/home/me" });
+    await listedRow("code");
+    const pending = deferred<BrowseResult>();
+    vi.mocked(browseDirectory).mockImplementation(async (path: string, showHidden?: boolean) => (showHidden ? pending.promise : listing(path)));
+    fireEvent.click(screen.getByTitle("Show hidden files"));
+    await screen.findByText("Loading...");
+    fireEvent.click(screen.getByTitle("Hide hidden files"));
+    await waitFor(() => expect(screen.queryByText("Loading...")).toBeNull());
+    expect(await listedRow("code")).toBeTruthy();
+    expect((screen.getByTitle("Refresh directory listing") as HTMLButtonElement).disabled).toBe(false);
+    pending.resolve(listing("/home/me"));
+  });
+
+  it("does not stick on Loading after navigating away and back mid-fetch", async () => {
+    renderBrowser({ initialPath: "/home/me", recentDirectories: RECENT });
+    await listedRow("code");
+    const pending = deferred<BrowseResult>();
+    vi.mocked(browseDirectory).mockImplementation(async (path: string) => (path === "/home/me/code/app" ? pending.promise : listing(path)));
+    fireEvent.click(screen.getByTitle("/home/me/code/app"));
+    await screen.findByText("Loading...");
+    // Back to the folder whose listing is still the one held.
+    fireEvent.click(screen.getByRole("button", { name: "me" }));
+    await waitFor(() => expect(screen.queryByText("Loading...")).toBeNull());
+    expect(await listedRow("code")).toBeTruthy();
+    pending.resolve(listing("/home/me/code/app"));
+  });
+
+  it("drops a refresh that lands after the user has navigated on", async () => {
+    renderBrowser({ initialPath: "/home/me" });
+    await listedRow("code");
+    const slowRefresh = deferred<BrowseResult>();
+    vi.mocked(browseDirectory).mockImplementationOnce(() => slowRefresh.promise);
+    fireEvent.click(screen.getByTitle("Refresh directory listing"));
+    await waitFor(() => expect(browsed().filter((p) => p === "/home/me").length).toBeGreaterThanOrEqual(2));
+    fireEvent.click(await listedRow("code"));
+    await listedRow("app");
+    slowRefresh.resolve(listing("/home/me"));
+    await new Promise((r) => setTimeout(r, 20));
+    // Still in /home/me/code: the stale refresh did not put /home/me back.
+    expect(await listedRow("app")).toBeTruthy();
+    expect(screen.queryAllByText("code").filter((el) => !el.closest("button"))).toHaveLength(0);
   });
 
   it("fetches the folder it walked up to once, not again for the resolved path", async () => {
