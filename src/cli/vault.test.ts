@@ -507,6 +507,13 @@ describe.skipIf(!built)('drawlatch vault (CLI against a test daemon)', () => {
       expect(r.status).toBe(0);
       expect(r.stdout).toContain('drawlatch vault list [--caller <alias>]');
       expect(r.stdout).toContain('drawlatch vault git-credential --item <name>');
+      // The example resets inherited helpers for the URL before adding this one.
+      expect(r.stdout).toContain(
+        "git config --global credential.https://forgejo.example.com.helper ''",
+      );
+      expect(r.stdout).toContain(
+        'git config --global --add credential.https://forgejo.example.com.helper',
+      );
       const top = await cli(['--help']);
       expect(top.stdout).toMatch(/^\s+vault\s+/m);
     });
@@ -624,6 +631,75 @@ describe.skipIf(!built)('drawlatch vault (CLI against a test daemon)', () => {
       expect(other.stdout).not.toContain(REVEAL_TOKEN);
       expect(other.status).not.toBe(0);
       expectNoCredentialFiles(home);
+    });
+
+    /**
+     * git calls `store` on every helper that applies to a URL, and a
+     * URL-scoped helper is added to the inherited list (osxkeychain, manager,
+     * store, cache …), not put in its place. An unscoped `store` helper in a
+     * temp global config stands in for those. The documented empty `helper`
+     * line clears the inherited list for the URL; without it the token lands
+     * in ~/.git-credentials.
+     */
+    async function fillAndApprove(reset: boolean): Promise<{ home: string; fill: Run }> {
+      const h = fs.mkdtempSync(path.join(os.tmpdir(), 'drawlatch-vault-cli-store-'));
+      const globalConfig = path.join(h, 'temp-global-gitconfig');
+      fs.writeFileSync(globalConfig, '[credential]\n\thelper = store\n');
+      const env = {
+        ...gitEnv(),
+        HOME: h,
+        XDG_CONFIG_HOME: path.join(h, '.config'),
+        GIT_CONFIG_GLOBAL: globalConfig,
+      };
+      const r = path.join(h, 'repo');
+      fs.mkdirSync(r);
+      expect((await run('git', ['init', '-q'], { cwd: r, env })).status).toBe(0);
+      const key = 'credential.https://forgejo.example.com.helper';
+      if (reset) {
+        expect((await run('git', ['config', '--local', key, ''], { cwd: r, env })).status).toBe(0);
+      }
+      const add = await run(
+        'git',
+        ['config', '--local', '--add', key, helper('forgejo.example.com')],
+        { cwd: r, env },
+      );
+      expect(add.status).toBe(0);
+      const fill = await run('git', ['credential', 'fill'], {
+        cwd: r,
+        env,
+        input: 'protocol=https\nhost=forgejo.example.com\n\n',
+      });
+      expect(fill.status).toBe(0);
+      const approve = await run('git', ['credential', 'approve'], {
+        cwd: r,
+        env,
+        input: fill.stdout + '\n',
+      });
+      expect(approve.status).toBe(0);
+      return { home: h, fill };
+    }
+
+    it('with the reset line, another configured helper (store) writes nothing', async () => {
+      const { home: h, fill } = await fillAndApprove(true);
+      try {
+        expect(fill.stdout).toContain(`password=${REVEAL_TOKEN}\n`);
+        expect(fs.existsSync(path.join(h, '.git-credentials'))).toBe(false);
+        expectNoCredentialFiles(h);
+      } finally {
+        fs.rmSync(h, { recursive: true, force: true });
+      }
+    });
+
+    it('without the reset line, the inherited store helper persists the token', async () => {
+      const { home: h, fill } = await fillAndApprove(false);
+      try {
+        expect(fill.stdout).toContain(`password=${REVEAL_TOKEN}\n`);
+        const stored = path.join(h, '.git-credentials');
+        expect(fs.existsSync(stored)).toBe(true);
+        expect(fs.readFileSync(stored, 'utf8')).toContain(REVEAL_TOKEN);
+      } finally {
+        fs.rmSync(h, { recursive: true, force: true });
+      }
     });
 
     it('git fetch over HTTP sends the vault token as Basic auth', async () => {

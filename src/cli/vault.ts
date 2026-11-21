@@ -76,9 +76,14 @@ git-credential actions:
 Errors go to stderr, without values, and exit 1, so git falls through to its
 next helper or prompt.
 
-Example (URL-scoped, so git asks the helper only for that host):
-  git config credential.https://forgejo.example.com.helper \\
+Example (URL-scoped, so git asks the helper only for that host). The first
+line, an empty helper, clears helpers inherited for that URL (osxkeychain,
+manager, store, cache …): git asks every helper that applies to store a
+credential that worked, so without it another helper may save the token.
+  git config --global credential.https://forgejo.example.com.helper ''
+  git config --global --add credential.https://forgejo.example.com.helper \\
     '!drawlatch vault git-credential --item forgejo-token --host forgejo.example.com'
+Run both inside a repository without --global to set it for that repository only.
 `;
 
 /** Run `drawlatch vault <argv…>`. Returns the exit code. */

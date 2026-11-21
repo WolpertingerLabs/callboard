@@ -544,7 +544,7 @@ An agent can **ask** for another caller's item. Only the operator, on the dashbo
 
 **It works only for items the caller may reveal**: its own `reveal` items, or another caller's item granted to it at `reveal`. An `inject` item, or one shared inject-only, is refused. That's deliberate. A credential helper has to hand the value to git, and the daemon can't tell git running the helper from an agent running the same command (or `git credential fill`) in its shell with the same caller keys. Anything the helper can read, an agent with those keys can read, so the helper is limited to items that agent could read with `vault_get` anyway. It still buys you a few things:
 
-- the token isn't in `~/.git-credentials`, a remote URL, or any other file;
+- the token isn't in a remote URL or a dotfile, and with the setup below (which clears other helpers for that URL) git doesn't save it in `~/.git-credentials`, a keychain, or a credential cache either;
 - it isn't in the model's context unless the agent asks for it with `vault_get`;
 - every use is written to the owner's [audit log](#audit-log) as `vault.reveal` with `vault.via: "git-credential"`;
 - rotating the value on the dashboard (**Vault → Replace value**) takes effect for git at once.
@@ -552,20 +552,23 @@ An agent can **ask** for another caller's item. Only the operator, on the dashbo
 Setup, on a machine with the caller's keys (the same `MCP_CONFIG_DIR`, `proxy.config.json`, and `keys/callers/<alias>/` the local MCP server uses):
 
 1. Save the token as a `reveal` item, for example `forgejo-token` (kind `token`, or `password` with a `username` field). An agent can save it with `vault_create` and `exposure: "reveal"`; for a token the agent shouldn't see in its conversation, create it on the dashboard (**Vault → New item**, exposure `reveal`).
-2. Point git at the helper **for that host only**, with a URL-scoped helper key, and pass the same host to `--host` so the helper refuses any other host even if the config is too broad:
+2. Point git at the helper **for that host only**, with a URL-scoped helper key, and pass the same host to `--host` so the helper refuses any other host even if the config is too broad. **Clear the inherited helpers first:**
 
    ```bash
-   git config --global credential.https://forgejo.example.com.helper \
+   git config --global credential.https://forgejo.example.com.helper ''
+   git config --global --add credential.https://forgejo.example.com.helper \
      '!drawlatch vault git-credential --item forgejo-token --host forgejo.example.com'
    ```
 
-   Use `git config` without `--global` to set it for one repository. Add `--caller <alias>` when the keys aren't `MCP_KEY_ALIAS`'s (or `default`), `--owner <alias>` to use another caller's item granted at `reveal`, and `--username <u>` when the item has no `username` field and the host wants a particular one.
+   The empty value matters. A URL-scoped helper is *added* to the helpers git already has (`osxkeychain` from macOS git, `manager` on Git for Windows, a `store` or `cache` you set up), not used instead of them, and after a successful login git asks **every** helper that applies to save the credential. Without the reset line, one of them writes the vault token to disk or a keychain, and from then on answers `get` before the vault helper does, so uses stop being audit-logged and a rotated value no longer reaches git. An empty `helper` value clears the list for that URL, so the vault helper is the only one. Check with `git config --get-all credential.https://forgejo.example.com.helper`: the first line is empty.
+
+   To set it for one repository only, run both commands inside it without `--global`. Add `--caller <alias>` when the keys aren't `MCP_KEY_ALIAS`'s (or `default`), `--owner <alias>` to use another caller's item granted at `reveal`, and `--username <u>` when the item has no `username` field and the host wants a particular one.
 3. `git clone https://forgejo.example.com/org/repo.git` now gets its credentials from the vault. Check with `drawlatch vault list` that the item is there and is `reveal`.
 
 What the helper does:
 
 - **`get`** reads git's `key=value` request from stdin. If `--host` is set and git's `host` isn't exactly that (case-insensitive, port included: `forgejo.example.com:3000` needs `--host forgejo.example.com:3000`), it exits 1 **without contacting the daemon**. Otherwise it calls `vault_get` with `purpose: "git-credential"` and prints `username=` (the item's `username` field, else `--username`, else `x-access-token`) and `password=` (the item's `value` field).
-- **`store`** and **`erase`** do nothing and exit 0: the vault is managed by the agent and the dashboard, not by git. git never writes the token anywhere.
+- **`store`** and **`erase`** do nothing and exit 0: the vault is managed by the agent and the dashboard, not by git. The helper itself never writes the token anywhere; whether git does depends on its other helpers for that URL, which the reset line above clears.
 - **Errors** (an `inject` or ungranted item, a missing item, a host mismatch, a value with a newline, the daemon not running) go to stderr without any value, and exit 1, so git moves on to its next helper or prompts.
 
 The helper authenticates the same way the MCP server does: the caller handshake over the encrypted channel, then the ordinary `vault_get` tool. It uses no admin password and no new endpoint, and it never opens the vault file or its key, so it works the same from another machine. There's deliberately no `drawlatch vault get` command that prints a value, and no command that writes one.
