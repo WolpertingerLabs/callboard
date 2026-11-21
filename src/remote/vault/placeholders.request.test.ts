@@ -378,6 +378,48 @@ describe('where ${vault:…} resolves', () => {
     expect(JSON.parse(received[0].body)).toEqual({ v: `${CANARY}"q\\b` });
   });
 
+  it('a value substituted into a multipart payload_json built from an object is JSON-escaped', async () => {
+    await send(
+      {
+        method: 'POST',
+        url: `${base}/x`,
+        body: { v: '${vault:quoted}' },
+        files: [
+          {
+            field: 'file',
+            data: Buffer.from('hi').toString('base64'),
+            filename: 'a.txt',
+            contentType: 'text/plain',
+          },
+        ],
+      },
+      routes({ resolveSecretsInBody: true }),
+    );
+    const part = /name="payload_json"\r\n\r\n([\s\S]*?)\r\n--/.exec(received[0].body);
+    expect(part).not.toBeNull();
+    expect(JSON.parse(part![1])).toEqual({ v: `${CANARY}"q\\b` });
+  });
+
+  it('a string payload_json is substituted raw, like a string body', async () => {
+    await send(
+      {
+        method: 'POST',
+        url: `${base}/x`,
+        body: 'v=${vault:quoted}',
+        files: [
+          {
+            field: 'file',
+            data: Buffer.from('hi').toString('base64'),
+            filename: 'a.txt',
+            contentType: 'text/plain',
+          },
+        ],
+      },
+      routes({ resolveSecretsInBody: true }),
+    );
+    expect(received[0].body).toContain(`name="payload_json"\r\n\r\nv=${CANARY}"q\\b\r\n`);
+  });
+
   it('never resolves in files content, file names, or bodyFieldName', async () => {
     await send(
       {
