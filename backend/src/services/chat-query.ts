@@ -131,14 +131,20 @@ export const searchChatsSchema = {
  * command finds claude-code chats and no pi chats, and the honest reading of
  * that is "pi was searched less deeply", not "no pi session touched it".
  *
- * Codex native children are the exception handled at the call site: their
- * "first prompt" is the agent's nickname or path, which is metadata.
+ * codex goes through `deriveCodexSearchText`: every genuine user and assistant
+ * message (the transcript view's own-history rule, so a native fork does not
+ * match its parent's copied history), no tool traffic — the same depth as pi,
+ * hence the same `"messages"`. A native child's text also leads with its
+ * nickname/agent path, the title the list shows for it.
+ *
+ * `"first-prompt"` and `"metadata"` are no longer produced. They stay in the
+ * union because the value is on the wire to agents that may branch on it.
  */
 export type MatchKind = "transcript" | "messages" | "first-prompt" | "metadata" | "unknown";
 const MATCH_KIND: Record<AgentProviderKind, MatchKind> = {
   "claude-code": "transcript",
   pi: "messages",
-  codex: "first-prompt",
+  codex: "messages",
   mock: "unknown",
 };
 
@@ -627,15 +633,7 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
     const hits = await contentSearch(args.grep, "grep");
     for (const [chatId, hit] of hits) {
       const providerKind = String(JSON.parse(hit)[0]);
-      const chat = rows.get(chatId);
-      // A Codex native child's "first prompt" is the agent's nickname or path.
-      // That is metadata, and saying so is the difference between a real hit
-      // and one the caller would read as conversation.
-      const native = !!parseChatMetadata(chat?.metadata).nativeAgent;
-      matchKinds.set(
-        chatId,
-        providerKind === "codex" && native ? "metadata" : (MATCH_KIND[providerKind as AgentProviderKind] ?? "unknown"),
-      );
+      matchKinds.set(chatId, MATCH_KIND[providerKind as AgentProviderKind] ?? "unknown");
     }
   }
   const sortKey = args.sort === "created" ? (chat: Chat) => Date.parse(chat.created_at) : (chat: Chat) => Date.parse(chat.updated_at);
@@ -735,7 +733,7 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
       ...((view?.available || args.grep !== undefined) && {
         contentSearchSemantics:
           "Provider-specific and not a full-text index. claude-code greps the raw session JSONL, tool calls and results included (matchKind 'transcript'); " +
-          "Pi searches derived conversational text only, no tool traffic (matchKind 'messages'); Codex matches the first user prompt, or a native child's nickname/path (matchKind 'first-prompt'/'metadata'). " +
+          "Pi and Codex search conversational text only, no tool traffic (matchKind 'messages'; a Codex native child's nickname/path is included). " +
           "Read matchKind on each row before concluding a chat did not mention something.",
       }),
     },

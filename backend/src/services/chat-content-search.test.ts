@@ -35,6 +35,32 @@ describe("bounded complete content collection", () => {
     expect(result.keys.has(JSON.stringify(["claude-code", "logical"]))).toBe(false);
     expect(result.warnings).toEqual([]);
   });
+  it("finds a Codex session by a message after its first prompt", async () => {
+    const filePath = join(dir, "codex-later.jsonl");
+    const message = (role: string, text: string) =>
+      JSON.stringify({ type: "response_item", payload: { type: "message", role, content: [{ type: "input_text", text }] } });
+    writeFileSync(
+      filePath,
+      [
+        JSON.stringify({ type: "session_meta", payload: { id: "codex-later", cwd: "/repo", cli_version: "0.153.4" } }),
+        message("user", "opening prompt"),
+        message("assistant", "reply"),
+        message("user", "later message with the laterneedle"),
+      ].join("\n") + "\n",
+    );
+    const session = {
+      sessionId: "codex-later",
+      filePath,
+      folder: "/repo",
+      displayFolder: "/repo",
+      createdAt: new Date(0),
+      updatedAt: new Date(0),
+      providerKind: "codex",
+    };
+    const result = await collectContentMatches("LaterNeedle", [session]);
+    expect([...result.keys]).toEqual([JSON.stringify(["codex", "codex-later"])]);
+    expect(result.warnings).toEqual([]);
+  });
   it("reports missing files and invalid grep instead of claiming no matches", async () => {
     const base = {
       sessionId: "x",

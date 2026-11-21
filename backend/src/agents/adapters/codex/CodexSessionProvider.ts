@@ -44,6 +44,7 @@ import {
   parseCodexRollout,
   readCodexSessionMeta,
   readFirstUserPrompt,
+  deriveCodexSearchText,
   resolveCodexSessionsRoot,
 } from "./sessionParser.js";
 
@@ -475,7 +476,8 @@ export class CodexSessionProvider implements SessionProvider {
     // Codex rollouts carry no callboard-native metadata (agentAlias, triggered,
     // gitBranch) — those live on callboard's own chat records and are joined in
     // by routes/chats.ts. The provider supports `folder` (exact cwd match),
-    // `grep` (substring over the first user prompt), and date filters over the
+    // `grep` (substring over every genuine user/assistant message — the
+    // same text content search reads, see deriveCodexSearchText), and date filters over the
     // rollout file's mtime.
     const { folder, grep, updatedAfter, updatedBefore, limit = 50 } = filters;
 
@@ -498,8 +500,7 @@ export class CodexSessionProvider implements SessionProvider {
       if (updatedBefore && updatedAt > new Date(updatedBefore)) continue;
 
       if (grep) {
-        const prompt = readFirstUserPrompt(entry.filePath) ?? "";
-        if (!prompt.toLowerCase().includes(grep.toLowerCase())) continue;
+        if (!deriveCodexSearchText(entry.filePath).toLowerCase().includes(grep.toLowerCase())) continue;
       }
 
       matches.push({

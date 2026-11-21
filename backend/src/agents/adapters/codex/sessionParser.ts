@@ -973,6 +973,46 @@ export function readFirstUserPrompt(filePath: string): string | null {
   );
 }
 
+/**
+ * The text content search matches a rollout against: every genuine user and
+ * assistant message, newline-joined.
+ *
+ * Uses the same own-history rule as {@link parseCodexRollout}, so a search hit
+ * is something the transcript view actually shows. A native fork copies its
+ * parent's history ahead of its own; only lines from `historyStartOrdinal` on
+ * are the fork's, and a fork that does not record the ordinal contributes no
+ * transcript text at all (it fails closed, as the transcript does) — otherwise
+ * every fork would match whatever its parent said. A native agent's
+ * nickname/agent path leads the text because that is what the list shows as
+ * its title. Synthetic user-channel messages ({@link SYNTHETIC_MESSAGE_PREFIXES})
+ * and developer messages are skipped for the same reason the transcript skips
+ * them.
+ */
+export function deriveCodexSearchText(filePath: string): string {
+  const rawLines = readRolloutLines(filePath);
+  const meta = readCodexSessionMeta(filePath);
+  if (!meta && rawLines.some((line) => line.type === "session_meta")) return "";
+  const lines = meta?.isNativeThread ? (meta.historyStartOrdinal === undefined ? [] : rawLines.slice(meta.historyStartOrdinal)) : rawLines;
+  const parts: string[] = [];
+  if (meta?.nativeAgent) {
+    const label = meta.nativeAgent.nickname || meta.nativeAgent.agentPath;
+    if (label) parts.push(label);
+  }
+  for (const line of lines) {
+    if (line.type !== "response_item") continue;
+    const p = line.payload;
+    if (!p || p.type !== "message" || (p.role !== "user" && p.role !== "assistant")) continue;
+    const { text } = extractTextAndImages(p.content);
+    if (!text) continue;
+    if (p.role === "user") {
+      const head = text.trimStart().toLowerCase();
+      if (SYNTHETIC_MESSAGE_PREFIXES.some((pre) => head.startsWith(pre))) continue;
+    }
+    parts.push(text);
+  }
+  return parts.join("\n");
+}
+
 /** Captured Codex 0.153.4 direct MCP output envelope. Called ONLY after
  * trusted call-id pairing. No searching JSON/text, no exec-result inspection. */
 function directUiResultText(output: unknown): string | undefined {

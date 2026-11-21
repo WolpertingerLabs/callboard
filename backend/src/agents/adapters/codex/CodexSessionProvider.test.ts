@@ -219,7 +219,7 @@ describe("getSessionPreview", () => {
 });
 
 describe("searchSessions", () => {
-  it("filters by folder and grep over the first user prompt", () => {
+  it("filters by folder and grep over the conversation", () => {
     writeRollout(UUID_A, { cwd: "/p/a", userPrompt: "refactor the parser" });
     writeRollout(UUID_B, { cwd: "/p/b", userPrompt: "fix the bug", date: ["2026", "06", "13"] });
     const provider = new CodexSessionProvider();

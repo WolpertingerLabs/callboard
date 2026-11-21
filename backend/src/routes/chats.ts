@@ -7,6 +7,7 @@ import { getAgentSettings } from "../services/agent-settings.js";
 import { codexSandboxRefusal } from "../services/permission-ceiling.js";
 import { startChatTurn } from "../services/chat-turn.js";
 import { discoverChatCorpus } from "../services/chat-discovery.js";
+import { indexChatSessions, indexStoredChatsBySession, rowIdForSession } from "../services/chat-row-index.js";
 import { createTriggeredPredicate, cardIsArchived, archivedRootIdsOf } from "../services/chat-visibility.js";
 import { isCardEligible } from "../services/card-fields.js";
 import { createCardContext } from "../services/card-context.js";
@@ -258,16 +259,26 @@ function discoverSessionsPaginated(limit: number, offset: number): { sessions: D
 chatsRouter.get("/search", async (req, res) => {
   // #swagger.tags = ['Chats']
   // #swagger.summary = 'Search chat contents'
-  // #swagger.description = 'Search through session files for matching content across all providers.'
+  // #swagger.description = 'Search session transcripts across all providers, and stored chat titles, for a case-insensitive substring. Returns chat-list row IDs: a session a stored chat claims (its session_id or any metadata.session_ids entry) is reported as that chat\'s id, by the same rule GET /chats uses to build rows; a session no record claims is reported as its own id. A title match reports the chat id. With folder, both content and title matches are limited to that folder (and, for Claude Code, its worktrees). partial/warnings report incomplete coverage.'
   /* #swagger.parameters['q'] = { in: 'query', type: 'string', required: true, description: 'Search query string' } */
   /* #swagger.parameters['folder'] = { in: 'query', type: 'string', description: 'Folder to search within' } */
-  /* #swagger.responses[200] = { description: "Array of matching chat/session IDs" } */
+  /* #swagger.responses[200] = { description: "{ chatIds, partial, warnings }: chatIds are chat-list row IDs" } */
   try {
     const query = ((req.query.q as string) || "").trim();
     const folder = (req.query.folder as string) || "";
     if (!query) {
       return res.json({ chatIds: [] });
     }
+
+    // The same record source the list builds rows from, so the IDs returned
+    // here are IDs the list can render.
+    let fileChats: SharedChat[] = [];
+    try {
+      fileChats = chatFileService.getAllChats() || [];
+    } catch (err) {
+      log.error(`Error reading file chats, searching filesystem only: ${err}`);
+    }
+    const rowIndex = indexStoredChatsBySession(fileChats);
 
     const discovery = discoverChatCorpus();
     // Retain the legacy folder endpoint's Claude-only worktree expansion.
@@ -276,26 +287,43 @@ chatsRouter.get("/search", async (req, res) => {
     // and worktree expansion there is the separate `repo` parameter, derived
     // from records rather than from a live `.git`. This route is unchanged.
     const folderMatches = new Map<string, boolean>();
-    const selected = folder
-      ? discovery.sessions.filter((s) => {
-          if (isIgnoredProjectFolder(folder)) return false;
-          if (s.folder === folder) return true;
-          if (s.providerKind !== "claude-code") return false;
-          if (!folderMatches.has(s.folder)) {
-            try {
-              const resolved = resolveWorktreeToMainRepoCached(s.folder);
-              folderMatches.set(s.folder, resolved.isWorktree && resolved.mainRepoPath === folder);
-            } catch {
-              folderMatches.set(s.folder, false);
-            }
-          }
-          return folderMatches.get(s.folder);
-        })
-      : discovery.sessions;
-    const matches = await collectContentMatches(query, selected, listChatsSnapshot());
-    const chatIds = [...new Set([...matches.keys].map((key) => JSON.parse(key)[2] as string).concat([...matches.chatIds]))];
+    const inFolder = (candidate: string, providerKind: string | undefined): boolean => {
+      if (candidate === folder) return true;
+      if (providerKind && providerKind !== "claude-code") return false;
+      if (!folderMatches.has(candidate)) {
+        try {
+          const resolved = resolveWorktreeToMainRepoCached(candidate);
+          folderMatches.set(candidate, resolved.isWorktree && resolved.mainRepoPath === folder);
+        } catch {
+          folderMatches.set(candidate, false);
+        }
+      }
+      return folderMatches.get(candidate)!;
+    };
+    const folderIgnored = !!folder && isIgnoredProjectFolder(folder);
+    const selected = folder ? (folderIgnored ? [] : discovery.sessions.filter((s) => inFolder(s.folder, s.providerKind))) : discovery.sessions;
+    const matches = await collectContentMatches(query, selected, fileChats);
+
+    // Session keys are `[provider, sessionId]`; each becomes the row the list
+    // shows that session as. `matches.chatIds` are already chat IDs.
+    const chatIds = new Set<string>(matches.chatIds);
+    for (const key of matches.keys) {
+      const [, sid] = JSON.parse(key) as [string, string];
+      chatIds.add(rowIdForSession(rowIndex, sid));
+    }
+
+    // A chat's title is searchable even when no transcript line contains it.
+    const needle = query.toLowerCase();
+    for (const chat of fileChats) {
+      if (!chat?.id) continue;
+      const meta = parseChatMetadata(chat.metadata);
+      if (typeof meta.title !== "string" || !meta.title.toLowerCase().includes(needle)) continue;
+      if (folder && (folderIgnored || !chat.folder || !inFolder(chat.folder, typeof meta.provider === "string" ? meta.provider : undefined))) continue;
+      chatIds.add(chat.id);
+    }
+
     return res.json({
-      chatIds: [...new Set(chatIds)],
+      chatIds: [...chatIds],
       partial: !!(discovery.warnings.length || matches.warnings.length),
       warnings: [...discovery.warnings, ...matches.warnings],
     });
@@ -389,18 +417,10 @@ chatsRouter.get("/", (req, res) => {
     const jobStepChats: [string, string][] = [];
 
     for (const chat of fileChats) {
-      // Index by session_id
-      if (chat?.session_id) {
-        fileChatsBySessionId.set(chat.session_id, chat);
-      }
-
-      // Also index by session_ids in metadata
+      // Index by session_id and every metadata.session_ids entry — the list's
+      // row-ID rule, shared with GET /chats/search (see chat-row-index.ts).
       const meta = parseChatMetadata(chat?.metadata);
-      if (Array.isArray(meta.session_ids)) {
-        for (const sid of meta.session_ids) {
-          fileChatsBySessionId.set(sid, chat);
-        }
-      }
+      indexChatSessions(fileChatsBySessionId, chat, meta);
       if (meta.pinned === true && chat?.id) pinnedFileChats.push(chat);
       if (chat?.id && readSidebarFolder(meta) !== undefined && isSidebarFolderEligible(meta, chat.id)) folderedFileChats.push(chat);
       fileMetaByChat.set(chat, meta);

@@ -21,7 +21,7 @@ export async function searchDiscoveredContent(query: string, sessions: OwnedSess
       let text: string | null;
       switch (session.providerKind) {
         case "codex":
-          text = (await import("../agents/adapters/codex/sessionParser.js")).readFirstUserPrompt(session.filePath);
+          text = (await import("../agents/adapters/codex/sessionParser.js")).deriveCodexSearchText(session.filePath);
           break;
         case "pi":
           text = (await import("../agents/adapters/pi/sessionParser.js")).deriveSearchText(session.filePath);

@@ -179,17 +179,17 @@ describe("individual chat query", () => {
     expect((sessions as { sessionId: string }[]).map((s) => s.sessionId).sort()).toEqual(["closed", "hit"]);
     // The shared mock only ever reports a hit for `closed`.
     expect(ids(result)).toEqual(["closed"]);
-    expect(result.chats[0].matchKind).toBe("first-prompt");
+    expect(result.chats[0].matchKind).toBe("messages");
     expect(result.appliedFilters.contentSearchSemantics).toContain("matchKind");
   });
-  it("calls a Codex native child's grep hit metadata, because that is what it matched", async () => {
-    // Codex's reader returns the agent's nickname or path for a native child.
-    // Presenting that as a first-prompt match would read as conversation.
+  it("calls a Codex native child's grep hit messages, the depth its reader searches", async () => {
+    // Codex's reader returns the child's own messages, led by its nickname or
+    // path — conversational text, the same depth as a root Codex chat.
     state.stored = [chat("closed", { nativeAgent: { parentThreadId: "root" } })];
     state.stored.push(chat("root"));
     discover();
     const result = await searchChats({ grep: "needle", folder: "/work/repo" });
-    expect(result.chats.map((c) => c.matchKind)).toEqual(["metadata"]);
+    expect(result.chats.map((c) => c.matchKind)).toEqual(["messages"]);
   });
   it("refuses an unscoped grep rather than opening the whole corpus", async () => {
     state.stored = [chat("closed")];

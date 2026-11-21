@@ -703,7 +703,7 @@ describe("search_chats is a superset of find_chats", () => {
     const rows = result.chats;
     expect(rows.map((r) => r.chatId).sort()).toEqual([R.r1, R.r3, R.r4].sort());
     // claude-code greps the whole transcript; a codex row here would say
-    // first-prompt. The row carries the distinction so the caller need not know
+    // messages. The row carries the distinction so the caller need not know
     // which engine wrote the log.
     for (const row of rows) expect(row.matchKind).toBe("transcript");
     expect(result.appliedFilters.contentSearchSemantics).toMatch(/matchKind/);
