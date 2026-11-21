@@ -19,6 +19,15 @@
  * already, so the route refuses one, and a split-off clears the flag (see
  * chat-detach.ts) so a chat that becomes a root cannot carry a stale one.
  *
+ * It can still end up on a root another way: the parent goes away (a delete
+ * never cascades, or the parent was never stored / was purged by native
+ * retention) and the lineage promotes this child to the root of its own card.
+ * The flag and the dangling parent pointer both stay, so the sidebar keeps
+ * hiding it and everything under it. That card is archived to match: a card
+ * root with `childArchived` and a parent pointer reads as closed everywhere
+ * (`strandedChildArchiveAt` in card-fields.ts), with `closedAt` defaulting to
+ * `childArchivedAt`, and reopening that card clears the flag in the same write.
+ *
  * View-only, like the tree archive: `updated_at` is not bumped, or archiving a
  * child would float its tree to the top of the sidebar.
  */

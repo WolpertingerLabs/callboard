@@ -2264,7 +2264,7 @@ chatsRouter.patch("/:id/pin", (req, res) => {
 chatsRouter.patch("/:id/child-archive", (req, res) => {
   // #swagger.tags = ['Chats']
   // #swagger.summary = 'Archive or unarchive one child chat'
-  // #swagger.description = 'Sets or clears metadata.childArchived (+ childArchivedAt) on a chat that has a parent. The sidebar hides an archived child, and every chat under it, from its parent tree unless archived chats are shown; GET /api/chats/:id/tree reports it as childArchived on the node. Unlike POST /bulk-archive this never touches the tree root or its card. View-only: updated_at is not bumped. Re-archiving keeps the original childArchivedAt.'
+  // #swagger.description = 'Sets or clears metadata.childArchived (+ childArchivedAt) on a chat that has a parent. The sidebar hides an archived child, and every chat under it, from its parent tree unless archived chats are shown; GET /api/chats/:id/tree reports it as childArchived on the node. Unlike POST /bulk-archive this never touches the tree root or its card. If the parent is later deleted (or was never stored), the archived child becomes the root of its own card and that card reads as closed (closedAt defaults to childArchivedAt); reopening or unarchiving the card clears the flag. View-only: updated_at is not bumped. Re-archiving keeps the original childArchivedAt.'
   /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
   /* #swagger.requestBody = {
     required: true,

@@ -17,7 +17,7 @@ import type { Chat, JobRunListItem } from "shared";
 const tmpRoot = mkdtempSync(join(tmpdir(), "callboard-card-rollup-"));
 process.env.CALLBOARD_DATA_DIR = tmpRoot;
 
-const { buildCardSummaries } = await import("./card-rollup.js");
+const { buildCardBoard, buildCardSummaries } = await import("./card-rollup.js");
 type RollupDeps = import("./card-rollup.js").RollupDeps;
 
 afterAll(() => {
@@ -426,5 +426,62 @@ describe("job run timing fields", () => {
     const memberRun = rollupOf([root()], [run()]).memberRuns[0];
     expect(memberRun).not.toHaveProperty("nextWakeAt");
     expect(memberRun).not.toHaveProperty("activeChildRunId");
+  });
+});
+
+describe("a child-archive flag stranded on a promoted root", () => {
+  // chat-1 is gone; "orphan" was archived as its child at T and is now the root
+  // of its own card. Its subtree is hidden in the sidebar, so the card is
+  // archived too.
+  const T = "2026-07-05T00:00:00.000Z";
+  const orphan = (overrides: Partial<Chat> & { meta?: Record<string, unknown> } = {}) =>
+    chat({ id: "orphan", session_id: "orphan-session", ...overrides, meta: { childArchived: true, childArchivedAt: T, ...overrides.meta } });
+
+  it("reads as a closed card with closedAt = childArchivedAt", () => {
+    const board = buildCardBoard([orphan()], [], IDLE_DEPS);
+    expect(board.closedTotal).toBe(1);
+    expect(board.cards.find((c) => c.id === "orphan")).toMatchObject({ lifecycle: "closed", closedAt: T });
+  });
+
+  it("is dropped by the open-lifecycle filter", () => {
+    const board = buildCardBoard([orphan()], [], IDLE_DEPS, { lifecycle: "open" });
+    expect(board.cards.map((c) => c.id)).toEqual([]);
+    expect(buildCardBoard([orphan()], [], IDLE_DEPS, { lifecycle: "closed" }).cards.map((c) => c.id)).toEqual(["orphan"]);
+  });
+
+  it("is windowed by closedLimit / closedSince on its childArchivedAt", () => {
+    const newer = root({ id: "newer", session_id: "newer-session", card: { lifecycle: "closed", closedAt: "2026-07-06T00:00:00.000Z" } });
+    const limited = buildCardBoard([orphan(), newer], [], IDLE_DEPS, { closedLimit: 1 });
+    expect(limited.closedTotal).toBe(2);
+    expect(limited.cards.map((c) => c.id)).toEqual(["newer"]);
+    const since = buildCardBoard([orphan(), newer], [], IDLE_DEPS, { closedLimit: 0, closedSince: Date.parse(T) });
+    expect(since.cards.map((c) => c.id).sort()).toEqual(["newer", "orphan"]);
+  });
+
+  it("prefers a stored closedAt over childArchivedAt", () => {
+    const board = buildCardBoard([orphan({ meta: { card: { lifecycle: "closed", closedAt: "2026-07-09T00:00:00.000Z" } } })], [], IDLE_DEPS);
+    expect(board.cards[0]).toMatchObject({ lifecycle: "closed", closedAt: "2026-07-09T00:00:00.000Z" });
+  });
+
+  it("leaves the parent's card open while the parent exists", () => {
+    const board = buildCardBoard([root(), orphan()], [], IDLE_DEPS);
+    expect(board.closedTotal).toBe(0);
+    expect(board.cards.map((c) => [c.id, c.lifecycle])).toEqual([["chat-1", "open"]]);
+  });
+
+  it("a deleted root with two archived children leaves two closed cards", () => {
+    const a = orphan();
+    const b = orphan({ id: "orphan-2", session_id: "orphan-2-session" });
+    const board = buildCardBoard([a, b], [], IDLE_DEPS);
+    expect(board.closedTotal).toBe(2);
+    expect(board.cards.map((c) => [c.id, c.lifecycle]).sort()).toEqual([
+      ["orphan", "closed"],
+      ["orphan-2", "closed"],
+    ]);
+  });
+
+  it("ignores the flag on a root with no parent pointer", () => {
+    const detached = root({ meta: { childArchived: true, childArchivedAt: T } });
+    expect(buildCardBoard([detached], [], IDLE_DEPS).cards[0].lifecycle).toBe("open");
   });
 });
