@@ -374,6 +374,9 @@ export default function ChatList({
    * search is running by the same rule.
    */
   const searching = submittedQuery.trim() !== "";
+  // Offered while a search is typed or in force, and only when there is
+  // another space for it to reach.
+  const showSearchAllSpaces = spacesEnabled && spaces.length > 1 && activeSpaceId !== ALL_SPACES && (searchQuery.trim() !== "" || searching);
 
   /**
    * Whether anything narrows the list client-side (advanced filters or a
@@ -1784,22 +1787,40 @@ export default function ChatList({
         {...(spacesEnabled && isMobile && { leading: <SpaceSwitcher cards={cards} compact inset={FILTER_INSET} /> })}
       />
       {spacesEnabled && isMobile && <SpaceNotice style={{ margin: `6px ${FILTER_INSET}px 0` }} />}
-      {searching && (
-        <ActiveSearchBar
-          query={submittedQuery.trim()}
-          resultCount={filteredChats.length}
-          // Until the full list for this search has committed too, the count
-          // would be taken over the first page only and read as final.
-          isSearching={isSearching || committedScopeKey !== scopeKey}
-          onClear={handleClearSearch}
-          inset={FILTER_INSET}
-        />
-      )}
-      {spacesEnabled && spaces.length > 1 && activeSpaceId !== ALL_SPACES && (searchQuery.trim() || searching) && (
-        <label style={{ display: "flex", alignItems: "center", gap: 6, padding: `0 ${FILTER_INSET}px 6px`, fontSize: 12, color: "var(--text-muted)", cursor: "pointer" }}>
-          <input type="checkbox" checked={searchAllSpaces} onChange={(e) => setSearchAllSpaces(e.target.checked)} />
-          Search all spaces
-        </label>
+      {/* One strip for the search's state, between the filter bar and the
+          list: the active-search line and the all-spaces toggle share its
+          divider, rather than each stacking a border of its own. */}
+      {(searching || showSearchAllSpaces) && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 2, padding: "4px 0", borderBottom: "1px solid var(--border-light)" }}>
+          {searching && (
+            <ActiveSearchBar
+              query={submittedQuery.trim()}
+              resultCount={filteredChats.length}
+              // Until the full list for this search has committed too, the count
+              // would be taken over the first page only and read as final.
+              isSearching={isSearching || committedScopeKey !== scopeKey}
+              onClear={handleClearSearch}
+              inset={FILTER_INSET}
+            />
+          )}
+          {showSearchAllSpaces && (
+            <label
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                // Taller on mobile: a finger-sized row, like the 32px clear button above.
+                padding: `${isMobile ? 8 : 4}px ${FILTER_INSET}px`,
+                fontSize: 12,
+                color: "var(--text-muted)",
+                cursor: "pointer",
+              }}
+            >
+              <input type="checkbox" checked={searchAllSpaces} onChange={(e) => setSearchAllSpaces(e.target.checked)} style={{ margin: 0 }} />
+              Search all spaces
+            </label>
+          )}
+        </div>
       )}
 
       {showNew && <NewChatPanel onClose={() => setShowNew(false)} />}
@@ -1860,11 +1881,7 @@ export default function ChatList({
           // button's own 16px wrapper is room enough, even though it does not
           // add the safe-area inset itself. Keyed on the same `showLoadMore`
           // that renders the button, so the two cannot disagree.
-          paddingBottom: selectionMode
-            ? (barHeight ?? SELECTION_BAR_FALLBACK_CLEARANCE)
-            : isMobile && !showLoadMore
-              ? MOBILE_LIST_BOTTOM_GAP
-              : undefined,
+          paddingBottom: selectionMode ? (barHeight ?? SELECTION_BAR_FALLBACK_CLEARANCE) : isMobile && !showLoadMore ? MOBILE_LIST_BOTTOM_GAP : undefined,
         }}
       >
         {drafts.length > 0 && (
