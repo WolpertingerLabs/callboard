@@ -406,15 +406,19 @@ export async function executeProxyRequest(
   // Step 1: Find matching route — try raw URL first
   let matched: ResolvedRoute | null = matchRoute(url, routes);
   let resolvedUrl = url;
+  // A URL with a vault token is resolved again, in one pass, at Step 1b: the
+  // resolution here only matches, so it doesn't repeat that one's warnings.
+  const urlHasVault = !templateAuthored && hasVaultToken(url);
+  const warn = !urlHasVault;
 
   if (matched) {
     // Resolve URL placeholders using matched route's secrets
-    resolvedUrl = resolvePlaceholders(url, usable(matched));
+    resolvedUrl = resolvePlaceholders(url, usable(matched), { warn });
   } else {
     // Try resolving URL with each route's secrets to find a match
     for (const route of routes) {
       if (route.allowedEndpoints.length === 0) continue;
-      const candidateUrl = resolvePlaceholders(url, usable(route));
+      const candidateUrl = resolvePlaceholders(url, usable(route), { warn });
       if (isEndpointAllowed(candidateUrl, route.allowedEndpoints)) {
         matched = route;
         resolvedUrl = candidateUrl;
@@ -450,24 +454,19 @@ export async function executeProxyRequest(
   // template's): the URL, its headers, and the body where the route resolves
   // secrets in it. Every token is resolved and authorized here, before
   // anything is sent; one that can't be used fails the request.
-  const bodyText =
-    body === null || body === undefined
-      ? undefined
-      : typeof body === 'string'
-        ? body
-        : JSON.stringify(body);
-  const vaultSources: VaultSource[] = [
-    { where: 'The request URL', text: url },
-    ...Object.entries(headers)
-      .filter(([, v]) => typeof v === 'string')
-      .map(([k, v]) => ({ where: `Header "${k}"`, text: v })),
-    ...(matched.resolveSecretsInBody && typeof bodyText === 'string'
-      ? [{ where: 'The request body', text: bodyText }]
-      : []),
-  ];
-  const vault: VaultResolution = templateAuthored
-    ? { values: new Map(), scrub: {} }
-    : resolveVaultTokens({ caller, connection, sources: vaultSources });
+  let vault: VaultResolution = { values: new Map(), scrub: {} };
+  if (!templateAuthored) {
+    const sources: VaultSource[] = [{ where: 'The request URL', text: url }];
+    for (const [k, v] of Object.entries(headers)) {
+      if (typeof v === 'string') sources.push({ where: `Header "${k}"`, text: v });
+    }
+    // Serialized here only when the body can resolve placeholders at all.
+    if (matched.resolveSecretsInBody && body !== null && body !== undefined) {
+      const text = typeof body === 'string' ? body : JSON.stringify(body);
+      sources.push({ where: 'The request body', text });
+    }
+    vault = resolveVaultTokens({ caller, connection, sources });
+  }
   /** Substitute a caller string's placeholders: `${VAR}` and `${vault:…}` in
    *  one pass over the original, so neither kind of value is expanded again.
    *  `jsonEscape` escapes vault values inside a body drawlatch serialized. */
@@ -475,7 +474,7 @@ export async function executeProxyRequest(
     templateAuthored
       ? resolvePlaceholders(text, secrets)
       : substitutePlaceholders(text, secrets, vault.values, { jsonEscape });
-  if (!templateAuthored && hasVaultToken(url)) resolvedUrl = resolve(url);
+  if (urlHasVault) resolvedUrl = resolve(url);
 
   // Step 2: Resolve client headers using matched route's secrets
   const resolvedHeaders: Record<string, string> = {};

@@ -1200,12 +1200,19 @@ function applyOAuth2Override(route: Route, override: OAuth2CallerOverride | unde
 
 /**
  * Replace ${VAR} placeholders in a string with values from a secrets map.
- * Unknown placeholders are left unchanged (with a warning).
+ * Unknown placeholders are left unchanged (with a warning, unless `warn` is
+ * false: a resolution done only to match a route, which is resolved again).
  */
-export function resolvePlaceholders(str: string, secretsMap: Record<string, string>): string {
+export function resolvePlaceholders(
+  str: string,
+  secretsMap: Record<string, string>,
+  options: { warn?: boolean } = {},
+): string {
   return str.replace(/\$\{(\w+)\}/g, (match, name: string) => {
     if (name in secretsMap) return secretsMap[name];
-    console.error(`[config] Warning: placeholder ${match} not found in secrets`);
+    if (options.warn !== false) {
+      console.error(`[config] Warning: placeholder ${match} not found in secrets`);
+    }
     return match;
   });
 }

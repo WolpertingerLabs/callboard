@@ -384,14 +384,21 @@ describe('where ${vault:…} resolves', () => {
   });
 
   it('is never resolved in a template-authored request (sent literally, as before)', async () => {
-    await executeProxyRequest(
-      { method: 'GET', url: `${base}/x?v=\${vault:tok}`, headers: { 'X-Key': '${vault:tok}' } },
+    // `nope` doesn't exist: if a template request ran the vault path at all,
+    // this would be refused instead of sent.
+    const res = await executeProxyRequest(
+      {
+        method: 'GET',
+        url: `${base}/x?v=\${vault:tok}&n=\${vault:nope}`,
+        headers: { 'X-Key': '${vault:tok} ${vault:nope}' },
+      },
       routes(),
       undefined,
       { caller: 'alice', templateAuthored: true },
     );
-    expect(received[0].url).toBe('/x?v=${vault:tok}');
-    expect(received[0].headers['x-key']).toBe('${vault:tok}');
+    expect(res.status).toBe(200);
+    expect(received[0].url).toBe('/x?v=${vault:tok}&n=${vault:nope}');
+    expect(received[0].headers['x-key']).toBe('${vault:tok} ${vault:nope}');
   });
 
   it.each([
@@ -528,6 +535,17 @@ describe('single pass', () => {
     });
     expect(received[0].url).toBe(`/x?a=${ACCOUNT}&m=\${MISSING}&v=${CANARY}`);
     expect(received[0].headers['x-key']).toBe(`${ACCOUNT}:${CANARY}`);
+  });
+
+  it('an unknown ${VAR} next to ${vault:…} warns once, as without the vault token', async () => {
+    const errors = consoleSpies[3];
+    const warnings = () =>
+      errors.mock.calls.filter((c) => String(c[0]).includes('placeholder ${MISSING_ONCE}')).length;
+    const before = warnings();
+    await send({ method: 'GET', url: `${base}/x?m=\${MISSING_ONCE}&v=\${vault:tok}` });
+    expect(warnings() - before).toBe(1);
+    await send({ method: 'GET', url: `${base}/x?m=\${MISSING_ONCE}` });
+    expect(warnings() - before).toBe(2);
   });
 
   it('a withheld ${VAR} next to ${vault:…} is still refused', async () => {

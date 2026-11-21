@@ -69,7 +69,7 @@ export function parseVaultSpec(spec: string): VaultRef | undefined {
 
 /** Whether `text` holds a vault token (well-formed or not). */
 export function hasVaultToken(text: string): boolean {
-  return text.includes(VAULT_TOKEN_START) && /\$\{vault:[^}]*\}/.test(text);
+  return /\$\{vault:[^}]*\}/.test(text);
 }
 
 /** The specs of every vault token in `text`, in order. */
