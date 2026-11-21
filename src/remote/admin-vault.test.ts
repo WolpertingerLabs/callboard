@@ -251,6 +251,26 @@ describe('vault admin router', () => {
     expect(items.status).toBe(503);
     const callers = (await req('GET', '/callers')).body as AdminCaller[];
     expect(callers.map((c) => c.vaultItems)).toEqual([null, null]);
+    // Every item endpoint is 503 while the file exists without its key, and
+    // none of them creates a new key.
+    const body = { name: 'x', kind: 'token', values: { value: 'abcd' } };
+    expect((await req('POST', '/callers/alice/vault/items', body)).status).toBe(503);
+    expect((await req('PATCH', '/callers/alice/vault/items/gh', { tags: [] })).status).toBe(503);
+    expect((await req('DELETE', '/callers/alice/vault/items/gh')).status).toBe(503);
+    expect((await req('POST', '/callers/alice/vault/items/gh/reveal', {})).status).toBe(503);
+    expect(fs.existsSync(path.join(configDir, VAULT_KEY_LABEL))).toBe(false);
+  });
+
+  it('with no vault file the item endpoints work: empty list, and the first create makes the key', async () => {
+    const list = await req('GET', '/callers/alice/vault/items');
+    expect(list.status).toBe(200);
+    expect(list.body).toEqual({ revision: 0, items: [] });
+    expect((await req('PATCH', '/callers/alice/vault/items/gh', { tags: [] })).status).toBe(404);
+    expect((await req('DELETE', '/callers/alice/vault/items/gh')).status).toBe(404);
+    expect((await req('POST', '/callers/alice/vault/items/gh/reveal', {})).status).toBe(404);
+    expect(fs.existsSync(path.join(configDir, VAULT_KEY_LABEL))).toBe(false);
+    expect((await req('POST', '/callers/alice/vault/items', injectItem)).status).toBe(201);
+    expect(fs.existsSync(path.join(configDir, VAULT_KEY_LABEL))).toBe(true);
   });
 
   it('GET /callers gains vaultItems per caller', async () => {

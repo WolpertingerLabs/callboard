@@ -537,7 +537,7 @@ The daemon serves a web dashboard and its JSON API from the same port as the MCP
 - **Delete**, after a confirmation.
 - **Reveal**, after a confirmation that says it is recorded: the values appear in masked fields with show and copy buttons, and are cleared when you close the panel, after 60 seconds, or when you navigate away. A reveal works on `inject` items too, since the admin could loosen them anyway, and writes `vault.reveal` with `vault.actor: "admin"` to the caller's [audit log](#audit-log) before anything is returned; if that write fails, the reveal fails.
 
-Edits and deletes are sent with the vault revision the page loaded (`If-Match`), so a change made meanwhile by the agent or another tab fails with `409` and a prompt to reload instead of being overwritten.
+Edits, value replacements, and deletes are sent with the vault revision the page loaded (`If-Match`). There is one revision for the whole vault, not one per item or caller, so a save made meanwhile by *any* caller's agent, or from another dashboard tab, makes a pending edit fail with `409` instead of being overwritten. The dialog then says so and the list reloads with the current revision, so you can check the item and save again.
 
 **OAuth2 connections.** The caller page and the configure dialog show each OAuth2 connection's grant and the scopes that caller gets (after its `oauth2Overrides`), the service-account subject if one is set, and why the daemon drops a connection for that caller, if it does. They are read-only: edit `oauth2Overrides` in `remote.config.json`.
 
@@ -571,7 +571,7 @@ Write endpoints (`…` = `/callers/:alias/connections/:connection`):
 | `DELETE /callers/:alias/vault/items/:name` | Delete an item |
 | `POST /callers/:alias/vault/items/:name/reveal` `{field?}` | Return the item's values (or one field), after writing `vault.reveal` to the caller's audit log; fails if that write fails. 10/min |
 
-The vault endpoints answer with `Cache-Control: no-store`, errors included. `PATCH` and `DELETE` take an optional `If-Match: <revision>` (from `GET …/vault/items`) and answer `409` with the current `revision` when the vault has changed since. Only `…/reveal` ever returns a value. A missing vault key gives `503` on the item endpoints.
+The vault endpoints answer with `Cache-Control: no-store`, errors included. `PATCH` and `DELETE` take an optional `If-Match: <revision>` (from `GET …/vault/items`) and answer `409` with the current `revision` when the vault has changed since. Only `…/reveal` ever returns a value. If `vault.enc.json` exists but `keys/vault.key` is missing, every item endpoint answers `503` with the restore-from-backup message (a create with an invalid body still gets its `400` first) and no new key is created; `/vault/status` still answers, with `error` set, and `GET /callers` shows `vaultItems: null`. With no vault file yet, the item endpoints work normally: `GET …/vault/items` returns `{revision: 0, items: []}`, a `PATCH`, `DELETE`, or reveal of an item answers `404`, and the first create makes the key and the file.
 
 Connection and listener operations share their implementation with the MCP tools (`src/remote/tool-dispatch.ts`). The unauthenticated `GET /health` returns status, active session count, uptime, and the tunnel URL.
 
