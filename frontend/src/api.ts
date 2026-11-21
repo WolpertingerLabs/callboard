@@ -9,6 +9,10 @@ import type {
   AdminMeta,
   AdminSecret,
   AdminSession,
+  AdminVaultItemChange,
+  AdminVaultItems,
+  AdminVaultReveal,
+  AdminVaultStatus,
   CallerBundleV1,
   DaemonOfflineEnvelope,
 } from "drawlatch-admin-types";
@@ -48,18 +52,23 @@ async function getJson<T>(path: string): Promise<DaemonResponse<T>> {
 }
 
 async function mutate<T>(
-  method: "POST" | "PUT" | "DELETE",
+  method: "POST" | "PUT" | "PATCH" | "DELETE",
   path: string,
   body?: unknown,
+  extraHeaders: Record<string, string> = {},
 ): Promise<MutationResult<T>> {
   let res: Response;
   try {
     res = await fetch(path, {
       method,
       credentials: "include",
+      // Vault responses are no-store on the daemon; don't let the browser
+      // reuse anything either.
+      cache: "no-store",
       headers: {
         accept: "application/json",
         ...(body !== undefined ? { "content-type": "application/json" } : {}),
+        ...extraHeaders,
       },
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     });
@@ -110,6 +119,45 @@ export const api = {
       `/api/admin/callers/${enc(alias)}/events?after_id=${afterId}`,
     ),
   sessions: () => getJson<AdminSession[]>("/api/admin/sessions"),
+
+  // ── Vault (items) ─────────────────────────────────────────────────────
+  // Only vaultReveal ever returns values. Its result belongs in the calling
+  // component's state and nowhere else (no shared cache, no context).
+  vaultStatus: () => getJson<AdminVaultStatus>("/api/admin/vault/status"),
+  vaultItems: (alias: string) =>
+    getJson<AdminVaultItems>(`/api/admin/callers/${enc(alias)}/vault/items`),
+  vaultCreate: (alias: string, body: VaultItemInput) =>
+    mutate<AdminVaultItemChange>(
+      "POST",
+      `/api/admin/callers/${enc(alias)}/vault/items`,
+      body,
+    ),
+  /** `revision` is sent as If-Match: a stale edit fails with 409. */
+  vaultUpdate: (
+    alias: string,
+    name: string,
+    body: VaultItemPatch,
+    revision?: number,
+  ) =>
+    mutate<AdminVaultItemChange>(
+      "PATCH",
+      `/api/admin/callers/${enc(alias)}/vault/items/${enc(name)}`,
+      body,
+      revision !== undefined ? { "if-match": String(revision) } : {},
+    ),
+  vaultDelete: (alias: string, name: string, revision?: number) =>
+    mutate<{ deleted: string; revokedGrants: number; withdrawnRequests: number }>(
+      "DELETE",
+      `/api/admin/callers/${enc(alias)}/vault/items/${enc(name)}`,
+      undefined,
+      revision !== undefined ? { "if-match": String(revision) } : {},
+    ),
+  vaultReveal: (alias: string, name: string) =>
+    mutate<AdminVaultReveal>(
+      "POST",
+      `/api/admin/callers/${enc(alias)}/vault/items/${enc(name)}/reveal`,
+      {},
+    ),
 
   // ── Caller create / delete (item E) ───────────────────────────────────
   createCaller: (alias: string, name?: string) =>
@@ -257,6 +305,30 @@ export const api = {
       { paramKey },
     ),
 };
+
+// ── Vault request bodies ────────────────────────────────────────────────
+
+export interface VaultItemInput {
+  name: string;
+  kind: "password" | "token" | "note" | "key-value";
+  values: Record<string, string>;
+  exposure?: "inject" | "reveal";
+  notes?: string;
+  tags?: string[];
+  metadata?: Record<string, string>;
+  connections?: string[];
+}
+
+/** `connections: null` removes the binding; `notes: null` clears notes. */
+export interface VaultItemPatch {
+  values?: Record<string, string>;
+  rename?: string;
+  exposure?: "inject" | "reveal";
+  notes?: string | null;
+  tags?: string[];
+  metadata?: Record<string, string>;
+  connections?: string[] | null;
+}
 
 // ── Listener-config response shapes (mirror tool-dispatch return shapes) ──
 

@@ -11,6 +11,7 @@ import {
   Lock,
   LogOut,
   Menu,
+  Vault,
   X,
   type LucideIcon,
 } from "lucide-react";
@@ -32,6 +33,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/ingestors", label: "Ingestors", icon: Radio },
   { to: "/sessions", label: "Sessions", icon: Activity },
   { to: "/secrets", label: "Secrets", icon: KeyRound },
+  { to: "/vault", label: "Vault", icon: Vault },
   { to: "/logs", label: "Logs", icon: ScrollText },
 ];
 
