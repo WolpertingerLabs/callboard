@@ -933,6 +933,112 @@ server.tool(
   },
 );
 
+// ── Vault ──────────────────────────────────────────────────────────────────
+//
+// The daemon validates every vault input, so these schemas stay loose and a
+// validation message never quotes a value back.
+
+/** Forward a vault tool call and render its result or error as MCP content. */
+async function forwardVaultTool(
+  toolName: string,
+  input: Record<string, unknown>,
+): Promise<{ content: { type: 'text'; text: string }[]; isError?: boolean }> {
+  try {
+    const result = await sendEncryptedRequest(toolName, input);
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: typeof result === 'string' ? result : JSON.stringify(result, null, 2),
+        },
+      ],
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { content: [{ type: 'text' as const, text: `Error: ${message}` }], isError: true };
+  }
+}
+
+const VAULT_PLAINTEXT_NOTE =
+  'notes, tags and metadata are plain text that vault_list returns: never put secrets in them.';
+const VAULT_CONTEXT_NOTE =
+  'The values you pass here go through your own context. For a secret you should never see, ask the operator to create the item on the drawlatch dashboard instead.';
+
+// eslint-disable-next-line @typescript-eslint/no-deprecated -- registerTool is not available in this SDK version
+server.tool(
+  'vault_list',
+  `List your vault items: name, kind, exposure, field names, notes, tags, metadata and connections binding. Never returns values. ${VAULT_PLAINTEXT_NOTE}`,
+  {
+    tag: z.string().optional().describe('Only items carrying this tag'),
+  },
+  async ({ tag }) => forwardVaultTool('vault_list', tag === undefined ? {} : { tag }),
+);
+
+// eslint-disable-next-line @typescript-eslint/no-deprecated -- registerTool is not available in this SDK version
+server.tool(
+  'vault_create',
+  `Save a new item in your vault. kind "token" and "note" take exactly { value }, "password" takes { value, username? }, "key-value" takes 1-16 named fields. exposure "inject" (the default) means no tool will ever return the value; "reveal" lets vault_get return it to you (every read is audit-logged). Fails if the name exists. ${VAULT_CONTEXT_NOTE} ${VAULT_PLAINTEXT_NOTE}`,
+  {
+    name: z.string().describe('Item name: 1-64 letters, digits, "_" or "-", unique in your vault'),
+    kind: z.string().describe('"password", "token", "note" or "key-value"'),
+    values: z.record(z.string(), z.string()).describe('Field name → secret value'),
+    exposure: z.string().optional().describe('"inject" (default) or "reveal"'),
+    notes: z.string().optional().describe('Plain-text description (not secret)'),
+    tags: z.array(z.string()).optional().describe('Plain-text tags (not secret)'),
+    metadata: z
+      .record(z.string(), z.string())
+      .optional()
+      .describe('Plain-text key → value pairs, e.g. a URL (not secret)'),
+    connections: z
+      .array(z.string())
+      .optional()
+      .describe('Connection aliases this item may be used on; omit for any'),
+  },
+  async (input) => forwardVaultTool('vault_create', input),
+);
+
+// eslint-disable-next-line @typescript-eslint/no-deprecated -- registerTool is not available in this SDK version
+server.tool(
+  'vault_update',
+  `Change one of your vault items. values replaces the whole value map. You can only tighten an item: exposure may go from "reveal" to "inject" but not back, and connections may only narrow (the operator can loosen an item on the drawlatch dashboard). ${VAULT_CONTEXT_NOTE} ${VAULT_PLAINTEXT_NOTE}`,
+  {
+    name: z.string().describe('Current item name'),
+    values: z.record(z.string(), z.string()).optional().describe('New field name → value map'),
+    rename: z.string().optional().describe('New name'),
+    exposure: z.string().optional().describe('"inject" or "reveal" (tighten only)'),
+    notes: z.string().optional().describe('New notes ("" clears)'),
+    tags: z.array(z.string()).optional().describe('New tags'),
+    metadata: z.record(z.string(), z.string()).optional().describe('New metadata'),
+    connections: z.array(z.string()).optional().describe('New, narrower connections binding'),
+  },
+  async (input) => forwardVaultTool('vault_update', input),
+);
+
+// eslint-disable-next-line @typescript-eslint/no-deprecated -- registerTool is not available in this SDK version
+server.tool(
+  'vault_delete',
+  'Delete one of your vault items.',
+  {
+    name: z.string().describe('Item name'),
+  },
+  async ({ name }) => forwardVaultTool('vault_delete', { name }),
+);
+
+// eslint-disable-next-line @typescript-eslint/no-deprecated -- registerTool is not available in this SDK version
+server.tool(
+  'vault_get',
+  'Read the values of one of your vault items whose exposure is "reveal". Every read is recorded in your audit log before the value is returned. Inject-only items are refused.',
+  {
+    name: z.string().describe('Item name'),
+    field: z.string().optional().describe('Return just this field'),
+    owner: z
+      .string()
+      .optional()
+      .describe("Another caller's alias, to read an item shared with you (needs a grant)"),
+  },
+  async (input) => forwardVaultTool('vault_get', input),
+);
+
 // ── Start ──────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
