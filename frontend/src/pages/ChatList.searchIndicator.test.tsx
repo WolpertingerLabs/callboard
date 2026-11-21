@@ -35,6 +35,15 @@ afterEach(() => {
 });
 
 const FOLDER = "/home/cybil/projects/callboard";
+
+/**
+ * The indicator's sentence, matched on its live region as a whole: the query
+ * and the count are separate spans inside it, so plain text matching would
+ * see only the pieces.
+ */
+function indicatorText(text: string) {
+  return (_: string, el: Element | null) => el?.getAttribute("role") === "status" && el.textContent === text;
+}
 function makeChat(id: string, preview: string): Chat {
   return {
     id,
@@ -79,7 +88,7 @@ it("shows the submitted query and its count, and Clear search restores the full 
   expect(screen.queryByRole("button", { name: "Clear search" })).toBeNull();
 
   fireEvent.keyDown(search, { key: "Enter" });
-  expect(await screen.findByText('Searching for "cache" · 1 match')).toBeTruthy();
+  expect(await screen.findByText(indicatorText('Searching for "cache" · 1 match'))).toBeTruthy();
   expect(searchChatContents).toHaveBeenCalledWith("cache");
   expect(screen.getByText("chat two")).toBeTruthy();
   expect(screen.queryByText("chat one")).toBeNull();
@@ -105,7 +114,7 @@ it("does not focus the search box after a pointer clear, so a tap does not pop t
   renderList();
   await screen.findByText("chat one");
   const search = submitSearch("cache");
-  await screen.findByText('Searching for "cache" · 1 match');
+  await screen.findByText(indicatorText('Searching for "cache" · 1 match'));
   search.blur();
 
   fireEvent.click(screen.getByRole("button", { name: "Clear search" }), { detail: 1 });
@@ -144,7 +153,7 @@ it("never shows a count taken over the first page while the full list for the se
   expect(screen.getByRole("status").textContent).toBe('Searching for "cache" · …');
 
   await act(async () => resolveFull(listResponse(CHATS)));
-  expect(await screen.findByText('Searching for "cache" · 2 matches')).toBeTruthy();
+  expect(await screen.findByText(indicatorText('Searching for "cache" · 2 matches'))).toBeTruthy();
   observer.disconnect();
   expect(seen.filter((t) => !t.endsWith("…") && t !== 'Searching for "cache" · 2 matches')).toEqual([]);
 });

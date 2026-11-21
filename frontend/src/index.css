@@ -1014,6 +1014,30 @@ pre {
   }
 }
 
+/* The chat list's "Clear search" button (ActiveSearchBar). Colours live here,
+   not inline, so :hover / :focus-visible can override them. */
+.active-search-clear {
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.active-search-clear:hover,
+.active-search-clear:focus-visible {
+  background: var(--chatlist-item-active-bg);
+  color: var(--text);
+}
+
+.active-search-clear:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+@media (forced-colors: active) {
+  .active-search-clear:focus-visible {
+    outline: 2px solid Highlight;
+  }
+}
+
 /* Copy button on code-block hover. Same contract as `.copy-btn` above: the
    rule matches a DIRECT child of the hovered wrapper, so the button must stay
    a sibling of the <pre>. Keyboard users get it via :focus-visible, since
