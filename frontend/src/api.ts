@@ -9,9 +9,14 @@ import type {
   AdminMeta,
   AdminSecret,
   AdminSession,
+  AdminVaultDecision,
+  AdminVaultExposure,
+  AdminVaultGrant,
   AdminVaultItemChange,
   AdminVaultItems,
+  AdminVaultRequest,
   AdminVaultReveal,
+  AdminVaultRevoke,
   AdminVaultStatus,
   CallerBundleV1,
   DaemonOfflineEnvelope,
@@ -111,6 +116,12 @@ async function mutate<T>(
 
 const enc = encodeURIComponent;
 
+/** Fired after a grant, deny or revoke, so the nav badge refreshes at once. */
+export const VAULT_REQUESTS_CHANGED = "drawlatch:vault-requests-changed";
+export function notifyVaultRequestsChanged(): void {
+  window.dispatchEvent(new Event(VAULT_REQUESTS_CHANGED));
+}
+
 export const api = {
   // ── Reads ────────────────────────────────────────────────────────────
   meta: () => getJson<AdminMeta>("/api/admin/meta"),
@@ -174,6 +185,25 @@ export const api = {
       `/api/admin/callers/${enc(alias)}/vault/items/${enc(name)}/reveal`,
       {},
     ),
+
+  // ── Vault (access requests and grants) ────────────────────────────────
+  // Grant, deny and revoke exist only on the admin API: no agent tool can.
+  vaultRequests: () => getJson<AdminVaultRequest[]>("/api/admin/vault/requests"),
+  vaultGrant: (id: string, mode: AdminVaultExposure) =>
+    mutate<AdminVaultDecision>(
+      "POST",
+      `/api/admin/vault/requests/${enc(id)}/grant`,
+      { mode },
+    ),
+  vaultDeny: (id: string, note?: string) =>
+    mutate<AdminVaultDecision>(
+      "POST",
+      `/api/admin/vault/requests/${enc(id)}/deny`,
+      note ? { note } : {},
+    ),
+  vaultGrants: () => getJson<AdminVaultGrant[]>("/api/admin/vault/grants"),
+  vaultRevoke: (id: string) =>
+    mutate<AdminVaultRevoke>("DELETE", `/api/admin/vault/grants/${enc(id)}`),
 
   // ── Caller create / delete (item E) ───────────────────────────────────
   createCaller: (alias: string, name?: string) =>

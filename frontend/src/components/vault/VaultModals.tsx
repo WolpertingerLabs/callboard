@@ -24,7 +24,7 @@ const KINDS: { kind: AdminVaultKind; label: string }[] = [
 
 // ── Shell ──────────────────────────────────────────────────────────────────
 
-function ModalShell({
+export function ModalShell({
   title,
   subtitle,
   busy,

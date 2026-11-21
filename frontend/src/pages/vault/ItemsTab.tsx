@@ -187,7 +187,13 @@ export default function ItemsTab({
                     {item.grants.length === 0 ? (
                       <span className="cell-muted">—</span>
                     ) : (
-                      item.grants.map((g) => `${g.grantee} (${g.mode})`).join(", ")
+                      item.grants
+                        .map((g) =>
+                          g.effectiveMode === g.mode
+                            ? `${g.grantee} (${g.mode})`
+                            : `${g.grantee} (${g.effectiveMode}; granted ${g.mode})`,
+                        )
+                        .join(", ")
                     )}
                   </td>
                   <td title={`value changed ${new Date(item.valueUpdatedAt).toLocaleString()}`}>

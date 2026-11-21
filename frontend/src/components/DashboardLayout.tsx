@@ -15,6 +15,7 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
+import { api, isDaemonDown, VAULT_REQUESTS_CHANGED } from "../api";
 import { useDaemon } from "../contexts/DaemonContext";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { logout } from "../auth";
@@ -37,6 +38,29 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/logs", label: "Logs", icon: ScrollText },
 ];
 
+/** Pending vault access requests, for the nav badge (polled, and refreshed on change). */
+function usePendingVaultRequests(daemon: string): number {
+  const [count, setCount] = useState(0);
+  useEffect(() => {
+    if (daemon !== "up") return;
+    let live = true;
+    const load = async () => {
+      const res = await api.vaultStatus();
+      if (live && !isDaemonDown(res)) setCount(res.pendingRequests);
+    };
+    void load();
+    const timer = window.setInterval(() => void load(), 30_000);
+    const onChange = () => void load();
+    window.addEventListener(VAULT_REQUESTS_CHANGED, onChange);
+    return () => {
+      live = false;
+      window.clearInterval(timer);
+      window.removeEventListener(VAULT_REQUESTS_CHANGED, onChange);
+    };
+  }, [daemon]);
+  return count;
+}
+
 interface SidebarBodyProps {
   onLogout: () => void;
   onNavigate?: () => void;
@@ -45,6 +69,7 @@ interface SidebarBodyProps {
 function SidebarBody({ onLogout, onNavigate }: SidebarBodyProps) {
   const { daemon, meta } = useDaemon();
   const navigate = useNavigate();
+  const pendingVault = usePendingVaultRequests(daemon);
   const [loggingOut, setLoggingOut] = useState(false);
 
   const statusLabel =
@@ -88,10 +113,19 @@ function SidebarBody({ onLogout, onNavigate }: SidebarBodyProps) {
             className={({ isActive }) =>
               `sidebar-nav-link${isActive ? " active" : ""}`
             }
-            title={label}
+            title={
+              to === "/vault" && pendingVault > 0
+                ? `${label}: ${pendingVault} pending access request${pendingVault === 1 ? "" : "s"}`
+                : label
+            }
           >
             <Icon size={16} aria-hidden="true" />
             <span className="sidebar-nav-label">{label}</span>
+            {to === "/vault" && pendingVault > 0 && (
+              <span className="sidebar-nav-badge" aria-label={`${pendingVault} pending`}>
+                {pendingVault}
+              </span>
+            )}
           </NavLink>
         ))}
       </nav>
