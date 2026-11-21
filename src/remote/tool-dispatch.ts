@@ -62,10 +62,22 @@ import type { IngestorManager } from './ingestors/index.js';
 import { safeFetch } from './safe-fetch.js';
 import { assertNoControlChars, isEndpointAllowed, normalizeOutboundUrl } from './url-policy.js';
 import { waitForEvents } from './wait-for-events.js';
-import { createItem, deleteItem, listItems, revealItem, updateItem } from './vault/service.js';
+import {
+  cancelRequest,
+  createItem,
+  deleteItem,
+  listItems,
+  listOwnRequests,
+  requestAccess,
+  revealItem,
+  updateItem,
+} from './vault/service.js';
 import {
   assertVaultNotInOrigin,
+  assertVaultUnchanged,
+  emptyVaultResolution,
   hasVaultToken,
+  recordCrossCallerUse,
   resolveVaultTokens,
   substitutePlaceholders,
   type VaultResolution,
@@ -454,7 +466,8 @@ export async function executeProxyRequest(
   // template's): the URL, its headers, and the body where the route resolves
   // secrets in it. Every token is resolved and authorized here, before
   // anything is sent; one that can't be used fails the request.
-  let vault: VaultResolution = { values: new Map(), scrub: {} };
+  let vault: VaultResolution = emptyVaultResolution();
+  let vaultSources: VaultSource[] = [];
   if (!templateAuthored) {
     const sources: VaultSource[] = [{ where: 'The request URL', text: url, url: true }];
     for (const [k, v] of Object.entries(headers)) {
@@ -466,6 +479,7 @@ export async function executeProxyRequest(
       sources.push({ where: 'The request body', text });
     }
     vault = resolveVaultTokens({ caller, connection, sources });
+    vaultSources = sources;
   }
   /** Substitute a caller string's placeholders: `${VAR}` and `${vault:…}` in
    *  one pass over the original, so neither kind of value is expanded again.
@@ -710,6 +724,10 @@ export async function executeProxyRequest(
     return auth.accessToken !== previous;
   };
   await mint(false);
+  // A cross-caller vault use is recorded in the owner's audit log before
+  // anything is sent (fail-closed). `send` checks the vault again, with no
+  // await before the fetch, so a revoke that lands meanwhile is honoured.
+  if (caller !== undefined) await recordCrossCallerUse(vault, caller, connection);
   /** Everything scrubbed from headers, URLs, and errors: every route secret,
    *  the minted token(s), and every vault value this request substituted. */
   const allSecrets = () => ({ ...matched.secrets, ...tokenScrub, ...vault.scrub });
@@ -726,8 +744,9 @@ export async function executeProxyRequest(
     // 307/308 resend of a body with substituted secrets). Anything else comes
     // back to the caller as the 3xx itself.
     const routeAllowlist = matched.allowedEndpoints;
-    const send = () =>
-      safeFetch(resolvedUrl, {
+    const send = () => {
+      assertVaultUnchanged(vault, { caller, connection, sources: vaultSources });
+      return safeFetch(resolvedUrl, {
         method,
         headers: outboundHeaders,
         body: outboundBody,
@@ -741,6 +760,7 @@ export async function executeProxyRequest(
         // covers the original path, so a re-sent copy would need re-signing.
         ...(matched.awsSigV4 && { maxRedirects: 0 }),
       });
+    };
     let { response: resp, url: finalUrl, redirects } = await send();
 
     // A 401 on an oauth2 route usually means the cached token was revoked or
@@ -1988,8 +2008,13 @@ export const toolHandlers: Record<string, ToolHandler> = {
   // agent rules (tighten only). No handler returns a value except
   // vault_get for an item the caller may reveal; none returns ciphertext or
   // key material. The operator's door is the admin API, not these handlers.
+  //
+  // INVARIANT 6: no handler here grants, denies or revokes access. Every
+  // toolHandlers entry is reachable by name by any authenticated caller over
+  // /request, so those live only on the admin router (admin-vault.ts). The
+  // vault canary sweep checks this by name and by behaviour.
 
-  /** The caller's items as metadata: names, kinds, field names, never values. */
+  /** The caller's items as metadata, plus the items shared with it (never values). */
   vault_list(input, _routes, context) {
     return Promise.resolve(listItems(context.callerAlias, { tag: input.tag }));
   },
@@ -2011,13 +2036,33 @@ export const toolHandlers: Record<string, ToolHandler> = {
     return deleteItem(context.callerAlias, input, 'agent');
   },
 
-  /** Values of a `reveal` item, audit-logged before they are returned. */
+  /** Values of an item the caller may reveal, audit-logged before they are returned. */
   vault_get(input, _routes, context) {
     return revealItem(context.callerAlias, {
       name: input.name,
       owner: input.owner,
       field: input.field,
     });
+  },
+
+  /** Ask the operator for access to another caller's item. Grants nothing. */
+  vault_request_access(input, _routes, context) {
+    return requestAccess(context.callerAlias, {
+      owner: input.owner,
+      name: input.name,
+      reason: input.reason,
+      mode: input.mode,
+    });
+  },
+
+  /** The caller's own access requests (as requester). */
+  vault_list_requests(_input, _routes, context) {
+    return Promise.resolve(listOwnRequests(context.callerAlias));
+  },
+
+  /** Cancel one of the caller's own pending requests. */
+  vault_cancel_request(input, _routes, context) {
+    return cancelRequest(context.callerAlias, { requestId: input.requestId });
   },
 
   /**
