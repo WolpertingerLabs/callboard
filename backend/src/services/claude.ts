@@ -592,11 +592,15 @@ export function buildCanUseTool(
       };
       let settings = readSettings();
       if (settings.modelReview || settings.parentAnswers) {
-        // What leaves this chat for the reviewer and the audit log: secret
-        // vault values become "[redacted]" (tool-input-redaction.ts). The call
-        // itself, and `entry.input` that an approval resolves with, keep `input`.
+        // What the screens see: secret vault values become "[redacted]"
+        // (tool-input-redaction.ts). The hard-stop pre-check gets this copy
+        // too, because its evidence quotes the input and goes to the log,
+        // reviewerNotes, the audit verdict and the parent's listing. Vault
+        // values are never executed, so screening them finds nothing. The
+        // call itself, and `entry.input` that an approval resolves with, keep
+        // `input`. (The audit log redacts in startReviewAudit itself.)
         const reviewInput = redactToolInputForReview(toolName, input);
-        let verdict = detectHardStop(toolName, input);
+        let verdict = detectHardStop(toolName, reviewInput);
         const beginAudit = (screen: "model" | "hardstop", taskExcerpt?: string) => {
           if (!review.audit) return undefined;
           // The model path passes the excerpt its reviewer saw; a hard stop
@@ -614,7 +618,7 @@ export function buildCanUseTool(
             chatId: getTrackingId(),
             toolName,
             toolUseId: toolUseID,
-            input: reviewInput,
+            input,
             category,
             cwd: review.cwd,
             ...(taskExcerpt && { taskExcerpt }),

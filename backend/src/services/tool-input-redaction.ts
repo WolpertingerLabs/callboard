@@ -17,7 +17,7 @@
  * approval resolves with, so it must stay whole).
  *
  * Matched by name — bare on pi (in-process tools have no server prefix),
- * `mcp__mcp-proxy__<name>` on Claude Code.
+ * `mcp__<server>__<name>` (normally `mcp__mcp-proxy__`) on Claude Code.
  */
 
 /** The placeholder a redacted value is replaced with. */
@@ -26,11 +26,15 @@ export const REDACTED = "[redacted]";
 /** The proxy tools whose `values` input holds secret values. */
 const SECRET_VALUES_TOOLS: ReadonlySet<string> = new Set(["vault_create", "vault_update"]);
 
-const PROXY_PREFIX = "mcp__mcp-proxy__";
-
-/** The bare proxy tool name, for a bare or `mcp__mcp-proxy__`-qualified name. */
-function bareProxyToolName(toolName: string): string {
-  return toolName.startsWith(PROXY_PREFIX) ? toolName.slice(PROXY_PREFIX.length) : toolName;
+/**
+ * The bare tool name: the part after `mcp__<server>__` when qualified, else
+ * the name as given. Any server, not only `mcp-proxy`, so a drawlatch MCP
+ * server mounted under another name is covered too.
+ */
+function bareToolName(toolName: string): string {
+  if (!toolName.startsWith("mcp__")) return toolName;
+  const cut = toolName.lastIndexOf("__");
+  return cut > "mcp_".length ? toolName.slice(cut + 2) : toolName;
 }
 
 /**
@@ -38,7 +42,7 @@ function bareProxyToolName(toolName: string): string {
  * Returns `input` itself when there is nothing to redact.
  */
 export function redactToolInputForReview<T extends Record<string, unknown>>(toolName: string, input: T): T {
-  if (!SECRET_VALUES_TOOLS.has(bareProxyToolName(toolName))) return input;
+  if (!SECRET_VALUES_TOOLS.has(bareToolName(toolName))) return input;
   if (!input || typeof input !== "object" || !("values" in input)) return input;
   const values = input.values;
   // A malformed map is redacted whole: there are no field names worth keeping,
