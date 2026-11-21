@@ -8,7 +8,7 @@ import { codexSandboxRefusal } from "../services/permission-ceiling.js";
 import { startChatTurn } from "../services/chat-turn.js";
 import { discoverChatCorpus } from "../services/chat-discovery.js";
 import { createTriggeredPredicate, cardIsArchived, archivedRootIdsOf } from "../services/chat-visibility.js";
-import { isCardEligible } from "../services/card-fields.js";
+import { isCardEligible, patchCardFields } from "../services/card-fields.js";
 import { createCardContext } from "../services/card-context.js";
 import { createPinnedMemberLookup } from "../services/card-archive-unpin.js";
 import { setRootArchived } from "../services/chat-archive.js";
@@ -2257,14 +2257,16 @@ chatsRouter.patch("/:id/pin", (req, res) => {
  * meaning for `treeArchived` or `Chat.archived`.
  *
  * Refused on a root (400): a root's archive is the card's, and a flag here
- * would hide nothing. Refused on a native Codex subagent (409): its parent is
+ * would hide nothing. That includes a chat whose parent pointer no longer
+ * resolves — it is the root of its own card, where the flag closes the card —
+ * except that unarchiving one is allowed and reopens that card. Refused on a native Codex subagent (409): its parent is
  * inferred from the rollout and it is read-only in Callboard, the same reason
  * split-off refuses it. Quiet and idempotent, like the pin.
  */
 chatsRouter.patch("/:id/child-archive", (req, res) => {
   // #swagger.tags = ['Chats']
   // #swagger.summary = 'Archive or unarchive one child chat'
-  // #swagger.description = 'Sets or clears metadata.childArchived (+ childArchivedAt) on a chat that has a parent. The sidebar hides an archived child, and every chat under it, from its parent tree unless archived chats are shown; GET /api/chats/:id/tree reports it as childArchived on the node. Unlike POST /bulk-archive this never touches the tree root or its card. If the parent is later deleted (or was never stored), the archived child becomes the root of its own card and that card reads as closed (closedAt defaults to childArchivedAt); reopening or unarchiving the card clears the flag. View-only: updated_at is not bumped. Re-archiving keeps the original childArchivedAt.'
+  // #swagger.description = 'Sets or clears metadata.childArchived (+ childArchivedAt) on a chat that has a parent. The sidebar hides an archived child, and every chat under it, from its parent tree unless archived chats are shown; GET /api/chats/:id/tree reports it as childArchived on the node. Unlike POST /bulk-archive this never touches the tree root or its card. If the parent is later deleted (or was never stored), the archived child becomes the root of its own card and that card reads as closed (closedAt defaults to childArchivedAt); reopening or unarchiving the card clears the flag. On such a chat this route refuses archived=true (400, as for a root) and archived=false reopens its card. View-only: updated_at is not bumped. Re-archiving keeps the original childArchivedAt.'
   /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
   /* #swagger.requestBody = {
     required: true,
@@ -2281,7 +2283,7 @@ chatsRouter.patch("/:id/child-archive", (req, res) => {
     }
   } */
   /* #swagger.responses[200] = { description: "Updated chat" } */
-  /* #swagger.responses[400] = { description: "Invalid request body, or the chat has no parent (archive a root through its card instead)" } */
+  /* #swagger.responses[400] = { description: "Invalid request body, or the chat is a root — no parent, or a parent that no longer exists (archive a root through its card instead)" } */
   /* #swagger.responses[404] = { description: "Chat not found" } */
   /* #swagger.responses[409] = { description: "The chat is a native Codex subagent" } */
   const { archived } = req.body ?? {};
@@ -2298,6 +2300,26 @@ chatsRouter.patch("/:id/child-archive", (req, res) => {
     const meta = parseChatMetadata(chat.metadata);
     if (!getParentChatId(meta)) {
       return res.status(400).json({ error: "This chat has no parent — archive it from its card instead" });
+    }
+    // A parent pointer that no longer resolves: the lineage promotes this chat
+    // to the root of its own card, and on a card root the flag IS the card's
+    // archive (`strandedChildArchiveAt` in card-fields.ts). So the card path
+    // owns it — archiving is refused like any root (writing the flag here
+    // would close the card without the unpin), and unarchiving reopens the
+    // card through patchCardFields, which clears the flag in the same write.
+    if (walkToRootId(chat.id) === chat.id && isCardEligible(chat)) {
+      if (archived) {
+        return res.status(400).json({ error: "This chat's parent no longer exists, so it is the root of its own card — archive it from its card instead" });
+      }
+      if (meta.childArchived === true) {
+        if (!patchCardFields(chat.id, { lifecycle: "open" })) {
+          return res.status(500).json({ error: "Failed to update the child's archived flag" });
+        }
+        clearListCaches();
+        sessionRegistry.notifyMetadata(chat.id, { childArchived: false });
+        sessionRegistry.notifyMetadata(chat.id, { cardEvent: "updated" });
+      }
+      return res.json(findChat(chat.id, false) ?? chat);
     }
     // Transition-only, like treeArchivedAt: re-archiving keeps the stamp
     // describing when the child was put away.

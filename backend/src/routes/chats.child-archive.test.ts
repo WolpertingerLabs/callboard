@@ -232,4 +232,34 @@ describe("an archived child whose parent is deleted", () => {
     expect(metaOf(child.id)).not.toHaveProperty("childArchived");
     expect(boardOf().cards.find((c) => c.id === child.id)?.lifecycle).toBe("open");
   });
+
+  it("refuses to archive it through the child route, which would close the card without the card path", async () => {
+    const root = makeChat({ title: "root" });
+    const child = makeChat({ title: "child", parentChatId: root.id, rootChatId: root.id, pinned: true });
+    chatFileService.deleteChat(root.session_id);
+
+    const res = await patch(child.id, { archived: true });
+
+    expect(res.status).toBe(400);
+    expect(metaOf(child.id)).not.toHaveProperty("childArchived");
+    expect(metaOf(child.id).pinned).toBe(true);
+    expect(boardOf().cards.find((c) => c.id === child.id)?.lifecycle).toBe("open");
+  });
+
+  it("unarchives it through the child route by reopening its card", async () => {
+    const root = makeChat({ title: "root" });
+    const child = makeChat({ title: "child", parentChatId: root.id, rootChatId: root.id });
+    await patch(child.id, { archived: true });
+    chatFileService.deleteChat(root.session_id);
+    notifyMetadata.mockClear();
+
+    const res = await patch(child.id, { archived: false });
+
+    expect(res.status).toBe(200);
+    expect(metaOf(child.id)).not.toHaveProperty("childArchived");
+    expect(metaOf(child.id)).not.toHaveProperty("childArchivedAt");
+    expect(metaOf(child.id).card.lifecycle).toBe("open");
+    expect(boardOf().cards.find((c) => c.id === child.id)?.lifecycle).toBe("open");
+    expect(notifyMetadata).toHaveBeenCalledWith(child.id, { cardEvent: "updated" });
+  });
 });
