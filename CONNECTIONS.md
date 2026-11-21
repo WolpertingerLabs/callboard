@@ -6,7 +6,7 @@ A connection is a built-in template that gives an API's allowed URL patterns, th
 { "callers": { "default": { "connections": ["github", "stripe"] } } }
 ```
 
-Then set the secrets for that caller. Caller `default` reads `GITHUB_TOKEN` from `DEFAULT_GITHUB_TOKEN`. See [README → Secrets](README.md#secrets) for how secrets resolve, and [README → Custom connectors](README.md#custom-connectors) to add an API or override a template (a custom connector with the same alias wins). Templates live in `src/connections/<category>/<name>.json`.
+Then set the secrets for that caller. Caller `default` reads `GITHUB_TOKEN` from `DEFAULT_GITHUB_TOKEN`. See [README → Secrets](README.md#secrets) for how secrets resolve, and [README → Custom connectors](README.md#custom-connectors) to add an API or override a template (a custom connector with the same alias wins). Templates live in `src/connections/<category>/<name>.json`. A caller's own [vault](README.md#vault) items can be used on any connection it has enabled, as `${vault:<name>}` in a `secure_request` ([README → Using vault items in requests](README.md#using-vault-items-in-requests)); templates don't change.
 
 ## Available connections
 

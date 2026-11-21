@@ -263,14 +263,18 @@ const server = new McpServer({
 // eslint-disable-next-line @typescript-eslint/no-deprecated -- registerTool is not available in this SDK version
 server.tool(
   'secure_request',
-  'Make an authenticated HTTP request through the encrypted proxy. Route-level headers (e.g., Authorization) are injected automatically by the server — do not send them yourself. You may use ${VAR_NAME} placeholders for other secrets in the URL, headers, or body — they are resolved server-side using the matched route\'s secrets and never exposed to the client. Secrets a route injects through its own headers (and signing/webhook secrets) are withheld: list_routes reports them as withheldSecretNames, and a request that references one is rejected. On a route whose list_routes entry has auth.type "oauth2", drawlatch mints the access token itself: do not send an Authorization header or an access_token query parameter.',
+  'Make an authenticated HTTP request through the encrypted proxy. Route-level headers (e.g., Authorization) are injected automatically by the server — do not send them yourself. You may use ${VAR_NAME} placeholders for other secrets in the URL, headers, or body — they are resolved server-side using the matched route\'s secrets and never exposed to the client. Secrets a route injects through its own headers (and signing/webhook secrets) are withheld: list_routes reports them as withheldSecretNames, and a request that references one is rejected. On a route whose list_routes entry has auth.type "oauth2", drawlatch mints the access token itself: do not send an Authorization header or an access_token query parameter. Your own vault items resolve as ${vault:name} or ${vault:name.field} in the URL path or query and in headers (in the body only where ${VAR} resolves there too), never in the host. The value never comes back to you: echoes are scrubbed to ${vault:<your caller alias>/name.field}. A placeholder for a missing item or field, or one used on a connection outside the item\'s connections binding, fails the request before anything is sent.',
   {
     method: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']).describe('HTTP method'),
-    url: z.string().describe('Full URL, may contain ${VAR} placeholders'),
+    url: z
+      .string()
+      .describe(
+        'Full URL, may contain ${VAR} and (in the path or query) ${vault:name} placeholders',
+      ),
     headers: z
       .record(z.string(), z.string())
       .optional()
-      .describe('Request headers, may contain ${VAR} placeholders'),
+      .describe('Request headers, may contain ${VAR} and ${vault:name} placeholders'),
     body: z.any().optional().describe('Request body (object for JSON, string for raw)'),
     files: z
       .array(
@@ -977,7 +981,7 @@ server.tool(
 // eslint-disable-next-line @typescript-eslint/no-deprecated -- registerTool is not available in this SDK version
 server.tool(
   'vault_create',
-  `Save a new item in your vault. kind "token" and "note" take exactly { value }, "password" takes { value, username? }, "key-value" takes 1-16 named fields. exposure "inject" (the default) means no tool will ever return the value; "reveal" lets vault_get return it to you (every read is audit-logged). Fails if the name exists. ${VAULT_CONTEXT_NOTE} ${VAULT_PLAINTEXT_NOTE}`,
+  `Save a new item in your vault. kind "token" and "note" take exactly { value }, "password" takes { value, username? }, "key-value" takes 1-16 named fields. exposure "inject" (the default) means no tool will ever return the value, and you use it as \${vault:name} in secure_request; "reveal" lets vault_get return it to you as well (every read is audit-logged). Fails if the name exists. ${VAULT_CONTEXT_NOTE} ${VAULT_PLAINTEXT_NOTE}`,
   {
     name: z.string().describe('Item name: 1-64 letters, digits, "_" or "-", unique in your vault'),
     kind: z.string().describe('"password", "token", "note" or "key-value"'),
@@ -1027,7 +1031,7 @@ server.tool(
 // eslint-disable-next-line @typescript-eslint/no-deprecated -- registerTool is not available in this SDK version
 server.tool(
   'vault_get',
-  'Read the values of one of your vault items whose exposure is "reveal". Every read is recorded in your audit log before the value is returned. Inject-only items are refused.',
+  'Read the values of one of your vault items whose exposure is "reveal". Every read is recorded in your audit log before the value is returned. Inject-only items are refused: use them as ${vault:name} in secure_request.',
   {
     name: z.string().describe('Item name'),
     field: z.string().optional().describe('Return just this field'),
