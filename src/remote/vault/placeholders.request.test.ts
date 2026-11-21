@@ -61,6 +61,7 @@ const PIECE_VALUES = {
   hsecret: 'Summer#2024!xyz',
   dsecret: 'a/../bcdefgh',
 } as const;
+const AMP_VALUE = 'Xk29vLq&admin=1';
 const STATIC_BODY = { status: 'open', items: [{ name: 'Summer sale' }], note: 'bcdefgh' };
 const ALL_CANARIES = [CANARY, USER_CANARY, KV_CANARY, REVEAL_CANARY, BOB_CANARY, ...NASTY_IDS];
 
@@ -234,6 +235,11 @@ beforeAll(async () => {
   await createItem(
     'alice',
     { name: 'quoted', kind: 'token', values: { value: `${CANARY}"q\\b` } },
+    'agent',
+  );
+  await createItem(
+    'alice',
+    { name: 'amp', kind: 'password', values: { value: AMP_VALUE } },
     'agent',
   );
   for (const [name, value] of Object.entries(PIECE_VALUES)) {
@@ -687,16 +693,77 @@ describe('echoes are scrubbed to ${vault:…}', () => {
   });
 });
 
+describe('URL delimiters in a vault value', () => {
+  // A `#`, `?` or `&` would cut the value or split it across URL components,
+  // where an echo of one piece couldn't be scrubbed. Refused in the URL.
+  const DELIMITED = { hsecret: '#', qsecret: '?', amp: '&' } as const;
+
+  it.each(Object.entries(DELIMITED))(
+    '%s (a value containing %s) is refused in the path and the query, before sending',
+    async (item) => {
+      for (const url of [`${base}/x/\${vault:${item}}`, `${base}/x?v=\${vault:${item}}`]) {
+        const msg = await errorOf(send({ method: 'GET', url }));
+        expect(msg).toBe(
+          `The request URL references \${vault:${item}}, which can't be used: it contains a URL ` +
+            'delimiter (#, ? or &); send it in a header instead.',
+        );
+      }
+      expect(received).toHaveLength(0);
+    },
+  );
+
+  it('the message never quotes the value or names the character', async () => {
+    const msg = await errorOf(send({ method: 'GET', url: `${base}/x?v=\${vault:amp}` }));
+    expect(msg).not.toContain(AMP_VALUE);
+    expect(msg).not.toContain('Xk29');
+    expect(msg.replace('(#, ? or &)', '')).not.toMatch(/[#?&]/);
+  });
+
+  it('is refused even when the same token is also used in a header', async () => {
+    const msg = await errorOf(
+      send({
+        method: 'GET',
+        url: `${base}/x?v=\${vault:hsecret}`,
+        headers: { 'X-Key': '${vault:hsecret}' },
+      }),
+    );
+    expect(msg).toContain('contains a URL delimiter');
+    expect(received).toHaveLength(0);
+  });
+
+  it('the same values work in a header and in a body', async () => {
+    await send(
+      {
+        method: 'POST',
+        url: `${base}/x`,
+        headers: { 'X-A': '${vault:hsecret}', 'X-B': '${vault:qsecret}', 'X-C': '${vault:amp}' },
+        body: 'a=${vault:hsecret}&b=${vault:qsecret}&c=${vault:amp}',
+      },
+      routes({ resolveSecretsInBody: true }),
+    );
+    expect(received[0].headers['x-a']).toBe(PIECE_VALUES.hsecret);
+    expect(received[0].headers['x-c']).toBe(AMP_VALUE);
+    expect(received[0].body).toBe(
+      `a=${PIECE_VALUES.hsecret}&b=${PIECE_VALUES.qsecret}&c=${AMP_VALUE}`,
+    );
+  });
+
+  it('${VAR} secrets with a delimiter still go into the URL as before', async () => {
+    const r = routes({ secrets: { API_TOKEN: TOKEN, ACCOUNT: 'acct#frag?q&x' } });
+    await send({ method: 'GET', url: `${base}/x?a=\${ACCOUNT}` }, r);
+    expect(received[0].url).toBe('/x?a=acct');
+  });
+});
+
 describe('values whose URL wire form differs from encodeURIComponent', () => {
   type Pos = 'path' | 'query' | 'header';
-  // n3 holds a `#`: placed in a URL it is cut there, and a cut value is not
-  // scrubbed (only whole-value forms are; see the B2 tests), so it is only
-  // promised in a header.
+  // n2 holds a `?` and n3 a `#`: such a value is refused in the URL (see
+  // "URL delimiters"), so those two are exercised in a header only.
   const cases = (Object.keys(NASTY) as (keyof typeof NASTY)[])
     .flatMap((item, i) =>
       (['path', 'query', 'header'] as Pos[]).map((pos) => [item, pos, NASTY_IDS[i]] as const),
     )
-    .filter(([item, pos]) => item !== 'n3' || pos === 'header');
+    .filter(([item, pos]) => item === 'n1' || pos === 'header');
   /** A request on `prefix` with the token at `pos`. */
   const placed = (prefix: string, pos: Pos, item: string) => {
     const token = `\${vault:${item}}`;
@@ -713,16 +780,11 @@ describe('values whose URL wire form differs from encodeURIComponent', () => {
     expect(leaked(res, id)).toBe(false);
   });
 
-  // The JSON echo also returns the decoded path on its own; for n2 (a `?` in
-  // the path) that is only the part before the `?`, which isn't scrubbed.
-  it.each(cases.filter(([item, pos]) => item !== 'n2' || pos !== 'path'))(
-    '%s in the %s: echoed URL in a JSON body',
-    async (item, pos, id) => {
-      const res = await send(placed('/j', pos, item));
-      expect(leaked(received, id)).toBe(true);
-      expect(leaked(res, id)).toBe(false);
-    },
-  );
+  it.each(cases)('%s in the %s: echoed URL in a JSON body', async (item, pos, id) => {
+    const res = await send(placed('/j', pos, item));
+    expect(leaked(received, id)).toBe(true);
+    expect(leaked(res, id)).toBe(false);
+  });
 
   it.each(cases.filter(([, pos]) => pos !== 'header'))(
     '%s in the %s: the final URL after a redirect that echoes it',

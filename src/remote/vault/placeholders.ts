@@ -101,7 +101,17 @@ export function assertVaultNotInOrigin(url: string): void {
 export interface VaultSource {
   where: string;
   text: string;
+  /** The text is the request URL: a value may not hold a URL delimiter there. */
+  url?: boolean;
 }
+
+/**
+ * `#`, `?` and `&` in a URL cut a value (fragment) or split it across URL
+ * components and parameters. The upstream would get part of it, and an echo
+ * of one part can't be scrubbed (only whole values are), so a vault value
+ * holding one is refused in the URL, like CR/LF and `..`.
+ */
+const URL_DELIMITER = /[#?&]/;
 
 export interface VaultResolution {
   /** spec (the text after `vault:`) → value. */
@@ -125,8 +135,8 @@ export function resolveVaultTokens(opts: {
     values: new Map(),
     scrub: Object.create(null) as Record<string, string>,
   };
-  const found = opts.sources.flatMap(({ where, text }) =>
-    vaultSpecs(text).map((spec) => ({ where, spec })),
+  const found = opts.sources.flatMap(({ where, text, url }) =>
+    vaultSpecs(text).map((spec) => ({ where, spec, url: url === true })),
   );
   if (found.length === 0) return resolution;
 
@@ -134,7 +144,7 @@ export function resolveVaultTokens(opts: {
     throw new Error(`${where} references \${vault:${spec}}, which can't be used: ${reason}.`);
   };
   // Parse everything first, so a malformed token is reported without echoing it.
-  const refs = found.map(({ where, spec }) => {
+  const refs = found.map(({ where, spec, url }) => {
     const ref = parseVaultSpec(spec);
     if (!ref) {
       throw new Error(
@@ -143,8 +153,14 @@ export function resolveVaultTokens(opts: {
           'fields 1-64 letters, digits or "_".',
       );
     }
-    return { where, spec, ref };
+    return { where, spec, ref, url };
   });
+  /** Per occurrence: the same token may be fine in a header and not in the URL. */
+  const checkPosition = (where: string, spec: string, url: boolean, value: string): void => {
+    if (url && URL_DELIMITER.test(value)) {
+      refuse(where, spec, 'it contains a URL delimiter (#, ? or &); send it in a header instead');
+    }
+  };
   const { caller } = opts;
   if (caller === undefined) {
     throw new Error(
@@ -154,8 +170,12 @@ export function resolveVaultTokens(opts: {
 
   const doc = readVault();
   const own = Object.hasOwn(doc.callers, caller) ? doc.callers[caller].items : undefined;
-  for (const { where, spec, ref } of refs) {
-    if (resolution.values.has(spec)) continue;
+  for (const { where, spec, ref, url } of refs) {
+    const known = resolution.values.get(spec);
+    if (known !== undefined) {
+      checkPosition(where, spec, url, known);
+      continue;
+    }
     if (ref.owner !== undefined && ref.owner !== caller) {
       refuse(where, spec, 'cross-caller access needs a grant (available in a later version)');
     }
@@ -184,6 +204,7 @@ export function resolveVaultTokens(opts: {
       );
     }
     const value = item.values[ref.field];
+    checkPosition(where, spec, url, value);
     resolution.values.set(spec, value);
     resolution.scrub[`vault:${caller}/${ref.name}.${ref.field}`] = value;
   }

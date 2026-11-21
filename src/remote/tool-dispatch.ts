@@ -456,7 +456,7 @@ export async function executeProxyRequest(
   // anything is sent; one that can't be used fails the request.
   let vault: VaultResolution = { values: new Map(), scrub: {} };
   if (!templateAuthored) {
-    const sources: VaultSource[] = [{ where: 'The request URL', text: url }];
+    const sources: VaultSource[] = [{ where: 'The request URL', text: url, url: true }];
     for (const [k, v] of Object.entries(headers)) {
       if (typeof v === 'string') sources.push({ where: `Header "${k}"`, text: v });
     }

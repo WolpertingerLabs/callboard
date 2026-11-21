@@ -1314,7 +1314,9 @@ export function scrubSecrets(text: string, secrets: Record<string, string>): str
  * form: scrubbing one would corrupt ordinary text that happens to contain it
  * (`Summer` from `Summer#2024!xyz`) and let an agent confirm a secret piece
  * by piece. So a URL form is kept only when the parser kept the whole value.
- * A value cut that way, and then echoed only in part, isn't scrubbed.
+ * A value cut that way, and then echoed only in part, isn't scrubbed; that's
+ * why a vault value holding `#`, `?` or `&` is refused in a URL (see
+ * vault/placeholders.ts). A `${VAR}` secret keeps the gap.
  * Duplicates are dropped; a plain ASCII token has one form.
  */
 // eslint-disable-next-line no-control-regex -- matching control characters is the point
