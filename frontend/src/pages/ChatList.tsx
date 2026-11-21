@@ -39,6 +39,7 @@ import { useIsMobile } from "../hooks/useIsMobile";
 import { usePolling } from "../hooks/usePolling";
 import DraftListItem from "../components/DraftListItem";
 import ChatFilterBar from "../components/ChatFilterBar";
+import ActiveSearchBar from "../components/ActiveSearchBar";
 import NewChatPanel from "../components/NewChatPanel";
 import ConfirmModal from "../components/ConfirmModal";
 import EditTitleModal from "../components/EditTitleModal";
@@ -348,6 +349,11 @@ export default function ChatList({
 
   const handleSearchSubmit = () => {
     setSubmittedQuery(searchQuery);
+  };
+  /** Ends the search outright: the draft goes too, or Enter would bring it straight back. */
+  const handleClearSearch = () => {
+    setSearchQuery("");
+    setSubmittedQuery("");
   };
 
   // Determine if any filter is active (advanced filters, content search, or bookmarks)
@@ -1753,6 +1759,15 @@ export default function ChatList({
         {...(spacesEnabled && isMobile && { leading: <SpaceSwitcher cards={cards} compact inset={FILTER_INSET} /> })}
       />
       {spacesEnabled && isMobile && <SpaceNotice style={{ margin: `6px ${FILTER_INSET}px 0` }} />}
+      {searching && (
+        <ActiveSearchBar
+          query={submittedQuery.trim()}
+          resultCount={filteredChats.length}
+          isSearching={isSearching}
+          onClear={handleClearSearch}
+          inset={FILTER_INSET}
+        />
+      )}
       {spacesEnabled && spaces.length > 1 && activeSpaceId !== ALL_SPACES && (searchQuery.trim() || searching) && (
         <label style={{ display: "flex", alignItems: "center", gap: 6, padding: `0 ${FILTER_INSET}px 6px`, fontSize: 12, color: "var(--text-muted)", cursor: "pointer" }}>
           <input type="checkbox" checked={searchAllSpaces} onChange={(e) => setSearchAllSpaces(e.target.checked)} />
