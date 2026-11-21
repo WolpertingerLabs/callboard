@@ -262,6 +262,54 @@ export interface GitInfo {
 }
 
 /**
+ * Read the pointer out of a `.git` *file* the way git's `read_gitfile_gently`
+ * does: the contents must begin with the literal `gitdir: `, and the path is the
+ * entire remainder with trailing `\n`/`\r` stripped. A relative pointer is
+ * resolved against `directory`. Returns undefined when it does not parse.
+ *
+ * The caller must already have established that `directory/.git` is a file;
+ * read errors propagate.
+ */
+export function readGitfilePointer(directory: string): string | undefined {
+  const contents = readFileSync(join(directory, ".git"), "utf-8");
+  const PREFIX = "gitdir: ";
+  if (!contents.startsWith(PREFIX)) return undefined;
+  const pointer = contents.slice(PREFIX.length).replace(/[\n\r]+$/, "");
+  // `gitdir:` may be relative to the checkout, so resolve against it.
+  return pointer ? resolve(directory, pointer) : undefined;
+}
+
+/**
+ * Is `directory` a *linked* worktree (made by `git worktree add`)? Not a main
+ * checkout (its `.git` is a directory) and not a submodule (its `.git` file
+ * points into `.git/modules/…`).
+ *
+ * The test is a `commondir` file in the admin directory the `.git` file points
+ * at: git writes one for every linked worktree and never for a submodule's
+ * gitdir. Checking for a `worktrees` path segment instead is wrong — a
+ * submodule added at `worktrees/foo` gets the gitdir `.git/modules/worktrees/foo`.
+ * This also covers worktrees whose admin dir is not under a `.git/` path —
+ * worktrees of a bare repo (`repo.git/worktrees/<n>`) and of a repo made with
+ * `--separate-git-dir` — which {@link resolveWorktreeToMainRepo} rejects.
+ *
+ * A worktree whose main repo was moved or deleted is *not* flagged: its admin
+ * dir lives under `<main>/.git/worktrees/`, so it is gone too and the pointer
+ * dangles. That is intentional — there is no repo left to call it a worktree of.
+ *
+ * `lstatSync`: a `.git` symlink is not treated as a worktree, matching
+ * {@link resolveWorktreeToMainRepo}. Any error → false.
+ */
+export function isLinkedWorktree(directory: string): boolean {
+  try {
+    if (!lstatSync(join(directory, ".git")).isFile()) return false;
+    const gitdir = readGitfilePointer(directory);
+    return !!gitdir && existsSync(join(gitdir, "commondir"));
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Where this checkout keeps `HEAD`, without asking git.
  *
  * Three shapes, and the pointer case covers two of them: a linked worktree's
@@ -305,12 +353,7 @@ function resolveHeadHome(directory: string): string | undefined {
       // Verified against real git rather than read off the source: a trailing
       // `\r` is accepted and resolves, trailing spaces are kept in the path and
       // produce `fatal: not a git repository: <path>   `.
-      const contents = readFileSync(gitPath, "utf-8");
-      const PREFIX = "gitdir: ";
-      if (!contents.startsWith(PREFIX)) return undefined;
-      const pointer = contents.slice(PREFIX.length).replace(/[\n\r]+$/, "");
-      // `gitdir:` may be relative to the checkout, so resolve against it.
-      if (pointer) return resolve(directory, pointer);
+      return readGitfilePointer(directory);
     }
   } catch {
     // Fall through — the caller asks git instead.
