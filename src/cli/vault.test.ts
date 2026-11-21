@@ -578,7 +578,7 @@ describe.skipIf(!built)('drawlatch vault (CLI against a test daemon)', () => {
     });
   });
 
-  describe.skipIf(!hasGit)('with git (repo-local config, no global config)', () => {
+  describe.skipIf(!hasGit)('with git (throwaway HOME and global config)', () => {
     let home: string;
     let repo: string;
     const gitEnv = (): Record<string, string> => ({
