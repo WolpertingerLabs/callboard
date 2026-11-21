@@ -98,12 +98,19 @@ The local MCP server exposes these tools. Every call goes through the encrypted 
 | `resolve_listener_options` | Fetch dynamic choices for a listener field (for example, your Trello boards). |
 | `list_listener_instances` / `delete_listener_instance` | Manage multi-instance listeners. |
 | `test_ingestor` | Check a listener's configuration and credentials. |
+| `vault_list` | This caller's [vault](#vault) items: name, kind, exposure, field names, notes, tags, metadata, `connections` binding, timestamps. Never values. Takes an optional `tag` filter. Returns `{ items, shared }` (`shared` is always empty in this version). |
+| `vault_create` | Save a new vault item (`name`, `kind`, `values`, and optional `exposure`, `notes`, `tags`, `metadata`, `connections`). Fails if the name exists. Returns the item's metadata. |
+| `vault_update` | Change a vault item. `values` replaces the whole value map, `rename` renames it. The agent can only tighten an item: `exposure` may go from `reveal` to `inject` but not back, and `connections` may only narrow. |
+| `vault_delete` | Delete a vault item. |
+| `vault_get` | The values of a `reveal` item (or one `field`). Each call is written to the caller's audit log before the value is returned, and fails if that write fails. `inject` items, and other callers' items, are refused. |
 
 `set_secrets` and `set_connection_enabled` let an agent change its own caller's configuration, which can grant it more access: secrets resolve per caller by name, so a connection the agent enables for itself starts with any secret it shares a name with (a second `google-*` connector picks up the existing `GOOGLE_API_TOKEN`). The agent still can't read secret values or reach URLs outside the allowlists, and OAuth2 connections are operator-only even with `selfManage` allowed: the agent can't enable one or set its credentials, because OAuth2 credentials are shared by name (every user-OAuth `google-*` template reads `GOOGLE_OAUTH_REFRESH_TOKEN`). Set [`selfManage: false`](#callers) on a caller to refuse both tools to its agent. The dashboard can still make the change. Callers that drawlatch creates (dashboard **New caller**, `issue-caller` for a new alias, local Callboard provisioning) start with `selfManage: false`. A caller entry without the field allows both tools, so existing configs behave as before.
 
 The daemon also accepts `wait_for_events`, a long-poll over all of a caller's event streams. The local MCP server doesn't expose it; long-running clients such as Callboard call it over the encrypted channel. See [INGESTORS.md](INGESTORS.md#reading-events).
 
 It likewise accepts `ingest_logs`, which appends records to the caller's audit log. The local MCP server doesn't expose it either. See [Audit log](#audit-log).
+
+The vault tools aren't gated by `selfManage`: they touch only the caller's own vault.
 
 ## Configuration
 
@@ -120,6 +127,8 @@ keys/callers/<alias>/  one keypair per caller (public half only, when issued as 
 logs/drawlatch.log     daemon log (drawlatch logs)
 data/sessions.json     dashboard login sessions
 audit/<caller>/        append-only audit logs shipped by callers (see Audit log)
+vault.enc.json         encrypted vault, created on the first save (see Vault)
+keys/vault.key         the vault's key, mode 0600, created with vault.enc.json (SENSITIVE)
 drawlatch.pid          PID of the background daemon
 ```
 
@@ -171,6 +180,8 @@ Connections reference secrets as `${NAME}` (for example, `${GITHUB_TOKEN}`). For
 2. The environment variable `<ALIAS>_<NAME>`, with the alias uppercased and `-` replaced by `_`. Examples: `DEFAULT_GITHUB_TOKEN`, `MY_AGENT_GITHUB_TOKEN`.
 
 A bare `GITHUB_TOKEN` is never used. This keeps one caller from picking up another's credentials. The daemon loads `.env` at startup, so restart after editing it by hand. The dashboard and `set_secrets` write `<ALIAS>_<NAME>` to `.env` and apply the change immediately.
+
+Agents can also keep their own secrets in a per-caller, encrypted [vault](#vault). Vault items are separate from connection secrets: they don't resolve as `${NAME}`.
 
 If a secret isn't set, its placeholder is sent literally (for example, `Authorization: Bearer ${GITHUB_TOKEN}`), and the upstream API will usually answer `401`. An [`awsSigV4`](#aws-sigv4-signing) connection without its signing keys fails the request instead of sending it. `drawlatch doctor`, `drawlatch config`, and the dashboard's Secrets page show what's missing. They check only built-in templates, and only secrets used in a template's headers or, for an `awsSigV4` or `oauth2` template, its signing keys or `secretRefs`: custom connectors are skipped, and a token that goes in the URL (Telegram, Trello) isn't flagged. `doctor` also prints the unprefixed name ("Set GITHUB_TOKEN in …/.env"); whatever it says, set `<ALIAS>_<NAME>` (`DEFAULT_GITHUB_TOKEN` for the default caller).
 
@@ -383,7 +394,7 @@ Records go to `audit/<caller>/<YYYY-MM-DD>.jsonl` (UTC day of receipt), one JSON
  "scope":{"name":"callboard.permission-review","version":"1"}}
 ```
 
-The `drawlatch.*` fields are set by the daemon: the caller is the authenticated session's, `sequence` counts up within each file, and `source` is `client` for caller records. Everything else is what the client sent, flattened (attribute lists become objects, `AnyValue`s become plain JSON; an `intValue` too big for a JSON number stays a string). Optional fields are left out when absent. Use `jq`, for example `jq -c 'select(.trace_id == "…")' ~/.drawlatch/audit/*/*.jsonl`.
+The `drawlatch.*` fields are set by the daemon: the caller is the authenticated session's, `sequence` counts up within each file, and `source` is `client` for caller records. The daemon's own lines (`quota_exceeded` below, and [vault events](#vault)) have `source: "daemon"`. Everything else is what the client sent, flattened (attribute lists become objects, `AnyValue`s become plain JSON; an `intValue` too big for a JSON number stays a string). Optional fields are left out when absent. Use `jq`, for example `jq -c 'select(.trace_id == "…")' ~/.drawlatch/audit/*/*.jsonl`.
 
 Limits: 1000 records and 4 MiB stored per call, and 256 KiB per line (the shared resource and scope count toward every line under them). Records past a limit are rejected. Strings over 16 KiB are cut and end in `…[truncated]`; past 128 attributes or keys, 256 array items, or 8 levels of nesting, the extra is dropped. Any of these adds `"truncated": true` to the line. A call counts as one request against `rateLimitPerMinute`.
 
@@ -406,6 +417,50 @@ On SIGTERM or SIGINT (`drawlatch stop` sends SIGTERM):
 So once a shutdown has begun, every refusal is on disk before the daemon exits, unless the day's marker allowance is used up or the disk keeps failing. What can still be lost is the counts waiting for the timer when the daemon is SIGKILLed or crashes, or the machine loses power: up to a minute of refusals for each caller over budget, or longer while a failing disk keeps the timer retrying. These lines come from a separate 1 MiB-a-day allowance, not the caller's budget. `jq 'select(."drawlatch.source" == "daemon")'` finds them.
 
 Every authenticated caller can write to its own log; there is no per-caller switch. Records carry the client's own timestamps, but only the `drawlatch.*` stamps are the daemon's. Anyone holding a caller's private key can add records as that caller, but not change or remove existing ones. Within the budget they can also crowd out real records; the `quota_exceeded` lines make that visible on the hub.
+
+### Vault
+
+Each caller has its own vault: named items (passwords, tokens, notes, key/value sets) that its agent saves and manages with the `vault_*` [MCP tools](#mcp-tools). A caller sees only its own items. No tool lists, reads, or changes another caller's vault.
+
+**Items.** An item has a `name` (1-64 letters, digits, `_` or `-`, starting with a letter or digit, unique within the caller's vault; `constructor` and `prototype` are reserved), a `kind`, secret `values`, and plain-text `notes`, `tags`, and `metadata`:
+
+| `kind` | `values` fields |
+| --- | --- |
+| `token`, `note` | exactly `value` |
+| `password` | `value`, and optionally `username` |
+| `key-value` | 1-16 fields named `^[a-zA-Z][a-zA-Z0-9_]{0,63}$` |
+
+Everything in `values` is secret, `username` included, and only field names ever leave the daemon. `notes`, `tags`, and `metadata` are not secret: `vault_list` returns them, so don't put secrets in them. An item also has a stable `id` (it survives a rename), `createdBy` (`agent` or `admin`), `createdAt`, `updatedAt`, and `valueUpdatedAt` (the last change to `values`), and an optional `connections` list. That list records which connections the item is meant for. This version stores and returns it but doesn't use it yet.
+
+**Exposure.** `inject` (the default) means no tool ever returns the value: not `vault_list`, not `vault_get`, not any other tool. `reveal` means the caller's agent can read it back with `vault_get`, and every such read is written to the caller's [audit log](#audit-log) first; if that write fails, `vault_get` fails and returns nothing. Using `inject` items in requests comes in a later version, so for now an `inject` item can be stored, listed, updated, and deleted, but not used.
+
+**Agents can only tighten.** On the agent's side, `vault_update` may change `exposure` from `reveal` to `inject` but never back, and may add a `connections` list or narrow one but never widen or remove it. Otherwise an `inject` item could be switched to `reveal` and read. Only the operator can loosen an item.
+
+What the agent saves passes through its own context: `vault_create` and `vault_update` carry the values. `inject` keeps a saved value out of later responses, not out of the conversation that saved it.
+
+**Limits** (errors name the field and the limit, never the value): 64 KiB per field, 128 KiB per item, 500 items per caller, 32 MiB for the whole vault; `notes` 4 KiB; 16 tags of up to 64 characters; 32 `metadata` entries, keys up to 64 and values up to 256 characters. Every field of an `inject` item must be at least 4 characters long.
+
+**Storage.** The vault is one file, `vault.enc.json`, holding every caller's items in a single AES-256-GCM envelope:
+
+```json
+{"format":"drawlatch-vault","version":1,"alg":"aes-256-gcm","keyId":"3fa1c09e7b2d4e51",
+ "iv":"…","tag":"…","ciphertext":"…"}
+```
+
+Item names, notes, and tags are encrypted too; only the header is plain. The key is `keys/vault.key`: 32 random bytes, base64 on one line, mode `0600`. The daemon creates both files on the first successful save, not at `init` or startup, and never creates a key while `vault.enc.json` exists. `keyId` is a public fingerprint of the key (the first 8 bytes of a SHA-256 over it), so a file paired with the wrong key fails with a key-id message rather than a decryption error. Every save writes a temporary file (mode `0600`) and renames it over the old one, so a crash leaves the old vault or the new one, never a torn file, and nothing on disk is ever plaintext. Only the daemon reads or writes the vault; two daemons on one config dir aren't supported (the PID file prevents it).
+
+If `keys/vault.key` is missing while `vault.enc.json` exists, every vault tool fails with `Vault key keys/vault.key is missing; restore it from backup.` and everything else keeps working. A key file readable by group or others is refused with the `chmod` to fix it. A vault file from a newer drawlatch is refused. `drawlatch doctor` checks that the key is present when the file is, that the key is `0600`, and that the file decrypts, and prints the key id and item count (never the key).
+
+**Backup and key loss.**
+
+- Back up `vault.enc.json` anywhere: it's useless without the key.
+- Back up `keys/vault.key` **separately**, for example in a password manager (`cat ~/.drawlatch/keys/vault.key` is a single base64 line). Anyone with both files can read every caller's vault.
+- **Lose the key and the vault is gone.** There's no recovery. To start over, move the old file aside (`mv vault.enc.json vault.enc.json.lost`); the next save creates a new key and an empty vault.
+- Syncing the whole config dir also syncs the key (and `.env`, which is already plaintext). Exclude `keys/` from sync if you want the vault backup to be safe.
+
+**Deleting a caller** (dashboard, `DELETE /api/admin/callers/:alias`) deletes its vault items too, so a new caller with the same alias starts empty. If the vault can't be read (its key is missing, say), the deletion fails and the caller is left in place.
+
+**Audit events.** Vault events are daemon lines (`drawlatch.source: "daemon"`) in the owner's audit log, with `drawlatch.event` set to `vault.item.created`, `vault.item.updated`, `vault.item.deleted`, or `vault.reveal`. They carry `vault.owner`, `vault.item` (the name at the time), `vault.item_id`, `vault.actor`, `vault.via` (`mcp`), `vault.fields` (field names), and for changes `vault.kind`, `vault.exposure`, `vault.changed` (which properties an update set), and `vault.renamed_from`. They never carry a value, ciphertext, or key. They don't count against the caller's `ingest_logs` byte budget.
 
 ### Webhooks and the tunnel
 
@@ -443,7 +498,7 @@ Write endpoints (`…` = `/callers/:alias/connections/:connection`):
 | --- | --- |
 | `POST /callers` `{alias, name?, connections?}` | Create a caller with a keypair on drawlatch's disk |
 | `POST /callers/:alias/issue` `{connections?, endpointUrl?, passphrase?, name?}` | Issue or rotate a credential bundle (10/min) |
-| `DELETE /callers/:alias` | Delete a caller, its keys, and the secrets recorded in its `env` map (set via the dashboard or `set_secrets`; hand-added `.env` lines remain). `default` is protected |
+| `DELETE /callers/:alias` | Delete a caller, its keys, its [vault](#vault) items, and the secrets recorded in its `env` map (set via the dashboard or `set_secrets`; hand-added `.env` lines remain). `default` is protected |
 | `PUT /callers/:alias/self-manage` `{enabled}` | Set the caller's `selfManage` flag (applies immediately). `GET /callers` reports it |
 | `PUT /tunnel` `{enabled}` | Persist the tunnel flag (applies on restart) |
 | `POST …` `{enabled}` | Enable or disable a connection |
@@ -476,7 +531,7 @@ watch [connection]       Stream listener events live (loopback only)
     --full                 Print full payloads instead of a 100-character preview
 config                   Show effective config and per-caller secret status (--path: config file path)
 doctor                   Check config, keys, required secrets, custom connectors' withheld
-                         secrets and daemon health; exits 1 if any check fails
+                         secrets, the vault and daemon health; exits 1 if any check fails
 generate-keys caller [alias]   Caller keypair in keys/callers/<alias>/ (default alias "default")
 generate-keys server           Server keypair in keys/server/
 generate-keys show <path>      Fingerprint of an existing keypair
@@ -503,6 +558,7 @@ set-password             Set the dashboard password (alias: change-password)
 - **Rate limits** apply per session (`rateLimitPerMinute`) and per IP on unauthenticated endpoints.
 - **Request log:** every request and response is logged with caller and session (`drawlatch logs --requests`).
 - **Caller audit log:** `ingest_logs` is append-only and write-only over the protocol, stamped with the authenticated caller ([Audit log](#audit-log)).
+- **Vault:** each caller's [vault](#vault) is encrypted at rest under a key file only the daemon reads. No tool returns a vault value except `vault_get` on the caller's own `reveal` item, which is audit-logged first, and none returns the vault file, its ciphertext, or the key. An agent can only tighten an item's exposure, never loosen it.
 
 ## Package exports
 
