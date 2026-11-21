@@ -83,7 +83,7 @@ The local MCP server exposes these tools. Every call goes through the encrypted 
 
 | Tool | Purpose |
 | --- | --- |
-| `secure_request` | HTTP request to an allowlisted URL. Connection headers are injected for you. `${VAR}` placeholders in the URL and headers resolve server-side from the matched connection's secrets (in the body only if the connection sets `resolveSecretsInBody`). Secrets the connection injects itself are [withheld](#header-only-secrets): a request that references one is rejected, and their values are scrubbed from the response body. Redirects are followed only within the connection's allowlist ([Redirects](#redirects)). On an [OAuth2](#oauth2-token-minting) connection the daemon mints the access token itself, and a request may not send `Authorization` or an `access_token` query parameter. `${vault:<name>}` placeholders resolve from the caller's own [vault](#vault) items in the URL path and query and in headers (in the body only with `resolveSecretsInBody`); an unusable one fails the request before anything is sent, and injected values are scrubbed from the response ([Using vault items in requests](#using-vault-items-in-requests)). Supports multipart uploads from local files (25 MB per file, 50 MB per base64-encoded request): with `files`, the JSON `body` is sent as a form part named `payload_json` (change it with `bodyFieldName`). Also takes a per-call `timeoutMs`. |
+| `secure_request` | HTTP request to an allowlisted URL. Connection headers are injected for you. `${VAR}` placeholders in the URL and headers resolve server-side from the matched connection's secrets (in the body only if the connection sets `resolveSecretsInBody`). Secrets the connection injects itself are [withheld](#header-only-secrets): a request that references one is rejected, and their values are scrubbed from the response body. Redirects are followed only within the connection's allowlist ([Redirects](#redirects)). On an [OAuth2](#oauth2-token-minting) connection the daemon mints the access token itself, and a request may not send `Authorization` or an `access_token` query parameter. `${vault:<name>}` placeholders resolve from the caller's own [vault](#vault) items (and `${vault:<owner>/<name>}` from another caller's item [shared with it](#access-requests-and-grants)) in the URL path and query and in headers (in the body only with `resolveSecretsInBody`); an unusable one fails the request before anything is sent, and injected values are scrubbed from the response ([Using vault items in requests](#using-vault-items-in-requests)). Supports multipart uploads from local files (25 MB per file, 50 MB per base64-encoded request): with `files`, the JSON `body` is sent as a form part named `payload_json` (change it with `bodyFieldName`). Also takes a per-call `timeoutMs`. |
 | `list_routes` | The caller's connections: docs links, allowed endpoint patterns, the *names* of secrets that are set, auto-injected header names, `withheldSecretNames` (secrets the connection uses itself, which a request may not reference), `awsSigV4` settings, `auth` (`{ "type": "oauth2", "grant", "scopes", "delegated"? }` on an [OAuth2](#oauth2-token-minting) connection, with the scopes after the caller's override, and `delegated: true` when a service account acts as a user; never a token, expiry, or who the user is), timeouts, listener info. |
 | `test_connection` | Run a connection's built-in credential check. Some cost a little credit; see [CONNECTIONS.md](CONNECTIONS.md#available-connections). On an [OAuth2](#oauth2-token-minting) connection it mints a token first and reports `oauth2: { tokenMinted, requestedScopes, grantedScopes, missingScopes }` (scope names only); without a test request that is the whole test. |
 | `list_connection_templates` | All built-in templates, with which are enabled for this caller and which secrets are set (booleans). Custom connectors aren't listed. Each entry's `selfManageable` says whether the two tools below will work for this caller. |
@@ -98,11 +98,14 @@ The local MCP server exposes these tools. Every call goes through the encrypted 
 | `resolve_listener_options` | Fetch dynamic choices for a listener field (for example, your Trello boards). |
 | `list_listener_instances` / `delete_listener_instance` | Manage multi-instance listeners. |
 | `test_ingestor` | Check a listener's configuration and credentials. |
-| `vault_list` | This caller's [vault](#vault) items: name, kind, exposure, field names, notes, tags, metadata, `connections` binding, timestamps. Never values. Takes an optional `tag` filter. Returns `{ items, shared }` (`shared` is always empty in this version). |
+| `vault_list` | This caller's [vault](#vault) items: name, kind, exposure, field names, notes, tags, metadata, `connections` binding, timestamps. Never values. Takes an optional `tag` filter. Returns `{ items, shared }`: `shared` lists other callers' items [granted](#access-requests-and-grants) to this caller, as `{owner, name, kind, fields, mode, connections?}` with the effective `mode`. |
 | `vault_create` | Save a new vault item (`name`, `kind`, `values`, and optional `exposure`, `notes`, `tags`, `metadata`, `connections`). Fails if the name exists. Returns the item's metadata. |
 | `vault_update` | Change a vault item. `values` replaces the whole value map, `rename` renames it. The agent can only tighten an item: `exposure` may go from `reveal` to `inject` but not back, and `connections` may only narrow. |
 | `vault_delete` | Delete a vault item. |
-| `vault_get` | The values of a `reveal` item (or one `field`). Each call is written to the caller's audit log before the value is returned, and fails if that write fails. `inject` items, and other callers' items, are refused: use an `inject` item as `${vault:<name>}` in `secure_request`. |
+| `vault_get` | The values of a `reveal` item (or one `field`), or with `owner` of another caller's item granted to this caller at effective mode `reveal`. Each call is written to the owner's audit log before the value is returned, and fails if that write fails. `inject` items, and other callers' items without a reveal grant, are refused: use an `inject` item as `${vault:<name>}` (or `${vault:<owner>/<name>}`) in `secure_request`. |
+| `vault_request_access` | Ask the operator for access to another caller's item (`owner`, `name`, `reason`, optional `mode`: `inject`, the default, or `reveal`). Returns `{requestId, status: "pending"}` whether or not that caller or item exists, or `status: "granted"` when a grant already covers it. Grants nothing itself ([Access requests](#access-requests-and-grants)). |
+| `vault_list_requests` | This caller's own access requests: `id`, `owner`, `itemName`, `mode`, `status`, `createdAt`, and `decidedAt` / `decidedNote` once decided. |
+| `vault_cancel_request` | Cancel one of this caller's pending requests (`requestId`). |
 
 `set_secrets` and `set_connection_enabled` let an agent change its own caller's configuration, which can grant it more access: secrets resolve per caller by name, so a connection the agent enables for itself starts with any secret it shares a name with (a second `google-*` connector picks up the existing `GOOGLE_API_TOKEN`). The agent still can't read secret values or reach URLs outside the allowlists, and OAuth2 connections are operator-only even with `selfManage` allowed: the agent can't enable one or set its credentials, because OAuth2 credentials are shared by name (every user-OAuth `google-*` template reads `GOOGLE_OAUTH_REFRESH_TOKEN`). Set [`selfManage: false`](#callers) on a caller to refuse both tools to its agent. The dashboard can still make the change. Callers that drawlatch creates (dashboard **New caller**, `issue-caller` for a new alias, local Callboard provisioning) start with `selfManage: false`. A caller entry without the field allows both tools, so existing configs behave as before.
 
@@ -110,7 +113,7 @@ The daemon also accepts `wait_for_events`, a long-poll over all of a caller's ev
 
 It likewise accepts `ingest_logs`, which appends records to the caller's audit log. The local MCP server doesn't expose it either. See [Audit log](#audit-log).
 
-The vault tools aren't gated by `selfManage`: they touch only the caller's own vault.
+The vault tools aren't gated by `selfManage`: they touch only the caller's own vault, and reaching another caller's item takes a grant that only the operator can give. No tool grants, denies, or revokes access.
 
 ## Configuration
 
@@ -433,7 +436,7 @@ Every authenticated caller can write to its own log; there is no per-caller swit
 
 ### Vault
 
-Each caller has its own vault: named items (passwords, tokens, notes, key/value sets) that its agent saves and manages with the `vault_*` [MCP tools](#mcp-tools). A caller sees only its own items. No tool lists, reads, or changes another caller's vault.
+Each caller has its own vault: named items (passwords, tokens, notes, key/value sets) that its agent saves and manages with the `vault_*` [MCP tools](#mcp-tools). A caller sees only its own items, plus the items the operator has [shared with it](#access-requests-and-grants). No tool lists or changes another caller's vault.
 
 **Items.** An item has a `name` (1-64 letters, digits, `_` or `-`, starting with a letter or digit, unique within the caller's vault; `constructor` and `prototype` are reserved), a `kind`, secret `values`, and plain-text `notes`, `tags`, and `metadata`:
 
@@ -471,9 +474,19 @@ If `keys/vault.key` is missing while `vault.enc.json` exists, every vault tool f
 - **Lose the key and the vault is gone.** There's no recovery. To start over, move the old file aside (`mv vault.enc.json vault.enc.json.lost`); the next save creates a new key and an empty vault.
 - Syncing the whole config dir also syncs the key (and `.env`, which is already plaintext). Exclude `keys/` from sync if you want the vault backup to be safe.
 
-**Deleting a caller** (dashboard, `DELETE /api/admin/callers/:alias`) deletes its vault items too, so a new caller with the same alias starts empty. If the vault can't be read (its key is missing, say), the deletion fails and the caller is left in place.
+**Deleting a caller** (dashboard, `DELETE /api/admin/callers/:alias`) deletes its vault items too, revokes every grant to or from it, and withdraws every pending request by it or for its items, so a new caller with the same alias starts empty and inherits no access. If the vault can't be read (its key is missing, say), the deletion fails and the caller is left in place.
 
-**Audit events.** Vault events are daemon lines (`drawlatch.source: "daemon"`) in the owner's audit log, with `drawlatch.event` set to `vault.item.created`, `vault.item.updated`, `vault.item.deleted`, or `vault.reveal`. They carry `vault.owner`, `vault.item` (the name at the time), `vault.item_id`, `vault.actor` (the caller's alias, or `admin` for a dashboard change or reveal), `vault.via` (`mcp` or `admin`), `vault.fields` (field names), and for changes `vault.kind`, `vault.exposure`, `vault.changed` (which properties an update set), and `vault.renamed_from`. They never carry a value, ciphertext, or key. They don't count against the caller's `ingest_logs` byte budget.
+**Audit events.** Vault events are daemon lines (`drawlatch.source: "daemon"`) in the **owner's** audit log, whoever acted. They carry `vault.owner`, `vault.item` (the name at the time), `vault.item_id`, `vault.actor` (a caller's alias, or `admin` for the dashboard), and `vault.via` (`mcp` or `admin`), plus:
+
+| `drawlatch.event` | Extra fields |
+| --- | --- |
+| `vault.item.created`, `vault.item.updated`, `vault.item.deleted` | `vault.kind`, `vault.exposure`, `vault.fields` (names), `vault.changed` (which properties an update set), `vault.renamed_from` |
+| `vault.reveal` | `vault.fields` revealed; `vault.grant_id` when another caller read it through a grant |
+| `vault.inject` | `vault.grantee`, `vault.grant_id`, `vault.connection`, `vault.fields`: another caller used the item in a request (own-item uses aren't logged per request) |
+| `vault.request.created`, `.cancelled`, `.denied`, `.withdrawn` | `vault.request_id`, `vault.requester`, `vault.mode`, `vault.reason` (agent-written, at most 1 KiB), `vault.note` (the operator's deny note) |
+| `vault.grant.created`, `vault.grant.revoked` | `vault.grant_id`, `vault.grantee`, `vault.mode`, `vault.request_id`, `vault.revoked_reason` |
+
+Request events are written only when the owner has a vault, so a request naming a made-up caller creates no audit directory. Events never carry a value, ciphertext, or key, and don't count against the caller's `ingest_logs` byte budget.
 
 #### Using vault items in requests
 
@@ -483,7 +496,7 @@ A `secure_request` can reference the caller's own vault items. The daemon substi
 | --- | --- |
 | `${vault:<name>}` | The item's `value` field. An item without one (a `key-value` item can have none) needs an explicit field. |
 | `${vault:<name>.<field>}` | That field, for example `${vault:login.username}`. |
-| `${vault:<owner>/<name>}`, `${vault:<owner>/<name>.<field>}` | Another caller's item. This version parses the form but refuses it with `cross-caller access needs a grant (available in a later version)`. The caller's own alias as `<owner>` means its own item. |
+| `${vault:<owner>/<name>}`, `${vault:<owner>/<name>.<field>}` | Another caller's item, when an active [grant](#access-requests-and-grants) shares it with this caller (at either mode). The caller's own alias as `<owner>` means its own item. |
 
 Names, owners, and fields can't contain `/`, `.`, `:`, or `}`, so a placeholder parses only one way.
 
@@ -496,7 +509,7 @@ Names, owners, and fields can't contain `/`, `.`, `:`, or `}`, so a placeholder 
 | `files`, `bodyFieldName` | Never: sent as written. |
 | Connection headers, template requests (`test_connection`, `test_ingestor`, `resolve_listener_options`), listener configs and params | Never: sent as written. |
 
-- **Checked before sending.** Every placeholder in a position where it resolves is looked up before anything is sent, OAuth2 token minting included. A placeholder for an item that doesn't exist, a field the item lacks, a malformed placeholder, another caller's item, or an item bound to other connections fails the request with the position, the placeholder, and the reason, for example `Header "X-Key" references ${vault:nope}, which can't be used: no such item "nope" in your vault.` Unlike an unknown `${VAR}`, an unknown vault placeholder is never sent literally. A request without one doesn't read the vault at all, so it works even when the vault key is missing.
+- **Checked before sending.** Every placeholder in a position where it resolves is looked up before anything is sent, OAuth2 token minting included. A placeholder for an item that doesn't exist, a field the item lacks, a malformed placeholder, another caller's item that isn't shared with the caller, or an item bound to other connections fails the request with the position, the placeholder, and the reason, for example `Header "X-Key" references ${vault:nope}, which can't be used: no such item "nope" in your vault.` Unlike an unknown `${VAR}`, an unknown vault placeholder is never sent literally. A request without one doesn't read the vault at all, so it works even when the vault key is missing.
 - **No URL delimiters in a URL.** A value containing `#`, `?` or `&` is refused in the URL path or query, before anything is sent: `The request URL references ${vault:pw}, which can't be used: it contains a URL delimiter (#, ? or &); send it in a header instead.` URL parsing would cut such a value or split it across components, and an echo of one piece couldn't be scrubbed. The message never says which character. The same value works in a header, or in a body where the connection resolves placeholders.
 - **One pass.** `${VAR}` and `${vault:…}` placeholders are substituted together, over the string as written. A vault value containing `${GITHUB_TOKEN}` is sent as is, and so is a connection secret containing `${vault:x}`. `${VAR}` placeholders work as before: withheld ones are refused, unknown ones are sent literally.
 - **Same checks after.** The substituted request goes through every usual check: the URL is matched against the allowlist again (a value that adds a `..` segment is refused), header values with a carriage return, newline, or NUL are refused by header name, and SigV4 signs the final request.
@@ -504,7 +517,26 @@ Names, owners, and fields can't contain `/`, `.`, `:`, or `}`, so a placeholder 
 - **Binding.** When an item has a `connections` list, it resolves only on those connections: `item "gh-token" is not allowed on connection "slack" (it is bound to "github")`. Without one, it resolves on any connection the caller has. An agent can add or narrow a binding, never widen or remove it.
 - **Round trips.** Scrubbing covers echoes in the same response only. An agent can still write an injected value into a resource on an API that accepts writes (a card titled with `${vault:x}` through a query parameter, say) and read it back in a later request. Trello's and Telegram's URL tokens have the same gap. Bind a sensitive `inject` item to the one connection that needs it.
 - Before this version `${vault:…}` meant nothing and went out literally. A request that still contains one where it resolves is now refused unless the item exists.
+- **Another caller's item.** Without an active grant, the request fails with one answer whether or not the item exists: `no such item "gh" shared with you by "alice" (using another caller's item needs a grant from the operator; ask with vault_request_access)`. Each use is written to the owner's audit log as `vault.inject` before anything is sent; if that write fails, the request fails and nothing is sent. Right before sending, the daemon checks the vault again, so a revoke, delete, rename, rebind, or value change that lands while the request is being prepared fails it rather than sending past it. The item's `connections` binding applies to the grantee too.
 - Own-item uses aren't written to the audit log per request. The daemon's `[audit]` request line names the tool, not the values.
+
+#### Access requests and grants
+
+An agent can **ask** for another caller's item. Only the operator, on the dashboard, can approve.
+
+1. bob's agent calls `vault_request_access` with `owner: "alice"`, `name: "forgejo-token"`, a `reason`, and optionally `mode: "reveal"` (the default is `inject`). It gets `{requestId, status: "pending"}`.
+2. The request appears on the dashboard's **Vault → Requests** tab, with the reason labelled as text the requesting agent wrote.
+3. The operator grants it (choosing the mode) or denies it (with an optional note bob sees in `vault_list_requests`).
+4. Once granted, bob uses the item as `${vault:alice/forgejo-token}` in `secure_request`, within the item's `connections` binding, and sees it in `vault_list`'s `shared`. At mode `reveal` it can also read the value with `vault_get` and `owner: "alice"`.
+5. The operator can revoke the grant at any time (**Vault → Grants**). The next request or `vault_get` fails.
+
+- **No existence oracle.** `vault_request_access` answers the same way whether or not alice has that item and whether or not a caller named alice exists, and `vault_list_requests` doesn't tell them apart either. The operator sees "no such item" and can only deny. Asking for your own item is refused.
+- **One pending request** per requester, owner, and item name: asking again returns the existing request unchanged. If an active grant already covers the mode asked for, the answer is `{status: "granted"}` and nothing is created. After a deny or a cancel, a new request may be made. Each requester may have at most 20 pending requests.
+- **Effective mode** is the lower of the grant's mode and the item's exposure. Reveal can be granted only on a `reveal` item, and if the item later becomes `inject`, the grant works inject-only until the operator loosens the item again.
+- **Item changes.** Grants and requests are bound to the item's `id`. A value change keeps them. A rename keeps them too and `shared` shows the new name, but placeholders using the old name stop resolving (`no such item`). Deleting the item revokes its grants (`item_deleted`) and withdraws its pending requests; re-creating the name makes a new item with no grants.
+- **The owner's agent** isn't told who asked and can't approve or veto. It may still rename or delete its item, with the effects above.
+- **History.** Decided requests are kept, the newest 500; revoked grants are kept for 90 days. Neither expires on its own: deny or revoke.
+- No MCP tool grants, denies, or revokes. Those exist only on the admin API, behind the dashboard login.
 
 ### Webhooks and the tunnel
 
@@ -512,7 +544,7 @@ Webhook listeners (GitHub, Stripe, Trello) receive `POST /webhooks/<path>` on th
 
 ## Admin dashboard
 
-The daemon serves a web dashboard and its JSON API from the same port as the MCP protocol: `http://127.0.0.1:9999/` by default. From it you can create, issue, and delete callers; choose whether a caller's agent may manage its own connections and secrets (**Agent permissions** on the caller page); enable connections; set secrets; configure, test, and control listeners; manage each caller's [vault](#vault) items; and watch events, ingestors, sessions, and a secrets matrix. Connection and secret changes apply to open sessions immediately. Running listeners pick up new secrets, or a newly enabled connection, only when they are (re)started: use the listener controls or `drawlatch restart`. Listener parameter changes restart the listener.
+The daemon serves a web dashboard and its JSON API from the same port as the MCP protocol: `http://127.0.0.1:9999/` by default. From it you can create, issue, and delete callers; choose whether a caller's agent may manage its own connections and secrets (**Agent permissions** on the caller page); enable connections; set secrets; configure, test, and control listeners; manage each caller's [vault](#vault) items and decide access requests; and watch events, ingestors, sessions, and a secrets matrix. Connection and secret changes apply to open sessions immediately. Running listeners pick up new secrets, or a newly enabled connection, only when they are (re)started: use the listener controls or `drawlatch restart`. Listener parameter changes restart the listener.
 
 **Password.** The dashboard stays locked until a password is set. `drawlatch set-password` (alias `change-password`) prompts on a TTY or reads the password twice from stdin (`printf '%s\n%s\n' "$PW" "$PW" | drawlatch set-password`). It stores a scrypt hash and salt in `.env` as `AUTH_PASSWORD_HASH` / `AUTH_PASSWORD_SALT`. Restart the daemon after setting it from the CLI. Changing it from the dashboard (**Change password**, `/settings/password`) applies immediately and signs out every other session.
 
@@ -529,13 +561,15 @@ The daemon serves a web dashboard and its JSON API from the same port as the MCP
   - `/api/admin`: 300/min, with credential issuance and vault reveal each limited to 10/min (separate counters)
 - Without a password, the MCP protocol still works. Login, auth checks, and `/api/admin/*` return `503`.
 
-**Vault.** The **Vault** page (`/vault?caller=<alias>`, also linked from each caller page as "Vault: N items") lists a caller's items: name, kind, exposure, tags, bound connections, and when each changed, never a value. From it you can:
+**Vault.** The **Vault** page (`/vault?caller=<alias>`, also linked from each caller page as "Vault: N items"; the nav entry shows a badge with the number of pending access requests) has three tabs. **Items** lists a caller's items: name, kind, exposure, tags, bound connections, who each is shared with ("bob (inject)"), and when each changed, never a value. From it you can:
 
 - **New item**: an item created by the admin (`createdBy: "admin"`). It defaults to `inject` and to being bound to one of the caller's enabled connections; keep the binding unless the item really needs every connection ([Round trips](#using-vault-items-in-requests)).
 - **Edit** the name, exposure, binding, tags, notes, and metadata. Unlike the agent, the admin may loosen an item: `inject` → `reveal`, or a wider or removed binding.
 - **Replace value**: write-only inputs with a show/hide toggle while typing. The current value is never shown.
 - **Delete**, after a confirmation.
 - **Reveal**, after a confirmation that says it is recorded: the values appear in masked fields with show and copy buttons, and are cleared when you close the panel, after 60 seconds, or when you navigate away. A reveal works on `inject` items too, since the admin could loosen them anyway, and writes `vault.reveal` with `vault.actor: "admin"` to the caller's [audit log](#audit-log) before anything is returned; if that write fails, the reveal fails.
+
+**Requests** is the pending [access-request](#access-requests-and-grants) queue: requester, owner and item, the mode asked for, and the reason, shown as plain text under a label saying the requesting agent wrote it. **Grant** opens a mode choice with inject preselected; reveal is disabled unless the item's exposure is `reveal`. **Deny** takes an optional note. A request for an item the owner doesn't have shows "no such item" and can only be denied. Decided requests are in a collapsible history below. **Grants** lists active grants with **Revoke** (after a confirmation), noting when a reveal grant works inject-only because the item is `inject`; revoked grants are collapsed below.
 
 Edits, value replacements, and deletes are sent with the vault revision the page loaded (`If-Match`). There is one revision for the whole vault, not one per item or caller, so a save made meanwhile by *any* caller's agent, or from another dashboard tab, makes a pending edit fail with `409` instead of being overwritten. The dialog then says so and the list reloads with the current revision, so you can check the item and save again.
 
@@ -546,7 +580,9 @@ Edits, value replacements, and deletes are sent with the vault revision the page
 - `GET /meta`, `/health`, `/connections`, `/callers`, `/ingestors`, `/sessions`, `/secrets`
 - `GET /callers/:alias/connections`, `/callers/:alias/connection-status`, `/callers/:alias/ingestors`, `/callers/:alias/events`, `/callers/:alias/listener-configs`
 - `GET /vault/status`: `{keyPresent, keyId, fileExists, revision, callers: {alias: itemCount}, pendingRequests}`, plus `error` when the vault can't be read. `keyId` is the key's public fingerprint, never the key.
-- `GET /callers/:alias/vault/items`: `{revision, items}`, each item's metadata and `fields` (names only) with `grants: []`. Never a value.
+- `GET /callers/:alias/vault/items`: `{revision, items}`, each item's metadata and `fields` (names only) with `grants: [{grantee, mode, effectiveMode}]` for its active grants. Never a value.
+- `GET /vault/requests?status=<pending|granted|denied|cancelled|withdrawn>`: access requests, newest first, each with `item` (`{name, kind, exposure}` as it is now, or `null` when the owner has no such item). `reason` is agent-written text.
+- `GET /vault/grants?status=<active|revoked>`: grants, newest first, each with `item` and `effectiveMode` (`null` once revoked).
 
 `GET /callers` includes `vaultItems` per caller (`null` when the vault can't be read).
 
@@ -570,8 +606,11 @@ Write endpoints (`…` = `/callers/:alias/connections/:connection`):
 | `PATCH /callers/:alias/vault/items/:name` `{values?, rename?, exposure?, notes?, tags?, metadata?, connections?}` | Update an item. The admin may loosen it; `connections: null` removes the binding, `notes: null` clears notes |
 | `DELETE /callers/:alias/vault/items/:name` | Delete an item |
 | `POST /callers/:alias/vault/items/:name/reveal` `{field?}` | Return the item's values (or one field), after writing `vault.reveal` to the caller's audit log; fails if that write fails. 10/min |
+| `POST /vault/requests/:id/grant` `{mode?}` | Grant a pending request: `{request, grant}`. `mode` defaults to `inject`; `reveal` is `400` unless the item's exposure is `reveal`. An active grant for the same grantee and item gets the new mode instead of a second grant. `409` (with the current `status`) if the request isn't pending or names no item |
+| `POST /vault/requests/:id/deny` `{note?}` | Deny a pending request (note at most 1 KiB): `{request}`. `409` if it isn't pending |
+| `DELETE /vault/grants/:id` | Revoke a grant: `{grant, changed}`. Revoking a revoked grant is a no-op `200` with `changed: false` |
 
-The vault endpoints answer with `Cache-Control: no-store`, errors included. `PATCH` and `DELETE` take an optional `If-Match: <revision>` (from `GET …/vault/items`) and answer `409` with the current `revision` when the vault has changed since. Only `…/reveal` ever returns a value. If `vault.enc.json` exists but `keys/vault.key` is missing, every item endpoint answers `503` with the restore-from-backup message (a create with an invalid body still gets its `400` first) and no new key is created; `/vault/status` still answers, with `error` set, and `GET /callers` shows `vaultItems: null`. With no vault file yet, the item endpoints work normally: `GET …/vault/items` returns `{revision: 0, items: []}`, a `PATCH`, `DELETE`, or reveal of an item answers `404`, and the first create makes the key and the file.
+The vault endpoints answer with `Cache-Control: no-store`, errors included, and an unknown request or grant id is `404`. `PATCH` and `DELETE` take an optional `If-Match: <revision>` (from `GET …/vault/items`) and answer `409` with the current `revision` when the vault has changed since. Only `…/reveal` ever returns a value. If `vault.enc.json` exists but `keys/vault.key` is missing, every item, request, and grant endpoint answers `503` with the restore-from-backup message (a create with an invalid body still gets its `400` first) and no new key is created; `/vault/status` still answers, with `error` set, and `GET /callers` shows `vaultItems: null`. With no vault file yet, the item endpoints work normally: `GET …/vault/items` returns `{revision: 0, items: []}`, a `PATCH`, `DELETE`, or reveal of an item answers `404`, and the first create makes the key and the file.
 
 Connection and listener operations share their implementation with the MCP tools (`src/remote/tool-dispatch.ts`). The unauthenticated `GET /health` returns status, active session count, uptime, and the tunnel URL.
 
@@ -622,7 +661,7 @@ set-password             Set the dashboard password (alias: change-password)
 - **Rate limits** apply per session (`rateLimitPerMinute`) and per IP on unauthenticated endpoints.
 - **Request log:** every request and response is logged with caller and session (`drawlatch logs --requests`).
 - **Caller audit log:** `ingest_logs` is append-only and write-only over the protocol, stamped with the authenticated caller ([Audit log](#audit-log)).
-- **Vault:** each caller's [vault](#vault) is encrypted at rest under a key file only the daemon reads. No tool returns a vault value except `vault_get` on the caller's own `reveal` item, which is audit-logged first, and none returns the vault file, its ciphertext, or the key. A value injected with `${vault:…}` is scrubbed from the response like a withheld secret and can't choose the request's host. An agent can only tighten an item's exposure, never loosen it.
+- **Vault:** each caller's [vault](#vault) is encrypted at rest under a key file only the daemon reads. No tool returns a vault value except `vault_get` on an item the caller may reveal (its own `reveal` item, or one granted to it at effective mode `reveal`), which is audit-logged first, and none returns the vault file, its ciphertext, or the key. Access to another caller's item needs a grant, and only the operator can grant, deny, or revoke: no MCP tool can, since any authenticated caller can call any tool by name. A value injected with `${vault:…}` is scrubbed from the response like a withheld secret and can't choose the request's host. An agent can only tighten an item's exposure, never loosen it.
 - **Vault on the dashboard:** no admin API response carries a vault value except the explicit `POST …/reveal`, which needs a confirmation in the UI, is limited to 10/min, is `no-store`, and is written to the owner's audit log (`actor: "admin"`) before it answers. The dashboard keeps a revealed value only in the reveal panel's state, never in a shared cache or storage, and clears it on close, after 60 seconds, and on navigation. Values are write-only everywhere else on the dashboard. Anyone with the dashboard password can reveal every caller's items.
 
 ## Package exports
