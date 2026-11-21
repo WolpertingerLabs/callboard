@@ -13,6 +13,7 @@ import {
   ReplaceValueModal,
 } from "../../components/vault/VaultModals";
 import RevealFlow from "../../components/vault/RevealFlow";
+import { conflictMessage } from "../../components/vault/conflict";
 
 type Load =
   | { status: "loading" }
@@ -53,7 +54,20 @@ export default function ItemsTab({
       return;
     }
     setLoad({ status: "ok", data: res });
+    // An open dialog follows the reloaded item (renamed or edited meanwhile).
+    setAction((a) => {
+      if (a === null || a.kind === "new") return a;
+      const fresh = res.items.find((i) => i.id === a.item.id);
+      return fresh ? { ...a, item: fresh } : a;
+    });
   }, [caller.alias]);
+
+  /** A write got 409 (the vault changed since the list loaded): reload the
+   *  list and its revision so the next attempt can succeed. */
+  const conflict = useCallback(() => {
+    void refresh();
+    onChanged();
+  }, [refresh, onChanged]);
 
   useEffect(() => {
     setLoad({ status: "loading" });
@@ -75,7 +89,8 @@ export default function ItemsTab({
     const res = await api.vaultDelete(caller.alias, item.name, revision);
     setDeleting(false);
     if (!res.ok) {
-      setDeleteError(res.error);
+      setDeleteError(conflictMessage(res));
+      if (res.status === 409) conflict();
       return;
     }
     setAction(null);
@@ -230,6 +245,7 @@ export default function ItemsTab({
           callerConnections={caller.connections}
           onClose={closeAction}
           onSaved={saved}
+          onConflict={conflict}
         />
       )}
       {action?.kind === "replace" && revision !== undefined && (
@@ -239,6 +255,7 @@ export default function ItemsTab({
           revision={revision}
           onClose={closeAction}
           onSaved={saved}
+          onConflict={conflict}
         />
       )}
       {action?.kind === "reveal" && (

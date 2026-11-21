@@ -23,7 +23,7 @@ export type DaemonResponse<T> = T | DaemonOfflineEnvelope;
 /** Result of a mutating call — never an "offline" envelope; errors are explicit. */
 export type MutationResult<T> =
   | { ok: true; data: T }
-  | { ok: false; error: string };
+  | { ok: false; error: string; status?: number };
 
 export function isDaemonDown<T>(
   body: DaemonResponse<T>,
@@ -46,7 +46,23 @@ async function getJson<T>(path: string): Promise<DaemonResponse<T>> {
     return { daemon: "down", error: "Not authenticated" };
   }
   if (!res.ok) {
-    return { daemon: "down", error: `HTTP ${res.status}` };
+    // Show the daemon's own message when it sent one. Admin error messages
+    // name fields, limits and items, never secret or vault values.
+    let message: string | undefined;
+    try {
+      message = ((await res.json()) as { error?: unknown }).error as
+        | string
+        | undefined;
+    } catch {
+      // empty / non-JSON body
+    }
+    return {
+      daemon: "down",
+      error:
+        typeof message === "string" && message !== ""
+          ? `${message} (HTTP ${res.status})`
+          : `HTTP ${res.status}`,
+    };
   }
   return (await res.json()) as DaemonResponse<T>;
 }
@@ -88,7 +104,7 @@ async function mutate<T>(
   if (!res.ok) {
     const error =
       (parsed as { error?: string } | null)?.error ?? `HTTP ${res.status}`;
-    return { ok: false, error };
+    return { ok: false, error, status: res.status };
   }
   return { ok: true, data: parsed as T };
 }

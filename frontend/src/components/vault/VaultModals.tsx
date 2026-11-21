@@ -11,6 +11,7 @@ import type {
   AdminVaultKind,
 } from "drawlatch-admin-types";
 import { api, type VaultItemPatch } from "../../api";
+import { conflictMessage } from "./conflict";
 import ValuesEditor, { rowsForKind, rowsToValues, type ValueRow } from "./ValuesEditor";
 import "../ConfigureConnectionModal.css";
 
@@ -455,6 +456,7 @@ export function EditItemModal({
   callerConnections,
   onClose,
   onSaved,
+  onConflict,
 }: {
   caller: string;
   item: AdminVaultItem;
@@ -462,6 +464,8 @@ export function EditItemModal({
   callerConnections: string[];
   onClose: () => void;
   onSaved: () => void;
+  /** The save got 409: the parent reloads the list and revision. */
+  onConflict: () => void;
 }) {
   const initial = useMemo(() => metaFromItem(item), [item]);
   const [name, setName] = useState(item.name);
@@ -496,7 +500,8 @@ export function EditItemModal({
     const res = await api.vaultUpdate(caller, item.name, patch, revision);
     setBusy(false);
     if (!res.ok) {
-      setError(res.error);
+      setError(conflictMessage(res));
+      if (res.status === 409) onConflict();
       return;
     }
     onSaved();
@@ -553,12 +558,14 @@ export function ReplaceValueModal({
   revision,
   onClose,
   onSaved,
+  onConflict,
 }: {
   caller: string;
   item: AdminVaultItem;
   revision: number;
   onClose: () => void;
   onSaved: () => void;
+  onConflict: () => void;
 }) {
   const [rows, setRows] = useState<ValueRow[]>(() =>
     item.kind === "key-value"
@@ -576,7 +583,8 @@ export function ReplaceValueModal({
     const res = await api.vaultUpdate(caller, item.name, { values }, revision);
     setBusy(false);
     if (!res.ok) {
-      setError(res.error);
+      setError(conflictMessage(res));
+      if (res.status === 409) onConflict();
       return;
     }
     onSaved();
