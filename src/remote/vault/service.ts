@@ -1094,7 +1094,13 @@ export async function cancelRequest(
     fail(`That request is ${snapshot.status}; only a pending request can be cancelled.`);
   }
   const { request, itemName, audit } = mutateVault((doc) => {
-    const r = doc.requests.find((x) => x.id === id) ?? fail(notFound);
+    // Checked again inside the write, not only on the snapshot above: the
+    // two are synchronous today, but this must hold even if an await ever
+    // lands between them.
+    const r = doc.requests.find((x) => x.id === id && x.requester === requester) ?? fail(notFound);
+    if (r.status !== 'pending') {
+      fail(`That request is ${r.status}; only a pending request can be cancelled.`);
+    }
     r.status = 'cancelled';
     r.decidedAt = new Date().toISOString();
     const item = r.itemId ? findItemById(doc, r.owner, r.itemId) : undefined;
