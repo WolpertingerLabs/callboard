@@ -73,6 +73,26 @@ function fail(message: string): never {
   throw new VaultError(message);
 }
 
+/** The vault changed since the revision the operator's edit was based on (`If-Match`). */
+export class VaultRevisionMismatch extends VaultError {
+  constructor(readonly current: number) {
+    super(`The vault changed (now at revision ${current}); reload and try again.`);
+    this.name = 'VaultRevisionMismatch';
+  }
+}
+
+/** Options for an operator change made through the admin API. */
+export interface ChangeOptions {
+  /** Refuse the change unless the vault is still at this revision. */
+  expectedRevision?: number;
+}
+
+function checkRevision(doc: VaultDocument, opts: ChangeOptions): void {
+  if (opts.expectedRevision !== undefined && doc.revision !== opts.expectedRevision) {
+    throw new VaultRevisionMismatch(doc.revision);
+  }
+}
+
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
@@ -360,6 +380,7 @@ export async function updateItem(
   owner: string,
   input: Record<string, unknown>,
   origin: Origin,
+  opts: ChangeOptions = {},
 ): Promise<ItemMeta> {
   const name = checkName(input.name);
   const changed = UPDATABLE.filter((k) => input[k] !== undefined);
@@ -374,6 +395,7 @@ export async function updateItem(
     input.connections === undefined ? undefined : checkConnections(input.connections);
 
   const updated = mutateVault((doc) => {
+    checkRevision(doc, opts);
     const current = requireItem(doc, owner, name);
     const next: VaultItem = { ...current };
     const now = new Date().toISOString();
@@ -435,9 +457,11 @@ export async function deleteItem(
   owner: string,
   input: Record<string, unknown>,
   origin: Origin = 'agent',
+  opts: ChangeOptions = {},
 ): Promise<{ success: true; deleted: string; revokedGrants: number; withdrawnRequests: number }> {
   const name = checkName(input.name);
   const { item, revokedGrants, withdrawnRequests } = mutateVault((doc) => {
+    checkRevision(doc, opts);
     const found = requireItem(doc, owner, name);
     const now = new Date().toISOString();
     let revoked = 0;
@@ -486,6 +510,27 @@ export async function revealItem(
         "and grants aren't available in this version.",
     );
   }
+  return reveal(caller, input, 'agent');
+}
+
+/**
+ * The operator's explicit reveal (`POST …/reveal` on the admin API): any of
+ * `owner`'s items, whatever its exposure, since the operator can loosen it
+ * anyway. Audited as `actor: "admin"` before anything is returned, and
+ * refused if that line can't be written.
+ */
+export async function adminRevealItem(
+  owner: string,
+  input: { name?: unknown; field?: unknown },
+): Promise<RevealResult> {
+  return reveal(owner, input, 'admin');
+}
+
+async function reveal(
+  owner: string,
+  input: { name?: unknown; field?: unknown },
+  origin: Origin,
+): Promise<RevealResult> {
   const name = checkName(input.name);
   let field: string | undefined;
   if (input.field !== undefined) {
@@ -494,8 +539,8 @@ export async function revealItem(
     }
     field = input.field;
   }
-  const item = requireItem(readVault(), caller, name);
-  if (item.exposure !== 'reveal') {
+  const item = requireItem(readVault(), owner, name);
+  if (origin === 'agent' && item.exposure !== 'reveal') {
     fail(`Item "${name}" is inject-only: reference it as \${vault:${name}} in secure_request.`);
   }
   if (field !== undefined && !Object.hasOwn(item.values, field)) {
@@ -503,19 +548,29 @@ export async function revealItem(
   }
   const fields = field === undefined ? fieldNames(item) : [field];
   try {
-    await appendVaultEvent(caller, 'vault.reveal', {
+    await appendVaultEvent(owner, 'vault.reveal', {
       item: item.name,
       item_id: item.id,
-      ...actorFor(caller, 'agent'),
+      ...actorFor(owner, origin),
       fields,
     });
   } catch (err) {
-    fail(`vault_get refused: ${(err as Error).message}; the value was not returned`);
+    const what = origin === 'admin' ? 'reveal' : 'vault_get';
+    fail(`${what} refused: ${(err as Error).message}; the value was not returned`);
   }
   if (field !== undefined) {
-    return { name, owner: caller, kind: item.kind, field, value: item.values[field] };
+    return { name, owner, kind: item.kind, field, value: item.values[field] };
   }
-  return { name, owner: caller, kind: item.kind, values: { ...item.values } };
+  return { name, owner, kind: item.kind, values: { ...item.values } };
+}
+
+/** Item count per caller, for the dashboard. Creates nothing. */
+export function itemCounts(): Record<string, number> {
+  const out = Object.create(null) as Record<string, number>;
+  for (const [alias, c] of Object.entries(readVault().callers)) {
+    out[alias] = Object.keys(c.items).length;
+  }
+  return out;
 }
 
 /**
