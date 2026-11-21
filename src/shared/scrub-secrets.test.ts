@@ -5,7 +5,12 @@
  */
 import { describe, it, expect } from 'vitest';
 
-import { compileSecretScrubber, scrubSecrets, scrubSecretsDeep } from './config.js';
+import {
+  compileSecretScrubber,
+  scrubSecrets,
+  scrubSecretsDeep,
+  secretWireForms,
+} from './config.js';
 
 const SECRETS = {
   OUTER: 'tok-OUTER-VALUE',
@@ -84,12 +89,13 @@ describe('compiled secret scrubbing', () => {
  * Every form a value takes on the wire, produced by the real encoders: a
  * value substituted into a URL is sent as the WHATWG serializer writes it,
  * an upstream that parses a query as a form decodes `+` to a space, and a
- * non-ASCII header value read back as bytes comes out as Latin-1.
+ * non-ASCII header value read back as bytes comes out as Latin-1. Only forms
+ * that encode the *whole* value count: never a piece of it.
  */
 describe('wire forms', () => {
-  const NASTY = `nasty-'|a b"c%+dé\\h/i?j#k`;
-  const NOTHASH = `x-'|a b"c%+dé\\h/i?j`;
-  const scrub = compileSecretScrubber({ V: NASTY, W: NOTHASH });
+  const PLAIN = `nasty-'|a b"c%+dé\\h/i`;
+  const QMARK = `x-'|a b"c%+dé\\h/i?j`;
+  const scrub = compileSecretScrubber({ V: PLAIN, W: QMARK });
 
   const pathForm = (v: string) => {
     const u = new URL(`http://h/p/${v}`);
@@ -108,8 +114,8 @@ describe('wire forms', () => {
     ['JSON-escaped query', (v: string) => JSON.stringify(queryForm(v)).slice(1, -1)],
   ])('scrubs the %s form', (_k, form) => {
     for (const [name, v] of [
-      ['V', NASTY],
-      ['W', NOTHASH],
+      ['V', PLAIN],
+      ['W', QMARK],
     ]) {
       const wire = form(v);
       expect(wire).not.toBe(v); // the form really differs from the raw value
@@ -117,20 +123,61 @@ describe('wire forms', () => {
     }
   });
 
-  it('a fragment cuts the value where the URL parser does', () => {
-    // The part before `#` is what was sent; it is scrubbed as a whole.
-    expect(queryForm(NASTY)).not.toContain('k');
-    expect(scrub(`/x?q=${queryForm(NASTY)}`)).toBe('/x?q=${V}');
-  });
-
-  it('adds no form shorter than the floor', () => {
-    // `ab#cdef` is sent as `ab`: too short to scrub without shredding text.
-    const s = compileSecretScrubber({ S: 'ab#cdef' });
-    expect(s('ab ab#cdef')).toBe('ab ${S}');
+  it('no form is shorter than the value: encodings only grow or keep its length', () => {
+    for (const v of [
+      PLAIN,
+      QMARK,
+      'Summer#2024!xyz',
+      'status?Xk29vLq',
+      'a/../bcdefgh',
+      'tok ',
+      'a\tbcdef',
+    ]) {
+      for (const form of secretWireForms(v)) expect(form.length).toBeGreaterThanOrEqual(v.length);
+    }
   });
 
   it('a plain value has one form, so plain values cost nothing extra', () => {
     const s = compileSecretScrubber({ P: 'plain-Value_123' });
     expect(s('x plain-Value_123 y')).toBe('x ${P} y');
+  });
+});
+
+/**
+ * Review B2: pieces of a value (the part before a `#`, either side of a `?`,
+ * what's left after URL dot-segment collapsing, a trailing space the URL
+ * parser trims) are never scrubbed on their own. They corrupt ordinary text
+ * and would let an agent confirm a secret piece by piece.
+ */
+describe('pieces of a value are never scrubbed', () => {
+  const PIECES = {
+    BOT_PASSWORD: 'status?Xk29vLq',
+    API_SECRET: 'Summer#2024!xyz',
+    DOTTED: 'a/../bcdefgh',
+    TRAILING: 'trailing-space ',
+  };
+  const DATA = { status: 'open', items: [{ name: 'Summer sale' }], note: 'bcdefgh trailing-space' };
+
+  it('leaves ordinary JSON and text unchanged', () => {
+    expect(scrubSecretsDeep(DATA, PIECES)).toEqual(DATA);
+    const text = JSON.stringify({ status: 'open', items: [{ name: 'Summer sale' }] });
+    expect(text).toBe('{"status":"open","items":[{"name":"Summer sale"}]}');
+    expect(scrubSecrets(text, PIECES)).toBe(text);
+    expect(scrubSecrets('Xk29vLq 2024!xyz bcdefgh', PIECES)).toBe('Xk29vLq 2024!xyz bcdefgh');
+  });
+
+  it('still scrubs the whole values, raw and encoded', () => {
+    expect(scrubSecrets(`a ${PIECES.API_SECRET} b`, PIECES)).toBe('a ${API_SECRET} b');
+    expect(scrubSecrets(`a ${encodeURIComponent(PIECES.BOT_PASSWORD)} b`, PIECES)).toBe(
+      'a ${BOT_PASSWORD} b',
+    );
+  });
+
+  it('secretWireForms returns no piece', () => {
+    expect(secretWireForms('Summer#2024!xyz')).not.toContain('Summer');
+    expect(secretWireForms('status?Xk29vLq')).not.toContain('status');
+    expect(secretWireForms('status?Xk29vLq')).not.toContain('Xk29vLq');
+    expect(secretWireForms('a/../bcdefgh')).not.toContain('bcdefgh');
+    expect(secretWireForms('trailing-space ')).not.toContain('trailing-space');
   });
 });

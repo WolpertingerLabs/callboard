@@ -1297,20 +1297,28 @@ export function scrubSecrets(text: string, secrets: Record<string, string>): str
  *
  *   - the value itself, and `encodeURIComponent(value)`;
  *   - the WHATWG URL serializer's path form (`new URL()` keeps `'` and `|`,
- *     encodes space and `"`, leaves `%` alone, turns `\` into `/`, and a `?`
- *     in the value starts the query) and its query form (which also encodes
- *     `'`). fetch() sends a URL exactly as `new URL()` serializes it, and
- *     upstreams echo URLs back as received (`self` links, error pages);
+ *     encodes space and `"`, leaves `%` alone, turns `\` into `/`) and its
+ *     query form (which also encodes `'`). fetch() sends a URL exactly as
+ *     `new URL()` serializes it, and upstreams echo URLs back as received
+ *     (`self` links, error pages);
  *   - the form-urlencoded form (URLSearchParams: `+` for space), and the query
  *     form as a form parser decodes it (`+` in the value becomes a space);
  *   - the UTF-8 bytes of the value or that decoded form read back as Latin-1,
  *     which is how a non-ASCII header value echoed by Node reads in undici.
  *
- * A `#` ends a URL there, so the path and query forms stop at it: that prefix
- * is what was sent. A `?` in a value placed in a path splits it in two, so
- * each part's forms are added too. Other splits (`&` or `=` in a query) are
- * not. Duplicates are dropped; a plain ASCII token has one form.
+ * Only forms of the **whole** value are returned. URL parsing can also cut a
+ * value (at a `#`, a trailing space, a `..` segment), and a piece is never a
+ * form: scrubbing one would corrupt ordinary text that happens to contain it
+ * (`Summer` from `Summer#2024!xyz`) and let an agent confirm a secret piece
+ * by piece. So a URL form is kept only when the parser kept the whole value.
+ * A value cut that way, and then echoed only in part, isn't scrubbed.
+ * Duplicates are dropped; a plain ASCII token has one form.
  */
+// eslint-disable-next-line no-control-regex -- matching control characters is the point
+const CONTROL_OR_DEL = /[\u0000-\u001f\u007f]/;
+/** A `.` or `..` path segment, as the URL parser sees one (`%2e`, `\\` included). */
+const DOT_SEGMENT = /(^|[/\\])(\.|%2e){1,2}($|[/\\?#])/i;
+
 export function secretWireForms(value: string): string[] {
   const forms = new Set<string>([value, encodeURIComponent(value)]);
   const add = (make: () => string | null | undefined) => {
@@ -1321,24 +1329,25 @@ export function secretWireForms(value: string): string[] {
       // A value the parser rejects can't be sent in that position either.
     }
   };
+  // A URL form counts only when it is the whole value. A sentinel after the
+  // value has to come through at the end of the component: a `#` in the value
+  // would push it into the fragment. A value with a control character
+  // (stripped by the parser, and refused in URLs) gets no URL form, and one
+  // with a dot segment (collapsed in a path, and refused there) no path form.
+  const END = '~drawlatch-end';
+  const querySafe = !CONTROL_OR_DEL.test(value);
+  const pathSafe = querySafe && !DOT_SEGMENT.test(value);
   add(() => {
-    const u = new URL(`http://h/p/${value}`);
-    if (!u.pathname.startsWith('/p/')) return undefined;
-    const pathPart = u.pathname.slice(3);
-    if (u.search) {
-      // A `?` in the value splits it: an upstream sees (and may echo) the
-      // path part and the query part separately, encoded or decoded.
-      add(() => pathPart);
-      add(() => lenientDecode(pathPart, false));
-      add(() => u.search.slice(1));
-      add(() => lenientDecode(u.search.slice(1), true));
-    }
-    return pathPart + u.search;
+    if (!pathSafe) return undefined;
+    const u = new URL(`http://h/p/${value}/${END}`);
+    const whole = u.pathname.slice(3) + u.search;
+    if (!u.pathname.startsWith('/p/') || !whole.endsWith(`/${END}`)) return undefined;
+    return whole.slice(0, -END.length - 1);
   });
   let query: string | undefined;
   try {
-    const search = new URL(`http://h/?q=${value}`).search;
-    if (search.startsWith('?q=')) query = search.slice(3);
+    const search = querySafe ? new URL(`http://h/?q=${value}${END}`).search : '';
+    if (search.startsWith('?q=') && search.endsWith(END)) query = search.slice(3, -END.length);
   } catch {
     // As above.
   }
@@ -1381,7 +1390,7 @@ export function compileSecretScrubber(secrets: Record<string, string>): SecretSc
       forms.push([name, form]);
     };
     for (const wire of secretWireForms(value)) {
-      // Shorter forms (a value cut short by a `#`) would shred the text.
+      // The same floor as the value itself, for every form.
       if (wire.length < MIN_SCRUBBED_SECRET_LENGTH) continue;
       add(wire);
       // How the form appears inside a JSON string in a body that wasn't

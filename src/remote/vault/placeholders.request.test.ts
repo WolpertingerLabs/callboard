@@ -55,6 +55,13 @@ const NASTY = {
   n2: `${NASTY_IDS[1]}'|a b"?c%+d/é\\h`,
   n3: `${NASTY_IDS[2]}'| b"#c?dé`,
 } as const;
+/** Values with a `?`, a `#`, or a `..` segment, whose pieces are ordinary words (review B2). */
+const PIECE_VALUES = {
+  qsecret: 'status?Xk29vLq',
+  hsecret: 'Summer#2024!xyz',
+  dsecret: 'a/../bcdefgh',
+} as const;
+const STATIC_BODY = { status: 'open', items: [{ name: 'Summer sale' }], note: 'bcdefgh' };
 const ALL_CANARIES = [CANARY, USER_CANARY, KV_CANARY, REVEAL_CANARY, BOB_CANARY, ...NASTY_IDS];
 
 const TOKEN = 'route-header-token-0000';
@@ -151,6 +158,13 @@ beforeAll(async () => {
         return;
       }
       res.setHeader('x-echo', `${q.get('v') ?? ''} ${String(r.headers['x-key'] ?? '')}`);
+      if (u.pathname === '/static') {
+        // Ordinary data that shares pieces with the B2 secrets below.
+        res.setHeader('content-type', 'application/json');
+        res.setHeader('x-note', 'Summer sale, status open, bcdefgh');
+        res.end('{"status":"open","items":[{"name":"Summer sale"}],"note":"bcdefgh"}');
+        return;
+      }
       if (u.pathname.startsWith('/raw/')) {
         // The URL exactly as it arrived, in the body and in a header.
         res.setHeader('x-url', r.url);
@@ -222,6 +236,9 @@ beforeAll(async () => {
     { name: 'quoted', kind: 'token', values: { value: `${CANARY}"q\\b` } },
     'agent',
   );
+  for (const [name, value] of Object.entries(PIECE_VALUES)) {
+    await createItem('alice', { name, kind: 'password', values: { value } }, 'agent');
+  }
   for (const [name, value] of Object.entries(NASTY)) {
     await createItem('alice', { name, kind: 'password', values: { value } }, 'agent');
   }
@@ -630,9 +647,14 @@ describe('echoes are scrubbed to ${vault:…}', () => {
 
 describe('values whose URL wire form differs from encodeURIComponent', () => {
   type Pos = 'path' | 'query' | 'header';
-  const cases = (Object.keys(NASTY) as (keyof typeof NASTY)[]).flatMap((item, i) =>
-    (['path', 'query', 'header'] as Pos[]).map((pos) => [item, pos, NASTY_IDS[i]] as const),
-  );
+  // n3 holds a `#`: placed in a URL it is cut there, and a cut value is not
+  // scrubbed (only whole-value forms are; see the B2 tests), so it is only
+  // promised in a header.
+  const cases = (Object.keys(NASTY) as (keyof typeof NASTY)[])
+    .flatMap((item, i) =>
+      (['path', 'query', 'header'] as Pos[]).map((pos) => [item, pos, NASTY_IDS[i]] as const),
+    )
+    .filter(([item, pos]) => item !== 'n3' || pos === 'header');
   /** A request on `prefix` with the token at `pos`. */
   const placed = (prefix: string, pos: Pos, item: string) => {
     const token = `\${vault:${item}}`;
@@ -649,11 +671,16 @@ describe('values whose URL wire form differs from encodeURIComponent', () => {
     expect(leaked(res, id)).toBe(false);
   });
 
-  it.each(cases)('%s in the %s: echoed URL in a JSON body', async (item, pos, id) => {
-    const res = await send(placed('/j', pos, item));
-    expect(leaked(received, id)).toBe(true);
-    expect(leaked(res, id)).toBe(false);
-  });
+  // The JSON echo also returns the decoded path on its own; for n2 (a `?` in
+  // the path) that is only the part before the `?`, which isn't scrubbed.
+  it.each(cases.filter(([item, pos]) => item !== 'n2' || pos !== 'path'))(
+    '%s in the %s: echoed URL in a JSON body',
+    async (item, pos, id) => {
+      const res = await send(placed('/j', pos, item));
+      expect(leaked(received, id)).toBe(true);
+      expect(leaked(res, id)).toBe(false);
+    },
+  );
 
   it.each(cases.filter(([, pos]) => pos !== 'header'))(
     '%s in the %s: the final URL after a redirect that echoes it',
@@ -661,7 +688,9 @@ describe('values whose URL wire form differs from encodeURIComponent', () => {
       const res = await send(placed('/redir-same', pos, item));
       expect(received).toHaveLength(2);
       expect(res.url).toBeDefined();
-      expect(leaked(res, id)).toBe(false);
+      // The final URL and headers. (The landing body is the JSON echo, whose
+      // decoded `path` for n2 is a piece; see the JSON-body cases.)
+      expect(leaked({ url: res.url, headers: res.headers }, id)).toBe(false);
     },
   );
 
@@ -688,6 +717,48 @@ describe('values whose URL wire form differs from encodeURIComponent', () => {
     } finally {
       fetchSpy.mockRestore();
     }
+  });
+});
+
+describe('pieces of a value are never scrubbed (review B2)', () => {
+  it('vault values: an ordinary response that shares their pieces comes back unchanged', async () => {
+    const res = await send(
+      {
+        method: 'GET',
+        url: `${base}/static`,
+        headers: {
+          'X-A': '${vault:qsecret}',
+          'X-B': '${vault:hsecret}',
+          'X-C': '${vault:dsecret}',
+        },
+      },
+      routes(),
+    );
+    expect(received[0].headers['x-b']).toBe(PIECE_VALUES.hsecret); // they were sent
+    expect(res.body).toEqual(STATIC_BODY);
+    expect(res.headers['x-note']).toBe('Summer sale, status open, bcdefgh');
+  });
+
+  it('${VAR} secrets (withheld, so scrubbed from bodies): the same response comes back unchanged', async () => {
+    const r = routes({
+      headers: {
+        Authorization: 'Bearer ${API_TOKEN}',
+        'X-A': '${BOT_PASSWORD}',
+        'X-B': '${API_SECRET}',
+        'X-C': '${DOTTED}',
+      },
+      secrets: {
+        API_TOKEN: TOKEN,
+        ACCOUNT,
+        BOT_PASSWORD: PIECE_VALUES.qsecret,
+        API_SECRET: PIECE_VALUES.hsecret,
+        DOTTED: PIECE_VALUES.dsecret,
+      },
+    });
+    const res = await send({ method: 'GET', url: `${base}/static` }, r);
+    expect(received[0].headers['x-b']).toBe(PIECE_VALUES.hsecret);
+    expect(res.body).toEqual(STATIC_BODY);
+    expect(res.headers['x-note']).toBe('Summer sale, status open, bcdefgh');
   });
 });
 
