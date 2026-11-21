@@ -302,13 +302,11 @@ chatsRouter.get("/search", async (req, res) => {
     };
     const folderIgnored = !!folder && isIgnoredProjectFolder(folder);
     const selected = folder ? (folderIgnored ? [] : discovery.sessions.filter((s) => inFolder(s.folder, s.providerKind))) : discovery.sessions;
-    const matches = await collectContentMatches(query, selected, fileChats);
+    const matches = await collectContentMatches(query, selected);
 
     // Session keys are `[provider, sessionId]`; each becomes the row the list
-    // shows that session as — and only that. `matches.chatIds` is deliberately
-    // not used: it resolves ownership by a provider-filtered single-owner rule,
-    // which can name a record the list does not build the matching session's
-    // row from, lighting up a row none of whose sessions matched.
+    // shows that session as — and only that, so a hit can never light up a
+    // row none of whose sessions matched.
     const chatIds = new Set<string>();
     for (const key of matches.keys) {
       const [, sid] = JSON.parse(key) as [string, string];

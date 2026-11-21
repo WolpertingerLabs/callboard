@@ -5,7 +5,9 @@ import { tmpdir } from "node:os";
 import { collectContentMatches } from "./chat-content-search.js";
 const dir = mkdtempSync(join(tmpdir(), "chat-content-"));
 describe("bounded complete content collection", () => {
-  it("returns more than fifty Claude matches and reconciles historical aliases", async () => {
+  // Mapping hits to chat rows (historical aliases included) is the route's
+  // job now — see routes/chats.search.test.ts.
+  it("returns more than fifty Claude matches", async () => {
     const sessions = Array.from({ length: 130 }, (_, i) => {
       const filePath = join(dir, i + ".jsonl");
       writeFileSync(filePath, '{"text":"needle"}\n');
@@ -19,20 +21,8 @@ describe("bounded complete content collection", () => {
         providerKind: "claude-code",
       };
     });
-    const result = await collectContentMatches("needle", sessions, [
-      {
-        id: "logical",
-        session_id: "new",
-        folder: "/repo",
-        metadata: JSON.stringify({ provider: "codex", session_ids: ["0"] }),
-        created_at: "",
-        updated_at: "",
-        session_log_path: null,
-      },
-    ]);
+    const result = await collectContentMatches("needle", sessions);
     expect(result.keys.size).toBe(130);
-    expect(result.chatIds.has("logical")).toBe(true);
-    expect(result.keys.has(JSON.stringify(["claude-code", "logical"]))).toBe(false);
     expect(result.warnings).toEqual([]);
   });
   it("finds a Codex session by a message after its first prompt", async () => {

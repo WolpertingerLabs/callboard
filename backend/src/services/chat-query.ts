@@ -586,8 +586,6 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
    * to stop doing. Same rule, both paths: not-looked-at is reported, and an
    * unknown is not allowed to masquerade as a miss.
    */
-  /** Chats whose grep hit was only a Codex native agent's nickname/agent path. */
-  const labelOnlyHits = new Set<string>();
   const contentSearch = async (term: string, label: string) => {
     // Keep every qualified current/historical identity of surviving logical
     // candidates, not just the row selected for its browse projection.
@@ -607,6 +605,11 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
     warnings.push(...content.warnings);
     let unsearchable = 0;
     const hits = new Map<string, string>();
+    // Chats whose hit, in THIS call, was only a Codex native agent's
+    // nickname/agent path. Per call: one searchChats can run two searches (the
+    // bound view's submitted search, then grep) and a verdict from one must
+    // not label the other's hit.
+    const labelOnly = new Set<string>();
     candidates = candidates.filter((chat) => {
       const keys = keysByChat.get(chat.id) ?? [];
       if (!keys.length) {
@@ -617,13 +620,13 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
       const hit = keys.find((key) => content.keys.has(key) && !content.labelOnlyKeys.has(key)) ?? keys.find((key) => content.keys.has(key));
       if (hit === undefined) return false;
       hits.set(chat.id, hit);
-      if (content.labelOnlyKeys.has(hit)) labelOnlyHits.add(chat.id);
+      if (content.labelOnlyKeys.has(hit)) labelOnly.add(chat.id);
       return true;
     });
     if (unsearchable) {
       warnings.push(`${unsearchable} chats have no readable transcript on disk; ${label} could not evaluate them`);
     }
-    return hits;
+    return { hits, labelOnly };
   };
   if (view?.available) {
     const advanced = await matchAdvanced(candidates, view.filters);
@@ -638,13 +641,13 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
   // run under the shared worker's time, heap and per-file byte budgets.
   const matchKinds = new Map<string, MatchKind>();
   if (args.grep !== undefined) {
-    const hits = await contentSearch(args.grep, "grep");
+    const { hits, labelOnly } = await contentSearch(args.grep, "grep");
     for (const [chatId, hit] of hits) {
       const providerKind = String(JSON.parse(hit)[0]);
       // A Codex native child's search text leads with its nickname/agent path.
       // A hit there and nowhere in its own messages is a metadata match, and
       // saying so keeps it from reading as conversation.
-      matchKinds.set(chatId, labelOnlyHits.has(chatId) ? "metadata" : (MATCH_KIND[providerKind as AgentProviderKind] ?? "unknown"));
+      matchKinds.set(chatId, labelOnly.has(chatId) ? "metadata" : (MATCH_KIND[providerKind as AgentProviderKind] ?? "unknown"));
     }
   }
   const sortKey = args.sort === "created" ? (chat: Chat) => Date.parse(chat.created_at) : (chat: Chat) => Date.parse(chat.updated_at);

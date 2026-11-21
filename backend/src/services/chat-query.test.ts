@@ -197,9 +197,27 @@ describe("individual chat query", () => {
     state.stored = [chat("closed", { nativeAgent: { parentThreadId: "root" } }), chat("root")];
     discover();
     const key = JSON.stringify(["codex", "closed"]);
-    vi.mocked(collectContentMatches).mockResolvedValueOnce({ keys: new Set([key]), chatIds: new Set(), labelOnlyKeys: new Set([key]), warnings: [] });
+    vi.mocked(collectContentMatches).mockResolvedValueOnce({ keys: new Set([key]), labelOnlyKeys: new Set([key]), warnings: [] });
     const result = await searchChats({ grep: "needle", folder: "/work/repo" });
     expect(result.chats.map((c) => c.matchKind)).toEqual(["metadata"]);
+  });
+  it("labels a grep hit by the grep's own verdict, not the bound view's submitted search", async () => {
+    // One searchChats runs two content searches here: the view's submitted
+    // search (label-only for `closed`), then grep (a message hit). The first
+    // verdict must not carry over into the second's matchKind. (A plain chat:
+    // the view's default filters hide native children, and the verdict comes
+    // from the worker's labelOnlyKeys alone.)
+    state.stored = [chat("closed")];
+    discover();
+    state.view = { available: true, filters: DEFAULT_CHAT_FILTERS, options: DEFAULT_CHAT_VIEW_OPTIONS, submittedSearch: "scout" };
+    const key = JSON.stringify(["codex", "closed"]);
+    vi.mocked(collectContentMatches)
+      .mockClear()
+      .mockResolvedValueOnce({ keys: new Set([key]), labelOnlyKeys: new Set([key]), warnings: [] })
+      .mockResolvedValueOnce({ keys: new Set([key]), labelOnlyKeys: new Set<string>(), warnings: [] });
+    const result = await searchChats({ scope: "visible", grep: "needle", folder: "/work/repo" });
+    expect(vi.mocked(collectContentMatches).mock.calls.map((call) => call[0])).toEqual(["scout", "needle"]);
+    expect(result.chats.map((c) => [c.chatId, c.matchKind])).toEqual([["closed", "messages"]]);
   });
   it("refuses an unscoped grep rather than opening the whole corpus", async () => {
     state.stored = [chat("closed")];
@@ -235,7 +253,7 @@ describe("individual chat query", () => {
     discover();
     vi.mocked(collectContentMatches).mockResolvedValueOnce({
       keys: new Set<string>(),
-      chatIds: new Set<string>(),
+      labelOnlyKeys: new Set<string>(),
       warnings: ["Content search workers busy; retry this query"],
     });
     // The sibling worker pool (`matchAdvanced`) throws CHAT_FILTER_BUSY for the
