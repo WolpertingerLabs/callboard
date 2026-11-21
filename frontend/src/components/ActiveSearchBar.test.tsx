@@ -7,11 +7,11 @@ afterEach(cleanup);
 
 it("pluralises the count", () => {
   const { rerender } = render(<ActiveSearchBar query="cache" resultCount={1} isSearching={false} onClear={() => {}} inset={20} />);
-  expect(screen.getByRole("status").textContent).toBe('Searching for "cache" · 1 chat');
+  expect(screen.getByRole("status").textContent).toBe('Searching for "cache" · 1 match');
   rerender(<ActiveSearchBar query="cache" resultCount={0} isSearching={false} onClear={() => {}} inset={20} />);
-  expect(screen.getByRole("status").textContent).toBe('Searching for "cache" · 0 chats');
+  expect(screen.getByRole("status").textContent).toBe('Searching for "cache" · 0 matches');
   rerender(<ActiveSearchBar query="cache" resultCount={3} isSearching={false} onClear={() => {}} inset={20} />);
-  expect(screen.getByRole("status").textContent).toBe('Searching for "cache" · 3 chats');
+  expect(screen.getByRole("status").textContent).toBe('Searching for "cache" · 3 matches');
 });
 
 it("shows an ellipsis instead of a count while the request is in flight", () => {
@@ -26,4 +26,9 @@ it("clears through a non-submitting button", () => {
   expect(button.getAttribute("type")).toBe("button");
   fireEvent.click(button);
   expect(onClear).toHaveBeenCalledOnce();
+});
+
+it("puts the live region on the text, not on the button", () => {
+  render(<ActiveSearchBar query="cache" resultCount={1} isSearching={false} onClear={() => {}} inset={20} />);
+  expect(screen.getByRole("status").querySelector("button")).toBeNull();
 });

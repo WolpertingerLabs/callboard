@@ -237,6 +237,8 @@ export default function ChatList({
   const [filters, setFilters] = useState<ChatFilters>(DEFAULT_CHAT_FILTERS);
   const [searchQuery, setSearchQuery] = useState("");
   const [submittedQuery, setSubmittedQuery] = useState("");
+  /** The filter bar's search box — Clear search hands focus back to it. */
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const [chatViewError, setChatViewError] = useState<string>();
   useEffect(() => {
     publishChatView(filters, viewOptions, submittedQuery, setChatViewError);
@@ -354,12 +356,9 @@ export default function ChatList({
   const handleClearSearch = () => {
     setSearchQuery("");
     setSubmittedQuery("");
+    // `searchAllSpaces` stays: it is a remembered preference, not part of the query.
+    searchInputRef.current?.focus();
   };
-
-  // Determine if any filter is active (advanced filters, content search, or bookmarks)
-  const anyFilterActive = hasActiveFilters(filters) || matchingChatIds !== null;
-  /** Whether the "Load next page" footer is rendered at the end of the list. */
-  const showLoadMore = hasMore && !anyFilterActive;
 
   /**
    * A content search is on the wire, which widens the request scope — see
@@ -375,6 +374,19 @@ export default function ChatList({
   const searching = submittedQuery.trim() !== "";
 
   /**
+   * Whether anything narrows the list client-side (advanced filters or a
+   * content search), which makes `load` fetch every chat instead of a page.
+   *
+   * Keyed on `searching`, not `matchingChatIds`, for the same reason as the
+   * scope widening above: the full list then loads in parallel with the
+   * search instead of starting only once its hits land, and the hits are never
+   * intersected with — or counted against — just the first page.
+   */
+  const anyFilterActive = hasActiveFilters(filters) || searching;
+  /** Whether the "Load next page" footer is rendered at the end of the list. */
+  const showLoadMore = hasMore && !anyFilterActive;
+
+  /**
    * The space the list requests: the active one, or every space while a
    * search has "All spaces" ticked. Undefined without a space provider, which
    * sends the unscoped request older daemons understand.
@@ -385,6 +397,15 @@ export default function ChatList({
   const showSpaceChips = listSpace === ALL_SPACES && spaces.length + archivedSpaces.length > 1;
   /** The space the loaded page count belongs to; a new space starts from one page. */
   const pagedSpaceRef = useRef(listSpace);
+  /**
+   * Everything that decides what `load` requests — its dependency list, as a
+   * value. `committedScopeKey` is the key of the last load that committed, so
+   * the two differ exactly while the list on screen was fetched for some
+   * other scope: e.g. it is still the first page when a search has just asked
+   * for every chat.
+   */
+  const scopeKey = JSON.stringify([viewOptions, anyFilterActive, searching, listSpace ?? null]);
+  const [committedScopeKey, setCommittedScopeKey] = useState<string | null>(null);
 
   /**
    * Fold pending pin changes into a response, and retire the ones it already
@@ -496,6 +517,7 @@ export default function ChatList({
     gen = loadGenRef.current += 1;
     setListVersion((v) => v + 1);
     setChats(applyPinOverrides(response.chats, pinEpoch));
+    setCommittedScopeKey(scopeKey);
     setHasMore(shouldFetchAll ? false : response.hasMore);
     if (!shouldFetchAll) loadedCountRef.current = response.windowRows;
 
@@ -535,7 +557,8 @@ export default function ChatList({
     // query changes the scope, and the effect below refetches only because
     // this callback is recreated.
     // `listSpace` too: switching space is a scope change like any other.
-  }, [viewOptions, anyFilterActive, searching, listSpace]);
+    // `scopeKey` is derived from exactly these, so it adds no refetches.
+  }, [viewOptions, anyFilterActive, searching, listSpace, scopeKey]);
 
   const loadMore = async () => {
     if (isLoadingMore || !hasMore) return;
@@ -1755,6 +1778,7 @@ export default function ChatList({
         onSearchChange={setSearchQuery}
         onSearchSubmit={handleSearchSubmit}
         isSearching={isSearching}
+        searchInputRef={searchInputRef}
         inset={FILTER_INSET}
         {...(spacesEnabled && isMobile && { leading: <SpaceSwitcher cards={cards} compact inset={FILTER_INSET} /> })}
       />
@@ -1763,7 +1787,9 @@ export default function ChatList({
         <ActiveSearchBar
           query={submittedQuery.trim()}
           resultCount={filteredChats.length}
-          isSearching={isSearching}
+          // Until the full list for this search has committed too, the count
+          // would be taken over the first page only and read as final.
+          isSearching={isSearching || committedScopeKey !== scopeKey}
           onClear={handleClearSearch}
           inset={FILTER_INSET}
         />

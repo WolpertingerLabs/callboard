@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 /**
  * A submitted content search says so under the search box — the query, how
- * many chats it left, and a way out. Keyed on the submitted query, not the
+ * many chats it matched, and a way out. Keyed on the submitted query, not the
  * draft in the box: typing alone narrows nothing, so it shows nothing.
  */
 import { afterEach, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { resetChatTreeCollapse } from "../hooks/useChatTreeCollapse";
 import type { Chat, ChatListResponse } from "../api";
@@ -19,33 +19,6 @@ vi.mock("../api", async (importOriginal) => ({
   listCards: vi.fn(),
   getDrafts: vi.fn(async () => []),
   searchChatContents: vi.fn(),
-  getChatTree: vi.fn(async () => ({
-    targetChatId: "main",
-    rootChatId: "main",
-    ancestors: [],
-    tree: {
-      chatId: "main",
-      title: "chat main",
-      provider: "claude-code",
-      status: "stopped",
-      folder: "/f",
-      createdAt: "",
-      updatedAt: "2026-08-20T11:00:00.000Z",
-      children: [
-        {
-          chatId: "aside",
-          title: "chat aside",
-          role: "aside",
-          provider: "claude-code",
-          status: "stopped",
-          folder: "/f",
-          createdAt: "",
-          updatedAt: "2026-08-20T11:00:00.000Z",
-          children: [],
-        },
-      ],
-    },
-  })),
 }));
 vi.mock("../contexts/SessionContext", () => ({
   useSessionContext: () => ({ activeSessions: new Map(), connected: true, metadataVersion: 0, summonedChatIds: new Set<string>() }),
@@ -54,8 +27,6 @@ vi.mock("../components/SidebarHeader", () => ({ default: () => <div /> }));
 vi.mock("../components/NewChatPanel", () => ({ default: () => <div /> }));
 
 afterEach(() => {
-  // Opened tree cards persist in a module-level store; start each test with every card closed.
-  localStorage.removeItem("callboard-chat-tree-cards-expanded");
   resetChatTreeCollapse();
   cleanup();
   vi.clearAllMocks();
@@ -77,17 +48,27 @@ function makeChat(id: string, preview: string): Chat {
   } as Chat;
 }
 const CHATS = [makeChat("one", "chat one"), makeChat("two", "chat two"), makeChat("three", "chat three")];
-const listResponse = (chats: Chat[]): ChatListResponse => ({ chats, hasMore: false, total: chats.length, windowRows: chats.length, stale: false });
+const listResponse = (chats: Chat[], hasMore = false): ChatListResponse => ({ chats, hasMore, total: CHATS.length, windowRows: chats.length, stale: false });
 
-it("shows the submitted query and its count, and Clear search restores the full list", async () => {
-  vi.mocked(listChats).mockResolvedValue(listResponse(CHATS));
-  vi.mocked(listCards).mockResolvedValue({ cards: [] });
-  vi.mocked(searchChatContents).mockResolvedValue({ chatIds: ["two"] } as never);
+function renderList() {
   render(
     <MemoryRouter>
       <ChatList onRefresh={() => {}} />
     </MemoryRouter>,
   );
+}
+function submitSearch(query: string) {
+  const search = screen.getByPlaceholderText("Search chat contents...") as HTMLInputElement;
+  fireEvent.change(search, { target: { value: query } });
+  fireEvent.keyDown(search, { key: "Enter" });
+  return search;
+}
+
+it("shows the submitted query and its count, and Clear search restores the full list", async () => {
+  vi.mocked(listChats).mockResolvedValue(listResponse(CHATS));
+  vi.mocked(listCards).mockResolvedValue({ cards: [] });
+  vi.mocked(searchChatContents).mockResolvedValue({ chatIds: ["two"] } as never);
+  renderList();
   await screen.findByText("chat one");
   expect(screen.queryByText(/Searching for/)).toBeNull();
 
@@ -98,7 +79,7 @@ it("shows the submitted query and its count, and Clear search restores the full 
   expect(screen.queryByRole("button", { name: "Clear search" })).toBeNull();
 
   fireEvent.keyDown(search, { key: "Enter" });
-  expect(await screen.findByText('Searching for "cache" · 1 chat')).toBeTruthy();
+  expect(await screen.findByText('Searching for "cache" · 1 match')).toBeTruthy();
   expect(searchChatContents).toHaveBeenCalledWith("cache");
   expect(screen.getByText("chat two")).toBeTruthy();
   expect(screen.queryByText("chat one")).toBeNull();
@@ -107,7 +88,44 @@ it("shows the submitted query and its count, and Clear search restores the full 
   fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
   expect(screen.queryByText(/Searching for/)).toBeNull();
   expect(search.value).toBe("");
+  // Keyboard users land back in the box, not on <body>.
+  expect(document.activeElement).toBe(search);
   expect(await screen.findByText("chat one")).toBeTruthy();
   expect(screen.getByText("chat two")).toBeTruthy();
   expect(screen.getByText("chat three")).toBeTruthy();
+});
+
+it("never shows a count taken over the first page while the full list for the search is loading", async () => {
+  // The first page has only "one"; the hits are both outside it.
+  let resolveFull!: (r: ChatListResponse) => void;
+  vi.mocked(listChats).mockImplementation((limit) =>
+    limit === 9999 ? new Promise<ChatListResponse>((r) => (resolveFull = r)) : Promise.resolve(listResponse([CHATS[0]], true)),
+  );
+  vi.mocked(listCards).mockResolvedValue({ cards: [] });
+  let resolveSearch!: (r: { chatIds: string[] }) => void;
+  vi.mocked(searchChatContents).mockImplementation(() => new Promise((r) => (resolveSearch = r)) as never);
+  renderList();
+  await screen.findByText("chat one");
+
+  const seen: string[] = [];
+  const observer = new MutationObserver(() => {
+    const status = screen.queryByRole("status");
+    if (status?.textContent) seen.push(status.textContent);
+  });
+  observer.observe(document.body, { subtree: true, childList: true, characterData: true });
+
+  submitSearch("cache");
+  // The full list is requested as soon as the query is submitted, while the search itself is still in flight.
+  await vi.waitFor(() =>
+    expect(listChats).toHaveBeenCalledWith(9999, 0, undefined, true, undefined, true, undefined, expect.anything(), true, undefined, true),
+  );
+  expect(screen.getByRole("status").textContent).toBe('Searching for "cache" · …');
+  // The hits land before the full list: still pending, not "0 matches".
+  await act(async () => resolveSearch({ chatIds: ["two", "three"] }));
+  expect(screen.getByRole("status").textContent).toBe('Searching for "cache" · …');
+
+  await act(async () => resolveFull(listResponse(CHATS)));
+  expect(await screen.findByText('Searching for "cache" · 2 matches')).toBeTruthy();
+  observer.disconnect();
+  expect(seen.filter((t) => !t.endsWith("…") && t !== 'Searching for "cache" · 2 matches')).toEqual([]);
 });

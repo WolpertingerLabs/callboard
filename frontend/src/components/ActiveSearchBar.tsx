@@ -3,9 +3,12 @@ import { X } from "lucide-react";
 interface ActiveSearchBarProps {
   /** The submitted query — not the draft in the search box. */
   query: string;
-  /** Chats the list is showing for this query. */
+  /**
+   * Chats that matched. Counted as matches, not rows: a matching parent and
+   * fork share one tree card, so "chats" would disagree with what is on screen.
+   */
   resultCount: number;
-  /** A request for this query is in flight; the count is not meaningful yet. */
+  /** The count is not final yet: the search, or the full list it filters, is still loading. */
   isSearching: boolean;
   onClear: () => void;
   /** Horizontal padding, matching the filter bar above it. */
@@ -19,10 +22,9 @@ interface ActiveSearchBarProps {
  * submitted search stays in force after the box is scrolled past or edited.
  */
 export default function ActiveSearchBar({ query, resultCount, isSearching, onClear, inset }: ActiveSearchBarProps) {
-  const count = isSearching ? "…" : `${resultCount} ${resultCount === 1 ? "chat" : "chats"}`;
+  const count = isSearching ? "…" : `${resultCount} ${resultCount === 1 ? "match" : "matches"}`;
   return (
     <div
-      role="status"
       style={{
         display: "flex",
         alignItems: "center",
@@ -33,7 +35,8 @@ export default function ActiveSearchBar({ query, resultCount, isSearching, onCle
         minWidth: 0,
       }}
     >
-      <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={query}>
+      {/* The live region is the text alone, so the button's label is not re-announced with it. */}
+      <span role="status" style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={query}>
         {`Searching for "${query}" · ${count}`}
       </span>
       <button
