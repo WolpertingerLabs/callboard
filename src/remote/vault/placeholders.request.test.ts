@@ -757,6 +757,34 @@ describe('cross-caller ${vault:owner/name} through a grant', () => {
     expect(received).toHaveLength(0);
   });
 
+  it('a granted value with a URL delimiter: refused in the URL before any audit, sent in a header', async () => {
+    await shareBob('dl1', { values: { value: `${BOB_CANARY}&admin=1` } });
+    const before = injectLines('bob').length;
+    const msg = await errorOf(send({ method: 'GET', url: `${base}/x?v=${asBobItem('dl1')}` }));
+    expect(msg).toContain('The request URL references ${vault:bob/dl1}');
+    expect(msg).toContain('URL delimiter');
+    expectNoCanary(msg);
+    // Refused before anything is sent and before the vault.inject line.
+    expect(received).toHaveLength(0);
+    expect(injectLines('bob')).toHaveLength(before);
+
+    // In a header it is fine: sent, recorded once, and not echoed back.
+    const res = await send({
+      method: 'GET',
+      url: `${base}/x`,
+      headers: { 'X-Key': asBobItem('dl1') },
+    });
+    expect(received).toHaveLength(1);
+    expect(received[0].headers['x-key']).toBe(`${BOB_CANARY}&admin=1`);
+    expect(injectLines('bob')).toHaveLength(before + 1);
+    expect(injectLines('bob').at(-1)).toMatchObject({
+      'vault.item': 'dl1',
+      'vault.grantee': 'alice',
+    });
+    expectNoCanary(res);
+    expect(JSON.stringify(res)).toContain('${vault:bob/dl1.value}');
+  });
+
   it('a rotation that lands meanwhile is refused rather than sending the stale value', async () => {
     await shareBob('x10');
     hooks.before = (_owner, event) => {
