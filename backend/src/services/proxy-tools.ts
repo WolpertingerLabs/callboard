@@ -106,7 +106,10 @@ function buildVaultTools(keyAlias: string) {
 
     defineTool(
       "vault_get",
-      'Read the values of one of your vault items whose exposure is "reveal", or (with owner) of another caller\'s item the operator granted you at mode "reveal". Every read is recorded in the owner\'s audit log before the value is returned. Inject-only items are refused: use them as ${vault:name} (or ${vault:owner/name}) in secure_request.',
+      // drawlatch's copy verbatim, plus one callboard addition: the last
+      // sentence, about the transcript being readable by other agents.
+      'Read the values of one of your vault items whose exposure is "reveal", or (with owner) of another caller\'s item the operator granted you at mode "reveal". Every read is recorded in the owner\'s audit log before the value is returned. Inject-only items are refused: use them as ${vault:name} (or ${vault:owner/name}) in secure_request. ' +
+        "In callboard, a revealed value becomes part of this chat's transcript, which other agents with chat-reading tools (read_session_messages, get_chat_view, search_chats) can see.",
       {
         name: z.string().describe("Item name"),
         field: z.string().optional().describe("Return just this field"),
@@ -163,6 +166,10 @@ export function buildProxyToolsSpec(keyAlias: string): ToolServerSpec {
     tools: [
       defineTool(
         "secure_request",
+        // Follows drawlatch's secure_request copy, except: ", and items shared
+        // with you as ${vault:owner/name}," is a callboard addition (drawlatch
+        // says it in vault_list/vault_request_access instead), and the
+        // list_routes / files sentences at the end are callboard's own.
         "Make an authenticated HTTP request through a configured connection. " +
           "Route-level headers (e.g., Authorization) are injected automatically by the server — " +
           "do not send them yourself. You may use ${VAR_NAME} placeholders for other secrets in " +
@@ -200,7 +207,7 @@ export function buildProxyToolsSpec(keyAlias: string): ToolServerSpec {
           const proxy = getProxy(keyAlias);
           if (!proxy) {
             return {
-              content: [{ type: "text" as const, text: "Proxy not configured. Set up proxy in Agent Settings." }],
+              content: [{ type: "text" as const, text: NOT_CONFIGURED }],
             };
           }
           try {
@@ -227,7 +234,7 @@ export function buildProxyToolsSpec(keyAlias: string): ToolServerSpec {
           const proxy = getProxy(keyAlias);
           if (!proxy) {
             return {
-              content: [{ type: "text" as const, text: "Proxy not configured. Set up proxy in Agent Settings." }],
+              content: [{ type: "text" as const, text: NOT_CONFIGURED }],
             };
           }
           try {
@@ -258,7 +265,7 @@ export function buildProxyToolsSpec(keyAlias: string): ToolServerSpec {
           const proxy = getProxy(keyAlias);
           if (!proxy) {
             return {
-              content: [{ type: "text" as const, text: "Proxy not configured. Set up proxy in Agent Settings." }],
+              content: [{ type: "text" as const, text: NOT_CONFIGURED }],
             };
           }
           try {
@@ -286,7 +293,7 @@ export function buildProxyToolsSpec(keyAlias: string): ToolServerSpec {
           const proxy = getProxy(keyAlias);
           if (!proxy) {
             return {
-              content: [{ type: "text" as const, text: "Proxy not configured. Set up proxy in Agent Settings." }],
+              content: [{ type: "text" as const, text: NOT_CONFIGURED }],
             };
           }
           try {
@@ -314,7 +321,7 @@ export function buildProxyToolsSpec(keyAlias: string): ToolServerSpec {
           const proxy = getProxy(keyAlias);
           if (!proxy) {
             return {
-              content: [{ type: "text" as const, text: "Proxy not configured. Set up proxy in Agent Settings." }],
+              content: [{ type: "text" as const, text: NOT_CONFIGURED }],
             };
           }
           try {
@@ -345,7 +352,7 @@ export function buildProxyToolsSpec(keyAlias: string): ToolServerSpec {
           const proxy = getProxy(keyAlias);
           if (!proxy) {
             return {
-              content: [{ type: "text" as const, text: "Proxy not configured. Set up proxy in Agent Settings." }],
+              content: [{ type: "text" as const, text: NOT_CONFIGURED }],
             };
           }
           try {
@@ -371,7 +378,7 @@ export function buildProxyToolsSpec(keyAlias: string): ToolServerSpec {
           const proxy = getProxy(keyAlias);
           if (!proxy) {
             return {
-              content: [{ type: "text" as const, text: "Proxy not configured. Set up proxy in Agent Settings." }],
+              content: [{ type: "text" as const, text: NOT_CONFIGURED }],
             };
           }
           try {
@@ -399,7 +406,7 @@ export function buildProxyToolsSpec(keyAlias: string): ToolServerSpec {
           const proxy = getProxy(keyAlias);
           if (!proxy) {
             return {
-              content: [{ type: "text" as const, text: "Proxy not configured. Set up proxy in Agent Settings." }],
+              content: [{ type: "text" as const, text: NOT_CONFIGURED }],
             };
           }
           try {
@@ -429,7 +436,7 @@ export function buildProxyToolsSpec(keyAlias: string): ToolServerSpec {
           const proxy = getProxy(keyAlias);
           if (!proxy) {
             return {
-              content: [{ type: "text" as const, text: "Proxy not configured. Set up proxy in Agent Settings." }],
+              content: [{ type: "text" as const, text: NOT_CONFIGURED }],
             };
           }
           try {
@@ -461,7 +468,7 @@ export function buildProxyToolsSpec(keyAlias: string): ToolServerSpec {
           const proxy = getProxy(keyAlias);
           if (!proxy) {
             return {
-              content: [{ type: "text" as const, text: "Proxy not configured. Set up proxy in Agent Settings." }],
+              content: [{ type: "text" as const, text: NOT_CONFIGURED }],
             };
           }
           try {
@@ -490,7 +497,7 @@ export function buildProxyToolsSpec(keyAlias: string): ToolServerSpec {
           const proxy = getProxy(keyAlias);
           if (!proxy) {
             return {
-              content: [{ type: "text" as const, text: "Proxy not configured. Set up proxy in Agent Settings." }],
+              content: [{ type: "text" as const, text: NOT_CONFIGURED }],
             };
           }
           try {
@@ -518,7 +525,7 @@ export function buildProxyToolsSpec(keyAlias: string): ToolServerSpec {
           const proxy = getProxy(keyAlias);
           if (!proxy) {
             return {
-              content: [{ type: "text" as const, text: "Proxy not configured. Set up proxy in Agent Settings." }],
+              content: [{ type: "text" as const, text: NOT_CONFIGURED }],
             };
           }
           try {
@@ -543,7 +550,7 @@ export function buildProxyToolsSpec(keyAlias: string): ToolServerSpec {
           const proxy = getProxy(keyAlias);
           if (!proxy) {
             return {
-              content: [{ type: "text" as const, text: "Proxy not configured. Set up proxy in Agent Settings." }],
+              content: [{ type: "text" as const, text: NOT_CONFIGURED }],
             };
           }
           try {
