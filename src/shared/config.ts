@@ -1302,7 +1302,10 @@ export function scrubSecrets(text: string, secrets: Record<string, string>): str
  *     `new URL()` serializes it, and upstreams echo URLs back as received
  *     (`self` links, error pages);
  *   - the form-urlencoded form (URLSearchParams: `+` for space), and the query
- *     form as a form parser decodes it (`+` in the value becomes a space);
+ *     form as a form parser decodes it: `+` becomes a space and `%XX` escapes
+ *     are decoded too, so `%41%41%41%41` also yields `AAAA`. That form can be
+ *     shorter than the value, but it is the whole value as a server reads it,
+ *     never a piece, and it is subject to the same minimum length;
  *   - the UTF-8 bytes of the value or that decoded form read back as Latin-1,
  *     which is how a non-ASCII header value echoed by Node reads in undici.
  *

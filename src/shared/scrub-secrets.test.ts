@@ -10,6 +10,7 @@ import {
   scrubSecrets,
   scrubSecretsDeep,
   secretWireForms,
+  MIN_SCRUBBED_SECRET_LENGTH,
 } from './config.js';
 
 const SECRETS = {
@@ -123,8 +124,43 @@ describe('wire forms', () => {
     }
   });
 
-  it('no form is shorter than the value: encodings only grow or keep its length', () => {
-    for (const v of [
+  /** WHATWG percent-decoding over UTF-8 bytes; a stray `%` stays as it is. */
+  const pct = (text: string, plusIsSpace = false): string => {
+    const b = Buffer.from(plusIsSpace ? text.replace(/\+/g, ' ') : text, 'utf8');
+    const out: number[] = [];
+    for (let i = 0; i < b.length; i++) {
+      const hex = String.fromCharCode(b[i + 1] ?? 0, b[i + 2] ?? 0);
+      if (b[i] === 0x25 && /^[0-9a-fA-F]{2}$/.test(hex)) {
+        out.push(parseInt(hex, 16));
+        i += 2;
+      } else out.push(b[i]);
+    }
+    return Buffer.from(out).toString('utf8');
+  };
+  /** Ways to read a form back: JSON-unescaped, Latin-1 bytes as UTF-8, percent-decoded. */
+  const readings = (form: string): string[] => {
+    const json: string[] = [form];
+    try {
+      json.push(JSON.parse(`"${form}"`) as string);
+    } catch {
+      // Not a JSON-escaped form.
+    }
+    return json
+      .flatMap((x) => [x, Buffer.from(x, 'latin1').toString('utf8')])
+      .flatMap((x) => [x, pct(x), pct(x, true)]);
+  };
+  /** The whole value, and the whole value as a URL path or a server decodes it. */
+  const wholeValue = (v: string): string[] =>
+    [v, v.replace(/^[^?]*/, (path) => path.replace(/\\/g, '/'))].flatMap((x) => [
+      x,
+      pct(x),
+      pct(x, true),
+    ]);
+
+  it('every form is at least the floor long and encodes or decodes the whole value', () => {
+    // A decoded form can be shorter than the value (`%41%41%41%41` → `AAAA`),
+    // but it is still the whole value, never a piece of it.
+    const values = [
       PLAIN,
       QMARK,
       'Summer#2024!xyz',
@@ -132,9 +168,22 @@ describe('wire forms', () => {
       'a/../bcdefgh',
       'tok ',
       'a\tbcdef',
-    ]) {
-      for (const form of secretWireForms(v)) expect(form.length).toBeGreaterThanOrEqual(v.length);
+      '%41%41%41%41',
+      'x%2Fy%2Fz',
+      'ab%41cd',
+      '100%+off now',
+      'é%C3%A9 x',
+    ];
+    for (const v of values) {
+      const whole = new Set(wholeValue(v));
+      for (const form of secretWireForms(v)) {
+        expect(form.length).toBeGreaterThanOrEqual(MIN_SCRUBBED_SECRET_LENGTH);
+        expect(readings(form).some((r) => whole.has(r))).toBe(true);
+      }
     }
+    // The decoded form really is there, and scrubbed.
+    expect(secretWireForms('%41%41%41%41')).toContain('AAAA');
+    expect(compileSecretScrubber({ S: '%41%41%41%41' })('the word AAAA')).toBe('the word ${S}');
   });
 
   it('a plain value has one form, so plain values cost nothing extra', () => {

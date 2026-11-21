@@ -200,7 +200,7 @@ Header-only secrets are one kind of **withheld** secret. The others are a webhoo
   - as-is, and `encodeURIComponent`-encoded;
   - as a URL path serializes it (`'` and `|` kept, a space as `%20`, `"` as `%22`, `\` as `/`);
   - as a URL query serializes it (`'` encoded too);
-  - form-encoded (a space as `+`), and as a form parser decodes the query form (a `+` as a space);
+  - form-encoded (a space as `+`), and as a form parser decodes the query form (a `+` as a space, and `%XX` escapes decoded, so a value written `%41%41%41%41` is also scrubbed as `AAAA`);
   - as UTF-8 read back as Latin-1 (how a non-ASCII header value can echo);
   - each of those JSON-string-escaped (with and without `\/`).
 - Only whole values are scrubbed, never a piece of one, so ordinary text that happens to contain part of a secret (`Summer` from `Summer#2024!xyz`) is left alone. The catch: URL parsing cuts a value at a `#` and splits it at a `?` into path and query parts. An upstream that echoes only one part (say, the decoded path) hands that part back as is. Don't put a secret containing `#` or `?` in a URL; send it in a header instead. Pieces of a value split by `&` or `=` in a query aren't recognised either.
