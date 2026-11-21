@@ -1,6 +1,7 @@
 # Plan: Agent-namespaced, encrypted-at-rest secrets vault
 
-Status: **proposed** (planner draft for review, 2026-11-21). Builds on #48 (withheld secrets,
+Status: **approved** (lead review, 2026-11-21; amendments: PR 3 split into 3a/3b, `purgeCaller`
+called from `deleteCaller`, a dedicated reveal rate limiter). Builds on #48 (withheld secrets,
 scrubbing, `selfManage`), #49 (OAuth2 engine) and #50 (scoped Google templates, `set_secrets`
 signing-credential refusal), all merged.
 Owner: drawlatch. Consumer follow-ups: Callboard (separate repo).
@@ -358,8 +359,8 @@ needs it. Admin-created items should always be bound. The dashboard's create for
   `withdrawn`. Re-creating the name makes a new `id` with no grants.
 - **Caller delete** (`DELETE /api/admin/callers/:alias`, or anything that calls `deleteCaller`):
   `service.purgeCaller(alias)` deletes its items, revokes grants to and from it, and withdraws
-  requests by it or to it, in the same handler, so a later caller with the same alias inherits
-  nothing.
+  requests by it or to it. It is called from inside `deleteCaller` (`src/remote/caller-bootstrap.ts`)
+  so every deletion path purges, and a later caller with the same alias inherits nothing.
 - **History:** terminal requests are kept, capped at the newest 500 (oldest pruned on write).
   Revoked grants are kept for 90 days.
 - The admin sees the `reason` as **agent-written text**. It's rendered as plain text (React
@@ -379,7 +380,7 @@ All responses carry `Cache-Control: no-store`. Every mutation goes to the `[audi
 | `POST /callers/:alias/vault/items` | Admin create (`createdBy: "admin"`). Same body as `vault_create`. |
 | `PATCH /callers/:alias/vault/items/:name` | Admin update. May loosen (exposure, `connections`). `If-Match: <revision>` optional (409 on mismatch). |
 | `DELETE /callers/:alias/vault/items/:name` | Delete (grant and request effects as above) |
-| `POST /callers/:alias/vault/items/:name/reveal` `{field?}` | **Explicit reveal.** Returns values. Rate-limited to 10/min (the issuance limiter's budget). Audit-logged as `actor: "admin"` before it responds. POST, so it's never prefetched or cached. |
+| `POST /callers/:alias/vault/items/:name/reveal` `{field?}` | **Explicit reveal.** Returns values. Rate-limited to 10/min by its own limiter instance (same budget as the issuance limiter, not shared with it). Audit-logged as `actor: "admin"` before it responds. POST, so it's never prefetched or cached. |
 | `GET /vault/requests?status=pending` | Requests (all, or filtered) |
 | `POST /vault/requests/:id/grant` `{mode?}` | Grant (default `inject`; `reveal` allowed only on a `reveal` item) |
 | `POST /vault/requests/:id/deny` `{note?}` | Deny |
@@ -634,8 +635,11 @@ Scope: request and grant model in `service.ts`; the tools `vault_request_access`
 placeholders and cross-caller `vault_get`; `vault.inject` events; `admin-vault.ts` (every endpoint
 above); the frontend Vault page (items, reveal, requests, grants) and the caller-page link; docs
 (README access requests, admin API, dashboard).
-If review finds this too large, split it into **3a** (admin API + dashboard items view/reveal/create)
-and **3b** (requests and grants).
+**Split (lead decision):** ship as **PR 3a** (admin API items endpoints + `/vault/status` + dashboard
+Items tab with create/edit/replace/delete/reveal, caller-page link) and **PR 3b** (request/grant
+model, the three request tools, `vault_list.shared`, `owner/` placeholders, cross-caller `vault_get`,
+`vault.inject` events, request/grant admin endpoints, Requests and Grants tabs). The acceptance
+items below split accordingly; 3a carries invariants 1-5 and 8, 3b all eight.
 
 Acceptance:
 - [ ] bob requests alice's item. It shows in the dashboard queue. The admin grants inject, and bob's
