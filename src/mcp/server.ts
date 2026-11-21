@@ -1062,7 +1062,7 @@ server.tool(
 // eslint-disable-next-line @typescript-eslint/no-deprecated -- registerTool is not available in this SDK version
 server.tool(
   'vault_list_requests',
-  "List your own vault access requests: id, owner, item name, mode, status (pending, granted, denied, cancelled, withdrawn), and the operator's note when one was given.",
+  'List your own vault access requests: id, owner, item name, mode, status (pending, granted, denied, cancelled, withdrawn), and the operator\'s note when one was given. status is the operator\'s decision on the request and stays "granted" even after the grant is revoked: what you can use now is the shared section of vault_list.',
   {},
   async () => forwardVaultTool('vault_list_requests', {}),
 );
