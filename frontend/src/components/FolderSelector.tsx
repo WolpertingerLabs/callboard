@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { AlertCircle, CheckCircle, Search } from "lucide-react";
 import { validatePath, type ValidateResult } from "../api";
+import { parentDir } from "../utils/paths";
 import FolderBrowser from "./FolderBrowser";
 
 interface FolderSelectorProps {
@@ -9,6 +10,10 @@ interface FolderSelectorProps {
   placeholder?: string;
   autoFocus?: boolean;
   disabled?: boolean;
+  /** Passed to the browser's "Previously used" section, most recent first. */
+  recentDirectories?: string[];
+  /** Passed to the browser; removes a folder from `recentDirectories` once confirmed. */
+  onRemoveRecentDirectory?: (path: string) => void;
 }
 
 export default function FolderSelector({
@@ -17,6 +22,8 @@ export default function FolderSelector({
   placeholder = "Project folder path (e.g. /home/user/myproject)",
   autoFocus = false,
   disabled = false,
+  recentDirectories,
+  onRemoveRecentDirectory,
 }: FolderSelectorProps) {
   const [validation, setValidation] = useState<ValidateResult | null>(null);
   const [isValidating, setIsValidating] = useState(false);
@@ -194,7 +201,12 @@ export default function FolderSelector({
           onChange(path);
           setShowBrowser(false);
         }}
-        initialPath={value || undefined}
+        // Open one level above the folder in the field — or, with the field
+        // empty, the folder picked last time — so it and its siblings are in
+        // view rather than the folder's own contents.
+        initialPath={parentDir(value.trim() || recentDirectories?.[0]) ?? "/"}
+        recentDirectories={recentDirectories}
+        onRemoveRecentDirectory={onRemoveRecentDirectory}
       />
     </div>
   );

@@ -760,7 +760,13 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
                   )}
                   <div style={{ display: "flex", gap: 8 }}>
                     <div style={{ flex: 1 }}>
-                      <FolderSelector value={folder} onChange={setFolder} placeholder="Project folder path (e.g. /home/user/myproject)" />
+                      <FolderSelector
+                        value={folder}
+                        onChange={setFolder}
+                        placeholder="Project folder path (e.g. /home/user/myproject)"
+                        recentDirectories={shownRecentDirs}
+                        onRemoveRecentDirectory={removeRecentDir}
+                      />
                     </div>
                     <button
                       onClick={() => handleCreate()}
