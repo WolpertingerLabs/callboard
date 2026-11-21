@@ -11,7 +11,8 @@ import { spaceHasOwnDefaults, writesBrowserFallback } from "../utils/spaceDefaul
 import PermissionSettings from "./PermissionSettings";
 import "./NewChatPanel.css";
 import { useSystemInfo } from "../hooks/useSystemInfo";
-import ConfirmModal from "./ConfirmModal";
+import ConfirmRemoveRecentDirectory from "./ConfirmRemoveRecentDirectory";
+import { useRecentDirectories } from "../hooks/useRecentDirectories";
 import FolderSelector from "./FolderSelector";
 import ProviderConfigPicker from "./ProviderConfigPicker";
 import type { ChatRouteState } from "../types/chatRouteState";
@@ -20,9 +21,6 @@ import {
   saveDefaultPermissions,
   getDefaultModelReview,
   saveDefaultModelReview,
-  getRecentDirectories,
-  addRecentDirectory,
-  removeRecentDirectory,
   getDefaultProvider,
   saveDefaultProvider,
   getDefaultOpenRouterEffort,
@@ -89,7 +87,6 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   // Model safety review for the new chat. No "parent can answer" here: a chat
   // started from this panel never has a parent.
   const [modelReview, setModelReview] = useState<boolean>(getDefaultModelReview);
-  const [recentDirs, setRecentDirs] = useState(() => getRecentDirectories().map((r) => r.path));
   const [chatMode, setChatMode] = useState<"claude-code" | "agent">("claude-code");
   const [permissionsOpen, setPermissionsOpen] = useState(false);
   // Behavior section (harness behavior toggles) — collapsible, default
@@ -98,7 +95,8 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   const [pathOpen, setPathOpen] = useState(true);
   const [agents, setAgents] = useState<AgentConfig[]>([]);
   const [agentsFetched, setAgentsFetched] = useState(false);
-  const [confirmModal, setConfirmModal] = useState<{ isOpen: boolean; path: string }>({ isOpen: false, path: "" });
+  /** The recent folder awaiting a "remove?" confirmation, if any. */
+  const [confirmRemovePath, setConfirmRemovePath] = useState<string | null>(null);
   // Explicit-completion requirement for the chat being created. Deliberately
   // NOT persisted to localStorage — it's a per-chat decision (the nudge loop
   // is only wanted for specific tasks), so it resets to off each time.
@@ -194,12 +192,13 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   const { enabled: spacesEnabled, spaces, activeSpaceId, spaceById, refreshSpaces } = useSpaces();
   const [targetSpaceId, setTargetSpaceId] = useState<string>(() => (activeSpaceId && activeSpaceId !== ALL_SPACES ? activeSpaceId : DEFAULT_SPACE_ID));
   const targetSpace = spaceById(targetSpaceId);
-  // Where choices for this chat belong — see writesBrowserFallback. General's
-  // recent folders ARE the browser's list, so any server list written for it
-  // (by a daemon from before that rule) is ignored here.
+  // Where choices for this chat belong — see writesBrowserFallback.
   const fallback = writesBrowserFallback({ enabled: spacesEnabled, spaceId: targetSpace?.id ?? targetSpaceId, liveSpaceCount: spaces.length });
-  const spaceRecent = fallback ? [] : (targetSpace?.defaults?.recentDirectories?.map((d) => d.path) ?? []);
-  const shownRecentDirs = spaceRecent.length > 0 ? spaceRecent : recentDirs;
+  const {
+    recentDirectories: shownRecentDirs,
+    removeRecent: removeRecentDir,
+    recordRecent: recordRecentDir,
+  } = useRecentDirectories({ fallback, targetSpace, refreshSpaces });
   /** This browser's global defaults at mount — the fallback for every field a space leaves unset. */
   const [globals] = useState(() => ({
     provider: getDefaultProvider(),
@@ -307,12 +306,8 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
 
   const displayPath = folder.trim() || (shownRecentDirs.length > 0 ? shownRecentDirs[0] : "");
 
-  const updateRecentDirs = () => {
-    setRecentDirs(getRecentDirectories().map((r) => r.path));
-  };
-
   const handleRemoveRecentDir = (path: string) => {
-    setConfirmModal({ isOpen: true, path });
+    setConfirmRemovePath(path);
   };
 
   const openApiSettings = () => {
@@ -330,20 +325,6 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   // Each provider carries its own model selection; forward the matching one.
   const modelForProvider = (p: AgentProviderKind): string => (p === "codex" ? codexModel : p === "pi" ? piModel : claudeModel);
 
-  const confirmRemoveRecentDir = () => {
-    // A space's list when the panel is showing one — removed as a delta, so a
-    // folder the server added since this list was read survives — and this
-    // browser's otherwise.
-    if (spaceRecent.length > 0 && targetSpace) {
-      void updateSpace(targetSpace.id, { removeRecentDirectory: confirmModal.path })
-        .then(() => refreshSpaces())
-        .catch(() => {});
-    }
-    removeRecentDirectory(confirmModal.path);
-    updateRecentDirs();
-    setConfirmModal({ isOpen: false, path: "" });
-  };
-
   // Surface the picker's own validity message on the select and refuse to
   // create. `reportValidity` reads the `setCustomValidity` the picker set.
   // The picker evaluated `displayPath`; a different directory may carry its own
@@ -359,12 +340,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     if (!target) return;
     if (refuseUnsupportedEffort(target)) return;
 
-    // The browser's recent list is General's (the fallback); any other
-    // space's list is kept server-side, which records the folder itself.
-    if (fallback) {
-      addRecentDirectory(target);
-      updateRecentDirs();
-    }
+    recordRecentDir(target);
     persistChoices();
     // Runtime guard: only downgrade to claude-code when we KNOW the chosen
     // provider is not configured. While still loading (null), trust the user's
@@ -916,15 +892,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
         )}
       </div>
 
-      <ConfirmModal
-        isOpen={confirmModal.isOpen}
-        onClose={() => setConfirmModal({ isOpen: false, path: "" })}
-        onConfirm={confirmRemoveRecentDir}
-        title="Remove Recent Directory"
-        message={`Are you sure you want to remove "${confirmModal.path}" from your recent directories? This action cannot be undone.`}
-        confirmText="Remove"
-        confirmStyle="danger"
-      />
+      <ConfirmRemoveRecentDirectory path={confirmRemovePath} onConfirm={removeRecentDir} onClose={() => setConfirmRemovePath(null)} />
     </>
   );
 }
