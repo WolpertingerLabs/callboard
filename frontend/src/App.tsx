@@ -11,6 +11,7 @@ import CallerDetail from "./pages/CallerDetail";
 import IngestorTable from "./pages/IngestorTable";
 import SessionTable from "./pages/SessionTable";
 import SecretMatrix from "./pages/SecretMatrix";
+import VaultPage from "./pages/VaultPage";
 import ChangePassword from "./pages/ChangePassword";
 import ComingSoon from "./pages/ComingSoon";
 import Login from "./pages/Login";
@@ -60,6 +61,7 @@ export default function App() {
           <Route path="ingestors" element={<IngestorTable />} />
           <Route path="sessions" element={<SessionTable />} />
           <Route path="secrets" element={<SecretMatrix />} />
+          <Route path="vault" element={<VaultPage />} />
           <Route path="logs" element={<EventsView />} />
           <Route path="settings/password" element={<ChangePassword />} />
           <Route path="*" element={<ComingSoon title="Not found" />} />

@@ -65,6 +65,8 @@ export interface AdminCaller {
   /** Whether the caller's agent may run set_connection_enabled / set_secrets
    *  on itself (config `selfManage`, absent = true). */
   selfManage: boolean;
+  /** Items in the caller's vault; null when the vault can't be read. */
+  vaultItems: number | null;
 }
 
 // ── /admin/connections ───────────────────────────────────────────────────
@@ -217,6 +219,64 @@ export interface AdminSecret {
   required: boolean;
   present: boolean;
 }
+
+// ── /admin/vault/* and /admin/callers/:alias/vault/* ────────────────────
+export type AdminVaultKind = 'password' | 'token' | 'note' | 'key-value';
+export type AdminVaultExposure = 'inject' | 'reveal';
+
+/** GET /vault/status. Never the key: only its public fingerprint. */
+export interface AdminVaultStatus {
+  keyPresent: boolean;
+  keyId: string | null;
+  fileExists: boolean;
+  revision: number | null;
+  /** Item count per caller that has any vault data. */
+  callers: Record<string, number>;
+  pendingRequests: number;
+  /** Why the vault can't be read, when it can't. */
+  error?: string;
+}
+
+/** Who an item is shared with. Always empty until access grants ship. */
+export interface AdminVaultItemGrant {
+  grantee: string;
+  mode: AdminVaultExposure;
+}
+
+/** An item's metadata: everything but its values, plus the field names. */
+export interface AdminVaultItem {
+  id: string;
+  name: string;
+  kind: AdminVaultKind;
+  exposure: AdminVaultExposure;
+  notes?: string;
+  tags: string[];
+  metadata: Record<string, string>;
+  /** Connections the item may be used on; absent = any of the caller's. */
+  connections?: string[];
+  createdBy: 'agent' | 'admin';
+  createdAt: string;
+  updatedAt: string;
+  valueUpdatedAt: string;
+  /** Field names only. */
+  fields: string[];
+}
+
+/** GET /callers/:alias/vault/items. `revision` is what `If-Match` takes. */
+export interface AdminVaultItems {
+  revision: number;
+  items: (AdminVaultItem & { grants: AdminVaultItemGrant[] })[];
+}
+
+/** POST/PATCH /callers/:alias/vault/items[/:name]. */
+export interface AdminVaultItemChange {
+  item: AdminVaultItem;
+}
+
+/** POST /callers/:alias/vault/items/:name/reveal. The only response with values. */
+export type AdminVaultReveal =
+  | { name: string; owner: string; kind: AdminVaultKind; values: Record<string, string> }
+  | { name: string; owner: string; kind: AdminVaultKind; field: string; value: string };
 
 // ── Daemon reachability envelope ─────────────────────────────────────────
 /**

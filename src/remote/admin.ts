@@ -36,6 +36,8 @@ import { isSecretSetForCaller } from '../shared/env-utils.js';
 import { callerFingerprint } from '../shared/crypto/key-manager.js';
 import { getTunnelUrl } from './tunnel-state.js';
 import { mountAdminMutations, type AdminMutationDeps } from './admin-mutations.js';
+import { mountAdminVault } from './admin-vault.js';
+import { itemCounts } from './vault/service.js';
 import type { IngestorManager } from './ingestors/index.js';
 import type { IngestorStatus } from './ingestors/types.js';
 import type { SessionSnapshot } from './server.js';
@@ -113,6 +115,14 @@ export function createAdminRouter(deps: AdminRouterDeps): express.Router {
   router.get('/callers', (_req, res) => {
     const config = deps.loadConfig();
     const callersKeysDir = getCallerKeysDir();
+    // Counts only. A vault that can't be read (missing key, say) shows null
+    // rather than failing the caller list.
+    let vaultCounts: Record<string, number> | null;
+    try {
+      vaultCounts = itemCounts();
+    } catch {
+      vaultCounts = null;
+    }
     const out: AdminCaller[] = Object.entries(config.callers).map(([alias, caller]) => {
       const keysDirExists = fs.existsSync(path.join(callersKeysDir, alias));
       let fingerprint: string | null = null;
@@ -131,6 +141,8 @@ export function createAdminRouter(deps: AdminRouterDeps): express.Router {
         keysDirExists,
         source: caller.source ?? null,
         selfManage: callerMaySelfManage(caller),
+        vaultItems:
+          vaultCounts === null ? null : Object.hasOwn(vaultCounts, alias) ? vaultCounts[alias] : 0,
       };
     });
     res.json(out);
@@ -428,6 +440,10 @@ export function createAdminRouter(deps: AdminRouterDeps): express.Router {
   // Connections enable/secrets/test, caller create/delete, and listener/ingestor
   // control. Mounted on the same router (already behind requireAuth in server.ts).
   mountAdminMutations(router, deps);
+
+  // Vault items and status (src/remote/admin-vault.ts). Only POST …/reveal
+  // ever returns a vault value.
+  mountAdminVault(router, deps);
 
   return router;
 }

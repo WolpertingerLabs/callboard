@@ -407,6 +407,49 @@ export function vaultDiagnostics(): VaultCheck[] {
   return checks;
 }
 
+/** What the dashboard shows about the vault. Never key material beyond the public key id. */
+export interface VaultStatus {
+  keyPresent: boolean;
+  /** Public fingerprint of the key; null when there is no readable key. */
+  keyId: string | null;
+  fileExists: boolean;
+  /** Null when there is no vault file or it can't be read. */
+  revision: number | null;
+  /** Item count per caller that has a vault namespace. */
+  callers: Record<string, number>;
+  pendingRequests: number;
+  /** Why the vault can't be read, when it can't (a safe message). */
+  error?: string;
+}
+
+/** Health and size of the vault, for the admin API. Creates nothing. */
+export function vaultStatus(): VaultStatus {
+  const fileExists = vaultExists();
+  const keyPresent = fs.existsSync(keyFile());
+  const status: VaultStatus = {
+    keyPresent,
+    keyId: null,
+    fileExists,
+    revision: null,
+    callers: {},
+    pendingRequests: 0,
+  };
+  try {
+    if (keyPresent) status.keyId = computeKeyId(readKeyFile(keyFile(), VAULT_KEY_LABEL));
+    if (fileExists) {
+      const doc = readVault();
+      status.revision = doc.revision;
+      for (const [alias, c] of Object.entries(doc.callers)) {
+        status.callers[alias] = Object.keys(c.items).length;
+      }
+      status.pendingRequests = doc.requests.filter((r) => r.status === 'pending').length;
+    }
+  } catch (err) {
+    status.error = safeMessage(err);
+  }
+  return status;
+}
+
 function safeMessage(err: unknown): string {
   if (err instanceof VaultError) return err.message;
   const code = (err as NodeJS.ErrnoException | undefined)?.code;

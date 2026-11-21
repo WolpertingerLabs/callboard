@@ -256,6 +256,18 @@ export default function CallerDetail() {
       </section>
 
       <section className="detail-section">
+        <h2 className="section-title">Vault</h2>
+        <p className="detail-note">
+          <Link to={`/vault?caller=${encodeURIComponent(caller.alias)}`}>
+            Vault:{" "}
+            {caller.vaultItems === null
+              ? "unavailable"
+              : `${caller.vaultItems} item${caller.vaultItems === 1 ? "" : "s"}`}
+          </Link>
+        </p>
+      </section>
+
+      <section className="detail-section">
         <h2 className="section-title">Agent permissions</h2>
         <label className="secret-matrix-toggle">
           <input

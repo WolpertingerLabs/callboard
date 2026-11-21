@@ -408,6 +408,10 @@ describe('vault canary sweep', () => {
       .filter((l) => l.route?.methods.get)
       .map((l) => l.route?.path ?? '');
     expect(getPaths.length).toBeGreaterThan(5);
+    // The vault's own read endpoints are part of the sweep.
+    expect(getPaths).toEqual(
+      expect.arrayContaining(['/vault/status', '/callers/:alias/vault/items']),
+    );
 
     const app = express();
     app.use('/api/admin', express.json(), router);
@@ -430,6 +434,86 @@ describe('vault canary sweep', () => {
       admin.close();
     }
     expect(leaks).toEqual([]);
+  });
+
+  it('no admin vault write returns a value; only POST …/reveal does', async () => {
+    await seedItems();
+    const router = createAdminRouter({
+      getSessionsSnapshot: () => [],
+      ingestorManager: () => mgr,
+      loadConfig: () => loadRemoteConfig(),
+      resolveRoutesForCaller: () => [],
+      refreshCaller: () => undefined,
+      reloadPeer: () => undefined,
+      removePeer: () => undefined,
+      version: 'test',
+      port: 0,
+      startedAt: Date.now(),
+    });
+    const vaultRoutes = (
+      router.stack as { route?: { path: string; methods: Record<string, boolean> } }[]
+    )
+      .filter((l) => l.route?.path.includes('vault'))
+      .flatMap((l) =>
+        Object.keys(l.route?.methods ?? {}).map((m) => [m.toUpperCase(), l.route?.path ?? '']),
+      );
+    expect(vaultRoutes.map(([m, p]) => `${m} ${p}`).sort()).toEqual([
+      'DELETE /callers/:alias/vault/items/:name',
+      'GET /callers/:alias/vault/items',
+      'GET /vault/status',
+      'PATCH /callers/:alias/vault/items/:name',
+      'POST /callers/:alias/vault/items',
+      'POST /callers/:alias/vault/items/:name/reveal',
+    ]);
+
+    const app = express();
+    app.use('/api/admin', express.json(), router);
+    const admin = app.listen(0, '127.0.0.1');
+    await new Promise((r) => admin.once('listening', r));
+    const port = (admin.address() as AddressInfo).port;
+    const leaks: string[] = [];
+    const reveals: string[] = [];
+    const bodies: Record<string, unknown>[] = [
+      {},
+      { name: 'rev', field: 'value', path: vaultFile(), file: keyFile() },
+      { tags: ['x'], rename: 'rev' },
+      { name: 'inj', kind: 'token', values: { value: 'fake-0000-new' } },
+    ];
+    try {
+      for (const [method, p] of vaultRoutes) {
+        for (const name of ['inj', 'rev']) {
+          for (const body of bodies) {
+            await seedItems();
+            const before = forbidden();
+            const res = await fetch(
+              `http://127.0.0.1:${port}/api/admin${p.replace(':alias', 'alice').replace(':name', name)}`,
+              {
+                method,
+                headers: { 'content-type': 'application/json' },
+                ...(method !== 'GET' && { body: JSON.stringify(body) }),
+              },
+            );
+            const text = await res.text();
+            const banned = [...before, ...forbidden(), REVEAL_CANARY];
+            if (p.endsWith('/reveal')) {
+              // Reveal returns the value it was asked for; still never key or ciphertext.
+              if (text.includes(INJECT_CANARY) || text.includes(REVEAL_CANARY)) reveals.push(name);
+              const keyOrCiphertext = banned.filter(
+                (b) => b !== INJECT_CANARY && b !== REVEAL_CANARY,
+              );
+              if (leaksIn(text, keyOrCiphertext) !== undefined)
+                leaks.push(`${method} ${p} ${name}`);
+            } else if (leaksIn(text, banned) !== undefined) {
+              leaks.push(`${method} ${p} ${name} ${JSON.stringify(body)}`);
+            }
+          }
+        }
+      }
+    } finally {
+      admin.close();
+    }
+    expect(leaks).toEqual([]);
+    expect(new Set(reveals)).toEqual(new Set(['inj', 'rev']));
   });
 });
 
