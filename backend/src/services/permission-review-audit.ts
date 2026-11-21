@@ -28,6 +28,7 @@ import type { PermissionCategory } from "../agents/permissions/ToolPermissionPol
 import { createLogger } from "../utils/logger.js";
 import { emitAuditRecord, MAX_STRING_BYTES, newSpanId, newTraceId, truncateUtf8, type AttrValue, type AuditRecordInput } from "./audit-log.js";
 import type { ReviewVerdict } from "./permission-review.js";
+import { redactToolInputForReview } from "./tool-input-redaction.js";
 
 const log = createLogger("permission-review-audit");
 
@@ -269,7 +270,9 @@ export function startReviewAudit(start: ReviewAuditStart): ReviewAuditTrace {
     const startedMs = Date.now();
     const { hooks } = start;
     // Snapshot now: what the screen decides on is the input as it is NOW.
-    const input = serializeInput(start.input);
+    // The log is append-only and plain text, so secret vault values never
+    // enter it (tool-input-redaction.ts; claude.ts passes a redacted copy too).
+    const input = serializeInput(redactToolInputForReview(start.toolName, start.input));
     const common = (): Record<string, AttrValue> => ({
       "callboard.chat.id": start.chatId,
       "callboard.agent.alias": hooks.agentAlias,

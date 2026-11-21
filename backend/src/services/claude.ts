@@ -60,6 +60,7 @@ import { sessionRegistry } from "./session-registry.js";
 import { pendingRequests, type PendingRequest } from "./pending-requests.js";
 import { detectHardStop, isReviewableTool, reviewerNotesFor, reviewToolCall, type ReviewOptions, type ReviewRequest, type ReviewVerdict } from "./permission-review.js";
 import { startReviewAudit, type PermissionAuditHooks, type ReviewAuditResult, type ReviewAuditTrace } from "./permission-review-audit.js";
+import { redactToolInputForReview } from "./tool-input-redaction.js";
 import { notifyParentOfChildPrompt } from "./parent-answers.js";
 import { resolveParentage, walkToRootId } from "./chat-lineage.js";
 import { answeringParentFor } from "./superseded-parent.js";
@@ -591,6 +592,10 @@ export function buildCanUseTool(
       };
       let settings = readSettings();
       if (settings.modelReview || settings.parentAnswers) {
+        // What leaves this chat for the reviewer and the audit log: secret
+        // vault values become "[redacted]" (tool-input-redaction.ts). The call
+        // itself, and `entry.input` that an approval resolves with, keep `input`.
+        const reviewInput = redactToolInputForReview(toolName, input);
         let verdict = detectHardStop(toolName, input);
         const beginAudit = (screen: "model" | "hardstop", taskExcerpt?: string) => {
           if (!review.audit) return undefined;
@@ -609,7 +614,7 @@ export function buildCanUseTool(
             chatId: getTrackingId(),
             toolName,
             toolUseId: toolUseID,
-            input,
+            input: reviewInput,
             category,
             cwd: review.cwd,
             ...(taskExcerpt && { taskExcerpt }),
@@ -630,7 +635,7 @@ export function buildCanUseTool(
           }
           const before = settings;
           auditTrace = beginAudit("model", excerpt);
-          verdict = await reviewer({ toolName, input, cwd: review.cwd, category, ...(excerpt && { taskExcerpt: excerpt }) }, { signal });
+          verdict = await reviewer({ toolName, input: reviewInput, cwd: review.cwd, category, ...(excerpt && { taskExcerpt: excerpt }) }, { signal });
           auditVerdict = verdict;
           if (signal.aborted) return audited({ behavior: "deny", message: "Aborted" }, "aborted");
           // The review can take up to a minute. Re-read: a user who turned

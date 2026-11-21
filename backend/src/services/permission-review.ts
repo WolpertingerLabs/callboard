@@ -36,6 +36,7 @@ import { homedir } from "node:os";
 import type { PermissionCategory } from "../agents/permissions/ToolPermissionPolicy.js";
 import { quickCompletion, type QuickCompletionOptions, type QuickCompletionResult } from "./quick-completion.js";
 import { createLogger } from "../utils/logger.js";
+import { redactToolInputForReview } from "./tool-input-redaction.js";
 
 const log = createLogger("permission-review");
 
@@ -171,8 +172,9 @@ export function sanitizeHeaderValue(value: string, max = 512): string {
 }
 
 export function buildReviewPrompt(req: ReviewRequest): string {
+  // Secret vault values never reach the reviewer model (tool-input-redaction.ts).
+  const { text, truncated, empty } = describeToolInput(redactToolInputForReview(req.toolName, req.input));
   // A closing tag inside the input must not end the delimited block early.
-  const { text, truncated, empty } = describeToolInput(req.input);
   const input = neutraliseTags(text);
   const task = req.taskExcerpt?.trim() ? neutraliseTags(req.taskExcerpt.trim().slice(0, MAX_TASK_CHARS)) : "(not available)";
   return [

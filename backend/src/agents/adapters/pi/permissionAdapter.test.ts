@@ -147,6 +147,19 @@ describe("categorizePiToolName", () => {
   });
 
   it.each([
+    ["vault_list", "fileRead"],
+    ["vault_list_requests", "fileRead"],
+    ["vault_create", "fileWrite"],
+    ["vault_update", "fileWrite"],
+    ["vault_delete", "fileWrite"],
+    ["vault_request_access", "fileWrite"],
+    ["vault_cancel_request", "fileWrite"],
+    ["vault_get", "codeExecution"],
+  ] as const)("pins the drawlatch vault tool %s to %s", (name, expected) => {
+    expect(categorizePiToolName(name)).toBe(expected);
+  });
+
+  it.each([
     ["spawn_job", "codeExecution"],
     ["run_something", "codeExecution"],
     ["update_card", "fileWrite"],
