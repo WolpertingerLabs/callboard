@@ -47,6 +47,7 @@ import {
 } from '../shared/protocol/caller-bundle-crypto.js';
 import { setEnvVars } from '../shared/env-utils.js';
 import { createLogger } from '../shared/logger.js';
+import { purgeCaller } from './vault/service.js';
 
 const log = createLogger('caller-bootstrap');
 
@@ -399,6 +400,18 @@ export function deleteCaller(alias: string): void {
   const config = loadRemoteConfig();
   if (!(alias in config.callers)) {
     throw new Error(`Caller "${alias}" not found`);
+  }
+
+  // Purge the caller's vault namespace first, so a later caller with the same
+  // alias inherits nothing. If the vault can't be read (say its key is
+  // missing), the deletion fails here with the caller still intact rather
+  // than leaving items behind for whoever reuses the alias.
+  const purged = purgeCaller(alias);
+  if (purged.items + purged.revokedGrants + purged.withdrawnRequests > 0) {
+    log.info(
+      `Purged vault for "${alias}": ${purged.items} item(s), ${purged.revokedGrants} grant(s) ` +
+        `revoked, ${purged.withdrawnRequests} request(s) withdrawn`,
+    );
   }
 
   // Clean up prefixed env vars referenced by this caller's env mapping.

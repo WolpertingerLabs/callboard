@@ -19,6 +19,11 @@ export const INSTANCE_ID_REGEX = /^[a-zA-Z0-9_-]+$/;
 /** Names that reach Object.prototype (or a constructor) through a lookup. */
 const RESERVED_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
+/** True for `__proto__`, `constructor`, and `prototype`. */
+export function isReservedKey(key: string): boolean {
+  return RESERVED_KEYS.has(key);
+}
+
 /** `map[key]` if `map` has `key` as an own property, else undefined. */
 export function ownEntry<T>(map: Record<string, T> | null | undefined, key: string): T | undefined {
   // null too: a hand-edited config can hold `"listenerInstances": null`.
