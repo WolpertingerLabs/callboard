@@ -76,14 +76,20 @@ git-credential actions:
 Errors go to stderr, without values, and exit 1, so git falls through to its
 next helper or prompt.
 
-Example (URL-scoped, so git asks the helper only for that host). The first
-line, an empty helper, clears helpers inherited for that URL (osxkeychain,
-manager, store, cache …): git asks every helper that applies to store a
-credential that worked, so without it another helper may save the token.
+Example (URL-scoped, so git asks the helper only for that host). git asks
+every helper that applies to store a credential that worked. The first line,
+an empty helper, clears the helpers git has read before it (system config,
+where osxkeychain and manager usually are, and lines above it in the same
+file). A credential.helper read later (lower in ~/.gitconfig, or in a repo's
+.git/config) still runs and may save the token.
   git config --global credential.https://forgejo.example.com.helper ''
   git config --global --add credential.https://forgejo.example.com.helper \\
     '!drawlatch vault git-credential --item forgejo-token --host forgejo.example.com'
 Run both inside a repository without --global to set it for that repository only.
+Check, inside a repo, that nothing for the URL comes after the empty line, and
+which helpers git runs:
+  git config --show-origin --get-regexp '^credential\\..*helper$'
+  printf 'url=https://forgejo.example.com\\n\\n' | GIT_TRACE=1 git credential reject 2>&1 | grep run_command
 `;
 
 /** Run `drawlatch vault <argv…>`. Returns the exit code. */

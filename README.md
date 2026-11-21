@@ -544,7 +544,7 @@ An agent can **ask** for another caller's item. Only the operator, on the dashbo
 
 **It works only for items the caller may reveal**: its own `reveal` items, or another caller's item granted to it at `reveal`. An `inject` item, or one shared inject-only, is refused. That's deliberate. A credential helper has to hand the value to git, and the daemon can't tell git running the helper from an agent running the same command (or `git credential fill`) in its shell with the same caller keys. Anything the helper can read, an agent with those keys can read, so the helper is limited to items that agent could read with `vault_get` anyway. It still buys you a few things:
 
-- the token isn't in a remote URL or a dotfile, and with the setup below (which clears other helpers for that URL) git doesn't save it in `~/.git-credentials`, a keychain, or a credential cache either;
+- the token isn't in a remote URL or a dotfile, and with the setup below git doesn't save it in `~/.git-credentials`, a keychain, or a credential cache either, as long as no other helper for that URL comes after the reset line (see below);
 - it isn't in the model's context unless the agent asks for it with `vault_get`;
 - every use is written to the owner's [audit log](#audit-log) as `vault.reveal` with `vault.via: "git-credential"`;
 - rotating the value on the dashboard (**Vault → Replace value**) takes effect for git at once.
@@ -560,7 +560,21 @@ Setup, on a machine with the caller's keys (the same `MCP_CONFIG_DIR`, `proxy.co
      '!drawlatch vault git-credential --item forgejo-token --host forgejo.example.com'
    ```
 
-   The empty value matters. A URL-scoped helper is *added* to the helpers git already has (`osxkeychain` from macOS git, `manager` on Git for Windows, a `store` or `cache` you set up), not used instead of them, and after a successful login git asks **every** helper that applies to save the credential. Without the reset line, one of them writes the vault token to disk or a keychain, and from then on answers `get` before the vault helper does, so uses stop being audit-logged and a rotated value no longer reaches git. An empty `helper` value clears the list for that URL, so the vault helper is the only one. Check with `git config --get-all credential.https://forgejo.example.com.helper`: the first line is empty.
+   The empty value matters. A URL-scoped helper is *added* to the helpers git already has (`osxkeychain` from macOS git, `manager` on Git for Windows, a `store` or `cache` you set up), not used instead of them, and after a successful login git asks **every** helper that applies to save the credential. Without the reset line, one of them writes the vault token to disk or a keychain, and from then on answers `get` before the vault helper does, so uses stop being audit-logged and a rotated value no longer reaches git.
+
+   An empty `helper` value clears only the helpers git has read **up to that point**. git reads system config, then `~/.gitconfig`, then the repository's `.git/config`, each top to bottom. So the reset covers helpers in system config (where `osxkeychain` and `manager` usually are) and lines above it in the same file. A helper that applies to the URL and comes **later** is still added after it and still saves the token: a `credential.helper` lower in `~/.gitconfig` (running `git config --global credential.helper …` after these lines can put one there), or one in a repository's `.git/config`. Check what git will use, from inside a repository you'll push from:
+
+   ```bash
+   # Every helper entry, in the order git reads them. Nothing that applies to the
+   # URL should come after the empty line.
+   git config --show-origin --get-regexp '^credential\..*helper$'
+   # The helpers git actually runs for the URL. Only the drawlatch helper should
+   # be listed. (This also asks them to erase a stored credential for it, which
+   # does no harm here.)
+   printf 'url=https://forgejo.example.com\n\n' | GIT_TRACE=1 git credential reject 2>&1 | grep run_command
+   ```
+
+   Don't check with `git credential approve`: without a password git runs no helpers at all, so it prints nothing either way.
 
    To set it for one repository only, run both commands inside it without `--global`. Add `--caller <alias>` when the keys aren't `MCP_KEY_ALIAS`'s (or `default`), `--owner <alias>` to use another caller's item granted at `reveal`, and `--username <u>` when the item has no `username` field and the host wants a particular one.
 3. `git clone https://forgejo.example.com/org/repo.git` now gets its credentials from the vault. Check with `drawlatch vault list` that the item is there and is `reveal`.
@@ -568,7 +582,7 @@ Setup, on a machine with the caller's keys (the same `MCP_CONFIG_DIR`, `proxy.co
 What the helper does:
 
 - **`get`** reads git's `key=value` request from stdin. If `--host` is set and git's `host` isn't exactly that (case-insensitive, port included: `forgejo.example.com:3000` needs `--host forgejo.example.com:3000`), it exits 1 **without contacting the daemon**. Otherwise it calls `vault_get` with `purpose: "git-credential"` and prints `username=` (the item's `username` field, else `--username`, else `x-access-token`) and `password=` (the item's `value` field).
-- **`store`** and **`erase`** do nothing and exit 0: the vault is managed by the agent and the dashboard, not by git. The helper itself never writes the token anywhere; whether git does depends on its other helpers for that URL, which the reset line above clears.
+- **`store`** and **`erase`** do nothing and exit 0: the vault is managed by the agent and the dashboard, not by git. The helper itself never writes the token anywhere. Whether git does depends on the other helpers for that URL: none run if every one of them comes before the reset line (see the check above).
 - **Errors** (an `inject` or ungranted item, a missing item, a host mismatch, a value with a newline, the daemon not running) go to stderr without any value, and exit 1, so git moves on to its next helper or prompts.
 
 The helper authenticates the same way the MCP server does: the caller handshake over the encrypted channel, then the ordinary `vault_get` tool. It uses no admin password and no new endpoint, and it never opens the vault file or its key, so it works the same from another machine. There's deliberately no `drawlatch vault get` command that prints a value, and no command that writes one.
