@@ -1262,10 +1262,12 @@ export function scrubSecretsDeep(
  * same goes for a redirect's `Location` and the final URL reported after
  * redirects, which can echo a substituted query parameter back.
  *
- * Each secret is scrubbed as-is, in its `encodeURIComponent` form (how it
- * appears once a server or URL parser has re-encoded a query string), and in
- * its JSON-string-escaped forms (with and without `\/`). This is best-effort
- * defense in depth, not a guarantee: base64, case-folded, truncated, or
+ * Each secret is scrubbed in every form it can take on the wire (see
+ * secretWireForms()): as-is, `encodeURIComponent`-encoded, as the WHATWG URL
+ * serializer writes it into a path or a query, form-urlencoded, as a form
+ * parser decodes its query form, and as UTF-8 bytes read back as Latin-1;
+ * and each of those JSON-string-escaped (with and without `\/`). This is
+ * best-effort defense in depth, not a guarantee: base64, case-folded, or
  * otherwise transformed copies are not recognised.
  *
  * Values shorter than 4 characters are skipped: they are not meaningful
@@ -1280,6 +1282,76 @@ export function scrubSecretsDeep(
  */
 export function scrubSecrets(text: string, secrets: Record<string, string>): string {
   return compileSecretScrubber(secrets)(text);
+}
+
+/**
+ * The forms a secret value takes once it's on the wire, each produced by the
+ * encoder that produces it (never a hand-written encode set):
+ *
+ *   - the value itself, and `encodeURIComponent(value)`;
+ *   - the WHATWG URL serializer's path form (`new URL()` keeps `'` and `|`,
+ *     encodes space and `"`, leaves `%` alone, turns `\` into `/`, and a `?`
+ *     in the value starts the query) and its query form (which also encodes
+ *     `'`). fetch() sends a URL exactly as `new URL()` serializes it, and
+ *     upstreams echo URLs back as received (`self` links, error pages);
+ *   - the form-urlencoded form (URLSearchParams: `+` for space), and the query
+ *     form as a form parser decodes it (`+` in the value becomes a space);
+ *   - the UTF-8 bytes of the value or that decoded form read back as Latin-1,
+ *     which is how a non-ASCII header value echoed by Node reads in undici.
+ *
+ * A `#` ends a URL there, so the path and query forms stop at it: that prefix
+ * is what was sent. A `?` in a value placed in a path splits it in two, so
+ * each part's forms are added too. Other splits (`&` or `=` in a query) are
+ * not. Duplicates are dropped; a plain ASCII token has one form.
+ */
+export function secretWireForms(value: string): string[] {
+  const forms = new Set<string>([value, encodeURIComponent(value)]);
+  const add = (make: () => string | null | undefined) => {
+    try {
+      const form = make();
+      if (form) forms.add(form);
+    } catch {
+      // A value the parser rejects can't be sent in that position either.
+    }
+  };
+  add(() => {
+    const u = new URL(`http://h/p/${value}`);
+    if (!u.pathname.startsWith('/p/')) return undefined;
+    const pathPart = u.pathname.slice(3);
+    if (u.search) {
+      // A `?` in the value splits it: an upstream sees (and may echo) the
+      // path part and the query part separately, encoded or decoded.
+      add(() => pathPart);
+      add(() => lenientDecode(pathPart, false));
+      add(() => u.search.slice(1));
+      add(() => lenientDecode(u.search.slice(1), true));
+    }
+    return pathPart + u.search;
+  });
+  let query: string | undefined;
+  try {
+    const search = new URL(`http://h/?q=${value}`).search;
+    if (search.startsWith('?q=')) query = search.slice(3);
+  } catch {
+    // As above.
+  }
+  add(() => query);
+  add(() => new URLSearchParams([['q', value]]).toString().slice(2));
+  const formDecoded = query === undefined ? undefined : lenientDecode(query, true);
+  add(() => formDecoded);
+  add(() => Buffer.from(value, 'utf8').toString('latin1'));
+  add(() => (formDecoded ? Buffer.from(formDecoded, 'utf8').toString('latin1') : undefined));
+  return [...forms];
+}
+
+/**
+ * Percent-decode `text` the lenient way URL parsers do: a stray `%` (`%+d`)
+ * stays as it is, where decodeURIComponent() would throw. With `plusIsSpace`,
+ * `+` decodes to a space, as in a form.
+ */
+function lenientDecode(text: string, plusIsSpace: boolean): string {
+  const escaped = (plusIsSpace ? text : text.replace(/\+/g, '%2B')).replace(/&/g, '%26');
+  return new URLSearchParams(`q=${escaped}`).get('q') ?? text;
 }
 
 /** A scrubSecrets() with its secret forms precomputed. */
@@ -1301,14 +1373,17 @@ export function compileSecretScrubber(secrets: Record<string, string>): SecretSc
       seen.add(form);
       forms.push([name, form]);
     };
-    add(value);
-    add(encodeURIComponent(value));
-    // How the value appears inside a JSON string in a body that wasn't parsed
-    // (a text/plain or HTML error page quoting JSON): `"` → `\"`, control
-    // characters → `\uXXXX`, and, from some encoders, `/` → `\/`.
-    const jsonEscaped = JSON.stringify(value).slice(1, -1);
-    add(jsonEscaped);
-    add(jsonEscaped.replace(/\//g, '\\/'));
+    for (const wire of secretWireForms(value)) {
+      // Shorter forms (a value cut short by a `#`) would shred the text.
+      if (wire.length < MIN_SCRUBBED_SECRET_LENGTH) continue;
+      add(wire);
+      // How the form appears inside a JSON string in a body that wasn't
+      // parsed (a text/plain or HTML error page quoting JSON): `"` → `\"`,
+      // control characters → `\uXXXX`, and, from some encoders, `/` → `\/`.
+      const jsonEscaped = JSON.stringify(wire).slice(1, -1);
+      add(jsonEscaped);
+      add(jsonEscaped.replace(/\//g, '\\/'));
+    }
   }
   forms.sort(([, a], [, b]) => b.length - a.length);
   const replacements = forms.map(([name, form]) => [form, `\${${name}}`] as const);

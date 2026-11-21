@@ -42,7 +42,20 @@ const USER_CANARY = `user-canary-${crypto.randomUUID()}`;
 const KV_CANARY = `kv-canary-${crypto.randomUUID()}`;
 const REVEAL_CANARY = `reveal-canary-${crypto.randomUUID()}`;
 const BOB_CANARY = `bob-canary-${crypto.randomUUID()}`;
-const ALL_CANARIES = [CANARY, USER_CANARY, KV_CANARY, REVEAL_CANARY, BOB_CANARY];
+/**
+ * Values whose URL wire forms differ from both encodeURIComponent and the raw
+ * value: the WHATWG path and query encode sets keep `'` and `|` (the query
+ * set encodes `'`), encode space and `"`, leave `%` alone, and `?` / `#`
+ * split the value across URL components. The id up front is what the
+ * assertions look for: any echo of any form of the value would carry it.
+ */
+const NASTY_IDS = [0, 1, 2].map(() => `nasty${crypto.randomUUID().replace(/-/g, '')}`);
+const NASTY = {
+  n1: `${NASTY_IDS[0]}'|a b"c%+dé\\h/i`,
+  n2: `${NASTY_IDS[1]}'|a b"?c%+d/é\\h`,
+  n3: `${NASTY_IDS[2]}'| b"#c?dé`,
+} as const;
+const ALL_CANARIES = [CANARY, USER_CANARY, KV_CANARY, REVEAL_CANARY, BOB_CANARY, ...NASTY_IDS];
 
 const TOKEN = 'route-header-token-0000';
 const ACCOUNT = 'acct-config-1234';
@@ -73,6 +86,15 @@ function listen(handler: http.RequestListener): Promise<{ srv: http.Server; url:
       resolve({ srv, url: `http://127.0.0.1:${(srv.address() as AddressInfo).port}` });
     });
   });
+}
+
+/** decodeURIComponent, or the input when it holds a stray `%` (`%+d`). */
+function safeDecode(text: string): string {
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    return text;
+  }
 }
 
 function collect(req: http.IncomingMessage, into: Received[], then: (r: Received) => void): void {
@@ -109,9 +131,10 @@ beforeAll(async () => {
         res.end();
         return;
       }
-      if (u.pathname === '/redir-same') {
+      if (u.pathname.startsWith('/redir-same')) {
+        // Location is the request URL as received, wire form and all.
         res.statusCode = 302;
-        res.setHeader('location', `/landing${u.search}`);
+        res.setHeader('location', r.url.replace('/redir-same', '/landing'));
         res.end();
         return;
       }
@@ -128,16 +151,23 @@ beforeAll(async () => {
         return;
       }
       res.setHeader('x-echo', `${q.get('v') ?? ''} ${String(r.headers['x-key'] ?? '')}`);
+      if (u.pathname.startsWith('/raw/')) {
+        // The URL exactly as it arrived, in the body and in a header.
+        res.setHeader('x-url', r.url);
+        res.setHeader('content-type', 'text/plain');
+        res.end(`raw ${r.url} key=${String(r.headers['x-key'])}`);
+        return;
+      }
       if (u.pathname.startsWith('/text/')) {
         res.setHeader('content-type', 'text/plain');
-        res.end(`you sent ${decodeURIComponent(r.url)} with ${String(r.headers['x-key'])}`);
+        res.end(`you sent ${safeDecode(r.url)} with ${String(r.headers['x-key'])}`);
         return;
       }
       res.setHeader('content-type', 'application/json');
       res.end(
         JSON.stringify({
           url: r.url,
-          path: decodeURIComponent(u.pathname),
+          path: safeDecode(u.pathname),
           query: Object.fromEntries(q),
           headers: r.headers,
           body: r.body,
@@ -192,6 +222,9 @@ beforeAll(async () => {
     { name: 'quoted', kind: 'token', values: { value: `${CANARY}"q\\b` } },
     'agent',
   );
+  for (const [name, value] of Object.entries(NASTY)) {
+    await createItem('alice', { name, kind: 'password', values: { value } }, 'agent');
+  }
   await createItem('bob', { name: 'tok', kind: 'token', values: { value: BOB_CANARY } }, 'agent');
 });
 
@@ -571,6 +604,69 @@ describe('echoes are scrubbed to ${vault:…}', () => {
       expect(err!.cause).toBeUndefined();
       expectNoCanary(`${err!.message} ${String(err!.stack)}`);
       if (_k === 'message') expect(err!.message).toContain(scrubbed('tok'));
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+});
+
+describe('values whose URL wire form differs from encodeURIComponent', () => {
+  type Pos = 'path' | 'query' | 'header';
+  const cases = (Object.keys(NASTY) as (keyof typeof NASTY)[]).flatMap((item, i) =>
+    (['path', 'query', 'header'] as Pos[]).map((pos) => [item, pos, NASTY_IDS[i]] as const),
+  );
+  /** A request on `prefix` with the token at `pos`. */
+  const placed = (prefix: string, pos: Pos, item: string) => {
+    const token = `\${vault:${item}}`;
+    if (pos === 'path') return { method: 'GET', url: `${base}${prefix}/${token}/tail` };
+    if (pos === 'query') return { method: 'GET', url: `${base}${prefix}?v=${token}&z=1` };
+    return { method: 'GET', url: `${base}${prefix}`, headers: { 'X-Key': token } };
+  };
+  const leaked = (value: unknown, id: string) =>
+    (typeof value === 'string' ? value : JSON.stringify(value)).includes(id);
+
+  it.each(cases)('%s in the %s: echoed URL in a text body and headers', async (item, pos, id) => {
+    const res = await send(placed('/raw/x', pos, item));
+    expect(leaked(received, id)).toBe(true); // the value really went out
+    expect(leaked(res, id)).toBe(false);
+  });
+
+  it.each(cases)('%s in the %s: echoed URL in a JSON body', async (item, pos, id) => {
+    const res = await send(placed('/j', pos, item));
+    expect(leaked(received, id)).toBe(true);
+    expect(leaked(res, id)).toBe(false);
+  });
+
+  it.each(cases.filter(([, pos]) => pos !== 'header'))(
+    '%s in the %s: the final URL after a redirect that echoes it',
+    async (item, pos, id) => {
+      const res = await send(placed('/redir-same', pos, item));
+      expect(received).toHaveLength(2);
+      expect(res.url).toBeDefined();
+      expect(leaked(res, id)).toBe(false);
+    },
+  );
+
+  it.each(cases)('%s in the %s: a fetch error quoting the URL sent', async (item, pos, id) => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementationOnce((input, init) => {
+      const url = input instanceof Request ? input.url : String(input);
+      // Only what carries the vault value: the route's own token in the
+      // Authorization header would trip the leak check on its own.
+      const xKey = (init?.headers as Record<string, string> | undefined)?.['X-Key'];
+      const echoed =
+        pos === 'header' ? `header ${String(xKey)}` : `${url} (${new URL(url).search})`;
+      return Promise.reject(
+        new TypeError('fetch failed', { cause: new Error(`connect ${echoed}`) }),
+      );
+    });
+    try {
+      const err = await send(placed('/x', pos, item)).then(
+        () => undefined,
+        (e: unknown) => e as Error,
+      );
+      expect(err).toBeInstanceOf(Error);
+      expect(err!.cause).toBeUndefined();
+      expect(leaked(`${err!.message} ${String(err!.stack)}`, id)).toBe(false);
     } finally {
       fetchSpy.mockRestore();
     }

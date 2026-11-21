@@ -79,3 +79,58 @@ describe('compiled secret scrubbing', () => {
     expect(scrub('ab and more ab')).toBe('ab and more ab');
   });
 });
+
+/**
+ * Every form a value takes on the wire, produced by the real encoders: a
+ * value substituted into a URL is sent as the WHATWG serializer writes it,
+ * an upstream that parses a query as a form decodes `+` to a space, and a
+ * non-ASCII header value read back as bytes comes out as Latin-1.
+ */
+describe('wire forms', () => {
+  const NASTY = `nasty-'|a b"c%+dé\\h/i?j#k`;
+  const NOTHASH = `x-'|a b"c%+dé\\h/i?j`;
+  const scrub = compileSecretScrubber({ V: NASTY, W: NOTHASH });
+
+  const pathForm = (v: string) => {
+    const u = new URL(`http://h/p/${v}`);
+    return u.pathname.slice('/p/'.length) + u.search;
+  };
+  const queryForm = (v: string) => new URL(`http://h/?q=${v}`).search.slice('?q='.length);
+  const formForm = (v: string) => new URLSearchParams([['q', v]]).toString().slice('q='.length);
+
+  it.each([
+    ['path', pathForm],
+    ['query', queryForm],
+    ['form-urlencoded', formForm],
+    ['form-decoded query', (v: string) => new URLSearchParams(`q=${queryForm(v)}`).get('q')!],
+    ['UTF-8 bytes read as Latin-1', (v: string) => Buffer.from(v, 'utf8').toString('latin1')],
+    ['JSON-escaped path', (v: string) => JSON.stringify(pathForm(v)).slice(1, -1)],
+    ['JSON-escaped query', (v: string) => JSON.stringify(queryForm(v)).slice(1, -1)],
+  ])('scrubs the %s form', (_k, form) => {
+    for (const [name, v] of [
+      ['V', NASTY],
+      ['W', NOTHASH],
+    ]) {
+      const wire = form(v);
+      expect(wire).not.toBe(v); // the form really differs from the raw value
+      expect(scrub(`echo: <${wire}>`)).toBe(`echo: <\${${name}}>`);
+    }
+  });
+
+  it('a fragment cuts the value where the URL parser does', () => {
+    // The part before `#` is what was sent; it is scrubbed as a whole.
+    expect(queryForm(NASTY)).not.toContain('k');
+    expect(scrub(`/x?q=${queryForm(NASTY)}`)).toBe('/x?q=${V}');
+  });
+
+  it('adds no form shorter than the floor', () => {
+    // `ab#cdef` is sent as `ab`: too short to scrub without shredding text.
+    const s = compileSecretScrubber({ S: 'ab#cdef' });
+    expect(s('ab ab#cdef')).toBe('ab ${S}');
+  });
+
+  it('a plain value has one form, so plain values cost nothing extra', () => {
+    const s = compileSecretScrubber({ P: 'plain-Value_123' });
+    expect(s('x plain-Value_123 y')).toBe('x ${P} y');
+  });
+});
