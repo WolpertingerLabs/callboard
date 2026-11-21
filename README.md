@@ -102,7 +102,7 @@ The local MCP server exposes these tools. Every call goes through the encrypted 
 | `vault_create` | Save a new vault item (`name`, `kind`, `values`, and optional `exposure`, `notes`, `tags`, `metadata`, `connections`). Fails if the name exists. Returns the item's metadata. |
 | `vault_update` | Change a vault item. `values` replaces the whole value map, `rename` renames it. The agent can only tighten an item: `exposure` may go from `reveal` to `inject` but not back, and `connections` may only narrow. |
 | `vault_delete` | Delete a vault item. |
-| `vault_get` | The values of a `reveal` item (or one `field`), or with `owner` of another caller's item granted to this caller at effective mode `reveal`. Each call is written to the owner's audit log before the value is returned, and fails if that write fails. `inject` items, and other callers' items without a reveal grant, are refused: use an `inject` item as `${vault:<name>}` (or `${vault:<owner>/<name>}`) in `secure_request`. |
+| `vault_get` | The values of a `reveal` item (or one `field`), or with `owner` of another caller's item granted to this caller at effective mode `reveal`. Each call is written to the owner's audit log before the value is returned, and fails if that write fails. An optional `purpose` (1-32 lowercase letters, digits, or `-`; not `mcp` or `admin`) is recorded in that line as `vault.via`, marked `vault.via_asserted: true` because the daemon can't check it; the [git credential helper](#git-credential-helper) sends `git-credential`. `inject` items, and other callers' items without a reveal grant, are refused: use an `inject` item as `${vault:<name>}` (or `${vault:<owner>/<name>}`) in `secure_request`. |
 | `vault_request_access` | Ask the operator for access to another caller's item (`owner`, `name`, `reason`, optional `mode`: `inject`, the default, or `reveal`). Returns `{requestId, status: "pending"}` whether or not that caller or item exists, or `status: "granted"` when a grant already covers it. Grants nothing itself ([Access requests](#access-requests-and-grants)). |
 | `vault_list_requests` | This caller's own access requests: `id`, `owner`, `itemName`, `mode`, `status`, `createdAt`, and `decidedAt` / `decidedNote` once decided. `status` is the operator's decision on the request: it stays `granted` after the grant is revoked. What the caller can use now is `vault_list`'s `shared` ([#57](https://github.com/WolpertingerLabs/drawlatch/issues/57) tracks exposing grant status here). |
 | `vault_cancel_request` | Cancel one of this caller's pending requests (`requestId`). |
@@ -476,7 +476,7 @@ If `keys/vault.key` is missing while `vault.enc.json` exists, every vault tool f
 
 **Deleting a caller** (dashboard, `DELETE /api/admin/callers/:alias`) deletes its vault items too, revokes every grant to or from it, withdraws every pending request by it or for its items, and drops its own request history, so a new caller with the same alias starts empty and inherits no access. If the vault can't be read (its key is missing, say), the deletion fails and the caller is left in place.
 
-**Audit events.** Vault events are daemon lines (`drawlatch.source: "daemon"`) in the **owner's** audit log, whoever acted. They carry `vault.owner`, `vault.item` (the name at the time), `vault.item_id`, `vault.actor` (a caller's alias, or `admin` for the dashboard), and `vault.via` (`mcp` or `admin`), plus:
+**Audit events.** Vault events are daemon lines (`drawlatch.source: "daemon"`) in the **owner's** audit log, whoever acted. They carry `vault.owner`, `vault.item` (the name at the time), `vault.item_id`, `vault.actor` (a caller's alias, or `admin` for the dashboard), and `vault.via` (`mcp` or `admin`; for a `vault_get` with a `purpose`, that purpose, such as `git-credential`, with `vault.via_asserted: true`, since it's the client's claim), plus:
 
 | `drawlatch.event` | Extra fields |
 | --- | --- |
@@ -537,6 +537,38 @@ An agent can **ask** for another caller's item. Only the operator, on the dashbo
 - **The owner's agent** isn't told who asked and can't approve or veto. It may still rename or delete its item, with the effects above.
 - **History.** Decided requests are kept, the newest 500; revoked grants are kept for 90 days. Pending requests and active grants never expire on their own: deny or revoke them.
 - No MCP tool grants, denies, or revokes. Those exist only on the admin API, behind the dashboard login.
+
+#### Git credential helper
+
+`drawlatch vault git-credential` is a [git credential helper](https://git-scm.com/docs/gitcredentials) that answers from one vault item, so git can push and fetch with a token that lives only in the vault.
+
+**It works only for items the caller may reveal**: its own `reveal` items, or another caller's item granted to it at `reveal`. An `inject` item, or one shared inject-only, is refused. That's deliberate. A credential helper has to hand the value to git, and the daemon can't tell git running the helper from an agent running the same command (or `git credential fill`) in its shell with the same caller keys. Anything the helper can read, an agent with those keys can read, so the helper is limited to items that agent could read with `vault_get` anyway. It still buys you a few things:
+
+- the token isn't in `~/.git-credentials`, a remote URL, or any other file;
+- it isn't in the model's context unless the agent asks for it with `vault_get`;
+- every use is written to the owner's [audit log](#audit-log) as `vault.reveal` with `vault.via: "git-credential"`;
+- rotating the value on the dashboard (**Vault → Replace value**) takes effect for git at once.
+
+Setup, on a machine with the caller's keys (the same `MCP_CONFIG_DIR`, `proxy.config.json`, and `keys/callers/<alias>/` the local MCP server uses):
+
+1. Save the token as a `reveal` item, for example `forgejo-token` (kind `token`, or `password` with a `username` field). An agent can save it with `vault_create` and `exposure: "reveal"`; for a token the agent shouldn't see in its conversation, create it on the dashboard (**Vault → New item**, exposure `reveal`).
+2. Point git at the helper **for that host only**, with a URL-scoped helper key, and pass the same host to `--host` so the helper refuses any other host even if the config is too broad:
+
+   ```bash
+   git config --global credential.https://forgejo.example.com.helper \
+     '!drawlatch vault git-credential --item forgejo-token --host forgejo.example.com'
+   ```
+
+   Use `git config` without `--global` to set it for one repository. Add `--caller <alias>` when the keys aren't `MCP_KEY_ALIAS`'s (or `default`), `--owner <alias>` to use another caller's item granted at `reveal`, and `--username <u>` when the item has no `username` field and the host wants a particular one.
+3. `git clone https://forgejo.example.com/org/repo.git` now gets its credentials from the vault. Check with `drawlatch vault list` that the item is there and is `reveal`.
+
+What the helper does:
+
+- **`get`** reads git's `key=value` request from stdin. If `--host` is set and git's `host` isn't exactly that (case-insensitive, port included: `forgejo.example.com:3000` needs `--host forgejo.example.com:3000`), it exits 1 **without contacting the daemon**. Otherwise it calls `vault_get` with `purpose: "git-credential"` and prints `username=` (the item's `username` field, else `--username`, else `x-access-token`) and `password=` (the item's `value` field).
+- **`store`** and **`erase`** do nothing and exit 0: the vault is managed by the agent and the dashboard, not by git. git never writes the token anywhere.
+- **Errors** (an `inject` or ungranted item, a missing item, a host mismatch, a value with a newline, the daemon not running) go to stderr without any value, and exit 1, so git moves on to its next helper or prompts.
+
+The helper authenticates the same way the MCP server does: the caller handshake over the encrypted channel, then the ordinary `vault_get` tool. It uses no admin password and no new endpoint, and it never opens the vault file or its key, so it works the same from another machine. There's deliberately no `drawlatch vault get` command that prints a value, and no command that writes one.
 
 ### Webhooks and the tunnel
 
@@ -646,6 +678,16 @@ issue-caller <alias>     Issue a caller credential bundle (for Callboard)
     -o, --output <file>    Write to a 0600 file instead of stdout
     --into <keysDir>       Same host: write key files into a Callboard keys directory
 set-password             Set the dashboard password (alias: change-password)
+vault list               Your vault items (name, kind, exposure, field names) and items shared with
+                         you, as a caller over the encrypted channel; never values
+    --caller <alias>       Caller keys to use (default: MCP_KEY_ALIAS, else "default")
+vault git-credential <get|store|erase>
+                         git credential helper answering from one reveal item (Git credential helper)
+    --item <name>          The item (required)
+    --owner <alias>        Another caller's item granted to you at reveal
+    --caller <alias>       As for vault list
+    --username <u>         Username when the item has no username field (default x-access-token)
+    --host <host>          Answer only for this git host; otherwise exit 1 without contacting the daemon
 -h, --help / -v, --version
 ```
 
@@ -662,6 +704,7 @@ set-password             Set the dashboard password (alias: change-password)
 - **Request log:** every request and response is logged with caller and session (`drawlatch logs --requests`).
 - **Caller audit log:** `ingest_logs` is append-only and write-only over the protocol, stamped with the authenticated caller ([Audit log](#audit-log)).
 - **Vault:** each caller's [vault](#vault) is encrypted at rest under a key file only the daemon reads. No tool returns a vault value except `vault_get` on an item the caller may reveal (its own `reveal` item, or one granted to it at effective mode `reveal`), which is audit-logged first, and none returns the vault file, its ciphertext, or the key. Access to another caller's item needs a grant, and only the operator can grant, deny, or revoke: no MCP tool can, since any authenticated caller can call any tool by name. A value injected with `${vault:…}` is scrubbed from the response like a withheld secret and can't choose the request's host. An agent can only tighten an item's exposure, never loosen it.
+- **Vault from the CLI:** `drawlatch vault list` and the [git credential helper](#git-credential-helper) run as a caller: the same handshake, keys, and tools as the MCP server, no admin password, no extra endpoint, no access to the vault file or key. They print only what `vault_get` returns to that caller, so an `inject` item never reaches git, and whoever holds a caller's keys can read that caller's `reveal` items either way.
 - **Vault on the dashboard:** no admin API response carries a vault value except the explicit `POST …/reveal`, which needs a confirmation in the UI, is limited to 10/min, is `no-store`, and is written to the owner's audit log (`actor: "admin"`) before it answers. The dashboard keeps a revealed value only in the reveal panel's state, never in a shared cache or storage, and clears it on close, after 60 seconds, and on navigation. Values are write-only everywhere else on the dashboard. Anyone with the dashboard password can reveal every caller's items.
 
 ## Package exports
@@ -693,6 +736,8 @@ npm run dev:mcp           # MCP server via tsx, config in ~/.drawlatch-dev
 ```
 bin/drawlatch.js          CLI
 src/mcp/server.ts         local MCP stdio server
+src/mcp/client.ts         caller side of the encrypted channel (MCP server and `drawlatch vault`)
+src/cli/vault.ts          drawlatch vault list / git-credential
 src/remote/server.ts      daemon: handshake, /request, webhooks, dashboard, admin API
 src/remote/tool-dispatch.ts   tool implementations shared by MCP and the admin API
 src/remote/ingestors/     WebSocket, webhook and poll listeners
