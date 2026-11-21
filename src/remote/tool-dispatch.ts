@@ -63,6 +63,14 @@ import { safeFetch } from './safe-fetch.js';
 import { assertNoControlChars, isEndpointAllowed, normalizeOutboundUrl } from './url-policy.js';
 import { waitForEvents } from './wait-for-events.js';
 import { createItem, deleteItem, listItems, revealItem, updateItem } from './vault/service.js';
+import {
+  assertVaultNotInOrigin,
+  hasVaultToken,
+  resolveVaultTokens,
+  substitutePlaceholders,
+  type VaultResolution,
+  type VaultSource,
+} from './vault/placeholders.js';
 
 // ── Endpoint matching ────────────────────────────────────────────────────────
 
@@ -367,7 +375,8 @@ export interface ProxyRequestOptions {
    *  signing credentials), and its headers override the route's headers of
    *  the same name instead of conflicting with them: Slack's testIngestor
    *  sends its app token in place of the bot token. The response is still
-   *  scrubbed of withheld values. */
+   *  scrubbed of withheld values. `${vault:…}` never resolves in one: it is
+   *  sent as written, exactly as before vault placeholders existed. */
   templateAuthored?: boolean;
   /** Caller the request is made for. Required on an oauth2 route: it is part
    *  of the token identity. */
@@ -390,6 +399,9 @@ export async function executeProxyRequest(
   // Step 0: refuse control characters before anything else looks at the URL
   // (Step 6 checks the resolved form again).
   assertNoControlChars(url, url);
+  // A vault value may never choose the scheme, host, or port. Route matching
+  // below sees vault tokens literally (`*` matches them within a segment).
+  if (!templateAuthored) assertVaultNotInOrigin(url);
 
   // Step 1: Find matching route — try raw URL first
   let matched: ResolvedRoute | null = matchRoute(url, routes);
@@ -434,11 +446,42 @@ export async function executeProxyRequest(
     assertNoWithheldSecrets(v, noneWithheld, `Connection header "${k}"`, connection);
   }
 
+  // Step 1b: Vault placeholders, in a caller's own request only (never a
+  // template's): the URL, its headers, and the body where the route resolves
+  // secrets in it. Every token is resolved and authorized here, before
+  // anything is sent; one that can't be used fails the request.
+  const bodyText =
+    body === null || body === undefined
+      ? undefined
+      : typeof body === 'string'
+        ? body
+        : JSON.stringify(body);
+  const vaultSources: VaultSource[] = [
+    { where: 'The request URL', text: url },
+    ...Object.entries(headers)
+      .filter(([, v]) => typeof v === 'string')
+      .map(([k, v]) => ({ where: `Header "${k}"`, text: v })),
+    ...(matched.resolveSecretsInBody && typeof bodyText === 'string'
+      ? [{ where: 'The request body', text: bodyText }]
+      : []),
+  ];
+  const vault: VaultResolution = templateAuthored
+    ? { values: new Map(), scrub: {} }
+    : resolveVaultTokens({ caller, connection, sources: vaultSources });
+  /** Substitute a caller string's placeholders: `${VAR}` and `${vault:…}` in
+   *  one pass over the original, so neither kind of value is expanded again.
+   *  `jsonEscape` escapes vault values inside a body drawlatch serialized. */
+  const resolve = (text: string, jsonEscape = false): string =>
+    templateAuthored
+      ? resolvePlaceholders(text, secrets)
+      : substitutePlaceholders(text, secrets, vault.values, { jsonEscape });
+  if (!templateAuthored && hasVaultToken(url)) resolvedUrl = resolve(url);
+
   // Step 2: Resolve client headers using matched route's secrets
   const resolvedHeaders: Record<string, string> = {};
   for (const [k, v] of Object.entries(headers)) {
     assertNoWithheldSecrets(v, withheld, `Header "${k}"`, connection);
-    resolvedHeaders[k] = resolvePlaceholders(v, secrets);
+    resolvedHeaders[k] = resolve(v);
   }
 
   // Step 3: Check for header conflicts — reject if client provides a header
@@ -545,7 +588,7 @@ export async function executeProxyRequest(
         assertNoWithheldSecrets(serialized, withheld, 'The request body', connection);
       }
       const resolvedPayload = matched.resolveSecretsInBody
-        ? resolvePlaceholders(serialized, secrets)
+        ? resolve(serialized, typeof body !== 'string')
         : serialized;
       bodyCarriesSecrets = resolvedPayload !== serialized;
       form.append(bodyFieldName ?? 'payload_json', resolvedPayload);
@@ -569,16 +612,14 @@ export async function executeProxyRequest(
       if (matched.resolveSecretsInBody) {
         assertNoWithheldSecrets(body, withheld, 'The request body', connection);
       }
-      fetchBody = matched.resolveSecretsInBody ? resolvePlaceholders(body, secrets) : body;
+      fetchBody = matched.resolveSecretsInBody ? resolve(body) : body;
       bodyCarriesSecrets = fetchBody !== body;
     } else if (body !== null && body !== undefined) {
       const serialized = JSON.stringify(body);
       if (matched.resolveSecretsInBody) {
         assertNoWithheldSecrets(serialized, withheld, 'The request body', connection);
       }
-      fetchBody = matched.resolveSecretsInBody
-        ? resolvePlaceholders(serialized, secrets)
-        : serialized;
+      fetchBody = matched.resolveSecretsInBody ? resolve(serialized, true) : serialized;
       bodyCarriesSecrets = fetchBody !== serialized;
       if (!resolvedHeaders['content-type'] && !resolvedHeaders['Content-Type']) {
         resolvedHeaders['Content-Type'] = 'application/json';
@@ -670,8 +711,9 @@ export async function executeProxyRequest(
     return auth.accessToken !== previous;
   };
   await mint(false);
-  /** Everything scrubbed from headers, URLs, and errors. */
-  const allSecrets = () => ({ ...matched.secrets, ...tokenScrub });
+  /** Everything scrubbed from headers, URLs, and errors: every route secret,
+   *  the minted token(s), and every vault value this request substituted. */
+  const allSecrets = () => ({ ...matched.secrets, ...tokenScrub, ...vault.scrub });
 
   try {
     // The signal is one wall-clock budget spanning connect, headers, *and*
@@ -738,8 +780,9 @@ export async function executeProxyRequest(
     // write the caller reads back), and many are plain config values
     // (REDDIT_SUBREDDIT, TWITCH_USER_ID) that legitimately appear in
     // responses; scrubbing those would corrupt data and protect nothing.
-    // The minted OAuth2 token counts as withheld too.
-    const withheldValues = { ...withheldSecretValues(matched), ...tokenScrub };
+    // The minted OAuth2 token counts as withheld too, and so does every vault
+    // value substituted into this request (reveal items included).
+    const withheldValues = { ...withheldSecretValues(matched), ...tokenScrub, ...vault.scrub };
     const responseBody =
       Object.keys(withheldValues).length > 0 ? scrubSecretsDeep(rawBody, withheldValues) : rawBody;
     // Every route secret plus the minted token(s), compiled once for all the
