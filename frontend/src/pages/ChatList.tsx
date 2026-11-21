@@ -1809,7 +1809,8 @@ export default function ChatList({
                 display: "flex",
                 alignItems: "center",
                 gap: 6,
-                padding: `4px ${FILTER_INSET}px`,
+                // Taller on mobile: a finger-sized row, like the 32px clear button above.
+                padding: `${isMobile ? 8 : 4}px ${FILTER_INSET}px`,
                 fontSize: 12,
                 color: "var(--text-muted)",
                 cursor: "pointer",
