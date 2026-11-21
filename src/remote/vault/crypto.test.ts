@@ -162,7 +162,8 @@ describe('key file', () => {
     createKeyFile(file, LABEL);
     fs.chmodSync(file, 0o640);
     expect(() => readKeyFile(file, LABEL)).toThrow(
-      /keys\/vault\.key is readable by group or others \(mode 0640\).*chmod 600/,
+      'keys/vault.key is readable by group or others (mode 0640); ' +
+        'run chmod 600 on keys/vault.key in the drawlatch config dir',
     );
   });
 
@@ -177,5 +178,18 @@ describe('key file', () => {
     }
     expect(message).toMatch(/not a base64 32-byte key/);
     expect(message).not.toContain(CANARY);
+  });
+
+  it('reports a read failure by code and label, never the absolute path', () => {
+    const file = path.join(dir, 'keys', 'vault.key');
+    fs.mkdirSync(file, { recursive: true, mode: 0o700 }); // a directory: read gives EISDIR
+    let message = '';
+    try {
+      readKeyFile(file, LABEL);
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    expect(message).toBe('could not read keys/vault.key (EISDIR)');
+    expect(message).not.toContain(dir);
   });
 });

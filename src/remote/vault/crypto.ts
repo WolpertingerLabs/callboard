@@ -111,23 +111,50 @@ export function openEnvelope(key: Buffer, envelope: unknown): Buffer {
   }
 }
 
+/** A key file whose mode lets group or others read it. */
+export class KeyModeError extends VaultError {
+  constructor(
+    readonly label: string,
+    readonly mode: number,
+  ) {
+    // Relative to the config dir, which the agent can't know: name the dir in words.
+    super(
+      `${label} is readable by group or others (mode 0${mode.toString(8)}); ` +
+        `run chmod 600 on ${label} in the drawlatch config dir`,
+    );
+    this.name = 'KeyModeError';
+  }
+}
+
+/**
+ * A filesystem error reduced to its code and the config-dir-relative label.
+ * Node's own messages carry the absolute path. VaultErrors pass through.
+ */
+export function readFailure(err: unknown, label: string): VaultError {
+  if (err instanceof VaultError) return err;
+  const code = (err as NodeJS.ErrnoException | undefined)?.code;
+  return new VaultError(`could not read ${label}${typeof code === 'string' ? ` (${code})` : ''}`);
+}
+
 /** Read and check a key file: owner-only mode, one base64 line of KEY_BYTES bytes. */
 export function readKeyFile(file: string, label: string): Buffer {
-  const fd = fs.openSync(file, 'r');
+  let fd: number;
+  try {
+    fd = fs.openSync(file, 'r');
+  } catch (err) {
+    throw readFailure(err, label);
+  }
   try {
     const mode = fs.fstatSync(fd).mode & 0o777;
-    if (mode & 0o077) {
-      throw new VaultError(
-        `${label} is readable by group or others (mode 0${mode.toString(8)}); ` +
-          `run: chmod 600 ${label}`,
-      );
-    }
+    if (mode & 0o077) throw new KeyModeError(label, mode);
     const text = fs.readFileSync(fd, 'utf8').trim();
     const key = Buffer.from(text, 'base64');
     if (key.length !== KEY_BYTES || key.toString('base64') !== text) {
       throw new VaultError(`${label} is not a base64 ${KEY_BYTES}-byte key`);
     }
     return key;
+  } catch (err) {
+    throw readFailure(err, label);
   } finally {
     fs.closeSync(fd);
   }

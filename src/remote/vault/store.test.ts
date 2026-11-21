@@ -9,6 +9,7 @@ import { computeKeyId } from './crypto.js';
 import {
   MAX_VAULT_BYTES,
   MISSING_KEY_MESSAGE,
+  ensureWriteKey,
   mutateVault,
   readVault,
   resetVaultCache,
@@ -232,6 +233,74 @@ describe('vault store', () => {
   });
 });
 
+describe('read-path errors', () => {
+  const asRoot = process.getuid?.() === 0;
+
+  function messageOf(fn: () => unknown): string {
+    try {
+      fn();
+    } catch (err) {
+      return (err as Error).message;
+    }
+    throw new Error('expected a throw');
+  }
+
+  it('reduces an unreadable vault file to its code and relative name', () => {
+    put('alice', 'gh', CANARY);
+    fs.rmSync(file());
+    fs.mkdirSync(file()); // stat works, read gives EISDIR
+    resetVaultCache();
+    const msg = messageOf(() => readVault());
+    expect(msg).toBe('could not read vault.enc.json (EISDIR)');
+    expect(msg).not.toContain(dir);
+  });
+
+  it('reduces an unreadable key to its code and relative name', () => {
+    put('alice', 'gh', CANARY);
+    fs.rmSync(keyFile());
+    fs.mkdirSync(keyFile(), { mode: 0o700 });
+    resetVaultCache();
+    const msg = messageOf(() => readVault());
+    expect(msg).toBe('could not read keys/vault.key (EISDIR)');
+    expect(msg).not.toContain(dir);
+  });
+
+  it.skipIf(asRoot)('reduces EACCES on the vault file the same way', () => {
+    put('alice', 'gh', CANARY);
+    fs.chmodSync(file(), 0o000);
+    resetVaultCache();
+    try {
+      const msg = messageOf(() => readVault());
+      expect(msg).toBe('could not read vault.enc.json (EACCES)');
+      expect(msg).not.toContain(dir);
+    } finally {
+      fs.chmodSync(file(), 0o600);
+    }
+  });
+});
+
+describe('ensureWriteKey', () => {
+  it('creates a key when neither file exists', () => {
+    expect(ensureWriteKey()).toHaveLength(32);
+    expect(fs.statSync(keyFile()).mode & 0o777).toBe(0o600);
+  });
+
+  it('never creates a key while the vault file exists, even called directly', () => {
+    put('alice', 'gh', CANARY);
+    const vaultBytes = fs.readFileSync(file());
+    fs.rmSync(keyFile());
+    expect(() => ensureWriteKey()).toThrow(MISSING_KEY_MESSAGE);
+    expect(fs.existsSync(keyFile())).toBe(false);
+    expect(fs.readFileSync(file()).equals(vaultBytes)).toBe(true);
+  });
+
+  it('reuses an existing key', () => {
+    put('alice', 'gh', CANARY);
+    const key = fs.readFileSync(keyFile(), 'utf8').trim();
+    expect(ensureWriteKey().toString('base64')).toBe(key);
+  });
+});
+
 describe('vaultDiagnostics', () => {
   it('passes with nothing created yet', () => {
     expect(vaultDiagnostics().every((c) => c.ok)).toBe(true);
@@ -260,7 +329,10 @@ describe('vaultDiagnostics', () => {
   it('flags a group-readable key and a file that will not decrypt', () => {
     put('alice', 'gh', CANARY);
     fs.chmodSync(keyFile(), 0o640);
-    expect(vaultDiagnostics().some((c) => !c.ok && (c.fix ?? '').includes('chmod 600'))).toBe(true);
+    // doctor is local CLI output: its fix carries the full path, runnable from anywhere.
+    expect(vaultDiagnostics().some((c) => !c.ok && c.fix === `run: chmod 600 ${keyFile()}`)).toBe(
+      true,
+    );
     fs.chmodSync(keyFile(), 0o600);
     const env = JSON.parse(fs.readFileSync(file(), 'utf8')) as Record<string, string>;
     fs.writeFileSync(file(), JSON.stringify({ ...env, tag: Buffer.alloc(16).toString('base64') }));

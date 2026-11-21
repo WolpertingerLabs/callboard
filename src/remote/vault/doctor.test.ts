@@ -63,6 +63,7 @@ describe.skipIf(!built)('drawlatch doctor: vault', () => {
       },
     );
     fs.chmodSync(path.join(dir, 'keys', 'vault.key'), 0o644);
-    expect(doctor()).toMatch(/chmod 600 keys\/vault\.key/);
+    // Local CLI output: the fix is the full path, so it works from any directory.
+    expect(doctor()).toContain(`run: chmod 600 ${path.join(dir, 'keys', 'vault.key')}`);
   });
 });

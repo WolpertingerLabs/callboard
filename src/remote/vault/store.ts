@@ -21,11 +21,13 @@ import path from 'node:path';
 import { getConfigDir, getKeysDir } from '../../shared/config.js';
 import { createLogger } from '../../shared/logger.js';
 import {
+  KeyModeError,
   VaultError,
   computeKeyId,
   createKeyFile,
   fsyncDir,
   openEnvelope,
+  readFailure,
   readKeyFile,
   sealDocument,
 } from './crypto.js';
@@ -190,8 +192,12 @@ function loadKey(): Buffer {
   return readKeyFile(keyFile(), VAULT_KEY_LABEL);
 }
 
-/** Load the key for a write, creating it only when no vault file exists yet. */
-function loadOrCreateKey(): Buffer {
+/**
+ * Load the key for a write, creating it only when no vault file exists yet:
+ * never a new key next to an existing vault file, which would orphan its data.
+ * Exported so that guard is tested on its own, not only behind loadText().
+ */
+export function ensureWriteKey(): Buffer {
   if (fs.existsSync(keyFile()) || vaultExists()) return loadKey();
   const { key, created } = createKeyFile(keyFile(), VAULT_KEY_LABEL);
   if (created) log.info(`Created vault key ${VAULT_KEY_LABEL} (key id ${computeKeyId(key)})`);
@@ -236,12 +242,20 @@ function loadText(): { text: string | undefined; key: Buffer | undefined } {
   // The key is read on every operation, so its loss is noticed at once.
   const key = loadKey();
   const keyId = computeKeyId(key);
-  const st = fs.statSync(file);
-  if (cache && sameFile(cache, file, st, keyId)) return { text: cache.text, key };
-  if (st.size > MAX_VAULT_FILE_BYTES) throw new VaultError('vault file is larger than 32 MiB');
+  let st: fs.Stats;
+  let raw: string | undefined;
+  try {
+    st = fs.statSync(file);
+    if (cache && sameFile(cache, file, st, keyId)) return { text: cache.text, key };
+    if (st.size > MAX_VAULT_FILE_BYTES) throw new VaultError('vault file is larger than 32 MiB');
+    raw = fs.readFileSync(file, 'utf8');
+  } catch (err) {
+    // Node's messages carry the absolute path: report the code and relative name only.
+    throw readFailure(err, VAULT_FILE_LABEL);
+  }
   let envelope: unknown;
   try {
-    envelope = JSON.parse(fs.readFileSync(file, 'utf8'));
+    envelope = JSON.parse(raw);
   } catch {
     throw new VaultError(`${VAULT_FILE_LABEL} is not valid JSON`);
   }
@@ -318,7 +332,7 @@ export function mutateVault<T>(fn: (doc: VaultDocument) => T): T {
   }
   const file = vaultFile();
   try {
-    const key = existingKey ?? loadOrCreateKey();
+    const key = existingKey ?? ensureWriteKey();
     const envelope = sealDocument(key, Buffer.from(plaintext, 'utf8'));
     const st = writeAtomic(file, JSON.stringify(envelope) + '\n');
     cache = {
@@ -365,7 +379,9 @@ export function vaultDiagnostics(): VaultCheck[] {
   try {
     key = readKeyFile(keyFile(), VAULT_KEY_LABEL);
   } catch (err) {
-    return [{ label: `Vault key (${VAULT_KEY_LABEL})`, ok: false, fix: safeMessage(err) }];
+    // doctor is local CLI output, so the fix can name the full path and run from anywhere.
+    const fix = err instanceof KeyModeError ? `run: chmod 600 ${keyFile()}` : safeMessage(err);
+    return [{ label: `Vault key (${VAULT_KEY_LABEL})`, ok: false, fix }];
   }
   checks.push({
     label: `Vault key (${VAULT_KEY_LABEL})`,
