@@ -12,7 +12,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@openai/codex-sdk": "^0.153.4",
     "@wolpertingerlabs/computer-use": "*",
-    "@wolpertingerlabs/drawlatch": "^1.0.0-alpha.63",
+    "@wolpertingerlabs/drawlatch": "^1.0.0-alpha.67",
     "adm-zip": "^0.5.16",
     "archiver": "^7.0.1",
     "cookie-parser": "^1.4.7",
