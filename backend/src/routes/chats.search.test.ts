@@ -165,6 +165,41 @@ describe("GET /chats/search returns chat-list row IDs", () => {
     expect(await search("needle", "/tmp/elsewhere")).toEqual([]);
   });
 
+  it("names only the record the list builds a matching session's row from", async () => {
+    // Storage order is newest-first and ownership is last-wins, so `a` (older,
+    // written first) owns `x`'s row although `b` also claims it. `a` is stamped
+    // pi while `x` is a claude-code hit — collectContentMatches' provider
+    // filter rejects `a` and names `b`, a row none of whose sessions matched.
+    record("a", "x", { provider: "pi" });
+    record("b", "b-own", { session_ids: ["x"] });
+    transcript("x", "needle");
+    transcript("b-own", "haystack");
+    const rows = await listRows();
+    expect(rows).toContain("a");
+    expect(await search("needle")).toEqual(["a"]);
+  });
+
+  it("still finds a logical chat through a historical alias", async () => {
+    // collectContentMatches' alias reconciliation is no longer read; the row
+    // index covers metadata.session_ids on its own.
+    record("logical", "current", { provider: "codex", session_ids: ["old"] });
+    transcript("old", "needle");
+    transcript("current", "haystack");
+    expect(await search("needle")).toEqual(["logical"]);
+  });
+
+  it("folder-scopes title hits by the record's discovered sessions, as content is", async () => {
+    // The record's stored folder disagrees with where its session was
+    // discovered; the discovered session decides, exactly as for content.
+    record("moved", "s-moved", { title: "needle title" }, "/tmp/elsewhere");
+    transcript("s-moved", "haystack", "/tmp/work");
+    // No discovered session at all: only the stored folder can place it.
+    record("orphan", "s-gone", { title: "needle orphan" }, "/tmp/elsewhere");
+    expect(await search("needle", "/tmp/work")).toEqual(["moved"]);
+    expect(await search("needle", "/tmp/elsewhere")).toEqual(["orphan"]);
+    expect(await search("needle")).toEqual(["moved", "orphan"]);
+  });
+
   it("scopes content hits to the folder", async () => {
     transcript("s-here", "needle", "/tmp/work");
     transcript("s-there", "needle", "/tmp/elsewhere");

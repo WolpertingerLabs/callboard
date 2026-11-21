@@ -287,9 +287,9 @@ chatsRouter.get("/search", async (req, res) => {
     // and worktree expansion there is the separate `repo` parameter, derived
     // from records rather than from a live `.git`. This route is unchanged.
     const folderMatches = new Map<string, boolean>();
-    const inFolder = (candidate: string, providerKind: string | undefined): boolean => {
+    const inFolder = (candidate: string, providerKind: string): boolean => {
       if (candidate === folder) return true;
-      if (providerKind && providerKind !== "claude-code") return false;
+      if (providerKind !== "claude-code") return false;
       if (!folderMatches.has(candidate)) {
         try {
           const resolved = resolveWorktreeToMainRepoCached(candidate);
@@ -305,20 +305,29 @@ chatsRouter.get("/search", async (req, res) => {
     const matches = await collectContentMatches(query, selected, fileChats);
 
     // Session keys are `[provider, sessionId]`; each becomes the row the list
-    // shows that session as. `matches.chatIds` are already chat IDs.
-    const chatIds = new Set<string>(matches.chatIds);
+    // shows that session as — and only that. `matches.chatIds` is deliberately
+    // not used: it resolves ownership by a provider-filtered single-owner rule,
+    // which can name a record the list does not build the matching session's
+    // row from, lighting up a row none of whose sessions matched.
+    const chatIds = new Set<string>();
     for (const key of matches.keys) {
       const [, sid] = JSON.parse(key) as [string, string];
       chatIds.add(rowIdForSession(rowIndex, sid));
     }
 
     // A chat's title is searchable even when no transcript line contains it.
+    // Folder scoping follows the content path exactly: a record passes when a
+    // session it owns (its row) is among the folder's selected sessions. A
+    // record with no discovered session has nothing to resolve worktrees
+    // from, so only its stored folder can place it.
     const needle = query.toLowerCase();
+    const selectedRows = folder ? new Set(selected.map((s) => rowIdForSession(rowIndex, s.sessionId))) : undefined;
+    const discoveredRows = folder ? new Set(discovery.sessions.map((s) => rowIdForSession(rowIndex, s.sessionId))) : undefined;
     for (const chat of fileChats) {
       if (!chat?.id) continue;
       const meta = parseChatMetadata(chat.metadata);
       if (typeof meta.title !== "string" || !meta.title.toLowerCase().includes(needle)) continue;
-      if (folder && (folderIgnored || !chat.folder || !inFolder(chat.folder, typeof meta.provider === "string" ? meta.provider : undefined))) continue;
+      if (selectedRows && discoveredRows && !selectedRows.has(chat.id) && (folderIgnored || discoveredRows.has(chat.id) || chat.folder !== folder)) continue;
       chatIds.add(chat.id);
     }
 

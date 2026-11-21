@@ -9,10 +9,11 @@ let running = 0;
  * Overload/time/byte-budget failures are explicit incomplete coverage.
  */
 export async function collectContentMatches(query: string, sessions: OwnedSession[], stored: Chat[] = []) {
-  if (running >= 2) return { keys: new Set<string>(), chatIds: new Set<string>(), warnings: ["Content search workers busy; retry this query"] };
+  if (running >= 2)
+    return { keys: new Set<string>(), chatIds: new Set<string>(), labelOnlyKeys: new Set<string>(), warnings: ["Content search workers busy; retry this query"] };
   running++;
   try {
-    const result = await new Promise<{ keys: string[]; warnings: string[] }>((resolve) => {
+    const result = await new Promise<{ keys: string[]; warnings: string[]; labelOnlyKeys?: string[] }>((resolve) => {
       const source = import.meta.url.endsWith(".ts");
       const moduleURL = new URL(source ? "./chat-content-worker.ts" : "./chat-content-worker.js", import.meta.url).href;
       // tsx is a devDependency and only a .ts run needs it, so its specifier travels
@@ -74,7 +75,9 @@ export async function collectContentMatches(query: string, sessions: OwnedSessio
       });
       if (compatible.length === 1) chatIds.add(compatible[0].id);
     }
-    return { keys, chatIds, warnings: result.warnings };
+    // Codex native-agent hits that matched only the nickname/agent path.
+    const labelOnlyKeys = new Set(result.labelOnlyKeys ?? []);
+    return { keys, chatIds, labelOnlyKeys, warnings: result.warnings };
   } finally {
     running--;
   }

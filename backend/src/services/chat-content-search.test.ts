@@ -61,6 +61,34 @@ describe("bounded complete content collection", () => {
     expect([...result.keys]).toEqual([JSON.stringify(["codex", "codex-later"])]);
     expect(result.warnings).toEqual([]);
   });
+  it("flags a Codex native child matched only on its nickname", async () => {
+    const child = "22222222-2222-4222-8222-222222222222";
+    const filePath = join(dir, "codex-native.jsonl");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        type: "session_meta",
+        payload: {
+          id: child,
+          cwd: "/repo",
+          cli_version: "0.153.4",
+          source: { subagent: { thread_spawn: { parent_thread_id: "11111111-1111-4111-8111-111111111111", agent_nickname: "Scoutling" } } },
+          subagent_history_start_ordinal: 1,
+        },
+      }) +
+        "\n" +
+        JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "own words" }] } }) +
+        "\n",
+    );
+    const session = { sessionId: child, filePath, folder: "/repo", displayFolder: "/repo", createdAt: new Date(0), updatedAt: new Date(0), providerKind: "codex" };
+    const key = JSON.stringify(["codex", child]);
+    const byLabel = await collectContentMatches("scoutling", [session]);
+    expect(byLabel.keys.has(key)).toBe(true);
+    expect(byLabel.labelOnlyKeys.has(key)).toBe(true);
+    const byMessage = await collectContentMatches("own words", [session]);
+    expect(byMessage.keys.has(key)).toBe(true);
+    expect(byMessage.labelOnlyKeys.has(key)).toBe(false);
+  });
   it("reports missing files and invalid grep instead of claiming no matches", async () => {
     const base = {
       sessionId: "x",

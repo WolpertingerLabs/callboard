@@ -16,7 +16,7 @@ const state = vi.hoisted(() => ({ stored: [] as Chat[], sessions: [] as any[] })
 vi.mock("./claude.js", () => ({ getActiveSession: () => undefined }));
 vi.mock("./chats-snapshot.js", () => ({ listChatsSnapshot: () => state.stored }));
 vi.mock("./chat-discovery.js", () => ({ discoverChatCorpus: () => ({ sessions: state.sessions, warnings: [] }) }));
-vi.mock("./chat-content-search.js", () => ({ collectContentMatches: vi.fn(() => ({ keys: new Set(), warnings: [] })) }));
+vi.mock("./chat-content-search.js", () => ({ collectContentMatches: vi.fn(() => ({ keys: new Set(), labelOnlyKeys: new Set(), warnings: [] })) }));
 vi.mock("../agents/adapters/codex/CodexSessionProvider.js", () => ({
   CodexSessionProvider: class {
     nativeDiscoveryEvidence() {

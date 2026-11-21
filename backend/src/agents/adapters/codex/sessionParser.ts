@@ -989,15 +989,23 @@ export function readFirstUserPrompt(filePath: string): string | null {
  * them.
  */
 export function deriveCodexSearchText(filePath: string): string {
+  const { label, messages } = readCodexSearchParts(filePath);
+  return label === null ? messages : messages ? `${label}\n${messages}` : label;
+}
+
+/**
+ * {@link deriveCodexSearchText}'s two halves, kept apart so a caller can say
+ * whether a hit was in the conversation or only in a native agent's
+ * nickname/agent path (`label`, `null` for a root thread). `messages` is the
+ * newline-joined conversational text.
+ */
+export function readCodexSearchParts(filePath: string): { label: string | null; messages: string } {
   const rawLines = readRolloutLines(filePath);
   const meta = readCodexSessionMeta(filePath);
-  if (!meta && rawLines.some((line) => line.type === "session_meta")) return "";
+  if (!meta && rawLines.some((line) => line.type === "session_meta")) return { label: null, messages: "" };
   const lines = meta?.isNativeThread ? (meta.historyStartOrdinal === undefined ? [] : rawLines.slice(meta.historyStartOrdinal)) : rawLines;
+  const label = (meta?.nativeAgent && (meta.nativeAgent.nickname || meta.nativeAgent.agentPath)) || null;
   const parts: string[] = [];
-  if (meta?.nativeAgent) {
-    const label = meta.nativeAgent.nickname || meta.nativeAgent.agentPath;
-    if (label) parts.push(label);
-  }
   for (const line of lines) {
     if (line.type !== "response_item") continue;
     const p = line.payload;
@@ -1010,7 +1018,7 @@ export function deriveCodexSearchText(filePath: string): string {
     }
     parts.push(text);
   }
-  return parts.join("\n");
+  return { label, messages: parts.join("\n") };
 }
 
 /** Captured Codex 0.153.4 direct MCP output envelope. Called ONLY after

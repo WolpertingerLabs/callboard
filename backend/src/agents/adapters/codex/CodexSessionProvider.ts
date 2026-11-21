@@ -38,6 +38,7 @@ import type {
 import { createLogger } from "../../../utils/logger.js";
 import { bundledPackageVersion } from "../../../utils/package-version.js";
 import { isIgnoredProjectFolder } from "../../../utils/paths.js";
+import { CONTENT_SEARCH_MAX_FILE_BYTES } from "../../../utils/content-search-budget.js";
 import {
   EXPECTED_CODEX_CLI_VERSION,
   extractThreadIdFromFilename,
@@ -500,6 +501,16 @@ export class CodexSessionProvider implements SessionProvider {
       if (updatedBefore && updatedAt > new Date(updatedBefore)) continue;
 
       if (grep) {
+        // The worker's byte cap, so a caller here cannot slurp an outsized
+        // rollout on the main thread. Over the cap (or unstat-able) is skipped,
+        // as the worker skips it.
+        let size: number;
+        try {
+          size = statSync(entry.filePath).size;
+        } catch {
+          continue;
+        }
+        if (size > CONTENT_SEARCH_MAX_FILE_BYTES) continue;
         if (!deriveCodexSearchText(entry.filePath).toLowerCase().includes(grep.toLowerCase())) continue;
       }
 

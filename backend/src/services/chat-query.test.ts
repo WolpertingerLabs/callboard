@@ -16,7 +16,7 @@ vi.mock("./chat-discovery.js", () => ({
   discoverChatCorpus: () => ({ sessions: state.sessions, warnings: state.warnings }),
 }));
 vi.mock("./chat-content-search.js", () => ({
-  collectContentMatches: vi.fn(() => ({ keys: new Set([JSON.stringify(["codex", "closed"])]), warnings: [] })),
+  collectContentMatches: vi.fn(() => ({ keys: new Set([JSON.stringify(["codex", "closed"])]), labelOnlyKeys: new Set<string>(), warnings: [] })),
 }));
 vi.mock("./chat-view.js", () => ({ chatViews: { read: () => state.view ?? { available: false, reason: "missing" } } }));
 vi.mock("../agents/adapters/codex/CodexSessionProvider.js", () => ({
@@ -190,6 +190,16 @@ describe("individual chat query", () => {
     discover();
     const result = await searchChats({ grep: "needle", folder: "/work/repo" });
     expect(result.chats.map((c) => c.matchKind)).toEqual(["messages"]);
+  });
+  it("calls a Codex native child's hit metadata when only its nickname/path matched", async () => {
+    // e.g. a fork without a history ordinal: no own messages to search, so the
+    // nickname is all that matched, and that is metadata, not conversation.
+    state.stored = [chat("closed", { nativeAgent: { parentThreadId: "root" } }), chat("root")];
+    discover();
+    const key = JSON.stringify(["codex", "closed"]);
+    vi.mocked(collectContentMatches).mockResolvedValueOnce({ keys: new Set([key]), chatIds: new Set(), labelOnlyKeys: new Set([key]), warnings: [] });
+    const result = await searchChats({ grep: "needle", folder: "/work/repo" });
+    expect(result.chats.map((c) => c.matchKind)).toEqual(["metadata"]);
   });
   it("refuses an unscoped grep rather than opening the whole corpus", async () => {
     state.stored = [chat("closed")];

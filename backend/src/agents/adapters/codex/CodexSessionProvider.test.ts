@@ -3,7 +3,7 @@
  * tree (`$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl`) laid down in a
  * tmpdir.
  */
-import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync, existsSync, utimesSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, statSync, truncateSync, writeFileSync, existsSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -227,6 +227,15 @@ describe("searchSessions", () => {
     expect(provider.searchSessions({ folder: "/p/a" }).chats.map((c) => c.sessionId)).toEqual([UUID_A]);
     expect(provider.searchSessions({ folder: "", grep: "bug" }).chats.map((c) => c.sessionId)).toEqual([UUID_B]);
     expect(provider.searchSessions({ folder: "", grep: "nothing" }).chats).toEqual([]);
+  });
+
+  it("does not read a rollout over the content-search byte cap", () => {
+    writeRollout(UUID_A, { cwd: "/p/a", userPrompt: "refactor the parser" });
+    const big = writeRollout(UUID_B, { cwd: "/p/a", userPrompt: "refactor the parser", date: ["2026", "06", "13"] });
+    // Sparse: the matching lines stay at the head, the file just reports 33 MB.
+    truncateSync(big, 33 * 1024 * 1024);
+    const provider = new CodexSessionProvider();
+    expect(provider.searchSessions({ folder: "", grep: "refactor" }).chats.map((c) => c.sessionId)).toEqual([UUID_A]);
   });
 
   it("skips ignored folders, including one the caller names outright", async () => {

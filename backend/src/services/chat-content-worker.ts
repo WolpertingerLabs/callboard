@@ -2,15 +2,19 @@
 import { statSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import type { OwnedSession } from "./chat-discovery.js";
+import { CONTENT_SEARCH_MAX_FILE_BYTES } from "../utils/content-search-budget.js";
 
 export async function searchDiscoveredContent(query: string, sessions: OwnedSession[]) {
   const keys: string[] = [],
-    warnings: string[] = [];
+    warnings: string[] = [],
+    // Keys whose only match was a Codex native agent's nickname/agent path,
+    // not its conversation — chat-query reports those as `metadata`.
+    labelOnlyKeys: string[] = [];
   const needle = query.toLowerCase();
   const claude: OwnedSession[] = [];
   for (const session of sessions) {
     try {
-      if (statSync(session.filePath).size > 32 * 1024 * 1024) {
+      if (statSync(session.filePath).size > CONTENT_SEARCH_MAX_FILE_BYTES) {
         warnings.push(`${session.providerKind}: search byte budget exceeded for ${session.sessionId}`);
         continue;
       }
@@ -20,9 +24,16 @@ export async function searchDiscoveredContent(query: string, sessions: OwnedSess
       }
       let text: string | null;
       switch (session.providerKind) {
-        case "codex":
-          text = (await import("../agents/adapters/codex/sessionParser.js")).deriveCodexSearchText(session.filePath);
-          break;
+        case "codex": {
+          const { label, messages } = (await import("../agents/adapters/codex/sessionParser.js")).readCodexSearchParts(session.filePath);
+          const key = JSON.stringify([session.providerKind, session.sessionId]);
+          if (messages.toLowerCase().includes(needle)) keys.push(key);
+          else if (label?.toLowerCase().includes(needle)) {
+            keys.push(key);
+            labelOnlyKeys.push(key);
+          }
+          continue;
+        }
         case "pi":
           text = (await import("../agents/adapters/pi/sessionParser.js")).deriveSearchText(session.filePath);
           break;
@@ -48,5 +59,5 @@ export async function searchDiscoveredContent(query: string, sessions: OwnedSess
       if ((error as { status?: number }).status !== 1) warnings.push(`claude-code: grep failed: ${String(error)}`);
     }
   }
-  return { keys, warnings };
+  return { keys, warnings, labelOnlyKeys };
 }
