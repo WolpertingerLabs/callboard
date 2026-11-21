@@ -353,11 +353,13 @@ export default function ChatList({
     setSubmittedQuery(searchQuery);
   };
   /** Ends the search outright: the draft goes too, or Enter would bring it straight back. */
-  const handleClearSearch = () => {
+  const handleClearSearch = (fromKeyboard: boolean) => {
     setSearchQuery("");
     setSubmittedQuery("");
     // `searchAllSpaces` stays: it is a remembered preference, not part of the query.
-    searchInputRef.current?.focus();
+    // The button unmounts, so a keyboard user would land on <body>; a tap
+    // must not refocus, or the on-screen keyboard pops up.
+    if (fromKeyboard) searchInputRef.current?.focus();
   };
 
   /**
@@ -578,11 +580,10 @@ export default function ChatList({
         undefined,
         true,
         undefined,
-        // Reachable mid-search: the button hides on `anyFilterActive`, which
-        // is still false for the whole window between submitting a query and
-        // its hits landing. So this really does need the search state, and it
-        // takes it from the same function `load` does — the two request paths
-        // cannot come to disagree about scope.
+        // The button is hidden while a search is submitted (`anyFilterActive`
+        // keys on `searching`), but the search state is passed anyway, through
+        // the same function `load` uses, so the two request paths cannot come
+        // to disagree about scope.
         cardLifecycleFor({ showArchived: viewOptions.showArchived, searching }),
         // includePinned stays on for later pages and includeFoldered goes off,
         // and the difference is payload, not caching: `offset` is part of the

@@ -85,7 +85,10 @@ it("shows the submitted query and its count, and Clear search restores the full 
   expect(screen.queryByText("chat one")).toBeNull();
   expect(screen.queryByText("chat three")).toBeNull();
 
-  fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
+  // From the keyboard: the button has focus, and the click carries no pointer.
+  const clear = screen.getByRole("button", { name: "Clear search" });
+  clear.focus();
+  fireEvent.click(clear, { detail: 0 });
   expect(screen.queryByText(/Searching for/)).toBeNull();
   expect(search.value).toBe("");
   // Keyboard users land back in the box, not on <body>.
@@ -93,6 +96,22 @@ it("shows the submitted query and its count, and Clear search restores the full 
   expect(await screen.findByText("chat one")).toBeTruthy();
   expect(screen.getByText("chat two")).toBeTruthy();
   expect(screen.getByText("chat three")).toBeTruthy();
+});
+
+it("does not focus the search box after a pointer clear, so a tap does not pop the on-screen keyboard", async () => {
+  vi.mocked(listChats).mockResolvedValue(listResponse(CHATS));
+  vi.mocked(listCards).mockResolvedValue({ cards: [] });
+  vi.mocked(searchChatContents).mockResolvedValue({ chatIds: ["two"] } as never);
+  renderList();
+  await screen.findByText("chat one");
+  const search = submitSearch("cache");
+  await screen.findByText('Searching for "cache" · 1 match');
+  search.blur();
+
+  fireEvent.click(screen.getByRole("button", { name: "Clear search" }), { detail: 1 });
+  expect(screen.queryByText(/Searching for/)).toBeNull();
+  expect(search.value).toBe("");
+  expect(document.activeElement).not.toBe(search);
 });
 
 it("never shows a count taken over the first page while the full list for the search is loading", async () => {

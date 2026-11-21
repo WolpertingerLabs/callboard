@@ -24,8 +24,21 @@ it("clears through a non-submitting button", () => {
   render(<ActiveSearchBar query="cache" resultCount={1} isSearching={false} onClear={onClear} inset={20} />);
   const button = screen.getByRole("button", { name: "Clear search" });
   expect(button.getAttribute("type")).toBe("button");
-  fireEvent.click(button);
+  fireEvent.click(button, { detail: 1 });
   expect(onClear).toHaveBeenCalledOnce();
+  expect(onClear).toHaveBeenCalledWith(false);
+});
+
+it("reports a keyboard activation only when the button had focus and no pointer clicked it", () => {
+  const onClear = vi.fn();
+  render(<ActiveSearchBar query="cache" resultCount={1} isSearching={false} onClear={onClear} inset={20} />);
+  const button = screen.getByRole("button", { name: "Clear search" });
+  button.focus();
+  // Enter/Space: a click with detail 0 on the focused button.
+  fireEvent.click(button, { detail: 0 });
+  // A tap in Chrome focuses the button first, but carries detail 1.
+  fireEvent.click(button, { detail: 1 });
+  expect(onClear.mock.calls).toEqual([[true], [false]]);
 });
 
 it("puts the live region on the text, not on the button", () => {

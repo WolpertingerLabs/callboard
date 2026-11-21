@@ -10,7 +10,12 @@ interface ActiveSearchBarProps {
   resultCount: number;
   /** The count is not final yet: the search, or the full list it filters, is still loading. */
   isSearching: boolean;
-  onClear: () => void;
+  /**
+   * `fromKeyboard` is true when the button was activated from the keyboard
+   * (it had focus and the click carries no pointer clicks), so the caller can
+   * move focus somewhere useful without popping a mobile keyboard on a tap.
+   */
+  onClear: (fromKeyboard: boolean) => void;
   /** Horizontal padding, matching the filter bar above it. */
   inset: number;
 }
@@ -41,7 +46,9 @@ export default function ActiveSearchBar({ query, resultCount, isSearching, onCle
       </span>
       <button
         type="button"
-        onClick={onClear}
+        // `detail === 0` as well as focus: Chrome (Android included) focuses a
+        // button on tap, so focus alone would not tell a tap from Enter/Space.
+        onClick={(e) => onClear(e.detail === 0 && document.activeElement === e.currentTarget)}
         aria-label="Clear search"
         title="Clear search"
         style={{
