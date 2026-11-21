@@ -177,6 +177,26 @@ describe('vault_request_access', () => {
     expect(fs.existsSync(path.join(dir, 'audit', 'nobody'))).toBe(false);
   });
 
+  it('later, a deletion tells them apart (documented in the README)', async () => {
+    await aliceItem('real');
+    const real = await ask('alice', 'real');
+    const missing = await ask('alice', 'missing');
+    const nobody = await ask('nobody', 'x');
+    const status = (id: string) => listOwnRequests('bob').requests.find((r) => r.id === id)?.status;
+    // The owner deletes the item: only the request for the real item moves.
+    await deleteItem('alice', { name: 'real' });
+    expect(status(real.requestId)).toBe('withdrawn');
+    expect(status(missing.requestId)).toBe('pending');
+    // The operator deletes the owner: every request to it moves, not one to a made-up alias.
+    purgeCaller('alice');
+    expect(status(missing.requestId)).toBe('withdrawn');
+    expect(status(nobody.requestId)).toBe('pending');
+    // One withdraw event from the item delete, one from the purge (in the background).
+    await vi.waitFor(() => {
+      expect(events('alice').filter((e) => e === 'vault.request.withdrawn')).toHaveLength(2);
+    });
+  });
+
   it('refuses a request for your own item', async () => {
     await createItem('bob', { name: 'mine', kind: 'token', values: { value: CANARY } }, 'agent');
     const err = await errorOf(ask('bob', 'mine'));
