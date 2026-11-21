@@ -356,7 +356,8 @@ export default function FolderBrowser({
               title={showHidden ? "Hide hidden files" : "Show hidden files"}
             >
               {showHidden ? <EyeOff size={isMobile ? 12 : 14} /> : <Eye size={isMobile ? 12 : 14} />}
-              {!isMobile && (showHidden ? "Hide hidden" : "Show hidden")}
+              {/* Fixed text: it must match the accessible name; aria-pressed and the fill carry the state. */}
+              {!isMobile && "Show hidden"}
             </button>
             <button
               onClick={handleToggleWorktrees}
@@ -366,7 +367,7 @@ export default function FolderBrowser({
               title={hideWorktrees ? "Show git worktrees" : "Hide git worktrees"}
             >
               <GitFork size={isMobile ? 12 : 14} />
-              {!isMobile && (hideWorktrees ? "Show worktrees" : "Hide worktrees")}
+              {!isMobile && "Hide worktrees"}
             </button>
             <button
               onClick={handleRefresh}

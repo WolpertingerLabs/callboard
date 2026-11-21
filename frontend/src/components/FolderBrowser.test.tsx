@@ -338,11 +338,11 @@ describe("FolderBrowser — hide worktrees", () => {
     expect(screen.getByText("lib")).toBeTruthy();
     expect(footer().textContent).toBe("2 folders (1 worktree hidden)");
     expect(localStorage.getItem("folderBrowser.hideWorktrees")).toBe("true");
-    // The accessible name stays fixed; only aria-pressed (and the visible text) change.
+    // The name and visible text stay fixed; only aria-pressed (and the title) change.
     const button = screen.getByRole("button", { name: "Hide worktrees" });
     expect(button.getAttribute("aria-pressed")).toBe("true");
     expect(button.title).toBe("Show git worktrees");
-    expect(button.textContent).toBe("Show worktrees");
+    expect(button.textContent).toBe("Hide worktrees");
     expect(browsed().length).toBe(calls);
 
     fireEvent.click(button);
@@ -416,7 +416,7 @@ describe("FolderBrowser — Show hidden", () => {
     fireEvent.click(button);
     await waitFor(() => expect(button.getAttribute("aria-pressed")).toBe("true"));
     expect(screen.getByRole("button", { name: "Show hidden files" })).toBe(button);
-    expect(button.textContent).toBe("Hide hidden");
+    expect(button.textContent).toBe("Show hidden");
     expect(localStorage.getItem("folderBrowser.showHidden")).toBe("true");
   });
 });
