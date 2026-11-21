@@ -2042,6 +2042,7 @@ export const toolHandlers: Record<string, ToolHandler> = {
       name: input.name,
       owner: input.owner,
       field: input.field,
+      purpose: input.purpose,
     });
   },
 

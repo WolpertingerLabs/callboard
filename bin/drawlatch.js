@@ -47,11 +47,6 @@ const { isSecretSetForCaller, loadEnvFile: loadEnvFileVars } = await import(
   join(PKG_ROOT, "dist/shared/env-utils.js")
 );
 
-// Import the vault health check (doctor). It reads the vault files; this CLI never names them.
-const { vaultDiagnostics } = await import(
-  join(PKG_ROOT, "dist/remote/vault/store.js")
-);
-
 const CONFIG_DIR = getConfigDir();
 const ENV_FILE = getEnvFilePath();
 const PID_FILE = join(CONFIG_DIR, "drawlatch.pid");
@@ -204,6 +199,17 @@ switch (subcommand) {
       await cmdSetPassword();
     }
     break;
+  case "vault": {
+    // Own argument parsing (strict) in src/cli/vault.ts. It authenticates only
+    // as a caller over the encrypted channel, like the local MCP server.
+    const { runVaultCli } = await import(join(PKG_ROOT, "dist/cli/vault.js"));
+    const code = await runVaultCli(rawArgs, {
+      stdin: process.stdin,
+      stdout: process.stdout,
+      stderr: process.stderr,
+    });
+    process.exit(code);
+  }
   case "watch":
     if (values.help) {
       printWatchHelp();
@@ -756,6 +762,13 @@ async function cmdGenerateKeys() {
 
 
 async function cmdDoctor() {
+  // The vault health check reads the vault files on the daemon's host; this CLI
+  // never names them. Imported here, not at the top, so no other command (in
+  // particular `drawlatch vault`) loads the vault store at all.
+  const { vaultDiagnostics } = await import(
+    join(PKG_ROOT, "dist/remote/vault/store.js")
+  );
+
   console.log(`\nDrawlatch Setup Check`);
   console.log(`=====================\n`);
 
@@ -1431,6 +1444,7 @@ Commands:
   generate-keys      Generate Ed25519 + X25519 keypairs
   issue-caller       Issue a caller credential bundle (for a callboard instance)
   set-password       Set/change the dashboard password (alias: change-password)
+  vault              Your vault as a caller: list, git-credential (see: drawlatch vault --help)
 
 Options:
   -h, --help         Show this help message

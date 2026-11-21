@@ -705,15 +705,37 @@ export type RevealResult =
  */
 export async function revealItem(
   caller: string,
-  input: { name?: unknown; owner?: unknown; field?: unknown },
+  input: { name?: unknown; owner?: unknown; field?: unknown; purpose?: unknown },
 ): Promise<RevealResult> {
+  const via = checkPurpose(input.purpose);
   if (input.owner === undefined || input.owner === caller) {
-    return reveal({ owner: caller, actor: caller }, input, 'agent');
+    return reveal({ owner: caller, actor: caller, via }, input, 'agent');
   }
   const name = checkName(input.name);
   const owner = input.owner;
   if (typeof owner !== 'string' || !isOwnerAlias(owner)) fail(notSharedMessage(name, undefined));
-  return reveal({ owner, actor: caller }, input, 'agent');
+  return reveal({ owner, actor: caller, via }, input, 'agent');
+}
+
+/**
+ * A `vault_get` `purpose` ("git-credential") is what the client says it is
+ * reading the value for. It is recorded as `vault.via` with
+ * `vault.via_asserted: true`, since the daemon can't check it. Short and
+ * plain so it can't forge other audit fields, and never echoed: the error
+ * states the rule only.
+ */
+export const PURPOSE_REGEX = /^[a-z][a-z0-9-]{0,31}$/;
+const RESERVED_PURPOSES = new Set(['mcp', 'admin']);
+
+function checkPurpose(v: unknown): { via: string; via_asserted?: true } {
+  if (v === undefined) return { via: 'mcp' };
+  if (typeof v !== 'string' || !PURPOSE_REGEX.test(v) || RESERVED_PURPOSES.has(v)) {
+    fail(
+      'purpose must be 1-32 lowercase letters, digits or "-", starting with a letter, ' +
+        'and not "mcp" or "admin"',
+    );
+  }
+  return { via: v, via_asserted: true };
 }
 
 /**
@@ -726,7 +748,7 @@ export async function adminRevealItem(
   owner: string,
   input: { name?: unknown; field?: unknown },
 ): Promise<RevealResult> {
-  return reveal({ owner, actor: 'admin' }, input, 'admin');
+  return reveal({ owner, actor: 'admin', via: { via: 'admin' } }, input, 'admin');
 }
 
 function isOwnerAlias(v: string): boolean {
@@ -797,7 +819,7 @@ function decideReveal(
  * written is honoured: the value read is the value the second check allowed.
  */
 async function reveal(
-  who: { owner: string; actor: string },
+  who: { owner: string; actor: string; via: { via: string; via_asserted?: true } },
   input: { name?: unknown; field?: unknown },
   origin: Origin,
 ): Promise<RevealResult> {
@@ -815,7 +837,7 @@ async function reveal(
     await appendVaultEvent(owner, 'vault.reveal', {
       item: before.item.name,
       item_id: before.item.id,
-      ...(origin === 'admin' ? actorFor(owner, origin) : { actor: who.actor, via: 'mcp' }),
+      ...(origin === 'admin' ? actorFor(owner, origin) : { actor: who.actor, ...who.via }),
       fields: before.fields,
       ...(before.grant && { grant_id: before.grant.id }),
     });
