@@ -212,8 +212,8 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-const tree = () => (
-  <MemoryRouter initialEntries={["/chat/original"]}>
+const tree = (state?: unknown) => (
+  <MemoryRouter initialEntries={[{ pathname: "/chat/original", state }]}>
     <Routes>
       <Route path="/chat/:id" element={<Chat />} />
     </Routes>
@@ -420,13 +420,36 @@ for (const action of ["Remove", "Edit"] as const) {
     view.rerender(tree());
     await waitFor(() => expect(vi.mocked(getActivity).mock.calls.length).toBeGreaterThan(before), { timeout: 3000 });
 
+    const issued = vi.mocked(getActivity).mock.calls.length;
     await act(async () => {
       fireEvent.click(within(heldCards()[0]).getByRole("button", { name: action }));
     });
     await waitFor(() => expect(heldCards()).toHaveLength(1));
+    // The dropped read also carried the dock: a fresh one replaces it.
+    expect(vi.mocked(getActivity).mock.calls.length).toBeGreaterThan(issued);
     await act(async () => answer());
     await act(async () => {});
     expect(heldCards()).toHaveLength(1);
     expect(heldCards()[0].textContent).toContain("held h2");
   });
 }
+
+it("drift → Continue Anyway with an opened Staging draft: the retry of a held message leaves the draft alone", async () => {
+  replies["POST /api/chats/original/message"] = [{ status: 409, body: { error: "branch_drift", message: "The branch has changed." } }];
+  state.held = [held("h1", { text: "retry me", state: "failed", reason: "The branch changed." })];
+  render(tree({ draft: { id: "draft-1", user_message: "my draft" } }));
+  await screen.findByText("first answer");
+  await waitFor(() => expect(composer().value).toBe("my draft"));
+  const card = await waitFor(() => heldCards()[0]!);
+  await act(async () => {
+    fireEvent.click(within(card).getByRole("button", { name: "Send now" }));
+  });
+  await act(async () => {
+    fireEvent.click(await screen.findByRole("button", { name: "Continue Anyway" }));
+  });
+  await waitFor(() => expect(calls("/api/chats/original/message")).toHaveLength(2));
+  expect(calls("/api/chats/original/message")[1]).toMatchObject({ prompt: "retry me", acknowledgeBranchDrift: true });
+  await act(async () => {});
+  expect(vi.mocked(fetch).mock.calls.some(([url, init]) => String(url).includes("/queue/draft-1") && init?.method === "DELETE")).toBe(false);
+  expect(composer().value).toBe("my draft");
+});

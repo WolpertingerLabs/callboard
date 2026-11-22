@@ -625,6 +625,8 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
     message: string;
     /** The refused send's `onRefused`: Cancel hands back what it took, and the retry carries it on. */
     onRefused?: () => void;
+    /** The refused send's `notFromComposer`, carried on to the retry so it can't retire an opened Staging draft it isn't. */
+    notFromComposer?: boolean;
   }>({ isOpen: false, prompt: "", message: "" });
   const forceBranchChangeRef = useRef(false);
   const [branchDriftConfirm, setBranchDriftConfirm] = useState<{
@@ -634,6 +636,8 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
     message: string;
     /** The refused send's `onRefused`: Cancel hands back what it took, and the retry carries it on. */
     onRefused?: () => void;
+    /** The refused send's `notFromComposer`, carried on to the retry so it can't retire an opened Staging draft it isn't. */
+    notFromComposer?: boolean;
   }>({ isOpen: false, prompt: "", message: "" });
   const acknowledgeBranchDriftRef = useRef(false);
   const [viewMode, setViewMode] = useState<"chat" | "diff" | "debug" | "job" | "computer">("chat");
@@ -654,6 +658,8 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
   // refreshActivity's request order: issued, and the newest one applied.
   const activityRequestSeqRef = useRef(0);
   const activityAppliedSeqRef = useRef(0);
+  /** `/activity` reads issued and not yet answered — see supersedeActivityReads. */
+  const activityInFlightRef = useRef(0);
   const streamEndReadRef = useRef<{ chatId: string | null; at: number; timer: ReturnType<typeof setTimeout> | null }>({ chatId: null, at: 0, timer: null });
 
   /**
@@ -684,9 +690,11 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
         // daemon without held messages answers with no field — none held.
         if (ok) storeHeld(chatId, next.heldMessages ?? []);
       };
+      activityInFlightRef.current++;
       getActivity(chatId)
         .then((next) => store(next, true))
-        .catch(() => store({ activities: [], conditionWatch: null, awaitingChildren: 0 }, false));
+        .catch(() => store({ activities: [], conditionWatch: null, awaitingChildren: 0 }, false))
+        .finally(() => activityInFlightRef.current--);
     },
     [storeHeld],
   );
@@ -695,12 +703,20 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
    * Mark every `/activity` read already out as stale: `store` drops a read
    * whose sequence is below the applied one, so the applied one moves past
    * the newest issued — the newest in-flight read included. For a held-list
-   * change a request just made, which a late read would otherwise undo. The
-   * dock's own rows those reads carried come back on the next read.
+   * change a request just made, which a late read would otherwise undo.
+   *
+   * A dropped read also carried the dock's rows, and with no run going (the
+   * end-of-run re-read is the one dropped) no other read may follow it. So
+   * when one was dropped, a fresh read goes out: issued after the change, it
+   * is applied, and the daemon already reflects the change.
    */
-  const supersedeActivityReads = useCallback(() => {
-    activityAppliedSeqRef.current = ++activityRequestSeqRef.current;
-  }, []);
+  const supersedeActivityReads = useCallback(
+    (chatId: string) => {
+      activityAppliedSeqRef.current = ++activityRequestSeqRef.current;
+      if (activityInFlightRef.current > 0) refreshActivity(chatId);
+    },
+    [refreshActivity],
+  );
 
   /**
    * A list of held messages a request just returned (a hold, a removal, a
@@ -710,7 +726,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
   const applyHeld = useCallback(
     (chatId: string, items: HeldMessage[]) => {
       if (currentIdRef.current !== chatId) return;
-      supersedeActivityReads();
+      supersedeActivityReads(chatId);
       storeHeld(chatId, items);
     },
     [storeHeld, supersedeActivityReads],
@@ -2911,6 +2927,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
               prompt,
               images,
               onRefused,
+              notFromComposer,
               message: errorData.message || "There are uncommitted changes that would be affected by this branch switch.",
             });
             setStreaming(false);
@@ -2925,6 +2942,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
               prompt,
               images,
               onRefused,
+              notFromComposer,
               message: errorData.message || "The branch has changed since your last message.",
             });
             setStreaming(false);
@@ -3640,7 +3658,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
       try {
         const taken = await takeHeldMessage(chatId, item.id);
         // Gone on the daemon: no read already out may put it back.
-        supersedeActivityReads();
+        supersedeActivityReads(chatId);
         setHeldState((prev) => (prev?.chatId === chatId ? { chatId, items: prev.items.filter((held) => held.id !== item.id) } : prev));
         const results = taken.images?.length ? await fetchDraftImages(taken.images) : [];
         const files = results.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
@@ -3801,20 +3819,20 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
 
   // Retry the original message with forceBranchChange after user confirms the modal
   const handleConfirmBranchChange = useCallback(() => {
-    const { prompt, images, onRefused } = branchChangeConfirm;
+    const { prompt, images, onRefused, notFromComposer } = branchChangeConfirm;
     forceBranchChangeRef.current = true;
     setBranchChangeConfirm({ isOpen: false, prompt: "", message: "" });
-    handleSend(prompt, images, { onRefused });
+    handleSend(prompt, images, { onRefused, notFromComposer });
     // Reset synchronously — handleSend reads the ref before its first await
     forceBranchChangeRef.current = false;
   }, [branchChangeConfirm, handleSend]);
 
   // Retry the original message with acknowledgeBranchDrift after user confirms the modal
   const handleConfirmBranchDrift = useCallback(() => {
-    const { prompt, images, onRefused } = branchDriftConfirm;
+    const { prompt, images, onRefused, notFromComposer } = branchDriftConfirm;
     acknowledgeBranchDriftRef.current = true;
     setBranchDriftConfirm({ isOpen: false, prompt: "", message: "" });
-    handleSend(prompt, images, { onRefused });
+    handleSend(prompt, images, { onRefused, notFromComposer });
     // Reset synchronously — handleSend reads the ref before its first await
     acknowledgeBranchDriftRef.current = false;
   }, [branchDriftConfirm, handleSend]);
