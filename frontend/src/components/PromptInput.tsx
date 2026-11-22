@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useLayoutEffect, useId, type ReactNode } from "react";
-import { ArrowUp, Paperclip, Edit, ImageIcon, Menu, Braces } from "lucide-react";
+import { ArrowUp, Paperclip, Edit, ImageIcon, Menu, Braces, ChevronDown } from "lucide-react";
 import ImageUpload, { validateAttachmentFiles } from "./ImageUpload";
 import SlashCommandAutocomplete, { slashOptionId } from "./SlashCommandAutocomplete";
 import KeywordAutocomplete, { keywordOptionId } from "./KeywordAutocomplete";
@@ -7,6 +7,9 @@ import { matchSlashCommands } from "../utils/commands";
 import SaveKeywordModal from "./SaveKeywordModal";
 import CommandChip from "./CommandChip";
 import MenuRow, { type MenuItem } from "./MenuRow";
+import SendMenu, { offeredSendVariants, sendVariantForEnter, SEND_VARIANT_SPECS, type SendVariant, type SendVariants } from "./SendMenu";
+import { useIsMobile } from "../hooks/useIsMobile";
+import { useLongPress } from "../hooks/useLongPress";
 import {
   findKeywordToken,
   matchKeywords,
@@ -23,6 +26,10 @@ import { canAutoFocusTextInput, isEditingElsewhere } from "../utils/autoFocus";
 import { escapeIsInScope } from "../utils/escapeScope";
 
 export type PromptMenuItem = MenuItem;
+export type { SendVariant, SendVariants, SendVariantState } from "./SendMenu";
+
+/** How long Send is held before the send menu opens (touch). */
+const SEND_LONG_PRESS_MS = 450;
 
 /**
  * Fold a chip back into the prompt string the harness expects.
@@ -251,6 +258,29 @@ interface Props {
    * Presentation only: what it holds is the caller's to fold into `onSend`.
    */
   accessory?: ReactNode;
+  /**
+   * The other ways this chat can send the composer's content (Send as aside),
+   * each enabled or disabled-with-a-reason. Absent or empty, Send is a plain
+   * button as it always was: no chevron, no long-press, no right-click menu.
+   * A variant left out is not offered; one present but disabled shows its row
+   * greyed with `reason` under it.
+   */
+  sendVariants?: SendVariants;
+  /**
+   * Send the composer's content one of the {@link Props.sendVariants} ways:
+   * the prompt as it would be sent (command chip folded in) and the
+   * attachments.
+   *
+   * Unlike {@link Props.onSend}, the composer clears nothing itself: the
+   * handler owns that, because only it learns — after a request — whether the
+   * message went and what of it was taken (an older daemon may drop the
+   * attachments). Chat's aside handler clears through `onSetValue` and
+   * `onRemoveImages`; see its contract. Awaited only so that a second press
+   * while one is out sends nothing. The handler reports its own errors.
+   */
+  onSendVariant?: (variant: SendVariant, prompt: string, files: File[]) => Promise<void>;
+  /** A run is going and Send would interrupt it — the send menu says so. */
+  sendInterrupts?: boolean;
 }
 
 /** How long typing has to pause before the draft is written to storage. */
@@ -282,6 +312,9 @@ export default function PromptInput({
   onCommandLeadChange,
   isCommandPrompt,
   accessory,
+  sendVariants,
+  onSendVariant,
+  sendInterrupts,
 }: Props) {
   // The stored draft, read once for the first render. Later chats load theirs
   // in the `draftKey` effect below. Mounting paused shows nothing of it: the
@@ -354,6 +387,7 @@ export default function PromptInput({
   const [keywordHighlightOverride, setKeywordHighlightOverride] = useState<HighlightChoice<number> | null>(null);
   const [saveKeywordBody, setSaveKeywordBody] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const isMobile = useIsMobile();
   const fileInputRef = useRef<HTMLInputElement>(null);
   /**
    * Caret to restore once React has committed a programmatic value change.
@@ -656,6 +690,42 @@ export default function PromptInput({
     setAutocompleteDismissed(false);
   }, [value, activeCommand, images, disabled, sendBlockedReason, onSend, clearComposer]);
 
+  /** A variant send is out: a second (a double click, Enter held) sends nothing. */
+  const variantSendingRef = useRef(false);
+
+  /**
+   * Send the composer's content one of the {@link Props.sendVariants} ways,
+   * leaving the composer to the handler — see {@link Props.onSendVariant}.
+   */
+  const handleSendVariant = useCallback(
+    async (variant: SendVariant) => {
+      if (!onSendVariant || !sendVariants?.[variant]?.enabled || variantSendingRef.current) return;
+      const prompt = composePrompt(activeCommand, value);
+      if ((!prompt && images.length === 0) || disabled || sendBlockedReason) return;
+      variantSendingRef.current = true;
+      try {
+        await onSendVariant(variant, prompt, [...images]);
+      } catch {
+        // The handler reports its own errors; this only releases the guard.
+      } finally {
+        variantSendingRef.current = false;
+      }
+    },
+    [onSendVariant, sendVariants, activeCommand, value, images, disabled, sendBlockedReason],
+  );
+
+  /** The send menu, while open, and whether a long press opened it (see SendMenu's backdrop grace). */
+  const [sendMenu, setSendMenu] = useState<{ openedByTouch: boolean } | null>(null);
+  const hasSendMenu = offeredSendVariants(sendVariants).length > 0;
+  const sendPress = useLongPress({
+    onLongPress: () => {
+      if (!hasSendMenu || disabled) return;
+      navigator.vibrate?.(10);
+      setSendMenu({ openedByTouch: true });
+    },
+    delayMs: SEND_LONG_PRESS_MS,
+  });
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     // Keystrokes that belong to an IME composition (picking a candidate,
     // committing a kana run) are the IME's, not ours: they must never drive a
@@ -748,6 +818,24 @@ export default function PromptInput({
       if (el.selectionStart === 0 && el.selectionEnd === 0) {
         e.preventDefault();
         changeActiveCommand(null);
+        return;
+      }
+    }
+
+    // A send variant's shortcut (⌘/Ctrl+Shift+Enter for aside). Shift+Enter
+    // alone matches none of them and stays a newline. An open menu still
+    // owns Enter: this one dismisses it, as a plain Enter with nothing
+    // highlighted does, and sends nothing. A variant offered but unusable
+    // right now opens the send menu, where its row says why — a shortcut
+    // that silently does nothing reads as broken.
+    if (e.key === "Enter") {
+      const variant = sendVariantForEnter(e, sendVariants);
+      if (variant) {
+        e.preventDefault();
+        if (showAutocomplete) setAutocompleteDismissed(true);
+        else if (keywordMenuOpen && activeKeywordToken) setKeywordDismissal({ start: activeKeywordToken.start, query: activeKeywordToken.query });
+        else if (sendVariants?.[variant]?.enabled) void handleSendVariant(variant);
+        else if (canSend) setSendMenu({ openedByTouch: false });
         return;
       }
     }
@@ -1371,6 +1459,26 @@ export default function PromptInput({
                     boxShadow: "var(--shadow-md)",
                   }}
                 >
+                  {/* On a phone there is no chevron and a long press on Send
+                      is invisible, so the send variants are here too. */}
+                  {isMobile &&
+                    offeredSendVariants(sendVariants).map((variant) => {
+                      const spec = SEND_VARIANT_SPECS[variant];
+                      const state = sendVariants![variant]!;
+                      return (
+                        <MenuRow
+                          key={`send-${variant}`}
+                          icon={spec.icon}
+                          label={spec.label}
+                          description={!state.enabled && state.reason ? state.reason : undefined}
+                          disabled={!state.enabled || !canSend}
+                          onClick={() => {
+                            setMenuOpen(false);
+                            void handleSendVariant(variant);
+                          }}
+                        />
+                      );
+                    })}
                   {/* Built-in save-draft entry, followed by caller-supplied
                       entries (e.g. the per-chat model/effort picker). */}
                   {onSaveDraft && (
@@ -1458,28 +1566,80 @@ export default function PromptInput({
             </button>
         </div>
 
-        {/* Send button */}
-        <button
-          onClick={handleSend}
-          disabled={!canSend}
-          style={{
-            background: !canSend ? "var(--border)" : "var(--accent)",
-            color: "var(--text-on-accent)",
-            width: 40,
-            height: 40,
-            borderRadius: 10,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            fontSize: 18,
-            flexShrink: 0,
-            border: "none",
-            cursor: !canSend ? "default" : "pointer",
-            transition: "background 0.2s ease",
-          }}
-        >
-          <ArrowUp size={18} />
-        </button>
+        {/* Send — a split button when the chat offers other ways to send:
+            the chevron (desktop), a right-click or a long press (touch) open
+            the send menu. Without variants, the plain button it always was. */}
+        <div style={{ position: "relative", display: "flex", flexShrink: 0 }}>
+          {sendMenu && (
+            <SendMenu
+              variants={sendVariants ?? {}}
+              canSend={!!canSend}
+              sendInterrupts={sendInterrupts}
+              showShortcuts={!isMobile}
+              openedByTouch={sendMenu.openedByTouch}
+              onSend={handleSend}
+              onVariant={(variant) => void handleSendVariant(variant)}
+              onClose={() => setSendMenu(null)}
+              returnFocusTo={textareaRef}
+              scope={composerRootRef}
+            />
+          )}
+          <button
+            aria-label="Send"
+            title={sendInterrupts ? "Send now — interrupts the current turn" : undefined}
+            onClick={() => {
+              // The click a long press or right-click leaves behind is not a send.
+              if (hasSendMenu && sendPress.consumeClickSuppression()) return;
+              handleSend();
+            }}
+            {...(hasSendMenu && !disabled ? sendPress.handlers : {})}
+            disabled={!canSend}
+            style={{
+              background: !canSend ? "var(--border)" : "var(--accent)",
+              color: "var(--text-on-accent)",
+              width: 40,
+              height: 40,
+              borderRadius: hasSendMenu && !isMobile ? "10px 0 0 10px" : 10,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              fontSize: 18,
+              flexShrink: 0,
+              border: "none",
+              cursor: !canSend ? "default" : "pointer",
+              transition: "background 0.2s ease",
+            }}
+          >
+            <ArrowUp size={18} />
+          </button>
+          {hasSendMenu && !isMobile && (
+            <button
+              aria-label="More ways to send"
+              aria-haspopup="menu"
+              aria-expanded={!!sendMenu}
+              title="More ways to send"
+              disabled={disabled}
+              onClick={() => setSendMenu((open) => (open ? null : { openedByTouch: false }))}
+              style={{
+                background: !canSend ? "var(--border)" : "var(--accent)",
+                color: "var(--text-on-accent)",
+                width: 22,
+                height: 40,
+                borderRadius: "0 10px 10px 0",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                flexShrink: 0,
+                border: "none",
+                borderLeft: "1px solid var(--bg-sidebar)",
+                cursor: disabled ? "default" : "pointer",
+                transition: "background 0.2s ease",
+              }}
+            >
+              <ChevronDown size={14} />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Attachment count indicator */}

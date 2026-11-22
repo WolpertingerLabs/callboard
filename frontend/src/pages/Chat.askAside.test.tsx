@@ -13,7 +13,7 @@ import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-rou
 import type { ReactNode } from "react";
 import Chat from "./Chat";
 import { addQuote, getQuotes, resetQuoteTraysForTests } from "../hooks/useQuoteTray";
-import { getAsideRecentTarget, getComposerDraft, saveAsideRecentTarget, saveComposerDraft } from "../utils/localStorage";
+import { getAsideRecentTarget, getComposerDraft, saveAsideReadOnly, saveAsideRecentTarget, saveComposerDraft } from "../utils/localStorage";
 import { getMessages } from "../api";
 import { quoteFromAsideReply } from "../utils/messageQuotes";
 
@@ -98,8 +98,12 @@ vi.mock("../components/PromptInput", async (importOriginal) => {
     sendBlockedReason,
     onCommandLeadChange,
     isCommandPrompt,
+    sendVariants,
+    onSendVariant,
   }: {
     onSend: (prompt: string) => void;
+    sendVariants?: { aside?: { enabled: boolean; reason?: string } };
+    onSendVariant?: (variant: "aside", prompt: string, files: File[]) => Promise<void>;
     accessory?: ReactNode;
     onFocusRequest?: (focus: (() => void) | null) => void;
     onSetValue?: (setter: (value: Update) => void) => void;
@@ -112,20 +116,20 @@ vi.mock("../components/PromptInput", async (importOriginal) => {
     const [text, setTextState] = useState("");
     // Like the real composer, an updater is resolved at the moment of the call,
     // against the live value — Ask as aside reads the question that way.
-    const live = useRef("");
+    const liveRef = useRef("");
     const setText = (next: string) => {
-      live.current = next;
+      liveRef.current = next;
       setTextState(next);
     };
     useEffect(() => {
       onFocusRequest?.(() => focusComposer);
     }, [onFocusRequest]);
     useEffect(() => {
-      onSetValue?.(() => (value: Update) => setText(typeof value === "function" ? value(live.current) : value));
+      onSetValue?.(() => (value: Update) => setText(typeof value === "function" ? value(liveRef.current) : value));
     }, [onSetValue]);
     useEffect(() => {
       // Trimmed, as the real composer composes the prompt it would send.
-      onSnapshotRequest?.(() => ({ prompt: live.current.trim(), attachments: composerState.files.length, files: [...composerState.files] }));
+      onSnapshotRequest?.(() => ({ prompt: liveRef.current.trim(), attachments: composerState.files.length, files: [...composerState.files] }));
       return () => onSnapshotRequest?.(null);
     }, [onSnapshotRequest]);
     useEffect(() => {
@@ -150,6 +154,18 @@ vi.mock("../components/PromptInput", async (importOriginal) => {
         >
           send
         </button>
+        {/* The send menu's aside row, as the real composer runs it: the
+            prompt and files handed over, the clearing left to the page. */}
+        {sendVariants?.aside && (
+          <button
+            type="button"
+            disabled={!sendVariants.aside.enabled}
+            title={sendVariants.aside.reason}
+            onClick={() => void onSendVariant!("aside", liveRef.current.trim(), [...composerState.files])}
+          >
+            send as aside
+          </button>
+        )}
       </div>
     );
   }
@@ -649,4 +665,105 @@ it("counts the occurrence across one turn's blocks: the LGTM in block B is the t
   fireEvent.click(askButton());
   await waitFor(() => expect(forkBodies()).toHaveLength(1));
   expect(forkBodies()[0].quotes).toEqual([{ timestamp: A1, role: "assistant", text: "LGTM", occurrence: 1 }]);
+});
+
+// ── Send as aside from the composer's send menu ─────────────────────────────
+
+const sendAsAside = () => screen.getAllByRole("button", { name: "send as aside" })[0];
+
+it("sends as aside from the composer with no quotes: forks at the latest message, with the attachments", async () => {
+  const file = new File(["x"], "shot.png", { type: "image/png" });
+  composerState.files = [file];
+  render(tree());
+  await screen.findByText("first answer");
+  type("What next?");
+  fireEvent.click(sendAsAside());
+
+  await waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/chat/original?aside=aside-1"));
+  expect(uploads()).toHaveLength(1);
+  const [body] = forkBodies();
+  // No quotes and no timestamp: the daemon picks the fork point.
+  expect(body).toEqual({
+    kind: "aside",
+    forkAtLatest: true,
+    prompt: "What next?",
+    imageIds: ["img-0"],
+    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+  });
+  expect(composer().value).toBe("");
+  expect(composerState.files).toEqual([]);
+});
+
+it("uses the remembered Read only, and the tray's quotes when there are some", async () => {
+  saveAsideReadOnly(true);
+  await quoteAndType("Why?");
+  fireEvent.click(sendAsAside());
+  await waitFor(() => expect(forkBodies()).toHaveLength(1));
+  const [body] = forkBodies();
+  expect(body.quotes).toEqual([{ timestamp: A1, role: "assistant", text: "first" }]);
+  expect(body.timestamp).toBe(A1);
+  expect(body.forkAtLatest).toBeUndefined();
+  expect(body.readOnly).toBe(true);
+  expect(getQuotes("original")).toHaveLength(0);
+});
+
+it("keeps the question and the attachments when a composer aside is refused", async () => {
+  forkReplies = ["refuse"];
+  const file = new File(["x"], "shot.png", { type: "image/png" });
+  composerState.files = [file];
+  render(tree());
+  await screen.findByText("first answer");
+  type("What next?");
+  fireEvent.click(sendAsAside());
+  await screen.findByText(/quotes\[0\] is after the fork point/);
+  expect(composer().value).toBe("What next?");
+  expect(composerState.files).toEqual([file]);
+});
+
+it("keeps the attachments, and clears the question, when an older daemon dropped them", async () => {
+  forkReplies = ["oldNoImages"];
+  const alert = vi.spyOn(window, "alert").mockImplementation(() => {});
+  const file = new File(["x"], "shot.png", { type: "image/png" });
+  composerState.files = [file];
+  render(tree());
+  await screen.findByText("first answer");
+  type("What next?");
+  fireEvent.click(sendAsAside());
+  await waitFor(() => expect(alert).toHaveBeenCalled());
+  await waitFor(() => expect(composer().value).toBe(""));
+  expect(composerState.files).toEqual([file]);
+});
+
+it("offers Send as aside disabled, with the reason, while a slash command leads the composer", async () => {
+  render(tree());
+  await screen.findByText("first answer");
+  expect((sendAsAside() as HTMLButtonElement).disabled).toBe(false);
+  type("/compact now");
+  await waitFor(() => expect((sendAsAside() as HTMLButtonElement).disabled).toBe(true));
+  expect(sendAsAside().getAttribute("title")).toMatch(/slash command runs in this chat/);
+});
+
+it("does not offer Send as aside on a chat with no messages yet", async () => {
+  vi.mocked(getMessages).mockResolvedValueOnce([]);
+  render(tree());
+  await waitFor(() => expect(vi.mocked(getMessages)).toHaveBeenCalled());
+  await act(async () => {});
+  expect(screen.queryByRole("button", { name: "send as aside" })).toBeNull();
+});
+
+it("clears the sending chat's stored draft, not the composer, when the user has moved on", async () => {
+  let release!: () => void;
+  forkReplies = [new Promise<"ok">((resolve) => (release = () => resolve("ok")))];
+  render(tree());
+  await screen.findByText("first answer");
+  type("What next?");
+  fireEvent.click(sendAsAside());
+  await waitFor(() => expect(forkBodies()).toHaveLength(1));
+  saveComposerDraft("original", "What next?");
+  fireEvent.click(screen.getByRole("button", { name: "go elsewhere" }));
+  await waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/chat/other"));
+  await act(async () => release());
+  await waitFor(() => expect(getComposerDraft("original")).toBe(""));
+  // Not pulled back to it.
+  expect(screen.getByTestId("location").textContent).toBe("/chat/other");
 });

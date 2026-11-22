@@ -87,7 +87,7 @@ import { hasMarkerSlot } from "../utils/forkMarkers";
 import MessageQuoteSelection from "../components/MessageQuoteSelection";
 import QuoteTray from "../components/QuoteTray";
 import AskAsideControls, { type AskAsideOptions, type AskAsideResult } from "../components/AskAsideControls";
-import type { ComposerSnapshot } from "../components/PromptInput";
+import type { ComposerSnapshot, SendVariant, SendVariants } from "../components/PromptInput";
 import { providerKindOf, useChatMeta } from "../hooks/useChatMeta";
 import { isRetiredProviderId } from "../utils/retiredProviders";
 import { INTERRUPTED_MESSAGE, useStopController } from "../hooks/useStopController";
@@ -138,6 +138,7 @@ import {
   getDefaultPermissions as getLocalDefaultPermissions,
   NEW_CHAT_DRAFT_KEY,
   saveComposerDraft,
+  getAsideReadOnly,
   getComposerDraft,
   type AgentProviderKind,
   type EffortLevel,
@@ -3377,6 +3378,35 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
   );
 
   /**
+   * The composer's send menu (and its shortcuts): the other ways to send what
+   * the composer holds. Only Send as aside so far — offered where the tray's
+   * Ask as aside would be (an existing chat with something to fork, not an
+   * aside panel, a native child or a retired harness), and greyed with the
+   * reason while a slash command leads the composer or an aside is out.
+   */
+  const asideOffered = !!id && !embedded && !nativeAgent && !isRetiredHarness && messages.length > 0;
+  const sendVariants = useMemo<SendVariants | undefined>(() => {
+    if (!asideOffered) return undefined;
+    if (composerLeadsWithCommand) return { aside: { enabled: false, reason: ASIDE_COMMAND_BLOCKED } };
+    if (asideInFlight) return { aside: { enabled: false, reason: ASIDE_IN_FLIGHT } };
+    return { aside: { enabled: true } };
+  }, [asideOffered, composerLeadsWithCommand, asideInFlight, ASIDE_IN_FLIGHT]);
+  const handleSendVariant = useCallback(
+    async (variant: SendVariant, prompt: string, files: File[]): Promise<void> => {
+      switch (variant) {
+        case "aside":
+          // The tray's controls are where a harness or Read only is chosen;
+          // from the composer it is the chat's own harness and the remembered
+          // Read only. The tray's own quotes, if any, still go with it, and
+          // handleAskAside clears what the aside took.
+          await handleAskAside({ source: "composer", prompt, files, readOnly: getAsideReadOnly(), target: null });
+          return;
+      }
+    },
+    [handleAskAside],
+  );
+
+  /**
    * The composer's send: the tray's quotes, if any, go first. They leave the
    * tray as the message goes out — a send then refused puts them back, and
    * the typed text too if the composer is still empty.
@@ -4807,6 +4837,21 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
             {DRAFT_RESTORING}
           </div>
         )}
+        {asideError && asideError.chatId === id && quoteTray.quotes.length === 0 && (
+          // A Send as aside from the composer with the tray empty: the tray's
+          // controls, which say why an ask failed, are not on screen.
+          <div role="alert" style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 12px", fontSize: 12, color: "var(--error)" }}>
+            <span style={{ flex: 1, minWidth: 0 }}>{asideError.message}</span>
+            <button
+              type="button"
+              aria-label="Dismiss"
+              onClick={() => setAsideError(null)}
+              style={{ display: "flex", padding: 2, border: "none", background: "transparent", color: "var(--text-muted)", cursor: "pointer" }}
+            >
+              <X size={14} />
+            </button>
+          </div>
+        )}
         <MessageQuoteSelection
           chatId={id}
           messages={messages}
@@ -4817,6 +4862,9 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
         />
         <PromptInput
           onSend={handleComposerSend}
+          sendVariants={sendVariants}
+          onSendVariant={handleSendVariant}
+          sendInterrupts={streaming || globalSessionActive?.type === "web"}
           onFocusRequest={setFocusComposer}
           onSnapshotRequest={registerComposerSnapshot}
           isCommandPrompt={isCommandPrompt}

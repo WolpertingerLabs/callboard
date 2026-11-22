@@ -1,4 +1,4 @@
-import { createContext, useContext } from "react";
+import { createContext, useContext, useId } from "react";
 
 /**
  * Shared popup-menu row. Used by the composer hamburger menu (PromptInput)
@@ -24,16 +24,27 @@ export interface MenuItem {
   title?: string;
   /** Danger styling — destructive actions (e.g. delete). */
   danger?: boolean;
+  /**
+   * A second, muted line under the label: what the row does, or — on a
+   * disabled row — why it can't right now. Shown rather than left to `title`,
+   * which a disabled button does not reliably surface and a touch screen never
+   * does. Also the row's accessible description.
+   */
+  description?: string;
+  /** A keyboard shortcut hint, right-aligned (e.g. "⌘⇧⏎"). Callers leave it off on touch layouts. */
+  shortcut?: string;
 }
 
-export default function MenuRow({ icon, label, onClick, disabled, active, title, danger }: Omit<MenuItem, "key">) {
+export default function MenuRow({ icon, label, onClick, disabled, active, title, danger, description, shortcut }: Omit<MenuItem, "key">) {
   const inMenu = useContext(MenuRoleContext);
+  const descriptionId = useId();
   return (
     <button
       role={inMenu ? "menuitem" : undefined}
       onClick={onClick}
       disabled={disabled}
       title={title}
+      aria-describedby={description ? descriptionId : undefined}
       style={{
         display: "flex",
         alignItems: "center",
@@ -63,7 +74,24 @@ export default function MenuRow({ icon, label, onClick, disabled, active, title,
       }}
     >
       {icon}
-      {label}
+      {description ? (
+        <span style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
+          <span>{label}</span>
+          <span id={descriptionId} style={{ fontSize: 12, color: active ? "var(--text-on-accent)" : "var(--text-muted)" }}>
+            {description}
+          </span>
+        </span>
+      ) : (
+        label
+      )}
+      {shortcut && (
+        <span
+          aria-hidden="true"
+          style={{ marginLeft: "auto", paddingLeft: 12, fontSize: 12, color: active ? "var(--text-on-accent)" : "var(--text-muted)", flexShrink: 0 }}
+        >
+          {shortcut}
+        </span>
+      )}
     </button>
   );
 }
