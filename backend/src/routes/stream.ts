@@ -887,7 +887,12 @@ streamRouter.post("/:id/stop", (req, res) => {
   // stopSession to reach yet, so the dispatcher aborts it as it registers and
   // keeps it as paused.
   const cancelledDelivery = cancelHeldDelivery(chatId);
-  heldMessageService.pause(chatId, PAUSE_REASON_STOPPED);
+  try {
+    heldMessageService.pause(chatId, PAUSE_REASON_STOPPED);
+  } catch (err: unknown) {
+    // A held file that cannot be read must not stand between the user and Stop.
+    log.error(`POST /${chatId}/stop — could not pause held messages: ${err instanceof Error ? err.message : String(err)}`);
+  }
   const stopped = stopSession(chatId) || cancelledDelivery;
   // Worth an info line: this is a deliberate user cancellation, and the run's
   // own "ended: aborted" log lands right after it.

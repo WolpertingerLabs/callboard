@@ -14,6 +14,7 @@ import { Router } from "express";
 import type { HeldMessage } from "shared/types/index.js";
 import { heldMessageService, isValidHeldChatId, isValidHeldId, type HeldMessageInput } from "../services/held-message-service.js";
 import { handleChatIdle } from "../services/session-completion-handler.js";
+import { hasTimedOutStart } from "../services/held-message-dispatcher.js";
 import { getActiveSession } from "../services/claude.js";
 import { sessionRegistry } from "../services/session-registry.js";
 import { assertNativeAgentControllable } from "../services/codex-native-agents.js";
@@ -49,9 +50,15 @@ heldRouter.param("hid", (req, res, next, hid) => {
   next();
 });
 
-/** Running, or a turn on its way — the only states a message can be held against. */
+/**
+ * Running, or a turn on its way — the only states a message can be held
+ * against. A "starting" mark left by a held delivery the dispatcher already
+ * timed out does not count: that start may never settle, and a hold queued
+ * behind it would wait for a stop that might not come.
+ */
 function isRunningOrStarting(chatId: string): boolean {
-  return Boolean(getActiveSession(chatId)) || sessionRegistry.isStarting(chatId);
+  if (getActiveSession(chatId)) return true;
+  return sessionRegistry.isStarting(chatId) && !hasTimedOutStart(chatId);
 }
 
 type Parsed = { ok: true; input: HeldMessageInput } | { ok: false; error: string };

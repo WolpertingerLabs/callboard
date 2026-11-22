@@ -146,4 +146,19 @@ describe("heldMessageService", () => {
     expect(() => heldMessageService.pauseAllOnBoot()).not.toThrow();
     expect(readdirSync(dir)).toContain(aside[0]);
   });
+
+  it("does not set a file aside for a read error that is not bad content, and refuses to write over it (round 2 #4)", () => {
+    const chat = freshChat();
+    const dir = join(DATA_DIR, "held");
+    // A directory where the file should be: readFileSync fails with EISDIR,
+    // standing in for EMFILE / EACCES without needing root to provoke them.
+    mkdirSync(join(dir, `${chat}.json`), { recursive: true });
+
+    expect(heldMessageService.list(chat)).toEqual([]);
+    expect(readdirSync(dir).filter((f) => f.startsWith(`${chat}.json.corrupt-`))).toEqual([]);
+    expect(existsSync(join(dir, `${chat}.json`))).toBe(true);
+    // A read-modify-write must not replace what it could not read.
+    expect(() => heldMessageService.add(chat, { text: "x" })).toThrow(/could not be read/);
+    expect(() => heldMessageService.pauseAllOnBoot()).not.toThrow();
+  });
 });

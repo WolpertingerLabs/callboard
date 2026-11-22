@@ -29,7 +29,7 @@
  *    item is `failed` (takeable again) and a late start is aborted.
  */
 import type { EventEmitter } from "events";
-import { heldMessageService, PAUSE_REASON_STOPPED } from "./held-message-service.js";
+import { heldMessageService, PAUSE_REASON_STOPPED_MID_SEND } from "./held-message-service.js";
 import { sessionRegistry } from "./session-registry.js";
 import { setIdleDeliveryHook } from "./session-completion-handler.js";
 import { startChatTurn, type ChatTurnRequest, type ChatTurnResult } from "./chat-turn.js";
@@ -46,6 +46,15 @@ const log = createLogger("held-dispatcher");
  * so this is a backstop for a start that hangs, not a budget anyone should
  * hit. Without it a hung start would leave the item `delivering` (refusing
  * take/remove with 409) and the chat's queue blocked until a restart.
+ *
+ * What it cannot do is cancel the hung await itself. If the hang is inside
+ * `sendMessage`, that call keeps its own starting mark until it settles, so
+ * the chat still reads as "starting": completion callbacks and later held
+ * deliveries wait (the start settling wakes them — a throw emits
+ * `start_abandoned`, a late success is aborted here and its stop fires). The
+ * hold route, though, treats such a chat as not running
+ * ({@link hasTimedOutStart}), so new holds are refused with `not_running`
+ * instead of piling up behind a start nobody is waiting for.
  */
 const DELIVERY_TIMEOUT_MS = 120_000;
 
@@ -65,6 +74,24 @@ interface InFlight {
   timedOut: boolean;
 }
 const inFlight = new Map<string, InFlight>();
+
+/** Per chat: starts this dispatcher timed out that have not settled yet. */
+const timedOutStarts = new Map<string, number>();
+
+/**
+ * Whether `chatId` has a held-delivery start that timed out and is still
+ * pending. While true, its "starting" mark belongs to a start nobody is
+ * waiting for, so the hold route must not read it as "running".
+ */
+export function hasTimedOutStart(chatId: string): boolean {
+  return (timedOutStarts.get(chatId) ?? 0) > 0;
+}
+
+function settleTimedOutStart(chatId: string): void {
+  const left = (timedOutStarts.get(chatId) ?? 1) - 1;
+  if (left > 0) timedOutStarts.set(chatId, left);
+  else timedOutStarts.delete(chatId);
+}
 
 /**
  * Stop a held message that is being started right now — the stop route's
@@ -151,11 +178,13 @@ export async function deliverHeld(chatId: string): Promise<boolean> {
       heldMessageService.markFailed(chatId, item.id, "Starting the turn timed out.");
       log.warn(`Held message ${item.id} on ${chatId}: start did not settle within ${dispatcherDeps.deliveryTimeoutMs}ms — given back as failed`);
       // It was handed back; a start that completes late must not run behind it.
+      timedOutStarts.set(chatId, (timedOutStarts.get(chatId) ?? 0) + 1);
       starting.then(
         (late) => {
+          settleTimedOutStart(chatId);
           if (late.ok) abortStartedRun(chatId, late.emitter);
         },
-        () => {},
+        () => settleTimedOutStart(chatId),
       );
       return false;
     }
@@ -167,10 +196,11 @@ export async function deliverHeld(chatId: string): Promise<boolean> {
     if (flight.cancelled) {
       // The user pressed Stop while this was starting. Kept, not lost: the
       // run is aborted and the item waits for Resume / Send now / Remove like
-      // any other paused one. (The aborted turn's prompt may already be in
-      // the transcript; resending puts it there again.)
+      // any other paused one. Its own reason says the prompt may already be in
+      // the transcript (the run registered before the abort), so the user
+      // knows a Resume could send it twice.
       abortStartedRun(chatId, result.emitter);
-      heldMessageService.update(chatId, item.id, { state: "paused", reason: PAUSE_REASON_STOPPED });
+      heldMessageService.update(chatId, item.id, { state: "paused", reason: PAUSE_REASON_STOPPED_MID_SEND });
       log.info(`Held message ${item.id} on ${chatId} stopped by the user as it started — paused`);
       return false;
     }

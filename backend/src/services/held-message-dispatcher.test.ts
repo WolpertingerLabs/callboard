@@ -38,16 +38,47 @@ vi.mock("./session-callbacks.js", () => ({
 }));
 
 const { sessionRegistry } = await import("./session-registry.js");
-const { initSessionCompletionHandler, handleChatIdle } = await import("./session-completion-handler.js");
-const { initHeldMessageDispatcher, deliverHeld, cancelHeldDelivery, dispatcherDeps } = await import("./held-message-dispatcher.js");
-const { heldMessageService, PAUSE_REASON_STOPPED } = await import("./held-message-service.js");
+const { initSessionCompletionHandler, handleChatIdle, setIdleDeliveryHook } = await import("./session-completion-handler.js");
+const { initHeldMessageDispatcher, deliverHeld, cancelHeldDelivery, dispatcherDeps, hasTimedOutStart } = await import("./held-message-dispatcher.js");
+const { heldMessageService, PAUSE_REASON_STOPPED_MID_SEND } = await import("./held-message-service.js");
 const { EventEmitter } = await import("events");
+
+/** Chats whose sends throw before registering ("Chat not found", a refused stored effort…). */
+const failingSends = new Set<string>();
+/** Every send attempt, across both senders (callbacks and held deliveries). */
+let sendAttempts = 0;
+/**
+ * Past this many attempts the stub stops emitting `start_abandoned`, so a
+ * regressed replay loop ends on its own and the test fails on the count
+ * instead of hanging the run.
+ */
+const SEND_ATTEMPT_LIMIT = 25;
+
+/**
+ * `sendMessage`'s starting contract, as claude.ts implements it: mark the
+ * chat starting synchronously, await preflight, then either register (and
+ * clear in the same tick) or throw — and a start that throws before
+ * registering releases its mark and emits `start_abandoned`. The register is
+ * the fake `active` set, as everywhere in this file.
+ */
+async function realisticSendMessage(chatId: string): Promise<InstanceType<typeof EventEmitter>> {
+  sendAttempts++;
+  const token = sessionRegistry.markStarting(chatId);
+  try {
+    await Promise.resolve(); // the preflight awaits
+    if (failingSends.has(chatId)) throw new Error("Chat not found");
+    active.add(chatId);
+    sessionRegistry.clearStarting(chatId, token);
+    return new EventEmitter();
+  } finally {
+    if (sessionRegistry.clearStarting(chatId, token) && sendAttempts <= SEND_ATTEMPT_LIMIT) sessionRegistry.notifyStartAbandoned(chatId);
+  }
+}
 
 initSessionCompletionHandler({
   sendMessage: async (opts) => {
     sendMessage(opts);
-    active.add(opts.chatId!);
-    return new (await import("events")).EventEmitter();
+    return realisticSendMessage(opts.chatId!);
   },
   getActiveSession: (id) => (active.has(id) ? {} : undefined),
 });
@@ -81,10 +112,11 @@ beforeEach(() => {
     return sessionRegistry.unregister(id);
   });
   dispatcherDeps.deliveryTimeoutMs = 120_000;
-  startChatTurn.mockImplementation(async (req: { chatId: string }) => {
-    active.add(req.chatId);
-    return { ok: true, emitter: {} };
-  });
+  failingSends.clear();
+  sendAttempts = 0;
+  // startChatTurn's preflight passes and it calls sendMessage — realistic
+  // starting marks and start_abandoned included.
+  startChatTurn.mockImplementation(async (req: { chatId: string }) => ({ ok: true, emitter: await realisticSendMessage(req.chatId) }));
 });
 
 const chat = () => `held-disp-${++n}`;
@@ -300,7 +332,7 @@ describe("reviewer follow-ups", () => {
     expect(stopSession).toHaveBeenCalledOnce();
     expect(sessionRegistry.get(id)).toBeUndefined();
     expect(emitter).toBeDefined();
-    expect(heldMessageService.list(id)).toEqual([expect.objectContaining({ id: item.id, state: "paused", reason: PAUSE_REASON_STOPPED })]);
+    expect(heldMessageService.list(id)).toEqual([expect.objectContaining({ id: item.id, state: "paused", reason: PAUSE_REASON_STOPPED_MID_SEND })]);
     // Nothing else goes out on the abort's stop.
     await settle();
     expect(startChatTurn).toHaveBeenCalledOnce();
@@ -332,10 +364,13 @@ describe("reviewer follow-ups", () => {
     expect(await deliverHeld(id)).toBe(false);
     expect(heldMessageService.list(id)[0]).toMatchObject({ state: "failed", reason: "Starting the turn timed out." });
     expect(sessionRegistry.isStarting(id)).toBe(false);
+    // Until it settles, the hold route must not read the chat as running.
+    expect(hasTimedOutStart(id)).toBe(true);
 
     start.ok(id);
     await settle();
     expect(stopSession).toHaveBeenCalledOnce();
+    expect(hasTimedOutStart(id)).toBe(false);
   });
 
   it("a late start never stops a run the user started since (#5)", async () => {
@@ -350,5 +385,54 @@ describe("reviewer follow-ups", () => {
     await settle();
     expect(stopSession).not.toHaveBeenCalled();
     sessionRegistry.unregister(id);
+  });
+});
+
+describe("replay loop (second review)", () => {
+  it("a callback delivery whose send keeps failing is tried once per stop, not replayed forever", async () => {
+    const id = chat();
+    failingSends.add(id);
+    ready.set(id, [{ id: "cb-loop", childChatId: "child-loop", depth: 1, kind: "spawned" }]);
+
+    await stop(id);
+    expect(sendAttempts).toBe(1);
+    expect(sessionRegistry.isStarting(id)).toBe(false);
+    expect(ready.get(id)).toHaveLength(1); // still ready
+
+    // "Retry on the next stop" is back: once the cause is gone, the next stop delivers.
+    failingSends.delete(id);
+    await stop(id);
+    expect(sendAttempts).toBe(2);
+    expect(ready.get(id)).toHaveLength(0);
+  });
+
+  it("a held delivery whose send throws is marked failed once, with no replay storm", async () => {
+    const id = chat();
+    failingSends.add(id);
+    heldMessageService.add(id, { text: "doomed" });
+    await stop(id);
+    expect(sendAttempts).toBe(1);
+    expect(heldMessageService.list(id)[0]).toMatchObject({ state: "failed", reason: "Chat not found" });
+  });
+
+  it("caps replays at one per guard release, even if every pass records a fresh miss", async () => {
+    const id = chat();
+    let calls = 0;
+    // A pathological hook: every call makes the chat "stop" while it holds
+    // the guard, which records a real miss. Bounded by its own counter so a
+    // regression fails on the count rather than spinning.
+    setIdleDeliveryHook(async (chatId) => {
+      calls++;
+      if (calls <= SEND_ATTEMPT_LIMIT) sessionRegistry.emit("change", { event: "session_stopped", chatId, type: "web" });
+      return false;
+    });
+    try {
+      sessionRegistry.emit("change", { event: "session_stopped", chatId: id, type: "web" });
+      await settle();
+      // The original pass, plus exactly one replay of the miss it recorded.
+      expect(calls).toBe(2);
+    } finally {
+      setIdleDeliveryHook(deliverHeld);
+    }
   });
 });

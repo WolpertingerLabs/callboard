@@ -14,6 +14,8 @@ const handleChatIdle = vi.hoisted(() => vi.fn(async (_id: string) => false));
 
 vi.mock("../services/claude.js", () => ({ getActiveSession: (id: string) => (active.has(id) ? {} : undefined) }));
 vi.mock("../services/session-completion-handler.js", () => ({ handleChatIdle }));
+const timedOut = vi.hoisted(() => new Set<string>());
+vi.mock("../services/held-message-dispatcher.js", () => ({ hasTimedOutStart: (id: string) => timedOut.has(id) }));
 vi.mock("../services/chat-file-service.js", () => ({ chatFileService: { getChat: (id: string) => chats.get(id) ?? null } }));
 vi.mock("../utils/chat-lookup.js", () => ({ findChatForStatus: () => null }));
 vi.mock("../services/codex-native-agents.js", () => ({
@@ -115,6 +117,22 @@ describe("POST /:id/held", () => {
     try {
       expect((await call(hold, { id }, { text: "hi" })).status).toBe(201);
     } finally {
+      sessionRegistry.clearStarting(id, token);
+    }
+  });
+
+  it("answers not_running when the only start is one the dispatcher already timed out (#2)", async () => {
+    const id = runningChat();
+    active.delete(id);
+    const token = sessionRegistry.markStarting(id);
+    timedOut.add(id);
+    try {
+      const state = await call(hold, { id }, { text: "hi" });
+      expect(state.status).toBe(409);
+      expect(state.body.code).toBe("not_running");
+      expect(heldMessageService.list(id)).toEqual([]);
+    } finally {
+      timedOut.delete(id);
       sessionRegistry.clearStarting(id, token);
     }
   });

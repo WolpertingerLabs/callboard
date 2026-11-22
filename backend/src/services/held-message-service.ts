@@ -53,6 +53,8 @@ export type TakeResult = { ok: true; item: HeldMessage } | { ok: false; reason: 
 
 /** Reasons shown to the user for a paused item. */
 export const PAUSE_REASON_STOPPED = "You stopped the run.";
+/** Stopped in the moment it was being started: the run had registered, so its prompt may be in the transcript. */
+export const PAUSE_REASON_STOPPED_MID_SEND = "Stopped as it was being sent — it may already appear in the chat.";
 export const PAUSE_REASON_RESTARTED = "The daemon restarted.";
 export const PAUSE_REASON_BLOCKED = "An earlier held message couldn't be sent.";
 
@@ -61,16 +63,35 @@ function fileFor(chatId: string): string {
   return join(heldDir, `${chatId}.json`);
 }
 
-function read(chatId: string): HeldMessage[] {
+/**
+ * The chat's list. `forWrite` is for read-modify-write callers: a file that
+ * exists but cannot be read then throws instead of reading as empty, since
+ * writing the "empty" list back would overwrite messages that were fine.
+ */
+function read(chatId: string, forWrite = false): HeldMessage[] {
   if (!isValidHeldChatId(chatId)) return [];
   const file = fileFor(chatId);
   if (!existsSync(file)) return [];
+  let raw: string;
   try {
-    const parsed = JSON.parse(readFileSync(file, "utf8"));
+    raw = readFileSync(file, "utf8");
+  } catch (err: unknown) {
+    // EMFILE, EACCES, a transient I/O error: the file may be perfectly good,
+    // so it stays where it is — a listing reads as empty this once, and a
+    // write is refused rather than allowed to replace it.
+    const message = err instanceof Error ? err.message : String(err);
+    log.error(`Could not read held-message file for ${chatId}: ${message}`);
+    if (forWrite) throw new Error(`Held messages for ${chatId} could not be read: ${message}`);
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(raw);
     if (Array.isArray(parsed)) return parsed as HeldMessage[];
     setAside(chatId, file, "not a list");
   } catch (err: unknown) {
-    setAside(chatId, file, err instanceof Error ? err.message : String(err));
+    // Only bad *content* is set aside; JSON.parse throws nothing else.
+    if (!(err instanceof SyntaxError)) throw err;
+    setAside(chatId, file, err.message);
   }
   return [];
 }
@@ -101,6 +122,11 @@ function setAside(chatId: string, file: string, why: string): void {
  * no capability gate and no old client can trip on it; a new client refetches
  * `/activity` on the bump. Without it, a delivery that fails after the run
  * ended (when nothing polls `/activity` any more) would be invisible.
+ *
+ * Cost: `metadataVersion` is global, so each bump makes *every* open tab
+ * refetch its sidebar and cards, not just this chat's. A held message causes
+ * a handful of writes over its life, which is fine; do not route anything
+ * high-frequency through this function without a narrower signal.
  */
 function write(chatId: string, items: HeldMessage[]): void {
   const file = fileFor(chatId);
@@ -130,7 +156,7 @@ export class HeldMessageService {
 
   /** Append a queued item. Throws on an invalid chat id. */
   add(chatId: string, input: HeldMessageInput): HeldMessage {
-    const items = read(chatId);
+    const items = read(chatId, true);
     const item: HeldMessage = {
       id: randomUUID(),
       chatId,
@@ -154,7 +180,7 @@ export class HeldMessageService {
    * handing it back too would send it twice.
    */
   take(chatId: string, id: string): TakeResult {
-    const items = read(chatId);
+    const items = read(chatId, true);
     const index = items.findIndex((m) => m.id === id);
     if (index === -1) return { ok: false, reason: "not_found" };
     const item = items[index]!;
@@ -166,7 +192,7 @@ export class HeldMessageService {
 
   /** Patch one item in place. Returns the updated item, or undefined if gone. */
   update(chatId: string, id: string, patch: Partial<Pick<HeldMessage, "state" | "reason">>): HeldMessage | undefined {
-    const items = read(chatId);
+    const items = read(chatId, true);
     const item = items.find((m) => m.id === id);
     if (!item) return undefined;
     Object.assign(item, patch);
@@ -177,7 +203,7 @@ export class HeldMessageService {
 
   /** Every `queued` item → `paused` with `reason`. Returns how many changed. */
   pause(chatId: string, reason: string): number {
-    const items = read(chatId);
+    const items = read(chatId, true);
     let changed = 0;
     for (const item of items) {
       if (item.state !== "queued") continue;
@@ -191,7 +217,7 @@ export class HeldMessageService {
 
   /** Every `paused` or `failed` item → `queued`. Returns how many changed. */
   resume(chatId: string): number {
-    const items = read(chatId);
+    const items = read(chatId, true);
     let changed = 0;
     for (const item of items) {
       if (item.state !== "paused" && item.state !== "failed") continue;
@@ -215,7 +241,7 @@ export class HeldMessageService {
    * cannot be overtaken either.
    */
   claimNext(chatId: string): HeldMessage | undefined {
-    const items = read(chatId);
+    const items = read(chatId, true);
     if (items.some((m) => m.state === "delivering")) return undefined;
     const next = items.find((m) => m.state === "queued");
     if (!next) return undefined;
@@ -230,7 +256,7 @@ export class HeldMessageService {
    * would otherwise sit "queued" on an idle chat with nothing to wake it.
    */
   markFailed(chatId: string, id: string, reason: string): void {
-    const items = read(chatId);
+    const items = read(chatId, true);
     const item = items.find((m) => m.id === id);
     if (!item) return;
     item.state = "failed";
@@ -245,7 +271,7 @@ export class HeldMessageService {
 
   /** Remove an item whose turn has started. */
   removeDelivered(chatId: string, id: string): void {
-    const items = read(chatId);
+    const items = read(chatId, true);
     const next = items.filter((m) => m.id !== id);
     if (next.length !== items.length) write(chatId, next);
   }
@@ -274,7 +300,12 @@ export class HeldMessageService {
       if (!file.endsWith(".json")) continue;
       const chatId = file.slice(0, -".json".length);
       if (!isValidHeldChatId(chatId)) continue;
-      const items = read(chatId);
+      let items: HeldMessage[];
+      try {
+        items = read(chatId, true);
+      } catch {
+        continue; // logged by read(); left for the next boot
+      }
       let changed = false;
       for (const item of items) {
         if (item.state !== "queued" && item.state !== "delivering") continue;
