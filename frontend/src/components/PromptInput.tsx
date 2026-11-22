@@ -65,10 +65,13 @@ export function parseLeadingCommand(text: string, commands: string[]): { command
  */
 export type ComposerValueUpdate = string | ((current: string) => string);
 
-/** What {@link Props.onSnapshotRequest}'s getter reads: the prompt as it would be sent, and the attachment count. */
+/** What {@link Props.onSnapshotRequest}'s getter reads: the prompt as it would be sent, and the attachments. */
 export interface ComposerSnapshot {
   prompt: string;
+  /** `files.length`. */
   attachments: number;
+  /** The attached files, as they would be sent. A copy: changing it changes nothing in the composer. */
+  files: File[];
 }
 
 /** Drop the leading `/token` the autocomplete matched on, keeping the rest. */
@@ -168,6 +171,13 @@ interface Props {
    */
   onAddImages?: (add: (files: File[]) => void) => void;
   /**
+   * Registration callback handing out a remove-attachments function, same
+   * shape as {@link Props.onSetValue}. It removes exactly the given File
+   * objects (by identity), so a file attached meanwhile stays — an aside
+   * asked from the tray takes the attachments it was sent with.
+   */
+  onRemoveImages?: (remove: (files: File[]) => void) => void;
+  /**
    * Where the unsent text is kept between visits: the chat id, or a fixed key
    * for the new-chat composer. Absent, nothing is persisted.
    *
@@ -263,6 +273,7 @@ export default function PromptInput({
   onKeywordCreated,
   onInsertAtCaret,
   onAddImages,
+  onRemoveImages,
   draftKey,
   draftPaused = false,
   focusKey,
@@ -1016,7 +1027,11 @@ export default function PromptInput({
 
   useEffect(() => {
     if (!onSnapshotRequest) return;
-    onSnapshotRequest(() => ({ prompt: composePrompt(activeCommandRef.current, valueRef.current), attachments: imagesRef.current.length }));
+    onSnapshotRequest(() => ({
+      prompt: composePrompt(activeCommandRef.current, valueRef.current),
+      attachments: imagesRef.current.length,
+      files: [...imagesRef.current],
+    }));
     return () => onSnapshotRequest(null);
   }, [onSnapshotRequest]);
 
@@ -1025,6 +1040,14 @@ export default function PromptInput({
     // this registers once.
     onAddImages?.(() => (files: File[]) => setImages((prev) => [...prev, ...files]));
   }, [onAddImages]);
+
+  useEffect(() => {
+    onRemoveImages?.(() => (files: File[]) => {
+      if (files.length === 0) return;
+      const gone = new Set(files);
+      setImages((prev) => (prev.some((file) => gone.has(file)) ? prev.filter((file) => !gone.has(file)) : prev));
+    });
+  }, [onRemoveImages]);
 
   /**
    * Restore the caret after a programmatic value change lands in the DOM.

@@ -687,10 +687,17 @@ export async function forkChat(id: string, timestamp: string, opts?: { provider?
 }
 
 export interface CreateAsideOptions {
-  /** The passages asked about. The fork point is the latest of their timestamps. */
-  quotes: AsideQuote[];
-  /** The question. When given, the aside's first turn starts immediately. */
+  /**
+   * The passages asked about. The fork point is the latest of their
+   * timestamps. Empty or omitted: an aside about the conversation so far,
+   * forked by the daemon at its newest message (`forkAtLatest`) — which then
+   * needs a `prompt` or `imageIds`.
+   */
+  quotes?: AsideQuote[];
+  /** The question. When given (or with `imageIds`), the aside's first turn starts immediately. */
   prompt?: string;
+  /** Uploads (`uploadImagesOnly`) attached to the first turn. All or nothing on the daemon: 409 if any is gone. */
+  imageIds?: string[];
   /** Full or partial; capped server-side so nothing is looser than the parent. Omit to inherit. */
   permissions?: Partial<DefaultPermissions>;
   /**
@@ -705,16 +712,27 @@ export interface CreateAsideOptions {
   effort?: string;
   /** The originating browser chat view (`originatingChatView()`), as sent with a message. */
   chatView?: unknown;
-  /** Active per-directory plugin ids for the first turn, as sent with a message. Only with `prompt`. */
+  /** Active per-directory plugin ids for the first turn, as sent with a message. Only with `prompt` or `imageIds`. */
   activePlugins?: string[];
 }
 
 /**
  * The chat an aside created: the fork's record, plus how its first turn went
  * when a prompt was sent — `started`, or `runError` with the `promptText` that
- * could not be sent (the aside exists either way).
+ * could not be sent (the aside exists either way). `attachedImages` is the
+ * daemon's count of the attachments it took.
+ *
+ * `attachmentsDropped` is set here, not by the daemon: attachments were sent
+ * and the answer has no `attachedImages`, so the daemon predates them and
+ * ignored them — the aside exists and its question went out without them.
  */
-export type CreateAsideResponse = Chat & { started?: boolean; runError?: string; promptText?: string };
+export type CreateAsideResponse = Chat & { started?: boolean; runError?: string; promptText?: string; attachedImages?: number; attachmentsDropped?: boolean };
+
+/** Shown when the daemon is too old for an aside without quotes or with attachments. */
+export const ASIDE_DAEMON_TOO_OLD_UNQUOTED =
+  "The Callboard daemon is too old to ask an aside without quoting something. Update and restart the daemon, or quote a passage first.";
+export const ASIDE_DAEMON_DROPPED_ATTACHMENTS =
+  "The aside was asked, but the Callboard daemon is too old for attachments and left them out. Update and restart the daemon to send attachments with an aside.";
 
 /** `metadata.chatRole` of a chat record, or undefined when absent or unreadable. */
 function chatRoleOf(chat: Chat): string | undefined {
@@ -774,7 +792,9 @@ export class AsideRequestError extends Error {
 /**
  * Ask a side question about quoted passages of a chat: a child chat forked at
  * the latest quoted message, with chatRole "aside" (POST /chats/:id/fork,
- * kind "aside").
+ * kind "aside"). With no quotes it is about the conversation so far, forked at
+ * its newest message as the daemon reads it (`forkAtLatest`, no timestamp).
+ * `imageIds` go with the first turn.
  *
  * When `started` is set, attach to `GET /chats/:newId/stream` — and then
  * re-fetch the chat's messages: events emitted between the start and the
@@ -787,34 +807,41 @@ export class AsideRequestError extends Error {
  * refusal throws {@link AsideRequestError}.
  */
 export async function createAside(id: string, opts: CreateAsideOptions): Promise<CreateAsideResponse> {
-  const timestamp = asideForkPoint(opts.quotes);
-  if (!timestamp) throw new Error("An aside needs at least one quote");
+  const quotes = opts.quotes ?? [];
+  const timestamp = asideForkPoint(quotes);
+  const imageIds = opts.imageIds ?? [];
+  const startsTurn = !!opts.prompt || imageIds.length > 0;
+  if (!timestamp && !startsTurn) throw new Error("An aside needs a question");
   const res = await fetch(`${BASE}/chats/${seg(id)}/fork`, {
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      timestamp,
       kind: "aside",
-      quotes: opts.quotes,
+      ...(timestamp ? { timestamp, quotes } : { forkAtLatest: true }),
       ...(opts.prompt && { prompt: opts.prompt }),
+      ...(imageIds.length > 0 && { imageIds }),
       ...(opts.permissions && { permissions: opts.permissions }),
       ...(opts.readOnly && { readOnly: true }),
       ...(opts.provider && { provider: opts.provider }),
       ...(opts.model && { model: opts.model }),
       ...(opts.effort && { effort: opts.effort }),
       ...(opts.chatView !== undefined && { chatView: opts.chatView }),
-      ...(opts.prompt && opts.activePlugins?.length && { activePlugins: opts.activePlugins }),
+      ...(startsTurn && opts.activePlugins?.length && { activePlugins: opts.activePlugins }),
       // So the quotes' origin lines show the asker's clock, not the daemon's.
       timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     }),
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new AsideRequestError(errorBodyMessage(body, "Failed to create aside"), res.status, typeof body?.code === "string" ? body.code : undefined);
+    const message = errorBodyMessage(body, "Failed to create aside");
+    // A daemon from before forkAtLatest asks for the timestamp it was not sent.
+    const tooOld = !timestamp && res.status === 400 && message === "timestamp is required";
+    throw new AsideRequestError(tooOld ? ASIDE_DAEMON_TOO_OLD_UNQUOTED : message, res.status, typeof body?.code === "string" ? body.code : undefined);
   }
   const created = (await res.json()) as CreateAsideResponse;
   if (chatRoleOf(created) !== ASIDE_ROLE) throw new AsidesUnsupportedError(created);
+  if (imageIds.length > 0 && typeof created.attachedImages !== "number") return { ...created, attachmentsDropped: true };
   return created;
 }
 

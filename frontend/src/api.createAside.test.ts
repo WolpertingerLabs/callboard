@@ -47,10 +47,51 @@ it("throws AsidesUnsupportedError when an older daemon made a plain fork", async
   expect(err.chat.id).toBe("f");
 });
 
-it("refuses without quotes, before any request", async () => {
+it("refuses without quotes and without a question, before any request", async () => {
   const fetcher = answering({});
-  await expect(createAside("c", { quotes: [] })).rejects.toThrow(/at least one quote/);
+  await expect(createAside("c", { quotes: [] })).rejects.toThrow(/needs a question/);
+  await expect(createAside("c", {})).rejects.toThrow(/needs a question/);
   expect(fetcher).not.toHaveBeenCalled();
+});
+
+it("without quotes, asks the daemon to fork at the latest message and sends no timestamp", async () => {
+  const fetcher = answering({ id: "a", metadata: JSON.stringify({ chatRole: "aside" }), started: true });
+  await createAside("c", { prompt: "what now?", activePlugins: ["p1"] });
+  await createAside("c", { quotes: [], prompt: "what now?" });
+  for (const [, init] of fetcher.mock.calls) {
+    const body = JSON.parse(init.body as string);
+    expect(body).toMatchObject({ kind: "aside", forkAtLatest: true, prompt: "what now?" });
+    expect(body).not.toHaveProperty("timestamp");
+    expect(body).not.toHaveProperty("quotes");
+  }
+  expect(JSON.parse(fetcher.mock.calls[0][1].body as string).activePlugins).toEqual(["p1"]);
+});
+
+it("sends attachments, with the first turn's plugins even without a question", async () => {
+  const fetcher = answering({ id: "a", metadata: JSON.stringify({ chatRole: "aside" }), started: true, attachedImages: 2 });
+  const res = await createAside("c", { quotes, imageIds: ["i1", "i2"], activePlugins: ["p1"] });
+  expect(JSON.parse(fetcher.mock.calls[0][1].body as string)).toMatchObject({ timestamp: T1, quotes, imageIds: ["i1", "i2"], activePlugins: ["p1"] });
+  expect(res.attachmentsDropped).toBeUndefined();
+  await createAside("c", { quotes, prompt: "why?" });
+  expect(JSON.parse(fetcher.mock.calls[1][1].body as string)).not.toHaveProperty("imageIds");
+});
+
+it("flags attachments an older daemon dropped: no attachedImages in its answer", async () => {
+  answering({ id: "a", metadata: JSON.stringify({ chatRole: "aside" }), started: true });
+  expect(await createAside("c", { quotes, prompt: "why?", imageIds: ["i1"] })).toMatchObject({ id: "a", attachmentsDropped: true });
+  expect(await createAside("c", { quotes, prompt: "why?" })).not.toHaveProperty("attachmentsDropped");
+});
+
+it("names an older daemon that wants a timestamp for an unquoted aside", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => ({ ok: false, status: 400, json: async () => ({ error: "timestamp is required" }) })),
+  );
+  const err = await createAside("c", { prompt: "why?" }).catch((e) => e);
+  expect(err).toBeInstanceOf(AsideRequestError);
+  expect(err.message).toMatch(/too old to ask an aside without quoting/);
+  // With quotes the same words mean what they say.
+  expect((await createAside("c", { quotes, prompt: "why?" }).catch((e) => e)).message).toBe("timestamp is required");
 });
 
 it("sends Read only as a flag for the daemon to apply", async () => {

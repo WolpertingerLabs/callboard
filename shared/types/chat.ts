@@ -120,8 +120,9 @@ export interface ChatTreeNode {
   forkedAt?: string;
   /**
    * For an `"aside"` child: the passages of the parent it was asked about
-   * (`metadata.asideQuotes`). Additive — absent on every other role and from
-   * older daemons.
+   * (`metadata.asideQuotes`). Additive — absent on every other role, from
+   * older daemons, and on an aside asked without quotes (`forkAtLatest`),
+   * which `forkedAt` alone places.
    */
   asideQuotes?: AsideQuote[];
   /** "claude-code" | "codex" | "pi" — or a retired kind ("openrouter", "cline", "acp") on old records */

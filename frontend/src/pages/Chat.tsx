@@ -53,6 +53,8 @@ import {
   createAside,
   AsidesUnsupportedError,
   AsideRequestError,
+  ASIDE_DAEMON_DROPPED_ATTACHMENTS,
+  uploadDraftImages,
   continueChatFrom,
   rerunChatFrom,
   RerunError,
@@ -369,6 +371,13 @@ const ASIDE_COMMAND_BLOCKED = "A slash command runs in this chat, not as an asid
 /** Ask as aside with only passages inserted from an aside in the tray: none of them is a point in this chat to fork at. */
 const ASIDE_INSERTED_ONLY = "Passages inserted from an aside can't start another aside. Quote this chat's own text to ask one.";
 
+/**
+ * One Ask as aside. From the tray (the default) the question and attachments
+ * are read from the composer; from the composer's own send they are handed
+ * over as it would send them, and the composer clears itself on success.
+ */
+type AskAsideRequest = AskAsideOptions & ({ source?: "tray" } | { source: "composer"; prompt: string; files: File[] });
+
 function leadsWithCommand(prompt: string, commands: string[], loaded: boolean): boolean {
   if (!loaded) return /^\s*\/[\w:-]+(?:\s|$)/.test(prompt);
   return parseLeadingCommand(prompt, commands).command !== null;
@@ -540,6 +549,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
   const [promptInputSetValue, setPromptInputSetValue] = useState<((value: ComposerValueUpdate) => void) | null>(null);
   const [promptInputInsertAtCaret, setPromptInputInsertAtCaret] = useState<((text: string) => void) | null>(null);
   const [promptInputAddImages, setPromptInputAddImages] = useState<((files: File[]) => void) | null>(null);
+  const [promptInputRemoveImages, setPromptInputRemoveImages] = useState<((files: File[]) => void) | null>(null);
   // `autoScroll` state drives rendering (the jump-to-bottom button, mounting
   // the pin loop). The two refs are the pin loop's and scroll listener's view
   // of the same latch, updated synchronously: a wheel-up on a long chat can
@@ -3206,17 +3216,26 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
   );
 
   // ── Ask as aside ───────────────────────────────────────────────────────
-  // The tray's quotes plus the composer's question become a side question in
-  // a child chat forked at the latest quote (POST /chats/:id/fork, kind aside),
-  // started at once; it then opens in the aside panel beside this chat, which
-  // stays as it was. Nothing leaves the tray or the composer until the aside
-  // exists, so a refusal has nothing to restore: the quotes and the question
-  // are still where they were. In-flight state and errors are the originating
-  // chat's (`asideInFlightFor`, `asideError`), never shown on another.
+  // The tray's quotes plus the composer's question (and attachments) become a
+  // side question in a child chat (POST /chats/:id/fork, kind aside), started
+  // at once; it then opens in the aside panel beside this chat, which stays as
+  // it was. With quotes it forks at the latest quote; with none it forks at
+  // this chat's newest message, as the daemon reads it (`forkAtLatest`).
+  // Nothing leaves the tray or the composer until the aside exists, so a
+  // refusal has nothing to restore: the quotes, the question and the
+  // attachments are still where they were. In-flight state and errors are the
+  // originating chat's (`asideInFlightFor`, `asideError`), never shown on
+  // another.
   //
   // Only the tray's own quotes go: a passage inserted from an aside's reply
   // has no point in this transcript for an aside to fork at. It stays in the
   // tray for the next ordinary send.
+  //
+  // Two callers. The tray's Ask as aside (`source: "tray"`, the default)
+  // reads the composer through its snapshot and clears what it sent once the
+  // aside exists. The composer's own send-as-aside (`source: "composer"`)
+  // hands over the prompt and files it would send, and clears itself on a
+  // "started"/"created" result.
   const composerSnapshotRef = useRef<(() => ComposerSnapshot) | null>(null);
   const registerComposerSnapshot = useCallback((get: (() => ComposerSnapshot) | null) => {
     composerSnapshotRef.current = get;
@@ -3231,25 +3250,26 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
     [allSlashCommands, commandsLoadedFor, id],
   );
   const handleAskAside = useCallback(
-    async ({ readOnly, target }: AskAsideOptions): Promise<AskAsideResult> => {
+    async (request: AskAsideRequest): Promise<AskAsideResult> => {
+      const { readOnly, target } = request;
       if (!id || asideInFlightForRef.current.has(id)) return "skipped";
       const chatId = id;
+      const fromComposer = request.source === "composer";
       const quotes = getQuotes(chatId).filter((quote) => !quote.fromChatId);
-      if (quotes.length === 0) {
-        if (getQuotes(chatId).length > 0) setAsideError({ chatId, message: ASIDE_INSERTED_ONLY });
+      // From the tray, quoting only inserted passages is a mistake to point
+      // out; from the composer the tray is incidental and the aside is about
+      // the conversation so far.
+      if (!fromComposer && quotes.length === 0 && getQuotes(chatId).length > 0) {
+        setAsideError({ chatId, message: ASIDE_INSERTED_ONLY });
         return "skipped";
       }
       // Read-only: the caret, the command chip and autocomplete are left alone.
-      const { prompt: question, attachments } = composerSnapshotRef.current?.() ?? { prompt: "", attachments: 0 };
-      if (attachments > 0) {
-        setAsideError({ chatId, message: "An aside can't carry attachments yet. Remove them, or send to this chat instead." });
-        return "skipped";
-      }
+      const { prompt: question, files } = fromComposer ? request : (composerSnapshotRef.current?.() ?? { prompt: "", files: [] as File[] });
       if (leadsWithCommand(question, allSlashCommands, commandsLoadedFor === chatId)) {
         setAsideError({ chatId, message: ASIDE_COMMAND_BLOCKED });
         return "skipped";
       }
-      if (!question.trim()) {
+      if (!question.trim() && files.length === 0) {
         setAsideError({ chatId, message: "Type your question in the composer, then Ask as aside." });
         focusComposer?.();
         return "skipped";
@@ -3264,9 +3284,14 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
       setInFlight(true);
       setAsideError(null);
       try {
+        // Uploaded first: the aside's first turn carries them by id. If the
+        // aside is then refused, these uploads are left unreferenced — the
+        // same trade-off a draft's attachments make.
+        const imageIds = files.length > 0 ? (await uploadDraftImages(files)).map((image) => image.id) : [];
         const created = await createAside(chatId, {
           quotes: quotes.map(({ timestamp, role, text, occurrence }) => ({ timestamp, role, text, ...(occurrence && { occurrence }) })),
           prompt: question.trim(),
+          ...(imageIds.length > 0 && { imageIds }),
           ...(readOnly && { readOnly: true }),
           ...(target && { provider: target.provider, ...(target.model && { model: target.model }) }),
           chatView: originatingChatView(),
@@ -3275,10 +3300,15 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
         // Created: the quotes and the question have gone into it.
         for (const quote of quotes) removeQuote(chatId, quote.id);
         const stillHere = currentIdRef.current === chatId;
-        // Compared trimmed: the question was sent trimmed, and the composer
-        // or the stored draft may still hold trailing whitespace or a newline.
-        if (stillHere) promptInputSetValue?.((current) => (current.trim() === question.trim() ? "" : current));
-        else if (getComposerDraft(chatId).trim() === question.trim()) saveComposerDraft(chatId, "");
+        if (!fromComposer) {
+          // Compared trimmed: the question was sent trimmed, and the composer
+          // or the stored draft may still hold trailing whitespace or a newline.
+          if (stillHere) promptInputSetValue?.((current) => (current.trim() === question.trim() ? "" : current));
+          else if (getComposerDraft(chatId).trim() === question.trim()) saveComposerDraft(chatId, "");
+          // The files it took, by identity — ones the daemon dropped stay.
+          if (stillHere && !created.attachmentsDropped) promptInputRemoveImages?.(files);
+        }
+        if (created.attachmentsDropped) window.alert(ASIDE_DAEMON_DROPPED_ATTACHMENTS);
         if (created.runError) {
           // The aside exists but its question did not go out: put it in the
           // aside's composer so resending is one click.
@@ -3305,7 +3335,18 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
         setInFlight(false);
       }
     },
-    [id, promptInputSetValue, focusComposer, activePluginIds, onChatListRefresh, fetchChatTree, openAside, allSlashCommands, commandsLoadedFor],
+    [
+      id,
+      promptInputSetValue,
+      promptInputRemoveImages,
+      focusComposer,
+      activePluginIds,
+      onChatListRefresh,
+      fetchChatTree,
+      openAside,
+      allSlashCommands,
+      commandsLoadedFor,
+    ],
   );
 
   /**
@@ -4779,6 +4820,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
           onSetValue={setPromptInputSetValue}
           onInsertAtCaret={setPromptInputInsertAtCaret}
           onAddImages={setPromptInputAddImages}
+          onRemoveImages={setPromptInputRemoveImages}
           // Unsent text is kept per chat. Every compose screen shares one
           // "new" slot: there is no id to tell them apart, and whatever is in
           // it is on its way to becoming a chat — the send that creates one

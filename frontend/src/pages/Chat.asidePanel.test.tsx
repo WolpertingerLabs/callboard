@@ -84,13 +84,13 @@ vi.mock("../components/PromptInput", async (importOriginal) => {
     chatId?: string;
     onSend?: (prompt: string) => void;
     onSetValue?: (setter: (value: Update) => void) => void;
-    onSnapshotRequest?: (get: (() => { prompt: string; attachments: number }) | null) => void;
+    onSnapshotRequest?: (get: (() => { prompt: string; attachments: number; files: File[] }) | null) => void;
   }) {
     const [text, setText] = useState("");
     const live = useRef("");
     live.current = text;
     useEffect(() => {
-      onSnapshotRequest?.(() => ({ prompt: live.current, attachments: 0 }));
+      onSnapshotRequest?.(() => ({ prompt: live.current, attachments: 0, files: [] }));
       return () => onSnapshotRequest?.(null);
     }, [onSnapshotRequest]);
     useEffect(() => {
