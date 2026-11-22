@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
-import { ArrowUp, MessageSquareQuote } from "lucide-react";
+import { ArrowUp, Clock, MessageSquareQuote } from "lucide-react";
 import MenuRow, { MenuRoleContext } from "./MenuRow";
 import { escapeIsInScope } from "../utils/escapeScope";
 
@@ -21,7 +21,7 @@ import { escapeIsInScope } from "../utils/escapeScope";
  * menu rows, the shortcut, the mobile hamburger entries and PromptInput's
  * async send all follow from those.
  */
-export type SendVariant = "aside";
+export type SendVariant = "enqueue" | "aside";
 
 /** Whether a variant can be used right now; `reason` says why not, and is shown on the disabled row. */
 export interface SendVariantState {
@@ -45,7 +45,7 @@ interface SendVariantSpec {
   /**
    * Whether an Enter with these modifiers is this variant's shortcut. State
    * every modifier, held and not held: on Windows AltGr arrives as Ctrl+Alt,
-   * so an Alt-based matcher (Send when idle's ⌥⏎) must also require
+   * so an Alt-based matcher (Enqueue Send's ⌥⏎) must also require
    * `!e.ctrlKey && !e.metaKey`, or AltGr+Enter and ⌥⌘⏎ would match it too.
    */
   matches: (e: EnterModifiers) => boolean;
@@ -53,12 +53,22 @@ interface SendVariantSpec {
    * What the shortcut does while the variant is offered but disabled:
    * `"menu"` opens the send menu so the row's reason is visible (a shortcut
    * that silently does nothing reads as broken); `"send"` falls back to a
-   * plain Send (Send when idle with no run to wait for is just Send).
+   * plain Send (Enqueue Send with no run to wait for is just Send).
    */
   whenUnavailable: "menu" | "send";
 }
 
 export const SEND_VARIANT_SPECS: Record<SendVariant, SendVariantSpec> = {
+  enqueue: {
+    label: "Enqueue Send",
+    description: "Sends after the current turn finishes",
+    icon: <Clock size={16} style={{ flexShrink: 0 }} />,
+    shortcut: { apple: "⌥⏎", other: "Alt+Enter" },
+    // Alt alone: AltGr (Ctrl+Alt on Windows) and ⌥⌘⏎ are not this.
+    matches: (e) => e.altKey && !e.shiftKey && !e.ctrlKey && !e.metaKey,
+    // With no run to wait for, enqueueing is sending now.
+    whenUnavailable: "send",
+  },
   aside: {
     label: "Send as aside",
     description: "Ask in a side chat; this chat keeps going",
@@ -72,7 +82,7 @@ export const SEND_VARIANT_SPECS: Record<SendVariant, SendVariantSpec> = {
 };
 
 /** Menu order, after Send. */
-export const SEND_VARIANT_ORDER: readonly SendVariant[] = ["aside"];
+export const SEND_VARIANT_ORDER: readonly SendVariant[] = ["enqueue", "aside"];
 
 /** The variants on offer, in menu order. */
 export function offeredSendVariants(variants: SendVariants | undefined): SendVariant[] {
@@ -84,7 +94,7 @@ export function sendVariantForEnter(e: EnterModifiers, variants: SendVariants | 
   return offeredSendVariants(variants).find((variant) => SEND_VARIANT_SPECS[variant].matches(e)) ?? null;
 }
 
-function isApplePlatform(): boolean {
+export function isApplePlatform(): boolean {
   return typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/.test(navigator.userAgent);
 }
 
@@ -179,12 +189,14 @@ export default function SendMenu({
       e.preventDefault();
       return;
     }
+    // With the menu itself focused (a shortcut opened it; no row has focus,
+    // index -1), ↓ goes to the first row and ↑ to the last.
     if (e.key === "ArrowDown") {
       e.preventDefault();
       focusAt(index + 1);
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
-      focusAt(index - 1);
+      focusAt(index < 0 ? items.length - 1 : index - 1);
     } else if (e.key === "Home") {
       e.preventDefault();
       focusAt(0);

@@ -55,6 +55,11 @@ import {
   AsideRequestError,
   asideDroppedAttachmentsMessage,
   uploadDraftImages,
+  holdMessage,
+  takeHeldMessage,
+  deleteHeldMessage,
+  resumeHeldMessages,
+  HeldRequestError,
   continueChatFrom,
   rerunChatFrom,
   RerunError,
@@ -72,9 +77,11 @@ import {
   type BranchConfig,
   type Keyword,
 } from "../api";
+import type { HeldMessage } from "shared/types/index.js";
+import HeldMessageList from "../components/HeldMessageList";
 import { readChatRouteState, type ChatRouteState } from "../types/chatRouteState";
 import { assignForkMarkers, forksByTimestamp } from "../utils/forkMarkers";
-import { buildQuotedPrompt, quoteFromAsideReply } from "../utils/messageQuotes";
+import { buildQuotedPrompt, quoteFromAsideReply, type MessageQuote } from "../utils/messageQuotes";
 import { addQuote, clearQuotes, getQuotes, removeQuote, restoreQuotes, useQuoteTray } from "../hooks/useQuoteTray";
 import { asidesOf } from "../utils/asideHighlights";
 import { asideAtPoint, useAsideHighlights } from "../hooks/useAsideHighlights";
@@ -355,6 +362,8 @@ function InFlightBubbles({ messages }: { messages: InFlightMessage[] }) {
  */
 const HIGHLIGHT_CLICK_DELAY_MS = 350;
 
+const NO_HELD_MESSAGES: HeldMessage[] = [];
+
 /** At most one parentage-tree refetch per this long while a chat is open — see the tree effect. */
 const TREE_REFRESH_INTERVAL_MS = 10_000;
 /** Even right after a quiet spell, wait this long so a burst of ticks costs one request. */
@@ -497,6 +506,16 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
   // countdown is derived from `expiresAt` client-side, so the dock only needs
   // to learn when something starts or ends. See the route handler for why.
   const [activity, setActivity] = useState<ChatActivityResponse>({ activities: [], conditionWatch: null, awaitingChildren: 0 });
+  /**
+   * The messages held until this chat's turn ends ("Enqueue Send"), as the
+   * daemon last listed them, and for which chat. Kept apart from `activity`
+   * so a failed `/activity` read, which blanks the dock, leaves them shown.
+   */
+  const [heldState, setHeldState] = useState<{ chatId: string; items: HeldMessage[] } | null>(null);
+  const storeHeld = useCallback((chatId: string, items: HeldMessage[]) => {
+    setHeldState((prev) => (prev?.chatId === chatId && JSON.stringify(prev.items) === JSON.stringify(items) ? prev : { chatId, items }));
+  }, []);
+  const heldMessages = heldState && heldState.chatId === id ? heldState.items : NO_HELD_MESSAGES;
   const globalSessionActive = useIsSessionActive(id);
   const [networkError, setNetworkError] = useState<string | null>(null);
   const [showDraftModal, setShowDraftModal] = useState(false);
@@ -651,19 +670,40 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
    * this callback dependency-free, so the interval that calls it is not torn
    * down and rebuilt on every render.
    */
-  const refreshActivity = useCallback((chatId: string) => {
-    // Requests overlap (a slow poll tick and an end-of-run re-read), and a
-    // late answer to an older one would put back a row the newer one took down.
-    const seq = ++activityRequestSeqRef.current;
-    const store = (next: ChatActivityResponse) => {
-      if (currentIdRef.current !== chatId || seq < activityAppliedSeqRef.current) return;
-      activityAppliedSeqRef.current = seq;
-      setActivity((prev) => (sameActivityPayload(prev, next) ? prev : next));
-    };
-    getActivity(chatId)
-      .then(store)
-      .catch(() => store({ activities: [], conditionWatch: null, awaitingChildren: 0 }));
-  }, []);
+  const refreshActivity = useCallback(
+    (chatId: string) => {
+      // Requests overlap (a slow poll tick and an end-of-run re-read), and a
+      // late answer to an older one would put back a row the newer one took down.
+      const seq = ++activityRequestSeqRef.current;
+      const store = (next: ChatActivityResponse, ok: boolean) => {
+        if (currentIdRef.current !== chatId || seq < activityAppliedSeqRef.current) return;
+        activityAppliedSeqRef.current = seq;
+        setActivity((prev) => (sameActivityPayload(prev, next) ? prev : next));
+        // The held list is the daemon's record of messages the user wrote: a
+        // failed read keeps the last one rather than making them vanish. A
+        // daemon without held messages answers with no field — none held.
+        if (ok) storeHeld(chatId, next.heldMessages ?? []);
+      };
+      getActivity(chatId)
+        .then((next) => store(next, true))
+        .catch(() => store({ activities: [], conditionWatch: null, awaitingChildren: 0 }, false));
+    },
+    [storeHeld],
+  );
+
+  /**
+   * A list of held messages a request just returned (a hold, a removal, a
+   * resume): newer than any `/activity` read already out, so those are
+   * dropped rather than let a late one put back what this took away.
+   */
+  const applyHeld = useCallback(
+    (chatId: string, items: HeldMessage[]) => {
+      if (currentIdRef.current !== chatId) return;
+      activityAppliedSeqRef.current = activityRequestSeqRef.current;
+      storeHeld(chatId, items);
+    },
+    [storeHeld],
+  );
 
   /**
    * `refreshActivity` for a stream that just ended or failed to connect. These
@@ -974,6 +1014,21 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
     }, wait);
   }, [id, metadataVersion, fetchChatTree]);
   const chatTree = chatTreeState && chatTreeState.chatId === id ? chatTreeState.tree : null;
+
+  // Held messages change with no stream frame: another tab holds one, the
+  // daemon sends one, the user stops the run. Every such write bumps the
+  // global `metadataVersion` (`chat_metadata_updated`, `heldMessages: true`),
+  // so re-read `/activity` on a bump — but only while this chat can have held
+  // messages moving (a run is going, or some are listed), because the
+  // version moves for every chat's metadata. Throttled per chat, as a
+  // stream end's re-read is.
+  const activitySeenVersionRef = useRef(metadataVersion);
+  const heldCanChange = streaming || !!globalSessionActive || heldMessages.length > 0;
+  useEffect(() => {
+    if (!id || metadataVersion === activitySeenVersionRef.current) return;
+    activitySeenVersionRef.current = metadataVersion;
+    if (heldCanChange) refreshActivityAfterStreamEnd(id);
+  }, [id, metadataVersion, heldCanChange, refreshActivityAfterStreamEnd]);
 
   // This chat's direct forks by fork point; the arrays are what the memoized
   // bubbles receive, so they only change with the tree.
@@ -2582,6 +2637,23 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
     setWorktreeCreation(null);
   }, [worktreeCreation]);
 
+  /**
+   * An opened Staging draft has just gone out (sent, or held by Enqueue
+   * Send): retire it — deleted, unless it went without images it still
+   * lists (a restore that couldn't fetch them), in which case it stays in
+   * Staging rather than taking those references with it — and let go of it.
+   */
+  const retireOpenDraft = useCallback(() => {
+    if (!activeDraftId) return;
+    if (!draftRestore || (draftRestore.settled && draftRestore.unrestored.length === 0)) {
+      deleteDraft(activeDraftId).catch(() => {});
+    }
+    openDraftRef.current = null;
+    setActiveDraftId(null);
+    setDraftRestore(null);
+    onChatListRefreshRef.current?.();
+  }, [activeDraftId, draftRestore]);
+
   const handleSend = useCallback(
     /**
      * `notFromComposer` marks a send that isn't the composer's contents — the
@@ -2809,19 +2881,9 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
           answered = true;
         }
 
-        // If this message came from a draft, delete the draft now that it's
-        // been sent — unless it wasn't, or it went without images the draft
-        // still lists (a restore that couldn't fetch them). Then the draft
-        // stays in Staging rather than taking those references with it.
-        if (activeDraftId && res.ok && !notFromComposer) {
-          if (!draftRestore || (draftRestore.settled && draftRestore.unrestored.length === 0)) {
-            deleteDraft(activeDraftId).catch(() => {});
-          }
-          openDraftRef.current = null;
-          setActiveDraftId(null);
-          setDraftRestore(null);
-          onChatListRefreshRef.current?.();
-        }
+        // If this message came from a draft, retire the draft now that it's
+        // been sent (see retireOpenDraft for when it is kept).
+        if (res.ok && !notFromComposer) retireOpenDraft();
 
         if (!res.ok || !res.body) {
           const errorData = await res.json().catch(() => ({}));
@@ -2923,8 +2985,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
       branchConfig,
       branchBoxShown,
       sendBlockedReason,
-      draftRestore,
-      activeDraftId,
+      retireOpenDraft,
       restoreNewChatComposer,
     ],
   );
@@ -3243,6 +3304,8 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
     composerSnapshotRef.current = get;
   }, []);
   const [asideError, setAsideError] = useState<{ chatId: string; message: string } | null>(null);
+  /** Why an Enqueue Send, or an action on a held message, did not go through — shown above the composer. */
+  const [heldError, setHeldError] = useState<{ chatId: string; message: string } | null>(null);
   // A slash command runs in this chat and has to lead the prompt to run at
   // all; it is not a question about the quotes. Ask as aside stays disabled
   // while one leads the composer, by the same rule the composer's send uses.
@@ -3251,6 +3314,44 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
     (prompt: string) => leadsWithCommand(prompt, allSlashCommands, commandsLoadedFor === id),
     [allSlashCommands, commandsLoadedFor, id],
   );
+  /**
+   * Take what a send variant sent out of the composer, once it has gone (an
+   * aside, a held message): the text if it still equals `prompt` (trimmed —
+   * it went trimmed, and the composer or the stored draft may still hold
+   * trailing whitespace), or, if the user has left `chatId`, that chat's
+   * saved draft under the same rule; and `files`, by identity, from whichever
+   * chat the composer shows now — its attachments are not per chat and go
+   * wherever it goes, so a user who moved on would otherwise send them again
+   * there. Never anything typed or attached since.
+   */
+  const clearSentFromComposer = useCallback(
+    (chatId: string, prompt: string, files: File[]) => {
+      if (currentIdRef.current === chatId) promptInputSetValue?.((current) => (current.trim() === prompt.trim() ? "" : current));
+      else if (getComposerDraft(chatId).trim() === prompt.trim()) saveComposerDraft(chatId, "");
+      if (files.length > 0) promptInputRemoveImages?.(files);
+    },
+    [promptInputSetValue, promptInputRemoveImages],
+  );
+
+  /**
+   * The prompt a composer send puts in this chat: the tray's quotes, if any,
+   * as blockquotes ahead of the typed text — and which quotes those were, for
+   * the caller to take out of the tray once the message is on its way. None
+   * are folded into a slash command, which has to lead the prompt to run at
+   * all and is not a question about the quoted text, nor when the send is
+   * blocked anyway.
+   */
+  const foldTrayQuotes = useCallback(
+    (chatId: string | undefined, prompt: string): { prompt: string; quotes: readonly MessageQuote[] } => {
+      const quotes = chatId ? getQuotes(chatId) : [];
+      if (!chatId || quotes.length === 0 || sendBlockedReason || leadsWithCommand(prompt, allSlashCommands, commandsLoadedFor === chatId)) {
+        return { prompt, quotes: [] };
+      }
+      return { prompt: buildQuotedPrompt(quotes, prompt), quotes };
+    },
+    [sendBlockedReason, allSlashCommands, commandsLoadedFor],
+  );
+
   /**
    * Ask an aside of this chat. The contract, the same for both sources:
    *
@@ -3324,18 +3425,11 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
           chatView: originatingChatView(),
           activePlugins: activePluginIds,
         });
-        // Created: the quotes and the question have gone into it.
+        // Created: the quotes and the question have gone into it. The files
+        // too, unless the daemon dropped them — those stay.
         for (const quote of quotes) removeQuote(chatId, quote.id);
         const stillHere = currentIdRef.current === chatId;
-        // Compared trimmed: the question was sent trimmed, and the composer
-        // or the stored draft may still hold trailing whitespace or a newline.
-        if (stillHere) promptInputSetValue?.((current) => (current.trim() === question.trim() ? "" : current));
-        else if (getComposerDraft(chatId).trim() === question.trim()) saveComposerDraft(chatId, "");
-        // The files it took, by identity, whichever chat the composer shows
-        // now: its attachments are not per chat and go wherever it goes, so a
-        // user who moved on would otherwise send them again there. Ones the
-        // daemon dropped stay.
-        if (!created.attachmentsDropped) promptInputRemoveImages?.(files);
+        clearSentFromComposer(chatId, question, created.attachmentsDropped ? [] : files);
         if (created.attachmentsDropped) window.alert(asideDroppedAttachmentsMessage(!!created.started));
         if (created.runError) {
           // The aside exists but its question did not go out: put it in the
@@ -3363,47 +3457,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
         setInFlight(false);
       }
     },
-    [
-      id,
-      promptInputSetValue,
-      promptInputRemoveImages,
-      focusComposer,
-      activePluginIds,
-      onChatListRefresh,
-      fetchChatTree,
-      openAside,
-      allSlashCommands,
-      commandsLoadedFor,
-    ],
-  );
-
-  /**
-   * The composer's send menu (and its shortcuts): the other ways to send what
-   * the composer holds. Only Send as aside so far — offered where the tray's
-   * Ask as aside would be (an existing chat with something to fork, not an
-   * aside panel, a native child or a retired harness), and greyed with the
-   * reason while a slash command leads the composer or an aside is out.
-   */
-  const asideOffered = !!id && !embedded && !nativeAgent && !isRetiredHarness && messages.length > 0;
-  const sendVariants = useMemo<SendVariants | undefined>(() => {
-    if (!asideOffered) return undefined;
-    if (composerLeadsWithCommand) return { aside: { enabled: false, reason: ASIDE_COMMAND_BLOCKED } };
-    if (asideInFlight) return { aside: { enabled: false, reason: ASIDE_IN_FLIGHT } };
-    return { aside: { enabled: true } };
-  }, [asideOffered, composerLeadsWithCommand, asideInFlight, ASIDE_IN_FLIGHT]);
-  const handleSendVariant = useCallback(
-    async (variant: SendVariant, prompt: string, files: File[]): Promise<void> => {
-      switch (variant) {
-        case "aside":
-          // The tray's controls are where a harness or Read only is chosen;
-          // from the composer it is the chat's own harness and the remembered
-          // Read only. The tray's own quotes, if any, still go with it, and
-          // handleAskAside clears what the aside took.
-          await handleAskAside({ source: "composer", prompt, files, readOnly: getAsideReadOnly(), target: null });
-          return;
-      }
-    },
-    [handleAskAside],
+    [id, clearSentFromComposer, focusComposer, activePluginIds, onChatListRefresh, fetchChatTree, openAside, allSlashCommands, commandsLoadedFor],
   );
 
   /**
@@ -3422,11 +3476,12 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
       if (id && asideInFlightForRef.current.has(id)) return;
       // A message sent here supersedes why the last aside failed — the line
       // above the composer would otherwise stay until dismissed.
-      if (id) setAsideError((current) => (current?.chatId === id ? null : current));
-      const quotes = id ? getQuotes(id) : [];
-      if (!id || quotes.length === 0 || sendBlockedReason || leadsWithCommand(prompt, allSlashCommands, commandsLoadedFor === id)) {
-        return handleSend(prompt, images);
+      if (id) {
+        setAsideError((current) => (current?.chatId === id ? null : current));
+        setHeldError((current) => (current?.chatId === id ? null : current));
       }
+      const { prompt: outgoing, quotes } = foldTrayQuotes(id, prompt);
+      if (!id || quotes.length === 0) return handleSend(prompt, images);
       const chatId = id;
       clearQuotes(chatId);
       const onRefused = () => {
@@ -3434,9 +3489,266 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
         // Only into the same chat's empty composer — never over new typing.
         if (currentIdRef.current === chatId) promptInputSetValue?.((current) => (current === "" ? prompt : current));
       };
-      return handleSend(buildQuotedPrompt(quotes, prompt), images, { onRefused });
+      return handleSend(outgoing, images, { onRefused });
     },
-    [id, handleSend, sendBlockedReason, allSlashCommands, commandsLoadedFor, promptInputSetValue],
+    [id, handleSend, foldTrayQuotes, promptInputSetValue],
+  );
+
+  // ── Enqueue Send ────────────────────────────────────────────────────────
+  // While a web run is going, the composer can hold a message for the daemon
+  // to send once the turn ends (POST /chats/:id/held), instead of
+  // interrupting it. The held list comes back on `/activity` and is shown at
+  // the end of the transcript (HeldMessageList), where each one can be sent
+  // now, taken back to edit, or removed.
+  /** Held messages with a take or a removal out, and whether a resume is: their buttons wait. */
+  const [heldBusy, setHeldBusy] = useState<ReadonlySet<string>>(() => new Set());
+  const [heldResuming, setHeldResuming] = useState(false);
+  const markHeldBusy = useCallback((heldId: string, on: boolean) => {
+    setHeldBusy((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(heldId);
+      else next.delete(heldId);
+      return next;
+    });
+  }, []);
+
+  /**
+   * Hold the composer's message until this chat's turn ends. The contract is
+   * `handleAskAside`'s: the prompt and files are handed in, and this — never
+   * the composer — clears what was taken, only once the daemon holds it (see
+   * `clearSentFromComposer`). The tray's quotes are folded in as a normal
+   * composer send folds them, and leave the tray once held.
+   *
+   * - The run already ended (`not_running`): sent normally instead, through
+   *   the composer's own send path, with its dialogs (branch drift…). The
+   *   composer is cleared first, as a plain Send clears it.
+   * - An older daemon (`HeldUnsupportedError`) or any other refusal: nothing
+   *   is touched, and the reason shows above the composer.
+   */
+  const handleEnqueueSend = useCallback(
+    async (prompt: string, files: File[]): Promise<void> => {
+      if (!id || sendBlockedReason) return;
+      const chatId = id;
+      setHeldError((current) => (current?.chatId === chatId ? null : current));
+      const { prompt: outgoing, quotes } = foldTrayQuotes(chatId, prompt);
+      try {
+        // Uploaded first: the held message refers to them by id. If the hold
+        // is then refused, or the run has ended and the message goes out
+        // normally (which uploads again), these are left unreferenced — the
+        // same trade-off a draft's attachments make.
+        const images = await uploadDraftImages(files);
+        const result = await holdMessage(chatId, {
+          text: outgoing,
+          ...(images.length > 0 && { images }),
+          // The settings a send now would carry — see handleSend.
+          ...(activePluginIds.length > 0 && { activePlugins: activePluginIds }),
+          ...(pendingModel !== null && { model: pendingModel }),
+          ...(pendingEffort !== null && ["codex", "pi"].includes(chatProvider) && { effort: pendingEffort ?? "" }),
+          maxTurns: getMaxTurns(),
+        });
+        if (!result.held) {
+          // Nothing to wait for: a plain send, if the user is still here to
+          // see it go. Otherwise the message stays where it was, and says so.
+          if (currentIdRef.current !== chatId) {
+            setHeldError({ chatId, message: "The run had ended, so nothing was held — your message is still in the composer." });
+            return;
+          }
+          clearSentFromComposer(chatId, prompt, files);
+          handleComposerSend(prompt, files.length > 0 ? files : undefined);
+          return;
+        }
+        for (const quote of quotes) removeQuote(chatId, quote.id);
+        clearSentFromComposer(chatId, prompt, files);
+        retireOpenDraft();
+        applyHeld(chatId, result.heldMessages);
+      } catch (err) {
+        setHeldError({ chatId, message: errorMessage(err, "Couldn't hold the message") });
+      }
+    },
+    [
+      id,
+      sendBlockedReason,
+      foldTrayQuotes,
+      activePluginIds,
+      pendingModel,
+      pendingEffort,
+      chatProvider,
+      clearSentFromComposer,
+      handleComposerSend,
+      retireOpenDraft,
+      applyHeld,
+    ],
+  );
+
+  /** Why taking a held message back failed, in words: it went, or it is going. */
+  const heldTakeFailure = useCallback(
+    (chatId: string, err: unknown) => {
+      if (err instanceof HeldRequestError && (err.status === 404 || err.code === "not_found")) {
+        setHeldError({ chatId, message: "Already sent." });
+      } else if (err instanceof HeldRequestError && err.code === "delivering") {
+        setHeldError({ chatId, message: "It's being sent right now." });
+      } else {
+        setHeldError({ chatId, message: errorMessage(err, "Couldn't take the held message back") });
+      }
+      // The list on screen is behind the daemon's: catch up.
+      refreshActivity(chatId);
+    },
+    [refreshActivity],
+  );
+
+  /**
+   * Take a held message back off the daemon. Atomic with delivery: a message
+   * being sent, or already sent, is refused (and said so) rather than sent
+   * twice. On success it is gone from the list.
+   */
+  const takeHeld = useCallback(
+    async (chatId: string, item: HeldMessage): Promise<{ text: string; files: File[]; lost: number } | null> => {
+      markHeldBusy(item.id, true);
+      try {
+        const taken = await takeHeldMessage(chatId, item.id);
+        setHeldState((prev) => (prev?.chatId === chatId ? { chatId, items: prev.items.filter((held) => held.id !== item.id) } : prev));
+        const results = taken.images?.length ? await fetchDraftImages(taken.images) : [];
+        const files = results.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
+        return { text: taken.text, files, lost: results.length - files.length };
+      } catch (err) {
+        heldTakeFailure(chatId, err);
+        return null;
+      } finally {
+        markHeldBusy(item.id, false);
+      }
+    },
+    [markHeldBusy, heldTakeFailure],
+  );
+
+  /**
+   * Put a taken-back message in the composer: below what is typed there
+   * already, never over it. If the user has moved to another chat meanwhile,
+   * the text goes to this chat's saved draft (the attachments cannot be kept
+   * there, which is said).
+   */
+  const loadIntoComposer = useCallback(
+    (chatId: string, text: string, files: File[], lost: number) => {
+      const append = (current: string) => (current.trim() ? `${current.replace(/\s+$/, "")}\n\n${text}` : text);
+      if (currentIdRef.current === chatId) {
+        promptInputSetValue?.(append);
+        if (files.length > 0) promptInputAddImages?.(files);
+        focusComposer?.();
+        if (lost > 0) setHeldError({ chatId, message: `${lost} attachment${lost === 1 ? "" : "s"} could not be loaded back.` });
+      } else {
+        saveComposerDraft(chatId, append(getComposerDraft(chatId)));
+        const dropped = lost + files.length;
+        if (dropped > 0) setHeldError({ chatId, message: `${dropped} attachment${dropped === 1 ? "" : "s"} could not be kept with the text.` });
+      }
+    },
+    [promptInputSetValue, promptInputAddImages, focusComposer],
+  );
+
+  const handleHeldEdit = useCallback(
+    async (item: HeldMessage) => {
+      if (!id) return;
+      const chatId = id;
+      const taken = await takeHeld(chatId, item);
+      if (taken) loadIntoComposer(chatId, taken.text, taken.files, taken.lost);
+    },
+    [id, takeHeld, loadIntoComposer],
+  );
+
+  /**
+   * Send a held message now, interrupting the turn it waits on — the same
+   * send as the composer's, with its dialogs (a `failed` one refused for
+   * branch drift gets the drift dialog). Its quotes were folded in when it was
+   * held. If an attachment could not be loaded back, or the user has moved on,
+   * it goes to the composer instead, so nothing is sent short.
+   */
+  const handleHeldSendNow = useCallback(
+    async (item: HeldMessage) => {
+      if (!id) return;
+      const chatId = id;
+      const taken = await takeHeld(chatId, item);
+      if (!taken) return;
+      if (taken.lost > 0 || currentIdRef.current !== chatId) {
+        loadIntoComposer(chatId, taken.text, taken.files, taken.lost);
+        return;
+      }
+      setHeldError((current) => (current?.chatId === chatId ? null : current));
+      void handleSend(taken.text, taken.files.length > 0 ? taken.files : undefined, { notFromComposer: true });
+    },
+    [id, takeHeld, loadIntoComposer, handleSend],
+  );
+
+  const handleHeldRemove = useCallback(
+    async (item: HeldMessage) => {
+      if (!id) return;
+      const chatId = id;
+      markHeldBusy(item.id, true);
+      try {
+        applyHeld(chatId, await deleteHeldMessage(chatId, item.id));
+      } catch (err) {
+        heldTakeFailure(chatId, err);
+      } finally {
+        markHeldBusy(item.id, false);
+      }
+    },
+    [id, markHeldBusy, applyHeld, heldTakeFailure],
+  );
+
+  const handleHeldResume = useCallback(async () => {
+    if (!id) return;
+    const chatId = id;
+    setHeldResuming(true);
+    try {
+      applyHeld(chatId, (await resumeHeldMessages(chatId)).heldMessages);
+    } catch (err) {
+      setHeldError({ chatId, message: errorMessage(err, "Couldn't resume the held messages") });
+    } finally {
+      setHeldResuming(false);
+    }
+  }, [id, applyHeld]);
+
+  /**
+   * The composer's send menu (and its shortcuts): the other ways to send what
+   * the composer holds.
+   *
+   * - **Enqueue Send**, offered while this chat has a live web run the
+   *   daemon can wait on — not a CLI-watched session, a native child, a
+   *   retired harness, a job step (the job runner owns its turns) or the
+   *   aside panel. Right after a send, before the registry has caught up,
+   *   the page's own stream stands for the run.
+   * - **Send as aside**, offered where the tray's Ask as aside would be (an
+   *   existing chat with something to fork, not an aside panel, a native
+   *   child or a retired harness), and greyed with the reason while a slash
+   *   command leads the composer or an aside is out.
+   */
+  const enqueueOffered =
+    !!id && !embedded && !nativeAgent && !isRetiredHarness && !chatJobRunId && (globalSessionActive ? globalSessionActive.type === "web" : streaming);
+  const asideOffered = !!id && !embedded && !nativeAgent && !isRetiredHarness && messages.length > 0;
+  const sendVariants = useMemo<SendVariants | undefined>(() => {
+    const variants: SendVariants = {};
+    if (enqueueOffered) variants.enqueue = { enabled: true };
+    if (asideOffered) {
+      if (composerLeadsWithCommand) variants.aside = { enabled: false, reason: ASIDE_COMMAND_BLOCKED };
+      else if (asideInFlight) variants.aside = { enabled: false, reason: ASIDE_IN_FLIGHT };
+      else variants.aside = { enabled: true };
+    }
+    return Object.keys(variants).length > 0 ? variants : undefined;
+  }, [enqueueOffered, asideOffered, composerLeadsWithCommand, asideInFlight, ASIDE_IN_FLIGHT]);
+  const handleSendVariant = useCallback(
+    async (variant: SendVariant, prompt: string, files: File[]): Promise<void> => {
+      switch (variant) {
+        case "enqueue":
+          // handleEnqueueSend clears what the daemon took.
+          await handleEnqueueSend(prompt, files);
+          return;
+        case "aside":
+          // The tray's controls are where a harness or Read only is chosen;
+          // from the composer it is the chat's own harness and the remembered
+          // Read only. The tray's own quotes, if any, still go with it, and
+          // handleAskAside clears what the aside took.
+          await handleAskAside({ source: "composer", prompt, files, readOnly: getAsideReadOnly(), target: null });
+          return;
+      }
+    },
+    [handleEnqueueSend, handleAskAside],
   );
 
   // Retry the original message with forceBranchChange after user confirms the modal
@@ -4625,6 +4937,16 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
                     </span>
                   </ThinkingIndicator>
                 )}
+                {/* After the turn they wait on: what goes next. */}
+                <HeldMessageList
+                  items={heldMessages}
+                  busyIds={heldBusy}
+                  resuming={heldResuming}
+                  onSendNow={handleHeldSendNow}
+                  onEdit={handleHeldEdit}
+                  onRemove={handleHeldRemove}
+                  onResume={handleHeldResume}
+                />
                 <div ref={bottomRef} />
               </ChatGalleryProvider>
             )}
@@ -4849,6 +5171,19 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
               type="button"
               aria-label="Dismiss"
               onClick={() => setAsideError(null)}
+              style={{ display: "flex", padding: 2, border: "none", background: "transparent", color: "var(--text-muted)", cursor: "pointer" }}
+            >
+              <X size={14} />
+            </button>
+          </div>
+        )}
+        {heldError && heldError.chatId === id && (
+          <div role="alert" style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 12px", fontSize: 12, color: "var(--error)" }}>
+            <span style={{ flex: 1, minWidth: 0 }}>{heldError.message}</span>
+            <button
+              type="button"
+              aria-label="Dismiss"
+              onClick={() => setHeldError(null)}
               style={{ display: "flex", padding: 2, border: "none", background: "transparent", color: "var(--text-muted)", cursor: "pointer" }}
             >
               <X size={14} />

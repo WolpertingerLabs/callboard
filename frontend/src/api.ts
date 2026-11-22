@@ -1099,16 +1099,16 @@ export async function releaseActivity(id: string, activityId: string): Promise<{
   return request(`/chats/${seg(id)}/activity/${seg(activityId)}/release`, { method: "POST", error: "Failed to end the wait" });
 }
 
-// ── Held messages ("Send when idle") ─────────────────────────────────
+// ── Held messages ("Enqueue Send") ──────────────────────────────────
 
 /**
  * Thrown by {@link holdMessage} when the daemon has no held-message routes —
- * it predates "Send when idle". Nothing was held; the composer should keep
+ * it predates "Enqueue Send". Nothing was held; the composer should keep
  * the message.
  */
 export class HeldUnsupportedError extends Error {
   constructor() {
-    super("The Callboard daemon is too old for “Send when idle”. Restart the daemon to use it.");
+    super("The Callboard daemon is too old for “Enqueue Send”. Restart the daemon to use it.");
     this.name = "HeldUnsupportedError";
   }
 }

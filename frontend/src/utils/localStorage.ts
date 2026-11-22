@@ -188,6 +188,8 @@ interface LocalStorageData {
   artifactWriteGrants?: Partial<Record<string, string>>;
   /** The aside options row's Read only toggle, as last left. Absent = off. */
   asideReadOnly?: boolean;
+  /** The composer's "Enter interrupts · ⌥Enter sends when it's done" hint was dismissed. Absent = shown. */
+  busyHintDismissed?: boolean;
   /**
    * The last explicit harness/model an aside was asked on — offered as a
    * one-click recent choice, never pre-selected (the default stays "Same as
@@ -884,6 +886,14 @@ export function getAsideReadOnly(): boolean {
 
 export function saveAsideReadOnly(on: boolean): void {
   updateStorage({ asideReadOnly: on });
+}
+
+export function getBusyHintDismissed(): boolean {
+  return getStorageData().busyHintDismissed === true;
+}
+
+export function saveBusyHintDismissed(dismissed: boolean): void {
+  updateStorage({ busyHintDismissed: dismissed });
 }
 
 /** The last explicit aside target, validated on read (the store is JSON another build may have written). */

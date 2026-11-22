@@ -379,4 +379,85 @@ describe("PromptInput send variants", () => {
     expect(onSendVariant).not.toHaveBeenCalled();
     expect(onSend).not.toHaveBeenCalled();
   });
+
+  describe("Enqueue Send", () => {
+    const WITH_ENQUEUE: SendVariants = { enqueue: { enabled: true }, aside: { enabled: true } };
+    const altEnter = (textarea: HTMLTextAreaElement, mods: Record<string, boolean> = {}) =>
+      fireEvent.keyDown(textarea, { key: "Enter", altKey: true, ...mods });
+
+    it("enqueues on Alt+Enter, handing over the prompt and leaving the composer to the page", async () => {
+      const { textarea, onSend, onSendVariant } = renderComposer({ sendVariants: WITH_ENQUEUE });
+      type(textarea, "after this");
+      await act(async () => {
+        altEnter(textarea);
+      });
+      expect(onSendVariant).toHaveBeenCalledWith("enqueue", "after this", []);
+      expect(onSend).not.toHaveBeenCalled();
+      expect(textarea.value).toBe("after this");
+    });
+
+    it("does not take AltGr (Ctrl+Alt) or ⌥⌘⏎ for Enqueue Send", async () => {
+      const { textarea, onSendVariant } = renderComposer({ sendVariants: WITH_ENQUEUE });
+      type(textarea, "x");
+      await act(async () => {
+        altEnter(textarea, { ctrlKey: true });
+        altEnter(textarea, { metaKey: true });
+      });
+      expect(onSendVariant).not.toHaveBeenCalledWith("enqueue", expect.anything(), expect.anything());
+    });
+
+    it("is a plain send on Alt+Enter when there is no run to wait on", () => {
+      const { textarea, onSend, onSendVariant } = renderComposer({ sendVariants: ENABLED });
+      type(textarea, "now");
+      altEnter(textarea);
+      expect(onSend).toHaveBeenCalledWith("now", undefined);
+      expect(onSendVariant).not.toHaveBeenCalled();
+    });
+
+    it("falls back to a plain Send on Alt+Enter while offered but disabled", () => {
+      const { textarea, onSend, onSendVariant } = renderComposer({ sendVariants: { enqueue: { enabled: false } } });
+      type(textarea, "now");
+      altEnter(textarea);
+      expect(onSend).toHaveBeenCalledWith("now", undefined);
+      expect(onSendVariant).not.toHaveBeenCalled();
+      expect(screen.queryByRole("menu")).toBeNull();
+    });
+
+    it("is in the send menu and in More actions on a phone", async () => {
+      Object.defineProperty(window, "innerWidth", { value: 400, configurable: true });
+      const { textarea, onSendVariant, sendButton } = renderComposer({ sendVariants: WITH_ENQUEUE });
+      type(textarea, "later");
+      fireEvent.click(screen.getByTitle("More actions"));
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: /Enqueue Send/ }));
+      });
+      expect(onSendVariant).toHaveBeenCalledWith("enqueue", "later", []);
+      fireEvent.contextMenu(sendButton());
+      expect(screen.getByRole("menuitem", { name: /Enqueue Send/ })).toBeTruthy();
+    });
+
+    it("shows the busy hint while there is text and a run, and remembers its dismissal", () => {
+      const { textarea, rerender } = renderComposer({ sendVariants: WITH_ENQUEUE });
+      expect(screen.queryByRole("note")).toBeNull();
+      type(textarea, "x");
+      expect(screen.getByRole("note").textContent).toMatch(/Enter interrupts the agent · (⌥Enter|Alt\+Enter) enqueues/);
+      // No run, no hint.
+      rerender({ sendVariants: ENABLED });
+      expect(screen.queryByRole("note")).toBeNull();
+      rerender({ sendVariants: WITH_ENQUEUE });
+      fireEvent.click(screen.getByRole("button", { name: "Don't show this hint again" }));
+      expect(screen.queryByRole("note")).toBeNull();
+      cleanup();
+      const again = renderComposer({ sendVariants: WITH_ENQUEUE });
+      type(again.textarea, "y");
+      expect(screen.queryByRole("note")).toBeNull();
+    });
+
+    it("shows no busy hint on a phone", () => {
+      Object.defineProperty(window, "innerWidth", { value: 400, configurable: true });
+      const { textarea } = renderComposer({ sendVariants: WITH_ENQUEUE });
+      type(textarea, "x");
+      expect(screen.queryByRole("note")).toBeNull();
+    });
+  });
 });
