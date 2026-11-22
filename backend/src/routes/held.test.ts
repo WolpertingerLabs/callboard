@@ -230,4 +230,18 @@ describe("POST /:id/held/resume", () => {
     expect(state.body.heldMessages.every((m: { state: string }) => m.state === "queued")).toBe(true);
     expect(handleChatIdle).toHaveBeenCalledWith(id);
   });
+
+  it("answers 500 rather than hanging when the held file cannot be read (#2)", async () => {
+    const id = runningChat();
+    const spy = vi.spyOn(heldMessageService, "resume").mockImplementationOnce(() => {
+      throw new Error("Held messages for x could not be read: EMFILE");
+    });
+    try {
+      const state = await call(resume, { id });
+      expect(state.status).toBe(500);
+      expect(state.body.error).toMatch(/could not be read/);
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });

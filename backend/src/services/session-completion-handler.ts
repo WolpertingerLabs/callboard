@@ -77,16 +77,29 @@ const missedWhileGuarded = new Set<string>();
 const guardHeldByReplay = new Set<string>();
 
 /**
+ * Chats with a *held-messages-only* miss: an abandoned start met the guard.
+ * Replaying full idle handling for it is what looped (the callback send fails
+ * again, forever), but dropping it outright strands a held message accepted
+ * while that failing start had the chat reading as "starting" — the hold
+ * route took it as running, and no stop will ever come for it. So on release
+ * only the idle hook is replayed, never `tryDeliver`. That cannot loop: a
+ * held delivery that fails marks its item failed and pauses what is queued
+ * behind it, so the next replay finds nothing to claim — and the replay cap
+ * below applies to it too.
+ */
+const heldOnlyMissWhileGuarded = new Set<string>();
+
+/**
  * Why idle handling is running, which decides what a held guard means:
  *  - `event` — a session stopped. Arriving while the guard is held, it is a
  *    real missed wakeup and is recorded for replay.
  *  - `abandoned` — a start failed before registering. Arriving while the
  *    guard is held, it is almost always the guard holder's *own* start
- *    failing (tryDeliver's `sendMessage`, or a held delivery's): recording it
- *    would replay straight into the same failure, forever, in microtasks —
- *    the event loop never gets a turn. The holder already handles its own
- *    failure (a held item is marked failed; ready callbacks stay ready and
- *    retry on the next stop), so it is not recorded.
+ *    failing (tryDeliver's `sendMessage`, or a held delivery's): replaying
+ *    full idle handling for it would retry the same failing callback send
+ *    forever, in microtasks — the event loop never gets a turn. Ready
+ *    callbacks stay ready and retry on the next stop instead; only a
+ *    held-messages-only miss is recorded ({@link heldOnlyMissWhileGuarded}).
  *  - `replay` — a recorded miss being replayed.
  */
 type IdleOrigin = "event" | "abandoned" | "replay";
@@ -94,7 +107,8 @@ type IdleOrigin = "event" | "abandoned" | "replay";
 /** Take the per-chat guard, or (for a real missed wakeup) note it and refuse. */
 function takeGuard(chatId: string, origin: IdleOrigin): boolean {
   if (delivering.has(chatId)) {
-    if (origin !== "abandoned") missedWhileGuarded.add(chatId);
+    if (origin === "abandoned") heldOnlyMissWhileGuarded.add(chatId);
+    else missedWhileGuarded.add(chatId);
     return false;
   }
   delivering.add(chatId);
@@ -111,17 +125,27 @@ function takeGuard(chatId: string, origin: IdleOrigin): boolean {
  * which is what every miss was before replays existed. The replay is also
  * deferred with `setImmediate`, so even a regression here yields to I/O and
  * timers instead of freezing the daemon in a microtask loop.
+ *
+ * The cap's accepted cost: two *consecutive* held deliveries that both fail
+ * within microtasks of registering (A's stop replayed, the replay delivers B,
+ * B's stop lands during the replay and is dropped) leave the next held
+ * message `queued` on an idle chat until Resume or the chat's next stop. It
+ * needs two instant failures back to back; the trade is a bounded stall
+ * against an unbounded loop.
  */
 function releaseGuard(chatId: string): void {
   delivering.delete(chatId);
   const heldByReplay = guardHeldByReplay.delete(chatId);
-  if (!missedWhileGuarded.delete(chatId)) return;
+  const full = missedWhileGuarded.delete(chatId);
+  const heldOnly = heldOnlyMissWhileGuarded.delete(chatId);
+  if (!full && !heldOnly) return;
   if (heldByReplay) {
     log.warn(`Idle wakeup for ${chatId} missed during a replay — not replaying again; it retries on the next stop`);
     return;
   }
   setImmediate(() => {
-    void handleChatIdle(chatId, "replay").catch((err) => {
+    const replay = full ? handleChatIdle(chatId, "replay") : runIdleHook(chatId, "replay");
+    void replay.catch((err) => {
       log.error(`Replayed idle handling for ${chatId} failed: ${err?.message ?? err}`);
     });
   });

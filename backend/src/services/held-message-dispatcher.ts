@@ -175,9 +175,10 @@ export async function deliverHeld(chatId: string): Promise<boolean> {
     const result = await Promise.race([starting, timedOut]);
     if (result === "timed_out") {
       flight.timedOut = true;
-      heldMessageService.markFailed(chatId, item.id, "Starting the turn timed out.");
-      log.warn(`Held message ${item.id} on ${chatId}: start did not settle within ${dispatcherDeps.deliveryTimeoutMs}ms — given back as failed`);
-      // It was handed back; a start that completes late must not run behind it.
+      // Bookkeeping first, the store write last: a store write that throws
+      // (an unreadable held file) must not skip arranging the late-start
+      // abort or the hold route's `hasTimedOutStart` view.
+      // A start that completes late must not run behind the handed-back item.
       timedOutStarts.set(chatId, (timedOutStarts.get(chatId) ?? 0) + 1);
       starting.then(
         (late) => {
@@ -186,6 +187,8 @@ export async function deliverHeld(chatId: string): Promise<boolean> {
         },
         () => settleTimedOutStart(chatId),
       );
+      log.warn(`Held message ${item.id} on ${chatId}: start did not settle within ${dispatcherDeps.deliveryTimeoutMs}ms — given back as failed`);
+      heldMessageService.markFailed(chatId, item.id, "Starting the turn timed out.");
       return false;
     }
     if (!result.ok) {
@@ -204,7 +207,16 @@ export async function deliverHeld(chatId: string): Promise<boolean> {
       log.info(`Held message ${item.id} on ${chatId} stopped by the user as it started — paused`);
       return false;
     }
-    heldMessageService.removeDelivered(chatId, item.id);
+    // The turn is running: from here the item WAS sent, whatever the store
+    // says. A store error now must not fall into the catch below and mark a
+    // sent message failed (a Resume would then send it twice). The item stays
+    // `delivering` instead — not claimable, refused by take/remove — and the
+    // next boot pauses it, where the user can see and remove it.
+    try {
+      heldMessageService.removeDelivered(chatId, item.id);
+    } catch (err: unknown) {
+      log.error(`Held message ${item.id} on ${chatId} was sent, but could not be removed from the store: ${err instanceof Error ? err.message : String(err)}`);
+    }
     log.info(`Delivered held message ${item.id} to ${chatId}`);
     return true;
   } catch (err: unknown) {

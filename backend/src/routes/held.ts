@@ -55,6 +55,13 @@ heldRouter.param("hid", (req, res, next, hid) => {
  * against. A "starting" mark left by a held delivery the dispatcher already
  * timed out does not count: that start may never settle, and a hold queued
  * behind it would wait for a stop that might not come.
+ *
+ * Accepted imprecision: starting marks are not tracked per owner, so while a
+ * timed-out held start is still hanging, a *different* live start on the
+ * same chat (the user's own send, a callback delivery) is hidden too and the
+ * hold is answered `not_running` — the client then sends normally into that
+ * start. It needs a hung `sendMessage` to begin with; per-owner marks would
+ * close it if that ever proves common.
  */
 function isRunningOrStarting(chatId: string): boolean {
   if (getActiveSession(chatId)) return true;
@@ -168,15 +175,25 @@ heldRouter.post("/:id/held/resume", async (req, res) => {
   // #swagger.description = 'Re-queues every paused or failed held message. If the chat is idle, the first one is sent now; otherwise they go out when the current turn ends.'
   /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID' } */
   /* #swagger.responses[200] = { description: "{ resumed, started, heldMessages } — how many items were re-queued, whether a turn was started now, and the list after" } */
+  /* #swagger.responses[500] = { description: "The chat's held messages could not be read" } */
   const chatId = req.params.id;
-  const resumed = heldMessageService.resume(chatId);
-  // Through the completion handler, not the dispatcher directly: under its
-  // per-chat guard, and followed by completion callbacks — so a callback that
-  // became ready while a resumed delivery was being refused is still sent,
-  // rather than waiting for some unrelated session to stop. Refuses a running
-  // or starting chat itself.
-  const started = await handleChatIdle(chatId);
-  res.json({ resumed, started, heldMessages: heldMessageService.list(chatId) });
+  // Express 4 does not catch a rejected async handler: without this, a throw
+  // (an unreadable held file — resume refuses to overwrite it) would leave the
+  // request unanswered until the client gave up.
+  try {
+    const resumed = heldMessageService.resume(chatId);
+    // Through the completion handler, not the dispatcher directly: under its
+    // per-chat guard, and followed by completion callbacks — so a callback that
+    // became ready while a resumed delivery was being refused is still sent,
+    // rather than waiting for some unrelated session to stop. Refuses a running
+    // or starting chat itself.
+    const started = await handleChatIdle(chatId);
+    res.json({ resumed, started, heldMessages: heldMessageService.list(chatId) });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    log.error(`POST /${chatId}/held/resume failed: ${message}`);
+    res.status(500).json({ error: message });
+  }
 });
 
 /** The 404 / 409 for a take or remove that did not happen. */

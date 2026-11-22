@@ -45,6 +45,10 @@ const { EventEmitter } = await import("events");
 
 /** Chats whose sends throw before registering ("Chat not found", a refused stored effort…). */
 const failingSends = new Set<string>();
+/** Chats whose next N sends throw (then succeed). */
+const failNextSends = new Map<string, number>();
+/** Runs inside a send's preflight, while the chat reads as "starting". */
+let duringPreflight: ((chatId: string) => void) | null = null;
 /** Every send attempt, across both senders (callbacks and held deliveries). */
 let sendAttempts = 0;
 /**
@@ -66,7 +70,10 @@ async function realisticSendMessage(chatId: string): Promise<InstanceType<typeof
   const token = sessionRegistry.markStarting(chatId);
   try {
     await Promise.resolve(); // the preflight awaits
-    if (failingSends.has(chatId)) throw new Error("Chat not found");
+    duringPreflight?.(chatId);
+    const failNext = failNextSends.get(chatId) ?? 0;
+    if (failNext > 0) failNextSends.set(chatId, failNext - 1);
+    if (failingSends.has(chatId) || failNext > 0) throw new Error("Chat not found");
     active.add(chatId);
     sessionRegistry.clearStarting(chatId, token);
     return new EventEmitter();
@@ -113,6 +120,8 @@ beforeEach(() => {
   });
   dispatcherDeps.deliveryTimeoutMs = 120_000;
   failingSends.clear();
+  failNextSends.clear();
+  duringPreflight = null;
   sendAttempts = 0;
   // startChatTurn's preflight passes and it calls sendMessage — realistic
   // starting marks and start_abandoned included.
@@ -434,5 +443,65 @@ describe("replay loop (second review)", () => {
     } finally {
       setIdleDeliveryHook(deliverHeld);
     }
+  });
+});
+
+describe("third review", () => {
+  it("a hold accepted while a failing callback start had the chat 'starting' is delivered, not stranded (#1)", async () => {
+    const id = chat();
+    ready.set(id, [{ id: "cb-strand", childChatId: "child-strand", depth: 1, kind: "spawned" }]);
+    failNextSends.set(id, 1); // the callback send fails; the next send works
+    // The hold route accepts a message on a starting chat; emulate it landing
+    // in the callback send's preflight.
+    duringPreflight = (chatId) => {
+      if (chatId !== id || heldMessageService.list(id).length > 0) return;
+      expect(sessionRegistry.isStarting(id)).toBe(true);
+      heldMessageService.add(id, { text: "held during" });
+    };
+
+    sessionRegistry.emit("change", { event: "session_stopped", chatId: "child-strand", type: "web" });
+    await settle();
+
+    expect(startChatTurn.mock.calls.map((c) => c[0].prompt)).toEqual(["held during"]);
+    expect(heldMessageService.list(id)).toEqual([]);
+    // Only the held-messages half was replayed: the callback send is not retried
+    // until the held turn stops, so a persistently failing one cannot spin.
+    expect(sendMessage).toHaveBeenCalledOnce();
+    expect(ready.get(id)).toHaveLength(1);
+    expect(sendAttempts).toBe(2);
+  });
+
+  it("a store error after a successful start does not mark the sent item failed (#3)", async () => {
+    const id = chat();
+    const item = heldMessageService.add(id, { text: "sent" });
+    const spy = vi.spyOn(heldMessageService, "removeDelivered").mockImplementationOnce(() => {
+      throw new Error("EMFILE");
+    });
+    try {
+      expect(await deliverHeld(id)).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+    // Left delivering (not claimable, not takeable) — never failed, so Resume cannot send it twice.
+    expect(heldMessageService.list(id)).toEqual([expect.objectContaining({ id: item.id, state: "delivering" })]);
+  });
+
+  it("a store error while timing out still arranges the late-start abort (#3)", async () => {
+    const id = chat();
+    dispatcherDeps.deliveryTimeoutMs = 20;
+    heldMessageService.add(id, { text: "slow" });
+    const start = deferredStart();
+    const spy = vi.spyOn(heldMessageService, "markFailed").mockImplementationOnce(() => {
+      throw new Error("EMFILE");
+    });
+    try {
+      expect(await deliverHeld(id)).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(hasTimedOutStart(id)).toBe(true);
+    start.ok(id);
+    await settle();
+    expect(stopSession).toHaveBeenCalledOnce();
   });
 });
