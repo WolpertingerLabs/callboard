@@ -17,7 +17,7 @@ vi.mock("fs", async (importOriginal) => {
   return { ...actual, readFileSync: vi.fn(actual.readFileSync) };
 });
 const fs = await import("fs");
-const { ImageStorageService, safeFileName, storeBase64Image } = await import("./image-storage.js");
+const { allUploadsExist, ImageStorageService, safeFileName, storeBase64Image } = await import("./image-storage.js");
 
 const imagesDir = join(tmpRoot, "images");
 const b64 = (s: string) => Buffer.from(s).toString("base64");
@@ -170,5 +170,18 @@ describe("hash index build", () => {
     const read = vi.mocked(freshFs.readFileSync).mock.calls.map(([path]) => String(path));
     expect(read.some((path) => path.includes(image.id))).toBe(true);
     expect(read.some((path) => path.includes(attachment.id))).toBe(false);
+  });
+});
+
+describe("allUploadsExist", () => {
+  it("is true only when every id is stored, without reading any file", () => {
+    const a = storeBase64Image(b64("exists-a"), "image/png")!;
+    const b = storeBase64Image(b64("exists-b"), "image/png")!;
+    vi.mocked(fs.readFileSync).mockClear();
+    expect(allUploadsExist([a, b])).toBe(true);
+    expect(allUploadsExist([a, "00000000-0000-4000-8000-000000000000"])).toBe(false);
+    expect(allUploadsExist([a, "../etc/passwd"])).toBe(false);
+    expect(allUploadsExist([])).toBe(true);
+    expect(fs.readFileSync).not.toHaveBeenCalled();
   });
 });

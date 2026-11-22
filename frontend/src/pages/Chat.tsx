@@ -53,7 +53,7 @@ import {
   createAside,
   AsidesUnsupportedError,
   AsideRequestError,
-  ASIDE_DAEMON_DROPPED_ATTACHMENTS,
+  asideDroppedAttachmentsMessage,
   uploadDraftImages,
   continueChatFrom,
   rerunChatFrom,
@@ -372,9 +372,12 @@ const ASIDE_COMMAND_BLOCKED = "A slash command runs in this chat, not as an asid
 const ASIDE_INSERTED_ONLY = "Passages inserted from an aside can't start another aside. Quote this chat's own text to ask one.";
 
 /**
- * One Ask as aside. From the tray (the default) the question and attachments
- * are read from the composer; from the composer's own send they are handed
- * over as it would send them, and the composer clears itself on success.
+ * One Ask as aside: `readOnly` and `target` as the tray's controls give them,
+ * and where the question comes from. From the tray (`source` omitted or
+ * "tray") the prompt and attachments are read from the composer's snapshot;
+ * from the composer's own send (`source: "composer"`) they are handed over as
+ * the composer would send them. Either way `handleAskAside` clears the
+ * composer itself — see its contract.
  */
 type AskAsideRequest = AskAsideOptions & ({ source?: "tray" } | { source: "composer"; prompt: string; files: File[] });
 
@@ -3231,11 +3234,9 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
   // has no point in this transcript for an aside to fork at. It stays in the
   // tray for the next ordinary send.
   //
-  // Two callers. The tray's Ask as aside (`source: "tray"`, the default)
-  // reads the composer through its snapshot and clears what it sent once the
-  // aside exists. The composer's own send-as-aside (`source: "composer"`)
-  // hands over the prompt and files it would send, and clears itself on a
-  // "started"/"created" result.
+  // Two callers, one contract (on `handleAskAside` below): the tray's Ask as
+  // aside and the composer's own send-as-aside differ only in where the
+  // prompt and files come from.
   const composerSnapshotRef = useRef<(() => ComposerSnapshot) | null>(null);
   const registerComposerSnapshot = useCallback((get: (() => ComposerSnapshot) | null) => {
     composerSnapshotRef.current = get;
@@ -3249,6 +3250,30 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
     (prompt: string) => leadsWithCommand(prompt, allSlashCommands, commandsLoadedFor === id),
     [allSlashCommands, commandsLoadedFor, id],
   );
+  /**
+   * Ask an aside of this chat. The contract, the same for both sources:
+   *
+   * - **Input.** `readOnly` and `target` (null = same harness as the chat).
+   *   `source: "tray"` (or omitted) reads the prompt and files from the
+   *   composer's snapshot; `source: "composer"` is handed the prompt and files
+   *   the composer would send. The prompt may be empty when there are files.
+   * - **Quotes.** The tray's own quotes go, and set the fork point; with none
+   *   the aside forks at this chat's latest message. Passages inserted from
+   *   an aside never go and stay in the tray; holding only those is refused
+   *   from the tray and ignored from the composer.
+   * - **Clearing — done here, never by the caller.** Only once the aside
+   *   exists, and only what it took: the composer's text if it still equals
+   *   the prompt (trimmed), or, if the user has left this chat, its saved
+   *   draft under the same rule; the files, by identity, from the composer
+   *   wherever it is showing (unless the daemon dropped them, which is then
+   *   said); and the quotes, from the tray. On any refusal or failure
+   *   nothing is touched. A caller must not clear the composer on any result.
+   * - **Result.** "started" or "created" (the aside exists; opened in the
+   *   panel if the user is still here), "refused" (the chosen harness/model
+   *   was refused), "failed", or "skipped" (nothing sent: no chat, one already
+   *   out, a leading slash command, nothing to ask). Why, for "failed" and
+   *   most "skipped", is in this chat's `asideError`.
+   */
   const handleAskAside = useCallback(
     async (request: AskAsideRequest): Promise<AskAsideResult> => {
       const { readOnly, target } = request;
@@ -3257,8 +3282,9 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
       const fromComposer = request.source === "composer";
       const quotes = getQuotes(chatId).filter((quote) => !quote.fromChatId);
       // From the tray, quoting only inserted passages is a mistake to point
-      // out; from the composer the tray is incidental and the aside is about
-      // the conversation so far.
+      // out. From the composer they are ignored rather than refused (the
+      // aside forks at the latest message); the tray's own quotes, when there
+      // are any, still go and set the fork point from either source.
       if (!fromComposer && quotes.length === 0 && getQuotes(chatId).length > 0) {
         setAsideError({ chatId, message: ASIDE_INSERTED_ONLY });
         return "skipped";
@@ -3300,15 +3326,16 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
         // Created: the quotes and the question have gone into it.
         for (const quote of quotes) removeQuote(chatId, quote.id);
         const stillHere = currentIdRef.current === chatId;
-        if (!fromComposer) {
-          // Compared trimmed: the question was sent trimmed, and the composer
-          // or the stored draft may still hold trailing whitespace or a newline.
-          if (stillHere) promptInputSetValue?.((current) => (current.trim() === question.trim() ? "" : current));
-          else if (getComposerDraft(chatId).trim() === question.trim()) saveComposerDraft(chatId, "");
-          // The files it took, by identity — ones the daemon dropped stay.
-          if (stillHere && !created.attachmentsDropped) promptInputRemoveImages?.(files);
-        }
-        if (created.attachmentsDropped) window.alert(ASIDE_DAEMON_DROPPED_ATTACHMENTS);
+        // Compared trimmed: the question was sent trimmed, and the composer
+        // or the stored draft may still hold trailing whitespace or a newline.
+        if (stillHere) promptInputSetValue?.((current) => (current.trim() === question.trim() ? "" : current));
+        else if (getComposerDraft(chatId).trim() === question.trim()) saveComposerDraft(chatId, "");
+        // The files it took, by identity, whichever chat the composer shows
+        // now: its attachments are not per chat and go wherever it goes, so a
+        // user who moved on would otherwise send them again there. Ones the
+        // daemon dropped stay.
+        if (!created.attachmentsDropped) promptInputRemoveImages?.(files);
+        if (created.attachmentsDropped) window.alert(asideDroppedAttachmentsMessage(!!created.started));
         if (created.runError) {
           // The aside exists but its question did not go out: put it in the
           // aside's composer so resending is one click.

@@ -212,7 +212,8 @@ function LocationProbe() {
   );
 }
 
-type ForkReply = "ok" | "refuse" | "refuseTarget" | "old" | "runError" | "oldNoImages" | Promise<"ok">;
+/** "oldNoImages": a daemon before attachments, which ignores them; "oldUnstarted": the same with no question, so it starts nothing. */
+type ForkReply = "ok" | "refuse" | "refuseTarget" | "old" | "runError" | "oldNoImages" | "oldUnstarted" | Promise<"ok">;
 /** How the stubbed upload route answers: every file stored, or one refused. */
 let uploadReply: "ok" | "partial" = "ok";
 const uploads = () => vi.mocked(fetch).mock.calls.filter(([url, init]) => String(url) === "/api/images/upload" && init?.method === "POST");
@@ -254,10 +255,15 @@ beforeEach(() => {
         const chatRole = reply === "old" ? "fork" : "aside";
         if (chatRole === "aside") created.add("aside-1");
         const title = reply === "old" ? "Fork: Work" : "Aside: Why?";
-        const outcome = reply === "runError" ? { runError: "engine down", promptText: "> **Assistant:**\n> first\n\nWhy?" } : { started: true };
+        const outcome =
+          reply === "runError"
+            ? { runError: "engine down", promptText: "> **Assistant:**\n> first\n\nWhy?" }
+            : reply === "oldUnstarted"
+              ? {}
+              : { started: true };
         // A current daemon counts the attachments it took; an older one ignores them.
         const sentImages = (JSON.parse(String(init.body)).imageIds ?? []) as string[];
-        const attached = sentImages.length > 0 && reply !== "oldNoImages" ? { attachedImages: sentImages.length } : {};
+        const attached = sentImages.length > 0 && reply !== "oldNoImages" && reply !== "oldUnstarted" ? { attachedImages: sentImages.length } : {};
         return {
           ok: true,
           status: 201,
@@ -442,6 +448,43 @@ it("sends nothing, and keeps everything, when an attachment does not upload", as
   expect(composerState.files).toEqual(files);
   expect(getQuotes("original")).toHaveLength(1);
   expect(composer().value).toBe("Why?");
+});
+
+it("says nothing was asked when an older daemon dropped the attachments of an aside with no question", async () => {
+  // A daemon before attachments starts no turn without a prompt: the aside exists, empty.
+  forkReplies = ["oldUnstarted"];
+  const alert = vi.spyOn(window, "alert").mockImplementation(() => {});
+  const a = file("a.png");
+  composerState.files = [a];
+  await quoteAndType("");
+  fireEvent.click(askButton());
+  await waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/chat/original?aside=aside-1"));
+  expect(forkBodies()[0]).toMatchObject({ imageIds: ["img-0"] });
+  expect(forkBodies()[0]).not.toHaveProperty("prompt");
+  expect(alert).toHaveBeenCalledTimes(1);
+  expect(alert.mock.calls[0]![0]).toMatch(/created, but nothing was sent in it/);
+  expect(alert.mock.calls[0]![0]).not.toMatch(/was asked/);
+  expect(composerState.files).toEqual([a]);
+});
+
+it("takes the sent attachments out of the composer even after the user moved to another chat", async () => {
+  // The composer is not per chat: its attachments go wherever it goes, and
+  // would be sent again from the next chat.
+  let release!: () => void;
+  forkReplies = [new Promise<"ok">((resolve) => (release = () => resolve("ok")))];
+  const [a, b] = [file("a.png"), file("b.png")];
+  composerState.files = [a];
+  await quoteAndType("Why?");
+  fireEvent.click(askButton());
+  await screen.findByRole("button", { name: "Asking…" });
+  fireEvent.click(screen.getByRole("button", { name: "go elsewhere" }));
+  await waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/chat/other"));
+  // Attached in the other chat while the aside was out: stays.
+  composerState.files = [...composerState.files, b];
+  await act(async () => release());
+  await waitFor(() => expect(composerState.files).toEqual([b]));
+  expect(forkBodies()[0]).toMatchObject({ imageIds: ["img-0"] });
+  expect(screen.getByTestId("location").textContent).toBe("/chat/other");
 });
 
 it("says so, and keeps the attachments, when an older daemon dropped them", async () => {

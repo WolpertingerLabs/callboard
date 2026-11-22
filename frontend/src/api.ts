@@ -731,8 +731,16 @@ export type CreateAsideResponse = Chat & { started?: boolean; runError?: string;
 /** Shown when the daemon is too old for an aside without quotes or with attachments. */
 export const ASIDE_DAEMON_TOO_OLD_UNQUOTED =
   "The Callboard daemon is too old to ask an aside without quoting something. Update and restart the daemon, or quote a passage first.";
-export const ASIDE_DAEMON_DROPPED_ATTACHMENTS =
-  "The aside was asked, but the Callboard daemon is too old for attachments and left them out. Update and restart the daemon to send attachments with an aside.";
+/**
+ * What to say when {@link CreateAsideResponse.attachmentsDropped}: the older
+ * daemon left the attachments out. `started` says whether anything went —
+ * without a question it does not start an aside at all, so nothing was asked.
+ */
+export function asideDroppedAttachmentsMessage(started: boolean): string {
+  return started
+    ? "The aside was asked, but the Callboard daemon is too old for attachments and left them out. Update and restart the daemon to send attachments with an aside."
+    : "The aside was created, but nothing was sent in it: the Callboard daemon is too old for attachments and does not start an aside on attachments alone. Update and restart the daemon, or type a question in the aside.";
+}
 
 /** `metadata.chatRole` of a chat record, or undefined when absent or unreadable. */
 function chatRoleOf(chat: Chat): string | undefined {

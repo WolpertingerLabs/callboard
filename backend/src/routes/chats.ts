@@ -37,7 +37,7 @@ import { checkSupersedable, supersedeChat, SupersedeRefusedError, type Supersede
 import { planRerun } from "../services/chat-rerun.js";
 import { sendMessage, stopSession, type SendMessageOptions } from "../services/claude.js";
 import { awaitChatCreated, ChatCreatedTimeoutError } from "../services/session-spawn.js";
-import { isValidImageId, loadImageBuffers } from "../services/image-storage.js";
+import { allUploadsExist, isValidImageId, loadImageBuffers } from "../services/image-storage.js";
 import { assertCompressible, CompressionInputError, spanFingerprint, summariseForCompression } from "../services/chat-summary.js";
 import { isCompressDirection, type CompressDirection } from "../agents/compression.js";
 import { createSpaceResolver, parseSpaceScope, type SpaceResolver } from "../services/space-membership.js";
@@ -1357,13 +1357,15 @@ chatsRouter.post("/:id/fork", async (req, res) => {
   /* #swagger.responses[404] = { description: "Chat not found" } */
   /* #swagger.responses[409] = { description: "An aside attachment (imageIds) is not stored, or the chat's provider could not be resolved" } */
   // An aside with `forkAtLatest` names no fork point: the daemon picks it below.
-  // Every other fork needs one.
+  // Every other fork needs one. A request that sends `forkAtLatest` at all
+  // leaves the missing-timestamp refusal to parseAsideRequest, which can say
+  // what is actually wrong (a plain fork, or not a boolean).
   const atLatest = req.body.kind === ASIDE_ROLE && req.body.forkAtLatest === true;
   const requestedTimestamp: unknown = req.body.timestamp;
   if (atLatest) {
     if (requestedTimestamp !== undefined)
       return res.status(400).json({ error: "timestamp is not accepted with forkAtLatest: the daemon picks the fork point" });
-  } else if (!requestedTimestamp || typeof requestedTimestamp !== "string") {
+  } else if (req.body.forkAtLatest === undefined && (!requestedTimestamp || typeof requestedTimestamp !== "string")) {
     return res.status(400).json({ error: "timestamp is required" });
   }
 
@@ -1375,7 +1377,7 @@ chatsRouter.post("/:id/fork", async (req, res) => {
   const { meta, providerKind } = source;
 
   // An aside: everything it carries is checked before anything is written.
-  const aside = parseAsideRequest(req.body, atLatest ? undefined : (requestedTimestamp as string), meta.defaultPermissions);
+  const aside = parseAsideRequest(req.body, typeof requestedTimestamp === "string" ? requestedTimestamp : undefined, meta.defaultPermissions);
   if (!aside.ok) return res.status(400).json({ error: aside.error });
 
   // The fork point of an aside at the latest message: the newest stamp in the
@@ -1400,7 +1402,7 @@ chatsRouter.post("/:id/fork", async (req, res) => {
   // start short of one is refused before anything is written (the same rule
   // as sending a draft, routes/queue.ts).
   const asideImageIds = aside.aside?.imageIds ?? [];
-  if (asideImageIds.length > 0 && loadImageBuffers(asideImageIds).length !== asideImageIds.length) {
+  if (asideImageIds.length > 0 && !allUploadsExist(asideImageIds)) {
     return res.status(409).json({ error: "Some of the attachments could not be found; attach them again" });
   }
   const startsTurn = !!aside.aside && (!!aside.aside.prompt || asideImageIds.length > 0);
@@ -1643,7 +1645,8 @@ function parseAsideRequest(
       return { ok: false, error: "quotes are not accepted with forkAtLatest: a quoted aside forks at its latest quote" };
     }
   } else {
-    if (timestamp === undefined || isNaN(new Date(timestamp).getTime())) return { ok: false, error: "timestamp is not a valid date" };
+    if (!timestamp) return { ok: false, error: "timestamp is required" };
+    if (isNaN(new Date(timestamp).getTime())) return { ok: false, error: "timestamp is not a valid date" };
     const parsed = parseAsideQuotes(body.quotes, timestamp);
     if (!parsed.ok) return parsed;
     quotes = parsed.quotes;
