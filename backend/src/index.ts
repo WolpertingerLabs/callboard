@@ -45,6 +45,8 @@ import { chatsRouter } from "./routes/chats.js";
 import { streamRouter } from "./routes/stream.js";
 import { imagesRouter } from "./routes/images.js";
 import { queueRouter } from "./routes/queue.js";
+import { heldRouter } from "./routes/held.js";
+import { initHeldMessageDispatcher } from "./services/held-message-dispatcher.js";
 import { foldersRouter } from "./routes/folders.js";
 import { gitRouter } from "./routes/git.js";
 import { appPluginsRouter } from "./routes/app-plugins.js";
@@ -215,6 +217,7 @@ app.get("/api/docs", (_req, res) => {
 
 app.use("/api/chats", chatsRouter);
 app.use("/api/chats", streamRouter);
+app.use("/api/chats", heldRouter);
 app.use("/api/computer-use", computerUseRouter);
 app.use("/api/images", imagesRouter);
 app.use("/api/chats", imagesRouter);
@@ -469,6 +472,16 @@ try {
   repairStrandedCardFields();
 } catch (err: any) {
   log.error(`Stranded card repair failed: ${err.message} — affected cards keep showing stale fields; the repair retries on next boot`);
+}
+
+// Held messages ("Send when idle"): pause what the previous process left
+// queued — the runs they waited on died with it — and install delivery as the
+// completion handler's idle hook. Before listen, so no request or stop can
+// see an unpaused item from the old process.
+try {
+  initHeldMessageDispatcher();
+} catch (err: any) {
+  log.error(`Held-message dispatcher init failed: ${err.message}`);
 }
 
 app.listen(PORT, () => {

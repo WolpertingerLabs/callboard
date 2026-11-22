@@ -1,3 +1,5 @@
+import type { HeldMessage } from "./held.js";
+
 /**
  * Chat activity — what a chat is currently doing that takes time.
  *
@@ -133,4 +135,10 @@ export interface ChatActivityResponse {
    * `session-callbacks.json`, so this survives a daemon restart.
    */
   awaitingChildren: number;
+  /**
+   * Messages held until this chat's turn ends ("Send when idle"), in delivery
+   * order. Optional: an older daemon omits it, and a client must read absence
+   * as "unknown", not "none" — keep the list it last had rather than blank it.
+   */
+  heldMessages?: HeldMessage[];
 }

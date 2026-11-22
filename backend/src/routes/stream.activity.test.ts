@@ -13,10 +13,11 @@
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import type { Request, Response } from "express";
 
+const stopSession = vi.hoisted(() => vi.fn((_id: string) => false));
 vi.mock("../services/claude.js", () => ({
   sendMessage: async () => null,
   getActiveSession: () => null,
-  stopSession: () => false,
+  stopSession,
   respondToPermission: () => ({ ok: false }),
   hasPendingRequest: () => false,
   getPendingRequest: () => null,
@@ -26,6 +27,7 @@ vi.mock("../services/session-callbacks.js", () => ({ listPendingForParent: (id: 
 
 const { streamRouter } = await import("./stream.js");
 const { startActivity, __resetActivityState, openOrContinueWatch, listActivities } = await import("../services/chat-activity.js");
+const { heldMessageService } = await import("../services/held-message-service.js");
 
 function handlerFor(path: string, method: "get" | "post") {
   const layer = (streamRouter as any).stack.find((l: any) => l.route?.path === path && l.route.methods[method]);
@@ -35,6 +37,7 @@ function handlerFor(path: string, method: "get" | "post") {
 
 const getActivityHandler = handlerFor("/:id/activity", "get");
 const releaseHandler = handlerFor("/:id/activity/:activityId/release", "post");
+const stopHandler = handlerFor("/:id/stop", "post");
 
 function fakeRes() {
   const state = { status: 200, body: undefined as any };
@@ -76,7 +79,17 @@ describe("GET /:id/activity", () => {
   it("reports an idle chat as empty rather than erroring", () => {
     const state = call(getActivityHandler, { id: "chat-idle" });
     expect(state.status).toBe(200);
-    expect(state.body).toEqual({ activities: [], conditionWatch: null, awaitingChildren: 0 });
+    expect(state.body).toEqual({ activities: [], conditionWatch: null, awaitingChildren: 0, heldMessages: [] });
+  });
+
+  it("includes the chat's held messages, in delivery order", () => {
+    heldMessageService.add("chat-held", { text: "first" });
+    heldMessageService.add("chat-held", { text: "second" });
+    const state = call(getActivityHandler, { id: "chat-held" });
+    expect(state.body.heldMessages.map((m: { text: string; state: string }) => [m.text, m.state])).toEqual([
+      ["first", "queued"],
+      ["second", "queued"],
+    ]);
   });
 
   it("counts outstanding spawned children", () => {
@@ -128,5 +141,22 @@ describe("POST /:id/activity/:activityId/release", () => {
     const state = call(releaseHandler, { id: "chat-2", activityId: activity.id });
     expect(state.status).toBe(404);
     expect(listActivities("chat-1")).toHaveLength(1);
+  });
+});
+
+describe("POST /:id/stop", () => {
+  it("pauses held messages before stopping, so the stop does not send the next one", () => {
+    heldMessageService.add("chat-stop", { text: "later" });
+    let stateAtStop: string | undefined;
+    stopSession.mockImplementationOnce((id: string) => {
+      stateAtStop = heldMessageService.list(id)[0]?.state;
+      return true;
+    });
+
+    const state = call(stopHandler, { id: "chat-stop" });
+
+    expect(state.body).toEqual({ stopped: true });
+    expect(stateAtStop).toBe("paused");
+    expect(heldMessageService.list("chat-stop")[0]).toMatchObject({ state: "paused", reason: "You stopped the run." });
   });
 });

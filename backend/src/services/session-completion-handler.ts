@@ -44,12 +44,36 @@ type MessageSender = (opts: SendMessageOptions) => Promise<EventEmitter>;
 
 type ActiveSessionLookup = (chatId: string) => unknown | undefined;
 
+/**
+ * Work that runs first when a chat goes idle, before its completion callbacks:
+ * held messages ("Send when idle"). Resolves true when it started a turn on
+ * the chat — the callbacks then wait for that turn to end, exactly as they
+ * wait for any other turn.
+ */
+export type IdleDeliveryHook = (chatId: string) => Promise<boolean>;
+
 let _sendMessage: MessageSender | null = null;
 let _getActiveSession: ActiveSessionLookup | null = null;
 let _initialized = false;
+let _idleHook: IdleDeliveryHook | null = null;
 
 /** Parents currently being delivered to — guards against concurrent double-delivery. */
 const delivering = new Set<string>();
+
+/**
+ * Install the idle hook (held-message delivery). Registered from server
+ * bootstrap rather than claude.ts: the dispatcher reaches `sendMessage`
+ * through chat-turn.ts, which imports claude.js, so claude.ts registering it
+ * would close an import cycle.
+ */
+export function setIdleDeliveryHook(fn: IdleDeliveryHook | null): void {
+  _idleHook = fn;
+}
+
+/** Busy for the purposes of idle-triggered delivery: running, or a turn on its way. */
+function isBusy(chatId: string): boolean {
+  return sessionRegistry.isStarting(chatId) || Boolean(_getActiveSession && _getActiveSession(chatId));
+}
 
 /**
  * Wire up the global completion listener. Safe to call once; subsequent calls
@@ -70,6 +94,14 @@ export function initSessionCompletionHandler(deps: { sendMessage: MessageSender;
     });
   });
 
+  // A start that failed before registering: the stop it superseded fired
+  // while the chat read as "starting", so anything that stop deferred is due.
+  sessionRegistry.on("start_abandoned", (chatId: string) => {
+    void handleChatIdle(chatId).catch((err) => {
+      log.error(`Idle handling for ${chatId} after an abandoned start failed: ${err?.message ?? err}`);
+    });
+  });
+
   log.info("Session completion handler initialized");
 }
 
@@ -80,11 +112,40 @@ async function handleSessionStopped(stoppedChatId: string): Promise<void> {
   // 2. Re-attempt delivery for every parent that has ready callbacks, plus the
   //    stopped chat itself (it may be a parent that just freed up). tryDeliver
   //    no-ops when a parent is still busy or has nothing ready.
+  //    The stopped chat's held messages go first: a message the user held for
+  //    "when this turn ends" is theirs to have answered next, and if one
+  //    starts a turn, the callbacks wait for that turn's stop like any other.
+  const startedHeld = await runIdleHook(stoppedChatId);
   const candidates = new Set<string>(parentsWithReadyCallbacks());
-  candidates.add(stoppedChatId);
+  if (startedHeld) candidates.delete(stoppedChatId);
+  else candidates.add(stoppedChatId);
 
   for (const parentChatId of candidates) {
     await tryDeliver(parentChatId);
+  }
+}
+
+/** A chat became idle without a session stopping (an abandoned start). */
+async function handleChatIdle(chatId: string): Promise<void> {
+  if (await runIdleHook(chatId)) return;
+  await tryDeliver(chatId);
+}
+
+/**
+ * Run the idle hook for `chatId`, under the same per-chat guard as callback
+ * delivery so the two can never both start a turn on one chat. Never throws.
+ */
+async function runIdleHook(chatId: string): Promise<boolean> {
+  if (!_idleHook) return false;
+  if (delivering.has(chatId) || isBusy(chatId)) return false;
+  delivering.add(chatId);
+  try {
+    return await _idleHook(chatId);
+  } catch (err: unknown) {
+    log.error(`Idle delivery for ${chatId} failed: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  } finally {
+    delivering.delete(chatId);
   }
 }
 
@@ -94,9 +155,10 @@ async function tryDeliver(parentChatId: string): Promise<void> {
   const ready = getReadyForParent(parentChatId);
   if (ready.length === 0) return;
 
-  // Parent is mid-turn — defer. It will be retried when the parent (or any
-  // session) next stops.
-  if (_getActiveSession && _getActiveSession(parentChatId)) return;
+  // Parent is mid-turn, or a turn is on its way (a superseding send, a held
+  // message being started) — defer. It will be retried when the parent (or
+  // any session) next stops.
+  if (isBusy(parentChatId)) return;
 
   delivering.add(parentChatId);
   try {

@@ -28,6 +28,7 @@ import { generateBranchName } from "../services/quick-completion.js";
 import { captureWorktreeWorkspace } from "../services/workspace-store.js";
 import { beginPendingCreation, cancelPendingCreation } from "../services/pending-chat-creations.js";
 import { listActivities, getWatch, releaseActivity } from "../services/chat-activity.js";
+import { heldMessageService, PAUSE_REASON_STOPPED } from "../services/held-message-service.js";
 import { listPendingForParent } from "../services/session-callbacks.js";
 import type { ChatActivityResponse } from "shared/types/index.js";
 
@@ -741,14 +742,15 @@ streamRouter.get("/:id/pending", (req, res) => {
 streamRouter.get("/:id/activity", (req, res) => {
   // #swagger.tags = ['Stream']
   // #swagger.summary = 'Get in-flight activity'
-  // #swagger.description = 'What this chat is currently blocked on: long-running tool calls (a wait countdown, a delegated session), any open condition watch, and the number of spawned children it is awaiting. Used for the live activity dock, and on reconnect after a page refresh.'
+  // #swagger.description = 'What this chat is currently blocked on: long-running tool calls (a wait countdown, a delegated session), any open condition watch, the number of spawned children it is awaiting, and the messages held until its turn ends (heldMessages, in delivery order). Used for the live activity dock, and on reconnect after a page refresh.'
   /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID' } */
-  /* #swagger.responses[200] = { description: "Open activities, the condition watch if any, and the awaited-children count" } */
+  /* #swagger.responses[200] = { description: "Open activities, the condition watch if any, the awaited-children count, and the held messages" } */
   const chatId = req.params.id;
   res.json({
     activities: listActivities(chatId),
     conditionWatch: getWatch(chatId) ?? null,
     awaitingChildren: listPendingForParent(chatId).length,
+    heldMessages: heldMessageService.list(chatId),
   } satisfies ChatActivityResponse);
 });
 
@@ -861,7 +863,7 @@ streamRouter.get("/:id/status", (req, res) => {
 streamRouter.post("/:id/stop", (req, res) => {
   // #swagger.tags = ['Stream']
   // #swagger.summary = 'Stop execution'
-  // #swagger.description = 'Cancel the running session for this chat: aborts the run and terminates the underlying provider request (subprocess / in-flight API call), not just the SSE stream. The run emits a final message_complete with reason "aborted" on its stream as it unwinds. Accepts a chat id or, for a chat still being created, the clientTrackingId passed to /new/message.'
+  // #swagger.description = 'Cancel the running session for this chat: aborts the run and terminates the underlying provider request (subprocess / in-flight API call), not just the SSE stream. The run emits a final message_complete with reason "aborted" on its stream as it unwinds. Messages held until the turn ends are paused, not sent. Accepts a chat id or, for a chat still being created, the clientTrackingId passed to /new/message.'
   /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID (or a new chat\'s clientTrackingId)' } */
   /* #swagger.responses[200] = { description: "{ stopped: true } when a live web session was cancelled; { stopped: true, phase: \"creation\" } when a chat still being created (its branch or worktree being prepared) was cancelled, so no chat exists; { stopped: false } when there was nothing to stop (already finished, or a CLI session the server does not control)" } */
   const chatId = req.params.id;
@@ -878,6 +880,9 @@ streamRouter.post("/:id/stop", (req, res) => {
     log.info(`Chat creation ${chatId} cancelled by user`);
     return res.json({ stopped: true, phase: "creation" });
   }
+  // Stop means stop, not "stop and run the next thing": pause held messages
+  // before the stop's `session_stopped` would hand the chat to the dispatcher.
+  heldMessageService.pause(chatId, PAUSE_REASON_STOPPED);
   const stopped = stopSession(chatId);
   // Worth an info line: this is a deliberate user cancellation, and the run's
   // own "ended: aborted" log lands right after it.
