@@ -15,13 +15,14 @@
  * both win the same item — whichever runs first changes its state, and the
  * other sees it.
  */
-import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync } from "fs";
 import { join } from "path";
 import { randomUUID } from "node:crypto";
 import type { HeldMessage } from "shared/types/index.js";
 import { DATA_DIR } from "../utils/paths.js";
 import { atomicWriteFileSync } from "../utils/atomic-write.js";
 import { createLogger } from "../utils/logger.js";
+import { sessionRegistry } from "./session-registry.js";
 
 export type { HeldMessage };
 
@@ -66,25 +67,54 @@ function read(chatId: string): HeldMessage[] {
   if (!existsSync(file)) return [];
   try {
     const parsed = JSON.parse(readFileSync(file, "utf8"));
-    return Array.isArray(parsed) ? (parsed as HeldMessage[]) : [];
+    if (Array.isArray(parsed)) return parsed as HeldMessage[];
+    setAside(chatId, file, "not a list");
   } catch (err: unknown) {
-    log.error(`Unreadable held-message file for ${chatId}: ${err instanceof Error ? err.message : String(err)}`);
-    return [];
+    setAside(chatId, file, err instanceof Error ? err.message : String(err));
+  }
+  return [];
+}
+
+/**
+ * Move an unreadable file out of the way before the chat reads as empty —
+ * otherwise the next `add` would overwrite it and the messages in it would be
+ * gone for good. The new name does not end in `.json`, so the boot scan skips
+ * it; it is kept for someone to recover by hand.
+ */
+function setAside(chatId: string, file: string, why: string): void {
+  const aside = `${file}.corrupt-${Date.now()}`;
+  try {
+    renameSync(file, aside);
+    log.error(`Unreadable held-message file for ${chatId} (${why}); moved to ${aside}`);
+  } catch (err: unknown) {
+    log.error(`Unreadable held-message file for ${chatId} (${why}), and it could not be moved aside: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
+/**
+ * Persist the chat's list, then tell clients it changed.
+ *
+ * The signal is the existing `chat_metadata_updated` registry event, which
+ * reaches browsers only as a bump of `metadataVersion` on
+ * `GET /api/sessions/poll` — the `data` payload never leaves the daemon, and
+ * every in-daemon `"change"` listener filters on the event type. So it needs
+ * no capability gate and no old client can trip on it; a new client refetches
+ * `/activity` on the bump. Without it, a delivery that fails after the run
+ * ended (when nothing polls `/activity` any more) would be invisible.
+ */
 function write(chatId: string, items: HeldMessage[]): void {
   const file = fileFor(chatId);
   if (items.length === 0) {
     try {
       unlinkSync(file);
     } catch {
-      /* already gone */
+      return; // already gone: nothing changed
     }
-    return;
+  } else {
+    if (!existsSync(heldDir)) mkdirSync(heldDir, { recursive: true });
+    atomicWriteFileSync(file, JSON.stringify(items, null, 2), { mode: 0o600 });
   }
-  if (!existsSync(heldDir)) mkdirSync(heldDir, { recursive: true });
-  atomicWriteFileSync(file, JSON.stringify(items, null, 2), { mode: 0o600 });
+  sessionRegistry.notifyMetadata(chatId, { heldMessages: true });
 }
 
 export class HeldMessageService {

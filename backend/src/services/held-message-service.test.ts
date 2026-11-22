@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
-import { existsSync, readdirSync } from "fs";
+import { describe, expect, it, vi } from "vitest";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { DATA_DIR } from "../utils/paths.js";
+import { sessionRegistry } from "./session-registry.js";
 import { heldMessageService, PAUSE_REASON_BLOCKED, PAUSE_REASON_RESTARTED, isValidHeldChatId } from "./held-message-service.js";
 
 let n = 0;
@@ -105,5 +106,44 @@ describe("heldMessageService", () => {
     heldMessageService.deleteAll(chat);
     expect(heldMessageService.list(chat)).toEqual([]);
     expect(readdirSync(join(DATA_DIR, "held"))).not.toContain(`${chat}.json`);
+  });
+
+  it("signals clients on every write, and not when nothing changed (#3)", () => {
+    const chat = freshChat();
+    const spy = vi.spyOn(sessionRegistry, "notifyMetadata");
+    try {
+      const a = heldMessageService.add(chat, { text: "a" });
+      heldMessageService.claimNext(chat);
+      heldMessageService.markFailed(chat, a.id, "nope");
+      heldMessageService.resume(chat);
+      heldMessageService.take(chat, a.id);
+      expect(spy.mock.calls).toHaveLength(5);
+      expect(spy.mock.calls.every(([id, data]) => id === chat && JSON.stringify(data) === '{"heldMessages":true}')).toBe(true);
+
+      spy.mockClear();
+      heldMessageService.deleteAll(chat); // already empty
+      heldMessageService.pause(chat, "x"); // nothing queued
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("sets an unreadable file aside instead of letting the next add overwrite it (#6)", () => {
+    const chat = freshChat();
+    const dir = join(DATA_DIR, "held");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, `${chat}.json`), "{ not json");
+
+    expect(heldMessageService.list(chat)).toEqual([]);
+    const aside = readdirSync(dir).filter((f) => f.startsWith(`${chat}.json.corrupt-`));
+    expect(aside).toHaveLength(1);
+    expect(readFileSync(join(dir, aside[0]!), "utf8")).toBe("{ not json");
+
+    heldMessageService.add(chat, { text: "fresh" });
+    expect(heldMessageService.list(chat).map((m) => m.text)).toEqual(["fresh"]);
+    // The boot scan only reads *.json, so the set-aside copy is left alone.
+    expect(() => heldMessageService.pauseAllOnBoot()).not.toThrow();
+    expect(readdirSync(dir)).toContain(aside[0]);
   });
 });

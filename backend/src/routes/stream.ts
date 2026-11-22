@@ -29,6 +29,7 @@ import { captureWorktreeWorkspace } from "../services/workspace-store.js";
 import { beginPendingCreation, cancelPendingCreation } from "../services/pending-chat-creations.js";
 import { listActivities, getWatch, releaseActivity } from "../services/chat-activity.js";
 import { heldMessageService, PAUSE_REASON_STOPPED } from "../services/held-message-service.js";
+import { cancelHeldDelivery } from "../services/held-message-dispatcher.js";
 import { listPendingForParent } from "../services/session-callbacks.js";
 import type { ChatActivityResponse } from "shared/types/index.js";
 
@@ -863,7 +864,7 @@ streamRouter.get("/:id/status", (req, res) => {
 streamRouter.post("/:id/stop", (req, res) => {
   // #swagger.tags = ['Stream']
   // #swagger.summary = 'Stop execution'
-  // #swagger.description = 'Cancel the running session for this chat: aborts the run and terminates the underlying provider request (subprocess / in-flight API call), not just the SSE stream. The run emits a final message_complete with reason "aborted" on its stream as it unwinds. Messages held until the turn ends are paused, not sent. Accepts a chat id or, for a chat still being created, the clientTrackingId passed to /new/message.'
+  // #swagger.description = 'Cancel the running session for this chat: aborts the run and terminates the underlying provider request (subprocess / in-flight API call), not just the SSE stream. The run emits a final message_complete with reason "aborted" on its stream as it unwinds. Messages held until the turn ends are paused, not sent; one being started at that moment is aborted as it starts and kept as paused (and counts as stopped: true). Accepts a chat id or, for a chat still being created, the clientTrackingId passed to /new/message.'
   /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID (or a new chat\'s clientTrackingId)' } */
   /* #swagger.responses[200] = { description: "{ stopped: true } when a live web session was cancelled; { stopped: true, phase: \"creation\" } when a chat still being created (its branch or worktree being prepared) was cancelled, so no chat exists; { stopped: false } when there was nothing to stop (already finished, or a CLI session the server does not control)" } */
   const chatId = req.params.id;
@@ -881,9 +882,13 @@ streamRouter.post("/:id/stop", (req, res) => {
     return res.json({ stopped: true, phase: "creation" });
   }
   // Stop means stop, not "stop and run the next thing": pause held messages
-  // before the stop's `session_stopped` would hand the chat to the dispatcher.
+  // before the stop's `session_stopped` would hand the chat to the dispatcher,
+  // and cancel one that is being started right now — it has no session for
+  // stopSession to reach yet, so the dispatcher aborts it as it registers and
+  // keeps it as paused.
+  const cancelledDelivery = cancelHeldDelivery(chatId);
   heldMessageService.pause(chatId, PAUSE_REASON_STOPPED);
-  const stopped = stopSession(chatId);
+  const stopped = stopSession(chatId) || cancelledDelivery;
   // Worth an info line: this is a deliberate user cancellation, and the run's
   // own "ended: aborted" log lands right after it.
   if (stopped) log.info(`Session ${chatId} cancelled by user`);

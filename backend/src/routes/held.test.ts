@@ -10,10 +10,10 @@ import type { Request, Response } from "express";
 
 const active = vi.hoisted(() => new Set<string>());
 const chats = vi.hoisted(() => new Map<string, { id: string; metadata?: string }>());
-const deliverHeld = vi.hoisted(() => vi.fn(async (_id: string) => false));
+const handleChatIdle = vi.hoisted(() => vi.fn(async (_id: string) => false));
 
 vi.mock("../services/claude.js", () => ({ getActiveSession: (id: string) => (active.has(id) ? {} : undefined) }));
-vi.mock("../services/held-message-dispatcher.js", () => ({ deliverHeld }));
+vi.mock("../services/session-completion-handler.js", () => ({ handleChatIdle }));
 vi.mock("../services/chat-file-service.js", () => ({ chatFileService: { getChat: (id: string) => chats.get(id) ?? null } }));
 vi.mock("../utils/chat-lookup.js", () => ({ findChatForStatus: () => null }));
 vi.mock("../services/codex-native-agents.js", () => ({
@@ -85,7 +85,7 @@ function runningChat(metadata = "{}"): string {
 }
 
 beforeEach(() => {
-  deliverHeld.mockClear();
+  handleChatIdle.mockClear();
 });
 
 describe("POST /:id/held", () => {
@@ -201,7 +201,7 @@ describe("take / remove", () => {
 });
 
 describe("POST /:id/held/resume", () => {
-  it("re-queues paused and failed items and tries to deliver", async () => {
+  it("re-queues paused and failed items and runs idle handling through the completion handler", async () => {
     const id = runningChat();
     const a = heldMessageService.add(id, { text: "a" });
     heldMessageService.add(id, { text: "b" });
@@ -210,6 +210,6 @@ describe("POST /:id/held/resume", () => {
     const state = await call(resume, { id });
     expect(state.body.resumed).toBe(2);
     expect(state.body.heldMessages.every((m: { state: string }) => m.state === "queued")).toBe(true);
-    expect(deliverHeld).toHaveBeenCalledWith(id);
+    expect(handleChatIdle).toHaveBeenCalledWith(id);
   });
 });

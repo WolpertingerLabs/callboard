@@ -13,7 +13,7 @@
 import { Router } from "express";
 import type { HeldMessage } from "shared/types/index.js";
 import { heldMessageService, isValidHeldChatId, isValidHeldId, type HeldMessageInput } from "../services/held-message-service.js";
-import { deliverHeld } from "../services/held-message-dispatcher.js";
+import { handleChatIdle } from "../services/session-completion-handler.js";
 import { getActiveSession } from "../services/claude.js";
 import { sessionRegistry } from "../services/session-registry.js";
 import { assertNativeAgentControllable } from "../services/codex-native-agents.js";
@@ -163,8 +163,12 @@ heldRouter.post("/:id/held/resume", async (req, res) => {
   /* #swagger.responses[200] = { description: "{ resumed, started, heldMessages } — how many items were re-queued, whether a turn was started now, and the list after" } */
   const chatId = req.params.id;
   const resumed = heldMessageService.resume(chatId);
-  // deliverHeld refuses a running or starting chat itself, and never throws.
-  const started = await deliverHeld(chatId);
+  // Through the completion handler, not the dispatcher directly: under its
+  // per-chat guard, and followed by completion callbacks — so a callback that
+  // became ready while a resumed delivery was being refused is still sent,
+  // rather than waiting for some unrelated session to stop. Refuses a running
+  // or starting chat itself.
+  const started = await handleChatIdle(chatId);
   res.json({ resumed, started, heldMessages: heldMessageService.list(chatId) });
 });
 

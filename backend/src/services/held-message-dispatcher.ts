@@ -5,7 +5,7 @@
  * Driven by `session-completion-handler.ts`'s idle hook (installed from
  * server bootstrap, see {@link initHeldMessageDispatcher}), which runs it on
  * every `session_stopped` before completion callbacks, and by
- * `POST /chats/:id/held/resume` when the chat is already idle.
+ * `POST /chats/:id/held/resume` (through the handler's `handleChatIdle`).
  *
  * One item per idle transition. Each held message becomes its own turn and
  * the next waits for that turn to end — it keeps "a normal message once the
@@ -21,19 +21,74 @@
  *    starting mark, which `tryDeliver` treats as busy.
  *  - The user's Edit / Send now (`take`): `claimNext` marks the item
  *    `delivering` synchronously, and `take` refuses a delivering item.
+ *  - The user's Stop while an item is being started: there is no session for
+ *    `stopSession` to reach yet, so the stop route flags the delivery
+ *    ({@link cancelHeldDelivery}) and the run is aborted as soon as the start
+ *    resolves; the item is kept as `paused`.
+ *  - A start that never settles: raced against a timeout, after which the
+ *    item is `failed` (takeable again) and a late start is aborted.
  */
-import { heldMessageService } from "./held-message-service.js";
+import type { EventEmitter } from "events";
+import { heldMessageService, PAUSE_REASON_STOPPED } from "./held-message-service.js";
 import { sessionRegistry } from "./session-registry.js";
 import { setIdleDeliveryHook } from "./session-completion-handler.js";
 import { startChatTurn, type ChatTurnRequest, type ChatTurnResult } from "./chat-turn.js";
-import { getActiveSession } from "./claude.js";
+import { getActiveSession, stopSession } from "./claude.js";
 import { loadImageBuffers } from "./image-storage.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("held-dispatcher");
 
-/** Test seam: the turn starter. */
-export const dispatcherDeps: { startChatTurn: (req: ChatTurnRequest) => Promise<ChatTurnResult> } = { startChatTurn };
+/**
+ * How long a delivery may sit in `startChatTurn` before the item is given
+ * back to the user. Starting a turn on an existing chat is preflight only
+ * (provenance, effort and route checks, a metadata write) — seconds at most —
+ * so this is a backstop for a start that hangs, not a budget anyone should
+ * hit. Without it a hung start would leave the item `delivering` (refusing
+ * take/remove with 409) and the chat's queue blocked until a restart.
+ */
+const DELIVERY_TIMEOUT_MS = 120_000;
+
+/** Test seams. */
+export const dispatcherDeps: {
+  startChatTurn: (req: ChatTurnRequest) => Promise<ChatTurnResult>;
+  stopSession: (chatId: string) => boolean;
+  deliveryTimeoutMs: number;
+} = { startChatTurn, stopSession, deliveryTimeoutMs: DELIVERY_TIMEOUT_MS };
+
+/** The delivery currently being started on a chat. At most one per chat (claimNext refuses a second). */
+interface InFlight {
+  itemId: string;
+  /** The user pressed Stop while this was starting. */
+  cancelled: boolean;
+  /** The timeout gave the item back; a late start is aborted, not kept. */
+  timedOut: boolean;
+}
+const inFlight = new Map<string, InFlight>();
+
+/**
+ * Stop a held message that is being started right now — the stop route's
+ * half of "Stop means stop". A delivery in `startChatTurn` has no registered
+ * session yet, so `stopSession` cannot reach it; this flags it instead, and
+ * {@link deliverHeld} aborts the run the moment the start resolves and puts
+ * the item back as `paused`. Returns true when there was one to cancel.
+ */
+export function cancelHeldDelivery(chatId: string): boolean {
+  const flight = inFlight.get(chatId);
+  if (!flight || flight.timedOut) return false;
+  flight.cancelled = true;
+  return true;
+}
+
+/**
+ * Abort the run a delivery started — only if it is still the chat's session,
+ * so a run the user started since (after a timeout handed the item back) is
+ * never the one stopped.
+ */
+function abortStartedRun(chatId: string, emitter: EventEmitter): void {
+  if (sessionRegistry.get(chatId)?.emitter !== emitter) return;
+  dispatcherDeps.stopSession(chatId);
+}
 
 /** A refusal body's user-facing text: `message` when there is one, else `error`. */
 function refusalMessage(body: Record<string, unknown>): string {
@@ -44,8 +99,13 @@ function refusalMessage(body: Record<string, unknown>): string {
 
 /**
  * Start the chat's next queued held message, if the chat is idle. Resolves
- * true when a turn started. Never throws: a delivery that cannot start leaves
- * the item `failed` with the reason, for the user to resend or remove.
+ * true when a turn started (and is still running). Never throws: a delivery
+ * that cannot start leaves the item `failed` with the reason, for the user to
+ * resend or remove; one the user stopped mid-start is left `paused`.
+ *
+ * Call it through the completion handler (its idle hook, or
+ * `handleChatIdle`), never directly: the per-chat guard there is what lets a
+ * wakeup that arrives mid-delivery be replayed instead of lost.
  */
 export async function deliverHeld(chatId: string): Promise<boolean> {
   if (getActiveSession(chatId) || sessionRegistry.isStarting(chatId)) return false;
@@ -55,6 +115,9 @@ export async function deliverHeld(chatId: string): Promise<boolean> {
   // From here until the turn registers (or fails), the chat reads as busy to
   // every other idle-triggered sender.
   const token = sessionRegistry.markStarting(chatId);
+  const flight: InFlight = { itemId: item.id, cancelled: false, timedOut: false };
+  inFlight.set(chatId, flight);
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const imageIds = (item.images ?? []).map((image) => image.id);
     // All or nothing, as for a draft's execute-now: a message that would go
@@ -65,7 +128,7 @@ export async function deliverHeld(chatId: string): Promise<boolean> {
       return false;
     }
 
-    const result = await dispatcherDeps.startChatTurn({
+    const starting = dispatcherDeps.startChatTurn({
       chatId,
       prompt: item.text,
       ...(imageIds.length > 0 && { imageIds }),
@@ -76,9 +139,39 @@ export async function deliverHeld(chatId: string): Promise<boolean> {
       // Never acknowledgeBranchDrift: whether to continue on a different
       // branch is the user's call, made through the client's dialog.
     });
+    // Raced against the timeout so a hung start releases the item, this
+    // chat's starting mark and the completion handler's guard (we return).
+    const timedOut = new Promise<"timed_out">((resolve) => {
+      timer = setTimeout(() => resolve("timed_out"), dispatcherDeps.deliveryTimeoutMs);
+      timer.unref?.();
+    });
+    const result = await Promise.race([starting, timedOut]);
+    if (result === "timed_out") {
+      flight.timedOut = true;
+      heldMessageService.markFailed(chatId, item.id, "Starting the turn timed out.");
+      log.warn(`Held message ${item.id} on ${chatId}: start did not settle within ${dispatcherDeps.deliveryTimeoutMs}ms — given back as failed`);
+      // It was handed back; a start that completes late must not run behind it.
+      starting.then(
+        (late) => {
+          if (late.ok) abortStartedRun(chatId, late.emitter);
+        },
+        () => {},
+      );
+      return false;
+    }
     if (!result.ok) {
       heldMessageService.markFailed(chatId, item.id, refusalMessage(result.body));
       log.info(`Held message ${item.id} on ${chatId} refused (${result.status}): ${refusalMessage(result.body)}`);
+      return false;
+    }
+    if (flight.cancelled) {
+      // The user pressed Stop while this was starting. Kept, not lost: the
+      // run is aborted and the item waits for Resume / Send now / Remove like
+      // any other paused one. (The aborted turn's prompt may already be in
+      // the transcript; resending puts it there again.)
+      abortStartedRun(chatId, result.emitter);
+      heldMessageService.update(chatId, item.id, { state: "paused", reason: PAUSE_REASON_STOPPED });
+      log.info(`Held message ${item.id} on ${chatId} stopped by the user as it started — paused`);
       return false;
     }
     heldMessageService.removeDelivered(chatId, item.id);
@@ -90,6 +183,8 @@ export async function deliverHeld(chatId: string): Promise<boolean> {
     log.error(`Held message ${item.id} on ${chatId} failed to start: ${reason}`);
     return false;
   } finally {
+    if (timer) clearTimeout(timer);
+    if (inFlight.get(chatId) === flight) inFlight.delete(chatId);
     sessionRegistry.clearStarting(chatId, token);
   }
 }

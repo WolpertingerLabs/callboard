@@ -61,6 +61,35 @@ let _idleHook: IdleDeliveryHook | null = null;
 const delivering = new Set<string>();
 
 /**
+ * Chats whose idle handling was skipped because the guard above was held —
+ * a stop (or abandoned start) that arrived mid-delivery. Without this the
+ * wakeup is simply lost: a held turn that fails within microtasks of
+ * registering, or a child finishing while a held delivery is being refused,
+ * would leave the next held message and any ready callbacks waiting for some
+ * unrelated session to stop. {@link releaseGuard} replays it.
+ */
+const missedWhileGuarded = new Set<string>();
+
+/** Take the per-chat guard, or note the missed wakeup and refuse. */
+function takeGuard(chatId: string): boolean {
+  if (delivering.has(chatId)) {
+    missedWhileGuarded.add(chatId);
+    return false;
+  }
+  delivering.add(chatId);
+  return true;
+}
+
+/** Release the guard and replay a wakeup that arrived while it was held. */
+function releaseGuard(chatId: string): void {
+  delivering.delete(chatId);
+  if (!missedWhileGuarded.delete(chatId)) return;
+  void handleChatIdle(chatId).catch((err) => {
+    log.error(`Replayed idle handling for ${chatId} failed: ${err?.message ?? err}`);
+  });
+}
+
+/**
  * Install the idle hook (held-message delivery). Registered from server
  * bootstrap rather than claude.ts: the dispatcher reaches `sendMessage`
  * through chat-turn.ts, which imports claude.js, so claude.ts registering it
@@ -125,10 +154,17 @@ async function handleSessionStopped(stoppedChatId: string): Promise<void> {
   }
 }
 
-/** A chat became idle without a session stopping (an abandoned start). */
-async function handleChatIdle(chatId: string): Promise<void> {
-  if (await runIdleHook(chatId)) return;
+/**
+ * Idle handling for one chat that went idle without (or after) a session
+ * stopping: an abandoned start, a replayed wakeup, or the user resuming held
+ * messages. Held messages first, then completion callbacks — the same order
+ * and the same guard as a stop. Resolves true when a held message started a
+ * turn. Exported for `POST /chats/:id/held/resume`.
+ */
+export async function handleChatIdle(chatId: string): Promise<boolean> {
+  if (await runIdleHook(chatId)) return true;
   await tryDeliver(chatId);
+  return false;
 }
 
 /**
@@ -137,20 +173,22 @@ async function handleChatIdle(chatId: string): Promise<void> {
  */
 async function runIdleHook(chatId: string): Promise<boolean> {
   if (!_idleHook) return false;
-  if (delivering.has(chatId) || isBusy(chatId)) return false;
-  delivering.add(chatId);
+  if (isBusy(chatId) || !takeGuard(chatId)) return false;
   try {
     return await _idleHook(chatId);
   } catch (err: unknown) {
     log.error(`Idle delivery for ${chatId} failed: ${err instanceof Error ? err.message : String(err)}`);
     return false;
   } finally {
-    delivering.delete(chatId);
+    releaseGuard(chatId);
   }
 }
 
 async function tryDeliver(parentChatId: string): Promise<void> {
-  if (delivering.has(parentChatId)) return;
+  if (delivering.has(parentChatId)) {
+    missedWhileGuarded.add(parentChatId);
+    return;
+  }
 
   const ready = getReadyForParent(parentChatId);
   if (ready.length === 0) return;
@@ -160,7 +198,7 @@ async function tryDeliver(parentChatId: string): Promise<void> {
   // any session) next stops.
   if (isBusy(parentChatId)) return;
 
-  delivering.add(parentChatId);
+  if (!takeGuard(parentChatId)) return;
   try {
     const ids = ready.map((c) => c.id);
     const childChatIds = ready.map((c) => c.childChatId);
@@ -211,7 +249,7 @@ async function tryDeliver(parentChatId: string): Promise<void> {
     // Leave callbacks in "ready" so they retry on a future session stop.
     log.error(`Delivery to parent ${parentChatId} failed: ${err.message}`);
   } finally {
-    delivering.delete(parentChatId);
+    releaseGuard(parentChatId);
   }
 }
 

@@ -23,6 +23,8 @@ vi.mock("../services/claude.js", () => ({
   getPendingRequest: () => null,
 }));
 vi.mock("../services/session-registry.js", () => ({ sessionRegistry: { notifyMetadata: () => {}, get: () => undefined } }));
+const cancelHeldDelivery = vi.hoisted(() => vi.fn((_id: string) => false));
+vi.mock("../services/held-message-dispatcher.js", () => ({ cancelHeldDelivery }));
 vi.mock("../services/session-callbacks.js", () => ({ listPendingForParent: (id: string) => (id === "chat-with-kids" ? [{}, {}] : []) }));
 
 const { streamRouter } = await import("./stream.js");
@@ -158,5 +160,15 @@ describe("POST /:id/stop", () => {
     expect(state.body).toEqual({ stopped: true });
     expect(stateAtStop).toBe("paused");
     expect(heldMessageService.list("chat-stop")[0]).toMatchObject({ state: "paused", reason: "You stopped the run." });
+  });
+
+  it("cancels a held message being started, and reports it as stopped (#2)", () => {
+    cancelHeldDelivery.mockImplementationOnce((id: string) => id === "chat-delivering");
+    stopSession.mockImplementationOnce(() => false);
+
+    const state = call(stopHandler, { id: "chat-delivering" });
+
+    expect(cancelHeldDelivery).toHaveBeenCalledWith("chat-delivering");
+    expect(state.body).toEqual({ stopped: true });
   });
 });

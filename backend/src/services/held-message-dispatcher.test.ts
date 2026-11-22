@@ -14,7 +14,8 @@ const sendMessage = vi.hoisted(() => vi.fn());
 const ready = vi.hoisted(() => new Map<string, { id: string; childChatId: string; depth: number; kind: "spawned" }[]>());
 const presentImages = vi.hoisted(() => new Set<string>());
 
-vi.mock("./claude.js", () => ({ getActiveSession: (id: string) => (active.has(id) ? {} : undefined) }));
+const stopSession = vi.hoisted(() => vi.fn());
+vi.mock("./claude.js", () => ({ getActiveSession: (id: string) => (active.has(id) ? {} : undefined), stopSession }));
 vi.mock("./chat-turn.js", () => ({ startChatTurn }));
 vi.mock("./agent-executor.js", () => ({ executeAgent: vi.fn() }));
 vi.mock("../utils/chat-lookup.js", () => ({ findChat: (id: string) => ({ id }) }));
@@ -37,9 +38,10 @@ vi.mock("./session-callbacks.js", () => ({
 }));
 
 const { sessionRegistry } = await import("./session-registry.js");
-const { initSessionCompletionHandler } = await import("./session-completion-handler.js");
-const { initHeldMessageDispatcher, deliverHeld } = await import("./held-message-dispatcher.js");
-const { heldMessageService } = await import("./held-message-service.js");
+const { initSessionCompletionHandler, handleChatIdle } = await import("./session-completion-handler.js");
+const { initHeldMessageDispatcher, deliverHeld, cancelHeldDelivery, dispatcherDeps } = await import("./held-message-dispatcher.js");
+const { heldMessageService, PAUSE_REASON_STOPPED } = await import("./held-message-service.js");
+const { EventEmitter } = await import("events");
 
 initSessionCompletionHandler({
   sendMessage: async (opts) => {
@@ -72,6 +74,13 @@ beforeEach(() => {
   presentImages.clear();
   sendMessage.mockReset();
   startChatTurn.mockReset();
+  stopSession.mockReset();
+  // A real stop: the registry entry goes and session_stopped fires.
+  stopSession.mockImplementation((id: string) => {
+    active.delete(id);
+    return sessionRegistry.unregister(id);
+  });
+  dispatcherDeps.deliveryTimeoutMs = 120_000;
   startChatTurn.mockImplementation(async (req: { chatId: string }) => {
     active.add(req.chatId);
     return { ok: true, emitter: {} };
@@ -226,5 +235,120 @@ describe("held-message dispatcher", () => {
     finish();
     expect(await delivered).toBe(true);
     expect(heldMessageService.take(id, item.id)).toEqual({ ok: false, reason: "not_found" });
+  });
+});
+
+/** A start the test resolves by hand; resolving it ok registers a real session. */
+function deferredStart() {
+  let resolve!: (r: { ok: true; emitter: InstanceType<typeof EventEmitter> } | { ok: false; status: number; body: Record<string, unknown> }) => void;
+  startChatTurn.mockImplementationOnce(
+    () =>
+      new Promise((r) => {
+        resolve = r;
+      }),
+  );
+  return {
+    ok(chatId: string) {
+      const emitter = new EventEmitter();
+      active.add(chatId);
+      sessionRegistry.register(chatId, { type: "web", emitter, abortController: new AbortController() });
+      resolve({ ok: true, emitter });
+      return emitter;
+    },
+    refuse(message: string) {
+      resolve({ ok: false, status: 409, body: { error: "branch_drift", message } });
+    },
+  };
+}
+
+describe("reviewer follow-ups", () => {
+  it("Resume whose start is refused still delivers a callback that became ready meanwhile (#1)", async () => {
+    const id = chat();
+    const item = heldMessageService.add(id, { text: "retry" });
+    heldMessageService.claimNext(id);
+    heldMessageService.markFailed(id, item.id, "drift");
+    heldMessageService.resume(id);
+
+    const start = deferredStart();
+    const resumed = handleChatIdle(id);
+    // A child finishes while the resumed delivery is still being validated.
+    ready.set(id, [{ id: "cb-r", childChatId: "child-r", depth: 1, kind: "spawned" }]);
+    sessionRegistry.emit("change", { event: "session_stopped", chatId: "child-r", type: "web" });
+    await settle();
+    expect(sendMessage).not.toHaveBeenCalled();
+
+    start.refuse("The branch has changed");
+    expect(await resumed).toBe(false);
+    await settle();
+    expect(heldMessageService.list(id)[0]).toMatchObject({ state: "failed", reason: "The branch has changed" });
+    // Replayed once the guard was released, rather than waiting for another stop.
+    expect(sendMessage).toHaveBeenCalledOnce();
+    expect(sendMessage.mock.calls[0]![0].chatId).toBe(id);
+  });
+
+  it("Stop while an item is being started aborts the new run and keeps the item paused (#2)", async () => {
+    const id = chat();
+    const item = heldMessageService.add(id, { text: "not now" });
+    const start = deferredStart();
+    const delivery = deliverHeld(id);
+    expect(heldMessageService.list(id)[0]!.state).toBe("delivering");
+
+    expect(cancelHeldDelivery(id)).toBe(true);
+    const emitter = start.ok(id);
+    expect(await delivery).toBe(false);
+
+    expect(stopSession).toHaveBeenCalledOnce();
+    expect(sessionRegistry.get(id)).toBeUndefined();
+    expect(emitter).toBeDefined();
+    expect(heldMessageService.list(id)).toEqual([expect.objectContaining({ id: item.id, state: "paused", reason: PAUSE_REASON_STOPPED })]);
+    // Nothing else goes out on the abort's stop.
+    await settle();
+    expect(startChatTurn).toHaveBeenCalledOnce();
+  });
+
+  it("cancel is a no-op when nothing is being started", () => {
+    expect(cancelHeldDelivery(chat())).toBe(false);
+  });
+
+  it("a stop that lands while the hook still holds the guard is replayed, not lost (#4)", async () => {
+    const id = chat();
+    heldMessageService.add(id, { text: "one" });
+    heldMessageService.add(id, { text: "two" });
+    // The first held turn registers and ends within microtasks — before the
+    // hook has returned and released the guard.
+    startChatTurn.mockImplementationOnce(async (req: { chatId: string }) => {
+      sessionRegistry.emit("change", { event: "session_stopped", chatId: req.chatId, type: "web" });
+      return { ok: true, emitter: {} };
+    });
+    await stop(id);
+    expect(startChatTurn.mock.calls.map((c) => c[0].prompt)).toEqual(["one", "two"]);
+  });
+
+  it("a start that hangs gives the item back as failed, and a late start is aborted (#5)", async () => {
+    const id = chat();
+    dispatcherDeps.deliveryTimeoutMs = 20;
+    heldMessageService.add(id, { text: "slow" });
+    const start = deferredStart();
+    expect(await deliverHeld(id)).toBe(false);
+    expect(heldMessageService.list(id)[0]).toMatchObject({ state: "failed", reason: "Starting the turn timed out." });
+    expect(sessionRegistry.isStarting(id)).toBe(false);
+
+    start.ok(id);
+    await settle();
+    expect(stopSession).toHaveBeenCalledOnce();
+  });
+
+  it("a late start never stops a run the user started since (#5)", async () => {
+    const id = chat();
+    dispatcherDeps.deliveryTimeoutMs = 20;
+    heldMessageService.add(id, { text: "slow" });
+    const start = deferredStart();
+    await deliverHeld(id);
+    start.ok(id);
+    // The user's own turn replaces the registry entry before the late result lands.
+    sessionRegistry.register(id, { type: "web", emitter: new EventEmitter(), abortController: new AbortController() });
+    await settle();
+    expect(stopSession).not.toHaveBeenCalled();
+    sessionRegistry.unregister(id);
   });
 });
