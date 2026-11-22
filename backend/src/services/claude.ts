@@ -1033,6 +1033,25 @@ function topLevelRunCreatedAt(runId: string): string | undefined {
  * and emits a "chat_created" event so the frontend can navigate.
  */
 export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitter> {
+  // An existing chat's turn is "starting" from here until its session
+  // registers: the run it supersedes is stopped (`stopSession`, which emits
+  // `session_stopped`) long before that — after several awaits — and nothing
+  // idle-triggered may mistake that stop for the chat going idle. See
+  // `SessionRegistry.markStarting`.
+  if (!opts.chatId) return runSendMessage(opts);
+  const chatId = opts.chatId;
+  const startToken = sessionRegistry.markStarting(chatId);
+  try {
+    return await runSendMessage(opts, startToken);
+  } finally {
+    // Still held here means the start never reached `register` — it threw on
+    // the way. The supersede stop (if any) already fired with the start
+    // marked, so whatever it deferred is due now.
+    if (sessionRegistry.clearStarting(chatId, startToken)) sessionRegistry.notifyStartAbandoned(chatId);
+  }
+}
+
+async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Promise<EventEmitter> {
   if (opts.chatId) assertNativeAgentControllable(opts.chatId);
   const { prompt, imageMetadata, activePlugins, defaultPermissions } = opts;
   const isNewChat = !opts.chatId;
@@ -1447,6 +1466,9 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       await activeQuery?.close();
     },
   });
+  // Registered: the chat now reads as busy through the registry itself. Same
+  // tick as `register`, so there is no moment it reads as neither.
+  if (startToken && opts.chatId) sessionRegistry.clearStarting(opts.chatId, startToken);
 
   const formattedPrompt = buildFormattedPrompt(prompt, imageMetadata, providerKind);
 

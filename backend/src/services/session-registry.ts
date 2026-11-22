@@ -195,6 +195,65 @@ class SessionRegistry extends EventEmitter {
   get size(): number {
     return this.sessions.size;
   }
+
+  // ── Starting ────────────────────────────────────────────────────────
+  //
+  // A turn is "starting" from the moment something commits to running one on
+  // a chat until its session is registered (or the attempt fails). The window
+  // matters because `sendMessage` stops the chat's current run *before* the
+  // new one registers — and that stop emits `session_stopped`, which to every
+  // idle-triggered sender (completion callbacks, held messages) looks exactly
+  // like the chat going idle. Without this, "interrupt and send" would start
+  // a second turn in parallel with the one being sent.
+  //
+  // Tokens, not a flag: two starts can overlap (a held delivery and a user's
+  // send), and one finishing must not clear the other.
+
+  private _starting = new Map<string, Set<symbol>>();
+
+  /**
+   * Mark `chatId` as having a turn on its way. Returns the token to hand to
+   * {@link clearStarting}. Synchronous, so a caller can mark and then stop the
+   * old run with no gap an idle check could fall into.
+   */
+  markStarting(chatId: string): symbol {
+    const token = Symbol(chatId);
+    let tokens = this._starting.get(chatId);
+    if (!tokens) {
+      tokens = new Set();
+      this._starting.set(chatId, tokens);
+    }
+    tokens.add(token);
+    return token;
+  }
+
+  /**
+   * Release one start. Returns true when this call released it (false when it
+   * was already released, so a register-time clear and a `finally` clear
+   * cannot double-count).
+   */
+  clearStarting(chatId: string, token: symbol): boolean {
+    const tokens = this._starting.get(chatId);
+    if (!tokens || !tokens.delete(token)) return false;
+    if (tokens.size === 0) this._starting.delete(chatId);
+    return true;
+  }
+
+  /** Whether any turn is on its way to starting on `chatId`. */
+  isStarting(chatId: string): boolean {
+    return this._starting.has(chatId);
+  }
+
+  /**
+   * A start that ended without registering a session — the attempt failed
+   * before the run began. Nothing emits `session_stopped` for it, yet any
+   * idle-triggered work the start had deferred is now due, so this emits
+   * `start_abandoned` (deliberately not a `"change"` event: those are relayed
+   * to browsers, and this is a daemon-internal signal).
+   */
+  notifyStartAbandoned(chatId: string): void {
+    this.emit("start_abandoned", chatId);
+  }
 }
 
 /** Singleton session registry instance */
