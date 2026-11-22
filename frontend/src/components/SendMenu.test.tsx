@@ -112,6 +112,33 @@ describe("SendMenu", () => {
   });
 });
 
+describe("SendMenu opened on the menu itself", () => {
+  it("goes to the first row on ArrowDown and the last on ArrowUp", () => {
+    const variants = { enqueue: { enabled: true }, aside: { enabled: true } };
+    renderMenu({ initialFocus: "menu", variants });
+    const menu = screen.getByRole("menu");
+    expect(document.activeElement).toBe(menu);
+    fireEvent.keyDown(menu, { key: "ArrowUp" });
+    expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: /Send as aside/ }));
+    cleanup();
+    renderMenu({ initialFocus: "menu", variants });
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "ArrowDown" });
+    expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: /Send now/ }));
+  });
+
+  it("lists Enqueue Send after Send now, with its description and ⌥⏎ hint", () => {
+    renderMenu({ variants: { enqueue: { enabled: true }, aside: { enabled: true } } });
+    const items = screen.getAllByRole("menuitem");
+    expect(items.map((item) => item.textContent)).toEqual([
+      expect.stringContaining("Send now"),
+      expect.stringContaining("Enqueue Send"),
+      expect.stringContaining("Send as aside"),
+    ]);
+    expect(items[1].textContent).toContain("Sends after the current turn finishes");
+    expect(items[1].textContent).toMatch(/⌥⏎|Alt\+Enter/);
+  });
+});
+
 describe("sendVariantForEnter", () => {
   const aside = { aside: { enabled: true } };
   it("matches Cmd/Ctrl+Shift+Enter to aside, and nothing else", () => {
@@ -124,5 +151,16 @@ describe("sendVariantForEnter", () => {
   it("matches only variants on offer", () => {
     expect(sendVariantForEnter({ shiftKey: true, metaKey: true, ctrlKey: false, altKey: false }, {})).toBeNull();
     expect(sendVariantForEnter({ shiftKey: true, metaKey: true, ctrlKey: false, altKey: false }, undefined)).toBeNull();
+  });
+  it("matches Alt+Enter alone to enqueue — not AltGr (Ctrl+Alt), ⌥⌘⏎ or ⌥⇧⏎", () => {
+    const both = { enqueue: { enabled: true }, aside: { enabled: true } };
+    const none = { shiftKey: false, metaKey: false, ctrlKey: false, altKey: false };
+    expect(sendVariantForEnter({ ...none, altKey: true }, both)).toBe("enqueue");
+    expect(sendVariantForEnter({ ...none, altKey: true, ctrlKey: true }, both)).toBeNull();
+    expect(sendVariantForEnter({ ...none, altKey: true, metaKey: true }, both)).toBeNull();
+    expect(sendVariantForEnter({ ...none, altKey: true, shiftKey: true }, both)).toBeNull();
+    expect(sendVariantForEnter(none, both)).toBeNull();
+    // Not on offer (no run to wait on): Alt+Enter is no variant's, so a plain Enter.
+    expect(sendVariantForEnter({ ...none, altKey: true }, { aside: { enabled: true } })).toBeNull();
   });
 });

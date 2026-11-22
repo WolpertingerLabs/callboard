@@ -1,5 +1,5 @@
 /**
- * Held messages — "Send when idle".
+ * Held messages — "Enqueue Send".
  *
  * A held message is one the user sent while the chat was running, to go out as
  * a normal message once that run ends. This is the store; delivery is

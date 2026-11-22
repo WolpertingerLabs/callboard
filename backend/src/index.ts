@@ -474,7 +474,7 @@ try {
   log.error(`Stranded card repair failed: ${err.message} — affected cards keep showing stale fields; the repair retries on next boot`);
 }
 
-// Held messages ("Send when idle"): pause what the previous process left
+// Held messages ("Enqueue Send"): pause what the previous process left
 // queued — the runs they waited on died with it — and install delivery as the
 // completion handler's idle hook. Before listen, so no request or stop can
 // see an unpaused item from the old process.

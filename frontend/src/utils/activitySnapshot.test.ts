@@ -63,4 +63,11 @@ describe("sameActivityPayload", () => {
     const watch = { id: "w1", chatId: "c1", text: "CI green", attempts: 1, maxAttempts: 20, firstStartedAt: 1000 };
     expect(sameActivityPayload(payload({ conditionWatch: watch }), payload({ conditionWatch: { ...watch, attempts: 2 } }))).toBe(false);
   });
+
+  it("notices the held messages changing — added, or one changing state", () => {
+    const item = { id: "h1", chatId: "c1", text: "later", createdAt: "2026-11-22T10:00:00.000Z", state: "queued" as const };
+    expect(sameActivityPayload(payload(), payload({ heldMessages: [item] }))).toBe(false);
+    expect(sameActivityPayload(payload({ heldMessages: [item] }), payload({ heldMessages: [{ ...item, state: "paused", reason: "Stopped." }] }))).toBe(false);
+    expect(sameActivityPayload(payload({ heldMessages: [item] }), payload({ heldMessages: [{ ...item }] }))).toBe(true);
+  });
 });

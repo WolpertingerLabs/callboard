@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useLayoutEffect, useId, type ReactNode } from "react";
-import { ArrowUp, Paperclip, Edit, ImageIcon, Menu, Braces, ChevronDown } from "lucide-react";
+import { ArrowUp, Paperclip, Edit, ImageIcon, Menu, Braces, ChevronDown, X } from "lucide-react";
 import ImageUpload, { validateAttachmentFiles } from "./ImageUpload";
 import SlashCommandAutocomplete, { slashOptionId } from "./SlashCommandAutocomplete";
 import KeywordAutocomplete, { keywordOptionId } from "./KeywordAutocomplete";
@@ -7,7 +7,7 @@ import { matchSlashCommands } from "../utils/commands";
 import SaveKeywordModal from "./SaveKeywordModal";
 import CommandChip from "./CommandChip";
 import MenuRow, { type MenuItem } from "./MenuRow";
-import SendMenu, { offeredSendVariants, sendVariantForEnter, SEND_VARIANT_SPECS, type SendVariant, type SendVariants } from "./SendMenu";
+import SendMenu, { isApplePlatform, offeredSendVariants, sendVariantForEnter, SEND_VARIANT_SPECS, type SendVariant, type SendVariants } from "./SendMenu";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { useLongPress } from "../hooks/useLongPress";
 import {
@@ -21,7 +21,7 @@ import {
   type KeywordMatches,
 } from "../utils/keywordTrigger";
 import type { Keyword } from "../api";
-import { getComposerDraft, saveComposerDraft } from "../utils/localStorage";
+import { getBusyHintDismissed, getComposerDraft, saveBusyHintDismissed, saveComposerDraft } from "../utils/localStorage";
 import { canAutoFocusTextInput, isEditingElsewhere } from "../utils/autoFocus";
 import { escapeIsInScope } from "../utils/escapeScope";
 
@@ -259,8 +259,9 @@ interface Props {
    */
   accessory?: ReactNode;
   /**
-   * The other ways this chat can send the composer's content (Send as aside),
-   * each enabled or disabled-with-a-reason. Absent or empty, Send is a plain
+   * The other ways this chat can send the composer's content (Enqueue Send,
+   * Send as aside), each enabled or disabled-with-a-reason. An enabled
+   * `enqueue` also shows the "Enter interrupts" hint under the composer. Absent or empty, Send is a plain
    * button as it always was: no chevron, no long-press, no right-click menu.
    * A variant left out is not offered; one present but disabled shows its row
    * greyed with `reason` under it.
@@ -274,9 +275,10 @@ interface Props {
    * Unlike {@link Props.onSend}, the composer clears nothing itself: the
    * handler owns that, because only it learns — after a request — whether the
    * message went and what of it was taken (an older daemon may drop the
-   * attachments). Chat's aside handler clears through `onSetValue` and
-   * `onRemoveImages`; see its contract. Awaited only so that a second press
-   * while one is out sends nothing. The handler reports its own errors.
+   * attachments). Chat's aside and enqueue handlers clear through `onSetValue`
+   * and `onRemoveImages`; see `handleAskAside`'s contract. Awaited only so
+   * that a second press while one is out sends nothing. The handler reports
+   * its own errors.
    */
   onSendVariant?: (variant: SendVariant, prompt: string, files: File[]) => Promise<void>;
   /** A run is going and Send would interrupt it — the send menu says so. */
@@ -822,7 +824,8 @@ export default function PromptInput({
       }
     }
 
-    // A send variant's shortcut (⌘/Ctrl+Shift+Enter for aside). Shift+Enter
+    // A send variant's shortcut (⌥/Alt+Enter to enqueue, ⌘/Ctrl+Shift+Enter
+    // for aside). One not offered right now is a plain Enter. Shift+Enter
     // alone matches none of them and stays a newline. An open menu still
     // owns Enter: this one dismisses it, as a plain Enter with nothing
     // highlighted does, and sends nothing. A variant offered but unusable
@@ -1180,6 +1183,10 @@ export default function PromptInput({
 
   // A chip alone is sendable: /compact and /clear take no argument.
   const canSend = (value.trim() || activeCommand || images.length > 0) && !disabled && !sendBlockedReason;
+  // "Enter interrupts · ⌥Enter enqueues": only while there is a run to wait for
+  // and something typed that Enter would send into it. Keyboards only.
+  const [busyHintDismissed, setBusyHintDismissed] = useState(getBusyHintDismissed);
+  const showBusyHint = !isMobile && !busyHintDismissed && !!sendVariants?.enqueue?.enabled && !!canSend && !!(value.trim() || activeCommand);
 
   const menuHasActiveItem = menuItems.some((item) => item.active);
   const composerRootRef = useRef<HTMLDivElement>(null);
@@ -1649,6 +1656,28 @@ export default function PromptInput({
           )}
         </div>
       </div>
+
+      {/* While a run is going, say what Enter does to it — and the way not to. */}
+      {showBusyHint && (
+        <div
+          role="note"
+          style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontSize: 12, color: "var(--text-muted)", marginTop: 4 }}
+        >
+          <span>Enter interrupts the agent · {isApplePlatform() ? "⌥Enter" : "Alt+Enter"} enqueues</span>
+          <button
+            type="button"
+            aria-label="Don't show this hint again"
+            title="Don't show again"
+            onClick={() => {
+              saveBusyHintDismissed(true);
+              setBusyHintDismissed(true);
+            }}
+            style={{ display: "flex", padding: 2, border: "none", background: "transparent", color: "var(--text-muted)", cursor: "pointer" }}
+          >
+            <X size={12} />
+          </button>
+        </div>
+      )}
 
       {/* Attachment count indicator */}
       {images.length > 0 && (

@@ -46,7 +46,7 @@ type ActiveSessionLookup = (chatId: string) => unknown | undefined;
 
 /**
  * Work that runs first when a chat goes idle, before its completion callbacks:
- * held messages ("Send when idle"). Resolves true when it started a turn on
+ * held messages ("Enqueue Send"). Resolves true when it started a turn on
  * the chat — the callbacks then wait for that turn to end, exactly as they
  * wait for any other turn.
  */

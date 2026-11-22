@@ -136,7 +136,7 @@ export interface ChatActivityResponse {
    */
   awaitingChildren: number;
   /**
-   * Messages held until this chat's turn ends ("Send when idle"), in delivery
+   * Messages held until this chat's turn ends ("Enqueue Send"), in delivery
    * order. Optional: an older daemon omits it, and a client must read absence
    * as "unknown", not "none" — keep the list it last had rather than blank it.
    */
