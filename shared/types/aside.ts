@@ -1,7 +1,9 @@
 /**
  * Asides: a side question about quoted passages of a chat, asked in a child
  * chat forked at the latest quoted message (`POST /api/chats/:id/fork` with
- * `kind: "aside"`). See plans/highlight-asides.md.
+ * `kind: "aside"`) — or, with `forkAtLatest` and no quotes, about the
+ * conversation so far, forked at its newest message. See
+ * plans/highlight-asides.md.
  *
  * `chatRole: "aside"` is a free-form role string on the wire, not a gated
  * enum value: an old bundle shows an aside as an ordinary child chat.

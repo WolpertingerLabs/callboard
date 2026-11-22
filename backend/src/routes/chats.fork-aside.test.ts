@@ -67,11 +67,12 @@ vi.mock("../services/chat-file-service.js", () => ({
 /** Calls recorded by the stub providers, so tests can assert which path ran. */
 const calls = vi.hoisted(() => ({ forkSession: [] as unknown[][], seedSession: [] as unknown[][], createChat: [] as unknown[][], deleted: [] as string[] }));
 
-/** History the source provider hands back to the handoff projection. */
-const sourceMessages: unknown[] = [
+/** History the source provider hands back to the handoff projection (and to the fork-at-latest pick). */
+const defaultSourceMessages = [
   { role: "user", type: "text", content: "carried question", timestamp: "2026-01-01T00:00:00Z" },
   { role: "assistant", type: "text", content: "carried answer", timestamp: "2026-01-01T00:00:00Z" },
 ];
+const sourceMessages: unknown[] = [...defaultSourceMessages];
 
 vi.mock("../agents/factory.js", () => ({
   getSessionProviders: () => [
@@ -150,6 +151,18 @@ vi.mock("../services/chat-turn.js", () => ({
   },
 }));
 vi.mock("../services/session-registry.js", () => ({ sessionRegistry: { notifyMetadata: () => {} } }));
+/** Upload ids that "exist": the existence check answers for these only, never touching the real images dir. */
+const storedImages = vi.hoisted(() => new Set<string>());
+/** Ids loadImageBuffers was asked for: the route must not read the files itself (startChatTurn does). */
+const loadedImages = vi.hoisted(() => [] as string[][]);
+vi.mock("../services/image-storage.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../services/image-storage.js")>()),
+  allUploadsExist: (ids: string[]) => ids.every((id) => storedImages.has(id)),
+  loadImageBuffers: (ids: string[]) => {
+    loadedImages.push(ids);
+    return ids.filter((id) => storedImages.has(id)).map((id) => ({ id, buffer: Buffer.from(""), mimeType: "image/png" }));
+  },
+}));
 
 const { chatsRouter } = await import("./chats.js");
 
@@ -201,6 +214,9 @@ const quote = (timestamp = T1, text = "the passage") => ({ timestamp, role: "ass
 const aside = (body: Record<string, unknown> = {}) => fork({ timestamp: T1, kind: "aside", quotes: [quote()], ...body });
 
 afterEach(() => {
+  storedImages.clear();
+  loadedImages.length = 0;
+  sourceMessages.splice(0, sourceMessages.length, ...defaultSourceMessages);
   settings.codexSandboxMode = undefined;
   turns.calls = [];
   turns.result = { ok: true, emitter: {} };
@@ -432,6 +448,127 @@ describe("POST /api/chats/:id/fork kind aside", () => {
     });
   });
 
+  describe("forkAtLatest — no quotes", () => {
+    const latest = (body: Record<string, unknown> = {}) => fork({ timestamp: undefined, kind: "aside", forkAtLatest: true, ...body });
+
+    it("forks at the newest message of the daemon's read of the log, stores no quotes, and titles off the question", async () => {
+      setParent({});
+      // Out of stamp order on purpose: the newest wins, not the last.
+      sourceMessages.splice(
+        0,
+        sourceMessages.length,
+        { role: "user", type: "text", content: "q", timestamp: T0 },
+        { role: "assistant", type: "text", content: "a", timestamp: "2026-01-01T00:09:00.000Z" },
+        { role: "assistant", type: "tool_use", content: "Read", timestamp: "2026-01-01T00:08:00.000Z" },
+        { role: "system", type: "system", content: "no stamp" },
+      );
+      const res = await latest({ prompt: "  what now?  " });
+      expect(res.code).toBe(201);
+      expect(res.meta.chatRole).toBe("aside");
+      expect(res.meta.forkedAt).toBe("2026-01-01T00:09:00.000Z");
+      expect(res.meta).not.toHaveProperty("asideQuotes");
+      expect(res.meta.title).toBe("Aside: what now?");
+      expect(calls.forkSession).toHaveLength(1);
+      expect(calls.forkSession[0]![1]).toBe("2026-01-01T00:09:00.000Z");
+      // No quotes: the question goes out as typed.
+      expect(turns.calls[0].prompt).toBe("what now?");
+      expect(res.chat.started).toBe(true);
+      expect(res.chat).not.toHaveProperty("attachedImages");
+    });
+
+    it("accepts an empty quote list as no quotes", async () => {
+      setParent({});
+      expect((await latest({ quotes: [], prompt: "why?" })).code).toBe(201);
+    });
+
+    it("refuses an empty chat: nothing to fork at", async () => {
+      setParent({});
+      sourceMessages.splice(0, sourceMessages.length);
+      const res = await latest({ prompt: "why?" });
+      expect(res.code).toBe(400);
+      expect(res.meta.error).toMatch(/no messages found/);
+      expect(calls.createChat).toHaveLength(0);
+    });
+
+    it.each([
+      ["quotes with it", { quotes: [quote()], prompt: "why?" }, /quotes are not accepted with forkAtLatest/],
+      ["a timestamp with it", { timestamp: T1, prompt: "why?" }, /timestamp is not accepted with forkAtLatest/],
+      ["nothing asked", {}, /an aside needs a question/],
+      ["a blank question", { prompt: "   " }, /an aside needs a question/],
+      ["a non-boolean forkAtLatest", { forkAtLatest: "yes", timestamp: T1, quotes: [quote()] }, /forkAtLatest must be a boolean/],
+    ])("refuses %s", async (_label, body, error) => {
+      setParent({});
+      const res = await latest(body);
+      expect(res.code).toBe(400);
+      expect(res.meta.error).toMatch(error);
+      expect(calls.forkSession).toHaveLength(0);
+      expect(calls.createChat).toHaveLength(0);
+      expect(turns.calls).toHaveLength(0);
+    });
+
+    it("names what is wrong with a forkAtLatest that is not one, rather than asking for a timestamp", async () => {
+      setParent({});
+      expect((await fork({ timestamp: undefined, forkAtLatest: true })).meta.error).toBe('forkAtLatest is only accepted with kind "aside"');
+      expect((await latest({ forkAtLatest: "true", prompt: "why?" })).meta.error).toBe("forkAtLatest must be a boolean");
+      expect(calls.createChat).toHaveLength(0);
+    });
+
+    it("still needs a timestamp without forkAtLatest", async () => {
+      setParent({});
+      expect((await fork({ timestamp: undefined, kind: "aside", quotes: [quote()] })).meta.error).toBe("timestamp is required");
+      expect((await fork({ timestamp: undefined, kind: "aside", forkAtLatest: false, prompt: "why?" })).meta.error).toBe("timestamp is required");
+    });
+  });
+
+  describe("attachments (imageIds)", () => {
+    const IMG_A = "11111111-1111-4111-8111-111111111111";
+    const IMG_B = "22222222-2222-4222-8222-222222222222";
+
+    it("passes them to the first turn and reports how many went", async () => {
+      setParent({});
+      storedImages.add(IMG_A).add(IMG_B);
+      const res = await aside({ prompt: "what is this?", imageIds: [IMG_A, IMG_B], activePlugins: ["p"] });
+      expect(res.code).toBe(201);
+      expect(turns.calls[0].imageIds).toEqual([IMG_A, IMG_B]);
+      expect(res.chat.attachedImages).toBe(2);
+      expect(res.chat.started).toBe(true);
+      // Checked by listing, not loaded: the turn reads them once.
+      expect(loadedImages).toEqual([]);
+    });
+
+    it("starts an attachments-only aside, titled plain Aside when unquoted", async () => {
+      setParent({});
+      storedImages.add(IMG_A);
+      const res = await fork({ timestamp: undefined, kind: "aside", forkAtLatest: true, imageIds: [IMG_A], activePlugins: ["p"] });
+      expect(res.code).toBe(201);
+      expect(res.meta.title).toBe("Aside");
+      expect(turns.calls[0]).toMatchObject({ prompt: "", imageIds: [IMG_A], activePlugins: ["p"] });
+      expect(res.chat.attachedImages).toBe(1);
+    });
+
+    it("reports the count beside a start that failed, too", async () => {
+      setParent({});
+      storedImages.add(IMG_A);
+      turns.result = { ok: false, status: 409, body: { message: "busy" } };
+      const res = await aside({ prompt: "why?", imageIds: [IMG_A] });
+      expect(res.chat).toMatchObject({ runError: "busy", attachedImages: 1 });
+    });
+
+    it("refuses a malformed id (400) and a missing upload (409), writing nothing", async () => {
+      setParent({});
+      storedImages.add(IMG_A);
+      const bad = await aside({ prompt: "why?", imageIds: ["../../etc/passwd"] });
+      expect(bad.code).toBe(400);
+      expect(bad.meta.error).toMatch(/imageIds must be an array of upload ids/);
+      expect((await aside({ prompt: "why?", imageIds: IMG_A })).code).toBe(400);
+      const missing = await aside({ prompt: "why?", imageIds: [IMG_A, IMG_B] });
+      expect(missing.code).toBe(409);
+      expect(calls.forkSession).toHaveLength(0);
+      expect(calls.createChat).toHaveLength(0);
+      expect(turns.calls).toHaveLength(0);
+    });
+  });
+
   describe("refusals — nothing is written", () => {
     it.each([
       ["a quote after the fork point", { quotes: [quote(T0), quote("2026-01-01T00:05:00.001Z")] }, /after the fork point/],
@@ -476,6 +613,7 @@ describe("POST /api/chats/:id/fork kind aside", () => {
       expect(calls.createChat).toHaveLength(0);
       expect((await fork({ activePlugins: ["p"] })).meta.error).toBe('activePlugins is only accepted with kind "aside"');
       expect((await fork({ readOnly: true })).meta.error).toBe('readOnly is only accepted with kind "aside"');
+      expect((await fork({ forkAtLatest: true, imageIds: [] })).meta.error).toBe('forkAtLatest, imageIds are only accepted with kind "aside"');
     });
 
     it("leaves a plain fork as it was", async () => {

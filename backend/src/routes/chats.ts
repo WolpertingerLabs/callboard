@@ -37,7 +37,7 @@ import { checkSupersedable, supersedeChat, SupersedeRefusedError, type Supersede
 import { planRerun } from "../services/chat-rerun.js";
 import { sendMessage, stopSession, type SendMessageOptions } from "../services/claude.js";
 import { awaitChatCreated, ChatCreatedTimeoutError } from "../services/session-spawn.js";
-import { loadImageBuffers } from "../services/image-storage.js";
+import { allUploadsExist, isValidImageId, loadImageBuffers } from "../services/image-storage.js";
 import { assertCompressible, CompressionInputError, spanFingerprint, summariseForCompression } from "../services/chat-summary.js";
 import { isCompressDirection, type CompressDirection } from "../agents/compression.js";
 import { createSpaceResolver, parseSpaceScope, type SpaceResolver } from "../services/space-membership.js";
@@ -1324,7 +1324,7 @@ const FORK_TARGET_INVALID = "fork_target_invalid";
 chatsRouter.post("/:id/fork", async (req, res) => {
   // #swagger.tags = ['Chats']
   // #swagger.summary = 'Fork a chat'
-  // #swagger.description = 'Create a new chat whose session history is a copy of this chat up to and including the message at the given timestamp. The forked chat is not auto-started — the user sends the next message. The fork inherits the original chat's card membership through the parentage tree (its root). Pass `provider` to hand the conversation to a different harness: the history is translated into that harness native session format, with tool calls flattened to text summaries. With `kind: "aside"` the new chat is an aside — a side question about `quotes` (passages of this chat; `timestamp` must be the latest quote timestamp): chatRole "aside", the quotes stored as metadata.asideQuotes, titled "Aside: <question>", an aside instruction added to its system prompt on every turn, and permissions inherited from this chat or the given `permissions` capped so no category is looser than in this chat. With `prompt`, the first turn of the aside (the quotes as Markdown blockquotes, then the question) is started immediately, through the same path as POST /chats/:id/message; connect to GET /chats/:id/stream for its events. A turn that cannot start leaves the aside in place and is reported as `runError`, with the text in `promptText`.'
+  // #swagger.description = 'Create a new chat whose session history is a copy of this chat up to and including the message at the given timestamp. The forked chat is not auto-started — the user sends the next message. The fork inherits the original chat's card membership through the parentage tree (its root). Pass `provider` to hand the conversation to a different harness: the history is translated into that harness native session format, with tool calls flattened to text summaries. With `kind: "aside"` the new chat is an aside — a side question about `quotes` (passages of this chat; `timestamp` must be the latest quote timestamp), or with `forkAtLatest: true` about the conversation so far (no quotes and no `timestamp`: the daemon forks at the newest message in its own read of the log, mid-turn included, and a `prompt` or `imageIds` is required): chatRole "aside", the quotes (if any) stored as metadata.asideQuotes, titled "Aside: <question>", an aside instruction added to its system prompt on every turn, and permissions inherited from this chat or the given `permissions` capped so no category is looser than in this chat. With `prompt` or `imageIds`, the first turn of the aside (the quotes as Markdown blockquotes, then the question, with the attachments) is started immediately, through the same path as POST /chats/:id/message; connect to GET /chats/:id/stream for its events. A turn that cannot start leaves the aside in place and is reported as `runError`, with the text in `promptText`.'
   /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
   /* #swagger.requestBody = {
     required: true,
@@ -1332,30 +1332,40 @@ chatsRouter.post("/:id/fork", async (req, res) => {
       "application/json": {
         schema: {
           type: "object",
-          required: ["timestamp"],
           properties: {
-            timestamp: { type: "string", description: "ISO timestamp of the message to fork at (history up to and including it is copied)" },
+            timestamp: { type: "string", description: "ISO timestamp of the message to fork at (history up to and including it is copied). Required, except on an aside with forkAtLatest, where it is refused." },
             provider: { type: "string", enum: ["claude-code", "codex", "pi"], description: "Target harness. Omit to fork within the current harness of the chat (higher fidelity). Any routable kind." },
             model: { type: "string", description: "Model for the new chat. Required-ish on a harness switch, where the source model id is meaningless to the target." },
             effort: { type: "string", description: "Reasoning effort for the new chat (codex only)." },
-            kind: { type: "string", enum: ["fork", "aside"], description: "fork (default) or aside. quotes, prompt, permissions, activePlugins and timeZone are accepted only with aside." },
-            quotes: { type: "array", maxItems: 20, items: { type: "object", required: ["timestamp", "role", "text"], properties: { timestamp: { type: "string" }, role: { type: "string", enum: ["user", "assistant"] }, text: { type: "string", maxLength: 10000 } } }, description: "Aside only, required: the quoted passages. `timestamp` must equal the latest of their timestamps (the fork point)." },
+            kind: { type: "string", enum: ["fork", "aside"], description: "fork (default) or aside. quotes, prompt, permissions, readOnly, activePlugins, timeZone, forkAtLatest and imageIds are accepted only with aside." },
+            forkAtLatest: { type: "boolean", description: "Aside only: fork at the newest message of this chat instead of at quotes. Omit timestamp and quotes; give a prompt or imageIds." },
+            quotes: { type: "array", maxItems: 20, items: { type: "object", required: ["timestamp", "role", "text"], properties: { timestamp: { type: "string" }, role: { type: "string", enum: ["user", "assistant", "system"] }, text: { type: "string", maxLength: 10000 } } }, description: "Aside only, required unless forkAtLatest: the quoted passages. `timestamp` must equal the latest of their timestamps (the fork point)." },
             prompt: { type: "string", maxLength: 20000, description: "Aside only: the question. When given, the first turn is started immediately." },
             readOnly: { type: "boolean", description: "Aside only: Read only. fileWrite and codeExecution at most ask, computerControl deny (all still capped by this chat), and the model reviewer is not inherited, so every such ask reaches the user." },
             permissions: { type: "object", description: "Aside only: permissions (full or partial — fileRead, fileWrite, codeExecution, webAccess, computerControl; allow/ask/deny). Merged over the permissions of this chat and capped so no category is looser. Omit to inherit them." },
             timeZone: { type: "string", description: "Aside only: IANA time zone for the HH:MM on the quote origin lines (the browser zone). Unknown zones fall back to the daemon zone." },
-            activePlugins: { type: "array", items: { type: "string" }, description: "Aside with prompt only: active plugin IDs for the first turn, as on POST /chats/:id/message." },
-            chatView: { type: "object", description: "Aside with prompt only: the browser chat view binding, as on POST /chats/:id/message." }
+            imageIds: { type: "array", items: { type: "string" }, description: "Aside only: uploads (POST /images/upload) attached to the first turn, which then starts even without a prompt. All or nothing: 409 when any is missing. The 201 then carries attachedImages." },
+            activePlugins: { type: "array", items: { type: "string" }, description: "Aside with prompt or imageIds only: active plugin IDs for the first turn, as on POST /chats/:id/message." },
+            chatView: { type: "object", description: "Aside with prompt or imageIds only: the browser chat view binding, as on POST /chats/:id/message." }
           }
         }
       }
     }
   } */
-  /* #swagger.responses[201] = { description: "Forked chat created. For an aside with prompt: plus started: true, or runError and promptText when the first turn could not start." } */
-  /* #swagger.responses[400] = { description: "Missing timestamp, provider does not support forking, or invalid aside input (quotes, fork point, prompt, permissions, activePlugins)" } */
+  /* #swagger.responses[201] = { description: "Forked chat created. For an aside with prompt or imageIds: plus started: true, or runError and promptText when the first turn could not start; with imageIds, attachedImages (their count) too." } */
+  /* #swagger.responses[400] = { description: "Missing timestamp, provider does not support forking, no messages at the fork point, or invalid aside input (quotes, fork point, forkAtLatest, prompt, imageIds, permissions, activePlugins)" } */
   /* #swagger.responses[404] = { description: "Chat not found" } */
-  const { timestamp } = req.body;
-  if (!timestamp || typeof timestamp !== "string") {
+  /* #swagger.responses[409] = { description: "An aside attachment (imageIds) is not stored, or the chat's provider could not be resolved" } */
+  // An aside with `forkAtLatest` names no fork point: the daemon picks it below.
+  // Every other fork needs one. A request that sends `forkAtLatest` at all
+  // leaves the missing-timestamp refusal to parseAsideRequest, which can say
+  // what is actually wrong (a plain fork, or not a boolean).
+  const atLatest = req.body.kind === ASIDE_ROLE && req.body.forkAtLatest === true;
+  const requestedTimestamp: unknown = req.body.timestamp;
+  if (atLatest) {
+    if (requestedTimestamp !== undefined)
+      return res.status(400).json({ error: "timestamp is not accepted with forkAtLatest: the daemon picks the fork point" });
+  } else if (req.body.forkAtLatest === undefined && (!requestedTimestamp || typeof requestedTimestamp !== "string")) {
     return res.status(400).json({ error: "timestamp is required" });
   }
 
@@ -1367,10 +1377,38 @@ chatsRouter.post("/:id/fork", async (req, res) => {
   const { meta, providerKind } = source;
 
   // An aside: everything it carries is checked before anything is written.
-  const aside = parseAsideRequest(req.body, timestamp, meta.defaultPermissions);
+  const aside = parseAsideRequest(req.body, typeof requestedTimestamp === "string" ? requestedTimestamp : undefined, meta.defaultPermissions);
   if (!aside.ok) return res.status(400).json({ error: aside.error });
+
+  // The fork point of an aside at the latest message: the newest stamp in the
+  // daemon's own read of the log. Not the client's — its transcript lags a
+  // running turn. A turn still running is cut where its log stands; the
+  // providers close any tool call left open (an interrupted tool_result).
+  let timestamp: string;
+  if (atLatest) {
+    let latest: string | undefined;
+    try {
+      latest = latestMessageTimestamp(source.provider.parseSessionMessages(source.sessionIds));
+    } catch (error) {
+      log.warn(`Aside of ${chat.id}: could not read its history for the fork point: ${error}`);
+    }
+    if (!latest) return res.status(400).json({ error: "Could not fork: no messages found at or before the fork point" });
+    timestamp = latest;
+  } else {
+    timestamp = requestedTimestamp as string;
+  }
+
+  // Attachments go with the first turn, all or nothing: an aside that would
+  // start short of one is refused before anything is written (the same rule
+  // as sending a draft, routes/queue.ts).
+  const asideImageIds = aside.aside?.imageIds ?? [];
+  if (asideImageIds.length > 0 && !allUploadsExist(asideImageIds)) {
+    return res.status(409).json({ error: "Some of the attachments could not be found; attach them again" });
+  }
+  const startsTurn = !!aside.aside && (!!aside.aside.prompt || asideImageIds.length > 0);
+
   let chatView: ReturnType<typeof bindChatView>;
-  if (aside.aside?.prompt) {
+  if (startsTurn) {
     try {
       chatView = bindChatView(res.locals?.chatViewOwner, req.body.chatView);
     } catch (error) {
@@ -1466,7 +1504,7 @@ chatsRouter.post("/:id/fork", async (req, res) => {
   const forkMeta = {
     session_ids: [newSessionId],
     title: asideSpec
-      ? asideTitle(asideSpec.prompt || asideSpec.quotes[0]!.text)
+      ? asideTitle(asideSpec.prompt || asideSpec.quotes[0]?.text || "")
       : baseTitle
         ? isHandoff
           ? `→ ${providerLabel(targetKind)}: ${baseTitle}`
@@ -1503,7 +1541,8 @@ chatsRouter.post("/:id/fork", async (req, res) => {
     ...(model && { model }),
     ...inheritedChatFields(meta),
     ...(asideSpec && {
-      asideQuotes: asideSpec.quotes,
+      // None for an aside at the latest message: `forkedAt` alone places its marker.
+      ...(asideSpec.quotes.length > 0 && { asideQuotes: asideSpec.quotes }),
       // Inherited unless the request named some, then capped to the parent's.
       defaultPermissions: asidePermissions ?? undefined,
       // Read only means the user sees every write or run ask: the inherited
@@ -1520,18 +1559,23 @@ chatsRouter.post("/:id/fork", async (req, res) => {
     // cascade interrupts when that directory is removed underneath it.
     const newChat = chatFileService.createChat(chat.folder, newSessionId, JSON.stringify(forkMeta), chat.workspaceId);
     clearListCaches();
-    if (!asideSpec?.prompt) return res.status(201).json(newChat);
+    if (!asideSpec || !startsTurn) return res.status(201).json(newChat);
+    // How many attachments the first turn was given. An older daemon ignores
+    // `imageIds` and leaves this out, which is how a client tells its
+    // attachments were dropped.
+    const attached = asideImageIds.length > 0 ? { attachedImages: asideImageIds.length } : {};
 
     // The aside's question, started now so the user does not send twice. The
     // aside stays either way; a turn that cannot start is reported beside it,
     // with the text, so the client can offer it again.
     // Origin-line times in the asker's zone; an unknown zone falls back to the daemon's.
-    const promptText = renderQuotedPrompt(asideSpec.quotes, asideSpec.prompt, quoteTimeFormatter(req.body.timeZone));
+    const promptText = renderQuotedPrompt(asideSpec.quotes, asideSpec.prompt ?? "", quoteTimeFormatter(req.body.timeZone));
     let runError: string | undefined;
     try {
       const turn = await startChatTurn({
         chatId: newChat.id,
         prompt: promptText,
+        ...(asideImageIds.length > 0 && { imageIds: asideImageIds }),
         // The record's lastBranch is the parent's, inherited a moment ago;
         // the user has not seen a drift prompt and an aside asks, it does
         // not continue the work on that branch.
@@ -1545,7 +1589,7 @@ chatsRouter.post("/:id/fork", async (req, res) => {
       runError = error?.message ?? String(error);
     }
     if (runError) log.warn(`Aside ${newChat.id} of ${chat.id}: could not start its first turn: ${runError}`);
-    res.status(201).json(runError ? { ...newChat, runError, promptText } : { ...newChat, started: true });
+    res.status(201).json(runError ? { ...newChat, ...attached, runError, promptText } : { ...newChat, ...attached, started: true });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -1553,32 +1597,64 @@ chatsRouter.post("/:id/fork", async (req, res) => {
 
 /** A validated `kind: "aside"` request — or `aside: null` for a plain fork. */
 type AsideRequest =
-  | { ok: true; aside: { quotes: AsideQuote[]; prompt?: string; permissions: DefaultPermissions | null; readOnly: boolean; activePlugins?: string[] } | null }
+  | {
+      ok: true;
+      aside: {
+        /** Empty for an aside at the latest message (`forkAtLatest`). */
+        quotes: AsideQuote[];
+        prompt?: string;
+        permissions: DefaultPermissions | null;
+        readOnly: boolean;
+        activePlugins?: string[];
+        imageIds?: string[];
+      } | null;
+    }
   | { ok: false; error: string };
 
+/** Keys only an aside takes. A plain fork refuses them rather than ignoring them. */
+const ASIDE_ONLY_KEYS = ["quotes", "prompt", "permissions", "readOnly", "activePlugins", "timeZone", "forkAtLatest", "imageIds"] as const;
+
 /**
- * The aside half of a fork request. `quotes`, `prompt`, `permissions` and
- * `activePlugins` are refused on a plain fork rather than ignored, so a client
- * that meant an aside cannot silently get an ordinary fork.
+ * The aside half of a fork request. The aside-only keys are refused on a
+ * plain fork rather than ignored, so a client that meant an aside cannot
+ * silently get an ordinary fork.
  *
- * The fork point must BE the latest quote: an aside is frozen at what it
- * quotes, so a later `timestamp` would hand it history the user never chose.
+ * Quoted, the fork point must BE the latest quote: an aside is frozen at what
+ * it quotes, so a later `timestamp` would hand it history the user never
+ * chose. With `forkAtLatest` there are no quotes and no `timestamp` (the route
+ * picks the newest message); the aside then has to ask something — a prompt
+ * or attachments.
  */
-function parseAsideRequest(body: Record<string, unknown>, timestamp: string, parentPermissions: DefaultPermissions | null | undefined): AsideRequest {
+function parseAsideRequest(
+  body: Record<string, unknown>,
+  timestamp: string | undefined,
+  parentPermissions: DefaultPermissions | null | undefined,
+): AsideRequest {
   const { kind } = body;
   if (kind !== undefined && kind !== "fork" && kind !== ASIDE_ROLE) return { ok: false, error: 'kind must be "fork" or "aside"' };
   if (kind !== ASIDE_ROLE) {
-    const stray = (["quotes", "prompt", "permissions", "readOnly", "activePlugins", "timeZone"] as const).filter((k) => body[k] !== undefined);
+    const stray = ASIDE_ONLY_KEYS.filter((k) => body[k] !== undefined);
     if (stray.length > 0) return { ok: false, error: `${stray.join(", ")} ${stray.length === 1 ? "is" : "are"} only accepted with kind "aside"` };
     return { ok: true, aside: null };
   }
-  if (isNaN(new Date(timestamp).getTime())) return { ok: false, error: "timestamp is not a valid date" };
-  const quotes = parseAsideQuotes(body.quotes, timestamp);
-  if (!quotes.ok) return quotes;
-  // Equal as instants, not as strings: "…00Z" and "…00.000Z" are one moment.
-  const latest = asideForkPoint(quotes.quotes)!;
-  if (new Date(latest).getTime() !== new Date(timestamp).getTime()) {
-    return { ok: false, error: `timestamp must be the latest quote timestamp (${latest}): an aside forks at what it quotes` };
+  if (body.forkAtLatest !== undefined && typeof body.forkAtLatest !== "boolean") return { ok: false, error: "forkAtLatest must be a boolean" };
+  const atLatest = body.forkAtLatest === true;
+  let quotes: AsideQuote[] = [];
+  if (atLatest) {
+    if (body.quotes !== undefined && !(Array.isArray(body.quotes) && body.quotes.length === 0)) {
+      return { ok: false, error: "quotes are not accepted with forkAtLatest: a quoted aside forks at its latest quote" };
+    }
+  } else {
+    if (!timestamp) return { ok: false, error: "timestamp is required" };
+    if (isNaN(new Date(timestamp).getTime())) return { ok: false, error: "timestamp is not a valid date" };
+    const parsed = parseAsideQuotes(body.quotes, timestamp);
+    if (!parsed.ok) return parsed;
+    quotes = parsed.quotes;
+    // Equal as instants, not as strings: "…00Z" and "…00.000Z" are one moment.
+    const latest = asideForkPoint(quotes)!;
+    if (new Date(latest).getTime() !== new Date(timestamp).getTime()) {
+      return { ok: false, error: `timestamp must be the latest quote timestamp (${latest}): an aside forks at what it quotes` };
+    }
   }
   let prompt: string | undefined;
   if (body.prompt !== undefined) {
@@ -1586,25 +1662,56 @@ function parseAsideRequest(body: Record<string, unknown>, timestamp: string, par
     if (body.prompt.length > ASIDE_MAX_PROMPT_CHARS) return { ok: false, error: `prompt is longer than ${ASIDE_MAX_PROMPT_CHARS} characters` };
     prompt = body.prompt.trim() || undefined;
   }
+  const { imageIds } = body;
+  if (imageIds !== undefined) {
+    if (!Array.isArray(imageIds) || !imageIds.every((id) => typeof id === "string" && isValidImageId(id)))
+      return { ok: false, error: "imageIds must be an array of upload ids" };
+  }
+  const images = (imageIds as string[] | undefined) ?? [];
+  // Quoted, an aside with nothing asked is still a place to ask (titled off
+  // its first quote, nothing started). Unquoted it would be a bare copy.
+  if (atLatest && !prompt && images.length === 0) return { ok: false, error: "an aside needs a question" };
   if (body.readOnly !== undefined && typeof body.readOnly !== "boolean") return { ok: false, error: "readOnly must be a boolean" };
   const readOnly = body.readOnly === true;
   const permissions = resolveAsidePermissions(parentPermissions, body.permissions, readOnly);
   if (!permissions.ok) return permissions;
   const { activePlugins } = body;
   if (activePlugins !== undefined) {
-    if (!prompt) return { ok: false, error: "activePlugins is only accepted with a prompt" };
-    if (!Array.isArray(activePlugins) || !activePlugins.every((id) => typeof id === "string")) return { ok: false, error: "activePlugins must be an array of strings" };
+    if (!prompt && images.length === 0) return { ok: false, error: "activePlugins is only accepted with a prompt or attachments" };
+    if (!Array.isArray(activePlugins) || !activePlugins.every((id) => typeof id === "string"))
+      return { ok: false, error: "activePlugins must be an array of strings" };
   }
   return {
     ok: true,
     aside: {
-      quotes: quotes.quotes,
+      quotes,
       ...(prompt && { prompt }),
       permissions: permissions.permissions,
       readOnly,
       ...(activePlugins !== undefined && { activePlugins: activePlugins as string[] }),
+      ...(images.length > 0 && { imageIds: images }),
     },
   };
+}
+
+/**
+ * The newest timestamp among `messages`, as written — the fork point that
+ * keeps all of them. The newest rather than the last: a log is not always in
+ * stamp order (the Claude CLI stamps the lines after a prompt earlier than the
+ * prompt), and the providers cut at the last line at or before the point.
+ */
+function latestMessageTimestamp(messages: readonly { timestamp?: string }[]): string | undefined {
+  let latest: string | undefined;
+  let latestMs = -Infinity;
+  for (const { timestamp } of messages) {
+    if (typeof timestamp !== "string") continue;
+    const ms = new Date(timestamp).getTime();
+    if (!isNaN(ms) && ms > latestMs) {
+      latest = timestamp;
+      latestMs = ms;
+    }
+  }
+  return latest;
 }
 
 /**

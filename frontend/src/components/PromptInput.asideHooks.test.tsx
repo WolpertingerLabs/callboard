@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 /**
  * The composer's two hooks for Ask as aside: a read-only snapshot getter
- * (prompt as it would be sent, command chip included, and the attachment
- * count) that leaves the text and caret alone, and a "leads with a command"
+ * (prompt as it would be sent, command chip included, and the attachments)
+ * that leaves the text and caret alone, a remover for the attachments an
+ * aside took, and a "leads with a command"
  * report that fires only when it changes — for a command chip, or text the
  * caller's rule recognises.
  */
@@ -45,7 +46,7 @@ describe("PromptInput snapshot and command lead", () => {
     fireEvent.change(textarea, { target: { value: "why this?  " } });
     textarea.setSelectionRange(3, 3);
     // The prompt as it would be sent (trimmed); the composer keeps its own text.
-    expect(snapshot()).toEqual({ prompt: "why this?", attachments: 0 });
+    expect(snapshot()).toEqual({ prompt: "why this?", attachments: 0, files: [] });
     expect(textarea.value).toBe("why this?  ");
     expect(textarea.selectionStart).toBe(3);
   });
@@ -64,6 +65,30 @@ describe("PromptInput snapshot and command lead", () => {
 
     setValue("no command");
     expect(onCommandLeadChange.mock.calls.at(-1)).toEqual([false]);
+  });
+
+  it("reads the attachments, and removes exactly the files it is handed", () => {
+    let add: ((files: File[]) => void) | null = null;
+    let remove: ((files: File[]) => void) | null = null;
+    const { snapshot } = renderComposer({
+      onAddImages: (get) => {
+        add = (get as unknown as () => (files: File[]) => void)();
+      },
+      onRemoveImages: (get) => {
+        remove = (get as unknown as () => (files: File[]) => void)();
+      },
+    });
+    const [a, b, c] = ["a.png", "b.png", "c.png"].map((name) => new File(["x"], name, { type: "image/png" }));
+    act(() => add!([a!, b!]));
+    const taken = snapshot();
+    expect(taken).toMatchObject({ attachments: 2, files: [a, b] });
+    // A copy: changing it changes nothing in the composer.
+    taken.files.pop();
+    expect(snapshot().files).toEqual([a, b]);
+    // Attached while the aside was out: stays when the sent ones are removed.
+    act(() => add!([c!]));
+    act(() => remove!([a!, b!]));
+    expect(snapshot().files).toEqual([c]);
   });
 
   it("unregisters the snapshot on unmount", () => {

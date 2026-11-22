@@ -10,9 +10,14 @@ import { capPermissions, isPermissionAxis, isPermissionLevel } from "./permissio
  * Appended to the system prompt on every turn of an aside chat. Built here
  * from `chatRole`, never stored, so it applies on resume and cannot be edited
  * into something else through metadata.
+ *
+ * One wording for both kinds of aside — about quoted passages, or (asked with
+ * `forkAtLatest`, no quotes) about the conversation so far — so it does not
+ * depend on `asideQuotes` being present, and still fits an aside started
+ * through `start_chat_session` with neither.
  */
 export const ASIDE_INSTRUCTION =
-  "This chat is an aside: a side question the user is asking about passages quoted from an earlier point of the conversation above. " +
+  "This chat is an aside: a side question the user is asking about the conversation above, or about passages of it they quote. " +
   "Answer that question. Do not continue, resume or redo the main task of the conversation, and do not make changes unless the user asks for them here.";
 
 /**

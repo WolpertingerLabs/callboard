@@ -80,7 +80,7 @@ vi.mock("../api", async (importOriginal) => ({
 /** Chats the session registry reports as running, and attachments in the stub composer. */
 /** Asides the stubbed daemon has created, which its trees then list. */
 const created = vi.hoisted(() => new Set<string>());
-const composerState = vi.hoisted(() => ({ attachments: 0, active: new Set<string>() }));
+const composerState = vi.hoisted(() => ({ files: [] as File[], active: new Set<string>() }));
 vi.mock("../contexts/SessionContext", () => ({
   useIsSessionActive: (id?: string) => (id && composerState.active.has(id) ? { startedAt: 1 } : null),
   useMetadataVersion: () => 0,
@@ -94,6 +94,7 @@ vi.mock("../components/PromptInput", async (importOriginal) => {
     onFocusRequest,
     onSetValue,
     onSnapshotRequest,
+    onRemoveImages,
     sendBlockedReason,
     onCommandLeadChange,
     isCommandPrompt,
@@ -102,7 +103,8 @@ vi.mock("../components/PromptInput", async (importOriginal) => {
     accessory?: ReactNode;
     onFocusRequest?: (focus: (() => void) | null) => void;
     onSetValue?: (setter: (value: Update) => void) => void;
-    onSnapshotRequest?: (get: (() => { prompt: string; attachments: number }) | null) => void;
+    onSnapshotRequest?: (get: (() => { prompt: string; attachments: number; files: File[] }) | null) => void;
+    onRemoveImages?: (remove: (files: File[]) => void) => void;
     sendBlockedReason?: string;
     onCommandLeadChange?: (leads: boolean) => void;
     isCommandPrompt?: (prompt: string) => boolean;
@@ -123,9 +125,14 @@ vi.mock("../components/PromptInput", async (importOriginal) => {
     }, [onSetValue]);
     useEffect(() => {
       // Trimmed, as the real composer composes the prompt it would send.
-      onSnapshotRequest?.(() => ({ prompt: live.current.trim(), attachments: composerState.attachments }));
+      onSnapshotRequest?.(() => ({ prompt: live.current.trim(), attachments: composerState.files.length, files: [...composerState.files] }));
       return () => onSnapshotRequest?.(null);
     }, [onSnapshotRequest]);
+    useEffect(() => {
+      onRemoveImages?.(() => (files: File[]) => {
+        composerState.files = composerState.files.filter((file) => !files.includes(file));
+      });
+    }, [onRemoveImages]);
     useEffect(() => {
       onCommandLeadChange?.(isCommandPrompt?.(text) ?? false);
     }, [text, isCommandPrompt, onCommandLeadChange]);
@@ -205,7 +212,11 @@ function LocationProbe() {
   );
 }
 
-type ForkReply = "ok" | "refuse" | "refuseTarget" | "old" | "runError" | Promise<"ok">;
+/** "oldNoImages": a daemon before attachments, which ignores them; "oldUnstarted": the same with no question, so it starts nothing. */
+type ForkReply = "ok" | "refuse" | "refuseTarget" | "old" | "runError" | "oldNoImages" | "oldUnstarted" | Promise<"ok">;
+/** How the stubbed upload route answers: every file stored, or one refused. */
+let uploadReply: "ok" | "partial" = "ok";
+const uploads = () => vi.mocked(fetch).mock.calls.filter(([url, init]) => String(url) === "/api/images/upload" && init?.method === "POST");
 let forkReplies: ForkReply[] = [];
 const forkBodies = () =>
   vi
@@ -217,7 +228,8 @@ const askButton = () => screen.getByRole("button", { name: /Ask as aside|Asking/
 beforeEach(() => {
   forkReplies = [];
   created.clear();
-  composerState.attachments = 0;
+  composerState.files = [];
+  uploadReply = "ok";
   composerState.active = new Set();
   resetQuoteTraysForTests();
   Object.defineProperty(window, "innerWidth", { value: 1200, configurable: true });
@@ -243,8 +255,29 @@ beforeEach(() => {
         const chatRole = reply === "old" ? "fork" : "aside";
         if (chatRole === "aside") created.add("aside-1");
         const title = reply === "old" ? "Fork: Work" : "Aside: Why?";
-        const outcome = reply === "runError" ? { runError: "engine down", promptText: "> **Assistant:**\n> first\n\nWhy?" } : { started: true };
-        return { ok: true, status: 201, json: async () => ({ id: "aside-1", folder: "/tmp", metadata: JSON.stringify({ chatRole, title }), ...outcome }) };
+        const outcome =
+          reply === "runError"
+            ? { runError: "engine down", promptText: "> **Assistant:**\n> first\n\nWhy?" }
+            : reply === "oldUnstarted"
+              ? {}
+              : { started: true };
+        // A current daemon counts the attachments it took; an older one ignores them.
+        const sentImages = (JSON.parse(String(init.body)).imageIds ?? []) as string[];
+        const attached = sentImages.length > 0 && reply !== "oldNoImages" && reply !== "oldUnstarted" ? { attachedImages: sentImages.length } : {};
+        return {
+          ok: true,
+          status: 201,
+          json: async () => ({ id: "aside-1", folder: "/tmp", metadata: JSON.stringify({ chatRole, title }), ...outcome, ...attached }),
+        };
+      }
+      if (url === "/api/images/upload" && init?.method === "POST") {
+        const files = (init.body as FormData).getAll("images") as File[];
+        const stored = (uploadReply === "partial" ? files.slice(1) : files).map((file, i) => ({ id: `img-${i}`, originalName: file.name }));
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ success: uploadReply === "ok", images: stored, ...(uploadReply === "partial" && { errors: ["too big"] }) }),
+        };
       }
       if (url === "/api/chats/aside-1/stream") {
         return { ok: true, status: 200, body: new ReadableStream({ start: (c) => c.close() }), json: async () => ({}) };
@@ -381,12 +414,91 @@ it("does not pull the user back from another chat, nor show the request there", 
   expect(getComposerDraft("original")).toBe("");
 });
 
-it("refuses attachments rather than dropping them", async () => {
-  composerState.attachments = 2;
+const file = (name: string) => new File(["x"], name, { type: "image/png" });
+
+it("uploads the composer's attachments and sends them with the aside, then takes them out of the composer", async () => {
+  const [a, b] = [file("a.png"), file("b.png")];
+  composerState.files = [a, b];
+  await quoteAndType("What is this?");
+  fireEvent.click(askButton());
+  await waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/chat/original?aside=aside-1"));
+  expect(uploads()).toHaveLength(1);
+  expect(forkBodies()[0]).toMatchObject({ timestamp: A1, prompt: "What is this?", imageIds: ["img-0", "img-1"] });
+  expect(composerState.files).toEqual([]);
+  expect(composer().value).toBe("");
+});
+
+it("asks with attachments and no question", async () => {
+  composerState.files = [file("a.png")];
+  await quoteAndType("");
+  fireEvent.click(askButton());
+  await waitFor(() => expect(forkBodies()).toHaveLength(1));
+  expect(forkBodies()[0]).toMatchObject({ quotes: [{ timestamp: A1, role: "assistant", text: "first" }], imageIds: ["img-0"] });
+  expect(forkBodies()[0]).not.toHaveProperty("prompt");
+});
+
+it("sends nothing, and keeps everything, when an attachment does not upload", async () => {
+  uploadReply = "partial";
+  const files = [file("a.png"), file("b.png")];
+  composerState.files = [...files];
   await quoteAndType("Why?");
   fireEvent.click(askButton());
-  expect((await screen.findByRole("alert")).textContent).toMatch(/can't carry attachments/);
+  expect((await screen.findByRole("alert")).textContent).toMatch(/too big/);
   expect(forkBodies()).toHaveLength(0);
+  expect(composerState.files).toEqual(files);
+  expect(getQuotes("original")).toHaveLength(1);
+  expect(composer().value).toBe("Why?");
+});
+
+it("says nothing was asked when an older daemon dropped the attachments of an aside with no question", async () => {
+  // A daemon before attachments starts no turn without a prompt: the aside exists, empty.
+  forkReplies = ["oldUnstarted"];
+  const alert = vi.spyOn(window, "alert").mockImplementation(() => {});
+  const a = file("a.png");
+  composerState.files = [a];
+  await quoteAndType("");
+  fireEvent.click(askButton());
+  await waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/chat/original?aside=aside-1"));
+  expect(forkBodies()[0]).toMatchObject({ imageIds: ["img-0"] });
+  expect(forkBodies()[0]).not.toHaveProperty("prompt");
+  expect(alert).toHaveBeenCalledTimes(1);
+  expect(alert.mock.calls[0]![0]).toMatch(/created, but nothing was sent in it/);
+  expect(alert.mock.calls[0]![0]).not.toMatch(/was asked/);
+  expect(composerState.files).toEqual([a]);
+});
+
+it("takes the sent attachments out of the composer even after the user moved to another chat", async () => {
+  // The composer is not per chat: its attachments go wherever it goes, and
+  // would be sent again from the next chat.
+  let release!: () => void;
+  forkReplies = [new Promise<"ok">((resolve) => (release = () => resolve("ok")))];
+  const [a, b] = [file("a.png"), file("b.png")];
+  composerState.files = [a];
+  await quoteAndType("Why?");
+  fireEvent.click(askButton());
+  await screen.findByRole("button", { name: "Asking…" });
+  fireEvent.click(screen.getByRole("button", { name: "go elsewhere" }));
+  await waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/chat/other"));
+  // Attached in the other chat while the aside was out: stays.
+  composerState.files = [...composerState.files, b];
+  await act(async () => release());
+  await waitFor(() => expect(composerState.files).toEqual([b]));
+  expect(forkBodies()[0]).toMatchObject({ imageIds: ["img-0"] });
+  expect(screen.getByTestId("location").textContent).toBe("/chat/other");
+});
+
+it("says so, and keeps the attachments, when an older daemon dropped them", async () => {
+  forkReplies = ["oldNoImages"];
+  const alert = vi.spyOn(window, "alert").mockImplementation(() => {});
+  const a = file("a.png");
+  composerState.files = [a];
+  await quoteAndType("Why?");
+  fireEvent.click(askButton());
+  await waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/chat/original?aside=aside-1"));
+  expect(alert).toHaveBeenCalledWith(expect.stringMatching(/too old for attachments/));
+  // The question went; the files it could not take did not.
+  expect(composer().value).toBe("");
+  expect(composerState.files).toEqual([a]);
 });
 
 it("passes a system message's quote through as system", async () => {

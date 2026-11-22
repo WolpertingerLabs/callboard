@@ -55,6 +55,15 @@ export function anyUploadExists(imageIds: string[]): boolean {
   return storedFilesOf(imageIds).length > 0;
 }
 
+/**
+ * Whether every one of `imageIds` is a stored upload: the all-or-nothing check
+ * before a send that carries them. One directory listing, no file read — the
+ * send loads them (once) afterwards.
+ */
+export function allUploadsExist(imageIds: string[]): boolean {
+  return storedFilesOf(imageIds).length === imageIds.length;
+}
+
 /** The stored file of each id that has one, in order. */
 function storedFilesOf(imageIds: string[]): string[] {
   try {
