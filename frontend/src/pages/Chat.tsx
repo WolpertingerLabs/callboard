@@ -692,6 +692,17 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
   );
 
   /**
+   * Mark every `/activity` read already out as stale: `store` drops a read
+   * whose sequence is below the applied one, so the applied one moves past
+   * the newest issued — the newest in-flight read included. For a held-list
+   * change a request just made, which a late read would otherwise undo. The
+   * dock's own rows those reads carried come back on the next read.
+   */
+  const supersedeActivityReads = useCallback(() => {
+    activityAppliedSeqRef.current = ++activityRequestSeqRef.current;
+  }, []);
+
+  /**
    * A list of held messages a request just returned (a hold, a removal, a
    * resume): newer than any `/activity` read already out, so those are
    * dropped rather than let a late one put back what this took away.
@@ -699,10 +710,10 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
   const applyHeld = useCallback(
     (chatId: string, items: HeldMessage[]) => {
       if (currentIdRef.current !== chatId) return;
-      activityAppliedSeqRef.current = activityRequestSeqRef.current;
+      supersedeActivityReads();
       storeHeld(chatId, items);
     },
-    [storeHeld],
+    [storeHeld, supersedeActivityReads],
   );
 
   /**
@@ -2670,7 +2681,12 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
       // in-flight bubble and the streaming flag, because there is no config to
       // send: the alternative is posting the last *valid* one, which is the
       // name the user abandoned on the way to this one.
-      if (sendBlockedReason) return;
+      // Nothing was sent: a caller that took the message from somewhere (a
+      // held message taken back for Send now) gets it handed back.
+      if (sendBlockedReason) {
+        onRefused?.();
+        return;
+      }
       // Sending a message re-latches auto-scroll so the user sees their
       // message and the response, even if they had scrolled up
       suppressRelatchRef.current = false;
@@ -3548,9 +3564,22 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
         });
         if (!result.held) {
           // Nothing to wait for: a plain send, if the user is still here to
-          // see it go. Otherwise the message stays where it was, and says so.
-          if (currentIdRef.current !== chatId) {
-            setHeldError({ chatId, message: "The run had ended, so nothing was held — your message is still in the composer." });
+          // see it go. Otherwise nothing was taken, so — by the clearing
+          // contract — nothing is cleared: the text stays in that chat's
+          // saved draft. The attachments, though, are not per chat and went
+          // with the composer to the chat the user is in now, where a plain
+          // Enter would send them; the note is shown there and says so.
+          const here = currentIdRef.current;
+          if (here !== chatId) {
+            const attachments = files.length === 1 ? "its attachment is" : `its ${files.length} attachments are`;
+            setHeldError(
+              files.length > 0 && here
+                ? {
+                    chatId: here,
+                    message: `The run had ended, so your message wasn't held. Its text is still in that chat's composer; ${attachments} in this one.`,
+                  }
+                : { chatId, message: "The run had ended, so nothing was held — your message is still in the composer." },
+            );
             return;
           }
           clearSentFromComposer(chatId, prompt, files);
@@ -3580,11 +3609,15 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
     ],
   );
 
-  /** Why taking a held message back failed, in words: it went, or it is going. */
+  /**
+   * Why taking a held message back (or removing it) failed, in words: it is
+   * being sent, or it is gone — sent, or taken or removed from another tab;
+   * a 404 can't tell which, so it doesn't claim either.
+   */
   const heldTakeFailure = useCallback(
     (chatId: string, err: unknown) => {
       if (err instanceof HeldRequestError && (err.status === 404 || err.code === "not_found")) {
-        setHeldError({ chatId, message: "Already sent." });
+        setHeldError({ chatId, message: "It's no longer held (sent or removed elsewhere)." });
       } else if (err instanceof HeldRequestError && err.code === "delivering") {
         setHeldError({ chatId, message: "It's being sent right now." });
       } else {
@@ -3606,6 +3639,8 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
       markHeldBusy(item.id, true);
       try {
         const taken = await takeHeldMessage(chatId, item.id);
+        // Gone on the daemon: no read already out may put it back.
+        supersedeActivityReads();
         setHeldState((prev) => (prev?.chatId === chatId ? { chatId, items: prev.items.filter((held) => held.id !== item.id) } : prev));
         const results = taken.images?.length ? await fetchDraftImages(taken.images) : [];
         const files = results.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
@@ -3617,7 +3652,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
         markHeldBusy(item.id, false);
       }
     },
-    [markHeldBusy, heldTakeFailure],
+    [markHeldBusy, heldTakeFailure, supersedeActivityReads],
   );
 
   /**
@@ -3659,11 +3694,21 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
    * branch drift gets the drift dialog). Its quotes were folded in when it was
    * held. If an attachment could not be loaded back, or the user has moved on,
    * it goes to the composer instead, so nothing is sent short.
+   *
+   * The take has already removed it from the daemon, so a send that doesn't
+   * go — refused, a network error before the route answered, a branch dialog
+   * backed out of, or blocked outright — hands it back to the composer
+   * (`onRefused`), with its attachments. Nothing is taken while the composer's
+   * send is blocked anyway.
    */
   const handleHeldSendNow = useCallback(
     async (item: HeldMessage) => {
       if (!id) return;
       const chatId = id;
+      if (sendBlockedReason) {
+        setHeldError({ chatId, message: sendBlockedReason });
+        return;
+      }
       const taken = await takeHeld(chatId, item);
       if (!taken) return;
       if (taken.lost > 0 || currentIdRef.current !== chatId) {
@@ -3671,9 +3716,12 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
         return;
       }
       setHeldError((current) => (current?.chatId === chatId ? null : current));
-      void handleSend(taken.text, taken.files.length > 0 ? taken.files : undefined, { notFromComposer: true });
+      void handleSend(taken.text, taken.files.length > 0 ? taken.files : undefined, {
+        notFromComposer: true,
+        onRefused: () => loadIntoComposer(chatId, taken.text, taken.files, 0),
+      });
     },
-    [id, takeHeld, loadIntoComposer, handleSend],
+    [id, sendBlockedReason, takeHeld, loadIntoComposer, handleSend],
   );
 
   const handleHeldRemove = useCallback(

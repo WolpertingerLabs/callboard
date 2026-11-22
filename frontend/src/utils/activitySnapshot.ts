@@ -22,7 +22,5 @@ export function sameActivityPayload(a: ChatActivityResponse, b: ChatActivityResp
   if (a === b) return true;
   if (a.awaitingChildren !== b.awaitingChildren) return false;
   if (a.activities.length !== b.activities.length) return false;
-  // The held messages ("Enqueue Send") are part of what the page shows.
-  if ((a.heldMessages?.length ?? 0) !== (b.heldMessages?.length ?? 0)) return false;
   return JSON.stringify(a) === JSON.stringify(b);
 }

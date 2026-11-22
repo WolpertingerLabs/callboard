@@ -1,5 +1,5 @@
 /**
- * Held messages — "Send when idle" (`/api/chats/:id/held`).
+ * Held messages — "Enqueue Send" (`/api/chats/:id/held`).
  *
  * A message held while the chat is running goes out as a normal message once
  * that run ends; see `held-message-service.ts` (store) and
@@ -103,7 +103,7 @@ function parseHoldBody(body: any): Parsed {
 heldRouter.get("/:id/held", (req, res) => {
   // #swagger.tags = ['Stream']
   // #swagger.summary = 'List held messages'
-  // #swagger.description = 'Messages held until this chat\'s current turn ends ("Send when idle"), in delivery order. The same list is returned as heldMessages by GET /chats/:id/activity.'
+  // #swagger.description = 'Messages held until this chat\'s current turn ends ("Enqueue Send"), in delivery order. The same list is returned as heldMessages by GET /chats/:id/activity.'
   /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID' } */
   /* #swagger.responses[200] = { description: "{ heldMessages: HeldMessage[] }" } */
   res.json({ heldMessages: heldMessageService.list(req.params.id) });

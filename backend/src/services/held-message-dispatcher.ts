@@ -1,5 +1,5 @@
 /**
- * Held-message delivery — sends the next "Send when idle" message once a
+ * Held-message delivery — sends the next "Enqueue Send" message once a
  * chat's turn ends.
  *
  * Driven by `session-completion-handler.ts`'s idle hook (installed from

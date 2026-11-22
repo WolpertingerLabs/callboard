@@ -2,7 +2,7 @@ import type { QueueItemImage } from "./queue.js";
 
 /**
  * A message the user sent while the chat was running, held by the daemon
- * until that run ends ("Send when idle").
+ * until that run ends ("Enqueue Send").
  *
  * Stored per chat in `DATA_DIR/held/<chatId>.json` and delivered by
  * `held-message-dispatcher.ts` when the chat's session stops: one item per

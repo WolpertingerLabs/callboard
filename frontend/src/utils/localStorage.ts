@@ -188,7 +188,7 @@ interface LocalStorageData {
   artifactWriteGrants?: Partial<Record<string, string>>;
   /** The aside options row's Read only toggle, as last left. Absent = off. */
   asideReadOnly?: boolean;
-  /** The composer's "Enter interrupts · ⌥Enter sends when it's done" hint was dismissed. Absent = shown. */
+  /** The composer's "Enter interrupts · ⌥Enter enqueues" hint was dismissed. Absent = shown. */
   busyHintDismissed?: boolean;
   /**
    * The last explicit harness/model an aside was asked on — offered as a

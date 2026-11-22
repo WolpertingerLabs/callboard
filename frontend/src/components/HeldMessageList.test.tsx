@@ -9,7 +9,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import type { HeldMessage } from "shared/types/index.js";
-import HeldMessageList, { heldStateLine } from "./HeldMessageList";
+import HeldMessageList, { heldStateLine, heldSummary } from "./HeldMessageList";
 
 afterEach(cleanup);
 
@@ -28,7 +28,8 @@ function renderList(items: HeldMessage[], props: Partial<React.ComponentProps<ty
   return handlers;
 }
 
-const cards = () => screen.getAllByRole("article", { name: "Held message" });
+const cards = () => screen.getAllByRole("article", { name: /^Held message \d+ of \d+$/ });
+const line = (card: HTMLElement) => card.querySelector("[data-held-line]")!.textContent;
 
 describe("heldStateLine", () => {
   it("says where each state stands", () => {
@@ -43,9 +44,25 @@ describe("heldStateLine", () => {
 });
 
 describe("HeldMessageList", () => {
-  it("renders nothing with nothing held", () => {
-    const { container } = render(<HeldMessageList items={[]} onSendNow={vi.fn()} onEdit={vi.fn()} onRemove={vi.fn()} onResume={vi.fn()} />);
-    expect(container.innerHTML).toBe("");
+  it("shows nothing with nothing held, but keeps its (empty) live region mounted", () => {
+    renderList([]);
+    expect(screen.queryByRole("region", { name: "Held messages" })).toBeNull();
+    expect(screen.queryAllByRole("article")).toHaveLength(0);
+    expect(screen.getByRole("status").textContent).toBe("");
+  });
+
+  it("labels each item with its position, and has one live region summing the list up", () => {
+    renderList([held("a", "queued"), held("b", "queued"), held("c", "paused", { reason: "x" })]);
+    expect(cards().map((card) => card.getAttribute("aria-label"))).toEqual(["Held message 1 of 3", "Held message 2 of 3", "Held message 3 of 3"]);
+    const live = screen.getAllByRole("status");
+    expect(live).toHaveLength(1);
+    expect(live[0].textContent).toBe("3 held messages: 2 queued, 1 paused");
+  });
+
+  it("shows a disabled action as disabled, not clickable", () => {
+    renderList([held("a", "delivering")]);
+    const sendNow = within(cards()[0]).getByRole("button", { name: "Send now" });
+    expect(sendNow.style.cursor).toBe("default");
   });
 
   it("shows one queued message as waiting on this turn, with its attachments and no Resume", () => {
@@ -53,19 +70,19 @@ describe("HeldMessageList", () => {
     const [card] = cards();
     expect(card.textContent).toContain("message a");
     expect(card.textContent).toContain("diagram.png");
-    expect(within(card).getByRole("status").textContent).toBe("Queued · sends when this turn ends");
+    expect(line(card)).toBe("Queued · sends when this turn ends");
     expect(screen.queryByRole("button", { name: "Resume queue" })).toBeNull();
   });
 
   it("numbers several queued messages", () => {
     renderList([held("a", "queued"), held("b", "queued")]);
-    expect(cards().map((card) => within(card).getByRole("status").textContent)).toEqual(["Queued · #1 in queue", "Queued · #2 in queue"]);
+    expect(cards().map((card) => line(card))).toEqual(["Queued · #1 in queue", "Queued · #2 in queue"]);
   });
 
   it("shows paused and failed reasons, and offers Resume queue", () => {
     const { onResume } = renderList([held("a", "paused", { reason: "You stopped the run." }), held("b", "failed", { reason: "Engine down." })]);
-    expect(within(cards()[0]).getByRole("status").textContent).toBe("Paused · You stopped the run.");
-    expect(within(cards()[1]).getByRole("status").textContent).toBe("Couldn't send · Engine down.");
+    expect(line(cards()[0])).toBe("Paused · You stopped the run.");
+    expect(line(cards()[1])).toBe("Couldn't send · Engine down.");
     fireEvent.click(screen.getByRole("button", { name: "Resume queue" }));
     expect(onResume).toHaveBeenCalledTimes(1);
   });
@@ -94,5 +111,15 @@ describe("HeldMessageList", () => {
   it("disables Resume queue while a resume is out", () => {
     renderList([held("a", "paused")], { resuming: true });
     expect((screen.getByRole("button", { name: "Resume queue" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+describe("heldSummary", () => {
+  it("counts the items by state, an unknown state as waiting", () => {
+    expect(heldSummary([])).toBe("");
+    expect(heldSummary([held("a", "queued")])).toBe("1 held message: 1 queued");
+    expect(heldSummary([held("a", "failed"), held("b", "delivering"), held("c", "later" as HeldMessage["state"])])).toBe(
+      "3 held messages: 1 couldn't send, 1 sending, 1 waiting",
+    );
   });
 });

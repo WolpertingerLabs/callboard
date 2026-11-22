@@ -128,7 +128,8 @@ const held = (id: string, extra: Partial<HeldMessage> = {}): HeldMessage => ({
   ...extra,
 });
 
-type Reply = { status: number; body?: unknown; text?: string };
+/** `reject`: the request never gets an answer (a network error). */
+type Reply = { status: number; body?: unknown; text?: string; reject?: boolean };
 /** Per-route queued replies; an empty queue answers with the route's default. */
 let replies: Record<string, Reply[]> = {};
 const json = (status: number, body: unknown) => ({ ok: status < 400, status, json: async () => body, text: async () => JSON.stringify(body) });
@@ -141,7 +142,7 @@ const calls = (path: string, method = "POST") =>
 const composer = () => screen.getByLabelText("Composer") as HTMLTextAreaElement;
 const type = (value: string) => fireEvent.change(composer(), { target: { value } });
 const file = (name: string) => new File(["x"], name, { type: "image/png" });
-const heldCards = () => screen.queryAllByRole("article", { name: "Held message" });
+const heldCards = () => screen.queryAllByRole("article", { name: /^Held message \d+ of \d+$/ });
 
 beforeEach(() => {
   state.files = [];
@@ -168,6 +169,7 @@ beforeEach(() => {
       const method = init?.method ?? "GET";
       const queued = replies[`${method} ${url}`]?.shift();
       if (queued) {
+        if (queued.reject) throw new TypeError("Failed to fetch");
         if (queued.text !== undefined) return { ok: false, status: queued.status, json: async () => JSON.parse(queued.text!), text: async () => queued.text };
         return json(queued.status, queued.body);
       }
@@ -245,7 +247,7 @@ it("holds the message while the run is going: quotes folded, attachments uploade
   expect(state.files).toEqual([]);
   expect(getQuotes("original")).toHaveLength(0);
   const [card] = heldCards();
-  expect(within(card).getByRole("status").textContent).toBe("Queued · sends when this turn ends");
+  expect(card.querySelector("[data-held-line]")!.textContent).toBe("Queued · sends when this turn ends");
 });
 
 it("sends normally when the run ended before the hold arrived", async () => {
@@ -325,7 +327,7 @@ it("says a message is already sent when the take finds it gone, and sends nothin
   await act(async () => {
     fireEvent.click(within(card).getByRole("button", { name: "Send now" }));
   });
-  expect((await screen.findByRole("alert")).textContent).toBe("Already sent.");
+  expect((await screen.findByRole("alert")).textContent).toBe("It's no longer held (sent or removed elsewhere).");
   expect(calls("/api/chats/original/message")).toHaveLength(0);
   expect(composer().value).toBe("");
   await waitFor(() => expect(heldCards()).toHaveLength(0));
@@ -364,3 +366,67 @@ it("re-reads the list when metadata moves, and keeps it through a failed read", 
   await act(async () => {});
   expect(heldCards()).toHaveLength(1);
 });
+
+/** Hold a failed message with an attachment, open the chat, and press its Send now. */
+async function sendNowFailedItem() {
+  state.held = [held("h1", { text: "retry me", state: "failed", reason: "The branch changed.", images: [{ id: "img-1", originalName: "pic.png" }] })];
+  await open();
+  const card = await waitFor(() => heldCards()[0]!);
+  await act(async () => {
+    fireEvent.click(within(card).getByRole("button", { name: "Send now" }));
+  });
+  await waitFor(() => expect(calls("/api/chats/original/message")).toHaveLength(1));
+  // Taken off the daemon: from here on the page is the only copy.
+  expect(calls("/api/chats/original/held/h1/take")).toHaveLength(1);
+}
+
+it("Send now hands the message back to the composer when the branch-drift dialog is cancelled", async () => {
+  replies["POST /api/chats/original/message"] = [{ status: 409, body: { error: "branch_drift", message: "The branch has changed." } }];
+  await sendNowFailedItem();
+  fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+  await waitFor(() => expect(composer().value).toBe("retry me"));
+  expect(state.files.map((f) => f.name)).toEqual(["pic.png"]);
+});
+
+it("Send now hands the message back to the composer on a network error", async () => {
+  replies["POST /api/chats/original/message"] = [{ status: 0, reject: true }];
+  await sendNowFailedItem();
+  await waitFor(() => expect(composer().value).toBe("retry me"));
+  expect(state.files.map((f) => f.name)).toEqual(["pic.png"]);
+});
+
+it("Send now hands the message back to the composer when the route refuses it", async () => {
+  replies["POST /api/chats/original/message"] = [{ status: 500, body: { error: "engine down" } }];
+  await sendNowFailedItem();
+  await waitFor(() => expect(composer().value).toBe("retry me"));
+});
+
+/**
+ * An `/activity` read that was already out when the user removed or took
+ * an item must not put the item back when it lands.
+ */
+for (const action of ["Remove", "Edit"] as const) {
+  it(`does not let an /activity read already out undo a ${action}`, async () => {
+    state.held = [held("h1"), held("h2")];
+    const view = await open();
+    await waitFor(() => expect(heldCards()).toHaveLength(2));
+    // A read goes out (the metadata moved) and is slow to answer — with the
+    // list as it was before the action.
+    let answer!: () => void;
+    const stale = { activities: [], conditionWatch: null, awaitingChildren: 0, heldMessages: [held("h1"), held("h2")] };
+    const before = vi.mocked(getActivity).mock.calls.length;
+    vi.mocked(getActivity).mockImplementationOnce(() => new Promise((resolve) => (answer = () => resolve(stale))));
+    state.metadataVersion = 1;
+    view.rerender(tree());
+    await waitFor(() => expect(vi.mocked(getActivity).mock.calls.length).toBeGreaterThan(before), { timeout: 3000 });
+
+    await act(async () => {
+      fireEvent.click(within(heldCards()[0]).getByRole("button", { name: action }));
+    });
+    await waitFor(() => expect(heldCards()).toHaveLength(1));
+    await act(async () => answer());
+    await act(async () => {});
+    expect(heldCards()).toHaveLength(1);
+    expect(heldCards()[0].textContent).toContain("held h2");
+  });
+}
