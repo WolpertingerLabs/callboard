@@ -50,7 +50,7 @@ function cleanImageName(raw: unknown, fallback: string): string {
  * draft's file, a traversal-chosen JSON file listing someone else's image. A
  * stray file on disk is the failure this trades them for.
  */
-function parseDraftImages(raw: unknown): QueueItemImage[] | undefined | null {
+export function parseDraftImages(raw: unknown): QueueItemImage[] | undefined | null {
   if (raw === undefined) return undefined;
   if (!Array.isArray(raw)) return null;
   const images: QueueItemImage[] = [];

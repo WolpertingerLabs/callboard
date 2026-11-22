@@ -134,6 +134,7 @@ export {
 } from "./attachment.js";
 
 export type { QueueItem, QueueItemImage } from "./queue.js";
+export type { HeldMessage } from "./held.js";
 
 export type { FolderItem, BrowseResult, ValidateResult, FolderSuggestion } from "./folders.js";
 

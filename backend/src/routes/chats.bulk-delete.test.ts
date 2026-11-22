@@ -346,6 +346,16 @@ describe("DELETE /api/chats/:id after the shared-helper refactor", () => {
     expect(notifyMetadata).toHaveBeenCalledWith(id, { cardEvent: "updated" });
   });
 
+  it("drops the chat's held messages", async () => {
+    const { heldMessageService } = await import("../services/held-message-service.js");
+    const id = makeChat("with-held");
+    heldMessageService.add(id, { text: "later" });
+
+    await deleteOne(id);
+
+    expect(heldMessageService.list(id)).toEqual([]);
+  });
+
   it("still 404s for a chat that does not exist", async () => {
     const res = await deleteOne("nope");
     expect(res.code).toBe(404);

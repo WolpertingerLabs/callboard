@@ -60,6 +60,7 @@ import { buildWorkspaceIndex, viewForDirectory } from "../services/workspace-vie
 import { chatListCache, CHAT_LIST_CACHE_TTL, CHAT_LIST_CACHE_MAX_AGE, clearChatListCache } from "../services/chat-list-cache.js";
 import { clearListCaches } from "../services/list-caches.js";
 import { parseIntParam } from "../utils/query-params.js";
+import { heldMessageService } from "../services/held-message-service.js";
 export { clearChatListCache, clearListCaches };
 
 const log = createLogger("chats");
@@ -3168,6 +3169,9 @@ function deleteOneChat(id: string, storedRecord?: SharedChat | null): string {
   // touches the record.
   const fileChat = storedRecord !== undefined ? storedRecord : chatFileService.getChat(id);
   if (fileChat) chatFileService.deleteChat(fileChat.session_id);
+  // Held messages are owned by the chat; nothing could ever deliver them now.
+  heldMessageService.deleteAll(id);
+  if (fileChat && fileChat.id !== id) heldMessageService.deleteAll(fileChat.id);
   return fileChat?.id ?? id;
 }
 

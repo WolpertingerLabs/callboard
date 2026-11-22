@@ -6,6 +6,7 @@ import type {
   UiAgentProviderKind,
   UserContactAvailability,
   ChatActivityResponse,
+  HeldMessage,
   SlashCommand,
   Plugin,
   Chat,
@@ -1096,6 +1097,109 @@ export async function getActivity(id: string): Promise<ChatActivityResponse> {
  */
 export async function releaseActivity(id: string, activityId: string): Promise<{ ok: boolean; kind: string }> {
   return request(`/chats/${seg(id)}/activity/${seg(activityId)}/release`, { method: "POST", error: "Failed to end the wait" });
+}
+
+// ── Held messages ("Send when idle") ─────────────────────────────────
+
+/**
+ * Thrown by {@link holdMessage} when the daemon has no held-message routes —
+ * it predates "Send when idle". Nothing was held; the composer should keep
+ * the message.
+ */
+export class HeldUnsupportedError extends Error {
+  constructor() {
+    super("The Callboard daemon is too old for “Send when idle”. Restart the daemon to use it.");
+    this.name = "HeldUnsupportedError";
+  }
+}
+
+/**
+ * A refused held-message request: the daemon's message, status and `code`
+ * (`not_found` — already sent or removed; `delivering` — being sent right now).
+ */
+export class HeldRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+  ) {
+    super(message);
+    this.name = "HeldRequestError";
+  }
+}
+
+async function heldRequestError(res: Response, fallback: string): Promise<HeldRequestError> {
+  const body = await res.json().catch(() => ({}));
+  return new HeldRequestError(errorBodyMessage(body, fallback), res.status, typeof body?.code === "string" ? body.code : undefined);
+}
+
+export interface HoldMessageBody {
+  text: string;
+  images?: QueueItemImage[];
+  activePlugins?: string[];
+  model?: string;
+  effort?: string;
+  maxTurns?: number;
+}
+
+/**
+ * The outcome of {@link holdMessage}. `not_running` means the chat went idle
+ * before the hold arrived: nothing was stored, and the caller should send the
+ * message normally (which keeps branch-drift and similar dialogs on the
+ * client path).
+ */
+export type HoldMessageResult = { held: true; heldMessage: HeldMessage; heldMessages: HeldMessage[] } | { held: false; reason: "not_running" };
+
+/**
+ * Hold a message until the chat's current turn ends (POST /chats/:id/held).
+ * The daemon sends it itself, whether or not any tab is open.
+ *
+ * Throws {@link HeldUnsupportedError} for a daemon without the route, and
+ * {@link HeldRequestError} for any other refusal.
+ */
+export async function holdMessage(id: string, body: HoldMessageBody): Promise<HoldMessageResult> {
+  const res = await fetch(`${BASE}/chats/${seg(id)}/held`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (res.ok) {
+    const data = (await res.json()) as { heldMessage: HeldMessage; heldMessages: HeldMessage[] };
+    return { held: true, heldMessage: data.heldMessage, heldMessages: data.heldMessages };
+  }
+  const payload = await res.json().catch(() => null);
+  if (res.status === 409 && payload?.code === "not_running") return { held: false, reason: "not_running" };
+  // An old daemon has no such route: Express's own 404, which is not our JSON.
+  // A new daemon's 404 is JSON with an `error` ("Chat not found").
+  if (res.status === 404 && !(payload && typeof payload.error === "string")) throw new HeldUnsupportedError();
+  throw new HeldRequestError(errorBodyMessage(payload, "Failed to hold the message"), res.status, typeof payload?.code === "string" ? payload.code : undefined);
+}
+
+/**
+ * Take a held message back (to edit it, or to send it now). Atomic with
+ * delivery: throws {@link HeldRequestError} with `code` `delivering` (409)
+ * while it is being sent, or `not_found` (404) once it has been.
+ */
+export async function takeHeldMessage(id: string, heldId: string): Promise<HeldMessage> {
+  const res = await fetch(`${BASE}/chats/${seg(id)}/held/${seg(heldId)}/take`, { method: "POST", credentials: "include" });
+  if (!res.ok) throw await heldRequestError(res, "Failed to take the held message");
+  return ((await res.json()) as { heldMessage: HeldMessage }).heldMessage;
+}
+
+/** Remove a held message without sending it. Same refusals as {@link takeHeldMessage}. */
+export async function deleteHeldMessage(id: string, heldId: string): Promise<HeldMessage[]> {
+  const res = await fetch(`${BASE}/chats/${seg(id)}/held/${seg(heldId)}`, { method: "DELETE", credentials: "include" });
+  if (!res.ok) throw await heldRequestError(res, "Failed to remove the held message");
+  return ((await res.json()) as { heldMessages: HeldMessage[] }).heldMessages;
+}
+
+/**
+ * Re-queue paused and failed held messages; if the chat is idle the first is
+ * sent now (`started`).
+ */
+export async function resumeHeldMessages(id: string): Promise<{ resumed: number; started: boolean; heldMessages: HeldMessage[] }> {
+  return request(`/chats/${seg(id)}/held/resume`, { method: "POST", error: "Failed to resume held messages" });
 }
 
 /**

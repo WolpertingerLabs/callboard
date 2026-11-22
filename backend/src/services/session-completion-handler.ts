@@ -44,12 +44,127 @@ type MessageSender = (opts: SendMessageOptions) => Promise<EventEmitter>;
 
 type ActiveSessionLookup = (chatId: string) => unknown | undefined;
 
+/**
+ * Work that runs first when a chat goes idle, before its completion callbacks:
+ * held messages ("Send when idle"). Resolves true when it started a turn on
+ * the chat — the callbacks then wait for that turn to end, exactly as they
+ * wait for any other turn.
+ */
+export type IdleDeliveryHook = (chatId: string) => Promise<boolean>;
+
 let _sendMessage: MessageSender | null = null;
 let _getActiveSession: ActiveSessionLookup | null = null;
 let _initialized = false;
+let _idleHook: IdleDeliveryHook | null = null;
 
 /** Parents currently being delivered to — guards against concurrent double-delivery. */
 const delivering = new Set<string>();
+
+/**
+ * Chats whose idle handling was skipped because the guard above was held —
+ * a stop (or abandoned start) that arrived mid-delivery. Without this the
+ * wakeup is simply lost: a held turn that fails within microtasks of
+ * registering, or a child finishing while a held delivery is being refused,
+ * would leave the next held message and any ready callbacks waiting for some
+ * unrelated session to stop. {@link releaseGuard} replays it.
+ */
+const missedWhileGuarded = new Set<string>();
+
+/**
+ * Chats whose guard is currently held by a replay. A wakeup missed during a
+ * replay is not replayed again — see {@link releaseGuard}.
+ */
+const guardHeldByReplay = new Set<string>();
+
+/**
+ * Chats with a *held-messages-only* miss: an abandoned start met the guard.
+ * Replaying full idle handling for it is what looped (the callback send fails
+ * again, forever), but dropping it outright strands a held message accepted
+ * while that failing start had the chat reading as "starting" — the hold
+ * route took it as running, and no stop will ever come for it. So on release
+ * only the idle hook is replayed, never `tryDeliver`. That cannot loop: a
+ * held delivery that fails marks its item failed and pauses what is queued
+ * behind it, so the next replay finds nothing to claim — and the replay cap
+ * below applies to it too.
+ */
+const heldOnlyMissWhileGuarded = new Set<string>();
+
+/**
+ * Why idle handling is running, which decides what a held guard means:
+ *  - `event` — a session stopped. Arriving while the guard is held, it is a
+ *    real missed wakeup and is recorded for replay.
+ *  - `abandoned` — a start failed before registering. Arriving while the
+ *    guard is held, it is almost always the guard holder's *own* start
+ *    failing (tryDeliver's `sendMessage`, or a held delivery's): replaying
+ *    full idle handling for it would retry the same failing callback send
+ *    forever, in microtasks — the event loop never gets a turn. Ready
+ *    callbacks stay ready and retry on the next stop instead; only a
+ *    held-messages-only miss is recorded ({@link heldOnlyMissWhileGuarded}).
+ *  - `replay` — a recorded miss being replayed.
+ */
+type IdleOrigin = "event" | "abandoned" | "replay";
+
+/** Take the per-chat guard, or (for a real missed wakeup) note it and refuse. */
+function takeGuard(chatId: string, origin: IdleOrigin): boolean {
+  if (delivering.has(chatId)) {
+    if (origin === "abandoned") heldOnlyMissWhileGuarded.add(chatId);
+    else missedWhileGuarded.add(chatId);
+    return false;
+  }
+  delivering.add(chatId);
+  if (origin === "replay") guardHeldByReplay.add(chatId);
+  return true;
+}
+
+/**
+ * Release the guard and replay a wakeup that arrived while it was held.
+ *
+ * At most one replay per release: a miss recorded while a *replay* held the
+ * guard is dropped (with a warning) rather than replayed again, so no chain
+ * of replays can sustain itself — it falls back to "retry on the next stop",
+ * which is what every miss was before replays existed. The replay is also
+ * deferred with `setImmediate`, so even a regression here yields to I/O and
+ * timers instead of freezing the daemon in a microtask loop.
+ *
+ * The cap's accepted cost: two *consecutive* held deliveries that both fail
+ * within microtasks of registering (A's stop replayed, the replay delivers B,
+ * B's stop lands during the replay and is dropped) leave the next held
+ * message `queued` on an idle chat until Resume or the chat's next stop. It
+ * needs two instant failures back to back; the trade is a bounded stall
+ * against an unbounded loop.
+ */
+function releaseGuard(chatId: string): void {
+  delivering.delete(chatId);
+  const heldByReplay = guardHeldByReplay.delete(chatId);
+  const full = missedWhileGuarded.delete(chatId);
+  const heldOnly = heldOnlyMissWhileGuarded.delete(chatId);
+  if (!full && !heldOnly) return;
+  if (heldByReplay) {
+    log.warn(`Idle wakeup for ${chatId} missed during a replay — not replaying again; it retries on the next stop`);
+    return;
+  }
+  setImmediate(() => {
+    const replay = full ? handleChatIdle(chatId, "replay") : runIdleHook(chatId, "replay");
+    void replay.catch((err) => {
+      log.error(`Replayed idle handling for ${chatId} failed: ${err?.message ?? err}`);
+    });
+  });
+}
+
+/**
+ * Install the idle hook (held-message delivery). Registered from server
+ * bootstrap rather than claude.ts: the dispatcher reaches `sendMessage`
+ * through chat-turn.ts, which imports claude.js, so claude.ts registering it
+ * would close an import cycle.
+ */
+export function setIdleDeliveryHook(fn: IdleDeliveryHook | null): void {
+  _idleHook = fn;
+}
+
+/** Busy for the purposes of idle-triggered delivery: running, or a turn on its way. */
+function isBusy(chatId: string): boolean {
+  return sessionRegistry.isStarting(chatId) || Boolean(_getActiveSession && _getActiveSession(chatId));
+}
 
 /**
  * Wire up the global completion listener. Safe to call once; subsequent calls
@@ -70,6 +185,14 @@ export function initSessionCompletionHandler(deps: { sendMessage: MessageSender;
     });
   });
 
+  // A start that failed before registering: the stop it superseded fired
+  // while the chat read as "starting", so anything that stop deferred is due.
+  sessionRegistry.on("start_abandoned", (chatId: string) => {
+    void handleChatIdle(chatId, "abandoned").catch((err) => {
+      log.error(`Idle handling for ${chatId} after an abandoned start failed: ${err?.message ?? err}`);
+    });
+  });
+
   log.info("Session completion handler initialized");
 }
 
@@ -80,25 +203,65 @@ async function handleSessionStopped(stoppedChatId: string): Promise<void> {
   // 2. Re-attempt delivery for every parent that has ready callbacks, plus the
   //    stopped chat itself (it may be a parent that just freed up). tryDeliver
   //    no-ops when a parent is still busy or has nothing ready.
+  //    The stopped chat's held messages go first: a message the user held for
+  //    "when this turn ends" is theirs to have answered next, and if one
+  //    starts a turn, the callbacks wait for that turn's stop like any other.
+  const startedHeld = await runIdleHook(stoppedChatId, "event");
   const candidates = new Set<string>(parentsWithReadyCallbacks());
-  candidates.add(stoppedChatId);
+  if (startedHeld) candidates.delete(stoppedChatId);
+  else candidates.add(stoppedChatId);
 
   for (const parentChatId of candidates) {
-    await tryDeliver(parentChatId);
+    await tryDeliver(parentChatId, "event");
   }
 }
 
-async function tryDeliver(parentChatId: string): Promise<void> {
-  if (delivering.has(parentChatId)) return;
+/**
+ * Idle handling for one chat that went idle without (or after) a session
+ * stopping: an abandoned start, a replayed wakeup, or the user resuming held
+ * messages. Held messages first, then completion callbacks — the same order
+ * and the same guard as a stop. Resolves true when a held message started a
+ * turn. Exported for `POST /chats/:id/held/resume` (origin `event`: the
+ * user asking is as real a wakeup as a stop).
+ */
+export async function handleChatIdle(chatId: string, origin: IdleOrigin = "event"): Promise<boolean> {
+  if (await runIdleHook(chatId, origin)) return true;
+  await tryDeliver(chatId, origin);
+  return false;
+}
+
+/**
+ * Run the idle hook for `chatId`, under the same per-chat guard as callback
+ * delivery so the two can never both start a turn on one chat. Never throws.
+ */
+async function runIdleHook(chatId: string, origin: IdleOrigin): Promise<boolean> {
+  if (!_idleHook) return false;
+  if (isBusy(chatId) || !takeGuard(chatId, origin)) return false;
+  try {
+    return await _idleHook(chatId);
+  } catch (err: unknown) {
+    log.error(`Idle delivery for ${chatId} failed: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  } finally {
+    releaseGuard(chatId);
+  }
+}
+
+async function tryDeliver(parentChatId: string, origin: IdleOrigin): Promise<void> {
+  if (delivering.has(parentChatId)) {
+    takeGuard(parentChatId, origin); // held: records the miss, or not, by origin
+    return;
+  }
 
   const ready = getReadyForParent(parentChatId);
   if (ready.length === 0) return;
 
-  // Parent is mid-turn — defer. It will be retried when the parent (or any
-  // session) next stops.
-  if (_getActiveSession && _getActiveSession(parentChatId)) return;
+  // Parent is mid-turn, or a turn is on its way (a superseding send, a held
+  // message being started) — defer. It will be retried when the parent (or
+  // any session) next stops.
+  if (isBusy(parentChatId)) return;
 
-  delivering.add(parentChatId);
+  if (!takeGuard(parentChatId, origin)) return;
   try {
     const ids = ready.map((c) => c.id);
     const childChatIds = ready.map((c) => c.childChatId);
@@ -149,7 +312,7 @@ async function tryDeliver(parentChatId: string): Promise<void> {
     // Leave callbacks in "ready" so they retry on a future session stop.
     log.error(`Delivery to parent ${parentChatId} failed: ${err.message}`);
   } finally {
-    delivering.delete(parentChatId);
+    releaseGuard(parentChatId);
   }
 }
 
