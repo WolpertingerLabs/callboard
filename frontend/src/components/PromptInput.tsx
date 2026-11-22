@@ -715,7 +715,7 @@ export default function PromptInput({
   );
 
   /** The send menu, while open, and whether a long press opened it (see SendMenu's backdrop grace). */
-  const [sendMenu, setSendMenu] = useState<{ openedByTouch: boolean } | null>(null);
+  const [sendMenu, setSendMenu] = useState<{ openedByTouch: boolean; initialFocus?: "item" | "menu" } | null>(null);
   const hasSendMenu = offeredSendVariants(sendVariants).length > 0;
   const sendPress = useLongPress({
     onLongPress: () => {
@@ -826,8 +826,9 @@ export default function PromptInput({
     // alone matches none of them and stays a newline. An open menu still
     // owns Enter: this one dismisses it, as a plain Enter with nothing
     // highlighted does, and sends nothing. A variant offered but unusable
-    // right now opens the send menu, where its row says why — a shortcut
-    // that silently does nothing reads as broken.
+    // right now does what its spec's `whenUnavailable` says: open the send
+    // menu, where its row says why (focus on the menu, not on a row — see
+    // SendMenu's `initialFocus`), or fall back to a plain Send.
     if (e.key === "Enter") {
       const variant = sendVariantForEnter(e, sendVariants);
       if (variant) {
@@ -835,7 +836,8 @@ export default function PromptInput({
         if (showAutocomplete) setAutocompleteDismissed(true);
         else if (keywordMenuOpen && activeKeywordToken) setKeywordDismissal({ start: activeKeywordToken.start, query: activeKeywordToken.query });
         else if (sendVariants?.[variant]?.enabled) void handleSendVariant(variant);
-        else if (canSend) setSendMenu({ openedByTouch: false });
+        else if (SEND_VARIANT_SPECS[variant].whenUnavailable === "send") handleSend();
+        else if (canSend) setSendMenu({ openedByTouch: false, initialFocus: "menu" });
         return;
       }
     }
@@ -1577,6 +1579,7 @@ export default function PromptInput({
               sendInterrupts={sendInterrupts}
               showShortcuts={!isMobile}
               openedByTouch={sendMenu.openedByTouch}
+              initialFocus={sendMenu.initialFocus}
               onSend={handleSend}
               onVariant={(variant) => void handleSendVariant(variant)}
               onClose={() => setSendMenu(null)}
@@ -1587,9 +1590,14 @@ export default function PromptInput({
           <button
             aria-label="Send"
             title={sendInterrupts ? "Send now — interrupts the current turn" : undefined}
-            onClick={() => {
-              // The click a long press or right-click leaves behind is not a send.
-              if (hasSendMenu && sendPress.consumeClickSuppression()) return;
+            onClick={(e) => {
+              // The click a long press or right-click leaves behind is not a
+              // send. The flag is consumed on every click but honoured only for
+              // a pointer's (detail > 0): a desktop right-click leaves no click
+              // behind to consume it, and the next keyboard press of Send
+              // (Enter/Space, detail 0) must not be the one it swallows.
+              const suppressed = hasSendMenu && sendPress.consumeClickSuppression();
+              if (suppressed && e.detail > 0) return;
               handleSend();
             }}
             {...(hasSendMenu && !disabled ? sendPress.handlers : {})}

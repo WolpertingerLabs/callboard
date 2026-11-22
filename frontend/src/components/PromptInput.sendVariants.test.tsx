@@ -7,8 +7,9 @@
  * variants in the hamburger menu on a phone.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, createEvent, fireEvent, render, screen } from "@testing-library/react";
 import PromptInput, { type SendVariants } from "./PromptInput";
+import { SEND_VARIANT_SPECS } from "./SendMenu";
 
 vi.mock("../api", () => ({ getSlashCommandContent: vi.fn(async (name: string) => ({ name, source: "custom-skill", description: "", content: "" })) }));
 
@@ -207,8 +208,20 @@ describe("PromptInput send variants", () => {
     type(textarea, "hi");
     fireEvent.contextMenu(sendButton());
     expect(screen.getByRole("menu")).toBeTruthy();
-    fireEvent.click(sendButton());
+    // macOS Ctrl+click: a contextmenu and a pointer click (detail 1).
+    fireEvent.click(sendButton(), { detail: 1 });
     expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("does not let a right-click swallow the next keyboard press of Send", () => {
+    const { sendButton, textarea, onSend } = renderComposer({ sendVariants: ENABLED });
+    type(textarea, "hi");
+    fireEvent.contextMenu(sendButton());
+    fireEvent.keyDown(screen.getAllByRole("menuitem")[0], { key: "Escape" });
+    expect(screen.queryByRole("menu")).toBeNull();
+    // Tab to Send, press Space: a click with detail 0.
+    fireEvent.click(sendButton(), { detail: 0 });
+    expect(onSend).toHaveBeenCalledWith("hi", undefined);
   });
 
   it("opens on a long press of Send (touch), and the click it leaves behind does not send", () => {
@@ -219,14 +232,14 @@ describe("PromptInput send variants", () => {
     act(() => vi.advanceTimersByTime(460));
     expect(screen.getByRole("menu")).toBeTruthy();
     fireEvent.pointerUp(sendButton());
-    fireEvent.click(sendButton());
+    fireEvent.click(sendButton(), { detail: 1 });
     expect(onSend).not.toHaveBeenCalled();
     // A plain tap still sends.
     act(() => vi.advanceTimersByTime(400));
     fireEvent.keyDown(screen.getAllByRole("menuitem")[0], { key: "Escape" });
     fireEvent.pointerDown(sendButton(), { pointerType: "touch", clientX: 5, clientY: 5 });
     fireEvent.pointerUp(sendButton());
-    fireEvent.click(sendButton());
+    fireEvent.click(sendButton(), { detail: 1 });
     expect(onSend).toHaveBeenCalledWith("hi", undefined);
   });
 
@@ -264,5 +277,106 @@ describe("PromptInput send variants", () => {
     const row = screen.getByRole("button", { name: /Send as aside/ }) as HTMLButtonElement;
     expect(row.disabled).toBe(true);
     expect(row.textContent).toContain("Not now.");
+  });
+
+  it("opens on the shortcut of a disabled variant with no row focused, so pressing it again sends nothing", () => {
+    const { textarea, onSend, onSendVariant } = renderComposer({
+      sendVariants: { aside: { enabled: false, reason: "Not now." } },
+      sendInterrupts: true,
+    });
+    type(textarea, "why?");
+    asideShortcut(textarea);
+    const menu = screen.getByRole("menu");
+    // The menu has focus, not Send now — a row with focus is what a repeated
+    // shortcut's Enter would click.
+    expect(document.activeElement).toBe(menu);
+    const again = createEvent.keyDown(menu, { key: "Enter", shiftKey: true, metaKey: true });
+    fireEvent(menu, again);
+    expect(again.defaultPrevented).toBe(true);
+    // ↓ from the menu picks the first usable row.
+    fireEvent.keyDown(menu, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: /Send now/ }));
+    expect(onSend).not.toHaveBeenCalled();
+    expect(onSendVariant).not.toHaveBeenCalled();
+  });
+
+  it("refuses a modified or auto-repeated Enter on a focused row, and takes a plain one", () => {
+    const { chevron, textarea, onSend } = renderComposer({ sendVariants: ENABLED });
+    type(textarea, "go");
+    fireEvent.click(chevron()!);
+    const sendNow = screen.getByRole("menuitem", { name: /Send now/ });
+    expect(document.activeElement).toBe(sendNow);
+    for (const init of [{ ctrlKey: true }, { metaKey: true }, { altKey: true }, { shiftKey: true }, { repeat: true }]) {
+      const event = createEvent.keyDown(sendNow, { key: "Enter", ...init });
+      fireEvent(sendNow, event);
+      expect(event.defaultPrevented).toBe(true);
+    }
+    const plain = createEvent.keyDown(sendNow, { key: "Enter" });
+    fireEvent(sendNow, plain);
+    expect(plain.defaultPrevented).toBe(false);
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("falls back to a plain Send for a disabled variant whose spec says so", () => {
+    const original = SEND_VARIANT_SPECS.aside.whenUnavailable;
+    SEND_VARIANT_SPECS.aside.whenUnavailable = "send";
+    try {
+      const { textarea, onSend, onSendVariant } = renderComposer({ sendVariants: { aside: { enabled: false } } });
+      type(textarea, "plain");
+      asideShortcut(textarea);
+      expect(onSend).toHaveBeenCalledWith("plain", undefined);
+      expect(onSendVariant).not.toHaveBeenCalled();
+      expect(screen.queryByRole("menu")).toBeNull();
+    } finally {
+      SEND_VARIANT_SPECS.aside.whenUnavailable = original;
+    }
+  });
+
+  it("hands focus back to the textarea after a row is picked", async () => {
+    const { chevron, textarea } = renderComposer({ sendVariants: ENABLED });
+    type(textarea, "why?");
+    fireEvent.click(chevron()!);
+    fireEvent.keyDown(screen.getByRole("menuitem", { name: /Send now/ }), { key: "ArrowDown" });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("menuitem", { name: /Send as aside/ }));
+    });
+    expect(document.activeElement).toBe(textarea);
+  });
+
+  it("does not focus the textarea after a row picked from a long-press menu (no phone keyboard)", async () => {
+    vi.useFakeTimers();
+    const { sendButton, textarea } = renderComposer({ sendVariants: ENABLED });
+    type(textarea, "why?");
+    textarea.blur();
+    fireEvent.pointerDown(sendButton(), { pointerType: "touch", clientX: 5, clientY: 5 });
+    act(() => vi.advanceTimersByTime(460));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Send as aside/ }));
+    expect(document.activeElement).not.toBe(textarea);
+  });
+
+  it("lets a highlighted slash row's menu have the shortcut: it closes the menu, picks nothing and sends nothing", () => {
+    const { textarea, onSendVariant, onSend } = renderComposer({ sendVariants: ENABLED });
+    type(textarea, "/comp");
+    fireEvent.keyDown(textarea, { key: "ArrowDown" });
+    expect(screen.getByRole("option", { selected: true })).toBeTruthy();
+    asideShortcut(textarea);
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(textarea.value).toBe("/comp");
+    expect(onSendVariant).not.toHaveBeenCalled();
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("lets an open $keyword menu have the shortcut: it dismisses the menu and sends nothing", () => {
+    const keywords = [
+      { name: "review", description: "", body: "Check the tests.", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" },
+    ];
+    const { textarea, onSendVariant, onSend } = renderComposer({ sendVariants: ENABLED, keywords });
+    type(textarea, "please $rev");
+    expect(screen.getByTestId("keyword-autocomplete")).toBeTruthy();
+    asideShortcut(textarea);
+    expect(screen.queryByTestId("keyword-autocomplete")).toBeNull();
+    expect(textarea.value).toBe("please $rev");
+    expect(onSendVariant).not.toHaveBeenCalled();
+    expect(onSend).not.toHaveBeenCalled();
   });
 });

@@ -767,3 +767,14 @@ it("clears the sending chat's stored draft, not the composer, when the user has 
   // Not pulled back to it.
   expect(screen.getByTestId("location").textContent).toBe("/chat/other");
 });
+
+it("drops a refused composer aside's error once a message is sent here", async () => {
+  forkReplies = ["refuse"];
+  render(tree());
+  await screen.findByText("first answer");
+  type("What next?");
+  fireEvent.click(sendAsAside());
+  await screen.findByText(/quotes\[0\] is after the fork point/);
+  fireEvent.click(screen.getAllByRole("button", { name: "send" })[0]);
+  await waitFor(() => expect(screen.queryByText(/quotes\[0\] is after the fork point/)).toBeNull());
+});

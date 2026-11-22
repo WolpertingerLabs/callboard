@@ -9,9 +9,10 @@ import { escapeIsInScope } from "../utils/escapeScope";
  * or by a long press on it (touch).
  *
  * Presentation only. Which variants exist and whether each can be used right
- * now is the caller's (`sendVariants` on PromptInput); sending is
- * PromptInput's, which clears the composer only once a variant reports it went
- * out.
+ * now is the caller's (`sendVariants` on PromptInput). Sending is
+ * PromptInput's, which hands the prompt and files to `onSendVariant` and
+ * clears nothing itself: the page's handler does, once it knows what was
+ * taken (see `onSendVariant` on PromptInput's Props).
  */
 
 /**
@@ -41,8 +42,20 @@ interface SendVariantSpec {
   icon: React.ReactNode;
   /** Shortcut hint as shown on Apple platforms and elsewhere. */
   shortcut: { apple: string; other: string };
-  /** Whether an Enter with these modifiers is this variant's shortcut. */
+  /**
+   * Whether an Enter with these modifiers is this variant's shortcut. State
+   * every modifier, held and not held: on Windows AltGr arrives as Ctrl+Alt,
+   * so an Alt-based matcher (Send when idle's ⌥⏎) must also require
+   * `!e.ctrlKey && !e.metaKey`, or AltGr+Enter and ⌥⌘⏎ would match it too.
+   */
   matches: (e: EnterModifiers) => boolean;
+  /**
+   * What the shortcut does while the variant is offered but disabled:
+   * `"menu"` opens the send menu so the row's reason is visible (a shortcut
+   * that silently does nothing reads as broken); `"send"` falls back to a
+   * plain Send (Send when idle with no run to wait for is just Send).
+   */
+  whenUnavailable: "menu" | "send";
 }
 
 export const SEND_VARIANT_SPECS: Record<SendVariant, SendVariantSpec> = {
@@ -52,6 +65,9 @@ export const SEND_VARIANT_SPECS: Record<SendVariant, SendVariantSpec> = {
     icon: <MessageSquareQuote size={16} style={{ flexShrink: 0 }} />,
     shortcut: { apple: "⌘⇧⏎", other: "Ctrl+Shift+Enter" },
     matches: (e) => e.shiftKey && (e.metaKey || e.ctrlKey) && !e.altKey,
+    // A plain send is the opposite of an aside: it would land in this chat
+    // (and interrupt a running turn). Show why instead.
+    whenUnavailable: "menu",
   },
 };
 
@@ -89,6 +105,15 @@ export interface SendMenuProps {
   /** Shortcut hints are for keyboards; off on touch layouts. */
   showShortcuts: boolean;
   openedByTouch?: boolean;
+  /**
+   * Where focus goes on open. `"item"`: the first usable row, for a menu the
+   * user opened to pick from (chevron, right-click, long press). `"menu"`: the
+   * menu itself, with no row focused — for one a shortcut opened to show a
+   * reason. A focused row there would be activated by the same shortcut
+   * pressed again (or auto-repeating): browsers click a focused button on
+   * Enter whatever modifiers are held, and the first usable row is Send now.
+   */
+  initialFocus?: "item" | "menu";
   onSend: () => void;
   onVariant: (variant: SendVariant) => void;
   onClose: () => void;
@@ -110,6 +135,7 @@ export default function SendMenu({
   sendInterrupts,
   showShortcuts,
   openedByTouch = false,
+  initialFocus = "item",
   onSend,
   onVariant,
   onClose,
@@ -128,7 +154,8 @@ export default function SendMenu({
   // does, so a container that closes on Escape (the aside panel) sees it was
   // handled — and only for an Escape in this composer's chat.
   useEffect(() => {
-    menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]:not([disabled])')?.focus();
+    if (initialFocus === "menu") menuRef.current?.focus();
+    else menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]:not([disabled])')?.focus();
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Escape" || !escapeIsInScope(e.target, scope.current)) return;
       e.preventDefault();
@@ -137,12 +164,21 @@ export default function SendMenu({
     };
     document.addEventListener("keydown", onKeyDown, true);
     return () => document.removeEventListener("keydown", onKeyDown, true);
+    // Focus is placed once, on open: `initialFocus` is not a dependency.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [returnFocusTo, scope]);
 
   const onMenuKeyDown = (e: React.KeyboardEvent) => {
     const items = [...(menuRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]:not([disabled])') ?? [])];
     const index = items.indexOf(document.activeElement as HTMLElement);
     const focusAt = (i: number) => items[(i + items.length) % items.length]?.focus();
+    // Only a plain, deliberate Enter picks a row. One with a modifier held is
+    // a send shortcut pressed again, and an auto-repeat is a key held down:
+    // left alone, either would click whichever row has focus.
+    if (e.key === "Enter" && (e.repeat || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey)) {
+      e.preventDefault();
+      return;
+    }
     if (e.key === "ArrowDown") {
       e.preventDefault();
       focusAt(index + 1);
@@ -158,6 +194,15 @@ export default function SendMenu({
     } else if (e.key === "Tab") {
       onClose();
     }
+  };
+
+  // The focused row unmounts with the menu, which would drop focus on the
+  // page body: hand it back to the textarea, so typing carries on. Not after a
+  // long press — focusing would raise a phone's keyboard.
+  const pick = (action: () => void) => {
+    onClose();
+    if (!openedByTouch) returnFocusTo.current?.focus();
+    action();
   };
 
   const backdropClose = () => {
@@ -179,6 +224,7 @@ export default function SendMenu({
         ref={menuRef}
         role="menu"
         aria-label="Send options"
+        tabIndex={-1}
         onKeyDown={onMenuKeyDown}
         style={{
           position: "absolute",
@@ -201,10 +247,7 @@ export default function SendMenu({
             description={sendInterrupts ? "Interrupts the current turn" : undefined}
             shortcut={showShortcuts ? "⏎" : undefined}
             disabled={!canSend}
-            onClick={() => {
-              onClose();
-              onSend();
-            }}
+            onClick={() => pick(onSend)}
           />
           {offeredSendVariants(variants).map((variant) => {
             const spec = SEND_VARIANT_SPECS[variant];
@@ -218,10 +261,7 @@ export default function SendMenu({
                 description={!state.enabled && state.reason ? state.reason : spec.description}
                 shortcut={showShortcuts ? sendVariantShortcut(variant) : undefined}
                 disabled={!enabled}
-                onClick={() => {
-                  onClose();
-                  onVariant(variant);
-                }}
+                onClick={() => pick(() => onVariant(variant))}
               />
             );
           })}

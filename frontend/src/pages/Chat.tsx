@@ -3420,6 +3420,9 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
       // Belt and braces: the composer is blocked while an aside is out, and
       // this is its only send path.
       if (id && asideInFlightForRef.current.has(id)) return;
+      // A message sent here supersedes why the last aside failed — the line
+      // above the composer would otherwise stay until dismissed.
+      if (id) setAsideError((current) => (current?.chatId === id ? null : current));
       const quotes = id ? getQuotes(id) : [];
       if (!id || quotes.length === 0 || sendBlockedReason || leadsWithCommand(prompt, allSlashCommands, commandsLoadedFor === id)) {
         return handleSend(prompt, images);
