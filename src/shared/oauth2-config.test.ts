@@ -450,6 +450,8 @@ describe('connectionOverlapWarnings', () => {
         'google-calendar-readonly',
         'google-drive-readonly',
         'google-sheets-readonly',
+        'google-docs',
+        'google-slides',
       ]),
     );
     expect(connectionOverlapWarnings(cfg(all))).toEqual([]);

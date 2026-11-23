@@ -18,6 +18,8 @@ const GMAIL = 'https://gmail.googleapis.com/gmail/v1/users/me';
 const CAL = 'https://www.googleapis.com/calendar/v3';
 const DRIVE = 'https://www.googleapis.com/drive/v3';
 const SHEETS = 'https://sheets.googleapis.com/v4/spreadsheets';
+const DOCS = 'https://docs.googleapis.com/v1/documents';
+const SLIDES = 'https://slides.googleapis.com/v1/presentations';
 
 describe('allowlistPatternsOverlap', () => {
   it.each([
@@ -90,6 +92,31 @@ describe('connectionOverlapWarnings', () => {
         ]),
       ),
     ).toEqual([]);
+    expect(
+      connectionOverlapWarnings(
+        config([
+          'google-docs',
+          'google-slides',
+          'google-sheets',
+          'google-drive-readonly',
+          'google-drive-file',
+        ]),
+      ),
+    ).toEqual([]);
+  });
+
+  it.each([
+    ['google-docs', 'google-docs-sa'],
+    ['google-slides', 'google-slides-sa'],
+    ['google', 'google-docs'],
+    ['google', 'google-docs-sa'],
+    ['google', 'google-slides'],
+    ['google', 'google-slides-sa'],
+  ])('warns for %s with %s (Docs/Slides), and says OAuth2 requests are refused', (a, b) => {
+    const warnings = connectionOverlapWarnings(config([a, b]));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(`"${a}" and "${b}"`);
+    expect(warnings[0]).toContain('refused (OAuth2)');
   });
 
   it.each([
@@ -149,5 +176,69 @@ describe('google-sheets overlapping another Sheets connection at request time', 
     }
     expect(isEndpointAllowed(SHEETS, rw)).toBe(true);
     expect(isEndpointAllowed(SHEETS, ro)).toBe(false);
+  });
+});
+
+describe('google-docs and google-slides overlapping another connection at request time', () => {
+  const env = {
+    GOOGLE_API_TOKEN: 'static-token',
+    GOOGLE_OAUTH_CLIENT_ID: 'cid',
+    GOOGLE_OAUTH_CLIENT_SECRET: 'csecret',
+    GOOGLE_OAUTH_REFRESH_TOKEN: 'rt',
+    GOOGLE_SERVICE_ACCOUNT_KEY: 'key',
+  };
+  const routesFor = (aliases: string[]) =>
+    resolveRoutes(
+      aliases.map((alias) => ({ ...loadConnection(alias), alias })),
+      env,
+      'alice',
+    );
+
+  it('the static google template allowlists both hosts', () => {
+    const { allowedEndpoints } = loadConnection('google');
+    expect(allowedEndpoints).toContain('https://docs.googleapis.com/**');
+    expect(allowedEndpoints).toContain('https://slides.googleapis.com/**');
+  });
+
+  const DOCS_URLS: [string, string][] = [
+    ['POST', DOCS],
+    ['GET', `${DOCS}/1AbC?includeTabsContent=true`],
+    ['POST', `${DOCS}/1AbC:batchUpdate`],
+  ];
+  const SLIDES_URLS: [string, string][] = [
+    ['POST', SLIDES],
+    ['GET', `${SLIDES}/1AbC`],
+    ['POST', `${SLIDES}/1AbC:batchUpdate`],
+    ['GET', `${SLIDES}/1AbC/pages/p1`],
+    ['GET', `${SLIDES}/1AbC/pages/p1/thumbnail`],
+  ];
+
+  it.each([
+    ['google-docs', 'google-docs-sa', DOCS_URLS],
+    ['google-docs-sa', 'google-docs', DOCS_URLS],
+    ['google', 'google-docs', DOCS_URLS],
+    ['google-docs', 'google', DOCS_URLS],
+    ['google', 'google-docs-sa', DOCS_URLS],
+    ['google-slides', 'google-slides-sa', SLIDES_URLS],
+    ['google-slides-sa', 'google-slides', SLIDES_URLS],
+    ['google', 'google-slides', SLIDES_URLS],
+    ['google-slides', 'google', SLIDES_URLS],
+    ['google', 'google-slides-sa', SLIDES_URLS],
+  ] as const)(
+    '%s + %s: every method URL is refused before any token is minted',
+    async (a, b, urls) => {
+      for (const [method, url] of urls) {
+        await expect(
+          executeProxyRequest({ method, url }, routesFor([a, b]), undefined, { caller: 'alice' }),
+        ).rejects.toThrow(new RegExp(`Ambiguous endpoint.*"${a}", "${b}"`));
+      }
+    },
+  );
+
+  it('google-docs and google-slides on one caller each keep their own URLs', () => {
+    const docs = loadConnection('google-docs').allowedEndpoints;
+    const slides = loadConnection('google-slides').allowedEndpoints;
+    for (const [, url] of DOCS_URLS) expect(isEndpointAllowed(url, slides), url).toBe(false);
+    for (const [, url] of SLIDES_URLS) expect(isEndpointAllowed(url, docs), url).toBe(false);
   });
 });
