@@ -79,6 +79,30 @@ it("the chat modal saves the review toggles with the permissions", async () => {
   expect(spy).toHaveBeenCalledWith("c1", expect.anything(), { parentAnswers: true });
   spy.mockRestore();
 });
+it("saving the chat's permissions signals the chat to re-read its open computer-control cards", async () => {
+  const api = await import("../api");
+  const events = await import("../utils/computerControlEvents");
+  const spy = vi.spyOn(api, "updateChatPermissions").mockResolvedValue({} as never);
+  const signal = vi.spyOn(events, "emitComputerControlSettledSoon").mockImplementation(() => {});
+  render(
+    <ChatPermissionsModal
+      isOpen
+      onClose={() => {}}
+      chatId="c1"
+      permissions={normalizePermissions(undefined)}
+      onPermissionsChange={() => {}}
+      review={{ modelReview: false, parentAnswers: false }}
+      hasParent
+      onReviewChange={() => {}}
+    />,
+  );
+  fireEvent.click(screen.getByRole("checkbox", { name: /Parent can answer/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await vi.waitFor(() => expect(spy).toHaveBeenCalled());
+  await vi.waitFor(() => expect(signal).toHaveBeenCalledWith("c1"));
+  spy.mockRestore();
+  signal.mockRestore();
+});
 it("a stale tab changing only permissions sends no review flags, so it cannot flip one another tab set", async () => {
   const api = await import("../api");
   const spy = vi.spyOn(api, "updateChatPermissions").mockResolvedValue({} as never);

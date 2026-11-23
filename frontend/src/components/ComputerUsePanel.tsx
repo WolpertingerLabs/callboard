@@ -7,6 +7,7 @@ import "./ComputerUsePanel.css";
 import ComputerUseExpandedView from "./ComputerUseExpandedView";
 import type { ComputerUseController } from "../hooks/useComputerUseController";
 import { errorMessage } from "../utils/errorMessage";
+import { emitComputerControlSettled, emitComputerControlSettledSoon } from "../utils/computerControlEvents";
 
 // Bound presentation, not server execution. Keep a little headroom over the
 // service's default 30 s driver timeout; a lost response or image load/decode must not
@@ -416,6 +417,10 @@ export default function ComputerUsePanel({
           // view closes first; a fetch abort could not cancel the accepted approval.
           const result = await client.control(chatId, session.id, operation, session.generation, operation === "approve" ? undefined : signal);
           acceptResponse(result, !signal.aborted);
+          if (operation === "stop" || operation === "revoke") emitComputerControlSettled(chatId);
+          // A takeover or resume makes a pending action unrunnable; the daemon
+          // withdraws it on its next sweep.
+          else if (operation === "takeover" || operation === "resume") emitComputerControlSettledSoon(chatId);
         } catch (error) {
           // Stopping a session the server no longer knows is settled, not failed:
           // record it as closed so the shared emergency ledger stops retrying it.
@@ -612,6 +617,7 @@ export default function ComputerUsePanel({
                           const acceptResponse = beginMutation();
                           const result = await client.control(chatId, item.id, "revoke", item.generation, signal);
                           acceptResponse(result, !signal.aborted);
+                          emitComputerControlSettled(chatId);
                         },
                         { waitForCapture: false },
                       )

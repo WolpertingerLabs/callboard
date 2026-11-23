@@ -16,6 +16,10 @@
  * the parent reads the child transcript itself. If the parent chat was deleted
  * and it was an agent, a brand-new agent chat is spawned to pick up instead.
  *
+ * Chat notices (chat-notices.ts) ride the same path: a notice is due as soon
+ * as it is queued, so a chat with one is a delivery candidate exactly like a
+ * parent with a ready callback, and both go out in one turn when they meet.
+ *
  * Dependencies (sendMessage, getActiveSession) are injected from claude.ts to
  * avoid a circular import, mirroring the setMessageSender pattern used elsewhere.
  */
@@ -32,6 +36,8 @@ import {
   setChatDepth,
   clearChatDepth,
 } from "./session-callbacks.js";
+import { chatsWithNotices, dropChatNotices, peekChatNotices, recordNoticeDeliveryFailure, removeChatNotices, setChatNoticeWakeup } from "./chat-notices.js";
+import { isChatArchived } from "./chat-archived.js";
 import { createLogger } from "../utils/logger.js";
 import type { SendMessageOptions } from "./claude.js";
 import { toPromptIterable } from "./session-spawn.js";
@@ -177,6 +183,10 @@ export function initSessionCompletionHandler(deps: { sendMessage: MessageSender;
   if (_initialized) return;
   _initialized = true;
 
+  // A notice queued on an idle chat is due now; on a busy one, the stop below
+  // picks it up. Through handleChatIdle so held messages keep going first.
+  setChatNoticeWakeup((chatId) => handleChatIdle(chatId));
+
   sessionRegistry.on("change", (event: SessionEvent) => {
     if (event.event !== "session_stopped") return;
     // Fire-and-forget; never let a delivery failure crash the registry emit.
@@ -207,7 +217,7 @@ async function handleSessionStopped(stoppedChatId: string): Promise<void> {
   //    "when this turn ends" is theirs to have answered next, and if one
   //    starts a turn, the callbacks wait for that turn's stop like any other.
   const startedHeld = await runIdleHook(stoppedChatId, "event");
-  const candidates = new Set<string>(parentsWithReadyCallbacks());
+  const candidates = new Set<string>([...parentsWithReadyCallbacks(), ...chatsWithNotices()]);
   if (startedHeld) candidates.delete(stoppedChatId);
   else candidates.add(stoppedChatId);
 
@@ -254,7 +264,15 @@ async function tryDeliver(parentChatId: string, origin: IdleOrigin): Promise<voi
   }
 
   const ready = getReadyForParent(parentChatId);
-  if (ready.length === 0) return;
+  let notices = peekChatNotices(parentChatId);
+  // Sending into an archived chat un-archives it (sendMessage reopens the
+  // tree). A completion callback is the agent's own delegated work and keeps
+  // that behaviour; a notice is the daemon's, so it is dropped instead.
+  if (notices.length && isChatArchived(parentChatId)) {
+    log.info(`Chat ${parentChatId} is archived — dropping ${dropChatNotices(parentChatId)} undelivered notice(s) rather than reopening it`);
+    notices = [];
+  }
+  if (ready.length === 0 && notices.length === 0) return;
 
   // Parent is mid-turn, or a turn is on its way (a superseding send, a held
   // message being started) — defer. It will be retried when the parent (or
@@ -265,22 +283,33 @@ async function tryDeliver(parentChatId: string, origin: IdleOrigin): Promise<voi
   try {
     const ids = ready.map((c) => c.id);
     const childChatIds = ready.map((c) => c.childChatId);
-    const depth = Math.max(...ready.map((c) => c.depth));
-    const prompt = buildNotification(
-      childChatIds,
-      ready.map((c) => c.kind ?? "spawned"),
-    );
+    const depth = ready.length ? Math.max(...ready.map((c) => c.depth)) : 0;
+    const callbackPrompt = ready.length
+      ? buildNotification(
+          childChatIds,
+          ready.map((c) => c.kind ?? "spawned"),
+        )
+      : "";
+    const noticeIds = notices.map((n) => n.id);
 
     const parentChat = findChat(parentChatId, false);
 
     if (parentChat) {
       // Normal path: resume the existing parent chat as a fresh turn.
+      const prompt = [callbackPrompt, ...notices.map((n) => n.text)].filter(Boolean).join("\n\n---\n\n");
       await _sendMessage!({ chatId: parentChatId, prompt: toPromptIterable(prompt), maxTurns: 200 });
-      setChatDepth(parentChatId, depth);
+      if (ready.length) setChatDepth(parentChatId, depth);
       removeCallbacks(ids);
-      log.info(`Delivered ${ids.length} completion(s) to parent chat ${parentChatId} (depth ${depth})`);
+      removeChatNotices(parentChatId, noticeIds);
+      log.info(`Delivered ${ids.length} completion(s) and ${noticeIds.length} notice(s) to chat ${parentChatId}${ready.length ? ` (depth ${depth})` : ""}`);
       return;
     }
+
+    // A notice describes this chat's own state (its computer-control
+    // session, its open approvals), which went with the chat.
+    if (noticeIds.length) log.warn(`Chat ${parentChatId} was deleted — dropping ${dropChatNotices(parentChatId)} undelivered notice(s)`);
+    if (ready.length === 0) return;
+    const prompt = callbackPrompt;
 
     // Parent chat was deleted. If it was an agent, spawn a fresh agent chat to
     // pick up where the deleted parent left off.
@@ -309,8 +338,14 @@ async function tryDeliver(parentChatId: string, origin: IdleOrigin): Promise<voi
     removeCallbacks(ids);
     clearChatDepth(parentChatId);
   } catch (err: any) {
-    // Leave callbacks in "ready" so they retry on a future session stop.
+    // Leave callbacks in "ready" (and notices queued) so they retry on a
+    // future session stop — notices only up to their attempt cap.
     log.error(`Delivery to parent ${parentChatId} failed: ${err.message}`);
+    if (notices.length)
+      recordNoticeDeliveryFailure(
+        parentChatId,
+        notices.map((n) => n.id),
+      );
   } finally {
     releaseGuard(parentChatId);
   }

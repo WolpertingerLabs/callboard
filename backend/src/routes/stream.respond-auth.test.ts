@@ -1,6 +1,8 @@
 /**
  * Who may answer a computer-control confirmation — the prompt a chat set to
- * `computerControl: "ask"` raises before every GUI action.
+ * `computerControl: "ask"` raises before every GUI action, and the consent
+ * card for enabling a target. Both are open approvals (`openHumanApproval`):
+ * nothing is suspended on them, and they wait for the human with no timer.
  *
  * The gate moved from `POST /api/computer-use/:chatId/:sessionId/approve` —
  * which carries `requireSessionAuth` + `requireControlOrigin` under the comment
@@ -38,7 +40,7 @@ vi.mock("../services/claude.js", async () => {
   };
 });
 
-const { pendingRequests, requestHumanApproval, hasPendingRequest } = await import("../services/pending-requests.js");
+const { pendingRequests, openHumanApproval, hasPendingRequest, getPendingRequest, clearOpenApprovalsForTest } = await import("../services/pending-requests.js");
 const { sessionRegistry } = await import("../services/session-registry.js");
 const { streamRouter } = await import("./stream.js");
 
@@ -51,7 +53,7 @@ const respondHandler = (streamRouter as any).stack.find((layer: any) => layer.ro
 function fakeRequest(headers: Record<string, string>): Request {
   return {
     params: { id: CHAT },
-    body: { allow: true, requestId: pendingRequests.get(CHAT)?.requestId },
+    body: { allow: true, requestId: getPendingRequest(CHAT)?.requestId },
     get: (name: string) => headers[name.toLowerCase()],
   } as unknown as Request;
 }
@@ -89,12 +91,27 @@ function liveChat() {
 
 afterEach(() => {
   pendingRequests.delete(CHAT);
+  clearOpenApprovalsForTest();
   sessionRegistry.unregister(CHAT);
 });
 
-it("refuses an API key for a computer-control confirmation, and leaves the agent still blocked", async () => {
+/** Raise a human-only open approval as the computer-control host does; `answers` records what the human said. */
+function approval(
+  toolName: string,
+  input: Record<string, unknown> = {},
+  extra: { controlRequest?: true; completion?: Promise<{ ok: boolean; error?: string }> } = {},
+) {
+  const answers: boolean[] = [];
+  const open = openHumanApproval(CHAT, { toolName, input, ...(extra.controlRequest ? { controlRequest: true } : {}) }, (approved) => {
+    answers.push(approved);
+    return approved ? extra.completion : undefined;
+  });
+  return { answers, open };
+}
+
+it("refuses an API key for a computer-control confirmation, and leaves it open for the human", async () => {
   liveChat();
-  const approval = requestHumanApproval(CHAT, { toolName: "mcp__computer_use__cu_action", input: { summary: "Click at (1, 2)" }, timeoutMs: 60_000 });
+  const { answers } = approval("mcp__computer_use__cu_action", { summary: "Click at (1, 2)" });
 
   const state = respond("bearer");
 
@@ -102,28 +119,43 @@ it("refuses an API key for a computer-control confirmation, and leaves the agent
   expect(state.body).toMatchObject({ code: "denied", error: expect.stringContaining("not an API key") });
   // Refused, not consumed: the human can still answer it.
   expect(hasPendingRequest(CHAT)).toBe(true);
-  const settled = await Promise.race([approval, Promise.resolve("still-blocked")]);
-  expect(settled).toBe("still-blocked");
+  expect(answers).toEqual([]);
+});
+
+it("refuses an API key that aims past an ordinary prompt at an open confirmation", async () => {
+  liveChat();
+  const { answers, open } = approval("mcp__computer_use__cu_action", { summary: "Click at (1, 2)" });
+  // An ordinary prompt in the slot, which an API key may answer...
+  const resolve = vi.fn();
+  pendingRequests.set(CHAT, { toolName: "Bash", input: {}, eventType: "permission_request", eventData: {}, resolve, requestId: "slot" });
+  // ...must not be a way to reach the confirmation beside it.
+  const req = fakeRequest(sameOrigin);
+  req.body = { allow: true, requestId: open.requestId };
+  const { res, state } = fakeResponse("bearer");
+  await respondHandler(req, res);
+  expect(state.status).toBe(403);
+  expect(answers).toEqual([]);
+  expect(resolve).not.toHaveBeenCalled();
 });
 
 it("refuses a cross-site POST for a computer-control confirmation even with a real session", async () => {
   liveChat();
-  const approval = requestHumanApproval(CHAT, { toolName: "mcp__computer_use__cu_action", input: { summary: "Click at (1, 2)" }, timeoutMs: 60_000 });
+  const { answers } = approval("mcp__computer_use__cu_action", { summary: "Click at (1, 2)" });
 
   expect(respond("session", { origin: "http://evil.example", host: "localhost:8000" })).toMatchObject({ status: 403, body: { code: "denied" } });
   expect(respond("session", { host: "localhost:8000" })).toMatchObject({ status: 403 }); // no Origin at all
   expect(respond("session", { ...sameOrigin, "sec-fetch-site": "cross-site" })).toMatchObject({ status: 403 });
 
   expect(hasPendingRequest(CHAT)).toBe(true);
-  expect(await Promise.race([approval, Promise.resolve("still-blocked")])).toBe("still-blocked");
+  expect(answers).toEqual([]);
 });
 
 it("accepts the signed-in, same-origin human — the one actor that may confirm", async () => {
   liveChat();
-  const approval = requestHumanApproval(CHAT, { toolName: "mcp__computer_use__cu_action", input: { summary: "Click at (1, 2)" }, timeoutMs: 60_000 });
+  const { answers } = approval("mcp__computer_use__cu_action", { summary: "Click at (1, 2)" });
 
   expect(respond("session")).toMatchObject({ status: 200, body: { ok: true, toolName: "mcp__computer_use__cu_action" } });
-  await expect(approval).resolves.toEqual({ approved: true, reason: "human" });
+  expect(answers).toEqual([true]);
 });
 
 it("still lets an API key answer an ordinary tool permission, from anywhere", async () => {
@@ -145,8 +177,8 @@ it("still lets an API key answer an ordinary tool permission, from anywhere", as
 
 it("requires a matching identity and boolean without consuming a human prompt", async () => {
   liveChat();
-  const approval = requestHumanApproval(CHAT, { toolName: "mcp__computer_use__cu_request_control", input: { kind: "browser" } });
-  for (const body of [{ allow: true }, { allow: true, requestId: "stale-id" }, { allow: "true", requestId: pendingRequests.get(CHAT)?.requestId }]) {
+  const { answers } = approval("mcp__computer_use__cu_request_control", { kind: "browser" });
+  for (const body of [{ allow: true }, { allow: true, requestId: "stale-id" }, { allow: "true", requestId: getPendingRequest(CHAT)?.requestId }]) {
     const req = fakeRequest(sameOrigin);
     req.body = body;
     const { res, state } = fakeResponse("session");
@@ -155,23 +187,45 @@ it("requires a matching identity and boolean without consuming a human prompt", 
     expect(hasPendingRequest(CHAT)).toBe(true);
   }
   expect(respond("session").status).toBe(200);
-  await expect(approval).resolves.toMatchObject({ approved: true });
+  expect(answers).toEqual([true]);
 });
 
 it("a stale tab cannot answer a replacement prompt and a second tab cannot redeem an answer twice", async () => {
   liveChat();
-  const first = requestHumanApproval(CHAT, { toolName: "first", input: {} });
+  const first = approval("first");
   const oldRequest = fakeRequest(sameOrigin);
   expect(respond("session").status).toBe(200);
-  await first;
-  const second = requestHumanApproval(CHAT, { toolName: "second", input: {} });
+  const second = approval("second");
   const { res, state } = fakeResponse("session");
   respondHandler(oldRequest, res);
   expect(state.status).toBe(409);
   expect(hasPendingRequest(CHAT)).toBe(true);
   expect(respond("session").status).toBe(200);
-  await second;
+  expect(first.answers).toEqual([true]);
+  expect(second.answers).toEqual([true]);
   expect(respond("session").status).toBe(404);
+});
+
+it("answering a card that was withdrawn or answered elsewhere says which, not just 'refresh'", async () => {
+  liveChat();
+  const { open } = approval("mcp__computer_use__cu_action", { summary: "Click" });
+  const answered = approval("mcp__computer_use__cu_action", { summary: "Other" });
+  open.cancel("you pressed Stop");
+  const late = (requestId: string) => {
+    const req = fakeRequest(sameOrigin);
+    req.body = { allow: true, requestId };
+    const { res, state } = fakeResponse("session");
+    respondHandler(req, res);
+    return state;
+  };
+  // Another prompt is still open, and the chat has no prompt at all: same answer.
+  expect(late(open.requestId)).toMatchObject({
+    status: 409,
+    body: { code: "resolved", error: "That request was already resolved or withdrawn: it was withdrawn because you pressed Stop." },
+  });
+  expect(late(answered.open.requestId).status).toBe(200);
+  expect(late(answered.open.requestId)).toMatchObject({ status: 409, body: { code: "resolved", error: expect.stringContaining("it was already answered") } });
+  expect(late("never-existed")).toMatchObject({ status: 404 });
 });
 
 it.each([true, false])("respond waits for actual host startup (success=%s), without serializing the completion promise", async (ok) => {
@@ -180,17 +234,12 @@ it.each([true, false])("respond waits for actual host startup (success=%s), with
   const completion = new Promise<{ ok: boolean; error?: string }>((resolve) => {
     complete = resolve;
   });
-  const approval = requestHumanApproval(CHAT, {
-    toolName: "mcp__computer_use__cu_request_control",
-    controlRequest: true,
-    input: { kind: "browser" },
-    completion,
-  });
-  const { getPendingRequest } = await import("../services/pending-requests.js");
+  const { answers } = approval("mcp__computer_use__cu_request_control", { kind: "browser" }, { controlRequest: true, completion });
   expect(getPendingRequest(CHAT)).not.toHaveProperty("completion");
   const { res, state } = fakeResponse("session");
   const response = respondHandler(fakeRequest(sameOrigin), res);
-  await expect(approval).resolves.toMatchObject({ approved: true });
+  expect(answers).toEqual([true]);
+  await Promise.resolve();
   expect(state.body).toBeUndefined();
   complete(ok ? { ok: true } : { ok: false, error: "Startup failed; request fresh consent" });
   await response;
@@ -200,7 +249,7 @@ it.each([true, false])("respond waits for actual host startup (success=%s), with
 
 it("legacy pending replay requests reload without an answerable card; upgraded replay redeems the same prompt", async () => {
   liveChat();
-  const approval = requestHumanApproval(CHAT, { toolName: "mcp__computer_use__cu_action", input: { summary: "Click" } });
+  const { answers } = approval("mcp__computer_use__cu_action", { summary: "Click" });
   const { handshakeHeaders } = await import("shared/types/index.js");
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const handler = (streamRouter as any).stack.find((l: any) => l.route?.path === "/:id/pending").route.stack[0].handle;
@@ -215,16 +264,17 @@ it("legacy pending replay requests reload without an answerable card; upgraded r
   expect(hasPendingRequest(CHAT)).toBe(true);
   const modernRes = fakeResponse("session");
   handler({ params: { id: CHAT }, headers: Object.fromEntries(Object.entries(handshakeHeaders()).map(([k, v]) => [k.toLowerCase(), v])) }, modernRes.res);
-  expect(modernRes.state.body).toMatchObject({ pending: { toolName: "mcp__computer_use__cu_action", requestId: pendingRequests.get(CHAT)?.requestId } });
+  expect(modernRes.state.body).toMatchObject({
+    pending: { toolName: "mcp__computer_use__cu_action", requestId: getPendingRequest(CHAT)?.requestId, nonBlocking: true },
+  });
   expect(respond("session").status).toBe(200);
-  await expect(approval).resolves.toMatchObject({ approved: true });
+  expect(answers).toEqual([true]);
 });
 it.each([true, false])("a delayed human-only %s reply cannot consume an ordinary replacement over HTTP", async (allow) => {
   liveChat();
-  const consent = requestHumanApproval(CHAT, { toolName: "mcp__computer_use__cu_request_control", input: {} });
-  const staleId = pendingRequests.get(CHAT)!.requestId;
+  approval("mcp__computer_use__cu_request_control");
+  const staleId = getPendingRequest(CHAT)!.requestId;
   respond("session");
-  await consent;
   const resolve = vi.fn();
   pendingRequests.set(CHAT, { toolName: "Bash", input: { command: "never run" }, eventType: "permission_request", eventData: {}, resolve });
   const req = fakeRequest(sameOrigin);
@@ -253,7 +303,7 @@ function attachStream(headers: Record<string, string> = {}) {
 const controlTools = ["mcp__computer_use__cu_action", "mcp__computer_use__cu_request_control"];
 it.each(controlTools)("legacy attachment recovers already-pending %s without an answerable card", async (toolName) => {
   liveChat();
-  const approval = requestHumanApproval(CHAT, { toolName, input: { summary: "Click" } });
+  approval(toolName, { summary: "Click" });
   const stream = attachStream();
   try {
     const wire = stream.chunks.join("");
@@ -264,16 +314,14 @@ it.each(controlTools)("legacy attachment recovers already-pending %s without an 
     expect(hasPendingRequest(CHAT)).toBe(true);
   } finally {
     stream.close();
-    respond("session");
-    await approval;
   }
 });
 it.each(controlTools)("capable reconnect recovers %s via REST without duplicate SSE cards", async (toolName) => {
   const { handshakeHeaders } = await import("shared/types/index.js");
   liveChat();
-  const approval = requestHumanApproval(CHAT, { toolName, input: { summary: "Click" } });
+  const { answers } = approval(toolName, { summary: "Click" });
   const headers = Object.fromEntries(Object.entries(handshakeHeaders()).map(([key, value]) => [key.toLowerCase(), value]));
-  const identity = pendingRequests.get(CHAT)!.requestId;
+  const identity = getPendingRequest(CHAT)!.requestId;
   for (let connection = 0; connection < 2; connection++) {
     const stream = attachStream(headers);
     try {
@@ -288,7 +336,7 @@ it.each(controlTools)("capable reconnect recovers %s via REST without duplicate 
     }
   }
   respond("session");
-  await expect(approval).resolves.toMatchObject({ approved: true });
+  expect(answers).toEqual([true]);
 });
 it.each([false, true])("attachment (capable=%s) preserves ordinary REST replies and forwards future prompts", async (capable) => {
   const { handshakeHeaders } = await import("shared/types/index.js");
@@ -310,9 +358,8 @@ it.each([false, true])("attachment (capable=%s) preserves ordinary REST replies 
 it("a prompt created synchronously while subscribing is recovered after subscription", async () => {
   liveChat();
   const emitter = sessionRegistry.get(CHAT)!.emitter!;
-  let approval: ReturnType<typeof requestHumanApproval> | undefined;
   emitter.once("newListener", () => {
-    approval = requestHumanApproval(CHAT, { toolName: controlTools[0], input: {} });
+    approval(controlTools[0]);
   });
   const stream = attachStream();
   try {
@@ -320,7 +367,5 @@ it("a prompt created synchronously while subscribing is recovered after subscrip
     expect(hasPendingRequest(CHAT)).toBe(true);
   } finally {
     stream.close();
-    respond("session");
-    await approval;
   }
 });

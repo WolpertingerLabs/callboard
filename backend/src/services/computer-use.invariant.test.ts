@@ -15,14 +15,16 @@
  *
  * So this file exercises the real thing, top to bottom: the real
  * `ComputerUseHost` with its DEFAULT confirmation wiring (no test double
- * injected — that is the point), the real `requestHumanApproval`, the real
+ * injected — that is the point), the real `openHumanApproval`, the real
  * pending-prompt registry, and the real `respondToPermission` the HTTP route
- * calls. The only fakes are the driver's pixels.
+ * calls. The only fakes are the driver's pixels and the notice sink.
  *
- * If someone re-routes the `ask` approval through `ToolPermissionPolicy`,
- * widens the `allow` branch to cover `ask`, or gives `requestHumanApproval` an
- * auto-decide branch, the first assertion here fails: the call returns instead
- * of blocking, and the driver acts with nobody asked.
+ * Under `ask` the call does not wait for the human any more: it returns
+ * `approval_pending` at once, and the action runs later, only when the human
+ * answers yes, only if the frame it was aimed at is still current. If someone
+ * re-routes the `ask` approval through `ToolPermissionPolicy`, widens the
+ * `allow` branch to cover `ask`, or gives `openHumanApproval` an auto-decide
+ * branch, the first test here fails: the driver acts with nobody asked.
  *
  * The boundary both levels share — a human, and only a human, enables a
  * target — is pinned at the bottom.
@@ -33,7 +35,7 @@ import { ComputerUseService, type Driver } from "@wolpertingerlabs/computer-use"
 import { CU_ACTION_TOOL_NAME, type PermissionLevel, type StreamEvent } from "shared/types/index.js";
 import { ComputerUseHost, controlPrincipal } from "./computer-use.js";
 import { readComputerUsePolicy } from "./computer-use-policy.js";
-import { getPendingRequest, hasPendingRequest, respondToPermission } from "./pending-requests.js";
+import { clearOpenApprovalsForTest, getPendingRequest, hasPendingRequest, respondToPermission } from "./pending-requests.js";
 import { sessionRegistry } from "./session-registry.js";
 
 const CHAT = "chat-under-test";
@@ -42,7 +44,7 @@ const hosts: ComputerUseHost[] = [];
 afterEach(async () => {
   await Promise.all(hosts.splice(0).map((host) => host.dispose()));
   sessionRegistry.unregister(CHAT);
-  respondToPermission(CHAT, false, undefined, undefined, getPendingRequest(CHAT)?.requestId);
+  clearOpenApprovalsForTest();
 });
 
 /** A chat whose every other permission axis is "allow" — the maximum a user can grant. */
@@ -60,14 +62,23 @@ function fixture(computerControl: PermissionLevel) {
   };
   const service = new ComputerUseService({ targets: [{ id: "managed-browser", enabled: true, driver }], authorize: (request) => host.authorize(request) });
   let level = computerControl;
-  // Third argument only: the policy reader. The fourth — the confirmation — is
-  // deliberately left at its production default. The signature is pinned so a
-  // level change is visible to the branch under test rather than short-circuited
-  // by the grant revocation a real signature change would trigger first.
-  const host: ComputerUseHost = new ComputerUseHost(service, { browser: driver, desktop: { ...driver, kind: "native-desktop" } }, () => ({
-    policy: readComputerUsePolicy({ browserControl: level, computerControl: level, webAccess: "allow", fileRead: "allow", fileWrite: "allow", codeExecution: "allow" }),
-    signature: "pinned",
-  }));
+  // The policy reader is injected, and the notice sink so the agent's side of
+  // the outcome can be read. The fourth argument — how the human is asked — is
+  // deliberately left at its production default (`openHumanApproval`). The
+  // signature is pinned so a level change is visible to the branch under test
+  // rather than short-circuited by the grant revocation a real signature
+  // change would trigger first.
+  const notices: string[] = [];
+  const host: ComputerUseHost = new ComputerUseHost(
+    service,
+    { browser: driver, desktop: { ...driver, kind: "native-desktop" } },
+    () => ({
+      policy: readComputerUsePolicy({ browserControl: level, computerControl: level, webAccess: "allow", fileRead: "allow", fileWrite: "allow", codeExecution: "allow" }),
+      signature: "pinned",
+    }),
+    undefined,
+    (_chatId, text) => notices.push(text),
+  );
   hosts.push(host);
 
   // A live chat session, as `sendMessage` registers one: the prompt is emitted
@@ -81,6 +92,7 @@ function fixture(computerControl: PermissionLevel) {
     service,
     act,
     events,
+    notices,
     setLevel: (next: PermissionLevel) => {
       level = next;
     },
@@ -103,24 +115,30 @@ it('a chat with computerControl "ask" cannot perform a GUI action without an exp
   const { opened, frameId } = await readyFrame(host, service);
   const execute = vi.fn(async () => ({ done: true }));
 
-  const call = host.requestAgentAction(CHAT, opened.id, opened.generation, frameId, { type: "navigate", url: "https://example.com" }, execute);
+  // The call returns straight away — nothing is held open waiting for the
+  // human — and what it returns is a request, not an outcome.
+  const pending = await host.requestAgentAction(CHAT, opened.id, opened.generation, frameId, { type: "navigate", url: "https://example.com" }, execute);
+  expect(pending).toMatchObject({ status: "approval_pending", requestId: expect.any(String) });
 
-  // Nothing happens on its own. Not on the next tick, not on the one after.
-  const raced = await Promise.race([call.then(() => "resolved").catch(() => "rejected"), new Promise((resolve) => setTimeout(() => resolve("blocked"), 25))]);
-  expect(raced).toBe("blocked");
+  // Nothing happens on its own. Not on the next tick, not much later.
+  await new Promise((resolve) => setTimeout(resolve, 25));
   expect(execute).not.toHaveBeenCalled();
   expect(act).not.toHaveBeenCalled();
 
-  // What happened instead: the chat is blocked on a prompt for the human,
-  // carried by the same event and the same registry a tool permission request
-  // or an AskUserQuestion uses.
+  // What happened instead: a prompt for the human, carried by the same event
+  // and answered through the same registry a tool permission request uses.
   expect(hasPendingRequest(CHAT)).toBe(true);
   const prompt = events.find((event) => event.type === "permission_request");
-  expect(prompt).toMatchObject({ type: "permission_request", toolName: CU_ACTION_TOOL_NAME });
+  expect(prompt).toMatchObject({ type: "permission_request", toolName: CU_ACTION_TOOL_NAME, humanOnly: true, nonBlocking: true });
   // `humanOnly` is what makes `POST /api/chats/:id/respond` refuse a bearer
   // `cbk_` key and a cross-origin actor: an agent holding a key must not be
   // able to confirm its own action. See `pendingRequestRequiresHuman`.
   expect(getPendingRequest(CHAT)).toMatchObject({ toolName: CU_ACTION_TOOL_NAME, eventType: "permission_request", humanOnly: true });
+  // The id the agent holds is not the prompt's identity: it cannot answer with it.
+  const requestId = getPendingRequest(CHAT)!.requestId!;
+  expect(requestId).not.toBe((pending as { requestId: string }).requestId);
+  expect(respondToPermission(CHAT, true, undefined, undefined, (pending as { requestId: string }).requestId)).toEqual({ ok: false });
+  expect(act).not.toHaveBeenCalled();
 
   // And it is legible: what will happen and where, not session/frame UUIDs.
   const input = (prompt as unknown as { input: Record<string, unknown> }).input;
@@ -129,38 +147,41 @@ it('a chat with computerControl "ask" cannot perform a GUI action without an exp
   expect(JSON.stringify(input)).not.toContain(frameId);
   expect(JSON.stringify(input)).not.toContain(opened.id);
 
-  // Only the human's answer, arriving by the route the UI posts to, releases it.
-  expect(respondToPermission(CHAT, true, undefined, undefined, getPendingRequest(CHAT)?.requestId)).toEqual({ ok: true, toolName: CU_ACTION_TOOL_NAME });
-  await expect(call).resolves.toEqual({ done: true });
-  expect(execute).toHaveBeenCalledOnce();
+  // Only the human's answer, arriving by the route the UI posts to, runs it —
+  // the host's own snapshot, against the frame it was aimed at.
+  expect(respondToPermission(CHAT, true, undefined, undefined, requestId)).toEqual({ ok: true, toolName: CU_ACTION_TOOL_NAME });
+  await vi.waitFor(() => expect(act).toHaveBeenCalledOnce());
+  expect(act).toHaveBeenCalledWith({ type: "navigate", url: "https://example.com" }, expect.anything());
+  // The caller's executor is for `allow`; under `ask` the host runs what it validated.
+  expect(execute).not.toHaveBeenCalled();
+  expect(hasPendingRequest(CHAT)).toBe(false);
 });
 
 it('a chat with computerControl "ask" reports the human\'s refusal as a refusal, and runs nothing', async () => {
-  const { host, service, act } = fixture("ask");
+  const { host, service, act, notices } = fixture("ask");
   const { opened, frameId } = await readyFrame(host, service);
   const execute = vi.fn(async () => ({ done: true }));
 
-  const call = host.requestAgentAction(CHAT, opened.id, opened.generation, frameId, { type: "click", x: 10, y: 20 }, execute);
-  await vi.waitFor(() => expect(hasPendingRequest(CHAT)).toBe(true));
+  await host.requestAgentAction(CHAT, opened.id, opened.generation, frameId, { type: "click", x: 10, y: 20 }, execute);
   expect(respondToPermission(CHAT, false, undefined, undefined, getPendingRequest(CHAT)?.requestId)).toMatchObject({ ok: true });
 
-  await expect(call).rejects.toMatchObject({ code: "denied", message: expect.stringContaining("Do not repeat it") });
+  await vi.waitFor(() => expect(notices).toEqual([expect.stringContaining("Do not repeat it")]));
   expect(execute).not.toHaveBeenCalled();
   expect(act).not.toHaveBeenCalled();
   // The refusal left nothing parked that a later "yes" could redeem.
   expect(hasPendingRequest(CHAT)).toBe(false);
 });
 
-it('a GUI action requested under "ask" with no live chat session to ask in is refused, never assumed', async () => {
-  const { host, service, act } = fixture("ask");
+it('an approval under "ask" runs nothing if the screen moved on while the human was deciding', async () => {
+  const { host, service, act, notices } = fixture("ask");
   const { opened, frameId } = await readyFrame(host, service);
-  sessionRegistry.unregister(CHAT); // e.g. the run ended while a resident tool closure lingered
-  const execute = vi.fn(async () => ({ done: true }));
+  await host.requestAgentAction(CHAT, opened.id, opened.generation, frameId, { type: "key", key: "Enter" }, vi.fn());
+  // The agent observed again: the frame the human was asked about is gone.
+  await service.observe(controlPrincipal(CHAT, "agent"), { sessionId: opened.id, generation: opened.generation });
 
-  await expect(host.requestAgentAction(CHAT, opened.id, opened.generation, frameId, { type: "key", key: "Enter" }, execute)).rejects.toMatchObject({
-    code: "approval_unavailable",
-  });
-  expect(execute).not.toHaveBeenCalled();
+  expect(respondToPermission(CHAT, true, undefined, undefined, getPendingRequest(CHAT)?.requestId)).toMatchObject({ ok: true });
+  await vi.waitFor(() => expect(notices).toEqual([expect.stringContaining("NOT performed")]));
+  expect(notices[0]).toContain("cu_observe");
   expect(act).not.toHaveBeenCalled();
 });
 
@@ -183,7 +204,7 @@ it('a chat with computerControl "allow" performs the action with no prompt at al
   expect(hasPendingRequest(CHAT)).toBe(false);
   // The operator's log gets a redacted description of it instead — the
   // unattended action's only record. See `logUnattendedAction`.
-  expect(execute).toHaveBeenCalledWith(expect.any(String), { type: "click", x: 10, y: 20 }, { confirmedByHuman: false });
+  expect(execute).toHaveBeenCalledWith(expect.any(String), { type: "click", x: 10, y: 20 });
 });
 
 it('a chat with computerControl "deny" refuses the action outright, prompting nobody', async () => {

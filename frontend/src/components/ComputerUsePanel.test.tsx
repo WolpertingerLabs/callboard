@@ -308,6 +308,22 @@ describe("ComputerUsePanel", () => {
     expect(button("Resume agent").hasAttribute("aria-describedby")).toBe(false);
   });
 
+  it("a takeover or resume signals the chat to re-read cards the daemon will withdraw", async () => {
+    const events = await import("../utils/computerControlEvents");
+    const signal = vi.spyOn(events, "emitComputerControlSettledSoon").mockImplementation(() => {});
+    try {
+      render(<Viewer permission="allow" />);
+      await ready();
+      fireEvent.click(button("Take over"));
+      await waitFor(() => expect(signal).toHaveBeenCalledWith("c1"));
+      await waitFor(() => expect(button("Resume agent").disabled).toBe(false));
+      fireEvent.click(button("Resume agent"));
+      await waitFor(() => expect(signal).toHaveBeenCalledTimes(2));
+    } finally {
+      signal.mockRestore();
+    }
+  });
+
   it("offers explicit scoped approval for ask and clears revoked screenshots", async () => {
     status.permission = "ask";
     status.sessions[0].state = "awaiting_approval";

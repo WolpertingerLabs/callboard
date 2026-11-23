@@ -14,7 +14,13 @@ process.env.CALLBOARD_DATA_DIR = tmpRoot;
 
 const running = vi.hoisted(() => new Set<string>());
 vi.mock("./claude.js", () => ({ getActiveSession: () => null, hasPendingRequest: () => false, getPendingRequest: () => null }));
-vi.mock("./session-registry.js", () => ({ sessionRegistry: { has: (id: string) => running.has(id), notifyMetadata: () => {} } }));
+vi.mock("./session-registry.js", () => ({ sessionRegistry: { has: (id: string) => running.has(id), get: () => undefined, notifyMetadata: () => {} } }));
+
+const cuHost = vi.hoisted(() => ({ withdrawChatRequests: vi.fn() }));
+vi.mock("./computer-use.js", () => ({
+  peekComputerUseHost: () => Promise.resolve(cuHost),
+  WITHDRAWN: { superseded: "superseded-reason" },
+}));
 
 const { chatFileService } = await import("./chat-file-service.js");
 const { walkToRootId, buildChatTree } = await import("./chat-lineage.js");
@@ -304,5 +310,24 @@ describe("supersedeChat — live linkage", () => {
 describe("keptStars", () => {
   it("ignores malformed keys", () => {
     expect(keptStars("continue", ["nonsense", 3, `user@${before}#0`], new Date(T).getTime())).toEqual([`user@${before}#0`]);
+  });
+});
+
+describe("supersedeChat — open computer-control requests", () => {
+  it("proceeds while one is open, and withdraws it with the notice addressed to the new chat", async () => {
+    const { openHumanApproval, clearOpenApprovalsForTest } = await import("./pending-requests.js");
+    const chat = makeChat();
+    try {
+      openHumanApproval(chat.id, { toolName: "mcp__computer_use__cu_action", input: { summary: "Click" } }, () => {});
+      // An open request has no timer; refusing for it would refuse forever.
+      expect(checkSupersedable(chat as Parameters<typeof checkSupersedable>[0])).toEqual({ ok: true });
+      const { chat: n } = supersede(chat);
+      await vi.waitFor(() => expect(cuHost.withdrawChatRequests).toHaveBeenCalledWith(chat.id, "superseded-reason", n.id));
+      // A blocking prompt still refuses, as before.
+      openPrompt(n.id);
+      expect(checkSupersedable(chatFileService.getChat(n.id) as Parameters<typeof checkSupersedable>[0])).toMatchObject({ ok: false, status: 409 });
+    } finally {
+      clearOpenApprovalsForTest();
+    }
   });
 });

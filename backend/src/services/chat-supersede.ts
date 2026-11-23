@@ -2,7 +2,8 @@ import { chatFileService, type Chat } from "./chat-file-service.js";
 import { buildLineageIndex, getParentChatId, walkToRootId } from "./chat-lineage.js";
 import { isNativeRecord } from "./card-membership.js";
 import { mergeTrails, parseGitTrail } from "./git-trail.js";
-import { hasPendingRequest, repointParentOffers } from "./pending-requests.js";
+import { pendingRequests, repointParentOffers } from "./pending-requests.js";
+import { peekComputerUseHost, WITHDRAWN } from "./computer-use.js";
 import { repointCallbacksForParent } from "./session-callbacks.js";
 import { sessionRegistry } from "./session-registry.js";
 import { isRetiredProvider, RETIRED_PROVIDER_LABELS } from "../agents/ports/AgentProvider.js";
@@ -184,7 +185,11 @@ export function checkSupersedable(chat: ChatRecord): SupersedeCheck {
   }
   const keys = [chat.id, chat.session_id].filter(Boolean);
   if (keys.some((k) => sessionRegistry.has(k))) return { ok: false, status: 409, error: "This chat is still running — stop it or wait for it to finish first" };
-  if (keys.some((k) => hasPendingRequest(k))) return { ok: false, status: 409, error: "This chat is waiting on a permission prompt — answer it first" };
+  // Only a prompt something is blocked on refuses this. An open
+  // computer-control request (enable card, GUI-action confirmation) waits
+  // beside that slot with no timer, and refusing for it would refuse forever;
+  // supersedeChat withdraws it instead.
+  if (keys.some((k) => pendingRequests.has(k))) return { ok: false, status: 409, error: "This chat is waiting on a permission prompt — answer it first" };
   return { ok: true };
 }
 
@@ -394,6 +399,18 @@ export function supersedeChat(opts: SupersedeOptions): SupersedeResult {
   const includeCallback = kind === "continue" || kind === "rerun" ? (cb: { createdAt: number }) => cb.createdAt <= cutoffMs : undefined;
   const repointedCallbacks = rewritten ? repointCallbacksForParent(parentKeys, created.id, includeCallback).length : 0;
   const repointedOffers = rewritten ? repointParentOffers(parentKeys, created.id).length : 0;
+  // C's open computer-control requests belong to the history being replaced,
+  // and its sessions stay C's. Withdraw them; the notice goes to N, which is
+  // where the conversation — and the agent that asked — carries on.
+  const host = peekComputerUseHost();
+  if (host)
+    void host
+      .then((h) => {
+        for (const key of parentKeys) h.withdrawChatRequests(key, WITHDRAWN.superseded, created.id);
+      })
+      .catch((err: unknown) =>
+        log.error(`supersede ${chat.id}: could not withdraw computer-control requests: ${err instanceof Error ? err.message : String(err)}`),
+      );
 
   let restamped = 0;
   if (wasRoot && rewritten) {

@@ -67,20 +67,18 @@ export type CodexMcpServerConfig = {
 /**
  * How long Codex waits for one callboard tool call, in seconds.
  *
- * Callboard tools park on purpose. `wait` sleeps up to 300s; the computer-use
- * confirmation (`HUMAN_APPROVAL_TIMEOUT_MS`) blocks up to 300s while a human
- * reads a GUI action in the chat. Codex is an MCP *client* with its own
- * per-call patience, and left unset it applies an internal default this
- * codebase does not control — verified with `codex mcp list --json`, which
- * reports `"tool_timeout_sec": null` for a server that does not set it.
+ * Callboard tools park on purpose: `wait` sleeps up to 300s. Codex is an MCP
+ * *client* with its own per-call patience, and left unset it applies an
+ * internal default this codebase does not control — verified with
+ * `codex mcp list --json`, which reports `"tool_timeout_sec": null` for a
+ * server that does not set it. Setting this makes OUR deadline the one that
+ * always fires first, so Codex never abandons a call callboard is still
+ * holding.
  *
- * That matters most for the confirmation, because the two clocks disagreeing
- * is a correctness problem and not just a UX one: if Codex abandoned the call
- * at its own deadline while the prompt stayed open, a human confirming
- * afterwards would run an action the harness had already moved past. Setting
- * this makes OUR deadline the one that always fires first, so Codex never
- * abandons a call callboard is still holding, and the question of whether it
- * would announce that is moot.
+ * (Computer-control human approvals used to block a tool call for up to 300s
+ * too, which is where this mattered most. They no longer hold a call open:
+ * `cu_request_control` and `cu_action` under Ask return at once and the
+ * outcome is delivered to the chat later — see `openHumanApproval`.)
  *
  * Only callboard's own bundles get it. User-configured external MCP servers
  * keep whatever their author chose.

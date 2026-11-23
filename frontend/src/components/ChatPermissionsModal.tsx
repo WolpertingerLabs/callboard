@@ -7,6 +7,7 @@ import type { DefaultPermissions } from "../api";
 import type { PermissionReviewSettings } from "shared/types/permissions.js";
 import { updateChatPermissions } from "../api";
 import { errorMessage } from "../utils/errorMessage";
+import { emitComputerControlSettledSoon } from "../utils/computerControlEvents";
 
 interface ChatPermissionsModalProps {
   isOpen: boolean;
@@ -70,6 +71,9 @@ export default function ChatPermissionsModal({
           ...(localReview.parentAnswers !== review.parentAnswers && { parentAnswers: localReview.parentAnswers }),
         };
         await updateChatPermissions(chatId, localPermissions, reviewDelta);
+        // A permission change withdraws open computer-control requests; let
+        // the chat re-read what it is showing once the daemon has.
+        emitComputerControlSettledSoon(chatId);
         onPermissionsChange(localPermissions);
         onReviewChange?.(localReview);
         onClose();

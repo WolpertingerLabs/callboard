@@ -1,18 +1,31 @@
 /**
- * The one thing a chat can be blocked on: a question for the human.
+ * What a chat is asking its human: the blocking prompt slot, and the open
+ * computer-control requests beside it.
  *
- * A chat has at most one open prompt at a time — a tool permission request, an
- * `AskUserQuestion`, or a plan review — parked here as a promise the SSE client
- * resolves through `POST /api/chats/:id/respond`. `buildCanUseTool` in
- * `claude.ts` is the engine-facing producer; `respondToPermission` is the
- * human-facing consumer; `/pending` replays the open one after a page refresh.
+ * **The slot.** A chat has at most one *blocking* prompt at a time — a tool
+ * permission request, an `AskUserQuestion`, or a plan review — parked here as a
+ * promise the SSE client resolves through `POST /api/chats/:id/respond`. A
+ * harness is suspended on it. `buildCanUseTool` in `claude.ts` is the producer;
+ * `respondToPermission` is the human-facing consumer; `/pending` replays the
+ * open one after a page refresh.
  *
- * This module exists so a *second* producer can exist without importing
- * `claude.ts`. `claude.ts` imports `computer-use-tools.ts`, so a computer-use
- * module that reached back into `claude.ts` for this map would close an import
- * cycle. Everything here depends only on the session registry and types.
+ * **Open approvals.** Computer control asks for things that a harness must not
+ * be suspended on, because a human may take minutes or hours to answer and an
+ * MCP tool call cannot be held that long: enabling a target, and each GUI
+ * action under Ask. {@link openHumanApproval} raises those. It returns at once,
+ * has no timer, and calls its owner back when the human answers; the owner
+ * reports the outcome to the agent as a chat notice. These requests live
+ * *beside* the slot rather than in it, so one never refuses or displaces a
+ * blocking prompt — the agent can still ask its human other questions while a
+ * GUI action waits. `/pending` shows the slot first, then the open approvals
+ * oldest first; each is answered by its own `requestId`.
  *
- * @see requestHumanApproval — the producer that is not a harness callback.
+ * This module exists so a producer can exist without importing `claude.ts`.
+ * `claude.ts` imports `computer-use-tools.ts`, so a computer-use module that
+ * reached back into `claude.ts` for this map would close an import cycle.
+ * Everything here depends only on the session registry and types.
+ *
+ * @see openHumanApproval — the producer that is not a harness callback.
  */
 import { randomUUID } from "node:crypto";
 import type { StreamEvent } from "shared/types/index.js";
@@ -39,7 +52,8 @@ export interface PendingRequest {
    * key — see {@link pendingRequestRequiresHuman} for why the distinction
    * exists and where it is enforced.
    *
-   * Set by {@link requestHumanApproval} and by nothing else. A harness
+   * Always set on an {@link openHumanApproval}; on the slot, only for a
+   * reviewer hard stop (`claude.ts`). A harness
    * callback's prompt (`buildCanUseTool`) does not set it: those are ordinary
    * tool permissions, and the `/respond` route has always accepted a bearer
    * token for them.
@@ -58,8 +72,6 @@ export interface PendingRequest {
   /** The model reviewer's (or pre-check's) reasoning, when one ran and passed the call on. */
   reviewerNotes?: string;
   reviewerVerdict?: "escalate" | "kill";
-  /** Host startup result; never serialized into the replay or SSE payload. */
-  completion?: Promise<ApprovalCompletion>;
 }
 
 /**
@@ -71,15 +83,23 @@ export interface PendingRequest {
  */
 export const pendingRequests = new Map<string, PendingRequest>();
 
+/** Is the human being asked anything in this chat — the blocking slot, or an open approval. */
 export function hasPendingRequest(chatId: string): boolean {
-  return pendingRequests.has(chatId);
+  return pendingRequests.has(chatId) || firstOpenApproval(chatId) !== undefined;
 }
 
-export function getPendingRequest(chatId: string): Omit<PendingRequest, "resolve" | "completion"> | null {
+/**
+ * The prompt to show for this chat: the blocking one when there is one (a
+ * harness is suspended on it), otherwise the oldest open approval.
+ */
+export function getPendingRequest(chatId: string): Omit<PendingRequest, "resolve"> | null {
   const p = pendingRequests.get(chatId);
-  if (!p) return null;
-  const { resolve: _, completion: _completion, ...rest } = p;
-  return rest;
+  if (p) {
+    const { resolve: _, ...rest } = p;
+    return rest;
+  }
+  const open = firstOpenApproval(chatId);
+  return open ? presentOpenApproval(open) : null;
 }
 
 /**
@@ -100,12 +120,21 @@ export function getPendingRequest(chatId: string): Omit<PendingRequest, "resolve
  * chat's output) must not be able to confirm its own GUI action.
  *
  * So the requirement travels with the prompt rather than being re-derived from
- * a tool name at the route: {@link requestHumanApproval} marks every prompt it
- * raises, and `/respond` refuses a non-session actor for those. A future
- * blocking gate inherits the protection by existing, not by remembering.
+ * a tool name at the route: every {@link openHumanApproval} is human-only, and
+ * `/respond` refuses a non-session actor for those. A future gate inherits the
+ * protection by existing, not by remembering.
+ *
+ * Pass the `requestId` the answer carries. It decides which prompt the answer
+ * would reach — {@link respondToPermission} routes by it — so the check has to
+ * ask about the same prompt. An answer that would not reach the slot falls
+ * through to the open approvals, and while any exist it is treated as
+ * human-only: an API key must not be able to aim a non-matching id at the slot
+ * and land on a GUI confirmation instead.
  */
-export function pendingRequestRequiresHuman(chatId: string): boolean {
-  return pendingRequests.get(chatId)?.humanOnly === true;
+export function pendingRequestRequiresHuman(chatId: string, requestId?: unknown): boolean {
+  const slot = pendingRequests.get(chatId);
+  if (slot && (requestId === undefined || requestId === slot.requestId)) return slot.humanOnly === true;
+  return firstOpenApproval(chatId) !== undefined;
 }
 
 /**
@@ -155,10 +184,12 @@ export function respondToPermission(
   updatedPermissions?: unknown[],
   requestId?: string,
 ): { ok: boolean; toolName?: string; completion?: Promise<ApprovalCompletion> } {
+  if (typeof allow !== "boolean") return { ok: false };
   const pending = pendingRequests.get(chatId);
-  if (!pending || typeof allow !== "boolean") return { ok: false };
-  // An old consent must never answer a replacement ordinary prompt either.
-  if (requestId !== undefined && requestId !== pending.requestId) return { ok: false };
+  // An answer meant for an open approval names it; one that names nothing, or
+  // the slot's own id, is for the slot. An old consent must never answer a
+  // replacement prompt, so an id that matches neither is refused.
+  if (!pending || (requestId !== undefined && requestId !== pending.requestId)) return answerOpenApproval(chatId, allow, requestId);
   if (pending.humanOnly && !requestId) return { ok: false };
   const toolName = pending.toolName;
   pendingRequests.delete(chatId);
@@ -181,30 +212,12 @@ export function respondToPermission(
   } else {
     pending.resolve({ behavior: "deny", message: "User denied", interrupt: true });
   }
-  return { ok: true, toolName, ...(allow && pending.completion ? { completion: pending.completion } : {}) };
+  return { ok: true, toolName };
 }
 
-/**
- * How long a blocking human approval waits before it gives up and denies.
- *
- * Five minutes, chosen against two ceilings rather than taste:
- *
- *  - **Below the harness's own patience.** The `wait` tool (services/
- *    callboard-tools.ts) parks an in-process MCP call for up to 300s on every
- *    engine and is used constantly in production, so 300s is the longest tool
- *    block this codebase has evidence for. Going past it would risk the harness
- *    timing the call out while the approval was still open — and a harness that
- *    has given up must never see the action execute afterwards. (It would not:
- *    the per-call `AbortSignal` is honored. But not relying on that is cheaper.)
- *  - **Above a human's reading time.** The old 120s was sized for a request the
- *    human had to *find* in another tab, which is exactly the case where 120s
- *    is not enough. A prompt rendered in the chat the human is already looking
- *    at needs time to read an action and decide, not time to go hunting.
- *
- * Expiry cannot wedge the call either way: the timer, the per-call transport
- * signal and the turn's abort signal all settle the same promise exactly once.
- */
-export const HUMAN_APPROVAL_TIMEOUT_MS = 300_000;
+// ---------------------------------------------------------------------------
+// Open (non-blocking) human approvals
+// ---------------------------------------------------------------------------
 
 export interface HumanApprovalRequest {
   /** Tool name shown in the prompt; also what `/respond` reports back. */
@@ -213,87 +226,159 @@ export interface HumanApprovalRequest {
   input: Record<string, unknown>;
   /** Trusted host UI discriminator, never derived from tool input. */
   controlRequest?: true;
-  /** Optional host result so /respond does not report successful startup early. */
-  completion?: Promise<ApprovalCompletion>;
-  timeoutMs?: number;
-  /** Transport/turn cancellation. An abort denies rather than hanging. */
-  signal?: AbortSignal;
-}
-
-export interface HumanApprovalOutcome {
-  approved: boolean;
-  /** Why, for the message the agent is handed. Never "approved" unless a human said so. */
-  reason: "human" | "denied" | "timeout" | "aborted" | "no_session" | "prompt_busy";
 }
 
 /**
- * Block until a human answers, using the chat's existing prompt surface.
- *
- * This is `buildCanUseTool`'s user-prompt path with the harness callback taken
- * off the front: same map, same `permission_request` event, same
- * `POST /:id/respond` route, same `FeedbackPanel`. What it deliberately does
- * NOT have is the auto-decide half — there is no `ToolPermissionPolicy` here,
- * no `decide()`, no early `allow`. A caller cannot configure this into
- * returning `approved: true` on its own; the only code that sets that flag is
- * the `behavior === "allow"` branch below, reached only from
- * `respondToPermission`, reached only from the authenticated human's POST.
- *
- * Fails closed on every ambiguity: no live session, a prompt already open for
- * this chat (we will not clobber the question the human is looking at), an
- * abort, or the timeout all resolve `approved: false`.
- *
- * Every prompt raised here is marked {@link PendingRequest.humanOnly}: an API
- * key cannot answer it, only a signed-in browser session can. See
- * {@link pendingRequestRequiresHuman}.
+ * Called once, when the human answers. A returned promise is handed to the
+ * `/respond` route, which waits for it so the human's click reports a failed
+ * startup rather than an early 200. Never called on cancel.
  */
-export function requestHumanApproval(chatId: string, request: HumanApprovalRequest): Promise<HumanApprovalOutcome> {
-  const emitter = sessionRegistry.get(chatId)?.emitter;
-  if (!emitter) return Promise.resolve({ approved: false, reason: "no_session" });
-  if (pendingRequests.has(chatId)) return Promise.resolve({ approved: false, reason: "prompt_busy" });
-  if (request.signal?.aborted) return Promise.resolve({ approved: false, reason: "aborted" });
+export type HumanApprovalAnswer = (approved: boolean) => Promise<ApprovalCompletion> | void;
 
+export interface OpenHumanApproval {
+  /** The prompt identity `/respond` must quote. Never handed to the agent. */
+  readonly requestId: string;
+  /** Still waiting on the human. */
+  isOpen(): boolean;
+  /**
+   * Withdraw the request — Stop, revoke, a scope change. Idempotent; the
+   * answer callback is never called afterwards. Returns whether it was open.
+   * `humanReason` (host-fixed, human-facing) is what a late answer to it is
+   * told — see {@link recentResolution}.
+   */
+  cancel(humanReason?: string): boolean;
+}
+
+interface OpenApprovalEntry {
+  chatId: string;
+  toolName: string;
+  input: Record<string, unknown>;
+  controlRequest: boolean;
+  onAnswer: HumanApprovalAnswer;
+}
+
+/** requestId → open approval. A Map, so iteration order is creation order. */
+const openApprovals = new Map<string, OpenApprovalEntry>();
+
+/**
+ * requestId → how a recently closed open approval ended, in human-facing
+ * words. Bounded: only a tab still showing the card needs it, and only until
+ * it re-reads.
+ */
+const recentResolutions = new Map<string, string>();
+const MAX_RECENT_RESOLUTIONS = 200;
+function rememberResolution(requestId: string, text: string) {
+  recentResolutions.delete(requestId);
+  recentResolutions.set(requestId, text);
+  while (recentResolutions.size > MAX_RECENT_RESOLUTIONS) recentResolutions.delete(recentResolutions.keys().next().value!);
+}
+
+/**
+ * Why the open approval `requestId` is no longer open — "it was already
+ * answered", "you pressed Stop" — when it closed recently, so a late answer
+ * from a tab still showing the card can be told why instead of "refresh".
+ */
+export function recentResolution(requestId: unknown): string | undefined {
+  return typeof requestId === "string" ? recentResolutions.get(requestId) : undefined;
+}
+
+function firstOpenApproval(chatId: string): [string, OpenApprovalEntry] | undefined {
+  for (const entry of openApprovals) if (entry[1].chatId === chatId) return entry;
+  return undefined;
+}
+
+function approvalEventData(requestId: string, entry: OpenApprovalEntry): Record<string, unknown> {
+  return {
+    toolName: entry.toolName,
+    input: entry.input,
+    requestId,
+    humanOnly: true,
+    ...(entry.controlRequest ? { controlRequest: true } : {}),
+    // Optional wire field (stream.ts): the agent is not suspended on this
+    // prompt, so the tab must not treat the chat as running because of it.
+    nonBlocking: true,
+  };
+}
+
+function presentOpenApproval([requestId, entry]: [string, OpenApprovalEntry]): Omit<PendingRequest, "resolve"> {
+  return {
+    toolName: entry.toolName,
+    input: entry.input,
+    eventType: "permission_request",
+    eventData: approvalEventData(requestId, entry),
+    humanOnly: true,
+    requestId,
+  };
+}
+
+function answerOpenApproval(chatId: string, allow: boolean, requestId: unknown): ReturnType<typeof respondToPermission> {
+  // Human-only, so the answer must name the request it is for.
+  if (typeof requestId !== "string") return { ok: false };
+  const entry = openApprovals.get(requestId);
+  if (!entry || entry.chatId !== chatId) return { ok: false };
+  openApprovals.delete(requestId);
+  rememberResolution(requestId, "it was already answered");
+  log.info(`[PERM-DIAG] open approval for ${entry.toolName} on ${chatId} → ${allow ? "approved" : "denied"} by the human`);
+  let completion: Promise<ApprovalCompletion> | void;
+  try {
+    completion = entry.onAnswer(allow);
+  } catch (err) {
+    log.error(`[PERM-DIAG] answer handler for ${entry.toolName} on ${chatId} threw: ${err instanceof Error ? err.message : String(err)}`);
+    completion = Promise.resolve({ ok: false, error: "The answer was recorded, but the request could not be completed. Check the chat for its outcome." });
+  }
+  return { ok: true, toolName: entry.toolName, ...(allow && completion ? { completion } : {}) };
+}
+
+/**
+ * Ask the chat's human something without suspending anyone on the answer.
+ *
+ * The non-blocking counterpart of the slot: same `permission_request` card,
+ * same `POST /:id/respond` route, same `FeedbackPanel`. What it deliberately
+ * does NOT have is the auto-decide half of `buildCanUseTool` — no
+ * `ToolPermissionPolicy`, no `decide()`, no early allow. Nothing a caller passes
+ * can make `onAnswer(true)` happen; the only code that calls it is
+ * {@link respondToPermission}, reached only from the authenticated human's
+ * POST (the route refuses an API key and a cross-origin actor for every
+ * request raised here — see {@link pendingRequestRequiresHuman}), and never
+ * from a parent chat: `respond_to_request` only sees the slot.
+ *
+ * There is no timeout. The request stays until the human answers or the owner
+ * calls `cancel()`; the owner is responsible for cancelling on Stop, revoke and
+ * any change that invalidates what was asked.
+ *
+ * The live `permission_request` event is sent only when nothing else is on the
+ * human's screen — no blocking prompt and no older open approval — so this
+ * never covers a question they are reading. Otherwise it waits its turn and the
+ * tab finds it on its next `/pending` read, which it makes after each answer.
+ */
+export function openHumanApproval(chatId: string, request: HumanApprovalRequest, onAnswer: HumanApprovalAnswer): OpenHumanApproval {
   const requestId = randomUUID();
-  const input = structuredClone(request.input);
-  const metadata = { requestId, humanOnly: true, ...(request.controlRequest ? { controlRequest: true } : {}) };
-  const timeoutMs = request.timeoutMs ?? HUMAN_APPROVAL_TIMEOUT_MS;
-  return new Promise<HumanApprovalOutcome>((resolvePromise) => {
-    let settled = false;
-    function settle(outcome: HumanApprovalOutcome) {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      request.signal?.removeEventListener("abort", onAbort);
-      // Only ever remove our own entry: a replacement prompt may have taken
-      // the slot while we were parked, and dropping it would strand that one.
-      if (pendingRequests.get(chatId) === entry) pendingRequests.delete(chatId);
-      if (!outcome.approved) log.info(`[PERM-DIAG] blocking approval for ${request.toolName} on ${chatId} → deny (${outcome.reason})`);
-      resolvePromise(outcome);
-    }
-    function onAbort() {
-      settle({ approved: false, reason: "aborted" });
-    }
+  const entry: OpenApprovalEntry = {
+    chatId,
+    toolName: request.toolName,
+    input: structuredClone(request.input),
+    controlRequest: request.controlRequest === true,
+    onAnswer,
+  };
+  const visible = !pendingRequests.has(chatId) && firstOpenApproval(chatId) === undefined;
+  openApprovals.set(requestId, entry);
+  const emitter = sessionRegistry.get(chatId)?.emitter;
+  if (visible && emitter) emitter.emit("event", { type: "permission_request", content: "", ...approvalEventData(requestId, entry) } as StreamEvent);
+  return {
+    requestId,
+    isOpen: () => openApprovals.get(requestId) === entry,
+    cancel: (humanReason) => {
+      if (openApprovals.get(requestId) !== entry) return false;
+      openApprovals.delete(requestId);
+      rememberResolution(requestId, humanReason ? `it was withdrawn because ${humanReason}` : "it was withdrawn");
+      log.info(`[PERM-DIAG] open approval for ${entry.toolName} on ${chatId} withdrawn`);
+      return true;
+    },
+  };
+}
 
-    const entry: PendingRequest = {
-      toolName: request.toolName,
-      input,
-      requestId,
-      ...(request.completion ? { completion: request.completion } : {}),
-      eventType: "permission_request",
-      eventData: { toolName: request.toolName, input, ...metadata },
-      humanOnly: true,
-      resolve: (result) => settle(result.behavior === "allow" ? { approved: true, reason: "human" } : { approved: false, reason: "denied" }),
-    };
-    const timer = setTimeout(() => settle({ approved: false, reason: "timeout" }), timeoutMs);
-    timer.unref?.();
-
-    pendingRequests.set(chatId, entry);
-    request.signal?.addEventListener("abort", onAbort, { once: true });
-    emitter.emit("event", {
-      type: "permission_request",
-      content: "",
-      toolName: request.toolName,
-      input,
-      ...metadata,
-    } as StreamEvent);
-  });
+/** Test seam: forget every open approval. */
+export function clearOpenApprovalsForTest(): void {
+  openApprovals.clear();
+  recentResolutions.clear();
 }
