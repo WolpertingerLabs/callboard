@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useState } from "react";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import ImageLightbox, { type LightboxItem } from "./ImageLightbox";
@@ -94,7 +94,7 @@ describe("ImageLightbox", () => {
   it("opens at the start index and shows a counter", () => {
     renderLightbox(1);
     expect(screen.getByText("2 / 3")).toBeTruthy();
-    expect(screen.getByText("Image 2 of 3")).toBeTruthy();
+    expect(screen.getByText("Item 2 of 3")).toBeTruthy();
     expect(screen.getByText("Second picture")).toBeTruthy();
   });
 
@@ -107,8 +107,8 @@ describe("ImageLightbox", () => {
 
   it("moves with the next/previous buttons and stops at either end", () => {
     renderLightbox(0);
-    const prev = screen.getByRole("button", { name: "Previous image" }) as HTMLButtonElement;
-    const next = screen.getByRole("button", { name: "Next image" }) as HTMLButtonElement;
+    const prev = screen.getByRole("button", { name: "Previous item" }) as HTMLButtonElement;
+    const next = screen.getByRole("button", { name: "Next item" }) as HTMLButtonElement;
     expect(prev.disabled).toBe(true);
 
     fireEvent.click(next);
@@ -150,14 +150,14 @@ describe("ImageLightbox", () => {
 
   it("hides the navigation and counter for a single image", () => {
     renderLightbox(0, [ITEMS[0]]);
-    expect(screen.queryByRole("button", { name: "Next image" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Next item" })).toBeNull();
     expect(screen.queryByText("1 / 1")).toBeNull();
   });
 
   it("closes on Escape and the close button", () => {
     const { onClose } = renderLightbox(0);
     fireEvent.keyDown(document, { key: "Escape" });
-    fireEvent.click(screen.getByRole("button", { name: "Close image viewer" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close viewer" }));
     expect(onClose).toHaveBeenCalledTimes(2);
   });
 
@@ -351,7 +351,7 @@ describe("ImageLightbox", () => {
         <ImageLightbox items={ITEMS} startIndex={0} onClose={() => {}} />
       </div>,
     );
-    fireEvent.click(screen.getByRole("button", { name: "Next image" }));
+    fireEvent.click(screen.getByRole("button", { name: "Next item" }));
     tap(surface());
     expect(outer).not.toHaveBeenCalled();
   });
@@ -373,7 +373,7 @@ describe("ImageLightbox", () => {
 
     const dialog = screen.getByRole("dialog");
     expect(dialog.getAttribute("aria-modal")).toBe("true");
-    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Close image viewer" }));
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Close viewer" }));
 
     act(() => {
       fireEvent.keyDown(document, { key: "Escape" });
@@ -384,8 +384,8 @@ describe("ImageLightbox", () => {
 
   it("keeps Tab inside the dialog", () => {
     renderLightbox(1);
-    const close = screen.getByRole("button", { name: "Close image viewer" });
-    const next = screen.getByRole("button", { name: "Next image" });
+    const close = screen.getByRole("button", { name: "Close viewer" });
+    const next = screen.getByRole("button", { name: "Next item" });
     next.focus();
     fireEvent.keyDown(document, { key: "Tab" });
     expect(document.activeElement).toBe(close);
@@ -408,9 +408,9 @@ describe("ImageLightbox", () => {
     expect(screen.getByText("3 / 3")).toBeTruthy();
     rerender(<ImageLightbox items={ITEMS.slice(0, 2)} startIndex={2} onClose={onClose} />);
     expect(screen.getByText("2 / 2")).toBeTruthy();
-    expect((screen.getByRole("button", { name: "Next image" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Next item" }) as HTMLButtonElement).disabled).toBe(true);
     expect(strip().style.transform).toBe("translate3d(calc(-100% + 0px), 0, 0)");
-    fireEvent.click(screen.getByRole("button", { name: "Previous image" }));
+    fireEvent.click(screen.getByRole("button", { name: "Previous item" }));
     expect(screen.getByText("1 / 2")).toBeTruthy();
   });
 
@@ -455,5 +455,166 @@ describe("ImageLightbox", () => {
     const dialog = screen.getByRole("dialog");
     expect(dialog.style.touchAction).toBe("none");
     expect(Number((dialog.parentElement as HTMLElement).style.zIndex)).toBeGreaterThan(1000);
+  });
+});
+
+describe("ImageLightbox: video slides", () => {
+  const MIXED: LightboxItem[] = [
+    { src: "/a.png", alt: "Alpha" },
+    { src: "/clip.mp4", alt: "Clip", kind: "video", poster: "/clip.jpg" },
+    { src: "/c.png", alt: "Charlie" },
+  ];
+  const video = () => screen.getByLabelText("Clip") as HTMLVideoElement;
+  let paused: HTMLMediaElement[];
+
+  beforeEach(() => {
+    paused = [];
+    // jsdom has no media playback; record which element was paused.
+    vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(function (this: HTMLMediaElement) {
+      paused.push(this);
+    });
+  });
+  afterEach(() => {
+    cleanup(); // unmount (which pauses) while pause is still stubbed
+    vi.restoreAllMocks();
+  });
+
+  it("renders a native <video controls playsInline> that preloads metadata as a neighbour too", () => {
+    renderLightbox(0, MIXED);
+    expect(video().tagName).toBe("VIDEO");
+    expect(video().controls).toBe(true);
+    expect(video().hasAttribute("playsinline")).toBe(true);
+    expect(video().getAttribute("poster")).toBe("/clip.jpg");
+    expect(video().getAttribute("src")).toBe("/clip.mp4");
+    // A neighbour loads metadata too, so swiping to it shows a frame, not black.
+    // (Slides further away are not mounted at all.)
+    expect(video().getAttribute("preload")).toBe("metadata");
+    fireEvent.click(screen.getByRole("button", { name: "Next item" }));
+    expect(video().getAttribute("preload")).toBe("metadata");
+  });
+
+  it("Tab reaches the current slide's video; a neighbour's video is skipped", () => {
+    renderLightbox(1, MIXED);
+    expect(video().tabIndex).toBe(0);
+    const next = screen.getByRole("button", { name: "Next item" });
+    next.focus();
+    fireEvent.keyDown(next, { key: "Tab" });
+    expect(document.activeElement).toBe(video());
+    fireEvent.keyDown(video(), { key: "Tab", shiftKey: true });
+    expect(document.activeElement).toBe(next);
+
+    cleanup();
+    renderLightbox(0, MIXED);
+    expect(video().tabIndex).toBe(-1);
+    const last = screen.getByRole("button", { name: "Next item" });
+    last.focus();
+    fireEvent.keyDown(last, { key: "Tab" });
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Close viewer" }));
+  });
+
+  it("←/→ on a focused video are left to it; Escape still closes", () => {
+    const { onClose } = renderLightbox(1, MIXED);
+    video().focus();
+    fireEvent.keyDown(video(), { key: "ArrowRight" });
+    fireEvent.keyDown(video(), { key: "ArrowLeft" });
+    expect(screen.getByText("2 / 3")).toBeTruthy();
+    fireEvent.keyDown(video(), { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+    // Off the video the arrows navigate as before.
+    fireEvent.keyDown(document, { key: "ArrowRight" });
+    expect(screen.getByText("3 / 3")).toBeTruthy();
+  });
+
+  it("a second finger on the backdrop starts nothing while one is on the video", () => {
+    renderLightbox(1, MIXED);
+    fireEvent.pointerDown(video(), { pointerId: 1, pointerType: "touch", clientX: 200, clientY: 400, isPrimary: true });
+    fireEvent.pointerDown(surface(), { pointerId: 2, pointerType: "touch", clientX: 300, clientY: 600, isPrimary: false });
+    move(2, 150, 600);
+    move(2, 50, 600);
+    up(2, 50, 600);
+    expect(screen.getByText("2 / 3")).toBeTruthy();
+    // The video finger lifts; the next touch sequence swipes normally.
+    up(1, 200, 400);
+    fireEvent.pointerDown(surface(), { pointerId: 3, pointerType: "touch", clientX: 300, clientY: 600, isPrimary: true });
+    move(3, 150, 600);
+    move(3, 50, 600);
+    up(3, 50, 600);
+    expect(screen.getByText("3 / 3")).toBeTruthy();
+  });
+
+  it("seeks to startTime on the first load only", () => {
+    renderLightbox(1, [MIXED[0], { ...MIXED[1], startTime: 12.5 }, MIXED[2]]);
+    fireEvent.loadedMetadata(video());
+    expect(video().currentTime).toBe(12.5);
+    video().currentTime = 3;
+    fireEvent.loadedMetadata(video());
+    expect(video().currentTime).toBe(3);
+  });
+
+  it("calls onVideoShown when a video slide becomes current, not for images", () => {
+    const onVideoShown = vi.fn();
+    render(<ImageLightbox items={MIXED} startIndex={0} onClose={() => {}} onVideoShown={onVideoShown} />);
+    expect(onVideoShown).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Next item" }));
+    expect(onVideoShown).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Next item" }));
+    expect(onVideoShown).toHaveBeenCalledTimes(1);
+  });
+
+  it("a drag that starts on the video is left to its controls; on the backdrop it swipes", () => {
+    renderLightbox(1, MIXED);
+    drag({ x: 300, y: 400 }, { x: 50, y: 400 }, video());
+    expect(screen.getByText("2 / 3")).toBeTruthy();
+    drag({ x: 300, y: 400 }, { x: 50, y: 400 });
+    expect(screen.getByText("3 / 3")).toBeTruthy();
+  });
+
+  it("a swipe down that starts on the video does not close; on the backdrop it does", () => {
+    const { onClose } = renderLightbox(1, MIXED);
+    drag({ x: 200, y: 300 }, { x: 200, y: 700 }, video());
+    expect(onClose).not.toHaveBeenCalled();
+    drag({ x: 200, y: 300 }, { x: 200, y: 700 });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("a tap on the video does not close the viewer, and a double-tap does not zoom it", () => {
+    const { onClose } = renderLightbox(1, MIXED);
+    tap(video());
+    tap(video());
+    expect(onClose).not.toHaveBeenCalled();
+    expect(video().style.transform).not.toMatch(/scale\((?!1\))/);
+  });
+
+  it("a pinch on a video slide does not zoom it", () => {
+    renderLightbox(1, MIXED);
+    down(surface(), 1, 150, 400);
+    down(surface(), 2, 250, 400);
+    move(1, 50, 400);
+    move(2, 350, 400);
+    up(1, 50, 400);
+    up(2, 350, 400);
+    expect(video().style.transform).not.toMatch(/scale\((?!1\))/);
+    expect(screen.getByText("2 / 3")).toBeTruthy();
+  });
+
+  it("leaving the video's slide pauses it, and so does closing", () => {
+    const { unmount } = renderLightbox(1, MIXED);
+    const v = video();
+    expect(paused).not.toContain(v);
+    fireEvent.click(screen.getByRole("button", { name: "Next item" }));
+    expect(paused).toContain(v);
+
+    paused.length = 0;
+    fireEvent.click(screen.getByRole("button", { name: "Previous item" }));
+    expect(paused).not.toContain(v);
+    unmount();
+    expect(paused).toContain(v);
+  });
+
+  it("uses media-neutral labels", () => {
+    renderLightbox(1, MIXED);
+    expect(screen.getByRole("dialog", { name: "Media viewer" })).toBeTruthy();
+    expect(screen.getByText("Item 2 of 3")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Close viewer" })).toBeTruthy();
   });
 });

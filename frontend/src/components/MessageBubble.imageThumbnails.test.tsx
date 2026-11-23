@@ -12,10 +12,10 @@ describe("ImageThumbnails", () => {
     expect(screen.getByRole("dialog")).toBeTruthy();
     expect(screen.getByText("2 / 3")).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Next image" }));
+    fireEvent.click(screen.getByRole("button", { name: "Next item" }));
     expect(screen.getByText("3 / 3")).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Close image viewer" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close viewer" }));
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
@@ -23,6 +23,6 @@ describe("ImageThumbnails", () => {
     render(<ImageThumbnails imageIds={["solo"]} />);
     fireEvent.click(screen.getByRole("button", { name: "Open image" }));
     expect(screen.getByRole("dialog")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Next image" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Next item" })).toBeNull();
   });
 });

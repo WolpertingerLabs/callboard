@@ -15,6 +15,7 @@
 
 import type { McpToolDefinition, McpToolServerInfo, McpToolsResponse } from "shared/types/index.js";
 import { getEnabledMcpServers, getEnabledAppPlugins } from "./app-plugins.js";
+import { RENDER_FILE_DESCRIPTION } from "./render-file-description.js";
 import { getAgentSettings, getActiveMcpConfigDir } from "./agent-settings.js";
 import { ROUTABLE_PROVIDER_KINDS } from "../agents/ports/AgentProvider.js";
 
@@ -24,7 +25,7 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
   {
     name: "render_file",
     qualifiedName: "mcp__callboard-tools__render_file",
-    description: "Render media in the chat UI. Supports images, audio, video, and PDFs from local files or URLs.",
+    description: RENDER_FILE_DESCRIPTION,
     parameters: [
       { name: "file_path", type: "string", description: "Absolute path to a local file to render", required: false },
       { name: "url", type: "string", description: "URL of media content to render (http or https)", required: false },

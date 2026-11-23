@@ -2,12 +2,12 @@ import { createContext, useCallback, useContext, useEffect, useLayoutEffect, use
 import ImageLightbox, { type LightboxItem } from "./ImageLightbox";
 
 /**
- * One gallery per open chat: every image in the transcript, in display order,
- * so the lightbox swipes across messages rather than stopping at the edge of
- * the one that was tapped.
+ * One gallery per open chat: every image and rendered video in the
+ * transcript, in display order, so the lightbox swipes across messages rather
+ * than stopping at the edge of the one that was tapped.
  *
  * Image sites (`ImageThumbnails` in MessageBubble and ToolCallBubble, and
- * MediaRenderer's images) register their element through `useGalleryItem`.
+ * MediaRenderer's images and videos) register their element through `useGalleryItem`.
  * The registry is a ref, not state: an image mounting or unmounting never
  * re-renders the transcript, and the context value is created once, so the
  * memoized message bubbles keep their benefit.
@@ -78,6 +78,11 @@ export function ChatGalleryProvider({ children, resetKey }: { children: ReactNod
   const entries = useRef(new Map<HTMLElement, GalleryEntry>());
   const nextId = useRef(0);
   const [session, setSession] = useState<GallerySession | null>(null);
+  /** Whether a viewer is showing, for `open` (which must stay stable) to read. */
+  const viewerOpen = useRef(false);
+  useLayoutEffect(() => {
+    viewerOpen.current = !!session?.items;
+  });
 
   // The provider outlives a chat switch (the page reuses one Chat instance
   // across /chat/:id), so the open viewer — still showing the old chat's
@@ -104,13 +109,37 @@ export function ChatGalleryProvider({ children, resetKey }: { children: ReactNod
     const sorted = sortByDocumentOrder([...entries.current.values()].filter((e) => e.el.isConnected));
     const startIndex = sorted.findIndex((e) => e.el === session.el);
     setSession(
-      startIndex < 0 ? null : { ...session, startIndex, items: sorted.map(({ src, alt, caption, referrerPolicy }) => ({ src, alt, caption, referrerPolicy })) },
+      startIndex < 0
+        ? null
+        : {
+            ...session,
+            startIndex,
+            items: sorted.map(({ el, src, alt, caption, referrerPolicy, kind, poster }) => ({
+              src,
+              alt,
+              caption,
+              referrerPolicy,
+              kind,
+              poster,
+              // The slide picks up where the inline copy was; play state is not carried.
+              startTime: kind === "video" ? el.querySelector("video")?.currentTime || undefined : undefined,
+            })),
+          },
     );
   }, [session]);
 
   // Stable, with the viewer memoized: the transcript re-renders per streamed
   // token, and that must not re-render an open viewer mid-pinch.
   const close = useCallback(() => setSession(null), []);
+
+  /**
+   * The viewer plays its own copy of each video: pause every inline one, not
+   * just the opened item's, so two never play at once. Run on open and
+   * whenever a video slide becomes current.
+   */
+  const pauseInlineVideos = useCallback(() => {
+    entries.current.forEach(({ el }) => el.querySelectorAll("video").forEach((v) => v.pause()));
+  }, []);
 
   const api = useMemo<GalleryApi>(
     () => ({
@@ -124,6 +153,9 @@ export function ChatGalleryProvider({ children, resetKey }: { children: ReactNod
       },
       open(el, opts) {
         const auto = !!opts?.auto;
+        // An auto-open yields to a viewer already showing — and then pauses nothing.
+        if (auto && viewerOpen.current) return;
+        pauseInlineVideos();
         // An auto-open restores focus nowhere: what was focused is usually the
         // composer, and focusing it on close would pop the phone keyboard.
         const returnFocusTo = auto ? null : focusTarget(el);
@@ -131,20 +163,27 @@ export function ChatGalleryProvider({ children, resetKey }: { children: ReactNod
         setSession((prev) => (auto && prev?.items ? prev : { id, el, items: null, startIndex: 0, returnFocusTo }));
       },
     }),
-    [],
+    [pauseInlineVideos],
   );
 
   return (
     <GalleryContext.Provider value={api}>
       {children}
       {session?.items && (
-        <ImageLightbox key={session.id} items={session.items} startIndex={session.startIndex} returnFocusTo={session.returnFocusTo} onClose={close} />
+        <ImageLightbox
+          key={session.id}
+          items={session.items}
+          startIndex={session.startIndex}
+          returnFocusTo={session.returnFocusTo}
+          onClose={close}
+          onVideoShown={pauseInlineVideos}
+        />
       )}
     </GalleryContext.Provider>
   );
 }
 
-/** Whether a `ChatGalleryProvider` is above — i.e. images here open the chat-wide viewer. */
+/** Whether a `ChatGalleryProvider` is above — i.e. images and videos here open the chat-wide viewer. */
 export function useHasChatGallery(): boolean {
   return useContext(GalleryContext) !== null;
 }
@@ -168,12 +207,14 @@ export function useGalleryItem(ref: RefObject<HTMLElement>, item: LightboxItem |
   const alt = item?.alt;
   const caption = item?.caption;
   const referrerPolicy = item?.referrerPolicy;
+  const kind = item?.kind;
+  const poster = item?.poster;
 
   useEffect(() => {
     const el = ref.current;
     if (!api || !el || !enabled || src === undefined) return;
-    return api.register({ el, src, alt: alt ?? "", caption, referrerPolicy });
-  }, [api, ref, enabled, src, alt, caption, referrerPolicy]);
+    return api.register({ el, src, alt: alt ?? "", caption, referrerPolicy, kind, poster });
+  }, [api, ref, enabled, src, alt, caption, referrerPolicy, kind, poster]);
 
   return useMemo(
     () =>

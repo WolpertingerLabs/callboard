@@ -9,7 +9,9 @@ import { defineTool, jsonError, jsonResult, textResult } from "../agents/ports/t
 import type { ToolServerSpec } from "../agents/ports/tools.js";
 import { existsSync, statSync } from "fs";
 import path from "path";
-import { mediaTypeForPath, type MediaTypeInfo } from "../utils/media-types.js";
+import { descriptiveMimeForPath, mediaTypeForPath } from "../utils/media-types.js";
+import type { RenderFileMediaType } from "shared/types/callboard-ui-tools.js";
+import { RENDER_FILE_DESCRIPTION } from "./render-file-description.js";
 import { createCanvas, updateCanvas, readCanvas } from "./canvas-service.js";
 import { chatFileService } from "./chat-file-service.js";
 import { sessionRegistry } from "./session-registry.js";
@@ -100,10 +102,13 @@ function readSessionMessages(chat: Parameters<typeof readChatSessionMessages>[0]
   }
 }
 
-/** The render_file media type for a path, or undefined. `captions` is servable but not rendered on its own. */
-function renderableMediaType(p: string): MediaTypeInfo | undefined {
+/**
+ * The render_file media type for a path, or undefined when it has no inline
+ * renderer. `captions` is servable but not rendered on its own.
+ */
+function renderableMediaType(p: string): { mime: string; category: Exclude<RenderFileMediaType, "file"> } | undefined {
   const info = mediaTypeForPath(p);
-  return info && info.category !== "captions" ? info : undefined;
+  return info && info.category !== "captions" ? { mime: info.mime, category: info.category } : undefined;
 }
 
 function error(message: string) {
@@ -250,7 +255,7 @@ export function buildCallboardToolsSpec(
     tools: [
       defineTool(
         "render_file",
-        "Render media in the chat UI. Supports images, audio, video, and PDFs from local files (absolute path) or URLs. Use this when the user would benefit from seeing media rather than just hearing about it. Provide either file_path or url, not both. If the content is from an untrusted or suspicious source, set untrusted=true with a reason.",
+        RENDER_FILE_DESCRIPTION,
         {
           file_path: z.string().optional().describe("Absolute path to a local file to render"),
           url: z.string().optional().describe("URL of media content to render (http or https)"),
@@ -321,24 +326,24 @@ export function buildCallboardToolsSpec(
             return error(`File not found: ${resolved}`);
           }
 
-          const ext = path.extname(resolved).toLowerCase();
-          const info = renderableMediaType(resolved);
-          if (!info) {
-            return error(`Unsupported file type: ${ext}`);
-          }
-
           const stat = statSync(resolved);
           if (!stat.isFile()) {
             return error("Path is not a regular file");
           }
+
+          // Anything without an inline renderer becomes a download card. Its
+          // mime_type is a display label only: the download route always
+          // serves application/octet-stream.
+          const info = renderableMediaType(resolved);
+          const mediaType: RenderFileMediaType = info?.category ?? "file";
 
           // No size cap: /api/files/serve streams with Range and backpressure, so a
           // large file costs only the bytes the browser actually requests.
           return jsonResult({
             type: "render_file",
             file_path: resolved,
-            media_type: info.category,
-            mime_type: info.mime,
+            media_type: mediaType,
+            mime_type: info?.mime ?? descriptiveMimeForPath(resolved),
             display_mode: args.display_mode || "inline",
             file_size: stat.size,
             caption: args.caption || undefined,
