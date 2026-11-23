@@ -71,7 +71,7 @@ import { spaceForFolder, touchSpaceRecentDirectory } from "./space-store.js";
 import { DEFAULT_SPACE_ID } from "shared";
 import { getGitInfo } from "../utils/git.js";
 import { createLogger } from "../utils/logger.js";
-import { toPromptIterable } from "./session-spawn.js";
+import { promptSourceText, toPromptIterable } from "./session-spawn.js";
 
 const log = createLogger("claude");
 
@@ -1922,8 +1922,12 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
   // in thread history. Claimed last, once nothing before the launch can
   // throw; committed when the engine reports the session, put back otherwise.
   // A slash command is left alone — a prefix would stop it being a command —
-  // and its notices wait for the next turn.
-  const isCommand = typeof prompt === "string" && prompt.trimStart().startsWith("/");
+  // and its notices wait for the next turn. An iterable prompt is judged by the
+  // text `toPromptIterable` tagged it with (start_chat_session / continue_chat
+  // can carry an agent's `/compact`); an untagged one, whose text cannot be
+  // read without consuming it, gets no block either.
+  const sourceText = promptSourceText(prompt);
+  const isCommand = sourceText === undefined || sourceText.trimStart().startsWith("/");
   const rideAlong = isCommand ? null : claimRideAlongNotices(trackingId);
   if (rideAlong) {
     effectivePrompt = prependToPrompt(effectivePrompt, rideAlong.text);

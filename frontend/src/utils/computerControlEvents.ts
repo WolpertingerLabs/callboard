@@ -30,14 +30,3 @@ export function emitComputerControlSettled(chatId: string): void {
     }
   }
 }
-
-/**
- * The daemon withdraws requests a takeover, resume or permission change made
- * unrunnable on its 1s watchdog sweep, not in the request itself — so signal
- * now, and again once that sweep has run.
- */
-export const WATCHDOG_SETTLE_MS = 1500;
-export function emitComputerControlSettledSoon(chatId: string): void {
-  emitComputerControlSettled(chatId);
-  setTimeout(() => emitComputerControlSettled(chatId), WATCHDOG_SETTLE_MS);
-}

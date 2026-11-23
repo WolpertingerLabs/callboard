@@ -14,13 +14,28 @@ export interface UserPromptMessage {
 }
 
 /**
+ * The text an iterable prompt was built from, when it was built by
+ * {@link toPromptIterable} — so `sendMessage` can still tell a slash command
+ * from a message without consuming the stream. Absent on any other iterable.
+ */
+export const PROMPT_SOURCE_TEXT = Symbol.for("callboard.promptSourceText");
+
+/** The text behind a prompt: itself for a string, the tagged source for a {@link toPromptIterable} one, else undefined. */
+export function promptSourceText(prompt: string | AsyncIterable<unknown>): string | undefined {
+  if (typeof prompt === "string") return prompt;
+  const tagged = (prompt as { [PROMPT_SOURCE_TEXT]?: unknown })[PROMPT_SOURCE_TEXT];
+  return typeof tagged === "string" ? tagged : undefined;
+}
+
+/**
  * Wrap one text prompt as the async-iterable form `sendMessage` takes (required
- * when MCP servers are present).
+ * when MCP servers are present). Tagged with its text ({@link PROMPT_SOURCE_TEXT}).
  */
 export function toPromptIterable(content: string): AsyncIterable<UserPromptMessage> {
-  return (async function* () {
+  const iterable = (async function* () {
     yield { type: "user" as const, message: { role: "user" as const, content } };
   })();
+  return Object.assign(iterable, { [PROMPT_SOURCE_TEXT]: content });
 }
 
 /**

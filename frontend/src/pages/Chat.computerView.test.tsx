@@ -5,7 +5,7 @@ import Chat from "./Chat";
 import { computerUseClient as client } from "../api/computerUse";
 import { stopChat, getPending, respondToChat, type PendingAction } from "../api";
 
-const fixture = vi.hoisted(() => ({ native: false, active: { type: "web" } }));
+const fixture = vi.hoisted(() => ({ native: false, active: { type: "web" }, metadataVersion: 0 }));
 vi.mock("../api/computerUse", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../api/computerUse")>()),
   computerUseClient: { status: vi.fn(), open: vi.fn(), observe: vi.fn(), control: vi.fn(), action: vi.fn() },
@@ -31,7 +31,7 @@ vi.mock("../api", async (importOriginal) => ({
   respondToChat: vi.fn(() => new Promise(() => {})),
   stopChat: vi.fn(async () => ({ stopped: true })),
 }));
-vi.mock("../contexts/SessionContext", () => ({ useIsSessionActive: () => fixture.active, useMetadataVersion: () => 0 }));
+vi.mock("../contexts/SessionContext", () => ({ useIsSessionActive: () => fixture.active, useMetadataVersion: () => fixture.metadataVersion }));
 vi.mock("../components/PromptInput", () => ({ default: ({ disabled }: { disabled: boolean }) => <textarea aria-label="Composer" disabled={disabled} /> }));
 vi.mock("../components/GitDiffView", () => ({ default: () => <div>Git diff view</div> }));
 vi.mock("../components/ChatDebugPanel", () => ({ default: () => <div>Debug view</div> }));
@@ -674,18 +674,24 @@ it("a refusal that left the request open (403) keeps the card up and shows the e
   expect(screen.getByText(/Click at \(1, 2\)/)).toBeTruthy();
 });
 
-it("a takeover, resume or permission change signals now and again after the daemon's sweep", async () => {
-  vi.useFakeTimers();
+it("a card the daemon withdraws in the background goes away on the next metadata bump, with no stream", async () => {
+  const previous = fixture.active;
+  fixture.active = null as never;
   try {
-    const { onComputerControlSettled, emitComputerControlSettledSoon, WATCHDOG_SETTLE_MS } = await import("../utils/computerControlEvents");
-    const seen: string[] = [];
-    const off = onComputerControlSettled((chatId) => seen.push(chatId));
-    emitComputerControlSettledSoon("c9");
-    expect(seen).toEqual(["c9"]);
-    vi.advanceTimersByTime(WATCHDOG_SETTLE_MS);
-    expect(seen).toEqual(["c9", "c9"]);
-    off();
+    vi.mocked(getPending).mockResolvedValueOnce(actionCard("bg-1")).mockResolvedValue(null);
+    const view = mount();
+    await screen.findByRole("button", { name: "Confirm" });
+    // The watchdog withdrew it (a takeover, a permission change): the daemon bumps metadataVersion.
+    fixture.metadataVersion++;
+    view.rerender(
+      <MemoryRouter initialEntries={["/chat/c1"]}>
+        <Routes>
+          <Route path="/chat/:id" element={<Chat />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Confirm" })).toBeNull());
   } finally {
-    vi.useRealTimers();
+    fixture.active = previous;
   }
 });

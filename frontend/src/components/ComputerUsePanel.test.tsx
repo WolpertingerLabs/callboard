@@ -310,7 +310,7 @@ describe("ComputerUsePanel", () => {
 
   it("a takeover or resume signals the chat to re-read cards the daemon will withdraw", async () => {
     const events = await import("../utils/computerControlEvents");
-    const signal = vi.spyOn(events, "emitComputerControlSettledSoon").mockImplementation(() => {});
+    const signal = vi.spyOn(events, "emitComputerControlSettled").mockImplementation(() => {});
     try {
       render(<Viewer permission="allow" />);
       await ready();

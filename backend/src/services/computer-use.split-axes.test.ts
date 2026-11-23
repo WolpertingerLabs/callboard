@@ -40,7 +40,13 @@ function fixture(levels: { browserControl: string; computerControl: string }) {
     ],
     authorize: (request) => host.authorize(request),
   });
-  const host: ComputerUseHost = new ComputerUseHost(service, drivers, () => current, confirm, () => {});
+  const host: ComputerUseHost = new ComputerUseHost(
+    service,
+    drivers,
+    () => current,
+    confirm,
+    () => {},
+  );
   hosts.push(host);
   /** Enable as the human does: one click under allow, click plus panel confirmation under ask. */
   const enable = async (kind: "browser" | "desktop") => {

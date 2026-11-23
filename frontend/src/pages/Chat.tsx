@@ -159,6 +159,7 @@ import { useSpaces } from "../contexts/SpaceContext";
 import { ALL_SPACES, DEFAULT_SPACE_ID } from "shared/types/space.js";
 import { isImageAttachmentType } from "shared/types/attachment.js";
 import { isRerunPrompt, rerunnableReplies } from "shared/types/rerun.js";
+import { withoutRideAlongBlock } from "shared/types/rideAlong.js";
 import { VOICE_NOT_CONFIGURED_MESSAGE } from "shared/types/voice.js";
 import ModalOverlay from "../components/ModalOverlay";
 import { writesBrowserFallback } from "../utils/spaceDefaults";
@@ -1201,7 +1202,8 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
         const { chat, runError, promptText } = await rerunChatFrom(id, timestamp, role, { expectedParentChatId: chatMeta.treeParentChatId ?? null });
         // The new chat is in place either way. A prompt that could not be sent
         // goes back in its composer, so resending is one click.
-        if (runError && promptText) saveComposerDraft(chat.id, promptText);
+        // Never a stale ride-along notice block: only what the human typed.
+        if (runError && promptText) saveComposerDraft(chat.id, withoutRideAlongBlock(promptText));
         finishRewrite(chat.id);
         if (runError) window.alert(`The chat was replaced, but the prompt could not be sent: ${runError}`);
       } catch (err) {
@@ -3992,6 +3994,20 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
     },
     [id, connectToStream, pendingAction, handleSend, beginResponse, finishResponse, isCurrentPending, setPendingAction, rereadPending],
   );
+
+  // A card the daemon withdraws on its own — its 1s watchdog after a
+  // takeover, a permission change or the session ending, or another tab's
+  // answer — has no stream frame on an idle chat. Every open approval opening
+  // or closing bumps the global metadataVersion (`chat_metadata_updated`, no
+  // new stream event), so re-read while a non-blocking card is up. The version
+  // moves for every chat's metadata; this read is one in-memory lookup.
+  const pendingSeenVersionRef = useRef(metadataVersion);
+  const showingOpenRequest = !!pendingAction?.nonBlocking;
+  useEffect(() => {
+    if (!id || metadataVersion === pendingSeenVersionRef.current) return;
+    pendingSeenVersionRef.current = metadataVersion;
+    if (showingOpenRequest) rereadPending(id, { clearIfNone: true });
+  }, [id, metadataVersion, showingOpenRequest, rereadPending]);
 
   // A Computer-view Stop or Revoke withdraws requests aimed at its sessions;
   // the daemon can only take the card down in a tab with a live stream.

@@ -157,6 +157,33 @@ describe("ride-along notices", () => {
     expect(await firstPromptText(provider.queryRecords[1].request.prompt)).toBe("again");
   });
 
+  it("writes a block the transcript splits back off under the strict format, leaving the human's text", async () => {
+    const { splitRideAlongBlock } = await import("shared/types/index.js");
+    const chat = stored("ride-format");
+    // A notice as the host writes them: multi-line, opening with the shared prefix.
+    enqueueChatNotice(
+      chat.id,
+      "🖥️ Computer control update — GUI action request withdrawn. (This message is from Callboard, not typed by the human.)\n\nYour request R3 was withdrawn.",
+      { wake: false },
+    );
+    const provider = quickProvider();
+    await finished(await sendMessage({ chatId: chat.id, prompt: "hello" } as never));
+    const split = splitRideAlongBlock(await firstPromptText(provider.queryRecords[0].request.prompt));
+    expect(split).toEqual({ notices: [expect.stringContaining("Your request R3 was withdrawn.")], rest: "hello" });
+  });
+
+  it("leaves a slash command alone, also one sent as an iterable, and keeps the notices for the next turn", async () => {
+    const { toPromptIterable } = await import("./session-spawn.js");
+    const chat = stored("ride-command");
+    enqueueChatNotice(chat.id, "R4-MARKER withdrawn.", { wake: false });
+    const provider = quickProvider();
+    // What continue_chat sends on an agent's behalf.
+    await finished(await sendMessage({ chatId: chat.id, prompt: toPromptIterable("/compact") } as never));
+    expect(await firstPromptText(provider.queryRecords[0].request.prompt)).toBe("/compact");
+    await finished(await sendMessage({ chatId: chat.id, prompt: "next" } as never));
+    expect(await firstPromptText(provider.queryRecords[1].request.prompt)).toContain("R4-MARKER");
+  });
+
   it("a turn that fails before the engine reports a session puts them back for the next turn", async () => {
     const chat = stored("ride-launch-fails");
     enqueueChatNotice(chat.id, "R2-MARKER withdrawn.", { wake: false });

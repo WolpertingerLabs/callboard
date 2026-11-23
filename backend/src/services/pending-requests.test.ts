@@ -15,6 +15,7 @@ import {
   openHumanApproval,
   pendingRequestRequiresHuman,
   pendingRequests,
+  recentResolution,
   respondToPermission,
 } from "./pending-requests.js";
 import { sessionRegistry } from "./session-registry.js";
@@ -195,5 +196,32 @@ it.each(["permission_request", "user_question", "plan_review"] as const)("stale 
     expect(resolve).not.toHaveBeenCalled();
     expect(respondToPermission(CHAT, false)).toMatchObject({ ok: true });
     expect(resolve).toHaveBeenCalledWith(expect.objectContaining({ behavior: "deny" }));
+  }
+});
+
+it("remembers how a request ended for its own chat only", () => {
+  liveChat();
+  const withdrawn = openHumanApproval(CHAT, request, vi.fn());
+  withdrawn.cancel("you pressed Stop");
+  expect(recentResolution(CHAT, withdrawn.requestId)).toBe("it was withdrawn because you pressed Stop");
+  // The same id quoted against another chat answers nothing.
+  expect(recentResolution("some-other-chat", withdrawn.requestId)).toBeUndefined();
+  const answered = openHumanApproval(CHAT, request, vi.fn());
+  respondToPermission(CHAT, false, undefined, undefined, answered.requestId);
+  expect(recentResolution(CHAT, answered.requestId)).toBe("it was already answered");
+});
+
+it("bumps the polled metadata version whenever an open approval opens or closes", () => {
+  liveChat();
+  const notify = vi.spyOn(sessionRegistry, "notifyMetadata");
+  try {
+    const approval = openHumanApproval(CHAT, request, vi.fn());
+    expect(notify).toHaveBeenLastCalledWith(CHAT, { openApprovals: true });
+    approval.cancel();
+    expect(notify).toHaveBeenCalledTimes(2);
+    respondToPermission(CHAT, true, undefined, undefined, openHumanApproval(CHAT, request, vi.fn()).requestId);
+    expect(notify).toHaveBeenCalledTimes(4);
+  } finally {
+    notify.mockRestore();
   }
 });

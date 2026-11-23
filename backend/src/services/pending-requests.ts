@@ -261,25 +261,38 @@ interface OpenApprovalEntry {
 const openApprovals = new Map<string, OpenApprovalEntry>();
 
 /**
- * requestId → how a recently closed open approval ended, in human-facing
- * words. Bounded: only a tab still showing the card needs it, and only until
- * it re-reads.
+ * `chatId:requestId` → how a recently closed open approval ended, in
+ * human-facing words. Keyed by the chat too, so a request id never answers
+ * for another chat's card. Bounded: only a tab still showing the card needs
+ * it, and only until it re-reads.
  */
 const recentResolutions = new Map<string, string>();
 const MAX_RECENT_RESOLUTIONS = 200;
-function rememberResolution(requestId: string, text: string) {
-  recentResolutions.delete(requestId);
-  recentResolutions.set(requestId, text);
+const resolutionKey = (chatId: string, requestId: string) => `${chatId}:${requestId}`;
+function rememberResolution(chatId: string, requestId: string, text: string) {
+  const key = resolutionKey(chatId, requestId);
+  recentResolutions.delete(key);
+  recentResolutions.set(key, text);
   while (recentResolutions.size > MAX_RECENT_RESOLUTIONS) recentResolutions.delete(recentResolutions.keys().next().value!);
 }
 
 /**
- * Why the open approval `requestId` is no longer open — "it was already
+ * Why `chatId`'s open approval `requestId` is no longer open — "it was already
  * answered", "you pressed Stop" — when it closed recently, so a late answer
  * from a tab still showing the card can be told why instead of "refresh".
  */
-export function recentResolution(requestId: unknown): string | undefined {
-  return typeof requestId === "string" ? recentResolutions.get(requestId) : undefined;
+export function recentResolution(chatId: string, requestId: unknown): string | undefined {
+  return typeof requestId === "string" ? recentResolutions.get(resolutionKey(chatId, requestId)) : undefined;
+}
+
+/**
+ * An open approval opened or closed: bump the metadata version every tab
+ * polls (`chat_metadata_updated`, no new stream event), so a tab showing a
+ * card that was withdrawn in the background — the watchdog, another tab —
+ * re-reads `/pending` even with no stream to tell it.
+ */
+function signalOpenApprovalsChanged(chatId: string) {
+  sessionRegistry.notifyMetadata(chatId, { openApprovals: true });
 }
 
 function firstOpenApproval(chatId: string): [string, OpenApprovalEntry] | undefined {
@@ -317,7 +330,8 @@ function answerOpenApproval(chatId: string, allow: boolean, requestId: unknown):
   const entry = openApprovals.get(requestId);
   if (!entry || entry.chatId !== chatId) return { ok: false };
   openApprovals.delete(requestId);
-  rememberResolution(requestId, "it was already answered");
+  rememberResolution(chatId, requestId, "it was already answered");
+  signalOpenApprovalsChanged(chatId);
   log.info(`[PERM-DIAG] open approval for ${entry.toolName} on ${chatId} → ${allow ? "approved" : "denied"} by the human`);
   let completion: Promise<ApprovalCompletion> | void;
   try {
@@ -362,6 +376,7 @@ export function openHumanApproval(chatId: string, request: HumanApprovalRequest,
   };
   const visible = !pendingRequests.has(chatId) && firstOpenApproval(chatId) === undefined;
   openApprovals.set(requestId, entry);
+  signalOpenApprovalsChanged(chatId);
   const emitter = sessionRegistry.get(chatId)?.emitter;
   if (visible && emitter) emitter.emit("event", { type: "permission_request", content: "", ...approvalEventData(requestId, entry) } as StreamEvent);
   return {
@@ -370,7 +385,8 @@ export function openHumanApproval(chatId: string, request: HumanApprovalRequest,
     cancel: (humanReason) => {
       if (openApprovals.get(requestId) !== entry) return false;
       openApprovals.delete(requestId);
-      rememberResolution(requestId, humanReason ? `it was withdrawn because ${humanReason}` : "it was withdrawn");
+      rememberResolution(chatId, requestId, humanReason ? `it was withdrawn because ${humanReason}` : "it was withdrawn");
+      signalOpenApprovalsChanged(chatId);
       log.info(`[PERM-DIAG] open approval for ${entry.toolName} on ${chatId} withdrawn`);
       return true;
     },

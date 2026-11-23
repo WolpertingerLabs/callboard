@@ -806,14 +806,14 @@ streamRouter.post("/:id/respond", async (req, res) => {
   } */
   /* #swagger.responses[200] = { description: "Response accepted" } */
   /* #swagger.responses[403] = { description: "This prompt requires a signed-in, same-origin human session (computer-control confirmations)" } */
-  /* #swagger.responses[409] = { description: "Missing or stale human-only request identity; prompt was not consumed" } */
+  /* #swagger.responses[409] = { description: "Missing or stale human-only request identity; prompt was not consumed. With code \"resolved\": the computer-control request named by requestId was already answered or withdrawn, and error says which (e.g. \"That request was already resolved or withdrawn: it was withdrawn because you pressed Stop.\") — also returned when nothing else is pending for the chat." } */
   /* #swagger.responses[404] = { description: "No pending request" } */
   const { allow, updatedInput, updatedPermissions, requestId } = req.body ?? {};
   if (typeof allow !== "boolean") return res.status(400).json({ error: "allow must be a boolean" });
   if (!hasPendingRequest(req.params.id)) {
     // Nothing open — but a tab still showing a card that was resolved or
     // withdrawn should learn why, not just that there is nothing here.
-    const resolution = recentResolution(requestId);
+    const resolution = recentResolution(req.params.id, requestId);
     if (resolution) return res.status(409).json({ error: `That request was already resolved or withdrawn: ${resolution}.`, code: "resolved" });
     return res.status(404).json({ error: "No pending request" });
   }
@@ -841,7 +841,7 @@ streamRouter.post("/:id/respond", async (req, res) => {
     // A computer-control card the tab is still showing may have been answered
     // elsewhere or withdrawn (Stop, Revoke, a permission change…), and an idle
     // chat has no stream to say so. Tell the human which, in their terms.
-    const resolution = recentResolution(requestId);
+    const resolution = recentResolution(req.params.id, requestId);
     if (resolution) return res.status(409).json({ error: `That request was already resolved or withdrawn: ${resolution}.`, code: "resolved" });
     return res.status(409).json({ error: "This prompt changed or expired. Refresh the pending request before answering." });
   }

@@ -83,7 +83,7 @@ it("saving the chat's permissions signals the chat to re-read its open computer-
   const api = await import("../api");
   const events = await import("../utils/computerControlEvents");
   const spy = vi.spyOn(api, "updateChatPermissions").mockResolvedValue({} as never);
-  const signal = vi.spyOn(events, "emitComputerControlSettledSoon").mockImplementation(() => {});
+  const signal = vi.spyOn(events, "emitComputerControlSettled").mockImplementation(() => {});
   render(
     <ChatPermissionsModal
       isOpen

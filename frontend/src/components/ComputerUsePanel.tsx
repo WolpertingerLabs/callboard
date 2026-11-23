@@ -7,7 +7,7 @@ import "./ComputerUsePanel.css";
 import ComputerUseExpandedView from "./ComputerUseExpandedView";
 import type { ComputerUseController } from "../hooks/useComputerUseController";
 import { errorMessage } from "../utils/errorMessage";
-import { emitComputerControlSettled, emitComputerControlSettledSoon } from "../utils/computerControlEvents";
+import { emitComputerControlSettled } from "../utils/computerControlEvents";
 
 // Bound presentation, not server execution. Keep a little headroom over the
 // service's default 30 s driver timeout; a lost response or image load/decode must not
@@ -418,9 +418,10 @@ export default function ComputerUsePanel({
           const result = await client.control(chatId, session.id, operation, session.generation, operation === "approve" ? undefined : signal);
           acceptResponse(result, !signal.aborted);
           if (operation === "stop" || operation === "revoke") emitComputerControlSettled(chatId);
-          // A takeover or resume makes a pending action unrunnable; the daemon
-          // withdraws it on its next sweep.
-          else if (operation === "takeover" || operation === "resume") emitComputerControlSettledSoon(chatId);
+          // A takeover or resume makes a pending action unrunnable. The daemon
+          // withdraws it on its next sweep, which reaches the chat as a
+          // metadataVersion bump; this re-read covers anything already settled.
+          else if (operation === "takeover" || operation === "resume") emitComputerControlSettled(chatId);
         } catch (error) {
           // Stopping a session the server no longer knows is settled, not failed:
           // record it as closed so the shared emergency ledger stops retrying it.
