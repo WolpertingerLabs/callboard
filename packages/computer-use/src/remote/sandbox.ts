@@ -7,8 +7,10 @@
  * This module only builds an argument vector. It never runs Docker, and it
  * never sees the token itself: only the path of a file holding it.
  */
+import { execFile } from "node:child_process";
 import { isAbsolute } from "node:path";
 import { ComputerUseError } from "../contracts.js";
+import { PROTOCOL } from "./protocol.js";
 
 /** Where the image expects the token file (a read-only bind mount; see the Dockerfile). */
 export const SANDBOX_TOKEN_PATH = "/run/computer-use/token";
@@ -17,6 +19,23 @@ export const SANDBOX_CONTAINER_PORT = 7801;
 export const SANDBOX_DEFAULT_IMAGE = "callboard/computer-use-desktop:local";
 /** Uid/gid of the image's `desktop` user, which owns the tmpfs home. */
 export const SANDBOX_DESKTOP_UID = 10001;
+/**
+ * The bridge network sandboxes run on by default: created by Callboard, with
+ * inter-container communication disabled, so one sandbox (or anything else on
+ * that network) cannot reach another's driver host. See {@link ensureSandboxNetwork}.
+ */
+export const SANDBOX_NETWORK = "callboard-sandbox";
+/** Label on a network that Callboard created for sandboxes. */
+export const SANDBOX_NETWORK_LABEL = "dev.callboard.sandbox-network";
+/**
+ * Image labels, so a host can check an image before `docker run`: the package
+ * version it was built from, and the protocol its driver host speaks
+ * (`"<major>.<minor>"`; compare the major with {@link PROTOCOL}).
+ */
+export const SANDBOX_IMAGE_LABELS = Object.freeze({
+  version: "org.opencontainers.image.version",
+  protocol: "dev.callboard.computer-use.protocol",
+});
 
 export interface SandboxLimits {
   /** Memory, and memory+swap (no swap beyond it). Docker syntax, default "1g". */
@@ -43,6 +62,12 @@ export interface SandboxRunOptions {
   limits?: SandboxLimits;
   /** Remove the container when it stops (default true). */
   remove?: boolean;
+  /**
+   * Docker network (default {@link SANDBOX_NETWORK}; create it with
+   * {@link ensureSandboxNetwork}). Must be a bridge network for the port to be
+   * published; `host`, `none` and `container:…` are refused.
+   */
+  network?: string;
 }
 
 export const SANDBOX_DEFAULT_LIMITS: Readonly<Required<SandboxLimits>> = Object.freeze({
@@ -73,9 +98,17 @@ const LABEL_KEY = /^[a-zA-Z0-9][a-zA-Z0-9_.\-/]{0,127}$/;
  * - **Bounded:** pids, memory (no extra swap) and CPU.
  * - **Loopback only.** The port is published on 127.0.0.1. The token is the
  *   whole authentication, so this must never be widened to 0.0.0.0.
+ * - **Its own network.** A user-defined bridge ({@link SANDBOX_NETWORK} by
+ *   default) with inter-container communication disabled, so other containers
+ *   on it cannot reach the driver host, which listens on all of the
+ *   container's interfaces so the published port works. This does not stop
+ *   the container reaching the *host's* own addresses (the bridge gateway):
+ *   services on this machine that listen on all interfaces are reachable from
+ *   the desktop. Bind them to 127.0.0.1, or firewall the bridge. Outbound
+ *   internet access is allowed; restricting it (an `--internal` network with an
+ *   egress proxy, or host firewall rules) is a decision for whoever runs these.
  * - **No Docker socket**, no host paths except the token file (read-only), no
- *   devices, no privileged mode. Outbound network stays on the default bridge;
- *   attach a restricted network separately if egress must be limited.
+ *   devices, no privileged mode.
  */
 export function sandboxRunArgs(options: SandboxRunOptions): string[] {
   const limits = { ...SANDBOX_DEFAULT_LIMITS, ...options.limits };
@@ -93,6 +126,9 @@ export function sandboxRunArgs(options: SandboxRunOptions): string[] {
       throw new ComputerUseError("invalid_request", `Invalid label ${JSON.stringify(key)}`);
   const image = options.image ?? SANDBOX_DEFAULT_IMAGE;
   if (image.startsWith("-")) throw new ComputerUseError("invalid_request", "Invalid image");
+  const network = options.network ?? SANDBOX_NETWORK;
+  if (!NAME.test(network) || ["host", "none", "bridge", "default"].includes(network))
+    throw new ComputerUseError("invalid_request", "The sandbox network must be a named, user-defined bridge network");
   return [
     "run",
     "--detach",
@@ -112,6 +148,7 @@ export function sandboxRunArgs(options: SandboxRunOptions): string[] {
     `--memory=${limits.memory}`,
     `--memory-swap=${limits.memory}`,
     `--cpus=${limits.cpus}`,
+    `--network=${network}`,
     "--publish",
     `127.0.0.1:${options.port === 0 ? "" : options.port}:${SANDBOX_CONTAINER_PORT}`,
     "--mount",
@@ -119,3 +156,46 @@ export function sandboxRunArgs(options: SandboxRunOptions): string[] {
     image,
   ];
 }
+
+/** `docker network create` arguments for a sandbox network: bridge, no inter-container traffic, labelled. */
+export function sandboxNetworkCreateArgs(name: string = SANDBOX_NETWORK): string[] {
+  if (!NAME.test(name)) throw new ComputerUseError("invalid_request", "Invalid network name");
+  return ["network", "create", "--driver", "bridge", "--opt", "com.docker.network.bridge.enable_icc=false", "--label", `${SANDBOX_NETWORK_LABEL}=1`, name];
+}
+
+/**
+ * Make sure the sandbox network exists, and that it isolates containers from
+ * each other. Creates it if missing. An existing network of that name that is
+ * not a bridge with inter-container communication disabled is refused rather
+ * than used: a sandbox on it would be reachable from its neighbours.
+ */
+export async function ensureSandboxNetwork(options: { name?: string; docker?: string; signal?: AbortSignal } = {}): Promise<void> {
+  const name = options.name ?? SANDBOX_NETWORK;
+  const docker = options.docker ?? "docker";
+  const run = (args: string[]) =>
+    new Promise<string>((resolve, reject) =>
+      execFile(docker, args, { encoding: "utf8", timeout: 30_000, signal: options.signal }, (error, stdout) => (error ? reject(error) : resolve(stdout))),
+    );
+  const inspect = async () => {
+    try {
+      return JSON.parse(await run(["network", "inspect", name]))[0] as { Driver?: string; Options?: Record<string, string> } | undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  let network = await inspect();
+  if (!network) {
+    // Another process may create it between our inspect and create; inspect again either way.
+    await run(sandboxNetworkCreateArgs(name)).catch(() => {});
+    network = await inspect();
+  }
+  if (!network) throw new ComputerUseError("unsupported", `Could not create Docker network ${name}`);
+  if (network.Driver !== "bridge" || network.Options?.["com.docker.network.bridge.enable_icc"] !== "false")
+    throw new ComputerUseError(
+      "invalid_request",
+      `Docker network ${name} exists but is not a bridge with inter-container communication disabled; remove it or pick another name`,
+    );
+}
+
+/** The protocol label value this release's image carries. */
+export const SANDBOX_PROTOCOL_LABEL_VALUE = `${PROTOCOL.major}.${PROTOCOL.minor}`;

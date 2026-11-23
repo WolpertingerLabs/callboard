@@ -29,17 +29,25 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       xvfb xdotool imagemagick icewm xterm x11-xserver-utils fonts-dejavu-core fonts-wqy-microhei tini \
  # The dependency closure drags in things this headless, GL-less desktop never
- # loads; purged deliberately (about 250 MB), and verified by the Docker test:
+ # loads; purged deliberately (about 250 MB), and verified by the Docker test.
+ # --force-depends leaves apt's dependency state broken ON PURPOSE: nothing
+ # installs packages at runtime (npm and apt lists are gone too), and a later
+ # `apt-get install` in a derived image must start by `apt-get -f install`.
  #  - mesa's DRI drivers + LLVM + z3: Xvfb's optional GLX loader. Without them
  #    Xvfb runs without GLX, which xdotool, import, icewm and xterm don't use.
  #  - cpp: needed only by xrdb in x11-xserver-utils; we use xhost alone.
  #  - Ghostscript, its fonts and poppler-data: imlib2's PostScript loader (via icewm).
- && dpkg --purge --force-depends \
-      libgl1-mesa-dri libllvm15 libz3-4 cpp cpp-12 libspectre1 libgs10 libgs10-common fonts-urw-base35 poppler-data \
+ && purged="libgl1-mesa-dri libllvm15 libz3-4 cpp cpp-12 libspectre1 libgs10 libgs10-common fonts-urw-base35 poppler-data" \
+ && dpkg --purge --force-depends $purged \
+ && for p in $purged; do if dpkg -s "$p" >/dev/null 2>&1; then echo "still installed: $p" >&2; exit 1; fi; done \
  && rm -rf /var/lib/apt/lists/* /usr/share/doc /usr/share/man \
  # The runtime never installs packages: drop npm, npx and corepack.
  && rm -rf /usr/local/lib/node_modules /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack /opt/yarn-* /usr/local/bin/yarn /usr/local/bin/yarnpkg \
  && test -x /usr/bin/xdotool && test -x /usr/bin/import \
+ # No setuid/setgid programs (su, mount, passwd, …). no-new-privileges already
+ # makes them inert; without the bits there is nothing to make inert.
+ && find / -xdev -type f -perm /6000 -exec chmod ug-s {} + \
+ && test -z "$(find / -xdev -type f -perm /6000 -print -quit)" \
  # Xvfb runs unprivileged; its socket directory must be root-owned (it is
  # recreated on the /tmp tmpfs at start, too).
  && mkdir -p /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix
@@ -75,6 +83,14 @@ ENV COMPUTER_USE_DISPLAY=:99 \
     # (its filesystem, processes and network), and authorization lives in the
     # Callboard ComputerUseService that connects to the driver host.
     COMPUTER_USE_ACKNOWLEDGE_FULL_DESKTOP_ACCESS=1
+
+# For a host to check before `docker run` (SANDBOX_IMAGE_LABELS in the package).
+# A unit test keeps these in step with package.json and PROTOCOL.
+LABEL org.opencontainers.image.title="callboard-computer-use-desktop" \
+      org.opencontainers.image.version="0.1.0" \
+      org.opencontainers.image.source="https://github.com/WolpertingerLabs/callboard" \
+      org.opencontainers.image.licenses="MIT" \
+      dev.callboard.computer-use.protocol="2.0"
 
 EXPOSE 7801
 # Starts as root only to split the desktop and the driver host into their two

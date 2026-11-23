@@ -7,7 +7,15 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
-import { ComputerUseService, createRemoteDriver, sandboxRunArgs } from "../dist/index.js";
+import {
+  ComputerUseService,
+  SANDBOX_IMAGE_LABELS,
+  SANDBOX_PROTOCOL_LABEL_VALUE,
+  createRemoteDriver,
+  ensureSandboxNetwork,
+  sandboxRunArgs,
+} from "../dist/index.js";
+import { PROTOCOL, hostProof, newNonce, sessionCredential } from "../dist/remote/protocol.js";
 
 // Live end-to-end qualification of the X11 driver inside the remote desktop
 // container, through createRemoteDriver + ComputerUseService. Needs Docker:
@@ -42,6 +50,12 @@ test(
     const log = (...m) => t.diagnostic(m.join(" "));
     await docker(["build", "-q", "-t", image, "-f", join(packageDir, "docker", "Dockerfile"), packageDir]);
     log(`built ${image}`);
+    // Labels a host checks before `docker run`.
+    const [imageInfo] = JSON.parse((await docker(["image", "inspect", image])).toString());
+    const { version } = JSON.parse((await import("node:fs")).readFileSync(join(packageDir, "package.json"), "utf8"));
+    assert.equal(imageInfo.Config.Labels[SANDBOX_IMAGE_LABELS.version], version);
+    assert.equal(imageInfo.Config.Labels[SANDBOX_IMAGE_LABELS.protocol], SANDBOX_PROTOCOL_LABEL_VALUE);
+    log(`labels: version ${version}, protocol ${SANDBOX_PROTOCOL_LABEL_VALUE}`);
 
     // The token reaches the container only as a read-only file mount, as sandboxRunArgs builds it.
     const tokenDir = await mkdtemp(join(tmpdir(), "callboard-cu-test-"));
@@ -50,24 +64,39 @@ test(
     const token = randomBytes(32).toString("hex");
     const tokenFile = join(tokenDir, "token");
     await writeFile(tokenFile, `${token}\n`, { mode: 0o444 });
-    const name = `callboard-cu-test-${randomUUID().slice(0, 8)}`;
+    const suffix = randomUUID().slice(0, 8);
+    const name = `callboard-cu-test-${suffix}`;
+    // Its own network, so the test never touches a shared one (other sandboxes may be running).
+    const network = `callboard-sandbox-test-${suffix}`;
+    await ensureSandboxNetwork({ name: network });
     // Random host port on loopback, every hardening flag (see src/remote/sandbox.ts).
-    await docker(sandboxRunArgs({ port: 0, tokenFile, image, name, labels: { "dev.callboard.test": "docker-desktop" } }));
+    await docker(sandboxRunArgs({ port: 0, tokenFile, image, name, network, labels: { "dev.callboard.test": "docker-desktop" } }));
+    // after-hooks run in order: the container goes before its network.
     t.after(() => docker(["rm", "-f", name]).catch(() => {}));
+    t.after(() => docker(["network", "rm", network]).catch(() => {}));
     const mapping = (await docker(["port", name, "7801/tcp"])).toString().trim().split("\n")[0];
     assert.match(mapping, /^127\.0\.0\.1:\d+$/, "published on loopback only");
     const url = `http://${mapping}`;
     log(`container ${name} on ${url}`);
 
-    // Wait for the driver host.
+    // Wait for the driver host, which must prove it holds the token.
+    const driver = createRemoteDriver({ url, token });
     const deadline = Date.now() + 60_000;
+    let identity;
     for (;;) {
-      const res = await fetch(`${url}/v1/identity`, { headers: { Authorization: `Bearer ${token}` } }).catch(() => undefined);
-      if (res?.ok) break;
+      identity = await driver.identity().catch(() => undefined);
+      if (identity) break;
       if (Date.now() > deadline) throw new Error(`driver host did not come up: ${(await docker(["logs", name]).catch(() => "")).toString()}`);
       await delay(250);
     }
-    assert.equal((await fetch(`${url}/v1/identity`)).status, 401, "no token, no answer");
+    assert.deepEqual(identity.protocol, { ...PROTOCOL });
+    log(`handshake: proof verified, protocol ${identity.protocol.major}.${identity.protocol.minor}, capabilities ${identity.capabilities.join(",")}`);
+    assert.equal((await fetch(`${url}/v2/probe`, { method: "POST" })).status, 401, "no credential, no answer");
+    assert.equal(
+      (await fetch(`${url}/v2/probe`, { method: "POST", headers: { Authorization: `Bearer ${token}` } })).status,
+      401,
+      "the raw token is not a credential",
+    );
 
     // Hardening, as Docker reports it.
     const [inspect] = JSON.parse((await docker(["inspect", name])).toString());
@@ -91,7 +120,40 @@ test(
       hc.PortBindings["7801/tcp"].map((b) => b.HostIp),
       ["127.0.0.1"],
     );
-    log("hardening: read-only root, cap-drop ALL (+SETUID/SETGID), no-new-privileges, pids 256, 1g, 1 cpu, tmpfs home+/tmp, token mount ro");
+    assert.equal(hc.NetworkMode, network);
+    log("hardening: read-only root, cap-drop ALL (+SETUID/SETGID), no-new-privileges, pids 256, 1g, 1 cpu, tmpfs home+/tmp, token mount ro, own network");
+
+    // Neighbours: another container on the same network cannot reach the
+    // driver host (inter-container communication is off), while the same probe
+    // from inside the sandbox's own network namespace can — so it is the
+    // network that blocks it, not the probe that is broken.
+    const target = inspect.NetworkSettings.Networks[network].IPAddress;
+    const reach = async (where, address) =>
+      (
+        await docker([
+          "run",
+          "--rm",
+          ...where,
+          "--entrypoint",
+          "node",
+          image,
+          "-e",
+          `fetch("http://${address}:7801/hello",{method:"POST",body:"{}",signal:AbortSignal.timeout(3000)}).then(r=>console.log("reached "+r.status),e=>console.log("blocked "+(e.cause?.code||e.name)))`,
+        ])
+      )
+        .toString()
+        .trim();
+    const neighbour = await reach(["--network", network], target);
+    const self = await reach(["--network", `container:${name}`], "127.0.0.1");
+    log(`isolation: neighbour on ${network} -> ${target}:7801 ${neighbour}; same namespace -> ${self}`);
+    assert.match(neighbour, /^blocked/);
+    assert.match(self, /^reached 400$/);
+
+    // No setuid programs, and the driver's temp directory is its own.
+    assert.equal((await docker(["exec", name, "sh", "-c", "find / -xdev -type f -perm /6000 2>/dev/null; true"])).toString().trim(), "");
+    assert.equal((await docker(["exec", name, "stat", "-c", "%U %a", "/tmp/.computer-use-driver"])).toString().trim(), "driver 700");
+    // A desktop user squatting the old shared lock location changes nothing (opened below).
+    await docker(["exec", "-u", "desktop", name, "mkdir", "-p", "/tmp/computer-use-x11-10002"]);
 
     // Inside: after startup nothing runs as root or holds a capability, the
     // token is unreachable from the desktop user, and no environment has it.
@@ -142,7 +204,6 @@ test(
     // A CJK-capable font is installed for xterm's fallback.
     assert.match((await docker(["exec", "-u", "desktop", name, "fc-match", "-f", "%{family}", ":lang=ja"])).toString(), /WenQuanYi/);
 
-    const driver = createRemoteDriver({ url, token });
     const service = new ComputerUseService({ targets: [{ id: "remote-desktop", enabled: true, driver }], authorize: () => "allow" });
     t.after(() => service.dispose());
     const principal = { ownerId: "docker-test", actorId: "agent:docker-test", role: "agent" };
@@ -172,12 +233,21 @@ test(
     assert.equal(first.frame.height, 800);
 
     let frame = first;
-    const act = async (action) => {
+    /** Act, then observe; with `changes`, poll until the screen differs from before the action (no fixed sleep). */
+    const act = async (action, { changes = false } = {}) => {
       const started = Date.now();
+      const previous = frame.digest;
       await service.act(principal, { ...ref, leaseId: lease.leaseId, frameId: frame.frameId, actionId: randomUUID(), action });
-      log(`act ${action.type}${action.key ? ` ${action.key}` : ""}${action.text ? ` (${[...action.text].length} chars)` : ""}: ${Date.now() - started}ms`);
-      await delay(150);
+      const acted = Date.now() - started;
       frame = await observe();
+      for (const until = Date.now() + 5000; changes && frame.digest === previous && Date.now() < until; ) {
+        await delay(25);
+        frame = await observe();
+      }
+      log(
+        `act ${action.type}${action.key ? ` ${action.key}` : ""}${action.text ? ` (${[...action.text].length} chars)` : ""}: ${acted}ms${changes ? `, screen changed after ${Date.now() - started}ms` : ""}`,
+      );
+      if (changes) assert.notEqual(frame.digest, previous, `${action.type} did not change the screen`);
       return frame;
     };
     const pointer = async () => (await docker(["exec", "-u", "desktop", "-e", "DISPLAY=:99", name, "xdotool", "getmouselocation"])).toString().trim();
@@ -190,14 +260,11 @@ test(
     await act({ type: "click", x: 400, y: 300 });
 
     // Type, then clear the line with a key chord: the frame must change, then return.
-    const blank = frame.digest;
-    const typed = await act({ type: "type", text: "throwaway text" });
-    assert.notEqual(typed.digest, blank, "typing changed the screen");
-    const cleared = await act({ type: "key", key: "Control+u" });
-    assert.notEqual(cleared.digest, typed.digest, "Control+u changed the screen");
+    await act({ type: "type", text: "throwaway text" }, { changes: true });
+    await act({ type: "key", key: "Control+u" }, { changes: true });
 
     // Non-ASCII typing remaps a scratch keycode per character; the desktop must keep up.
-    await act({ type: "type", text: "é ü ß € → 日本 ñ" });
+    await act({ type: "type", text: "é ü ß € → 日本 ñ" }, { changes: true });
     await act({ type: "key", key: "Control+u" });
     await act({ type: "move", x: 10, y: 10 });
     assert.match(await pointer(), /^x:10 y:10 /, "pointer still responsive after non-ASCII typing");
@@ -205,10 +272,8 @@ test(
 
     // Write a file into the outbox through the app itself.
     const nonce = randomBytes(8).toString("hex");
-    const before = frame.digest;
-    await act({ type: "type", text: `echo cu-${nonce} > ~/outbox/from-app.txt` });
-    const after = await act({ type: "key", key: "Enter" });
-    assert.notEqual(after.digest, before, "frame changed after typing and Enter");
+    await act({ type: "type", text: `echo cu-${nonce} > ~/outbox/from-app.txt` }, { changes: true });
+    const after = await act({ type: "key", key: "Enter" }, { changes: true });
     assert.notEqual(after.digest, first.digest);
 
     let entries = [];
@@ -218,7 +283,8 @@ test(
     }
     const expectedApp = Buffer.from(`cu-${nonce}\n`);
     const appEntry = entries.find((e) => e.name === "from-app.txt");
-    assert.deepEqual(appEntry, { name: "from-app.txt", size: expectedApp.length, sha256: sha256(expectedApp) });
+    assert.deepEqual({ ...appEntry, mtimeMs: 0 }, { name: "from-app.txt", size: expectedApp.length, sha256: sha256(expectedApp), mtimeMs: 0 });
+    assert.ok(appEntry.mtimeMs > Date.now() - 600_000);
     const appFile = await driver.downloadOutboxFile("from-app.txt");
     assert.equal(appFile.data.toString(), expectedApp.toString());
     assert.equal(appFile.sha256, sha256(expectedApp));
@@ -241,10 +307,22 @@ test(
     log(`outbox exec.bin: ${execFileEntry.size} bytes sha256 ${execFileEntry.sha256}`);
     await assert.rejects(driver.downloadOutboxFile("passwd-link"), { code: "not_found" });
     await assert.rejects(driver.downloadOutboxFile("../.bashrc"), { code: "invalid_request" });
-    assert.equal(
-      (await fetch(`${url}/v1/outbox/..%2F.bashrc`, { headers: { Authorization: `Bearer ${token}`, "X-Computer-Use-Protocol": "1.0" } })).status,
-      400,
-    );
+    // Raw, skipping the client's own checks: the host refuses too.
+    const nonceForRaw = newNonce();
+    const helloRaw = await (await fetch(`${url}/hello`, { method: "POST", body: JSON.stringify({ nonce: nonceForRaw, protocol: PROTOCOL }) })).json();
+    assert.equal(helloRaw.proof, hostProof(token, nonceForRaw, helloRaw.instanceId, helloRaw.protocol));
+    const rawHeaders = { Authorization: `Bearer ${sessionCredential(token, helloRaw.instanceId, nonceForRaw)}`, "X-Computer-Use-Protocol": "2.0" };
+    assert.equal((await fetch(`${url}/v2/outbox/..%2F.bashrc`, { headers: rawHeaders })).status, 400);
+
+    // The reviewer's exploit, made deterministic: the desktop user swaps its
+    // outbox for a symlink to the token's directory. The host must not follow it.
+    await docker(["exec", "-u", "desktop", name, "sh", "-c", "mv ~/outbox ~/outbox.real && ln -s /run/computer-use ~/outbox"]);
+    assert.deepEqual(await driver.listOutbox(), []);
+    await assert.rejects(driver.downloadOutboxFile("token"), { code: "not_found" });
+    assert.equal((await fetch(`${url}/v2/outbox/token`, { headers: rawHeaders })).status, 404);
+    await docker(["exec", "-u", "desktop", name, "sh", "-c", "rm ~/outbox && mv ~/outbox.real ~/outbox"]);
+    assert.equal((await driver.listOutbox()).length, 2);
+    log("outbox: symlink swap to /run/computer-use refused (listing empty, token 404), restored");
 
     // Stop: the session ends and a new one can open (the input lock was released).
     await service.stop(principal, ref.sessionId);

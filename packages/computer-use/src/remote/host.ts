@@ -5,50 +5,55 @@
  * This is deliberately not an MCP server and holds no authority of its own.
  * It knows nothing about owners, leases, approvals, frames or TTLs: the service
  * on the other end decides whether an operation may happen, and this host only
- * performs it. What it does enforce is transport hygiene: a bearer token on
- * every request (compared in constant time), the action grammar, bounded
- * request sizes, a bounded operation time, and — the property that matters for
- * input safety — a session lives exactly as long as the client's attach
- * connection. Lose that connection and the host aborts whatever is running,
- * releases input and closes the session.
+ * performs it. What it does enforce is transport hygiene: proof that it holds
+ * the token before a client sends anything that matters (see the handshake in
+ * protocol.ts), an instance-bound credential on every other request (compared
+ * in constant time), the action grammar, bounded request sizes and read times,
+ * a bounded operation time, and — the property that matters for input safety —
+ * a session lives exactly as long as the client's attach connection. Lose that
+ * connection and the host aborts whatever is running, releases input and
+ * closes the session.
  *
- * Endpoints (all require `Authorization: Bearer <token>`; all but
- * `/v1/identity` also require `X-Computer-Use-Protocol: <major>.<minor>` with
- * this host's major — see `PROTOCOL` in protocol.ts):
+ * Endpoints. `POST /hello` takes no credentials; every other one requires
+ * `Authorization: Bearer <credential>` and `X-Computer-Use-Protocol` with this
+ * host's major:
  *
- *   GET    /v1/identity                     HostIdentity: protocol, capabilities, instance
- *   POST   /v1/probe                        Probe
- *   POST   /v1/sessions                     NDJSON stream: {"type":"opened","sessionId"} then pings
- *   POST   /v1/sessions/:id/observe         Frame (PNG, width/height from the image)
- *   POST   /v1/sessions/:id/act             {"action": Action} → 204
- *   POST   /v1/sessions/:id/release-input   204
- *   DELETE /v1/sessions/:id                 204
- *   GET    /v1/outbox                       {"entries": OutboxEntry[]}
- *   GET    /v1/outbox/:name                 file bytes, X-Content-SHA256
+ *   POST   /hello                           {nonce, protocol} → HostIdentity + proof
+ *   POST   /v2/probe                        Probe
+ *   POST   /v2/sessions                     NDJSON stream: {"type":"opened","sessionId","instanceId"} then pings
+ *   POST   /v2/sessions/:id/observe         Frame (PNG, width/height from the image)
+ *   POST   /v2/sessions/:id/act             {"action": Action} → 204
+ *   POST   /v2/sessions/:id/release-input   204
+ *   DELETE /v2/sessions/:id                 204
+ *   GET    /v2/outbox                       {"entries": OutboxEntry[]}        (capability outbox.list)
+ *   GET    /v2/outbox/:name                 file bytes, X-Content-SHA256      (capability outbox.get)
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { createHash, randomUUID } from "node:crypto";
-import { constants } from "node:fs";
-import { lstat, open, readdir, readFile } from "node:fs/promises";
+import { constants, type Stats } from "node:fs";
+import { lstat, open, readdir, readFile, readlink, realpath, stat as statPath, type FileHandle } from "node:fs/promises";
 import { hostname } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { ComputerUseError, type Driver, type DriverSession } from "../contracts.js";
 import { actionSchema } from "../validation.js";
 import {
   DEFAULT_HEARTBEAT_MS,
   DEFAULT_MAX_OUTBOX_FILE_BYTES,
   DEFAULT_OPERATION_TIMEOUT_MS,
+  HELLO_PATH,
+  MAX_HELLO_BYTES,
   MAX_OUTBOX_ENTRIES,
   MAX_REQUEST_BYTES,
   MIN_TOKEN_LENGTH,
+  NONCE,
   OUTBOX_NAME,
-  HOST_CAPABILITIES,
   PROTOCOL,
   PROTOCOL_HEADER,
   STATUS_FOR,
   asComputerUseError,
+  credentialMatches,
+  hostProof,
   pngSize,
-  tokenMatches,
   type HostIdentity,
   type OutboxEntry,
 } from "./protocol.js";
@@ -66,6 +71,14 @@ export interface DriverHostOptions {
   heartbeatMs?: number;
   /** Largest outbox file served (default 64 MiB). */
   maxOutboxFileBytes?: number;
+  /** Simultaneous connections (default 32). More are dropped by the server. */
+  maxConnections?: number;
+  /** Time to receive a request's headers (default 10s). */
+  headersTimeoutMs?: number;
+  /** Time to receive a whole request, headers and body (default 15s). Responses, the attach stream included, are not bounded by it. */
+  requestTimeoutMs?: number;
+  /** Time to read a request body once headers are in (default 10s). */
+  bodyTimeoutMs?: number;
 }
 
 export interface DriverHost {
@@ -110,14 +123,29 @@ function sendError(res: ServerResponse, error: unknown): void {
   send(res, STATUS_FOR[code] ?? 500, { error: code });
 }
 
-async function readJson(req: IncomingMessage): Promise<unknown> {
+/** Read a small JSON body, within `max` bytes and `deadlineMs`. The socket is closed by the caller if this throws. */
+async function readJson(req: IncomingMessage, deadlineMs: number, max = MAX_REQUEST_BYTES): Promise<unknown> {
+  const declared = Number(req.headers["content-length"] ?? "0");
+  if (!Number.isFinite(declared) || declared > max) throw new HttpError("invalid_request");
   const chunks: Buffer[] = [];
   let size = 0;
-  for await (const chunk of req as AsyncIterable<Buffer>) {
-    size += chunk.length;
-    if (size > MAX_REQUEST_BYTES) throw new HttpError("invalid_request");
-    chunks.push(chunk);
+  let late = false;
+  const timer = setTimeout(() => {
+    late = true;
+    req.destroy();
+  }, deadlineMs);
+  try {
+    for await (const chunk of req as AsyncIterable<Buffer>) {
+      size += chunk.length;
+      if (size > max) throw new HttpError("invalid_request");
+      chunks.push(chunk);
+    }
+  } catch (error) {
+    throw error instanceof HttpError ? error : new HttpError(late ? "timeout" : "cancelled");
+  } finally {
+    clearTimeout(timer);
   }
+  if (late) throw new HttpError("timeout");
   if (size === 0) return {};
   try {
     return JSON.parse(Buffer.concat(chunks).toString("utf8"));
@@ -126,24 +154,78 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
   }
 }
 
-/** Open a regular file inside `dir` by plain name, refusing symlinks and anything else. */
-async function openOutboxFile(dir: string, name: string) {
-  if (!OUTBOX_NAME.test(name)) throw new HttpError("invalid_request");
-  const dirStat = await lstat(dir).catch(() => undefined);
-  if (!dirStat?.isDirectory()) throw new HttpError("not_found");
-  let handle;
+/**
+ * The outbox directory, opened once per request and held, so every name is
+ * resolved inside that exact directory however its path changes meanwhile.
+ *
+ * The desktop user owns the outbox and its parent, so it can swap `outbox` for
+ * a symlink at any moment. `O_NOFOLLOW` on a file path guards only the last
+ * component, which is how a race between checking and opening once served the
+ * token file. Instead: open the directory itself with `O_NOFOLLOW` (a symlink
+ * there fails), confirm via `/proc/self/fd` that it is the configured path,
+ * then resolve names through `/proc/self/fd/<dirfd>/<name>` — the kernel's
+ * openat — with `O_NOFOLLOW` on the name. Linux-only, like the driver host.
+ */
+interface OutboxDir {
+  handle: FileHandle;
+  /** `/proc/self/fd/<fd>`: a path that always means this directory. */
+  via: string;
+  /** Its real path, for checking what a file fd resolves to. */
+  real: string;
+  stat: Stats;
+}
+async function openOutboxDir(configured: string): Promise<OutboxDir | undefined> {
+  // The parent is not the desktop user's to rename; the outbox itself is.
+  const expected = join(await realpath(dirname(configured)).catch(() => dirname(configured)), basename(configured));
+  let handle: FileHandle;
   try {
-    // O_NOFOLLOW: a symlink at the final component fails with ELOOP instead of being followed.
-    handle = await open(join(dir, name), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    handle = await open(configured, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  } catch {
+    return undefined;
+  }
+  try {
+    const via = `/proc/self/fd/${handle.fd}`;
+    const [stat, real] = await Promise.all([handle.stat(), readlink(via)]);
+    if (!stat.isDirectory() || real !== expected) throw new Error("outbox moved");
+    return { handle, via, real, stat };
+  } catch {
+    await handle.close();
+    return undefined;
+  }
+}
+/**
+ * Open `name` inside a held outbox directory. Refused unless it is a regular
+ * file on the outbox's own device, owned by the outbox's owner, and the open
+ * fd still resolves to `<outbox>/<name>`. Any of those failing means a link or
+ * a swap, and reads as not found.
+ */
+async function openOutboxFile(dir: OutboxDir, name: string): Promise<{ handle: FileHandle; stat: Stats }> {
+  if (!OUTBOX_NAME.test(name)) throw new HttpError("invalid_request");
+  let handle: FileHandle;
+  try {
+    handle = await open(`${dir.via}/${name}`, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   } catch {
     throw new HttpError("not_found");
   }
-  const stat = await handle.stat();
-  if (!stat.isFile()) {
+  try {
+    const [stat, real] = await Promise.all([handle.stat(), readlink(`/proc/self/fd/${handle.fd}`)]);
+    if (!stat.isFile() || stat.dev !== dir.stat.dev || stat.uid !== dir.stat.uid || real !== `${dir.real}/${name}`) throw new Error("not a plain outbox file");
+    return { handle, stat };
+  } catch {
     await handle.close();
     throw new HttpError("not_found");
   }
-  return { handle, size: stat.size };
+}
+/** SHA-256 of an open file, streamed. Undefined when the bytes read do not match the size it had (it is being written). */
+async function hashFile(handle: FileHandle, size: number): Promise<string | undefined> {
+  const hash = createHash("sha256");
+  let read = 0;
+  for await (const chunk of handle.createReadStream({ start: 0, autoClose: false }) as AsyncIterable<Buffer>) {
+    read += chunk.length;
+    if (read > size) return undefined;
+    hash.update(chunk);
+  }
+  return read === size ? hash.digest("hex") : undefined;
 }
 
 /** `"1"` or `"1.4"` → 1; anything else → undefined. */
@@ -155,14 +237,18 @@ export function protocolMajor(value: unknown): number | undefined {
 /**
  * Read a bearer token from a file, the way the driver host is meant to get it:
  * a read-only bind mount, never an environment variable (which `docker
- * inspect` and every `docker exec` shell can read). Refuses a symlink, a
- * non-regular file, a file anyone else could write, and anything outside
- * 32–4096 characters once trailing whitespace is trimmed.
+ * inspect` and every `docker exec` shell can read). Refuses a symlink (unless
+ * `allowSymlink`), a non-regular file, a file group or others could write,
+ * and anything but one line of 32–4096 non-space characters.
  */
-export async function readTokenFile(path: string): Promise<string> {
-  const stat = await lstat(path).catch(() => undefined);
-  if (!stat) throw new ComputerUseError("invalid_request", "Token file not found");
-  if (!stat.isFile()) throw new ComputerUseError("invalid_request", "Token file must be a regular file, not a symlink or directory");
+export async function readTokenFile(path: string, options: { allowSymlink?: boolean } = {}): Promise<string> {
+  const link = await lstat(path).catch(() => undefined);
+  if (!link) throw new ComputerUseError("invalid_request", "Token file not found");
+  // Followed only when the caller opts in (Kubernetes secrets and some credential
+  // stores are symlinks). The checks below then apply to the file it names.
+  if (link.isSymbolicLink() && !options.allowSymlink) throw new ComputerUseError("invalid_request", "Token file must be a regular file, not a symlink");
+  const stat = link.isSymbolicLink() ? await statPath(path).catch(() => undefined) : link;
+  if (!stat?.isFile()) throw new ComputerUseError("invalid_request", "Token file must be a regular file, not a directory or a broken link");
   if ((stat.mode & 0o022) !== 0) throw new ComputerUseError("invalid_request", "Token file must not be writable by group or others");
   if (stat.size > 4096) throw new ComputerUseError("invalid_request", "Token file is too large");
   const token = (await readFile(path, "utf8")).trim();
@@ -180,13 +266,20 @@ export function createDriverHost(options: DriverHostOptions): DriverHost {
   const opTimeout = options.operationTimeoutMs ?? DEFAULT_OPERATION_TIMEOUT_MS;
   const heartbeatMs = options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS;
   const maxFile = options.maxOutboxFileBytes ?? DEFAULT_MAX_OUTBOX_FILE_BYTES;
+  const bodyTimeout = options.bodyTimeoutMs ?? 10_000;
+  if (!Number.isInteger(heartbeatMs) || heartbeatMs < 100 || heartbeatMs > 60_000)
+    throw new ComputerUseError("invalid_request", "heartbeatMs must be 100–60000");
   const identity: HostIdentity = Object.freeze({
     protocol: { ...PROTOCOL },
-    capabilities: [...HOST_CAPABILITIES],
+    // Only what this host actually serves: no outbox directory, no outbox capabilities.
+    capabilities: ["session.attach", "observe.png", "act", "release-input", ...(options.outboxDir ? ["outbox.list", "outbox.get"] : [])],
     instanceId: randomUUID(),
     hostname: hostname(),
     kind: "native-desktop",
+    heartbeatMs,
   });
+  /** Digests by file identity and state, so a listing does not rehash unchanged files. */
+  const digests = new Map<string, string>();
   const sessions = new Map<string, HostSession>();
   let opening = false;
   let closed = false;
@@ -294,33 +387,48 @@ export function createDriverHost(options: DriverHostOptions): DriverHost {
   }
 
   async function listOutbox(): Promise<OutboxEntry[]> {
-    const dir = options.outboxDir;
-    if (!dir) throw new HttpError("unsupported");
-    const dirStat = await lstat(dir).catch(() => undefined);
-    if (!dirStat?.isDirectory()) return [];
-    const entries: OutboxEntry[] = [];
-    for (const entry of (await readdir(dir, { withFileTypes: true })).sort((a, b) => (a.name < b.name ? -1 : 1))) {
-      if (entries.length >= MAX_OUTBOX_ENTRIES) break;
-      // Dirent reports a symlink as a symlink, never as a file, so links are skipped here too.
-      if (!entry.isFile() || !OUTBOX_NAME.test(entry.name)) continue;
-      let file;
-      try {
-        file = await openOutboxFile(dir, entry.name);
-      } catch {
-        continue;
-      }
-      try {
-        if (file.size > maxFile) {
-          entries.push({ name: entry.name, size: file.size, sha256: null });
+    if (!options.outboxDir) throw new HttpError("unsupported");
+    const dir = await openOutboxDir(options.outboxDir);
+    if (!dir) return [];
+    try {
+      const entries: OutboxEntry[] = [];
+      const names = (await readdir(dir.via, { withFileTypes: true }))
+        // Dirent reports a symlink as a symlink, never as a file; openOutboxFile checks again.
+        .filter((e) => e.isFile() && OUTBOX_NAME.test(e.name))
+        .map((e) => e.name)
+        .sort();
+      for (const name of names) {
+        if (entries.length >= MAX_OUTBOX_ENTRIES) break;
+        let file;
+        try {
+          file = await openOutboxFile(dir, name);
+        } catch {
           continue;
         }
-        const data = await file.handle.readFile();
-        entries.push({ name: entry.name, size: data.length, sha256: createHash("sha256").update(data).digest("hex") });
-      } finally {
-        await file.handle.close();
+        try {
+          const { stat } = file;
+          let sha256: string | null = null;
+          if (stat.size <= maxFile) {
+            // ctime is in the key because mtime can be set back by the writer; ctime cannot.
+            const key = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+            sha256 = digests.get(key) ?? null;
+            if (!sha256) {
+              sha256 = (await hashFile(file.handle, stat.size)) ?? null;
+              if (sha256) {
+                if (digests.size >= 4 * MAX_OUTBOX_ENTRIES) digests.clear();
+                digests.set(key, sha256);
+              }
+            }
+          }
+          entries.push({ name, size: stat.size, sha256, mtimeMs: Math.floor(stat.mtimeMs) });
+        } finally {
+          await file.handle.close();
+        }
       }
+      return entries;
+    } finally {
+      await dir.handle.close();
     }
-    return entries;
   }
 
   async function serveOutboxFile(res: ServerResponse, rawName: string): Promise<void> {
@@ -331,14 +439,21 @@ export function createDriverHost(options: DriverHostOptions): DriverHost {
     } catch {
       throw new HttpError("invalid_request");
     }
-    const file = await openOutboxFile(options.outboxDir, name);
+    if (!OUTBOX_NAME.test(name)) throw new HttpError("invalid_request");
+    const dir = await openOutboxDir(options.outboxDir);
+    if (!dir) throw new HttpError("not_found");
     let data: Buffer;
     try {
-      if (file.size > maxFile) throw new HttpError("invalid_request");
-      // Read once and hash what is sent, so the digest always describes these bytes.
-      data = await file.handle.readFile();
+      const file = await openOutboxFile(dir, name);
+      try {
+        if (file.stat.size > maxFile) throw new HttpError("invalid_request");
+        // Read once and hash what is sent, so the digest always describes these bytes.
+        data = await file.handle.readFile();
+      } finally {
+        await file.handle.close();
+      }
     } finally {
-      await file.handle.close();
+      await dir.handle.close();
     }
     if (data.length > maxFile) throw new HttpError("invalid_request");
     res
@@ -357,31 +472,42 @@ export function createDriverHost(options: DriverHostOptions): DriverHost {
     return s;
   }
 
+  async function hello(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const body = (await readJson(req, bodyTimeout, MAX_HELLO_BYTES)) as { nonce?: unknown; protocol?: unknown } | null;
+    if (
+      !body ||
+      typeof body !== "object" ||
+      Object.keys(body).some((k) => k !== "nonce" && k !== "protocol") ||
+      typeof body.nonce !== "string" ||
+      !NONCE.test(body.nonce)
+    )
+      throw new HttpError("invalid_request");
+    // Answered whatever protocol the client speaks: this is where it learns whether it can talk to us.
+    send(res, 200, { ...identity, proof: hostProof(token, body.nonce, identity.instanceId, PROTOCOL) });
+  }
+
   async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (closed) throw new HttpError("stopped");
+    const method = req.method ?? "GET";
+    if (req.url === HELLO_PATH && method === "POST") return hello(req, res);
     // Authentication first, before the body is read or the path is looked at.
     const header = req.headers.authorization;
     const presented = typeof header === "string" && header.startsWith("Bearer ") ? header.slice(7) : "";
-    if (!tokenMatches(token, presented)) {
-      res.setHeader("WWW-Authenticate", "Bearer");
-      req.resume();
+    if (!credentialMatches(token, identity.instanceId, presented)) {
+      res.setHeader("WWW-Authenticate", 'Bearer realm="computer-use", error="invalid_token"');
+      // An unauthenticated client gets its answer and loses the connection, body read or not.
+      res.setHeader("Connection", "close");
+      res.on("finish", () => req.socket.destroy());
       throw new HttpError("denied");
     }
-    if (closed) throw new HttpError("stopped");
     const url = new URL(req.url ?? "/", "http://driver-host");
     const parts = url.pathname.split("/").filter(Boolean);
-    const method = req.method ?? "GET";
-    if (parts[0] !== "v1") throw new HttpError("not_found");
+    // Versioned paths, and the header, must both name this host's major.
+    if (!/^v\d+$/.test(parts[0] ?? "")) throw new HttpError("not_found");
+    if (parts[0] !== `v${PROTOCOL.major}` || protocolMajor(req.headers[PROTOCOL_HEADER.toLowerCase()]) !== PROTOCOL.major) throw new HttpError("unsupported");
     const [, resource, id, verb] = parts;
-    // Identity is the one endpoint served to any protocol version: it is how a
-    // client from another release learns that it cannot talk to this host.
-    if (resource === "identity" && method === "GET" && parts.length === 2) return send(res, 200, identity);
-    // Everything else fails closed on a protocol major this host does not speak, or none at all.
-    if (protocolMajor(req.headers[PROTOCOL_HEADER.toLowerCase()]) !== PROTOCOL.major) {
-      req.resume();
-      throw new HttpError("unsupported");
-    }
     if (resource === "probe" && method === "POST" && parts.length === 2) {
-      await readJson(req);
+      await readJson(req, bodyTimeout);
       let timer: NodeJS.Timeout | undefined;
       try {
         const probe = await Promise.race([
@@ -399,7 +525,7 @@ export function createDriverHost(options: DriverHostOptions): DriverHost {
     }
     if (resource === "sessions") {
       if (method === "POST" && parts.length === 2) {
-        await readJson(req);
+        await readJson(req, bodyTimeout);
         return attach(res);
       }
       if (method === "DELETE" && parts.length === 3) {
@@ -409,7 +535,7 @@ export function createDriverHost(options: DriverHostOptions): DriverHost {
         return send(res, 204);
       }
       if (method === "POST" && parts.length === 4) {
-        const body = await readJson(req);
+        const body = await readJson(req, bodyTimeout);
         const s = session(id);
         if (verb === "observe") {
           const frame = await operate(res, s, (signal) => s.driver.observe(signal));
@@ -433,17 +559,32 @@ export function createDriverHost(options: DriverHostOptions): DriverHost {
     throw new HttpError("not_found");
   }
 
-  const server = createServer((req, res) => {
-    route(req, res).catch((error) => {
-      // A failed write means the client is already gone; nothing more to say.
-      if (!res.headersSent) sendError(res, error);
-      else res.destroy();
-    });
-  });
-  // The attach stream is long-lived by design; per-request timeouts are ours, not Node's.
-  server.requestTimeout = 0;
-  server.headersTimeout = 10_000;
+  const requestTimeout = options.requestTimeoutMs ?? 15_000;
+  const headersTimeout = Math.min(options.headersTimeoutMs ?? 10_000, requestTimeout);
+  const server = createServer(
+    // Node checks these deadlines on an interval; keep it short enough to matter.
+    { requestTimeout, headersTimeout, connectionsCheckingInterval: Math.max(100, Math.min(1_000, Math.floor(headersTimeout / 2))) },
+    (req, res) => {
+      // A request whose body was not read in full — refused before reading it,
+      // too large, too slow — gets no keep-alive: the socket closes with the
+      // answer, so nobody can hold it open by trickling a body nobody reads.
+      res.on("finish", () => {
+        if (!req.complete) req.socket.destroy();
+      });
+      route(req, res).catch((error) => {
+        // A failed write means the client is already gone; nothing more to say.
+        if (res.headersSent) {
+          res.destroy();
+          return;
+        }
+        if (!req.complete) res.setHeader("Connection", "close");
+        sendError(res, error);
+      });
+    },
+  );
+  // Requests are bounded above; the attach stream's response is long-lived by design.
   server.keepAliveTimeout = 5_000;
+  server.maxConnections = options.maxConnections ?? 32;
 
   return {
     server,

@@ -1,6 +1,5 @@
 /** Thin Callboard host: policy, human grants and presentation. Drivers live in the independent package. */
 import { randomUUID } from "node:crypto";
-import { lstatSync, readFileSync } from "node:fs";
 import { hostname } from "node:os";
 // The schema is a value, not a type: `describeAgentActionForLog` asks the
 // service's own grammar whether an action is well-formed before it writes a
@@ -453,6 +452,8 @@ const PENDING_TARGET_REASON =
 interface RemoteTarget {
   endpoint: string;
   identity(signal?: AbortSignal): Promise<{ instanceId: string }>;
+  /** The host instance an open session landed on (by the service's session id). */
+  openedInstance?(sessionId: string): string | undefined;
 }
 const remoteTarget = (driver: Driver): RemoteTarget | undefined => {
   const candidate = driver as Partial<RemoteTarget>;
@@ -842,6 +843,13 @@ export class ComputerUseHost {
       });
     }
   }
+  /** The identity, in {@link targetIdentity}'s form, of the host a session actually opened on. Fails closed. */
+  private openedIdentity(kind: ComputerTargetKind, sessionId: string): string | undefined {
+    const remote = this.remote(kind);
+    if (!remote) return hostname();
+    const instanceId = remote.openedInstance?.(sessionId);
+    return instanceId ? `${remote.endpoint}#${instanceId}` : undefined;
+  }
   /** Called by the package before AND after every action/observation. */
   authorize = (request: AuthorizationRequest): "allow" | "deny" => {
     try {
@@ -1193,11 +1201,12 @@ export class ComputerUseHost {
         if (this.readPolicy(chatId).signature !== record.signature) throw controlError("denied", "Control authority changed during startup.");
         // Bind the consent to the session that actually opened, not just to the
         // host checked before opening: a remote host replaced between that
-        // check and open would otherwise get the session. Asking again after
-        // open closes the gap. A replacement *after* open cannot slip through
-        // either: the session's attach connection was to the old instance, so
-        // it is already lost and failed, and this check stops it regardless.
-        if ((await this.targetIdentity(kind, signal)) !== record.identity)
+        // check and open would otherwise get the session. The remote driver
+        // records the instance each session opened on (proven by the host's
+        // handshake), so compare that, with no further round trip. A
+        // replacement *after* open cannot slip through either: the session's
+        // attach connection was to the old instance, so it is lost and failed.
+        if (this.openedIdentity(kind, session.id) !== record.identity)
           throw controlError("unsupported", "The target changed while it was starting (a different host is answering there). Request fresh consent.");
         this.agentLease(chatId, session.id, session.generation);
         const actual = this.service.status(controlPrincipal(chatId, "agent")).find((s) => s.sessionId === session.id);
@@ -1735,16 +1744,22 @@ export function desktopDriver(
   pkg: Pick<typeof import("@wolpertingerlabs/computer-use"), "createRemoteDriver" | "createNativeDesktopDriver">,
   env: NodeJS.ProcessEnv = process.env,
 ): Driver {
-  const url = env.CALLBOARD_REMOTE_DESKTOP_URL?.trim();
-  const inline = env.CALLBOARD_REMOTE_DESKTOP_TOKEN?.trim();
-  const tokenFile = env.CALLBOARD_REMOTE_DESKTOP_TOKEN_FILE?.trim();
+  // An empty variable is an unset one: `||`, not `??`, so `X=""` never
+  // overrides (or half-configures) the others.
+  const url = env.CALLBOARD_REMOTE_DESKTOP_URL?.trim() || undefined;
+  const inline = env.CALLBOARD_REMOTE_DESKTOP_TOKEN?.trim() || undefined;
+  const tokenFile = env.CALLBOARD_REMOTE_DESKTOP_TOKEN_FILE?.trim() || undefined;
   if (url || inline || tokenFile) {
     try {
       if (inline && tokenFile) throw new Error("Set CALLBOARD_REMOTE_DESKTOP_TOKEN_FILE or CALLBOARD_REMOTE_DESKTOP_TOKEN, not both.");
       if (!url || !(inline || tokenFile))
         throw new Error("Set CALLBOARD_REMOTE_DESKTOP_URL and CALLBOARD_REMOTE_DESKTOP_TOKEN_FILE (or _TOKEN) together, or none of them.");
-      const token = inline ?? readRemoteTokenFile(tokenFile!);
-      return pkg.createRemoteDriver({ url, token });
+      // A token file is read by the package's readTokenFile at each handshake
+      // (so a rotated token is picked up), with symlinks allowed: Kubernetes
+      // secrets and some credential stores are symlinks, and this path is the
+      // operator's, not the desktop's. A bad file makes the target unavailable
+      // with the reason, as a bad setting here does.
+      return pkg.createRemoteDriver(inline ? { url, token: inline } : { url, tokenFile: tokenFile! });
     } catch (error) {
       const reason = `Remote desktop is misconfigured: ${error instanceof Error ? error.message : "invalid settings"}`;
       log.error(reason);
@@ -1764,18 +1779,6 @@ export function desktopDriver(
     acknowledgeFullDesktopAccess: true,
     permissions: { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow" },
   });
-}
-
-/** The token from a file: preferred over the variable, which every child process inherits. Never echoed. */
-function readRemoteTokenFile(path: string): string {
-  let stat;
-  try {
-    stat = lstatSync(path);
-  } catch {
-    throw new Error("CALLBOARD_REMOTE_DESKTOP_TOKEN_FILE does not exist.");
-  }
-  if (!stat.isFile() || stat.size > 4096) throw new Error("CALLBOARD_REMOTE_DESKTOP_TOKEN_FILE must be a small regular file.");
-  return readFileSync(path, "utf8").trim();
 }
 
 let hostPromise: Promise<ComputerUseHost> | undefined;

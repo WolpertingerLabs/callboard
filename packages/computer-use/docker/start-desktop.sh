@@ -34,6 +34,14 @@ as_desktop() { (exec_desktop "$@"); }
 # shell is left waiting on it.
 spawn_desktop() { (exec_desktop "$@") >/dev/null 2>&1 & }
 
+# The driver's own temporary directory (its cross-process input lock lives
+# under TMPDIR), created as `driver` before any desktop process exists. /tmp is
+# shared and world-writable: had the desktop user created the lock directory
+# first, every session would have been refused. mkdir without -p fails if it
+# already exists, so a squat cannot be inherited either.
+driver_tmp=/tmp/.computer-use-driver
+setpriv --reuid=driver --regid=driver --init-groups --inh-caps=-all mkdir -m 0700 "$driver_tmp"
+
 # /tmp and /home/desktop may be fresh tmpfs mounts: recreate what the image had.
 mkdir -p /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix
 as_desktop sh -c 'mkdir -p "$HOME/outbox" "$HOME/.icewm" && printf "ShowTaskBar=0\n" > "$HOME/.icewm/preferences"'
@@ -72,7 +80,7 @@ done
 
 # tini stays PID 1 (reaping the desktop processes started above) as `driver`.
 exec setpriv --reuid=driver --regid=driver --init-groups --inh-caps=-all \
-  env -i HOME=/nonexistent PATH=/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 \
+  env -i HOME=/nonexistent PATH=/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 TMPDIR="$driver_tmp" \
   COMPUTER_USE_HOST_TOKEN_FILE="$token_file" \
   COMPUTER_USE_DISPLAY="$display" \
   COMPUTER_USE_ACKNOWLEDGE_FULL_DESKTOP_ACCESS="${COMPUTER_USE_ACKNOWLEDGE_FULL_DESKTOP_ACCESS:-}" \
