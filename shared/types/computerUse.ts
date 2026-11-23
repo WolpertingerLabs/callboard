@@ -1,4 +1,5 @@
 import type { PermissionLevel } from "./permissions.js";
+import type { ComputerUseContainerState, ComputerUseSandboxInfo } from "./sandboxDesktop.js";
 
 /**
  * The tool name the per-action computer-control confirmation is raised under,
@@ -29,21 +30,65 @@ export const CU_REQUEST_CONTROL_TOOL_NAME = "mcp__computer_use__cu_request_contr
 
 /**
  * How Callboard describes the Sandbox desktop — to the human (consent card,
- * permission row, Computer view) and to the agent (tool descriptions). One
- * place, because the truth depends on how the container is run, and that
- * changes: today one operator-started container is shared by every chat and
- * keeps its state until it is restarted, so it is NOT fresh per session and
- * NOT safe for arbitrary untrusted work. When containers are started per
- * session, change these strings (and only these) to say so.
+ * per-action card, permission row, Computer view) and to the agent (tool
+ * descriptions). One place, because the truth depends on how the container
+ * is run, which is a host setting (Settings → Sandbox desktop):
+ *
+ * - **managed**: Callboard starts a fresh container for each session and
+ *   removes it, with everything in it, when the session ends. Its network is
+ *   the internet (default) or none (`network: "none"`, an `--internal`
+ *   network); either way it can reach services on this machine that listen on
+ *   all interfaces.
+ * - **endpoint** (and anything unknown — an older daemon, a surface that does
+ *   not know the mode): one operator-run container shared by every chat and
+ *   kept until it is restarted, so NOT fresh per session and NOT a place for
+ *   work other chats must not see. The strictest description is the fallback.
+ *
+ * A surface that cannot know the mode (the permission row) uses
+ * {@link SANDBOX_DESKTOP_TEXT_ANY_MODE}.
  */
-export const SANDBOX_DESKTOP_TEXT = {
+export interface SandboxDesktopVariant {
+  mode?: "managed" | "endpoint" | "off";
+  network?: "internet" | "none";
+}
+export interface SandboxDesktopText {
   /** What it is, as a phrase: "the Sandbox desktop is …". */
-  what: "a Linux desktop in a hardened container, isolated from this machine's files and credentials, but shared by every chat and kept until the container is restarted",
+  what: string;
   /** What it can reach. Shown on the consent card and wherever the network is mentioned. */
-  network: "Its network is open: it can reach the internet, and any service on this machine that listens on all interfaces, Callboard included.",
+  network: string;
   /** When to choose it. */
+  use: string;
+  /** What survives a session, as a sentence. */
+  persistence: string;
+}
+const OPEN_NETWORK = "Its network is open: it can reach the internet, and any service on this machine that listens on all interfaces, Callboard included.";
+const NO_INTERNET =
+  "It has no internet access, but it can still reach any service on this machine that listens on all interfaces, Callboard included.";
+export function sandboxDesktopText(variant: SandboxDesktopVariant = {}): SandboxDesktopText {
+  if (variant.mode === "managed")
+    return {
+      what: "a Linux desktop in a hardened container, isolated from this machine's files and credentials; Callboard starts a fresh one for each session and removes it, with everything in it, when the session ends",
+      network: variant.network === "none" ? NO_INTERNET : OPEN_NETWORK,
+      use: "Use it for desktop apps and downloads that should stay off this machine.",
+      persistence: "Nothing carries over: the container and everything in it are removed when the session ends, and no other chat ever sees it.",
+    };
+  return {
+    what: "a Linux desktop in a hardened container, isolated from this machine's files and credentials, but shared by every chat and kept until the container is restarted",
+    network: OPEN_NETWORK,
+    use: "Use it for desktop apps and downloads that should stay off this machine.",
+    persistence: "Whatever is left there, later sessions and other chats can see.",
+  };
+}
+/** The shared-container (endpoint) description: the fallback wherever the mode is unknown. */
+export const SANDBOX_DESKTOP_TEXT: SandboxDesktopText = Object.freeze(sandboxDesktopText({ mode: "endpoint" }));
+/** For a surface that cannot know the host's mode (the permission row). True of both modes. */
+export const SANDBOX_DESKTOP_TEXT_ANY_MODE: SandboxDesktopText = Object.freeze({
+  what: "a Linux desktop in a hardened container, isolated from this machine's files and credentials (a fresh one per session when Callboard manages it, or a shared one you run yourself)",
+  network:
+    "Its network is open by default: it can reach the internet, and in any setting any service on this machine that listens on all interfaces, Callboard included.",
   use: "Use it for desktop apps and downloads that should stay off this machine.",
-} as const;
+  persistence: "A shared container you run yourself keeps what is left there for later sessions and other chats.",
+});
 
 /**
  * Callboard HTTP viewer DTOs. Driver/package types stay outside shared.
@@ -69,6 +114,8 @@ export interface ComputerUseCapability {
    * it, in which case fall back to `ComputerUseStatus.permission`.
    */
   permission?: PermissionLevel;
+  /** Sandbox only: its mode, and why a managed sandbox cannot start (Docker, image, cap). Additive. */
+  sandbox?: ComputerUseSandboxInfo;
 }
 export interface ComputerUseSession {
   id: string;
@@ -78,6 +125,8 @@ export interface ComputerUseSession {
   generation: number;
   targetLabel?: string;
   reason?: string;
+  /** A managed sandbox's container: starting (with the step), ready, stopping, removed. Additive. */
+  container?: ComputerUseContainerState;
 }
 export interface ComputerUseStatus {
   capabilities: ComputerUseCapability[];

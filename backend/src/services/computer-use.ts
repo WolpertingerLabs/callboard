@@ -39,6 +39,9 @@ import {
 import { sessionRegistry } from "./session-registry.js";
 import { enqueueChatNotice } from "./chat-notices.js";
 import { openHumanApproval, type ApprovalCompletion, type OpenHumanApproval } from "./pending-requests.js";
+import type { ComputerUseContainerState, ComputerUseSandboxInfo, SandboxDesktopMode } from "shared/types/index.js";
+import { managedSandboxDriver } from "./sandbox-containers.js";
+import { currentSandboxMode, getSandboxManager, sandboxInfo } from "./sandbox-desktop.js";
 
 const log = createLogger("computer-use");
 
@@ -465,13 +468,28 @@ const PENDING_TARGET_REASON =
  */
 interface RemoteTarget {
   endpoint: string;
+  /** A Callboard-managed container (one per session) rather than a fixed host: labelled as such. */
+  managed?: boolean;
   identity(signal?: AbortSignal): Promise<{ instanceId: string }>;
   /** The host instance an open session landed on (by the service's session id). */
   openedInstance?(sessionId: string): string | undefined;
 }
-const remoteTarget = (driver: Driver): RemoteTarget | undefined => {
+function remoteTarget(driver: Driver): RemoteTarget | undefined {
   const candidate = driver as Partial<RemoteTarget>;
   return typeof candidate.endpoint === "string" && typeof candidate.identity === "function" ? (candidate as RemoteTarget) : undefined;
+}
+/**
+ * What the sandbox target can say about itself for the Computer view, beyond
+ * a probe: its mode and why a managed sandbox cannot start, and where a
+ * session's container is. Recognised by shape, like {@link RemoteTarget}.
+ */
+interface SandboxView {
+  sandboxInfo(): ComputerUseSandboxInfo;
+  containerState(sessionId: string): ComputerUseContainerState | undefined;
+}
+const sandboxView = (driver: Driver): SandboxView | undefined => {
+  const candidate = driver as Partial<SandboxView>;
+  return typeof candidate.sandboxInfo === "function" && typeof candidate.containerState === "function" ? (candidate as SandboxView) : undefined;
 };
 
 /**
@@ -834,6 +852,7 @@ export class ComputerUseHost {
   private targetLabel(kind: ComputerTargetKind): string {
     if (kind !== "sandbox") return hostname();
     const remote = this.remote(kind);
+    if (remote?.managed) return "sandbox (container on this machine)";
     return remote ? `sandbox ${remote.endpoint}` : "sandbox (not configured)";
   }
   /** What a person is told the target is, in prompts and action summaries. */
@@ -841,6 +860,7 @@ export class ComputerUseHost {
     if (kind === "browser") return `managed browser on ${hostname()}`;
     if (kind === "desktop") return `native desktop on ${hostname()}`;
     const remote = this.remote(kind);
+    if (remote?.managed) return `sandbox desktop (a disposable container on ${hostname()})`;
     return remote ? `sandbox desktop at ${remote.endpoint}` : "sandbox desktop";
   }
   /**
@@ -996,14 +1016,43 @@ export class ComputerUseHost {
    */
   private presentation(value: SessionStatus, legacy = false) {
     const kind = kindOfTarget(value.targetId);
+    const container = kind === "sandbox" ? sandboxView(this.drivers.sandbox)?.containerState(value.sessionId) : undefined;
     return {
       ...value,
+      ...(container ? { container } : {}),
       id: value.sessionId,
       kind: legacy && kind === "sandbox" ? ("native" as const) : viewerKind(kind),
       controller: value.controller === "none" ? null : value.controller,
       targetLabel: this.targetLabel(kind),
       target: this.targetLabel(kind),
     };
+  }
+  /** The sandbox capability's extra field (mode, problem, running/limit), when its driver reports one. */
+  private sandboxCapability(kind: ComputerTargetKind): { sandbox?: ComputerUseSandboxInfo } {
+    if (kind !== "sandbox") return {};
+    try {
+      const info = sandboxView(this.drivers.sandbox)?.sandboxInfo();
+      return info ? { sandbox: info } : {};
+    } catch {
+      return {};
+    }
+  }
+  /**
+   * End every live session on one target, as Revoke does: for a change the
+   * target itself went through (the Sandbox desktop's mode), not a chat's
+   * permissions. Each ends through the service, so a managed container is
+   * removed on the way.
+   */
+  async revokeTarget(kind: ComputerTargetKind): Promise<number> {
+    let count = 0;
+    for (const [id, grant] of [...this.grants]) {
+      if (kindOfTarget(grant.lease.targetId) !== kind) continue;
+      this.grants.delete(id);
+      this.cancelSessionActionRequest(grant.chatId, id, WITHDRAWN.revoked);
+      await this.service.revoke(controlPrincipal(grant.chatId, "human"), id).catch(() => {});
+      count++;
+    }
+    return count;
   }
   /**
    * The chat's computer-control status for the Computer view.
@@ -1047,6 +1096,7 @@ export class ComputerUseHost {
             reason: restriction ?? detailed,
             permission: levelFor(kind, policy),
             ...(kind !== "browser" && restriction ? { readiness: "permission-blocked" as const } : {}),
+            ...this.sandboxCapability(kind),
           };
         } catch {
           return {
@@ -1056,6 +1106,7 @@ export class ComputerUseHost {
             reason: restriction ?? "Driver probe unavailable. Retry status or ask your agent to check readiness on the Callboard service host.",
             permission: levelFor(kind, policy),
             ...(kind !== "browser" ? { readiness: restriction ? ("permission-blocked" as const) : ("unknown" as const) } : {}),
+            ...this.sandboxCapability(kind),
           };
         }
       }),
@@ -1835,8 +1886,60 @@ function unavailableSandboxDriver(reason: string): Driver {
   };
 }
 const SANDBOX_NOT_CONFIGURED =
-  "Sandbox desktop is not configured on the Callboard service host. Start the sandbox container (packages/computer-use/docker/run.sh) and set CALLBOARD_SANDBOX_DESKTOP_URL and CALLBOARD_SANDBOX_DESKTOP_TOKEN_FILE.";
+  "Sandbox desktop is not configured: it is in endpoint mode, and no endpoint is set on the Callboard service host. Set CALLBOARD_SANDBOX_DESKTOP_URL and CALLBOARD_SANDBOX_DESKTOP_TOKEN_FILE for a container you run yourself (packages/computer-use/docker/run.sh), or switch Settings → Sandbox desktop to managed mode.";
 const unconfiguredSandboxDriver = () => unavailableSandboxDriver(SANDBOX_NOT_CONFIGURED);
+const SANDBOX_TURNED_OFF = "Sandbox desktop is turned off on this Callboard (Settings → Sandbox desktop).";
+
+/**
+ * The Sandbox desktop target's driver: whichever mode is in force now —
+ * `managed` (a container per session, {@link managedSandboxDriver}), `endpoint`
+ * ({@link sandboxDesktopDriver}) or `off` — read at each probe and open, so a
+ * mode change in Settings applies without a restart. Every property the host
+ * reads by shape (`endpoint`, `identity`, `openedInstance`, `managed`) follows
+ * the current mode; in `off` there is no endpoint, so the target is not remote.
+ *
+ * `lockScope: "session"`: managed sessions are separate containers. An
+ * endpoint is one host serving one session at a time, and that host refuses a
+ * second `open` itself (`lease_conflict`).
+ */
+export function sandboxTargetDriver(options: {
+  mode: () => SandboxDesktopMode;
+  managed: Driver;
+  endpoint: Driver;
+  info?: () => ComputerUseSandboxInfo;
+  containerState?: (sessionId: string) => ComputerUseContainerState | undefined;
+}): Driver & Partial<RemoteTarget> & SandboxView {
+  const off = unavailableSandboxDriver(SANDBOX_TURNED_OFF);
+  const current = (): Driver => {
+    const mode = options.mode();
+    return mode === "managed" ? options.managed : mode === "endpoint" ? options.endpoint : off;
+  };
+  const remote = () => remoteTarget(current());
+  return {
+    kind: "native-desktop",
+    lockDomain: "sandbox-desktop",
+    lockScope: "session",
+    probe: () => current().probe(),
+    open: (context) => current().open(context),
+    get endpoint() {
+      return remote()?.endpoint;
+    },
+    get managed() {
+      return remote()?.managed;
+    },
+    identity: (signal?: AbortSignal) => {
+      const target = remote();
+      if (!target) return Promise.reject(controlError("unsupported", "The sandbox desktop is not configured on the service host."));
+      return target.identity(signal);
+    },
+    // Each driver knows only the sessions it opened, so ask both: a session
+    // opened before a mode change still answers for itself.
+    openedInstance: (sessionId: string) =>
+      remoteTarget(options.managed)?.openedInstance?.(sessionId) ?? remoteTarget(options.endpoint)?.openedInstance?.(sessionId),
+    sandboxInfo: () => options.info?.() ?? { mode: options.mode() },
+    containerState: (sessionId: string) => options.containerState?.(sessionId),
+  } as Driver & Partial<RemoteTarget> & SandboxView;
+}
 
 /**
  * The Sandbox desktop target's driver: a remote driver host — the hardened
@@ -1883,10 +1986,17 @@ let hostPromise: Promise<ComputerUseHost> | undefined;
 export function getComputerUseHost(): Promise<ComputerUseHost> {
   return (hostPromise ??= (async () => {
     const pkg = await import("@wolpertingerlabs/computer-use");
+    const manager = getSandboxManager();
     const drivers = {
       browser: pkg.createBrowserDriver({ network: "unrestricted", executablePath: process.env.CALLBOARD_BROWSER_EXECUTABLE }),
       desktop: localDesktopDriver(pkg),
-      sandbox: sandboxDesktopDriver(pkg),
+      sandbox: sandboxTargetDriver({
+        mode: () => currentSandboxMode().mode,
+        managed: managedSandboxDriver(manager),
+        endpoint: sandboxDesktopDriver(pkg),
+        info: () => sandboxInfo(),
+        containerState: (sessionId) => manager.containerState(sessionId),
+      }),
     };
     const service = new pkg.ComputerUseService({
       targets: COMPUTER_TARGET_KINDS.map((kind) => ({ id: TARGET_IDS[kind], enabled: true, driver: drivers[kind] })),

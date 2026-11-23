@@ -139,7 +139,7 @@ This lets an agent drive a managed Chromium browser or a Linux X11 desktop **on 
 
 - **Permissions:** three axes, one per target. All three default to **Deny**, and new child chats, job steps, agent sessions and Read only asides start with all three denied. Set them in the chat's permission dialog, or as defaults under Settings. None of them inherits from another: a chat created before an axis existed reads it as **Deny**.
   - **Browser Use** governs the managed browser. It needs no other axis: Web Access doesn't have to be Allow. The browser's network access is unrestricted, and Callboard treats Browser Use as the explicit opt-in to that, independent of Web Access (which governs only the agent's own web tools). If Web Access restrictions must also cover the browser, confine it on the host or leave Browser Use denied.
-  - **Sandbox desktop** governs the container desktop. It needs no other axis, because the container is the boundary: nothing of this machine is mounted into it (no files, no credentials, no Docker socket). Its outbound network is unrestricted, and, as with Browser Use, turning Sandbox desktop on is the opt-in to that. That includes this machine: code in the sandbox can reach any service here that listens on all interfaces, Callboard included, so bind those to `127.0.0.1` or firewall the Docker bridge (see **Sandbox desktop** under setup below). Use it for desktop apps and downloads that should stay off this machine. It isn't a fresh desktop per session: everything an agent leaves there is visible to later sessions and other chats until you restart the container, so it isn't a place for work you wouldn't let them share.
+  - **Sandbox desktop** governs the container desktop. It needs no other axis, because the container is the boundary: nothing of this machine is mounted into it (no files, no credentials, no Docker socket). Its outbound network is unrestricted by default (Settings → Sandbox desktop can turn internet access off for managed containers), and, as with Browser Use, turning Sandbox desktop on is the opt-in to that. That includes this machine: code in the sandbox can reach any service here that listens on all interfaces, Callboard included, in either network setting, so bind those to `127.0.0.1` or firewall the Docker bridge (see **Sandbox desktop** under setup below). Use it for desktop apps and downloads that should stay off this machine. What it keeps depends on the mode: a **managed** sandbox (the default) is a fresh container per session, removed with everything in it when the session ends, so nothing carries over between sessions or chats. An **endpoint** sandbox (one you run yourself) isn't fresh per session: everything an agent leaves there is visible to later sessions and other chats until you restart the container, so it isn't a place for work you wouldn't let them share.
   - **Computer Use** governs this machine's desktop. It also needs the four built-in axes and Browser Use on **Allow**, because a desktop session can open any app, a browser among them, and can't honour a narrower restriction. It doesn't need Sandbox desktop: the sandbox reaches less than your desktop already does.
 - **Existing chats:** chats created before Browser Use existed read it as **Deny**. A chat that had Browser & Computer Control on Ask or Allow keeps that level as Computer Use, but loses the browser until you set Browser Use, and loses the desktop until Browser Use is Allow. A chat with Web Access on Deny or Ask can now browse if Browser Use is on. Saved defaults (new-chat defaults in the browser and space defaults) migrate the same way: a saved Browser & Computer Control on Ask or Allow now means Computer Use on and Browser Use off. A tab still running an older bundle can turn its old row off (that also denies Browser Use) but can't turn it on; it's asked to reload.
 - **Enabling a target is always a human action.** The agent can call `cu_request_control` to put an **Enable browser control**, **Enable Sandbox desktop control** or **Enable desktop control** card in the chat. You can also enable a target from the Computer view, which you open with the monitor icon (**Show computer control**) in the chat header. The agent can't grant itself access.
@@ -155,38 +155,51 @@ Set up the host first:
 
 - **Browser:** Playwright installs with Callboard as an optional dependency, but no browser is downloaded. Provide Chromium and its OS libraries, and set `CALLBOARD_BROWSER_EXECUTABLE=/absolute/path/to/chrome` if Playwright won't find it. Chromium's sandbox is mandatory. On Linux, run as a non-root user with sandbox support. The chat's Browser Use permission must be Ask or Allow.
 - **Desktop:** only an existing Linux X11 session works. It needs `/usr/bin/xdotool`, ImageMagick's `/usr/bin/import`, and `CALLBOARD_NATIVE_DISPLAY` (or `DISPLAY`). Computer Use must be Ask or Allow and all five other permission axes (Browser Use included) must be Allow, because desktop control can reach everything the user can. This isn't an isolation boundary. macOS, Windows and Wayland aren't supported.
-- **Sandbox desktop (preview):** a hardened Linux desktop running in Docker, as its own target. It isn't this machine's desktop, but it isn't sealed off from this machine either: code in the sandbox can reach services on this machine that listen on all interfaces, Callboard included (see **Network exposure** below). From a source checkout (the image builds from the repository, and `docker/` isn't in the published package), build and start the container, then point Callboard at it and restart Callboard:
+- **Sandbox desktop (preview):** a hardened Linux desktop in Docker, as its own target. Callboard starts **one container per session** on the local Docker and removes it when the session ends. It isn't this machine's desktop, but it isn't sealed off from this machine either: code in the sandbox can reach services on this machine that listen on all interfaces, Callboard included (see **Network exposure** below).
+
+  Build the image once, on the machine running Callboard (an npm install works: the Docker context ships with it):
 
   ```sh
-  docker build -t callboard/computer-use-desktop:local -f packages/computer-use/docker/Dockerfile packages/computer-use
-  packages/computer-use/docker/run.sh 7801   # prints the two variables below
-  export CALLBOARD_SANDBOX_DESKTOP_URL=http://127.0.0.1:7801
-  export CALLBOARD_SANDBOX_DESKTOP_TOKEN_FILE=/tmp/callboard-desktop-XXXXXX/token   # the path run.sh printed
+  callboard sandbox build      # docker build of callboard/computer-use-desktop:local; --force rebuilds
+  callboard sandbox status     # Docker, the image and its protocol, running managed sandboxes
   ```
 
-  `run.sh` builds the image only if it's missing. Set `COMPUTER_USE_DESKTOP_REBUILD=1` to rebuild it after pulling changes; `docker rmi callboard/computer-use-desktop:local` removes it. A container from an older image predates the handshake and shows as unavailable until you rebuild.
+  Then turn **Sandbox desktop** on in a chat's permissions and enable it there (or let the agent ask with `cu_request_control`). That's all: there's nothing to start or point Callboard at. **Settings → Sandbox desktop** has a **Build image** button too, and shows the same diagnostics. Callboard never builds or pulls the image on its own.
 
-  - **Token:** it's a file, not an environment variable, on both sides. `run.sh` writes a fresh one into a private temp directory and mounts it into the container read-only.
-    - **Never sent:** Callboard never sends the token itself. The container first proves it holds the token, so a process that took the port after the container stopped learns nothing.
-    - **Rotation:** `CALLBOARD_SANDBOX_DESKTOP_TOKEN_FILE` is read at each connection, so a rotated token is picked up.
-    - **Symlinks:** it may be a symlink, as Kubernetes secrets and some credential stores are.
-    - **The variable:** `CALLBOARD_SANDBOX_DESKTOP_TOKEN` also works but is discouraged, because every child process of Callboard inherits it. An empty value counts as unset.
+  - **Lifecycle:** on Enable, after your consent, Callboard checks Docker, prepares the sandbox network, checks the image and its protocol label, writes a fresh token file, runs the container, waits for it to answer (bounded) and opens the session on it. The Computer view shows each step while it starts, then **Ready**, then **Stopping** and **Removed**. It removes the container and its token when the session ends, however it ends: Stop, Revoke, the 15-minute limit, a permission change, archiving or deleting the chat, a mode change or Callboard shutting down. Anything a crash leaves behind is removed at the next startup and every few minutes after that.
+  - **Ownership:** every container is labelled `dev.callboard.managed=1`, with its chat, its session and an **owner** derived from Callboard's data directory. A dev server (`~/.callboard-dev`) and production (`~/.callboard`) on one Docker daemon each see, count and remove only their own containers, and never touch a container without these labels.
+  - **Modes** (Settings → Sandbox desktop):
+    - **Automatic** (the default): **endpoint** if `CALLBOARD_SANDBOX_DESKTOP_URL` is set, so a setup from before managed mode keeps working; otherwise **managed**. Until Docker and the image are ready it shows as off, with the step to take.
+    - **Managed:** local Docker, as above.
+    - **Endpoint:** a container you run yourself (below).
+    - **Off.**
+
+    Changing the mode ends any live sandbox session.
+  - **Limits:** 1 CPU and 1024 MiB per sandbox, and 2 sandboxes at once across all chats, by default. Each is adjustable within bounds (0.5–8 CPUs, 512–16384 MiB, 1–8 at once). Past the cap, enabling is refused with a message saying so. Pids are capped at 256.
+  - **Network:** **Internet access** (the default) or **No internet**. Both use a bridge network Callboard creates with inter-container traffic off, so sandboxes can't reach each other. **No internet** uses an `--internal` network (`callboard-sandbox-internal`), which has no route off the bridge. Docker publishes no ports there, so Callboard reaches the container at its bridge address, which never leaves this machine. That needs this machine to reach container bridge addresses, which Docker Engine on Linux allows and Docker Desktop (macOS, Windows) and rootless Docker don't; there, keep **Internet access**.
+  - **Token:** a file, never an environment variable, in a private (`0700`) directory under the data directory, one per session. It's mounted into the container read-only, and Callboard never sends it: the container first proves it holds it. It's deleted with the container.
   - **Hardening:**
     - **Filesystem:** a read-only root, with tmpfs only for the desktop home and `/tmp`.
     - **Capabilities:** every capability dropped except the two the entrypoint needs to start the desktop and the driver as separate unprivileged users, plus `no-new-privileges` and no setuid programs.
     - **Limits:** pids, memory and CPU are capped. There is no Docker socket.
-    - **Port:** published on `127.0.0.1` only.
-    - **Network:** its own bridge network (`callboard-sandbox`) with inter-container traffic off, so other containers can't reach it.
-  - **Configuration:**
-    - **Not configured:** with none of the variables set (empty counts as unset), the Sandbox desktop shows as not configured.
-    - **Misconfigured:** with only some set, or a value Callboard rejects, it shows as misconfigured and says what's wrong. It never falls back to anything else, and the browser and this machine's desktop are unaffected.
-    - **Incompatible:** a container from an incompatible release is reported unavailable rather than used.
-    - **Label and consent:** the panel names the target `sandbox 127.0.0.1:7801`. Consent is bound to the container instance that was asked about: if the container is replaced while a card is open, approving it opens nothing.
-  - **Network exposure, both ways:**
-    - **Inbound:** keep the port on `127.0.0.1`. It grants full control of that desktop, so reach it from another machine only through a TLS proxy that authenticates. Callboard refuses plain `http` to anything but loopback.
-    - **Outbound:** the container *can* reach this machine through the Docker bridge gateway (for example `172.17.0.1`). Any service listening on all interfaces is reachable from the desktop, and Docker flags can't prevent that. That includes Callboard itself, which listens on every interface. Bind host services to `127.0.0.1` where you can, or firewall the Docker bridge on the host. The desktop can also reach the internet.
+    - **Port:** published on `127.0.0.1` only, on a port Docker picks.
+  - **Endpoint mode (a box you run yourself):** build and start the container, then point Callboard at it and restart Callboard:
 
-  For now you start and stop the container yourself; containers Callboard starts itself are planned. See [Sandbox desktop container](packages/computer-use/README.md#sandbox-desktop-container) for the flags, the image, the handshake and protocol versioning.
+    ```sh
+    packages/computer-use/docker/run.sh 7801   # from the package directory of a source checkout or an install; prints the two variables
+    export CALLBOARD_SANDBOX_DESKTOP_URL=http://127.0.0.1:7801
+    export CALLBOARD_SANDBOX_DESKTOP_TOKEN_FILE=/tmp/callboard-desktop-XXXXXX/token   # the path run.sh printed
+    ```
+
+    - `run.sh` builds the image only if it's missing (from the compiled package, so run `npm run build:computer-use` first in a source checkout). Set `COMPUTER_USE_DESKTOP_REBUILD=1` to rebuild it.
+    - `CALLBOARD_SANDBOX_DESKTOP_TOKEN_FILE` is read at each connection, so a rotated token is picked up, and it may be a symlink. `CALLBOARD_SANDBOX_DESKTOP_TOKEN` also works but is discouraged, because every child process of Callboard inherits it. Empty values count as unset.
+    - With some of the variables set, or a value Callboard rejects, the target shows as misconfigured and says what's wrong. A container from an incompatible release is reported unavailable rather than used.
+    - The panel names the target `sandbox 127.0.0.1:7801`. Consent is bound to the container instance that was asked about: if the container is replaced while a card is open, approving it opens nothing. (A managed sandbox's consent is for a fresh container, and the session must open on the one Callboard started, proven with that session's own token.)
+  - **Network exposure, both ways:**
+    - **Inbound:** keep an endpoint's port on `127.0.0.1`. It grants full control of that desktop, so reach it from another machine only through a TLS proxy that authenticates. Callboard refuses plain `http` to anything but loopback (and, in managed **No internet** mode, the container's own bridge address).
+    - **Outbound:** the container *can* reach this machine through the Docker bridge gateway (for example `172.17.0.1`), in either network setting. Any service listening on all interfaces is reachable from the desktop, and Docker flags can't prevent that. That includes Callboard itself, which listens on every interface. Bind host services to `127.0.0.1` where you can, or firewall the Docker bridge on the host. With **Internet access** the desktop can also reach the internet.
+
+  See [Sandbox desktop container](packages/computer-use/README.md#sandbox-desktop-container) for the flags, the image, the handshake and protocol versioning.
 
 Live sandboxed-browser use hasn't been qualified yet. The X11 driver has been qualified only against Xvfb in that container. For the security model and limits, see [`packages/computer-use/README.md`](packages/computer-use/README.md).
 
@@ -262,6 +275,8 @@ callboard status              PID, port, uptime, health
 callboard logs [-n N] [--no-follow]
 callboard config [--path]     Effective configuration (or just the file path)
 callboard set-password
+callboard sandbox build [--force] Build the Sandbox desktop image (Docker)
+callboard sandbox status      Docker, the image, running managed sandboxes
 callboard help
 callboard -v                  Version
 ```
@@ -283,6 +298,8 @@ Callboard reads `~/.callboard/.env`. If the package root also has a `.env`, its 
 | `CALLBOARD_WORKSPACES_DIR`         | `$CALLBOARD_DATA_DIR/agent-workspaces` | Where agent workspaces live. Process environment only                                    |
 | `CALLBOARD_MAX_BACKGROUND_HOLD_MS` | `900000` (15 min)                      | How long a finished turn waits on its backgrounded shell tasks. Process environment only |
 | `CALLBOARD_AUDIT_LOG`              | on                                     | `off` (or `0`/`false`) stops shipping review records to Drawlatch (see Audit log)        |
+| `CALLBOARD_SANDBOX_IMAGE`          | `callboard/computer-use-desktop:local` | The image managed Sandbox desktops run and `sandbox build` builds. Process environment only |
+| `CALLBOARD_DOCKER_BIN`             | `docker` on `PATH`                     | The Docker CLI Callboard runs for managed Sandbox desktops                               |
 
 Variables marked **process environment only** must be set in the daemon's environment (for example `SESSION_COOKIE_NAME=x callboard start`); a value in `.env` is ignored. `CALLBOARD_DATA_DIR` decides which `.env` is read, so it can't be set inside one. The others are read while the server's modules load, before `.env` is applied. The data directory holds everything: chats, agents, jobs, workspaces, storage, artifacts, settings (`agent-settings.json`), API keys, themes, logs and the PID file.
 

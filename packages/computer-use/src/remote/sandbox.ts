@@ -27,6 +27,13 @@ export const SANDBOX_DESKTOP_UID = 10001;
  * that network) cannot reach another's driver host. See {@link ensureSandboxNetwork}.
  */
 export const SANDBOX_NETWORK = "callboard-sandbox";
+/**
+ * The same, but `--internal`: no route off the bridge, so no internet. Docker
+ * publishes no ports on an internal network, so a sandbox on it is reached at
+ * its bridge address instead (`publish: false`, and the remote driver's
+ * `localDockerBridge`). See {@link ensureSandboxNetwork}.
+ */
+export const SANDBOX_INTERNAL_NETWORK = "callboard-sandbox-internal";
 /** Label on a network that Callboard created for sandboxes. */
 export const SANDBOX_NETWORK_LABEL = "dev.callboard.sandbox-network";
 /**
@@ -70,6 +77,12 @@ export interface SandboxRunOptions {
    * published; `host`, `none` and `container:…` are refused.
    */
   network?: string;
+  /**
+   * Publish the driver host's port on 127.0.0.1 (default true). Pass false for
+   * an `--internal` network, where Docker publishes nothing; the host then
+   * reaches the container at its bridge address, and `port` must be 0.
+   */
+  publish?: boolean;
 }
 
 export const SANDBOX_DEFAULT_LIMITS: Readonly<Required<SandboxLimits>> = Object.freeze({
@@ -131,6 +144,8 @@ export function sandboxRunArgs(options: SandboxRunOptions): string[] {
   const network = options.network ?? SANDBOX_NETWORK;
   if (!NAME.test(network) || ["host", "none", "bridge", "default"].includes(network))
     throw new ComputerUseError("invalid_request", "The sandbox network must be a named, user-defined bridge network");
+  const publish = options.publish !== false;
+  if (!publish && options.port !== 0) throw new ComputerUseError("invalid_request", "An unpublished sandbox takes port 0");
   return [
     "run",
     "--detach",
@@ -151,18 +166,32 @@ export function sandboxRunArgs(options: SandboxRunOptions): string[] {
     `--memory-swap=${limits.memory}`,
     `--cpus=${limits.cpus}`,
     `--network=${network}`,
-    "--publish",
-    `127.0.0.1:${options.port === 0 ? "" : options.port}:${SANDBOX_CONTAINER_PORT}`,
+    ...(publish ? ["--publish", `127.0.0.1:${options.port === 0 ? "" : options.port}:${SANDBOX_CONTAINER_PORT}`] : []),
     "--mount",
     `type=bind,source=${options.tokenFile},target=${SANDBOX_TOKEN_PATH},readonly`,
     image,
   ];
 }
 
-/** `docker network create` arguments for a sandbox network: bridge, no inter-container traffic, labelled. */
-export function sandboxNetworkCreateArgs(name: string = SANDBOX_NETWORK): string[] {
+/**
+ * `docker network create` arguments for a sandbox network: bridge, no
+ * inter-container traffic, labelled. `internal` adds `--internal` (no route
+ * off the bridge); inter-container traffic stays off on it too.
+ */
+export function sandboxNetworkCreateArgs(name: string = SANDBOX_NETWORK, options: { internal?: boolean } = {}): string[] {
   if (!NAME.test(name)) throw new ComputerUseError("invalid_request", "Invalid network name");
-  return ["network", "create", "--driver", "bridge", "--opt", "com.docker.network.bridge.enable_icc=false", "--label", `${SANDBOX_NETWORK_LABEL}=1`, name];
+  return [
+    "network",
+    "create",
+    "--driver",
+    "bridge",
+    ...(options.internal ? ["--internal"] : []),
+    "--opt",
+    "com.docker.network.bridge.enable_icc=false",
+    "--label",
+    `${SANDBOX_NETWORK_LABEL}=1`,
+    name,
+  ];
 }
 
 /**
@@ -171,16 +200,32 @@ export function sandboxNetworkCreateArgs(name: string = SANDBOX_NETWORK): string
  * not a bridge with inter-container communication disabled is refused rather
  * than used: a sandbox on it would be reachable from its neighbours.
  */
-export async function ensureSandboxNetwork(options: { name?: string; docker?: string; signal?: AbortSignal } = {}): Promise<void> {
+export async function ensureSandboxNetwork(
+  options: {
+    name?: string;
+    docker?: string;
+    signal?: AbortSignal;
+    /** An `--internal` network (no route off the bridge). An existing one must match, either way. */
+    internal?: boolean;
+    /**
+     * Run `docker <args>` and resolve its stdout, instead of executing
+     * `docker` itself: for a host with its own Docker runner (and tests).
+     */
+    run?: (args: string[], signal?: AbortSignal) => Promise<string>;
+  } = {},
+): Promise<void> {
   const name = options.name ?? SANDBOX_NETWORK;
   const docker = options.docker ?? "docker";
-  const run = (args: string[]) =>
-    new Promise<string>((resolve, reject) =>
-      execFile(docker, args, { encoding: "utf8", timeout: 30_000, signal: options.signal }, (error, stdout) => (error ? reject(error) : resolve(stdout))),
-    );
+  const internal = options.internal === true;
+  const run = options.run
+    ? (args: string[]) => options.run!(args, options.signal)
+    : (args: string[]) =>
+        new Promise<string>((resolve, reject) =>
+          execFile(docker, args, { encoding: "utf8", timeout: 30_000, signal: options.signal }, (error, stdout) => (error ? reject(error) : resolve(stdout))),
+        );
   const inspect = async () => {
     try {
-      return JSON.parse(await run(["network", "inspect", name]))[0] as { Driver?: string; Options?: Record<string, string> } | undefined;
+      return JSON.parse(await run(["network", "inspect", name]))[0] as { Driver?: string; Internal?: boolean; Options?: Record<string, string> } | undefined;
     } catch {
       return undefined;
     }
@@ -188,7 +233,7 @@ export async function ensureSandboxNetwork(options: { name?: string; docker?: st
   let network = await inspect();
   if (!network) {
     // Another process may create it between our inspect and create; inspect again either way.
-    await run(sandboxNetworkCreateArgs(name)).catch(() => {});
+    await run(sandboxNetworkCreateArgs(name, { internal })).catch(() => {});
     network = await inspect();
   }
   if (!network) throw new ComputerUseError("unsupported", `Could not create Docker network ${name}`);
@@ -196,6 +241,13 @@ export async function ensureSandboxNetwork(options: { name?: string; docker?: st
     throw new ComputerUseError(
       "invalid_request",
       `Docker network ${name} exists but is not a bridge with inter-container communication disabled; remove it or pick another name`,
+    );
+  if ((network.Internal === true) !== internal)
+    throw new ComputerUseError(
+      "invalid_request",
+      internal
+        ? `Docker network ${name} exists but is not an --internal network; remove it or pick another name`
+        : `Docker network ${name} exists but is an --internal network (no internet); remove it or pick another name`,
     );
 }
 

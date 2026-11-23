@@ -7,9 +7,11 @@ import {
   PROTOCOL,
   SANDBOX_DEFAULT_LIMITS,
   SANDBOX_IMAGE_LABELS,
+  SANDBOX_INTERNAL_NETWORK,
   SANDBOX_NETWORK,
   SANDBOX_PROTOCOL_LABEL_VALUE,
   SANDBOX_TOKEN_PATH,
+  ensureSandboxNetwork,
   sandboxNetworkCreateArgs,
   sandboxRunArgs,
 } from "../dist/index.js";
@@ -118,4 +120,74 @@ test("the image labels match package.json and the protocol", async () => {
   assert.ok(dockerfile.includes(`${SANDBOX_IMAGE_LABELS.protocol}="${SANDBOX_PROTOCOL_LABEL_VALUE}"`), "image protocol label out of date");
   // And the base image stays pinned by digest.
   assert.match(dockerfile, /ARG NODE_IMAGE=node:[^\s]+@sha256:[0-9a-f]{64}/);
+});
+
+test("an unpublished sandbox (an --internal network) has no --publish and must take port 0", () => {
+  const args = sandboxRunArgs({ port: 0, publish: false, tokenFile: "/tmp/x/token", network: SANDBOX_INTERNAL_NETWORK });
+  assert.ok(!args.includes("--publish"));
+  assert.ok(args.includes(`--network=${SANDBOX_INTERNAL_NETWORK}`));
+  assert.throws(() => sandboxRunArgs({ port: 7801, publish: false, tokenFile: "/tmp/x/token" }), { code: "invalid_request" });
+  // Published stays the default, on loopback.
+  assert.ok(sandboxRunArgs({ port: 0, tokenFile: "/tmp/x/token" }).includes("127.0.0.1::7801"));
+});
+
+test("internal network arguments keep inter-container traffic off and add --internal", () => {
+  const args = sandboxNetworkCreateArgs(SANDBOX_INTERNAL_NETWORK, { internal: true });
+  assert.deepEqual(args, [
+    "network",
+    "create",
+    "--driver",
+    "bridge",
+    "--internal",
+    "--opt",
+    "com.docker.network.bridge.enable_icc=false",
+    "--label",
+    "dev.callboard.sandbox-network=1",
+    SANDBOX_INTERNAL_NETWORK,
+  ]);
+  assert.ok(!sandboxNetworkCreateArgs().includes("--internal"));
+});
+
+test("ensureSandboxNetwork through a caller's Docker runner: creates when missing, refuses an internal/external mismatch", async () => {
+  const networks = new Map();
+  const calls = [];
+  const run = async (args) => {
+    calls.push(args.join(" "));
+    if (args[1] === "inspect") {
+      const n = networks.get(args[2]);
+      if (!n) throw new Error("No such network");
+      return JSON.stringify([n]);
+    }
+    if (args[1] === "create") {
+      networks.set(args.at(-1), {
+        Driver: "bridge",
+        Internal: args.includes("--internal"),
+        Options: { "com.docker.network.bridge.enable_icc": "false" },
+      });
+      return "id\n";
+    }
+    throw new Error(`unexpected ${args.join(" ")}`);
+  };
+  await ensureSandboxNetwork({ name: "n-int", internal: true, run });
+  assert.equal(networks.get("n-int").Internal, true);
+  assert.ok(calls.some((c) => c.startsWith("network create --driver bridge --internal")));
+  await ensureSandboxNetwork({ name: "n-int", internal: true, run }); // exists and matches
+  await assert.rejects(ensureSandboxNetwork({ name: "n-int", run }), { code: "invalid_request" }); // exists but internal
+  await ensureSandboxNetwork({ name: "n-ext", run });
+  await assert.rejects(ensureSandboxNetwork({ name: "n-ext", internal: true, run }), { code: "invalid_request" });
+  networks.set("n-icc", { Driver: "bridge", Internal: false, Options: {} });
+  await assert.rejects(ensureSandboxNetwork({ name: "n-icc", run }), { code: "invalid_request" });
+});
+
+test("the Docker context ships in the package and builds from dist, not src", async () => {
+  const pkg = JSON.parse(await readFile(join(packageDir, "package.json"), "utf8"));
+  assert.ok(pkg.files.includes("docker"), "docker/ must be in files");
+  const dockerfile = await readFile(join(packageDir, "docker", "Dockerfile"), "utf8");
+  assert.ok(/^COPY dist \.\/dist$/m.test(dockerfile), "the image copies the compiled dist/");
+  assert.ok(!/^COPY src/m.test(dockerfile), "the image must not need src/");
+  assert.ok(!/npm run build/.test(dockerfile), "the image must not compile");
+  assert.ok(pkg.files.includes(".dockerignore"), ".dockerignore must be in files");
+  const ignore = await readFile(join(packageDir, ".dockerignore"), "utf8");
+  for (const line of ["*", "!package.json", "!dist", "!docker/package-lock.json", "!docker/start-desktop.sh"])
+    assert.ok(ignore.split("\n").includes(line), line);
 });

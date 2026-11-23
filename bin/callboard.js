@@ -58,6 +58,7 @@ try {
       follow: { type: "boolean", default: true },
       "no-follow": { type: "boolean", default: false },
       path: { type: "boolean", default: false },
+      force: { type: "boolean", default: false },
     },
     strict: false,
     allowPositionals: true,
@@ -132,6 +133,13 @@ switch (subcommand) {
       await cmdSetPassword();
     }
     break;
+  case "sandbox":
+    if (values.help) {
+      printSandboxHelp();
+    } else {
+      await cmdSandbox();
+    }
+    break;
   case "help": {
     printHelp();
     const latestVersion = await checkForUpdate();
@@ -145,6 +153,61 @@ switch (subcommand) {
 }
 
 // ── Commands ─────────────────────────────────────────────────────────
+
+// `callboard sandbox build|status`: the Sandbox desktop's image. Building is
+// only ever explicit (this command or Settings → Sandbox desktop → Build
+// image); Callboard never builds or pulls it on its own. The context is the
+// shipped packages/computer-use (dist/ + docker/), so this works from an npm
+// install as well as from a source checkout.
+async function cmdSandbox() {
+  const action = rawArgs.find((arg) => !arg.startsWith("-"));
+  const image = await import(join(PKG_ROOT, "backend/dist/services/sandbox-image.js"));
+  const docker = image.execDocker();
+  if (action === "build") {
+    const present = await image.inspectSandboxImage(docker).catch(() => undefined);
+    if (present?.present && present.compatible && !values.force) {
+      console.log(`${image.SANDBOX_IMAGE} already exists (protocol ${present.protocol}, version ${present.version ?? "unknown"}).`);
+      console.log("Rebuild it with: callboard sandbox build --force");
+      return;
+    }
+    console.log(`Building ${image.SANDBOX_IMAGE} from ${image.sandboxBuildContext()} ...`);
+    try {
+      await image.buildSandboxImage({ stdio: "inherit" });
+    } catch (err) {
+      console.error(`\nBuild failed: ${err.message.split("\n")[0]}`);
+      process.exit(1);
+    }
+    console.log(`\nBuilt ${image.SANDBOX_IMAGE}. Turn on Sandbox desktop in a chat's permissions to use it.`);
+    return;
+  }
+  if (action === "status" || action === undefined) {
+    let server;
+    try {
+      server = (await docker(["version", "--format", "{{.Server.Version}}"], { timeoutMs: 10000 })).trim();
+    } catch (err) {
+      console.log(`Docker:  not reachable (${err.message})`);
+      process.exit(1);
+    }
+    console.log(`Docker:  ${server}`);
+    const info = await image.inspectSandboxImage(docker).catch((err) => ({ error: err.message }));
+    if (info.error) console.log(`Image:   ${image.SANDBOX_IMAGE}: ${info.error}`);
+    else if (!info.present) console.log(`Image:   ${image.SANDBOX_IMAGE} is not built. Run: callboard sandbox build`);
+    else
+      console.log(
+        `Image:   ${image.SANDBOX_IMAGE} (protocol ${info.protocol ?? "unlabelled"}${info.compatible ? "" : `, INCOMPATIBLE with ${image.SANDBOX_PROTOCOL_LABEL_VALUE}; rebuild with --force`}, version ${info.version ?? "unknown"}, this Callboard ships ${image.sandboxPackageVersion()})`,
+      );
+    const owner = image.sandboxOwnerId(DATA_DIR);
+    const running = await docker(["ps", "--quiet", "--filter", "label=dev.callboard.managed=1", "--filter", `label=dev.callboard.owner=${owner}`]).catch(
+      () => "",
+    );
+    console.log(`Owner:   ${owner} (from ${DATA_DIR})`);
+    console.log(`Running: ${running.split("\n").filter((line) => line.trim()).length} managed sandbox container(s)`);
+    return;
+  }
+  console.error(`Unknown sandbox command: ${action}\n`);
+  printSandboxHelp();
+  process.exit(1);
+}
 
 async function cmdDefault() {
   ensureDataDir();
@@ -739,6 +802,7 @@ Commands:
   logs           View and follow server logs
   config         Show effective configuration
   set-password   Set or change the server password
+  sandbox        Build or check the Sandbox desktop image (Docker)
 
 Options:
   -h, --help     Show this help message
@@ -754,6 +818,24 @@ Examples:
   callboard start --port 3000  Start on a custom port
   callboard status             Check if server is running
   callboard logs -n 100        View last 100 log lines
+`);
+}
+
+function printSandboxHelp() {
+  console.log(`
+callboard sandbox
+
+Build or check the Sandbox desktop image. Callboard starts and stops one
+container per computer-control session itself; this only provides the image.
+
+Usage: callboard sandbox <build|status> [options]
+
+Commands:
+  build          Build the image once (docker build; skipped if it exists)
+  status         Show Docker, the image and running managed sandboxes
+
+Options:
+  --force        build: rebuild even if a compatible image exists
 `);
 }
 

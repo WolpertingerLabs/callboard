@@ -1,6 +1,8 @@
 import { computerUseRouter } from "./routes/computer-use.js";
 import { setChatArchivedCheck, shutdownComputerUse } from "./services/computer-use.js";
 import { closeComputerUseConnections } from "./services/computer-use-tools.js";
+import { sandboxDesktopRouter } from "./routes/sandbox-desktop.js";
+import { shutdownSandboxDesktop, startSandboxReaper } from "./services/sandbox-desktop.js";
 import dotenv from "dotenv";
 import { spawn } from "child_process";
 import { existsSync, readFileSync } from "fs";
@@ -221,6 +223,7 @@ app.use("/api/chats", chatsRouter);
 app.use("/api/chats", streamRouter);
 app.use("/api/chats", heldRouter);
 app.use("/api/computer-use", computerUseRouter);
+app.use("/api/sandbox-desktop", sandboxDesktopRouter);
 app.use("/api/images", imagesRouter);
 app.use("/api/chats", imagesRouter);
 app.use("/api/queue", queueRouter);
@@ -495,6 +498,10 @@ setChatArchivedCheck(isChatArchived);
 
 app.listen(PORT, () => {
   log.info(`Backend running on http://localhost:${PORT}`);
+  // Managed Sandbox desktop containers a previous run left behind (a crash,
+  // a kill -9) are removed now and every few minutes. Only this data
+  // directory's own: see sandbox-containers.ts.
+  startSandboxReaper();
   log.info(`Log level: ${process.env.LOG_LEVEL || "info"}`);
   log.info(`Config: ${ENV_FILE}`);
 
@@ -584,6 +591,7 @@ async function gracefulShutdown(signal: string) {
   log.info(`${signal} received, shutting down gracefully`);
   await closeComputerUseConnections();
   await shutdownComputerUse().catch((error) => log.warn(`Computer-control shutdown: ${error instanceof Error ? error.message : "failed"}`));
+  await shutdownSandboxDesktop().catch((error) => log.warn(`Sandbox desktop shutdown: ${error instanceof Error ? error.message : "failed"}`));
   shutdownScheduler();
   shutdownJobRunner();
   shutdownDebounce();

@@ -18,7 +18,7 @@ The package is not published to npm, and shipping inside Callboard doesn't publi
 npm install /absolute/path/to/wolpertingerlabs-computer-use-0.1.0.tgz
 ```
 
-Playwright is an **optional** dependency, imported lazily. The core and the native driver work without it. Browser binaries must already be on the host; importing or probing never downloads them. The published files are the compiled JS, type declarations, this README and the MIT licence.
+Playwright is an **optional** dependency, imported lazily. The core and the native driver work without it. Browser binaries must already be on the host; importing or probing never downloads them. The published files are the compiled JS, type declarations, the sandbox image's Docker context (`docker/`, `.dockerignore`), this README and the MIT licence.
 
 ## Public API
 
@@ -27,7 +27,7 @@ Types and `ComputerUseError` live in `src/contracts.ts` and are exported from bo
 - `ComputerUseService`, `createComputerUseService(options?)`
 - `createBrowserDriver(options?)`, `BrowserDriverOptions`
 - `createNativeDesktopDriver(options?)`, `NativeDesktopDriverOptions`
-- `createDriverHost(options)`, `readTokenFile(path, { allowSymlink? })`, `createRemoteDriver(options)` (with `openedInstance`, `listOutbox`, `downloadOutboxFile`), `sandboxRunArgs(options)`, `ensureSandboxNetwork(options?)`, `sandboxNetworkCreateArgs(name?)`, `PROTOCOL`, `HOST_CAPABILITIES`, `SANDBOX_NETWORK`, `SANDBOX_IMAGE_LABELS`, and their types: see [Sandbox desktop container](#sandbox-desktop-container)
+- `createDriverHost(options)`, `readTokenFile(path, { allowSymlink? })`, `createRemoteDriver(options)` (with `openedInstance`, `listOutbox`, `downloadOutboxFile`), `sandboxRunArgs(options)`, `ensureSandboxNetwork(options?)`, `sandboxNetworkCreateArgs(name?, { internal? })`, `PROTOCOL`, `HOST_CAPABILITIES`, `SANDBOX_NETWORK`, `SANDBOX_INTERNAL_NETWORK`, `SANDBOX_IMAGE_LABELS`, and their types: see [Sandbox desktop container](#sandbox-desktop-container)
 - `createMcpServer(service, principal): McpServer`
 - `getToolDefinitions(service, principal): ToolDefinition[]`, `ToolDefinition`
 - `actionSchema`, the Zod schema the service validates actions against, so a host can check an action before acting on it
@@ -69,7 +69,7 @@ const unsubscribe = service.subscribe(principal, (event) => {});
 
 **Leases.** Keep lease IDs in authenticated controller state, never in status listings or audit events. Opening a new MCP connection doesn't rotate an existing lease, and closing a transport doesn't revoke anything. Before retiring or rebinding a controller's turn identity, stop or revoke its sessions, or hand control over through the human control plane.
 
-**Drivers.** A `Driver` has an immutable `kind` (`'browser' | 'native-desktop'`), `probe()`, `open({ sessionId, signal, onTargetChanged?, onLost? })`, and an optional `lockDomain`, which is mandatory for native drivers. `open` returns a `DriverSession` with `observe(signal)`, `act(action, signal)`, `releaseInput()` and `close()`. Driver code is trusted infrastructure, not a sandbox. A driver must:
+**Drivers.** A `Driver` has an immutable `kind` (`'browser' | 'native-desktop'`), `probe()`, `open({ sessionId, ownerId?, signal, onTargetChanged?, onLost? })`, an optional `lockDomain`, which is mandatory for native drivers, and an optional `lockScope`. With `lockScope: "driver"` (the default) every session of the driver shares its lock domain, so one is open at a time. `lockScope: "session"` is for a driver whose every `open` gets a device of its own, such as a fresh container per session: the lock is then the domain plus the session id. `ownerId` is the session owner's id, for a driver that labels what it creates; never authorize by it. `open` returns a `DriverSession` with `observe(signal)`, `act(action, signal)`, `releaseInput()` and `close()`. Driver code is trusted infrastructure, not a sandbox. A driver must:
 
 - settle promptly on abort, release only the input it holds, and never mutate after settling
 - leave existing native apps alone
@@ -205,7 +205,7 @@ await desktop.listOutbox(); // [{ name, size, sha256, mtimeMs }]
 await desktop.downloadOutboxFile("report.pdf"); // { name, size, sha256, data: Buffer }, digest checked
 ```
 
-**Build and run, from a source checkout.** `docker/` is not part of the published package, and the Dockerfile builds this package from `src/`. From this directory:
+**Build and run.** `docker/` ships in the published package, and the Dockerfile takes the compiled `dist/` (it installs only the runtime dependencies from `docker/package-lock.json` and compiles nothing), so the same context builds from a source checkout after `npm run build` and from an installed package. `.dockerignore` sends the daemon only `package.json`, `dist/` and `docker/`'s own files, with or without BuildKit. From this directory:
 
 ```sh
 docker build -t callboard/computer-use-desktop:local -f docker/Dockerfile .
@@ -217,14 +217,22 @@ docker/run.sh 7801   # hardened flags, its own network, a fresh token in a priva
 - **Rebuilding:** it builds the image only if it's missing. After pulling changes, run it with `COMPUTER_USE_DESKTOP_REBUILD=1` (or `docker build` again). `docker rmi callboard/computer-use-desktop:local` removes the image.
 - **Labels:** the image carries `org.opencontainers.image.version` (this package's version) and `dev.callboard.computer-use.protocol` (`"2.0"`), named by `SANDBOX_IMAGE_LABELS`, so a host can check compatibility before `docker run`.
 
-**How Callboard wires it.** Callboard registers the container as its own target, `sandbox-desktop` (kind `sandbox` in its viewer API), next to `managed-browser` and `native-desktop`. It never replaces the local desktop.
+**How Callboard wires it.** Callboard registers the container as its own target, `sandbox-desktop` (kind `sandbox` in its viewer API), next to `managed-browser` and `native-desktop`. It never replaces the local desktop. In its default, **managed** mode, Callboard runs the container itself, one per session, on the local Docker:
+
+- **Start**, inside the target's `Driver.open`, after the human's consent: Docker reachable, `ensureSandboxNetwork`, the image present with a compatible `dev.callboard.computer-use.protocol` label, a fresh token file in a `0700` directory, `docker run` with `sandboxRunArgs` (port `0`, so `127.0.0.1::7801`, read back with `docker port`), a bounded wait for `POST /hello`, then `createRemoteDriver({ url, tokenFile })`. The session must open on the very `instanceId` that answered that hello. The driver says `lockScope: "session"`, so sandboxes of different chats never contend.
+- **Stop:** the session's `close` removes the container (`docker rm --force`) and its token directory, so every way the service ends a session (stop, revoke, TTL, a lost connection, `dispose`) removes it. A hook runs just before removal, while the container is still up, for copying the outbox out.
+- **Labels:** `dev.callboard.managed=1`, the chat, the session, and an owner derived from Callboard's data directory. A reaper removes containers with Callboard's own owner label that belong to no live session, at startup and periodically, and never touches another owner's or an unlabelled container.
+- **Network:** `callboard-sandbox` by default, or with internet access turned off, `callboard-sandbox-internal`: the same bridge with inter-container traffic off, plus `--internal`. Docker publishes no ports on an internal network, so there `sandboxRunArgs({ publish: false })` leaves the port unpublished and Callboard connects to the container's bridge address with `createRemoteDriver({ localDockerBridge: true })`, which accepts plain `http` to a private IPv4 literal. This needs the host to reach container bridge addresses: Docker Engine on Linux, not Docker Desktop or rootless Docker. `ensureSandboxNetwork({ internal })` refuses an existing network whose `--internal` setting differs.
+- **The image** is never built or pulled implicitly: `callboard sandbox build` (or Callboard's Settings) runs `docker build` on this directory.
+
+In **endpoint** mode, Callboard uses a container you run yourself instead:
 
 - **Driver:** a `createRemoteDriver` built from `CALLBOARD_SANDBOX_DESKTOP_URL` and either `tokenFile: CALLBOARD_SANDBOX_DESKTOP_TOKEN_FILE` or `token: CALLBOARD_SANDBOX_DESKTOP_TOKEN` (discouraged). The file is read with `readTokenFile(path, { allowSymlink: true })` at each handshake, so a rotated or symlinked secret works. Empty variables count as unset.
 - **Readiness:** with none set, the target probes unavailable with `readiness: "setup-required"`; with a partial or rejected setting, the same with the reason. A bad token file or an unreachable or incompatible host is the driver's own probe result (its fixed `reason`, with the host's detail only in `operatorDetail`, which Callboard shows only on the signed-in human's status view).
 - **Kinds:** the remote driver's kind is `native-desktop`, so Callboard tells the two desktops apart by target id, never by driver kind.
 - **Permission:** the target is gated on Callboard's own **Sandbox desktop** permission (`sandboxControl`) and nothing else. The container is the boundary, so the file and code permissions have nothing in it to govern, and its unrestricted outbound network is part of what that permission opts into, as for Browser Use. That network reaches this machine's all-interface services too (see above).
 - **Consent:** bound to the endpoint and the `instanceId` the host proved in `POST /hello`, checked before the human is asked and again before opening, and then compared with `openedInstance(sessionId)` for the session that actually opened. A container replaced in between gets nothing.
-- **Not yet:** Callboard doesn't start, stop or sync the container.
+- **Not yet:** Callboard doesn't sync the outbox.
 
 **The token is a file, never an environment variable.** An environment variable shows in `docker inspect` and in every `docker exec` shell.
 
@@ -249,7 +257,7 @@ docker/run.sh 7801   # hardened flags, its own network, a fresh token in a priva
 
 **The other direction: the container can reach this machine.** No Docker flag stops a container on a bridge network from connecting to the host's own addresses, such as the bridge gateway (`172.x.0.1`). Any service on this machine that listens on all interfaces is reachable from the desktop. That includes Callboard itself, which today listens on every interface: a reviewer reached it from the desktop at `172.17.0.1:8000`. Bind host services to `127.0.0.1` where you can, or firewall the Docker bridge on the host, for example a `DOCKER-USER` or nftables rule that drops traffic from the sandbox network to the host.
 
-**Outbound internet** is allowed. Restricting it is a decision for whoever runs the containers. Options are an `--internal` network with an egress proxy (published ports don't work on an internal network, so the driver host would need another path), or host firewall rules.
+**Outbound internet** is allowed on `SANDBOX_NETWORK`. `SANDBOX_INTERNAL_NETWORK` (`sandboxNetworkCreateArgs(name, { internal: true })`) has no route off the bridge, so no internet. Published ports don't work on an internal network, so run the container with `publish: false` and reach it at its bridge address (`localDockerBridge`), as Callboard does. Neither stops the container reaching this machine through the bridge (above). Narrower egress (an allow-list) needs an egress proxy or host firewall rules.
 
 **Keep the port local.** To reach a container on another machine, put it behind a TLS proxy that authenticates. `createRemoteDriver` refuses plain `http` to anything but a loopback address. The token never crosses the wire, but screenshots and typed text do.
 
@@ -355,7 +363,8 @@ The offline suites cover:
 - **MCP:** real in-memory initialize/list/call, stdio subprocess discovery, and a stdio run whose enabled target has no authorizer and must deny `probe` and `open` without opening the driver.
 - **Native lock directory:** PID record, dead-holder reclaim, quarantine and concurrent reclaim, all without a display.
 - **Native typing:** chained `xdotool` argument vectors, delay only for remapped characters, and the 1000-character refusal.
-- **Sandbox run arguments:** every hardening flag, the network argv, input validation, `run.sh` kept in step, and the image labels matching `package.json` and `PROTOCOL`.
+- **Sandbox run arguments:** every hardening flag, the network argv (and its `--internal` variant), `publish: false`, `ensureSandboxNetwork` through a caller's runner (creating, and refusing an ICC or internal/external mismatch), input validation, `run.sh` kept in step, the image labels matching `package.json` and `PROTOCOL`, and the Docker context shipping in the package and building from `dist/`.
+- **Lock scope:** a `lockScope: "session"` driver serves concurrent sessions and receives the owner id; the default scope still allows one.
 - **Remote driver host:** the handshake (a squatting host without the token learns nothing and gets no request past `/hello`; credentials for another instance or secret are refused), protocol negotiation failing closed in both directions (another major, none, a missing capability), slow and oversized requests cut off, `maxConnections`, the attach stream outliving the request deadline, the probe's fixed human words and readiness whitelist, `openedInstance`, token files (symlinks on the client side), the outbox symlink race, digest caching and the `.part` convention, token refusal on every endpoint, schema refusal on both sides, abort and operation bounds, disconnect and heartbeat fencing through the service, open cancellation, outbox path safety (`..`, absolute paths, hidden files, directories, symlinks, size cap) and digest checking.
 
 **Live remote desktop (opt-in, needs Docker):**

@@ -4,7 +4,9 @@
 #
 #   packages/computer-use/docker/run.sh [host-port]
 #
-# From a source checkout (the Dockerfile builds the package from src/).
+# From a source checkout after `npm run build`, or an installed package (the
+# Dockerfile takes the compiled dist/). Callboard users: `callboard sandbox build`
+# builds the image, and Callboard starts and stops containers itself.
 # COMPUTER_USE_DESKTOP_REBUILD=1 rebuilds an existing :local image, e.g. after
 # pulling changes; `docker rmi callboard/computer-use-desktop:local` removes it.
 #
@@ -19,6 +21,11 @@ network="${COMPUTER_USE_DESKTOP_NETWORK:-callboard-sandbox}"
 port="${1:-7801}"
 
 if [ "${COMPUTER_USE_DESKTOP_REBUILD:-}" = 1 ] || ! docker image inspect "$image" >/dev/null 2>&1; then
+  # The image is built from the compiled package, not from src/.
+  if [ ! -f "$here/dist/driver-host-cli.js" ]; then
+    echo "run.sh: $here/dist is not built; run \`npm run build\` in $here first" >&2
+    exit 1
+  fi
   docker build -t "$image" -f "$here/docker/Dockerfile" "$here"
 fi
 

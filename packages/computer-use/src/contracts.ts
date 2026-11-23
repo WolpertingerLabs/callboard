@@ -86,9 +86,22 @@ export interface Driver {
   readonly kind: Kind;
   /** Shared native input MUST share a lock domain, including across driver instances. */
   readonly lockDomain?: string;
+  /**
+   * `"driver"` (the default): every session of this driver shares its one
+   * `lockDomain`, so only one is open at a time. `"session"`: each `open`
+   * gets an input device of its own (a fresh container per session, say), so
+   * the lock is `lockDomain` plus the session id and sessions never contend.
+   * Only a driver that really gives each session its own device may say so.
+   */
+  readonly lockScope?: "driver" | "session";
   probe(): Promise<Probe>;
   open(context: {
     sessionId: string;
+    /**
+     * The session owner's `ownerId`, for a driver that labels what it creates
+     * per session. Metadata only: a driver must never authorize by it.
+     */
+    ownerId?: string;
     signal: AbortSignal;
     onTargetChanged?: () => void;
     /**

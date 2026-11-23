@@ -1,4 +1,9 @@
-node_modules
-dist
-test
-*.tgz
+# The build context is packages/computer-use (this directory). Send the daemon
+# only what docker/Dockerfile copies: package.json, the compiled dist/ and
+# docker/'s own files. At the context root, so the legacy builder honours it too.
+*
+!package.json
+!dist
+!docker/package-lock.json
+!docker/start-desktop.sh
+dist/**/*.map

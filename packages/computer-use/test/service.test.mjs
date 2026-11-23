@@ -287,6 +287,41 @@ test("shared native lock domain excludes other owners/services", async () => {
   assert.equal(next.kind, "native-desktop");
   await b.dispose();
 });
+test("lockScope session: each open is its own device, so sessions of one target never contend; the owner reaches open", async () => {
+  const opened = [];
+  const f = fake();
+  const driver = {
+    ...f.driver,
+    kind: "native-desktop",
+    lockDomain: "fake-per-session",
+    lockScope: "session",
+    open: async (context) => {
+      opened.push({ sessionId: context.sessionId, ownerId: context.ownerId });
+      return f.driver.open(context);
+    },
+  };
+  const s = new ComputerUseService({ targets: [{ id: "box", enabled: true, driver }], authorize: () => "allow" });
+  const a = await s.open(agent, "box");
+  const b = await s.open(other, "box");
+  assert.notEqual(a.sessionId, b.sessionId);
+  assert.deepEqual(opened, [
+    { sessionId: a.sessionId, ownerId: "owner" },
+    { sessionId: b.sessionId, ownerId: "other" },
+  ]);
+  // Stopping one releases only its own lock.
+  await s.stop(agent, a.sessionId);
+  const c = await s.open(agent, "box");
+  assert.equal(c.state, "ready");
+  await s.dispose();
+  // The default scope still shares one lock per driver.
+  const shared = new ComputerUseService({
+    targets: [{ id: "one", enabled: true, driver: { ...driver, lockDomain: "fake-shared", lockScope: undefined } }],
+    authorize: () => "allow",
+  });
+  await shared.open(agent, "one");
+  await assert.rejects(shared.open(other, "one"), error("lease_conflict"));
+  await shared.dispose();
+});
 test("native unavailable without explicit compatible configuration, never captures ambient desktop", async () => {
   for (const opts of [
     {},

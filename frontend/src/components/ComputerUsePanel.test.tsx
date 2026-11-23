@@ -294,6 +294,78 @@ describe("ComputerUsePanel", () => {
       expect(screen.getByText("Sandbox desktop (container)", { selector: "strong" })).toBeTruthy();
       expect(screen.getByText(/^Sandbox desktop:$/)).toBeTruthy();
     });
+
+    describe("managed containers", () => {
+      it.each([
+        ["starting", { phase: "starting", step: "Waiting for the desktop" }, "Container: Starting: Waiting for the desktop…"],
+        ["ready", { phase: "ready" }, "Container: Ready"],
+        ["stopping", { phase: "stopping" }, "Container: Stopping and removing the container…"],
+        ["removed", { phase: "removed" }, "Container: Removed"],
+      ] as const)("shows the container's lifecycle: %s", async (_name, container, text) => {
+        status.capabilities = [...status.capabilities, { ...sandboxCapability, sandbox: { mode: "managed", network: "internet", running: 1, limit: 2 } }];
+        status.sessions = [{ id: "s1", kind: "sandbox", state: "active", controller: "agent", generation: 1, container }];
+        render(<Viewer permission="allow" />);
+        await ready();
+        expect(screen.getByText(text)).toBeTruthy();
+      });
+
+      it("says the container is fresh and removed after, and no internet under network none", async () => {
+        status.capabilities = [...status.capabilities, { ...sandboxCapability, sandbox: { mode: "managed", network: "none", running: 0, limit: 2 } }];
+        render(<Viewer permission="allow" />);
+        await ready();
+        fireEvent.change(screen.getByLabelText("Target"), { target: { value: "sandbox" } });
+        const note = screen.getByText(/Disposable sandbox desktop:/).closest("p")!.textContent!;
+        expect(note).toContain("starts a fresh container when you enable it and removes it");
+        expect(note).toContain("no internet access");
+        expect(note).not.toContain("unrestricted");
+      });
+
+      it.each([
+        ["docker-unreachable", "Docker isn't reachable", /Install or start Docker/],
+        ["image-missing", "Sandbox image not built", /callboard sandbox build/],
+        ["image-incompatible", "Sandbox image is out of date", /callboard sandbox build --force/],
+        ["cap-reached", "Sandbox limit reached", /2 of 2 sandbox desktops are running/],
+        ["turned-off", "Sandbox desktop is turned off", /Settings → Sandbox desktop/],
+      ] as const)("explains %s with its own heading and the step to take", async (problem, heading, guidance) => {
+        status.capabilities = [
+          ...status.capabilities,
+          {
+            kind: "sandbox",
+            available: false,
+            readiness: problem === "cap-reached" ? undefined : "setup-required",
+            reason: `daemon detail for ${problem}`,
+            permission: "allow",
+            sandbox: { mode: problem === "turned-off" ? "off" : "managed", problem, running: 2, limit: 2 },
+          },
+        ];
+        render(<Viewer permission="allow" />);
+        await ready();
+        fireEvent.change(screen.getByLabelText("Target"), { target: { value: "sandbox" } });
+        expect(screen.getByRole("heading", { name: heading })).toBeTruthy();
+        expect(screen.getByRole("heading", { name: heading }).closest("div")!.textContent).toMatch(guidance);
+        expect(screen.getByText(`daemon detail for ${problem}`)).toBeTruthy();
+        expect(button("Enable").disabled).toBe(true);
+      });
+
+      it("a permission block wins over a host problem", async () => {
+        status.capabilities = [
+          ...status.capabilities,
+          {
+            kind: "sandbox",
+            available: false,
+            readiness: "permission-blocked",
+            reason: "Sandbox desktop is denied for this chat.",
+            permission: "allow",
+            sandbox: { mode: "managed", problem: "image-missing" },
+          },
+        ];
+        render(<Viewer permission="allow" />);
+        await ready();
+        fireEvent.change(screen.getByLabelText("Target"), { target: { value: "sandbox" } });
+        expect(screen.queryByRole("heading", { name: "Sandbox image not built" })).toBeNull();
+        expect(screen.getByText("Sandbox desktop is denied for this chat.")).toBeTruthy();
+      });
+    });
   });
 
   it.each(["codex", "claude-code", "pi", undefined])(
