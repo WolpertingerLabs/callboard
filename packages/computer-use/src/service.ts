@@ -421,7 +421,18 @@ export class ComputerUseService {
           const probe = await t.driver.probe();
           sig.throwIfAborted();
           if (!probe.available) throw new ComputerUseError("unsupported", probe.reason ?? "Target unavailable");
-          const driver = await t.driver.open({ sessionId: id, signal: sig, onTargetChanged: () => this.invalidateFrame(s) });
+          const driver = await t.driver.open({
+            sessionId: id,
+            signal: sig,
+            onTargetChanged: () => this.invalidateFrame(s),
+            // Same fencing a failed call would cause, without waiting for one.
+            onLost: () => {
+              if (s.state === "ready" || s.state === "starting") {
+                this.fence(s, "failed");
+                void this.cleanup(s);
+              }
+            },
+          });
           if (sig.aborted || s.generation !== ref.generation) {
             await driver.releaseInput();
             await driver.close();

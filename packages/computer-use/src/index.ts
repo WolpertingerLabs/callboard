@@ -15,3 +15,6 @@ export { createMcpServer, getToolDefinitions, type ToolDefinition } from "./mcp.
  * is the only way to be sure the two agree.
  */
 export { actionSchema } from "./validation.js";
+export { createDriverHost, type DriverHost, type DriverHostOptions } from "./remote/host.js";
+export { createRemoteDriver, type RemoteDriver, type RemoteDriverOptions } from "./remote/client.js";
+export type { HostIdentity, OutboxEntry, OutboxFile } from "./remote/protocol.js";

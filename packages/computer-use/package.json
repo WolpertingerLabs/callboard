@@ -18,7 +18,8 @@
     }
   },
   "bin": {
-    "computer-use-mcp": "dist/cli.js"
+    "computer-use-mcp": "dist/cli.js",
+    "computer-use-driver-host": "dist/driver-host-cli.js"
   },
   "files": [
     "dist",

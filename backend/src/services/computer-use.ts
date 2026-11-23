@@ -372,6 +372,8 @@ interface ControlRequest {
   expiresAt: number;
   /** Set when something withdrew it, so an in-flight startup reports why. */
   withdrawn?: { reason: WithdrawReason; noticeTo: string };
+  /** Which target the human is asked about ({@link ComputerUseHost.targetIdentity}); re-checked on approval. */
+  identity?: string;
 }
 
 /**
@@ -441,7 +443,20 @@ const ACTION_TYPES: readonly string[] = GUI_ACTION_TYPES;
 const PENDING_TARGET_REASON =
   "Approve access to this specific target for this chat. This request stays open until you answer it; once approved, the session lasts up to 15 minutes. Screenshots are sent to the configured model when requested. This target is set to Ask, so every agent action also needs a separate confirmation — that one is asked in the chat, not here. Subagents the engine runs inside this chat's turn (Claude Code Task subagents, Codex native subagents) share this grant and act under this chat's identity.";
 
-const humanTarget = (kind: ComputerTargetKind) => `${kind === "browser" ? "managed browser" : "native desktop"} on ${hostname()}`;
+/**
+ * A desktop driver that runs somewhere else (`createRemoteDriver`, enabled by
+ * CALLBOARD_REMOTE_DESKTOP_URL/TOKEN). Recognised by shape so tests and other
+ * drivers need no import: it names its endpoint, and can say which host
+ * instance is answering there.
+ */
+interface RemoteTarget {
+  endpoint: string;
+  identity(signal?: AbortSignal): Promise<{ instanceId: string }>;
+}
+const remoteTarget = (driver: Driver): RemoteTarget | undefined => {
+  const candidate = driver as Partial<RemoteTarget>;
+  return typeof candidate.endpoint === "string" && typeof candidate.identity === "function" ? (candidate as RemoteTarget) : undefined;
+};
 
 /**
  * Show the human what they are approving. Never UUIDs, never raw JSON.
@@ -792,6 +807,40 @@ export class ComputerUseHost {
     }, 1000);
     this.watchdog.unref();
   }
+  private remote(kind: ComputerTargetKind): RemoteTarget | undefined {
+    return kind === "desktop" ? remoteTarget(this.drivers.desktop) : undefined;
+  }
+  /** Short label for a target: this machine's name, or the remote desktop's endpoint. */
+  private targetLabel(kind: ComputerTargetKind): string {
+    const remote = this.remote(kind);
+    return remote ? `remote ${remote.endpoint}` : hostname();
+  }
+  /** What a person is told the target is, in prompts and action summaries. */
+  private humanTarget(kind: ComputerTargetKind): string {
+    if (kind === "browser") return `managed browser on ${hostname()}`;
+    const remote = this.remote(kind);
+    return remote ? `remote desktop at ${remote.endpoint}` : `native desktop on ${hostname()}`;
+  }
+  /**
+   * The identity a consent is bound to: asked under one target, opened on the
+   * same one. Locally that is this machine's hostname. For a remote desktop it
+   * is the endpoint plus the instance id its driver host reports, which a host
+   * restart changes — so approving a request after the container was replaced
+   * does not open the replacement on the old consent.
+   */
+  private async targetIdentity(kind: ComputerTargetKind, signal: AbortSignal): Promise<string> {
+    const remote = this.remote(kind);
+    if (!remote) return hostname();
+    try {
+      const { instanceId } = await remote.identity(AbortSignal.any([signal, AbortSignal.timeout(CONTROL_PROBE_TIMEOUT_MS)]));
+      return `${remote.endpoint}#${instanceId}`;
+    } catch (error) {
+      if (signal.aborted) throw controlError("cancelled", "Control request cancelled; no target was enabled.");
+      throw Object.assign(controlError("unsupported", "Could not confirm which remote desktop host is answering. Check that it is running, then retry."), {
+        cause: error,
+      });
+    }
+  }
   /** Called by the package before AND after every action/observation. */
   authorize = (request: AuthorizationRequest): "allow" | "deny" => {
     try {
@@ -906,8 +955,8 @@ export class ComputerUseHost {
       id: value.sessionId,
       kind: value.kind === "browser" ? "browser" : "native",
       controller: value.controller === "none" ? null : value.controller,
-      targetLabel: hostname(),
-      target: hostname(),
+      targetLabel: this.targetLabel(uiKind(value.kind)),
+      target: this.targetLabel(uiKind(value.kind)),
     };
   }
   async status(chatId: string) {
@@ -951,8 +1000,8 @@ export class ComputerUseHost {
           id,
           sessionId: id,
           kind: pending.kind === "browser" ? ("browser" as const) : ("native" as const),
-          targetLabel: hostname(),
-          target: hostname(),
+          targetLabel: this.targetLabel(pending.kind),
+          target: this.targetLabel(pending.kind),
           targetId: targetId(pending.kind),
           reason: pending.reason ?? PENDING_TARGET_REASON,
           state: "pending_approval" as SessionStatus["state"],
@@ -1030,7 +1079,7 @@ export class ComputerUseHost {
       } satisfies ControlRequestPending;
     }
     const id = randomUUID();
-    const target = hostname();
+    const target = this.targetLabel(kind);
     const record: ControlRequest = { chatId, kind, signature: current.signature, abort: new AbortController(), expiresAt: Infinity };
     // Reserve before the first asynchronous probe. Stop can discover this even
     // before the card arrives, and it stays discoverable until it is answered.
@@ -1048,6 +1097,7 @@ export class ComputerUseHost {
       record.abort.signal.throwIfAborted();
       signal.throwIfAborted();
       if (!probe.available) throw controlError("unsupported", probe.reason ?? "Target unavailable. Check native setup on the service host, then retry.");
+      record.identity = await this.targetIdentity(kind, AbortSignal.any([signal, record.abort.signal]));
       if (this.readPolicy(chatId).signature !== current.signature) throw controlError("denied", "Permissions changed; request fresh consent.");
     } catch (error) {
       this.dropControlRequest(id, record);
@@ -1060,7 +1110,7 @@ export class ComputerUseHost {
         controlRequest: true,
         input: { kind, target, reason: reason.trim(), permission: levelFor(kind, current.policy), durationMinutes: 15 },
       },
-      (approved) => (approved ? this.enableApproved(id, record, target) : this.refuseControl(id, record)),
+      (approved) => (approved ? this.enableApproved(id, record) : this.refuseControl(id, record)),
     );
     return {
       status: "consent_pending",
@@ -1119,15 +1169,17 @@ export class ComputerUseHost {
     );
   }
   /** The human said yes: re-check, probe, open, and tell both of them. Resolves for `/respond`. */
-  private async enableApproved(id: string, record: ControlRequest, target: string): Promise<ApprovalCompletion> {
+  private async enableApproved(id: string, record: ControlRequest): Promise<ApprovalCompletion> {
     const { chatId, kind } = record;
     const signal = record.abort.signal;
     const label = kind === "browser" ? "Browser" : "Desktop";
     try {
       if (this.controlRequests.get(id) !== record || signal.aborted) throw controlError("cancelled", "This request was withdrawn before it was answered.");
       const current = this.readPolicy(chatId);
-      if (hostname() !== target || current.signature !== record.signature || computerUseScopeError(kind, current.policy))
+      if (current.signature !== record.signature || computerUseScopeError(kind, current.policy))
         throw controlError("denied", "Permissions changed since this was requested. Request fresh consent.");
+      if ((await this.targetIdentity(kind, signal)) !== record.identity)
+        throw controlError("unsupported", "The target changed since this was requested (a different host is answering there). Request fresh consent.");
       const ready = await boundedProbe(this.drivers[kind], signal, Date.now() + CONTROL_PROBE_TIMEOUT_MS);
       signal.throwIfAborted();
       if (!ready.available) throw controlError("unsupported", ready.reason ?? "Target is no longer available. Fix host setup before retrying.");
@@ -1193,7 +1245,7 @@ export class ComputerUseHost {
         state: "pending_approval",
         controller: null,
         generation: 0,
-        targetLabel: hostname(),
+        targetLabel: this.targetLabel(kind),
       };
     }
     return this.openApproved(chatId, kind, current);
@@ -1404,7 +1456,7 @@ export class ComputerUseHost {
     const level = levelFor(kind, this.readPolicy(chatId).policy);
     if (level === "deny")
       throw controlError("denied", `${kind === "browser" ? "Browser Use" : "Computer Use"} is denied for this chat; no GUI action can be performed`);
-    const target = humanTarget(kind);
+    const target = this.humanTarget(kind);
     // Prompt and execution share one immutable snapshot: what the human is
     // shown is what runs, even if the caller mutates its object afterwards.
     const request = structuredClone(action) as Record<string, unknown>;
@@ -1652,18 +1704,55 @@ export class ComputerUseHost {
   }
 }
 
+/**
+ * The desktop target's driver. With CALLBOARD_REMOTE_DESKTOP_URL and
+ * CALLBOARD_REMOTE_DESKTOP_TOKEN set it is a remote driver host (for example
+ * the container in packages/computer-use/docker); otherwise this machine's
+ * X11 display. Same target, same permission axis and policy either way: the
+ * remote host is only a driver, and every decision stays in this process.
+ *
+ * Only one of the two set, or a value the remote driver rejects, gives a
+ * desktop that probes unavailable with the reason — never a silent fall back
+ * to the local display the operator was trying to avoid.
+ */
+export function desktopDriver(
+  pkg: Pick<typeof import("@wolpertingerlabs/computer-use"), "createRemoteDriver" | "createNativeDesktopDriver">,
+  env: NodeJS.ProcessEnv = process.env,
+): Driver {
+  const url = env.CALLBOARD_REMOTE_DESKTOP_URL?.trim();
+  const token = env.CALLBOARD_REMOTE_DESKTOP_TOKEN?.trim();
+  if (url || token) {
+    try {
+      if (!url || !token) throw new Error("Set both CALLBOARD_REMOTE_DESKTOP_URL and CALLBOARD_REMOTE_DESKTOP_TOKEN, or neither.");
+      return pkg.createRemoteDriver({ url, token });
+    } catch (error) {
+      const reason = `Remote desktop is misconfigured: ${error instanceof Error ? error.message : "invalid settings"}`;
+      log.error(reason);
+      return {
+        kind: "native-desktop",
+        lockDomain: "remote-desktop:misconfigured",
+        probe: async () => ({ available: false, kind: "native-desktop", readiness: "setup-required", reason, capabilities: [] }),
+        open: async () => {
+          throw controlError("unsupported", reason);
+        },
+      };
+    }
+  }
+  return pkg.createNativeDesktopDriver({
+    enabled: true,
+    display: env.CALLBOARD_NATIVE_DISPLAY ?? env.DISPLAY,
+    acknowledgeFullDesktopAccess: true,
+    permissions: { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow" },
+  });
+}
+
 let hostPromise: Promise<ComputerUseHost> | undefined;
 export function getComputerUseHost(): Promise<ComputerUseHost> {
   return (hostPromise ??= (async () => {
     const pkg = await import("@wolpertingerlabs/computer-use");
     const drivers = {
       browser: pkg.createBrowserDriver({ network: "unrestricted", executablePath: process.env.CALLBOARD_BROWSER_EXECUTABLE }),
-      desktop: pkg.createNativeDesktopDriver({
-        enabled: true,
-        display: process.env.CALLBOARD_NATIVE_DISPLAY ?? process.env.DISPLAY,
-        acknowledgeFullDesktopAccess: true,
-        permissions: { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow" },
-      }),
+      desktop: desktopDriver(pkg),
     };
     const service = new pkg.ComputerUseService({
       targets: [

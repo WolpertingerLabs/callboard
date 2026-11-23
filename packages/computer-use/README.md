@@ -27,6 +27,7 @@ Types and `ComputerUseError` live in `src/contracts.ts` and are exported from bo
 - `ComputerUseService`, `createComputerUseService(options?)`
 - `createBrowserDriver(options?)`, `BrowserDriverOptions`
 - `createNativeDesktopDriver(options?)`, `NativeDesktopDriverOptions`
+- `createDriverHost(options)`, `createRemoteDriver(options)`, and their types: see [Remote desktop container](#remote-desktop-container)
 - `createMcpServer(service, principal): McpServer`
 - `getToolDefinitions(service, principal): ToolDefinition[]`, `ToolDefinition`
 - `actionSchema`, the Zod schema the service validates actions against, so a host can check an action before acting on it
@@ -68,12 +69,13 @@ const unsubscribe = service.subscribe(principal, (event) => {});
 
 **Leases.** Keep lease IDs in authenticated controller state, never in status listings or audit events. Opening a new MCP connection doesn't rotate an existing lease, and closing a transport doesn't revoke anything. Before retiring or rebinding a controller's turn identity, stop or revoke its sessions, or hand control over through the human control plane.
 
-**Drivers.** A `Driver` has an immutable `kind` (`'browser' | 'native-desktop'`), `probe()`, `open({ sessionId, signal, onTargetChanged? })`, and an optional `lockDomain`, which is mandatory for native drivers. `open` returns a `DriverSession` with `observe(signal)`, `act(action, signal)`, `releaseInput()` and `close()`. Driver code is trusted infrastructure, not a sandbox. A driver must:
+**Drivers.** A `Driver` has an immutable `kind` (`'browser' | 'native-desktop'`), `probe()`, `open({ sessionId, signal, onTargetChanged?, onLost? })`, and an optional `lockDomain`, which is mandatory for native drivers. `open` returns a `DriverSession` with `observe(signal)`, `act(action, signal)`, `releaseInput()` and `close()`. Driver code is trusted infrastructure, not a sandbox. A driver must:
 
 - settle promptly on abort, release only the input it holds, and never mutate after settling
 - leave existing native apps alone
 - use screenshot pixel coordinates that equal input coordinates
 - share a lock domain with anything that shares an input device (separate screens don't mean separate keyboards)
+- call `onLost` if it loses its target out of band (the remote driver does when its connection drops); the service then fences the session `failed` at once instead of on the next call
 
 **Probe readiness.** `Probe.readiness` is optional metadata: `setup-required`, `unsupported`, `permission-blocked` or `unknown`. Consumers need a generic fallback for missing or unknown values, and must not parse `reason`. Readiness grants nothing. `operatorDetail` is for operators only and is stripped from MCP probe results.
 
@@ -83,7 +85,7 @@ const unsubscribe = service.subscribe(principal, (event) => {});
 - Holds and waits are capped at 2 seconds, and text at 4096 characters.
 - Pointer coordinates are checked against an authorized frame.
 - Native scroll maps every 100 pixels to one wheel step.
-- Native Unicode typing is sent key by key. It can be slow, depends on the keyboard layout, and hasn't been qualified on a live target.
+- Native typing chains up to 64 keys per `xdotool` call. Printable ASCII, newline and tab need no delay; any other character is typed through a remapped scratch keycode with a 10 ms per-key delay (about 20 ms per character), so a `type` action may contain at most 1000 of them; more is refused with `invalid_request` before any input is sent. Qualified live on Xvfb; see [Tests and qualification](#tests-and-qualification).
 
 ## Authorization and lifecycle
 
@@ -187,6 +189,47 @@ There's no watchdog, so a killed process can leave input held; use an independen
 
 Command choices follow upstream [xdotool](https://github.com/jordansissel/xdotool/blob/main/xdotool.pod) and [ImageMagick import](https://imagemagick.org/script/import.php) documentation.
 
+## Remote desktop container
+
+The X11 driver can run inside a Docker container and be driven from another process over an authenticated local connection. The container is a **driver host**, not an MCP server and not a policy point: it exposes one local `Driver`'s `probe`, `open`, `observe`, `act`, `releaseInput` and `close` over HTTP, and everything that decides whether an operation may happen (authorization, leases, approvals, the 15-minute TTL) stays in the `ComputerUseService` that connects to it.
+
+```ts
+import { ComputerUseService, createRemoteDriver } from "@wolpertingerlabs/computer-use";
+const desktop = createRemoteDriver({ url: "http://127.0.0.1:7801", token: process.env.DESKTOP_TOKEN! });
+const service = new ComputerUseService({ targets: [{ id: "desktop", enabled: true, driver: desktop }], authorize });
+await desktop.listOutbox(); // [{ name, size, sha256 }]
+await desktop.downloadOutboxFile("report.pdf"); // { name, size, sha256, data: Buffer }, digest checked
+```
+
+**Build and run.** From this directory:
+
+```sh
+docker build -t callboard/computer-use-desktop:local -f docker/Dockerfile .
+docker/run.sh 7801   # runs it on 127.0.0.1:7801 with a fresh random token and prints both values
+```
+
+or by hand, passing the token through the environment rather than argv:
+
+```sh
+export COMPUTER_USE_HOST_TOKEN=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
+docker run -d --rm --name callboard-computer-use-desktop -p 127.0.0.1:7801:7801 -e COMPUTER_USE_HOST_TOKEN callboard/computer-use-desktop:local
+```
+
+**Keep the port local.** The bearer token is the only authentication, and it grants full control of that desktop. Publish the port on `127.0.0.1` only, as above. To reach a container on another machine, put it behind a TLS proxy that authenticates; `createRemoteDriver` refuses plain `http` to anything but a loopback address.
+
+**What's in the image.** Xvfb on `:99` at 1280×800×24, the icewm window manager, one xterm (respawned if it exits) as the test target, `/usr/bin/xdotool`, ImageMagick's `/usr/bin/import`, Node 22 and this package. Two unprivileged users: `desktop` owns the X session and every app on it, and `driver` runs `computer-use-driver-host` and alone holds the token, so nothing launched on the desktop can read it from another process's environment. The entrypoint starts as root only to start those processes; nothing but `tini` stays root. Inside the container the native driver runs with full-desktop access acknowledged and all four scopes on `allow`, which is correct there: the container (its filesystem, processes and network) is the boundary. It still has outbound network access by default; attach it to a restricted Docker network if the desktop must not reach the internet.
+
+**The driver host** (`createDriverHost({ driver, token, outboxDir? })`, or the `computer-use-driver-host` bin, configured by `COMPUTER_USE_*` environment variables):
+
+- Refuses to start without a token of at least 32 characters, and checks it on every request, in constant time, before reading the body or the path.
+- Validates every action with `actionSchema`, as the client does before sending it.
+- Bounds each operation at 30 seconds and aborts it if the client goes away.
+- Ties each session to a long-lived attach response with a ping every 5 seconds. If that connection drops, the host aborts the running operation, releases input and closes the session. The client reads the same drop (or 15 seconds without a ping) as a lost connection, fails any in-flight call with `driver_error`, and calls `onLost`, so the service fences the session at once.
+- Returns frames as PNG, with width and height read from the image itself. Coordinates are 1:1 with those pixels.
+- Serves one session at a time; another `open` gets `lease_conflict`.
+
+**Outbox (spike).** `~/outbox` in the container (`/home/desktop/outbox`) is listed with name, size and SHA-256, and served by name. Names are plain file names: no leading dot, no separators, at most 128 characters, so `..` and absolute paths are refused, and symlinks are refused at open time with `O_NOFOLLOW`. Files over 64 MiB are listed without a digest and not served, and a listing stops at 200 entries. The client checks the digest against the bytes it received.
+
 ## MCP server
 
 ```sh
@@ -239,11 +282,29 @@ The offline suites cover:
 - **Fake drivers:** policy, identity, lease and generation races, takeover privacy at capture, queue and delivery, queued cancellation, revocation before image delivery, TTL, and native incompatibility.
 - **MCP:** real in-memory initialize/list/call, stdio subprocess discovery, and a stdio run whose enabled target has no authorizer and must deny `probe` and `open` without opening the driver.
 - **Native lock directory:** PID record, dead-holder reclaim, quarantine and concurrent reclaim, all without a display.
+- **Native typing:** chained `xdotool` argument vectors, delay only for remapped characters, and the 1000-character refusal.
+- **Remote driver host:** token refusal on every endpoint, schema refusal on both sides, abort and operation bounds, disconnect and heartbeat fencing through the service, open cancellation, outbox path safety (`..`, absolute paths, hidden files, directories, symlinks, size cap) and digest checking.
+
+**Live remote desktop (opt-in, needs Docker):**
+
+```sh
+CALLBOARD_DOCKER_TESTS=1 npm test
+```
+
+This builds the image, runs it on a random `127.0.0.1` port with a random token, and through `createRemoteDriver` and `ComputerUseService` checks: the token isn't readable from the desktop user's processes; probe; open; a 1280×800 PNG frame; pointer coordinates equal to screenshot pixels (`xdotool getmouselocation` at the corners); typing, a key chord and Enter each changing the frame; non-ASCII typing with the pointer still responsive afterwards; a file written into the outbox by typing a shell command in the terminal, then listed and downloaded with a matching digest; a binary file written with `docker exec`, likewise; a symlink not listed and not served; stop and reopen; and `docker kill` under a live session fencing it `failed` with no further call. The container is always removed; the image is left in place. Without the variable the test is skipped.
+
+**Native X11 driver, qualified on Xvfb (inside the container):** screenshots; pointer `move`, left/right `click`, `drag` (exact end points; a title-bar drag moves the window by exactly the requested distance) and `scroll`; key chords such as `Shift+a`, `Control+A`, `Control+u`, `Enter`, `Tab`, `Escape`, `F1`, with no modifier left held afterwards; typing of all 95 printable ASCII characters, Latin-1, `€`, arrows, CJK and emoji (byte-exact, checked by typing into `cat > file`); 4000 ASCII characters in about 0.6 s; 1000 CJK characters in about 21 s; an aborted `type` fencing the session. Found and fixed while qualifying:
+
+- **Typing was too slow for its own limit.** Two `xdotool` processes per character came to about 30 ms each, so a 1500-character `type` timed out at 30 s and failed the session, though the schema allows 4096. Keys are now chained per call.
+- **Chaining without a delay drops non-ASCII characters**, because each one is typed through a scratch keycode that xdotool remaps and the client reads it after the mapping has moved on. Those characters keep a 10 ms per-key delay.
+- **Non-ASCII typing can freeze the pointer under some window managers.** Each remap sends every client a keyboard `MappingNotify`. Under a UTF-8 locale openbox spends about 80 ms on each, falls minutes behind on a long string, and meanwhile holds its click-to-focus pointer grab, so the pointer stops moving. The image uses icewm, which keeps up. This is a property of the desktop, not the driver: on another X desktop, check the window manager the same way.
+
+Still open: a key held when `xdotool` is killed mid-chunk is released by `keyup` on the same keysym, which for a remapped character may land on a different scratch keycode; a monospace CJK font isn't installed in the image, so CJK renders as boxes (the characters themselves are correct).
 
 **Not qualified:**
 
 - Live sandboxed browser operation. Earlier Chromium smoke passes predate the sandbox fix, and the sandboxed smoke couldn't run on the build host.
-- Any live native desktop.
+- A live native desktop other than Xvfb in the container above: a physical X server, other window managers and toolkits.
 - GPU, Wayland, macOS and Windows.
 - Image-to-model vision across the five engine routes.
 - Durable host policy, crash watchdogs, and drawing or modelling workflows.

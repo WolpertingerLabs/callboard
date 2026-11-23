@@ -40,6 +40,16 @@ const keys: Record<string, string> = {
   PageDown: "Next",
   Space: "space",
 };
+/** Characters per xdotool exec when typing. */
+const TYPE_CHUNK = 64;
+/** Printable ASCII, newline and tab: present in every keymap, safe to chain with no delay. */
+const TYPE_FAST = /^[\x20-\x7e\n\t]$/;
+/** Per-key delay for characters typed through a remapped scratch keycode. */
+const TYPE_SLOW_DELAY_MS = "10";
+/** ~22ms each on Xvfb: past this, one action could not finish inside the 30s bound. */
+const TYPE_MAX_SLOW = 1000;
+const keysymFor = (character: string) =>
+  character === "\n" ? "Return" : character === "\t" ? "Tab" : `U${character.codePointAt(0)!.toString(16).padStart(4, "0")}`;
 /** Fixed executables and argument vectors; no shell, eval, app launcher, clipboard or file transfer. */
 export function createNativeDesktopDriver(options: NativeDesktopDriverOptions = {}): Driver {
   const config = { ...options, permissions: options.permissions ? { ...options.permissions } : undefined };
@@ -201,16 +211,31 @@ export function createNativeDesktopDriver(options: NativeDesktopDriverOptions = 
                   }
                 }
                 break;
-              case "type":
-                for (const character of a.text) {
+              case "type": {
+                // Qualified live on Xvfb (see README): one xdotool exec per key
+                // cost ~30ms a character, so the 4096-character maximum could
+                // never finish inside the 30s operation bound. Keys are now
+                // chained, TYPE_CHUNK characters per exec. Printable ASCII is in
+                // every keymap and is exact with no inter-key delay; anything
+                // else is typed through a scratch keycode that xdotool remaps
+                // per key, and with no delay the client reads the keycode after
+                // the mapping has moved on and drops the character. Hence the
+                // per-key delay for those only.
+                const characters = [...a.text];
+                if (characters.filter((c) => !TYPE_FAST.test(c)).length > TYPE_MAX_SLOW)
+                  throw new ComputerUseError("invalid_request", `Type at most ${TYPE_MAX_SLOW} non-ASCII characters per action; split the text`);
+                for (let i = 0; i < characters.length; i += TYPE_CHUNK) {
                   sig.throwIfAborted();
-                  const k = character === "\n" ? "Return" : character === "\t" ? "Tab" : `U${character.codePointAt(0)!.toString(16).padStart(4, "0")}`;
-                  heldKeys.add(k);
-                  await input(["keydown", k], sig);
-                  await input(["keyup", k], sig);
-                  heldKeys.delete(k);
+                  const chunk = characters.slice(i, i + TYPE_CHUNK).map((c) => ({ key: keysymFor(c), delay: TYPE_FAST.test(c) ? "0" : TYPE_SLOW_DELAY_MS }));
+                  for (const { key } of chunk) heldKeys.add(key);
+                  await input(
+                    chunk.flatMap(({ key, delay }) => ["keydown", "--delay", delay, key, "keyup", "--delay", delay, key]),
+                    sig,
+                  );
+                  for (const { key } of chunk) heldKeys.delete(key);
                 }
                 break;
+              }
               case "key":
                 for (const key of a.key.split("+")) {
                   const k = keys[key] ?? key;
