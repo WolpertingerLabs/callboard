@@ -427,12 +427,39 @@ describe('scoped Google templates', () => {
           `${SHEETS}/1AbC/developerMetadata:searchX`,
           `${SHEETS}/1AbC/developerMetadata/42/x`,
           `${SHEETS}/1AbC/permissions`,
-          // An encoded ":" in a method suffix isn't decoded by the matcher, so
-          // it matches no pattern: refused rather than guessed at.
+          // An encoded ":" in a method suffix that is its own segment isn't
+          // decoded by the matcher, so it matches no pattern (but see the
+          // %2F case below).
           `${SHEETS}/1AbC/values%3AbatchUpdate`,
           `${SHEETS}/1AbC/developerMetadata%3Asearch`,
         ]) {
           expect(isEndpointAllowed(url, allowedEndpoints), url).toBe(false);
+        }
+      });
+
+      it(`${alias}: a %2F doesn't split a segment, and stays under /v4/spreadsheets`, () => {
+        // `*` is [^/]*, so `{id}%2F…` is one segment for `…/spreadsheets/*`
+        // (CONNECTIONS.md "Sheets method suffixes"). Sent as written.
+        for (const url of [
+          `${SHEETS}/1AbC%2Fvalues%3AbatchUpdate`,
+          `${SHEETS}/1AbC%2Fvalues:batchUpdate`,
+          `${SHEETS}/1AbC%2fpermissions`,
+        ]) {
+          expect(isEndpointAllowed(url, allowedEndpoints), url).toBe(true);
+          const sent = normalizeOutboundUrl(url, allowedEndpoints, url);
+          expect(sent, url).toBe(url);
+          expect(new URL(sent).host).toBe('sheets.googleapis.com');
+          expect(new URL(sent).pathname.startsWith('/v4/spreadsheets/')).toBe(true);
+        }
+        // ...but a dot segment behind it is still refused.
+        for (const url of [
+          `${SHEETS}/1AbC%2F..%2F..%2Fbatch`,
+          `${SHEETS}/1AbC%2F%2e%2e%2F%2e%2e%2Fbatch`,
+          `${SHEETS}/1AbC%5C..%5C..%5Cbatch`,
+        ]) {
+          expect(() => normalizeOutboundUrl(url, allowedEndpoints, url), url).toThrow(
+            /Endpoint not allowed/,
+          );
         }
       });
 
