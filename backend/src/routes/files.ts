@@ -78,9 +78,10 @@ export function createFilesRouter(proxyOptions: FilesRouterOptions = {}) {
 
   // Serve a local file by absolute path, or proxy an http(s) URL
   router.get("/serve", (req, res) => {
-    // First, so every response — including the early 400/403/413/415/502/504
-    // JSON errors — carries nosniff and the sandbox CSP.
+    // First, so every response — including the early 400/403/404/413/415/502/504
+    // JSON errors — carries nosniff, the sandbox CSP and the cache policy.
     setSandboxedContentHeaders(res);
+    res.setHeader("Cache-Control", SERVED_CACHE_CONTROL);
 
     const filePath = req.query.path as string | undefined;
     const urlParam = req.query.url as string | undefined;
@@ -109,15 +110,16 @@ export const filesRouter = createFilesRouter();
 
 /**
  * `Content-Disposition: attachment` for `name`: an ASCII `filename` fallback
- * with quotes, backslashes and control characters removed (and any other
- * non-ASCII replaced), plus the exact name as RFC 5987 `filename*`.
+ * with quotes, backslashes and control characters removed (and `%` and any
+ * other non-ASCII replaced by `_`), plus the exact name as RFC 5987 `filename*`.
  */
 export function attachmentDisposition(name: string): string {
   const ascii =
     name
       // eslint-disable-next-line no-control-regex
       .replace(/["\\\x00-\x1f\x7f]/g, "")
-      .replace(/[^\x20-\x7e]/g, "_")
+      // `%` too: some browsers percent-decode the plain `filename`.
+      .replace(/[^\x20-\x7e]|%/g, "_")
       .trim() || "download";
   // encodeURIComponent leaves ' ( ) * ! — not attr-chars in RFC 5987.
   const encoded = encodeURIComponent(name).replace(/['()*!]/g, (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase());
@@ -167,7 +169,8 @@ function serveLocalFile(filePath: string, req: Request, res: Response, download 
   // policy and the sandbox headers — downloads included.
   if (download) {
     res.setHeader("Content-Type", "application/octet-stream");
-    res.setHeader("Content-Disposition", attachmentDisposition(path.basename(realPath)));
+    // The requested name, not a symlink target's: the saved file matches the card.
+    res.setHeader("Content-Disposition", attachmentDisposition(path.basename(resolved)));
   } else {
     // MIME allowlist
     const info = mediaTypeForPath(realPath);

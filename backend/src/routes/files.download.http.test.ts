@@ -8,7 +8,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import express from "express";
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { listenRaw, type RawResponse, type RawServer } from "./__fixtures__/raw-http.js";
@@ -99,6 +99,17 @@ describe("download=1", () => {
   it("attachmentDisposition encodes RFC 5987 non-attr-chars and never yields an empty fallback", () => {
     expect(attachmentDisposition("it's (1)*!.txt")).toBe(`attachment; filename="it's (1)*!.txt"; filename*=UTF-8''it%27s%20%281%29%2A%21.txt`);
     expect(attachmentDisposition('"\r\n"')).toBe(`attachment; filename="download"; filename*=UTF-8''%22%0D%0A%22`);
+    // A literal % would be percent-decoded by some browsers.
+    expect(attachmentDisposition("100%25.txt")).toBe(`attachment; filename="100_25.txt"; filename*=UTF-8''100%2525.txt`);
+  });
+
+  it("names the download after the requested path, not a symlink's target", async () => {
+    const target = file("target-name.bin", "data");
+    const link = join(DATA, "shown-name.bin");
+    symlinkSync(target, link);
+    const res = await download(link);
+    expect(res.status).toBe(200);
+    expect(res.headers["content-disposition"]).toBe(`attachment; filename="shown-name.bin"; filename*=UTF-8''shown-name.bin`);
   });
 
   it("download=1 with url= → 400, and nothing is fetched", async () => {
@@ -128,9 +139,18 @@ describe("download=1", () => {
   it("a directory → 400, a missing path → 404, a relative path → 400", async () => {
     const dir = join(DATA, "a-dir");
     mkdirSync(dir, { recursive: true });
-    expect((await download(dir)).status).toBe(400);
-    expect((await download(join(DATA, "nope.zip"))).status).toBe(404);
-    expect((await download("relative/x.zip")).status).toBe(400);
+    for (const [p, status] of [
+      [dir, 400],
+      [join(DATA, "nope.zip"), 404],
+      ["relative/x.zip", 400],
+    ] as const) {
+      const res = await download(p);
+      expect(res.status).toBe(status);
+      // Early errors carry the full served-content header set too.
+      expect(res.headers["cache-control"]).toBe("private, no-cache");
+      expect(res.headers["x-content-type-options"]).toBe("nosniff");
+      expect(res.headers["content-security-policy"]).toBe(SANDBOX_CSP);
+    }
   });
 
   it("without download=1 an unknown type is still 415", async () => {
