@@ -115,6 +115,7 @@ To turn the button off, set `allowEngineInstalls: false` in `~/.callboard/agent-
 - **Drafts:** save a message for an existing chat, or for a folder before its chat exists.
 - **Held messages (API):** while a chat is running, `POST /api/chats/:id/held` holds a message until the current turn ends; the daemon then sends it as a normal message, with its attachments, even if no browser tab is open. Several held messages go out in order, one turn each. Stopping the run or restarting the daemon pauses them (`POST /api/chats/:id/held/resume` re-queues). On an idle chat the request is refused with `409 not_running`, so send normally. The held list is returned as `heldMessages` by `GET /api/chats/:id/activity`; the full routes are in `GET /api/docs`.
 - **Forks:** branch off an earlier message into a new chat. The fork tree is browsable.
+- **Read aloud:** the speaker in a message's hover row reads that one message aloud (code blocks are skipped). The player under it has play/pause, ±10 s, seeking and a 0.75–2× speed, which is remembered. It needs the OpenRouter key (see Engines above).
 - **Model and effort:** switch the model mid-chat, and set the reasoning effort on engines that support it.
 - **Rendered output:** agents can show images, audio, video and PDFs inline, plus versioned HTML/SVG canvases that they update in place.
 

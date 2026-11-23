@@ -2450,12 +2450,40 @@ function decodeHeader(value: string | null): string {
 }
 
 /**
+ * A refused `POST /api/voice/speech`: the server's message, the HTTP status and
+ * its `code` (`VOICE_ERROR_CODES`), so the player can tell a refusal a retry
+ * would meet again (400, 413) from one worth retrying (409 once a key is added,
+ * 429, 5xx).
+ */
+export class ReadAloudRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+  ) {
+    super(message);
+    this.name = "ReadAloudRequestError";
+  }
+}
+
+/**
  * Read `text` (speakable plain text, not markdown) aloud. Resolves with the
- * whole mp3 and what the server reported about it. Throws with the server's
- * message (no key, too long, unsupported model, upstream failure, timeout).
+ * whole mp3 and what the server reported about it. Throws a
+ * {@link ReadAloudRequestError} with the server's message (no key, too long,
+ * unsupported model, upstream failure, timeout).
  */
 export async function synthesizeSpeech(text: string, signal?: AbortSignal): Promise<SynthesizedSpeech> {
-  const res = await send("/voice/speech", { method: "POST", json: { text }, signal, error: "Read aloud failed" });
+  const res = await fetch(`${BASE}/voice/speech`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+    ...(signal && { signal }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new ReadAloudRequestError(errorBodyMessage(body, "Read aloud failed"), res.status, typeof body?.code === "string" ? body.code : undefined);
+  }
   const blob = await res.blob();
   const header = (name: string) => res.headers.get(name);
   const duration = Number(header(READ_ALOUD_HEADERS.durationMs) ?? NaN);

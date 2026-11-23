@@ -994,7 +994,8 @@ pre {
 .msg-bubble > .copy-btn,
 .msg-bubble > .copy-affordance,
 .msg-bubble > .fork-affordance,
-.msg-bubble > .star-affordance {
+.msg-bubble > .star-affordance,
+.msg-bubble > .read-aloud-affordance {
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.15s ease;
@@ -1012,6 +1013,138 @@ pre {
 .msg-bubble > .star-affordance:focus-visible {
   opacity: 1;
   pointer-events: auto;
+}
+
+/* The read-aloud speaker reveals like star, plus: while its message is the one
+   playing (`.is-active`, so the control that stops it never fades), and
+   whenever focus is inside the bubble — a tap on a link or a Tab into the row
+   on a touch device, where :hover is only emulated. */
+.msg-bubble:hover > .read-aloud-affordance,
+.msg-bubble:focus-within > .read-aloud-affordance,
+.msg-bubble > .read-aloud-affordance:focus-visible,
+.msg-bubble > .read-aloud-affordance.is-active {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* The inline player under the bubble being read aloud. Always visible while
+   it exists, so none of its controls depend on hover. */
+.read-aloud-player {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  max-width: 92%;
+  margin-top: 4px;
+  padding: 4px 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.read-aloud-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 4px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--text-muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.read-aloud-btn:hover {
+  background: var(--bg-secondary);
+  color: var(--text);
+}
+
+.read-aloud-btn:focus-visible,
+.read-aloud-progress:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.read-aloud-btn-primary {
+  color: var(--accent-text);
+  border-color: var(--border);
+}
+
+.read-aloud-btn-text {
+  padding: 0 8px;
+}
+
+.read-aloud-rate {
+  font-variant-numeric: tabular-nums;
+  min-width: 44px;
+}
+
+.read-aloud-progress {
+  flex: 1 1 120px;
+  min-width: 80px;
+  margin: 0 2px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.read-aloud-progress:disabled {
+  cursor: default;
+}
+
+.read-aloud-time {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.read-aloud-text {
+  color: var(--text-muted);
+}
+
+.read-aloud-error {
+  color: var(--danger);
+}
+
+.read-aloud-note {
+  flex-basis: 100%;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+/* Narrow screens and touch: the seek bar takes its own row above the buttons,
+   and every control is at least a 32px target. */
+@media (max-width: 768px) {
+  .read-aloud-player {
+    max-width: 100%;
+  }
+
+  .read-aloud-progress {
+    order: -1;
+    flex-basis: 100%;
+    height: 32px;
+    margin: 0;
+  }
+}
+
+@media (max-width: 768px), (pointer: coarse) {
+  .read-aloud-btn {
+    min-width: 32px;
+    height: 32px;
+  }
+}
+
+/* After the reveal rule above, which it must out-cascade. The spinner is
+   `.voice-spinner`, already stilled in the dictation block. */
+@media (prefers-reduced-motion: reduce) {
+  .msg-bubble > .read-aloud-affordance,
+  .read-aloud-progress {
+    transition: none;
+  }
 }
 
 /* Fork-point menu rows (ForkPointMarker). Background lives here, not inline,

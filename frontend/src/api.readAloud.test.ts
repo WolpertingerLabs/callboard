@@ -4,7 +4,7 @@
  * surfacing as the thrown error.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { getReadAloudModels, synthesizeSpeech } from "./api";
+import { ReadAloudRequestError, getReadAloudModels, synthesizeSpeech } from "./api";
 
 type Call = [string, RequestInit];
 
@@ -65,6 +65,20 @@ describe("synthesizeSpeech", () => {
       }),
     );
     await expect(synthesizeSpeech("Hi.")).rejects.toThrow("Read aloud needs an OpenRouter API key");
+  });
+
+  it("carries the status and code, so the player can tell a refusal no retry will fix", async () => {
+    stubFetch(
+      new Response(JSON.stringify({ error: "Text too long", code: "TEXT_TOO_LONG" }), { status: 413, headers: { "Content-Type": "application/json" } }),
+    );
+    const err = await synthesizeSpeech("Hi.").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ReadAloudRequestError);
+    expect(err).toMatchObject({ message: "Text too long", status: 413, code: "TEXT_TOO_LONG" });
+  });
+
+  it("falls back to a generic message for a body that is not JSON", async () => {
+    stubFetch(new Response("<html>502</html>", { status: 502 }));
+    await expect(synthesizeSpeech("Hi.")).rejects.toMatchObject({ message: "Read aloud failed", status: 502 });
   });
 });
 
