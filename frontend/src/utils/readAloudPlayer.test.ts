@@ -23,7 +23,11 @@ import {
   cycleRate,
   getReadAloudAudioForTesting,
   getSnapshot,
+  getSpeaker,
+  READ_ALOUD_LABEL_CHARS,
+  registerSpeaker,
   release,
+  releaseScope,
   resetReadAloudPlayerForTesting,
   retry,
   seekBy,
@@ -255,6 +259,87 @@ describe("controls", () => {
     release("a");
     expect(signal.aborted).toBe(true);
     expect(getSnapshot().status).toBe("idle");
+  });
+});
+
+describe("what the docked bar needs", () => {
+  it("carries a one-line label of the speech text, cut with an ellipsis", async () => {
+    await startPlaying("a", "## Title\n\nHello   **world**,\nhow are you?");
+    expect(getSnapshot().label).toBe("Title. Hello world, how are you?");
+
+    const long = "word ".repeat(40).trim();
+    synth.fn.mockReturnValueOnce(new Promise(() => {}));
+    start("b", long);
+    const label = getSnapshot().label!;
+    expect(label.endsWith("…")).toBe(true);
+    expect(label.length).toBeLessThanOrEqual(READ_ALOUD_LABEL_CHARS + 1);
+    expect(long.startsWith(label.slice(0, -1).trimEnd())).toBe(true);
+  });
+
+  it("keeps the label and scope through loading, playing and an error", async () => {
+    const d = deferred<SynthesizedSpeech>();
+    synth.fn.mockReturnValueOnce(d.promise);
+    start("a", "Some text.", "chat-1");
+    expect(getSnapshot()).toMatchObject({ status: "loading", label: "Some text.", scope: "chat-1" });
+    d.reject(new Error("nope"));
+    await flush();
+    expect(getSnapshot()).toMatchObject({ status: "error", label: "Some text.", scope: "chat-1" });
+    synth.fn.mockResolvedValueOnce(speech());
+    retry();
+    await flush();
+    expect(getSnapshot()).toMatchObject({ status: "playing", label: "Some text.", scope: "chat-1" });
+  });
+
+  it("keeps the label on a media error", async () => {
+    await startPlaying("a", "Some text.");
+    getReadAloudAudioForTesting()!.dispatchEvent(new Event("error"));
+    expect(getSnapshot()).toMatchObject({ status: "error", label: "Some text." });
+  });
+
+  it("stop (the bar's close) aborts the fetch, revokes the URL and clears label and scope", async () => {
+    await startPlaying("a", "First.");
+    expect(getSnapshot().label).toBe("First.");
+    stop();
+    expect(media.revokeObjectURL).toHaveBeenCalledWith("blob:test/1");
+    expect(getSnapshot()).toMatchObject({ ownerId: null, status: "idle" });
+    expect(getSnapshot().label).toBeUndefined();
+    expect(getSnapshot().scope).toBeUndefined();
+
+    synth.fn.mockReturnValueOnce(new Promise(() => {}));
+    start("a", "Second.", "s");
+    const signal = synth.fn.mock.calls.at(-1)![1] as AbortSignal;
+    stop();
+    expect(signal.aborted).toBe(true);
+    expect(getSnapshot().status).toBe("idle");
+    expect(media.pause).toHaveBeenCalled();
+  });
+
+  it("releaseScope stops only its own scope's playback", async () => {
+    synth.fn.mockResolvedValueOnce(speech());
+    start("a", "Text.", "chat-1");
+    await flush();
+    releaseScope("chat-2");
+    expect(getSnapshot().status).toBe("playing");
+    releaseScope("chat-1");
+    expect(getSnapshot()).toMatchObject({ ownerId: null, status: "idle" });
+  });
+
+  it("registers a speaker per owner, forgotten on unregister", () => {
+    const el = document.createElement("button");
+    const off = registerSpeaker("a", el);
+    expect(getSpeaker("a")).toBe(el);
+    expect(getSpeaker("b")).toBeNull();
+    off();
+    expect(getSpeaker("a")).toBeNull();
+  });
+
+  it("an older registration's unregister leaves a newer one alone", () => {
+    const first = document.createElement("button");
+    const second = document.createElement("button");
+    const offFirst = registerSpeaker("a", first);
+    registerSpeaker("a", second);
+    offFirst();
+    expect(getSpeaker("a")).toBe(second);
   });
 });
 

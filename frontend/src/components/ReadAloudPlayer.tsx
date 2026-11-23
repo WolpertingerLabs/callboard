@@ -1,7 +1,7 @@
-import { useEffect, useRef, type FocusEvent, type KeyboardEvent, type RefObject } from "react";
-import { Loader2, Pause, Play, RotateCcw, RotateCw, Square } from "lucide-react";
-import { useReadAloud } from "../hooks/useReadAloud";
-import { cycleRate, retry, seekBy, seekTo, stop, toggle } from "../utils/readAloudPlayer";
+import { useEffect, useRef, type FocusEvent, type KeyboardEvent } from "react";
+import { Loader2, Pause, Play, RotateCcw, RotateCw, X } from "lucide-react";
+import { useReadAloudPlayback } from "../hooks/useReadAloud";
+import { cycleRate, getSpeaker, retry, seekBy, seekTo, stop, toggle } from "../utils/readAloudPlayer";
 
 const SKIP_SECONDS = 10;
 
@@ -19,26 +19,36 @@ function rateLabel(rate: number): string {
 }
 
 /**
- * The inline player under the bubble being read aloud. Renders nothing for
- * any other bubble — and, through `useReadAloud`'s selector, does not even
- * re-render for them.
+ * The read-aloud bar, docked above the chat's composer (pages/Chat.tsx), so
+ * the controls stay on screen however far the message being read has
+ * scrolled. One per chat view, showing the one page-wide playback when the
+ * playing bubble is in its `scope`; nothing while idle. It is the only
+ * subscriber that re-renders on `timeupdate` — the bubbles only ask "am I the
+ * one playing" (hooks/useReadAloud.ts).
  *
- * Shortcuts are taken only from inside the player (`onKeyDown` on the group,
- * no global listener): Space/K play-pause, J/L or ←/→ skip 10 s, Escape stops.
+ * Detached from its message, it names it: "Reading: <the start of its text>".
+ *
+ * The X closes the whole thing — the store's `stop`: the fetch aborted, the
+ * audio paused, the blob URL revoked, the bar gone. Cancel (while preparing),
+ * Dismiss (an error) and Escape do the same.
+ *
+ * Shortcuts are taken only from inside the bar (`onKeyDown` on the group, no
+ * global listener): Space/K play-pause, J/L or ←/→ skip 10 s, Escape closes.
  * Escape is claimed (`preventDefault` + `stopPropagation`) so an aside panel
- * around the chat, and the quote bar, leave it alone; the composer's dictation
- * Escape only acts on keys from inside the composer, so the two never meet.
- * Space is play/pause only on the play button, the slider or the group
- * itself; on any other button it is that button's own activation.
+ * around the chat, and the quote bar, leave it alone. The bar is a sibling of
+ * the composer, not inside its root, and the composer's dictation Escape acts
+ * only on keys from inside that root, so the two never meet. Space is
+ * play/pause only on the play button, the slider or the group itself; on any
+ * other button it is that button's own activation.
  *
  * Focus is kept, not dropped: when the controls swap (Cancel → play/pause
  * once the audio is ready, Retry → Cancel) and focus was on the control that
- * went away, it moves to the new state's main control; and when the player
- * closes itself (Stop, Escape, Dismiss, Cancel) with focus inside, focus goes
- * back to `returnFocusTo` — the bubble's speaker.
+ * went away, it moves to the new state's main control; and when the bar
+ * closes (X, Escape, Dismiss, Cancel) with focus inside, focus goes back to
+ * the playing bubble's speaker if it is still there, and stays put otherwise.
  */
-export default function ReadAloudPlayer({ ownerId, returnFocusTo }: { ownerId: string; returnFocusTo?: RefObject<HTMLElement | null> }) {
-  const s = useReadAloud(ownerId);
+export default function ReadAloudPlayer({ scope }: { scope?: string }) {
+  const s = useReadAloudPlayback(scope);
   const groupRef = useRef<HTMLDivElement>(null);
   /** The current state's main control: Cancel, play/pause, or Retry/Dismiss. */
   const primaryRef = useRef<HTMLButtonElement>(null);
@@ -48,7 +58,7 @@ export default function ReadAloudPlayer({ ownerId, returnFocusTo }: { ownerId: s
    * a null-target blur in others, and both mean "still ours".
    */
   const focusInside = useRef(false);
-  const live = s.ownerId === ownerId && s.status !== "idle";
+  const live = s.ownerId !== null && s.status !== "idle";
 
   useEffect(() => {
     if (!live || !focusInside.current) return;
@@ -58,13 +68,20 @@ export default function ReadAloudPlayer({ ownerId, returnFocusTo }: { ownerId: s
 
   if (!live) return null;
 
-  /** Stop, and if the player had focus, hand it back to the speaker. */
+  /** Close, and if the bar had focus, hand it back to the playing bubble's speaker. */
   const end = () => {
     const hadFocus = !!groupRef.current?.contains(document.activeElement);
+    const speaker = s.ownerId ? getSpeaker(s.ownerId) : null;
     focusInside.current = false;
     stop();
-    if (hadFocus) returnFocusTo?.current?.focus();
+    if (hadFocus && speaker?.isConnected) speaker.focus();
   };
+
+  const close = (
+    <button type="button" className="read-aloud-btn read-aloud-close" aria-label="Close audio player" title="Close (Esc)" onClick={end}>
+      <X size={16} aria-hidden="true" />
+    </button>
+  );
 
   const onFocus = () => {
     focusInside.current = true;
@@ -104,6 +121,12 @@ export default function ReadAloudPlayer({ ownerId, returnFocusTo }: { ownerId: s
 
   return (
     <div ref={groupRef} className="read-aloud-player" role="group" aria-label="Read aloud player" onKeyDown={onKeyDown} onFocus={onFocus} onBlur={onBlur}>
+      {s.label && (
+        <span className="read-aloud-label" title={s.label}>
+          Reading: <span className="read-aloud-label-text">{s.label}</span>
+        </span>
+      )}
+
       {s.status === "loading" && (
         <>
           <Loader2 size={14} className="voice-spinner" aria-hidden="true" />
@@ -113,6 +136,7 @@ export default function ReadAloudPlayer({ ownerId, returnFocusTo }: { ownerId: s
           <button ref={primaryRef} type="button" className="read-aloud-btn read-aloud-btn-text" aria-label="Cancel read aloud" onClick={end}>
             Cancel
           </button>
+          {close}
         </>
       )}
 
@@ -129,6 +153,7 @@ export default function ReadAloudPlayer({ ownerId, returnFocusTo }: { ownerId: s
           <button ref={s.retryable ? undefined : primaryRef} type="button" className="read-aloud-btn read-aloud-btn-text" onClick={end}>
             Dismiss
           </button>
+          {close}
         </>
       )}
 
@@ -149,9 +174,6 @@ export default function ReadAloudPlayer({ ownerId, returnFocusTo }: { ownerId: s
           </button>
           <button type="button" className="read-aloud-btn" aria-label="Forward 10 seconds" title="Forward 10 seconds (L)" onClick={() => seekBy(SKIP_SECONDS)}>
             <RotateCw size={14} aria-hidden="true" />
-          </button>
-          <button type="button" className="read-aloud-btn" aria-label="Stop" title="Stop (Esc)" onClick={end}>
-            <Square size={12} aria-hidden="true" />
           </button>
           <input
             type="range"
@@ -177,6 +199,7 @@ export default function ReadAloudPlayer({ ownerId, returnFocusTo }: { ownerId: s
           >
             {rateLabel(s.rate)}
           </button>
+          {close}
           {s.hint && <span className="read-aloud-note">{s.hint}</span>}
           {s.truncated && <span className="read-aloud-note">Reading the start of this long message.</span>}
         </>
