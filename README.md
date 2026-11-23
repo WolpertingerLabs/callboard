@@ -22,7 +22,7 @@ Then open **http://localhost:8000** and log in.
 
 ## Engines
 
-Each chat runs on one of three engines. You pick the engine per chat and set each engine's defaults on its tab under **Settings → API**. The **OpenRouter** tab there isn't an engine. It holds the account-wide OpenRouter key and base URL, used for the OpenRouter model catalog and, when **Use OpenRouter for chat titles, branch names and themes** is ticked, for those one-shot completions. Otherwise they run on Claude Code.
+Each chat runs on one of three engines. You pick the engine per chat and set each engine's defaults on its tab under **Settings → API**. The **OpenRouter** tab there isn't an engine. It holds the account-wide OpenRouter key and base URL, used for the OpenRouter model catalog and, when **Use OpenRouter for chat titles, branch names and themes** is ticked, for those one-shot completions. Otherwise they run on Claude Code. The same key powers composer voice input: its **Voice input** section picks the transcription model (default `openai/whisper-large-v3-turbo`).
 
 | Engine          | How it runs                                                                                                | Must you install it? | Sign-in                                              |
 | --------------- | ---------------------------------------------------------------------------------------------------------- | -------------------- | ---------------------------------------------------- |
@@ -249,6 +249,8 @@ Variables marked **process environment only** must be set in the daemon's enviro
 ## Remote access
 
 Callboard doesn't expose itself to the internet. To reach it from your phone or another machine, put both devices on [Tailscale](https://tailscale.com/) (or another VPN or private network) and open `http://<host's tailnet address>:8000`. Running `tailscale serve` in front of the daemon port works too, and gives you HTTPS.
+
+Browsers only allow microphone access on HTTPS or `localhost`, so composer voice input is unavailable over plain `http://<tailnet address>:8000`. Use `tailscale serve` (HTTPS) or open Callboard on the host itself.
 
 > ⚠️ Anyone who can reach the port can reach the login page, and the password (`callboard set-password`) is what protects your sessions, files and connected services. Use a strong, unique one, and keep the port off the public internet.
 

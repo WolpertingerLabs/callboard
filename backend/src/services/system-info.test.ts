@@ -39,6 +39,8 @@ const mocks = vi.hoisted(() => ({
   /** Codex's two credential answers, stubbed so no case depends on the running machine's $CODEX_HOME. */
   codexAuthSource: null as "api-key" | "auth.json" | "config.toml" | null,
   codexRouted: false,
+  /** When set, `getAgentSettings` answers with this instead of reading disk. */
+  settings: null as Record<string, unknown> | null,
 }));
 
 // Partial mock: `DATA_DIR` and every other export stay real, because the
@@ -52,6 +54,17 @@ vi.mock("../utils/paths.js", async (importOriginal) => {
       if (mocks.dataDirBroken) throw Object.assign(new Error("EACCES: permission denied, mkdir '/callboard'"), { code: "EACCES" });
       return real.ensureDataDir();
     },
+  };
+});
+
+// Real unless a case pins settings — the broken-data-dir cases need the real
+// read path to throw.
+vi.mock("./agent-settings.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("./agent-settings.js")>();
+  return {
+    ...real,
+    getAgentSettings: (...args: Parameters<typeof real.getAgentSettings>) =>
+      (mocks.settings ?? real.getAgentSettings(...args)) as ReturnType<typeof real.getAgentSettings>,
   };
 });
 
@@ -79,6 +92,7 @@ beforeEach(() => {
   mocks.dataDirBroken = false;
   mocks.codexAuthSource = null;
   mocks.codexRouted = false;
+  mocks.settings = null;
   vi.clearAllMocks();
   mocks.getSdkInfoAsync.mockResolvedValue({ account: null, models: [], fetchedAt: 0 });
   // No test talks to registry.npmjs.org. A rejection is also the shape an
@@ -214,5 +228,29 @@ describe("buildSystemInfo", () => {
     } finally {
       rmSync(empty, { recursive: true, force: true });
     }
+  });
+
+  describe("voiceInputAvailable", () => {
+    it("is true when the account-wide OpenRouter key is set", async () => {
+      mocks.settings = { proxyMode: "local", openRouterApiKey: "sk-or-test" };
+      expect((await buildSystemInfo({ pkgRoot: PKG_ROOT })).voiceInputAvailable).toBe(true);
+    });
+
+    it("is false with no key, and with a whitespace-only key", async () => {
+      mocks.settings = { proxyMode: "local" };
+      expect((await buildSystemInfo({ pkgRoot: PKG_ROOT })).voiceInputAvailable).toBe(false);
+      mocks.settings = { proxyMode: "local", openRouterApiKey: "   " };
+      expect((await buildSystemInfo({ pkgRoot: PKG_ROOT })).voiceInputAvailable).toBe(false);
+    });
+
+    it("ignores the per-harness OpenRouter keys — voice bills the account-wide one", async () => {
+      mocks.settings = { proxyMode: "local", claudeCodeOpenRouterApiKey: "sk-or-test", codexOpenRouterApiKey: "sk-or-test" };
+      expect((await buildSystemInfo({ pkgRoot: PKG_ROOT })).voiceInputAvailable).toBe(false);
+    });
+
+    it("is false when settings are unreadable", async () => {
+      mocks.dataDirBroken = true;
+      expect((await buildSystemInfo({ pkgRoot: PKG_ROOT })).voiceInputAvailable).toBe(false);
+    });
   });
 });

@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { Key, Globe, Cpu, Eye, EyeOff, RefreshCw, Bot, Network, Terminal, Boxes, ExternalLink, AlertTriangle, CheckCircle2, HardDrive } from "lucide-react";
+import { Key, Globe, Cpu, Eye, EyeOff, RefreshCw, Bot, Network, Terminal, Boxes, ExternalLink, AlertTriangle, CheckCircle2, HardDrive, Mic } from "lucide-react";
 import {
   getAgentSettings,
   updateAgentSettings,
   getSystemInfo,
+  getVoiceModels,
   getOpenRouterCatalog,
   getPiProviders,
   getEngines,
@@ -27,6 +28,7 @@ import EngineStatusCard, { EngineStatusDot } from "./EngineStatusCard";
 import ChatRetentionSection from "./ChatRetentionSection";
 import type { EngineRecheckOutcome } from "./EngineStatusCard";
 import type { AgentSettings, OpenRouterModelInfo } from "shared/types/index.js";
+import { DEFAULT_VOICE_MODEL, type VoiceModelInfo } from "shared/types/voice.js";
 import type { SystemInfo, EngineStatus, EngineBinaryCheckResponse } from "../../api";
 import OpenRouterModelSelector from "../../components/OpenRouterModelSelector";
 import CodexModelSelector from "../../components/CodexModelSelector";
@@ -809,6 +811,7 @@ export default function ApiSettings() {
     openRouterUtilityHaikuModel,
     openRouterUtilitySonnetModel,
     openRouterUtilityOpusModel,
+    openRouterVoiceModel,
     codexAuthMode,
     codexApiKey,
     codexBaseUrl,
@@ -826,6 +829,9 @@ export default function ApiSettings() {
   } = form;
   // Catalog models, for the role-model placeholders on the routed-harness tabs.
   const [orModels, setOrModels] = useState<OpenRouterModelInfo[]>([]);
+  // Voice input picker options; empty until (and unless) the list loads.
+  const [voiceModels, setVoiceModels] = useState<VoiceModelInfo[]>([]);
+  const [defaultVoiceModel, setDefaultVoiceModel] = useState(DEFAULT_VOICE_MODEL);
   const [piProviders, setPiProviders] = useState<string[]>([]);
 
   const loadAll = async () => {
@@ -870,6 +876,13 @@ export default function ApiSettings() {
       // Catalog (for supportedParameters); best-effort — fields still work offline.
       getOpenRouterCatalog()
         .then(({ models }) => setOrModels(models))
+        .catch(() => {});
+      // Voice picker options; best-effort — the Default option works without them.
+      getVoiceModels()
+        .then(({ models, defaultModel }) => {
+          setVoiceModels(models);
+          setDefaultVoiceModel(defaultModel);
+        })
         .catch(() => {});
     } catch (err) {
       setError(errorMessage(err, "Failed to load settings"));
@@ -1815,6 +1828,39 @@ export default function ApiSettings() {
               </>
             )}
           </div>
+
+          {/* OpenRouter — composer voice input */}
+          <div style={sectionStyle}>
+            <div style={headerStyle}>
+              <Mic size={16} style={{ color: "var(--accent-text)" }} />
+              <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Voice input</span>
+            </div>
+            <div style={subtitleStyle}>
+              The composer&rsquo;s microphone button records you and inserts what you said at the cursor. It never sends anything. Recordings are transcribed
+              on this OpenRouter key.
+            </div>
+
+            <div style={fieldWrap}>
+              <label htmlFor="openRouterVoiceModel" style={labelStyle}>
+                Voice model
+              </label>
+              <VoiceModelSelect
+                value={openRouterVoiceModel}
+                onChange={bind("openRouterVoiceModel")}
+                models={voiceModels}
+                defaultModel={defaultVoiceModel}
+                disabled={!openRouterApiKey.trim()}
+              />
+              {!openRouterApiKey.trim() ? (
+                <div style={{ ...helpStyle, color: "var(--warning)" }}>Add an API key above to enable voice input.</div>
+              ) : (
+                <div style={helpStyle}>
+                  Speech-to-text models transcribe verbatim and are the cheap default. Audio-capable chat models are given a strict transcription prompt;
+                  they can be slower and cost more.
+                </div>
+              )}
+            </div>
+          </div>
         </>
       )}
 
@@ -2256,5 +2302,54 @@ export default function ApiSettings() {
         </div>
       )}
     </>
+  );
+}
+
+/**
+ * The voice model picker: a native select, so it works the same on a phone.
+ * Default (blank) first, then dedicated speech-to-text models, then
+ * audio-capable chat models. A stored slug the list does not know — a custom
+ * one, or the list failed to load — is kept as its own option rather than
+ * silently shown as something else.
+ */
+function VoiceModelSelect({
+  value,
+  onChange,
+  models,
+  defaultModel,
+  disabled,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  models: VoiceModelInfo[];
+  defaultModel: string;
+  disabled: boolean;
+}) {
+  const transcription = models.filter((m) => m.kind === "transcription");
+  const chat = models.filter((m) => m.kind === "chat");
+  const known = value === "" || models.some((m) => m.id === value);
+  return (
+    <select id="openRouterVoiceModel" value={value} onChange={(e) => onChange(e.target.value)} disabled={disabled} style={inputStyle}>
+      <option value="">Default ({defaultModel})</option>
+      {!known && <option value={value}>{value} (custom)</option>}
+      {transcription.length > 0 && (
+        <optgroup label="Speech-to-text">
+          {transcription.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.id}
+            </option>
+          ))}
+        </optgroup>
+      )}
+      {chat.length > 0 && (
+        <optgroup label="Audio-capable chat models">
+          {chat.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.id}
+            </option>
+          ))}
+        </optgroup>
+      )}
+    </select>
   );
 }

@@ -83,6 +83,7 @@ describe("Settings → API Save payload", () => {
       openRouterUtilityHaikuModel: "",
       openRouterUtilitySonnetModel: "",
       openRouterUtilityOpusModel: "",
+      openRouterVoiceModel: "",
       piProviderId: "",
       piModel: "",
       piApiKey: "",

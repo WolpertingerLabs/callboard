@@ -230,6 +230,7 @@ agentSettingsRouter.put("/", requireSessionAuth, async (req: Request, res: Respo
     openRouterUtilityHaikuModel,
     openRouterUtilitySonnetModel,
     openRouterUtilityOpusModel,
+    openRouterVoiceModel,
     openRouterModelAliases,
     modelAliases,
     codexAuthMode,
@@ -529,6 +530,7 @@ agentSettingsRouter.put("/", requireSessionAuth, async (req: Request, res: Respo
       ...(openRouterUtilityHaikuModel !== undefined && { openRouterUtilityHaikuModel: normalize(openRouterUtilityHaikuModel) }),
       ...(openRouterUtilitySonnetModel !== undefined && { openRouterUtilitySonnetModel: normalize(openRouterUtilitySonnetModel) }),
       ...(openRouterUtilityOpusModel !== undefined && { openRouterUtilityOpusModel: normalize(openRouterUtilityOpusModel) }),
+      ...(openRouterVoiceModel !== undefined && { openRouterVoiceModel: normalize(openRouterVoiceModel) }),
       ...(openRouterModelAliases !== undefined && { openRouterModelAliases: normalizedAliases }),
       // Writing the unified registry retires the deprecated OR-only map (its
       // entries are already folded into the openrouter targets on load). Skip

@@ -11,10 +11,11 @@ import multer from "multer";
  * the knobs — the default for `fieldArrayIndexLimit` is still Infinity, so the
  * hang reproduces on 2.4.0 until these are set.
  *
- * No Callboard client sends a bracketed field name — or any text field at
- * all: image uploads are N × `images`, agent import and multipart storage
- * writes are 1 × `file` (storage also *accepts* an optional flat `mimeType`).
- * So any bracket is refused.
+ * No Callboard client sends a bracketed field name, and only flat text
+ * fields at all: image uploads are N × `images`, agent import and multipart
+ * storage writes are 1 × `file` (storage also *accepts* an optional flat
+ * `mimeType`), and voice transcription is 1 × `audio` plus an optional flat
+ * `language`. So any bracket is refused.
  */
 export const MULTIPART_FIELD_LIMITS = {
   fieldNestingDepth: 0,

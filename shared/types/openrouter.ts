@@ -50,6 +50,12 @@ export interface OpenRouterModelInfo {
    * absent window is not cosmetic. See `adapters/pi/modelCatalog.ts`.
    */
   contextLength?: number;
+  /**
+   * OpenRouter's `architecture.input_modalities` (e.g. `["text", "image",
+   * "audio"]`). Absent when the catalog entry omits `architecture`. Used to
+   * find the audio-capable chat models offered for voice input.
+   */
+  inputModalities?: string[];
 }
 
 /**

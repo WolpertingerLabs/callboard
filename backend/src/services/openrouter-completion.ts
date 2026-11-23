@@ -66,7 +66,7 @@ const REQUEST_TIMEOUT_MS = 60_000;
  * the first try and the user simply got no title. Retrying on the transport's
  * own terms is the fix.
  */
-const RETRY_DELAYS_MS = [500, 1500];
+export const RETRY_DELAYS_MS = [500, 1500];
 
 /** Attempts a completion gets in total: the first plus one per backoff delay. */
 const MAX_ATTEMPTS = RETRY_DELAYS_MS.length + 1;
@@ -110,7 +110,7 @@ interface RawCompletionResponse {
 }
 
 /** Promise that resolves after `ms`. */
-function delay(ms: number): Promise<void> {
+export function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
@@ -132,7 +132,7 @@ function delay(ms: number): Promise<void> {
  *    THEME_GENERATION_ATTEMPTS calls of its own. Retrying timeouts would turn a
  *    dead endpoint into ~6 minutes with the HTTP request held open.
  */
-function isRetryable(err: unknown): boolean {
+export function isRetryable(err: unknown): boolean {
   const status = (err as { status?: number })?.status;
   if (typeof status === "number") return status === 429 || status >= 500;
   const name = (err as { name?: string })?.name;
@@ -140,7 +140,7 @@ function isRetryable(err: unknown): boolean {
 }
 
 /** An HTTP error carrying the status so {@link isRetryable} can read it. */
-class OpenRouterHttpError extends Error {
+export class OpenRouterHttpError extends Error {
   constructor(
     message: string,
     readonly status: number,
@@ -160,7 +160,7 @@ class OpenRouterHttpError extends Error {
  * for a minute. Both are terminal, so the distinction changes no control flow;
  * it changes whether the line in the log tells you what happened.
  */
-class OpenRouterAbortError extends Error {
+export class OpenRouterAbortError extends Error {
   constructor(message: string, kind: "caller" | "timeout") {
     super(message);
     this.name = kind === "timeout" ? "TimeoutError" : "AbortError";

@@ -77,6 +77,7 @@ interface RawOpenRouterModel {
   pricing?: { prompt?: string; completion?: string; input_cache_read?: string; input_cache_write?: string };
   context_length?: number;
   top_provider?: { context_length?: number };
+  architecture?: { input_modalities?: unknown };
 }
 
 let cache: OpenRouterModelsCache | null = null;
@@ -133,6 +134,7 @@ async function fetchOpenRouterModels(endpoint?: string, previousModels: OpenRout
           ...(typeof m.pricing?.input_cache_write === "string" ? { cacheWritePrice: m.pricing.input_cache_write } : {}),
           supportedParameters: m.supported_parameters ?? [],
           ...(typeof contextLength === "number" && contextLength > 0 ? { contextLength } : {}),
+          ...(Array.isArray(m.architecture?.input_modalities) ? { inputModalities: m.architecture.input_modalities.filter((x): x is string => typeof x === "string") } : {}),
         };
       })
       .sort((a, b) => a.id.localeCompare(b.id));

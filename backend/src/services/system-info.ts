@@ -186,10 +186,15 @@ export async function buildSystemInfo({ pkgRoot }: BuildSystemInfoOptions) {
   // Codex options adapter resolve from. Keys themselves are never exposed.
   let claudeCodeUseOpenRouter = false;
   let codexUseOpenRouter = false;
+  // Whether composer voice input can run: it bills the account-wide OpenRouter
+  // key (`POST /api/voice/transcribe`), never a per-harness one. The key itself
+  // is never exposed. Optional on the wire, so older tabs simply ignore it.
+  let voiceInputAvailable = false;
   try {
     const s = getAgentSettings();
     claudeCodeUseOpenRouter = isClaudeCodeRoutedThroughOpenRouter(s);
     codexUseOpenRouter = isCodexRoutedThroughOpenRouter(s);
+    voiceInputAvailable = Boolean(s.openRouterApiKey?.trim());
   } catch {
     // Settings unreadable — treat every routing mode as off.
   }
@@ -265,6 +270,7 @@ export async function buildSystemInfo({ pkgRoot }: BuildSystemInfoOptions) {
     codexConfigured,
     codexAuthSource,
     codexAuthNote,
+    voiceInputAvailable,
     // `acpProviders` (the retired ACP harness's vendor list) is no longer
     // sent. Old bundles read `info.acpProviders ?? []`, so absence reads as
     // "no ACP vendors".

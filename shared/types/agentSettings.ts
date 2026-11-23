@@ -252,6 +252,15 @@ export interface AgentSettings {
   openRouterUtilityOpusModel?: string;
 
   /**
+   * Model for composer voice input (`POST /api/voice/transcribe`), billed to
+   * {@link openRouterApiKey}. Either a dedicated speech-to-text slug (served by
+   * OpenRouter's `/audio/transcriptions`) or an audio-input chat model (sent a
+   * strict verbatim-transcription prompt). Blank ⇒ `DEFAULT_VOICE_MODEL` from
+   * `shared/types/voice.ts`.
+   */
+  openRouterVoiceModel?: string;
+
+  /**
    * @deprecated Superseded by the cross-harness {@link modelAliases} registry.
    * Retained for backward compatibility: on load, each `{name → slug}` entry is
    * folded into the `openrouter` target of a matching {@link ModelAlias} (see
