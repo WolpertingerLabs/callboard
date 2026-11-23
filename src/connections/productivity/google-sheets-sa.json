@@ -1,0 +1,50 @@
+{
+  "name": "Google Sheets (read-write, service account)",
+  "stability": "beta",
+  "category": "productivity",
+  "description": "Google Sheets, read and edit (scope spreadsheets): spreadsheets.create, get, batchUpdate (formatting, sheets, charts, …), getByDataFilter; values get/update/append/clear and the batch and DataFilter variants; sheets.copyTo; developerMetadata get/search. No Drive endpoints, so it cannot share, move, or delete files. Auth: drawlatch signs a JWT with GOOGLE_SERVICE_ACCOUNT_KEY (base64 of the service-account JSON key file) and mints short-lived access tokens for exactly this scope; the agent never sees the key. Without a subject it edits spreadsheets shared with the service account as Editor (Viewer sharing makes them read-only) and link-shared ones whose link grants edit, and cannot create spreadsheets (service accounts own no files); with one (domain-wide delegation) every spreadsheet that user can open, and it can create spreadsheets owned by that user. See CONNECTIONS.md \"Google (scoped)\".",
+  "docsUrl": "https://developers.google.com/workspace/sheets/api/reference/rest",
+  "secrets": {
+    "GOOGLE_SERVICE_ACCOUNT_KEY": "${GOOGLE_SERVICE_ACCOUNT_KEY}"
+  },
+  "oauth2": {
+    "tokenUrl": "https://oauth2.googleapis.com/token",
+    "grant": "jwt_bearer",
+    "secretRefs": {
+      "serviceAccountKey": "GOOGLE_SERVICE_ACCOUNT_KEY"
+    },
+    "scopes": [
+      "https://www.googleapis.com/auth/spreadsheets"
+    ]
+  },
+  "allowedEndpoints": [
+    "https://sheets.googleapis.com/v4/spreadsheets",
+    "https://sheets.googleapis.com/v4/spreadsheets?**",
+    "https://sheets.googleapis.com/v4/spreadsheets/*",
+    "https://sheets.googleapis.com/v4/spreadsheets/*?**",
+    "https://sheets.googleapis.com/v4/spreadsheets/*/values/*",
+    "https://sheets.googleapis.com/v4/spreadsheets/*/values/*?**",
+    "https://sheets.googleapis.com/v4/spreadsheets/*/values:batchGet",
+    "https://sheets.googleapis.com/v4/spreadsheets/*/values:batchGet?**",
+    "https://sheets.googleapis.com/v4/spreadsheets/*/values:batchUpdate",
+    "https://sheets.googleapis.com/v4/spreadsheets/*/values:batchUpdate?**",
+    "https://sheets.googleapis.com/v4/spreadsheets/*/values:batchClear",
+    "https://sheets.googleapis.com/v4/spreadsheets/*/values:batchClear?**",
+    "https://sheets.googleapis.com/v4/spreadsheets/*/values:batchGetByDataFilter",
+    "https://sheets.googleapis.com/v4/spreadsheets/*/values:batchGetByDataFilter?**",
+    "https://sheets.googleapis.com/v4/spreadsheets/*/values:batchUpdateByDataFilter",
+    "https://sheets.googleapis.com/v4/spreadsheets/*/values:batchUpdateByDataFilter?**",
+    "https://sheets.googleapis.com/v4/spreadsheets/*/values:batchClearByDataFilter",
+    "https://sheets.googleapis.com/v4/spreadsheets/*/values:batchClearByDataFilter?**",
+    "https://sheets.googleapis.com/v4/spreadsheets/*/sheets/*:copyTo",
+    "https://sheets.googleapis.com/v4/spreadsheets/*/sheets/*:copyTo?**",
+    "https://sheets.googleapis.com/v4/spreadsheets/*/developerMetadata/*",
+    "https://sheets.googleapis.com/v4/spreadsheets/*/developerMetadata/*?**",
+    "https://sheets.googleapis.com/v4/spreadsheets/*/developerMetadata:search",
+    "https://sheets.googleapis.com/v4/spreadsheets/*/developerMetadata:search?**"
+  ],
+  "testConnection": {
+    "url": "https://sheets.googleapis.com/v4/spreadsheets/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms?fields=spreadsheetId",
+    "description": "Reads the ID of Google's public sample spreadsheet (needs the Sheets API enabled)"
+  }
+}

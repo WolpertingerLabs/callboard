@@ -2,16 +2,18 @@
  * The scoped Google templates: what each one may reach, its token settings,
  * and the `-sa` twins' drift check.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 
 import {
   resolveCallerRoutesChecked,
   resolveRoutes,
+  type OAuth2Config,
   type RemoteServerConfig,
   type Route,
 } from '../shared/config.js';
 import { describeConnectionTemplate, loadConnection } from '../shared/connections.js';
-import { isEndpointAllowed } from './tool-dispatch.js';
+import { OAuth2ScopeError, TokenManager } from './oauth/token-manager.js';
+import { isEndpointAllowed, normalizeOutboundUrl } from './tool-dispatch.js';
 
 const SCOPE = 'https://www.googleapis.com/auth/';
 const USER_TEMPLATES: Record<string, string> = {
@@ -22,12 +24,14 @@ const USER_TEMPLATES: Record<string, string> = {
   'google-drive-readonly': 'drive.readonly',
   'google-drive-file': 'drive.file',
   'google-sheets-readonly': 'spreadsheets.readonly',
+  'google-sheets': 'spreadsheets',
 };
 const SA_TWINS = [
   'google-gmail-readonly',
   'google-calendar-readonly',
   'google-drive-readonly',
   'google-sheets-readonly',
+  'google-sheets',
 ];
 const ALL = [...Object.keys(USER_TEMPLATES), ...SA_TWINS.map((a) => `${a}-sa`)];
 
@@ -46,6 +50,7 @@ const FORBIDDEN = [
   'https://www.googleapis.com/batch/calendar/v3',
   'https://gmail.googleapis.com/batch/gmail/v1',
   'https://sheets.googleapis.com/batch',
+  'https://sheets.googleapis.com/batch/sheets/v4',
   'https://www.googleapis.com/admin/directory/v1/users',
 ];
 
@@ -264,6 +269,26 @@ describe('scoped Google templates', () => {
       ],
       deny: [`${DRIVE}/files`, `${SHEETS}X/1AbC`, 'https://docs.googleapis.com/v1/documents/1AbC'],
     },
+    'google-sheets': {
+      allow: [
+        SHEETS,
+        `${SHEETS}?fields=spreadsheetId`,
+        `${SHEETS}/1AbC`,
+        `${SHEETS}/1AbC?fields=sheets/properties/title`,
+        `${SHEETS}/1AbC:batchUpdate`,
+        `${SHEETS}/1AbC/values/Sheet1!A1:B2?valueInputOption=USER_ENTERED`,
+        `${SHEETS}/1AbC/values/Sheet1!A1:append?insertDataOption=INSERT_ROWS`,
+        `${SHEETS}/1AbC/values:batchUpdate`,
+        `${SHEETS}/1AbC/sheets/0:copyTo`,
+      ],
+      deny: [
+        `${DRIVE}/files`,
+        `${DRIVE}/files/1AbC`,
+        `${DRIVE}/files/1AbC/permissions`,
+        `${SHEETS}X/1AbC`,
+        'https://docs.googleapis.com/v1/documents/1AbC',
+      ],
+    },
   };
 
   it.each(ALL)('%s cannot register or stop push channels (watch endpoints)', (alias) => {
@@ -289,6 +314,173 @@ describe('scoped Google templates', () => {
     }
   }
 
+  describe('google-sheets (read-write)', () => {
+    /** Every method of the Sheets API v4 REST reference, by its HTTP request. */
+    const METHODS: Record<string, [string, string]> = {
+      'spreadsheets.create': ['POST', SHEETS],
+      'spreadsheets.get': ['GET', `${SHEETS}/1AbC?includeGridData=false&ranges=Sheet1!A1:B2`],
+      'spreadsheets.batchUpdate': ['POST', `${SHEETS}/1AbC:batchUpdate`],
+      'spreadsheets.getByDataFilter': ['POST', `${SHEETS}/1AbC:getByDataFilter`],
+      'spreadsheets.values.get': ['GET', `${SHEETS}/1AbC/values/Sheet1!A1:B2`],
+      'spreadsheets.values.update': [
+        'PUT',
+        `${SHEETS}/1AbC/values/Sheet1!A1:B2?valueInputOption=USER_ENTERED`,
+      ],
+      'spreadsheets.values.append': [
+        'POST',
+        `${SHEETS}/1AbC/values/Sheet1!A1:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`,
+      ],
+      'spreadsheets.values.clear': ['POST', `${SHEETS}/1AbC/values/Sheet1!A1:B2:clear`],
+      'spreadsheets.values.batchGet': [
+        'GET',
+        `${SHEETS}/1AbC/values:batchGet?ranges=A1:B2&ranges=Sheet2!C:C`,
+      ],
+      'spreadsheets.values.batchUpdate': ['POST', `${SHEETS}/1AbC/values:batchUpdate`],
+      'spreadsheets.values.batchClear': ['POST', `${SHEETS}/1AbC/values:batchClear`],
+      'spreadsheets.values.batchGetByDataFilter': [
+        'POST',
+        `${SHEETS}/1AbC/values:batchGetByDataFilter`,
+      ],
+      'spreadsheets.values.batchUpdateByDataFilter': [
+        'POST',
+        `${SHEETS}/1AbC/values:batchUpdateByDataFilter`,
+      ],
+      'spreadsheets.values.batchClearByDataFilter': [
+        'POST',
+        `${SHEETS}/1AbC/values:batchClearByDataFilter`,
+      ],
+      'spreadsheets.sheets.copyTo': ['POST', `${SHEETS}/1AbC/sheets/0:copyTo`],
+      'spreadsheets.developerMetadata.get': ['GET', `${SHEETS}/1AbC/developerMetadata/42`],
+      'spreadsheets.developerMetadata.search': ['POST', `${SHEETS}/1AbC/developerMetadata:search`],
+    };
+
+    for (const alias of ['google-sheets', 'google-sheets-sa']) {
+      const { allowedEndpoints } = loadConnection(alias);
+
+      it.each(Object.entries(METHODS))(`${alias} allows %s (%j)`, (_name, [, url]) => {
+        expect(isEndpointAllowed(url, allowedEndpoints)).toBe(true);
+        // What fetch() sends is what was matched.
+        expect(normalizeOutboundUrl(url, allowedEndpoints, url)).toBe(url);
+      });
+
+      it(`${alias} matches ranges however they are encoded, and \`?**\` queries with a /`, () => {
+        for (const url of [
+          `${SHEETS}/1AbC/values/Sheet1%21A1%3AB2`,
+          `${SHEETS}/1AbC/values/Sheet1%21A1%3AB2:append`,
+          `${SHEETS}/1AbC/values/'My%20Sheet'!A:A`,
+          `${SHEETS}/1AbC/values/%27My%20Sheet%27%21A%3AA:clear`,
+          `${SHEETS}/1AbC/values/Tab%2FTwo!A1`,
+          `${SHEETS}/1AbC/values/NamedRange`,
+          `${SHEETS}/1AbC?fields=sheets/properties/title`,
+          `${SHEETS}/1AbC/values/A1?valueRenderOption=FORMULA&x=a/b`,
+          `${SHEETS}/1AbC/values:batchGet?ranges=Sheet1!A1:B2&fields=valueRanges/values`,
+          `${SHEETS}?fields=spreadsheetId,sheets/properties`,
+        ]) {
+          expect(isEndpointAllowed(url, allowedEndpoints), url).toBe(true);
+          expect(normalizeOutboundUrl(url, allowedEndpoints, url), url).toBe(url);
+        }
+      });
+
+      it(`${alias} reaches only sheets.googleapis.com/v4/spreadsheets`, () => {
+        for (const pattern of allowedEndpoints) {
+          expect(pattern.startsWith(SHEETS), pattern).toBe(true);
+          expect(pattern, pattern).not.toContain('**/');
+        }
+        for (const url of [
+          // Drive: sharing, permissions, delete, trash, copy, upload stay out.
+          `${DRIVE}/files`,
+          `${DRIVE}/files/1AbC`,
+          `${DRIVE}/files/1AbC?supportsAllDrives=true`,
+          `${DRIVE}/files/1AbC/permissions`,
+          `${DRIVE}/files/1AbC/permissions/anyoneWithLink`,
+          `${DRIVE}/files/1AbC/copy`,
+          `${DRIVE}/files/trash`,
+          'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart',
+          'https://www.googleapis.com/drive/v2/files/1AbC',
+          'https://drive.googleapis.com/drive/v3/files/1AbC',
+          'https://drive.googleapis.com/drive/v3/files/1AbC/permissions',
+          // Other Google APIs and hosts.
+          'https://docs.googleapis.com/v1/documents/1AbC',
+          'https://sheets.googleapis.com/v3/spreadsheets/1AbC',
+          'https://sheets.googleapis.com/v4/1AbC',
+          'https://sheets.googleapis.com/$discovery/rest?version=v4',
+          'https://www.googleapis.com/v4/spreadsheets/1AbC',
+          'http://sheets.googleapis.com/v4/spreadsheets/1AbC',
+          'https://sheets.googleapis.com.evil.example/v4/spreadsheets/1AbC',
+          'https://sheets.googleapis.com@evil.example/v4/spreadsheets/1AbC',
+          'https://evil.example/v4/spreadsheets/1AbC',
+          // Batch endpoints (sub-requests the path rules can't see).
+          'https://sheets.googleapis.com/batch',
+          'https://sheets.googleapis.com/batch/sheets/v4',
+          'https://www.googleapis.com/batch/drive/v3',
+          // Prefix tricks and paths the API doesn't have.
+          `${SHEETS}X`,
+          `${SHEETS}X/1AbC`,
+          `${SHEETS}:batchUpdate`,
+          `${SHEETS}/1AbC/values`,
+          `${SHEETS}/1AbC/values/A1/B2`,
+          `${SHEETS}/1AbC/valuesX:batchGet`,
+          `${SHEETS}/1AbC/values:batchGetX`,
+          `${SHEETS}/1AbC/sheets/0`,
+          `${SHEETS}/1AbC/sheets/0:copyToX`,
+          `${SHEETS}/1AbC/developerMetadata`,
+          `${SHEETS}/1AbC/developerMetadata:searchX`,
+          `${SHEETS}/1AbC/developerMetadata/42/x`,
+          `${SHEETS}/1AbC/permissions`,
+          // An encoded ":" in a method suffix that is its own segment isn't
+          // decoded by the matcher, so it matches no pattern (but see the
+          // %2F case below).
+          `${SHEETS}/1AbC/values%3AbatchUpdate`,
+          `${SHEETS}/1AbC/developerMetadata%3Asearch`,
+        ]) {
+          expect(isEndpointAllowed(url, allowedEndpoints), url).toBe(false);
+        }
+      });
+
+      it(`${alias}: a %2F doesn't split a segment, and stays under /v4/spreadsheets`, () => {
+        // `*` is [^/]*, so `{id}%2F…` is one segment for `…/spreadsheets/*`
+        // (CONNECTIONS.md "Sheets method suffixes"). Sent as written.
+        for (const url of [
+          `${SHEETS}/1AbC%2Fvalues%3AbatchUpdate`,
+          `${SHEETS}/1AbC%2Fvalues:batchUpdate`,
+          `${SHEETS}/1AbC%2fpermissions`,
+        ]) {
+          expect(isEndpointAllowed(url, allowedEndpoints), url).toBe(true);
+          const sent = normalizeOutboundUrl(url, allowedEndpoints, url);
+          expect(sent, url).toBe(url);
+          expect(new URL(sent).host).toBe('sheets.googleapis.com');
+          expect(new URL(sent).pathname.startsWith('/v4/spreadsheets/')).toBe(true);
+        }
+        // ...but a dot segment behind it is still refused.
+        for (const url of [
+          `${SHEETS}/1AbC%2F..%2F..%2Fbatch`,
+          `${SHEETS}/1AbC%2F%2e%2e%2F%2e%2e%2Fbatch`,
+          `${SHEETS}/1AbC%5C..%5C..%5Cbatch`,
+        ]) {
+          expect(() => normalizeOutboundUrl(url, allowedEndpoints, url), url).toThrow(
+            /Endpoint not allowed/,
+          );
+        }
+      });
+
+      it(`${alias} refuses dot segments that would climb out of /v4/spreadsheets`, () => {
+        for (const url of [
+          `${SHEETS}/x/../..`,
+          `${SHEETS}/x/../../../drive/v3/files`,
+          `${SHEETS}/1AbC/values/..`,
+          `${SHEETS}/1AbC/values/%2e%2e`,
+          `${SHEETS}/1AbC/values/..%2f..%2f..%2f..%2fdrive%2fv3%2ffiles`,
+          `${SHEETS}/1AbC/values/.`,
+          `${SHEETS}/%2e%2e/%2e%2e/drive/v3/files`,
+        ]) {
+          expect(() => normalizeOutboundUrl(url, allowedEndpoints, url), url).toThrow(
+            /Endpoint not allowed/,
+          );
+        }
+      });
+    }
+  });
+
   it('google.json is unchanged apart from recommending the scoped templates', () => {
     const route = loadConnection('google');
     expect(route.description).toMatch(/^Static token, full access: prefer the scoped google-\*/);
@@ -297,6 +489,13 @@ describe('scoped Google templates', () => {
     expect(route.oauth2).toBeUndefined();
   });
 });
+
+/** A template's oauth2 block (every Google template has one). */
+function oauthOf(alias: string): OAuth2Config {
+  const { oauth2 } = loadConnection(alias);
+  if (!oauth2) throw new Error(`${alias} has no oauth2 block`);
+  return oauth2;
+}
 
 describe('one refresh token per scope set (documented fallback)', () => {
   it('a custom connector overriding a template alias can use its own refresh-token secret', () => {
@@ -340,5 +539,98 @@ describe('one refresh token per scope set (documented fallback)', () => {
     } finally {
       for (const k of Object.keys(env)) Reflect.deleteProperty(process.env, k);
     }
+  });
+
+  it('google-sheets can read its own refresh token next to google-drive-readonly', () => {
+    const template = loadConnection('google-sheets');
+    const oauth2 = oauthOf('google-sheets');
+    const override: Route = {
+      ...template,
+      alias: 'google-sheets',
+      secrets: {
+        GOOGLE_OAUTH_CLIENT_ID: '${GOOGLE_OAUTH_CLIENT_ID}',
+        GOOGLE_OAUTH_CLIENT_SECRET: '${GOOGLE_OAUTH_CLIENT_SECRET}',
+        SHEETS_RW_REFRESH_TOKEN: '${SHEETS_RW_REFRESH_TOKEN}',
+      },
+      oauth2: {
+        ...oauth2,
+        secretRefs: { ...oauth2.secretRefs, refreshToken: 'SHEETS_RW_REFRESH_TOKEN' },
+      },
+    };
+    const config = {
+      host: '127.0.0.1',
+      port: 0,
+      rateLimitPerMinute: 60,
+      connectors: [override],
+      callers: {
+        'sheets-agent': { connections: ['google-sheets', 'google-drive-readonly'] },
+      },
+    } as RemoteServerConfig;
+    const env = {
+      SHEETS_AGENT_GOOGLE_OAUTH_CLIENT_ID: 'cid',
+      SHEETS_AGENT_GOOGLE_OAUTH_CLIENT_SECRET: 'csecret',
+      SHEETS_AGENT_GOOGLE_OAUTH_REFRESH_TOKEN: 'rt-drive',
+      SHEETS_AGENT_SHEETS_RW_REFRESH_TOKEN: 'rt-sheets',
+    };
+    Object.assign(process.env, env);
+    try {
+      const { routes, problems } = resolveCallerRoutesChecked(config, 'sheets-agent');
+      expect(problems).toEqual([]);
+      const [sheets, drive] = resolveRoutes(routes, {}, 'sheets-agent');
+      const refreshTokenOf = (r: typeof sheets) =>
+        r.secrets[r.oauth2?.secretRefs.refreshToken ?? ''];
+      expect(sheets.oauth2?.scopes).toEqual([SCOPE + 'spreadsheets']);
+      expect(refreshTokenOf(sheets)).toBe('rt-sheets');
+      expect(refreshTokenOf(drive)).toBe('rt-drive');
+    } finally {
+      for (const k of Object.keys(env)) Reflect.deleteProperty(process.env, k);
+    }
+  });
+});
+
+describe('one refresh token granted several Sheets/Drive scopes', () => {
+  /** Mint for `alias` against a token endpoint that reports `granted`. */
+  async function mint(alias: string, granted: string[]) {
+    const fetchImpl = vi.fn<typeof fetch>(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({ access_token: 'at', expires_in: 3600, scope: granted.join(' ') }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+      ),
+    );
+    const tm = new TokenManager({ fetchImpl, now: () => 1_000_000 });
+    const result = await tm
+      .getToken({ connection: alias, caller: 'alice' }, oauthOf(alias), (n) => n)
+      .catch((e: unknown) => e);
+    const sent = new URLSearchParams(fetchImpl.mock.calls[0][1]?.body as string).get('scope');
+    return { result, sent };
+  }
+  const RW = SCOPE + 'spreadsheets';
+  const RO = SCOPE + 'spreadsheets.readonly';
+  const DRIVE_RO = SCOPE + 'drive.readonly';
+
+  it.each([
+    ['google-sheets', RW],
+    ['google-sheets-readonly', RO],
+    ['google-drive-readonly', DRIVE_RO],
+  ])('%s asks for exactly %s on every refresh', async (alias, scope) => {
+    const { result, sent } = await mint(alias, [scope]);
+    expect(sent).toBe(scope);
+    expect(result).toMatchObject({ grantedScopes: [scope] });
+  });
+
+  // If Google returns the whole grant instead of narrowing, every template on
+  // that token fails closed. Scopes compare as strings: spreadsheets.readonly
+  // is "extra" to a google-sheets request even though spreadsheets covers it.
+  it.each([
+    ['google-sheets', [RW, RO], RO],
+    ['google-sheets-readonly', [RW, RO], RW],
+    ['google-sheets', [RW, DRIVE_RO], DRIVE_RO],
+    ['google-drive-readonly', [RW, DRIVE_RO], RW],
+  ])('%s refuses an un-narrowed grant of %j, naming %s', async (alias, granted, extra) => {
+    const { result } = await mint(alias, granted);
+    expect(result).toBeInstanceOf(OAuth2ScopeError);
+    expect((result as Error).message).toContain(`broader than this connection allows (${extra})`);
   });
 });

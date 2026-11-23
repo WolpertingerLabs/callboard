@@ -160,6 +160,8 @@ describe('OAuth2 connections and credentials on the agent path', () => {
       callers: {
         open: { connections: ['github', 'google-gmail-readonly'], selfManage: true },
         legacy: { connections: ['github'] },
+        // Read-write Sheets, enabled by the operator.
+        sheets: { connections: ['github', 'google-sheets'], selfManage: true },
       },
     });
   });
@@ -175,6 +177,11 @@ describe('OAuth2 connections and credentials on the agent path', () => {
     ['open', 'google-drive-readonly-sa'],
     ['open', 'acme'],
     ['legacy', 'google-gmail-readonly'],
+    ['open', 'google-sheets'],
+    ['open', 'google-sheets-sa'],
+    ['legacy', 'google-sheets'],
+    ['sheets', 'google-sheets-sa'],
+    ['sheets', 'google-sheets-readonly'],
   ])(
     'refuses to enable OAuth2 connection for caller %s: %s, even with selfManage',
     async (caller, connection) => {
@@ -228,6 +235,32 @@ describe('OAuth2 connections and credentials on the agent path', () => {
     }
     // Nothing from the refused call was written, not even the allowed name.
     expect(loadRemoteConfig().callers.open.env).toBeUndefined();
+  });
+
+  it.each([
+    'GOOGLE_OAUTH_CLIENT_ID',
+    'GOOGLE_OAUTH_CLIENT_SECRET',
+    'GOOGLE_OAUTH_REFRESH_TOKEN',
+    'GOOGLE_SERVICE_ACCOUNT_KEY',
+  ])('refuses set_secrets on %s for a caller with google-sheets enabled', async (name) => {
+    for (const value of ['attacker-value', '']) {
+      for (const origin of ['agent', undefined] as const) {
+        await expect(
+          dispatchTool('set_secrets', { secrets: { [name]: value } }, [], ctx('sheets', origin)),
+        ).rejects.toThrow(new RegExp(`cannot set or delete ${name}`));
+      }
+    }
+    expect(loadRemoteConfig().callers.sheets.env).toBeUndefined();
+  });
+
+  it('still lets the agent disable google-sheets', async () => {
+    await dispatchTool(
+      'set_connection_enabled',
+      { connection: 'google-sheets', enabled: false },
+      [],
+      ctx('sheets', 'agent'),
+    );
+    expect(loadRemoteConfig().callers.sheets.connections).toEqual(['github']);
   });
 
   it('lets the agent set other secrets', async () => {
