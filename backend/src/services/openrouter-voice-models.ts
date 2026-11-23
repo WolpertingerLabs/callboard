@@ -20,6 +20,7 @@ import { DEFAULT_VOICE_MODEL, type AgentSettings, type VoiceModelInfo, type Voic
 import { getAgentSettings } from "./agent-settings.js";
 import { resolveOpenRouterApiUrl } from "./openrouter-endpoint.js";
 import { OPENROUTER_MODELS_RETRY_MS, OPENROUTER_MODELS_TTL_MS, getOpenRouterModelsAsync } from "./openrouter-models.js";
+import { OpenRouterAbortError } from "./openrouter-completion.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("openrouter-voice-models");
@@ -133,15 +134,42 @@ export function resolveVoiceModel(settings?: AgentSettings): string {
 }
 
 /**
- * How to call `model`: its kind from the voice-model list. A slug the list does
- * not know (a custom one, or the list could not be fetched) goes to
- * speech-to-text only if it is the default — the one slug known to be a
- * transcriber — and to chat completions otherwise.
+ * The longest a transcription will wait on the voice-model list to learn a
+ * model's kind. A cold listing fetch may take up to its own 30 s timeout; a
+ * recording should not, so past this the kind is answered as unknown.
  */
-export async function resolveVoiceModelKind(model: string): Promise<VoiceModelKind> {
-  const found = (await getVoiceModelsAsync()).find((m) => m.id === model);
-  if (found) return found.kind;
-  return model === DEFAULT_VOICE_MODEL ? "transcription" : "chat";
+export const VOICE_KIND_LOOKUP_TIMEOUT_MS = 5_000;
+
+/**
+ * How to call `model`: its kind from the voice-model list, or `null` when the
+ * list cannot place it — a custom slug, or a listing that has not loaded within
+ * {@link VOICE_KIND_LOOKUP_TIMEOUT_MS}. The caller decides what unknown means
+ * (see voice-transcription.ts).
+ *
+ * {@link DEFAULT_VOICE_MODEL} is answered without a lookup: it is the one slug
+ * known to be a transcriber, and the common case should never wait on a fetch.
+ *
+ * Rejects with an `AbortError` as soon as `signal` aborts. The listing fetch
+ * itself carries on and warms the cache for the next caller.
+ */
+export async function resolveVoiceModelKind(model: string, signal?: AbortSignal): Promise<VoiceModelKind | null> {
+  if (model === DEFAULT_VOICE_MODEL) return "transcription";
+  if (signal?.aborted) throw new OpenRouterAbortError("Voice model lookup cancelled by the caller", "caller");
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+  const capped = new Promise<null>((resolve, reject) => {
+    timer = setTimeout(() => resolve(null), VOICE_KIND_LOOKUP_TIMEOUT_MS);
+    onAbort = () => reject(new OpenRouterAbortError("Voice model lookup cancelled by the caller", "caller"));
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    const models = await Promise.race([getVoiceModelsAsync(), capped]);
+    return models?.find((m) => m.id === model)?.kind ?? null;
+  } finally {
+    clearTimeout(timer);
+    if (onAbort) signal?.removeEventListener("abort", onAbort);
+  }
 }
 
 /** Test-only: drop the cached listing and any in-flight fetch. */

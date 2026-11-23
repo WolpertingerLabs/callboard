@@ -27,6 +27,7 @@ import {
   resetVoiceModelsCacheForTesting,
   resolveVoiceModel,
   resolveVoiceModelKind,
+  VOICE_KIND_LOOKUP_TIMEOUT_MS,
   VOICE_MODELS_RETRY_MS,
   VOICE_MODELS_TTL_MS,
 } from "./openrouter-voice-models.js";
@@ -202,9 +203,40 @@ describe("resolveVoiceModelKind", () => {
     expect(await resolveVoiceModelKind("google/gemini-3.5-flash")).toBe("chat");
   });
 
-  it("with the list unavailable, sends the default to speech-to-text and anything else to chat", async () => {
-    fetchMock.mockRejectedValue(new Error("offline"));
+  it("answers the default as speech-to-text without looking anything up", async () => {
     expect(await resolveVoiceModelKind(DEFAULT_VOICE_MODEL)).toBe("transcription");
-    expect(await resolveVoiceModelKind("some/custom-model")).toBe("chat");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mockChatCatalog).not.toHaveBeenCalled();
+  });
+
+  it("answers null (unknown) for a slug the list does not have, or when the list is unavailable", async () => {
+    fetchMock.mockRejectedValue(new Error("offline"));
+    expect(await resolveVoiceModelKind("some/custom-model")).toBeNull();
+    resetVoiceModelsCacheForTesting();
+    fetchMock.mockResolvedValue(sttBody("deepgram/nova-3"));
+    expect(await resolveVoiceModelKind("some/custom-model")).toBeNull();
+  });
+
+  it("gives up on a slow listing after the lookup cap and answers unknown", async () => {
+    fetchMock.mockImplementation(() => new Promise(() => {}));
+    const pending = resolveVoiceModelKind("deepgram/nova-3");
+    let settled: unknown = "pending";
+    void pending.then((v) => (settled = v));
+    await vi.advanceTimersByTimeAsync(VOICE_KIND_LOOKUP_TIMEOUT_MS - 1);
+    expect(settled).toBe("pending");
+    await vi.advanceTimersByTimeAsync(1);
+    expect(settled).toBeNull();
+  });
+
+  it("stops waiting as soon as the caller aborts, with an AbortError", async () => {
+    fetchMock.mockImplementation(() => new Promise(() => {}));
+    const controller = new AbortController();
+    const pending = resolveVoiceModelKind("deepgram/nova-3", controller.signal);
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("rejects straight away for an already-aborted signal", async () => {
+    await expect(resolveVoiceModelKind("deepgram/nova-3", AbortSignal.abort())).rejects.toMatchObject({ name: "AbortError" });
   });
 });

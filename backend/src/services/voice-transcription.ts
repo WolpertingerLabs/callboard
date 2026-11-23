@@ -28,12 +28,32 @@ const log = createLogger("voice-transcription");
 
 /**
  * How long one attempt may take. A five-minute recording on a slow
- * transcriber finishes well inside this; three attempts plus backoff stay
- * under the client's 150 s ceiling.
+ * transcriber finishes well inside this. With the kind lookup cap, three
+ * attempts and the backoff between them, the server's worst case is
+ * `VOICE_SERVER_BUDGET_MS` (shared/types/voice.ts) — a client timeout should
+ * sit above that.
  */
 export const VOICE_REQUEST_TIMEOUT_MS = 45_000;
 
+/**
+ * Attempts in total, shared by both endpoints: the unknown-kind fallback
+ * below spends one of these rather than adding one, so the worst case stays
+ * `VOICE_SERVER_BUDGET_MS`.
+ */
 const MAX_ATTEMPTS = RETRY_DELAYS_MS.length + 1;
+
+/**
+ * Output cap for the chat path. Five minutes of fast speech is ~800 words,
+ * ~1,100 tokens; this is roughly four times that, so it never truncates a
+ * real transcript but does stop a model that has wandered off into prose.
+ */
+export const VOICE_CHAT_MAX_TOKENS = 4000;
+
+/**
+ * 4xx statuses that mean "the other endpoint would refuse this too" — the key,
+ * the account, or the rate limit — so the unknown-kind fallback skips them.
+ */
+const NO_FALLBACK_STATUSES = new Set([401, 402, 403, 429]);
 
 /** Upstream error text is cut to this before it reaches the composer. */
 const MAX_ERROR_DETAIL = 300;
@@ -59,16 +79,23 @@ export class VoiceNotConfiguredError extends Error {
 /**
  * OpenRouter refused or failed the request. `message` is OpenRouter's own
  * explanation (capped), suitable to show; `status` is the HTTP status when
- * there was one, which is what decides whether it is retried.
+ * there was one, which is what decides whether it is retried. `retryable:
+ * false` overrides that — for a request that may already have been billed.
  */
 export class VoiceUpstreamError extends Error {
   constructor(
     message: string,
     readonly status?: number,
+    readonly retryable?: boolean,
   ) {
     super(message);
     this.name = "VoiceUpstreamError";
   }
+}
+
+function shouldRetry(err: unknown): boolean {
+  if (err instanceof VoiceUpstreamError && err.retryable === false) return false;
+  return isRetryable(err);
 }
 
 export interface TranscribeAudioRequest {
@@ -99,9 +126,18 @@ export async function transcribeAudio(req: TranscribeAudioRequest): Promise<Tran
   if (!apiKey) throw new VoiceNotConfiguredError();
 
   const model = resolveVoiceModel(settings);
-  const kind = await resolveVoiceModelKind(model);
-  const url = resolveOpenRouterApiUrl(kind === "transcription" ? "/audio/transcriptions" : "/chat/completions", settings);
-  const body = JSON.stringify(buildBody(kind, model, req));
+  // `null`: the list could not place this slug (a custom one, or the listing
+  // has not loaded). Chat completions is tried first; a 4xx there that is not
+  // about the key gets one try on the speech-to-text endpoint instead, since a
+  // transcriber sent to the wrong endpoint is refused before it is billed.
+  const known = await resolveVoiceModelKind(model, req.signal);
+  let kind: VoiceModelKind = known ?? "chat";
+  let canFallBack = known === null;
+  const request = () => ({
+    url: resolveOpenRouterApiUrl(kind === "transcription" ? "/audio/transcriptions" : "/chat/completions", settings),
+    body: JSON.stringify(buildBody(kind, model, req)),
+  });
+  let { url, body } = request();
 
   const started = Date.now();
   for (let attempt = 1; ; attempt++) {
@@ -111,7 +147,15 @@ export async function transcribeAudio(req: TranscribeAudioRequest): Promise<Tran
       log.debug(`Transcribed with ${model} (${kind}) — ${durationMs}ms${costUsd !== undefined ? `, cost=$${costUsd.toFixed(5)}` : ""}`);
       return { text, model, durationMs, ...(costUsd !== undefined ? { costUsd } : {}) };
     } catch (err) {
-      if (!isRetryable(err) || attempt >= MAX_ATTEMPTS) throw err;
+      const status = err instanceof VoiceUpstreamError ? err.status : undefined;
+      if (canFallBack && status !== undefined && status >= 400 && status < 500 && !NO_FALLBACK_STATUSES.has(status) && attempt < MAX_ATTEMPTS) {
+        log.info(`${model} is not in the voice-model list and chat completions refused it (${status}) — trying /audio/transcriptions`);
+        canFallBack = false;
+        kind = "transcription";
+        ({ url, body } = request());
+        continue;
+      }
+      if (!shouldRetry(err) || attempt >= MAX_ATTEMPTS) throw err;
       const wait = RETRY_DELAYS_MS[attempt - 1];
       log.warn(`Transcription attempt ${attempt} of ${MAX_ATTEMPTS} failed (${(err as Error)?.message}) — retrying in ${wait}ms`);
       await delay(wait);
@@ -131,6 +175,7 @@ function buildBody(kind: VoiceModelKind, model: string, req: TranscribeAudioRequ
   return {
     model,
     temperature: 0,
+    max_tokens: VOICE_CHAT_MAX_TOKENS,
     usage: { include: true },
     messages: [
       { role: "system", content: VOICE_TRANSCRIPTION_SYSTEM_PROMPT },
@@ -183,7 +228,11 @@ async function send(opts: {
     throw new VoiceUpstreamError(upstreamMessage(raw, `OpenRouter HTTP ${res.status} ${res.statusText}`), res.status);
   }
 
-  const json = (await res.json()) as RawTranscriptionResponse & RawChatResponse;
+  // Not retried: a 200 means the provider may already have transcribed — and
+  // billed — this recording, and a garbled body is not a transient fault.
+  const json = (await res.json().catch(() => {
+    throw new VoiceUpstreamError("OpenRouter returned an unreadable response", undefined, false);
+  })) as RawTranscriptionResponse & RawChatResponse;
   // A 200 carrying an `error` object is a provider-side failure routed through
   // OpenRouter — an error, not an empty transcript.
   if (json.error?.message) throw new VoiceUpstreamError(json.error.message.slice(0, MAX_ERROR_DETAIL));

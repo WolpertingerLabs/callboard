@@ -201,7 +201,14 @@ export type { McpToolParameter, McpToolDefinition, McpToolServerInfo, McpToolsRe
 export type { OpenRouterModelInfo, OpenRouterModelAliasInfo } from "./openrouter.js";
 
 export type { VoiceModelKind, VoiceModelInfo, VoiceModelsResponse, TranscribeResponse, VoiceErrorCode } from "./voice.js";
-export { DEFAULT_VOICE_MODEL, MAX_VOICE_RECORDING_MS, MAX_VOICE_UPLOAD_BYTES, VOICE_ERROR_CODES, VOICE_NOT_CONFIGURED_MESSAGE } from "./voice.js";
+export {
+  DEFAULT_VOICE_MODEL,
+  MAX_VOICE_RECORDING_MS,
+  MAX_VOICE_UPLOAD_BYTES,
+  VOICE_ERROR_CODES,
+  VOICE_NOT_CONFIGURED_MESSAGE,
+  VOICE_SERVER_BUDGET_MS,
+} from "./voice.js";
 
 export type { CodexModelInfo } from "./codex.js";
 

@@ -29,6 +29,14 @@ export const MAX_VOICE_RECORDING_MS = 5 * 60 * 1000;
 export const MAX_VOICE_UPLOAD_BYTES = 12 * 1024 * 1024;
 
 /**
+ * The longest `POST /api/voice/transcribe` can take on the server: the 5 s
+ * model-kind lookup cap, three 45 s upstream attempts, and 2 s of backoff
+ * between them. A client timeout should sit comfortably above this. Pinned
+ * against the backend's own constants in voice-transcription.test.ts.
+ */
+export const VOICE_SERVER_BUDGET_MS = 142_000;
+
+/**
  * How a voice model is called:
  *  - `transcription` — a dedicated speech-to-text model, via OpenRouter's
  *    `POST /audio/transcriptions`.

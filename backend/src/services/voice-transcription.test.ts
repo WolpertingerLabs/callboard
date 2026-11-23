@@ -17,11 +17,21 @@ vi.mock("./agent-settings.js", () => ({
 // answer matters, so the kind is pinned per case.
 vi.mock("./openrouter-voice-models.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./openrouter-voice-models.js")>()),
-  resolveVoiceModelKind: vi.fn(async (): Promise<VoiceModelKind> => "transcription"),
+  resolveVoiceModelKind: vi.fn(async (): Promise<VoiceModelKind | null> => "transcription"),
 }));
 
-import { DEFAULT_VOICE_MODEL } from "shared";
-import { NO_SPEECH_SENTINEL, VOICE_TRANSCRIPTION_SYSTEM_PROMPT, VoiceNotConfiguredError, VoiceUpstreamError, transcribeAudio } from "./voice-transcription.js";
+import { DEFAULT_VOICE_MODEL, VOICE_SERVER_BUDGET_MS } from "shared";
+import {
+  NO_SPEECH_SENTINEL,
+  VOICE_CHAT_MAX_TOKENS,
+  VOICE_REQUEST_TIMEOUT_MS,
+  VOICE_TRANSCRIPTION_SYSTEM_PROMPT,
+  VoiceNotConfiguredError,
+  VoiceUpstreamError,
+  transcribeAudio,
+} from "./voice-transcription.js";
+import { RETRY_DELAYS_MS } from "./openrouter-completion.js";
+import { VOICE_KIND_LOOKUP_TIMEOUT_MS } from "./openrouter-voice-models.js";
 import { getAgentSettings } from "./agent-settings.js";
 import { resolveVoiceModelKind } from "./openrouter-voice-models.js";
 
@@ -79,6 +89,7 @@ describe("speech-to-text models", () => {
     expect(body).toEqual({ model: DEFAULT_VOICE_MODEL, input_audio: { data: WAV.toString("base64"), format: "wav" }, response_format: "json" });
     // Raw base64, not a data URL.
     expect(body.input_audio.data).not.toMatch(/^data:/);
+    expect(body).not.toHaveProperty("max_tokens");
     expect(result).toMatchObject({ text: "hello world", model: DEFAULT_VOICE_MODEL });
     expect(typeof result.durationMs).toBe("number");
   });
@@ -124,6 +135,7 @@ describe("audio-input chat models", () => {
     const body = sentBody();
     expect(body.model).toBe("google/gemini-3.5-flash");
     expect(body.temperature).toBe(0);
+    expect(body.max_tokens).toBe(VOICE_CHAT_MAX_TOKENS);
     expect(body.usage).toEqual({ include: true });
     expect(body).not.toHaveProperty("reasoning");
     expect(body).not.toHaveProperty("language");
@@ -173,7 +185,7 @@ describe("model and endpoint resolution", () => {
     fetchMock.mockResolvedValue(sttOk("x"));
     await transcribeAudio({ wav: WAV });
     expect(sentBody().model).toBe(DEFAULT_VOICE_MODEL);
-    expect(mockKind).toHaveBeenCalledWith(DEFAULT_VOICE_MODEL);
+    expect(mockKind).toHaveBeenCalledWith(DEFAULT_VOICE_MODEL, undefined);
   });
 
   it("honours an openRouterBaseUrl override", async () => {
@@ -267,6 +279,108 @@ describe("timeouts and cancellation", () => {
     );
     const err = (await transcribeAudio({ wav: WAV, signal: controller.signal }).catch((e: unknown) => e)) as Error;
     expect(err.name).toBe("AbortError");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the chat path's output cap", () => {
+  it("is generous: ~4x the tokens of five minutes of fast speech", () => {
+    // ~160 words/min × 5 min ≈ 800 words ≈ 1,100 tokens.
+    expect(VOICE_CHAT_MAX_TOKENS).toBeGreaterThanOrEqual(4000);
+  });
+});
+
+describe("the server's worst-case budget", () => {
+  it("covers the kind lookup cap, every attempt's timeout and every backoff", () => {
+    const attempts = RETRY_DELAYS_MS.length + 1;
+    expect(VOICE_SERVER_BUDGET_MS).toBe(VOICE_KIND_LOOKUP_TIMEOUT_MS + attempts * VOICE_REQUEST_TIMEOUT_MS + RETRY_DELAYS_MS.reduce((a, b) => a + b, 0));
+  });
+});
+
+describe("kind lookup", () => {
+  it("hands the caller's signal to the lookup", async () => {
+    const controller = new AbortController();
+    fetchMock.mockResolvedValue(sttOk("x"));
+    await transcribeAudio({ wav: WAV, signal: controller.signal });
+    expect(mockKind).toHaveBeenCalledWith(DEFAULT_VOICE_MODEL, controller.signal);
+  });
+});
+
+/**
+ * A slug the voice-model list cannot place — a custom one, or the listing has
+ * not loaded — is tried on chat completions first; a 4xx there that says "not
+ * this endpoint" gets one try on the speech-to-text endpoint instead.
+ */
+describe("unknown model kind", () => {
+  beforeEach(() => {
+    mockGetAgentSettings.mockReturnValue(configured({ openRouterVoiceModel: "deepgram/nova-3" }));
+    mockKind.mockResolvedValue(null);
+  });
+
+  it("uses chat completions when that works", async () => {
+    fetchMock.mockResolvedValue(chatOk("from chat"));
+    expect((await transcribeAudio({ wav: WAV })).text).toBe("from chat");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(sentUrl()).toBe("https://openrouter.ai/api/v1/chat/completions");
+  });
+
+  it("falls back to /audio/transcriptions once when chat completions answers a 4xx", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: { message: "model does not support chat" } }, 400)).mockResolvedValueOnce(sttOk("from stt"));
+    const result = await transcribeAudio({ wav: WAV, language: "en" });
+    expect(result).toMatchObject({ text: "from stt", model: "deepgram/nova-3" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(sentUrl(0)).toBe("https://openrouter.ai/api/v1/chat/completions");
+    expect(sentUrl(1)).toBe("https://openrouter.ai/api/v1/audio/transcriptions");
+    expect(sentBody(1)).toEqual({
+      model: "deepgram/nova-3",
+      input_audio: { data: WAV.toString("base64"), format: "wav" },
+      response_format: "json",
+      language: "en",
+    });
+  });
+
+  it("falls back only once, reporting the speech-to-text endpoint's error", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ error: { message: "not a chat model" } }, 404))
+      .mockResolvedValueOnce(jsonResponse({ error: { message: "not a transcription model either" } }, 400));
+    await expect(transcribeAudio({ wav: WAV })).rejects.toThrow("not a transcription model either");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not fall back on an auth or billing refusal — the other endpoint would answer the same", async () => {
+    for (const status of [401, 402, 403]) {
+      fetchMock.mockReset();
+      fetchMock.mockResolvedValue(jsonResponse({ error: { message: "nope" } }, status));
+      await expect(transcribeAudio({ wav: WAV })).rejects.toThrow("nope");
+      expect(fetchMock, String(status)).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("does not fall back for a model the list places as chat", async () => {
+    mockKind.mockResolvedValue("chat");
+    fetchMock.mockResolvedValue(jsonResponse({ error: { message: "bad audio" } }, 400));
+    await expect(transcribeAudio({ wav: WAV })).rejects.toThrow("bad audio");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("unreadable responses", () => {
+  it("a 200 whose body is not JSON is a non-retryable upstream error — retrying could bill the recording again", async () => {
+    vi.useFakeTimers();
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      json: async () => {
+        throw new SyntaxError("Unexpected token < in JSON at position 0");
+      },
+      text: async () => "<html>",
+    } as unknown as Response);
+    const outcome = transcribeAudio({ wav: WAV }).catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(5000);
+    const err = (await outcome) as Error;
+    expect(err).toBeInstanceOf(VoiceUpstreamError);
+    expect(err.message).toMatch(/unreadable/i);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
