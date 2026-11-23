@@ -1,4 +1,5 @@
 import { normalizePermissions } from "shared/types/permissions.js";
+import { SANDBOX_DESKTOP_TEXT } from "shared/types/computerUse.js";
 import type { PermissionReviewSettings } from "shared/types/permissions.js";
 import { DefaultPermissions, PermissionLevel } from "../api";
 
@@ -210,9 +211,12 @@ export default function PermissionSettings({ permissions, onChange, title, provi
         onUpdate={updatePermission}
       />
 
+      {/* Shown even against a daemon that predates the sandbox (a rollback):
+          the frontend has no daemon-feature signal here, and such a daemon
+          drops the key, so the row reads back as Deny and grants nothing. */}
       <PermissionRow
         label="Sandbox desktop"
-        description="Control a disposable Linux desktop in a hardened container, not your machine. Needs no other permission; its network is unrestricted."
+        description={`Control ${SANDBOX_DESKTOP_TEXT.what}; not your machine. Needs no other permission. ${SANDBOX_DESKTOP_TEXT.network}`}
         category="sandboxControl"
         permissions={permissions}
         onUpdate={updatePermission}

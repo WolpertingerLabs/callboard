@@ -9,7 +9,7 @@ export interface DefaultPermissions {
   browserControl: PermissionLevel;
   /** Computer Use: drive the desktop target. */
   computerControl: PermissionLevel;
-  /** Sandbox desktop: drive the disposable desktop in a hardened container. Independent of every other axis. */
+  /** Sandbox desktop: drive the desktop in a hardened container. Independent of every other axis. */
   sandboxControl: PermissionLevel;
 }
 

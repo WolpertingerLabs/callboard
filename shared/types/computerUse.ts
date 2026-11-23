@@ -28,10 +28,28 @@ export const CU_ACTION_TOOL_NAME = "mcp__computer_use__cu_action";
 export const CU_REQUEST_CONTROL_TOOL_NAME = "mcp__computer_use__cu_request_control";
 
 /**
+ * How Callboard describes the Sandbox desktop — to the human (consent card,
+ * permission row, Computer view) and to the agent (tool descriptions). One
+ * place, because the truth depends on how the container is run, and that
+ * changes: today one operator-started container is shared by every chat and
+ * keeps its state until it is restarted, so it is NOT fresh per session and
+ * NOT safe for arbitrary untrusted work. When containers are started per
+ * session, change these strings (and only these) to say so.
+ */
+export const SANDBOX_DESKTOP_TEXT = {
+  /** What it is, as a phrase: "the Sandbox desktop is …". */
+  what: "a Linux desktop in a hardened container, isolated from this machine's files and credentials, but shared by every chat and kept until the container is restarted",
+  /** What it can reach. Shown on the consent card and wherever the network is mentioned. */
+  network: "Its network is open: it can reach the internet, and any service on this machine that listens on all interfaces, Callboard included.",
+  /** When to choose it. */
+  use: "Use it for desktop apps and downloads that should stay off this machine.",
+} as const;
+
+/**
  * Callboard HTTP viewer DTOs. Driver/package types stay outside shared.
  *
- * `"sandbox"` (the Sandbox desktop: a disposable desktop in a hardened
- * container, not the user's machine) is a later enum value. A client that has
+ * `"sandbox"` (the Sandbox desktop: a desktop in a hardened container, not
+ * the user's machine) is a later enum value. A client that has
  * a `switch` on this cannot be assumed to handle it, so the daemon sends
  * sandbox capabilities, sessions and prompts only to a client that advertises
  * `CLIENT_CAPS.sandboxTarget` (shared/types/protocol.ts) — on the status REST

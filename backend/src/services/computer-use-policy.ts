@@ -4,8 +4,9 @@
  *  - `browserControl` ("Browser Use") — the managed browser target. It needs no
  *    other axis; in particular it does NOT require `webAccess`. Browser
  *    networking is unrestricted, and opting into Browser Use opts into that.
- *  - `sandboxControl` ("Sandbox desktop") — a disposable Linux desktop in a
- *    hardened container (packages/computer-use/docker). It needs no other axis
+ *  - `sandboxControl` ("Sandbox desktop") — a Linux desktop in a hardened
+ *    container (packages/computer-use/docker). In this release it is one
+ *    operator-started container shared by every chat, not fresh per session. It needs no other axis
  *    either: the container is the boundary. Nothing of this machine is mounted
  *    into it — no files, no credentials, no Docker socket — so the file and
  *    code axes have nothing there to govern. Its outbound network is

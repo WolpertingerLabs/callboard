@@ -233,9 +233,9 @@ describe("ComputerUsePanel", () => {
       fireEvent.change(screen.getByLabelText("Target"), { target: { value: "sandbox" } });
       expect(button("Enable").disabled).toBe(false);
       expect(screen.getByRole("note", { name: "What Enable grants" }).textContent).toContain("Sandbox desktop is set to Allow:");
-      const note = screen.getByText(/Disposable sandbox desktop:/).closest("p")!.textContent!;
-      expect(note).toContain("hardened container, not this computer");
-      expect(note).toContain("network access is unrestricted");
+      const note = screen.getByText(/^Sandbox desktop:$/).closest("p")!.textContent!;
+      expect(note).toContain("shared by every chat and kept until the container is restarted, not this computer");
+      expect(note).toContain("any service on this machine that listens on all interfaces");
       expect(screen.queryByText(/Same-machine native control/)).toBeNull();
       fireEvent.change(screen.getByLabelText("Target"), { target: { value: "native" } });
       expect(button("Enable").disabled).toBe(true);
@@ -292,7 +292,7 @@ describe("ComputerUsePanel", () => {
       render(<Viewer permission="allow" />);
       await ready();
       expect(screen.getByText("Sandbox desktop (container)", { selector: "strong" })).toBeTruthy();
-      expect(screen.getByText(/Disposable sandbox desktop:/)).toBeTruthy();
+      expect(screen.getByText(/^Sandbox desktop:$/)).toBeTruthy();
     });
   });
 

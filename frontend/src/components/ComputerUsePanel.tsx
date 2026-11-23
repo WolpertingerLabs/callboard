@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { Monitor } from "lucide-react";
 import type { ComputerUseCapability, ComputerUseAction, ComputerUseKind, ComputerUseObservation, ComputerUseSession } from "shared/types/computerUse.js";
+import { SANDBOX_DESKTOP_TEXT } from "shared/types/computerUse.js";
 import type { PermissionLevel } from "shared/types/permissions.js";
 import { computerUseClient as client, controlErrorCode } from "../api/computerUse";
 import "./ComputerUsePanel.css";
@@ -515,8 +516,8 @@ export default function ComputerUsePanel({
               <span className="computer-use-consent" role="note" aria-label="What Enable grants">
                 {level === "allow" ? (
                   <>
-                    <strong>{axisLabel} is set to Allow:</strong> once you enable a target, the agent acts on it without asking you again. Each action is
-                    recorded in the server log.
+                    <strong>{axisLabel} is set to Allow:</strong> once you enable a target, the agent acts on it without asking you again. Each action is recorded
+                    in the server log.
                   </>
                 ) : (
                   <>
@@ -551,7 +552,7 @@ export default function ComputerUsePanel({
           <details className="computer-use-about">
             <summary>How computer control works</summary>
             <p>
-              Controls Callboard&apos;s browser and desktop tools. Browser Use governs the managed browser, Sandbox desktop the disposable container desktop,
+              Controls Callboard&apos;s browser and desktop tools. Browser Use governs the managed browser, Sandbox desktop the container desktop,
               and Computer Use the service host&apos;s desktop; each target follows its own setting, and the host desktop also needs every other permission
               except Sandbox desktop on Allow. Enabling a target is always your own action; after that, Allow lets the agent act on its own, while Ask stops its
               turn and asks you in the chat before each action. Agents with unrestricted code execution may still run their own automation.
@@ -576,8 +577,8 @@ export default function ComputerUsePanel({
           )}
           {(kind === "sandbox" || session?.kind === "sandbox") && (
             <p className="computer-use-note" role="note">
-              <strong>Disposable sandbox desktop:</strong> this targets a Linux desktop in a hardened container, not this computer or the service host&apos;s
-              own desktop. Its network access is unrestricted.
+              <strong>Sandbox desktop:</strong> this targets {SANDBOX_DESKTOP_TEXT.what}, not this computer or the service host&apos;s own desktop.{" "}
+              {SANDBOX_DESKTOP_TEXT.network}
             </p>
           )}
           {denied && (

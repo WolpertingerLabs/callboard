@@ -19,7 +19,6 @@ it("renders Browser Use, Sandbox desktop and Computer Use in that order, each a 
   // means allow, so neither row explains away its levels with confirmation caveats.
   for (const [pattern, dependency] of [
     [/Control a managed Chromium browser on the service host/, /independent of Web Access/],
-    [/Control a disposable Linux desktop in a hardened container, not your machine/, /Needs no other permission; its network is unrestricted/],
     [/Control the Linux X11 desktop on the service host/, /every other axis on Allow, except Sandbox desktop/],
   ] as const) {
     const description = screen.getByText(pattern).textContent!;
@@ -27,6 +26,12 @@ it("renders Browser Use, Sandbox desktop and Computer Use in that order, each a 
     expect(description).not.toMatch(/confirm/i);
     expect(description.length).toBeLessThan(140);
   }
+  // The sandbox row says what the container is today, which takes more than one short line.
+  const sandbox = screen.getByText(/Control a Linux desktop in a hardened container/).textContent!;
+  expect(sandbox).toContain("shared by every chat and kept until the container is restarted");
+  expect(sandbox).toContain("Needs no other permission");
+  expect(sandbox).toContain("any service on this machine that listens on all interfaces");
+  expect(sandbox).not.toMatch(/disposable/i);
   for (const label of ["Browser Use", "Sandbox desktop", "Computer Use"])
     expect((within(rowOf(label)).getByRole("radio", { name: "Deny" }) as HTMLInputElement).checked).toBe(true);
   fireEvent.click(within(rowOf("Browser Use")).getByRole("radio", { name: "Ask" }));

@@ -4,6 +4,7 @@ import { z } from "zod";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { defineTool, type ToolCallResult, type ToolServerSpec } from "../agents/ports/tools.js";
+import { SANDBOX_DESKTOP_TEXT } from "shared/types/index.js";
 import { TARGET_IDS, controlError, controlPrincipal, getComputerUseHost, logComputerUseFailure, type FailureContext } from "./computer-use.js";
 
 /**
@@ -11,7 +12,10 @@ import { TARGET_IDS, controlError, controlPrincipal, getComputerUseHost, logComp
  * model which one to ask for. Shared so the three tools cannot disagree.
  */
 const TARGET_GUIDE =
-  'Targets: "browser" — a managed Chromium on the Callboard service host, for websites. "sandbox" — the Sandbox desktop, a disposable Linux desktop in a hardened container: not the user\'s machine, none of their files or credentials are in it, and it can be reset, so prefer it for desktop apps, downloads and anything untrusted. "desktop" — the user\'s own desktop session on the service host, which reaches everything they can; use it only when the task needs their real apps or data. Each target has its own permission (Browser Use, Sandbox desktop, Computer Use), and enabling one never grants another.';
+  'Targets: "browser" — a managed Chromium on the Callboard service host, for websites. ' +
+  `"sandbox" — the Sandbox desktop, ${SANDBOX_DESKTOP_TEXT.what}; it is not the user's machine. ${SANDBOX_DESKTOP_TEXT.network} ${SANDBOX_DESKTOP_TEXT.use} Anything you leave in it is visible to later sessions and other chats. ` +
+  '"desktop" — the user\'s own desktop session on the service host, which reaches everything they can; use it only when the task needs their real apps or data. ' +
+  "Each target has its own permission (Browser Use, Sandbox desktop, Computer Use), and enabling one never grants another.";
 /** Kind names as cu_open and cu_request_control take them, by the service's target id that cu_status reports. */
 const TARGET_KINDS: Record<string, "browser" | "desktop" | "sandbox"> = {
   [TARGET_IDS.browser]: "browser",

@@ -147,9 +147,13 @@ it("titles a Sandbox desktop request as such and says it is a container desktop,
   );
   expect(screen.getByText("Enable Sandbox desktop control", { selector: "strong" })).toBeTruthy();
   expect(screen.queryByText(/Enable browser control/)).toBeNull();
-  const note = screen.getByText(/disposable Linux desktop in a hardened container/).textContent!;
+  const note = screen.getByText(/The Sandbox desktop is a Linux desktop in a hardened container/).textContent!;
   expect(note).toContain("not this machine");
-  expect(note).toContain("network access is unrestricted");
+  // What it is today: shared and persistent, with an open network that reaches this machine's services.
+  expect(note).toContain("shared by every chat and kept until the container is restarted");
+  expect(note).toContain("later sessions and other chats can see");
+  expect(note).toContain("any service on this machine that listens on all interfaces, Callboard included");
+  expect(note).not.toMatch(/disposable|fresh|reset/i);
   expect(screen.queryByText(/existing app windows on the service host/)).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Enable Sandbox desktop control" }));
   expect(onRespond).toHaveBeenCalledWith(true);
@@ -157,7 +161,9 @@ it("titles a Sandbox desktop request as such and says it is a container desktop,
 
 it("says a GUI action on the Sandbox desktop is on the container, not this machine", () => {
   render(<FeedbackPanel action={{ ...guiAction, input: { ...guiAction.input, kind: "sandbox" } }} onRespond={() => {}} />);
-  expect(screen.getByText(/This chat asks before every GUI action/).textContent).toContain("Sandbox desktop, a disposable container desktop, not this machine");
+  expect(screen.getByText(/This chat asks before every GUI action/).textContent).toContain(
+    "Sandbox desktop, a Linux desktop in a hardened container, isolated from this machine's files and credentials, but shared by every chat",
+  );
   cleanup();
   render(<FeedbackPanel action={{ ...guiAction, input: { ...guiAction.input, kind: "browser" } }} onRespond={() => {}} />);
   expect(screen.getByText(/This chat asks before every GUI action/).textContent).not.toContain("Sandbox desktop");

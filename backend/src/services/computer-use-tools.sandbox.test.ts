@@ -6,6 +6,7 @@ vi.mock("./computer-use.js", async (original) => ({
   ...(await original<typeof import("./computer-use.js")>()),
   getComputerUseHost: vi.fn(),
 }));
+import { SANDBOX_DESKTOP_TEXT } from "shared/types/index.js";
 import { ComputerUseHost, getComputerUseHost } from "./computer-use.js";
 import { readComputerUsePolicy } from "./computer-use-policy.js";
 import { clearOpenApprovalsForTest, getPendingRequest, respondToPermission } from "./pending-requests.js";
@@ -71,7 +72,7 @@ function setup(permissions: Record<string, string>) {
 it("cu_request_control asks for the sandbox by kind; cu_open and cu_status list it apart from the desktop", async () => {
   const { end, tool, drivers, notices } = setup({ sandboxControl: "allow" });
   try {
-    expect(textOf(await tool("cu_request_control").handler({ kind: "sandbox", reason: "Open the untrusted attachment" }))).toMatchObject({
+    expect(textOf(await tool("cu_request_control").handler({ kind: "sandbox", reason: "Open the downloaded attachment" }))).toMatchObject({
       status: "consent_pending",
       kind: "sandbox",
     });
@@ -114,9 +115,12 @@ it("the tool descriptions say when to use the sandbox rather than the browser or
   const spec = buildComputerUseToolsSpec(() => CHAT);
   for (const name of ["cu_status", "cu_open", "cu_request_control"]) {
     const description = spec.tools.find((item) => item.name === name)!.description;
-    expect(description).toMatch(/Sandbox desktop, a disposable Linux desktop in a hardened container/);
+    expect(description).toContain(`Sandbox desktop, ${SANDBOX_DESKTOP_TEXT.what}`);
+    expect(description).toContain("shared by every chat and kept until the container is restarted");
     expect(description).toMatch(/not the user's machine/);
-    expect(description).toMatch(/untrusted/);
+    expect(description).toContain("any service on this machine that listens on all interfaces");
+    // Not promised until containers are per session: fresh, resettable, safe for anything untrusted.
+    expect(description).not.toMatch(/disposable|can be reset|anything untrusted/);
     expect(description).toMatch(/"desktop" — the user's own desktop/);
   }
 });

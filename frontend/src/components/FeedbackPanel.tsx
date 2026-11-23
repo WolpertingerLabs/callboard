@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Maximize2, Minimize2 } from "lucide-react";
-import { CU_ACTION_TOOL_NAME, CU_REQUEST_CONTROL_TOOL_NAME } from "shared/types/index.js";
+import { CU_ACTION_TOOL_NAME, CU_REQUEST_CONTROL_TOOL_NAME, SANDBOX_DESKTOP_TEXT } from "shared/types/index.js";
 import MarkdownRenderer from "./MarkdownRenderer";
 import type { PendingAction } from "../api";
 
@@ -79,8 +79,8 @@ function FeedbackContent({ action, onRespond, agentName = "Claude", approveLocke
           )}
           {sandbox && (
             <p>
-              The Sandbox desktop is a disposable Linux desktop in a hardened container, not this machine or the service host&apos;s own desktop. Its network
-              access is unrestricted.
+              The Sandbox desktop is {SANDBOX_DESKTOP_TEXT.what}, not this machine or the service host&apos;s own desktop. Whatever the agent leaves there,
+              later sessions and other chats can see. {SANDBOX_DESKTOP_TEXT.network}
             </p>
           )}
           <p>Subagents running inside this chat’s turn share this grant and this chat’s permissions.</p>
@@ -128,7 +128,7 @@ function FeedbackContent({ action, onRespond, agentName = "Claude", approveLocke
         {guiAction && (
           <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 0, marginBottom: 10 }}>
             This chat asks before every GUI action: a pixel action may transmit data, change files or execute code.
-            {sandboxAction && " This action is on the Sandbox desktop, a disposable container desktop, not this machine."}
+            {sandboxAction && ` This action is on the Sandbox desktop, ${SANDBOX_DESKTOP_TEXT.what}, not this machine.`}
             {action.nonBlocking &&
               ` ${agentName} isn’t waiting on this: it will be told your answer, and a confirmed action runs only if the screen it was aimed at hasn’t changed. It is withdrawn if you press Stop (while a run is going), Stop computer control, take over or revoke the session, or the session ends.`}
           </p>
