@@ -94,12 +94,7 @@ describe('connectionOverlapWarnings', () => {
     ).toEqual([]);
     expect(
       connectionOverlapWarnings(
-        config([
-          'google-docs',
-          'google-slides',
-          'google-sheets',
-          'google-drive-readonly',
-        ]),
+        config(['google-docs', 'google-slides', 'google-sheets', 'google-drive-readonly']),
       ),
     ).toEqual([]);
   });
