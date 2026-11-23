@@ -28,6 +28,7 @@ const FULL: AgentSettings = {
   openRouterUtilityHaikuModel: "u-haiku",
   openRouterUtilitySonnetModel: "u-sonnet",
   openRouterUtilityOpusModel: "u-opus",
+  openRouterVoiceModel: "openai/whisper-1",
   piProviderId: "openrouter",
   piModel: "google/gemini",
   piApiKey: "sk-pi",
@@ -65,10 +66,12 @@ describe("formFromSettings / settingsFromForm", () => {
 
   it("sends every field on Save — a snapshot, with blanks as empty strings", () => {
     const body = settingsFromForm(EMPTY_API_SETTINGS_FORM);
-    expect(Object.keys(body)).toHaveLength(38);
+    expect(Object.keys(body)).toHaveLength(39);
     expect(body.apiKey).toBe("");
     expect(body.codexAuthMode).toBe("subscription");
     expect(body.openRouterUtilityCompletions).toBe(false);
+    // Blank ⇒ the server's default voice model.
+    expect(body.openRouterVoiceModel).toBe("");
   });
 
   it("sends no field for the retired Cline harness", () => {

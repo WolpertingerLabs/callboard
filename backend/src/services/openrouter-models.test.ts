@@ -179,6 +179,30 @@ describe("cache pricing", () => {
   });
 });
 
+describe("input modalities", () => {
+  function bodyWith(entry: Record<string, unknown>): Response {
+    return {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      json: async () => ({ data: [{ id: "a/b", name: "A B", supported_parameters: ["tools"], ...entry }] }),
+    } as unknown as Response;
+  }
+
+  it("carries architecture.input_modalities through, for finding audio-capable models", async () => {
+    fetchMock.mockResolvedValue(bodyWith({ architecture: { input_modalities: ["text", "image", "audio"] } }));
+    expect((await getOpenRouterModelsAsync())[0]?.inputModalities).toEqual(["text", "image", "audio"]);
+  });
+
+  it("omits the field when the entry carries no architecture, or a malformed one", async () => {
+    fetchMock.mockResolvedValue(bodyWith({}));
+    expect((await getOpenRouterModelsAsync())[0]).not.toHaveProperty("inputModalities");
+    resetOpenRouterModelsCacheForTesting();
+    fetchMock.mockResolvedValue(bodyWith({ architecture: { input_modalities: "audio" } }));
+    expect((await getOpenRouterModelsAsync())[0]).not.toHaveProperty("inputModalities");
+  });
+});
+
 describe("failure handling", () => {
   it("retries a failed fetch after the retry window, not the full TTL", async () => {
     fetchMock.mockRejectedValue(new Error("offline"));

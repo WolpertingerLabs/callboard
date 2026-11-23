@@ -294,6 +294,8 @@ function isClaudeCodeModelName(value: string, { allowInherit }: { allowInherit: 
  *   resolves, and is a supported setup.
  * - `openRouterUtility*Model` → `resolveUtilityModel` → the OpenRouter request,
  *   verbatim. Nothing resolves.
+ * - `openRouterVoiceModel` → `resolveVoiceModel` → the transcription request,
+ *   verbatim. Nothing resolves.
  */
 const OPENROUTER_MODEL_FIELDS: readonly { field: keyof AgentSettings; resolvesToday: (value: string, alias: ModelAlias) => boolean }[] = [
   { field: "claudeCodeOpenRouterModel", resolvesToday: (value) => isClaudeCodeModelName(value, { allowInherit: false }) },
@@ -305,6 +307,7 @@ const OPENROUTER_MODEL_FIELDS: readonly { field: keyof AgentSettings; resolvesTo
   { field: "openRouterUtilityHaikuModel", resolvesToday: () => false },
   { field: "openRouterUtilitySonnetModel", resolvesToday: () => false },
   { field: "openRouterUtilityOpusModel", resolvesToday: () => false },
+  { field: "openRouterVoiceModel", resolvesToday: () => false },
 ];
 
 /**

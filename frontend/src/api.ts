@@ -1,5 +1,6 @@
 import { ASIDE_ROLE, asideForkPoint, handshakeHeaders, type AsideQuote } from "shared/types/index.js";
 import type { PermissionReviewSettings, ReasoningCapability } from "shared/types/index.js";
+import { DEFAULT_VOICE_MODEL, type TranscribeResponse, type VoiceModelsResponse } from "shared/types/voice.js";
 import { normalizePermissions } from "shared/types/permissions.js";
 import type { SpaceListItem, SpacePatch } from "shared/types/space.js";
 import type {
@@ -1983,6 +1984,12 @@ export interface SystemInfo {
    * control.
    */
   codexAuthNote?: string;
+  /**
+   * Whether composer voice input can run: true when the account-wide OpenRouter
+   * key (Settings → API → OpenRouter) is set. Absent on servers older than
+   * voice input — treat as false.
+   */
+  voiceInputAvailable?: boolean;
 }
 
 /**
@@ -2314,6 +2321,28 @@ export async function getOpenRouterCatalog(): Promise<{ models: OpenRouterModelI
     models: Array.isArray(data.models) ? data.models : [],
     aliases: Array.isArray(data.aliases) ? data.aliases : [],
   };
+}
+
+// Voice input API
+
+/** Models the Settings → API voice picker offers, plus the server's default. */
+export async function getVoiceModels(): Promise<VoiceModelsResponse> {
+  const data = await request<Partial<VoiceModelsResponse>>("/voice/models", { error: "Failed to get voice models" });
+  return {
+    models: Array.isArray(data.models) ? data.models : [],
+    defaultModel: typeof data.defaultModel === "string" && data.defaultModel ? data.defaultModel : DEFAULT_VOICE_MODEL,
+  };
+}
+
+/**
+ * Transcribe one 16-bit PCM WAV recording. Resolves with the transcript only —
+ * the caller decides where it goes; nothing is sent. Throws with the server's
+ * message (no key, too large, upstream failure, timeout).
+ */
+export async function transcribeAudio(wav: Blob, signal?: AbortSignal): Promise<TranscribeResponse> {
+  const form = new FormData();
+  form.append("audio", wav, "dictation.wav");
+  return request("/voice/transcribe", { method: "POST", body: form, signal, error: "Transcription failed" });
 }
 
 // Instance name API

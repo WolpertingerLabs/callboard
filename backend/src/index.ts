@@ -63,6 +63,7 @@ import { storageRouter } from "./routes/storage.js";
 import { artifactsRouter } from "./routes/artifacts.js";
 import { mcpToolsRouter } from "./routes/mcp-tools.js";
 import { openRouterRouter } from "./routes/openrouter.js";
+import { voiceRouter } from "./routes/voice.js";
 import { codexRouter } from "./routes/codex.js";
 import { piRouter } from "./routes/pi.js";
 import { enginesRouter } from "./routes/engines.js";
@@ -238,6 +239,8 @@ app.use("/api/storage", storageRouter);
 app.use("/api/artifacts", artifactsRouter);
 app.use("/api/mcp-tools", mcpToolsRouter);
 app.use("/api/openrouter", openRouterRouter);
+// Composer voice input; spends OpenRouter credit like /api/themes/generate.
+app.use("/api/voice", voiceRouter);
 app.use("/api/codex", codexRouter);
 app.use("/api/pi", piRouter);
 // Per-engine runtime/version/credential status. Deliberately not part of

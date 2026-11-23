@@ -276,3 +276,23 @@ describe("PUT /api/agent-settings — pi fields round-trip", () => {
     expect(saved.piModel).toBe("~anthropic/claude-haiku-latest");
   });
 });
+
+describe("PUT /api/agent-settings — openRouterVoiceModel round-trips", () => {
+  it("persists the voice model, trimmed", async () => {
+    const res = await put({ openRouterVoiceModel: "  openai/gpt-4o-mini-transcribe " });
+    expect(res.code).toBe(200);
+    expect(onDisk().openRouterVoiceModel).toBe("openai/gpt-4o-mini-transcribe");
+  });
+
+  it("clears it on a blank value, so the default applies", async () => {
+    await put({ openRouterVoiceModel: "openai/whisper-1" });
+    await put({ openRouterVoiceModel: "   " });
+    expect(onDisk().openRouterVoiceModel).toBeUndefined();
+  });
+
+  it("is left alone when an unrelated field is saved", async () => {
+    await put({ openRouterVoiceModel: "openai/whisper-1" });
+    await put({ openRouterApiKey: "sk-or-other" });
+    expect(onDisk().openRouterVoiceModel).toBe("openai/whisper-1");
+  });
+});
