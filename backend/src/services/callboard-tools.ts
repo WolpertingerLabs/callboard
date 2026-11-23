@@ -9,6 +9,7 @@ import { defineTool, jsonError, jsonResult, textResult } from "../agents/ports/t
 import type { ToolServerSpec } from "../agents/ports/tools.js";
 import { existsSync, statSync } from "fs";
 import path from "path";
+import { mediaTypeForPath, type MediaTypeInfo } from "../utils/media-types.js";
 import { createCanvas, updateCanvas, readCanvas } from "./canvas-service.js";
 import { chatFileService } from "./chat-file-service.js";
 import { sessionRegistry } from "./session-registry.js";
@@ -99,24 +100,11 @@ function readSessionMessages(chat: Parameters<typeof readChatSessionMessages>[0]
   }
 }
 
-const MIME_MAP: Record<string, { mime: string; category: string }> = {
-  ".png": { mime: "image/png", category: "image" },
-  ".jpg": { mime: "image/jpeg", category: "image" },
-  ".jpeg": { mime: "image/jpeg", category: "image" },
-  ".gif": { mime: "image/gif", category: "image" },
-  ".webp": { mime: "image/webp", category: "image" },
-  ".svg": { mime: "image/svg+xml", category: "image" },
-  ".bmp": { mime: "image/bmp", category: "image" },
-  ".mp3": { mime: "audio/mpeg", category: "audio" },
-  ".wav": { mime: "audio/wav", category: "audio" },
-  ".ogg": { mime: "audio/ogg", category: "audio" },
-  ".aac": { mime: "audio/aac", category: "audio" },
-  ".flac": { mime: "audio/flac", category: "audio" },
-  ".mp4": { mime: "video/mp4", category: "video" },
-  ".webm": { mime: "video/webm", category: "video" },
-  ".mov": { mime: "video/quicktime", category: "video" },
-  ".pdf": { mime: "application/pdf", category: "pdf" },
-};
+/** The render_file media type for a path, or undefined. `captions` is servable but not rendered on its own. */
+function renderableMediaType(p: string): MediaTypeInfo | undefined {
+  const info = mediaTypeForPath(p);
+  return info && info.category !== "captions" ? info : undefined;
+}
 
 function error(message: string) {
   return jsonError(message);
@@ -303,7 +291,7 @@ export function buildCallboardToolsSpec(
             }
 
             const ext = path.extname(parsed.pathname).toLowerCase();
-            const info = MIME_MAP[ext];
+            const info = renderableMediaType(parsed.pathname);
             if (!info) {
               return error(`Unsupported file type or could not determine type from URL${ext ? `: ${ext}` : ""}`);
             }
@@ -334,7 +322,7 @@ export function buildCallboardToolsSpec(
           }
 
           const ext = path.extname(resolved).toLowerCase();
-          const info = MIME_MAP[ext];
+          const info = renderableMediaType(resolved);
           if (!info) {
             return error(`Unsupported file type: ${ext}`);
           }
@@ -344,11 +332,8 @@ export function buildCallboardToolsSpec(
             return error("Path is not a regular file");
           }
 
-          const MAX_SIZE = 100 * 1024 * 1024; // 100MB
-          if (stat.size > MAX_SIZE) {
-            return error(`File too large (${(stat.size / 1024 / 1024).toFixed(1)}MB, max 100MB)`);
-          }
-
+          // No size cap: /api/files/serve streams with Range and backpressure, so a
+          // large file costs only the bytes the browser actually requests.
           return jsonResult({
             type: "render_file",
             file_path: resolved,

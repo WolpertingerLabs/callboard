@@ -95,7 +95,9 @@ export async function fetchPublicUrl(url: string, opts: PublicFetchOptions = {})
     const location = res.headers.location;
     if (!REDIRECT_STATUSES.has(res.statusCode ?? 0) || !location) return res;
 
-    res.resume();
+    // Destroy, not drain: a redirect's body is never read, and a hostile one
+    // could stream until the abort timer. Each hop has its own socket anyway.
+    res.destroy();
     if (hop >= MAX_REDIRECTS) throw new BlockedDestinationError(`More than ${MAX_REDIRECTS} redirects`);
     current = new URL(location, current);
   }
