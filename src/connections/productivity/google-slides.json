@@ -1,0 +1,37 @@
+{
+  "name": "Google Slides (read-write)",
+  "stability": "beta",
+  "category": "productivity",
+  "description": "Google Slides, read and edit (scope presentations): presentations.create, get, batchUpdate (slides, shapes, text, images, tables, comments, …); pages.get and pages.getThumbnail. A thumbnail comes back as a contentUrl on a Google image host that drawlatch doesn't fetch; anyone holding that URL can open the image for about 30 minutes. Reaches every presentation the Google account can open, not just chosen ones; no Drive endpoints, so it cannot share, move, export, or delete files. Auth: drawlatch mints short-lived access tokens from GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET and GOOGLE_OAUTH_REFRESH_TOKEN (user OAuth; the agent never sees them) and refuses any token broader than this scope. See CONNECTIONS.md \"Google (scoped)\".",
+  "docsUrl": "https://developers.google.com/workspace/slides/api/reference/rest",
+  "secrets": {
+    "GOOGLE_OAUTH_CLIENT_ID": "${GOOGLE_OAUTH_CLIENT_ID}",
+    "GOOGLE_OAUTH_CLIENT_SECRET": "${GOOGLE_OAUTH_CLIENT_SECRET}",
+    "GOOGLE_OAUTH_REFRESH_TOKEN": "${GOOGLE_OAUTH_REFRESH_TOKEN}"
+  },
+  "oauth2": {
+    "tokenUrl": "https://oauth2.googleapis.com/token",
+    "grant": "refresh_token",
+    "clientAuth": "body",
+    "secretRefs": {
+      "clientId": "GOOGLE_OAUTH_CLIENT_ID",
+      "clientSecret": "GOOGLE_OAUTH_CLIENT_SECRET",
+      "refreshToken": "GOOGLE_OAUTH_REFRESH_TOKEN"
+    },
+    "scopes": ["https://www.googleapis.com/auth/presentations"]
+  },
+  "allowedEndpoints": [
+    "https://slides.googleapis.com/v1/presentations",
+    "https://slides.googleapis.com/v1/presentations?**",
+    "https://slides.googleapis.com/v1/presentations/*",
+    "https://slides.googleapis.com/v1/presentations/*?**",
+    "https://slides.googleapis.com/v1/presentations/*/pages/*",
+    "https://slides.googleapis.com/v1/presentations/*/pages/*?**",
+    "https://slides.googleapis.com/v1/presentations/*/pages/*/thumbnail",
+    "https://slides.googleapis.com/v1/presentations/*/pages/*/thumbnail?**"
+  ],
+  "testConnection": {
+    "url": "https://slides.googleapis.com/v1/presentations/1EAYk18WDjIG-zp_0vLm3CsfQh_i8eXc67Jo2O9C6Vuc?fields=presentationId",
+    "description": "Reads the ID of the public sample presentation from Google's Slides API quickstart (needs the Slides API enabled)"
+  }
+}

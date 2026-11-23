@@ -162,6 +162,8 @@ describe('OAuth2 connections and credentials on the agent path', () => {
         legacy: { connections: ['github'] },
         // Read-write Sheets, enabled by the operator.
         sheets: { connections: ['github', 'google-sheets'], selfManage: true },
+        // Read-write Docs and Slides, enabled by the operator.
+        editors: { connections: ['github', 'google-docs', 'google-slides'], selfManage: true },
       },
     });
   });
@@ -182,6 +184,16 @@ describe('OAuth2 connections and credentials on the agent path', () => {
     ['legacy', 'google-sheets'],
     ['sheets', 'google-sheets-sa'],
     ['sheets', 'google-sheets-readonly'],
+    ['open', 'google-docs'],
+    ['open', 'google-docs-sa'],
+    ['open', 'google-slides'],
+    ['open', 'google-slides-sa'],
+    ['legacy', 'google-docs'],
+    ['legacy', 'google-slides'],
+    ['sheets', 'google-docs'],
+    ['sheets', 'google-slides'],
+    ['editors', 'google-docs-sa'],
+    ['editors', 'google-slides-sa'],
   ])(
     'refuses to enable OAuth2 connection for caller %s: %s, even with selfManage',
     async (caller, connection) => {
@@ -251,6 +263,37 @@ describe('OAuth2 connections and credentials on the agent path', () => {
       }
     }
     expect(loadRemoteConfig().callers.sheets.env).toBeUndefined();
+  });
+
+  it.each([
+    'GOOGLE_OAUTH_CLIENT_ID',
+    'GOOGLE_OAUTH_CLIENT_SECRET',
+    'GOOGLE_OAUTH_REFRESH_TOKEN',
+    'GOOGLE_SERVICE_ACCOUNT_KEY',
+  ])(
+    'refuses set_secrets on %s for a caller with google-docs and google-slides enabled',
+    async (name) => {
+      for (const value of ['attacker-value', '']) {
+        for (const origin of ['agent', undefined] as const) {
+          await expect(
+            dispatchTool('set_secrets', { secrets: { [name]: value } }, [], ctx('editors', origin)),
+          ).rejects.toThrow(new RegExp(`cannot set or delete ${name}`));
+        }
+      }
+      expect(loadRemoteConfig().callers.editors.env).toBeUndefined();
+    },
+  );
+
+  it('still lets the agent disable google-docs and google-slides', async () => {
+    for (const connection of ['google-docs', 'google-slides']) {
+      await dispatchTool(
+        'set_connection_enabled',
+        { connection, enabled: false },
+        [],
+        ctx('editors', 'agent'),
+      );
+    }
+    expect(loadRemoteConfig().callers.editors.connections).toEqual(['github']);
   });
 
   it('still lets the agent disable google-sheets', async () => {

@@ -13,7 +13,13 @@ import {
 } from '../shared/config.js';
 import { describeConnectionTemplate, loadConnection } from '../shared/connections.js';
 import { OAuth2ScopeError, TokenManager } from './oauth/token-manager.js';
-import { isEndpointAllowed, normalizeOutboundUrl } from './tool-dispatch.js';
+import { resetSharedTokenManager, setSharedTokenManager } from './oauth/shared-token-manager.js';
+import {
+  dispatchTool,
+  isEndpointAllowed,
+  normalizeOutboundUrl,
+  type ToolContext,
+} from './tool-dispatch.js';
 
 const SCOPE = 'https://www.googleapis.com/auth/';
 const USER_TEMPLATES: Record<string, string> = {
@@ -25,6 +31,8 @@ const USER_TEMPLATES: Record<string, string> = {
   'google-drive-file': 'drive.file',
   'google-sheets-readonly': 'spreadsheets.readonly',
   'google-sheets': 'spreadsheets',
+  'google-docs': 'documents',
+  'google-slides': 'presentations',
 };
 const SA_TWINS = [
   'google-gmail-readonly',
@@ -32,6 +40,8 @@ const SA_TWINS = [
   'google-drive-readonly',
   'google-sheets-readonly',
   'google-sheets',
+  'google-docs',
+  'google-slides',
 ];
 const ALL = [...Object.keys(USER_TEMPLATES), ...SA_TWINS.map((a) => `${a}-sa`)];
 
@@ -39,6 +49,8 @@ const GMAIL = 'https://gmail.googleapis.com/gmail/v1/users/me';
 const CAL = 'https://www.googleapis.com/calendar/v3';
 const DRIVE = 'https://www.googleapis.com/drive/v3';
 const SHEETS = 'https://sheets.googleapis.com/v4/spreadsheets';
+const DOCS = 'https://docs.googleapis.com/v1/documents';
+const SLIDES = 'https://slides.googleapis.com/v1/presentations';
 
 /** URLs no Google template may reach. */
 const FORBIDDEN = [
@@ -51,6 +63,12 @@ const FORBIDDEN = [
   'https://gmail.googleapis.com/batch/gmail/v1',
   'https://sheets.googleapis.com/batch',
   'https://sheets.googleapis.com/batch/sheets/v4',
+  'https://docs.googleapis.com/batch',
+  'https://docs.googleapis.com/batch/docs/v1',
+  'https://slides.googleapis.com/batch',
+  'https://slides.googleapis.com/batch/slides/v1',
+  'https://docs.googleapis.com/$discovery/rest?version=v1',
+  'https://slides.googleapis.com/$discovery/rest?version=v1',
   'https://www.googleapis.com/admin/directory/v1/users',
 ];
 
@@ -289,6 +307,37 @@ describe('scoped Google templates', () => {
         'https://docs.googleapis.com/v1/documents/1AbC',
       ],
     },
+    'google-docs': {
+      allow: [
+        DOCS,
+        `${DOCS}/1AbC`,
+        `${DOCS}/1AbC?includeTabsContent=true`,
+        `${DOCS}/1AbC:batchUpdate`,
+      ],
+      deny: [
+        `${DRIVE}/files/1AbC`,
+        `${SHEETS}/1AbC`,
+        `${SLIDES}/1AbC`,
+        `${DOCS}X/1AbC`,
+        `${DOCS}/1AbC/x`,
+      ],
+    },
+    'google-slides': {
+      allow: [
+        SLIDES,
+        `${SLIDES}/1AbC`,
+        `${SLIDES}/1AbC:batchUpdate`,
+        `${SLIDES}/1AbC/pages/p1`,
+        `${SLIDES}/1AbC/pages/p1/thumbnail?thumbnailProperties.thumbnailSize=LARGE`,
+      ],
+      deny: [
+        `${DRIVE}/files/1AbC`,
+        `${SHEETS}/1AbC`,
+        `${DOCS}/1AbC`,
+        `${SLIDES}X/1AbC`,
+        `${SLIDES}/1AbC/pages`,
+      ],
+    },
   };
 
   it.each(ALL)('%s cannot register or stop push channels (watch endpoints)', (alias) => {
@@ -481,6 +530,199 @@ describe('scoped Google templates', () => {
     }
   });
 
+  /**
+   * Google Docs v1 and Slides v1: every method in the Discovery documents
+   * (docs.googleapis.com and slides.googleapis.com `$discovery/rest?version=v1`,
+   * revision 20261118), by its HTTP request, with each documented query
+   * parameter on the methods that take one. Query strings don't take part in
+   * path matching; the `?**` entries let them through.
+   */
+  const EDITORS: Record<
+    string,
+    {
+      base: string;
+      host: string;
+      methods: Record<string, [string, string]>;
+      /** Paths on the same host and version that the API doesn't have. */
+      bogus: string[];
+    }
+  > = {
+    'google-docs': {
+      base: DOCS,
+      host: 'docs.googleapis.com',
+      methods: {
+        'documents.create': ['POST', DOCS],
+        'documents.get': [
+          'GET',
+          `${DOCS}/1AbC?includeTabsContent=true&suggestionsViewMode=PREVIEW_WITHOUT_SUGGESTIONS&commentsViewMode=COMMENTS_VIEW_MODE_INCLUDED`,
+        ],
+        'documents.batchUpdate': ['POST', `${DOCS}/1AbC:batchUpdate`],
+      },
+      bogus: [
+        `${DOCS}X`,
+        `${DOCS}X/1AbC`,
+        `${DOCS}:batchUpdate`,
+        `${DOCS}/1AbC/tabs`,
+        `${DOCS}/1AbC/x/y`,
+        'https://docs.googleapis.com/v1/1AbC',
+        'https://docs.googleapis.com/v2/documents/1AbC',
+        'https://docs.googleapis.com/v1beta/documents/1AbC',
+        'https://docs.googleapis.com/V1/documents/1AbC',
+      ],
+    },
+    'google-slides': {
+      base: SLIDES,
+      host: 'slides.googleapis.com',
+      methods: {
+        'presentations.create': ['POST', SLIDES],
+        'presentations.get': [
+          'GET',
+          `${SLIDES}/1AbC?commentsViewMode=COMMENTS_VIEW_MODE_OMITTED&fields=slides.objectId`,
+        ],
+        'presentations.batchUpdate': ['POST', `${SLIDES}/1AbC:batchUpdate`],
+        'presentations.pages.get': [
+          'GET',
+          `${SLIDES}/1AbC/pages/g1234_0?commentsViewMode=COMMENTS_VIEW_MODE_INCLUDED`,
+        ],
+        'presentations.pages.getThumbnail': [
+          'GET',
+          `${SLIDES}/1AbC/pages/g1234_0/thumbnail?thumbnailProperties.mimeType=PNG&thumbnailProperties.thumbnailSize=WIDTH2000_PX`,
+        ],
+      },
+      bogus: [
+        `${SLIDES}X`,
+        `${SLIDES}X/1AbC`,
+        `${SLIDES}:batchUpdate`,
+        `${SLIDES}/1AbC/pages`,
+        `${SLIDES}/1AbC/pagesX/p1`,
+        `${SLIDES}/1AbC/pages/p1/thumbnailX`,
+        `${SLIDES}/1AbC/pages/p1/thumbnail/x`,
+        `${SLIDES}/1AbC/pages/p1/x`,
+        `${SLIDES}/1AbC/x`,
+        'https://slides.googleapis.com/v1/1AbC',
+        'https://slides.googleapis.com/v2/presentations/1AbC',
+        'https://slides.googleapis.com/V1/presentations/1AbC',
+      ],
+    },
+  };
+
+  /** Off-service URLs neither editor template may reach. */
+  const OFF_SERVICE = [
+    // Drive: sharing, permissions, delete, trash, copy, export, upload stay out.
+    `${DRIVE}/files`,
+    `${DRIVE}/files/1AbC`,
+    `${DRIVE}/files/1AbC?supportsAllDrives=true`,
+    `${DRIVE}/files/1AbC/permissions`,
+    `${DRIVE}/files/1AbC/permissions/anyoneWithLink`,
+    `${DRIVE}/files/1AbC/copy`,
+    `${DRIVE}/files/1AbC/export?mimeType=application/pdf`,
+    `${DRIVE}/files/1AbC/comments`,
+    'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart',
+    'https://drive.googleapis.com/drive/v3/files/1AbC/permissions',
+    // Token host, tokeninfo, userinfo.
+    'https://oauth2.googleapis.com/token',
+    'https://oauth2.googleapis.com/tokeninfo?access_token=x',
+    'https://www.googleapis.com/oauth2/v3/userinfo',
+    'https://openidconnect.googleapis.com/v1/userinfo',
+    // The other editors' APIs.
+    `${SHEETS}/1AbC`,
+    // Hosts that only look like the service.
+    'https://www.googleapis.com/v1/documents/1AbC',
+    'https://www.googleapis.com/v1/presentations/1AbC',
+    'https://docs.google.com/document/d/1AbC/export?format=txt',
+    'https://docs.google.com/presentation/d/1AbC/export/pdf',
+    'https://evil.example/v1/documents/1AbC',
+    'https://evil.example/v1/presentations/1AbC',
+    // Where thumbnails live: not allowlisted, and not to be (see CONNECTIONS.md).
+    'https://lh3.googleusercontent.com/abc=s1600',
+    'https://lh7-rt.googleusercontent.com/slidesz/abc',
+  ];
+
+  for (const [user, { base, host, methods, bogus }] of Object.entries(EDITORS)) {
+    describe(`${user} (read-write)`, () => {
+      const sibling = user === 'google-docs' ? SLIDES : DOCS;
+
+      for (const alias of [user, `${user}-sa`]) {
+        const { allowedEndpoints } = loadConnection(alias);
+
+        it.each(Object.entries(methods))(`${alias} allows %s (%j)`, (_name, [, url]) => {
+          expect(isEndpointAllowed(url, allowedEndpoints)).toBe(true);
+          // What fetch() sends is what was matched.
+          expect(normalizeOutboundUrl(url, allowedEndpoints, url)).toBe(url);
+        });
+
+        it(`${alias} reaches only ${base}`, () => {
+          for (const pattern of allowedEndpoints) {
+            expect(
+              pattern === base || pattern.startsWith(`${base}/`) || pattern.startsWith(`${base}?`),
+              pattern,
+            ).toBe(true);
+            expect(pattern, pattern).not.toContain('**/');
+          }
+          for (const url of [
+            ...OFF_SERVICE,
+            sibling,
+            `${sibling}/1AbC`,
+            ...bogus,
+            `http://${host}${new URL(base).pathname}/1AbC`,
+            `https://${host}.evil.example${new URL(base).pathname}/1AbC`,
+            `https://${host}@evil.example${new URL(base).pathname}/1AbC`,
+            `https://${host}/batch`,
+            `https://${host}/$discovery/rest?version=v1`,
+            // An encoded ":" isn't decoded by the matcher: `{id}%3AbatchUpdate`
+            // is still one segment, so it matches `…/*` (asserted below) but a
+            // suffix that is its own segment doesn't.
+            `${base}%3AbatchUpdate`,
+          ]) {
+            expect(isEndpointAllowed(url, allowedEndpoints), url).toBe(false);
+          }
+        });
+
+        it(`${alias}: a %2F or %3A doesn't split a segment, and stays under ${base}`, () => {
+          // `*` is [^/]*, so `{id}%2F…` is one segment for `…/{collection}/*`.
+          for (const url of [
+            `${base}/1AbC%2Fx`,
+            `${base}/1AbC%3AbatchUpdate`,
+            `${base}/1AbC%2F..x`,
+          ]) {
+            expect(isEndpointAllowed(url, allowedEndpoints), url).toBe(true);
+            const sent = normalizeOutboundUrl(url, allowedEndpoints, url);
+            expect(sent, url).toBe(url);
+            expect(new URL(sent).host).toBe(host);
+            expect(new URL(sent).pathname.startsWith(`${new URL(base).pathname}/`)).toBe(true);
+          }
+        });
+
+        it(`${alias} refuses dot segments that would climb out of ${base}`, () => {
+          for (const url of [
+            `${base}/x/../..`,
+            `${base}/x/../../../drive/v3/files`,
+            `${base}/..`,
+            `${base}/%2e%2e`,
+            `${base}/%2E%2E/%2e%2e/batch`,
+            `${base}/1AbC%2F..%2F..%2Fbatch`,
+            `${base}/1AbC%2F%2e%2e%2F%2e%2e%2Fbatch`,
+            `${base}/1AbC%5C..%5C..%5Cbatch`,
+            `${base}/1AbC\\..\\..\\batch`,
+            `${base}/.`,
+          ]) {
+            expect(() => normalizeOutboundUrl(url, allowedEndpoints, url), url).toThrow(
+              /Endpoint not allowed/,
+            );
+          }
+        });
+      }
+    });
+  }
+
+  it('google-slides allows presentations.get only for a one-segment ID', () => {
+    // Discovery writes the path as `{+presentationId}` (reserved expansion,
+    // which may contain "/"); Slides IDs don't, and `*` won't match one that does.
+    const { allowedEndpoints } = loadConnection('google-slides');
+    expect(isEndpointAllowed(`${SLIDES}/1AbC`, allowedEndpoints)).toBe(true);
+    expect(isEndpointAllowed(`${SLIDES}/a/b`, allowedEndpoints)).toBe(false);
+  });
+
   it('google.json is unchanged apart from recommending the scoped templates', () => {
     const route = loadConnection('google');
     expect(route.description).toMatch(/^Static token, full access: prefer the scoped google-\*/);
@@ -633,4 +875,94 @@ describe('one refresh token granted several Sheets/Drive scopes', () => {
     expect(result).toBeInstanceOf(OAuth2ScopeError);
     expect((result as Error).message).toContain(`broader than this connection allows (${extra})`);
   });
+});
+
+describe('one master refresh token for Docs, Slides and Sheets', () => {
+  const DOCS_RW = SCOPE + 'documents';
+  const SLIDES_RW = SCOPE + 'presentations';
+  const SHEETS_RW = SCOPE + 'spreadsheets';
+  const SUPERSET = [DOCS_RW, SLIDES_RW, SHEETS_RW];
+
+  /**
+   * test_connection on a real template's route, against a token endpoint that
+   * answers with `scopeFor(requested)`. The test request itself is dropped so
+   * nothing leaves the process: the mint is what's under test.
+   */
+  async function testConnection(alias: string, scopeFor: (requested: string) => string) {
+    const fetchImpl = vi.fn<typeof fetch>((_url, init) => {
+      const requested = new URLSearchParams(init?.body as string).get('scope') ?? '';
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({ access_token: 'at', expires_in: 3600, scope: scopeFor(requested) }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+      );
+    });
+    setSharedTokenManager(new TokenManager({ fetchImpl }));
+    try {
+      const routes = resolveRoutes(
+        [{ ...loadConnection(alias), alias, testConnection: undefined }],
+        {
+          GOOGLE_OAUTH_CLIENT_ID: 'cid',
+          GOOGLE_OAUTH_CLIENT_SECRET: 'csecret',
+          GOOGLE_OAUTH_REFRESH_TOKEN: 'rt-master',
+        },
+        'alice',
+      );
+      const context = {
+        callerAlias: 'alice',
+        origin: 'agent',
+        ingestorManager: {} as ToolContext['ingestorManager'],
+        refreshRoutes: () => undefined,
+      } as ToolContext;
+      const result = (await dispatchTool(
+        'test_connection',
+        { connection: alias },
+        routes,
+        context,
+      )) as Record<string, unknown>;
+      return { result, fetchImpl };
+    } finally {
+      resetSharedTokenManager();
+    }
+  }
+
+  it.each([
+    ['google-docs', DOCS_RW],
+    ['google-slides', SLIDES_RW],
+    ['google-sheets', SHEETS_RW],
+  ])(
+    '%s: if Google narrows on refresh, test_connection reports the one scope granted',
+    async (alias, scope) => {
+      const { result, fetchImpl } = await testConnection(alias, (requested) => requested);
+      expect(new URLSearchParams(fetchImpl.mock.calls[0][1]?.body as string).get('scope')).toBe(
+        scope,
+      );
+      expect(result).toMatchObject({
+        success: true,
+        oauth2: { tokenMinted: true, requestedScopes: [scope], grantedScopes: [scope] },
+      });
+    },
+  );
+
+  it.each([
+    ['google-docs', DOCS_RW],
+    ['google-slides', SLIDES_RW],
+    ['google-sheets', SHEETS_RW],
+  ])(
+    "%s: if Google doesn't narrow, test_connection fails with the broader-scopes error",
+    async (alias, scope) => {
+      const { result } = await testConnection(alias, () => SUPERSET.join(' '));
+      expect(result).toMatchObject({
+        success: false,
+        oauth2: { tokenMinted: false, requestedScopes: [scope] },
+      });
+      const extra = SUPERSET.filter((s) => s !== scope).join(', ');
+      expect(String(result.error)).toContain(
+        `granted scopes broader than this connection allows (${extra})`,
+      );
+      // No grantedScopes on a refusal: the extra scopes are named in the error.
+      expect((result.oauth2 as Record<string, unknown>).grantedScopes).toBeUndefined();
+    },
+  );
 });

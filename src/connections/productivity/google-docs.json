@@ -1,0 +1,33 @@
+{
+  "name": "Google Docs (read-write)",
+  "stability": "beta",
+  "category": "productivity",
+  "description": "Google Docs, read and edit (scope documents): documents.create, get (with tabs, suggestions and comments view modes), batchUpdate (text, styles, tables, images, tabs, headers and footers, comments, suggestions, …). Reaches every document the Google account can open, not just chosen ones; no Drive endpoints, so it cannot share, move, export, or delete files. Auth: drawlatch mints short-lived access tokens from GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET and GOOGLE_OAUTH_REFRESH_TOKEN (user OAuth; the agent never sees them) and refuses any token broader than this scope. See CONNECTIONS.md \"Google (scoped)\".",
+  "docsUrl": "https://developers.google.com/workspace/docs/api/reference/rest",
+  "secrets": {
+    "GOOGLE_OAUTH_CLIENT_ID": "${GOOGLE_OAUTH_CLIENT_ID}",
+    "GOOGLE_OAUTH_CLIENT_SECRET": "${GOOGLE_OAUTH_CLIENT_SECRET}",
+    "GOOGLE_OAUTH_REFRESH_TOKEN": "${GOOGLE_OAUTH_REFRESH_TOKEN}"
+  },
+  "oauth2": {
+    "tokenUrl": "https://oauth2.googleapis.com/token",
+    "grant": "refresh_token",
+    "clientAuth": "body",
+    "secretRefs": {
+      "clientId": "GOOGLE_OAUTH_CLIENT_ID",
+      "clientSecret": "GOOGLE_OAUTH_CLIENT_SECRET",
+      "refreshToken": "GOOGLE_OAUTH_REFRESH_TOKEN"
+    },
+    "scopes": ["https://www.googleapis.com/auth/documents"]
+  },
+  "allowedEndpoints": [
+    "https://docs.googleapis.com/v1/documents",
+    "https://docs.googleapis.com/v1/documents?**",
+    "https://docs.googleapis.com/v1/documents/*",
+    "https://docs.googleapis.com/v1/documents/*?**"
+  ],
+  "testConnection": {
+    "url": "https://docs.googleapis.com/v1/documents/195j9eDD3ccgjQRttHhJPymLJUCOUjs-jmwTrekvdjFE?fields=documentId",
+    "description": "Reads the ID of the public sample document from Google's Docs API quickstart (needs the Docs API enabled)"
+  }
+}
