@@ -17,7 +17,7 @@
  * Pure: messages in, a plan out. The route writes the session and starts the
  * run.
  */
-import { findReplyPrompt, isRerunPrompt, isUserTurn, type ParsedMessage, withoutRideAlongBlock } from "shared/types/index.js";
+import { CALLBOARD_NOTICE_SUBTYPE, findReplyPrompt, isRerunPrompt, isUserTurn, type ParsedMessage, withoutRideAlongBlock } from "shared/types/index.js";
 
 export { isRerunPrompt };
 
@@ -120,5 +120,9 @@ export function planRerun(messages: readonly ParsedMessage[], timestamp: string,
       break;
     }
   }
-  return { ok: true, promptAt, text, imageIds, keepThrough, hasHistory: kept.length > 0, markerAt };
+  // A ride-along notice row (split off the prompt it rode in on) sits before
+  // the prompt by position, but it is not history: rerunning an opening
+  // prompt that carried one is still rerunning an opening prompt.
+  const hasHistory = kept.some((m) => m.subtype !== CALLBOARD_NOTICE_SUBTYPE);
+  return { ok: true, promptAt, text, imageIds, keepThrough, hasHistory, markerAt };
 }

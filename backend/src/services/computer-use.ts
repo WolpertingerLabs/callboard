@@ -8,7 +8,15 @@ import { hostname } from "node:os";
 // nothing that the dynamic import in `getComputerUseHost` was avoiding.
 import { actionSchema } from "@wolpertingerlabs/computer-use";
 import type { Action, AuthorizationRequest, ComputerUseService, Driver, Lease, Principal, SessionStatus } from "@wolpertingerlabs/computer-use";
-import { CU_ACTION_TOOL_NAME, CU_REQUEST_CONTROL_TOOL_NAME, RIDE_ALONG_NOTICE_PREFIX } from "shared/types/index.js";
+import {
+  CU_ACTION_TOOL_NAME,
+  CU_REQUEST_CONTROL_TOOL_NAME,
+  GUI_ACTION_TYPES,
+  RIDE_ALONG_WITHDRAW_TEXT,
+  actionWithdrawnNotice,
+  callboardNoticeHeader,
+  controlWithdrawnNotice,
+} from "shared/types/index.js";
 import { assertNativeAgentControllable } from "./codex-native-agents.js";
 import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { createLogger } from "../utils/logger.js";
@@ -422,7 +430,7 @@ export interface AgentOpenRequest {
 }
 
 /** Action shapes the host will forward. Anything else is rejected unopened. */
-const ACTION_TYPES = ["click", "move", "drag", "scroll", "key", "type", "navigate", "wait"];
+const ACTION_TYPES: readonly string[] = GUI_ACTION_TYPES;
 
 /**
  * The only approval the panel still shows: a human's own Enable request under
@@ -667,7 +675,7 @@ function enableFailure(code: string): string {
 }
 
 /** Every notice opens with the shared prefix, so a ride-along block of them matches `splitRideAlongBlock`'s strict format. */
-const noticeHeader = (what: string) => `${RIDE_ALONG_NOTICE_PREFIX}${what}. (This message is from Callboard, not typed by the human.)`;
+const noticeHeader = callboardNoticeHeader;
 
 /**
  * How a notice names an action: its request id and its type, nothing else.
@@ -699,38 +707,29 @@ export const WITHDRAWN = {
   agentStop: "agentStop",
 } as const;
 export type WithdrawReason = (typeof WITHDRAWN)[keyof typeof WITHDRAWN];
-export const WITHDRAW_TEXT: Readonly<Record<WithdrawReason, { agent: string; human: string }>> = {
-  stopped: { agent: "the human pressed Stop", human: "you pressed Stop" },
-  panelStop: { agent: "the human stopped it from the Computer view", human: "it was stopped from the Computer view" },
-  revoked: { agent: "the human revoked it from the Computer view", human: "it was revoked from the Computer view" },
-  scope: {
-    agent: "this chat's Browser Use or Computer Use permissions changed, or the chat was archived or deleted",
-    human: "this chat's Browser Use or Computer Use permissions changed, or the chat was archived or deleted",
-  },
-  sessionEnded: {
-    agent: "its control session ended (the 15-minute session expired, or it was stopped or revoked)",
-    human: "its control session ended",
-  },
-  stale: {
-    agent: "the screen it was aimed at changed before the human answered (the target changed under it), so it could no longer run",
-    human: "the screen changed after the agent asked, so it could no longer run",
-  },
-  takeover: { agent: "the human took over control of the session", human: "you took over control of the session" },
-  superseded: {
-    agent: "the chat was rewound, forked or compressed, so this request belonged to its old history",
-    human: "the chat was rewound, forked or compressed",
-  },
-  agentStop: { agent: "you stopped the session with cu_stop", human: "the agent stopped the session" },
+/**
+ * The agent's words for each reason live in shared/ (`RIDE_ALONG_WITHDRAW_TEXT`),
+ * with the advice that follows them: withdrawal notices ride along in a block
+ * the transcript splits off only when every line is one of those exact
+ * templates. The human's words are here.
+ */
+const WITHDRAW_HUMAN_TEXT: Readonly<Record<WithdrawReason, string>> = {
+  stopped: "you pressed Stop",
+  panelStop: "it was stopped from the Computer view",
+  revoked: "it was revoked from the Computer view",
+  scope: "this chat's Browser Use or Computer Use permissions changed, or the chat was archived or deleted",
+  sessionEnded: "its control session ended",
+  stale: "the screen changed after the agent asked, so it could no longer run",
+  takeover: "you took over control of the session",
+  superseded: "the chat was rewound, forked or compressed",
+  agentStop: "the agent stopped the session",
 };
-
-/** What to do after a withdrawal: only a stale frame or an ended session is the agent's to retry. */
-function afterWithdrawal(reason: WithdrawReason): string {
-  if (reason === WITHDRAWN.stale) return "Call cu_observe for a fresh frame, and request it again if it still makes sense.";
-  if (reason === WITHDRAWN.takeover) return "Wait until the human chooses Resume agent; then call cu_observe and request it again if it still makes sense.";
-  if (reason === WITHDRAWN.sessionEnded) return "Check cu_open; a new session needs fresh consent through cu_request_control.";
-  if (reason === WITHDRAWN.agentStop) return "";
-  return "Do not request it again unless the human asks you to.";
-}
+export const WITHDRAW_TEXT: Readonly<Record<WithdrawReason, { agent: string; human: string }>> = Object.fromEntries(
+  (Object.keys(WITHDRAW_HUMAN_TEXT) as WithdrawReason[]).map((reason) => [
+    reason,
+    { agent: RIDE_ALONG_WITHDRAW_TEXT[reason].agent, human: WITHDRAW_HUMAN_TEXT[reason] },
+  ]),
+) as Record<WithdrawReason, { agent: string; human: string }>;
 
 /** A readiness check cannot hold an agent or an accepted HTTP response forever. */
 export const CONTROL_PROBE_TIMEOUT_MS = 10_000;
@@ -1102,11 +1101,7 @@ export class ComputerUseHost {
   }
   private notifyControlWithdrawn(id: string, record: ControlRequest, reason: WithdrawReason, noticeTo: string) {
     const label = record.kind === "browser" ? "browser" : "desktop";
-    this.notify(
-      noticeTo,
-      `${noticeHeader(`${label} control request withdrawn`)}\n\nYour request ${id} to enable ${label} control was withdrawn, and control was NOT enabled: ${WITHDRAW_TEXT[reason].agent}. ${afterWithdrawal(reason)}`.trim(),
-      { wake: false },
-    );
+    this.notify(noticeTo, controlWithdrawnNotice(label, id, reason), { wake: false });
   }
   private refuseControl(id: string, record: ControlRequest): void {
     if (this.controlRequests.get(id) !== record) return;
@@ -1522,11 +1517,7 @@ export class ComputerUseHost {
       `The GUI action request was withdrawn: ${WITHDRAW_TEXT[reason].human}.`,
     );
     if (reason === WITHDRAWN.agentStop) return;
-    this.notify(
-      noticeTo,
-      `${noticeHeader("GUI action request withdrawn")}\n\nYour ${actionLabel(record)} was withdrawn before the human answered, and it was NOT performed: ${WITHDRAW_TEXT[reason].agent}. ${afterWithdrawal(reason)}`.trim(),
-      { wake: false },
-    );
+    this.notify(noticeTo, actionWithdrawnNotice(String(record.action.type), record.id, reason), { wake: false });
   }
   private cancelSessionActionRequest(chatId: string, sessionId: string, reason: WithdrawReason) {
     const record = this.actionRequests.get(chatId);

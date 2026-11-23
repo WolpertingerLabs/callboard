@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from "vitest";
 import type { ParsedMessage } from "../api";
-import { appendAttachmentBlocks, formatAttachmentBlock, formatRideAlongBlock, splitRideAlongMessages } from "shared/types/index.js";
+import { appendAttachmentBlocks, formatAttachmentBlock, formatRideAlongBlock, splitRideAlongMessages, actionWithdrawnNotice } from "shared/types/index.js";
 import { endsWithInterruptMarker, nextInFlightKey, settleInFlight, toInFlightHandoff, toInFlightList, visibleInFlight, type InFlightMessage } from "./inFlightMessages";
 
 const pending = (...texts: string[]): InFlightMessage[] => texts.map((text) => ({ key: nextInFlightKey(), text, imageUrls: [] }));
@@ -19,7 +19,7 @@ const assistant = (content: string): ParsedMessage => ({ role: "assistant", type
 const system = (content: string, subtype?: string): ParsedMessage => ({ role: "system", type: "system", content, ...(subtype && { subtype }) });
 
 describe("ride-along notice blocks", () => {
-  const block = formatRideAlongBlock(["🖥️ Computer control update — GUI action request withdrawn. Your request R1 was withdrawn."]);
+  const block = formatRideAlongBlock([actionWithdrawnNotice("click", "3f2a1b4c-5d6e-4f70-8a9b-0c1d2e3f4a5b", "stopped")]);
   it("a message the daemon prefixed with a notice block still accounts for the in-flight copy — no duplicate", () => {
     // Raw (as an engine saved it), and split (as the transcript route serves it).
     expect(visibleInFlight(pending("hello"), [user(`${block}\n\nhello`)])).toEqual([]);

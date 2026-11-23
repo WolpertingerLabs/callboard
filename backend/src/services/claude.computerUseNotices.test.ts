@@ -161,15 +161,13 @@ describe("ride-along notices", () => {
     const { splitRideAlongBlock } = await import("shared/types/index.js");
     const chat = stored("ride-format");
     // A notice as the host writes them: multi-line, opening with the shared prefix.
-    enqueueChatNotice(
-      chat.id,
-      "🖥️ Computer control update — GUI action request withdrawn. (This message is from Callboard, not typed by the human.)\n\nYour request R3 was withdrawn.",
-      { wake: false },
-    );
+    // A notice exactly as the host writes one.
+    const { actionWithdrawnNotice } = await import("shared/types/index.js");
+    enqueueChatNotice(chat.id, actionWithdrawnNotice("type", "3f2a1b4c-5d6e-4f70-8a9b-0c1d2e3f4a5b", "stopped"), { wake: false });
     const provider = quickProvider();
     await finished(await sendMessage({ chatId: chat.id, prompt: "hello" } as never));
     const split = splitRideAlongBlock(await firstPromptText(provider.queryRecords[0].request.prompt));
-    expect(split).toEqual({ notices: [expect.stringContaining("Your request R3 was withdrawn.")], rest: "hello" });
+    expect(split).toEqual({ notices: [expect.stringContaining("Your request 3f2a1b4c-5d6e-4f70-8a9b-0c1d2e3f4a5b (a type action)")], rest: "hello" });
   });
 
   it("leaves a slash command alone, also one sent as an iterable, and keeps the notices for the next turn", async () => {
