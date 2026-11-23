@@ -119,7 +119,7 @@ Forward one **re-serialised** range upstream and relay the upstream `206`. The c
 5. Other statuses: 3xx is still followed by `fetchPublicUrl`. Any other non-2xx still returns 502.
 6. Add `Range` to the `headers` passed to `fetchPublicUrl`. Check (and add a test) that the header survives each redirect hop it re-requests.
 
-The public-address policy, the 30 s timeout and the disconnect handling (`res.once("close")`) are unchanged.
+The public-address policy and the disconnect handling (`res.once("close")`) are unchanged. The 30 s timeout now covers connect + response headers only (across every redirect hop) and is cleared once headers arrive; the body is bounded by a 60 s idle timeout instead (changed in PR1 review, so a 100 MB window from a slow upstream is not cut off).
 
 **Follow-up (deferred from PR1 review): forward `If-Range` upstream.** The proxy relays the upstream's `ETag` and `Last-Modified` on 200/206, but does not yet forward the client's `If-Range`. Until it does, a remote file that changes between two range requests can be stitched from two versions. To fix it: forward `If-Range` only if it matches the same safe ETag or IMF-fixdate pattern the relayed validators use, and treat an upstream 200 to a conditional range request as a full response (as today).
 
@@ -345,7 +345,7 @@ npm run lint:all
 5. **Range parsing never forwards raw client input.** The upstream sees only a range we re-serialised from integers.
    - Upstream `Content-Range` is regex-validated before it is relayed.
    - Our own response's `Content-Type` is always extension-forced.
-6. **The proxy keeps** the public-address check on every hop, the 30 s timeout, disconnect cleanup and a per-response 100 MB cap.
+6. **The proxy keeps** the public-address check on every hop, the 30 s connect/headers timeout and the 60 s body idle timeout, disconnect cleanup and a per-response 100 MB cap.
 7. **The `Content-Disposition` filename** is sanitised (no CR/LF or quotes in the ASCII form), with `filename*` encoded by `encodeURIComponent`.
 
 ## Open questions (with recommendations)

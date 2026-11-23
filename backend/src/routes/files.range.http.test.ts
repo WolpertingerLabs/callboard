@@ -116,6 +116,24 @@ const upstreamRoutes: Record<string, (req: http.IncomingMessage, res: http.Serve
       upstreamClosedAt.set("/slow.mp4", Date.now());
     });
   },
+  // Headers at once, then 12 × 16 bytes at 50ms intervals (~600ms: longer than the 200ms headers timeout, each gap shorter than the idle one).
+  "/trickle.mp4": (_req, res) => {
+    res.writeHead(200, { "Content-Type": "video/mp4", "Content-Length": 12 * 16 });
+    let sent = 0;
+    const timer = setInterval(() => {
+      res.write(Buffer.alloc(16, sent));
+      if (++sent === 12) {
+        clearInterval(timer);
+        res.end();
+      }
+    }, 50);
+    res.once("close", () => clearInterval(timer));
+  },
+  // Accepts the request and never answers.
+  "/noheaders.mp4": (req) => {
+    req.socket.once("close", () => upstreamClosedAt.set("/noheaders.mp4", Date.now()));
+  },
+  "/hop-noheaders.mp4": (_req, res) => res.writeHead(302, { Location: "/noheaders.mp4" }).end(),
   // One chunk, then nothing.
   "/stalled.mp4": (_req, res) => {
     res.writeHead(200, { "Content-Type": "video/mp4" }).write(Buffer.alloc(16));
@@ -136,7 +154,7 @@ function endless(res: http.ServerResponse, name: string) {
 
 let app: RawServer;
 let proxyApp: RawServer;
-let idleProxyApp: RawServer; // the same, with a 200ms idle timeout
+let idleProxyApp: RawServer; // the same, with 200ms headers and idle timeouts
 let proxySettled = 0;
 let upstream: http.Server;
 let upstreamOrigin: string;
@@ -178,6 +196,7 @@ beforeAll(async () => {
       isAllowedAddress: (address) => address === UPSTREAM_IP || isPublicAddress(address),
       maxProxyBytes: PROXY_CAP,
       proxyIdleTimeoutMs: 200,
+      proxyHeadersTimeoutMs: 200,
     }),
   );
   idleProxyApp = await listenRaw(idleFixture);
@@ -613,5 +632,29 @@ describe("URL proxy: error messages are generic", () => {
     );
     expect(res.status).toBe(502);
     expect(JSON.parse(res.body.toString())).toEqual({ error: "Failed to fetch URL" });
+  });
+});
+
+describe("URL proxy: the headers timeout covers connect + headers only", () => {
+  it("a body that trickles in for longer than the headers timeout still completes", async () => {
+    const started = Date.now();
+    const res = await idleProxyApp.request("GET", `/api/files/serve?url=${encodeURIComponent(`${upstreamOrigin}/trickle.mp4`)}`);
+    expect(res.status).toBe(200);
+    expectServed(res, "video/mp4");
+    expect(res.body.length).toBe(12 * 16);
+    expect(res.body.subarray(176).equals(Buffer.alloc(16, 11))).toBe(true);
+    expect(Date.now() - started).toBeGreaterThan(400); // well past the 200ms headers timeout
+  });
+
+  it.each(["/noheaders.mp4", "/hop-noheaders.mp4"])("%s: no headers within the timeout → 504, upstream released", async (path) => {
+    upstreamClosedAt.delete("/noheaders.mp4");
+    const started = Date.now();
+    const res = await idleProxyApp.request("GET", `/api/files/serve?url=${encodeURIComponent(`${upstreamOrigin}${path}`)}`);
+    const elapsed = Date.now() - started;
+    expect(res.status).toBe(504);
+    expect(JSON.parse(res.body.toString())).toEqual({ error: "Upstream request timed out" });
+    expect(elapsed).toBeGreaterThanOrEqual(150);
+    expect(elapsed).toBeLessThan(2000);
+    await expect.poll(() => upstreamClosedAt.get("/noheaders.mp4"), { timeout: 2000 }).toBeDefined();
   });
 });

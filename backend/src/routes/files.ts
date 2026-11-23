@@ -20,6 +20,14 @@ export const MAX_PROXY_BYTES = 100 * 1024 * 1024; // 100MB
 /** How long a proxied response may make no socket progress before it is dropped. */
 export const PROXY_IDLE_TIMEOUT_MS = 60_000;
 
+/**
+ * How long the proxy waits for upstream response headers: connect, every
+ * redirect hop, and the final hop's headers. Cleared once they arrive; the
+ * body is then bounded by {@link PROXY_IDLE_TIMEOUT_MS} instead, so a large
+ * window from a slow-but-live upstream is not cut off mid-stream.
+ */
+export const PROXY_HEADERS_TIMEOUT_MS = 30_000;
+
 const UPSTREAM_UNSATISFIED_RANGE = /^bytes \*\/\d+$/;
 /** Validators relayed from upstream only in these shapes: a quoted (optionally weak) ETag, and an IMF-fixdate. */
 const SAFE_ETAG = /^(W\/)?"[\x21\x23-\x7e]{0,200}"$/;
@@ -39,6 +47,8 @@ export type FilesRouterOptions = Pick<PublicFetchOptions, "isAllowedAddress" | "
   maxProxyBytes?: number;
   /** Overrides {@link PROXY_IDLE_TIMEOUT_MS}, for tests. */
   proxyIdleTimeoutMs?: number;
+  /** Overrides {@link PROXY_HEADERS_TIMEOUT_MS}, for tests. */
+  proxyHeadersTimeoutMs?: number;
   /** Called when a proxy request's handler has fully finished, for tests. */
   onProxySettled?: () => void;
 };
@@ -164,7 +174,13 @@ function serveLocalFile(filePath: string, req: Request, res: Response) {
  * on every hop; see {@link fetchPublicUrl}.
  */
 async function serveUrl(url: string, req: Request, res: Response, proxyOptions: FilesRouterOptions) {
-  const { maxProxyBytes = MAX_PROXY_BYTES, proxyIdleTimeoutMs = PROXY_IDLE_TIMEOUT_MS, onProxySettled: _onSettled, ...fetchOptions } = proxyOptions;
+  const {
+    maxProxyBytes = MAX_PROXY_BYTES,
+    proxyIdleTimeoutMs = PROXY_IDLE_TIMEOUT_MS,
+    proxyHeadersTimeoutMs = PROXY_HEADERS_TIMEOUT_MS,
+    onProxySettled: _onSettled,
+    ...fetchOptions
+  } = proxyOptions;
 
   // Validate URL format and protocol
   let parsed: URL;
@@ -189,6 +205,14 @@ async function serveUrl(url: string, req: Request, res: Response, proxyOptions: 
   const clientRange = req.headers.range === undefined ? undefined : parseRangeHeader(req.headers.range);
   const requested = clientRange?.kind === "single" ? upstreamRangeFor(clientRange.range, maxProxyBytes) : undefined;
 
+  // Bounds connect + headers across every hop (fetchPublicUrl resolves only
+  // with the final hop's response), then is cleared; a client that leaves
+  // while we wait aborts the fetch too.
+  const headersAbort = new AbortController();
+  const headersTimer = setTimeout(() => headersAbort.abort(new DOMException("Upstream headers timed out", "TimeoutError")), proxyHeadersTimeoutMs);
+  const abortOnClientClose = () => headersAbort.abort();
+  res.once("close", abortOnClientClose);
+
   try {
     const upstream = await fetchPublicUrl(parsed.href, {
       ...fetchOptions,
@@ -197,7 +221,10 @@ async function serveUrl(url: string, req: Request, res: Response, proxyOptions: 
         Accept: mimeType + ", */*",
         ...(requested && { Range: formatByteRange(requested) }),
       },
-      signal: AbortSignal.timeout(30_000),
+      signal: headersAbort.signal,
+    }).finally(() => {
+      clearTimeout(headersTimer);
+      res.off("close", abortOnClientClose);
     });
 
     const status = upstream.statusCode ?? 0;
