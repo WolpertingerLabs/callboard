@@ -4,16 +4,16 @@ import { mergePermissions, normalizePermissions } from "../types/permissions.js"
 const oldAllow = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow" } as const;
 describe("permission migration and settings merges", () => {
   it("never turns four legacy allows into computer control", () => {
-    expect(normalizePermissions(oldAllow)).toEqual({ ...oldAllow, computerControl: "deny" });
+    expect(normalizePermissions(oldAllow)).toEqual({ ...oldAllow, browserControl: "deny", computerControl: "deny" });
   });
   it("preserves all existing old-axis values", () => {
     for (const fileRead of ["allow", "ask", "deny"]) {
-      expect(normalizePermissions({ ...oldAllow, fileRead })).toEqual({ ...oldAllow, fileRead, computerControl: "deny" });
+      expect(normalizePermissions({ ...oldAllow, fileRead })).toEqual({ ...oldAllow, fileRead, browserControl: "deny", computerControl: "deny" });
     }
   });
   it("defaults absent records safely and returns fresh objects", () => {
     for (const value of [undefined, null, [], false, "allow", 9]) {
-      expect(normalizePermissions(value)).toEqual({ fileRead: "ask", fileWrite: "ask", codeExecution: "ask", webAccess: "ask", computerControl: "deny" });
+      expect(normalizePermissions(value)).toEqual({ fileRead: "ask", fileWrite: "ask", codeExecution: "ask", webAccess: "ask", browserControl: "deny", computerControl: "deny" });
     }
     const first = normalizePermissions(undefined);
     first.computerControl = "allow";
@@ -21,7 +21,7 @@ describe("permission migration and settings merges", () => {
   });
   it("rejects malformed, unknown and inherited values", () => {
     for (const value of [undefined, null, true, "", "ALLOW", {}, ["allow"]]) {
-      expect(normalizePermissions({ computerControl: value }).computerControl).toBe("deny");
+      expect(normalizePermissions({ browserControl: value, computerControl: value }).computerControl).toBe("deny");
       expect(normalizePermissions({ fileRead: value }).fileRead).toBe("deny");
     }
     expect(normalizePermissions(Object.create(oldAllow)).fileRead).toBe("ask");
@@ -37,10 +37,11 @@ describe("permission migration and settings merges", () => {
       ...oldAllow,
       fileRead: "deny",
       webAccess: "ask",
+      browserControl: "deny",
       computerControl: "deny",
     });
-    expect(mergePermissions({ ...oldAllow, computerControl: "ask" }, oldAllow).computerControl).toBe("ask");
-    expect(mergePermissions(oldAllow, { computerControl: undefined }).computerControl).toBe("deny");
+    expect(mergePermissions({ ...oldAllow, browserControl: "ask", computerControl: "ask" }, oldAllow).computerControl).toBe("ask");
+    expect(mergePermissions(oldAllow, { browserControl: undefined, computerControl: undefined }).computerControl).toBe("deny");
     expect(mergePermissions(oldAllow, null)).toEqual(normalizePermissions(oldAllow));
   });
 });

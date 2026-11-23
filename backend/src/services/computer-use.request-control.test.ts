@@ -33,7 +33,8 @@ function fixture(level: "ask" | "allow" | "deny" = "ask", kind: "browser" | "des
     authorize: (request) => host.authorize(request),
   });
   host = new ComputerUseHost(service, { browser: driver, desktop: driver }, () => ({
-    policy: readComputerUsePolicy({ computerControl: level, webAccess: "allow", fileRead: "allow", fileWrite: "allow", codeExecution: "allow" }),
+    // The desktop also requires Browser Use on allow; the browser target reads only Browser Use.
+    policy: readComputerUsePolicy({ browserControl: kind === "desktop" ? "allow" : level, computerControl: level, webAccess: "allow", fileRead: "allow", fileWrite: "allow", codeExecution: "allow" }),
     signature,
   }));
   const request = () => host.requestControl(CHAT, kind, "Check the requested page", AbortSignal.any([controller.signal, turnController.signal]));

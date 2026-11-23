@@ -1342,8 +1342,8 @@ chatsRouter.post("/:id/fork", async (req, res) => {
             forkAtLatest: { type: "boolean", description: "Aside only: fork at the newest message of this chat instead of at quotes. Omit timestamp and quotes; give a prompt or imageIds." },
             quotes: { type: "array", maxItems: 20, items: { type: "object", required: ["timestamp", "role", "text"], properties: { timestamp: { type: "string" }, role: { type: "string", enum: ["user", "assistant", "system"] }, text: { type: "string", maxLength: 10000 } } }, description: "Aside only, required unless forkAtLatest: the quoted passages. `timestamp` must equal the latest of their timestamps (the fork point)." },
             prompt: { type: "string", maxLength: 20000, description: "Aside only: the question. When given, the first turn is started immediately." },
-            readOnly: { type: "boolean", description: "Aside only: Read only. fileWrite and codeExecution at most ask, computerControl deny (all still capped by this chat), and the model reviewer is not inherited, so every such ask reaches the user." },
-            permissions: { type: "object", description: "Aside only: permissions (full or partial — fileRead, fileWrite, codeExecution, webAccess, computerControl; allow/ask/deny). Merged over the permissions of this chat and capped so no category is looser. Omit to inherit them." },
+            readOnly: { type: "boolean", description: "Aside only: Read only. fileWrite and codeExecution at most ask, browserControl and computerControl deny (all still capped by this chat), and the model reviewer is not inherited, so every such ask reaches the user." },
+            permissions: { type: "object", description: "Aside only: permissions (full or partial — fileRead, fileWrite, codeExecution, webAccess, browserControl, computerControl; allow/ask/deny). Merged over the permissions of this chat and capped so no category is looser. Omit to inherit them." },
             timeZone: { type: "string", description: "Aside only: IANA time zone for the HH:MM on the quote origin lines (the browser zone). Unknown zones fall back to the daemon zone." },
             imageIds: { type: "array", items: { type: "string" }, description: "Aside only: uploads (POST /images/upload) attached to the first turn, which then starts even without a prompt. All or nothing: 409 when any is missing. The 201 then carries attachedImages." },
             activePlugins: { type: "array", items: { type: "string" }, description: "Aside with prompt or imageIds only: active plugin IDs for the first turn, as on POST /chats/:id/message." },
@@ -2924,7 +2924,7 @@ chatsRouter.post("/:id/regenerate-title", async (req, res) => {
 chatsRouter.patch("/:id/permissions", (req, res) => {
   // #swagger.tags = ['Chats']
   // #swagger.summary = 'Update chat permissions'
-  // #swagger.description = 'Update the default tool permissions for a chat. Changes take effect immediately for future tool use checks. The computerControl axis is the exception to this router\'s bearer-key access: CHANGING it requires a logged-in same-origin session, because allow means unattended GUI control and an agent must not be able to raise the level that governs it. Requests that leave it unchanged — or omit it, which preserves the stored value — are unaffected.'
+  // #swagger.description = 'Update the default tool permissions for a chat. Changes take effect immediately for future tool use checks. The browserControl (Browser Use) and computerControl (Computer Use) axes are the exception to this router\'s bearer-key access: CHANGING either requires a logged-in same-origin session, because allow means unattended GUI control and an agent must not be able to raise the level that governs it. Requests that leave them unchanged — or omit them, which preserves the stored value — are unaffected.'
   /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
   /* #swagger.requestBody = {
     required: true,
@@ -2941,7 +2941,9 @@ chatsRouter.patch("/:id/permissions", (req, res) => {
                 fileRead: { type: "string", enum: ["allow", "ask", "deny"] },
                 fileWrite: { type: "string", enum: ["allow", "ask", "deny"] },
                 codeExecution: { type: "string", enum: ["allow", "ask", "deny"] },
-                webAccess: { type: "string", enum: ["allow", "ask", "deny"] }
+                webAccess: { type: "string", enum: ["allow", "ask", "deny"] },
+                browserControl: { type: "string", enum: ["allow", "ask", "deny"], description: "Browser Use. Changing it requires a logged-in same-origin session. Omit to keep the stored value." },
+                computerControl: { type: "string", enum: ["allow", "ask", "deny"], description: "Computer Use (desktop). Changing it requires a logged-in same-origin session. Omit to keep the stored value." }
               }
             },
             modelReview: { type: "boolean", description: "Screen permission asks with the model safety reviewer before a person sees them. Omit to keep the stored value." },
@@ -2953,7 +2955,7 @@ chatsRouter.patch("/:id/permissions", (req, res) => {
   } */
   /* #swagger.responses[200] = { description: "Updated chat" } */
   /* #swagger.responses[400] = { description: "Invalid request body" } */
-  /* #swagger.responses[403] = { description: "Changing computerControl from a bearer key or a cross-origin request" } */
+  /* #swagger.responses[403] = { description: "Changing browserControl or computerControl from a bearer key or a cross-origin request" } */
   /* #swagger.responses[404] = { description: "Chat not found" } */
   const { defaultPermissions } = req.body;
   if (!defaultPermissions || typeof defaultPermissions !== "object" || Array.isArray(defaultPermissions)) {
@@ -2968,8 +2970,11 @@ chatsRouter.patch("/:id/permissions", (req, res) => {
     }
   }
 
-  if (Object.hasOwn(defaultPermissions, "computerControl") && !validLevels.includes(defaultPermissions.computerControl)) {
-    return res.status(400).json({ error: "computerControl must be one of: allow, ask, deny" });
+  const CONTROL_AXES = ["browserControl", "computerControl"] as const;
+  for (const axis of CONTROL_AXES) {
+    if (Object.hasOwn(defaultPermissions, axis) && !validLevels.includes(defaultPermissions[axis])) {
+      return res.status(400).json({ error: `${axis} must be one of: allow, ask, deny` });
+    }
   }
   // Who else may answer an "ask" (shared/types/permissions.ts). Same actors as
   // the four axes: an API key that may set an axis to "allow" gains nothing
@@ -2986,43 +2991,51 @@ chatsRouter.patch("/:id/permissions", (req, res) => {
     const meta: Record<string, any> = parseChatMetadata(chat.metadata);
 
     /**
-     * The fifth axis is not like the other four: it is the one an agent could
-     * usefully raise on its own chat.
+     * The two control axes (`browserControl` — Browser Use, `computerControl` —
+     * Computer Use) are not like the other four: they are the ones an agent
+     * could usefully raise on its own chat.
      *
      * This router sits under `requireAuth`, which accepts a Bearer `cbk_` key —
      * correct for the four axes, where the API is a supported way to widen a
-     * chat's own permissions. `computerControl` is different because of what it
-     * now means: `allow` is unattended GUI control. An agent holding a key
+     * chat's own permissions. The control axes are different because of what
+     * they mean: `allow` is unattended GUI control. An agent holding a key
      * could flip its chat from `ask` to `allow`, and while that revokes any
      * live grant (the level is in the signature), the human's *next* Enable
      * click — made for an ordinary reason, believing they are enabling the
      * `ask` behaviour they configured — would hand over unattended control.
      * Before the level governed prompting, that flip bought almost nothing.
      *
-     * So changing this axis keeps the guarantees of the control plane it
+     * So changing either axis keeps the guarantees of the control plane it
      * governs (`requireSessionAuth` + `requireControlOrigin` in
      * routes/computer-use.ts): a logged-in, same-origin human, never an API
      * key. Leaving it alone is unrestricted — an API client updating the other
      * four axes is unaffected, and an omitted key preserves the stored value
      * rather than being normalized down to `deny` behind the human's back.
+     * That includes a tab whose bundle predates `browserControl`: it sends the
+     * other five axes, and the stored Browser Use level is kept.
      */
     const level = (value: unknown) => (value === "allow" || value === "ask" ? value : "deny");
-    const storedControl = level(meta.defaultPermissions?.computerControl);
-    const requestedControl = Object.hasOwn(defaultPermissions, "computerControl") ? level(defaultPermissions.computerControl) : storedControl;
-    if (requestedControl !== storedControl) {
-      if (res.locals?.authMethod !== "session") {
-        log.warn(`Rejected a ${res.locals?.authMethod ?? "unauthenticated"} attempt to set computerControl=${requestedControl} on ${chat.id}`);
-        return res.status(403).json({ error: "Changing Browser & Computer Control requires a logged-in session, not an API key.", code: "denied" });
+    const AXIS_LABELS = { browserControl: "Browser Use", computerControl: "Computer Use" } as const;
+    const resolvedControl = {} as Record<(typeof CONTROL_AXES)[number], "allow" | "ask" | "deny">;
+    for (const axis of CONTROL_AXES) {
+      const stored = level(meta.defaultPermissions?.[axis]);
+      const requested = Object.hasOwn(defaultPermissions, axis) ? level(defaultPermissions[axis]) : stored;
+      if (requested !== stored) {
+        if (res.locals?.authMethod !== "session") {
+          log.warn(`Rejected a ${res.locals?.authMethod ?? "unauthenticated"} attempt to set ${axis}=${requested} on ${chat.id}`);
+          return res.status(403).json({ error: `Changing ${AXIS_LABELS[axis]} requires a logged-in session, not an API key.`, code: "denied" });
+        }
+        const originError = controlOriginError(req);
+        if (originError) return res.status(403).json({ error: originError, code: "denied" });
       }
-      const originError = controlOriginError(req);
-      if (originError) return res.status(403).json({ error: originError, code: "denied" });
+      resolvedControl[axis] = requested;
     }
 
     // Configuration, not activity, so quiet like /read. Nothing keys on this
     // record's updated_at to notice the change: the permission check re-reads
     // the record from disk on every tool call (getDefaultPermissions in
     // services/claude.ts), and the list caches are cleared below.
-    const fields: Record<string, any> = { ...meta, defaultPermissions: { ...normalizePermissions(defaultPermissions), computerControl: requestedControl } };
+    const fields: Record<string, any> = { ...meta, defaultPermissions: { ...normalizePermissions(defaultPermissions), ...resolvedControl } };
     // Stored only when on; turning one off clears the key (absent = off).
     for (const [key, value] of [["modelReview", modelReview], ["parentAnswers", parentAnswers]] as const) {
       if (value !== undefined) fields[key] = value ? true : null;

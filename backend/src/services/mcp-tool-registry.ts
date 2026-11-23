@@ -269,7 +269,7 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
       {
         name: "permissions",
         type: "object",
-        description: "Per-category permissions for the child (allow/ask/deny), capped at this chat's own; computer control always denied",
+        description: "Per-category permissions for the child (allow/ask/deny), capped at this chat's own; browser and computer use always denied",
         required: false,
       },
       {

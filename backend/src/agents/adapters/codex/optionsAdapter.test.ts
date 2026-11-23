@@ -290,6 +290,7 @@ function perms(overrides: Partial<DefaultPermissions> = {}): DefaultPermissions 
     fileWrite: "deny",
     codeExecution: "deny",
     webAccess: "deny",
+    browserControl: "deny",
     computerControl: "deny",
     ...overrides,
   };

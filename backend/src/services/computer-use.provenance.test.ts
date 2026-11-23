@@ -11,7 +11,7 @@ process.env.CALLBOARD_DATA_DIR = dir;
 const { chatFileService } = await import("./chat-file-service.js");
 const { setSessionProvidersForTesting } = await import("../agents/factory.js");
 const { ComputerUseHost, loadComputerUsePolicy } = await import("./computer-use.js");
-const permissions = { computerControl: "allow", webAccess: "allow", codeExecution: "allow", fileRead: "allow", fileWrite: "allow" };
+const permissions = { browserControl: "allow", computerControl: "allow", webAccess: "allow", codeExecution: "allow", fileRead: "allow", fileWrite: "allow" };
 afterEach(() => setSessionProvidersForTesting(null));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 

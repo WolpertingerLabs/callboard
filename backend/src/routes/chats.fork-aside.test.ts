@@ -274,7 +274,7 @@ describe("POST /api/chats/:id/fork kind aside", () => {
   });
 
   describe("permissions", () => {
-    const parentPerms = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "ask", computerControl: "deny" };
+    const parentPerms = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "ask", browserControl: "deny", computerControl: "deny" };
 
     it("inherits the parent's when none are given", async () => {
       setParent({ defaultPermissions: parentPerms });
@@ -282,16 +282,16 @@ describe("POST /api/chats/:id/fork kind aside", () => {
     });
 
     it("maps readOnly to ask on writes and runs, deny on computer control, and drops the model reviewer", async () => {
-      setParent({ defaultPermissions: { ...parentPerms, computerControl: "allow", webAccess: "allow" }, modelReview: true });
+      setParent({ defaultPermissions: { ...parentPerms, browserControl: "allow", computerControl: "allow", webAccess: "allow" }, modelReview: true });
       const res = await aside({ readOnly: true });
-      expect(res.meta.defaultPermissions).toEqual({ fileRead: "allow", fileWrite: "ask", codeExecution: "ask", webAccess: "allow", computerControl: "deny" });
+      expect(res.meta.defaultPermissions).toEqual({ fileRead: "allow", fileWrite: "ask", codeExecution: "ask", webAccess: "allow", browserControl: "deny", computerControl: "deny" });
       expect(res.meta).not.toHaveProperty("modelReview");
     });
 
     it("keeps a parent's stricter axes under readOnly, and the reviewer without it", async () => {
       setParent({ defaultPermissions: { ...parentPerms, fileWrite: "deny" }, modelReview: true });
       const ro = await aside({ readOnly: true, permissions: { fileWrite: "allow" } });
-      expect(ro.meta.defaultPermissions).toMatchObject({ fileWrite: "deny", codeExecution: "ask", computerControl: "deny" });
+      expect(ro.meta.defaultPermissions).toMatchObject({ fileWrite: "deny", codeExecution: "ask", browserControl: "deny", computerControl: "deny" });
       const plain = await aside();
       expect(plain.meta.modelReview).toBe(true);
     });
@@ -311,7 +311,7 @@ describe("POST /api/chats/:id/fork kind aside", () => {
 
     it("clamps a looser set to the parent's", async () => {
       setParent({ defaultPermissions: parentPerms });
-      const res = await aside({ permissions: { webAccess: "allow", computerControl: "allow" } });
+      const res = await aside({ permissions: { webAccess: "allow", browserControl: "allow", computerControl: "allow" } });
       expect(res.code).toBe(201);
       expect(res.meta.defaultPermissions).toEqual(parentPerms);
     });
@@ -330,7 +330,7 @@ describe("POST /api/chats/:id/fork kind aside", () => {
     it("clamps to ask-everywhere under a parent with no permissions", async () => {
       setParent({});
       const res = await aside({ permissions: { fileRead: "allow" } });
-      expect(res.meta.defaultPermissions).toEqual({ fileRead: "ask", fileWrite: "ask", codeExecution: "ask", webAccess: "ask", computerControl: "deny" });
+      expect(res.meta.defaultPermissions).toEqual({ fileRead: "ask", fileWrite: "ask", codeExecution: "ask", webAccess: "ask", browserControl: "deny", computerControl: "deny" });
     });
   });
 
@@ -342,7 +342,7 @@ describe("POST /api/chats/:id/fork kind aside", () => {
   });
 
   describe("Codex sandbox setting", () => {
-    const loose = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", computerControl: "deny" };
+    const loose = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", browserControl: "deny", computerControl: "deny" };
 
     it("refuses a Read only Codex aside under workspace-write, writing nothing", async () => {
       setParent({ defaultPermissions: loose });

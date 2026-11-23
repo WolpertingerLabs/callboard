@@ -2,8 +2,9 @@ import type { PermissionLevel } from "./permissions.js";
 
 /**
  * The tool name the per-action computer-control confirmation is raised under,
- * on every engine — that is, in a chat whose `computerControl` is `ask`; under
- * `allow` no per-action confirmation is raised. Initial enablement always
+ * on every engine — that is, when the target's axis (`browserControl` for the
+ * browser, `computerControl` for the desktop) is `ask`; under `allow` no
+ * per-action confirmation is raised. Initial enablement always
  * requires human consent under both policies (CU_REQUEST_CONTROL_TOOL_NAME).
  *
  * Shared because both sides of one contract need the *same* string and neither
@@ -33,6 +34,12 @@ export interface ComputerUseCapability {
   reason?: string;
   /** Additive viewer guidance; older/custom probes may omit this. Never infer from reason. */
   readiness?: "setup-required" | "unsupported" | "permission-blocked" | "unknown";
+  /**
+   * The level of the axis that governs this target (`browserControl` for
+   * `browser`, `computerControl` for `native`). Additive; older daemons omit
+   * it, in which case fall back to `ComputerUseStatus.permission`.
+   */
+  permission?: PermissionLevel;
 }
 export interface ComputerUseSession {
   id: string;
@@ -46,6 +53,11 @@ export interface ComputerUseSession {
 export interface ComputerUseStatus {
   capabilities: ComputerUseCapability[];
   sessions: ComputerUseSession[];
+  /**
+   * The most permissive of the chat's `browserControl` and `computerControl`
+   * levels — "does any target accept enabling". Per-target levels are on
+   * `ComputerUseCapability.permission`.
+   */
   permission: PermissionLevel;
   events?: { sessionId: string; generation: number; type: string; at: number }[];
 }

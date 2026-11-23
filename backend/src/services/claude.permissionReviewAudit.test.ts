@@ -14,7 +14,7 @@ import type { ReviewVerdict } from "./permission-review.js";
 import { REVIEW_REQUESTED_EVENT, REVIEW_RESULT_EVENT, startReviewAudit, type PermissionAuditHooks } from "./permission-review-audit.js";
 import { __auditQueueLength, __resetAuditLogForTests, emitAuditRecord, type AuditRecordInput } from "./audit-log.js";
 
-const FULL_ASK: DefaultPermissions = { fileRead: "ask", fileWrite: "ask", codeExecution: "ask", webAccess: "ask", computerControl: "deny" };
+const FULL_ASK: DefaultPermissions = { fileRead: "ask", fileWrite: "ask", codeExecution: "ask", webAccess: "ask", browserControl: "deny", computerControl: "deny" };
 
 /** Let the awaited reviewer settle and the prompt be parked. */
 /** One macrotask turn, then the check phase: the reviewer settles, the prompt parks, deferred emits run. */

@@ -1,5 +1,6 @@
 /**
- * Who may change the fifth permission axis.
+ * Who may change the two control axes (`browserControl` — Browser Use, and
+ * `computerControl` — Computer Use).
  *
  * `PATCH /api/chats/:id/permissions` sits under this router's `requireAuth`,
  * which accepts a Bearer `cbk_` key. That is correct for the four original
@@ -91,12 +92,15 @@ const written = (): DefaultPermissions | undefined => {
   return call && (call[1] as any).defaultPermissions;
 };
 
-function setStored(computerControl?: string) {
+/** Stores both control axes at `computerControl`'s level unless `browserControl` is given separately. */
+function setStored(computerControl?: string, browserControl: string | undefined = computerControl) {
   chat = {
     id: "chat-1",
     folder: "/repo",
     session_id: "session-1",
-    metadata: JSON.stringify({ defaultPermissions: { ...FOUR, ...(computerControl ? { computerControl } : {}) } }),
+    metadata: JSON.stringify({
+      defaultPermissions: { ...FOUR, ...(browserControl ? { browserControl } : {}), ...(computerControl ? { computerControl } : {}) },
+    }),
   };
 }
 
@@ -105,9 +109,9 @@ beforeEach(() => {
   setStored("ask");
 });
 
-describe("PATCH /api/chats/:id/permissions — the computerControl axis", () => {
+describe("PATCH /api/chats/:id/permissions — the control axes", () => {
   it("refuses a bearer key that raises the level, and writes nothing", async () => {
-    const result = await patch({ ...FOUR, computerControl: "allow" }, { authMethod: "bearer" });
+    const result = await patch({ ...FOUR, browserControl: "allow", computerControl: "allow" }, { authMethod: "bearer" });
 
     expect(result.code).toBe(403);
     expect(result.body).toMatchObject({ code: "denied", error: expect.stringContaining("logged-in session") });
@@ -116,7 +120,7 @@ describe("PATCH /api/chats/:id/permissions — the computerControl axis", () => 
 
   it("refuses a bearer key that lowers it too: an agent does not get to set the level that governs it", async () => {
     setStored("allow");
-    const result = await patch({ ...FOUR, computerControl: "deny" }, { authMethod: "bearer" });
+    const result = await patch({ ...FOUR, browserControl: "deny", computerControl: "deny" }, { authMethod: "bearer" });
 
     expect(result.code).toBe(403);
     expect(updateChatMetadata).not.toHaveBeenCalled();
@@ -129,24 +133,24 @@ describe("PATCH /api/chats/:id/permissions — the computerControl axis", () => 
       { authMethod: "session" as const, secFetchSite: "cross-site" },
     ]) {
       updateChatMetadata.mockClear();
-      const result = await patch({ ...FOUR, computerControl: "allow" }, actor);
+      const result = await patch({ ...FOUR, browserControl: "allow", computerControl: "allow" }, actor);
       expect(result.code, JSON.stringify(actor)).toBe(403);
       expect(updateChatMetadata).not.toHaveBeenCalled();
     }
   });
 
   it("lets a same-origin logged-in human set it, which is the whole point", async () => {
-    const result = await patch({ ...FOUR, computerControl: "allow" });
+    const result = await patch({ ...FOUR, browserControl: "allow", computerControl: "allow" });
 
     expect(result.code).toBe(200);
-    expect(written()).toMatchObject({ computerControl: "allow" });
+    expect(written()).toMatchObject({ browserControl: "allow", computerControl: "allow" });
   });
 
   it("leaves the other four axes answerable by an API key", async () => {
-    const result = await patch({ ...FOUR, fileWrite: "allow", computerControl: "ask" }, { authMethod: "bearer" });
+    const result = await patch({ ...FOUR, fileWrite: "allow", browserControl: "ask", computerControl: "ask" }, { authMethod: "bearer" });
 
     expect(result.code).toBe(200);
-    expect(written()).toMatchObject({ fileWrite: "allow", computerControl: "ask" });
+    expect(written()).toMatchObject({ fileWrite: "allow", browserControl: "ask", computerControl: "ask" });
   });
 
   it("preserves the stored level when the request omits the axis, rather than clearing it behind the human's back", async () => {
@@ -158,15 +162,53 @@ describe("PATCH /api/chats/:id/permissions — the computerControl axis", () => 
     const result = await patch({ ...FOUR }, { authMethod: "bearer" });
 
     expect(result.code).toBe(200);
-    expect(written()).toMatchObject({ computerControl: "allow" });
+    expect(written()).toMatchObject({ browserControl: "allow", computerControl: "allow" });
   });
 
   it("treats an absent stored axis as deny, so a key cannot grant it by writing deny→ask", async () => {
     setStored(undefined);
-    expect((await patch({ ...FOUR, computerControl: "ask" }, { authMethod: "bearer" })).code).toBe(403);
+    expect((await patch({ ...FOUR, browserControl: "ask", computerControl: "ask" }, { authMethod: "bearer" })).code).toBe(403);
     // …and writing the level it already effectively has is not a change.
-    expect((await patch({ ...FOUR, computerControl: "deny" }, { authMethod: "bearer" })).code).toBe(200);
-    expect(written()).toMatchObject({ computerControl: "deny" });
+    expect((await patch({ ...FOUR, browserControl: "deny", computerControl: "deny" }, { authMethod: "bearer" })).code).toBe(200);
+    expect(written()).toMatchObject({ browserControl: "deny", computerControl: "deny" });
+  });
+
+  it("refuses a bearer key that changes only Browser Use, naming that axis", async () => {
+    const result = await patch({ ...FOUR, browserControl: "allow", computerControl: "ask" }, { authMethod: "bearer" });
+
+    expect(result.code).toBe(403);
+    expect(result.body.error).toContain("Browser Use");
+    expect(updateChatMetadata).not.toHaveBeenCalled();
+  });
+
+  it("refuses a cross-origin session that changes only Browser Use", async () => {
+    const result = await patch({ ...FOUR, browserControl: "allow", computerControl: "ask" }, { authMethod: "session", origin: "https://evil.example" });
+    expect(result.code).toBe(403);
+    expect(updateChatMetadata).not.toHaveBeenCalled();
+  });
+
+  it("keeps a stored Browser Use level when an older tab sends only the original five axes", async () => {
+    // A bundle that predates `browserControl` sends fileRead…computerControl.
+    // Normalizing would read the missing key as deny and silently switch
+    // Browser Use off; it must be kept, exactly like an omitted computerControl.
+    setStored("ask", "allow");
+    for (const actor of [{ authMethod: "session" as const }, { authMethod: "bearer" as const }]) {
+      const result = await patch({ ...FOUR, computerControl: "ask" }, actor);
+      expect(result.code, actor.authMethod).toBe(200);
+      expect(written()).toMatchObject({ browserControl: "allow", computerControl: "ask" });
+    }
+  });
+
+  it("lets a human change Browser Use independently of Computer Use", async () => {
+    const result = await patch({ ...FOUR, browserControl: "allow", computerControl: "deny" });
+    expect(result.code).toBe(200);
+    expect(written()).toMatchObject({ browserControl: "allow", computerControl: "deny" });
+  });
+
+  it("validates browserControl too", async () => {
+    const result = await patch({ ...FOUR, browserControl: "sometimes" }, { authMethod: "session" });
+    expect(result.code).toBe(400);
+    expect(result.body.error).toContain("browserControl");
   });
 
   it("writes quietly: configuration is not activity, so updated_at is left alone", async () => {
@@ -185,20 +227,20 @@ describe("PATCH /api/chats/:id/permissions — review-chain toggles", () => {
   const fields = () => updateChatMetadata.mock.calls.at(-1)?.[1] as Record<string, unknown> | undefined;
 
   it("stores modelReview / parentAnswers when on, clears them when off", async () => {
-    expect((await patch({ ...FOUR, computerControl: "ask" }, { authMethod: "bearer" }, { modelReview: true, parentAnswers: true })).code).toBe(200);
+    expect((await patch({ ...FOUR, browserControl: "ask", computerControl: "ask" }, { authMethod: "bearer" }, { modelReview: true, parentAnswers: true })).code).toBe(200);
     expect(fields()).toMatchObject({ modelReview: true, parentAnswers: true });
-    expect((await patch({ ...FOUR, computerControl: "ask" }, { authMethod: "session" }, { modelReview: false })).code).toBe(200);
+    expect((await patch({ ...FOUR, browserControl: "ask", computerControl: "ask" }, { authMethod: "session" }, { modelReview: false })).code).toBe(200);
     expect(fields()).toMatchObject({ modelReview: null });
   });
 
   it("leaves them alone when omitted", async () => {
     chat.metadata = JSON.stringify({ ...JSON.parse(chat.metadata), modelReview: true });
-    await patch({ ...FOUR, computerControl: "ask" });
+    await patch({ ...FOUR, browserControl: "ask", computerControl: "ask" });
     expect(fields()).toMatchObject({ modelReview: true });
   });
 
   it("rejects a non-boolean", async () => {
-    const result = await patch({ ...FOUR, computerControl: "ask" }, { authMethod: "session" }, { parentAnswers: "yes" });
+    const result = await patch({ ...FOUR, browserControl: "ask", computerControl: "ask" }, { authMethod: "session" }, { parentAnswers: "yes" });
     expect(result.code).toBe(400);
     expect(updateChatMetadata).not.toHaveBeenCalled();
   });

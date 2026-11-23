@@ -23,7 +23,7 @@ beforeEach(() => {
 const FOUR = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow" };
 
 it.each(["allow", "ask"] as const)("records an API key creating a chat with computerControl=%s", (level) => {
-  noteComputerControlAtCreation("POST /api/chats", "bearer", { ...FOUR, computerControl: level });
+  noteComputerControlAtCreation("POST /api/chats", "bearer", { ...FOUR, browserControl: level, computerControl: level });
 
   const line = String(logs.warn.mock.calls.at(-1)?.[0]);
   expect(line).toContain("POST /api/chats");
@@ -31,12 +31,21 @@ it.each(["allow", "ask"] as const)("records an API key creating a chat with comp
   expect(line).toContain(`computerControl=${level}`);
 });
 
+it("records each control axis on its own: Browser Use alone is noted, and named", () => {
+  noteComputerControlAtCreation("POST /api/chats", "bearer", { ...FOUR, browserControl: "allow", computerControl: "deny" });
+
+  expect(logs.warn).toHaveBeenCalledTimes(1);
+  const line = String(logs.warn.mock.calls.at(-1)?.[0]);
+  expect(line).toContain("browserControl=allow");
+  expect(line).not.toContain("computerControl");
+});
+
 it("says nothing for the calls that are every ordinary call", () => {
   // A signed-in human, at any level: that is the supported way to set it.
-  for (const level of ["allow", "ask", "deny"]) noteComputerControlAtCreation("POST /api/chats", "session", { ...FOUR, computerControl: level });
+  for (const level of ["allow", "ask", "deny"]) noteComputerControlAtCreation("POST /api/chats", "session", { ...FOUR, browserControl: level, computerControl: level });
   // A key, but not asking for computer control — including the shapes every
   // in-repo agent-facing spawn actually sends.
-  noteComputerControlAtCreation("POST /api/chats", "bearer", { ...FOUR, computerControl: "deny" });
+  noteComputerControlAtCreation("POST /api/chats", "bearer", { ...FOUR, browserControl: "deny", computerControl: "deny" });
   noteComputerControlAtCreation("POST /api/chats", "bearer", FOUR);
   noteComputerControlAtCreation("POST /api/chats", "bearer", undefined);
 
@@ -44,6 +53,6 @@ it("says nothing for the calls that are every ordinary call", () => {
 });
 
 it("names an unauthenticated caller rather than printing undefined", () => {
-  noteComputerControlAtCreation("POST /api/chats/new/message", undefined, { computerControl: "allow" });
+  noteComputerControlAtCreation("POST /api/chats/new/message", undefined, { browserControl: "allow", computerControl: "allow" });
   expect(String(logs.warn.mock.calls.at(-1)?.[0])).toContain("unauthenticated caller");
 });

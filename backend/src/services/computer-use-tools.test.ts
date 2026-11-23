@@ -69,7 +69,7 @@ it("an ask chat's real host MCP hop blocks on the human, executes only what they
   host = new ComputerUseHost(
     service,
     { browser: driver, desktop: { ...driver, kind: "native-desktop" } },
-    () => ({ policy: readComputerUsePolicy({ computerControl: "ask", webAccess: "allow" }), signature: "scope" }),
+    () => ({ policy: readComputerUsePolicy({ browserControl: "ask", computerControl: "ask", webAccess: "allow" }), signature: "scope" }),
     person.confirm,
   );
   vi.mocked(getComputerUseHost).mockResolvedValue(host);
@@ -153,7 +153,7 @@ it("an allow chat's MCP hop reaches the driver with nobody asked", async () => {
   host = new ComputerUseHost(
     service,
     { browser: driver, desktop: { ...driver, kind: "native-desktop" } },
-    () => ({ policy: readComputerUsePolicy({ computerControl: "allow", webAccess: "allow" }), signature: "scope" }),
+    () => ({ policy: readComputerUsePolicy({ browserControl: "allow", computerControl: "allow", webAccess: "allow" }), signature: "scope" }),
     confirm,
   );
   vi.mocked(getComputerUseHost).mockResolvedValue(host);
@@ -197,7 +197,7 @@ it("cu_request_control blocks through the provider-neutral spec, then returns th
   };
   const service = new ComputerUseService({ targets: [{ id: "managed-browser", enabled: true, driver }], authorize: (request) => host!.authorize(request) });
   host = new ComputerUseHost(service, { browser: driver, desktop: driver }, () => ({
-    policy: readComputerUsePolicy({ computerControl: "allow", webAccess: "allow" }),
+    policy: readComputerUsePolicy({ browserControl: "allow", computerControl: "allow", webAccess: "allow" }),
     signature: "scope",
   }));
   vi.mocked(getComputerUseHost).mockResolvedValue(host);

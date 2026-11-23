@@ -76,7 +76,7 @@ describe("toPromptIterable", () => {
 describe("unattendedPermissions", () => {
   it("allows every axis but computer control, as a fresh object each call", () => {
     const p = unattendedPermissions();
-    expect(p).toEqual({ fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", computerControl: "deny" });
+    expect(p).toEqual({ fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", browserControl: "deny", computerControl: "deny" });
     expect(unattendedPermissions()).not.toBe(p);
   });
 });

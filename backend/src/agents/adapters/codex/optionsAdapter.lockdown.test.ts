@@ -5,7 +5,7 @@
 import { describe, expect, it } from "vitest";
 import { LOCKDOWN_FEATURES, translateCodexOptions } from "./optionsAdapter.js";
 
-const allow = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", computerControl: "allow" } as const;
+const allow = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", browserControl: "allow", computerControl: "allow" } as const;
 
 describe("translateCodexOptions — lockdown", () => {
   it("forces read-only / never over a global danger-full-access setting and allow-all permissions", () => {
