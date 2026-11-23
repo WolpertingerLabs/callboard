@@ -439,6 +439,7 @@ describe('connectionOverlapWarnings', () => {
       'google-gmail-metadata', // vs google-gmail-readonly
       'google-calendar-freebusy', // vs google-calendar-readonly
       'google-drive-file', // vs google-drive-readonly
+      'google-sheets', // vs google-sheets-readonly
     ]);
     const all = listConnectionTemplates()
       .map((t) => t.alias)

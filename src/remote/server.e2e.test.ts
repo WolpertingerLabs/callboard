@@ -3202,11 +3202,13 @@ const GOOGLE_USER_TEMPLATES: Record<string, string> = {
   'google-drive-readonly': 'drive.readonly',
   'google-drive-file': 'drive.file',
   'google-sheets-readonly': 'spreadsheets.readonly',
+  'google-sheets': 'spreadsheets',
 };
 const GOOGLE_SA_TEMPLATES: Record<string, string> = {
   'google-calendar-readonly-sa': 'calendar.readonly',
   'google-drive-readonly-sa': 'drive.readonly',
   'google-sheets-readonly-sa': 'spreadsheets.readonly',
+  'google-sheets-sa': 'spreadsheets',
   ...(googleSubject && { 'google-gmail-readonly-sa': 'gmail.readonly' }),
 };
 
