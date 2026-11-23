@@ -695,6 +695,34 @@ pre {
   }
 }
 
+/* Composer dictation: the mic while recording and the status-row dot pulse;
+   the transcribing spinner turns. Opacity/transform only — colours come from
+   the inline var(--danger*) styles, so themes need nothing here. */
+@keyframes voice-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+.voice-recording {
+  animation: voice-pulse 1.2s ease-in-out infinite;
+}
+
+.voice-spinner {
+  animation: spin 1s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .voice-recording,
+  .voice-spinner {
+    animation: none;
+  }
+}
+
 @keyframes thinking-bounce {
   0%,
   80%,
