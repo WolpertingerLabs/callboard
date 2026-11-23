@@ -101,6 +101,8 @@ export type { ParsedMessage } from "./message.js";
 export {
   GUI_ACTION_TYPES,
   RIDE_ALONG_WITHDRAW_TEXT,
+  RIDE_ALONG_TARGETS,
+  type RideAlongTarget,
   actionWithdrawnNotice,
   callboardNoticeHeader,
   controlWithdrawnNotice,

@@ -40,9 +40,24 @@ it("records each control axis on its own: Browser Use alone is noted, and named"
   expect(line).not.toContain("computerControl");
 });
 
+it("records Sandbox desktop alone, like the other control axes", () => {
+  noteComputerControlAtCreation("POST /api/chats", "bearer", { ...FOUR, sandboxControl: "ask" });
+
+  expect(logs.warn).toHaveBeenCalledTimes(1);
+  const line = String(logs.warn.mock.calls.at(-1)?.[0]);
+  expect(line).toContain("a bearer caller created a chat with sandboxControl=ask");
+  expect(line).not.toContain("browserControl");
+});
+
+it("is silent for a signed-in human setting Sandbox desktop", () => {
+  for (const level of ["allow", "ask", "deny"]) noteComputerControlAtCreation("POST /api/chats", "session", { ...FOUR, sandboxControl: level });
+  expect(logs.warn).not.toHaveBeenCalled();
+});
+
 it("says nothing for the calls that are every ordinary call", () => {
   // A signed-in human, at any level: that is the supported way to set it.
-  for (const level of ["allow", "ask", "deny"]) noteComputerControlAtCreation("POST /api/chats", "session", { ...FOUR, browserControl: level, computerControl: level });
+  for (const level of ["allow", "ask", "deny"])
+    noteComputerControlAtCreation("POST /api/chats", "session", { ...FOUR, browserControl: level, computerControl: level });
   // A key, but not asking for computer control — including the shapes every
   // in-repo agent-facing spawn actually sends.
   noteComputerControlAtCreation("POST /api/chats", "bearer", { ...FOUR, browserControl: "deny", computerControl: "deny" });

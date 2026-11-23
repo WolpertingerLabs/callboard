@@ -12,10 +12,12 @@ import {
   CU_ACTION_TOOL_NAME,
   CU_REQUEST_CONTROL_TOOL_NAME,
   GUI_ACTION_TYPES,
+  RIDE_ALONG_TARGETS,
   RIDE_ALONG_WITHDRAW_TEXT,
   actionWithdrawnNotice,
   callboardNoticeHeader,
   controlWithdrawnNotice,
+  type StreamEvent,
 } from "shared/types/index.js";
 import { assertNativeAgentControllable } from "./codex-native-agents.js";
 import { parseChatMetadata } from "../utils/chat-metadata.js";
@@ -23,6 +25,8 @@ import { createLogger } from "../utils/logger.js";
 import { resolveSessionContext } from "../utils/session-provenance.js";
 import { chatFileService } from "./chat-file-service.js";
 import {
+  AXIS_LABELS,
+  COMPUTER_TARGET_KINDS,
   aggregateControlLevel,
   axisFor,
   computerUseScopeError,
@@ -30,6 +34,7 @@ import {
   readComputerUsePolicy,
   type ComputerTargetKind,
   type ComputerUsePolicy,
+  type ControlAxis,
 } from "./computer-use-policy.js";
 import { sessionRegistry } from "./session-registry.js";
 import { enqueueChatNotice } from "./chat-notices.js";
@@ -203,7 +208,7 @@ export function logComputerUseFailure(operation: string, ids: { chatId?: unknown
 
 /**
  * Record that an unattended GUI action is about to run — the target's axis
- * (`browserControl` or `computerControl`) is `"allow"`, nobody asked.
+ * (`browserControl`, `computerControl` or `sandboxControl`) is `"allow"`, nobody asked.
  *
  * Under `ask` the record already exists and is better than a log line: the
  * confirmation is a `permission_request` in the chat, the agent's tool result
@@ -232,12 +237,7 @@ export function logComputerUseFailure(operation: string, ids: { chatId?: unknown
  *
  * It cannot flood: one line per action the agent was going to take anyway.
  */
-export function logUnattendedAction(
-  chatId: string,
-  sessionId: string,
-  redactedSummary: string,
-  axis: "browserControl" | "computerControl" = "computerControl",
-): void {
+export function logUnattendedAction(chatId: string, sessionId: string, redactedSummary: string, axis: ControlAxis = "computerControl"): void {
   log.info(`Computer control ${controlIds({ chatId, sessionId })} attempting unattended (${axis}=allow): ${oneLine(redactedSummary).slice(0, 500)}`);
 }
 
@@ -261,16 +261,13 @@ export function logUnattendedAction(
  * failure. The caller holds the signal; it says so, exactly as `call()`'s own
  * `logContext()` does. `escalate` has no meaning here — nobody approved this.
  */
-function logUnattendedFailure(
-  chatId: string,
-  sessionId: string,
-  error: unknown,
-  context: FailureContext = {},
-  axis: "browserControl" | "computerControl" = "computerControl",
-): void {
+function logUnattendedFailure(chatId: string, sessionId: string, error: unknown, context: FailureContext = {}, axis: ControlAxis = "computerControl"): void {
   const label = context.cancelled || isAbort(error) ? "cancelled" : controlCode(error) || envelopeCode(error) || "unavailable";
   log.info(`Computer control ${controlIds({ chatId, sessionId })} unattended action did NOT complete (${axis}=allow) code=${label}`);
 }
+
+/** A `controlRequestResult` event as the host emits it, with the target it is about. See {@link ComputerUseHost.emitControlResult}. */
+export type ControlResultEvent = StreamEvent & { controlTarget?: ComputerTargetKind };
 
 export interface HostPolicy {
   policy: ComputerUsePolicy;
@@ -318,8 +315,8 @@ export function loadComputerUsePolicy(chatId: string): HostPolicy {
   const policy = readComputerUsePolicy(metadata.defaultPermissions);
   // The signature is what a grant is bound to; drift revokes the live session.
   // Sign only what changes the authority itself: the permission axes (all of
-  // them, both control axes included, so changing Browser Use also revokes a
-  // live desktop grant) and the
+  // them, every control axis included, so changing Browser Use or Sandbox
+  // desktop also revokes a live desktop grant) and the
   // engine identity the provenance check just verified. The wider chat
   // fingerprint (session ids, last branch, model, folder) used to be in here,
   // and a nudge resume appending a session id or an acknowledged branch drift
@@ -330,8 +327,25 @@ export function controlError(code: string, message: string): Error & { code: str
   return Object.assign(new Error(message), { code });
 }
 export const controlPrincipal = (chatId: string, role: "agent" | "human"): Principal => ({ ownerId: chatId, actorId: `${role}:${chatId}`, role });
-const uiKind = (kind: string): ComputerTargetKind => (kind === "browser" ? "browser" : "desktop");
-const targetId = (kind: ComputerTargetKind) => (kind === "browser" ? "managed-browser" : "native-desktop");
+/**
+ * The service's target id for each kind. The package knows two driver kinds
+ * only (`browser`, `native-desktop`), and the sandbox's remote driver is a
+ * `native-desktop` one, so a session's Callboard kind is read off its target
+ * id ({@link kindOfTarget}), never off its driver kind.
+ */
+export const TARGET_IDS: Readonly<Record<ComputerTargetKind, string>> = {
+  browser: "managed-browser",
+  desktop: "native-desktop",
+  sandbox: "sandbox-desktop",
+};
+const targetId = (kind: ComputerTargetKind) => TARGET_IDS[kind];
+/** Unknown ids read as the desktop: the strictest scope rule, never a looser one. */
+const kindOfTarget = (id: string): ComputerTargetKind => (id === TARGET_IDS.browser ? "browser" : id === TARGET_IDS.sandbox ? "sandbox" : "desktop");
+/** The viewer DTO's kind (`ComputerUseKind`). */
+const viewerKind = (kind: ComputerTargetKind) => (kind === "browser" ? ("browser" as const) : kind === "sandbox" ? ("sandbox" as const) : ("native" as const));
+/** How a notice or banner names a target: "browser", "desktop", "sandbox desktop". */
+const targetNoun = (kind: ComputerTargetKind) => RIDE_ALONG_TARGETS[kind];
+const capitalized = (text: string) => `${text.charAt(0).toUpperCase()}${text.slice(1)}`;
 const PROBE_CACHE_MS = 5_000;
 interface Grant {
   chatId: string;
@@ -393,7 +407,7 @@ interface ActionRequest {
   signature: string;
   summary: string;
   target: string;
-  /** Which target, so its own axis (`browserControl`/`computerControl`) is the one re-read. */
+  /** Which target, so its own axis (`browserControl`/`computerControl`/`sandboxControl`) is the one re-read. */
   kind: ComputerTargetKind;
   approval?: OpenHumanApproval;
 }
@@ -419,7 +433,7 @@ export interface ControlRequestPending {
   status: "consent_pending";
   state: "pending_approval";
   requestId: string;
-  kind: "browser" | "native";
+  kind: "browser" | "native" | "sandbox";
   message: string;
 }
 
@@ -427,7 +441,7 @@ export interface ControlRequestPending {
 export interface AgentOpenRequest {
   requestId: string;
   type: "enable_control" | "gui_action";
-  kind?: "browser" | "native";
+  kind?: "browser" | "native" | "sandbox";
   summary?: string;
 }
 
@@ -444,10 +458,10 @@ const PENDING_TARGET_REASON =
   "Approve access to this specific target for this chat. This request stays open until you answer it; once approved, the session lasts up to 15 minutes. Screenshots are sent to the configured model when requested. This target is set to Ask, so every agent action also needs a separate confirmation — that one is asked in the chat, not here. Subagents the engine runs inside this chat's turn (Claude Code Task subagents, Codex native subagents) share this grant and act under this chat's identity.";
 
 /**
- * A desktop driver that runs somewhere else (`createRemoteDriver`, enabled by
- * CALLBOARD_REMOTE_DESKTOP_URL/TOKEN). Recognised by shape so tests and other
- * drivers need no import: it names its endpoint, and can say which host
- * instance is answering there.
+ * A desktop driver that runs somewhere else (`createRemoteDriver`, the Sandbox
+ * desktop's driver when CALLBOARD_SANDBOX_DESKTOP_URL/TOKEN_FILE are set).
+ * Recognised by shape so tests and other drivers need no import: it names its
+ * endpoint, and can say which host instance is answering there.
  */
 interface RemoteTarget {
   endpoint: string;
@@ -634,7 +648,7 @@ function approvedActionFailure(code: string): string {
     case "not_found":
       return "the control session was stopped, revoked or expired";
     case "denied":
-      return "this chat's Browser Use or Computer Use permissions changed after it was requested";
+      return "this chat's Browser Use, Computer Use or Sandbox desktop permissions changed after it was requested";
     default:
       return `it failed while running (${knownCode(code)})`;
   }
@@ -653,7 +667,7 @@ function humanActionFailure(code: string): string {
     case "not_found":
       return "the control session had ended";
     case "denied":
-      return "this chat's Browser Use or Computer Use permissions changed";
+      return "this chat's Browser Use, Computer Use or Sandbox desktop permissions changed";
     default:
       return `it failed while running (${knownCode(code)})`;
   }
@@ -677,7 +691,7 @@ function afterApprovedFailure(code: string): string {
 function enableFailure(code: string): string {
   switch (code) {
     case "denied":
-      return "this chat's Browser Use or Computer Use permissions changed before it could start";
+      return "this chat's Browser Use, Computer Use or Sandbox desktop permissions changed before it could start";
     case "unsupported":
       return "the target is not available on the service host";
     case "revoked":
@@ -734,7 +748,7 @@ const WITHDRAW_HUMAN_TEXT: Readonly<Record<WithdrawReason, string>> = {
   stopped: "you pressed Stop",
   panelStop: "it was stopped from the Computer view",
   revoked: "it was revoked from the Computer view",
-  scope: "this chat's Browser Use or Computer Use permissions changed, or the chat was archived or deleted",
+  scope: "this chat's Browser Use, Computer Use or Sandbox desktop permissions changed, or the chat was archived or deleted",
   sessionEnded: "its control session ended",
   stale: "the screen changed after the agent asked, so it could no longer run",
   takeover: "you took over control of the session",
@@ -797,56 +811,64 @@ export class ComputerUseHost {
   private readonly watchdog: ReturnType<typeof setInterval>;
   /** chatId → the GUI action waiting on the human. At most one per chat. */
   private readonly actionRequests = new Map<string, ActionRequest>();
+  readonly drivers: Readonly<Record<ComputerTargetKind, Driver>>;
   constructor(
     readonly service: ComputerUseService,
-    readonly drivers: Readonly<Record<ComputerTargetKind, Driver>>,
+    /** `sandbox` may be omitted: it then probes as not configured, exactly as with no endpoint set. */
+    drivers: Readonly<Record<"browser" | "desktop", Driver> & Partial<Record<"sandbox", Driver>>>,
     private readonly readPolicy: (chatId: string) => HostPolicy = loadComputerUsePolicy,
     private readonly raiseApproval: RaiseHumanApproval = openHumanApproval,
     private readonly notify: NotifyAgent = (chatId, text, options) => void enqueueChatNotice(chatId, text, options),
   ) {
+    this.drivers = { ...drivers, sandbox: drivers.sandbox ?? unconfiguredSandboxDriver() };
     this.watchdog = setInterval(() => {
       void this.expire();
     }, 1000);
     this.watchdog.unref();
   }
+  /** The sandbox's driver host, when one is configured. The browser and the local desktop are never remote. */
   private remote(kind: ComputerTargetKind): RemoteTarget | undefined {
-    return kind === "desktop" ? remoteTarget(this.drivers.desktop) : undefined;
+    return kind === "sandbox" ? remoteTarget(this.drivers.sandbox) : undefined;
   }
-  /** Short label for a target: this machine's name, or the remote desktop's endpoint. */
+  /** Short label for a target: this machine's name, or the sandbox's endpoint. */
   private targetLabel(kind: ComputerTargetKind): string {
+    if (kind !== "sandbox") return hostname();
     const remote = this.remote(kind);
-    return remote ? `remote ${remote.endpoint}` : hostname();
+    return remote ? `sandbox ${remote.endpoint}` : "sandbox (not configured)";
   }
   /** What a person is told the target is, in prompts and action summaries. */
   private humanTarget(kind: ComputerTargetKind): string {
     if (kind === "browser") return `managed browser on ${hostname()}`;
+    if (kind === "desktop") return `native desktop on ${hostname()}`;
     const remote = this.remote(kind);
-    return remote ? `remote desktop at ${remote.endpoint}` : `native desktop on ${hostname()}`;
+    return remote ? `sandbox desktop at ${remote.endpoint}` : "sandbox desktop";
   }
   /**
    * The identity a consent is bound to: asked under one target, opened on the
-   * same one. Locally that is this machine's hostname. For a remote desktop it
-   * is the endpoint plus the instance id its driver host reports, which a host
+   * same one. Locally that is this machine's hostname. For the sandbox it is
+   * the endpoint plus the instance id its driver host reports, which a host
    * restart changes — so approving a request after the container was replaced
    * does not open the replacement on the old consent.
    */
   private async targetIdentity(kind: ComputerTargetKind, signal: AbortSignal): Promise<string> {
+    if (kind !== "sandbox") return hostname();
     const remote = this.remote(kind);
-    if (!remote) return hostname();
+    if (!remote) throw controlError("unsupported", "The sandbox desktop is not configured on the service host.");
     try {
       const { instanceId } = await remote.identity(AbortSignal.any([signal, AbortSignal.timeout(CONTROL_PROBE_TIMEOUT_MS)]));
       return `${remote.endpoint}#${instanceId}`;
     } catch (error) {
       if (signal.aborted) throw controlError("cancelled", "Control request cancelled; no target was enabled.");
-      throw Object.assign(controlError("unsupported", "Could not confirm which remote desktop host is answering. Check that it is running, then retry."), {
+      throw Object.assign(controlError("unsupported", "Could not confirm which sandbox desktop host is answering. Check that it is running, then retry."), {
         cause: error,
       });
     }
   }
   /** The identity, in {@link targetIdentity}'s form, of the host a session actually opened on. Fails closed. */
   private openedIdentity(kind: ComputerTargetKind, sessionId: string): string | undefined {
+    if (kind !== "sandbox") return hostname();
     const remote = this.remote(kind);
-    if (!remote) return hostname();
+    if (!remote) return undefined;
     const instanceId = remote.openedInstance?.(sessionId);
     return instanceId ? `${remote.endpoint}#${instanceId}` : undefined;
   }
@@ -854,7 +876,8 @@ export class ComputerUseHost {
   authorize = (request: AuthorizationRequest): "allow" | "deny" => {
     try {
       const current = this.readPolicy(request.principal.ownerId);
-      if (computerUseScopeError(uiKind(request.kind), current.policy)) return "deny";
+      // By target id, not driver kind: the sandbox's driver is a native-desktop one.
+      if (computerUseScopeError(kindOfTarget(request.targetId), current.policy)) return "deny";
       if (request.operation === "open") {
         const initial = this.opening.get(`${request.principal.ownerId}:${request.targetId}`);
         return initial?.signature === current.signature ? "allow" : "deny";
@@ -928,9 +951,16 @@ export class ComputerUseHost {
       return false;
     }
   }
-  /** Tell any live tab to take a withdrawn or finished card down, with a one-line reason. */
-  private emitControlResult(chatId: string, toolName: string, requestId: string | undefined, message: string) {
-    sessionRegistry.get(chatId)?.emitter?.emit("event", { type: "tool_result", content: "", controlRequestResult: { requestId, message }, toolName });
+  /**
+   * Tell any live tab to take a withdrawn or finished card down, with a one-line reason.
+   *
+   * `controlTarget` is for the stream handler only and never reaches the wire
+   * (the handler forwards `controlRequestResult` alone): a sandbox result is
+   * not sent to a tab that was never sent the sandbox card (utils/sse.ts).
+   */
+  private emitControlResult(chatId: string, toolName: string, requestId: string | undefined, message: string, kind: ComputerTargetKind) {
+    const event: ControlResultEvent = { type: "tool_result", content: "", controlRequestResult: { requestId, message }, toolName, controlTarget: kind };
+    sessionRegistry.get(chatId)?.emitter?.emit("event", event);
   }
   /**
    * Driver probes are host facts, not chat facts, and the native one execs
@@ -959,20 +989,34 @@ export class ComputerUseHost {
     return result;
   }
   private presentation(value: SessionStatus) {
+    const kind = kindOfTarget(value.targetId);
     return {
       ...value,
       id: value.sessionId,
-      kind: value.kind === "browser" ? "browser" : "native",
+      kind: viewerKind(kind),
       controller: value.controller === "none" ? null : value.controller,
-      targetLabel: this.targetLabel(uiKind(value.kind)),
-      target: this.targetLabel(uiKind(value.kind)),
+      targetLabel: this.targetLabel(kind),
+      target: this.targetLabel(kind),
     };
   }
-  async status(chatId: string) {
+  /**
+   * The chat's computer-control status for the Computer view.
+   *
+   * `options.sandbox` says whether the caller understands the sandbox target
+   * (`CLIENT_CAPS.sandboxTarget`, read off the request's handshake headers by
+   * routes/computer-use.ts). Without it the sandbox is left out entirely — its
+   * capability, its sessions, its pending requests and their events — and the
+   * aggregate `permission` covers the other two axes only: `"sandbox"` is a
+   * `ComputerUseKind` an older bundle has no branch for. Default `true` for
+   * in-process callers (the agent's `cu_open`), which are not old tabs.
+   */
+  async status(chatId: string, options: { sandbox?: boolean } = {}) {
     const { policy } = this.readPolicy(chatId);
     await this.expire();
+    const kinds = options.sandbox === false ? COMPUTER_TARGET_KINDS.filter((kind) => kind !== "sandbox") : COMPUTER_TARGET_KINDS;
+    const shown = (id: string) => kinds.includes(kindOfTarget(id));
     const capabilities = await Promise.all(
-      (["browser", "desktop"] as const).map(async (kind) => {
+      kinds.map(async (kind) => {
         const restriction = computerUseScopeError(kind, policy);
         try {
           // This status is served only to a signed-in human (routes/computer-use.ts
@@ -982,33 +1026,34 @@ export class ComputerUseHost {
           const detailed = [probe.reason, operatorDetail].filter(Boolean).join(" ") || undefined;
           return {
             ...probe,
-            kind: kind === "browser" ? "browser" : "native",
+            kind: viewerKind(kind),
             available: probe.available && !restriction,
             reason: restriction ?? detailed,
             permission: levelFor(kind, policy),
-            ...(kind === "desktop" && restriction ? { readiness: "permission-blocked" as const } : {}),
+            ...(kind !== "browser" && restriction ? { readiness: "permission-blocked" as const } : {}),
           };
         } catch {
           return {
-            kind: kind === "browser" ? "browser" : "native",
+            kind: viewerKind(kind),
             available: false,
             capabilities: [],
             reason: restriction ?? "Driver probe unavailable. Retry status or ask your agent to check readiness on the Callboard service host.",
             permission: levelFor(kind, policy),
-            ...(kind === "desktop" ? { readiness: restriction ? ("permission-blocked" as const) : ("unknown" as const) } : {}),
+            ...(kind !== "browser" ? { readiness: restriction ? ("permission-blocked" as const) : ("unknown" as const) } : {}),
           };
         }
       }),
     );
-    const sessions = this.service.status(controlPrincipal(chatId, "human")).map((session) => this.presentation(session));
+    const live = this.service.status(controlPrincipal(chatId, "human")).filter((session) => shown(session.targetId));
+    const sessions = live.map((session) => this.presentation(session));
     for (const [id, pending] of this.pending)
-      if (pending.chatId === chatId) {
+      if (pending.chatId === chatId && kinds.includes(pending.kind)) {
         // Bound to a variable, not pushed as a fresh literal: `reason` is a
         // viewer-only field the package's SessionStatus does not declare.
         const request = {
           id,
           sessionId: id,
-          kind: pending.kind === "browser" ? ("browser" as const) : ("native" as const),
+          kind: viewerKind(pending.kind),
           targetLabel: this.targetLabel(pending.kind),
           target: this.targetLabel(pending.kind),
           targetId: targetId(pending.kind),
@@ -1022,14 +1067,21 @@ export class ComputerUseHost {
         };
         sessions.push(request);
       }
+    // A hidden target's events are hidden with it. Events of a session already
+    // reaped from status cannot be attributed, so they go only to a client
+    // that is shown every target.
+    const visibleIds = new Set(live.map((session) => session.sessionId));
+    const events = (this.events.get(chatId) ?? []).filter(
+      (event) => kinds.length === COMPUTER_TARGET_KINDS.length || visibleIds.has(String((event as { sessionId?: unknown }).sessionId)),
+    );
     return {
       capabilities,
       sessions,
       // Aggregate (most permissive) for old panels; per-target levels are on each capability.
-      permission: aggregateControlLevel(policy),
+      permission: aggregateControlLevel(policy, kinds),
       target: hostname(),
       platform: process.platform,
-      events: this.events.get(chatId) ?? [],
+      events,
       modelVision:
         "Runtime image delivery requires a tool/vision-capable configured model; live artistic/model qualification has not been established on this host.",
     };
@@ -1056,7 +1108,7 @@ export class ComputerUseHost {
    * than refused, so a forgotten one is not a dead end.
    */
   async requestControl(chatId: string, kind: ComputerTargetKind, reason: string, signal: AbortSignal) {
-    if (!["browser", "desktop"].includes(kind) || typeof reason !== "string" || !reason.trim() || reason.length > 500)
+    if (!COMPUTER_TARGET_KINDS.includes(kind) || typeof reason !== "string" || !reason.trim() || reason.length > 500)
       throw controlError("invalid_request", "Provide a target kind and a reason of 1–500 characters.");
     signal.throwIfAborted();
     const current = this.readPolicy(chatId);
@@ -1081,10 +1133,10 @@ export class ComputerUseHost {
         status: "consent_pending",
         state: "pending_approval",
         requestId: waitingId,
-        kind: waitingRequest.kind === "browser" ? "browser" : "native",
+        kind: viewerKind(waitingRequest.kind),
         message: agents
-          ? `Nothing new was requested: your earlier request ${waitingId} to enable ${waitingRequest.kind} control is still waiting for the human in this chat. You will be told the outcome; do not request again meanwhile.`
-          : `Nothing new was requested: the human already has a request to enable ${waitingRequest.kind} control open in this chat's Computer view, waiting for them to confirm it there. Ask them to confirm or cancel it; once it is enabled it appears in cu_open.`,
+          ? `Nothing new was requested: your earlier request ${waitingId} to enable ${targetNoun(waitingRequest.kind)} control is still waiting for the human in this chat. You will be told the outcome; do not request again meanwhile.`
+          : `Nothing new was requested: the human already has a request to enable ${targetNoun(waitingRequest.kind)} control open in this chat's Computer view, waiting for them to confirm it there. Ask them to confirm or cancel it; once it is enabled it appears in cu_open.`,
       } satisfies ControlRequestPending;
     }
     const id = randomUUID();
@@ -1125,7 +1177,7 @@ export class ComputerUseHost {
       status: "consent_pending",
       state: "pending_approval",
       requestId: id,
-      kind: kind === "browser" ? "browser" : "native",
+      kind: viewerKind(kind),
       message:
         "Consent pending: the human has been asked in this chat to enable this target. This call does not wait — you will be told the outcome in this chat when they answer, and there is nothing to poll. Do not request again meanwhile; carry on with work that does not need the target, or end your turn.",
     } satisfies ControlRequestPending;
@@ -1152,6 +1204,7 @@ export class ComputerUseHost {
         CU_REQUEST_CONTROL_TOOL_NAME,
         record.approval?.requestId,
         `The enable request was withdrawn: ${WITHDRAW_TEXT[reason].human}.`,
+        record.kind,
       );
       // A request still in its pre-consent probe belongs to a live tool call,
       // which reports the cancellation itself.
@@ -1159,18 +1212,18 @@ export class ComputerUseHost {
     }
   }
   private notifyControlWithdrawn(id: string, record: ControlRequest, reason: WithdrawReason, noticeTo: string) {
-    const label = record.kind === "browser" ? "browser" : "desktop";
-    this.notify(noticeTo, controlWithdrawnNotice(label, id, reason), { wake: false });
+    this.notify(noticeTo, controlWithdrawnNotice(record.kind, id, reason), { wake: false });
   }
   private refuseControl(id: string, record: ControlRequest): void {
     if (this.controlRequests.get(id) !== record) return;
     this.dropControlRequest(id, record);
-    const label = record.kind === "browser" ? "browser" : "desktop";
+    const label = targetNoun(record.kind);
     this.emitControlResult(
       record.chatId,
       CU_REQUEST_CONTROL_TOOL_NAME,
       record.approval?.requestId,
-      `${label === "browser" ? "Browser" : "Desktop"} control was not enabled.`,
+      `${capitalized(label)} control was not enabled.`,
+      record.kind,
     );
     this.notify(
       record.chatId,
@@ -1181,7 +1234,7 @@ export class ComputerUseHost {
   private async enableApproved(id: string, record: ControlRequest): Promise<ApprovalCompletion> {
     const { chatId, kind } = record;
     const signal = record.abort.signal;
-    const label = kind === "browser" ? "Browser" : "Desktop";
+    const label = capitalized(targetNoun(kind));
     try {
       if (this.controlRequests.get(id) !== record || signal.aborted) throw controlError("cancelled", "This request was withdrawn before it was answered.");
       const current = this.readPolicy(chatId);
@@ -1220,7 +1273,7 @@ export class ComputerUseHost {
       // from a tab's pending ledger must also stop a just-completed open.
       record.sessionId = session.id;
       record.expiresAt = session.expiresAt;
-      this.emitControlResult(chatId, CU_REQUEST_CONTROL_TOOL_NAME, record.approval?.requestId, `${label} control enabled.`);
+      this.emitControlResult(chatId, CU_REQUEST_CONTROL_TOOL_NAME, record.approval?.requestId, `${label} control enabled.`, kind);
       this.notify(
         chatId,
         `${noticeHeader(`${label.toLowerCase()} control enabled`)}\n\nThe human approved your request ${id}. Session ${session.id} (generation ${session.generation}) is ready and agent-controlled for up to 15 minutes. Call cu_observe with it for a fresh frame before acting.`,
@@ -1231,7 +1284,7 @@ export class ComputerUseHost {
       const stopped = signal.aborted;
       const message = error instanceof Error ? error.message : "Control could not be enabled. Check status and retry.";
       logComputerUseFailure("cu_request_control", { chatId }, error, { cancelled: stopped });
-      this.emitControlResult(chatId, CU_REQUEST_CONTROL_TOOL_NAME, record.approval?.requestId, message);
+      this.emitControlResult(chatId, CU_REQUEST_CONTROL_TOOL_NAME, record.approval?.requestId, message, kind);
       // A withdrawal (Stop, a permission change…) is the human's own doing
       // and must not start a turn, but the agent is still told, next turn.
       if (stopped && record.withdrawn) this.notifyControlWithdrawn(id, record, record.withdrawn.reason, record.withdrawn.noticeTo);
@@ -1259,7 +1312,7 @@ export class ComputerUseHost {
       return {
         id,
         sessionId: id,
-        kind: kind === "browser" ? "browser" : "native",
+        kind: viewerKind(kind),
         state: "pending_approval",
         controller: null,
         generation: 0,
@@ -1469,11 +1522,10 @@ export class ComputerUseHost {
       !ACTION_TYPES.includes(String((action as { type?: unknown }).type))
     )
       throw controlError("invalid_request", "Action must be a bounded GUI operation");
-    const kind = uiKind(grant.lease.kind);
+    const kind = kindOfTarget(grant.lease.targetId);
     const axis = axisFor(kind);
     const level = levelFor(kind, this.readPolicy(chatId).policy);
-    if (level === "deny")
-      throw controlError("denied", `${kind === "browser" ? "Browser Use" : "Computer Use"} is denied for this chat; no GUI action can be performed`);
+    if (level === "deny") throw controlError("denied", `${AXIS_LABELS[axis]} is denied for this chat; no GUI action can be performed`);
     const target = this.humanTarget(kind);
     // Prompt and execution share one immutable snapshot: what the human is
     // shown is what runs, even if the caller mutates its object afterwards.
@@ -1519,7 +1571,9 @@ export class ComputerUseHost {
       kind,
     };
     this.actionRequests.set(chatId, record);
-    record.approval = this.raiseApproval(chatId, { toolName: CU_ACTION_TOOL_NAME, input: { summary, target, action: request } }, (approved) => {
+    // `kind` travels with the prompt so the stream can keep a sandbox prompt
+    // from a tab that does not know the sandbox (utils/sse.ts).
+    record.approval = this.raiseApproval(chatId, { toolName: CU_ACTION_TOOL_NAME, input: { summary, target, action: request, kind } }, (approved) => {
       void this.answerAction(record, approved).catch((error) => logComputerUseFailure("cu_action", { chatId, sessionId: id }, error, { escalate: true }));
     });
     return {
@@ -1527,7 +1581,7 @@ export class ComputerUseHost {
       requestId: record.id,
       summary,
       message:
-        "Approval pending: this target is set to Ask in this chat (Browser Use for the browser, Computer Use for the desktop), so the human has been asked in the chat to confirm this action, and it has NOT been performed. This call does not wait — you will be told the outcome in this chat when they answer, or if the request is withdrawn. It runs only against this frame, so until then cu_observe on this session and cu_action on any session answer approval_pending and do nothing; carry on with other work or end your turn. cu_stop on the session withdraws it, and ends the session (re-enabling needs fresh consent).",
+        "Approval pending: this target is set to Ask in this chat (Browser Use for the browser, Computer Use for the desktop, Sandbox desktop for the sandbox), so the human has been asked in the chat to confirm this action, and it has NOT been performed. This call does not wait — you will be told the outcome in this chat when they answer, or if the request is withdrawn. It runs only against this frame, so until then cu_observe on this session and cu_action on any session answer approval_pending and do nothing; carry on with other work or end your turn. cu_stop on the session withdraws it, and ends the session (re-enabling needs fresh consent).",
     };
   }
   /**
@@ -1585,6 +1639,7 @@ export class ComputerUseHost {
       CU_ACTION_TOOL_NAME,
       record.approval.requestId,
       `The GUI action request was withdrawn: ${WITHDRAW_TEXT[reason].human}.`,
+      record.kind,
     );
     if (reason === WITHDRAWN.agentStop) return;
     this.notify(noticeTo, actionWithdrawnNotice(String(record.action.type), record.id, reason), { wake: false });
@@ -1611,7 +1666,7 @@ export class ComputerUseHost {
     if (!approved) {
       // Warn, as a denial always has: repeated refusals are a prompt-injection signal.
       logComputerUseFailure("cu_action", { chatId: record.chatId, sessionId: record.sessionId }, controlError("denied", ACTION_DENIED));
-      this.emitControlResult(record.chatId, CU_ACTION_TOOL_NAME, record.approval?.requestId, "GUI action refused; it was not performed.");
+      this.emitControlResult(record.chatId, CU_ACTION_TOOL_NAME, record.approval?.requestId, "GUI action refused; it was not performed.", record.kind);
       this.notify(record.chatId, `${noticeHeader("GUI action refused")}\n\nYour ${label}. ${ACTION_DENIED}`);
       return;
     }
@@ -1621,6 +1676,7 @@ export class ComputerUseHost {
       CU_ACTION_TOOL_NAME,
       record.approval?.requestId,
       failure ? `The confirmed GUI action was NOT performed: ${humanActionFailure(failure)}.` : "The confirmed GUI action was performed.",
+      record.kind,
     );
     this.notify(
       record.chatId,
@@ -1693,8 +1749,7 @@ export class ComputerUseHost {
   agentRequests(chatId: string): AgentOpenRequest[] {
     const open: AgentOpenRequest[] = [];
     for (const [id, request] of this.controlRequests)
-      if (request.chatId === chatId && !request.sessionId)
-        open.push({ requestId: id, type: "enable_control", kind: request.kind === "browser" ? "browser" : "native" });
+      if (request.chatId === chatId && !request.sessionId) open.push({ requestId: id, type: "enable_control", kind: viewerKind(request.kind) });
     const action = this.actionRequests.get(chatId);
     if (action) open.push({ requestId: action.id, type: "gui_action", summary: action.summary });
     return open;
@@ -1722,57 +1777,11 @@ export class ComputerUseHost {
   }
 }
 
-/**
- * The desktop target's driver. With CALLBOARD_REMOTE_DESKTOP_URL and
- * CALLBOARD_REMOTE_DESKTOP_TOKEN set it is a remote driver host (for example
- * the container in packages/computer-use/docker); otherwise this machine's
- * X11 display. Same target, same permission axis and policy either way: the
- * remote host is only a driver, and every decision stays in this process.
- *
- * Only one of the two set, or a value the remote driver rejects, gives a
- * desktop that probes unavailable with the reason — never a silent fall back
- * to the local display the operator was trying to avoid.
- */
-// TODO(sandbox target, PR 2 of the sandbox-desktop stack): this operator
-// env-var wiring is a stopgap that points the *existing* desktop target, and
-// with it the desktop policy (every other axis on Allow), at a remote host.
-// PR 2 moves it to a separate `sandbox` target kind with its own
-// `sandboxControl` axis behind a capability gate, and PR 3 replaces the
-// variables with containers Callboard starts itself (sandboxRunArgs). Remove
-// CALLBOARD_REMOTE_DESKTOP_* from here when the sandbox target lands.
-export function desktopDriver(
-  pkg: Pick<typeof import("@wolpertingerlabs/computer-use"), "createRemoteDriver" | "createNativeDesktopDriver">,
+/** The local desktop target's driver: this machine's X11 display, and nothing else. */
+export function localDesktopDriver(
+  pkg: Pick<typeof import("@wolpertingerlabs/computer-use"), "createNativeDesktopDriver">,
   env: NodeJS.ProcessEnv = process.env,
 ): Driver {
-  // An empty variable is an unset one: `||`, not `??`, so `X=""` never
-  // overrides (or half-configures) the others.
-  const url = env.CALLBOARD_REMOTE_DESKTOP_URL?.trim() || undefined;
-  const inline = env.CALLBOARD_REMOTE_DESKTOP_TOKEN?.trim() || undefined;
-  const tokenFile = env.CALLBOARD_REMOTE_DESKTOP_TOKEN_FILE?.trim() || undefined;
-  if (url || inline || tokenFile) {
-    try {
-      if (inline && tokenFile) throw new Error("Set CALLBOARD_REMOTE_DESKTOP_TOKEN_FILE or CALLBOARD_REMOTE_DESKTOP_TOKEN, not both.");
-      if (!url || !(inline || tokenFile))
-        throw new Error("Set CALLBOARD_REMOTE_DESKTOP_URL and CALLBOARD_REMOTE_DESKTOP_TOKEN_FILE (or _TOKEN) together, or none of them.");
-      // A token file is read by the package's readTokenFile at each handshake
-      // (so a rotated token is picked up), with symlinks allowed: Kubernetes
-      // secrets and some credential stores are symlinks, and this path is the
-      // operator's, not the desktop's. A bad file makes the target unavailable
-      // with the reason, as a bad setting here does.
-      return pkg.createRemoteDriver(inline ? { url, token: inline } : { url, tokenFile: tokenFile! });
-    } catch (error) {
-      const reason = `Remote desktop is misconfigured: ${error instanceof Error ? error.message : "invalid settings"}`;
-      log.error(reason);
-      return {
-        kind: "native-desktop",
-        lockDomain: "remote-desktop:misconfigured",
-        probe: async () => ({ available: false, kind: "native-desktop", readiness: "setup-required", reason, capabilities: [] }),
-        open: async () => {
-          throw controlError("unsupported", reason);
-        },
-      };
-    }
-  }
   return pkg.createNativeDesktopDriver({
     enabled: true,
     display: env.CALLBOARD_NATIVE_DISPLAY ?? env.DISPLAY,
@@ -1781,19 +1790,73 @@ export function desktopDriver(
   });
 }
 
+/** A sandbox target that can never open, and says why. Its own lock domain, so it never contends with a real one. */
+function unavailableSandboxDriver(reason: string): Driver {
+  return {
+    kind: "native-desktop",
+    lockDomain: "sandbox-desktop:unavailable",
+    probe: async () => ({ available: false, kind: "native-desktop", readiness: "setup-required", reason, capabilities: [] }),
+    open: async () => {
+      throw controlError("unsupported", reason);
+    },
+  };
+}
+const SANDBOX_NOT_CONFIGURED =
+  "Sandbox desktop is not configured on the Callboard service host. Start the sandbox container (packages/computer-use/docker/run.sh) and set CALLBOARD_SANDBOX_DESKTOP_URL and CALLBOARD_SANDBOX_DESKTOP_TOKEN_FILE.";
+const unconfiguredSandboxDriver = () => unavailableSandboxDriver(SANDBOX_NOT_CONFIGURED);
+
+/**
+ * The Sandbox desktop target's driver: a remote driver host — the hardened
+ * container in packages/computer-use/docker — named by
+ * CALLBOARD_SANDBOX_DESKTOP_URL with its token in
+ * CALLBOARD_SANDBOX_DESKTOP_TOKEN_FILE (or, discouraged because every child
+ * process inherits it, CALLBOARD_SANDBOX_DESKTOP_TOKEN). The host is only a
+ * driver: every decision stays in this process, under `sandboxControl`.
+ *
+ * None of them set gives a target that probes unavailable (`setup-required`)
+ * with a reason saying how to set it up. Only some of them set, or a value the
+ * remote driver rejects, gives the same with what is wrong — never a fall back
+ * to anything else. Containers Callboard starts itself replace these variables
+ * in a later change.
+ */
+export function sandboxDesktopDriver(
+  pkg: Pick<typeof import("@wolpertingerlabs/computer-use"), "createRemoteDriver">,
+  env: NodeJS.ProcessEnv = process.env,
+): Driver {
+  // An empty variable is an unset one: `||`, not `??`, so `X=""` never
+  // overrides (or half-configures) the others.
+  const url = env.CALLBOARD_SANDBOX_DESKTOP_URL?.trim() || undefined;
+  const inline = env.CALLBOARD_SANDBOX_DESKTOP_TOKEN?.trim() || undefined;
+  const tokenFile = env.CALLBOARD_SANDBOX_DESKTOP_TOKEN_FILE?.trim() || undefined;
+  if (!url && !inline && !tokenFile) return unconfiguredSandboxDriver();
+  try {
+    if (inline && tokenFile) throw new Error("Set CALLBOARD_SANDBOX_DESKTOP_TOKEN_FILE or CALLBOARD_SANDBOX_DESKTOP_TOKEN, not both.");
+    if (!url || !(inline || tokenFile))
+      throw new Error("Set CALLBOARD_SANDBOX_DESKTOP_URL and CALLBOARD_SANDBOX_DESKTOP_TOKEN_FILE (or _TOKEN) together, or none of them.");
+    // A token file is read by the package's readTokenFile at each handshake
+    // (so a rotated token is picked up), with symlinks allowed: Kubernetes
+    // secrets and some credential stores are symlinks, and this path is the
+    // operator's, not the desktop's. A bad file makes the target unavailable
+    // with the reason, as a bad setting here does.
+    return pkg.createRemoteDriver(inline ? { url, token: inline } : { url, tokenFile: tokenFile! });
+  } catch (error) {
+    const reason = `Sandbox desktop is misconfigured: ${error instanceof Error ? error.message : "invalid settings"}`;
+    log.error(reason);
+    return unavailableSandboxDriver(reason);
+  }
+}
+
 let hostPromise: Promise<ComputerUseHost> | undefined;
 export function getComputerUseHost(): Promise<ComputerUseHost> {
   return (hostPromise ??= (async () => {
     const pkg = await import("@wolpertingerlabs/computer-use");
     const drivers = {
       browser: pkg.createBrowserDriver({ network: "unrestricted", executablePath: process.env.CALLBOARD_BROWSER_EXECUTABLE }),
-      desktop: desktopDriver(pkg),
+      desktop: localDesktopDriver(pkg),
+      sandbox: sandboxDesktopDriver(pkg),
     };
     const service = new pkg.ComputerUseService({
-      targets: [
-        { id: "managed-browser", enabled: true, driver: drivers.browser },
-        { id: "native-desktop", enabled: true, driver: drivers.desktop },
-      ],
+      targets: COMPUTER_TARGET_KINDS.map((kind) => ({ id: TARGET_IDS[kind], enabled: true, driver: drivers[kind] })),
       authorize: (request) => host?.authorize(request) ?? "deny",
     });
     const host: ComputerUseHost = new ComputerUseHost(service, drivers);

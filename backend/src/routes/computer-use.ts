@@ -1,7 +1,9 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import rateLimit from "express-rate-limit";
 import { controlOriginError, requireSessionAuth } from "../auth.js";
+import { CLIENT_CAPS } from "shared/types/index.js";
 import { getComputerUseHost, logComputerUseFailure } from "../services/computer-use.js";
+import { createStreamSession } from "../services/stream-session.js";
 
 /** This control plane is for the signed-in human, never an agent API key.
  *  The per-action confirmation now lives in the chat, and `POST
@@ -59,11 +61,18 @@ function handle(operation: string, fn: (req: Request) => Promise<unknown>) {
   };
 }
 
+/**
+ * The status DTO, with the Sandbox desktop only for a client that says it
+ * understands it. Same handshake the stream reads (`X-Callboard-Caps`, sent by
+ * `handshakeHeaders()`), parsed the same way `GET /api/stream/:id/pending`
+ * does: `"sandbox"` is a `ComputerUseKind` an older bundle has no branch for.
+ */
 computerUseRouter.get(
   "/:chatId/status",
   handle("status", async (req) => {
     const { chatId } = ids(req);
-    return (await getComputerUseHost()).status(chatId);
+    const sandbox = createStreamSession(req).supports(CLIENT_CAPS.sandboxTarget);
+    return (await getComputerUseHost()).status(chatId, { sandbox });
   }),
 );
 computerUseRouter.post(
@@ -71,9 +80,10 @@ computerUseRouter.post(
   handle("open", async (req) => {
     const { chatId } = ids(req);
     const kind = req.body?.kind;
-    if (kind !== "browser" && kind !== "desktop" && kind !== "native" && kind !== "native-desktop")
-      throw Object.assign(new Error("Choose browser or native desktop explicitly"), { code: "invalid_request" });
-    return { session: await (await getComputerUseHost()).open(chatId, kind === "browser" ? "browser" : "desktop") };
+    // Only a client that knows the sandbox can name it, so no capability check is needed here.
+    if (kind !== "browser" && kind !== "desktop" && kind !== "native" && kind !== "native-desktop" && kind !== "sandbox")
+      throw Object.assign(new Error("Choose browser, native desktop or sandbox desktop explicitly"), { code: "invalid_request" });
+    return { session: await (await getComputerUseHost()).open(chatId, kind === "browser" ? "browser" : kind === "sandbox" ? "sandbox" : "desktop") };
   }),
 );
 computerUseRouter.post(

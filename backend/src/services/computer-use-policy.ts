@@ -1,14 +1,25 @@
 /** Host-side policy translation. The package service remains authoritative.
  *
- * Two axes govern the two targets, one each:
+ * Three axes govern the three targets, one each:
  *  - `browserControl` ("Browser Use") — the managed browser target. It needs no
  *    other axis; in particular it does NOT require `webAccess`. Browser
  *    networking is unrestricted, and opting into Browser Use opts into that.
- *  - `computerControl` ("Computer Use") — the desktop target. It additionally
- *    requires every other axis, `browserControl` included, on `allow`: a
- *    desktop session can open any app (a browser among them) and cannot honour
- *    a narrower promise, and on `allow` it could do so unattended.
- * A missing or malformed axis reads as `deny`; neither inherits from the other.
+ *  - `sandboxControl` ("Sandbox desktop") — a disposable Linux desktop in a
+ *    hardened container (packages/computer-use/docker). It needs no other axis
+ *    either: the container is the boundary. Nothing of this machine is mounted
+ *    into it — no files, no credentials, no Docker socket — so the file and
+ *    code axes have nothing there to govern. Its outbound network is
+ *    unrestricted, and, as for Browser Use, opting into the Sandbox desktop
+ *    opts into that; `webAccess` is not consulted.
+ *  - `computerControl` ("Computer Use") — the desktop target, this machine's
+ *    own session. It additionally requires `fileRead`, `fileWrite`,
+ *    `codeExecution`, `webAccess` and `browserControl` on `allow`: a desktop
+ *    session can open any app (a browser among them) and cannot honour a
+ *    narrower promise, and on `allow` it could do so unattended. It does NOT
+ *    require `sandboxControl`: the sandbox reaches strictly less than the
+ *    user's desktop already does, so allowing it would add no authority the
+ *    desktop lacks, and requiring it would only tie two unrelated opt-ins.
+ * A missing or malformed axis reads as `deny`; none inherits from another.
  *
  * What each axis's levels mean for its target:
  *  - `deny`  — no target can be enabled; `cu_*` calls are refused by the service
@@ -39,10 +50,13 @@ import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("computer-use-policy");
 
-export type ComputerTargetKind = "browser" | "desktop";
+export type ComputerTargetKind = "browser" | "desktop" | "sandbox";
+export const COMPUTER_TARGET_KINDS: readonly ComputerTargetKind[] = ["browser", "desktop", "sandbox"];
+export type ControlAxis = "browserControl" | "computerControl" | "sandboxControl";
 export interface ComputerUsePolicy {
   browserControl: PermissionLevel;
   computerControl: PermissionLevel;
+  sandboxControl: PermissionLevel;
   fileRead: PermissionLevel;
   fileWrite: PermissionLevel;
   codeExecution: PermissionLevel;
@@ -59,6 +73,7 @@ export function readComputerUsePolicy(value: unknown): ComputerUsePolicy {
   return {
     browserControl: level("browserControl"),
     computerControl: level("computerControl"),
+    sandboxControl: level("sandboxControl"),
     fileRead: level("fileRead"),
     fileWrite: level("fileWrite"),
     codeExecution: level("codeExecution"),
@@ -66,9 +81,17 @@ export function readComputerUsePolicy(value: unknown): ComputerUsePolicy {
   };
 }
 
+const AXIS: Readonly<Record<ComputerTargetKind, ControlAxis>> = { browser: "browserControl", desktop: "computerControl", sandbox: "sandboxControl" };
+/** The permission names a person sees, per axis. */
+export const AXIS_LABELS: Readonly<Record<ControlAxis, string>> = {
+  browserControl: "Browser Use",
+  computerControl: "Computer Use",
+  sandboxControl: "Sandbox desktop",
+};
+
 /** The axis that governs a target. */
-export function axisFor(kind: ComputerTargetKind): "browserControl" | "computerControl" {
-  return kind === "browser" ? "browserControl" : "computerControl";
+export function axisFor(kind: ComputerTargetKind): ControlAxis {
+  return AXIS[kind];
 }
 
 /** The level of the axis that governs a target. */
@@ -76,18 +99,24 @@ export function levelFor(kind: ComputerTargetKind, policy: ComputerUsePolicy): P
   return policy[axisFor(kind)];
 }
 
-/** The most permissive of the two control axes — "does any target accept enabling". */
-export function aggregateControlLevel(policy: ComputerUsePolicy): PermissionLevel {
-  return mostPermissiveLevel(policy.browserControl, policy.computerControl);
+/**
+ * The most permissive of the control axes of `kinds` (all three by default) —
+ * "does any of these targets accept enabling". A client that is not sent the
+ * sandbox asks about the other two only, so a chat whose only open axis is
+ * `sandboxControl` does not show it an Enable it can do nothing with.
+ */
+export function aggregateControlLevel(policy: ComputerUsePolicy, kinds: readonly ComputerTargetKind[] = COMPUTER_TARGET_KINDS): PermissionLevel {
+  return mostPermissiveLevel(...kinds.map((kind) => levelFor(kind, policy)));
 }
 
 /**
  * Record the way a caller that is not a signed-in human can still put a
- * non-`deny` `browserControl` or `computerControl` on a chat: **creating** one —
+ * non-`deny` control axis (`browserControl`, `computerControl` or
+ * `sandboxControl`) on a chat: **creating** one —
  * directly (`POST /api/chats`, the stream route) or via a new-chat draft
  * (`POST /api/queue`, whose permissions `execute-now` later creates the chat with).
  *
- * `PATCH /:id/permissions` refuses to *change* either axis for anyone but a
+ * `PATCH /:id/permissions` refuses to *change* any of them for anyone but a
  * same-origin session, because that rewrites the expectation of a human who
  * already chose `ask` — their existing Enable habit becomes the exploit. A
  * brand-new chat has no such expectation to violate, and passing permissions is
@@ -102,7 +131,7 @@ export function noteComputerControlAtCreation(where: string, authMethod: unknown
   if (authMethod === "session") return;
   const policy = readComputerUsePolicy(defaultPermissions);
   const caller = typeof authMethod === "string" ? authMethod : "unauthenticated";
-  for (const axis of ["browserControl", "computerControl"] as const) {
+  for (const axis of Object.values(AXIS)) {
     const level = policy[axis];
     if (level !== "deny") log.warn(`[PERM-DIAG] ${where}: a ${caller} caller created a chat with ${axis}=${level}`);
   }
@@ -115,13 +144,24 @@ export function noteComputerControlAtCreation(where: string, authMethod: unknown
  * evaluation are not exposed, and its network reach is part of what Browser
  * Use opts into, so no other axis is consulted.
  *
+ * Sandbox: `sandboxControl` alone. The container is the boundary — it holds
+ * nothing of this machine — so the file and code axes have nothing there to
+ * protect, and its unrestricted network is part of what the Sandbox desktop
+ * opts into.
+ *
  * Desktop: the native driver controls an existing OS session, not a sandbox.
  * It cannot enforce narrower restrictions through arbitrary app pixels, so it
- * requires every other axis — including `browserControl` — on `allow`.
+ * requires the four built-in axes and `browserControl` on `allow`
+ * (`sandboxControl` is not among them; see the module comment).
  */
 export function computerUseScopeError(kind: ComputerTargetKind, policy: ComputerUsePolicy): string | undefined {
   if (kind === "browser") {
     if (policy.browserControl === "deny") return "Browser Use is denied. Change this chat's Browser Use permission explicitly to enable the managed browser.";
+    return undefined;
+  }
+  if (kind === "sandbox") {
+    if (policy.sandboxControl === "deny")
+      return "Sandbox desktop is denied. Change this chat's Sandbox desktop permission explicitly to enable the sandbox desktop.";
     return undefined;
   }
   if (policy.computerControl === "deny") return "Computer Use is denied. Change this chat's Computer Use permission explicitly to enable the desktop.";

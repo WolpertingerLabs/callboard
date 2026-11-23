@@ -32,7 +32,14 @@ import { SessionRoutingError } from "../agents/ports/SessionProvider.js";
 import { readChatSessionMessages, withSessionProvider, withSessionProviderMeta, findChat } from "../utils/chat-lookup.js";
 import { buildChatTree, buildLineageIndex, getParentChatId, paginateTreeRows, walkToRootId } from "../services/chat-lineage.js";
 import { detachChatFromParent } from "../services/chat-detach.js";
-import { inheritedChatFields, resolveForkSource, UnsupportedForkError, writeCompressedSession, writeForkedSession, type ForkSource } from "../services/chat-fork.js";
+import {
+  inheritedChatFields,
+  resolveForkSource,
+  UnsupportedForkError,
+  writeCompressedSession,
+  writeForkedSession,
+  type ForkSource,
+} from "../services/chat-fork.js";
 import { checkSupersedable, supersedeChat, SupersedeRefusedError, type SupersedeKind, type SupersedeResult } from "../services/chat-supersede.js";
 import { planRerun } from "../services/chat-rerun.js";
 import { sendMessage, stopSession, type SendMessageOptions } from "../services/claude.js";
@@ -50,8 +57,28 @@ import { getSessionProviders } from "../agents/factory.js";
 import { isRetiredProvider, isRoutableProvider, RETIRED_PROVIDER_LABELS, type InternalProviderKind } from "../agents/ports/AgentProvider.js";
 import { providerLabel } from "../agents/handoff.js";
 import { generateChatTitleFromTranscript } from "../services/quick-completion.js";
-import { ASIDE_MAX_PROMPT_CHARS, ASIDE_ROLE, asideForkPoint, asideTitle, parseAsideQuotes, quoteTimeFormatter, renderQuotedPrompt, type AsideQuote, type DefaultPermissions } from "shared/types/index.js";
-import { ALL_SPACES, normalizePermissions, isSidebarFolderEligible, parseSidebarFolder, readSidebarFolder, sameSidebarFolder, type ParsedMessage, type Chat as SharedChat, type SpaceAgentScope } from "shared/types/index.js";
+import {
+  ASIDE_MAX_PROMPT_CHARS,
+  ASIDE_ROLE,
+  asideForkPoint,
+  asideTitle,
+  parseAsideQuotes,
+  quoteTimeFormatter,
+  renderQuotedPrompt,
+  type AsideQuote,
+  type DefaultPermissions,
+} from "shared/types/index.js";
+import {
+  ALL_SPACES,
+  normalizePermissions,
+  isSidebarFolderEligible,
+  parseSidebarFolder,
+  readSidebarFolder,
+  sameSidebarFolder,
+  type ParsedMessage,
+  type Chat as SharedChat,
+  type SpaceAgentScope,
+} from "shared/types/index.js";
 import { createLogger } from "../utils/logger.js";
 import { buildWorkspaceIndex, viewForDirectory } from "../services/workspace-views.js";
 // The chat-list cache lives in a standalone module so services can invalidate
@@ -701,7 +728,8 @@ chatsRouter.get("/", (req, res) => {
     // needs the full session list so out-of-window tree relatives can be augmented,
     // and includePinned for the same reason: a pinned chat is appended precisely
     // when it is NOT in the window, so its session is never in a paged fetch.
-    const needsPostFilter = bookmarkedFilter || excludeTriggered || includeLineage || scopedByCardLifecycle || includePinned || includeFoldered || spaceFiltering;
+    const needsPostFilter =
+      bookmarkedFilter || excludeTriggered || includeLineage || scopedByCardLifecycle || includePinned || includeFoldered || spaceFiltering;
     const fetchLimit = needsPostFilter ? Number.MAX_SAFE_INTEGER : limit;
     const fetchOffset = needsPostFilter ? 0 : offset;
     const { sessions: discoveredSessions, total: rawTotal } = discoverSessionsPaginated(fetchLimit, fetchOffset);
@@ -875,7 +903,6 @@ chatsRouter.get("/", (req, res) => {
      * cannot put the badge on the wrong row.
      */
     const anyApprovalParked = hasParkedApprovals();
-
 
     /**
      * Is this row the single row that should carry "needs you"?
@@ -1342,8 +1369,8 @@ chatsRouter.post("/:id/fork", async (req, res) => {
             forkAtLatest: { type: "boolean", description: "Aside only: fork at the newest message of this chat instead of at quotes. Omit timestamp and quotes; give a prompt or imageIds." },
             quotes: { type: "array", maxItems: 20, items: { type: "object", required: ["timestamp", "role", "text"], properties: { timestamp: { type: "string" }, role: { type: "string", enum: ["user", "assistant", "system"] }, text: { type: "string", maxLength: 10000 } } }, description: "Aside only, required unless forkAtLatest: the quoted passages. `timestamp` must equal the latest of their timestamps (the fork point)." },
             prompt: { type: "string", maxLength: 20000, description: "Aside only: the question. When given, the first turn is started immediately." },
-            readOnly: { type: "boolean", description: "Aside only: Read only. fileWrite and codeExecution at most ask, browserControl and computerControl deny (all still capped by this chat), and the model reviewer is not inherited, so every such ask reaches the user." },
-            permissions: { type: "object", description: "Aside only: permissions (full or partial — fileRead, fileWrite, codeExecution, webAccess, browserControl, computerControl; allow/ask/deny). Merged over the permissions of this chat and capped so no category is looser. Omit to inherit them." },
+            readOnly: { type: "boolean", description: "Aside only: Read only. fileWrite and codeExecution at most ask, browserControl, computerControl and sandboxControl deny (all still capped by this chat), and the model reviewer is not inherited, so every such ask reaches the user." },
+            permissions: { type: "object", description: "Aside only: permissions (full or partial — fileRead, fileWrite, codeExecution, webAccess, browserControl, computerControl, sandboxControl; allow/ask/deny). Merged over the permissions of this chat and capped so no category is looser. Omit to inherit them." },
             timeZone: { type: "string", description: "Aside only: IANA time zone for the HH:MM on the quote origin lines (the browser zone). Unknown zones fall back to the daemon zone." },
             imageIds: { type: "array", items: { type: "string" }, description: "Aside only: uploads (POST /images/upload) attached to the first turn, which then starts even without a prompt. All or nothing: 409 when any is missing. The 201 then carries attachedImages." },
             activePlugins: { type: "array", items: { type: "string" }, description: "Aside with prompt or imageIds only: active plugin IDs for the first turn, as on POST /chats/:id/message." },
@@ -1464,7 +1491,8 @@ chatsRouter.post("/:id/fork", async (req, res) => {
   try {
     forked = writeForkedSession({ chat, source, targetKind, targetProvider, timestamp, newSessionId });
   } catch (error) {
-    if (error instanceof UnsupportedForkError) return res.status(400).json({ error: `Forking into ${providerLabel(targetKind)} is not supported`, code: FORK_TARGET_INVALID });
+    if (error instanceof UnsupportedForkError)
+      return res.status(400).json({ error: `Forking into ${providerLabel(targetKind)} is not supported`, code: FORK_TARGET_INVALID });
     log.error(`Failed to fork session (${providerKind} → ${targetKind}): ${error}`);
   }
   if (!forked) {
@@ -1720,7 +1748,10 @@ function latestMessageTimestamp(messages: readonly { timestamp?: string }[]): st
  * the cutoff, resolve the chat and its provider, and refuse what cannot be
  * superseded — all before anything is written or a model is called.
  */
-function resolveSupersedeRequest(req: Request, verb: string): { ok: true; chat: any; source: ForkSource; timestamp: string } | { ok: false; status: number; error: string } {
+function resolveSupersedeRequest(
+  req: Request,
+  verb: string,
+): { ok: true; chat: any; source: ForkSource; timestamp: string } | { ok: false; status: number; error: string } {
   const { timestamp } = req.body ?? {};
   if (!timestamp || typeof timestamp !== "string") return { ok: false, status: 400, error: "timestamp is required" };
   if (isNaN(new Date(timestamp).getTime())) return { ok: false, status: 400, error: "timestamp is not a valid date" };
@@ -1737,7 +1768,11 @@ function resolveSupersedeRequest(req: Request, verb: string): { ok: true; chat: 
     const expected = req.body.expectedParentChatId;
     if (expected !== null && typeof expected !== "string") return { ok: false, status: 400, error: "expectedParentChatId must be a string or null" };
     if ((getParentChatId(source.meta) ?? null) !== (expected || null)) {
-      return { ok: false, status: 409, error: "This chat was moved in the chat tree since you opened it (another tab may have continued or compressed it). Reload and try again." };
+      return {
+        ok: false,
+        status: 409,
+        error: "This chat was moved in the chat tree since you opened it (another tab may have continued or compressed it). Reload and try again.",
+      };
     }
   }
   return { ok: true, chat, source, timestamp };
@@ -1840,7 +1875,8 @@ chatsRouter.post("/:id/continue-from", (req, res) => {
   try {
     written = writeForkedSession({ chat, source, targetKind: source.providerKind, targetProvider: source.provider, timestamp, newSessionId });
   } catch (error) {
-    if (error instanceof UnsupportedForkError) return res.status(400).json({ error: `${providerLabel(source.providerKind)} chats cannot be continued from a message` });
+    if (error instanceof UnsupportedForkError)
+      return res.status(400).json({ error: `${providerLabel(source.providerKind)} chats cannot be continued from a message` });
     log.error(`Failed to write continuation of ${chat.id}: ${error}`);
   }
   if (!written) return res.status(400).json({ error: "Could not continue: no messages found at or before that point" });
@@ -1873,7 +1909,11 @@ function recheckSupersedable(chat: any, expectedParent: string | null): { ok: tr
   const check = checkSupersedable(chat);
   if (!check.ok) return check;
   if ((getParentChatId(parseChatMetadata(chat.metadata)) ?? null) !== expectedParent) {
-    return { ok: false, status: 409, error: "This chat was moved in the chat tree while the rerun was starting (another tab may have continued or compressed it)" };
+    return {
+      ok: false,
+      status: 409,
+      error: "This chat was moved in the chat tree while the rerun was starting (another tab may have continued or compressed it)",
+    };
   }
   return { ok: true };
 }
@@ -1942,7 +1982,9 @@ chatsRouter.post("/:id/rerun", async (req, res) => {
   const loaded = plan.imageIds.length > 0 ? loadImageBuffers(plan.imageIds) : [];
   if (loaded.length < plan.imageIds.length) {
     const missing = plan.imageIds.length - loaded.length;
-    return res.status(400).json({ error: `${missing} of this message's ${plan.imageIds.length} image(s) are no longer stored, so it cannot be rerun as it was sent` });
+    return res
+      .status(400)
+      .json({ error: `${missing} of this message's ${plan.imageIds.length} image(s) are no longer stored, so it cannot be rerun as it was sent` });
   }
   const images = loaded.filter((u) => u.name === undefined);
   if (!prompt.trim() && images.length === 0) return res.status(400).json({ error: "That message has nothing left to send" });
@@ -1972,7 +2014,8 @@ chatsRouter.post("/:id/rerun", async (req, res) => {
         newSessionId,
       });
     } catch (error) {
-      if (error instanceof UnsupportedForkError) return res.status(400).json({ error: `${providerLabel(source.providerKind)} chats cannot be rerun from a message` });
+      if (error instanceof UnsupportedForkError)
+        return res.status(400).json({ error: `${providerLabel(source.providerKind)} chats cannot be rerun from a message` });
       // A writer that threw is a server fault, not "nothing before the prompt".
       log.error(`Failed to write rerun of ${chat.id}: ${error}`);
       return res.status(500).json({ error: `Could not write the rerun's session: ${(error as Error).message}` });
@@ -2051,7 +2094,9 @@ chatsRouter.post("/:id/rerun", async (req, res) => {
   // or compressed from another tab, or moved in the tree since the request's
   // checks: re-read it, check again, and supersede the record as it is now.
   const current = findChat(chat.id, false) as any;
-  const recheck = current ? recheckSupersedable(current, parentAtStart) : { ok: false as const, status: 404, error: "The chat was deleted while the rerun was starting" };
+  const recheck = current
+    ? recheckSupersedable(current, parentAtStart)
+    : { ok: false as const, status: 404, error: "The chat was deleted while the rerun was starting" };
   if (!recheck.ok) {
     return res.status(recheck.status).json({ error: `${recheck.error}. The rerun is running as a separate chat.`, chatId: fresh.id });
   }
@@ -2164,7 +2209,8 @@ chatsRouter.post("/:id/compress", (req, res) => {
   const direction: CompressDirection = req.body.direction;
   const summary = typeof req.body.summary === "string" ? req.body.summary.trim() : "";
   if (!summary) return res.status(400).json({ error: "summary is required" });
-  if (summary.length > MAX_COMPRESSION_SUMMARY_CHARS) return res.status(400).json({ error: `summary is longer than ${MAX_COMPRESSION_SUMMARY_CHARS} characters` });
+  if (summary.length > MAX_COMPRESSION_SUMMARY_CHARS)
+    return res.status(400).json({ error: `summary is longer than ${MAX_COMPRESSION_SUMMARY_CHARS} characters` });
   const fingerprint = typeof req.body.fingerprint === "string" ? req.body.fingerprint : "";
   if (!fingerprint) return res.status(400).json({ error: "fingerprint is required — pass the one /compress/preview returned with the summary" });
   const resolved = resolveSupersedeRequest(req, "compressed");
@@ -2177,7 +2223,9 @@ chatsRouter.post("/:id/compress", (req, res) => {
     // compress-later preview followed by more conversation would otherwise drop
     // the new messages without a trace.
     if (spanFingerprint(summarised) !== fingerprint) {
-      return res.status(409).json({ error: "The conversation changed since the summary was generated. Regenerate the summary and try again.", code: "summary_stale" });
+      return res
+        .status(409)
+        .json({ error: "The conversation changed since the summary was generated. Regenerate the summary and try again.", code: "summary_stale" });
     }
   } catch (error: any) {
     if (error instanceof CompressionInputError) return res.status(400).json({ error: error.message });
@@ -2877,7 +2925,9 @@ chatsRouter.post("/:id/regenerate-title", async (req, res) => {
     // readable conversation" — false of a chat that has a conversation no
     // surviving provider can read.
     if (isRetiredProvider(meta.provider)) {
-      return res.status(400).json({ error: `This chat ran on ${RETIRED_PROVIDER_LABELS[meta.provider]}, which has been removed. Its title cannot be regenerated.` });
+      return res
+        .status(400)
+        .json({ error: `This chat ran on ${RETIRED_PROVIDER_LABELS[meta.provider]}, which has been removed. Its title cannot be regenerated.` });
     }
 
     // Same session set and provider resolution as GET /:id/messages: a chat's
@@ -2924,7 +2974,7 @@ chatsRouter.post("/:id/regenerate-title", async (req, res) => {
 chatsRouter.patch("/:id/permissions", (req, res) => {
   // #swagger.tags = ['Chats']
   // #swagger.summary = 'Update chat permissions'
-  // #swagger.description = 'Update the default tool permissions for a chat. Changes take effect immediately for future tool use checks. The browserControl (Browser Use) and computerControl (Computer Use) axes are the exception to this router\'s bearer-key access: CHANGING either requires a logged-in same-origin session, because allow means unattended GUI control and an agent must not be able to raise the level that governs it. Requests that leave them unchanged — or omit them, which preserves the stored value — are unaffected. Exception: if computerControl changes and browserControl is omitted, the request is treated as coming from a pre-split client — deny also denies browserControl, and ask or allow is refused with 409 stale_client.'
+  // #swagger.description = 'Update the default tool permissions for a chat. Changes take effect immediately for future tool use checks. The browserControl (Browser Use), computerControl (Computer Use) and sandboxControl (Sandbox desktop) axes are the exception to this router\'s bearer-key access: CHANGING any of them requires a logged-in same-origin session, because allow means unattended GUI control and an agent must not be able to raise the level that governs it. Requests that leave them unchanged — or omit them, which preserves the stored value — are unaffected. Exception: if computerControl changes and browserControl is omitted, the request is treated as coming from a pre-split client — deny also denies browserControl (and sandboxControl, if omitted), and ask or allow is refused with 409 stale_client.'
   /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
   /* #swagger.requestBody = {
     required: true,
@@ -2943,7 +2993,8 @@ chatsRouter.patch("/:id/permissions", (req, res) => {
                 codeExecution: { type: "string", enum: ["allow", "ask", "deny"] },
                 webAccess: { type: "string", enum: ["allow", "ask", "deny"] },
                 browserControl: { type: "string", enum: ["allow", "ask", "deny"], description: "Browser Use. Changing it requires a logged-in same-origin session. Omit to keep the stored value. — unless computerControl changes in the same request (pre-split client): then a computerControl deny also denies this, and ask/allow is refused with 409." },
-                computerControl: { type: "string", enum: ["allow", "ask", "deny"], description: "Computer Use (desktop). Changing it requires a logged-in same-origin session. Omit to keep the stored value." }
+                computerControl: { type: "string", enum: ["allow", "ask", "deny"], description: "Computer Use (desktop). Changing it requires a logged-in same-origin session. Omit to keep the stored value." },
+                sandboxControl: { type: "string", enum: ["allow", "ask", "deny"], description: "Sandbox desktop (a disposable desktop in a hardened container). Changing it requires a logged-in same-origin session. Omit to keep the stored value." }
               }
             },
             modelReview: { type: "boolean", description: "Screen permission asks with the model safety reviewer before a person sees them. Omit to keep the stored value." },
@@ -2955,7 +3006,7 @@ chatsRouter.patch("/:id/permissions", (req, res) => {
   } */
   /* #swagger.responses[200] = { description: "Updated chat" } */
   /* #swagger.responses[400] = { description: "Invalid request body" } */
-  /* #swagger.responses[403] = { description: "Changing browserControl or computerControl from a bearer key or a cross-origin request" } */
+  /* #swagger.responses[403] = { description: "Changing browserControl, computerControl or sandboxControl from a bearer key or a cross-origin request" } */
   /* #swagger.responses[409] = { description: "A request that changes computerControl to ask/allow without a browserControl key (an older tab, from before the axes were split); nothing is applied" } */
   /* #swagger.responses[404] = { description: "Chat not found" } */
   const { defaultPermissions } = req.body;
@@ -2971,7 +3022,7 @@ chatsRouter.patch("/:id/permissions", (req, res) => {
     }
   }
 
-  const CONTROL_AXES = ["browserControl", "computerControl"] as const;
+  const CONTROL_AXES = ["browserControl", "computerControl", "sandboxControl"] as const;
   for (const axis of CONTROL_AXES) {
     if (Object.hasOwn(defaultPermissions, axis) && !validLevels.includes(defaultPermissions[axis])) {
       return res.status(400).json({ error: `${axis} must be one of: allow, ask, deny` });
@@ -2981,7 +3032,10 @@ chatsRouter.patch("/:id/permissions", (req, res) => {
   // the four axes: an API key that may set an axis to "allow" gains nothing
   // by letting a reviewer or a parent (capped at its own policy) answer.
   const { modelReview, parentAnswers } = req.body;
-  for (const [key, value] of [["modelReview", modelReview], ["parentAnswers", parentAnswers]] as const) {
+  for (const [key, value] of [
+    ["modelReview", modelReview],
+    ["parentAnswers", parentAnswers],
+  ] as const) {
     if (value !== undefined && typeof value !== "boolean") return res.status(400).json({ error: `${key} must be a boolean` });
   }
 
@@ -2992,9 +3046,9 @@ chatsRouter.patch("/:id/permissions", (req, res) => {
     const meta: Record<string, any> = parseChatMetadata(chat.metadata);
 
     /**
-     * The two control axes (`browserControl` — Browser Use, `computerControl` —
-     * Computer Use) are not like the other four: they are the ones an agent
-     * could usefully raise on its own chat.
+     * The control axes (`browserControl` — Browser Use, `computerControl` —
+     * Computer Use, `sandboxControl` — Sandbox desktop) are not like the other
+     * four: they are the ones an agent could usefully raise on its own chat.
      *
      * This router sits under `requireAuth`, which accepts a Bearer `cbk_` key —
      * correct for the four axes, where the API is a supported way to widen a
@@ -3006,31 +3060,41 @@ chatsRouter.patch("/:id/permissions", (req, res) => {
      * `ask` behaviour they configured — would hand over unattended control.
      * Before the level governed prompting, that flip bought almost nothing.
      *
-     * So changing either axis keeps the guarantees of the control plane it
+     * So changing any of them keeps the guarantees of the control plane it
      * governs (`requireSessionAuth` + `requireControlOrigin` in
      * routes/computer-use.ts): a logged-in, same-origin human, never an API
      * key. Leaving it alone is unrestricted — an API client updating the other
      * four axes is unaffected, and an omitted key preserves the stored value
      * rather than being normalized down to `deny` behind the human's back.
      * That includes a tab whose bundle predates `browserControl` when it
-     * leaves `computerControl` alone: the stored Browser Use level is kept.
+     * leaves `computerControl` alone: the stored Browser Use level is kept —
+     * and a tab whose bundle predates `sandboxControl`, which never sends it:
+     * the stored Sandbox desktop level is kept, whatever else it changes.
      *
      * A body that CHANGES `computerControl` without any `browserControl` key
      * can only come from such a tab, where that row meant "Browser & Computer
      * Control". Taking it at face value would be wrong both ways, so:
-     *  - Deny → also deny Browser Use. Tightening only, and it is what the
-     *    person asked for: no GUI control.
+     *  - Deny → also deny Browser Use (and Sandbox desktop, which that tab
+     *    cannot show). Tightening only, and it is what the person asked for:
+     *    no GUI control.
      *  - Ask/Allow → refused with 409 (after the auth checks). They meant the
      *    browser; applying it would silently grant desktop-only Computer Use.
      *    Reloading the tab shows the two separate rows.
      */
     const level = (value: unknown) => (value === "allow" || value === "ask" ? value : "deny");
-    const AXIS_LABELS = { browserControl: "Browser Use", computerControl: "Computer Use" } as const;
-    const stored = { browserControl: level(meta.defaultPermissions?.browserControl), computerControl: level(meta.defaultPermissions?.computerControl) };
+    const AXIS_LABELS = { browserControl: "Browser Use", computerControl: "Computer Use", sandboxControl: "Sandbox desktop" } as const;
+    const stored = {
+      browserControl: level(meta.defaultPermissions?.browserControl),
+      computerControl: level(meta.defaultPermissions?.computerControl),
+      sandboxControl: level(meta.defaultPermissions?.sandboxControl),
+    };
     const resolvedControl = { ...stored };
     for (const axis of CONTROL_AXES) if (Object.hasOwn(defaultPermissions, axis)) resolvedControl[axis] = level(defaultPermissions[axis]);
     const staleTabChange = !Object.hasOwn(defaultPermissions, "browserControl") && resolvedControl.computerControl !== stored.computerControl;
-    if (staleTabChange && resolvedControl.computerControl === "deny") resolvedControl.browserControl = "deny";
+    if (staleTabChange && resolvedControl.computerControl === "deny") {
+      resolvedControl.browserControl = "deny";
+      if (!Object.hasOwn(defaultPermissions, "sandboxControl")) resolvedControl.sandboxControl = "deny";
+    }
     for (const axis of CONTROL_AXES) {
       const requested = resolvedControl[axis];
       if (requested !== stored[axis]) {
@@ -3057,7 +3121,10 @@ chatsRouter.patch("/:id/permissions", (req, res) => {
     // services/claude.ts), and the list caches are cleared below.
     const fields: Record<string, any> = { ...meta, defaultPermissions: { ...normalizePermissions(defaultPermissions), ...resolvedControl } };
     // Stored only when on; turning one off clears the key (absent = off).
-    for (const [key, value] of [["modelReview", modelReview], ["parentAnswers", parentAnswers]] as const) {
+    for (const [key, value] of [
+      ["modelReview", modelReview],
+      ["parentAnswers", parentAnswers],
+    ] as const) {
       if (value !== undefined) fields[key] = value ? true : null;
     }
     if (writeQuietMetadata(chat, fields) === "unwritten") {

@@ -186,7 +186,15 @@ describe("continue_chat", () => {
  * drive a looser chat. Refused, not clamped — see the handler comment.
  */
 describe("continue_chat permission ceiling", () => {
-  const UNATTENDED: DefaultPermissions = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", browserControl: "deny", computerControl: "deny" };
+  const UNATTENDED: DefaultPermissions = {
+    fileRead: "allow",
+    fileWrite: "allow",
+    codeExecution: "allow",
+    webAccess: "allow",
+    browserControl: "deny",
+    computerControl: "deny",
+    sandboxControl: "deny",
+  };
   const ASK_EXEC: DefaultPermissions = { ...UNATTENDED, codeExecution: "ask" };
 
   it("refuses an ask caller driving an allow-all chat, and sends nothing", async () => {
@@ -222,7 +230,7 @@ describe("continue_chat permission ceiling", () => {
   });
 
   it("refuses driving a chat with computer control from a caller without it", async () => {
-    existingChatMeta = { defaultPermissions: { ...UNATTENDED, browserControl: "ask", computerControl: "ask" } };
+    existingChatMeta = { defaultPermissions: { ...UNATTENDED, browserControl: "ask", computerControl: "ask", sandboxControl: "deny" } };
     const sender = stubSender();
 
     const result = payload(await continueChat(() => ({ ...UNATTENDED })).handler({ chatId: CHILD_CHAT_ID, prompt: "click things" }));
@@ -244,7 +252,15 @@ describe("continue_chat permission ceiling", () => {
 
 /** A Codex target runs under an explicit `codexSandboxMode`, not its stored permissions. */
 describe("continue_chat — Codex target under an explicit sandbox setting", () => {
-  const UNATTENDED: DefaultPermissions = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", browserControl: "deny", computerControl: "deny" };
+  const UNATTENDED: DefaultPermissions = {
+    fileRead: "allow",
+    fileWrite: "allow",
+    codeExecution: "allow",
+    webAccess: "allow",
+    browserControl: "deny",
+    computerControl: "deny",
+    sandboxControl: "deny",
+  };
   const ASK_EXEC: DefaultPermissions = { ...UNATTENDED, codeExecution: "ask" };
 
   afterEach(() => {

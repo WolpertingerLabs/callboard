@@ -270,6 +270,30 @@ it("legacy pending replay requests reload without an answerable card; upgraded r
   expect(respond("session").status).toBe(200);
   expect(answers).toEqual([true]);
 });
+it.each([
+  ["consent card", "mcp__computer_use__cu_request_control", { kind: "sandbox", target: "sandbox 127.0.0.1:7801" }, { controlRequest: true as const }],
+  ["action prompt", "mcp__computer_use__cu_action", { summary: "Click", kind: "sandbox" }, {}],
+])("pending replay keeps a sandbox %s from a client without sandbox_target", async (_label, toolName, input, extra) => {
+  liveChat();
+  approval(toolName, input, extra);
+  const { CAPS_HEADER, CLIENT_CAPS, handshakeHeaders } = await import("shared/types/index.js");
+  const { SANDBOX_PROMPT_RELOAD } = await import("../utils/sse.js");
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const handler = (streamRouter as any).stack.find((l: any) => l.route?.path === "/:id/pending").route.stack[0].handle;
+  const modern = Object.fromEntries(Object.entries(handshakeHeaders()).map(([k, v]) => [k.toLowerCase(), v]));
+  // The bundle just before this change: identity-capable, sandbox-unaware.
+  const preSandbox = { ...modern, [CAPS_HEADER.toLowerCase()]: modern[CAPS_HEADER.toLowerCase()].replace(`,${CLIENT_CAPS.sandboxTarget}`, "") };
+  expect(preSandbox[CAPS_HEADER.toLowerCase()]).not.toContain(CLIENT_CAPS.sandboxTarget);
+  for (const headers of [{}, preSandbox]) {
+    const old = fakeResponse("session");
+    handler({ params: { id: CHAT }, headers }, old.res);
+    expect(old.state.body).toEqual({ pending: null, reloadRequired: headers === preSandbox ? SANDBOX_PROMPT_RELOAD : expect.stringContaining("Reload") });
+  }
+  const current = fakeResponse("session");
+  handler({ params: { id: CHAT }, headers: modern }, current.res);
+  expect(current.state.body).toMatchObject({ pending: { toolName, input: { kind: "sandbox" } } });
+});
+
 it.each([true, false])("a delayed human-only %s reply cannot consume an ordinary replacement over HTTP", async (allow) => {
   liveChat();
   approval("mcp__computer_use__cu_request_control");

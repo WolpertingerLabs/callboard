@@ -334,7 +334,10 @@ it("a legacy client gets hard-stop reload guidance for a reviewer hard stop, not
   const { HARD_STOP_PROMPT_RELOAD, HUMAN_PROMPT_RELOAD, GENERIC_HUMAN_PROMPT_RELOAD, humanPromptReloadMessage } = await import("./sse.js");
   const f = fakeResponse();
   beginSSE(fakeRequest({}), f.res);
-  createSSEHandler(f.res, new EventEmitter())({
+  createSSEHandler(
+    f.res,
+    new EventEmitter(),
+  )({
     type: "permission_request",
     content: "",
     toolName: "Bash",
@@ -352,4 +355,84 @@ it("a legacy client gets hard-stop reload guidance for a reviewer hard stop, not
   // The other cases keep (or get) a message that names them.
   expect(humanPromptReloadMessage({ toolName: "mcp__computer_use__cu_action", humanOnly: true })).toBe(HUMAN_PROMPT_RELOAD);
   expect(humanPromptReloadMessage({ toolName: "SomethingNew", humanOnly: true })).toBe(GENERIC_HUMAN_PROMPT_RELOAD);
+});
+
+describe("Sandbox desktop for a client without sandbox_target", () => {
+  /** The bundle just before the sandbox target: identity-capable, sandbox-unaware. */
+  const preSandbox = (): IncomingHttpHeaders => {
+    const headers = handshakeAsReceived();
+    const caps = String(headers["x-callboard-caps"]).replace(`,${CLIENT_CAPS.sandboxTarget}`, "");
+    expect(caps).not.toContain(CLIENT_CAPS.sandboxTarget);
+    expect(caps).toContain(CLIENT_CAPS.humanPromptIdentity);
+    return { ...headers, "x-callboard-caps": caps };
+  };
+  const sandboxCards: StreamEvent[] = [
+    {
+      type: "permission_request",
+      content: "",
+      toolName: "mcp__computer_use__cu_request_control",
+      requestId: "consent",
+      humanOnly: true,
+      controlRequest: true,
+      input: { kind: "sandbox", target: "sandbox 127.0.0.1:7801" },
+    },
+    {
+      type: "permission_request",
+      content: "",
+      toolName: "mcp__computer_use__cu_action",
+      requestId: "act",
+      humanOnly: true,
+      input: { summary: "Click", kind: "sandbox" },
+    },
+  ];
+  const sandboxResult = {
+    type: "tool_result",
+    content: "",
+    controlRequestResult: { requestId: "consent", message: "Sandbox desktop control enabled." },
+    controlTarget: "sandbox",
+  } as StreamEvent;
+  const desktopResult = {
+    ...sandboxResult,
+    controlRequestResult: { requestId: "d", message: "Desktop control enabled." },
+    controlTarget: "desktop",
+  } as StreamEvent;
+
+  function replay(headers: IncomingHttpHeaders, events: StreamEvent[]) {
+    const f = fakeResponse();
+    beginSSE(fakeRequest(headers), f.res);
+    f.chunks.length = 0;
+    const handler = createSSEHandler(f.res, new EventEmitter());
+    for (const event of events) handler(event);
+    return parseAsFrontend(f.chunks);
+  }
+
+  it("replaces sandbox prompts with the reload notice and drops their outcomes", async () => {
+    const { SANDBOX_PROMPT_RELOAD } = await import("./sse.js");
+    for (const headers of [preSandbox(), {}]) {
+      const frames = replay(headers, [...sandboxCards, sandboxResult, desktopResult]);
+      expect(frames.filter((frame) => frame.type === "permission_request")).toEqual([]);
+      expect(frames.filter((frame) => frame.type === "message_error").map((frame) => frame.content)).toEqual([SANDBOX_PROMPT_RELOAD, SANDBOX_PROMPT_RELOAD]);
+      expect(frames.filter((frame) => frame.type === "message_update")).toEqual([
+        { type: "message_update" },
+        { type: "message_update", controlRequestResult: { requestId: "d", message: "Desktop control enabled." } },
+      ]);
+      expect(JSON.stringify(frames)).not.toContain("sandbox 127.0.0.1");
+    }
+  });
+
+  it("still sends a pre-sandbox client its browser and desktop prompts", () => {
+    const desktop = { ...sandboxCards[0], input: { kind: "desktop", target: "host" } } as StreamEvent;
+    expect(replay(preSandbox(), [desktop]).filter((frame) => frame.type === "permission_request")).toHaveLength(1);
+  });
+
+  it("sends a current client the sandbox prompts and results as-is, without the internal target field", () => {
+    const frames = replay(handshakeAsReceived(), [...sandboxCards, sandboxResult]);
+    expect(frames.filter((frame) => frame.type === "permission_request")).toHaveLength(2);
+    expect(frames.at(-1)).toEqual({ type: "message_update", controlRequestResult: { requestId: "consent", message: "Sandbox desktop control enabled." } });
+  });
+
+  it("does not let another tool's `kind: sandbox` argument hide its prompt", () => {
+    const other = { type: "permission_request", content: "", toolName: "mcp__other__tool", requestId: "x", input: { kind: "sandbox" } } as StreamEvent;
+    expect(replay(preSandbox(), [other]).filter((frame) => frame.type === "permission_request")).toHaveLength(1);
+  });
 });

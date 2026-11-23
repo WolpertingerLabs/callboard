@@ -5,13 +5,45 @@ import { defineTool, textResult } from "../agents/ports/tools.js";
 import type { ToolCallResult } from "../agents/ports/tools.js";
 import { unattendedPermissions } from "./session-spawn.js";
 
-const ALL_ASK: DefaultPermissions = { fileRead: "ask", fileWrite: "ask", codeExecution: "ask", webAccess: "ask", browserControl: "deny", computerControl: "deny" };
+const ALL_ASK: DefaultPermissions = {
+  fileRead: "ask",
+  fileWrite: "ask",
+  codeExecution: "ask",
+  webAccess: "ask",
+  browserControl: "deny",
+  computerControl: "deny",
+  sandboxControl: "deny",
+};
 
 describe("capPermissions", () => {
   it("takes the stricter level on every axis (deny < ask < allow)", () => {
-    const requested: DefaultPermissions = { fileRead: "allow", fileWrite: "ask", codeExecution: "allow", webAccess: "deny", browserControl: "allow", computerControl: "allow" };
-    const ceiling: DefaultPermissions = { fileRead: "ask", fileWrite: "allow", codeExecution: "deny", webAccess: "allow", browserControl: "ask", computerControl: "ask" };
-    expect(capPermissions(requested, ceiling)).toEqual({ fileRead: "ask", fileWrite: "ask", codeExecution: "deny", webAccess: "deny", browserControl: "ask", computerControl: "ask" });
+    const requested: DefaultPermissions = {
+      fileRead: "allow",
+      fileWrite: "ask",
+      codeExecution: "allow",
+      webAccess: "deny",
+      browserControl: "allow",
+      computerControl: "allow",
+      sandboxControl: "deny",
+    };
+    const ceiling: DefaultPermissions = {
+      fileRead: "ask",
+      fileWrite: "allow",
+      codeExecution: "deny",
+      webAccess: "allow",
+      browserControl: "ask",
+      computerControl: "ask",
+      sandboxControl: "deny",
+    };
+    expect(capPermissions(requested, ceiling)).toEqual({
+      fileRead: "ask",
+      fileWrite: "ask",
+      codeExecution: "deny",
+      webAccess: "deny",
+      browserControl: "ask",
+      computerControl: "ask",
+      sandboxControl: "deny",
+    });
   });
 
   it("is the identity on unattended permissions under an unattended ceiling", () => {
@@ -22,7 +54,9 @@ describe("capPermissions", () => {
     expect(capPermissions(unattendedPermissions(), null)).toEqual(ALL_ASK);
     // A legacy four-axis record has no computerControl: absent is deny.
     const legacy = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow" } as unknown as DefaultPermissions;
-    expect(capPermissions({ ...unattendedPermissions(), browserControl: "allow", computerControl: "allow" }, legacy).computerControl).toBe("deny");
+    expect(
+      capPermissions({ ...unattendedPermissions(), browserControl: "allow", computerControl: "allow", sandboxControl: "deny" }, legacy).computerControl,
+    ).toBe("deny");
   });
 
   it("does not mutate its inputs", () => {

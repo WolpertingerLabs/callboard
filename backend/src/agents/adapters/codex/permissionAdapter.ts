@@ -45,7 +45,7 @@ export interface CodexPermissionMapping {
 
 /** True when any built-in axis asks.
  *
- * `browserControl` and `computerControl` are deliberately absent from this and
+ * `browserControl`, `computerControl` and `sandboxControl` are deliberately absent from this and
  * from the sandbox mapping: Codex has no per-call hook, so the adapter cannot enforce those axes
  * at all. The managed `cu_*` tools are gated solely by the computer-use
  * service — `ComputerUseHost.authorize` re-reads the chat's policy on every

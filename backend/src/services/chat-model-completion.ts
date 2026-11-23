@@ -67,7 +67,15 @@ import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("chat-model-completion");
 
-const DENY_ALL: DefaultPermissions = { fileRead: "deny", fileWrite: "deny", codeExecution: "deny", webAccess: "deny", browserControl: "deny", computerControl: "deny" };
+const DENY_ALL: DefaultPermissions = {
+  fileRead: "deny",
+  fileWrite: "deny",
+  codeExecution: "deny",
+  webAccess: "deny",
+  browserControl: "deny",
+  computerControl: "deny",
+  sandboxControl: "deny",
+};
 
 /** Generous: a long span on a slow reasoning model can take minutes. */
 const DEFAULT_TIMEOUT_MS = 8 * 60 * 1000;

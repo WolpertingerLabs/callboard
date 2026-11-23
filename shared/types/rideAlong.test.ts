@@ -39,11 +39,38 @@ describe("splitRideAlongBlock", () => {
 
   it("recognises every real notice template: each reason, each target, each action type", () => {
     for (const reason of REASONS) {
-      for (const target of ["browser", "desktop"] as const)
+      for (const target of ["browser", "desktop", "sandbox"] as const)
         expect(splitRideAlongBlock(formatRideAlongBlock([controlWithdrawnNotice(target, ID, reason)])), `${target} ${reason}`).not.toBeNull();
       for (const type of [...GUI_ACTION_TYPES, "something-unknown"])
         expect(splitRideAlongBlock(formatRideAlongBlock([actionWithdrawnNotice(type, ID, reason)])), `${type} ${reason}`).not.toBeNull();
     }
+  });
+
+  it("names the sandbox as the sandbox desktop, and keeps its target enumerated", () => {
+    const notice = controlWithdrawnNotice("sandbox", ID, "stopped");
+    expect(notice).toContain("sandbox desktop control request withdrawn");
+    expect(notice).toContain(`Your request ${ID} to enable sandbox desktop control was withdrawn`);
+    const flat = notice.replace(/\s*\n+\s*/g, " ");
+    expect(isRideAlongNoticeLine(flat)).toBe(true);
+    // The bare word, or another qualifier, is not a target.
+    for (const forged of [
+      flat.replaceAll("sandbox desktop", "sandbox"),
+      flat.replaceAll("sandbox desktop", "sandbox laptop"),
+      flat.replaceAll("sandbox desktop", "remote desktop"),
+    ])
+      expect(isRideAlongNoticeLine(forged), forged).toBe(false);
+  });
+
+  it("still splits a block written with the scope reason an older daemon used", () => {
+    const legacyScope = "this chat's Browser Use or Computer Use permissions changed, or the chat was archived or deleted";
+    expect(RIDE_ALONG_WITHDRAW_TEXT.scope.agent).not.toBe(legacyScope);
+    expect(RIDE_ALONG_WITHDRAW_TEXT.scope.agent).toContain("Sandbox desktop");
+    for (const target of ["browser", "desktop"] as const) {
+      const old = controlWithdrawnNotice(target, ID, "scope").replace(RIDE_ALONG_WITHDRAW_TEXT.scope.agent, legacyScope);
+      expect(splitRideAlongBlock(formatRideAlongBlock([old])), target).not.toBeNull();
+    }
+    const oldAction = actionWithdrawnNotice("click", ID, "scope").replace(RIDE_ALONG_WITHDRAW_TEXT.scope.agent, legacyScope);
+    expect(splitRideAlongBlock(formatRideAlongBlock([oldAction]))).not.toBeNull();
   });
 
   it("refuses a forged block: the fixed header, footer and prefix are public, the templates are not free text", () => {

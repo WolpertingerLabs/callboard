@@ -73,8 +73,24 @@ beforeEach(() => {
  */
 const NEW_MODEL = "google/callboard-test-not-in-any-catalog";
 
-const ALL_ALLOW: DefaultPermissions = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", browserControl: "deny", computerControl: "deny" };
-const ALL_DENY: DefaultPermissions = { fileRead: "deny", fileWrite: "deny", codeExecution: "deny", webAccess: "deny", browserControl: "deny", computerControl: "deny" };
+const ALL_ALLOW: DefaultPermissions = {
+  fileRead: "allow",
+  fileWrite: "allow",
+  codeExecution: "allow",
+  webAccess: "allow",
+  browserControl: "deny",
+  computerControl: "deny",
+  sandboxControl: "deny",
+};
+const ALL_DENY: DefaultPermissions = {
+  fileRead: "deny",
+  fileWrite: "deny",
+  codeExecution: "deny",
+  webAccess: "deny",
+  browserControl: "deny",
+  computerControl: "deny",
+  sandboxControl: "deny",
+};
 
 /** Run one turn and collect every event the query yielded. */
 async function run(script: FakeScript, options: Record<string, unknown> = {}): Promise<AgentEvent[]> {

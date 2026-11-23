@@ -146,7 +146,8 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
   {
     name: "list_cards",
     qualifiedName: "mcp__callboard-tools__list_cards",
-    description: "List cards (tickets) with lifecycle and narrative status. Includes archived cards by default. Scoped to the calling chat's space unless space is given.",
+    description:
+      "List cards (tickets) with lifecycle and narrative status. Includes archived cards by default. Scoped to the calling chat's space unless space is given.",
     parameters: [
       {
         name: "lifecycle",
@@ -270,7 +271,7 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
       {
         name: "permissions",
         type: "object",
-        description: "Per-category permissions for the child (allow/ask/deny), capped at this chat's own; browser and computer use always denied",
+        description: "Per-category permissions for the child (allow/ask/deny), capped at this chat's own; browser, computer and sandbox use always denied",
         required: false,
       },
       {
@@ -282,8 +283,7 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
       {
         name: "provider",
         type: "enum",
-        description:
-          "Agent engine for the new session. Defaults to the engine this session is running on.",
+        description: "Agent engine for the new session. Defaults to the engine this session is running on.",
         required: false,
         enumValues: [...ROUTABLE_PROVIDER_KINDS],
       },
@@ -435,7 +435,8 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
       {
         name: "grep",
         type: "string",
-        description: "Case-insensitive transcript content search. Requires at least one other filter alongside it. Each hit reports matchKind; engine semantics differ.",
+        description:
+          "Case-insensitive transcript content search. Requires at least one other filter alongside it. Each hit reports matchKind; engine semantics differ.",
         required: false,
       },
       {
@@ -458,7 +459,13 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
       },
       { name: "updatedAfter", type: "string", description: "ISO-8601 date or date-time; only chats updated at or after this instant", required: false },
       { name: "updatedBefore", type: "string", description: "ISO-8601 date or date-time; only chats updated at or before this instant", required: false },
-      { name: "sort", type: "enum", description: "Newest-first by update time (default) or creation time", required: false, enumValues: ["updated", "created"] },
+      {
+        name: "sort",
+        type: "enum",
+        description: "Newest-first by update time (default) or creation time",
+        required: false,
+        enumValues: ["updated", "created"],
+      },
       { name: "limit", type: "number", description: "Page size, 1-100, default 20", required: false },
       { name: "offset", type: "number", description: "Stable global offset, default 0; page with nextOffset", required: false },
     ],
@@ -501,7 +508,8 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
   {
     name: "respond_to_request",
     qualifiedName: "mcp__callboard-tools__respond_to_request",
-    description: "Allow or deny a child chat's open permission prompt. Allow only where this chat itself allows the category; hard stops are for the user only.",
+    description:
+      "Allow or deny a child chat's open permission prompt. Allow only where this chat itself allows the category; hard stops are for the user only.",
     parameters: [
       { name: "chatId", type: "string", description: "The child chat whose prompt to answer", required: true },
       { name: "requestId", type: "string", description: "The open prompt's requestId", required: true },
@@ -1202,8 +1210,7 @@ const AGENT_TOOLS: McpToolDefinition[] = [
       {
         name: "provider",
         type: "enum",
-        description:
-          "Agent engine for the new session. Defaults to the engine this session is running on.",
+        description: "Agent engine for the new session. Defaults to the engine this session is running on.",
         required: false,
         enumValues: [...ROUTABLE_PROVIDER_KINDS],
       },
@@ -1231,8 +1238,7 @@ const AGENT_TOOLS: McpToolDefinition[] = [
       {
         name: "provider",
         type: "enum",
-        description:
-          "Agent engine for the new session. Defaults to the engine this session is running on.",
+        description: "Agent engine for the new session. Defaults to the engine this session is running on.",
         required: false,
         enumValues: [...ROUTABLE_PROVIDER_KINDS],
       },

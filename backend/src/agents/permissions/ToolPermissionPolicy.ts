@@ -13,8 +13,8 @@ import type { DefaultPermissions } from "shared/types/index.js";
 export type PermissionCategory = keyof DefaultPermissions;
 export type PermissionDecision = "allow" | "deny" | "ask";
 
-/** The two axes that gate the managed `cu_*` transport. Categorizers only ever emit `computerControl`. */
-const CONTROL_AXES = ["browserControl", "computerControl"] as const;
+/** The axes that gate the managed `cu_*` transport. Categorizers only ever emit `computerControl`. */
+const CONTROL_AXES = ["browserControl", "computerControl", "sandboxControl"] as const;
 
 /**
  * Pure function: given a category (or null) and the user's default-permission
@@ -23,11 +23,11 @@ const CONTROL_AXES = ["browserControl", "computerControl"] as const;
  */
 export function decidePermission(category: PermissionCategory | null, defaultPermissions: DefaultPermissions | null): PermissionDecision {
   if (!category) return "ask";
-  if (category === "computerControl" || category === "browserControl") {
+  if ((CONTROL_AXES as readonly string[]).includes(category)) {
     // The same `cu_*` tools drive both targets, and which target a call reaches
     // is decided by the session or grant, not the tool name — so this gate can
     // only decide whether the transport call reaches the service. It denies only
-    // when BOTH Browser Use and Computer Use are denied; otherwise the service
+    // when Browser Use, Computer Use AND Sandbox desktop are all denied; otherwise the service
     // (`computerUseScopeError` + the per-target level) enforces per target.
     //
     // Scoped approval is owned by the managed service, which sees the principal.

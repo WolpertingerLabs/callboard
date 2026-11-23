@@ -13,7 +13,7 @@ import type { ParsedMessage } from "./message.js";
  * who types something that merely looks like it — or a parent chat or API key
  * sending a prompt built to — keeps it as the human's text. Every line must be
  * one of the fixed notice templates below, exactly, whose only variable parts
- * are a UUID, an action type, a target ("browser"/"desktop") and one of the
+ * are a UUID, an action type, a target ({@link RIDE_ALONG_TARGETS}) and one of the
  * fixed reason and advice strings; nothing else can produce a notice row:
  *
  *     <RIDE_ALONG_HEADER>
@@ -39,7 +39,7 @@ export const RIDE_ALONG_WITHDRAW_TEXT = {
   panelStop: { agent: "the human stopped it from the Computer view", advice: "Do not request it again unless the human asks you to." },
   revoked: { agent: "the human revoked it from the Computer view", advice: "Do not request it again unless the human asks you to." },
   scope: {
-    agent: "this chat's Browser Use or Computer Use permissions changed, or the chat was archived or deleted",
+    agent: "this chat's Browser Use, Computer Use or Sandbox desktop permissions changed, or the chat was archived or deleted",
     advice: "Do not request it again unless the human asks you to.",
   },
   sessionEnded: {
@@ -62,6 +62,23 @@ export const RIDE_ALONG_WITHDRAW_TEXT = {
 } as const;
 export type RideAlongWithdrawReason = keyof typeof RIDE_ALONG_WITHDRAW_TEXT;
 
+/**
+ * Reason texts an older daemon wrote, still recognised so a block already in a
+ * transcript keeps splitting off. Never produced: the split accepts them, the
+ * daemon does not write them.
+ */
+const LEGACY_WITHDRAW_AGENT_TEXT: Partial<Record<RideAlongWithdrawReason, readonly string[]>> = {
+  scope: ["this chat's Browser Use or Computer Use permissions changed, or the chat was archived or deleted"],
+};
+
+/**
+ * The targets a notice may name, and how it names them. Enumerated rather than
+ * free text, so the split below can stay strict: a target is one of these
+ * exact words or the line is not a notice.
+ */
+export const RIDE_ALONG_TARGETS = { browser: "browser", desktop: "desktop", sandbox: "sandbox desktop" } as const;
+export type RideAlongTarget = keyof typeof RIDE_ALONG_TARGETS;
+
 /** The GUI action types a notice may name (the host's own list); anything else reads as "GUI". */
 export const GUI_ACTION_TYPES = ["click", "move", "drag", "scroll", "key", "type", "navigate", "wait"] as const;
 
@@ -71,15 +88,22 @@ export const callboardNoticeHeader = (what: string) => `${RIDE_ALONG_NOTICE_PREF
 const withAdvice = (body: string, reason: RideAlongWithdrawReason) => [body, RIDE_ALONG_WITHDRAW_TEXT[reason].advice].filter(Boolean).join(" ");
 
 /** The notice for an enable request withdrawn before the human answered. */
-export function controlWithdrawnNotice(target: "browser" | "desktop", requestId: string, reason: RideAlongWithdrawReason): string {
-  const body = `Your request ${requestId} to enable ${target} control was withdrawn, and control was NOT enabled: ${RIDE_ALONG_WITHDRAW_TEXT[reason].agent}.`;
-  return `${callboardNoticeHeader(`${target} control request withdrawn`)}\n\n${withAdvice(body, reason)}`;
+export function controlWithdrawnNotice(target: RideAlongTarget, requestId: string, reason: RideAlongWithdrawReason): string {
+  return controlWithdrawnText(target, requestId, reason, RIDE_ALONG_WITHDRAW_TEXT[reason].agent);
+}
+function controlWithdrawnText(target: RideAlongTarget, requestId: string, reason: RideAlongWithdrawReason, why: string): string {
+  const noun = RIDE_ALONG_TARGETS[target];
+  const body = `Your request ${requestId} to enable ${noun} control was withdrawn, and control was NOT enabled: ${why}.`;
+  return `${callboardNoticeHeader(`${noun} control request withdrawn`)}\n\n${withAdvice(body, reason)}`;
 }
 
 /** The notice for a GUI action withdrawn before the human answered. An `actionType` outside {@link GUI_ACTION_TYPES} reads as "GUI". */
 export function actionWithdrawnNotice(actionType: string, requestId: string, reason: RideAlongWithdrawReason): string {
+  return actionWithdrawnText(actionType, requestId, reason, RIDE_ALONG_WITHDRAW_TEXT[reason].agent);
+}
+function actionWithdrawnText(actionType: string, requestId: string, reason: RideAlongWithdrawReason, why: string): string {
   const type = (GUI_ACTION_TYPES as readonly string[]).includes(actionType) ? actionType : "GUI";
-  const body = `Your request ${requestId} (a ${type} action) was withdrawn before the human answered, and it was NOT performed: ${RIDE_ALONG_WITHDRAW_TEXT[reason].agent}.`;
+  const body = `Your request ${requestId} (a ${type} action) was withdrawn before the human answered, and it was NOT performed: ${why}.`;
   return `${callboardNoticeHeader("GUI action request withdrawn")}\n\n${withAdvice(body, reason)}`;
 }
 
@@ -101,12 +125,15 @@ const NOTICE_LINES: readonly RegExp[] = (() => {
   const types = `(?:${[...GUI_ACTION_TYPES, "GUI"].join("|")})`;
   const lines = new Set<string>();
   for (const reason of Object.keys(RIDE_ALONG_WITHDRAW_TEXT) as RideAlongWithdrawReason[]) {
-    for (const target of ["browser", "desktop"] as const) lines.add(escape(flatten(controlWithdrawnNotice(target, ID, reason))).replaceAll(ID, UUID));
-    lines.add(
-      escape(flatten(actionWithdrawnNotice("GUI", ID, reason)))
-        .replaceAll(ID, UUID)
-        .replace("\\(a GUI action\\)", `\\(a ${types} action\\)`),
-    );
+    for (const why of [RIDE_ALONG_WITHDRAW_TEXT[reason].agent, ...(LEGACY_WITHDRAW_AGENT_TEXT[reason] ?? [])]) {
+      for (const target of Object.keys(RIDE_ALONG_TARGETS) as RideAlongTarget[])
+        lines.add(escape(flatten(controlWithdrawnText(target, ID, reason, why))).replaceAll(ID, UUID));
+      lines.add(
+        escape(flatten(actionWithdrawnText("GUI", ID, reason, why)))
+          .replaceAll(ID, UUID)
+          .replace("\\(a GUI action\\)", `\\(a ${types} action\\)`),
+      );
+    }
   }
   return [...lines].map((line) => new RegExp(`^${line}$`, "u"));
 })();

@@ -333,12 +333,28 @@ describe("start_chat_session independent spawns", () => {
  * allow-all child with a shell.
  */
 describe("start_chat_session permission ceiling", () => {
-  const UNATTENDED: DefaultPermissions = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", browserControl: "deny", computerControl: "deny" };
+  const UNATTENDED: DefaultPermissions = {
+    fileRead: "allow",
+    fileWrite: "allow",
+    codeExecution: "allow",
+    webAccess: "allow",
+    browserControl: "deny",
+    computerControl: "deny",
+    sandboxControl: "deny",
+  };
 
   it("caps an ask parent's child at the parent's own policy, per category", async () => {
     writeCallerChat({});
     const sender = stubSender();
-    const parent: DefaultPermissions = { fileRead: "allow", fileWrite: "ask", codeExecution: "ask", webAccess: "deny", browserControl: "deny", computerControl: "deny" };
+    const parent: DefaultPermissions = {
+      fileRead: "allow",
+      fileWrite: "ask",
+      codeExecution: "ask",
+      webAccess: "deny",
+      browserControl: "deny",
+      computerControl: "deny",
+      sandboxControl: "deny",
+    };
 
     const result = payload(await startChat(CALLER_CHAT_ID, () => parent).handler({ prompt: "go", folder: "/tmp/project" }));
 
@@ -360,7 +376,10 @@ describe("start_chat_session permission ceiling", () => {
     writeCallerChat({});
     const sender = stubSender();
 
-    await startChat(CALLER_CHAT_ID, () => ({ ...UNATTENDED, browserControl: "allow", computerControl: "allow" })).handler({ prompt: "go", folder: "/tmp/project" });
+    await startChat(CALLER_CHAT_ID, () => ({ ...UNATTENDED, browserControl: "allow", computerControl: "allow", sandboxControl: "allow" })).handler({
+      prompt: "go",
+      folder: "/tmp/project",
+    });
 
     expect(sender.calls[0].defaultPermissions).toEqual(UNATTENDED);
   });
@@ -369,13 +388,13 @@ describe("start_chat_session permission ceiling", () => {
     writeCallerChat({});
     const sender = stubSender();
 
-    await startChat(CALLER_CHAT_ID, () => ({ ...UNATTENDED, browserControl: "allow", computerControl: "allow" })).handler({
+    await startChat(CALLER_CHAT_ID, () => ({ ...UNATTENDED, browserControl: "allow", computerControl: "allow", sandboxControl: "allow" })).handler({
       prompt: "go",
       folder: "/tmp/project",
-      permissions: { browserControl: "allow", computerControl: "allow" } as never,
+      permissions: { browserControl: "allow", computerControl: "allow", sandboxControl: "allow" } as never,
     });
 
-    expect(sender.calls[0].defaultPermissions).toMatchObject({ browserControl: "deny", computerControl: "deny" });
+    expect(sender.calls[0].defaultPermissions).toMatchObject({ browserControl: "deny", computerControl: "deny", sandboxControl: "deny" });
   });
 
   it("treats a parent with no permissions as ask-everything, the policy it actually runs under", async () => {
@@ -384,7 +403,15 @@ describe("start_chat_session permission ceiling", () => {
 
     await startChat(CALLER_CHAT_ID, () => null).handler({ prompt: "go", folder: "/tmp/project" });
 
-    expect(sender.calls[0].defaultPermissions).toEqual({ fileRead: "ask", fileWrite: "ask", codeExecution: "ask", webAccess: "ask", browserControl: "deny", computerControl: "deny" });
+    expect(sender.calls[0].defaultPermissions).toEqual({
+      fileRead: "ask",
+      fileWrite: "ask",
+      codeExecution: "ask",
+      webAccess: "ask",
+      browserControl: "deny",
+      computerControl: "deny",
+      sandboxControl: "deny",
+    });
   });
 
   it("fails closed when the spec was built without a permission getter", async () => {
@@ -393,7 +420,7 @@ describe("start_chat_session permission ceiling", () => {
 
     await startChat().handler({ prompt: "go", folder: "/tmp/project" });
 
-    expect(sender.calls[0].defaultPermissions).toMatchObject({ codeExecution: "ask", browserControl: "deny", computerControl: "deny" });
+    expect(sender.calls[0].defaultPermissions).toMatchObject({ codeExecution: "ask", browserControl: "deny", computerControl: "deny", sandboxControl: "deny" });
   });
 });
 
@@ -403,7 +430,15 @@ describe("start_chat_session permission ceiling", () => {
  * child would still get `danger-full-access`. Refused instead.
  */
 describe("start_chat_session — Codex under an explicit sandbox setting", () => {
-  const UNATTENDED: DefaultPermissions = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", browserControl: "deny", computerControl: "deny" };
+  const UNATTENDED: DefaultPermissions = {
+    fileRead: "allow",
+    fileWrite: "allow",
+    codeExecution: "allow",
+    webAccess: "allow",
+    browserControl: "deny",
+    computerControl: "deny",
+    sandboxControl: "deny",
+  };
   const ASK_EXEC: DefaultPermissions = { ...UNATTENDED, codeExecution: "ask" };
 
   afterEach(() => {

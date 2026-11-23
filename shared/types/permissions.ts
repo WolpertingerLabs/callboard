@@ -9,9 +9,11 @@ export interface DefaultPermissions {
   browserControl: PermissionLevel;
   /** Computer Use: drive the desktop target. */
   computerControl: PermissionLevel;
+  /** Sandbox desktop: drive the disposable desktop in a hardened container. Independent of every other axis. */
+  sandboxControl: PermissionLevel;
 }
 
-const keys = ["fileRead", "fileWrite", "codeExecution", "webAccess", "browserControl", "computerControl"] as const;
+const keys = ["fileRead", "fileWrite", "codeExecution", "webAccess", "browserControl", "computerControl", "sandboxControl"] as const;
 const defaults: DefaultPermissions = {
   fileRead: "ask",
   fileWrite: "ask",
@@ -19,6 +21,7 @@ const defaults: DefaultPermissions = {
   webAccess: "ask",
   browserControl: "deny",
   computerControl: "deny",
+  sandboxControl: "deny",
 };
 
 function record(value: unknown): Record<string, unknown> {
@@ -37,7 +40,8 @@ export function mostPermissiveLevel(...levels: PermissionLevel[]): PermissionLev
 }
 
 /** Legacy records keep the old four defaults; a missing control axis (`browserControl`,
- * `computerControl`) never grants access — it reads as `deny`, with no inheritance between them.
+ * `computerControl`, `sandboxControl`) never grants access — it reads as `deny`, with no
+ * inheritance between them.
  * Explicit malformed values fail closed. Unknown/inherited keys are discarded.
  */
 export function normalizePermissions(value: unknown): DefaultPermissions {
@@ -49,7 +53,7 @@ export function normalizePermissions(value: unknown): DefaultPermissions {
   return result;
 }
 
-/** Partial updates preserve omitted axes, including existing browser/computer-control denial.
+/** Partial updates preserve omitted axes, including existing browser/computer/sandbox-control denial.
  * This is a settings merge, not a child-grant operation or authority intersection.
  */
 export function mergePermissions(current: unknown, patch: unknown): DefaultPermissions {

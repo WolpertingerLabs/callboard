@@ -7,7 +7,15 @@ import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { assertNativeAgentControllable, nativeAgentForChat } from "./codex-native-agents.js";
 import { beginComputerUseTurn, buildComputerUseToolsSpec } from "./computer-use-tools.js";
 import { getAgentProvider } from "../agents/factory.js";
-import { isInternalProvider, isRetiredProvider, RETIRED_PROVIDER_LABELS, type AgentProviderKind, type RetiredProviderKind, type AgentQuery, type InternalProviderKind } from "../agents/ports/AgentProvider.js";
+import {
+  isInternalProvider,
+  isRetiredProvider,
+  RETIRED_PROVIDER_LABELS,
+  type AgentProviderKind,
+  type RetiredProviderKind,
+  type AgentQuery,
+  type InternalProviderKind,
+} from "../agents/ports/AgentProvider.js";
 import type { EffortLevel } from "shared/types/index.js";
 import type { PermissionResult } from "../agents/adapters/claude-code/types.js";
 import type { ToolServerSpec } from "../agents/ports/tools.js";
@@ -40,13 +48,7 @@ import {
 } from "./stream-recovery.js";
 import { buildProxyToolsSpec } from "./proxy-tools.js";
 import { ensureCallerEnrolled, fetchProxyRoutes } from "./proxy-singleton.js";
-import {
-  getAgentSettings,
-  resolveAgentKeyAlias,
-  resolveDefaultCaller,
-  getApiEnvOverrides,
-  resolveModelAlias,
-} from "./agent-settings.js";
+import { getAgentSettings, resolveAgentKeyAlias, resolveDefaultCaller, getApiEnvOverrides, resolveModelAlias } from "./agent-settings.js";
 import { getClaudeCodeExecutablePath } from "./claude-binary.js";
 import { sanitizeInheritedAgentEnv } from "../agents/agentEnvPolicy.js";
 import { appendActivity } from "./agent-activity.js";
@@ -58,7 +60,15 @@ import { reopenArchivedChildChain } from "./child-archive.js";
 import { clearListCaches } from "./list-caches.js";
 import { sessionRegistry } from "./session-registry.js";
 import { pendingRequests, type PendingRequest } from "./pending-requests.js";
-import { detectHardStop, isReviewableTool, reviewerNotesFor, reviewToolCall, type ReviewOptions, type ReviewRequest, type ReviewVerdict } from "./permission-review.js";
+import {
+  detectHardStop,
+  isReviewableTool,
+  reviewerNotesFor,
+  reviewToolCall,
+  type ReviewOptions,
+  type ReviewRequest,
+  type ReviewVerdict,
+} from "./permission-review.js";
 import { startReviewAudit, type PermissionAuditHooks, type ReviewAuditResult, type ReviewAuditTrace } from "./permission-review-audit.js";
 import { redactToolInputForReview } from "./tool-input-redaction.js";
 import { notifyParentOfChildPrompt } from "./parent-answers.js";
@@ -542,9 +552,9 @@ export function buildCanUseTool(
         log.info(`[PERM-DIAG] tool=${toolName}, category=${category}, decision=${decision}`);
         // computerControl never decides "ask" here: a scoped grant/approval
         // belongs to the service, so `decidePermission` admits the transport
-        // when either Browser Use or Computer Use is ask/allow (the service
-        // still checks every target/action/frame against that target's axis)
-        // and denies only when both axes are absent or "deny".
+        // when Browser Use, Computer Use or Sandbox desktop is ask/allow (the
+        // service still checks every target/action/frame against that target's
+        // axis) and denies only when all three are absent or "deny".
         if (decision === "allow") {
           return { behavior: "allow", updatedInput: input };
         }
@@ -552,8 +562,8 @@ export function buildCanUseTool(
           // A denied computer-control call is a harmless service lookup the
           // model should read and relay ("enable it in the panel"), not a
           // reason to abort the turn the way a denied write or shell is.
-          if (category === "computerControl" || category === "browserControl")
-            return { behavior: "deny", message: "Auto-denied: Browser Use and Computer Use are both denied for this chat", interrupt: false };
+          if (category === "computerControl" || category === "browserControl" || category === "sandboxControl")
+            return { behavior: "deny", message: "Auto-denied: Browser Use, Computer Use and Sandbox desktop are all denied for this chat", interrupt: false };
           return { behavior: "deny", message: `Auto-denied by default ${category} policy`, interrupt: true };
         }
         // "ask" — fall through to the user-prompt path
@@ -577,7 +587,8 @@ export function buildCanUseTool(
     let auditVerdict: ReviewVerdict | undefined;
     let auditDowngrade: ReviewAuditResult["downgrade"];
     const reportAudit = (outcome: ReviewAuditResult["outcome"], requestId?: string): void => {
-      if (auditTrace && auditVerdict) auditTrace.result({ verdict: auditVerdict, outcome, ...(requestId && { requestId }), ...(auditDowngrade && { downgrade: auditDowngrade }) });
+      if (auditTrace && auditVerdict)
+        auditTrace.result({ verdict: auditVerdict, outcome, ...(requestId && { requestId }), ...(auditDowngrade && { downgrade: auditDowngrade }) });
     };
     const audited = (result: PermissionResult, outcome: ReviewAuditResult["outcome"]): PermissionResult => {
       reportAudit(outcome);
@@ -1476,7 +1487,7 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
   const formattedPrompt = buildFormattedPrompt(prompt, imageMetadata, providerKind);
 
   // Stored records are normalized on read: a legacy record may lack
-  // `browserControl`/`computerControl`, and absence must read as deny, never as "not set".
+  // `browserControl`/`computerControl`/`sandboxControl`, and absence must read as deny, never as "not set".
   // `null` (no permissions at all) stays null — the Codex/pi option builders
   // treat it as "use the SDK default", and decidePermission already denies
   // computer control for a missing axis.
@@ -1572,7 +1583,11 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
     cwd: folder,
     getTaskExcerpt: () => {
       const title = readLiveMetadata().title;
-      return [typeof title === "string" && title ? `Chat title: ${title}` : "", promptExcerpt ? `Current request: ${promptExcerpt}` : ""].filter(Boolean).join("\n") || undefined;
+      return (
+        [typeof title === "string" && title ? `Chat title: ${title}` : "", promptExcerpt ? `Current request: ${promptExcerpt}` : ""]
+          .filter(Boolean)
+          .join("\n") || undefined
+      );
     },
   };
 
@@ -1610,8 +1625,8 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
   // SDK before `canUseTool` fires, which made the chat's control-axis `deny`
   // unenforceable at this layer (only the service's own authorizer stood). With
   // no allow-list entry every `mcp__computer_use__*` call reaches `canUseTool`,
-  // whose computerControl branch denies (both Browser Use and Computer Use
-  // denied), or admits the transport call and lets
+  // whose computerControl branch denies (Browser Use, Computer Use and Sandbox
+  // desktop all denied), or admits the transport call and lets
   // the service decide scope. Codex has no per-call hook, so for
   // it the service remains the sole gate — see their adapters.
   //
@@ -1705,7 +1720,12 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
   // ── Objective tools: injected only when explicit completion is required ──
   // Job steps are excluded — they report through complete_job_step above.
   if (requireCompletion && !isJobStepSession) {
-    inject("objective-tools", () => buildObjectiveToolsSpec(() => trackingId), "objective-tools server", "Injected objective-tools MCP server (explicit completion required)");
+    inject(
+      "objective-tools",
+      () => buildObjectiveToolsSpec(() => trackingId),
+      "objective-tools server",
+      "Injected objective-tools MCP server (explicit completion required)",
+    );
   }
 
   // ── Proxy tools: injected for ALL sessions (regular + agent) ──
@@ -1733,7 +1753,12 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
       log.warn(`Caller enrollment for "${proxyKeyAlias}" failed: ${err.message}`);
     }
 
-    inject("mcp-proxy", () => buildProxyToolsSpec(proxyKeyAlias), "proxy tools server", `Injected proxy tools (mode=${agentSettings.proxyMode}, alias=${proxyKeyAlias})`);
+    inject(
+      "mcp-proxy",
+      () => buildProxyToolsSpec(proxyKeyAlias),
+      "proxy tools server",
+      `Injected proxy tools (mode=${agentSettings.proxyMode}, alias=${proxyKeyAlias})`,
+    );
   } else if (opts.agentAlias && !proxyKeyAlias) {
     log.info(`Agent "${opts.agentAlias}" has no caller alias assigned — proxy tools not injected`);
   }

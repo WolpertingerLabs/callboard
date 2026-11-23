@@ -37,20 +37,31 @@ import type { AuditRecordInput } from "./audit-log.js";
 import { REDACTED, redactToolInputForReview } from "./tool-input-redaction.js";
 
 const SECRET = "hunter2-correct-horse";
-const FULL_ASK: DefaultPermissions = { fileRead: "ask", fileWrite: "ask", codeExecution: "ask", webAccess: "ask", browserControl: "deny", computerControl: "deny" };
+const FULL_ASK: DefaultPermissions = {
+  fileRead: "ask",
+  fileWrite: "ask",
+  codeExecution: "ask",
+  webAccess: "ask",
+  browserControl: "deny",
+  computerControl: "deny",
+  sandboxControl: "deny",
+};
 
 function vaultInput(): Record<string, unknown> {
   return { name: "gh", kind: "password", values: { value: SECRET, username: "octocat" }, notes: "CI token" };
 }
 
 describe("redactToolInputForReview", () => {
-  it.each(["vault_create", "vault_update", "mcp__mcp-proxy__vault_create", "mcp__mcp-proxy__vault_update"])("redacts every value of %s and keeps the field names", (tool) => {
-    const input = vaultInput();
-    const out = redactToolInputForReview(tool, input);
-    expect(out).toEqual({ name: "gh", kind: "password", values: { value: REDACTED, username: REDACTED }, notes: "CI token" });
-    // The original — what the tool runs with — is untouched.
-    expect(input.values).toEqual({ value: SECRET, username: "octocat" });
-  });
+  it.each(["vault_create", "vault_update", "mcp__mcp-proxy__vault_create", "mcp__mcp-proxy__vault_update"])(
+    "redacts every value of %s and keeps the field names",
+    (tool) => {
+      const input = vaultInput();
+      const out = redactToolInputForReview(tool, input);
+      expect(out).toEqual({ name: "gh", kind: "password", values: { value: REDACTED, username: REDACTED }, notes: "CI token" });
+      // The original — what the tool runs with — is untouched.
+      expect(input.values).toEqual({ value: SECRET, username: "octocat" });
+    },
+  );
 
   it("matches the tool name under any MCP server prefix", () => {
     // A drawlatch server mounted under another name is still drawlatch.
@@ -92,7 +103,10 @@ function setup(hookAskOverride?: { reason: string }) {
     notifyParent: vi.fn(),
     audit: { getCallerAlias: () => "default", emit: (_alias, build) => records.push(build()) },
   };
-  const policy = new ToolPermissionPolicy(() => "fileWrite", () => FULL_ASK);
+  const policy = new ToolPermissionPolicy(
+    () => "fileWrite",
+    () => FULL_ASK,
+  );
   const canUseTool = buildCanUseTool(emitter, policy, () => trackingId, hookAskOverride, hooks);
   const call = (toolName: string, input: Record<string, unknown>) => canUseTool(toolName, input, { signal: new AbortController().signal });
   return { trackingId, reviewer, records, events, call };
@@ -101,31 +115,34 @@ function setup(hookAskOverride?: { reason: string }) {
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
 describe("a vault secret on the permission-review path", () => {
-  it.each(["vault_create", "mcp__mcp-proxy__vault_update"])("%s: reaches neither the reviewer, the audit log nor the parent's listing, but does reach the tool", async (tool) => {
-    const { call, reviewer, records, trackingId } = setup();
-    const promise = call(tool, vaultInput());
-    await flush();
+  it.each(["vault_create", "mcp__mcp-proxy__vault_update"])(
+    "%s: reaches neither the reviewer, the audit log nor the parent's listing, but does reach the tool",
+    async (tool) => {
+      const { call, reviewer, records, trackingId } = setup();
+      const promise = call(tool, vaultInput());
+      await flush();
 
-    expect(reviewer).toHaveBeenCalledOnce();
-    const reviewed = (reviewer.mock.calls[0] as unknown[])[0] as { input: Record<string, unknown> };
-    expect(JSON.stringify(reviewed)).not.toContain(SECRET);
-    expect(reviewed.input.values).toEqual({ value: REDACTED, username: REDACTED });
+      expect(reviewer).toHaveBeenCalledOnce();
+      const reviewed = (reviewer.mock.calls[0] as unknown[])[0] as { input: Record<string, unknown> };
+      expect(JSON.stringify(reviewed)).not.toContain(SECRET);
+      expect(reviewed.input.values).toEqual({ value: REDACTED, username: REDACTED });
 
-    expect(records.length).toBeGreaterThan(0);
-    expect(JSON.stringify(records)).not.toContain(SECRET);
-    expect(JSON.stringify(records)).toContain(REDACTED);
+      expect(records.length).toBeGreaterThan(0);
+      expect(JSON.stringify(records)).not.toContain(SECRET);
+      expect(JSON.stringify(records)).toContain(REDACTED);
 
-    const rows = listAnswerableRequests("parent-1", null).filter((r) => r.chatId === trackingId);
-    expect(rows).toHaveLength(1);
-    expect(JSON.stringify(rows)).not.toContain(SECRET);
-    expect(rows[0].input.values).toEqual({ value: REDACTED, username: REDACTED });
+      const rows = listAnswerableRequests("parent-1", null).filter((r) => r.chatId === trackingId);
+      expect(rows).toHaveLength(1);
+      expect(JSON.stringify(rows)).not.toContain(SECRET);
+      expect(rows[0].input.values).toEqual({ value: REDACTED, username: REDACTED });
 
-    // Approved: the call runs with the real values.
-    expect(respondToPermission(trackingId, true).ok).toBe(true);
-    const result = await promise;
-    expect(result).toMatchObject({ behavior: "allow" });
-    expect((result as { updatedInput: Record<string, unknown> }).updatedInput.values).toEqual({ value: SECRET, username: "octocat" });
-  });
+      // Approved: the call runs with the real values.
+      expect(respondToPermission(trackingId, true).ok).toBe(true);
+      const result = await promise;
+      expect(result).toMatchObject({ behavior: "allow" });
+      expect((result as { updatedInput: Record<string, unknown> }).updatedInput.values).toEqual({ value: SECRET, username: "octocat" });
+    },
+  );
 
   it("a secret that would trip the hard-stop pre-check is not quoted anywhere", async () => {
     // A field named `path` is screened as a write target, and `.git/…` is a

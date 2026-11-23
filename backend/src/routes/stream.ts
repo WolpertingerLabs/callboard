@@ -65,7 +65,6 @@ function nothingToSend(prompt: string, imageIds: unknown, loaded?: unknown[]): b
   return !hasAttachments(imageIds) || !anyUploadExists(imageIds);
 }
 
-
 // Send first message to create a new chat (no existing chat ID required)
 streamRouter.post("/new/message", async (req, res) => {
   // #swagger.tags = ['Stream']
@@ -81,7 +80,7 @@ streamRouter.post("/new/message", async (req, res) => {
           properties: {
             folder: { type: "string", description: "Absolute path to the project folder" },
             prompt: { type: "string", description: "The user message to send. May be empty when imageIds is non-empty" },
-            defaultPermissions: { type: "object", description: "Default tool permissions (fileRead, fileWrite, codeExecution, webAccess, browserControl, computerControl — each one of allow, deny, or ask). browserControl (Browser Use) and computerControl (Computer Use) default to deny when omitted; setting either to ask/allow from an API key is allowed at creation and recorded in the server log." },
+            defaultPermissions: { type: "object", description: "Default tool permissions (fileRead, fileWrite, codeExecution, webAccess, browserControl, computerControl, sandboxControl — each one of allow, deny, or ask). browserControl (Browser Use), computerControl (Computer Use) and sandboxControl (Sandbox desktop) default to deny when omitted; setting any of them to ask/allow from an API key is allowed at creation and recorded in the server log." },
             modelReview: { type: "boolean", description: "Screen every permission ask with a one-shot model safety reviewer before it reaches a person (approve is final, deny returns to the agent, escalate passes on). Not applied to Codex. Persisted for the chat. Default: false." },
             parentAnswers: { type: "boolean", description: "Also offer permission prompts to the parent chat (needs parentChatId); it may answer within its own permissions, first answer wins. Persisted for the chat. Default: false." },
             imageIds: { type: "array", items: { type: "string" }, description: "Previously uploaded image/file IDs to attach. Images are sent as images; other files are inlined into the prompt when small text, otherwise referenced by their stored path" },
@@ -169,12 +168,10 @@ streamRouter.post("/new/message", async (req, res) => {
   // nothing is created on the way to refusing.
   if (isRetiredProvider(provider)) {
     const label = RETIRED_PROVIDER_LABELS[provider];
-    return res
-      .status(400)
-      .json({
-        error: `${label.charAt(0).toUpperCase()}${label.slice(1)} has been removed from Callboard. Pick another harness for this chat.`,
-        code: "retired_provider",
-      });
+    return res.status(400).json({
+      error: `${label.charAt(0).toUpperCase()}${label.slice(1)} has been removed from Callboard. Pick another harness for this chat.`,
+      code: "retired_provider",
+    });
   }
 
   // Check if folder exists — before effort validation, which probes the Codex

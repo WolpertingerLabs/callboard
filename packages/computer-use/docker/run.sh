@@ -62,7 +62,7 @@ docker run --detach --rm --name "$name" \
 trap - EXIT
 
 echo "Started $name on 127.0.0.1:$port (network $network, token file: $dir/token). For Callboard:"
-echo "  export CALLBOARD_REMOTE_DESKTOP_URL=http://127.0.0.1:$port"
-echo "  export CALLBOARD_REMOTE_DESKTOP_TOKEN_FILE=$dir/token"
+echo "  export CALLBOARD_SANDBOX_DESKTOP_URL=http://127.0.0.1:$port"
+echo "  export CALLBOARD_SANDBOX_DESKTOP_TOKEN_FILE=$dir/token"
 echo "Stop it with: docker rm -f $name && rm -r $dir"
 echo "Remove the image with: docker rmi $image (and the network with: docker network rm $network)"

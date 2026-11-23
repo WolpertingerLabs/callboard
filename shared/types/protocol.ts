@@ -61,6 +61,14 @@ export const CLIENT_CAPS = {
   planReview: "plan_review",
   /** Sends prompt identities on /respond; older bundles must reload for human consent. */
   humanPromptIdentity: "human_prompt_identity",
+  /**
+   * Understands the Sandbox desktop target: `ComputerUseKind` `"sandbox"` in
+   * `GET /api/computer-use/:chatId/status` (sent with the handshake headers),
+   * and sandbox consent cards, action prompts and `controlRequestResult`s on
+   * the stream. Without it the daemon leaves the sandbox out of status and
+   * replaces its prompts with a reload notice (`message_error`).
+   */
+  sandboxTarget: "sandbox_target",
 } as const;
 
 /** Union of the capability strings in {@link CLIENT_CAPS}. */
