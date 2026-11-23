@@ -1,4 +1,5 @@
 import type { ComputerUseActionRequest, ComputerUseKind, ComputerUseObservation, ComputerUseSession, ComputerUseStatus } from "shared/types/computerUse.js";
+import { handshakeHeaders } from "shared/types/index.js";
 
 /** A failed route response. The server's `code` (`not_found`, `stale_generation`,
  * `denied`, …) travels with the message so callers can distinguish "the server no
@@ -16,12 +17,15 @@ export function controlErrorCode(error: unknown): string | undefined {
 /** Same-origin cookie authentication, as in api.ts. The server must enforce
  * Origin/CSRF, chat ownership, scoped grants and generation fencing on every route.
  * Keep endpoint/envelope adaptations here, not in the viewer.
+ *
+ * Every request carries the handshake headers: the daemon includes the Sandbox
+ * desktop target in status only for a client advertising `sandbox_target`.
  */
 async function request<T>(chatId: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   const response = await fetch(`/api/computer-use/${encodeURIComponent(chatId)}/${path}`, {
     method: body === undefined ? "GET" : "POST",
     credentials: "include",
-    headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+    headers: body === undefined ? handshakeHeaders() : { ...handshakeHeaders(), "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
     signal,
   });
@@ -38,6 +42,9 @@ async function request<T>(chatId: string, path: string, body?: unknown, signal?:
   }
   return response.status === 204 ? (undefined as T) : response.json();
 }
+/** Every target kind this bundle renders (the bundle advertises `sandbox_target`). */
+const KINDS: readonly string[] = ["browser", "native", "sandbox"] satisfies ComputerUseKind[];
+export const isComputerUseKind = (kind: unknown): kind is ComputerUseKind => typeof kind === "string" && KINDS.includes(kind);
 const sessionPath = (id: string, operation: string) => `${encodeURIComponent(id)}/${operation}`;
 
 export function validateStatus(value: ComputerUseStatus): ComputerUseStatus {
@@ -61,13 +68,13 @@ export function validateStatus(value: ComputerUseStatus): ComputerUseStatus {
       (session) =>
         !session ||
         typeof session.id !== "string" ||
-        !["browser", "native"].includes(session.kind) ||
+        !KINDS.includes(session.kind) ||
         typeof session.state !== "string" ||
         !["agent", "human", null].includes(session.controller) ||
         !Number.isSafeInteger(session.generation) ||
         session.generation < 0,
     ) ||
-    value.capabilities.some((capability) => !capability || !["browser", "native"].includes(capability.kind) || typeof capability.available !== "boolean")
+    value.capabilities.some((capability) => !capability || !KINDS.includes(capability.kind) || typeof capability.available !== "boolean")
   ) {
     throw new Error("Invalid computer-control status. Check the server viewer contract and retry.");
   }

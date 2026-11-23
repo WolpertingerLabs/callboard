@@ -14,12 +14,38 @@ describe("computer-use HTTP adapter", () => {
       expect.objectContaining({
         method: "POST",
         credentials: "include",
-        headers: { "Content-Type": "application/json" },
+        headers: expect.objectContaining({ "Content-Type": "application/json" }),
         body: '{"kind":"native"}',
       }),
     );
     await computerUseClient.status("chat/1");
     expect(fetcher).toHaveBeenLastCalledWith("/api/computer-use/chat%2F1/status", expect.objectContaining({ method: "GET", credentials: "include" }));
+  });
+  it("advertises the sandbox_target capability on the status read, so the daemon includes the Sandbox desktop", async () => {
+    const fetcher = vi.fn(
+      async (_url: string, _init: RequestInit) => new Response(JSON.stringify({ permission: "deny", capabilities: [], sessions: [] }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetcher);
+    await computerUseClient.status("c1");
+    const headers = fetcher.mock.calls[0][1].headers as Record<string, string>;
+    expect(headers["X-Callboard-Caps"].split(",")).toContain("sandbox_target");
+    expect(headers["X-Callboard-Protocol"]).toBeTruthy();
+    await computerUseClient.open("c1", "sandbox");
+    const [, init] = fetcher.mock.calls[1];
+    expect(init.body).toBe('{"kind":"sandbox"}');
+    expect((init.headers as Record<string, string>)["X-Callboard-Caps"]).toContain("sandbox_target");
+  });
+  it("accepts Sandbox desktop capabilities and sessions, and still rejects unknown kinds", () => {
+    const payload = {
+      permission: "allow" as const,
+      capabilities: [
+        { kind: "sandbox" as const, available: false, readiness: "setup-required" as const, reason: "No sandbox configured", permission: "allow" as const },
+      ],
+      sessions: [{ id: "s1", kind: "sandbox" as const, state: "ready", controller: "agent" as const, generation: 1, targetLabel: "sandbox 127.0.0.1:7801" }],
+    };
+    expect(validateStatus(payload)).toBe(payload);
+    expect(() => validateStatus({ ...payload, capabilities: [{ kind: "vm", available: true }] } as never)).toThrow("Invalid computer-control status");
+    expect(() => validateStatus({ ...payload, sessions: [{ ...payload.sessions[0], kind: "vm" }] } as never)).toThrow("Invalid computer-control status");
   });
   it("surfaces actionable backend capability errors", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response('{"error":{"message":"Native display missing: configure OS consent"}}', { status: 503 })));

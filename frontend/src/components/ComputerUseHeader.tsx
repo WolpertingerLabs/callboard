@@ -27,7 +27,7 @@ export default function ComputerUseHeader({ controller, viewOpen = false }: { co
           ? "Idle"
           : "";
   const details = [
-    "Browser & Computer Use",
+    "Computer control",
     statusError
       ? status
         ? "Status unavailable (last known)"
@@ -42,7 +42,7 @@ export default function ComputerUseHeader({ controller, viewOpen = false }: { co
       : []),
   ].join(": ");
   return (
-    <div className="computer-use-header" aria-label="Browser & Computer Use">
+    <div className="computer-use-header" aria-label="Computer control">
       <span className="computer-use-summary" role="status" aria-label={details} title={details}>
         <Monitor size={14} aria-hidden="true" />
         {state && (
@@ -67,7 +67,7 @@ export default function ComputerUseHeader({ controller, viewOpen = false }: { co
         onClick={() => void stopAll()}
         disabled={stopping}
         aria-label="Stop computer control"
-        title="Stop computer control — all browser and computer sessions"
+        title="Stop computer control — all browser, sandbox and desktop sessions"
       >
         <OctagonX size={14} aria-hidden="true" />
         {stopping ? "Stopping…" : "Stop computer"}

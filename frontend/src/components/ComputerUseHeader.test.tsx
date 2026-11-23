@@ -40,7 +40,7 @@ it("keeps counts, pending approval and named controllers visible with full acces
   const summary = screen.getByRole("status");
   expect(summary.getAttribute("aria-label")).toContain("1 waiting for approval");
   expect(summary.title).toBe(summary.getAttribute("aria-label"));
-  expect(summary.textContent).not.toContain("Browser & Computer Use:");
+  expect(summary.textContent).not.toContain("Computer control:");
   expect(control.stopAll).not.toHaveBeenCalled();
   expect(control.readStatus).not.toHaveBeenCalled();
   expect(control.beginMutation).not.toHaveBeenCalled();
@@ -99,3 +99,14 @@ it.each([{ stopping: true }, { stopError: "Discovery failed. Retry Stop computer
     expect(container.innerHTML).toBe("");
   },
 );
+it("names the strip for every target and counts Sandbox desktop sessions with the rest", () => {
+  const sandbox: ComputerUseStatus = {
+    ...status,
+    sessions: [...status.sessions, { id: "sb", kind: "sandbox", state: "ready", controller: "agent", generation: 1, targetLabel: "sandbox 127.0.0.1:7801" }],
+  };
+  render(<ComputerUseHeader controller={controller({ status: sandbox })} />);
+  expect(screen.getByLabelText("Computer control")).toBeTruthy();
+  expect(screen.getByText("3 active · 1 waiting")).toBeTruthy();
+  expect(screen.getByText("Agent 2")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Stop computer control" }).getAttribute("title")).toContain("sandbox");
+});

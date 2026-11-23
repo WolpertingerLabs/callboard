@@ -211,8 +211,16 @@ export default function PermissionSettings({ permissions, onChange, title, provi
       />
 
       <PermissionRow
+        label="Sandbox desktop"
+        description="Control a disposable Linux desktop in a hardened container, not your machine. Needs no other permission; its network is unrestricted."
+        category="sandboxControl"
+        permissions={permissions}
+        onUpdate={updatePermission}
+      />
+
+      <PermissionRow
         label="Computer Use"
-        description="Control the Linux X11 desktop on the service host. Requires every other axis on Allow."
+        description="Control the Linux X11 desktop on the service host. Requires every other axis on Allow, except Sandbox desktop."
         category="computerControl"
         permissions={permissions}
         onUpdate={updatePermission}

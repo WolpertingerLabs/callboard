@@ -79,6 +79,7 @@ export default function AgentDashboard() {
       webAccess: "allow",
       browserControl: "deny",
       computerControl: "deny",
+      sandboxControl: "deny",
     };
 
     let systemPrompt: string | undefined;

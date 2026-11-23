@@ -47,6 +47,7 @@ function getPermissionsSummary(permissions: DefaultPermissions): string {
     webAccess: "Web Access",
     browserControl: "Browser Use",
     computerControl: "Computer Use",
+    sandboxControl: "Sandbox desktop",
   };
 
   const values = Object.values(permissions);
@@ -384,6 +385,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
       webAccess: "allow",
       browserControl: "deny",
       computerControl: "deny",
+      sandboxControl: "deny",
     };
 
     let systemPrompt: string | undefined;

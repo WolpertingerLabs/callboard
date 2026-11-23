@@ -711,7 +711,7 @@ export interface CreateAsideOptions {
   permissions?: Partial<DefaultPermissions>;
   /**
    * Read only, decided by the daemon: fileWrite and codeExecution at most
-   * "ask", browserControl and computerControl "deny", and no inherited model reviewer — so every
+   * "ask", browserControl, computerControl and sandboxControl "deny", and no inherited model reviewer — so every
    * write or run is the user's to approve.
    */
   readOnly?: boolean;

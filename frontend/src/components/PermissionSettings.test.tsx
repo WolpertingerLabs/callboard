@@ -7,33 +7,45 @@ import ChatPermissionsModal from "./ChatPermissionsModal";
 afterEach(cleanup);
 const rowOf = (label: string) => screen.getByText(label).parentElement!.parentElement!;
 
-it("renders Browser Use immediately before Computer Use, each a separate axis defaulting to deny", () => {
+it("renders Browser Use, Sandbox desktop and Computer Use in that order, each a separate axis defaulting to deny", () => {
   const onChange = vi.fn();
   render(<PermissionSettings permissions={normalizePermissions({ fileRead: "allow" })} onChange={onChange} />);
-  const labels = ["Web Access", "Browser Use", "Computer Use"].map((label) => screen.getByText(label));
-  // Document order: Web Access → Browser Use → Computer Use, with nothing between the last two.
-  expect(labels[0].compareDocumentPosition(labels[1]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  expect(labels[1].compareDocumentPosition(labels[2]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  expect(rowOf("Browser Use").nextElementSibling).toBe(rowOf("Computer Use"));
+  const labels = ["Web Access", "Browser Use", "Sandbox desktop", "Computer Use"].map((label) => screen.getByText(label));
+  // Document order: Web Access → Browser Use → Sandbox desktop → Computer Use, the last three adjacent.
+  for (let i = 1; i < labels.length; i++) expect(labels[i - 1].compareDocumentPosition(labels[i]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(rowOf("Browser Use").nextElementSibling).toBe(rowOf("Sandbox desktop"));
+  expect(rowOf("Sandbox desktop").nextElementSibling).toBe(rowOf("Computer Use"));
   // What each axis governs and what it depends on, in one line each. Allow
   // means allow, so neither row explains away its levels with confirmation caveats.
   for (const [pattern, dependency] of [
     [/Control a managed Chromium browser on the service host/, /independent of Web Access/],
-    [/Control the Linux X11 desktop on the service host/, /every other axis on Allow/],
+    [/Control a disposable Linux desktop in a hardened container, not your machine/, /Needs no other permission; its network is unrestricted/],
+    [/Control the Linux X11 desktop on the service host/, /every other axis on Allow, except Sandbox desktop/],
   ] as const) {
     const description = screen.getByText(pattern).textContent!;
     expect(description).toMatch(dependency);
     expect(description).not.toMatch(/confirm/i);
     expect(description.length).toBeLessThan(140);
   }
-  for (const label of ["Browser Use", "Computer Use"])
+  for (const label of ["Browser Use", "Sandbox desktop", "Computer Use"])
     expect((within(rowOf(label)).getByRole("radio", { name: "Deny" }) as HTMLInputElement).checked).toBe(true);
   fireEvent.click(within(rowOf("Browser Use")).getByRole("radio", { name: "Ask" }));
-  expect(onChange).toHaveBeenLastCalledWith({ fileRead: "allow", fileWrite: "ask", codeExecution: "ask", webAccess: "ask", browserControl: "ask", computerControl: "deny" });
+  const base = {
+    fileRead: "allow",
+    fileWrite: "ask",
+    codeExecution: "ask",
+    webAccess: "ask",
+    browserControl: "deny",
+    computerControl: "deny",
+    sandboxControl: "deny",
+  };
+  expect(onChange).toHaveBeenLastCalledWith({ ...base, browserControl: "ask" });
+  fireEvent.click(within(rowOf("Sandbox desktop")).getByRole("radio", { name: "Allow" }));
+  expect(onChange).toHaveBeenLastCalledWith({ ...base, sandboxControl: "allow" });
   fireEvent.click(within(rowOf("Computer Use")).getByRole("radio", { name: "Ask" }));
-  expect(onChange).toHaveBeenLastCalledWith({ fileRead: "allow", fileWrite: "ask", codeExecution: "ask", webAccess: "ask", browserControl: "deny", computerControl: "ask" });
+  expect(onChange).toHaveBeenLastCalledWith({ ...base, computerControl: "ask" });
 });
-it.each(["Browser Use", "Computer Use"])("enables modal Save for a %s-only change", (label) => {
+it.each(["Browser Use", "Sandbox desktop", "Computer Use"])("enables modal Save for a %s-only change", (label) => {
   render(<ChatPermissionsModal isOpen onClose={() => {}} chatId={undefined} permissions={normalizePermissions(undefined)} onPermissionsChange={() => {}} />);
   const save = screen.getByRole("button", { name: "Save" }) as HTMLButtonElement;
   expect(save.disabled).toBe(true);

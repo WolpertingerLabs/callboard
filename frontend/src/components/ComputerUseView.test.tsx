@@ -35,7 +35,7 @@ function Harness({
   );
 }
 const click = (name: string) => fireEvent.click(screen.getByRole("button", { name }));
-const summary = () => screen.getByRole("status", { name: /^Browser & Computer Use/ });
+const summary = () => screen.getByRole("status", { name: /^Computer control/ });
 function expectIdle() {
   expect(screen.getByText("Idle")).toBeTruthy();
   expect(summary().getAttribute("aria-label")).toContain("0 active · 0 waiting for approval");
@@ -186,6 +186,20 @@ it("stops all browser/native and pending sessions without confirmation, even whe
   vi.mocked(client.control).mockImplementation(async (_chat, id) => ({ id, state: "stopped" }));
   click("Stop computer control");
   await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+});
+it("remembers an accepted Sandbox desktop open for the emergency Stop, even when status never lists it", async () => {
+  status = { permission: "allow", capabilities: [{ kind: "sandbox", available: true, permission: "allow" }], sessions: [] };
+  const opened = { id: "sb1", kind: "sandbox" as const, state: "ready", controller: "agent" as const, generation: 1, targetLabel: "sandbox 127.0.0.1:7801" };
+  vi.mocked(client.open).mockResolvedValue({ session: opened });
+  vi.mocked(client.control).mockImplementation(async (_chat, id) => ({ id, state: "stopped" }));
+  render(<Harness />);
+  await act(async () => {});
+  click("Switch view");
+  fireEvent.change(screen.getByLabelText("Target"), { target: { value: "sandbox" } });
+  click("Enable");
+  await waitFor(() => expect(client.open).toHaveBeenCalledWith("c1", "sandbox"));
+  click("Stop computer control");
+  await waitFor(() => expect(client.control).toHaveBeenCalledWith("c1", "sb1", "stop", 1));
 });
 it("dispatches known stops without waiting for discovery or screenshot and never presents late capture after view remount", async () => {
   let resolveCapture!: (value: Awaited<ReturnType<typeof client.observe>>) => void;
