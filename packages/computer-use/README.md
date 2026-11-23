@@ -27,7 +27,7 @@ Types and `ComputerUseError` live in `src/contracts.ts` and are exported from bo
 - `ComputerUseService`, `createComputerUseService(options?)`
 - `createBrowserDriver(options?)`, `BrowserDriverOptions`
 - `createNativeDesktopDriver(options?)`, `NativeDesktopDriverOptions`
-- `createDriverHost(options)`, `readTokenFile(path)`, `createRemoteDriver(options)`, `sandboxRunArgs(options)`, `PROTOCOL`, `HOST_CAPABILITIES`, and their types: see [Sandbox desktop container](#sandbox-desktop-container)
+- `createDriverHost(options)`, `readTokenFile(path, { allowSymlink? })`, `createRemoteDriver(options)` (with `openedInstance`, `listOutbox`, `downloadOutboxFile`), `sandboxRunArgs(options)`, `ensureSandboxNetwork(options?)`, `sandboxNetworkCreateArgs(name?)`, `PROTOCOL`, `HOST_CAPABILITIES`, `SANDBOX_NETWORK`, `SANDBOX_IMAGE_LABELS`, and their types: see [Sandbox desktop container](#sandbox-desktop-container)
 - `createMcpServer(service, principal): McpServer`
 - `getToolDefinitions(service, principal): ToolDefinition[]`, `ToolDefinition`
 - `actionSchema`, the Zod schema the service validates actions against, so a host can check an action before acting on it
@@ -194,25 +194,37 @@ Command choices follow upstream [xdotool](https://github.com/jordansissel/xdotoo
 The X11 driver can run inside a Docker container and be driven from another process over an authenticated loopback connection. The container is a **driver host**, not an MCP server and not a policy point: it exposes one local `Driver`'s `probe`, `open`, `observe`, `act`, `releaseInput` and `close` over HTTP, and everything that decides whether an operation may happen (authorization, leases, approvals, the 15-minute TTL) stays in the `ComputerUseService` that connects to it.
 
 ```ts
-import { ComputerUseService, createRemoteDriver, sandboxRunArgs } from "@wolpertingerlabs/computer-use";
+import { ComputerUseService, createRemoteDriver, ensureSandboxNetwork, sandboxRunArgs } from "@wolpertingerlabs/computer-use";
 // docker run arguments with every hardening flag; the token only as a file path:
 const args = sandboxRunArgs({ port: 0, tokenFile: "/private/dir/token", name: "sandbox-1", labels: { "dev.example.owner": "x" } });
-const desktop = createRemoteDriver({ url: "http://127.0.0.1:7801", token });
+await ensureSandboxNetwork(); // the bridge network those args name, with inter-container traffic off
+const desktop = createRemoteDriver({ url: "http://127.0.0.1:7801", tokenFile: "/private/dir/token" });
 const service = new ComputerUseService({ targets: [{ id: "desktop", enabled: true, driver: desktop }], authorize });
-await desktop.listOutbox(); // [{ name, size, sha256 }]
+desktop.openedInstance(lease.sessionId); // the host instance a session actually opened on
+await desktop.listOutbox(); // [{ name, size, sha256, mtimeMs }]
 await desktop.downloadOutboxFile("report.pdf"); // { name, size, sha256, data: Buffer }, digest checked
 ```
 
-**Build and run.** From this directory:
+**Build and run, from a source checkout.** `docker/` is not part of the published package, and the Dockerfile builds this package from `src/`. From this directory:
 
 ```sh
 docker build -t callboard/computer-use-desktop:local -f docker/Dockerfile .
-docker/run.sh 7801   # hardened flags, a fresh token in a private temp file, 127.0.0.1:7801
+docker/run.sh 7801   # hardened flags, its own network, a fresh token in a private temp file, 127.0.0.1:7801
 ```
 
-`run.sh` prints `CALLBOARD_REMOTE_DESKTOP_URL` and `CALLBOARD_REMOTE_DESKTOP_TOKEN_FILE` for Callboard, and the command to stop it and delete the token.
+- **What `run.sh` prints:** `CALLBOARD_REMOTE_DESKTOP_URL` and `CALLBOARD_REMOTE_DESKTOP_TOKEN_FILE` for Callboard, and the commands to stop it, delete the token and remove the image.
+- **Failure:** if it fails part-way, it removes the token it created.
+- **Rebuilding:** it builds the image only if it's missing. After pulling changes, run it with `COMPUTER_USE_DESKTOP_REBUILD=1` (or `docker build` again). `docker rmi callboard/computer-use-desktop:local` removes the image.
+- **Labels:** the image carries `org.opencontainers.image.version` (this package's version) and `dev.callboard.computer-use.protocol` (`"2.0"`), named by `SANDBOX_IMAGE_LABELS`, so a host can check compatibility before `docker run`.
 
-**The token is a file, never an environment variable.** An environment variable shows in `docker inspect` and in every `docker exec` shell. The driver host reads `COMPUTER_USE_HOST_TOKEN_FILE` (default `/run/computer-use/token`, a read-only bind mount) and refuses to start if `COMPUTER_USE_HOST_TOKEN` is set at all. `readTokenFile` rejects a symlink, a non-regular file, a group- or world-writable file, and anything other than one line of 32–4096 characters. On the host, `run.sh` writes the token as a `0444` file inside a `0700` directory. The file has to be readable by "others" because the container's driver user isn't your uid; the directory is what keeps it private. Inside the container the mount point's directory is `root:driver 0750`, so the desktop user can't even list it. Verified by the Docker test: the token appears in neither `docker inspect` nor any process environment, and the desktop user gets `Permission denied`.
+**The token is a file, never an environment variable.** An environment variable shows in `docker inspect` and in every `docker exec` shell.
+
+- **The host reads a file:** `COMPUTER_USE_HOST_TOKEN_FILE`, by default `/run/computer-use/token`, a read-only bind mount. It refuses to start if `COMPUTER_USE_HOST_TOKEN` is set at all.
+- **`readTokenFile` checks it:** a symlink is refused unless the caller passes `allowSymlink`. So are a non-regular file, a group- or world-writable file, and anything other than one line of 32–4096 characters.
+- **On your machine:** `run.sh` writes the token as a `0444` file inside a `0700` directory. The file has to be readable by "others" because the container's driver user isn't your uid; the directory is what keeps it private.
+- **Inside the container:** the mount point's directory is `root:driver 0750`, so the desktop user can't even list it.
+- **On the client side:** `createRemoteDriver({ tokenFile })` reads the file at every handshake, so a rotated token is picked up. It *does* follow symlinks: Kubernetes secrets and some credential stores are symlinks, and that path is chosen by the operator, not by anything on the desktop.
+- **Verified by the Docker test:** the token appears in neither `docker inspect` nor any process environment, and the desktop user gets `Permission denied`.
 
 **Hardening** (`sandboxRunArgs`; `run.sh` mirrors it, and a test keeps the two in step):
 
@@ -222,12 +234,15 @@ docker/run.sh 7801   # hardened flags, a fresh token in a private temp file, 127
 | `--cap-drop=ALL --cap-add=SETUID --cap-add=SETGID` | The entrypoint runs as root just long enough to start the desktop as `desktop`, then execs into tini as `driver`. The two added capabilities exist only for that split. Afterwards no process is root and none holds a capability (checked by the Docker test). |
 | `--security-opt=no-new-privileges` | No setuid or file-capability gain. |
 | `--pids-limit=256 --memory=1g --memory-swap=1g --cpus=1` | Defaults; pass `limits` to change them. |
-| `--publish 127.0.0.1:<port>:7801` | Loopback only. The token is the whole authentication. |
+| `--network=callboard-sandbox` | A user-defined bridge with inter-container communication off (`ensureSandboxNetwork` creates it, or refuses one with that name that is set up otherwise). Another container on it cannot reach the driver host, which listens on all the container's interfaces so the published port works. Verified by the Docker test. |
+| `--publish 127.0.0.1:<port>:7801` | Loopback only. |
 | `--mount type=bind,…token,readonly` | The only host path. No Docker socket, no devices, not privileged. |
 
-Outbound network stays on Docker's default bridge. Attach a restricted network if the desktop must not reach the internet.
+**The other direction: the container can reach this machine.** No Docker flag stops a container on a bridge network from connecting to the host's own addresses, such as the bridge gateway (`172.x.0.1`). Any service on this machine that listens on all interfaces is reachable from the desktop. That includes Callboard itself, which today listens on every interface: a reviewer reached it from the desktop at `172.17.0.1:8000`. Bind host services to `127.0.0.1` where you can, or firewall the Docker bridge on the host, for example a `DOCKER-USER` or nftables rule that drops traffic from the sandbox network to the host.
 
-**Keep the port local.** To reach a container on another machine, put it behind a TLS proxy that authenticates. `createRemoteDriver` refuses plain `http` to anything but a loopback address.
+**Outbound internet** is allowed. Restricting it is a decision for whoever runs the containers. Options are an `--internal` network with an egress proxy (published ports don't work on an internal network, so the driver host would need another path), or host firewall rules.
+
+**Keep the port local.** To reach a container on another machine, put it behind a TLS proxy that authenticates. `createRemoteDriver` refuses plain `http` to anything but a loopback address. The token never crosses the wire, but screenshots and typed text do.
 
 **What's in the image** (about 430 MB unpacked, 140 MB compressed):
 - **Desktop:** Xvfb on `:99` at 1280×800×24, icewm, and one xterm (respawned if it exits) as the test target.
@@ -236,32 +251,47 @@ Outbound network stays on Docker's default bridge. Attach a restricted network i
 
 How it's built:
 - The base image is pinned by digest, and the package builds with `npm ci` from `docker/package-lock.json`. That lock is pinned to the versions Callboard runs; `npm ci` fails if it drifts from `package.json`.
+- No file has a setuid or setgid bit (they're stripped, and the Docker test checks), and the driver's temporary directory (`TMPDIR`, which holds its input lock) is created `0700` as `driver` before any desktop process starts. The desktop user therefore can't squat the lock.
 - npm, npx and corepack are removed. Packages the dependency closure drags in but a headless, GL-less desktop never loads are purged: mesa's DRI drivers with LLVM and z3, `cpp`, and Ghostscript with its fonts.
 
 Users and permissions:
 - Two unprivileged users: `desktop` owns the X session and every app on it, and `driver` runs `computer-use-driver-host` and alone can reach the token.
 - Inside the container the native driver runs with full-desktop access acknowledged and all four scopes on `allow`. That's correct there, because the container is the boundary.
 
-**Protocol versioning.** `PROTOCOL` is `{ major: 1, minor: 0 }`, so a daemon and a container from different releases can tell whether they understand each other:
+**Protocol versioning and the handshake.** `PROTOCOL` is `{ major: 2, minor: 0 }`, so a daemon and a container from different releases can tell whether they understand each other.
 
-- `GET /v1/identity` is answered at any version. It reports `protocol`, `capabilities` (`HOST_CAPABILITIES`), a per-process `instanceId` and the hostname.
-- **Major** breaks compatibility and is also the URL prefix. The client sends `X-Computer-Use-Protocol: <major>.<minor>` on every request, and the host refuses every other endpoint with `unsupported` (501) unless the major matches. Before probe, open and outbox calls, the client checks `/v1/identity` and fails closed on a different major, or on a host from before versioning. A probe then reports `readiness: "unsupported"`.
-- **Minor** only adds. New behaviour is announced as a capability, and a client checks for the capability, never the minor number. The rules are the same as for Callboard's stream types: fields are added, never removed or renamed, and an existing field's meaning never changes.
+- **`POST /hello` is unversioned and needs no credentials.** The client sends a fresh 32-byte nonce. The host answers with its `protocol`, `capabilities`, a per-process `instanceId`, `heartbeatMs` and hostname, plus `proof = HMAC-SHA256(token, ["computer-use/host-proof", nonce, instanceId, major, minor])`.
+- **The client trusts nothing until that proof checks out against its own copy of the token.** A process that took the port after the real host went away gets a `denied` and was never sent anything but the nonce.
+- **The token never travels.** Every later request carries `Authorization: Bearer <nonce>.<HMAC(token, ["computer-use/credential", instanceId, nonce])>`. That credential is bound to one host instance, so one captured from a host that has since gone or restarted is worthless.
+- **What it doesn't stop:** an active relay to a live host. That needs channel binding (TLS), which is one more reason the port stays on loopback.
+- **Major** breaks compatibility and is the URL prefix (`/v2`). The client sends `X-Computer-Use-Protocol: <major>.<minor>`, and the host refuses another major, or none, with `unsupported` (501). The client fails closed on a host whose hello reports another major, or that predates the handshake; a probe then reports `readiness: "unsupported"`. Protocol 1.0 sent the raw token on every request and is not accepted.
+- **Minor** only adds. New behaviour is announced as a capability, and a client checks for the capability, never the minor number. A host advertises only what it serves: no outbox directory means no `outbox.list`/`outbox.get`.
+- **The rules:** the same as for Callboard's stream types. Fields are added, never removed or renamed, and an existing field's meaning never changes. **Request bodies are strict**: the host rejects unknown fields, so a new request field needs a capability first. Responses are lenient: clients ignore fields they don't know.
 
 **The driver host** (`createDriverHost({ driver, token, outboxDir? })`, or the `computer-use-driver-host` bin, configured by `COMPUTER_USE_*` environment variables):
 
-- Refuses to start without a token of at least 32 characters, and checks it on every request, in constant time, before reading the body or the path.
+- Refuses to start without a token of at least 32 characters.
+- **Authentication:** it proves itself on `/hello`, and checks the instance credential on every other request, in constant time, before reading the body or the path. A refused request gets `Connection: close`, and the socket is destroyed.
+- **Limits:** 32 connections, 10 s for headers, 15 s for a whole request, and 10 s to read a body once headers are in (`maxConnections`, `headersTimeoutMs`, `requestTimeoutMs`, `bodyTimeoutMs`). The attach stream's response is not bounded by them. A request whose body is refused or left unread also loses its connection.
 - Validates every action with `actionSchema`, as the client does before sending it.
 - Bounds each operation at 30 seconds and aborts it if the client goes away.
-- Ties each session to a long-lived attach response with a ping every 5 seconds. If that connection drops, the host aborts the running operation, releases input and closes the session. The client reads the same drop (or 15 seconds without a ping) as a lost connection, fails any in-flight call with `driver_error`, and calls `onLost`, so the service fences the session at once.
+- Ties each session to a long-lived attach response with a ping every `heartbeatMs` (5 s by default, advertised in the hello). If that connection drops, the host aborts the running operation, releases input and closes the session. The client reads the same drop (or 15 seconds without a ping) as a lost connection, fails any in-flight call with `driver_error`, and calls `onLost`, so the service fences the session at once.
 - Returns frames as PNG, with width and height read from the image itself. Coordinates are 1:1 with those pixels.
 - Serves one session at a time; another `open` gets `lease_conflict`.
 
-**Outbox.** `~/outbox` in the container (`/home/desktop/outbox`, on the home tmpfs) is listed with name, size and SHA-256, and served by name.
-- Names are plain file names: no leading dot, no separators, at most 128 characters. So `..` and absolute paths are refused, and symlinks are refused at open time with `O_NOFOLLOW`.
-- Files over 64 MiB are listed without a digest and not served, and a listing stops at 200 entries.
-- The client checks the digest against the bytes it received.
-- Syncing it anywhere, and draining it before the container is destroyed, are the host's job.
+**Outbox.** `~/outbox` in the container (`/home/desktop/outbox`, on the home tmpfs) is listed with name, size, SHA-256 and `mtimeMs`, and served by name.
+
+- **Plain names only:** no leading dot, no separators, at most 128 characters. So `..` and absolute paths are refused.
+- **No following links, even mid-race.** The desktop user owns the outbox and its parent, so it can swap the outbox for a symlink at any moment. (A reviewer did exactly that, to `/run/computer-use`, and got the token served.) Now, for every request:
+  1. The host opens the outbox directory itself with `O_NOFOLLOW`, so a symlink there fails.
+  2. It confirms through `/proc/self/fd` that the directory it holds is the configured one.
+  3. It opens each name *through that held directory* (`/proc/self/fd/<dirfd>/<name>`, i.e. `openat`) with `O_NOFOLLOW`.
+  4. It serves the file only if it is a regular file on the outbox's own device, owned by the outbox's owner, and its fd still resolves to `<outbox>/<name>`.
+
+  A unit test races a real swapper process against downloads and listings, and the Docker test replays the reviewer's swap. The driver host is Linux-only, as `/proc` is.
+- **Digests:** a listing streams each file's hash and caches it by device, inode, size, mtime and ctime (ctime because a writer can set mtime back), so unchanged files aren't re-read. Files over 64 MiB are listed without a digest and not served, and a listing stops at 200 entries. The client checks a download's digest against the bytes it received.
+- **Write `.name.part`, then rename to `name`.** Dot-names are never listed, and a rename is atomic, so a listing never sees a half-written file. A file that changes while it's being hashed is listed with `sha256: null`.
+- **Syncing and draining:** copying the outbox anywhere, and draining it before the container is destroyed, are the host's job.
 
 ## MCP server
 
@@ -316,8 +346,8 @@ The offline suites cover:
 - **MCP:** real in-memory initialize/list/call, stdio subprocess discovery, and a stdio run whose enabled target has no authorizer and must deny `probe` and `open` without opening the driver.
 - **Native lock directory:** PID record, dead-holder reclaim, quarantine and concurrent reclaim, all without a display.
 - **Native typing:** chained `xdotool` argument vectors, delay only for remapped characters, and the 1000-character refusal.
-- **Sandbox run arguments:** every hardening flag, input validation, and `run.sh` kept in step.
-- **Remote driver host:** protocol negotiation failing closed in both directions (another major, none, a missing capability), token files, token refusal on every endpoint, schema refusal on both sides, abort and operation bounds, disconnect and heartbeat fencing through the service, open cancellation, outbox path safety (`..`, absolute paths, hidden files, directories, symlinks, size cap) and digest checking.
+- **Sandbox run arguments:** every hardening flag, the network argv, input validation, `run.sh` kept in step, and the image labels matching `package.json` and `PROTOCOL`.
+- **Remote driver host:** the handshake (a squatting host without the token learns nothing and gets no request past `/hello`; credentials for another instance or secret are refused), protocol negotiation failing closed in both directions (another major, none, a missing capability), slow and oversized requests cut off, `maxConnections`, the attach stream outliving the request deadline, the probe's fixed human words and readiness whitelist, `openedInstance`, token files (symlinks on the client side), the outbox symlink race, digest caching and the `.part` convention, token refusal on every endpoint, schema refusal on both sides, abort and operation bounds, disconnect and heartbeat fencing through the service, open cancellation, outbox path safety (`..`, absolute paths, hidden files, directories, symlinks, size cap) and digest checking.
 
 **Live remote desktop (opt-in, needs Docker):**
 
@@ -327,8 +357,8 @@ CALLBOARD_DOCKER_TESTS=1 npm test
 
 This builds the image and runs it with `sandboxRunArgs` (every hardening flag) on a random `127.0.0.1` port, with a random token in a read-only mounted file. Then it checks:
 
-- **As Docker reports it:** the hardening settings themselves; the token absent from `docker inspect` and from every process environment; no process running as root or holding a capability; the token file unreadable by the desktop user; the root filesystem read-only; a CJK font present.
-- **Through `createRemoteDriver` and `ComputerUseService`:** probe; open; a 1280×800 PNG frame; pointer coordinates equal to screenshot pixels (`xdotool getmouselocation` at the corners); typing, a key chord and Enter each changing the frame; non-ASCII typing with the pointer still responsive afterwards; a file written into the outbox by typing a shell command in the terminal, then listed and downloaded with a matching digest; a binary file written with `docker exec`, likewise; a symlink not listed and not served; stop and reopen; and `docker kill` under a live session fencing it `failed` with no further call. The container is always removed; the image is left in place. Without the variable the test is skipped.
+- **As Docker reports it:** the image labels; the handshake (and the raw token refused as a credential); the hardening settings themselves; a neighbour on the same network blocked while the same probe from the sandbox's own namespace gets through; no setuid files; the driver's private temp directory, with a desktop-user squat of the old lock path not stopping a session; the token absent from `docker inspect` and from every process environment; no process running as root or holding a capability; the token file unreadable by the desktop user; the root filesystem read-only; a CJK font present.
+- **Through `createRemoteDriver` and `ComputerUseService`:** probe; open; a 1280×800 PNG frame; pointer coordinates equal to screenshot pixels (`xdotool getmouselocation` at the corners); typing, a key chord and Enter each changing the frame; non-ASCII typing with the pointer still responsive afterwards; a file written into the outbox by typing a shell command in the terminal, then listed and downloaded with a matching digest; a binary file written with `docker exec`, likewise; a symlink not listed and not served; the outbox swapped for a symlink to the token's directory refused; stop and reopen; and `docker kill` under a live session fencing it `failed` with no further call. The container is always removed; the image is left in place. Without the variable the test is skipped.
 
 **Native X11 driver, qualified on Xvfb (inside the container):** screenshots; pointer `move`, left/right `click`, `drag` (exact end points; a title-bar drag moves the window by exactly the requested distance) and `scroll`; key chords such as `Shift+a`, `Control+A`, `Control+u`, `Enter`, `Tab`, `Escape`, `F1`, with no modifier left held afterwards; typing of all 95 printable ASCII characters, Latin-1, `€`, arrows, CJK and emoji (byte-exact, checked by typing into `cat > file`); 4000 ASCII characters in about 0.6 s; 1000 CJK characters in about 21 s; an aborted `type` fencing the session. Found and fixed while qualifying:
 
