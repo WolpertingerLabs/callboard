@@ -1,6 +1,13 @@
 import { ASIDE_ROLE, asideForkPoint, handshakeHeaders, type AsideQuote } from "shared/types/index.js";
 import type { PermissionReviewSettings, ReasoningCapability } from "shared/types/index.js";
 import { DEFAULT_VOICE_MODEL, type TranscribeResponse, type VoiceModelsResponse } from "shared/types/voice.js";
+import {
+  DEFAULT_READ_ALOUD_MODEL,
+  DEFAULT_READ_ALOUD_VOICE,
+  READ_ALOUD_HEADERS,
+  type ReadAloudCacheStatus,
+  type ReadAloudModelsResponse,
+} from "shared/types/readAloud.js";
 import { normalizePermissions } from "shared/types/permissions.js";
 import type { SpaceListItem, SpacePatch } from "shared/types/space.js";
 import type {
@@ -2006,6 +2013,11 @@ export interface SystemInfo {
    * voice input — treat as false.
    */
   voiceInputAvailable?: boolean;
+  /**
+   * Whether message read-aloud can run: true when the account-wide OpenRouter
+   * key is set. Absent on servers older than read aloud — treat as false.
+   */
+  readAloudAvailable?: boolean;
 }
 
 /**
@@ -2395,6 +2407,55 @@ export async function transcribeAudio(wav: Blob, signal?: AbortSignal): Promise<
   const form = new FormData();
   form.append("audio", wav, "dictation.wav");
   return request("/voice/transcribe", { method: "POST", body: form, signal, error: "Transcription failed" });
+}
+
+// Read aloud API
+
+/** Models (and their voices) the Settings → API read-aloud picker offers, plus the server's defaults. */
+export async function getReadAloudModels(): Promise<ReadAloudModelsResponse> {
+  const data = await request<Partial<ReadAloudModelsResponse>>("/voice/speech/models", { error: "Failed to get read-aloud models" });
+  return {
+    models: Array.isArray(data.models) ? data.models : [],
+    defaultModel: typeof data.defaultModel === "string" && data.defaultModel ? data.defaultModel : DEFAULT_READ_ALOUD_MODEL,
+    defaultVoice: typeof data.defaultVoice === "string" && data.defaultVoice ? data.defaultVoice : DEFAULT_READ_ALOUD_VOICE,
+  };
+}
+
+export interface SynthesizedSpeech {
+  /** The mp3, fully downloaded — so seeking works on an object URL of it. */
+  blob: Blob;
+  model: string;
+  /** The voice the server sent; `null` when it sent none. */
+  voice: string | null;
+  /** Exact duration, when the server could compute it. */
+  durationMs?: number;
+  /** Whether the server read only the start of a very long text. */
+  truncated: boolean;
+  chunks?: number;
+  cache?: ReadAloudCacheStatus;
+}
+
+/**
+ * Read `text` (speakable plain text, not markdown) aloud. Resolves with the
+ * whole mp3 and what the server reported about it. Throws with the server's
+ * message (no key, too long, unsupported model, upstream failure, timeout).
+ */
+export async function synthesizeSpeech(text: string, signal?: AbortSignal): Promise<SynthesizedSpeech> {
+  const res = await send("/voice/speech", { method: "POST", json: { text }, signal, error: "Read aloud failed" });
+  const blob = await res.blob();
+  const header = (name: string) => res.headers.get(name);
+  const duration = Number(header(READ_ALOUD_HEADERS.durationMs) ?? NaN);
+  const chunks = Number(header(READ_ALOUD_HEADERS.chunks) ?? NaN);
+  const cache = header(READ_ALOUD_HEADERS.cache);
+  return {
+    blob,
+    model: header(READ_ALOUD_HEADERS.model) || "",
+    voice: header(READ_ALOUD_HEADERS.voice) || null,
+    ...(Number.isFinite(duration) && duration > 0 ? { durationMs: duration } : {}),
+    truncated: header(READ_ALOUD_HEADERS.truncated) === "1",
+    ...(Number.isInteger(chunks) && chunks > 0 ? { chunks } : {}),
+    ...(cache === "hit" || cache === "partial" || cache === "miss" ? { cache } : {}),
+  };
 }
 
 // Instance name API

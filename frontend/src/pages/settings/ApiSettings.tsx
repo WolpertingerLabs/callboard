@@ -1,10 +1,28 @@
 import { useEffect, useRef, useState } from "react";
-import { Key, Globe, Cpu, Eye, EyeOff, RefreshCw, Bot, Network, Terminal, Boxes, ExternalLink, AlertTriangle, CheckCircle2, HardDrive, Mic } from "lucide-react";
+import {
+  Key,
+  Globe,
+  Cpu,
+  Eye,
+  EyeOff,
+  RefreshCw,
+  Bot,
+  Network,
+  Terminal,
+  Boxes,
+  ExternalLink,
+  AlertTriangle,
+  CheckCircle2,
+  HardDrive,
+  Mic,
+  Volume2,
+} from "lucide-react";
 import {
   getAgentSettings,
   updateAgentSettings,
   getSystemInfo,
   getVoiceModels,
+  getReadAloudModels,
   getOpenRouterCatalog,
   getPiProviders,
   getEngines,
@@ -29,6 +47,7 @@ import ChatRetentionSection from "./ChatRetentionSection";
 import type { EngineRecheckOutcome } from "./EngineStatusCard";
 import type { AgentSettings, OpenRouterModelInfo } from "shared/types/index.js";
 import { DEFAULT_VOICE_MODEL, type VoiceModelInfo } from "shared/types/voice.js";
+import { DEFAULT_READ_ALOUD_MODEL, DEFAULT_READ_ALOUD_VOICE, type ReadAloudModelInfo } from "shared/types/readAloud.js";
 import type { SystemInfo, EngineStatus, EngineBinaryCheckResponse } from "../../api";
 import OpenRouterModelSelector from "../../components/OpenRouterModelSelector";
 import CodexModelSelector from "../../components/CodexModelSelector";
@@ -812,6 +831,8 @@ export default function ApiSettings() {
     openRouterUtilitySonnetModel,
     openRouterUtilityOpusModel,
     openRouterVoiceModel,
+    openRouterTtsModel,
+    openRouterTtsVoice,
     codexAuthMode,
     codexApiKey,
     codexBaseUrl,
@@ -832,6 +853,10 @@ export default function ApiSettings() {
   // Voice input picker options; empty until (and unless) the list loads.
   const [voiceModels, setVoiceModels] = useState<VoiceModelInfo[]>([]);
   const [defaultVoiceModel, setDefaultVoiceModel] = useState(DEFAULT_VOICE_MODEL);
+  // Read-aloud picker options; empty until (and unless) the list loads.
+  const [speechModels, setSpeechModels] = useState<ReadAloudModelInfo[]>([]);
+  const [defaultSpeechModel, setDefaultSpeechModel] = useState(DEFAULT_READ_ALOUD_MODEL);
+  const [defaultSpeechVoice, setDefaultSpeechVoice] = useState(DEFAULT_READ_ALOUD_VOICE);
   const [piProviders, setPiProviders] = useState<string[]>([]);
 
   const loadAll = async () => {
@@ -882,6 +907,14 @@ export default function ApiSettings() {
         .then(({ models, defaultModel }) => {
           setVoiceModels(models);
           setDefaultVoiceModel(defaultModel);
+        })
+        .catch(() => {});
+      // Read-aloud picker options; best-effort — the Default options work without them.
+      getReadAloudModels()
+        .then(({ models, defaultModel, defaultVoice }) => {
+          setSpeechModels(models);
+          setDefaultSpeechModel(defaultModel);
+          setDefaultSpeechVoice(defaultVoice);
         })
         .catch(() => {});
     } catch (err) {
@@ -1358,7 +1391,12 @@ export default function ApiSettings() {
 
       {activeProvider === "claude-code" && (
         <>
-          <EngineStatusCard engine={engineFor("claude-code")} loading={enginesLoading} onRecheck={handleRecheckEngines} onEnginesUpdated={handleEnginesUpdated} />
+          <EngineStatusCard
+            engine={engineFor("claude-code")}
+            loading={enginesLoading}
+            onRecheck={handleRecheckEngines}
+            onEnginesUpdated={handleEnginesUpdated}
+          />
 
           <CredentialModeSection
             harness="Claude Code"
@@ -1395,8 +1433,8 @@ export default function ApiSettings() {
             caveats={
               <>
                 While this is the selected credential, Callboard sets <code>ANTHROPIC_BASE_URL</code> to the endpoint above and forces{" "}
-                <code>ANTHROPIC_API_KEY</code> empty. Claude Code is optimized for Anthropic models — pick <code>anthropic/*</code> slugs below for best results.
-                If you previously logged in to Anthropic directly, run <code>/logout</code> in a chat to clear any cached session conflict.
+                <code>ANTHROPIC_API_KEY</code> empty. Claude Code is optimized for Anthropic models — pick <code>anthropic/*</code> slugs below for best
+                results. If you previously logged in to Anthropic directly, run <code>/logout</code> in a chat to clear any cached session conflict.
               </>
             }
           />
@@ -1510,8 +1548,8 @@ export default function ApiSettings() {
                 <>
                   Absolute path on the machine running Callboard. Set this to pin a specific build — a local checkout, a version you have not upgraded, or an
                   install somewhere the daemon&rsquo;s <code style={{ fontSize: 11 }}>PATH</code> does not reach. Clearing it restores the default lookup. Note
-                  it does <em>not</em> change the binary behind the About page&rsquo;s CLI version or the login prompt: that is a separate lookup, and the status
-                  card above says so when the two disagree.
+                  it does <em>not</em> change the binary behind the About page&rsquo;s CLI version or the login prompt: that is a separate lookup, and the
+                  status card above says so when the two disagree.
                 </>
               }
             />
@@ -1728,9 +1766,7 @@ export default function ApiSettings() {
                 API Key<span style={envLabelStyle}>OPENROUTER_API_KEY</span>
               </label>
               <SecretField id="openRouterApiKey" value={openRouterApiKey} onChange={bind("openRouterApiKey")} placeholder="sk-or-..." />
-              <div style={helpStyle}>
-                Create one at openrouter.ai/keys.
-              </div>
+              <div style={helpStyle}>Create one at openrouter.ai/keys.</div>
             </div>
 
             <div style={fieldWrap}>
@@ -1836,8 +1872,8 @@ export default function ApiSettings() {
               <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Voice input</span>
             </div>
             <div style={subtitleStyle}>
-              The composer&rsquo;s microphone button records you and inserts what you said at the cursor. It never sends anything. Recordings are transcribed
-              on this OpenRouter key.
+              The composer&rsquo;s microphone button records you and inserts what you said at the cursor. It never sends anything. Recordings are transcribed on
+              this OpenRouter key.
             </div>
 
             <div style={fieldWrap}>
@@ -1855,8 +1891,53 @@ export default function ApiSettings() {
                 <div style={{ ...helpStyle, color: "var(--warning)" }}>Add an API key above to enable voice input.</div>
               ) : (
                 <div style={helpStyle}>
-                  Speech-to-text models transcribe verbatim and are the cheap default. Audio-capable chat models are given a strict transcription prompt;
-                  they can be slower and cost more.
+                  Speech-to-text models transcribe verbatim and are the cheap default. Audio-capable chat models are given a strict transcription prompt; they
+                  can be slower and cost more.
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* OpenRouter — message read-aloud */}
+          <div style={sectionStyle}>
+            <div style={headerStyle}>
+              <Volume2 size={16} style={{ color: "var(--accent-text)" }} />
+              <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Read aloud</span>
+            </div>
+            <div style={subtitleStyle}>The speaker button on a message reads that one message aloud. Audio is synthesized on this OpenRouter key.</div>
+
+            <div style={fieldWrap}>
+              <label htmlFor="openRouterTtsModel" style={labelStyle}>
+                Read-aloud model
+              </label>
+              <ReadAloudModelSelect
+                value={openRouterTtsModel}
+                // Voices are model-specific: a new model starts on its own default.
+                onChange={(value) => setForm((prev) => ({ ...prev, openRouterTtsModel: value, openRouterTtsVoice: "" }))}
+                models={speechModels}
+                defaultModel={defaultSpeechModel}
+                disabled={!openRouterApiKey.trim()}
+              />
+            </div>
+
+            <div style={fieldWrap}>
+              <label htmlFor="openRouterTtsVoice" style={labelStyle}>
+                Read-aloud voice
+              </label>
+              <ReadAloudVoiceSelect
+                value={openRouterTtsVoice}
+                onChange={bind("openRouterTtsVoice")}
+                model={openRouterTtsModel.trim() || defaultSpeechModel}
+                models={speechModels}
+                defaultModel={defaultSpeechModel}
+                defaultVoice={defaultSpeechVoice}
+                disabled={!openRouterApiKey.trim()}
+              />
+              {!openRouterApiKey.trim() ? (
+                <div style={{ ...helpStyle, color: "var(--warning)" }}>Add an API key above to enable read aloud.</div>
+              ) : (
+                <div style={helpStyle}>
+                  Voices depend on the model. Models that only produce PCM audio are listed but not supported yet. Playback speed is set in the player.
                 </div>
               )}
             </div>
@@ -1939,8 +2020,8 @@ export default function ApiSettings() {
                 {credentialSavingControl === "codexParkedAuth" && <div style={helpStyle}>Saving&hellip;</div>}
                 {credentialErrors.codexParkedAuth && <div style={{ ...helpStyle, color: "var(--error)" }}>{credentialErrors.codexParkedAuth}</div>}
                 <div style={helpStyle}>
-                  Saved as soon as you pick it, like Credentials above — and unlike the key field below it, which still needs the page&rsquo;s Save. Nothing runs
-                  on it until you set Credentials back to a native Codex login.
+                  Saved as soon as you pick it, like Credentials above — and unlike the key field below it, which still needs the page&rsquo;s Save. Nothing
+                  runs on it until you set Credentials back to a native Codex login.
                 </div>
               </div>
             )}
@@ -2110,8 +2191,8 @@ export default function ApiSettings() {
             </div>
             <div style={subtitleStyle}>
               Which <code style={{ fontSize: 11 }}>codex</code> runs your chats. Leave this empty and Callboard uses the platform binary bundled with{" "}
-              <code style={{ fontSize: 11 }}>@openai/codex-sdk</code>, which is what it has always done. There is no{" "}
-              <code style={{ fontSize: 11 }}>PATH</code> search behind this field: it is your path or the bundled copy, nothing in between.
+              <code style={{ fontSize: 11 }}>@openai/codex-sdk</code>, which is what it has always done. There is no <code style={{ fontSize: 11 }}>PATH</code>{" "}
+              search behind this field: it is your path or the bundled copy, nothing in between.
             </div>
             <BinaryOverrideField
               id="codexPathOverride"
@@ -2123,9 +2204,8 @@ export default function ApiSettings() {
                 <>
                   {engineFor("codex")?.userCliPath ? (
                     <>
-                      You already have a <code style={{ fontSize: 11 }}>codex</code> at{" "}
-                      <code style={{ fontSize: 11 }}>{engineFor("codex")?.userCliPath}</code> — the one{" "}
-                      <code style={{ fontSize: 11 }}>codex login</code> runs. Setting it here makes chats run it too.{" "}
+                      You already have a <code style={{ fontSize: 11 }}>codex</code> at <code style={{ fontSize: 11 }}>{engineFor("codex")?.userCliPath}</code>{" "}
+                      — the one <code style={{ fontSize: 11 }}>codex login</code> runs. Setting it here makes chats run it too.{" "}
                     </>
                   ) : (
                     <>
@@ -2134,12 +2214,11 @@ export default function ApiSettings() {
                       it.{" "}
                     </>
                   )}
-                  Auth and sessions do not move: an overridden binary still reads{" "}
-                  <code style={{ fontSize: 11 }}>$CODEX_HOME/auth.json</code> and writes to the same rollout tree. Clearing this returns to the bundled binary.
-                  Point it at a real install rather than a loose binary if you can — the Codex SDK stops adding its own bundled helpers (
-                  <code style={{ fontSize: 11 }}>rg</code>, <code style={{ fontSize: 11 }}>bwrap</code>) to the subprocess&rsquo;s{" "}
-                  <code style={{ fontSize: 11 }}>PATH</code> once you name a binary yourself, so a copy that did not bring its own may lose search or
-                  sandboxing inside chats.
+                  Auth and sessions do not move: an overridden binary still reads <code style={{ fontSize: 11 }}>$CODEX_HOME/auth.json</code> and writes to the
+                  same rollout tree. Clearing this returns to the bundled binary. Point it at a real install rather than a loose binary if you can — the Codex
+                  SDK stops adding its own bundled helpers (<code style={{ fontSize: 11 }}>rg</code>, <code style={{ fontSize: 11 }}>bwrap</code>) to the
+                  subprocess&rsquo;s <code style={{ fontSize: 11 }}>PATH</code> once you name a binary yourself, so a copy that did not bring its own may lose
+                  search or sandboxing inside chats.
                 </>
               }
             />
@@ -2285,7 +2364,6 @@ export default function ApiSettings() {
           Overrides are applied as environment variables when Callboard spawns an OpenRouter session. They take effect for new sessions; resume an existing chat
           to pick up the new settings. Leave a field empty to fall back to the ambient environment.
         </div>
-
       ) : activeProvider === "pi" ? (
         <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 16, lineHeight: 1.5 }}>
           These are read when a pi chat starts, so they take effect for new sessions; resume an existing chat to pick them up. The runtime is embedded, so
@@ -2350,6 +2428,116 @@ function VoiceModelSelect({
           ))}
         </optgroup>
       )}
+    </select>
+  );
+}
+
+/** "$0.99/M chars" — two decimals under $10, whole dollars above. */
+function formatCharPrice(perMillion: number): string {
+  return `$${perMillion < 10 ? perMillion.toFixed(2) : Math.round(perMillion)}/M chars`;
+}
+
+/**
+ * The read-aloud model picker: Default (blank) first, then mp3-capable models
+ * by id with their per-character price, then PCM-only models, disabled — read
+ * aloud asks for mp3 and does not support PCM yet. A stored slug the list does
+ * not know is kept as its own option.
+ */
+function ReadAloudModelSelect({
+  value,
+  onChange,
+  models,
+  defaultModel,
+  disabled,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  models: ReadAloudModelInfo[];
+  defaultModel: string;
+  disabled: boolean;
+}) {
+  const mp3 = models.filter((m) => m.mp3);
+  const pcm = models.filter((m) => !m.mp3);
+  const known = value === "" || models.some((m) => m.id === value);
+  return (
+    <select id="openRouterTtsModel" value={value} onChange={(e) => onChange(e.target.value)} disabled={disabled} style={inputStyle}>
+      <option value="">Default ({defaultModel})</option>
+      {!known && <option value={value}>{value} (custom)</option>}
+      {mp3.length > 0 && (
+        <optgroup label="Speech models">
+          {mp3.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.pricePerMillionChars !== undefined ? `${m.id} — ${formatCharPrice(m.pricePerMillionChars)}` : m.id}
+            </option>
+          ))}
+        </optgroup>
+      )}
+      {pcm.length > 0 && (
+        <optgroup label="PCM output only — not supported yet">
+          {pcm.map((m) => (
+            <option key={m.id} value={m.id} disabled>
+              {m.id}
+            </option>
+          ))}
+        </optgroup>
+      )}
+    </select>
+  );
+}
+
+/**
+ * The read-aloud voice picker, for the selected model (or the default model
+ * when none is chosen). A select of the model's voices, with Default naming
+ * the voice the server will send; a free-text field when OpenRouter lists the
+ * model's voices as unknown, or the model is not in the list at all. A stored
+ * voice the list does not know is kept as its own option.
+ */
+function ReadAloudVoiceSelect({
+  value,
+  onChange,
+  model,
+  models,
+  defaultModel,
+  defaultVoice,
+  disabled,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  model: string;
+  models: ReadAloudModelInfo[];
+  defaultModel: string;
+  defaultVoice: string;
+  disabled: boolean;
+}) {
+  const info = models.find((m) => m.id === model);
+  const isDefault = model === defaultModel;
+  // The default model's voice is known without the list; any other model's
+  // voices are only known from it.
+  const voices = info ? info.voices : isDefault ? [] : null;
+  if (voices === null) {
+    return (
+      <input
+        id="openRouterTtsVoice"
+        type="text"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
+        placeholder="Voice ID (provider-specific) — blank for provider default"
+        style={inputStyle}
+      />
+    );
+  }
+  const fallback = info ? info.defaultVoice : defaultVoice;
+  const known = value === "" || voices.includes(value);
+  return (
+    <select id="openRouterTtsVoice" value={value} onChange={(e) => onChange(e.target.value)} disabled={disabled} style={inputStyle}>
+      <option value="">{fallback ? `Default (${fallback})` : "Default (provider's choice)"}</option>
+      {!known && <option value={value}>{value} (custom)</option>}
+      {voices.map((v) => (
+        <option key={v} value={v}>
+          {v}
+        </option>
+      ))}
     </select>
   );
 }

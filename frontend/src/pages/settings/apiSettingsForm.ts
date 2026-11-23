@@ -44,6 +44,10 @@ export interface ApiSettingsForm {
   openRouterUtilityOpusModel: string;
   // Composer voice input, billed to the same key. Blank ⇒ DEFAULT_VOICE_MODEL.
   openRouterVoiceModel: string;
+  // Message read-aloud, billed to the same key. Blank model ⇒
+  // DEFAULT_READ_ALOUD_MODEL; blank voice ⇒ that model's default voice.
+  openRouterTtsModel: string;
+  openRouterTtsVoice: string;
   piProviderId: string;
   piModel: string;
   piApiKey: string;
@@ -106,6 +110,8 @@ export function formFromSettings(s: AgentSettings): ApiSettingsForm {
     openRouterUtilitySonnetModel: s.openRouterUtilitySonnetModel ?? "",
     openRouterUtilityOpusModel: s.openRouterUtilityOpusModel ?? "",
     openRouterVoiceModel: s.openRouterVoiceModel ?? "",
+    openRouterTtsModel: s.openRouterTtsModel ?? "",
+    openRouterTtsVoice: s.openRouterTtsVoice ?? "",
     piProviderId: s.piProviderId ?? "",
     piModel: s.piModel ?? "",
     piApiKey: s.piApiKey ?? "",
@@ -158,6 +164,8 @@ export function settingsFromForm(form: ApiSettingsForm): Partial<AgentSettings> 
     openRouterUtilitySonnetModel: form.openRouterUtilitySonnetModel,
     openRouterUtilityOpusModel: form.openRouterUtilityOpusModel,
     openRouterVoiceModel: form.openRouterVoiceModel,
+    openRouterTtsModel: form.openRouterTtsModel,
+    openRouterTtsVoice: form.openRouterTtsVoice,
     piProviderId: form.piProviderId,
     piModel: form.piModel,
     piApiKey: form.piApiKey,

@@ -138,7 +138,11 @@ function favoritesOf(settings: Pick<AgentSettings, "favoriteSkills" | "favoriteJ
   favoriteJobs: string[];
   starredSidebarFolders: string[];
 } {
-  return { favoriteSkills: settings.favoriteSkills ?? [], favoriteJobs: settings.favoriteJobs ?? [], starredSidebarFolders: settings.starredSidebarFolders ?? [] };
+  return {
+    favoriteSkills: settings.favoriteSkills ?? [],
+    favoriteJobs: settings.favoriteJobs ?? [],
+    starredSidebarFolders: settings.starredSidebarFolders ?? [],
+  };
 }
 
 /**
@@ -231,6 +235,8 @@ agentSettingsRouter.put("/", requireSessionAuth, async (req: Request, res: Respo
     openRouterUtilitySonnetModel,
     openRouterUtilityOpusModel,
     openRouterVoiceModel,
+    openRouterTtsModel,
+    openRouterTtsVoice,
     openRouterModelAliases,
     modelAliases,
     codexAuthMode,
@@ -531,6 +537,8 @@ agentSettingsRouter.put("/", requireSessionAuth, async (req: Request, res: Respo
       ...(openRouterUtilitySonnetModel !== undefined && { openRouterUtilitySonnetModel: normalize(openRouterUtilitySonnetModel) }),
       ...(openRouterUtilityOpusModel !== undefined && { openRouterUtilityOpusModel: normalize(openRouterUtilityOpusModel) }),
       ...(openRouterVoiceModel !== undefined && { openRouterVoiceModel: normalize(openRouterVoiceModel) }),
+      ...(openRouterTtsModel !== undefined && { openRouterTtsModel: normalize(openRouterTtsModel) }),
+      ...(openRouterTtsVoice !== undefined && { openRouterTtsVoice: normalize(openRouterTtsVoice) }),
       ...(openRouterModelAliases !== undefined && { openRouterModelAliases: normalizedAliases }),
       // Writing the unified registry retires the deprecated OR-only map (its
       // entries are already folded into the openrouter targets on load). Skip

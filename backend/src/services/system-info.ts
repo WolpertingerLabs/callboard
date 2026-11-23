@@ -190,11 +190,16 @@ export async function buildSystemInfo({ pkgRoot }: BuildSystemInfoOptions) {
   // key (`POST /api/voice/transcribe`), never a per-harness one. The key itself
   // is never exposed. Optional on the wire, so older tabs simply ignore it.
   let voiceInputAvailable = false;
+  // Whether message read-aloud can run (`POST /api/voice/speech`). Computed the
+  // same way today, but its own field: the two features may diverge (a
+  // per-feature toggle), and an existing field's meaning never changes.
+  let readAloudAvailable = false;
   try {
     const s = getAgentSettings();
     claudeCodeUseOpenRouter = isClaudeCodeRoutedThroughOpenRouter(s);
     codexUseOpenRouter = isCodexRoutedThroughOpenRouter(s);
     voiceInputAvailable = Boolean(s.openRouterApiKey?.trim());
+    readAloudAvailable = Boolean(s.openRouterApiKey?.trim());
   } catch {
     // Settings unreadable — treat every routing mode as off.
   }
@@ -235,7 +240,8 @@ export async function buildSystemInfo({ pkgRoot }: BuildSystemInfoOptions) {
   let codexAuthNote: string | undefined;
   if (codexUseOpenRouter) {
     codexConfigured = true;
-    codexAuthNote = "Routed through OpenRouter — authenticated with the OpenRouter key on this tab, or with the OpenRouter credentials already in your environment when none is stored here.";
+    codexAuthNote =
+      "Routed through OpenRouter — authenticated with the OpenRouter key on this tab, or with the OpenRouter credentials already in your environment when none is stored here.";
   }
 
   // Detect whether the ambient environment already routes each harness through
@@ -271,6 +277,7 @@ export async function buildSystemInfo({ pkgRoot }: BuildSystemInfoOptions) {
     codexAuthSource,
     codexAuthNote,
     voiceInputAvailable,
+    readAloudAvailable,
     // `acpProviders` (the retired ACP harness's vendor list) is no longer
     // sent. Old bundles read `info.acpProviders ?? []`, so absence reads as
     // "no ACP vendors".

@@ -230,6 +230,30 @@ describe("buildSystemInfo", () => {
     }
   });
 
+  describe("readAloudAvailable", () => {
+    it("is true when the account-wide OpenRouter key is set", async () => {
+      mocks.settings = { proxyMode: "local", openRouterApiKey: "sk-or-test" };
+      expect((await buildSystemInfo({ pkgRoot: PKG_ROOT })).readAloudAvailable).toBe(true);
+    });
+
+    it("is false with no key, and with a whitespace-only key", async () => {
+      mocks.settings = { proxyMode: "local" };
+      expect((await buildSystemInfo({ pkgRoot: PKG_ROOT })).readAloudAvailable).toBe(false);
+      mocks.settings = { proxyMode: "local", openRouterApiKey: "   " };
+      expect((await buildSystemInfo({ pkgRoot: PKG_ROOT })).readAloudAvailable).toBe(false);
+    });
+
+    it("ignores the per-harness OpenRouter keys — read aloud bills the account-wide one", async () => {
+      mocks.settings = { proxyMode: "local", claudeCodeOpenRouterApiKey: "sk-or-test", codexOpenRouterApiKey: "sk-or-test" };
+      expect((await buildSystemInfo({ pkgRoot: PKG_ROOT })).readAloudAvailable).toBe(false);
+    });
+
+    it("is false when settings are unreadable", async () => {
+      mocks.dataDirBroken = true;
+      expect((await buildSystemInfo({ pkgRoot: PKG_ROOT })).readAloudAvailable).toBe(false);
+    });
+  });
+
   describe("voiceInputAvailable", () => {
     it("is true when the account-wide OpenRouter key is set", async () => {
       mocks.settings = { proxyMode: "local", openRouterApiKey: "sk-or-test" };
