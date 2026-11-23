@@ -24,6 +24,7 @@ import type { Keyword } from "../api";
 import { getBusyHintDismissed, getComposerDraft, saveBusyHintDismissed, saveComposerDraft } from "../utils/localStorage";
 import { canAutoFocusTextInput, isEditingElsewhere } from "../utils/autoFocus";
 import { escapeIsInScope } from "../utils/escapeScope";
+import { isModalOpen } from "../utils/modalOpen";
 import { insertDictation } from "../utils/dictation";
 import { useVoiceDictation } from "../hooks/useVoiceDictation";
 import VoiceInputButton from "./VoiceInputButton";
@@ -1282,18 +1283,28 @@ export default function PromptInput({
     escapeOwnedElsewhereRef.current = escapeOwnedElsewhere;
   }, [escapeOwnedElsewhere]);
 
-  // Escape cancels dictation in progress — only an Escape pressed in this
-  // composer's chat (the aside panel has its own composer), only when nothing
-  // above owns it, and claimed with preventDefault so the aside panel does
-  // not also close on it. Capture phase, like the menu's: it has to see the
-  // key before the panel's handler does.
+  // Escape cancels dictation in progress, claimed with preventDefault so the
+  // aside panel does not also close on it. Capture phase, like the menu's: it
+  // has to see the key before the panel's handler does — which is also why it
+  // must be narrow. Only an Escape *in this composer*, or one with focus on
+  // the page body (nowhere else for it to go); never one from elsewhere in
+  // the chat (a bubble's copy menu), never while a modal is up, never one the
+  // quote bar is about to use to clear a message selection, and never one a
+  // menu of this composer owns.
   const dictationActive = dictation.active;
   const cancelDictation = dictation.cancel;
   useEffect(() => {
     if (!dictationActive) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Escape" || e.defaultPrevented || e.isComposing || e.keyCode === 229) return;
-      if (escapeOwnedElsewhereRef.current || !escapeIsInScope(e.target, composerRootRef.current)) return;
+      const root = composerRootRef.current;
+      if (!root || escapeOwnedElsewhereRef.current || isModalOpen()) return;
+      const target = e.target;
+      const onBody = !(target instanceof Node) || target === document || target === document.body || target === document.documentElement;
+      if (onBody) {
+        const selection = window.getSelection();
+        if (selection && !selection.isCollapsed && selection.rangeCount > 0 && !root.contains(selection.getRangeAt(0).commonAncestorContainer)) return;
+      } else if (!root.contains(target)) return;
       e.preventDefault();
       cancelDictation();
     };
@@ -1457,9 +1468,20 @@ export default function PromptInput({
                   ? keywordOptionId(keywordListboxId, keywordHighlight)
                   : undefined
             }
-            onKeyUp={(e) => syncCaret(e.currentTarget)}
-            onSelect={(e) => syncCaret(e.currentTarget)}
-            onClick={(e) => syncCaret(e.currentTarget)}
+            // A caret the user placed is theirs under the chat now on screen
+            // — even if focus never left the textarea across a chat switch.
+            onKeyUp={(e) => {
+              focusedKeyRef.current = draftKey;
+              syncCaret(e.currentTarget);
+            }}
+            onSelect={(e) => {
+              focusedKeyRef.current = draftKey;
+              syncCaret(e.currentTarget);
+            }}
+            onClick={(e) => {
+              focusedKeyRef.current = draftKey;
+              syncCaret(e.currentTarget);
+            }}
             onInput={handleInput}
             onFocus={() => {
               setFocused(true);

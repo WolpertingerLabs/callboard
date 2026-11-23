@@ -21,8 +21,16 @@ class FakeTrack {
   }
 }
 
+/** Wall clock the hook reads (Date.now), moved by the fake recorder — see `recordMs`. */
+let clock = 1_000_000;
+
 class FakeMediaRecorder {
   static instances: FakeMediaRecorder[] = [];
+  /** How long each recording "lasts": the clock moves this much between start and stop. */
+  static recordMs = 2000;
+  /** A recorder that produced nothing at all (a very short tap on some browsers). */
+  static emitsNoData = false;
+  startArgs: unknown[] = [];
   static isTypeSupported = () => true;
   state: "inactive" | "recording" = "inactive";
   mimeType: string;
@@ -36,13 +44,16 @@ class FakeMediaRecorder {
     this.mimeType = opts?.mimeType ?? "";
     FakeMediaRecorder.instances.push(this);
   }
-  start() {
+  start(...args: unknown[]) {
+    this.startArgs = args;
     this.state = "recording";
   }
   stop() {
     if (this.state === "inactive") return;
     this.state = "inactive";
-    this.ondataavailable?.({ data: new Blob(["chunk"], { type: this.mimeType }) });
+    clock += FakeMediaRecorder.recordMs;
+    // Without a timeslice, the whole recording arrives as one chunk on stop.
+    if (!FakeMediaRecorder.emitsNoData) this.ondataavailable?.({ data: new Blob(["chunk"], { type: this.mimeType }) });
     this.onstop?.();
   }
 }
@@ -56,6 +67,9 @@ function setSecure(secure: boolean) {
 
 beforeEach(() => {
   FakeMediaRecorder.instances = [];
+  FakeMediaRecorder.recordMs = 2000;
+  FakeMediaRecorder.emitsNoData = false;
+  vi.spyOn(Date, "now").mockImplementation(() => clock);
   tracks = [new FakeTrack()];
   getUserMedia.mockReset().mockImplementation(async () => ({ getTracks: () => tracks }));
   Object.defineProperty(navigator, "mediaDevices", { value: { getUserMedia }, configurable: true });
@@ -67,6 +81,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -164,7 +179,33 @@ describe("useVoiceDictation", () => {
     expect(result.current.state).toMatchObject({ status: "error", tone: "info", message: "No speech detected" });
   });
 
-  it("skips the upload for a too-short tap", async () => {
+  it("starts the recorder without a timeslice, so Safari writes one unfragmented MP4", async () => {
+    const { result } = setup();
+    await act(async () => result.current.toggle());
+    expect(FakeMediaRecorder.instances[0].startArgs).toEqual([]);
+  });
+
+  it("a tap shorter than the minimum says no speech, without decoding", async () => {
+    FakeMediaRecorder.recordMs = 100;
+    const { result, onTranscript } = setup();
+    await act(async () => result.current.toggle());
+    await act(async () => result.current.toggle());
+    expect(toWav16kMono).not.toHaveBeenCalled();
+    expect(transcribeAudio).not.toHaveBeenCalled();
+    expect(onTranscript).not.toHaveBeenCalled();
+    expect(result.current.state).toMatchObject({ status: "error", tone: "info", message: "No speech detected" });
+  });
+
+  it("a recorder that produced no data says no speech, not a processing error", async () => {
+    FakeMediaRecorder.emitsNoData = true;
+    const { result } = setup();
+    await act(async () => result.current.toggle());
+    await act(async () => result.current.toggle());
+    expect(toWav16kMono).not.toHaveBeenCalled();
+    expect(result.current.state).toMatchObject({ status: "error", tone: "info", message: "No speech detected" });
+  });
+
+  it("skips the upload when the decoded clip is too short", async () => {
     toWav16kMono.mockResolvedValueOnce({ wav: new Blob(["wav"]), durationMs: 200, rms: 0.2, peak: 0.9 });
     const { result } = setup();
     await act(async () => result.current.toggle());
@@ -281,6 +322,7 @@ describe("useVoiceDictation", () => {
     );
     const { result, onTranscript } = setup();
     await act(async () => result.current.toggle());
+    await act(async () => vi.advanceTimersByTime(2000)); // speak for a bit
     await act(async () => result.current.toggle());
     const signal = transcribeAudio.mock.calls[0][1] as AbortSignal;
 

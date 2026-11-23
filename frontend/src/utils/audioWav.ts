@@ -8,6 +8,8 @@
  * Cost: 32 KB per second of audio, about 1.9 MB a minute.
  */
 
+import { MAX_VOICE_RECORDING_MS } from "shared/types/voice.js";
+
 /** The rate the WAV is resampled to — what speech models are trained on. */
 export const VOICE_SAMPLE_RATE = 16000;
 
@@ -78,22 +80,23 @@ export function encodeWavPcm16(samples: Float32Array, sampleRate: number): Array
   view.setUint32(40, dataBytes, true);
   for (let i = 0; i < samples.length; i++) {
     const s = Math.max(-1, Math.min(1, samples[i]));
-    view.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : Math.round(s * 0x7fff), true);
+    view.setInt16(44 + i * 2, Math.round(s < 0 ? s * 0x8000 : s * 0x7fff), true);
   }
   return buffer;
 }
 
-type AudioContextCtor = new () => AudioContext;
+/** The longest clip we encode, in samples — see {@link toWav16kMono}. */
+const MAX_SAMPLES = (MAX_VOICE_RECORDING_MS / 1000) * VOICE_SAMPLE_RATE;
 
-/** The decoding `AudioContext` constructor, including Safari's prefixed one. */
-function audioContextCtor(): AudioContextCtor | undefined {
-  const w = globalThis as { AudioContext?: AudioContextCtor; webkitAudioContext?: AudioContextCtor };
-  return w.AudioContext ?? w.webkitAudioContext;
-}
-
-/** Whether this browser can do the decode → resample → encode this module needs. */
+/**
+ * Whether this browser can do the decode → encode this module needs.
+ *
+ * Only the unprefixed `OfflineAudioContext`: the `webkit`-prefixed contexts of
+ * Safari < 14.1 have a callback-only `decodeAudioData`, and those browsers
+ * cannot record `audio/mp4` with MediaRecorder anyway.
+ */
 export function canConvertAudio(): boolean {
-  return !!audioContextCtor() && typeof (globalThis as { OfflineAudioContext?: unknown }).OfflineAudioContext === "function";
+  return typeof (globalThis as { OfflineAudioContext?: unknown }).OfflineAudioContext === "function";
 }
 
 export interface ConvertedRecording {
@@ -105,34 +108,41 @@ export interface ConvertedRecording {
 
 /**
  * Decode a recording (webm/opus, mp4/aac, ogg/opus — whatever the recorder
- * produced), downmix to mono and resample to 16 kHz, and encode as WAV.
- * Rejects when the browser cannot decode it.
+ * produced), downmix to mono at 16 kHz, and encode as WAV. Rejects when the
+ * browser cannot decode it.
+ *
+ * Decoded on a 16 kHz `OfflineAudioContext` and never rendered: per the Web
+ * Audio spec `decodeAudioData` resamples to its context's rate, so the buffer
+ * arrives at 16 kHz — no device-rate (often 48 kHz) copy in memory, no render
+ * pass. It keeps the source's channel count, so the downmix is done here, as
+ * the average of the channels.
+ *
+ * Capped at {@link MAX_VOICE_RECORDING_MS}: the recorder's auto-stop is a
+ * timer, and a throttled background tab can fire it late — past the upload
+ * limit the server enforces.
  */
 export async function toWav16kMono(blob: Blob): Promise<ConvertedRecording> {
-  const Ctx = audioContextCtor();
-  if (!Ctx) throw new Error("AudioContext is unavailable");
+  if (!canConvertAudio()) throw new Error("OfflineAudioContext is unavailable");
   const encoded = await blob.arrayBuffer();
-  const ctx = new Ctx();
-  let decoded: AudioBuffer;
-  try {
-    decoded = await ctx.decodeAudioData(encoded);
-  } finally {
-    void ctx.close?.().catch(() => {});
+  const ctx = new OfflineAudioContext(1, 1, VOICE_SAMPLE_RATE);
+  const decoded = await ctx.decodeAudioData(encoded);
+  const length = Math.min(decoded.length, MAX_SAMPLES);
+  const channels = decoded.numberOfChannels;
+  let samples: Float32Array;
+  if (channels === 1) {
+    samples = decoded.getChannelData(0).subarray(0, length);
+  } else {
+    samples = new Float32Array(length);
+    for (let c = 0; c < channels; c++) {
+      const data = decoded.getChannelData(c);
+      for (let i = 0; i < length; i++) samples[i] += data[i];
+    }
+    for (let i = 0; i < length; i++) samples[i] /= channels;
   }
-  const length = Math.max(1, Math.ceil(decoded.duration * VOICE_SAMPLE_RATE));
-  // A one-channel destination downmixes a stereo source ("speakers"
-  // interpretation: (L+R)/2), and the offline context's rate does the resample.
-  const offline = new OfflineAudioContext(1, length, VOICE_SAMPLE_RATE);
-  const source = offline.createBufferSource();
-  source.buffer = decoded;
-  source.connect(offline.destination);
-  source.start();
-  const rendered = await offline.startRendering();
-  const samples = rendered.getChannelData(0);
   const { rms, peak } = measureLevels(samples);
   return {
     wav: new Blob([encodeWavPcm16(samples, VOICE_SAMPLE_RATE)], { type: "audio/wav" }),
-    durationMs: Math.round(decoded.duration * 1000),
+    durationMs: Math.round((length / VOICE_SAMPLE_RATE) * 1000),
     rms,
     peak,
   };

@@ -12,7 +12,9 @@ interface Props {
  *
  * Unavailable (no OpenRouter key, insecure context) is `aria-disabled` rather
  * than `disabled`, so it stays focusable and its `title` — the reason — can be
- * read. A press does nothing then. Enter/Space come from native button
+ * read. A press does nothing then. No `aria-pressed`: the label itself
+ * changes with the state ("Start voice input" / "Stop recording and
+ * transcribe"), and a toggle state on top would announce it twice. Enter/Space come from native button
  * semantics; Escape (cancel) is handled by the composer, scoped to its chat.
  */
 export default function VoiceInputButton({ dictation, disabled }: Props) {
@@ -32,7 +34,6 @@ export default function VoiceInputButton({ dictation, disabled }: Props) {
       data-testid="voice-input-button"
       className={recording ? "voice-recording" : undefined}
       aria-label={label}
-      aria-pressed={recording}
       aria-busy={busy || undefined}
       aria-disabled={unavailable || busy || requesting ? true : undefined}
       disabled={disabled}

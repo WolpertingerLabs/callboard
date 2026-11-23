@@ -1,5 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { encodeWavPcm16, isSilentRecording, measureLevels, pickRecorderMimeType, MIN_RECORDING_MS } from "./audioWav";
+import { MAX_VOICE_RECORDING_MS } from "shared/types/voice.js";
+import {
+  canConvertAudio,
+  encodeWavPcm16,
+  isSilentRecording,
+  measureLevels,
+  pickRecorderMimeType,
+  toWav16kMono,
+  MIN_RECORDING_MS,
+  VOICE_SAMPLE_RATE,
+} from "./audioWav";
 
 const ascii = (view: DataView, offset: number, length: number) => String.fromCharCode(...Array.from({ length }, (_, i) => view.getUint8(offset + i)));
 
@@ -27,6 +37,14 @@ describe("encodeWavPcm16", () => {
     const view = new DataView(encodeWavPcm16(new Float32Array([0, 1, -1, 2, -3, 0.5]), 16000));
     const pcm = Array.from({ length: 6 }, (_, i) => view.getInt16(44 + i * 2, true));
     expect(pcm).toEqual([0, 32767, -32768, 32767, -32768, Math.round(0.5 * 32767)]);
+  });
+
+  it("rounds negative samples symmetrically with positive ones", () => {
+    // -0.00002 * 0x8000 = -0.655… → -1, as +0.00002 * 0x7fff = 0.655… → 1. Truncation gave 0.
+    const view = new DataView(encodeWavPcm16(new Float32Array([0.00002, -0.00002, -0.25]), 16000));
+    expect(view.getInt16(44, true)).toBe(1);
+    expect(view.getInt16(46, true)).toBe(-1);
+    expect(view.getInt16(48, true)).toBe(-8192);
   });
 
   it("encodes an empty clip as a bare header", () => {
@@ -91,5 +109,108 @@ describe("pickRecorderMimeType", () => {
     expect(pickRecorderMimeType()).toBe("");
     vi.stubGlobal("MediaRecorder", undefined);
     expect(pickRecorderMimeType()).toBe("");
+  });
+});
+
+/** A decoded AudioBuffer as the browser hands it back: at the context's rate, in the source's channel count. */
+function fakeBuffer(channels: Float32Array[], sampleRate = VOICE_SAMPLE_RATE) {
+  return {
+    numberOfChannels: channels.length,
+    length: channels[0].length,
+    sampleRate,
+    duration: channels[0].length / sampleRate,
+    getChannelData: (i: number) => channels[i],
+  };
+}
+
+/** What the recorder hands over. jsdom's Blob has no `arrayBuffer()`; browsers' does. */
+const recording = { arrayBuffer: async () => new ArrayBuffer(8) } as unknown as Blob;
+
+const readBlob = (b: Blob) =>
+  new Promise<ArrayBuffer>((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as ArrayBuffer);
+    reader.readAsArrayBuffer(b);
+  });
+
+describe("toWav16kMono", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  /** Records how each OfflineAudioContext was built, and decodes to `decoded`. */
+  function stubOffline(decoded: ReturnType<typeof fakeBuffer>) {
+    const built: unknown[][] = [];
+    const startRendering = vi.fn();
+    vi.stubGlobal(
+      "OfflineAudioContext",
+      class {
+        constructor(...args: unknown[]) {
+          built.push(args);
+        }
+        decodeAudioData = vi.fn(async () => decoded);
+        startRendering = startRendering;
+      },
+    );
+    // A device-rate context must not be needed at all.
+    vi.stubGlobal(
+      "AudioContext",
+      class {
+        constructor() {
+          throw new Error("no AudioContext should be created");
+        }
+      },
+    );
+    return { built, startRendering };
+  }
+
+  it("decodes straight into a 16 kHz mono offline context — no device-rate context, no render pass", async () => {
+    const { built, startRendering } = stubOffline(fakeBuffer([new Float32Array(16000).fill(0.25)]));
+    const out = await toWav16kMono(recording);
+    expect(built).toEqual([[1, 1, VOICE_SAMPLE_RATE]]);
+    expect(startRendering).not.toHaveBeenCalled();
+    expect(out.durationMs).toBe(1000);
+    expect(out.wav.type).toBe("audio/wav");
+    expect(out.wav.size).toBe(44 + 16000 * 2);
+    expect(out.rms).toBeCloseTo(0.25);
+  });
+
+  it("downmixes every channel to their average", async () => {
+    stubOffline(fakeBuffer([new Float32Array([1, 0.5, -1]), new Float32Array([0, -0.5, -1])]));
+    const out = await toWav16kMono(recording);
+    const view = new DataView(await readBlob(out.wav));
+    expect([0, 1, 2].map((i) => view.getInt16(44 + i * 2, true))).toEqual([Math.round(0.5 * 0x7fff), 0, -32768]);
+    expect(out.peak).toBeCloseTo(1);
+  });
+
+  it("caps the clip at the maximum recording length, so a late stop cannot exceed the upload limit", async () => {
+    const max = (MAX_VOICE_RECORDING_MS / 1000) * VOICE_SAMPLE_RATE;
+    stubOffline(fakeBuffer([new Float32Array(max + 16000)]));
+    const out = await toWav16kMono(recording);
+    expect(out.wav.size).toBe(44 + max * 2);
+    expect(out.durationMs).toBe(MAX_VOICE_RECORDING_MS);
+  });
+
+  it("rejects when the browser cannot decode the recording", async () => {
+    vi.stubGlobal(
+      "OfflineAudioContext",
+      class {
+        decodeAudioData = async () => {
+          throw new DOMException("bad", "EncodingError");
+        };
+      },
+    );
+    await expect(toWav16kMono(recording)).rejects.toThrow();
+  });
+});
+
+describe("canConvertAudio", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("needs an unprefixed OfflineAudioContext; the callback-only webkit prefix does not count", () => {
+    vi.stubGlobal("OfflineAudioContext", undefined);
+    vi.stubGlobal("webkitOfflineAudioContext", class {});
+    vi.stubGlobal("webkitAudioContext", class {});
+    expect(canConvertAudio()).toBe(false);
+    vi.stubGlobal("OfflineAudioContext", class {});
+    expect(canConvertAudio()).toBe(true);
   });
 });

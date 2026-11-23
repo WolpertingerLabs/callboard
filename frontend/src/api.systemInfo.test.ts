@@ -16,7 +16,7 @@
  * is how many requests reach the wire and which response wins.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cachedSystemInfo, getSystemInfo, resetSystemInfoCache, updateAgentSettings } from "./api";
+import { cachedSystemInfo, getSystemInfo, importCallerBundle, resetSystemInfoCache, updateAgentSettings } from "./api";
 
 const fetchMock = vi.fn();
 
@@ -232,6 +232,30 @@ describe("getSystemInfo after an agent-settings save", () => {
     routed(async () => payload("3"));
     expect((await getSystemInfo()).version).toBe("2");
     expect(fetchMock.mock.calls.length).toBe(calls + 1); // just the background revalidation
+  });
+
+  it("falls back to the previous payload when the post-save fetch fails, rather than failing the caller", async () => {
+    await getSystemInfo(); // cache: "1"
+    routed(async () => ({ ok: false, status: 503, json: async () => ({ error: "daemon restarting" }) }));
+    await updateAgentSettings({ openRouterApiKey: "k" });
+    expect((await getSystemInfo()).version).toBe("1");
+  });
+
+  it("with no previous payload a failed fetch still rejects", async () => {
+    routed(async () => ({ ok: false, status: 503, json: async () => ({ error: "down" }) }));
+    await updateAgentSettings({ openRouterApiKey: "k" });
+    await expect(getSystemInfo()).rejects.toThrow();
+  });
+
+  it("a caller-bundle import (which can set the OpenRouter key) also marks the cache stale", async () => {
+    await getSystemInfo(); // cache: "1"
+    fetchMock.mockImplementation((url: string, init?: RequestInit) =>
+      String(url).endsWith("/agent-settings/import-bundle") && init?.method === "POST"
+        ? Promise.resolve({ ok: true, json: async () => ({ alias: "a", fingerprint: "f", serverKeyFingerprint: "s", endpointUrl: "u", aliases: [] }) })
+        : Promise.resolve(payload("2")),
+    );
+    await importCallerBundle({ any: "bundle" });
+    expect((await getSystemInfo()).version).toBe("2");
   });
 
   it("a failed save leaves the cache trusted", async () => {

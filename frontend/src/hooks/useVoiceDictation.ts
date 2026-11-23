@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { MAX_VOICE_RECORDING_MS, VOICE_SERVER_BUDGET_MS } from "shared/types/voice.js";
 import { transcribeAudio } from "../api";
-import { canConvertAudio, isSilentRecording, pickRecorderMimeType, toWav16kMono } from "../utils/audioWav";
+import { canConvertAudio, isSilentRecording, MIN_RECORDING_MS, pickRecorderMimeType, toWav16kMono } from "../utils/audioWav";
 
 /** Shown wherever the browser itself rules the mic out — almost always plain HTTP on a LAN/tailnet address. */
 export const VOICE_INSECURE_MESSAGE = "Voice input needs HTTPS or localhost. Open Callboard over https (e.g. `tailscale serve`) or on this machine.";
@@ -166,10 +166,17 @@ export function useVoiceDictation({ available, reason, resetKey, onTranscript }:
   }, [clearRecordingTimers, stopTracks, update]);
 
   const finish = useCallback(
-    async (gen: number, chunks: Blob[], mimeType: string) => {
+    async (gen: number, chunks: Blob[], mimeType: string, startedAt: number) => {
       stopTracks();
       recorderRef.current = null;
       if (genRef.current !== gen) return;
+      // A tap, not speech: some browsers produce no data at all for one, and
+      // the few hundred bytes others produce often fail to decode — which is
+      // not "Couldn't process the recording", it is nothing said.
+      if (chunks.length === 0 || Date.now() - startedAt < MIN_RECORDING_MS) {
+        showMessage(gen, VOICE_NO_SPEECH_MESSAGE, "info");
+        return;
+      }
       update({ status: "transcribing" });
       let converted;
       try {
@@ -255,16 +262,19 @@ export function useVoiceDictation({ available, reason, resetKey, onTranscript }:
     recorder.ondataavailable = (e) => {
       if (e.data && e.data.size > 0) chunks.push(e.data);
     };
-    recorder.onstop = () => void finish(gen, chunks, recorder.mimeType || mimeType);
+    let startedAt = Date.now();
+    recorder.onstop = () => void finish(gen, chunks, recorder.mimeType || mimeType, startedAt);
     recorderRef.current = recorder;
     try {
-      recorder.start(1000);
+      // No timeslice: the whole recording arrives as one blob on stop. With
+      // one, Safari writes fragmented MP4, which decodeAudioData has rejected.
+      recorder.start();
     } catch {
       cancel();
       showMessage(genRef.current, "Couldn't start recording.", "error");
       return;
     }
-    const startedAt = Date.now();
+    startedAt = Date.now();
     update({ status: "recording", elapsedMs: 0 });
     timersRef.current.tick = setInterval(() => {
       if (genRef.current === gen && stateRef.current.status === "recording") update({ status: "recording", elapsedMs: Date.now() - startedAt });

@@ -1848,11 +1848,14 @@ export interface ImportBundleResult {
 }
 
 export async function importCallerBundle(bundle: unknown, passphrase?: string): Promise<ImportBundleResult> {
-  return request("/agent-settings/import-bundle", {
+  const result = await request<ImportBundleResult>("/agent-settings/import-bundle", {
     method: "POST",
     json: { bundle, ...(passphrase ? { passphrase } : {}) },
     error: "Failed to import caller bundle",
   });
+  // A bundle can carry an OpenRouter key, which system-info reports.
+  markSystemInfoStale();
+  return result;
 }
 
 // Agent activity API functions
@@ -2262,11 +2265,18 @@ export interface SystemInfoOptions {
  * want both.
  */
 export async function getSystemInfo(opts: SystemInfoOptions = {}): Promise<SystemInfo> {
-  if (systemInfoCache && !opts.refresh && systemInfoLatestWritten > systemInfoStaleThrough) {
-    // Fire-and-forget: the caller has its answer, and a revalidation that fails
-    // must not become an unhandled rejection or evict a good cached value.
-    void revalidateSystemInfo().catch(() => {});
-    return systemInfoCache;
+  if (systemInfoCache && !opts.refresh) {
+    if (systemInfoLatestWritten > systemInfoStaleThrough) {
+      // Fire-and-forget: the caller has its answer, and a revalidation that fails
+      // must not become an unhandled rejection or evict a good cached value.
+      void revalidateSystemInfo().catch(() => {});
+      return systemInfoCache;
+    }
+    // Stale after a settings save: wait for a fresh answer, but if there is
+    // none to be had, the previous payload beats an error — the caller would
+    // otherwise read "the daemon is unreachable" off one failed request.
+    const previous = systemInfoCache;
+    return revalidateSystemInfo().catch(() => systemInfoCache ?? previous);
   }
   // A `refresh` deliberately does **not** join an in-flight request. That
   // request may have been issued before the save/install this call exists to

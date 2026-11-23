@@ -33,6 +33,9 @@ class FakeTrack {
   }
 }
 
+/** Added to the real clock by each fake recording, so it lasts past the hook's short-tap gate. */
+let clockOffset = 0;
+
 class FakeMediaRecorder {
   static isTypeSupported = () => true;
   state: "inactive" | "recording" = "inactive";
@@ -45,6 +48,7 @@ class FakeMediaRecorder {
   stop() {
     if (this.state === "inactive") return;
     this.state = "inactive";
+    clockOffset += 2000;
     this.ondataavailable?.({ data: new Blob(["chunk"]) });
     this.onstop?.();
   }
@@ -53,8 +57,11 @@ class FakeMediaRecorder {
 let tracks: FakeTrack[];
 const getUserMedia = vi.fn();
 
+const realNow = Date.now.bind(Date);
+
 beforeEach(() => {
   localStorage.clear();
+  vi.spyOn(Date, "now").mockImplementation(() => realNow() + clockOffset);
   tracks = [new FakeTrack()];
   getUserMedia.mockReset().mockImplementation(async () => ({ getTracks: () => tracks }));
   Object.defineProperty(navigator, "mediaDevices", { value: { getUserMedia }, configurable: true });
@@ -65,13 +72,21 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  document.querySelectorAll("[data-test-modal]").forEach((el) => el.remove());
+  window.getSelection()?.removeAllRanges();
   localStorage.clear();
 });
 
 const AVAILABLE = { available: true };
 
-function renderComposer(props: Partial<React.ComponentProps<typeof PromptInput>> = {}) {
+/**
+ * `inChat`: mount the composer the way Chat.tsx does — inside a `.chat-layout`
+ * with a message bubble above it — so an Escape can come from elsewhere in the
+ * chat.
+ */
+function renderComposer(props: Partial<React.ComponentProps<typeof PromptInput>> = {}, { inChat = false } = {}) {
   const callbacks = {
     onSend: vi.fn(),
     onSendVariant: vi.fn(async () => {}),
@@ -86,14 +101,26 @@ function renderComposer(props: Partial<React.ComponentProps<typeof PromptInput>>
     ...props,
   };
   let current = base;
-  const view = render(<PromptInput {...base} />);
+  const wrap = (el: React.ReactElement) =>
+    inChat ? (
+      <div className="chat-layout">
+        <div data-testid="bubble">
+          <p>an assistant message</p>
+          <button type="button">Copy</button>
+        </div>
+        {el}
+      </div>
+    ) : (
+      el
+    );
+  const view = render(wrap(<PromptInput {...base} />));
   return {
     ...callbacks,
     textarea: () => screen.getByPlaceholderText("Send a message...") as HTMLTextAreaElement,
     mic: () => screen.getByTestId("voice-input-button"),
     rerender: (next: Partial<React.ComponentProps<typeof PromptInput>>) => {
       current = { ...current, ...next };
-      act(() => view.rerender(<PromptInput {...current} />));
+      act(() => view.rerender(wrap(<PromptInput {...current} />)));
     },
   };
 }
@@ -167,10 +194,11 @@ describe("PromptInput voice input", () => {
     ta.setSelectionRange(0, 5); // "hello" selected
 
     expect(c.mic().getAttribute("aria-label")).toBe("Start voice input");
-    expect(c.mic().getAttribute("aria-pressed")).toBe("false");
+    // The label carries the state; a toggle's aria-pressed alongside a changing label would say it twice.
+    expect(c.mic().hasAttribute("aria-pressed")).toBe(false);
     await act(async () => fireEvent.click(c.mic()));
-    expect(c.mic().getAttribute("aria-pressed")).toBe("true");
     expect(c.mic().getAttribute("aria-label")).toBe("Stop recording and transcribe");
+    expect(c.mic().hasAttribute("aria-pressed")).toBe(false);
     expect(screen.getByRole("status").textContent).toMatch(/Recording/);
     expect(screen.getByRole("status").textContent).toMatch(/0:00/);
     expect(screen.getByRole("status").textContent).toMatch(/5:00/);
@@ -178,7 +206,7 @@ describe("PromptInput voice input", () => {
     await act(async () => fireEvent.click(c.mic()));
     await waitFor(() => expect(c.textarea().value).toBe("hello dictated text world"));
     expect(tracks[0].stopped).toBe(true);
-    expect(c.mic().getAttribute("aria-pressed")).toBe("false");
+    expect(c.mic().getAttribute("aria-label")).toBe("Start voice input");
     expectNothingSent(c);
 
     // The inserted text is a draft like any typed text.
@@ -220,7 +248,7 @@ describe("PromptInput voice input", () => {
     expect(tracks[0].stopped).toBe(true);
     expect(transcribeAudio).not.toHaveBeenCalled();
     expect(c.textarea().value).toBe("keep me");
-    expect(c.mic().getAttribute("aria-pressed")).toBe("false");
+    expect(c.mic().getAttribute("aria-label")).toBe("Start voice input");
     expectNothingSent(c);
   });
 
@@ -231,8 +259,73 @@ describe("PromptInput voice input", () => {
     expect(screen.getByRole("listbox")).toBeTruthy();
     fireEvent.keyDown(c.textarea(), { key: "Escape" });
     expect(screen.queryByRole("listbox")).toBeNull();
-    expect(c.mic().getAttribute("aria-pressed")).toBe("true");
+    expect(c.mic().getAttribute("aria-label")).toBe("Stop recording and transcribe");
     expect(tracks[0].stopped).toBe(false);
+  });
+
+  it("Escape from elsewhere in the chat (a message bubble's copy menu) leaves the recording running and unclaimed", async () => {
+    const c = renderComposer({}, { inChat: true });
+    await act(async () => fireEvent.click(c.mic()));
+    const copy = screen.getByRole("button", { name: "Copy" });
+    copy.focus();
+    expect(fireEvent.keyDown(copy, { key: "Escape" })).toBe(true);
+    await act(async () => {});
+    expect(tracks[0].stopped).toBe(false);
+    expect(c.mic().getAttribute("aria-label")).toBe("Stop recording and transcribe");
+  });
+
+  it("Escape with focus on the page body cancels — unless a modal is open", async () => {
+    const c = renderComposer({}, { inChat: true });
+    await act(async () => fireEvent.click(c.mic()));
+    const modal = document.createElement("div");
+    modal.setAttribute("data-modal-overlay", "");
+    modal.setAttribute("data-test-modal", "");
+    document.body.appendChild(modal);
+    expect(fireEvent.keyDown(document.body, { key: "Escape" })).toBe(true);
+    await act(async () => {});
+    expect(tracks[0].stopped).toBe(false);
+
+    modal.remove();
+    expect(fireEvent.keyDown(document.body, { key: "Escape" })).toBe(false);
+    await act(async () => {});
+    expect(tracks[0].stopped).toBe(true);
+  });
+
+  it("Escape with message text selected is the quote bar's, not a cancel", async () => {
+    const c = renderComposer({}, { inChat: true });
+    await act(async () => fireEvent.click(c.mic()));
+    const range = document.createRange();
+    range.selectNodeContents(screen.getByText("an assistant message"));
+    window.getSelection()!.addRange(range);
+    expect(fireEvent.keyDown(document.body, { key: "Escape" })).toBe(true);
+    await act(async () => {});
+    expect(tracks[0].stopped).toBe(false);
+  });
+
+  it("Escape inside a modal opened over the composer does not cancel", async () => {
+    const c = renderComposer();
+    await act(async () => fireEvent.click(c.mic()));
+    const dialog = document.createElement("div");
+    dialog.setAttribute("aria-modal", "true");
+    dialog.setAttribute("data-test-modal", "");
+    c.textarea().parentElement!.appendChild(dialog); // even one rendered inside the composer root
+    const input = document.createElement("input");
+    dialog.appendChild(input);
+    expect(fireEvent.keyDown(input, { key: "Escape" })).toBe(true);
+    await act(async () => {});
+    expect(tracks[0].stopped).toBe(false);
+  });
+
+  it("after a chat switch with the textarea still focused, the transcript lands at the caret the user just placed", async () => {
+    const c = renderComposer();
+    c.textarea().focus(); // focused under chat-a
+    c.rerender({ draftKey: "chat-b" }); // no new focus event
+    fireEvent.change(c.textarea(), { target: { value: "abc def" } });
+    c.textarea().setSelectionRange(3, 3);
+    fireEvent.select(c.textarea());
+    await act(async () => fireEvent.click(c.mic()));
+    await act(async () => fireEvent.click(c.mic()));
+    await waitFor(() => expect(c.textarea().value).toBe("abc dictated text def"));
   });
 
   it("Escape while idle is not claimed", () => {
