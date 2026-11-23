@@ -29,6 +29,14 @@ import { CONTACT_FIELDS, contactFieldState, emptyContact } from "./contactFields
 import type { ContactKey } from "./contactFields";
 import { errorMessage } from "../../utils/errorMessage";
 
+/**
+ * Contact Info row geometry. The note under each row is indented by exactly
+ * the label column plus the row gap so it lines up with the input; both are
+ * derived from these so they can't drift apart.
+ */
+const CONTACT_LABEL_WIDTH = 90;
+const CONTACT_ROW_GAP = 10;
+
 export default function GeneralSettings() {
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => getThemeMode());
   const [maxTurns, setMaxTurns] = useState(() => getMaxTurns());
@@ -546,8 +554,11 @@ export default function GeneralSettings() {
                     it greys out the one toggle an undeliverable-but-enabled
                     channel needs the user to click. Unavailability is carried
                     by the recessed input, the cursor, and the note instead. */}
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <label htmlFor={`contact-${key}`} style={{ fontSize: 13, fontWeight: 600, color: "var(--text)", width: 90, flexShrink: 0 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: CONTACT_ROW_GAP }}>
+                  <label
+                    htmlFor={`contact-${key}`}
+                    style={{ fontSize: 13, fontWeight: 600, color: "var(--text)", width: CONTACT_LABEL_WIDTH, flexShrink: 0, whiteSpace: "nowrap" }}
+                  >
                     {label}
                     {field.comingSoon && <span style={{ fontWeight: 400, color: "var(--text-muted)", fontSize: 11 }}> (soon)</span>}
                   </label>
@@ -561,6 +572,10 @@ export default function GeneralSettings() {
                     onChange={(e) => handleContactValueChange(key, e.target.value)}
                     style={{
                       flex: 1,
+                      // Without this a text input won't shrink below its
+                      // intrinsic (~20ch) width, pushing the toggle off the
+                      // card at phone widths.
+                      minWidth: 0,
                       padding: "9px 12px",
                       borderRadius: 8,
                       // Dashed, not just recessed: the fill difference between
@@ -611,7 +626,10 @@ export default function GeneralSettings() {
                     />
                   </button>
                 </div>
-                <div id={`contact-${key}-note`} style={{ fontSize: 11, color: warn ? "var(--warning)" : "var(--text-muted)", paddingLeft: 140 }}>
+                <div
+                  id={`contact-${key}-note`}
+                  style={{ fontSize: 11, color: warn ? "var(--warning)" : "var(--text-muted)", paddingLeft: CONTACT_LABEL_WIDTH + CONTACT_ROW_GAP }}
+                >
                   {enabledButUndeliverable ? `Enabled, but not deliverable right now — ${note.charAt(0).toLowerCase()}${note.slice(1)}` : note}
                   {/* Connections are added in drawlatch's own dashboard, never
                       here — so the note is only actionable with a pointer to
