@@ -1689,7 +1689,11 @@ export async function getAgentSettings(): Promise<AgentSettings> {
 }
 
 export async function updateAgentSettings(settings: Partial<AgentSettings>): Promise<AgentSettings> {
-  return request("/agent-settings", { method: "PUT", json: settings, error: "Failed to update agent settings" });
+  const updated = await request<AgentSettings>("/agent-settings", { method: "PUT", json: settings, error: "Failed to update agent settings" });
+  // Settings feed system-info (an OpenRouter key is `voiceInputAvailable`), so
+  // the cached payload no longer describes the daemon.
+  markSystemInfoStale();
+  return updated;
 }
 
 /**
@@ -2173,6 +2177,33 @@ let systemInfoCache: SystemInfo | null = null;
 
 /** One in-flight request, so N callers in one frame share a round trip rather than racing N. */
 let systemInfoInFlight: Promise<SystemInfo> | null = null;
+/** The ticket {@link systemInfoInFlight} was issued under (see `systemInfoRequestSeq`). */
+let systemInfoInFlightSeq = 0;
+
+/**
+ * Requests numbered at or below this were issued before the last settings
+ * save, so neither their cached answer nor their in-flight promise may be
+ * handed to a default caller. 0: nothing is stale.
+ */
+let systemInfoStaleThrough = 0;
+
+/**
+ * The daemon's settings just changed under the cache — a successful
+ * agent-settings save. The next default {@link getSystemInfo} fetches (or
+ * joins a request issued after this) instead of serving the old payload.
+ *
+ * Settings → API already re-reads with `refresh` 800 ms after a save, which
+ * keeps the cache right for whoever comes later; this covers whoever comes
+ * *sooner* — the chat page, which remounts the moment the user leaves
+ * Settings and would otherwise be pinned to the pre-save answer (the composer
+ * mic staying disabled after an OpenRouter key was added).
+ *
+ * {@link cachedSystemInfo} still returns the old payload: it seeds a first
+ * frame, and a frame of old data beats a frame of none.
+ */
+function markSystemInfoStale(): void {
+  systemInfoStaleThrough = systemInfoRequestSeq;
+}
 
 /**
  * The cached payload **synchronously**, without touching the network.
@@ -2231,7 +2262,7 @@ export interface SystemInfoOptions {
  * want both.
  */
 export async function getSystemInfo(opts: SystemInfoOptions = {}): Promise<SystemInfo> {
-  if (systemInfoCache && !opts.refresh) {
+  if (systemInfoCache && !opts.refresh && systemInfoLatestWritten > systemInfoStaleThrough) {
     // Fire-and-forget: the caller has its answer, and a revalidation that fails
     // must not become an unhandled rejection or evict a good cached value.
     void revalidateSystemInfo().catch(() => {});
@@ -2246,7 +2277,8 @@ export async function getSystemInfo(opts: SystemInfoOptions = {}): Promise<Syste
 }
 
 function revalidateSystemInfo(): Promise<SystemInfo> {
-  return systemInfoInFlight ?? fetchSystemInfo();
+  // A request that left before the last settings save answers for the old settings.
+  return systemInfoInFlight && systemInfoInFlightSeq > systemInfoStaleThrough ? systemInfoInFlight : fetchSystemInfo();
 }
 
 /** Ticket dispenser: every request takes the next number, in start order. */
@@ -2286,6 +2318,7 @@ function fetchSystemInfo(): Promise<SystemInfo> {
     if (systemInfoInFlight === inFlight) systemInfoInFlight = null;
   });
   systemInfoInFlight = inFlight;
+  systemInfoInFlightSeq = seq;
   return inFlight;
 }
 

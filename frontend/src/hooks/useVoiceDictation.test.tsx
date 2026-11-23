@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
-import { MAX_VOICE_RECORDING_MS } from "shared/types/voice.js";
+import { MAX_VOICE_RECORDING_MS, VOICE_SERVER_BUDGET_MS } from "shared/types/voice.js";
 
 const transcribeAudio = vi.fn();
 vi.mock("../api", () => ({ transcribeAudio: (...args: unknown[]) => transcribeAudio(...args) }));
@@ -12,7 +12,7 @@ vi.mock("../utils/audioWav", async (importOriginal) => {
   return { ...actual, toWav16kMono: (blob: Blob) => toWav16kMono(blob), canConvertAudio: () => true, pickRecorderMimeType: () => "audio/webm;codecs=opus" };
 });
 
-import { useVoiceDictation, VOICE_INSECURE_MESSAGE, type UseVoiceDictationOptions } from "./useVoiceDictation";
+import { TRANSCRIBE_TIMEOUT_MS, useVoiceDictation, VOICE_INSECURE_MESSAGE, type UseVoiceDictationOptions } from "./useVoiceDictation";
 
 class FakeTrack {
   stopped = false;
@@ -266,6 +266,32 @@ describe("useVoiceDictation", () => {
     await act(async () => result.current.toggle());
     await act(async () => result.current.toggle());
     expect(result.current.state).toMatchObject({ status: "error", tone: "error", message: "Voice input needs an OpenRouter API key" });
+    expect(onTranscript).not.toHaveBeenCalled();
+  });
+
+  it("sizes the client timeout above the server's worst case", () => {
+    expect(VOICE_SERVER_BUDGET_MS).toBeGreaterThan(0); // not an undefined import (NaN would pass the next line)
+    expect(TRANSCRIBE_TIMEOUT_MS).toBe(VOICE_SERVER_BUDGET_MS + 15_000);
+  });
+
+  it("gives up on an upload only after the server budget plus headroom, and says it timed out", async () => {
+    vi.useFakeTimers();
+    transcribeAudio.mockImplementationOnce(
+      (_wav: Blob, signal: AbortSignal) => new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason))),
+    );
+    const { result, onTranscript } = setup();
+    await act(async () => result.current.toggle());
+    await act(async () => result.current.toggle());
+    const signal = transcribeAudio.mock.calls[0][1] as AbortSignal;
+
+    // The server can legitimately take its whole budget; the client must still be waiting then.
+    await act(async () => vi.advanceTimersByTime(VOICE_SERVER_BUDGET_MS));
+    expect(signal.aborted).toBe(false);
+    expect(result.current.state.status).toBe("transcribing");
+
+    await act(async () => vi.advanceTimersByTime(TRANSCRIBE_TIMEOUT_MS - VOICE_SERVER_BUDGET_MS));
+    expect(signal.aborted).toBe(true);
+    expect(result.current.state).toMatchObject({ status: "error", tone: "error", message: "Transcription timed out." });
     expect(onTranscript).not.toHaveBeenCalled();
   });
 

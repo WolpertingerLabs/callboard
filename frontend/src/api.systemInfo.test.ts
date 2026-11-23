@@ -16,7 +16,7 @@
  * is how many requests reach the wire and which response wins.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cachedSystemInfo, getSystemInfo, resetSystemInfoCache } from "./api";
+import { cachedSystemInfo, getSystemInfo, resetSystemInfoCache, updateAgentSettings } from "./api";
 
 const fetchMock = vi.fn();
 
@@ -183,5 +183,64 @@ describe("cachedSystemInfo", () => {
     // No await — `useEffect` runs after the browser has painted, so a promise
     // cannot seed initial state no matter how fast it resolves.
     expect(cachedSystemInfo()?.version).toBe("1");
+  });
+});
+
+/**
+ * A settings save can change what system-info reports (an OpenRouter key turns
+ * `voiceInputAvailable` on). Settings → API re-reads it 800 ms after a save,
+ * but the chat page remounts the moment the user leaves Settings and takes the
+ * cached default — inside that window it would be handed the pre-save payload
+ * and keep it for its lifetime (the mic staying disabled until a reload).
+ */
+describe("getSystemInfo after an agent-settings save", () => {
+  const saveOk = { ok: true, json: async () => ({}) };
+  const routed = (systemInfo: () => Promise<unknown>, save: () => Promise<unknown> = async () => saveOk) =>
+    fetchMock.mockImplementation((url: string, init?: RequestInit) =>
+      String(url).endsWith("/agent-settings") && init?.method === "PUT" ? save() : systemInfo(),
+    );
+
+  it("does not serve the pre-save cache to the next default caller", async () => {
+    await getSystemInfo(); // cache: "1"
+    routed(async () => payload("2"));
+    await updateAgentSettings({ openRouterApiKey: "sk-or-new" });
+    expect((await getSystemInfo()).version).toBe("2");
+  });
+
+  it("does not join a revalidation that left before the save", async () => {
+    await getSystemInfo(); // cache: "1"
+    let releaseOld!: () => void;
+    routed(() => new Promise((r) => (releaseOld = () => r(payload("pre-save")))));
+    await getSystemInfo(); // stale hit; a pre-save revalidation is now in flight
+    const preSave = releaseOld;
+
+    routed(async () => payload("post-save"));
+    await updateAgentSettings({ openRouterApiKey: "sk-or-new" });
+    const next = getSystemInfo();
+    preSave();
+    expect((await next).version).toBe("post-save");
+    await settle();
+    expect(cachedSystemInfo()?.version).toBe("post-save");
+  });
+
+  it("goes back to serving from cache once a post-save answer has landed", async () => {
+    await getSystemInfo();
+    routed(async () => payload("2"));
+    await updateAgentSettings({ openRouterApiKey: "k" });
+    await getSystemInfo();
+    const calls = fetchMock.mock.calls.length;
+    routed(async () => payload("3"));
+    expect((await getSystemInfo()).version).toBe("2");
+    expect(fetchMock.mock.calls.length).toBe(calls + 1); // just the background revalidation
+  });
+
+  it("a failed save leaves the cache trusted", async () => {
+    await getSystemInfo();
+    routed(
+      async () => payload("2"),
+      async () => ({ ok: false, status: 500, json: async () => ({ error: "nope" }) }),
+    );
+    await expect(updateAgentSettings({ openRouterApiKey: "k" })).rejects.toThrow();
+    expect((await getSystemInfo()).version).toBe("1");
   });
 });

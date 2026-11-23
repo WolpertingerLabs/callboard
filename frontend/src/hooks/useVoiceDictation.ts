@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { MAX_VOICE_RECORDING_MS } from "shared/types/voice.js";
+import { MAX_VOICE_RECORDING_MS, VOICE_SERVER_BUDGET_MS } from "shared/types/voice.js";
 import { transcribeAudio } from "../api";
 import { canConvertAudio, isSilentRecording, pickRecorderMimeType, toWav16kMono } from "../utils/audioWav";
 
@@ -8,8 +8,13 @@ export const VOICE_INSECURE_MESSAGE = "Voice input needs HTTPS or localhost. Ope
 
 export const VOICE_NO_SPEECH_MESSAGE = "No speech detected";
 
-/** The client-side ceiling on one upload, a little over the server's worst case (45 s × 3 attempts plus backoff). */
-const TRANSCRIBE_TIMEOUT_MS = 150_000;
+/**
+ * The client-side ceiling on one upload: the server's worst case
+ * ({@link VOICE_SERVER_BUDGET_MS}) plus room for the upload itself — up to
+ * ~10 MB on a slow link — so the server's own 504 normally arrives first and
+ * the user sees its message rather than a bare client timeout.
+ */
+export const TRANSCRIBE_TIMEOUT_MS = VOICE_SERVER_BUDGET_MS + 15_000;
 /** How often the elapsed-time readout updates while recording. */
 const TICK_MS = 250;
 const ERROR_CLEAR_MS = 6000;
