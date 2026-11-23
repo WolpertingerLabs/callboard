@@ -4,6 +4,7 @@ import { sendMessage } from "../services/claude.js";
 import { sendRetiredProviderError } from "../utils/route-errors.js";
 import { isValidImageId, loadImageBuffers } from "../services/image-storage.js";
 import type { QueueItemImage } from "shared/types/index.js";
+import { noteComputerControlAtCreation } from "../services/computer-use-policy.js";
 
 export const queueRouter = Router();
 
@@ -125,6 +126,10 @@ queueRouter.post("/", (req, res) => {
 
   try {
     const item = queueFileService.createQueueItem(chat_id || null, user_message, folder, defaultPermissions, images);
+    // A new-chat draft carries the permissions its chat will be created with
+    // (execute-now sends them as-is), so it is a creation path like POST /api/chats.
+    // A draft for an existing chat never uses them.
+    if (!chat_id) noteComputerControlAtCreation("POST /api/queue", res.locals?.authMethod, defaultPermissions);
     res.status(201).json(item);
   } catch (error: any) {
     res.status(500).json({ error: error.message });

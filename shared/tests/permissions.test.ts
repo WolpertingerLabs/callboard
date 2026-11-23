@@ -22,15 +22,22 @@ describe("permission migration and settings merges", () => {
   it("rejects malformed, unknown and inherited values", () => {
     for (const value of [undefined, null, true, "", "ALLOW", {}, ["allow"]]) {
       expect(normalizePermissions({ browserControl: value, computerControl: value }).computerControl).toBe("deny");
+      expect(normalizePermissions({ browserControl: value, computerControl: value }).browserControl).toBe("deny");
       expect(normalizePermissions({ fileRead: value }).fileRead).toBe("deny");
     }
     expect(normalizePermissions(Object.create(oldAllow)).fileRead).toBe("ask");
     expect(normalizePermissions({ ...oldAllow, unexpected: "allow" })).not.toHaveProperty("unexpected");
   });
-  it("accepts all explicit fifth-axis levels", () => {
-    for (const computerControl of ["allow", "ask", "deny"]) {
-      expect(normalizePermissions({ computerControl }).computerControl).toBe(computerControl);
+  it("accepts all explicit control-axis levels", () => {
+    for (const level of ["allow", "ask", "deny"]) {
+      expect(normalizePermissions({ computerControl: level }).computerControl).toBe(level);
+      expect(normalizePermissions({ browserControl: level }).browserControl).toBe(level);
     }
+  });
+  it("never lets one control axis stand in for the other", () => {
+    expect(normalizePermissions({ computerControl: "allow" }).browserControl).toBe("deny");
+    expect(normalizePermissions({ browserControl: "allow" }).computerControl).toBe("deny");
+    expect(mergePermissions({ computerControl: "allow" }, { fileRead: "allow" }).browserControl).toBe("deny");
   });
   it("does not widen omitted axes on legacy partial updates", () => {
     expect(mergePermissions({ ...oldAllow, fileRead: "deny" }, { webAccess: "ask" })).toEqual({
@@ -41,7 +48,9 @@ describe("permission migration and settings merges", () => {
       computerControl: "deny",
     });
     expect(mergePermissions({ ...oldAllow, browserControl: "ask", computerControl: "ask" }, oldAllow).computerControl).toBe("ask");
+    expect(mergePermissions({ ...oldAllow, browserControl: "ask", computerControl: "ask" }, oldAllow).browserControl).toBe("ask");
     expect(mergePermissions(oldAllow, { browserControl: undefined, computerControl: undefined }).computerControl).toBe("deny");
+    expect(mergePermissions(oldAllow, { browserControl: undefined, computerControl: undefined }).browserControl).toBe("deny");
     expect(mergePermissions(oldAllow, null)).toEqual(normalizePermissions(oldAllow));
   });
 });

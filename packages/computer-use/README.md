@@ -151,6 +151,8 @@ The driver uses Playwright's `chromium.launchPersistentContext` with a private t
 
 These controls **are not a firewall or a filesystem sandbox**. DNS, browser internals, WebRTC and page behaviour need external confinement. Do not promise narrow egress or path policy from URL interception. A host with strict web or file restrictions must provide that confinement or refuse to enable the browser; browser mode is not a substitute for native desktop.
 
+**How Callboard applies this.** Callboard runs the browser with `network: 'unrestricted'` and gates it on its own **Browser Use** permission, which it treats as the explicit opt-in to unrestricted browser networking. That is independent of the chat's Web Access permission: Web Access governs the agent's own fetch and search tools, not the browser, so a chat with Web Access on Deny can still browse once a human turns Browser Use on and enables the target. A host that needs Web Access restrictions to cover the browser too must confine the browser externally or leave Browser Use denied.
+
 The package never evaluates JS in the page, but the website's own JavaScript still runs. File choosers aren't exposed. Chromium's own profile writes are infrastructure, not permission to touch host projects. See Playwright's [BrowserContext docs](https://playwright.dev/docs/api/class-browsercontext) for the limits of routing and service-worker blocking.
 
 ## Native desktop driver (Linux X11, explicit opt-in)

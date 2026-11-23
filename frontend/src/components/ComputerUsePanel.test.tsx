@@ -29,12 +29,14 @@ const button = (name: string) => screen.getByRole("button", { name }) as HTMLBut
 function Viewer({
   chatId = "c1",
   permission,
+  targetPermissions,
   provider,
   onPermissions,
   onRender,
 }: {
   chatId?: string;
   permission?: PermissionLevel;
+  targetPermissions?: Partial<Record<"browser" | "native", PermissionLevel>>;
   provider?: string;
   onPermissions?: () => void;
   onRender?: (controller: ReturnType<typeof useComputerUseController>) => void;
@@ -50,6 +52,7 @@ function Viewer({
           key={`${chatId}:${controller.viewerEpoch}`}
           chatId={chatId}
           permission={permission}
+          targetPermissions={targetPermissions}
           provider={provider}
           onPermissions={onPermissions}
           controller={controller}
@@ -188,11 +191,11 @@ describe("ComputerUsePanel", () => {
   });
 
   it("disables Enable for a target whose own axis is denied while the other is on", async () => {
+    // `available: true` on purpose: the per-target level alone must disable
+    // Enable, not the server's availability verdict.
     status.permission = "allow";
     status.capabilities = status.capabilities.map((item) =>
-      item.kind === "browser"
-        ? { ...item, available: false, permission: "deny" as const, reason: "Browser Use is denied." }
-        : { ...item, available: true, permission: "allow" as const },
+      item.kind === "browser" ? { ...item, available: true, permission: "deny" as const } : { ...item, available: true, permission: "allow" as const },
     );
     render(<Viewer permission="allow" />);
     await ready();
@@ -201,6 +204,17 @@ describe("ComputerUsePanel", () => {
     expect(screen.queryByText(/Browser Use and Computer Use are both denied/)).toBeNull();
     fireEvent.change(screen.getByLabelText("Target"), { target: { value: "native" } });
     expect(button("Enable").disabled).toBe(false);
+  });
+
+  it("before the first status read, states each target's level from this tab's copy", async () => {
+    vi.mocked(client.status).mockReturnValue(new Promise(() => {}));
+    render(<Viewer permission="ask" targetPermissions={{ browser: "ask", native: "deny" }} />);
+    const note = await screen.findByRole("note", { name: "What Enable grants" });
+    expect(note.textContent).toContain("Browser Use is set to Ask:");
+    // The aggregate is Ask, but the desktop's own level is Deny: nothing to consent to.
+    fireEvent.change(screen.getByLabelText("Target"), { target: { value: "native" } });
+    expect(screen.queryByRole("note", { name: "What Enable grants" })).toBeNull();
+    expect(button("Enable").disabled).toBe(true);
   });
 
   it.each(["codex", "claude-code", "pi", undefined])(

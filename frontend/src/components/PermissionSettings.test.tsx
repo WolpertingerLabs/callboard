@@ -15,9 +15,17 @@ it("renders Browser Use immediately before Computer Use, each a separate axis de
   expect(labels[0].compareDocumentPosition(labels[1]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   expect(labels[1].compareDocumentPosition(labels[2]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   expect(rowOf("Browser Use").nextElementSibling).toBe(rowOf("Computer Use"));
-  // What each axis governs, without caveats about confirmation.
-  expect(screen.getByText(/Control a managed Chromium browser on the service host/).textContent).toMatch(/independent of Web Access/);
-  expect(screen.getByText(/Control the Linux X11 desktop on the service host/).textContent).toMatch(/every other axis on Allow/);
+  // What each axis governs and what it depends on, in one line each. Allow
+  // means allow, so neither row explains away its levels with confirmation caveats.
+  for (const [pattern, dependency] of [
+    [/Control a managed Chromium browser on the service host/, /independent of Web Access/],
+    [/Control the Linux X11 desktop on the service host/, /every other axis on Allow/],
+  ] as const) {
+    const description = screen.getByText(pattern).textContent!;
+    expect(description).toMatch(dependency);
+    expect(description).not.toMatch(/confirm/i);
+    expect(description.length).toBeLessThan(140);
+  }
   for (const label of ["Browser Use", "Computer Use"])
     expect((within(rowOf(label)).getByRole("radio", { name: "Deny" }) as HTMLInputElement).checked).toBe(true);
   fireEvent.click(within(rowOf("Browser Use")).getByRole("radio", { name: "Ask" }));

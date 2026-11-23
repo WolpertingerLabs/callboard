@@ -80,8 +80,10 @@ export function aggregateControlLevel(policy: ComputerUsePolicy): PermissionLeve
 }
 
 /**
- * Record the one path by which a caller that is not a signed-in human can still
- * put a non-`deny` `browserControl` or `computerControl` on a chat: **creating** one.
+ * Record the way a caller that is not a signed-in human can still put a
+ * non-`deny` `browserControl` or `computerControl` on a chat: **creating** one —
+ * directly (`POST /api/chats`, the stream route) or via a new-chat draft
+ * (`POST /api/queue`, whose permissions `execute-now` later creates the chat with).
  *
  * `PATCH /:id/permissions` refuses to *change* either axis for anyone but a
  * same-origin session, because that rewrites the expectation of a human who
