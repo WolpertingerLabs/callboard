@@ -5,7 +5,7 @@
  * Runs only when a chat has `modelReview` on (`PermissionReviewSettings`), and
  * only on the ordinary tool-permission path of `buildCanUseTool` (claude.ts):
  *
- *  - never on a `humanOnly` prompt (`requestHumanApproval` — the computer-use
+ *  - never on a `humanOnly` prompt (`openHumanApproval` — the computer-use
  *    gate), which does not go through `buildCanUseTool` at all;
  *  - never on `AskUserQuestion` / `ExitPlanMode` ({@link isReviewableTool}),
  *    which are questions for the user, not permissions;

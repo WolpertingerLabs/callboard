@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import type { ComputerUseSession, ComputerUseStatus } from "shared/types/computerUse.js";
 import { computerUseClient as client, controlErrorCode } from "../api/computerUse";
 import { errorMessage } from "../utils/errorMessage";
+import { emitComputerControlSettled } from "../utils/computerControlEvents";
 
 export const isTerminal = (session: ComputerUseSession) => ["stopped", "revoked", "closed", "failed", "expired"].includes(session.state);
 export const isPending = (session: ComputerUseSession) => ["pending", "awaiting_approval", "approval_required", "pending_approval"].includes(session.state);
@@ -348,6 +349,9 @@ export function useComputerUseController(
         report("Could not verify stopped state.");
       }
     } finally {
+      // Stopping also withdraws open requests aimed at these sessions; let the
+      // chat re-read what it is showing.
+      emitComputerControlSettled(chatId);
       if (valid()) {
         stopActive.current = false;
         setStopping(false);

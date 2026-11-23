@@ -81,6 +81,23 @@ export type {
 
 export type { ParsedMessage } from "./message.js";
 export {
+  GUI_ACTION_TYPES,
+  RIDE_ALONG_WITHDRAW_TEXT,
+  actionWithdrawnNotice,
+  callboardNoticeHeader,
+  controlWithdrawnNotice,
+  isRideAlongNoticeLine,
+  type RideAlongWithdrawReason,
+  CALLBOARD_NOTICE_SUBTYPE,
+  RIDE_ALONG_FOOTER,
+  RIDE_ALONG_HEADER,
+  RIDE_ALONG_NOTICE_PREFIX,
+  formatRideAlongBlock,
+  splitRideAlongBlock,
+  splitRideAlongMessages,
+  withoutRideAlongBlock,
+} from "./rideAlong.js";
+export {
   COMPRESSION_SUMMARY_HEADINGS,
   HANDOFF_PREAMBLE_TAG,
   isCompressionSummaryText,

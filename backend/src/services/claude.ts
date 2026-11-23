@@ -65,12 +65,13 @@ import { notifyParentOfChildPrompt } from "./parent-answers.js";
 import { resolveParentage, walkToRootId } from "./chat-lineage.js";
 import { answeringParentFor } from "./superseded-parent.js";
 import { asideInstructionFor } from "./aside.js";
+import { claimRideAlongNotices, prependToPrompt } from "./chat-notices.js";
 import { readChat, resolveNewChatSpace, spaceInstructionsPrompt, spaceOfChat, spaceRecord } from "./space-service.js";
 import { spaceForFolder, touchSpaceRecentDirectory } from "./space-store.js";
 import { DEFAULT_SPACE_ID } from "shared";
 import { getGitInfo } from "../utils/git.js";
 import { createLogger } from "../utils/logger.js";
-import { toPromptIterable } from "./session-spawn.js";
+import { promptSourceText, toPromptIterable } from "./session-spawn.js";
 
 const log = createLogger("claude");
 
@@ -688,11 +689,10 @@ export function buildCanUseTool(
     // with no trace and no `/pending` replay, and its caller waited for an
     // answer that could no longer arrive.
     //
-    // That was survivable while every occupant was an ordinary tool
-    // permission. It is not, now that the occupant may be the computer-control
-    // confirmation — the one prompt whose whole job is to be seen. So the slot
-    // is first-come-first-served in both directions: `requestHumanApproval`
-    // already refuses to displace a prompt, and so does this.
+    // So the slot is first-come-first-served: a prompt the human is reading is
+    // never replaced. (Computer-control confirmations are not in this slot —
+    // they are open approvals beside it, see `openHumanApproval` — so they
+    // neither block this nor are displaced by it.)
     //
     // Refusing is not the same as interrupting. `interrupt: false` lets the
     // model carry on and re-request once the user has answered, which is the
@@ -1914,6 +1914,26 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
       `model=${queryOpts.options.model || "(default)"}, resume=${resumeSessionId || "none"}`,
   );
 
+  // Computer-control withdrawals since the agent's last turn (chat-notices.ts):
+  // promised to the agent, never worth starting a turn for, so they ride along
+  // with this one, whoever started it — as a marked block at the front of its
+  // user prompt, the one channel every engine treats as this turn's input and
+  // nothing else. Never the system channel: Codex keeps developer instructions
+  // in thread history. Claimed last, once nothing before the launch can
+  // throw; committed when the engine reports the session, put back otherwise.
+  // A slash command is left alone — a prefix would stop it being a command —
+  // and its notices wait for the next turn. An iterable prompt is judged by the
+  // text `toPromptIterable` tagged it with (start_chat_session / continue_chat
+  // can carry an agent's `/compact`); an untagged one, whose text cannot be
+  // read without consuming it, gets no block either.
+  const sourceText = promptSourceText(prompt);
+  const isCommand = sourceText === undefined || sourceText.trimStart().startsWith("/");
+  const rideAlong = isCommand ? null : claimRideAlongNotices(trackingId);
+  if (rideAlong) {
+    effectivePrompt = prependToPrompt(effectivePrompt, rideAlong.text);
+    queryOpts.prompt = effectivePrompt;
+  }
+
   (async () => {
     try {
       // Inject proxy connections listing into system prompt before starting the
@@ -2219,6 +2239,8 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
               // on first arrival.
               if (sessionId) break;
               sessionId = event.sessionId;
+              // The engine has this turn's prompt: the notices it carried are delivered.
+              rideAlong?.commit();
               log.debug(`Session ID arrived: ${sessionId}`);
 
               if (!chatRecordCreated) {
@@ -2639,6 +2661,10 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
       heldPromptRef.current?.close();
       endHoldActivity();
       endComputerUseTurn();
+      // A run that ended without the engine ever reporting a session (a
+      // launch that failed, an option builder that threw) never delivered its
+      // ride-along notices: put them back for the next turn. No-op once committed.
+      rideAlong?.release();
       // This run's query is done with — drop the handle so a late stop on a
       // replacement session can never close it a second time.
       activeQuery = null;

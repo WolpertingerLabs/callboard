@@ -70,11 +70,35 @@ export interface StreamEvent {
     | "nudge"
     | "auto_recovery";
   content: string;
-  /** Host enablement outcome, forwarded on message_update; old clients safely ignore it. */
+  /**
+   * A computer-control card was resolved without this tab answering it:
+   * `requestId` names the card to take down, `message` says why in one line.
+   * Forwarded on message_update; old clients safely ignore it. First used for
+   * the enable card's startup outcome; also sent when an open request — an
+   * enable card or a GUI-action confirmation — is answered elsewhere, or
+   * withdrawn (Stop, Revoke, a permission change, the session ending). Same
+   * shape and meaning for existing clients: "this card is done".
+   */
   controlRequestResult?: { requestId?: string; message: string };
   requestId?: string;
   humanOnly?: boolean;
   controlRequest?: boolean;
+  /**
+   * On a `permission_request`: nothing is suspended on this prompt. It is an
+   * open computer-control approval (enable a target, or one GUI action under
+   * Ask) that waits for the human with no timer, and the agent is told the
+   * answer later in a chat message. A client shows it like any prompt but must
+   * not treat the chat as running because of it, and should not hide the
+   * composer for it. Absent means the ordinary, blocking kind.
+   *
+   * An older bundle that ignores the field — one with `human_prompt_identity`
+   * but from before `nonBlocking` — shows it as a blocking prompt: its answer
+   * still works, but it hides its composer while the card is up, until the
+   * card is answered (or the tab reloads), and on an idle chat it may treat
+   * the chat as running. Bundles without `human_prompt_identity` get the
+   * existing reload notice instead of the card.
+   */
+  nonBlocking?: boolean;
   toolName?: string;
   /**
    * Where the tool executed — "openrouter_server" for OpenRouter server

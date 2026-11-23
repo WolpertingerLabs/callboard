@@ -15,6 +15,7 @@ import { formatBytes } from "../utils/formatBytes";
 import { getToolSummary, getToolDisplayName } from "./toolFormatting";
 import ImageLightbox, { type LightboxItem } from "./gallery/ImageLightbox";
 import { useGalleryItem } from "./gallery/ChatGallery";
+import { CALLBOARD_NOTICE_SUBTYPE } from "shared/types/rideAlong.js";
 
 /**
  * The task list this message carries, or null when it is an ordinary tool call.
@@ -998,6 +999,31 @@ function MessageBubble({
         >
           <div style={{ fontWeight: 600, marginBottom: 4 }}>⚠ Model provider error</div>
           <div style={{ whiteSpace: "pre-wrap" }}>{message.content}</div>
+        </div>
+      );
+    }
+    // A ride-along notice block, split off the front of the human's message:
+    // what Callboard told the agent at the start of that turn (a withdrawn
+    // computer-control request, say). Its own row, so it never reads as
+    // something the human typed.
+    if (message.subtype === CALLBOARD_NOTICE_SUBTYPE) {
+      return (
+        <div data-testid="callboard-notice" style={{ display: "flex", justifyContent: "center", margin: "12px 0", padding: "0 8px" }}>
+          <div
+            style={{
+              maxWidth: "100%",
+              padding: "6px 12px",
+              background: "var(--surface)",
+              border: "1px solid var(--border)",
+              borderRadius: 8,
+              fontSize: 12,
+              color: "var(--text-muted)",
+              wordBreak: "break-word",
+            }}
+          >
+            <div style={{ fontWeight: 600, marginBottom: 2 }}>Callboard told the agent</div>
+            <div style={{ whiteSpace: "pre-wrap" }}>{message.content}</div>
+          </div>
         </div>
       );
     }

@@ -6,7 +6,7 @@
  */
 import { afterEach, expect, it, vi } from "vitest";
 import { ComputerUseService, type Driver, type Probe } from "@wolpertingerlabs/computer-use";
-import { ComputerUseHost, controlPrincipal, type ConfirmAgentAction, type HostPolicy } from "./computer-use.js";
+import { ComputerUseHost, controlPrincipal, type HostPolicy, type RaiseHumanApproval } from "./computer-use.js";
 import { readComputerUsePolicy } from "./computer-use-policy.js";
 
 const hosts: ComputerUseHost[] = [];
@@ -19,7 +19,22 @@ const OTHERS = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", 
 function fixture(levels: { browserControl: string; computerControl: string }) {
   const policyOf = (value: typeof levels): HostPolicy => ({ policy: readComputerUsePolicy({ ...OTHERS, ...value }), signature: JSON.stringify(value) });
   let current = policyOf(levels);
-  const confirm = vi.fn<ConfirmAgentAction>(async () => ({ approved: true, reason: "human" }));
+  // Records each question raised; nothing waits on it (approvals are non-blocking).
+  const cards: { open: boolean }[] = [];
+  const confirm = vi.fn<RaiseHumanApproval>(() => {
+    const card = { open: true };
+    cards.push(card);
+    return {
+      requestId: `prompt-${cards.length}`,
+      isOpen: () => card.open,
+      cancel: () => {
+        const was = card.open;
+        card.open = false;
+        return was;
+      },
+    };
+  });
+  const notices: { text: string; wake: boolean }[] = [];
   const driver = (kind: "browser" | "native-desktop"): Driver => ({
     kind,
     lockDomain: kind === "native-desktop" ? "split-axes-test" : undefined,
@@ -39,7 +54,13 @@ function fixture(levels: { browserControl: string; computerControl: string }) {
     ],
     authorize: (request) => host.authorize(request),
   });
-  const host: ComputerUseHost = new ComputerUseHost(service, drivers, () => current, confirm);
+  const host: ComputerUseHost = new ComputerUseHost(
+    service,
+    drivers,
+    () => current,
+    confirm,
+    (_chatId, text, options) => notices.push({ text, wake: options?.wake !== false }),
+  );
   hosts.push(host);
   /** Enable as the human does: one click under allow, click plus panel confirmation under ask. */
   const enable = async (kind: "browser" | "desktop") => {
@@ -50,13 +71,13 @@ function fixture(levels: { browserControl: string; computerControl: string }) {
     const frame = await service.observe(controlPrincipal("a", "agent"), { sessionId: opened.id, generation: opened.generation });
     return host.requestAgentAction("a", opened.id, opened.generation, frame.frameId, { type: "click", x: 1, y: 1 }, async () => ({ ok: true }));
   };
-  return { host, service, confirm, enable, act, set: (next: typeof levels) => (current = policyOf(next)) };
+  return { host, service, confirm, cards, notices, enable, act, set: (next: typeof levels) => (current = policyOf(next)) };
 }
 
 it("Browser Use: Ask prompts for a browser action even when Computer Use is Allow", async () => {
   const f = fixture({ browserControl: "ask", computerControl: "allow" });
   const browser = await f.enable("browser");
-  await expect(f.act(browser)).resolves.toEqual({ ok: true });
+  await expect(f.act(browser)).resolves.toMatchObject({ status: "approval_pending" });
   expect(f.confirm).toHaveBeenCalledTimes(1);
   // …and the desktop is refused outright: it needs Browser Use on allow too.
   await expect(f.host.open("a", "desktop")).rejects.toMatchObject({ code: "denied", message: expect.stringContaining("browserControl") });
@@ -65,10 +86,10 @@ it("Browser Use: Ask prompts for a browser action even when Computer Use is Allo
 it("Browser Use Allow runs browser actions unattended while Computer Use Ask still prompts on the desktop", async () => {
   const f = fixture({ browserControl: "allow", computerControl: "ask" });
   const browser = await f.enable("browser");
-  await f.act(browser);
+  await expect(f.act(browser)).resolves.toEqual({ ok: true });
   expect(f.confirm).not.toHaveBeenCalled();
   const desktop = await f.enable("desktop");
-  await f.act(desktop);
+  await expect(f.act(desktop)).resolves.toMatchObject({ status: "approval_pending" });
   expect(f.confirm).toHaveBeenCalledTimes(1);
 });
 
@@ -105,4 +126,25 @@ it("changing Browser Use revokes a live desktop grant (the signature covers both
     code: "revoked",
   });
   expect(execute).not.toHaveBeenCalled();
+});
+
+it("flipping Computer Use withdraws a pending browser action under Browser Use Ask, with a withdrawal notice", async () => {
+  const f = fixture({ browserControl: "ask", computerControl: "allow" });
+  const browser = await f.enable("browser");
+  const pending = await f.act(browser);
+  expect(pending).toMatchObject({ status: "approval_pending" });
+  expect(f.cards[0].open).toBe(true);
+  // The other axis changes: the signature covers both, so the grant the card was raised under no longer holds.
+  f.set({ browserControl: "ask", computerControl: "deny" });
+  await (f.host as unknown as { expire(): Promise<void> }).expire();
+  expect(f.cards[0].open).toBe(false);
+  expect(f.host.agentRequests("a")).toEqual([]);
+  // Queued for the agent's next turn (ride-along), naming the request and the fixed reason.
+  expect(f.notices).toEqual([
+    {
+      wake: false,
+      text: expect.stringContaining(`Your request ${(pending as { requestId: string }).requestId} (a click action) was withdrawn before the human answered`),
+    },
+  ]);
+  expect(f.notices[0].text).toContain("permissions changed");
 });

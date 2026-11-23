@@ -35,6 +35,25 @@ it("names the action and its target instead of the tool's wire name", () => {
   expect(screen.getByText(/This chat asks before every GUI action/)).toBeTruthy();
 });
 
+it("says when nothing is waiting on the answer, and that a stale screen means it will not run", () => {
+  render(<FeedbackPanel action={{ ...guiAction, nonBlocking: true }} onRespond={() => {}} agentName="Codex" />);
+  expect(screen.getByText(/Codex isn’t waiting on this/).textContent).toContain("runs only if the screen it was aimed at hasn’t changed");
+  cleanup();
+  render(<FeedbackPanel action={guiAction} onRespond={() => {}} />);
+  expect(screen.queryByText(/isn’t waiting on this/)).toBeNull();
+});
+
+it("keeps Confirm disabled while the card is locked, and lets Deny through", () => {
+  const onRespond = vi.fn();
+  render(<FeedbackPanel action={{ ...guiAction, humanOnly: true, nonBlocking: true }} onRespond={onRespond} approveLocked />);
+  const confirm = screen.getByRole("button", { name: "Confirm" }) as HTMLButtonElement;
+  expect(confirm.disabled).toBe(true);
+  fireEvent.click(confirm);
+  expect(onRespond).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Deny" }));
+  expect(onRespond).toHaveBeenCalledWith(false);
+});
+
 it("offers Confirm and Deny, and reports each one faithfully", () => {
   const onRespond = vi.fn();
   render(<FeedbackPanel action={guiAction} onRespond={onRespond} />);

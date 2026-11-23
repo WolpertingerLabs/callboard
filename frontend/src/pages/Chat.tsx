@@ -5,7 +5,7 @@ import ComputerUseHeader from "../components/ComputerUseHeader";
 import { usePendingFeedback } from "../hooks/usePendingFeedback";
 import { useComputerUseController } from "../hooks/useComputerUseController";
 import ComputerUsePanel from "../components/ComputerUsePanel";
-import { memo, useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from "react";
+import { memo, useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, type ReactNode } from "react";
 import { useParams, useNavigate, useSearchParams, useLocation, useNavigationType } from "react-router-dom";
 import {
   RotateCw,
@@ -159,9 +159,11 @@ import { useSpaces } from "../contexts/SpaceContext";
 import { ALL_SPACES, DEFAULT_SPACE_ID } from "shared/types/space.js";
 import { isImageAttachmentType } from "shared/types/attachment.js";
 import { isRerunPrompt, rerunnableReplies } from "shared/types/rerun.js";
+import { withoutRideAlongBlock } from "shared/types/rideAlong.js";
 import { VOICE_NOT_CONFIGURED_MESSAGE } from "shared/types/voice.js";
 import ModalOverlay from "../components/ModalOverlay";
 import { writesBrowserFallback } from "../utils/spaceDefaults";
+import { onComputerControlSettled } from "../utils/computerControlEvents";
 
 /**
  * How long an opened draft's images get to come back before the composer stops
@@ -500,8 +502,22 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
   const [streaming, setStreaming] = useState(transitionInFlightMessages.length > 0);
   const [responseError, setResponseError] = useState("");
   const [controlNotice, setControlNotice] = useState("");
-  const { pendingAction, pendingKey, responding, setPendingAction, capturePending, isCurrentPending, isUnchangedPending, beginResponse, finishResponse } =
-    usePendingFeedback(id ?? `new:${viewKey}`);
+  const {
+    pendingAction,
+    pendingKey,
+    responding,
+    approveLocked,
+    setPendingAction,
+    capturePending,
+    isCurrentPending,
+    isUnchangedPending,
+    beginResponse,
+    finishResponse,
+  } = usePendingFeedback(id ?? `new:${viewKey}`);
+  const pendingActionRef = useRef(pendingAction);
+  useLayoutEffect(() => {
+    pendingActionRef.current = pendingAction;
+  }, [pendingAction]);
   // What this chat is blocked on right now — a wait countdown, a delegated
   // session, an open condition watch. Fetched rather than streamed: the
   // countdown is derived from `expiresAt` client-side, so the dock only needs
@@ -652,6 +668,35 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const hasReceivedFirstResponseRef = useRef<boolean>(false);
   const currentIdRef = useRef<string | undefined>(id);
+  /**
+   * Re-read `/pending` and show what the daemon is waiting on now. For the
+   * moments a card goes without this tab answering it — taken down by
+   * `controlRequestResult`/`promptResolved`, withdrawn by a Computer-view Stop or
+   * Revoke, or refused at /respond because it was already resolved — and after
+   * an answer, because open computer-control requests queue behind the one on
+   * screen and are not pushed while it is. Snapshot-guarded: a prompt that
+   * arrived over SSE meanwhile wins. `exceptRequestId` is never re-shown (the
+   * daemon dropped it before saying so). `clearIfNone` lets an empty answer
+   * clear the card; otherwise an empty answer changes nothing.
+   */
+  const rereadPending = useCallback(
+    (chatId: string, opts: { exceptRequestId?: string; clearIfNone?: boolean } = {}) => {
+      const snapshot = capturePending();
+      void Promise.resolve()
+        .then(() => getPending(chatId))
+        .then((next) => {
+          if (currentIdRef.current !== chatId || !isUnchangedPending(snapshot)) return;
+          if (next && next.requestId !== opts.exceptRequestId) setPendingAction(next);
+          else if (opts.clearIfNone) setPendingAction(null);
+        })
+        .catch(() => {});
+    },
+    [capturePending, isUnchangedPending, setPendingAction],
+  );
+  const rereadPendingRef = useRef(rereadPending);
+  useLayoutEffect(() => {
+    rereadPendingRef.current = rereadPending;
+  }, [rereadPending]);
   /** A chat whose run another request started (an aside): read its transcript once when the stream attaches. */
   const refetchOnAttachRef = useRef<string | null>(embedded?.refetchOnAttach && id ? id : null);
   /** Bumped when a stream-driven refetch applies, so an older one-off read (on attach) knows to stand down. */
@@ -1157,7 +1202,8 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
         const { chat, runError, promptText } = await rerunChatFrom(id, timestamp, role, { expectedParentChatId: chatMeta.treeParentChatId ?? null });
         // The new chat is in place either way. A prompt that could not be sent
         // goes back in its composer, so resending is one click.
-        if (runError && promptText) saveComposerDraft(chat.id, promptText);
+        // Never a stale ride-along notice block: only what the human typed.
+        if (runError && promptText) saveComposerDraft(chat.id, withoutRideAlongBlock(promptText));
         finishRewrite(chat.id);
         if (runError) window.alert(`The chat was replaced, but the prompt could not be sent: ${runError}`);
       } catch (err) {
@@ -1470,14 +1516,28 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
               if (event.controlRequestResult) {
                 const result = event.controlRequestResult;
                 setControlNotice(result.message);
-                if (result.requestId) setPendingAction((value) => (value?.requestId === result.requestId ? null : value));
+                let cleared = false;
+                if (result.requestId)
+                  setPendingAction((value) => {
+                    if (value?.requestId !== result.requestId) return value;
+                    cleared = true;
+                    return null;
+                  });
+                // Whatever was queued behind it is not pushed; read it.
+                if (cleared && streamChatId) rereadPendingRef.current(streamChatId, { exceptRequestId: result.requestId });
               }
 
               // A parent chat answered the prompt this tab may be showing.
               if (event.promptResolved) {
                 const resolved = event.promptResolved;
                 setControlNotice(resolved.message);
-                setPendingAction((value) => (value?.requestId === resolved.requestId ? null : value));
+                let cleared = false;
+                setPendingAction((value) => {
+                  if (value?.requestId !== resolved.requestId) return value;
+                  cleared = true;
+                  return null;
+                });
+                if (cleared && streamChatId) rereadPendingRef.current(streamChatId, { exceptRequestId: resolved.requestId });
               }
 
               if (event.type === "message_complete") {
@@ -1698,6 +1758,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
                     requestId: event.requestId,
                     humanOnly: event.humanOnly,
                     controlRequest: event.controlRequest,
+                    nonBlocking: event.nonBlocking,
                     input: event.input,
                     questions: event.questions,
                     suggestions: event.suggestions,
@@ -2003,7 +2064,8 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
         setMessages(Array.isArray(msgs) ? msgs : []);
         if (pending && isUnchangedPending(pendingSnapshot)) {
           setPendingAction(pending);
-          setStreaming(true);
+          // An open computer-control approval waits with nothing running.
+          if (!pending.nonBlocking) setStreaming(true);
         }
       });
       refreshActivity(id);
@@ -2201,7 +2263,8 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
       if (!isUnchangedPending(pendingSnapshot)) return;
       if (pending) {
         setPendingAction(pending);
-        setStreaming(true);
+        // An open computer-control approval waits with nothing running.
+        if (!pending.nonBlocking) setStreaming(true);
       } else {
         // Detect stale ExitPlanMode: if the last assistant turn has an unresolved
         // ExitPlanMode tool_use, reconstruct the plan review panel from message history
@@ -3881,6 +3944,20 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
         result = await respondToChat(chatId, allow, updatedInput, undefined, currentAction?.requestId);
         if (!isCurrentPending(ticket)) return;
         if (!result.ok) {
+          // An open computer-control request can be resolved elsewhere at any
+          // time — withdrawn, answered in another tab — and an idle chat has no
+          // stream to say so. Show what is current instead of a generic error.
+          if (currentAction?.nonBlocking) {
+            // Resolved elsewhere or withdrawn: say why (the daemon names it)
+            // and show what is current. Anything else — a 401, an origin 403,
+            // a proxy 502 — left the request open: keep the error up, and
+            // re-read without excluding it, so an open card stays on screen.
+            // /pending already omits answered and withdrawn requests.
+            if (result.code === "resolved") setControlNotice(result.error || "That request was already resolved or withdrawn.");
+            else setResponseError(result.error || "Could not submit the answer. Retry.");
+            rereadPending(chatId, { clearIfNone: true });
+            return;
+          }
           setResponseError(result.error || "This prompt changed or expired. Refresh the pending request before answering.");
           return;
         }
@@ -3892,6 +3969,16 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
       } finally {
         finishResponse(ticket);
       }
+
+      // Open computer-control approvals wait beside the blocking prompt and
+      // are not pushed while another prompt is on screen, so the next one is
+      // read here. Only ever adds: a prompt that arrived over SSE meanwhile
+      // wins (the snapshot), and an empty answer clears nothing.
+      rereadPending(chatId, { exceptRequestId: currentAction?.requestId });
+
+      // Answering an open approval resumes nothing in this tab: if it starts a
+      // turn, the daemon starts it and the session watcher connects.
+      if (currentAction?.nonBlocking) return;
 
       // Track if this was an ExitPlanMode approval - the SDK conversation may end
       // after plan approval, so we need to auto-send a continuation message
@@ -3905,8 +3992,31 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
         connectToStream();
       }
     },
-    [id, connectToStream, pendingAction, handleSend, beginResponse, finishResponse, isCurrentPending, setPendingAction],
+    [id, connectToStream, pendingAction, handleSend, beginResponse, finishResponse, isCurrentPending, setPendingAction, rereadPending],
   );
+
+  // A card the daemon withdraws on its own — its 1s watchdog after a
+  // takeover, a permission change or the session ending, or another tab's
+  // answer — has no stream frame on an idle chat. Every open approval opening
+  // or closing bumps the global metadataVersion (`chat_metadata_updated`, no
+  // new stream event), so re-read while a non-blocking card is up. The version
+  // moves for every chat's metadata; this read is one in-memory lookup.
+  const pendingSeenVersionRef = useRef(metadataVersion);
+  const showingOpenRequest = !!pendingAction?.nonBlocking;
+  useEffect(() => {
+    if (!id || metadataVersion === pendingSeenVersionRef.current) return;
+    pendingSeenVersionRef.current = metadataVersion;
+    if (showingOpenRequest) rereadPending(id, { clearIfNone: true });
+  }, [id, metadataVersion, showingOpenRequest, rereadPending]);
+
+  // A Computer-view Stop or Revoke withdraws requests aimed at its sessions;
+  // the daemon can only take the card down in a tab with a live stream.
+  useEffect(() => {
+    if (!id) return;
+    return onComputerControlSettled((chatId) => {
+      if (chatId === id) rereadPending(chatId, { clearIfNone: !!pendingActionRef.current?.nonBlocking });
+    });
+  }, [id, rereadPending]);
 
   // The stop button should be active whenever the frontend is streaming OR the
   // server reports an active web session for this chat.  This covers cases where
@@ -3951,7 +4061,8 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
       if (!isUnchangedPending(pendingSnapshot)) return;
       if (pending) {
         setPendingAction(pending);
-        setStreaming(true);
+        // An open computer-control approval waits with nothing running.
+        if (!pending.nonBlocking) setStreaming(true);
       } else {
         const stalePlan = detectStaleExitPlanMode(messageArray);
         if (stalePlan) {
@@ -5135,7 +5246,14 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
         </div>
       )}
       {pendingAction && (
-        <FeedbackPanel key={pendingKey} action={pendingAction} responding={responding} onRespond={handleRespond} agentName={providerDisplayName} />
+        <FeedbackPanel
+          key={pendingKey}
+          action={pendingAction}
+          responding={responding}
+          onRespond={handleRespond}
+          agentName={providerDisplayName}
+          approveLocked={approveLocked}
+        />
       )}
       {/* Wrap the composer in a positioned container so the model/effort
           popover can anchor to the composer's edges (not the hamburger menu
@@ -5147,7 +5265,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
           PromptInput keeps its draft (typed text + attached images) in local
           state, so unmounting it would silently wipe whatever the user was
           typing when the panel appeared. */}
-      <div style={{ position: "relative", display: pendingAction ? "none" : undefined }}>
+      <div style={{ position: "relative", display: pendingAction && !pendingAction.nonBlocking ? "none" : undefined }}>
         {modelPopoverOpen && composerProvider && (
           <>
             {/* Click-away overlay */}

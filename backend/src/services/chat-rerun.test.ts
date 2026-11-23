@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { COMPRESSION_SUMMARY_HEADINGS, type ParsedMessage } from "shared/types/index.js";
+import { COMPRESSION_SUMMARY_HEADINGS, actionWithdrawnNotice, formatRideAlongBlock, splitRideAlongMessages, type ParsedMessage } from "shared/types/index.js";
 import { isRerunPrompt, planRerun } from "./chat-rerun.js";
 
 const t = (s: number, ms = 0) => new Date(Date.UTC(2026, 0, 1, 10, 0, s, ms)).toISOString();
@@ -13,6 +13,25 @@ const history: ParsedMessage[] = [
   msg({ role: "assistant", type: "tool_result", content: "ok", timestamp: t(12) }),
   msg({ role: "assistant", type: "text", content: "a2", timestamp: t(13) }),
 ];
+
+describe("planRerun — ride-along notices", () => {
+  it("never re-sends an old notice block: the prompt is only what the human typed", () => {
+    const block = formatRideAlongBlock([actionWithdrawnNotice("click", "3f2a1b4c-5d6e-4f70-8a9b-0c1d2e3f4a5b", "stopped")]);
+    const withBlock = history.map((m) => (m.content === "q2" ? { ...m, content: `${block}\n\nq2` } : m));
+    expect(planRerun(withBlock, t(10))).toMatchObject({ ok: true, text: "q2" });
+  });
+
+  it("an opening prompt that carried a notice still has no history: the notice row is not a message", () => {
+    const block = formatRideAlongBlock([actionWithdrawnNotice("click", "3f2a1b4c-5d6e-4f70-8a9b-0c1d2e3f4a5b", "stopped")]);
+    // As the transcript route serves it: the notice row, then the human's prompt.
+    const opening = splitRideAlongMessages([
+      msg({ role: "user", type: "text", content: `${block}\n\nfirst question`, timestamp: t(0) }),
+      msg({ role: "assistant", type: "text", content: "answer", timestamp: t(1) }),
+    ]);
+    expect(opening[0]).toMatchObject({ role: "system" });
+    expect(planRerun(opening, t(0))).toMatchObject({ ok: true, text: "first question", hasHistory: false });
+  });
+});
 
 describe("planRerun", () => {
   it("reruns a user prompt from strictly before it", () => {

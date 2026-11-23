@@ -5,7 +5,7 @@ import Chat from "./Chat";
 import { computerUseClient as client } from "../api/computerUse";
 import { stopChat, getPending, respondToChat, type PendingAction } from "../api";
 
-const fixture = vi.hoisted(() => ({ native: false, active: { type: "web" } }));
+const fixture = vi.hoisted(() => ({ native: false, active: { type: "web" }, metadataVersion: 0 }));
 vi.mock("../api/computerUse", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../api/computerUse")>()),
   computerUseClient: { status: vi.fn(), open: vi.fn(), observe: vi.fn(), control: vi.fn(), action: vi.fn() },
@@ -31,7 +31,7 @@ vi.mock("../api", async (importOriginal) => ({
   respondToChat: vi.fn(() => new Promise(() => {})),
   stopChat: vi.fn(async () => ({ stopped: true })),
 }));
-vi.mock("../contexts/SessionContext", () => ({ useIsSessionActive: () => fixture.active, useMetadataVersion: () => 0 }));
+vi.mock("../contexts/SessionContext", () => ({ useIsSessionActive: () => fixture.active, useMetadataVersion: () => fixture.metadataVersion }));
 vi.mock("../components/PromptInput", () => ({ default: ({ disabled }: { disabled: boolean }) => <textarea aria-label="Composer" disabled={disabled} /> }));
 vi.mock("../components/GitDiffView", () => ({ default: () => <div>Git diff view</div> }));
 vi.mock("../components/ChatDebugPanel", () => ({ default: () => <div>Debug view</div> }));
@@ -275,6 +275,32 @@ it("replays in-chat enablement after refresh, preserves composer draft and view,
   expect(client.open).not.toHaveBeenCalled();
   expect(client.observe).not.toHaveBeenCalled();
 });
+it("an open (non-blocking) request leaves the composer usable, and answering it brings up the next queued prompt", async () => {
+  const actionPrompt: PendingAction = {
+    type: "permission_request",
+    requestId: "action-server-id",
+    toolName: "mcp__computer_use__cu_action",
+    humanOnly: true,
+    nonBlocking: true,
+    input: { summary: "Click at (1, 2) in the managed browser on service-host", action: { type: "click", x: 1, y: 2 } },
+  };
+  vi.mocked(getPending)
+    .mockResolvedValueOnce({ ...enablePrompt, nonBlocking: true })
+    .mockResolvedValue(actionPrompt);
+  vi.mocked(respondToChat).mockResolvedValue({ ok: true });
+  mount();
+  const enable = await screen.findByRole("button", { name: "Enable browser control" });
+  // Nothing is suspended on this card, so the composer stays in view.
+  const composer = screen.getByLabelText("Composer");
+  expect(composer.closest("div[style*='display: none']")).toBeNull();
+  expect(screen.getByText(/isn’t waiting on this/)).toBeTruthy();
+  fireEvent.click(enable);
+  await waitFor(() => expect(respondToChat).toHaveBeenCalledWith("c1", true, undefined, undefined, "enable-server-id"));
+  // The next open request was waiting behind it and is read, not pushed.
+  await screen.findByRole("button", { name: "Confirm" });
+  expect(screen.getByText(/Click at \(1, 2\)/)).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Enable browser control" })).toBeNull();
+});
 it("network failure keeps consent visible and refresh replaces a stale card without approving it", async () => {
   vi.mocked(getPending).mockResolvedValue(enablePrompt);
   vi.mocked(respondToChat).mockRejectedValueOnce(new Error("Network offline"));
@@ -484,7 +510,14 @@ it("replacement prompt can submit while A is pending and A's finally cannot unlo
   await screen.findByText(/Submitting response/);
   act(() => stream.emit({ ...enablePrompt, requestId: "B", input: { ...enablePrompt.input, reason: "B request" } }));
   await screen.findByText("B request");
-  fireEvent.click(await screen.findByRole("button", { name: "Enable browser control" }));
+  // B replaced A under the cursor: a click straight away is ignored…
+  const enableB = await screen.findByRole("button", { name: "Enable browser control" });
+  expect((enableB as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(enableB);
+  expect(respondToChat).toHaveBeenCalledTimes(1);
+  // …and it unlocks a second later.
+  await waitFor(() => expect((screen.getByRole("button", { name: "Enable browser control" }) as HTMLButtonElement).disabled).toBe(false), { timeout: 2000 });
+  fireEvent.click(screen.getByRole("button", { name: "Enable browser control" }));
   expect(respondToChat).toHaveBeenCalledTimes(2);
   await act(async () => resolveA({ ok: true }));
   expect(screen.getByRole("button", { name: "Deny" }).closest("fieldset")?.disabled).toBe(true);
@@ -538,4 +571,127 @@ it("the existing message_error reader shows migration guidance without mounting 
   await screen.findByText(/Reload this Callboard tab/);
   expect(screen.queryByRole("button", { name: "Confirm" })).toBeNull();
   expect(respondToChat).not.toHaveBeenCalled();
+});
+
+const actionCard = (requestId: string, summary = "Click at (1, 2) in the managed browser on service-host"): PendingAction => ({
+  type: "permission_request",
+  requestId,
+  toolName: "mcp__computer_use__cu_action",
+  humanOnly: true,
+  nonBlocking: true,
+  input: { summary, action: { type: "click", x: 1, y: 2 } },
+});
+const composerHidden = () => screen.getByLabelText("Composer").closest("div[style*='display: none']") !== null;
+
+it("a non-blocking card arriving over SSE mid-run leaves the composer up, and outlives the run's end", async () => {
+  const stream = streamFixture();
+  mount();
+  await stream.ready();
+  act(() => stream.emit({ ...actionCard("live-1"), content: "" }));
+  await screen.findByRole("button", { name: "Confirm" });
+  expect(composerHidden()).toBe(false);
+  act(() => stream.emit({ type: "message_complete", content: "" }));
+  // The run ended; the request did not.
+  await waitFor(() => expect(screen.getByRole("button", { name: "Confirm" })).toBeTruthy());
+  expect(composerHidden()).toBe(false);
+});
+
+it("an older-bundle-shaped card (no nonBlocking) still hides the composer until answered", async () => {
+  vi.mocked(getPending).mockResolvedValue({ ...actionCard("old-1"), nonBlocking: undefined });
+  mount();
+  await screen.findByRole("button", { name: "Confirm" });
+  expect(composerHidden()).toBe(true);
+});
+
+it("after a refresh on an idle chat, a non-blocking card does not make the chat look running", async () => {
+  const previous = fixture.active;
+  fixture.active = null as never;
+  try {
+    vi.mocked(getPending).mockResolvedValue(actionCard("idle-1"));
+    mount();
+    await screen.findByRole("button", { name: "Confirm" });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(screen.queryByTitle("Stop generation")).toBeNull();
+    expect(screen.getByTitle("No active generation")).toBeTruthy();
+  } finally {
+    fixture.active = previous;
+  }
+});
+
+it("a card taken down by controlRequestResult or promptResolved brings up what was queued behind it", async () => {
+  const stream = streamFixture();
+  mount();
+  await stream.ready();
+  act(() => stream.emit({ ...actionCard("first"), content: "" }));
+  await screen.findByText(/Click at \(1, 2\)/);
+  vi.mocked(getPending).mockResolvedValue({ ...enablePrompt, requestId: "queued", nonBlocking: true });
+  act(() =>
+    stream.emit({
+      type: "message_update",
+      controlRequestResult: { requestId: "first", message: "The GUI action request was withdrawn: the human pressed Stop." },
+    }),
+  );
+  await screen.findByRole("button", { name: "Enable browser control" });
+  expect(screen.queryByText(/Click at \(1, 2\)/)).toBeNull();
+
+  vi.mocked(getPending).mockResolvedValue(actionCard("after-parent", "Press Enter in the managed browser on service-host"));
+  act(() => stream.emit({ type: "message_update", promptResolved: { requestId: "queued", message: "Answered by the parent chat." } }));
+  await screen.findByText(/Press Enter/);
+});
+
+it("a Computer-view Stop or Revoke re-reads, so a withdrawn card goes away on an idle chat", async () => {
+  const { emitComputerControlSettled } = await import("../utils/computerControlEvents");
+  vi.mocked(getPending).mockResolvedValueOnce(actionCard("withdrawn-1")).mockResolvedValue(null);
+  mount();
+  await screen.findByRole("button", { name: "Confirm" });
+  act(() => emitComputerControlSettled("c1"));
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Confirm" })).toBeNull());
+});
+
+it("an answer /respond refuses for a non-blocking card shows what is current, not a generic error", async () => {
+  vi.mocked(getPending)
+    .mockResolvedValueOnce(actionCard("stale-1"))
+    .mockResolvedValue(actionCard("fresh-2", "Press Enter in the managed browser on service-host"));
+  const why = "That request was already resolved or withdrawn: it was withdrawn because you pressed Stop.";
+  vi.mocked(respondToChat).mockResolvedValue({ ok: false, status: 409, code: "resolved", error: why });
+  mount();
+  fireEvent.click(await screen.findByRole("button", { name: "Confirm" }));
+  await screen.findByText(/Press Enter/);
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.getByText(why)).toBeTruthy();
+});
+
+it("a refusal that left the request open (403) keeps the card up and shows the error", async () => {
+  // Still open server-side: /pending keeps returning it.
+  vi.mocked(getPending).mockResolvedValue(actionCard("still-open"));
+  vi.mocked(respondToChat).mockResolvedValue({ ok: false, status: 403, error: "This confirmation requires a logged-in session, not an API key." });
+  mount();
+  fireEvent.click(await screen.findByRole("button", { name: "Confirm" }));
+  await screen.findByRole("alert");
+  expect(screen.getByRole("alert").textContent).toContain("logged-in session");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(screen.getByRole("button", { name: "Confirm" })).toBeTruthy();
+  expect(screen.getByText(/Click at \(1, 2\)/)).toBeTruthy();
+});
+
+it("a card the daemon withdraws in the background goes away on the next metadata bump, with no stream", async () => {
+  const previous = fixture.active;
+  fixture.active = null as never;
+  try {
+    vi.mocked(getPending).mockResolvedValueOnce(actionCard("bg-1")).mockResolvedValue(null);
+    const view = mount();
+    await screen.findByRole("button", { name: "Confirm" });
+    // The watchdog withdrew it (a takeover, a permission change): the daemon bumps metadataVersion.
+    fixture.metadataVersion++;
+    view.rerender(
+      <MemoryRouter initialEntries={["/chat/c1"]}>
+        <Routes>
+          <Route path="/chat/:id" element={<Chat />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Confirm" })).toBeNull());
+  } finally {
+    fixture.active = previous;
+  }
 });

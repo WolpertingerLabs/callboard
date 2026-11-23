@@ -22,7 +22,6 @@ import {
   shimSpawnConfig,
   type CodexToolServerHandle,
 } from "./toolAdapter.js";
-import { HUMAN_APPROVAL_TIMEOUT_MS } from "../../../services/pending-requests.js";
 
 /** The `wait` tool's ceiling (services/callboard-tools.ts: `z.number().min(1).max(300)`). */
 const MAX_WAIT_SECONDS = 300;
@@ -56,12 +55,10 @@ describe("shimSpawnConfig", () => {
   it("outlasts every callboard tool that parks on purpose, so codex never abandons a live call", () => {
     // Codex is an MCP client with its own per-call patience, and unset it uses
     // an internal default callboard does not control (`codex mcp list --json`
-    // reports `tool_timeout_sec: null` for a server that omits it). The
-    // computer-use confirmation is the one that must not lose this race: if
-    // codex gave up while the prompt stayed open, a human confirming later
-    // would run an action the harness had already moved past.
+    // reports `tool_timeout_sec: null` for a server that omits it). `wait` is
+    // the longest deliberate park; computer-control approvals no longer hold a
+    // call open at all.
     expect(shimSpawnConfig("/tmp/x/s.sock").tool_timeout_sec).toBe(CALLBOARD_TOOL_TIMEOUT_SEC);
-    expect(CALLBOARD_TOOL_TIMEOUT_SEC * 1000).toBeGreaterThan(HUMAN_APPROVAL_TIMEOUT_MS);
     expect(CALLBOARD_TOOL_TIMEOUT_SEC).toBeGreaterThan(MAX_WAIT_SECONDS);
   });
 

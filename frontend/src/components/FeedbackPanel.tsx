@@ -23,6 +23,12 @@ interface Props {
   onRespond: (allow: boolean, updatedInput?: Record<string, unknown>) => void;
   /** Display name of the harness running this chat (e.g. "Claude", "Codex", "pi") */
   agentName?: string;
+  /**
+   * A computer-control card's approve button is disabled: the card replaced
+   * another moments ago, so a click already on its way was aimed at that one.
+   * Set by the chat page (`usePendingFeedback`); clears itself.
+   */
+  approveLocked?: boolean;
 }
 
 export default function FeedbackPanel(props: Props) {
@@ -33,7 +39,7 @@ export default function FeedbackPanel(props: Props) {
     </fieldset>
   );
 }
-function FeedbackContent({ action, onRespond, agentName = "Claude" }: Props) {
+function FeedbackContent({ action, onRespond, agentName = "Claude", approveLocked = false }: Props) {
   const [answers, setAnswers] = useState<Record<number, string | string[]>>({});
   const [otherText, setOtherText] = useState<Record<number, string>>({});
   const [planExpanded, setPlanExpanded] = useState(false);
@@ -60,13 +66,19 @@ function FeedbackContent({ action, onRespond, agentName = "Claude" }: Props) {
               : "Allow: the agent can act unattended after you enable control."}
           </p>
           <p>Grant duration: up to 15 minutes. You can Stop computer control at any time.</p>
+          {action.nonBlocking && (
+            <p>
+              {agentName} isn’t waiting on this: it will be told your answer. The request stays open until you enable or deny it — or it is withdrawn by Stop
+              (while a run is going), Stop computer control, a permission change, or archiving or deleting the chat.
+            </p>
+          )}
           {desktop && (
             <p>Native desktop control covers the full desktop and existing app windows on the service host, not an isolated browser or your viewing device.</p>
           )}
           <p>Subagents running inside this chat’s turn share this grant and this chat’s permissions.</p>
         </div>
         <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
-          <button onClick={() => onRespond(true)} style={allowBtn}>
+          <button onClick={() => !approveLocked && onRespond(true)} disabled={approveLocked} style={allowBtn}>
             Enable {label} control
           </button>
           <button onClick={() => onRespond(false)} style={denyBtn}>
@@ -107,10 +119,12 @@ function FeedbackContent({ action, onRespond, agentName = "Claude" }: Props) {
         {guiAction && (
           <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 0, marginBottom: 10 }}>
             This chat asks before every GUI action: a pixel action may transmit data, change files or execute code.
+            {action.nonBlocking &&
+              ` ${agentName} isn’t waiting on this: it will be told your answer, and a confirmed action runs only if the screen it was aimed at hasn’t changed. It is withdrawn if you press Stop (while a run is going), Stop computer control, take over or revoke the session, or the session ends.`}
           </p>
         )}
         <div style={{ display: "flex", gap: 8 }}>
-          <button onClick={() => onRespond(true)} style={allowBtn}>
+          <button onClick={() => !(guiAction && approveLocked) && onRespond(true)} disabled={guiAction && approveLocked} style={allowBtn}>
             {guiAction ? "Confirm" : "Allow"}
           </button>
           <button onClick={() => onRespond(false)} style={denyBtn}>

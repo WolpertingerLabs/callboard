@@ -16,7 +16,7 @@ import type { StreamEvent, DefaultPermissions } from "shared/types/index.js";
 import { ToolPermissionPolicy } from "../agents/permissions/ToolPermissionPolicy.js";
 import { categorizeClaudeTool } from "../agents/adapters/claude-code/permissionAdapter.js";
 import { buildCanUseTool, respondToPermission, hasPendingRequest, getPendingRequest, stopSession } from "./claude.js";
-import { requestHumanApproval } from "./pending-requests.js";
+import { clearOpenApprovalsForTest, openHumanApproval } from "./pending-requests.js";
 import { CU_ACTION_TOOL_NAME } from "shared/types/index.js";
 import { sessionRegistry } from "./session-registry.js";
 
@@ -273,26 +273,28 @@ describe("buildCanUseTool — the prompt slot holds one question", () => {
     respondToPermission(trackingId, false);
   });
 
-  it("the same rule protects a parked computer-control confirmation", async () => {
+  it("an open computer-control request does not occupy the slot: the harness can still ask", async () => {
     const trackingId = `cu-slot-${Math.random().toString(36).slice(2)}`;
     const emitter = new EventEmitter();
     sessionRegistry.register(trackingId, { type: "web", abortController: new AbortController(), emitter });
     try {
-      const approval = requestHumanApproval(trackingId, {
-        toolName: CU_ACTION_TOOL_NAME,
-        input: { summary: "Click at (1, 2)" },
-        timeoutMs: 60_000,
+      const answers: boolean[] = [];
+      const approval = openHumanApproval(trackingId, { toolName: CU_ACTION_TOOL_NAME, input: { summary: "Click at (1, 2)" } }, (approved) => {
+        answers.push(approved);
       });
       const { canUseTool } = make({ policy: makePolicy(FULL_ASK), trackingId, emitter });
 
-      expect(await canUseTool("Bash", { command: "ls" }, unsignaled())).toMatchObject({ behavior: "deny", interrupt: false });
-      // Still the GUI confirmation, still answerable, still human-only.
-      expect(getPendingRequest(trackingId)).toMatchObject({ toolName: CU_ACTION_TOOL_NAME, humanOnly: true });
-
-      respondToPermission(trackingId, false, undefined, undefined, getPendingRequest(trackingId)?.requestId);
-      await expect(approval).resolves.toEqual({ approved: false, reason: "denied" });
+      // Parks in the slot as usual rather than being deferred.
+      void canUseTool("Bash", { command: "ls" }, unsignaled());
+      expect(getPendingRequest(trackingId)).toMatchObject({ toolName: "Bash" });
+      // The GUI confirmation is still open beside it, still answerable by its own identity.
+      expect(respondToPermission(trackingId, false, undefined, undefined, approval.requestId)).toMatchObject({ ok: true, toolName: CU_ACTION_TOOL_NAME });
+      expect(answers).toEqual([false]);
+      expect(getPendingRequest(trackingId)).toMatchObject({ toolName: "Bash" });
+      respondToPermission(trackingId, false);
     } finally {
       sessionRegistry.unregister(trackingId);
+      clearOpenApprovalsForTest();
     }
   });
 });

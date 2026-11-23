@@ -3,8 +3,10 @@ import { ComputerUseService, type Driver } from "@wolpertingerlabs/computer-use"
 vi.mock("./computer-use.js", async (original) => ({
   ...(await original<typeof import("./computer-use.js")>()),
   getComputerUseHost: vi.fn(),
+  peekComputerUseHost: vi.fn(),
 }));
-import { ComputerUseHost, getComputerUseHost, type ActionConfirmationRequest, type ConfirmAgentAction } from "./computer-use.js";
+import { ComputerUseHost, getComputerUseHost, peekComputerUseHost, type RaiseHumanApproval } from "./computer-use.js";
+import type { HumanApprovalRequest } from "./pending-requests.js";
 import { readComputerUsePolicy } from "./computer-use-policy.js";
 import { beginComputerUseTurn, buildComputerUseToolsSpec, closeComputerUseConnections } from "./computer-use-tools.js";
 
@@ -15,24 +17,31 @@ afterEach(async () => {
   host = undefined;
 });
 
-/** A stand-in human the test answers for, one question at a time. */
+/** A stand-in human the test answers for, one question at a time. Nothing waits on them. */
 function human() {
-  const queue: { request: ActionConfirmationRequest; answer: (outcome: { approved: boolean; reason: "human" | "denied" }) => void }[] = [];
-  const waiters: (() => void)[] = [];
-  const confirm: ConfirmAgentAction = (request) =>
-    new Promise((resolve) => {
-      queue.push({ request, answer: resolve });
-      waiters.splice(0).forEach((wake) => wake());
-    });
-  const asked = async (index: number) => {
-    while (queue.length <= index) await new Promise<void>((resolve) => waiters.push(resolve));
-    return queue[index].request;
+  const queue: { request: HumanApprovalRequest; onAnswer: (approved: boolean) => unknown; open: boolean }[] = [];
+  const raise: RaiseHumanApproval = vi.fn((_chatId, request, onAnswer) => {
+    const entry = { request, onAnswer, open: true };
+    queue.push(entry);
+    return {
+      requestId: `prompt-${queue.length}`,
+      isOpen: () => entry.open,
+      cancel: () => {
+        const was = entry.open;
+        entry.open = false;
+        return was;
+      },
+    };
+  });
+  const answer = (index: number, approved: boolean) => {
+    queue[index].open = false;
+    return queue[index].onAnswer(approved);
   };
   return {
-    confirm,
-    asked,
-    approve: (index = 0) => queue[index].answer({ approved: true, reason: "human" }),
-    deny: (index = 0) => queue[index].answer({ approved: false, reason: "denied" }),
+    raise,
+    queue,
+    approve: (index = 0) => answer(index, true),
+    deny: (index = 0) => answer(index, false),
   };
 }
 
@@ -41,7 +50,7 @@ const textOf = (result: { content: { type: string }[] }) => {
   return block ? JSON.parse(block.text) : undefined;
 };
 
-it("an ask chat's real host MCP hop blocks on the human, executes only what they confirmed, and fences a revoked grant", async () => {
+it("an ask chat's real host MCP hop returns at once, executes only what the human confirmed, and fences a revoked grant", async () => {
   const act = vi.fn(async () => {});
   let targetChanged: (() => void) | undefined;
   let authorizeAction: (() => Promise<void>) | undefined = undefined;
@@ -66,11 +75,13 @@ it("an ask chat's real host MCP hop blocks on the human, executes only what they
     },
   });
   const person = human();
+  const notices: string[] = [];
   host = new ComputerUseHost(
     service,
     { browser: driver, desktop: { ...driver, kind: "native-desktop" } },
     () => ({ policy: readComputerUsePolicy({ browserControl: "ask", computerControl: "ask", webAccess: "allow" }), signature: "scope" }),
-    person.confirm,
+    person.raise,
+    (_chatId, text) => notices.push(text),
   );
   vi.mocked(getComputerUseHost).mockResolvedValue(host);
   const controller = new AbortController();
@@ -79,32 +90,40 @@ it("an ask chat's real host MCP hop blocks on the human, executes only what they
   const tool = (name: string) => spec.tools.find((item) => item.name === name)!;
   const opened = (await host.approve("chat", (await host.open("chat", "browser")).id)) as { id: string; generation: number };
   const ref = { sessionId: opened.id, generation: opened.generation };
+  const observe = async () => JSON.parse(((await tool("cu_observe").handler(ref)).content[0] as { text: string }).text).frameId as string;
   const pixels = await tool("cu_observe").handler(ref);
   expect(pixels.content).toContainEqual({ type: "image", data: "AA==", mimeType: "image/png" });
   const frameId = JSON.parse((pixels.content[0] as { text: string }).text).frameId;
 
-  // ── The call blocks; nothing reaches the driver until the human answers ──
-  const requested = tool("cu_action").handler({ ...ref, frameId, action: { type: "click", x: 1, y: 2 } });
-  const question = await person.asked(0);
-  expect(question.summary).toMatch(/^Click at \(1, 2\) in the managed browser on \S+$/);
+  // ── The call returns at once; nothing reaches the driver until the human answers ──
+  const requested = await tool("cu_action").handler({ ...ref, frameId, action: { type: "click", x: 1, y: 2 } });
+  expect(requested.isError).toBeUndefined();
+  expect(textOf(requested)).toMatchObject({ status: "approval_pending", requestId: expect.any(String) });
+  expect(person.queue[0].request.input.summary).toMatch(/^Click at \(1, 2\) in the managed browser on \S+$/);
   expect(act).not.toHaveBeenCalled();
-  // A second concurrent request is refused, not queued behind the first.
-  expect(textOf(await tool("cu_action").handler({ ...ref, frameId, action: { type: "click", x: 3, y: 4 } }))).toMatchObject({ error: "queue_full" });
+  // While it waits, the agent can neither replace the card nor move the frame
+  // under it: cu_action and cu_observe both answer with the waiting request.
+  const firstId = textOf(requested).requestId;
+  const again = await tool("cu_action").handler({ ...ref, frameId, action: { type: "click", x: 3, y: 4 } });
+  expect(again.isError).toBeUndefined();
+  expect(textOf(again)).toMatchObject({ status: "approval_pending", alreadyPending: true, requestId: firstId });
+  const looked = await tool("cu_observe").handler(ref);
+  expect(textOf(looked)).toMatchObject({ status: "approval_pending", alreadyPending: true, requestId: firstId });
+  expect(looked.content.some((block) => block.type === "image")).toBe(false);
+  expect(person.queue).toHaveLength(1);
   person.approve(0);
-  const result = await requested;
-  expect(result.isError).toBeUndefined();
+  await vi.waitFor(() => expect(notices).toEqual([expect.stringContaining("was performed")]));
   expect(act).toHaveBeenCalledOnce();
 
   // ── A refusal comes back as a refusal, and never runs ──
-  const nextFrame = JSON.parse(((await tool("cu_observe").handler(ref)).content[0] as { text: string }).text).frameId;
-  const refused = tool("cu_action").handler({ ...ref, frameId: nextFrame, action: { type: "navigate", url: "https://example.com" } });
-  await person.asked(1);
+  await tool("cu_action").handler({ ...ref, frameId: await observe(), action: { type: "navigate", url: "https://example.com" } });
   person.deny(1);
-  expect(textOf(await refused)).toMatchObject({ error: "denied", message: expect.stringContaining("NOT performed") });
+  await vi.waitFor(() => expect(notices).toHaveLength(2));
+  expect(notices[1]).toContain("NOT performed");
   expect(act).toHaveBeenCalledOnce();
 
   // ── A target change between the human's yes and the driver's act is not a success ──
-  const currentId = JSON.parse(((await tool("cu_observe").handler(ref)).content[0] as { text: string }).text).frameId;
+  const currentId = await observe();
   let enter!: () => void, release!: () => void;
   const entered = new Promise<void>((r) => {
     enter = r;
@@ -116,19 +135,79 @@ it("an ask chat's real host MCP hop blocks on the human, executes only what they
     enter();
     await gate;
   };
-  const delayed = tool("cu_action").handler({ ...ref, frameId: currentId, action: { type: "click", x: 5, y: 6 } });
-  await person.asked(2);
+  await tool("cu_action").handler({ ...ref, frameId: currentId, action: { type: "click", x: 5, y: 6 } });
   person.approve(2);
   await entered;
-  targetChanged!(); // Changes after the human's yes, while the MCP service awaits policy.
+  targetChanged!(); // Changes after the human's yes, while the service awaits policy.
   release();
-  expect(textOf(await delayed)).toMatchObject({ error: "driver_error" });
+  await vi.waitFor(() => expect(notices).toHaveLength(3));
+  expect(notices[2]).toContain("NOT performed");
   expect(act).toHaveBeenCalledOnce();
 
   authorizeAction = undefined;
   await host.revoke("chat", opened.id);
   expect((await tool("cu_observe").handler(ref)).isError).toBe(true);
   end();
+});
+
+it("a run's abort — Stop or an interrupting send alike — does not withdraw open requests by itself", async () => {
+  // The chat's Stop button withdraws them from the stream route; an
+  // interrupting send aborts the run the same way and must not.
+  const withdrawChatRequests = vi.fn();
+  vi.mocked(peekComputerUseHost).mockReturnValue(Promise.resolve({ withdrawChatRequests } as unknown as ComputerUseHost));
+  try {
+    const aborted = new AbortController();
+    const end = beginComputerUseTurn(() => "stop-chat", aborted.signal);
+    aborted.abort();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(withdrawChatRequests).not.toHaveBeenCalled();
+    end();
+  } finally {
+    vi.mocked(peekComputerUseHost).mockReturnValue(undefined);
+  }
+});
+
+it("cu_stop withdraws a pending action only when the stop happened, and names it in the result", async () => {
+  const driver: Driver = {
+    kind: "browser",
+    probe: async () => ({ kind: "browser", available: true, capabilities: ["screenshot"] }),
+    open: async () => ({
+      act: async () => {},
+      close: async () => {},
+      releaseInput: async () => {},
+      observe: async () => ({ data: "AA==", mimeType: "image/png", width: 100, height: 100, capturedAt: Date.now() }),
+    }),
+  };
+  const service = new ComputerUseService({
+    targets: [{ id: "managed-browser", enabled: true, driver }],
+    authorize: (request) => host?.authorize(request) ?? "deny",
+  });
+  const person = human();
+  host = new ComputerUseHost(
+    service,
+    { browser: driver, desktop: { ...driver, kind: "native-desktop" } },
+    () => ({ policy: readComputerUsePolicy({ browserControl: "ask", computerControl: "ask", webAccess: "allow" }), signature: "scope" }),
+    person.raise,
+    () => {},
+  );
+  vi.mocked(getComputerUseHost).mockResolvedValue(host);
+  const end = beginComputerUseTurn(() => "chat", new AbortController().signal);
+  try {
+    const tool = (name: string) => buildComputerUseToolsSpec(() => "chat").tools.find((item) => item.name === name)!;
+    const opened = (await host.approve("chat", (await host.open("chat", "browser")).id)) as { id: string; generation: number };
+    const ref = { sessionId: opened.id, generation: opened.generation };
+    const frameId = JSON.parse(((await tool("cu_observe").handler(ref)).content[0] as { text: string }).text).frameId;
+    const pending = textOf(await tool("cu_action").handler({ ...ref, frameId, action: { type: "click", x: 1, y: 2 } }));
+    // A stop that failed (no such session) withdraws nothing.
+    expect((await tool("cu_stop").handler({ sessionId: "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa" })).isError).toBe(true);
+    expect(person.queue[0].open).toBe(true);
+    const stopped = await tool("cu_stop").handler({ sessionId: opened.id });
+    expect(stopped.isError).toBeUndefined();
+    expect(textOf(stopped)).toMatchObject({ withdrawnRequestId: pending.requestId });
+    expect(person.queue[0].open).toBe(false);
+  } finally {
+    end();
+  }
 });
 
 it("an allow chat's MCP hop reaches the driver with nobody asked", async () => {
@@ -147,14 +226,13 @@ it("an allow chat's MCP hop reaches the driver with nobody asked", async () => {
     targets: [{ id: "managed-browser", enabled: true, driver }],
     authorize: (request) => host?.authorize(request) ?? "deny",
   });
-  // The confirmation double would say yes if it were reached; the point is that
-  // it is not, so a reintroduced prompt fails here as a call rather than a hang.
-  const confirm = vi.fn<ConfirmAgentAction>(async () => ({ approved: true, reason: "human" }));
+  // The stand-in human records any question; the point is that none is raised.
+  const person = human();
   host = new ComputerUseHost(
     service,
     { browser: driver, desktop: { ...driver, kind: "native-desktop" } },
     () => ({ policy: readComputerUsePolicy({ browserControl: "allow", computerControl: "allow", webAccess: "allow" }), signature: "scope" }),
-    confirm,
+    person.raise,
   );
   vi.mocked(getComputerUseHost).mockResolvedValue(host);
   const end = beginComputerUseTurn(() => "chat", new AbortController().signal);
@@ -168,7 +246,7 @@ it("an allow chat's MCP hop reaches the driver with nobody asked", async () => {
 
   expect(result.isError).toBeUndefined();
   expect(act).toHaveBeenCalledOnce();
-  expect(confirm).not.toHaveBeenCalled();
+  expect(person.raise).not.toHaveBeenCalled();
   end();
 });
 
@@ -179,10 +257,10 @@ it("an idle facade cannot call the service, even if a model supplies a session i
   expect(result.content).toEqual([{ type: "text", text: expect.stringContaining("No active authorized chat turn") }]);
 });
 
-it("cu_request_control blocks through the provider-neutral spec, then returns the enabled session to the agent", async () => {
+it("cu_request_control returns consent_pending through the provider-neutral spec; the agent is told the enabled session later", async () => {
   const { EventEmitter } = await import("node:events");
   const { sessionRegistry } = await import("./session-registry.js");
-  const { getPendingRequest, respondToPermission } = await import("./pending-requests.js");
+  const { clearOpenApprovalsForTest, getPendingRequest, respondToPermission } = await import("./pending-requests.js");
   const controller = new AbortController();
   sessionRegistry.register("enable-tool-chat", { type: "web", emitter: new EventEmitter(), abortController: controller });
   const driver: Driver = {
@@ -195,27 +273,37 @@ it("cu_request_control blocks through the provider-neutral spec, then returns th
       observe: async () => ({ data: "AA==", mimeType: "image/png" as const, width: 100, height: 100, capturedAt: Date.now() }),
     })),
   };
+  const notices: string[] = [];
   const service = new ComputerUseService({ targets: [{ id: "managed-browser", enabled: true, driver }], authorize: (request) => host!.authorize(request) });
-  host = new ComputerUseHost(service, { browser: driver, desktop: driver }, () => ({
-    policy: readComputerUsePolicy({ browserControl: "allow", computerControl: "allow", webAccess: "allow" }),
-    signature: "scope",
-  }));
+  host = new ComputerUseHost(
+    service,
+    { browser: driver, desktop: driver },
+    () => ({ policy: readComputerUsePolicy({ browserControl: "allow", computerControl: "allow", webAccess: "allow" }), signature: "scope" }),
+    undefined,
+    (_chatId, text) => notices.push(text),
+  );
   vi.mocked(getComputerUseHost).mockResolvedValue(host);
   const end = beginComputerUseTurn(() => "enable-tool-chat", controller.signal);
   try {
     const spec = buildComputerUseToolsSpec(() => "enable-tool-chat");
     const tool = spec.tools.find((tool) => tool.name === "cu_request_control")!;
-    const result = tool.handler({ kind: "browser", reason: "Read the page" });
-    await vi.waitFor(() => expect(getPendingRequest("enable-tool-chat")?.humanOnly).toBe(true));
+    expect(textOf(await tool.handler({ kind: "browser", reason: "Read the page" }))).toMatchObject({ status: "consent_pending", kind: "browser" });
+    expect(getPendingRequest("enable-tool-chat")?.humanOnly).toBe(true);
     expect(driver.open).not.toHaveBeenCalled();
-    respondToPermission("enable-tool-chat", true, undefined, undefined, getPendingRequest("enable-tool-chat")?.requestId);
-    expect(textOf(await result)).toMatchObject({ state: "ready", kind: "browser", controller: "agent", generation: 1 });
+    // cu_open shows the agent its own open request, never the prompt identity.
+    const listed = textOf(await spec.tools.find((tool) => tool.name === "cu_open")!.handler({ kind: "browser" }));
+    expect(listed).toMatchObject({ sessions: [], pendingRequests: [{ type: "enable_control", kind: "browser" }] });
+    expect(JSON.stringify(listed)).not.toContain(getPendingRequest("enable-tool-chat")!.requestId!);
+    end(); // The turn can end; the request does not.
+    const completion = respondToPermission("enable-tool-chat", true, undefined, undefined, getPendingRequest("enable-tool-chat")?.requestId).completion;
+    await expect(completion).resolves.toEqual({ ok: true });
     expect(driver.open).toHaveBeenCalledTimes(1);
-    end();
+    expect(notices).toEqual([expect.stringMatching(/Session \S+ \(generation 1\) is ready and agent-controlled/)]);
     expect(textOf(await tool.handler({ kind: "browser", reason: "Again" }))).toMatchObject({ error: "cancelled" });
   } finally {
     end();
     sessionRegistry.unregister("enable-tool-chat");
+    clearOpenApprovalsForTest();
   }
 });
 

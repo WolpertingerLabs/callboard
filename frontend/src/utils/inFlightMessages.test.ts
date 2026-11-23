@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from "vitest";
 import type { ParsedMessage } from "../api";
-import { appendAttachmentBlocks, formatAttachmentBlock } from "shared/types/index.js";
+import { appendAttachmentBlocks, formatAttachmentBlock, formatRideAlongBlock, splitRideAlongMessages, actionWithdrawnNotice } from "shared/types/index.js";
 import { endsWithInterruptMarker, nextInFlightKey, settleInFlight, toInFlightHandoff, toInFlightList, visibleInFlight, type InFlightMessage } from "./inFlightMessages";
 
 const pending = (...texts: string[]): InFlightMessage[] => texts.map((text) => ({ key: nextInFlightKey(), text, imageUrls: [] }));
@@ -17,6 +17,20 @@ const user = (content: string): ParsedMessage => ({ role: "user", type: "text", 
 const command = (content: string): ParsedMessage => ({ role: "user", type: "text", content, isBuiltInCommand: true });
 const assistant = (content: string): ParsedMessage => ({ role: "assistant", type: "text", content });
 const system = (content: string, subtype?: string): ParsedMessage => ({ role: "system", type: "system", content, ...(subtype && { subtype }) });
+
+describe("ride-along notice blocks", () => {
+  const block = formatRideAlongBlock([actionWithdrawnNotice("click", "3f2a1b4c-5d6e-4f70-8a9b-0c1d2e3f4a5b", "stopped")]);
+  it("a message the daemon prefixed with a notice block still accounts for the in-flight copy — no duplicate", () => {
+    // Raw (as an engine saved it), and split (as the transcript route serves it).
+    expect(visibleInFlight(pending("hello"), [user(`${block}\n\nhello`)])).toEqual([]);
+    expect(visibleInFlight(pending("hello"), splitRideAlongMessages([user(`${block}\n\nhello`)]))).toEqual([]);
+    expect(settleInFlight(pending("hello"), [user(`${block}\n\nhello`), assistant("hi")])).toEqual([]);
+  });
+  it("text the human typed that only looks like a block is matched as typed", () => {
+    const typed = "[Callboard system notice — not typed by the human. Computer-control updates since your last turn:]\nwhat is this?";
+    expect(visibleInFlight(pending(typed), [user(typed)])).toEqual([]);
+  });
+});
 
 describe("visibleInFlight", () => {
   it("keeps a message the transcript has not caught up with", () => {

@@ -47,6 +47,10 @@
             "optional": true,
             "type": "number"
           },
+          "nonBlocking": {
+            "optional": true,
+            "type": "boolean"
+          },
           "objectiveComplete": {
             "optional": true,
             "type": "boolean"

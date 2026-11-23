@@ -8,7 +8,15 @@ import { hostname } from "node:os";
 // nothing that the dynamic import in `getComputerUseHost` was avoiding.
 import { actionSchema } from "@wolpertingerlabs/computer-use";
 import type { Action, AuthorizationRequest, ComputerUseService, Driver, Lease, Principal, SessionStatus } from "@wolpertingerlabs/computer-use";
-import { CU_ACTION_TOOL_NAME, CU_REQUEST_CONTROL_TOOL_NAME } from "shared/types/index.js";
+import {
+  CU_ACTION_TOOL_NAME,
+  CU_REQUEST_CONTROL_TOOL_NAME,
+  GUI_ACTION_TYPES,
+  RIDE_ALONG_WITHDRAW_TEXT,
+  actionWithdrawnNotice,
+  callboardNoticeHeader,
+  controlWithdrawnNotice,
+} from "shared/types/index.js";
 import { assertNativeAgentControllable } from "./codex-native-agents.js";
 import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { createLogger } from "../utils/logger.js";
@@ -24,7 +32,8 @@ import {
   type ComputerUsePolicy,
 } from "./computer-use-policy.js";
 import { sessionRegistry } from "./session-registry.js";
-import { getPendingRequest, requestHumanApproval, type HumanApprovalOutcome, type ApprovalCompletion } from "./pending-requests.js";
+import { enqueueChatNotice } from "./chat-notices.js";
+import { openHumanApproval, type ApprovalCompletion, type OpenHumanApproval } from "./pending-requests.js";
 
 const log = createLogger("computer-use");
 
@@ -42,14 +51,10 @@ const ROUTINE_CONTROL_CODES = new Set([
   "not_found",
   "invalid_request",
   "approval_required",
-  // The two ways a GUI action ends without the human ever saying yes: nobody
-  // answered the chat prompt in time, and there was nowhere to ask (no live
-  // session, or the chat's one prompt slot was already occupied). Neither is a
-  // fault — an operator who wants them raises the level. They are emphatically
-  // NOT the escalated case, which is a human answering yes and it still not
-  // happening; see `markConfirmedFailure`.
+  // A readiness probe that did not answer within CONTROL_PROBE_TIMEOUT_MS.
+  // (Human approvals themselves no longer time out: they stay open until
+  // answered or cancelled, and nothing waits on them.)
   "approval_timeout",
-  "approval_unavailable",
   "queue_full",
   "lease_conflict",
   "stale_frame",
@@ -149,40 +154,12 @@ function stackFrames(error: unknown): string {
 export interface FailureContext {
   /** The caller's signal was aborted — a stopped turn, not a fault. Wins over `escalate`. */
   cancelled?: boolean;
-  /** This failure is not routine whatever its code: a human approved it and it did not happen. */
+  /**
+   * This failure is not routine whatever its code: a human approved it and it
+   * did not happen for a reason other than the world moving on. See
+   * {@link ComputerUseHost.executeApprovedAction}.
+   */
   escalate?: boolean;
-}
-
-/**
- * "The human said yes, and it still did not happen" — carried on the error
- * itself, because that fact is known where the throw happens and needed where
- * it is logged.
- *
- * `escalate` used to be derived from a parameter (`approvedSignal`) that only
- * the redemption path passed. With the confirmation inlined into the blocking
- * call, the redemption path is no longer a separate call — but the *window*
- * still is: under `ask`, everything {@link ComputerUseHost.requestAgentAction}
- * throws after `outcome.approved` is a confirmed-but-unfulfilled action, and
- * everything it throws before is an ordinary refusal. A denial, a timeout, an
- * occupied prompt slot and a malformed action are all pre-approval, and none of
- * them escalate.
- *
- * Under `allow` nothing is marked: no human is waiting on the result, so a
- * failure there is an ordinary failure and classifies by its own code.
- *
- * A symbol so it cannot collide with a driver's own field and never reaches
- * the model: `failure()` serializes only `code` and `message`.
- */
-const CONFIRMED_BY_HUMAN = Symbol("callboard.computerUse.confirmedByHuman");
-
-function markConfirmedFailure<E>(error: E): E {
-  if (error && typeof error === "object") Object.defineProperty(error, CONFIRMED_BY_HUMAN, { value: true, enumerable: false });
-  return error;
-}
-
-/** Did this failure happen after a human confirmed the action? See {@link markConfirmedFailure}. */
-export function isConfirmedFailure(error: unknown): boolean {
-  return !!error && typeof error === "object" && (error as Record<symbol, unknown>)[CONFIRMED_BY_HUMAN] === true;
 }
 
 /**
@@ -229,8 +206,10 @@ export function logComputerUseFailure(operation: string, ids: { chatId?: unknown
  * (`browserControl` or `computerControl`) is `"allow"`, nobody asked.
  *
  * Under `ask` the record already exists and is better than a log line: the
- * confirmation is a `permission_request` in the chat, so the transcript carries
- * the action, its target and the human's answer. `allow` removes the prompt —
+ * confirmation is a `permission_request` in the chat, the agent's tool result
+ * and the outcome notice carry the action and what came of it, and the host
+ * writes its own info line when an approved action runs (see
+ * {@link ComputerUseHost.executeApprovedAction}). `allow` removes the prompt —
  * and with it that record. Without this line the server retains nothing about
  * what an unattended agent did to a real browser; the operator's only source
  * would be the model's own transcript, which is the one artifact a
@@ -297,6 +276,17 @@ export interface HostPolicy {
   policy: ComputerUsePolicy;
   signature: string;
 }
+/**
+ * Is this chat archived? Injected rather than imported: the real check
+ * (`isChatArchived`, chat-archived.ts) walks chat lineage, whose module imports
+ * `claude.ts`, and nothing computer control loads may close that cycle. Server
+ * bootstrap installs it; until then nothing is treated as archived, which is
+ * only ever the case in unit tests that inject their own policy reader.
+ */
+let chatArchivedCheck: (chatId: string) => boolean = () => false;
+export function setChatArchivedCheck(check: (chatId: string) => boolean): void {
+  chatArchivedCheck = check;
+}
 export function loadComputerUsePolicy(chatId: string): HostPolicy {
   const chat = chatFileService.getChat(chatId);
   if (!chat) throw controlError("not_found", "Chat not found");
@@ -306,7 +296,13 @@ export function loadComputerUsePolicy(chatId: string): HostPolicy {
   } catch {
     throw controlError("denied", "Chat permission metadata is unreadable");
   }
+  // `metadata.archived` is a legacy spelling nothing writes any more; the
+  // archive itself lives on the lineage (card lifecycle, `treeArchived`,
+  // `childArchived`) and is read through the injected check. An archived chat
+  // has no computer control: its open requests are withdrawn by the watchdog
+  // and a request redeemed after archive is refused here.
   if (!metadata || typeof metadata !== "object" || metadata.archived === true) throw controlError("denied", "Chat is unavailable");
+  if (chatArchivedCheck(chatId)) throw controlError("denied", "Chat is archived");
   let routing: Record<string, unknown>;
   try {
     // Use main's current/historical provenance rules; never treat an inherited
@@ -354,11 +350,87 @@ interface Pending {
   chatId: string;
   kind: ComputerTargetKind;
   signature: string;
+}
+
+/**
+ * An agent's in-chat request to enable a target (`cu_request_control`). Open
+ * until the human answers it or something cancels it; then, once enabled, kept
+ * as a request → session alias until the session expires, so a Stop dispatched
+ * against the request id still reaches the session it became.
+ */
+interface ControlRequest {
+  chatId: string;
+  kind: ComputerTargetKind;
+  /** The policy signature the human is being asked under; re-checked on approval. */
+  signature: string;
+  /** Fences startup after approval; aborted by Stop. */
+  abort: AbortController;
+  /** The consent card, while it is unanswered. */
+  approval?: OpenHumanApproval;
+  sessionId?: string;
+  /** Infinity until enabled: an unanswered request does not expire. */
   expiresAt: number;
+  /** Set when something withdrew it, so an in-flight startup reports why. */
+  withdrawn?: { reason: WithdrawReason; noticeTo: string };
+}
+
+/**
+ * A GUI action under Ask, waiting for the human (`cu_action`). Everything it
+ * was validated against is kept, because all of it is checked again on
+ * approval: the action only runs if the frame it was aimed at is still the
+ * current one.
+ */
+interface ActionRequest {
+  id: string;
+  chatId: string;
+  sessionId: string;
+  generation: number;
+  frameId: string;
+  /** The immutable snapshot the human is shown and that runs verbatim if approved. */
+  action: Record<string, unknown>;
+  signature: string;
+  summary: string;
+  target: string;
+  /** Which target, so its own axis (`browserControl`/`computerControl`) is the one re-read. */
+  kind: ComputerTargetKind;
+  approval?: OpenHumanApproval;
+}
+
+/** What `cu_action` returns under Ask: the request is open, and the agent will be told. */
+export interface AgentActionPending {
+  status: "approval_pending";
+  requestId: string;
+  summary: string;
+  message: string;
+  /**
+   * Set when this is NOT a new request: the agent asked for something while
+   * one of its GUI actions was already waiting, and nothing was done. A field
+   * of the tool result only — not on the wire to the browser.
+   */
+  alreadyPending?: true;
+  /** The session the waiting request is aimed at (with `alreadyPending`). */
+  sessionId?: string;
+}
+
+/** What `cu_request_control` returns while consent is open. */
+export interface ControlRequestPending {
+  status: "consent_pending";
+  state: "pending_approval";
+  requestId: string;
+  kind: "browser" | "native";
+  message: string;
+}
+
+/** What the agent can see of its own open requests (`cu_open`). No prompt identities. */
+export interface AgentOpenRequest {
+  requestId: string;
+  type: "enable_control" | "gui_action";
+  kind?: "browser" | "native";
+  summary?: string;
 }
 
 /** Action shapes the host will forward. Anything else is rejected unopened. */
-const ACTION_TYPES = ["click", "move", "drag", "scroll", "key", "type", "navigate", "wait"];
+const ACTION_TYPES: readonly string[] = GUI_ACTION_TYPES;
 
 /**
  * The only approval the panel still shows: a human's own Enable request under
@@ -367,7 +439,7 @@ const ACTION_TYPES = ["click", "move", "drag", "scroll", "key", "type", "navigat
  * target directly and the agent then acts without a prompt.
  */
 const PENDING_TARGET_REASON =
-  "Approve access to this specific target for this chat until expiry. Screenshots are sent to the configured model when requested. This chat is set to Ask, so every agent action also needs a separate confirmation — that one is asked in the chat, not here. Subagents the engine runs inside this chat's turn (Claude Code Task subagents, Codex native subagents) share this grant and act under this chat's identity.";
+  "Approve access to this specific target for this chat. This request stays open until you answer it; once approved, the session lasts up to 15 minutes. Screenshots are sent to the configured model when requested. This target is set to Ask, so every agent action also needs a separate confirmation — that one is asked in the chat, not here. Subagents the engine runs inside this chat's turn (Claude Code Task subagents, Codex native subagents) share this grant and act under this chat's identity.";
 
 const humanTarget = (kind: ComputerTargetKind) => `${kind === "browser" ? "managed browser" : "native desktop"} on ${hostname()}`;
 
@@ -482,19 +554,20 @@ export function describeAgentActionForLog(action: Record<string, unknown>, targe
   }
 }
 
-/** What the human is asked, stripped of transport identifiers. */
-export interface ActionConfirmationRequest {
-  chatId: string;
-  /** One readable line: what will happen, where. */
-  summary: string;
-  /** The target, in words. */
-  target: string;
-  /** The immutable snapshot that executes verbatim if approved. */
-  action: Record<string, unknown>;
-  /** Transport/turn cancellation; an abort is a refusal, never an approval. */
-  signal?: AbortSignal;
-}
-export type ConfirmAgentAction = (request: ActionConfirmationRequest) => Promise<HumanApprovalOutcome>;
+/**
+ * Raise a human-only, non-blocking prompt in the chat. The production value is
+ * {@link openHumanApproval}; it is a constructor seam only so a test can watch
+ * what is asked. Whatever is injected, nothing but its answer callback can
+ * approve, and the host only ever runs what it validated itself.
+ */
+export type RaiseHumanApproval = typeof openHumanApproval;
+
+/**
+ * Deliver a message to the chat's agent. `wake` (the default) starts a turn if
+ * the chat is idle, else waits for the current one to end; `wake: false` never
+ * starts a turn and rides along with the chat's next one. See chat-notices.ts.
+ */
+export type NotifyAgent = (chatId: string, text: string, options?: { wake?: boolean }) => void;
 
 /**
  * The tool name the confirmation prompt is attributed to — the same string the
@@ -504,51 +577,159 @@ export type ConfirmAgentAction = (request: ActionConfirmationRequest) => Promise
  */
 export { CU_ACTION_TOOL_NAME };
 
-/**
- * The production confirmation: the chat's own blocking prompt.
- *
- * Note what is NOT threaded in here — the target's control level, or
- * any policy at all. The level decides *whether this function is called*, once,
- * in {@link ComputerUseHost.requestAgentAction}; it can never decide what the
- * function answers. `requestHumanApproval` has no auto-decide branch, so once a
- * chat set to "ask" reaches here, nothing short of the authenticated human's
- * POST returns `approved: true`.
- */
-const confirmAgentActionInChat: ConfirmAgentAction = (request) =>
-  requestHumanApproval(request.chatId, {
-    toolName: CU_ACTION_TOOL_NAME,
-    input: { summary: request.summary, target: request.target, action: request.action },
-    signal: request.signal,
-  });
+/** The human refused — final. Worded so it is never read as an invitation to retry. */
+const ACTION_DENIED = "The human refused this GUI action, so it was NOT performed. Do not repeat it or try a variation of it; ask them what to do instead.";
 
-/** Why the action did not run, in terms the model can act on — and never as an invitation to retry a denial. */
-const REFUSALS: Record<HumanApprovalOutcome["reason"], { code: string; message: string }> = {
-  human: { code: "denied", message: "Internal error: an approval was treated as a refusal." },
-  denied: {
-    code: "denied",
-    message: "The human refused this GUI action, so it was NOT performed. Do not repeat it or try a variation of it; ask them what to do instead.",
-  },
-  timeout: {
-    code: "approval_timeout",
-    // Explicitly not a refusal — that distinction decides whether re-requesting
-    // is reasonable, and the tool description tells the model a refusal is final.
-    message: "Nobody answered in time, so this GUI action was NOT performed. That is not a refusal: observe the current state, then you may request it again.",
-  },
-  aborted: {
-    code: "cancelled",
-    message: "The turn ended before the human confirmed, so this GUI action was NOT performed.",
-  },
-  no_session: {
-    code: "approval_unavailable",
-    message:
-      "There is no live chat session to confirm a GUI action in, so it was NOT performed. This chat's computer control is set to Ask, so a human has to confirm each action here.",
-  },
-  prompt_busy: {
-    code: "approval_unavailable",
-    message:
-      "This chat is already waiting on another prompt, so the GUI action was NOT performed. Let the human answer that first, then observe and re-request.",
-  },
+/**
+ * An approved action runs outside any tool call, so it gets the same ceiling
+ * the tool hop gave it (`computer-use-tools`' 35s MCP timeout). The service's
+ * own per-operation timeout (30s) fires first; this is the backstop.
+ */
+const APPROVED_ACTION_TIMEOUT_MS = 35_000;
+
+/**
+ * Codes that mean "the world moved while the human was deciding": the agent
+ * observed again, an action ran, the human took over, the session was stopped
+ * or expired, or the chat's permissions changed. With no limit on think-time
+ * these are an expected outcome of an approval, not a fault, so they log at
+ * their ordinary level. Anything else after a human's yes escalates.
+ */
+const WORLD_MOVED = new Set(["stale_frame", "stale_generation", "lease_conflict", "revoked", "stopped", "not_found", "denied", "cancelled"]);
+
+/**
+ * An error code as a notice may print it: one of the codes this host and the
+ * package define, else "unavailable". `controlCode` sanitizes but does not
+ * restrict, and a code thrown from a driver is not ours to repeat.
+ */
+const KNOWN_CODES = new Set([...ROUTINE_CONTROL_CODES, "denied", "driver_error", "unsupported", "timeout", "disposed", "unavailable"]);
+const knownCode = (code: string) => (KNOWN_CODES.has(code) ? code : "unavailable");
+
+/** Why an approved action did not run, in terms the model can act on. Host-fixed: never driver or page text. */
+function approvedActionFailure(code: string): string {
+  switch (code) {
+    case "stale_frame":
+      return "the frame it was aimed at is no longer current (another capture or action replaced it, or the screen was recaptured)";
+    case "stale_generation":
+    case "lease_conflict":
+      return "control of the session changed while the human was deciding (they took over, or resumed, or it restarted)";
+    case "revoked":
+    case "stopped":
+    case "not_found":
+      return "the control session was stopped, revoked or expired";
+    case "denied":
+      return "this chat's Browser Use or Computer Use permissions changed after it was requested";
+    default:
+      return `it failed while running (${knownCode(code)})`;
+  }
+}
+
+/** The same outcome for the human who just confirmed it — their banner, not the agent's notice. */
+function humanActionFailure(code: string): string {
+  switch (code) {
+    case "stale_frame":
+      return "the screen changed after the agent asked, so it was skipped";
+    case "stale_generation":
+    case "lease_conflict":
+      return "control of the session changed (a takeover or resume), so it was skipped";
+    case "revoked":
+    case "stopped":
+    case "not_found":
+      return "the control session had ended";
+    case "denied":
+      return "this chat's Browser Use or Computer Use permissions changed";
+    default:
+      return `it failed while running (${knownCode(code)})`;
+  }
+}
+
+/** What the agent may do next. Only a moved screen is its own to retry; a scope change or an ended session is the human's call. */
+function afterApprovedFailure(code: string): string {
+  switch (code) {
+    case "denied":
+      return "Do not request it again; this chat's permissions changed, so ask the human what they want.";
+    case "revoked":
+    case "stopped":
+    case "not_found":
+      return "Do not re-request on that session. Check cu_open; a new session needs fresh consent through cu_request_control, so ask the human first.";
+    default:
+      return "Call cu_observe for a fresh frame, check the action still makes sense, and request it again if so — the approval cannot be reused.";
+  }
+}
+
+/** Why enabling failed after the human said yes, by code. Host-fixed: a driver's or probe's own text never reaches the agent. */
+function enableFailure(code: string): string {
+  switch (code) {
+    case "denied":
+      return "this chat's Browser Use or Computer Use permissions changed before it could start";
+    case "unsupported":
+      return "the target is not available on the service host";
+    case "revoked":
+      return "the session was stopped, taken over or expired during startup";
+    case "approval_timeout":
+      return "the target's readiness check timed out";
+    case "lease_conflict":
+      return "a session for this target was already starting or running";
+    default:
+      return `it could not be started (${knownCode(code)})`;
+  }
+}
+
+/** Every notice opens with the shared prefix, so a ride-along block of them matches `splitRideAlongBlock`'s strict format. */
+const noticeHeader = callboardNoticeHeader;
+
+/**
+ * How a notice names an action: its request id and its type, nothing else.
+ * Notices are read as Callboard's own words, so they never carry the action's
+ * content (typed text, a URL, a key name) — all of it agent-supplied, and
+ * possibly put there by a page. The type was checked against ACTION_TYPES
+ * before the request existed. The agent has the full action in its own
+ * history under the same id.
+ */
+const actionLabel = (record: { id: string; action: Record<string, unknown> }) =>
+  `request ${record.id} (a ${ACTION_TYPES.includes(String(record.action.type)) ? String(record.action.type) : "GUI"} action)`;
+
+/**
+ * Why an open request was withdrawn before the human answered. Each produces a
+ * ride-along notice — it never starts a turn, but the agent's next turn is told
+ * — and takes the card down in any live tab. Every reason has two fixed
+ * texts: one for the agent's notice, one for the human's banner and for a
+ * late answer's refusal. Neither ever carries agent- or page-supplied text.
+ */
+export const WITHDRAWN = {
+  stopped: "stopped",
+  panelStop: "panelStop",
+  revoked: "revoked",
+  scope: "scope",
+  sessionEnded: "sessionEnded",
+  stale: "stale",
+  takeover: "takeover",
+  superseded: "superseded",
+  agentStop: "agentStop",
+} as const;
+export type WithdrawReason = (typeof WITHDRAWN)[keyof typeof WITHDRAWN];
+/**
+ * The agent's words for each reason live in shared/ (`RIDE_ALONG_WITHDRAW_TEXT`),
+ * with the advice that follows them: withdrawal notices ride along in a block
+ * the transcript splits off only when every line is one of those exact
+ * templates. The human's words are here.
+ */
+const WITHDRAW_HUMAN_TEXT: Readonly<Record<WithdrawReason, string>> = {
+  stopped: "you pressed Stop",
+  panelStop: "it was stopped from the Computer view",
+  revoked: "it was revoked from the Computer view",
+  scope: "this chat's Browser Use or Computer Use permissions changed, or the chat was archived or deleted",
+  sessionEnded: "its control session ended",
+  stale: "the screen changed after the agent asked, so it could no longer run",
+  takeover: "you took over control of the session",
+  superseded: "the chat was rewound, forked or compressed",
+  agentStop: "the agent stopped the session",
 };
+export const WITHDRAW_TEXT: Readonly<Record<WithdrawReason, { agent: string; human: string }>> = Object.fromEntries(
+  (Object.keys(WITHDRAW_HUMAN_TEXT) as WithdrawReason[]).map((reason) => [
+    reason,
+    { agent: RIDE_ALONG_WITHDRAW_TEXT[reason].agent, human: WITHDRAW_HUMAN_TEXT[reason] },
+  ]),
+) as Record<WithdrawReason, { agent: string; human: string }>;
 
 /** A readiness check cannot hold an agent or an accepted HTTP response forever. */
 export const CONTROL_PROBE_TIMEOUT_MS = 10_000;
@@ -591,19 +772,20 @@ function boundedProbe(driver: Driver, signal: AbortSignal, expiresAt: number): R
 export class ComputerUseHost {
   private readonly grants = new Map<string, Grant>();
   private readonly opening = new Map<string, HostPolicy>();
-  private readonly controlRequests = new Map<string, { chatId: string; abort: AbortController; sessionId?: string; expiresAt: number }>();
+  private readonly controlRequests = new Map<string, ControlRequest>();
   private readonly pending = new Map<string, Pending>();
   private readonly events = new Map<string, unknown[]>();
   private readonly unsubscribers = new Map<string, () => void>();
   private readonly probes = new Map<ComputerTargetKind, { at: number; result: Promise<Awaited<ReturnType<Driver["probe"]>>> }>();
   private readonly watchdog: ReturnType<typeof setInterval>;
-  /** Chats with a GUI action currently parked on a human. At most one each. */
-  private readonly awaiting = new Set<string>();
+  /** chatId → the GUI action waiting on the human. At most one per chat. */
+  private readonly actionRequests = new Map<string, ActionRequest>();
   constructor(
     readonly service: ComputerUseService,
     readonly drivers: Readonly<Record<ComputerTargetKind, Driver>>,
     private readonly readPolicy: (chatId: string) => HostPolicy = loadComputerUsePolicy,
-    private readonly confirmAction: ConfirmAgentAction = confirmAgentActionInChat,
+    private readonly raiseApproval: RaiseHumanApproval = openHumanApproval,
+    private readonly notify: NotifyAgent = (chatId, text, options) => void enqueueChatNotice(chatId, text, options),
   ) {
     this.watchdog = setInterval(() => {
       void this.expire();
@@ -649,12 +831,48 @@ export class ComputerUseHost {
         await this.service.revoke(controlPrincipal(grant.chatId, "human"), id).catch(() => {});
       }
     }
-    for (const [id, pending] of this.pending) if (pending.expiresAt <= Date.now()) this.pending.delete(id);
-    for (const [id, request] of this.controlRequests)
-      if (request.expiresAt <= Date.now()) {
+    // Open requests have no expiry, so this is what retires them when the
+    // authority they were asked under goes away: a permission or provenance
+    // change, an archived or deleted chat (`readPolicy` throws for both), or —
+    // for an action — the session it targets no longer being granted. The
+    // approval path checks all of this again; this just takes the card down.
+    for (const [id, request] of [...this.controlRequests]) {
+      if (request.approval?.isOpen()) {
+        if (!this.signatureHolds(request.chatId, request.signature)) this.cancelControlRequest(id, request, WITHDRAWN.scope);
+      } else if (request.expiresAt <= Date.now()) {
         request.abort.abort();
         this.controlRequests.delete(id);
       }
+    }
+    // A panel Enable request (the human's own, under Ask) is not the agent's
+    // and gets no notice; it is just cleared once its chat can no longer use it.
+    for (const [id, pending] of [...this.pending])
+      if (!this.controlRequests.has(id) && !this.signatureHolds(pending.chatId, pending.signature)) this.pending.delete(id);
+    for (const record of [...this.actionRequests.values()]) {
+      if (!this.signatureHolds(record.chatId, record.signature)) this.cancelActionRequest(record, WITHDRAWN.scope);
+      else if (!this.grants.has(record.sessionId)) this.cancelActionRequest(record, WITHDRAWN.sessionEnded);
+      // The agent cannot move its own frame while this is pending (observe and
+      // act are refused), so a frame that went stale moved under it — a
+      // takeover, a resume, the target changing. It can never run now; take
+      // the card down rather than leave the human a guaranteed refusal.
+      else if (!this.actionCanStillRun(record)) {
+        const grant = this.grants.get(record.sessionId);
+        // A takeover is the human's own move and has its own advice: the
+        // agent cannot act until they choose Resume agent.
+        this.cancelActionRequest(record, !grant ? WITHDRAWN.sessionEnded : grant.lease.controller !== "agent" ? WITHDRAWN.takeover : WITHDRAWN.stale);
+      }
+    }
+  }
+  private signatureHolds(chatId: string, signature: string): boolean {
+    try {
+      return this.readPolicy(chatId).signature === signature;
+    } catch {
+      return false;
+    }
+  }
+  /** Tell any live tab to take a withdrawn or finished card down, with a one-line reason. */
+  private emitControlResult(chatId: string, toolName: string, requestId: string | undefined, message: string) {
+    sessionRegistry.get(chatId)?.emitter?.emit("event", { type: "tool_result", content: "", controlRequestResult: { requestId, message }, toolName });
   }
   /**
    * Driver probes are host facts, not chat facts, and the native one execs
@@ -740,7 +958,9 @@ export class ComputerUseHost {
           state: "pending_approval" as SessionStatus["state"],
           generation: 0,
           controller: null,
-          expiresAt: pending.expiresAt,
+          // No expiry: the request stays until it is answered or stopped. The
+          // field stays numeric for the viewer DTO's shape.
+          expiresAt: Number.MAX_SAFE_INTEGER,
         };
         sessions.push(request);
       }
@@ -756,7 +976,27 @@ export class ComputerUseHost {
         "Runtime image delivery requires a tool/vision-capable configured model; live artistic/model qualification has not been established on this host.",
     };
   }
-  /** Host-only initial consent. Never exported as an MCP open/approve capability. */
+  /**
+   * Ask the human, in the chat, to enable a target — and return straight away.
+   *
+   * Host-only initial consent; never exported as an MCP open/approve
+   * capability. The tool call does not wait for the answer: it gets
+   * `consent_pending` and a request id, the consent card stays in the chat
+   * until the human answers (no timer), and the outcome reaches the agent as a
+   * chat notice. On approval everything is re-checked — the policy signature,
+   * the host, a fresh readiness probe — before the target opens, and the human's
+   * `/respond` waits for that startup so a failure is shown to them too.
+   *
+   * Withdrawn by: the chat's Stop button and a rewind/fork/compress
+   * ({@link withdrawChatRequests}), the Computer view's Stop/Revoke on the
+   * request id, and a change of the chat's permissions or provenance, or
+   * archiving/deleting it (the watchdog). Never by the human just sending a
+   * message. Every withdrawal reaches the agent as a ride-along notice.
+   *
+   * A request already waiting — the agent's own, or a human's Enable still
+   * open in the Computer view — is reported back as `consent_pending` rather
+   * than refused, so a forgotten one is not a dead end.
+   */
   async requestControl(chatId: string, kind: ComputerTargetKind, reason: string, signal: AbortSignal) {
     if (!["browser", "desktop"].includes(kind) || typeof reason !== "string" || !reason.trim() || reason.length > 500)
       throw controlError("invalid_request", "Provide a target kind and a reason of 1–500 characters.");
@@ -772,63 +1012,132 @@ export class ComputerUseHost {
       if (existing.state !== "ready") throw controlError("lease_conflict", "Target is already starting; check cu_open later.");
       return this.presentation(existing);
     }
-    if ([...this.pending.values()].some((p) => p.chatId === chatId)) throw controlError("queue_full", "Resolve the existing target request first.");
+    // One target request per chat. Rather than refuse, say what is already
+    // waiting — an agent's earlier request, or a human's own Enable request
+    // still open in the Computer view — so a forgotten one is not a dead end.
+    const waiting = [...this.pending.entries()].find(([, p]) => p.chatId === chatId);
+    if (waiting) {
+      const [waitingId, waitingRequest] = waiting;
+      const agents = this.controlRequests.has(waitingId);
+      return {
+        status: "consent_pending",
+        state: "pending_approval",
+        requestId: waitingId,
+        kind: waitingRequest.kind === "browser" ? "browser" : "native",
+        message: agents
+          ? `Nothing new was requested: your earlier request ${waitingId} to enable ${waitingRequest.kind} control is still waiting for the human in this chat. You will be told the outcome; do not request again meanwhile.`
+          : `Nothing new was requested: the human already has a request to enable ${waitingRequest.kind} control open in this chat's Computer view, waiting for them to confirm it there. Ask them to confirm or cancel it; once it is enabled it appears in cu_open.`,
+      } satisfies ControlRequestPending;
+    }
     const id = randomUUID();
-    const abort = new AbortController();
-    const combined = AbortSignal.any([signal, abort.signal]);
     const target = hostname();
-    const expiresAt = Date.now() + 300_000;
-    const record = { chatId, abort, expiresAt } as { chatId: string; abort: AbortController; sessionId?: string; expiresAt: number };
+    const record: ControlRequest = { chatId, kind, signature: current.signature, abort: new AbortController(), expiresAt: Infinity };
     // Reserve before the first asynchronous probe. Stop can discover this even
-    // before the card arrives, and it stays discoverable throughout startup.
+    // before the card arrives, and it stays discoverable until it is answered.
     this.controlRequests.set(id, record);
     this.pending.set(id, {
       chatId,
       kind,
       signature: current.signature,
-      expiresAt,
-      reason: "Enablement is awaiting consent or starting in the chat. Answer the in-chat card; Stop cancels this request.",
-    });
-    let promptId: string | undefined;
-    let complete!: (result: ApprovalCompletion) => void;
-    const completion = new Promise<ApprovalCompletion>((resolve) => {
-      complete = resolve;
+      reason: "Enablement is awaiting consent in the chat. Answer the in-chat card; Stop cancels this request.",
     });
     try {
-      const probe = await boundedProbe(this.drivers[kind], combined, expiresAt);
-      combined.throwIfAborted();
+      // Bounded (CONTROL_PROBE_TIMEOUT_MS), and run before asking: a human
+      // should not be asked to enable a target this host cannot provide.
+      const probe = await boundedProbe(this.drivers[kind], AbortSignal.any([signal, record.abort.signal]), Date.now() + CONTROL_PROBE_TIMEOUT_MS);
+      record.abort.signal.throwIfAborted();
+      signal.throwIfAborted();
       if (!probe.available) throw controlError("unsupported", probe.reason ?? "Target unavailable. Check native setup on the service host, then retry.");
       if (this.readPolicy(chatId).signature !== current.signature) throw controlError("denied", "Permissions changed; request fresh consent.");
-      const previousPrompt = getPendingRequest(chatId)?.requestId;
-      const approval = requestHumanApproval(chatId, {
+    } catch (error) {
+      this.dropControlRequest(id, record);
+      throw error;
+    }
+    record.approval = this.raiseApproval(
+      chatId,
+      {
         toolName: CU_REQUEST_CONTROL_TOOL_NAME,
         controlRequest: true,
-        completion,
-        input: { kind, target, reason: reason.trim(), permission: levelFor(kind, current.policy), durationMinutes: 15, expiresAt },
-        signal: combined,
-        timeoutMs: Math.max(1, expiresAt - Date.now()),
-      });
-      const createdPrompt = getPendingRequest(chatId)?.requestId;
-      promptId = createdPrompt !== previousPrompt ? createdPrompt : undefined;
-      const outcome = await approval;
-      if (!outcome.approved)
-        throw controlError(
-          REFUSALS[outcome.reason].code,
-          `Control was not enabled (${outcome.reason}). ${outcome.reason === "denied" ? "Do not repeat a refused request." : "Check current state before requesting again."}`,
-        );
-      combined.throwIfAborted();
-      if (expiresAt <= Date.now() || hostname() !== target || this.readPolicy(chatId).signature !== current.signature)
-        throw controlError("denied", "Control consent expired or permissions changed. Request fresh consent.");
-      const ready = await boundedProbe(this.drivers[kind], combined, expiresAt);
-      combined.throwIfAborted();
+        input: { kind, target, reason: reason.trim(), permission: levelFor(kind, current.policy), durationMinutes: 15 },
+      },
+      (approved) => (approved ? this.enableApproved(id, record, target) : this.refuseControl(id, record)),
+    );
+    return {
+      status: "consent_pending",
+      state: "pending_approval",
+      requestId: id,
+      kind: kind === "browser" ? "browser" : "native",
+      message:
+        "Consent pending: the human has been asked in this chat to enable this target. This call does not wait — you will be told the outcome in this chat when they answer, and there is nothing to poll. Do not request again meanwhile; carry on with work that does not need the target, or end your turn.",
+    } satisfies ControlRequestPending;
+  }
+  private dropControlRequest(id: string, record: ControlRequest) {
+    if (this.controlRequests.get(id) === record) this.controlRequests.delete(id);
+    this.pending.delete(id);
+  }
+  /**
+   * Withdraw an unanswered enable request, or fence one whose startup is in
+   * flight (that path reports through {@link enableApproved}'s catch). Either
+   * way the agent gets a ride-along notice with the reason — it was promised
+   * an outcome — and nothing starts a turn. `noticeTo` is the chat that
+   * carries the conversation on (a rewind's new chat), when not this one.
+   */
+  private cancelControlRequest(id: string, record: ControlRequest, reason: WithdrawReason, noticeTo = record.chatId) {
+    record.withdrawn = { reason, noticeTo };
+    record.abort.abort();
+    const wasOpen = record.approval?.cancel(WITHDRAW_TEXT[reason].human) ?? false;
+    if (wasOpen || !record.approval) {
+      this.dropControlRequest(id, record);
+      this.emitControlResult(
+        record.chatId,
+        CU_REQUEST_CONTROL_TOOL_NAME,
+        record.approval?.requestId,
+        `The enable request was withdrawn: ${WITHDRAW_TEXT[reason].human}.`,
+      );
+      // A request still in its pre-consent probe belongs to a live tool call,
+      // which reports the cancellation itself.
+      if (record.approval) this.notifyControlWithdrawn(id, record, reason, noticeTo);
+    }
+  }
+  private notifyControlWithdrawn(id: string, record: ControlRequest, reason: WithdrawReason, noticeTo: string) {
+    const label = record.kind === "browser" ? "browser" : "desktop";
+    this.notify(noticeTo, controlWithdrawnNotice(label, id, reason), { wake: false });
+  }
+  private refuseControl(id: string, record: ControlRequest): void {
+    if (this.controlRequests.get(id) !== record) return;
+    this.dropControlRequest(id, record);
+    const label = record.kind === "browser" ? "browser" : "desktop";
+    this.emitControlResult(
+      record.chatId,
+      CU_REQUEST_CONTROL_TOOL_NAME,
+      record.approval?.requestId,
+      `${label === "browser" ? "Browser" : "Desktop"} control was not enabled.`,
+    );
+    this.notify(
+      record.chatId,
+      `${noticeHeader(`${label} control was NOT enabled`)}\n\nThe human refused your request ${id} to enable ${label} control. Do not request it again; ask them what to do instead.`,
+    );
+  }
+  /** The human said yes: re-check, probe, open, and tell both of them. Resolves for `/respond`. */
+  private async enableApproved(id: string, record: ControlRequest, target: string): Promise<ApprovalCompletion> {
+    const { chatId, kind } = record;
+    const signal = record.abort.signal;
+    const label = kind === "browser" ? "Browser" : "Desktop";
+    try {
+      if (this.controlRequests.get(id) !== record || signal.aborted) throw controlError("cancelled", "This request was withdrawn before it was answered.");
+      const current = this.readPolicy(chatId);
+      if (hostname() !== target || current.signature !== record.signature || computerUseScopeError(kind, current.policy))
+        throw controlError("denied", "Permissions changed since this was requested. Request fresh consent.");
+      const ready = await boundedProbe(this.drivers[kind], signal, Date.now() + CONTROL_PROBE_TIMEOUT_MS);
+      signal.throwIfAborted();
       if (!ready.available) throw controlError("unsupported", ready.reason ?? "Target is no longer available. Fix host setup before retrying.");
-      const session = await this.openApproved(chatId, kind, current, combined);
-      // openApproved has its own await boundary. Stop/transport cancellation
-      // can land after it registers a grant but before this continuation gets
-      // to publish the alias. Fence that session before reporting failure.
+      const session = await this.openApproved(chatId, kind, current, signal);
+      // openApproved has its own await boundary. Stop can land after it
+      // registers a grant but before this continuation publishes the alias.
+      // Fence that session before reporting failure.
       try {
-        combined.throwIfAborted();
-        if (this.readPolicy(chatId).signature !== current.signature) throw controlError("denied", "Control authority changed during startup.");
+        signal.throwIfAborted();
+        if (this.readPolicy(chatId).signature !== record.signature) throw controlError("denied", "Control authority changed during startup.");
         this.agentLease(chatId, session.id, session.generation);
         const actual = this.service.status(controlPrincipal(chatId, "agent")).find((s) => s.sessionId === session.id);
         if (!actual || actual.state !== "ready" || actual.controller !== "agent" || actual.generation !== session.generation || actual.expiresAt <= Date.now())
@@ -837,34 +1146,31 @@ export class ComputerUseHost {
         await this.stop(chatId, session.id);
         throw error;
       }
+      // Keep the request → session alias through expiry: a Stop dispatched
+      // from a tab's pending ledger must also stop a just-completed open.
       record.sessionId = session.id;
       record.expiresAt = session.expiresAt;
-      complete({ ok: true });
-      // Keep the request → session alias through expiry: a Stop dispatched from
-      // a tab's pending ledger must also stop a just-completed open.
-      sessionRegistry.get(chatId)?.emitter?.emit("event", {
-        type: "tool_result",
-        content: "",
-        controlRequestResult: { requestId: promptId, message: `${kind === "browser" ? "Browser" : "Desktop"} control enabled.` },
-        toolName: CU_REQUEST_CONTROL_TOOL_NAME,
-      });
-      return session;
+      this.emitControlResult(chatId, CU_REQUEST_CONTROL_TOOL_NAME, record.approval?.requestId, `${label} control enabled.`);
+      this.notify(
+        chatId,
+        `${noticeHeader(`${label.toLowerCase()} control enabled`)}\n\nThe human approved your request ${id}. Session ${session.id} (generation ${session.generation}) is ready and agent-controlled for up to 15 minutes. Call cu_observe with it for a fresh frame before acting.`,
+      );
+      return { ok: true };
     } catch (error) {
-      complete({
-        ok: false,
-        error: `${error instanceof Error ? error.message : "Control could not be enabled"} This request is finished; refresh pending state. Any retry needs fresh consent.`,
-      });
-      this.controlRequests.delete(id);
-      sessionRegistry.get(chatId)?.emitter?.emit("event", {
-        type: "tool_result",
-        content: "",
-        controlRequestResult: {
-          requestId: promptId,
-          message: error instanceof Error ? error.message : "Control could not be enabled. Check status and retry.",
-        },
-        toolName: CU_REQUEST_CONTROL_TOOL_NAME,
-      });
-      throw error;
+      if (this.controlRequests.get(id) === record) this.controlRequests.delete(id);
+      const stopped = signal.aborted;
+      const message = error instanceof Error ? error.message : "Control could not be enabled. Check status and retry.";
+      logComputerUseFailure("cu_request_control", { chatId }, error, { cancelled: stopped });
+      this.emitControlResult(chatId, CU_REQUEST_CONTROL_TOOL_NAME, record.approval?.requestId, message);
+      // A withdrawal (Stop, a permission change…) is the human's own doing
+      // and must not start a turn, but the agent is still told, next turn.
+      if (stopped && record.withdrawn) this.notifyControlWithdrawn(id, record, record.withdrawn.reason, record.withdrawn.noticeTo);
+      else if (!stopped)
+        this.notify(
+          chatId,
+          `${noticeHeader(`${label.toLowerCase()} control was NOT enabled`)}\n\nThe human approved your request ${id}, but enabling failed: ${enableFailure(controlCode(error))}. Check cu_open; any retry needs fresh consent through cu_request_control.`,
+        );
+      return { ok: false, error: `${message} This request is finished; refresh pending state. Any retry needs fresh consent.` };
     } finally {
       this.pending.delete(id);
     }
@@ -877,7 +1183,9 @@ export class ComputerUseHost {
       if ([...this.pending.values()].filter((p) => p.chatId === chatId).length >= 2)
         throw controlError("queue_full", "Resolve the existing target approval first");
       const id = randomUUID();
-      this.pending.set(id, { chatId, kind, signature: current.signature, expiresAt: Date.now() + 120_000 });
+      // No expiry: it waits for the human. approve() re-checks its signature
+      // and scope, so a request that outlived a permission change is refused.
+      this.pending.set(id, { chatId, kind, signature: current.signature });
       return {
         id,
         sessionId: id,
@@ -897,14 +1205,8 @@ export class ComputerUseHost {
     if (pending && pending.chatId !== chatId) throw controlError("not_found", "Approval not found");
     this.pending.delete(id);
     const current = this.readPolicy(chatId);
-    if (
-      !pending ||
-      pending.chatId !== chatId ||
-      pending.expiresAt <= Date.now() ||
-      pending.signature !== current.signature ||
-      levelFor(pending.kind, current.policy) === "deny"
-    )
-      throw controlError("denied", "Approval expired or its scope changed; enable the target again");
+    if (!pending || pending.chatId !== chatId || pending.signature !== current.signature || levelFor(pending.kind, current.policy) === "deny")
+      throw controlError("denied", "Approval was withdrawn or its scope changed; enable the target again");
     return this.openApproved(chatId, pending.kind, current);
   }
   private async openApproved(chatId: string, kind: ComputerTargetKind, current: HostPolicy, signal?: AbortSignal) {
@@ -986,6 +1288,11 @@ export class ComputerUseHost {
     const request = this.controlRequests.get(id);
     if (request) {
       if (request.chatId !== chatId) throw controlError("not_found", "Control request not found");
+      if (request.approval?.isOpen()) {
+        this.cancelControlRequest(id, request, WITHDRAWN.panelStop);
+        return { id, state: "stopped" };
+      }
+      if (!request.sessionId) request.withdrawn = { reason: WITHDRAWN.panelStop, noticeTo: chatId };
       request.abort.abort();
       if (request.sessionId) {
         await this.stop(chatId, request.sessionId);
@@ -999,30 +1306,43 @@ export class ComputerUseHost {
     // Even denied/revoked owners may stop; ownership still enforced by the service.
     const result = await this.service.stop(controlPrincipal(chatId, "human"), id);
     this.grants.delete(id);
+    this.cancelSessionActionRequest(chatId, id, WITHDRAWN.panelStop);
     return this.presentation(result);
   }
   async revoke(chatId: string, id: string, _generation?: unknown) {
-    if (this.controlRequests.has(id)) return this.stop(chatId, id);
+    const request = this.controlRequests.get(id);
+    if (request?.chatId === chatId && request.approval?.isOpen()) {
+      this.cancelControlRequest(id, request, WITHDRAWN.revoked);
+      return { id, state: "revoked" };
+    }
+    if (request) return this.stop(chatId, id);
     if (this.pending.get(id)?.chatId === chatId) {
       this.pending.delete(id);
       return { id, state: "revoked" };
     }
     const result = await this.service.revoke(controlPrincipal(chatId, "human"), id);
     this.grants.delete(id);
+    this.cancelSessionActionRequest(chatId, id, WITHDRAWN.revoked);
     return this.presentation(result);
   }
   /**
-   * Perform one GUI action, asking the human first if the chat says to.
+   * Perform one GUI action, or ask the human first if the chat says to.
    *
    * The level of the grant's target axis (`browserControl` for the browser,
    * `computerControl` for the desktop) is read here, once, and it decides
-   * exactly one thing — whether {@link ConfirmAgentAction} is called at all:
+   * exactly one thing — whether the action runs now or is put to the human:
    *
-   * - **`ask`** — the agent's tool call blocks on a prompt in the chat and
-   *   returns the real outcome. Nothing but the authenticated human's POST can
-   *   answer it: no policy value, hook, allow-list entry or API key reaches
-   *   `requestHumanApproval`, which has no auto-decide branch. This branch is
-   *   what `computer-use.invariant.test.ts` pins, end to end.
+   * - **`ask`** — nothing runs. A confirmation card is raised in the chat and
+   *   the call returns at once with {@link AgentActionPending}; the agent is
+   *   not suspended on the answer, and the card has no timer. Nothing but the
+   *   authenticated human's POST can answer it: no policy value, hook,
+   *   allow-list entry, parent chat or API key reaches the answer callback of
+   *   {@link openHumanApproval}, which has no auto-decide branch. On approval
+   *   {@link executeApprovedAction} runs the stored snapshot only if the frame
+   *   it was aimed at is still current, and the outcome — performed, refused,
+   *   or not performed because the world moved — reaches the agent as a chat
+   *   notice. This branch is what `computer-use.invariant.test.ts` pins, end
+   *   to end.
    * - **`allow`** — the action runs unprompted, bracketed by the operator's
    *   only record of it: {@link logUnattendedAction} before, and
    *   {@link logUnattendedFailure} after if it did not complete. Both carry the
@@ -1033,14 +1353,18 @@ export class ComputerUseHost {
    * What the level does NOT govern, at any value: **who enables a target.**
    * `open`/`approve` are reached only from the signed-in human's
    * `requireSessionAuth` + same-origin control plane, and the agent's `cu_open`
-   * only lists sessions a human already started. `requestControl` always waits for authenticated in-chat target consent, under Ask AND Allow. `allow` says what happens
-   * after you enable, never who enables.
+   * only lists sessions a human already started. `requestControl` always asks
+   * for authenticated in-chat target consent, under Ask AND Allow. `allow` says
+   * what happens after you enable, never who enables.
    *
-   * Under `ask`, everything the deferred `approve()` used to re-check on
-   * redemption is re-checked after the wait, because a human takes time and the
-   * world moves: the grant, its signature, the lease generation, who holds
-   * control, and the frame the action was aimed at. Under `allow` there is no
-   * wait, so the checks above are still current when `execute` runs.
+   * One action request is open per chat, and nothing the agent sends while it
+   * waits replaces it: `cu_action` answers with the pending request
+   * ({@link pendingAgentAction}) and `cu_observe` on its session is refused
+   * the same way, so the agent can neither swap the card under the human's
+   * cursor nor invalidate the frame they are being asked about. If the frame
+   * goes stale under it anyway (a takeover, the target changing), the
+   * watchdog withdraws it with a notice. The agent may withdraw its own with
+   * `cu_stop`.
    */
   async requestAgentAction<T>(
     chatId: string,
@@ -1049,15 +1373,21 @@ export class ComputerUseHost {
     frameId: string,
     action: unknown,
     /**
-     * Runs the action. It is handed the exact snapshot that was validated (and,
-     * under `ask`, shown to the human) — do not reach back to the caller's own
-     * copy, or "what is shown is what runs" stops being a property of the
-     * wiring and becomes a promise. `confirmedByHuman` tells the caller whether
-     * someone is waiting on this result; see {@link FailureContext}.
+     * Runs the action, under `allow` only. It is handed the exact snapshot that
+     * was validated — do not reach back to the caller's own copy, or "what is
+     * checked is what runs" stops being a property of the wiring and becomes a
+     * promise. Under `ask` the host runs the approved snapshot itself, later,
+     * outside the tool call; see {@link executeApprovedAction}.
      */
-    execute: (actionId: string, approvedAction: Record<string, unknown>, context: { confirmedByHuman: boolean }) => Promise<T>,
+    execute: (actionId: string, approvedAction: Record<string, unknown>) => Promise<T>,
     options?: { signal?: AbortSignal },
-  ): Promise<T> {
+  ): Promise<T | AgentActionPending> {
+    // While one is waiting for the human, nothing the agent sends replaces it:
+    // a new card pushed live could land under a human's cursor mid-click, so
+    // they would confirm an action they never read. Checked first, so the
+    // answer is the same whatever state the new request is in.
+    const waiting = this.pendingAgentAction(chatId, undefined, id);
+    if (waiting) return waiting;
     const grant = this.grant(chatId, id);
     this.agentLease(chatId, id, generation);
     this.service.assertFrame(controlPrincipal(chatId, "agent"), { sessionId: id, generation, frameId });
@@ -1091,7 +1421,7 @@ export class ComputerUseHost {
       const outcome = (): FailureContext => ({ cancelled: options?.signal?.aborted });
       let result: T;
       try {
-        result = await execute(randomUUID(), request, { confirmedByHuman: false });
+        result = await execute(randomUUID(), request);
       } catch (error) {
         logUnattendedFailure(chatId, id, error, outcome(), axis);
         throw error;
@@ -1101,45 +1431,203 @@ export class ComputerUseHost {
       if (result && typeof result === "object" && (result as { isError?: unknown }).isError === true) logUnattendedFailure(chatId, id, result, outcome(), axis);
       return result;
     }
-    // A queue cannot form when the call blocks: the agent's own turn is parked
-    // here until this one is answered. What CAN arrive is a second, concurrent
-    // tool call in the same assistant block, and two prompts cannot share one
-    // chat's prompt slot — so refuse the second explicitly rather than let it
-    // clobber the request the human is reading. (This replaces a cap of four
-    // parked requests, which was reachable only because the call returned.)
-    if (this.awaiting.has(chatId))
-      throw controlError("queue_full", "Another GUI action in this chat is already waiting for the human. Request one action at a time.");
-    this.awaiting.add(chatId);
-    let outcome: HumanApprovalOutcome;
+    // Under Ask the action runs later, outside this call, so the strict grammar
+    // is applied now: a human must never be asked to approve something the
+    // service would reject (the outer `cu_action` schema is a loose record).
+    if (!actionSchema.safeParse(request).success)
+      throw controlError("invalid_request", "That action does not match the cu_action grammar, so nobody was asked. Fix it and request again.");
+    const record: ActionRequest = {
+      id: randomUUID(),
+      chatId,
+      sessionId: id,
+      generation,
+      frameId,
+      action: request,
+      signature: grant.signature,
+      summary,
+      target,
+      kind,
+    };
+    this.actionRequests.set(chatId, record);
+    record.approval = this.raiseApproval(chatId, { toolName: CU_ACTION_TOOL_NAME, input: { summary, target, action: request } }, (approved) => {
+      void this.answerAction(record, approved).catch((error) => logComputerUseFailure("cu_action", { chatId, sessionId: id }, error, { escalate: true }));
+    });
+    return {
+      status: "approval_pending",
+      requestId: record.id,
+      summary,
+      message:
+        "Approval pending: this target is set to Ask in this chat (Browser Use for the browser, Computer Use for the desktop), so the human has been asked in the chat to confirm this action, and it has NOT been performed. This call does not wait — you will be told the outcome in this chat when they answer, or if the request is withdrawn. It runs only against this frame, so until then cu_observe on this session and cu_action on any session answer approval_pending and do nothing; carry on with other work or end your turn. cu_stop on the session withdraws it, and ends the session (re-enabling needs fresh consent).",
+    };
+  }
+  /**
+   * The GUI action this chat has waiting for the human, as the answer to any
+   * `cu_action` (and to `cu_observe` on its session) until it is resolved.
+   * `sessionId` restricts the question to one session (`cu_observe`);
+   * `askedAbout` is the session the agent was trying to use, for the wording.
+   *
+   * The lock is per chat for actions and per session for observing, on
+   * purpose. Observing another session cannot touch the pending frame, so it
+   * is allowed. Acting on another session cannot either — but it would raise a
+   * second card, and a second card queued behind the first is exactly what
+   * lands under the human's cursor when they answer it. One card per chat.
+   */
+  pendingAgentAction(chatId: string, sessionId?: string, askedAbout?: string): AgentActionPending | undefined {
+    const record = this.actionRequests.get(chatId);
+    if (!record || (sessionId !== undefined && record.sessionId !== sessionId)) return undefined;
+    const same = (askedAbout ?? sessionId) === undefined || (askedAbout ?? sessionId) === record.sessionId;
+    return {
+      status: "approval_pending",
+      alreadyPending: true,
+      requestId: record.id,
+      sessionId: record.sessionId,
+      summary: record.summary,
+      message: same
+        ? `Nothing new was done or requested: your GUI action request ${record.id} on this session is still waiting for the human, and observing or acting here would invalidate the frame they are being asked about. You will be told the outcome in this chat. Carry on with other work or end your turn; cu_stop on the session withdraws it (and ends the session; re-enabling needs fresh consent).`
+        : `Nothing new was requested: your GUI action request ${record.id} on session ${record.sessionId} is still waiting for the human. Only one GUI action can wait per chat, so actions on any session wait until it is resolved; observing other sessions is fine. You will be told the outcome in this chat.`,
+    };
+  }
+  /** Could this request still run if approved now? The same checks approval makes, without side effects on the request. */
+  private actionCanStillRun(record: ActionRequest): boolean {
     try {
-      outcome = await this.confirmAction({ chatId, summary, target, action: request, signal: options?.signal });
-    } finally {
-      this.awaiting.delete(chatId);
+      if (!this.signatureHolds(record.chatId, record.signature)) return false;
+      this.agentLease(record.chatId, record.sessionId, record.generation);
+      this.service.assertFrame(controlPrincipal(record.chatId, "agent"), {
+        sessionId: record.sessionId,
+        generation: record.generation,
+        frameId: record.frameId,
+      });
+      return true;
+    } catch {
+      return false;
     }
-    if (!outcome.approved) {
-      const refusal = REFUSALS[outcome.reason];
-      throw controlError(refusal.code, refusal.message);
+  }
+  /**
+   * Withdraw a pending GUI action before the human answered it. The card is
+   * taken down in any live tab, and the agent gets a ride-along notice with
+   * the reason (it was promised an outcome); nothing starts a turn.
+   */
+  private cancelActionRequest(record: ActionRequest, reason: WithdrawReason, noticeTo = record.chatId) {
+    if (this.actionRequests.get(record.chatId) === record) this.actionRequests.delete(record.chatId);
+    if (!record.approval?.cancel(WITHDRAW_TEXT[reason].human)) return;
+    this.emitControlResult(
+      record.chatId,
+      CU_ACTION_TOOL_NAME,
+      record.approval.requestId,
+      `The GUI action request was withdrawn: ${WITHDRAW_TEXT[reason].human}.`,
+    );
+    if (reason === WITHDRAWN.agentStop) return;
+    this.notify(noticeTo, actionWithdrawnNotice(String(record.action.type), record.id, reason), { wake: false });
+  }
+  private cancelSessionActionRequest(chatId: string, sessionId: string, reason: WithdrawReason) {
+    const record = this.actionRequests.get(chatId);
+    if (record?.sessionId === sessionId) this.cancelActionRequest(record, reason);
+  }
+  /**
+   * The agent's own successful `cu_stop` on a session withdraws the action
+   * waiting on it. Returns the withdrawn request id, which `cu_stop`'s result
+   * carries as `withdrawnRequestId`; no notice, since the agent asked.
+   */
+  withdrawAgentAction(chatId: string, sessionId: string): string | undefined {
+    const record = this.actionRequests.get(chatId);
+    if (record?.sessionId !== sessionId) return undefined;
+    this.cancelActionRequest(record, WITHDRAWN.agentStop);
+    return record.id;
+  }
+  private async answerAction(record: ActionRequest, approved: boolean): Promise<void> {
+    if (this.actionRequests.get(record.chatId) !== record) return;
+    this.actionRequests.delete(record.chatId);
+    const label = actionLabel(record);
+    if (!approved) {
+      // Warn, as a denial always has: repeated refusals are a prompt-injection signal.
+      logComputerUseFailure("cu_action", { chatId: record.chatId, sessionId: record.sessionId }, controlError("denied", ACTION_DENIED));
+      this.emitControlResult(record.chatId, CU_ACTION_TOOL_NAME, record.approval?.requestId, "GUI action refused; it was not performed.");
+      this.notify(record.chatId, `${noticeHeader("GUI action refused")}\n\nYour ${label}. ${ACTION_DENIED}`);
+      return;
     }
-    // Past this line the human has said yes, so every failure is one they will
-    // never see: their click already returned 200 from `/respond`, and only the
-    // model is told what happened next. `markConfirmedFailure` is what puts
-    // those in the operator's log at error level — see {@link FailureContext}.
+    const failure = await this.executeApprovedAction(record);
+    this.emitControlResult(
+      record.chatId,
+      CU_ACTION_TOOL_NAME,
+      record.approval?.requestId,
+      failure ? `The confirmed GUI action was NOT performed: ${humanActionFailure(failure)}.` : "The confirmed GUI action was performed.",
+    );
+    this.notify(
+      record.chatId,
+      failure
+        ? `${noticeHeader("approved GUI action NOT performed")}\n\nThe human approved your ${label}, but it was NOT performed: ${approvedActionFailure(failure)}. ${afterApprovedFailure(failure)}`
+        : `${noticeHeader("approved GUI action performed")}\n\nThe human approved your ${label} and it was performed. The screen may have changed: call cu_observe for a fresh frame before your next action.`,
+    );
+  }
+  /**
+   * Run a human-approved GUI action — only if it is still the action they were
+   * shown, against the screen it was aimed at. Resolves to the failure code, or
+   * undefined when it ran.
+   *
+   * A human can take any amount of time to answer, so everything the request
+   * was validated against is re-derived first: the chat's policy signature and
+   * level, the grant (expiry, ownership), the lease generation and who holds
+   * control (a takeover or resume bumps the generation), and the frame —
+   * `assertFrame` fails if the agent observed again, another action consumed
+   * the frame, or the session restarted. The service repeats the frame and
+   * lease checks at dequeue. If any of it moved, nothing runs.
+   *
+   * It runs as the agent principal, through the service rather than the MCP
+   * hop: there is no tool call to answer any more, and the turn that asked may
+   * be long over. The service's own operation timeout and the grant's
+   * authorization still apply on every step.
+   */
+  private async executeApprovedAction(record: ActionRequest): Promise<string | undefined> {
+    const { chatId, sessionId, generation, frameId } = record;
+    const ids = { chatId, sessionId };
     try {
       const current = this.readPolicy(chatId);
-      if (grant.signature !== current.signature || levelFor(kind, current.policy) === "deny")
-        throw controlError("denied", "The chat's control scope changed while this action was awaiting confirmation; enable the target again");
-      // Re-derives the grant: expiry, ownership, signature, generation, controller.
-      this.agentLease(chatId, id, generation);
-      this.service.assertFrame(controlPrincipal(chatId, "agent"), { sessionId: id, generation, frameId });
-      if (options?.signal?.aborted)
-        throw controlError("cancelled", "The turn ended after the human confirmed but before the action ran; it was NOT performed.");
-      const result = await execute(randomUUID(), request, { confirmedByHuman: true });
-      if (result && typeof result === "object" && (result as { isError?: unknown }).isError === true)
-        throw controlError("driver_error", "The approved action did not complete. Refresh session state before retrying; approval cannot be reused.");
-      return result;
+      if (record.signature !== current.signature || levelFor(record.kind, current.policy) === "deny")
+        throw controlError("denied", "The chat's control scope changed while this action was awaiting confirmation.");
+      const lease = this.agentLease(chatId, sessionId, generation);
+      this.service.assertFrame(controlPrincipal(chatId, "agent"), { sessionId, generation, frameId });
+      await this.service.act(
+        controlPrincipal(chatId, "agent"),
+        { ...lease, frameId, actionId: randomUUID(), action: record.action as Action },
+        AbortSignal.timeout(APPROVED_ACTION_TIMEOUT_MS),
+      );
+      log.info(
+        `Computer control ${controlIds(ids)} human-approved action performed: ${oneLine(describeAgentActionForLog(record.action, record.target)).slice(0, 500)}`,
+      );
+      return undefined;
     } catch (error) {
-      throw markConfirmedFailure(error);
+      const code = controlCode(error) || "unavailable";
+      // The human's click already returned 200; only the agent and this log
+      // learn what happened next. A fault after their yes is never routine.
+      logComputerUseFailure("cu_action", ids, error, { escalate: !WORLD_MOVED.has(code) });
+      log.info(`Computer control ${controlIds(ids)} human-approved action did NOT run code=${code}`);
+      return code;
     }
+  }
+  /**
+   * Withdraw this chat's open agent requests: the human pressed Stop (the
+   * stream route's `/stop`), or the chat was rewound, forked or compressed
+   * (`chat-supersede.ts`). NOT wired to a run's abort signal: an interrupting
+   * send also aborts the run, and a message the human sends while the agent
+   * waits is not a withdrawal. An approved enable request still starting is
+   * fenced. Each withdrawal leaves a ride-along notice — on `noticeTo`, the
+   * chat that carries the conversation on — and none starts a turn.
+   */
+  withdrawChatRequests(chatId: string, reason: WithdrawReason, noticeTo = chatId) {
+    for (const [id, request] of [...this.controlRequests])
+      if (request.chatId === chatId && !request.sessionId) this.cancelControlRequest(id, request, reason, noticeTo);
+    const action = this.actionRequests.get(chatId);
+    if (action) this.cancelActionRequest(action, reason, noticeTo);
+  }
+  /** The agent's own open requests, for `cu_open`. Host request ids only — never a prompt identity. */
+  agentRequests(chatId: string): AgentOpenRequest[] {
+    const open: AgentOpenRequest[] = [];
+    for (const [id, request] of this.controlRequests)
+      if (request.chatId === chatId && !request.sessionId)
+        open.push({ requestId: id, type: "enable_control", kind: request.kind === "browser" ? "browser" : "native" });
+    const action = this.actionRequests.get(chatId);
+    if (action) open.push({ requestId: action.id, type: "gui_action", summary: action.summary });
+    return open;
   }
   agentLease(chatId: string, id: string, generation: number) {
     const grant = this.grant(chatId, id);
@@ -1149,11 +1637,15 @@ export class ComputerUseHost {
   }
   async dispose() {
     clearInterval(this.watchdog);
-    for (const request of this.controlRequests.values()) request.abort.abort();
+    for (const request of this.controlRequests.values()) {
+      request.abort.abort();
+      request.approval?.cancel();
+    }
+    for (const record of this.actionRequests.values()) record.approval?.cancel();
     this.controlRequests.clear();
     this.grants.clear();
     this.pending.clear();
-    this.awaiting.clear();
+    this.actionRequests.clear();
     for (const off of this.unsubscribers.values()) off();
     this.unsubscribers.clear();
     await this.service.dispose();
@@ -1186,6 +1678,10 @@ export function getComputerUseHost(): Promise<ComputerUseHost> {
     hostPromise = undefined;
     throw error;
   }));
+}
+/** The host if something has already started it; never starts one. For hooks that must stay free when computer control is unused. */
+export function peekComputerUseHost(): Promise<ComputerUseHost> | undefined {
+  return hostPromise;
 }
 export async function shutdownComputerUse(): Promise<void> {
   const pending = hostPromise;

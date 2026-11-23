@@ -1,5 +1,5 @@
 import { computerUseRouter } from "./routes/computer-use.js";
-import { shutdownComputerUse } from "./services/computer-use.js";
+import { setChatArchivedCheck, shutdownComputerUse } from "./services/computer-use.js";
 import { closeComputerUseConnections } from "./services/computer-use-tools.js";
 import dotenv from "dotenv";
 import { spawn } from "child_process";
@@ -47,6 +47,7 @@ import { imagesRouter } from "./routes/images.js";
 import { queueRouter } from "./routes/queue.js";
 import { heldRouter } from "./routes/held.js";
 import { initHeldMessageDispatcher } from "./services/held-message-dispatcher.js";
+import { isChatArchived } from "./services/chat-archived.js";
 import { foldersRouter } from "./routes/folders.js";
 import { gitRouter } from "./routes/git.js";
 import { appPluginsRouter } from "./routes/app-plugins.js";
@@ -486,6 +487,11 @@ try {
 } catch (err: any) {
   log.error(`Held-message dispatcher init failed: ${err.message}`);
 }
+
+// Computer control refuses an archived chat. The check walks chat lineage,
+// which computer control cannot import without closing a cycle through
+// claude.ts, so it is handed in here.
+setChatArchivedCheck(isChatArchived);
 
 app.listen(PORT, () => {
   log.info(`Backend running on http://localhost:${PORT}`);

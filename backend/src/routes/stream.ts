@@ -5,7 +5,8 @@ import { assertNativeAgentStoppable } from "../services/codex-native-agents.js";
 import { Router } from "express";
 import { NOTHING_TO_SEND, startChatTurn } from "../services/chat-turn.js";
 import { sendMessage, getActiveSession, stopSession, respondToPermission, hasPendingRequest, getPendingRequest } from "../services/claude.js";
-import { pendingRequestRequiresHuman } from "../services/pending-requests.js";
+import { pendingRequestRequiresHuman, recentResolution } from "../services/pending-requests.js";
+import { peekComputerUseHost, WITHDRAWN } from "../services/computer-use.js";
 import { controlOriginError } from "../auth.js";
 import { noteComputerControlAtCreation } from "../services/computer-use-policy.js";
 import { isRoutableProvider, type AgentProviderKind } from "../agents/ports/AgentProvider.js";
@@ -805,21 +806,26 @@ streamRouter.post("/:id/respond", async (req, res) => {
   } */
   /* #swagger.responses[200] = { description: "Response accepted" } */
   /* #swagger.responses[403] = { description: "This prompt requires a signed-in, same-origin human session (computer-control confirmations)" } */
-  /* #swagger.responses[409] = { description: "Missing or stale human-only request identity; prompt was not consumed" } */
+  /* #swagger.responses[409] = { description: "Missing or stale human-only request identity; prompt was not consumed. With code \"resolved\": the computer-control request named by requestId was already answered or withdrawn, and error says which (e.g. \"That request was already resolved or withdrawn: it was withdrawn because you pressed Stop.\") — also returned when nothing else is pending for the chat." } */
   /* #swagger.responses[404] = { description: "No pending request" } */
   const { allow, updatedInput, updatedPermissions, requestId } = req.body ?? {};
   if (typeof allow !== "boolean") return res.status(400).json({ error: "allow must be a boolean" });
   if (!hasPendingRequest(req.params.id)) {
+    // Nothing open — but a tab still showing a card that was resolved or
+    // withdrawn should learn why, not just that there is nothing here.
+    const resolution = recentResolution(req.params.id, requestId);
+    if (resolution) return res.status(409).json({ error: `That request was already resolved or withdrawn: ${resolution}.`, code: "resolved" });
     return res.status(404).json({ error: "No pending request" });
   }
   // Most prompts here are ordinary tool permissions, and answering those with
   // an API key is a supported workflow — `requireAuth` admits both actors.
-  // A prompt raised by `requestHumanApproval` is not one of those: it is the
+  // A prompt raised by `openHumanApproval` is not one of those: it is the
   // computer-control gate, whose whole purpose is to hold after chat policy
   // has already said yes. It therefore keeps the guarantees of the panel
   // endpoint it replaced (`requireSessionAuth` + `requireControlOrigin` in
   // routes/computer-use.ts) rather than inheriting this router's weaker ones.
-  if (pendingRequestRequiresHuman(req.params.id)) {
+  // Asked about the prompt this answer's `requestId` would actually reach.
+  if (pendingRequestRequiresHuman(req.params.id, requestId)) {
     if (res.locals.authMethod !== "session") {
       log.warn(`Rejected a ${res.locals.authMethod ?? "unauthenticated"} attempt to answer the computer-control prompt on ${req.params.id}`);
       return res.status(403).json({ error: "This confirmation requires a logged-in session, not an API key.", code: "denied" });
@@ -831,7 +837,14 @@ streamRouter.post("/:id/respond", async (req, res) => {
     if (originError) return res.status(403).json({ error: originError, code: "denied" });
   }
   const result = respondToPermission(req.params.id, allow, updatedInput, updatedPermissions, requestId);
-  if (!result.ok) return res.status(409).json({ error: "This prompt changed or expired. Refresh the pending request before answering." });
+  if (!result.ok) {
+    // A computer-control card the tab is still showing may have been answered
+    // elsewhere or withdrawn (Stop, Revoke, a permission change…), and an idle
+    // chat has no stream to say so. Tell the human which, in their terms.
+    const resolution = recentResolution(req.params.id, requestId);
+    if (resolution) return res.status(409).json({ error: `That request was already resolved or withdrawn: ${resolution}.`, code: "resolved" });
+    return res.status(409).json({ error: "This prompt changed or expired. Refresh the pending request before answering." });
+  }
   if (result.completion) {
     const completed = await result.completion;
     if (!completed.ok) return res.status(409).json({ ok: false, error: completed.error });
@@ -864,7 +877,7 @@ streamRouter.get("/:id/status", (req, res) => {
 streamRouter.post("/:id/stop", (req, res) => {
   // #swagger.tags = ['Stream']
   // #swagger.summary = 'Stop execution'
-  // #swagger.description = 'Cancel the running session for this chat: aborts the run and terminates the underlying provider request (subprocess / in-flight API call), not just the SSE stream. The run emits a final message_complete with reason "aborted" on its stream as it unwinds. Messages held until the turn ends are paused, not sent; one being started at that moment is aborted as it starts and kept as paused (and counts as stopped: true). Accepts a chat id or, for a chat still being created, the clientTrackingId passed to /new/message.'
+  // #swagger.description = 'Cancel the running session for this chat: aborts the run and terminates the underlying provider request (subprocess / in-flight API call), not just the SSE stream. Also withdraws the chat\'s open computer-control requests (enable cards and GUI-action confirmations), whether or not a run was live. The run emits a final message_complete with reason "aborted" on its stream as it unwinds. Messages held until the turn ends are paused, not sent; one being started at that moment is aborted as it starts and kept as paused (and counts as stopped: true). Accepts a chat id or, for a chat still being created, the clientTrackingId passed to /new/message.'
   /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID (or a new chat\'s clientTrackingId)' } */
   /* #swagger.responses[200] = { description: "{ stopped: true } when a live web session was cancelled; { stopped: true, phase: \"creation\" } when a chat still being created (its branch or worktree being prepared) was cancelled, so no chat exists; { stopped: false } when there was nothing to stop (already finished, or a CLI session the server does not control)" } */
   const chatId = req.params.id;
@@ -894,6 +907,15 @@ streamRouter.post("/:id/stop", (req, res) => {
     log.error(`POST /${chatId}/stop — could not pause held messages: ${err instanceof Error ? err.message : String(err)}`);
   }
   const stopped = stopSession(chatId) || cancelledDelivery;
+  // Stop also withdraws the chat's open computer-control requests — they
+  // outlive the turn that raised them, so stopping the run does not reach
+  // them on its own. Only this explicit Stop: a message sent while the run is
+  // busy also stops it, and must not. A host nobody started has none.
+  void peekComputerUseHost()
+    ?.then((host) => host.withdrawChatRequests(chatId, WITHDRAWN.stopped))
+    .catch((err: unknown) =>
+      log.error(`POST /${chatId}/stop — could not withdraw computer-control requests: ${err instanceof Error ? err.message : String(err)}`),
+    );
   // Worth an info line: this is a deliberate user cancellation, and the run's
   // own "ended: aborted" log lands right after it.
   if (stopped) log.info(`Session ${chatId} cancelled by user`);

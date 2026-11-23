@@ -1059,6 +1059,8 @@ export interface PendingAction {
   requestId?: string;
   humanOnly?: boolean;
   controlRequest?: boolean;
+  /** An open computer-control approval: nothing is suspended on it, so it never makes the chat "running" and never hides the composer. */
+  nonBlocking?: boolean;
   toolName?: string;
   input?: Record<string, unknown>;
   questions?: any[];
@@ -1230,7 +1232,7 @@ export async function respondToChat(
   updatedInput?: Record<string, unknown>,
   updatedPermissions?: unknown[],
   requestId?: string,
-): Promise<{ ok: boolean; toolName?: string; error?: string }> {
+): Promise<{ ok: boolean; toolName?: string; error?: string; status?: number; code?: string }> {
   const res = await fetch(`${BASE}/chats/${seg(id)}/respond`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1239,7 +1241,14 @@ export async function respondToChat(
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    return { ok: false, error: body.error || "Could not answer this prompt. Retry or refresh the pending request." };
+    // `status`/`code` let the caller tell "already resolved" (409, code
+    // "resolved") from a refusal that left the prompt open (401/403/5xx).
+    return {
+      ok: false,
+      error: body.error || "Could not answer this prompt. Retry or refresh the pending request.",
+      status: res.status,
+      ...(typeof body.code === "string" && { code: body.code }),
+    };
   }
   return res.json();
 }

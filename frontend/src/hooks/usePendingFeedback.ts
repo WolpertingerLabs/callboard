@@ -8,6 +8,11 @@ class Scope {
   action: PendingAction | null = null;
   key = "";
   submissions = new Map<string, symbol>();
+  /** When the last card went away, for {@link APPROVE_LOCK_MS}. */
+  goneAt: number | undefined = undefined;
+  /** A human-only card that replaced another is not approvable yet. */
+  approveLocked = false;
+  lockTimer: ReturnType<typeof setTimeout> | undefined = undefined;
   constructor(readonly route: string) {}
   activate(value: boolean) {
     this.active = value;
@@ -19,6 +24,15 @@ interface Snapshot {
   revision: number;
   key: string;
 }
+/**
+ * How long a human-only card that replaced another — or appeared within this
+ * long of one going — keeps its approve button locked. Open computer-control
+ * requests queue and appear one after another, so the next card can land where
+ * the human's cursor already is; a double-click, or a click already on its
+ * way, must not approve something they never read.
+ */
+export const APPROVE_LOCK_MS = 1000;
+
 /** Prompt UI state belongs to a route lifetime AND a prompt, never the Chat component. */
 export function usePendingFeedback(route: string) {
   const sequence = useRef(0);
@@ -36,6 +50,23 @@ export function usePendingFeedback(route: string) {
     const scope = current.current;
     const next = typeof update === "function" ? update(scope.action) : update;
     if (next === scope.action && !newPrompt) return;
+    const previous = scope.action;
+    if (next?.requestId !== previous?.requestId) {
+      const now = Date.now();
+      const followsAnother = previous !== null || (scope.goneAt !== undefined && now - scope.goneAt < APPROVE_LOCK_MS);
+      if (!next && previous) scope.goneAt = now;
+      if (next?.humanOnly && followsAnother) {
+        scope.approveLocked = true;
+        clearTimeout(scope.lockTimer);
+        scope.lockTimer = setTimeout(() => {
+          scope.approveLocked = false;
+          if (current.current === scope) redraw((n) => n + 1);
+        }, APPROVE_LOCK_MS);
+      } else if (next) {
+        scope.approveLocked = false;
+        clearTimeout(scope.lockTimer);
+      }
+    }
     scope.key = next?.requestId ? `server:${next.requestId}` : `local:${++sequence.current}`;
     scope.action = next;
     scope.revision++;
@@ -66,6 +97,7 @@ export function usePendingFeedback(route: string) {
     pendingAction: scope.action,
     pendingKey: `${route}:${scope.key}`,
     responding: scope.submissions.has(scope.key),
+    approveLocked: scope.approveLocked,
     setPendingAction,
     capturePending,
     isCurrentPending,

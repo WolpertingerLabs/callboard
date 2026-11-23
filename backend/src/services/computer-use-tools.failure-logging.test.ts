@@ -14,7 +14,7 @@ vi.mock("./computer-use.js", async (original) => ({
   getComputerUseHost: vi.fn(),
 }));
 
-import { ComputerUseHost, getComputerUseHost, type ConfirmAgentAction } from "./computer-use.js";
+import { ComputerUseHost, getComputerUseHost, type RaiseHumanApproval } from "./computer-use.js";
 import { readComputerUsePolicy } from "./computer-use-policy.js";
 import { beginComputerUseTurn, buildComputerUseToolsSpec, closeComputerUseConnections } from "./computer-use-tools.js";
 
@@ -33,15 +33,28 @@ afterEach(async () => {
 
 const frame = { data: "AA==", mimeType: "image/png" as const, width: 100, height: 100, capturedAt: Date.now() };
 /**
+ * A stand-in for the human at the chat prompt. Under `ask` nothing waits for
+ * them any more — `cu_action` returns `approval_pending` — so the test answers
+ * for them afterwards, by calling `approve`/`deny`. There is no approving
+ * default: a fixture that silently says yes is the shape
+ * `computer-use.invariant.test.ts` exists to forbid.
+ */
+function human() {
+  const answers: ((approved: boolean) => unknown)[] = [];
+  const raise: RaiseHumanApproval = (_chatId, _request, onAnswer) => {
+    answers.push(onAnswer);
+    return { requestId: `prompt-${answers.length}`, isOpen: () => true, cancel: () => true };
+  };
+  return { raise, approve: () => answers.at(-1)!(true), deny: () => answers.at(-1)!(false), asked: () => answers.length };
+}
+
+/**
  * A real service and host over a stub driver: the MCP hop is what is under test.
  *
  * The chat is set to `ask` unless a case says otherwise, because that is the
- * level with a human to be blind to. `confirm` stands in for them at the chat
- * prompt, and every caller states its own — there is no approving default here,
- * because a fixture that silently says yes is the shape
- * `computer-use.invariant.test.ts` exists to forbid.
+ * level with a human to be blind to.
  */
-function harness(observe: () => Promise<typeof frame>, confirm?: ConfirmAgentAction, level: "ask" | "allow" = "ask", act: () => Promise<void> = async () => {}) {
+function harness(observe: () => Promise<typeof frame>, person = human(), level: "ask" | "allow" = "ask", act: () => Promise<void> = async () => {}) {
   const driver: Driver = {
     kind: "browser",
     probe: async () => ({ kind: "browser", available: true, capabilities: ["screenshot"] }),
@@ -51,16 +64,20 @@ function harness(observe: () => Promise<typeof frame>, confirm?: ConfirmAgentAct
     targets: [{ id: "managed-browser", enabled: true, driver }],
     authorize: (request) => host?.authorize(request) ?? "deny",
   });
+  const notices: string[] = [];
   host = new ComputerUseHost(
     service,
     { browser: driver, desktop: { ...driver, kind: "native-desktop" } },
     () => ({ policy: readComputerUsePolicy({ browserControl: level, computerControl: level, webAccess: "allow" }), signature: "scope" }),
-    confirm,
+    person.raise,
+    (_chatId, text) => notices.push(text),
   );
   vi.mocked(getComputerUseHost).mockResolvedValue(host);
   const spec = buildComputerUseToolsSpec(() => "chat");
   return {
     host: host!,
+    person,
+    notices,
     tool: (name: string) => spec.tools.find((item) => item.name === name)!,
     /** Enable a target as the human does — one click, plus the panel confirmation under `ask`. */
     enable: async () => {
@@ -70,7 +87,10 @@ function harness(observe: () => Promise<typeof frame>, confirm?: ConfirmAgentAct
   };
 }
 
+const textOf = (result: { content: { type: string }[] }) =>
+  JSON.parse((result.content.find((item) => item.type === "text") as unknown as { text: string }).text);
 /** The one call that reached the driver, or undefined. */
+const infoLine = (needle: string) => logs.info.mock.calls.map((call) => String(call[0])).find((entry) => entry.includes(needle));
 const errorLine = (operation: string) => logs.error.mock.calls.map((call) => String(call[0])).find((line) => line.includes(operation));
 
 it("records a driver fault the model only sees as an error tool result", async () => {
@@ -122,64 +142,15 @@ it("treats a turn stopped mid-call as cancelled, not as a fault", async () => {
   expect(String(logs.debug.mock.calls.at(-1)?.[0])).toContain("This operation was aborted");
 });
 
-it("gives an approved action that never happened a cause, at a level the operator sees", async () => {
-  // The confirmation now blocks inside `cu_action` rather than being redeemed
-  // later through the panel, so the escalation no longer keys on a signal that
-  // only the redemption path held. It keys on the same condition: this human
-  // said yes. Stand in for them saying it.
-  const { tool, enable } = harness(
+it("gives an approved action that failed in the driver a cause, at a level the operator sees", async () => {
+  // The human's click returned 200 from `/respond` before anything ran, and
+  // the agent only hears about it in a notice: this line is the operator's.
+  const { tool, enable, person, notices } = harness(
     async () => frame,
-    async () => ({ approved: true, reason: "human" }),
-  );
-  const end = beginComputerUseTurn(() => "chat", new AbortController().signal);
-  const opened = await enable();
-  const ref = { sessionId: opened.id, generation: opened.generation };
-  const observed = await tool("cu_observe").handler(ref);
-  const frameId = JSON.parse((observed.content[0] as { text: string }).text).frameId;
-
-  // `cu_action`'s outer schema is a loose record, so an extra key survives the
-  // prompt and only fails the strict `computer_act` schema once the human has
-  // confirmed — at which point the host relabels it a bare `driver_error`.
-  const result = await tool("cu_action").handler({ ...ref, frameId, action: { type: "click", x: 1, y: 2, bogus: 9 } });
-  expect(result.isError).toBe(true);
-  end();
-
-  // Without the escalation this classifies as a routine `invalid_request` and
-  // vanishes at the default level, leaving only the host's content-free
-  // relabel — the exact blindness this change exists to remove.
-  const line = errorLine("computer_act")!;
-  expect(line).toBeDefined();
-  expect(line).toContain(`computer_act chat=chat session=${opened.id} code=invalid_request`);
-  expect(line).toContain("Unrecognized key");
-  expect(line).toContain("bogus");
-  expect(line.split("\n")[0]).toContain("bogus"); // multi-line SDK text folded onto our line
-  // The host's own relabel still lands too, naming the tool call the human
-  // confirmed. `driver_error` is not routine, so it needs no escalation.
-  expect(errorLine("cu_action")).toContain("code=driver_error");
-});
-
-it("escalates the rest of the confirmed window too: the human said yes and the world moved", async () => {
-  // A takeover, a scope change or a fresh capture during the human's
-  // think-time throws AFTER the confirmation, before the driver is reached.
-  // Those codes are routine on their own — `stale_frame` at error level is the
-  // noise the level table exists to prevent — but not here, where a human
-  // clicked Confirm and nothing happened. Their click already returned 200
-  // from `/respond`, so this log line is the only trace anyone gets.
-  // The human is at the prompt (`asked`) and has not answered yet (`decide`),
-  // which is the window the world moves in.
-  let asked!: () => void, decide!: () => void;
-  const prompted = new Promise<void>((resolve) => {
-    asked = resolve;
-  });
-  const deciding = new Promise<void>((resolve) => {
-    decide = resolve;
-  });
-  const { tool, enable } = harness(
-    async () => frame,
+    undefined,
+    "ask",
     async () => {
-      asked();
-      await deciding;
-      return { approved: true, reason: "human" };
+      throw new Error("Target page, context or browser has been closed");
     },
   );
   const end = beginComputerUseTurn(() => "chat", new AbortController().signal);
@@ -187,71 +158,105 @@ it("escalates the rest of the confirmed window too: the human said yes and the w
   const ref = { sessionId: opened.id, generation: opened.generation };
   const frameId = JSON.parse(((await tool("cu_observe").handler(ref)).content[0] as { text: string }).text).frameId;
 
-  const inflight = tool("cu_action").handler({ ...ref, frameId, action: { type: "click", x: 1, y: 2 } });
-  await prompted;
-  await tool("cu_observe").handler(ref); // a new capture invalidates the frame they are looking at
-  decide(); // …and only now do they click Confirm
-  expect((await inflight).isError).toBe(true);
-  end();
+  const pending = textOf(await tool("cu_action").handler({ ...ref, frameId, action: { type: "click", x: 1, y: 2 } }));
+  expect(pending).toMatchObject({ status: "approval_pending" });
+  end(); // The turn that asked is over; the approval still runs.
+  person.approve();
+  await vi.waitFor(() => expect(notices).toHaveLength(1));
 
-  expect(errorLine("cu_action")).toContain("code=stale_frame");
+  expect(errorLine("cu_action")).toContain(`cu_action chat=chat session=${opened.id} code=driver_error`);
+  expect(infoLine("human-approved action did NOT run")).toContain("code=driver_error");
 });
 
-it("does not escalate a refusal, a timeout or an occupied prompt: nobody approved those", async () => {
-  const { tool, enable } = harness(
-    async () => frame,
-    async () => ({ approved: false, reason: "denied" }),
-  );
+it("records an approved action that ran, so the operator's log says what the human let happen", async () => {
+  const { tool, enable, person, notices } = harness(async () => frame);
+  const end = beginComputerUseTurn(() => "chat", new AbortController().signal);
+  const opened = await enable();
+  const ref = { sessionId: opened.id, generation: opened.generation };
+  const frameId = JSON.parse(((await tool("cu_observe").handler(ref)).content[0] as { text: string }).text).frameId;
+  await tool("cu_action").handler({ ...ref, frameId, action: { type: "type", text: "hunter2-my-real-password" } });
+  end();
+  person.approve();
+  await vi.waitFor(() => expect(notices).toHaveLength(1));
+
+  // Redacted like every other action line: the shape, never the text.
+  expect(infoLine("human-approved action performed")).toContain("Type 24 characters into the managed browser");
+  expect(logs.info.mock.calls.map((call) => String(call[0])).join("\n")).not.toContain("hunter2");
+});
+
+it("does not escalate an approval the world moved past: the agent is told to observe and re-request", async () => {
+  // With no limit on the human's think-time, a fresh capture, a takeover or
+  // a scope change before they answer is an expected outcome, not a fault —
+  // `stale_frame` at error level is the noise the level table prevents. The
+  // info line still records that a confirmed action did not run.
+  const { tool, enable, person, notices } = harness(async () => frame);
   const end = beginComputerUseTurn(() => "chat", new AbortController().signal);
   const opened = await enable();
   const ref = { sessionId: opened.id, generation: opened.generation };
   const frameId = JSON.parse(((await tool("cu_observe").handler(ref)).content[0] as { text: string }).text).frameId;
 
-  expect((await tool("cu_action").handler({ ...ref, frameId, action: { type: "click", x: 1, y: 2 } })).isError).toBe(true);
+  const { controlPrincipal } = await import("./computer-use.js");
+  await tool("cu_action").handler({ ...ref, frameId, action: { type: "click", x: 1, y: 2 } });
+  // The agent's own cu_observe is refused while this waits, so move the frame
+  // from underneath, as a target change would: a capture straight through the
+  // service, between the watchdog's sweeps.
+  await host!.service.observe(controlPrincipal("chat", "agent"), ref);
   end();
+  person.approve(); // …and only now do they click Confirm
+  await vi.waitFor(() => expect(notices).toHaveLength(1));
 
-  // `denied` is warn, not error: an operator should see repeated refusals
-  // (a prompt-injection signal) without them masquerading as faults.
+  expect(logs.error).not.toHaveBeenCalled();
+  expect(infoLine("human-approved action did NOT run")).toContain("code=stale_frame");
+  expect(notices[0]).toContain("cu_observe");
+});
+
+it("logs a refusal at warn — a prompt-injection signal, not a fault", async () => {
+  const { tool, enable, person } = harness(async () => frame);
+  const end = beginComputerUseTurn(() => "chat", new AbortController().signal);
+  const opened = await enable();
+  const ref = { sessionId: opened.id, generation: opened.generation };
+  const frameId = JSON.parse(((await tool("cu_observe").handler(ref)).content[0] as { text: string }).text).frameId;
+
+  await tool("cu_action").handler({ ...ref, frameId, action: { type: "click", x: 1, y: 2 } });
+  end();
+  person.deny();
+
   expect(logs.error).not.toHaveBeenCalled();
   expect(String(logs.warn.mock.calls.at(-1)?.[0])).toContain("code=denied");
 });
 
-it.each([
-  ["approval_timeout", { approved: false, reason: "timeout" as const }],
-  ["approval_unavailable", { approved: false, reason: "no_session" as const }],
-  ["approval_unavailable", { approved: false, reason: "prompt_busy" as const }],
-])("logs %s at debug — the control plane working, not a fault", async (code, outcome) => {
-  const { tool, enable } = harness(async () => frame, async () => outcome);
+it("a pending request is not a failure, and a malformed one is refused before anyone is asked", async () => {
+  const { tool, enable, person } = harness(async () => frame);
   const end = beginComputerUseTurn(() => "chat", new AbortController().signal);
   const opened = await enable();
   const ref = { sessionId: opened.id, generation: opened.generation };
   const frameId = JSON.parse(((await tool("cu_observe").handler(ref)).content[0] as { text: string }).text).frameId;
 
-  expect((await tool("cu_action").handler({ ...ref, frameId, action: { type: "click", x: 1, y: 2 } })).isError).toBe(true);
+  // `cu_action`'s outer schema is a loose record; under Ask the host applies
+  // the strict grammar itself, so this extra key never reaches a human.
+  const malformed = await tool("cu_action").handler({ ...ref, frameId, action: { type: "click", x: 1, y: 2, bogus: 9 } });
+  expect(textOf(malformed)).toMatchObject({ error: "invalid_request" });
+  expect(person.asked()).toBe(0);
+  expect((await tool("cu_action").handler({ ...ref, frameId, action: { type: "click", x: 1, y: 2 } })).isError).toBeUndefined();
   end();
 
   expect(logs.error).not.toHaveBeenCalled();
   expect(logs.warn).not.toHaveBeenCalled();
-  expect(String(logs.debug.mock.calls.at(-1)?.[0])).toContain(`code=${code}`);
+  expect(String(logs.debug.mock.calls.at(-1)?.[0])).toContain("code=invalid_request");
 });
 
 /**
  * The `allow` half of the same blindness problem. Under `ask` the operator's
- * record of an action is the chat itself: the confirmation is a
- * `permission_request` the human answered, and it stays in the transcript.
+ * record of an action is the chat itself — the confirmation is a
+ * `permission_request` the human answered — plus the host's own line when an
+ * approved action runs or does not.
  * `allow` removes the prompt, so nothing outside the model's own transcript —
  * the one artifact a prompt-injected page can influence — would say what an
  * unattended agent did to a real browser. An `info` line per action closes it.
  */
-const infoLine = (needle: string) => logs.info.mock.calls.map((call) => String(call[0])).find((entry) => entry.includes(needle));
 
 it("records each unprompted action an allow chat attempts, so an operator can reconstruct the session", async () => {
-  const { tool, enable } = harness(
-    async () => frame,
-    // Would say yes if it were reached. It is not: `allow` does not ask.
-    async () => ({ approved: true, reason: "human" }),
-    "allow",
-  );
+  const { tool, enable, person } = harness(async () => frame, undefined, "allow");
   const end = beginComputerUseTurn(() => "chat", new AbortController().signal);
   const opened = await enable();
   const ref = { sessionId: opened.id, generation: opened.generation };
@@ -268,6 +273,8 @@ it("records each unprompted action an allow chat attempts, so an operator can re
   expect(line).toMatch(/Open https:\/\/example\.com\/dashboard in the managed browser on \S+$/);
   // It completed, so nothing corrects it. That absence is the success signal.
   expect(infoLine("did NOT complete")).toBeUndefined();
+  // And nobody was asked: `allow` does not ask.
+  expect(person.asked()).toBe(0);
 });
 
 /**
@@ -345,10 +352,15 @@ it("records a stopped turn as cancelled, not as an unexplained failure", async (
   const entered = new Promise<void>((resolve) => {
     acting = resolve;
   });
-  const { tool, enable } = harness(async () => frame, undefined, "allow", async () => {
-    acting();
-    await new Promise((resolve) => setTimeout(resolve, 400));
-  });
+  const { tool, enable } = harness(
+    async () => frame,
+    undefined,
+    "allow",
+    async () => {
+      acting();
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    },
+  );
   const controller = new AbortController();
   beginComputerUseTurn(() => "chat", controller.signal);
   const opened = await enable();

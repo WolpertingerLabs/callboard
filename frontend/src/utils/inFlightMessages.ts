@@ -11,6 +11,7 @@
 import type { ParsedMessage } from "../api";
 import type { InFlightHandoff } from "../types/chatRouteState";
 import { safeFileName, splitAttachmentBlocks } from "shared/types/index.js";
+import { withoutRideAlongBlock } from "shared/types/rideAlong.js";
 
 /**
  * A user message rendered before the server's transcript accounts for it.
@@ -123,7 +124,10 @@ function userEntries(messages: ParsedMessage[]): UserEntry[] {
     .map((m) => {
       // The transcript carries non-image attachments as blocks after the
       // typed text; the optimistic bubble only ever had the typed text.
-      const { text: typed, files } = splitAttachmentBlocks(m.content ?? "");
+      // A ride-along notice block the daemon put in front of the prompt is
+      // not what the human typed (the transcript route already splits it off;
+      // this keeps the match right for any reader that did not).
+      const { text: typed, files } = splitAttachmentBlocks(withoutRideAlongBlock(m.content ?? ""));
       const text = typed.trim();
       return {
         text,
