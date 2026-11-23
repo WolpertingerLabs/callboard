@@ -15,3 +15,21 @@ export { createMcpServer, getToolDefinitions, type ToolDefinition } from "./mcp.
  * is the only way to be sure the two agree.
  */
 export { actionSchema } from "./validation.js";
+export { createDriverHost, readTokenFile, type DriverHost, type DriverHostOptions } from "./remote/host.js";
+export { createRemoteDriver, type RemoteDriver, type RemoteDriverOptions, type RemoteDriverSession } from "./remote/client.js";
+export { PROTOCOL, HOST_CAPABILITIES, type HostIdentity, type HostCapability, type OutboxEntry, type OutboxFile } from "./remote/protocol.js";
+export {
+  ensureSandboxNetwork,
+  sandboxNetworkCreateArgs,
+  sandboxRunArgs,
+  SANDBOX_IMAGE_LABELS,
+  SANDBOX_NETWORK,
+  SANDBOX_NETWORK_LABEL,
+  SANDBOX_PROTOCOL_LABEL_VALUE,
+  SANDBOX_CONTAINER_PORT,
+  SANDBOX_DEFAULT_IMAGE,
+  SANDBOX_DEFAULT_LIMITS,
+  SANDBOX_TOKEN_PATH,
+  type SandboxLimits,
+  type SandboxRunOptions,
+} from "./remote/sandbox.js";

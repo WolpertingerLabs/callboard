@@ -154,8 +154,36 @@ Set up the host first:
 
 - **Browser:** Playwright installs with Callboard as an optional dependency, but no browser is downloaded. Provide Chromium and its OS libraries, and set `CALLBOARD_BROWSER_EXECUTABLE=/absolute/path/to/chrome` if Playwright won't find it. Chromium's sandbox is mandatory. On Linux, run as a non-root user with sandbox support. The chat's Browser Use permission must be Ask or Allow.
 - **Desktop:** only an existing Linux X11 session works. It needs `/usr/bin/xdotool`, ImageMagick's `/usr/bin/import`, and `CALLBOARD_NATIVE_DISPLAY` (or `DISPLAY`). Computer Use must be Ask or Allow and all five other permission axes (Browser Use included) must be Allow, because desktop control can reach everything the user can. This isn't an isolation boundary. macOS, Windows and Wayland aren't supported.
+- **Desktop in a container (preview):** instead of this machine's display, the desktop target can be a hardened Linux desktop running in Docker. From a source checkout (the image builds from the repository, and `docker/` isn't in the published package), build and start it, then point Callboard at it:
 
-Live sandboxed-browser use and native desktop workflows haven't been qualified yet. For the security model and limits, see [`packages/computer-use/README.md`](packages/computer-use/README.md).
+  ```sh
+  docker build -t callboard/computer-use-desktop:local -f packages/computer-use/docker/Dockerfile packages/computer-use
+  packages/computer-use/docker/run.sh 7801   # prints the two variables below
+  export CALLBOARD_REMOTE_DESKTOP_URL=http://127.0.0.1:7801
+  export CALLBOARD_REMOTE_DESKTOP_TOKEN_FILE=/tmp/callboard-desktop-XXXXXX/token   # the path run.sh printed
+  ```
+
+  `run.sh` builds the image only if it's missing. Set `COMPUTER_USE_DESKTOP_REBUILD=1` to rebuild it after pulling changes; `docker rmi callboard/computer-use-desktop:local` removes it.
+
+  - **Token:** it's a file, not an environment variable, on both sides. `run.sh` writes a fresh one into a private temp directory and mounts it into the container read-only.
+    - **Never sent:** Callboard never sends the token itself. The container first proves it holds the token, so a process that took the port after the container stopped learns nothing.
+    - **Rotation:** `CALLBOARD_REMOTE_DESKTOP_TOKEN_FILE` is read at each connection, so a rotated token is picked up.
+    - **Symlinks:** it may be a symlink, as Kubernetes secrets and some credential stores are.
+    - **The variable:** `CALLBOARD_REMOTE_DESKTOP_TOKEN` still works but is discouraged, because every child process of Callboard inherits it. An empty value counts as unset.
+  - **Hardening:**
+    - **Filesystem:** a read-only root, with tmpfs only for the desktop home and `/tmp`.
+    - **Capabilities:** every capability dropped except the two the entrypoint needs to start the desktop and the driver as separate unprivileged users, plus `no-new-privileges` and no setuid programs.
+    - **Limits:** pids, memory and CPU are capped. There is no Docker socket.
+    - **Port:** published on `127.0.0.1` only.
+    - **Network:** its own bridge network (`callboard-sandbox`) with inter-container traffic off, so other containers can't reach it.
+  - **Configuration:** with the URL and a token set, the desktop target uses the container. With only one set, it reports itself unavailable rather than using the local display. Permissions and approvals work exactly as for the local desktop, and the panel names the target `remote 127.0.0.1:7801`. A container from an incompatible release is reported unavailable rather than used.
+  - **Network exposure, both ways:**
+    - **Inbound:** keep the port on `127.0.0.1`. It grants full control of that desktop, so reach it from another machine only through a TLS proxy that authenticates. Callboard refuses plain `http` to anything but loopback.
+    - **Outbound:** the container *can* reach this machine through the Docker bridge gateway (for example `172.17.0.1`). Any service listening on all interfaces is reachable from the desktop, and Docker flags can't prevent that. That includes Callboard itself, which listens on every interface. Bind host services to `127.0.0.1` where you can, or firewall the Docker bridge on the host. The desktop can also reach the internet.
+
+  These variables are a stopgap: a separate Sandbox target with its own permission, and containers Callboard starts itself, are planned. See [Sandbox desktop container](packages/computer-use/README.md#sandbox-desktop-container) for the flags, the image, the handshake and protocol versioning.
+
+Live sandboxed-browser use hasn't been qualified yet. The X11 driver has been qualified only against Xvfb in that container. For the security model and limits, see [`packages/computer-use/README.md`](packages/computer-use/README.md).
 
 ## Agents
 

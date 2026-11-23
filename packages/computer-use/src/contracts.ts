@@ -87,7 +87,17 @@ export interface Driver {
   /** Shared native input MUST share a lock domain, including across driver instances. */
   readonly lockDomain?: string;
   probe(): Promise<Probe>;
-  open(context: { sessionId: string; signal: AbortSignal; onTargetChanged?: () => void }): Promise<DriverSession>;
+  open(context: {
+    sessionId: string;
+    signal: AbortSignal;
+    onTargetChanged?: () => void;
+    /**
+     * The driver lost its target out of band (a remote driver's connection
+     * dropped). The service fences the session `failed` and cleans it up at
+     * once instead of waiting for the next call to fail. Optional to call.
+     */
+    onLost?: () => void;
+  }): Promise<DriverSession>;
 }
 export interface Target {
   readonly id: string;
