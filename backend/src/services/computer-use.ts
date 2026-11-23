@@ -1,5 +1,6 @@
 /** Thin Callboard host: policy, human grants and presentation. Drivers live in the independent package. */
 import { randomUUID } from "node:crypto";
+import { lstatSync, readFileSync } from "node:fs";
 import { hostname } from "node:os";
 // The schema is a value, not a type: `describeAgentActionForLog` asks the
 // service's own grammar whether an action is well-formed before it writes a
@@ -1190,6 +1191,14 @@ export class ComputerUseHost {
       try {
         signal.throwIfAborted();
         if (this.readPolicy(chatId).signature !== record.signature) throw controlError("denied", "Control authority changed during startup.");
+        // Bind the consent to the session that actually opened, not just to the
+        // host checked before opening: a remote host replaced between that
+        // check and open would otherwise get the session. Asking again after
+        // open closes the gap. A replacement *after* open cannot slip through
+        // either: the session's attach connection was to the old instance, so
+        // it is already lost and failed, and this check stops it regardless.
+        if ((await this.targetIdentity(kind, signal)) !== record.identity)
+          throw controlError("unsupported", "The target changed while it was starting (a different host is answering there). Request fresh consent.");
         this.agentLease(chatId, session.id, session.generation);
         const actual = this.service.status(controlPrincipal(chatId, "agent")).find((s) => s.sessionId === session.id);
         if (!actual || actual.state !== "ready" || actual.controller !== "agent" || actual.generation !== session.generation || actual.expiresAt <= Date.now())
@@ -1715,15 +1724,26 @@ export class ComputerUseHost {
  * desktop that probes unavailable with the reason — never a silent fall back
  * to the local display the operator was trying to avoid.
  */
+// TODO(sandbox target, PR 2 of the sandbox-desktop stack): this operator
+// env-var wiring is a stopgap that points the *existing* desktop target, and
+// with it the desktop policy (every other axis on Allow), at a remote host.
+// PR 2 moves it to a separate `sandbox` target kind with its own
+// `sandboxControl` axis behind a capability gate, and PR 3 replaces the
+// variables with containers Callboard starts itself (sandboxRunArgs). Remove
+// CALLBOARD_REMOTE_DESKTOP_* from here when the sandbox target lands.
 export function desktopDriver(
   pkg: Pick<typeof import("@wolpertingerlabs/computer-use"), "createRemoteDriver" | "createNativeDesktopDriver">,
   env: NodeJS.ProcessEnv = process.env,
 ): Driver {
   const url = env.CALLBOARD_REMOTE_DESKTOP_URL?.trim();
-  const token = env.CALLBOARD_REMOTE_DESKTOP_TOKEN?.trim();
-  if (url || token) {
+  const inline = env.CALLBOARD_REMOTE_DESKTOP_TOKEN?.trim();
+  const tokenFile = env.CALLBOARD_REMOTE_DESKTOP_TOKEN_FILE?.trim();
+  if (url || inline || tokenFile) {
     try {
-      if (!url || !token) throw new Error("Set both CALLBOARD_REMOTE_DESKTOP_URL and CALLBOARD_REMOTE_DESKTOP_TOKEN, or neither.");
+      if (inline && tokenFile) throw new Error("Set CALLBOARD_REMOTE_DESKTOP_TOKEN_FILE or CALLBOARD_REMOTE_DESKTOP_TOKEN, not both.");
+      if (!url || !(inline || tokenFile))
+        throw new Error("Set CALLBOARD_REMOTE_DESKTOP_URL and CALLBOARD_REMOTE_DESKTOP_TOKEN_FILE (or _TOKEN) together, or none of them.");
+      const token = inline ?? readRemoteTokenFile(tokenFile!);
       return pkg.createRemoteDriver({ url, token });
     } catch (error) {
       const reason = `Remote desktop is misconfigured: ${error instanceof Error ? error.message : "invalid settings"}`;
@@ -1744,6 +1764,18 @@ export function desktopDriver(
     acknowledgeFullDesktopAccess: true,
     permissions: { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow" },
   });
+}
+
+/** The token from a file: preferred over the variable, which every child process inherits. Never echoed. */
+function readRemoteTokenFile(path: string): string {
+  let stat;
+  try {
+    stat = lstatSync(path);
+  } catch {
+    throw new Error("CALLBOARD_REMOTE_DESKTOP_TOKEN_FILE does not exist.");
+  }
+  if (!stat.isFile() || stat.size > 4096) throw new Error("CALLBOARD_REMOTE_DESKTOP_TOKEN_FILE must be a small regular file.");
+  return readFileSync(path, "utf8").trim();
 }
 
 let hostPromise: Promise<ComputerUseHost> | undefined;

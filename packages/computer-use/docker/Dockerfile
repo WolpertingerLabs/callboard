@@ -1,45 +1,65 @@
-# Remote desktop target for computer use: Xvfb + icewm + xterm, driven by
+# Sandbox desktop for computer use: Xvfb + icewm + xterm, driven by
 # computer-use-driver-host. Build from packages/computer-use:
 #
 #   docker build -t callboard/computer-use-desktop:local -f docker/Dockerfile .
 #
-# Run with the port published on loopback ONLY (see docker/run.sh). The token
-# authorizes full control of this desktop; never publish it on 0.0.0.0.
+# Run it with the hardened flags in docker/run.sh (or sandboxRunArgs() from the
+# package): read-only root, tmpfs home and /tmp, no capabilities but SETUID and
+# SETGID, no-new-privileges, pid/memory/CPU limits, the token as a read-only
+# file mount, and the port on 127.0.0.1 only.
 
-FROM node:22-bookworm-slim AS build
+# Pinned by digest: node:22-bookworm-slim as of 2026-11-23. Bump deliberately.
+ARG NODE_IMAGE=node:22-bookworm-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee
+
+FROM ${NODE_IMAGE} AS build
 WORKDIR /pkg
+# docker/package-lock.json is this package's own lockfile (the repository's root
+# lockfile covers the whole workspace), pinned to the versions Callboard runs.
+# Playwright is installed only so the browser driver type-checks
+# (--ignore-scripts: no browser is downloaded), then pruned.
 COPY package.json tsconfig.json ./
+COPY docker/package-lock.json ./package-lock.json
+RUN npm ci --ignore-scripts --no-audit --no-fund
 COPY src ./src
-# No lockfile ships with the package. Playwright is installed only so the
-# browser driver type-checks (--ignore-scripts: no browser is downloaded),
-# then pruned: the image never runs a browser driver.
-RUN npm install --ignore-scripts --no-audit --no-fund \
- && npm run build \
+RUN npm run build \
  && npm prune --omit=dev --omit=optional --no-audit --no-fund
 
-FROM node:22-bookworm-slim
+FROM ${NODE_IMAGE}
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      xvfb xdotool imagemagick icewm xterm x11-utils x11-xserver-utils xfonts-base fonts-dejavu-core tini \
- && rm -rf /var/lib/apt/lists/* \
+      xvfb xdotool imagemagick icewm xterm x11-xserver-utils fonts-dejavu-core fonts-wqy-microhei tini \
+ # The dependency closure drags in things this headless, GL-less desktop never
+ # loads; purged deliberately (about 250 MB), and verified by the Docker test:
+ #  - mesa's DRI drivers + LLVM + z3: Xvfb's optional GLX loader. Without them
+ #    Xvfb runs without GLX, which xdotool, import, icewm and xterm don't use.
+ #  - cpp: needed only by xrdb in x11-xserver-utils; we use xhost alone.
+ #  - Ghostscript, its fonts and poppler-data: imlib2's PostScript loader (via icewm).
+ && dpkg --purge --force-depends \
+      libgl1-mesa-dri libllvm15 libz3-4 cpp cpp-12 libspectre1 libgs10 libgs10-common fonts-urw-base35 poppler-data \
+ && rm -rf /var/lib/apt/lists/* /usr/share/doc /usr/share/man \
+ # The runtime never installs packages: drop npm, npx and corepack.
+ && rm -rf /usr/local/lib/node_modules /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack /opt/yarn-* /usr/local/bin/yarn /usr/local/bin/yarnpkg \
  && test -x /usr/bin/xdotool && test -x /usr/bin/import \
- # Xvfb runs unprivileged; its socket directory must exist and be root-owned.
+ # Xvfb runs unprivileged; its socket directory must be root-owned (it is
+ # recreated on the /tmp tmpfs at start, too).
  && mkdir -p /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix
 
 # Two unprivileged users. `desktop` owns the X session and every app on it.
-# `driver` runs the driver host and alone holds the bearer token, so nothing
-# launched on the desktop can read it from the host process's environment.
+# `driver` runs the driver host and alone can reach the token, whose mount
+# point sits in a directory only `driver` may enter.
 RUN useradd --create-home --uid 10001 --shell /bin/bash desktop \
- && useradd --create-home --uid 10002 --shell /usr/sbin/nologin driver \
- && mkdir -p /home/desktop/outbox /home/desktop/.icewm \
- # No taskbar: one terminal is the whole test target, and no clock keeps frames stable.
- && printf 'ShowTaskBar=0\n' > /home/desktop/.icewm/preferences \
- && chown -R desktop:desktop /home/desktop/outbox /home/desktop/.icewm \
- && chmod 0755 /home/desktop /home/desktop/outbox
+ && useradd --no-create-home --home-dir /nonexistent --uid 10002 --shell /usr/sbin/nologin driver \
+ && chmod 0755 /home/desktop \
+ && mkdir -p /run/computer-use \
+ && chown root:driver /run/computer-use \
+ && chmod 0750 /run/computer-use
 
 COPY --from=build /pkg/package.json /opt/computer-use/package.json
 COPY --from=build /pkg/dist /opt/computer-use/dist
-COPY --from=build /pkg/node_modules /opt/computer-use/node_modules
+# The driver host loads only zod (driver-host-cli → native driver, remote host;
+# never the MCP server or the browser driver), so only zod ships. The Docker
+# test fails at startup if that ever stops being true.
+COPY --from=build /pkg/node_modules/zod /opt/computer-use/node_modules/zod
 COPY docker/start-desktop.sh /usr/local/bin/start-desktop.sh
 RUN chmod 0755 /usr/local/bin/start-desktop.sh
 
@@ -47,6 +67,7 @@ ENV COMPUTER_USE_DISPLAY=:99 \
     COMPUTER_USE_SCREEN=1280x800x24 \
     COMPUTER_USE_HOST_LISTEN=0.0.0.0 \
     COMPUTER_USE_HOST_PORT=7801 \
+    COMPUTER_USE_HOST_TOKEN_FILE=/run/computer-use/token \
     COMPUTER_USE_OUTBOX=/home/desktop/outbox \
     # The native driver insists on explicit full-desktop acknowledgement and
     # all four scopes on allow, because X11 cannot confine the apps it drives.
@@ -56,6 +77,6 @@ ENV COMPUTER_USE_DISPLAY=:99 \
     COMPUTER_USE_ACKNOWLEDGE_FULL_DESKTOP_ACCESS=1
 
 EXPOSE 7801
-# The entrypoint starts as root only to start each process as its own
-# unprivileged user; nothing keeps running as root except tini.
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/start-desktop.sh"]
+# Starts as root only to split the desktop and the driver host into their two
+# users, then execs into tini as `driver`; see start-desktop.sh.
+ENTRYPOINT ["/usr/local/bin/start-desktop.sh"]

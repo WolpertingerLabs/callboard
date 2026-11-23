@@ -1,26 +1,47 @@
 #!/bin/sh
-# Start the X session as `desktop`, then exec the driver host as `driver`.
+# Start the X session as `desktop`, then exec tini, with the driver host under
+# it, as `driver`. This script is PID 1 and runs as root only until that exec;
+# afterwards no process in the container is root or holds a capability. The
+# only capabilities it needs are SETUID and SETGID (for setpriv); run it with
+# --cap-drop=ALL --cap-add=SETUID --cap-add=SETGID (see sandboxRunArgs).
 set -eu
 
-if [ -z "${COMPUTER_USE_HOST_TOKEN:-}" ]; then
-  echo "start-desktop: COMPUTER_USE_HOST_TOKEN is not set; refusing to start" >&2
+if [ -n "${COMPUTER_USE_HOST_TOKEN:-}" ]; then
+  echo "start-desktop: COMPUTER_USE_HOST_TOKEN is not supported; mount the token as a file (see docker/run.sh)" >&2
+  exit 2
+fi
+token_file="${COMPUTER_USE_HOST_TOKEN_FILE:-/run/computer-use/token}"
+# Root holds no DAC override here, so only existence is checked; the driver
+# host reads and validates the file itself.
+if [ ! -e "$token_file" ]; then
+  echo "start-desktop: no token file at $token_file; mount one read-only (see docker/run.sh)" >&2
   exit 2
 fi
 
 display="${COMPUTER_USE_DISPLAY:-:99}"
 screen="${COMPUTER_USE_SCREEN:-1280x800x24}"
 
-# A clean environment for the desktop: no token, nothing inherited from docker run.
-as_desktop() {
-  setpriv --reuid=desktop --regid=desktop --init-groups --inh-caps=-all \
+# Replace the current (sub)shell with "$@" as `desktop`, in a clean
+# environment: nothing inherited from docker run.
+exec_desktop() {
+  exec setpriv --reuid=desktop --regid=desktop --init-groups --inh-caps=-all \
     env -i HOME=/home/desktop USER=desktop LOGNAME=desktop SHELL=/bin/bash \
     PATH=/usr/local/bin:/usr/bin:/bin DISPLAY="$display" LANG=C.UTF-8 "$@"
 }
+# Run "$@" as `desktop` and wait for it.
+as_desktop() { (exec_desktop "$@"); }
+# Start "$@" as `desktop` in the background. The subshell execs, so no root
+# shell is left waiting on it.
+spawn_desktop() { (exec_desktop "$@") >/dev/null 2>&1 & }
+
+# /tmp and /home/desktop may be fresh tmpfs mounts: recreate what the image had.
+mkdir -p /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix
+as_desktop sh -c 'mkdir -p "$HOME/outbox" "$HOME/.icewm" && printf "ShowTaskBar=0\n" > "$HOME/.icewm/preferences"'
 
 cd /home/desktop
-as_desktop Xvfb "$display" -screen 0 "$screen" -nolisten tcp -noreset &
+spawn_desktop Xvfb "$display" -screen 0 "$screen" -nolisten tcp -noreset
 i=0
-until as_desktop xdpyinfo >/dev/null 2>&1; do
+until as_desktop xdotool getdisplaygeometry >/dev/null 2>&1; do
   i=$((i + 1))
   if [ "$i" -gt 100 ]; then
     echo "start-desktop: Xvfb did not come up on $display" >&2
@@ -28,16 +49,16 @@ until as_desktop xdpyinfo >/dev/null 2>&1; do
   fi
   sleep 0.1
 done
-# The driver user connects to the desktop user's X server.
+# Only the desktop user and the driver may connect to the X server.
 as_desktop xhost +si:localuser:driver >/dev/null
 # icewm, not openbox: each non-ASCII character the driver types remaps a
 # scratch keycode, so every client sees two keyboard MappingNotify events.
 # Under a UTF-8 locale openbox spends ~80ms on each, falls minutes behind on a
 # long string, and while behind it never releases its click-to-focus pointer
 # grab, freezing the pointer. icewm keeps up (qualified live; see the README).
-as_desktop icewm >/dev/null 2>&1 &
+spawn_desktop icewm
 # The test target: one terminal in the desktop user's home, restarted if it exits.
-as_desktop sh -c 'cd /home/desktop && while :; do xterm -geometry 100x30+40+40 -fa "DejaVu Sans Mono" -fs 12 -title "test-terminal"; sleep 1; done' >/dev/null 2>&1 &
+spawn_desktop sh -c 'cd "$HOME" && while :; do xterm -geometry 100x30+40+40 -fa "DejaVu Sans Mono" -fs 12 -title "test-terminal"; sleep 1; done'
 # Serve only once the terminal is on screen, so a reachable host means a ready desktop.
 i=0
 until as_desktop xdotool search --onlyvisible --class xterm >/dev/null 2>&1; do
@@ -49,12 +70,13 @@ until as_desktop xdotool search --onlyvisible --class xterm >/dev/null 2>&1; do
   sleep 0.1
 done
 
+# tini stays PID 1 (reaping the desktop processes started above) as `driver`.
 exec setpriv --reuid=driver --regid=driver --init-groups --inh-caps=-all \
-  env -i HOME=/home/driver PATH=/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 \
-  COMPUTER_USE_HOST_TOKEN="$COMPUTER_USE_HOST_TOKEN" \
+  env -i HOME=/nonexistent PATH=/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 \
+  COMPUTER_USE_HOST_TOKEN_FILE="$token_file" \
   COMPUTER_USE_DISPLAY="$display" \
   COMPUTER_USE_ACKNOWLEDGE_FULL_DESKTOP_ACCESS="${COMPUTER_USE_ACKNOWLEDGE_FULL_DESKTOP_ACCESS:-}" \
   COMPUTER_USE_HOST_LISTEN="${COMPUTER_USE_HOST_LISTEN:-0.0.0.0}" \
   COMPUTER_USE_HOST_PORT="${COMPUTER_USE_HOST_PORT:-7801}" \
   COMPUTER_USE_OUTBOX="${COMPUTER_USE_OUTBOX:-}" \
-  node /opt/computer-use/dist/driver-host-cli.js
+  /usr/bin/tini -- node /opt/computer-use/dist/driver-host-cli.js

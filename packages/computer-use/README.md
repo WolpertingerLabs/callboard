@@ -27,7 +27,7 @@ Types and `ComputerUseError` live in `src/contracts.ts` and are exported from bo
 - `ComputerUseService`, `createComputerUseService(options?)`
 - `createBrowserDriver(options?)`, `BrowserDriverOptions`
 - `createNativeDesktopDriver(options?)`, `NativeDesktopDriverOptions`
-- `createDriverHost(options)`, `createRemoteDriver(options)`, and their types: see [Remote desktop container](#remote-desktop-container)
+- `createDriverHost(options)`, `readTokenFile(path)`, `createRemoteDriver(options)`, `sandboxRunArgs(options)`, `PROTOCOL`, `HOST_CAPABILITIES`, and their types: see [Sandbox desktop container](#sandbox-desktop-container)
 - `createMcpServer(service, principal): McpServer`
 - `getToolDefinitions(service, principal): ToolDefinition[]`, `ToolDefinition`
 - `actionSchema`, the Zod schema the service validates actions against, so a host can check an action before acting on it
@@ -85,7 +85,7 @@ const unsubscribe = service.subscribe(principal, (event) => {});
 - Holds and waits are capped at 2 seconds, and text at 4096 characters.
 - Pointer coordinates are checked against an authorized frame.
 - Native scroll maps every 100 pixels to one wheel step.
-- Native typing chains up to 64 keys per `xdotool` call. Printable ASCII, newline and tab need no delay; any other character is typed through a remapped scratch keycode with a 10 ms per-key delay (about 20 ms per character), so a `type` action may contain at most 1000 of them; more is refused with `invalid_request` before any input is sent. Qualified live on Xvfb; see [Tests and qualification](#tests-and-qualification).
+- Native typing chains up to 64 keys per `xdotool` call. Printable ASCII, newline and tab need no delay; any other character is typed through a remapped scratch keycode with a 10 ms per-key delay (about 20 ms per character), so a `type` action may contain at most 1000 of them; more is refused with `invalid_request` before any input is sent. A typing call is never killed part-way: abort is honoured between calls, which carry at most 16 such characters (about 350 ms), so no key is left held. Qualified live on Xvfb; see [Tests and qualification](#tests-and-qualification).
 
 ## Authorization and lifecycle
 
@@ -189,13 +189,15 @@ There's no watchdog, so a killed process can leave input held; use an independen
 
 Command choices follow upstream [xdotool](https://github.com/jordansissel/xdotool/blob/main/xdotool.pod) and [ImageMagick import](https://imagemagick.org/script/import.php) documentation.
 
-## Remote desktop container
+## Sandbox desktop container
 
-The X11 driver can run inside a Docker container and be driven from another process over an authenticated local connection. The container is a **driver host**, not an MCP server and not a policy point: it exposes one local `Driver`'s `probe`, `open`, `observe`, `act`, `releaseInput` and `close` over HTTP, and everything that decides whether an operation may happen (authorization, leases, approvals, the 15-minute TTL) stays in the `ComputerUseService` that connects to it.
+The X11 driver can run inside a Docker container and be driven from another process over an authenticated loopback connection. The container is a **driver host**, not an MCP server and not a policy point: it exposes one local `Driver`'s `probe`, `open`, `observe`, `act`, `releaseInput` and `close` over HTTP, and everything that decides whether an operation may happen (authorization, leases, approvals, the 15-minute TTL) stays in the `ComputerUseService` that connects to it.
 
 ```ts
-import { ComputerUseService, createRemoteDriver } from "@wolpertingerlabs/computer-use";
-const desktop = createRemoteDriver({ url: "http://127.0.0.1:7801", token: process.env.DESKTOP_TOKEN! });
+import { ComputerUseService, createRemoteDriver, sandboxRunArgs } from "@wolpertingerlabs/computer-use";
+// docker run arguments with every hardening flag; the token only as a file path:
+const args = sandboxRunArgs({ port: 0, tokenFile: "/private/dir/token", name: "sandbox-1", labels: { "dev.example.owner": "x" } });
+const desktop = createRemoteDriver({ url: "http://127.0.0.1:7801", token });
 const service = new ComputerUseService({ targets: [{ id: "desktop", enabled: true, driver: desktop }], authorize });
 await desktop.listOutbox(); // [{ name, size, sha256 }]
 await desktop.downloadOutboxFile("report.pdf"); // { name, size, sha256, data: Buffer }, digest checked
@@ -205,19 +207,46 @@ await desktop.downloadOutboxFile("report.pdf"); // { name, size, sha256, data: B
 
 ```sh
 docker build -t callboard/computer-use-desktop:local -f docker/Dockerfile .
-docker/run.sh 7801   # runs it on 127.0.0.1:7801 with a fresh random token and prints both values
+docker/run.sh 7801   # hardened flags, a fresh token in a private temp file, 127.0.0.1:7801
 ```
 
-or by hand, passing the token through the environment rather than argv:
+`run.sh` prints `CALLBOARD_REMOTE_DESKTOP_URL` and `CALLBOARD_REMOTE_DESKTOP_TOKEN_FILE` for Callboard, and the command to stop it and delete the token.
 
-```sh
-export COMPUTER_USE_HOST_TOKEN=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
-docker run -d --rm --name callboard-computer-use-desktop -p 127.0.0.1:7801:7801 -e COMPUTER_USE_HOST_TOKEN callboard/computer-use-desktop:local
-```
+**The token is a file, never an environment variable.** An environment variable shows in `docker inspect` and in every `docker exec` shell. The driver host reads `COMPUTER_USE_HOST_TOKEN_FILE` (default `/run/computer-use/token`, a read-only bind mount) and refuses to start if `COMPUTER_USE_HOST_TOKEN` is set at all. `readTokenFile` rejects a symlink, a non-regular file, a group- or world-writable file, and anything other than one line of 32–4096 characters. On the host, `run.sh` writes the token as a `0444` file inside a `0700` directory. The file has to be readable by "others" because the container's driver user isn't your uid; the directory is what keeps it private. Inside the container the mount point's directory is `root:driver 0750`, so the desktop user can't even list it. Verified by the Docker test: the token appears in neither `docker inspect` nor any process environment, and the desktop user gets `Permission denied`.
 
-**Keep the port local.** The bearer token is the only authentication, and it grants full control of that desktop. Publish the port on `127.0.0.1` only, as above. To reach a container on another machine, put it behind a TLS proxy that authenticates; `createRemoteDriver` refuses plain `http` to anything but a loopback address.
+**Hardening** (`sandboxRunArgs`; `run.sh` mirrors it, and a test keeps the two in step):
 
-**What's in the image.** Xvfb on `:99` at 1280×800×24, the icewm window manager, one xterm (respawned if it exits) as the test target, `/usr/bin/xdotool`, ImageMagick's `/usr/bin/import`, Node 22 and this package. Two unprivileged users: `desktop` owns the X session and every app on it, and `driver` runs `computer-use-driver-host` and alone holds the token, so nothing launched on the desktop can read it from another process's environment. The entrypoint starts as root only to start those processes; nothing but `tini` stays root. Inside the container the native driver runs with full-desktop access acknowledged and all four scopes on `allow`, which is correct there: the container (its filesystem, processes and network) is the boundary. It still has outbound network access by default; attach it to a restricted Docker network if the desktop must not reach the internet.
+| Flag | Why |
+| --- | --- |
+| `--read-only`, `--tmpfs /tmp` (`noexec`, 64m), `--tmpfs /home/desktop` (512m) | Nothing persists. The only writable places are the desktop user's home (outbox included) and `/tmp` (the X socket directory). |
+| `--cap-drop=ALL --cap-add=SETUID --cap-add=SETGID` | The entrypoint runs as root just long enough to start the desktop as `desktop`, then execs into tini as `driver`. The two added capabilities exist only for that split. Afterwards no process is root and none holds a capability (checked by the Docker test). |
+| `--security-opt=no-new-privileges` | No setuid or file-capability gain. |
+| `--pids-limit=256 --memory=1g --memory-swap=1g --cpus=1` | Defaults; pass `limits` to change them. |
+| `--publish 127.0.0.1:<port>:7801` | Loopback only. The token is the whole authentication. |
+| `--mount type=bind,…token,readonly` | The only host path. No Docker socket, no devices, not privileged. |
+
+Outbound network stays on Docker's default bridge. Attach a restricted network if the desktop must not reach the internet.
+
+**Keep the port local.** To reach a container on another machine, put it behind a TLS proxy that authenticates. `createRemoteDriver` refuses plain `http` to anything but a loopback address.
+
+**What's in the image** (about 430 MB unpacked, 140 MB compressed):
+- **Desktop:** Xvfb on `:99` at 1280×800×24, icewm, and one xterm (respawned if it exits) as the test target.
+- **Tools:** `/usr/bin/xdotool`, ImageMagick's `/usr/bin/import`, DejaVu fonts plus WenQuanYi Micro Hei for CJK and Hangul.
+- **Runtime:** Node 22 and this package, with only `zod` among its dependencies (the driver host loads nothing else).
+
+How it's built:
+- The base image is pinned by digest, and the package builds with `npm ci` from `docker/package-lock.json`. That lock is pinned to the versions Callboard runs; `npm ci` fails if it drifts from `package.json`.
+- npm, npx and corepack are removed. Packages the dependency closure drags in but a headless, GL-less desktop never loads are purged: mesa's DRI drivers with LLVM and z3, `cpp`, and Ghostscript with its fonts.
+
+Users and permissions:
+- Two unprivileged users: `desktop` owns the X session and every app on it, and `driver` runs `computer-use-driver-host` and alone can reach the token.
+- Inside the container the native driver runs with full-desktop access acknowledged and all four scopes on `allow`. That's correct there, because the container is the boundary.
+
+**Protocol versioning.** `PROTOCOL` is `{ major: 1, minor: 0 }`, so a daemon and a container from different releases can tell whether they understand each other:
+
+- `GET /v1/identity` is answered at any version. It reports `protocol`, `capabilities` (`HOST_CAPABILITIES`), a per-process `instanceId` and the hostname.
+- **Major** breaks compatibility and is also the URL prefix. The client sends `X-Computer-Use-Protocol: <major>.<minor>` on every request, and the host refuses every other endpoint with `unsupported` (501) unless the major matches. Before probe, open and outbox calls, the client checks `/v1/identity` and fails closed on a different major, or on a host from before versioning. A probe then reports `readiness: "unsupported"`.
+- **Minor** only adds. New behaviour is announced as a capability, and a client checks for the capability, never the minor number. The rules are the same as for Callboard's stream types: fields are added, never removed or renamed, and an existing field's meaning never changes.
 
 **The driver host** (`createDriverHost({ driver, token, outboxDir? })`, or the `computer-use-driver-host` bin, configured by `COMPUTER_USE_*` environment variables):
 
@@ -228,7 +257,11 @@ docker run -d --rm --name callboard-computer-use-desktop -p 127.0.0.1:7801:7801 
 - Returns frames as PNG, with width and height read from the image itself. Coordinates are 1:1 with those pixels.
 - Serves one session at a time; another `open` gets `lease_conflict`.
 
-**Outbox (spike).** `~/outbox` in the container (`/home/desktop/outbox`) is listed with name, size and SHA-256, and served by name. Names are plain file names: no leading dot, no separators, at most 128 characters, so `..` and absolute paths are refused, and symlinks are refused at open time with `O_NOFOLLOW`. Files over 64 MiB are listed without a digest and not served, and a listing stops at 200 entries. The client checks the digest against the bytes it received.
+**Outbox.** `~/outbox` in the container (`/home/desktop/outbox`, on the home tmpfs) is listed with name, size and SHA-256, and served by name.
+- Names are plain file names: no leading dot, no separators, at most 128 characters. So `..` and absolute paths are refused, and symlinks are refused at open time with `O_NOFOLLOW`.
+- Files over 64 MiB are listed without a digest and not served, and a listing stops at 200 entries.
+- The client checks the digest against the bytes it received.
+- Syncing it anywhere, and draining it before the container is destroyed, are the host's job.
 
 ## MCP server
 
@@ -283,7 +316,8 @@ The offline suites cover:
 - **MCP:** real in-memory initialize/list/call, stdio subprocess discovery, and a stdio run whose enabled target has no authorizer and must deny `probe` and `open` without opening the driver.
 - **Native lock directory:** PID record, dead-holder reclaim, quarantine and concurrent reclaim, all without a display.
 - **Native typing:** chained `xdotool` argument vectors, delay only for remapped characters, and the 1000-character refusal.
-- **Remote driver host:** token refusal on every endpoint, schema refusal on both sides, abort and operation bounds, disconnect and heartbeat fencing through the service, open cancellation, outbox path safety (`..`, absolute paths, hidden files, directories, symlinks, size cap) and digest checking.
+- **Sandbox run arguments:** every hardening flag, input validation, and `run.sh` kept in step.
+- **Remote driver host:** protocol negotiation failing closed in both directions (another major, none, a missing capability), token files, token refusal on every endpoint, schema refusal on both sides, abort and operation bounds, disconnect and heartbeat fencing through the service, open cancellation, outbox path safety (`..`, absolute paths, hidden files, directories, symlinks, size cap) and digest checking.
 
 **Live remote desktop (opt-in, needs Docker):**
 
@@ -291,7 +325,10 @@ The offline suites cover:
 CALLBOARD_DOCKER_TESTS=1 npm test
 ```
 
-This builds the image, runs it on a random `127.0.0.1` port with a random token, and through `createRemoteDriver` and `ComputerUseService` checks: the token isn't readable from the desktop user's processes; probe; open; a 1280×800 PNG frame; pointer coordinates equal to screenshot pixels (`xdotool getmouselocation` at the corners); typing, a key chord and Enter each changing the frame; non-ASCII typing with the pointer still responsive afterwards; a file written into the outbox by typing a shell command in the terminal, then listed and downloaded with a matching digest; a binary file written with `docker exec`, likewise; a symlink not listed and not served; stop and reopen; and `docker kill` under a live session fencing it `failed` with no further call. The container is always removed; the image is left in place. Without the variable the test is skipped.
+This builds the image and runs it with `sandboxRunArgs` (every hardening flag) on a random `127.0.0.1` port, with a random token in a read-only mounted file. Then it checks:
+
+- **As Docker reports it:** the hardening settings themselves; the token absent from `docker inspect` and from every process environment; no process running as root or holding a capability; the token file unreadable by the desktop user; the root filesystem read-only; a CJK font present.
+- **Through `createRemoteDriver` and `ComputerUseService`:** probe; open; a 1280×800 PNG frame; pointer coordinates equal to screenshot pixels (`xdotool getmouselocation` at the corners); typing, a key chord and Enter each changing the frame; non-ASCII typing with the pointer still responsive afterwards; a file written into the outbox by typing a shell command in the terminal, then listed and downloaded with a matching digest; a binary file written with `docker exec`, likewise; a symlink not listed and not served; stop and reopen; and `docker kill` under a live session fencing it `failed` with no further call. The container is always removed; the image is left in place. Without the variable the test is skipped.
 
 **Native X11 driver, qualified on Xvfb (inside the container):** screenshots; pointer `move`, left/right `click`, `drag` (exact end points; a title-bar drag moves the window by exactly the requested distance) and `scroll`; key chords such as `Shift+a`, `Control+A`, `Control+u`, `Enter`, `Tab`, `Escape`, `F1`, with no modifier left held afterwards; typing of all 95 printable ASCII characters, Latin-1, `€`, arrows, CJK and emoji (byte-exact, checked by typing into `cat > file`); 4000 ASCII characters in about 0.6 s; 1000 CJK characters in about 21 s; an aborted `type` fencing the session. Found and fixed while qualifying:
 
@@ -299,7 +336,9 @@ This builds the image, runs it on a random `127.0.0.1` port with a random token,
 - **Chaining without a delay drops non-ASCII characters**, because each one is typed through a scratch keycode that xdotool remaps and the client reads it after the mapping has moved on. Those characters keep a 10 ms per-key delay.
 - **Non-ASCII typing can freeze the pointer under some window managers.** Each remap sends every client a keyboard `MappingNotify`. Under a UTF-8 locale openbox spends about 80 ms on each, falls minutes behind on a long string, and meanwhile holds its click-to-focus pointer grab, so the pointer stops moving. The image uses icewm, which keeps up. This is a property of the desktop, not the driver: on another X desktop, check the window manager the same way.
 
-Still open: a key held when `xdotool` is killed mid-chunk is released by `keyup` on the same keysym, which for a remapped character may land on a different scratch keycode; a monospace CJK font isn't installed in the image, so CJK renders as boxes (the characters themselves are correct).
+- **A key could be left held when typing was cancelled.** Killing `xdotool` between a keydown and its keyup left that key down, and for a remapped character a later keyup by keysym can miss the scratch keycode it was pressed on. A typing call is now never killed: abort waits for the current call, which is short. Verified live: cancelling a 300-character non-ASCII `type` settled in 68 ms, and the next session typed exactly.
+
+Under the hardened flags (1 CPU, 1 GB), 1000 CJK characters still type in about 21 s with the pointer responsive straight after, and CJK and Hangul render (WenQuanYi Micro Hei).
 
 **Not qualified:**
 

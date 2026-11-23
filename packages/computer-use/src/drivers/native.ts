@@ -48,6 +48,26 @@ const TYPE_FAST = /^[\x20-\x7e\n\t]$/;
 const TYPE_SLOW_DELAY_MS = "10";
 /** ~22ms each on Xvfb: past this, one action could not finish inside the 30s bound. */
 const TYPE_MAX_SLOW = 1000;
+/** Remapped characters per exec: ~22ms each, so a chunk settles within ~350ms of an abort. */
+const TYPE_CHUNK_SLOW = 16;
+/** Split typed text into exec-sized chunks: at most TYPE_CHUNK characters, of which at most TYPE_CHUNK_SLOW remapped. */
+function typeChunks(characters: string[]): string[][] {
+  const chunks: string[][] = [];
+  let current: string[] = [];
+  let slow = 0;
+  for (const c of characters) {
+    const isSlow = !TYPE_FAST.test(c);
+    if (current.length === TYPE_CHUNK || (isSlow && slow === TYPE_CHUNK_SLOW)) {
+      chunks.push(current);
+      current = [];
+      slow = 0;
+    }
+    current.push(c);
+    if (isSlow) slow++;
+  }
+  if (current.length) chunks.push(current);
+  return chunks;
+}
 const keysymFor = (character: string) =>
   character === "\n" ? "Return" : character === "\t" ? "Tab" : `U${character.codePointAt(0)!.toString(16).padStart(4, "0")}`;
 /** Fixed executables and argument vectors; no shell, eval, app launcher, clipboard or file transfer. */
@@ -221,19 +241,27 @@ export function createNativeDesktopDriver(options: NativeDesktopDriverOptions = 
                 // per key, and with no delay the client reads the keycode after
                 // the mapping has moved on and drops the character. Hence the
                 // per-key delay for those only.
+                //
+                // A chunk is never killed part-way: abort is honoured between
+                // chunks, which are kept short enough (TYPE_CHUNK_SLOW) to settle
+                // promptly. Killing xdotool between a keydown and its keyup left
+                // the key held, and for a remapped character no later keyup by
+                // keysym reliably reaches the same scratch keycode, so the only
+                // safe release is the one in the same exec. If an exec still
+                // fails (its 5s timeout), the keys go through releaseInput as
+                // before and the session fails.
                 const characters = [...a.text];
                 if (characters.filter((c) => !TYPE_FAST.test(c)).length > TYPE_MAX_SLOW)
                   throw new ComputerUseError("invalid_request", `Type at most ${TYPE_MAX_SLOW} non-ASCII characters per action; split the text`);
-                for (let i = 0; i < characters.length; i += TYPE_CHUNK) {
+                for (const part of typeChunks(characters)) {
                   sig.throwIfAborted();
-                  const chunk = characters.slice(i, i + TYPE_CHUNK).map((c) => ({ key: keysymFor(c), delay: TYPE_FAST.test(c) ? "0" : TYPE_SLOW_DELAY_MS }));
+                  const chunk = part.map((c) => ({ key: keysymFor(c), delay: TYPE_FAST.test(c) ? "0" : TYPE_SLOW_DELAY_MS }));
                   for (const { key } of chunk) heldKeys.add(key);
-                  await input(
-                    chunk.flatMap(({ key, delay }) => ["keydown", "--delay", delay, key, "keyup", "--delay", delay, key]),
-                    sig,
-                  );
+                  // No signal: see above.
+                  await input(chunk.flatMap(({ key, delay }) => ["keydown", "--delay", delay, key, "keyup", "--delay", delay, key]));
                   for (const { key } of chunk) heldKeys.delete(key);
                 }
+                sig.throwIfAborted();
                 break;
               }
               case "key":

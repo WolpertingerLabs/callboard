@@ -12,9 +12,11 @@
  * connection. Lose that connection and the host aborts whatever is running,
  * releases input and closes the session.
  *
- * Endpoints (all require `Authorization: Bearer <token>`):
+ * Endpoints (all require `Authorization: Bearer <token>`; all but
+ * `/v1/identity` also require `X-Computer-Use-Protocol: <major>.<minor>` with
+ * this host's major — see `PROTOCOL` in protocol.ts):
  *
- *   GET    /v1/identity                     HostIdentity
+ *   GET    /v1/identity                     HostIdentity: protocol, capabilities, instance
  *   POST   /v1/probe                        Probe
  *   POST   /v1/sessions                     NDJSON stream: {"type":"opened","sessionId"} then pings
  *   POST   /v1/sessions/:id/observe         Frame (PNG, width/height from the image)
@@ -27,7 +29,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, open, readdir } from "node:fs/promises";
+import { lstat, open, readdir, readFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { ComputerUseError, type Driver, type DriverSession } from "../contracts.js";
@@ -40,7 +42,9 @@ import {
   MAX_REQUEST_BYTES,
   MIN_TOKEN_LENGTH,
   OUTBOX_NAME,
-  PROTOCOL_VERSION,
+  HOST_CAPABILITIES,
+  PROTOCOL,
+  PROTOCOL_HEADER,
   STATUS_FOR,
   asComputerUseError,
   pngSize,
@@ -142,6 +146,31 @@ async function openOutboxFile(dir: string, name: string) {
   return { handle, size: stat.size };
 }
 
+/** `"1"` or `"1.4"` → 1; anything else → undefined. */
+export function protocolMajor(value: unknown): number | undefined {
+  const match = typeof value === "string" ? /^(\d{1,4})(?:\.\d{1,4})?$/.exec(value.trim()) : null;
+  return match ? Number(match[1]) : undefined;
+}
+
+/**
+ * Read a bearer token from a file, the way the driver host is meant to get it:
+ * a read-only bind mount, never an environment variable (which `docker
+ * inspect` and every `docker exec` shell can read). Refuses a symlink, a
+ * non-regular file, a file anyone else could write, and anything outside
+ * 32–4096 characters once trailing whitespace is trimmed.
+ */
+export async function readTokenFile(path: string): Promise<string> {
+  const stat = await lstat(path).catch(() => undefined);
+  if (!stat) throw new ComputerUseError("invalid_request", "Token file not found");
+  if (!stat.isFile()) throw new ComputerUseError("invalid_request", "Token file must be a regular file, not a symlink or directory");
+  if ((stat.mode & 0o022) !== 0) throw new ComputerUseError("invalid_request", "Token file must not be writable by group or others");
+  if (stat.size > 4096) throw new ComputerUseError("invalid_request", "Token file is too large");
+  const token = (await readFile(path, "utf8")).trim();
+  if (token.length < MIN_TOKEN_LENGTH || /\s/.test(token))
+    throw new ComputerUseError("invalid_request", `Token must be one line of at least ${MIN_TOKEN_LENGTH} non-space characters`);
+  return token;
+}
+
 export function createDriverHost(options: DriverHostOptions): DriverHost {
   const { driver } = options;
   if (typeof options.token !== "string" || options.token.length < MIN_TOKEN_LENGTH)
@@ -151,7 +180,13 @@ export function createDriverHost(options: DriverHostOptions): DriverHost {
   const opTimeout = options.operationTimeoutMs ?? DEFAULT_OPERATION_TIMEOUT_MS;
   const heartbeatMs = options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS;
   const maxFile = options.maxOutboxFileBytes ?? DEFAULT_MAX_OUTBOX_FILE_BYTES;
-  const identity: HostIdentity = Object.freeze({ protocol: PROTOCOL_VERSION, instanceId: randomUUID(), hostname: hostname(), kind: "native-desktop" });
+  const identity: HostIdentity = Object.freeze({
+    protocol: { ...PROTOCOL },
+    capabilities: [...HOST_CAPABILITIES],
+    instanceId: randomUUID(),
+    hostname: hostname(),
+    kind: "native-desktop",
+  });
   const sessions = new Map<string, HostSession>();
   let opening = false;
   let closed = false;
@@ -337,7 +372,14 @@ export function createDriverHost(options: DriverHostOptions): DriverHost {
     const method = req.method ?? "GET";
     if (parts[0] !== "v1") throw new HttpError("not_found");
     const [, resource, id, verb] = parts;
+    // Identity is the one endpoint served to any protocol version: it is how a
+    // client from another release learns that it cannot talk to this host.
     if (resource === "identity" && method === "GET" && parts.length === 2) return send(res, 200, identity);
+    // Everything else fails closed on a protocol major this host does not speak, or none at all.
+    if (protocolMajor(req.headers[PROTOCOL_HEADER.toLowerCase()]) !== PROTOCOL.major) {
+      req.resume();
+      throw new HttpError("unsupported");
+    }
     if (resource === "probe" && method === "POST" && parts.length === 2) {
       await readJson(req);
       let timer: NodeJS.Timeout | undefined;

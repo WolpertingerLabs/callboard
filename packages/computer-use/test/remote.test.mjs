@@ -5,7 +5,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { ComputerUseService, createDriverHost, createRemoteDriver } from "../dist/index.js";
+import { createServer } from "node:http";
+import { ComputerUseService, HOST_CAPABILITIES, PROTOCOL, createDriverHost, createRemoteDriver, readTokenFile } from "../dist/index.js";
 
 // A remote driver host and client on loopback, with a fake native driver
 // behind the host. No display, no Docker.
@@ -78,7 +79,8 @@ async function openObserved(service) {
   return { lease, ref, observation };
 }
 
-const raw = (url, path, init = {}) => fetch(`${url}${path}`, { ...init, headers: { Authorization: `Bearer ${TOKEN}`, ...init.headers } });
+const raw = (url, path, init = {}) =>
+  fetch(`${url}${path}`, { ...init, headers: { Authorization: `Bearer ${TOKEN}`, "X-Computer-Use-Protocol": "1.0", ...init.headers } });
 
 async function waitFor(predicate, ms = 3000) {
   const end = Date.now() + ms;
@@ -432,4 +434,117 @@ test("an unreachable host probes unavailable and fails open without hanging", as
   assert.equal(probe.available, false);
   assert.equal(probe.readiness, "setup-required");
   await assert.rejects(remote.open({ sessionId: "s", signal: new AbortController().signal }), { code: "driver_error" });
+});
+
+test("identity reports the protocol version and capabilities", async (t) => {
+  const { host, url } = await startHost();
+  t.after(() => host.close());
+  const identity = await createRemoteDriver({ url, token: TOKEN }).identity();
+  assert.deepEqual(identity.protocol, { major: PROTOCOL.major, minor: PROTOCOL.minor });
+  assert.deepEqual(identity.capabilities, [...HOST_CAPABILITIES]);
+  assert.equal(PROTOCOL.major, 1);
+});
+
+test("the host fails closed on a missing or unknown protocol major, but still says who it is", async (t) => {
+  const { host, url, calls } = await startHost();
+  t.after(() => host.close());
+  for (const header of [undefined, "2.0", "0", "1x", "", "1.0.0"]) {
+    const headers = { "X-Computer-Use-Protocol": header };
+    if (header === undefined) delete headers["X-Computer-Use-Protocol"];
+    for (const [method, path] of [
+      ["POST", "/v1/probe"],
+      ["POST", "/v1/sessions"],
+      ["GET", "/v1/outbox"],
+    ]) {
+      const res = await fetch(`${url}${path}`, { method, headers: { Authorization: `Bearer ${TOKEN}`, ...headers } });
+      assert.equal(res.status, 501, `${method} ${path} with ${header}`);
+      assert.deepEqual(await res.json(), { error: "unsupported" });
+    }
+    // Identity stays readable so a client from another release can explain the mismatch.
+    const identity = await fetch(`${url}/v1/identity`, { headers: { Authorization: `Bearer ${TOKEN}`, ...headers } });
+    assert.equal(identity.status, 200);
+  }
+  // A later minor of the same major is accepted.
+  assert.equal((await raw(url, "/v1/probe", { method: "POST", headers: { "X-Computer-Use-Protocol": "1.7" } })).status, 200);
+  assert.equal(calls.open, 0);
+});
+
+/** A fake host that reports `identity` and records every other request it gets. */
+async function fakeHost(t, identity) {
+  const seen = [];
+  const server = createServer((req, res) => {
+    if (req.url === "/v1/identity") {
+      res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(identity));
+      return;
+    }
+    seen.push(`${req.method} ${req.url}`);
+    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ available: true, kind: "native-desktop", capabilities: [], entries: [] }));
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  t.after(() => new Promise((r) => server.close(r)));
+  return { url: `http://127.0.0.1:${server.address().port}`, seen };
+}
+const fakeIdentity = (over = {}) => ({
+  protocol: { major: 1, minor: 0 },
+  capabilities: [...HOST_CAPABILITIES],
+  instanceId: "11111111-1111-4111-8111-111111111111",
+  hostname: "x",
+  kind: "native-desktop",
+  ...over,
+});
+
+test("the client fails closed on a host with another protocol major, or none", async (t) => {
+  for (const identity of [fakeIdentity({ protocol: { major: 2, minor: 0 } }), fakeIdentity({ protocol: 1 }), fakeIdentity({ protocol: undefined })]) {
+    const { url, seen } = await fakeHost(t, identity);
+    const remote = createRemoteDriver({ url, token: TOKEN });
+    const probe = await remote.probe();
+    assert.equal(probe.available, false);
+    assert.equal(probe.readiness, "unsupported");
+    assert.match(probe.reason, /incompatible version/);
+    await assert.rejects(remote.open({ sessionId: "s", signal: new AbortController().signal }), { code: "unsupported" });
+    await assert.rejects(remote.listOutbox(), { code: "unsupported" });
+    await assert.rejects(remote.downloadOutboxFile("a.txt"), { code: "unsupported" });
+    // Nothing past identity was ever asked of it.
+    assert.deepEqual(seen, []);
+  }
+});
+
+test("the client checks for a capability before relying on it", async (t) => {
+  const { url, seen } = await fakeHost(
+    t,
+    fakeIdentity({ protocol: { major: 1, minor: 9 }, capabilities: ["session.attach", "observe.png", "act", "future.thing"] }),
+  );
+  const remote = createRemoteDriver({ url, token: TOKEN });
+  // A newer minor with unknown extras is fine...
+  assert.equal((await remote.probe()).available, true);
+  // ...but an endpoint it does not announce is not called.
+  await assert.rejects(remote.listOutbox(), { code: "unsupported" });
+  await assert.rejects(remote.downloadOutboxFile("a.txt"), { code: "unsupported" });
+  assert.deepEqual(seen, ["POST /v1/probe"]);
+});
+
+test("readTokenFile accepts only a private-enough regular file holding a real token", async (t) => {
+  const dir = await fs.mkdtemp(join(os.tmpdir(), "cu-token-test-"));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const good = join(dir, "good");
+  await fs.writeFile(good, `${TOKEN}\n`, { mode: 0o444 });
+  assert.equal(await readTokenFile(good), TOKEN);
+  const cases = {
+    missing: null,
+    short: ["short\n", 0o400],
+    spaced: [`${TOKEN} ${TOKEN}\n`, 0o400],
+    writable: [`${TOKEN}\n`, 0o666],
+    big: ["x".repeat(5000), 0o400],
+  };
+  for (const [name, spec] of Object.entries(cases)) {
+    const path = join(dir, name);
+    if (spec) {
+      await fs.writeFile(path, spec[0]);
+      await fs.chmod(path, spec[1]);
+    }
+    await assert.rejects(readTokenFile(path), { code: "invalid_request" }, name);
+  }
+  await fs.symlink(good, join(dir, "link"));
+  await assert.rejects(readTokenFile(join(dir, "link")), { code: "invalid_request" });
+  await assert.rejects(readTokenFile(dir), { code: "invalid_request" });
 });

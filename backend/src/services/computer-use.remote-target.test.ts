@@ -5,7 +5,9 @@
  */
 import { afterEach, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
-import { hostname } from "node:os";
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { hostname, tmpdir } from "node:os";
+import { join } from "node:path";
 import * as pkg from "@wolpertingerlabs/computer-use";
 import { ComputerUseService, type Driver } from "@wolpertingerlabs/computer-use";
 import { ComputerUseHost, controlPrincipal, desktopDriver } from "./computer-use.js";
@@ -37,6 +39,7 @@ it("uses the remote driver only when both variables are set, and never falls bac
     // Plain http off loopback would send the token in the clear.
     { DISPLAY: ":0", CALLBOARD_REMOTE_DESKTOP_URL: "http://10.0.0.5:7801", CALLBOARD_REMOTE_DESKTOP_TOKEN: TOKEN },
     { DISPLAY: ":0", CALLBOARD_REMOTE_DESKTOP_URL: "http://127.0.0.1:7801", CALLBOARD_REMOTE_DESKTOP_TOKEN: "short" },
+    { DISPLAY: ":0", CALLBOARD_REMOTE_DESKTOP_URL: "http://127.0.0.1:7801", CALLBOARD_REMOTE_DESKTOP_TOKEN_FILE: "/nonexistent/token" },
   ]) {
     const driver = desktopDriver(pkg, env);
     expect("endpoint" in driver).toBe(false);
@@ -44,6 +47,31 @@ it("uses the remote driver only when both variables are set, and never falls bac
     expect(probe).toMatchObject({ available: false, readiness: "setup-required", reason: expect.stringMatching(/^Remote desktop is misconfigured/) });
     expect(probe.reason).not.toContain(TOKEN);
     await expect(driver.open({ sessionId: "s", signal: new AbortController().signal })).rejects.toMatchObject({ code: "unsupported" });
+  }
+});
+
+it("reads the token from CALLBOARD_REMOTE_DESKTOP_TOKEN_FILE, and refuses both or a non-file", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "cb-remote-token-"));
+  try {
+    const file = join(dir, "token");
+    writeFileSync(file, `${TOKEN}\n`, { mode: 0o400 });
+    const url = "http://127.0.0.1:7801";
+    expect(desktopDriver(pkg, { CALLBOARD_REMOTE_DESKTOP_URL: url, CALLBOARD_REMOTE_DESKTOP_TOKEN_FILE: file })).toMatchObject({ endpoint: "127.0.0.1:7801" });
+    symlinkSync(file, join(dir, "link"));
+    for (const env of [
+      { CALLBOARD_REMOTE_DESKTOP_URL: url, CALLBOARD_REMOTE_DESKTOP_TOKEN_FILE: file, CALLBOARD_REMOTE_DESKTOP_TOKEN: TOKEN },
+      { CALLBOARD_REMOTE_DESKTOP_URL: url, CALLBOARD_REMOTE_DESKTOP_TOKEN_FILE: dir },
+      { CALLBOARD_REMOTE_DESKTOP_URL: url, CALLBOARD_REMOTE_DESKTOP_TOKEN_FILE: join(dir, "link") },
+      { CALLBOARD_REMOTE_DESKTOP_TOKEN_FILE: file },
+    ]) {
+      const driver = desktopDriver(pkg, env);
+      expect("endpoint" in driver).toBe(false);
+      const probe = await driver.probe();
+      expect(probe.reason).toMatch(/^Remote desktop is misconfigured/);
+      expect(probe.reason).not.toContain(TOKEN);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 
@@ -96,6 +124,7 @@ function fixture() {
   return {
     service,
     desktop,
+    handle,
     notices,
     answer,
     restartHost: () => {
@@ -131,6 +160,22 @@ it("refuses to open on consent given to a different host instance", async () => 
   expect(f.desktop.open).not.toHaveBeenCalled();
   expect(f.notices.at(-1)).toMatch(/desktop control was NOT enabled/);
   expect(f.service.status(controlPrincipal(CHAT, "human"))).toEqual([]);
+});
+
+it("binds consent to the session that opened: a host replaced during open is stopped", async () => {
+  const f = fixture();
+  await host!.requestControl(CHAT, "desktop", "Edit the document", new AbortController().signal);
+  // Same instance at the pre-open check; replaced while open runs.
+  f.desktop.open.mockImplementationOnce(async () => {
+    f.restartHost();
+    return f.handle;
+  });
+  const completion = await f.answer();
+  expect(completion).toMatchObject({ ok: false, error: expect.stringContaining("changed while it was starting") });
+  expect(f.desktop.open).toHaveBeenCalledTimes(1);
+  expect(f.service.status(controlPrincipal(CHAT, "human")).every((s) => !["ready", "starting"].includes(s.state))).toBe(true);
+  await vi.waitFor(() => expect(f.handle.close).toHaveBeenCalled());
+  expect(f.notices.at(-1)).toMatch(/desktop control was NOT enabled/);
 });
 
 it("does not ask the human when the remote host cannot say who it is", async () => {

@@ -21,6 +21,8 @@ import {
   MAX_FRAME_RESPONSE_BYTES,
   MIN_TOKEN_LENGTH,
   OUTBOX_NAME,
+  PROTOCOL,
+  PROTOCOL_HEADER,
   pngSize,
   wireCode,
   type HostIdentity,
@@ -113,7 +115,11 @@ export function createRemoteDriver(options: RemoteDriverOptions): RemoteDriver {
     try {
       res = await fetch(`${origin}${prefix}${path}`, {
         method,
-        headers: { Authorization: auth, ...(init.body !== undefined ? { "Content-Type": "application/json" } : {}) },
+        headers: {
+          Authorization: auth,
+          [PROTOCOL_HEADER]: `${PROTOCOL.major}.${PROTOCOL.minor}`,
+          ...(init.body !== undefined ? { "Content-Type": "application/json" } : {}),
+        },
         body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
         signal,
         redirect: "error",
@@ -142,9 +148,40 @@ export function createRemoteDriver(options: RemoteDriverOptions): RemoteDriver {
 
   async function identity(signal?: AbortSignal): Promise<HostIdentity> {
     const value = await json<HostIdentity>(await request("GET", "/v1/identity", { signal, timeoutMs: Math.min(requestTimeout, 10_000) }));
-    if (!value || typeof value.instanceId !== "string" || !/^[0-9a-f-]{36}$/.test(value.instanceId) || value.kind !== "native-desktop")
-      throw new ComputerUseError("driver_error", "Driver host identity malformed");
-    return { protocol: Number(value.protocol), instanceId: value.instanceId, hostname: String(value.hostname).slice(0, 255), kind: "native-desktop" };
+    const protocol = value?.protocol as Partial<HostIdentity["protocol"]> | undefined;
+    if (
+      !value ||
+      typeof value.instanceId !== "string" ||
+      !/^[0-9a-f-]{36}$/.test(value.instanceId) ||
+      value.kind !== "native-desktop" ||
+      !protocol ||
+      !Number.isSafeInteger(protocol.major) ||
+      !Number.isSafeInteger(protocol.minor)
+    )
+      // A host from before versioning, or not a driver host at all: no basis to proceed.
+      throw new ComputerUseError("unsupported", "Driver host did not report a protocol version this client understands");
+    return {
+      protocol: { major: protocol.major!, minor: protocol.minor! },
+      capabilities: Array.isArray(value.capabilities) ? value.capabilities.filter((c) => typeof c === "string").slice(0, 64) : [],
+      instanceId: value.instanceId,
+      hostname: String(value.hostname).slice(0, 255),
+      kind: "native-desktop",
+    };
+  }
+  /**
+   * Check the host speaks our protocol major, and that it serves `capability`
+   * when given. Fails closed with `unsupported`. Runs before probe, open and
+   * outbox calls, so a host upgraded or replaced in between is caught.
+   */
+  async function negotiate(signal?: AbortSignal, capability?: string): Promise<HostIdentity> {
+    const host = await identity(signal);
+    if (host.protocol.major !== PROTOCOL.major)
+      throw new ComputerUseError(
+        "unsupported",
+        `Driver host speaks protocol ${host.protocol.major}.${host.protocol.minor}; this client speaks ${PROTOCOL.major}.x`,
+      );
+    if (capability && !host.capabilities.includes(capability)) throw new ComputerUseError("unsupported", `Driver host does not serve ${capability}`);
+    return host;
   }
 
   async function probe(): Promise<Probe> {
@@ -157,11 +194,19 @@ export function createRemoteDriver(options: RemoteDriverOptions): RemoteDriver {
       capabilities: [],
     });
     let value: Probe;
+    let host: HostIdentity;
     try {
+      host = await negotiate();
       value = await json<Probe>(await request("POST", "/v1/probe", { body: {} }));
     } catch (error) {
       const code = error instanceof ComputerUseError ? error.code : "driver_error";
       if (code === "denied") return no("setup-required", "The remote desktop host refused the configured token", `Driver host ${origin} answered 401`);
+      if (code === "unsupported")
+        return no(
+          "unsupported",
+          "The remote desktop host runs an incompatible version; update the image or Callboard so they match",
+          `Driver host ${origin}: ${error instanceof Error ? error.message : "incompatible"}`,
+        );
       return no("setup-required", "The remote desktop host is not reachable", `Driver host ${origin}: ${code}`);
     }
     if (!value || typeof value.available !== "boolean" || value.kind !== "native-desktop" || !Array.isArray(value.capabilities))
@@ -171,7 +216,7 @@ export function createRemoteDriver(options: RemoteDriverOptions): RemoteDriver {
       kind: "native-desktop",
       ...(typeof value.reason === "string" ? { reason: value.reason.slice(0, 500) } : {}),
       ...(typeof value.readiness === "string" ? { readiness: value.readiness } : {}),
-      operatorDetail: `Remote driver host ${origin}`,
+      operatorDetail: `Remote driver host ${origin}, protocol ${host.protocol.major}.${host.protocol.minor}, instance ${host.instanceId}`,
       capabilities: value.capabilities.filter((c) => typeof c === "string").slice(0, 16),
     };
   }
@@ -213,6 +258,7 @@ export function createRemoteDriver(options: RemoteDriverOptions): RemoteDriver {
     };
     let reader: ReadableStreamDefaultReader<Uint8Array>;
     try {
+      await negotiate(connection.signal, "session.attach");
       const res = await request("POST", "/v1/sessions", { body: {}, signal: connection.signal, timeoutMs: 0 });
       if (!res.body) throw new ComputerUseError("driver_error", "Driver host sent no session stream");
       reader = res.body.getReader();
@@ -331,6 +377,7 @@ export function createRemoteDriver(options: RemoteDriverOptions): RemoteDriver {
     open,
     identity,
     async listOutbox(signal) {
+      await negotiate(signal, "outbox.list");
       const value = await json<{ entries?: unknown }>(await request("GET", "/v1/outbox", { signal }));
       if (!Array.isArray(value.entries)) throw new ComputerUseError("driver_error", "Driver host outbox listing malformed");
       return value.entries
@@ -347,6 +394,7 @@ export function createRemoteDriver(options: RemoteDriverOptions): RemoteDriver {
     },
     async downloadOutboxFile(name, signal) {
       if (typeof name !== "string" || !OUTBOX_NAME.test(name)) throw new ComputerUseError("invalid_request", "Outbox names are plain file names");
+      await negotiate(signal, "outbox.get");
       const res = await request("GET", `/v1/outbox/${encodeURIComponent(name)}`, { signal });
       const declared = res.headers.get("x-content-sha256") ?? "";
       const data = await readCapped(res, maxFile);

@@ -5,7 +5,9 @@
  * in `docker/`; see the README's "Remote desktop container" section.
  *
  * Environment (all read once, at startup):
- *   COMPUTER_USE_HOST_TOKEN                        required, >= 32 chars
+ *   COMPUTER_USE_HOST_TOKEN_FILE                   required: file holding the bearer token (>= 32 chars),
+ *                                                  e.g. a read-only bind mount. Never an environment variable:
+ *                                                  `docker inspect` and every `docker exec` shell can read those.
  *   COMPUTER_USE_DISPLAY                           X11 display, e.g. ":99"
  *   COMPUTER_USE_ACKNOWLEDGE_FULL_DESKTOP_ACCESS   must be "1"
  *   COMPUTER_USE_HOST_LISTEN                       bind address (default 127.0.0.1)
@@ -13,14 +15,27 @@
  *   COMPUTER_USE_OUTBOX                            outbox directory (optional)
  */
 import { createNativeDesktopDriver } from "./drivers/native.js";
-import { createDriverHost } from "./remote/host.js";
+import { createDriverHost, readTokenFile } from "./remote/host.js";
 
 async function main() {
-  const token = process.env.COMPUTER_USE_HOST_TOKEN ?? "";
-  // Keep the token out of every child process (xdotool, import) and out of anything they spawn.
-  delete process.env.COMPUTER_USE_HOST_TOKEN;
-  if (!token) {
-    process.stderr.write("computer-use-driver-host: COMPUTER_USE_HOST_TOKEN is not set; refusing to start without authentication\n");
+  const tokenFile = process.env.COMPUTER_USE_HOST_TOKEN_FILE;
+  if (process.env.COMPUTER_USE_HOST_TOKEN !== undefined) {
+    // Refused rather than accepted with a warning: a token in the environment
+    // is readable by `docker inspect` and every `docker exec` session.
+    process.stderr.write(
+      "computer-use-driver-host: COMPUTER_USE_HOST_TOKEN is not supported; mount the token as a file and set COMPUTER_USE_HOST_TOKEN_FILE\n",
+    );
+    process.exit(2);
+  }
+  if (!tokenFile) {
+    process.stderr.write("computer-use-driver-host: COMPUTER_USE_HOST_TOKEN_FILE is not set; refusing to start without authentication\n");
+    process.exit(2);
+  }
+  let token: string;
+  try {
+    token = await readTokenFile(tokenFile);
+  } catch (error) {
+    process.stderr.write(`computer-use-driver-host: ${error instanceof Error ? error.message : "token file unreadable"}; refusing to start\n`);
     process.exit(2);
   }
   const acknowledged = process.env.COMPUTER_USE_ACKNOWLEDGE_FULL_DESKTOP_ACCESS === "1";

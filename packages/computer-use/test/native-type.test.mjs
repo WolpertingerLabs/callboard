@@ -16,11 +16,15 @@ test("native typing chains keys per exec, delaying only remapped characters", as
   const wayland = process.env.WAYLAND_DISPLAY;
   delete process.env.WAYLAND_DISPLAY;
   const commands = [];
+  const signals = [];
+  let onExec = () => {};
   mock.method(os, "platform", () => "linux");
   mock.method(os, "tmpdir", () => root);
   mock.method(fs, "access", async () => {});
-  mock.method(cp, "execFile", (binary, args, _options, done) => {
+  mock.method(cp, "execFile", (binary, args, options, done) => {
     commands.push([binary, ...args]);
+    if (args[0] === "keydown") signals.push(options.signal);
+    onExec(args);
     done(null, Buffer.from("10 20"));
   });
   syncBuiltinESMExports();
@@ -63,6 +67,28 @@ test("native typing chains keys per exec, delaying only remapped characters", as
     assert.equal(typing().length, 0);
     await session.act({ type: "type", text: "é".repeat(1000) + "a".repeat(3000) }, signal);
     assert.ok(typing().length > 0);
+
+    // Remapped characters go at most 16 to an exec, so an abort settles quickly.
+    commands.length = 0;
+    await session.act({ type: "type", text: "é".repeat(40) }, signal);
+    assert.deepEqual(
+      typing().map((c) => c.filter((a) => a === "keydown").length),
+      [16, 16, 8],
+    );
+
+    // A typing exec is never handed the abort signal, so it is never killed
+    // between a keydown and its keyup; the abort lands between chunks.
+    assert.ok(signals.every((s) => s === undefined));
+    commands.length = 0;
+    const controller = new AbortController();
+    onExec = (args) => {
+      if (args[0] === "keydown") controller.abort();
+    };
+    await assert.rejects(session.act({ type: "type", text: "é".repeat(40) }, controller.signal));
+    onExec = () => {};
+    assert.equal(typing().length, 1, "the running chunk completes; the next never starts");
+    const chunk = typing()[0];
+    assert.equal(chunk.filter((a) => a === "keydown").length, chunk.filter((a) => a === "keyup").length);
   } finally {
     try {
       await session?.close();

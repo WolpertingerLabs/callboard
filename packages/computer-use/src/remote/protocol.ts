@@ -6,7 +6,27 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { ComputerUseError, type ErrorCode } from "../contracts.js";
 
-export const PROTOCOL_VERSION = 1;
+/**
+ * Wire protocol version, negotiated so a daemon and a container from different
+ * releases can tell whether they understand each other.
+ *
+ * - **major** changes break compatibility. It is also the URL prefix (`/v1`).
+ *   Both sides fail closed on a major they do not know: the host refuses any
+ *   request without a matching `X-Computer-Use-Protocol` header, and the
+ *   client refuses a host whose `/v1/identity` reports another major.
+ * - **minor** only adds. New endpoints and behaviours are announced in
+ *   `capabilities`; a client checks for a capability before relying on it,
+ *   never for a minor number.
+ *
+ * Rules, as for Callboard's own stream types: fields are added, never removed
+ * or renamed; an existing field's meaning never changes; new meaning gets a
+ * new field or a new capability.
+ */
+export const PROTOCOL = Object.freeze({ major: 1, minor: 0 });
+export const PROTOCOL_HEADER = "X-Computer-Use-Protocol";
+/** What this release of the host serves. */
+export const HOST_CAPABILITIES = Object.freeze(["session.attach", "observe.png", "act", "release-input", "outbox.list", "outbox.get"] as const);
+export type HostCapability = (typeof HOST_CAPABILITIES)[number];
 /** Shortest bearer token either side accepts. 32 characters is 128+ bits for hex or base64url tokens. */
 export const MIN_TOKEN_LENGTH = 32;
 export const DEFAULT_OPERATION_TIMEOUT_MS = 30_000;
@@ -24,7 +44,9 @@ export const MAX_OUTBOX_ENTRIES = 200;
 export const OUTBOX_NAME = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/;
 
 export interface HostIdentity {
-  protocol: number;
+  protocol: { major: number; minor: number };
+  /** Optional features this host serves; see {@link PROTOCOL}. Unknown entries are ignored. */
+  capabilities: readonly string[];
   /** Random per host process; a restarted host is a different instance. */
   instanceId: string;
   hostname: string;

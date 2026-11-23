@@ -2,10 +2,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
-import { ComputerUseService, createRemoteDriver } from "../dist/index.js";
+import { ComputerUseService, createRemoteDriver, sandboxRunArgs } from "../dist/index.js";
 
 // Live end-to-end qualification of the X11 driver inside the remote desktop
 // container, through createRemoteDriver + ComputerUseService. Needs Docker:
@@ -13,8 +15,9 @@ import { ComputerUseService, createRemoteDriver } from "../dist/index.js";
 //   CALLBOARD_DOCKER_TESTS=1 npm test
 //
 // Builds docker/Dockerfile as callboard/computer-use-desktop:local (left in
-// place afterwards), runs it on a random 127.0.0.1 port with a random token,
-// and removes the container whatever happens.
+// place afterwards), runs it with sandboxRunArgs() (the hardened flags) on a
+// random 127.0.0.1 port with a random token in a read-only mounted file, and
+// removes the container and the token file whatever happens.
 
 const enabled = process.env.CALLBOARD_DOCKER_TESTS === "1";
 const packageDir = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -40,17 +43,16 @@ test(
     await docker(["build", "-q", "-t", image, "-f", join(packageDir, "docker", "Dockerfile"), packageDir]);
     log(`built ${image}`);
 
+    // The token reaches the container only as a read-only file mount, as sandboxRunArgs builds it.
+    const tokenDir = await mkdtemp(join(tmpdir(), "callboard-cu-test-"));
+    t.after(() => rm(tokenDir, { recursive: true, force: true }));
+    await chmod(tokenDir, 0o700);
     const token = randomBytes(32).toString("hex");
+    const tokenFile = join(tokenDir, "token");
+    await writeFile(tokenFile, `${token}\n`, { mode: 0o444 });
     const name = `callboard-cu-test-${randomUUID().slice(0, 8)}`;
-    // Random host port, loopback only. The token goes through the environment, not argv.
-    await new Promise((resolve, reject) =>
-      execFile(
-        "docker",
-        ["run", "-d", "--rm", "--name", name, "-p", "127.0.0.1::7801", "-e", "COMPUTER_USE_HOST_TOKEN", image],
-        { env: { ...process.env, COMPUTER_USE_HOST_TOKEN: token } },
-        (error) => (error ? reject(error) : resolve()),
-      ),
-    );
+    // Random host port on loopback, every hardening flag (see src/remote/sandbox.ts).
+    await docker(sandboxRunArgs({ port: 0, tokenFile, image, name, labels: { "dev.callboard.test": "docker-desktop" } }));
     t.after(() => docker(["rm", "-f", name]).catch(() => {}));
     const mapping = (await docker(["port", name, "7801/tcp"])).toString().trim().split("\n")[0];
     assert.match(mapping, /^127\.0\.0\.1:\d+$/, "published on loopback only");
@@ -67,8 +69,60 @@ test(
     }
     assert.equal((await fetch(`${url}/v1/identity`)).status, 401, "no token, no answer");
 
-    // The token stays with the driver host: nothing the desktop user runs can read it.
-    const leaked = (
+    // Hardening, as Docker reports it.
+    const [inspect] = JSON.parse((await docker(["inspect", name])).toString());
+    assert.ok(!JSON.stringify(inspect).includes(token), "token visible in docker inspect");
+    const hc = inspect.HostConfig;
+    assert.equal(hc.ReadonlyRootfs, true);
+    assert.deepEqual(hc.CapDrop, ["ALL"]);
+    assert.deepEqual(hc.CapAdd.map((c) => c.replace(/^CAP_/, "")).sort(), ["SETGID", "SETUID"]);
+    assert.deepEqual(hc.SecurityOpt, ["no-new-privileges"]);
+    assert.equal(hc.Privileged, false);
+    assert.equal(hc.PidsLimit, 256);
+    assert.equal(hc.Memory, 1024 ** 3);
+    assert.equal(hc.NanoCpus, 1e9);
+    assert.deepEqual(Object.keys(hc.Tmpfs).sort(), ["/home/desktop", "/tmp"]);
+    assert.deepEqual(
+      inspect.Mounts.map((m) => [m.Type, m.Destination, m.RW]),
+      [["bind", "/run/computer-use/token", false]],
+      "only the token file is mounted, read-only; no Docker socket",
+    );
+    assert.deepEqual(
+      hc.PortBindings["7801/tcp"].map((b) => b.HostIp),
+      ["127.0.0.1"],
+    );
+    log("hardening: read-only root, cap-drop ALL (+SETUID/SETGID), no-new-privileges, pids 256, 1g, 1 cpu, tmpfs home+/tmp, token mount ro");
+
+    // Inside: after startup nothing runs as root or holds a capability, the
+    // token is unreachable from the desktop user, and no environment has it.
+    const procs = (
+      await docker([
+        "exec",
+        "-u",
+        "desktop",
+        name,
+        "sh",
+        "-c",
+        'for p in /proc/[0-9]*; do [ "${p#/proc/}" = "$$" ] && continue; printf "%s %s %s\\n" "$(cat $p/comm 2>/dev/null)" "$(awk "/^Uid/{print \\$2}" $p/status 2>/dev/null)" "$(awk "/^CapEff/{print \\$2}" $p/status 2>/dev/null)"; done',
+      ])
+    )
+      .toString()
+      .trim()
+      .split("\n")
+      .map((line) => line.split(" "))
+      .filter(([comm, uid]) => uid && !["sh", "awk", "cat"].includes(comm));
+    log(`processes: ${procs.map(([c, u]) => `${c}:${u}`).join(" ")}`);
+    assert.ok(procs.length >= 5);
+    for (const [comm, uid, caps] of procs) {
+      assert.notEqual(uid, "0", `${comm} runs as root`);
+      assert.equal(caps, "0000000000000000", `${comm} holds capabilities`);
+    }
+    assert.deepEqual(
+      procs.filter(([c]) => c === "tini" || c === "node").map(([, u]) => u),
+      ["10002", "10002"],
+      "tini (PID 1) and the driver host run as driver",
+    );
+    const desktopView = (
       await docker([
         "exec",
         "-u",
@@ -78,12 +132,15 @@ test(
         "-i",
         "/bin/sh",
         "-c",
-        'for f in /proc/[0-9]*/environ; do tr "\\0" "\\n" < "$f" 2>/dev/null; done | grep -c "^COMPUTER_USE_HOST_TOKEN=" || true',
+        `cat /run/computer-use/token 2>&1; touch /usr/probe 2>&1; for f in /proc/[0-9]*/environ; do tr "\\0" "\\n" < "$f" 2>/dev/null; done | grep -c "${token}" || true`,
       ])
-    )
-      .toString()
-      .trim();
-    assert.equal(leaked, "0", "token readable from the desktop user's side");
+    ).toString();
+    assert.match(desktopView, /Permission denied/, "desktop user reads the token file");
+    assert.match(desktopView, /Read-only file system/);
+    assert.match(desktopView.trim(), /0$/, "token found in an environment");
+    assert.ok(!(await docker(["exec", name, "env"])).toString().includes(token), "token in a docker exec environment");
+    // A CJK-capable font is installed for xterm's fallback.
+    assert.match((await docker(["exec", "-u", "desktop", name, "fc-match", "-f", "%{family}", ":lang=ja"])).toString(), /WenQuanYi/);
 
     const driver = createRemoteDriver({ url, token });
     const service = new ComputerUseService({ targets: [{ id: "remote-desktop", enabled: true, driver }], authorize: () => "allow" });
@@ -184,7 +241,10 @@ test(
     log(`outbox exec.bin: ${execFileEntry.size} bytes sha256 ${execFileEntry.sha256}`);
     await assert.rejects(driver.downloadOutboxFile("passwd-link"), { code: "not_found" });
     await assert.rejects(driver.downloadOutboxFile("../.bashrc"), { code: "invalid_request" });
-    assert.equal((await fetch(`${url}/v1/outbox/..%2F.bashrc`, { headers: { Authorization: `Bearer ${token}` } })).status, 400);
+    assert.equal(
+      (await fetch(`${url}/v1/outbox/..%2F.bashrc`, { headers: { Authorization: `Bearer ${token}`, "X-Computer-Use-Protocol": "1.0" } })).status,
+      400,
+    );
 
     // Stop: the session ends and a new one can open (the input lock was released).
     await service.stop(principal, ref.sessionId);

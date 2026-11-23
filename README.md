@@ -154,16 +154,21 @@ Set up the host first:
 
 - **Browser:** Playwright installs with Callboard as an optional dependency, but no browser is downloaded. Provide Chromium and its OS libraries, and set `CALLBOARD_BROWSER_EXECUTABLE=/absolute/path/to/chrome` if Playwright won't find it. Chromium's sandbox is mandatory. On Linux, run as a non-root user with sandbox support. The chat's Browser Use permission must be Ask or Allow.
 - **Desktop:** only an existing Linux X11 session works. It needs `/usr/bin/xdotool`, ImageMagick's `/usr/bin/import`, and `CALLBOARD_NATIVE_DISPLAY` (or `DISPLAY`). Computer Use must be Ask or Allow and all five other permission axes (Browser Use included) must be Allow, because desktop control can reach everything the user can. This isn't an isolation boundary. macOS, Windows and Wayland aren't supported.
-- **Desktop in a container (preview):** instead of this machine's display, the desktop target can be a Linux desktop running in Docker. Build and start it, then point Callboard at it:
+- **Desktop in a container (preview):** instead of this machine's display, the desktop target can be a hardened Linux desktop running in Docker. Build and start it, then point Callboard at it:
 
   ```sh
   docker build -t callboard/computer-use-desktop:local -f packages/computer-use/docker/Dockerfile packages/computer-use
-  packages/computer-use/docker/run.sh 7801   # prints the two variables below, with a fresh random token
+  packages/computer-use/docker/run.sh 7801   # prints the two variables below
   export CALLBOARD_REMOTE_DESKTOP_URL=http://127.0.0.1:7801
-  export CALLBOARD_REMOTE_DESKTOP_TOKEN=<token printed by run.sh>
+  export CALLBOARD_REMOTE_DESKTOP_TOKEN_FILE=/tmp/callboard-desktop-XXXXXX/token   # the path run.sh printed
   ```
 
-  With both variables set, the desktop target uses the container. With only one set, it reports itself unavailable rather than using the local display. Permissions and approvals work exactly as for the local desktop, and the panel names the target `remote 127.0.0.1:7801`. **Keep the port on `127.0.0.1`.** The token grants full control of that desktop, so reach it from another machine only through a TLS proxy that authenticates. Callboard refuses plain `http` to anything but loopback. See [Remote desktop container](packages/computer-use/README.md#remote-desktop-container) for what's in the image.
+  - **Token:** it's a file, not an environment variable, on both sides. `run.sh` writes a fresh one into a private temp directory and mounts it into the container read-only. `CALLBOARD_REMOTE_DESKTOP_TOKEN` still works but is discouraged, because every child process of Callboard inherits it.
+  - **Hardening:** the container runs with a read-only root filesystem (tmpfs only for the desktop home and `/tmp`), every capability dropped except the two the entrypoint needs to start the desktop and the driver as separate unprivileged users, and `no-new-privileges`. It also has pid, memory and CPU limits, no Docker socket, and its port on `127.0.0.1` only.
+  - **Configuration:** with the URL and a token set, the desktop target uses the container. With only one set, it reports itself unavailable rather than using the local display. Permissions and approvals work exactly as for the local desktop, and the panel names the target `remote 127.0.0.1:7801`. A container from an incompatible release is reported unavailable rather than used.
+  - **Keep the port on `127.0.0.1`.** The token grants full control of that desktop, so reach it from another machine only through a TLS proxy that authenticates. Callboard refuses plain `http` to anything but loopback.
+
+  These variables are a stopgap: a separate Sandbox target with its own permission, and containers Callboard starts itself, are planned. See [Sandbox desktop container](packages/computer-use/README.md#sandbox-desktop-container) for the flags, the image and protocol versioning.
 
 Live sandboxed-browser use hasn't been qualified yet. The X11 driver has been qualified only against Xvfb in that container. For the security model and limits, see [`packages/computer-use/README.md`](packages/computer-use/README.md).
 
