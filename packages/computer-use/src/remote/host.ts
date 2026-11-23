@@ -41,6 +41,7 @@ import {
   DEFAULT_MAX_OUTBOX_FILE_BYTES,
   DEFAULT_OPERATION_TIMEOUT_MS,
   HELLO_PATH,
+  HOST_CAPABILITIES,
   MAX_HELLO_BYTES,
   MAX_OUTBOX_ENTRIES,
   MAX_REQUEST_BYTES,
@@ -79,6 +80,8 @@ export interface DriverHostOptions {
   requestTimeoutMs?: number;
   /** Time to read a request body once headers are in (default 10s). */
   bodyTimeoutMs?: number;
+  /** An outbox file changed more recently than this is listed with `sha256: null`, as still being written (default 1s). */
+  outboxSettleMs?: number;
 }
 
 export interface DriverHost {
@@ -216,16 +219,32 @@ async function openOutboxFile(dir: OutboxDir, name: string): Promise<{ handle: F
     throw new HttpError("not_found");
   }
 }
-/** SHA-256 of an open file, streamed. Undefined when the bytes read do not match the size it had (it is being written). */
-async function hashFile(handle: FileHandle, size: number): Promise<string | undefined> {
+/**
+ * SHA-256 of an open file, streamed, or undefined when the file may have been
+ * written while it was read — a digest of torn bytes must never be reported.
+ *
+ * Two checks, because a same-size rewrite in place changes neither the size
+ * nor the bytes read count:
+ * - after hashing, `fstat` again: any change in size, mtime or ctime means a
+ *   write landed during the read;
+ * - before hashing, a file changed within `settleMs` is treated as still being
+ *   written. Linux stamps ctime when a write *starts*, so a long write that
+ *   began just before the first `fstat` and is still copying while we read
+ *   would pass the after-check unseen; the settle window covers it.
+ */
+async function hashFile(handle: FileHandle, before: Stats, settleMs: number): Promise<string | undefined> {
+  if (Date.now() - before.ctimeMs < settleMs) return undefined;
   const hash = createHash("sha256");
   let read = 0;
   for await (const chunk of handle.createReadStream({ start: 0, autoClose: false }) as AsyncIterable<Buffer>) {
     read += chunk.length;
-    if (read > size) return undefined;
+    if (read > before.size) return undefined;
     hash.update(chunk);
   }
-  return read === size ? hash.digest("hex") : undefined;
+  if (read !== before.size) return undefined;
+  const after = await handle.stat();
+  if (after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs) return undefined;
+  return hash.digest("hex");
 }
 
 /** `"1"` or `"1.4"` → 1; anything else → undefined. */
@@ -267,12 +286,13 @@ export function createDriverHost(options: DriverHostOptions): DriverHost {
   const heartbeatMs = options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS;
   const maxFile = options.maxOutboxFileBytes ?? DEFAULT_MAX_OUTBOX_FILE_BYTES;
   const bodyTimeout = options.bodyTimeoutMs ?? 10_000;
+  const outboxSettleMs = options.outboxSettleMs ?? 1_000;
   if (!Number.isInteger(heartbeatMs) || heartbeatMs < 100 || heartbeatMs > 60_000)
     throw new ComputerUseError("invalid_request", "heartbeatMs must be 100–60000");
   const identity: HostIdentity = Object.freeze({
     protocol: { ...PROTOCOL },
     // Only what this host actually serves: no outbox directory, no outbox capabilities.
-    capabilities: ["session.attach", "observe.png", "act", "release-input", ...(options.outboxDir ? ["outbox.list", "outbox.get"] : [])],
+    capabilities: HOST_CAPABILITIES.filter((capability) => options.outboxDir || !capability.startsWith("outbox.")),
     instanceId: randomUUID(),
     hostname: hostname(),
     kind: "native-desktop",
@@ -413,7 +433,7 @@ export function createDriverHost(options: DriverHostOptions): DriverHost {
             const key = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
             sha256 = digests.get(key) ?? null;
             if (!sha256) {
-              sha256 = (await hashFile(file.handle, stat.size)) ?? null;
+              sha256 = (await hashFile(file.handle, stat, outboxSettleMs)) ?? null;
               if (sha256) {
                 if (digests.size >= 4 * MAX_OUTBOX_ENTRIES) digests.clear();
                 digests.set(key, sha256);

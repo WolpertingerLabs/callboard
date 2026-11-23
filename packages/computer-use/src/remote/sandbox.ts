@@ -4,8 +4,10 @@
  * lifecycle (a later change) calls {@link sandboxRunArgs} directly, so every
  * route to a running container gets the same hardening.
  *
- * This module only builds an argument vector. It never runs Docker, and it
- * never sees the token itself: only the path of a file holding it.
+ * {@link sandboxRunArgs} only builds an argument vector; it never runs Docker.
+ * {@link ensureSandboxNetwork} is the one function here that does (`docker
+ * network inspect` and `create`). Nothing here ever sees the token itself:
+ * only the path of a file holding it.
  */
 import { execFile } from "node:child_process";
 import { isAbsolute } from "node:path";

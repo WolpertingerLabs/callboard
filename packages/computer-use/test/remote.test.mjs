@@ -14,6 +14,8 @@ import { hostProof, newNonce, sessionCredential } from "../dist/remote/protocol.
 // behind the host. No display, no Docker.
 
 const TOKEN = randomBytes(32).toString("hex");
+/** The outbox's safe opening goes through /proc/self/fd, so the driver host's outbox is Linux-only. */
+const linuxOnly = { skip: process.platform !== "linux" && "the outbox resolves names through /proc/self/fd (Linux only)" };
 const principal = { ownerId: "owner", actorId: "agent:owner", role: "agent" };
 
 /** PNG signature + IHDR is all the host and client inspect. */
@@ -391,7 +393,7 @@ test("cancelling open while the host is opening leaves no session behind", async
   await session.close();
 });
 
-test("outbox lists and serves plain files only", async (t) => {
+test("outbox lists and serves plain files only", linuxOnly, async (t) => {
   const root = await fs.mkdtemp(join(os.tmpdir(), "cu-outbox-test-"));
   const outbox = join(root, "outbox");
   await fs.mkdir(outbox);
@@ -405,7 +407,7 @@ test("outbox lists and serves plain files only", async (t) => {
   await fs.symlink(root, join(outbox, "dirlink"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
 
-  const { host, url } = await startHost({ host: { outboxDir: outbox, maxOutboxFileBytes: 1024 } });
+  const { host, url } = await startHost({ host: { outboxDir: outbox, maxOutboxFileBytes: 1024, outboxSettleMs: 0 } });
   t.after(() => host.close());
   const remote = createRemoteDriver({ url, token: TOKEN, maxOutboxFileBytes: 1024 });
 
@@ -540,7 +542,10 @@ async function fakeHost(t, answer) {
     seen.push({ method: req.method, url: req.url, headers: req.headers, body });
     if (req.url === "/hello") {
       const { nonce } = JSON.parse(body || "{}");
-      res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(answer(nonce)));
+      const out = answer(nonce);
+      // `{ status, body }` answers with that status, as a real host from another release would.
+      const status = out && typeof out === "object" && "status" in out ? out.status : 200;
+      res.writeHead(status, { "Content-Type": "application/json" }).end(JSON.stringify(status === 200 ? out : out.body));
       return;
     }
     res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ available: true, kind: "native-desktop", capabilities: [], entries: [] }));
@@ -571,8 +576,7 @@ test("a squatter without the token learns nothing: no token, no credential, no r
     () => ({ ...fakeIdentity(), proof: "A".repeat(43) }),
     // A proof made with the wrong secret.
     (nonce) => ({ ...fakeIdentity(), proof: hostProof("z".repeat(40), nonce, fakeIdentity().instanceId, PROTOCOL) }),
-    // A pre-handshake (1.0) host's identity, or something else entirely.
-    () => ({ ...fakeIdentity({ protocol: 1 }) }),
+    // Something that is not a driver host at all.
     () => ({ hello: "world" }),
   ]) {
     const { url, seen } = await fakeHost(t, answer);
@@ -775,10 +779,10 @@ test("readTokenFile accepts only a private-enough regular file holding a real to
   await assert.rejects(readTokenFile(dir), { code: "invalid_request" });
 });
 
-test("outbox listings reuse digests of unchanged files and rehash changed ones", async (t) => {
+test("outbox listings reuse digests of unchanged files and rehash changed ones", linuxOnly, async (t) => {
   const root = await fs.mkdtemp(join(os.tmpdir(), "cu-outbox-cache-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
-  const { host, url } = await startHost({ host: { outboxDir: root } });
+  const { host, url } = await startHost({ host: { outboxDir: root, outboxSettleMs: 0 } });
   t.after(() => host.close());
   const remote = createRemoteDriver({ url, token: TOKEN });
   const sha = (s) => createHash("sha256").update(s).digest("hex");
@@ -802,7 +806,7 @@ test("outbox listings reuse digests of unchanged files and rehash changed ones",
   );
 });
 
-test("an outbox swapped for a symlink never serves what it points to, even mid-race", async (t) => {
+test("an outbox swapped for a symlink never serves what it points to, even mid-race", linuxOnly, async (t) => {
   // The desktop user owns the outbox's parent, so it can swap the outbox for
   // a symlink at any moment. Before the fix, this race served the token file.
   const { spawn } = await import("node:child_process");
@@ -814,7 +818,7 @@ test("an outbox swapped for a symlink never serves what it points to, even mid-r
   await fs.mkdir(secret);
   await fs.writeFile(join(secret, "token"), "SECRET-TOKEN");
   await fs.writeFile(join(outbox, "real.txt"), "real");
-  const { host, url } = await startHost({ host: { outboxDir: outbox } });
+  const { host, url } = await startHost({ host: { outboxDir: outbox, outboxSettleMs: 0 } });
   t.after(() => host.close());
 
   // Deterministic first: an outbox that is a symlink is not followed at all.
@@ -857,4 +861,106 @@ test("an outbox swapped for a symlink never serves what it points to, even mid-r
   swapper.kill();
   // The legitimate file was still served and listed in between swaps.
   assert.ok(served > 0 && listed > 0, `served ${served}, listed ${listed}`);
+});
+
+test("a real 1.0 host (auth before path: /hello gets 401) is reported as too old, not as a token problem", async (t) => {
+  for (const status of [401, 404]) {
+    const { url, seen } = await fakeHost(t, () => ({ status, body: { error: status === 401 ? "denied" : "not_found" } }));
+    const remote = createRemoteDriver({ url, token: TOKEN });
+    const probe = await remote.probe();
+    assert.equal(probe.available, false);
+    assert.equal(probe.readiness, "unsupported");
+    assert.match(probe.reason, /incompatible version/);
+    assert.match(probe.operatorDetail, /predates the handshake/);
+    await assert.rejects(remote.open({ sessionId: "s", signal: new AbortController().signal }), { code: "unsupported", message: /rebuild the image/ });
+    await assert.rejects(remote.listOutbox(), { code: "unsupported" });
+    assert.ok(seen.every((r) => r.url === "/hello" && r.headers.authorization === undefined));
+  }
+});
+
+test("a token-file failure is reported as such; a host's own invalid_request is not", async (t) => {
+  const { url } = await fakeHost(t, () => ({ status: 400, body: { error: "invalid_request" } }));
+  const dir = await fs.mkdtemp(join(os.tmpdir(), "cu-token-tag-"));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  await fs.writeFile(join(dir, "token"), `${TOKEN}\n`, { mode: 0o400 });
+  // The file is fine; the host refuses. Not a token-file problem.
+  const probe = await createRemoteDriver({ url, tokenFile: join(dir, "token") }).probe();
+  assert.doesNotMatch(probe.reason, /token file/);
+  // The file is bad. A token-file problem.
+  const bad = await createRemoteDriver({ url, tokenFile: join(dir, "missing") }).probe();
+  assert.match(bad.reason, /token file/);
+});
+
+test("a file rewritten in place at the same size while hashed never gets a wrong digest", linuxOnly, async (t) => {
+  // The reviewer's case: pwrite the whole file every 5 ms without changing its
+  // size. Two known contents; any reported digest must be one of them.
+  const { spawn } = await import("node:child_process");
+  const root = await fs.mkdtemp(join(os.tmpdir(), "cu-outbox-rewrite-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const size = 16 * 1024 * 1024;
+  const a = Buffer.alloc(size, 0x41);
+  const b = Buffer.alloc(size, 0x42);
+  const sha = (data) => createHash("sha256").update(data).digest("hex");
+  const file = join(root, "big.bin");
+  await fs.writeFile(file, a);
+  const { host, url } = await startHost({ host: { outboxDir: root, outboxSettleMs: 0 } });
+  t.after(() => host.close());
+  const writer = spawn(
+    process.execPath,
+    [
+      "-e",
+      `const fs=require("fs");const fd=fs.openSync(${JSON.stringify(file)},"r+");const s=${size};const bufs=[Buffer.alloc(s,0x41),Buffer.alloc(s,0x42)];let i=0;const z=new Int32Array(new SharedArrayBuffer(4));for(;;){fs.writeSync(fd,bufs[i++%2],0,s,0);Atomics.wait(z,0,0,5);}`,
+    ],
+    { stdio: "ignore" },
+  );
+  t.after(() => writer.kill());
+  const remote = createRemoteDriver({ url, token: TOKEN });
+  const valid = new Set([sha(a), sha(b)]);
+  let nulls = 0;
+  let digests = 0;
+  const until = Date.now() + 4000;
+  while (Date.now() < until) {
+    const [entry] = await remote.listOutbox();
+    assert.equal(entry.size, size);
+    if (entry.sha256 === null) nulls++;
+    else {
+      digests++;
+      assert.ok(valid.has(entry.sha256), "a torn read was reported with a non-null digest");
+    }
+  }
+  writer.kill();
+  assert.ok(nulls > 0, "the rewrites were never detected");
+  // Once writes stop, the digest is right and stable.
+  await delay(50);
+  const [settled] = await remote.listOutbox();
+  assert.equal(settled.sha256, sha(await fs.readFile(file)));
+  t.diagnostic(`same-size rewrite: ${nulls} listings null, ${digests} with a (valid) digest`);
+});
+
+test("a recently changed outbox file is listed without a digest until it settles", linuxOnly, async (t) => {
+  const root = await fs.mkdtemp(join(os.tmpdir(), "cu-outbox-settle-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const { host, url } = await startHost({ host: { outboxDir: root, outboxSettleMs: 300 } });
+  t.after(() => host.close());
+  const remote = createRemoteDriver({ url, token: TOKEN });
+  await fs.writeFile(join(root, "new.txt"), "fresh");
+  assert.equal((await remote.listOutbox())[0].sha256, null);
+  await delay(350);
+  assert.equal((await remote.listOutbox())[0].sha256, createHash("sha256").update("fresh").digest("hex"));
+});
+
+test("downloadOutboxFile with expectedSha256 refuses a file that changed since it was listed", linuxOnly, async (t) => {
+  const root = await fs.mkdtemp(join(os.tmpdir(), "cu-outbox-expected-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const { host, url } = await startHost({ host: { outboxDir: root, outboxSettleMs: 0 } });
+  t.after(() => host.close());
+  const remote = createRemoteDriver({ url, token: TOKEN });
+  await fs.writeFile(join(root, "r.txt"), "version 1");
+  const [listed] = await remote.listOutbox();
+  const same = await remote.downloadOutboxFile("r.txt", undefined, { expectedSha256: listed.sha256 });
+  assert.equal(same.data.toString(), "version 1");
+  await fs.writeFile(join(root, "r.txt"), "version 2");
+  await assert.rejects(remote.downloadOutboxFile("r.txt", undefined, { expectedSha256: listed.sha256 }), { code: "stale_frame" });
+  for (const bad of ["ABC", "0".repeat(63), listed.sha256.toUpperCase()])
+    await assert.rejects(remote.downloadOutboxFile("r.txt", undefined, { expectedSha256: bad }), { code: "invalid_request" });
 });

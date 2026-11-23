@@ -275,7 +275,7 @@ Users and permissions:
 - **Limits:** 32 connections, 10 s for headers, 15 s for a whole request, and 10 s to read a body once headers are in (`maxConnections`, `headersTimeoutMs`, `requestTimeoutMs`, `bodyTimeoutMs`). The attach stream's response is not bounded by them. A request whose body is refused or left unread also loses its connection.
 - Validates every action with `actionSchema`, as the client does before sending it.
 - Bounds each operation at 30 seconds and aborts it if the client goes away.
-- Ties each session to a long-lived attach response with a ping every `heartbeatMs` (5 s by default, advertised in the hello). If that connection drops, the host aborts the running operation, releases input and closes the session. The client reads the same drop (or 15 seconds without a ping) as a lost connection, fails any in-flight call with `driver_error`, and calls `onLost`, so the service fences the session at once.
+- Ties each session to a long-lived attach response with a ping every `heartbeatMs` (5 s by default, advertised in the hello). If that connection drops, the host aborts the running operation, releases input and closes the session. The client reads the same drop (or 3 × `heartbeatMs` without a ping, at least 3 seconds) as a lost connection, fails any in-flight call with `driver_error`, and calls `onLost`, so the service fences the session at once.
 - Returns frames as PNG, with width and height read from the image itself. Coordinates are 1:1 with those pixels.
 - Serves one session at a time; another `open` gets `lease_conflict`.
 
@@ -290,7 +290,7 @@ Users and permissions:
 
   A unit test races a real swapper process against downloads and listings, and the Docker test replays the reviewer's swap. The driver host is Linux-only, as `/proc` is.
 - **Digests:** a listing streams each file's hash and caches it by device, inode, size, mtime and ctime (ctime because a writer can set mtime back), so unchanged files aren't re-read. Files over 64 MiB are listed without a digest and not served, and a listing stops at 200 entries. The client checks a download's digest against the bytes it received.
-- **Write `.name.part`, then rename to `name`.** Dot-names are never listed, and a rename is atomic, so a listing never sees a half-written file. A file that changes while it's being hashed is listed with `sha256: null`.
+- **Write `.name.part`, then rename to `name`.** Dot-names are never listed, and a rename is atomic, so a listing never sees a half-written file. A file that changed in the last second (`outboxSettleMs`), or changes while it's being hashed (re-checked with `fstat` afterwards, so a same-size rewrite in place is caught too), is listed with `sha256: null` and not cached. Pass a listed digest to `downloadOutboxFile(name, signal, { expectedSha256 })` to refuse a file that changed since (`stale_frame`).
 - **Syncing and draining:** copying the outbox anywhere, and draining it before the container is destroyed, are the host's job.
 
 ## MCP server

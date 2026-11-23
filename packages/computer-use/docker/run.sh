@@ -28,8 +28,8 @@ if ! docker network inspect "$network" >/dev/null 2>&1; then
   docker network create --driver bridge --opt com.docker.network.bridge.enable_icc=false \
     --label dev.callboard.sandbox-network=1 "$network" >/dev/null
 fi
-if [ "$(docker network inspect -f '{{index .Options "com.docker.network.bridge.enable_icc"}}' "$network")" != false ]; then
-  echo "run.sh: network $network exists without inter-container communication disabled; remove it or set COMPUTER_USE_DESKTOP_NETWORK" >&2
+if [ "$(docker network inspect -f '{{.Driver}} {{index .Options "com.docker.network.bridge.enable_icc"}}' "$network")" != "bridge false" ]; then
+  echo "run.sh: network $network exists but is not a bridge with inter-container communication disabled; remove it or set COMPUTER_USE_DESKTOP_NETWORK" >&2
   exit 1
 fi
 

@@ -79,8 +79,20 @@ export interface RemoteDriver extends Driver {
    */
   openedInstance(sessionId: string): string | undefined;
   listOutbox(signal?: AbortSignal): Promise<OutboxEntry[]>;
-  /** Download one outbox file by plain name; the digest is checked against the bytes received. */
-  downloadOutboxFile(name: string, signal?: AbortSignal): Promise<OutboxFile>;
+  /**
+   * Download one outbox file by plain name; the digest is checked against the
+   * bytes received. With `expectedSha256` (the digest from a listing), a file
+   * that has changed since it was listed is refused with `stale_frame` — list
+   * again — so a download is bound to the entry it was chosen from.
+   */
+  downloadOutboxFile(name: string, signal?: AbortSignal, options?: { expectedSha256?: string }): Promise<OutboxFile>;
+}
+
+/** The token file could not be read or failed its checks: a setup problem, told apart from the host's own `invalid_request`. */
+class TokenFileError extends ComputerUseError {
+  constructor(message: string) {
+    super("invalid_request", message);
+  }
 }
 
 const LOOPBACK = (host: string) => host === "localhost" || host === "[::1]" || /^127(?:\.\d{1,3}){3}$/.test(host);
@@ -143,7 +155,11 @@ export function createRemoteDriver(options: RemoteDriverOptions): RemoteDriver {
   const origin = base.origin;
   const prefix = base.pathname.replace(/\/+$/, "");
   const secret = (): Promise<string> =>
-    options.token !== undefined ? Promise.resolve(options.token) : readTokenFile(options.tokenFile!, { allowSymlink: true });
+    options.token !== undefined
+      ? Promise.resolve(options.token)
+      : readTokenFile(options.tokenFile!, { allowSymlink: true }).catch((error: unknown) => {
+          throw new TokenFileError(error instanceof Error ? error.message : "Token file unusable");
+        });
   const requestTimeout = options.requestTimeoutMs ?? DEFAULT_OPERATION_TIMEOUT_MS;
   const maxFile = options.maxOutboxFileBytes ?? DEFAULT_MAX_OUTBOX_FILE_BYTES;
   const openedInstances = new Map<string, string>();
@@ -208,7 +224,17 @@ export function createRemoteDriver(options: RemoteDriverOptions): RemoteDriver {
   async function hello(signal?: AbortSignal): Promise<Verified> {
     const token = await secret();
     const nonce = newNonce();
-    const res = await request("POST", HELLO_PATH, { body: { nonce, protocol: { ...PROTOCOL } }, signal, timeoutMs: Math.min(requestTimeout, 10_000) });
+    let res: Response;
+    try {
+      res = await request("POST", HELLO_PATH, { body: { nonce, protocol: { ...PROTOCOL } }, signal, timeoutMs: Math.min(requestTimeout, 10_000) });
+    } catch (error) {
+      // A 2.0 host never answers /hello with 401 or 404 (it is unauthenticated,
+      // and malformed hellos get 400). A 1.x host checks auth before the path,
+      // so it answers 401: that is a version problem, not a token problem.
+      if (error instanceof ComputerUseError && (error.code === "denied" || error.code === "not_found"))
+        throw new ComputerUseError("unsupported", "Driver host predates the handshake (protocol 1.x); rebuild the image");
+      throw error;
+    }
     const value = await json<Partial<HostIdentity> & { proof?: unknown }>(res, 64 * 1024, signal);
     const protocol = value?.protocol as Partial<HostIdentity["protocol"]> | undefined;
     if (
@@ -273,7 +299,7 @@ export function createRemoteDriver(options: RemoteDriverOptions): RemoteDriver {
     } catch (error) {
       const code = error instanceof ComputerUseError ? error.code : "driver_error";
       const detail = `Driver host ${origin}: ${code}${error instanceof Error && error.message !== code ? ` (${error.message})` : ""}`;
-      if (code === "invalid_request" && options.tokenFile !== undefined)
+      if (error instanceof TokenFileError)
         return no(
           "setup-required",
           "The remote desktop token file is missing or unusable",
@@ -481,14 +507,18 @@ export function createRemoteDriver(options: RemoteDriverOptions): RemoteDriver {
         )
         .map((e) => ({ name: e.name, size: e.size, sha256: e.sha256, mtimeMs: Number.isFinite(e.mtimeMs) ? Math.floor(e.mtimeMs) : 0 }));
     },
-    async downloadOutboxFile(name, signal) {
+    async downloadOutboxFile(name, signal, { expectedSha256 } = {}) {
       if (typeof name !== "string" || !OUTBOX_NAME.test(name)) throw new ComputerUseError("invalid_request", "Outbox names are plain file names");
+      if (expectedSha256 !== undefined && (typeof expectedSha256 !== "string" || !/^[0-9a-f]{64}$/.test(expectedSha256)))
+        throw new ComputerUseError("invalid_request", "expectedSha256 must be a lowercase hex SHA-256");
       const { credential } = await negotiate(signal, "outbox.get");
       const res = await request("GET", v(`/outbox/${encodeURIComponent(name)}`), { signal, credential });
       const declared = res.headers.get("x-content-sha256") ?? "";
       const data = await readCapped(res, maxFile, signal);
       const sha256 = createHash("sha256").update(data).digest("hex");
       if (!/^[0-9a-f]{64}$/.test(declared) || declared !== sha256) throw new ComputerUseError("driver_error", "Outbox file digest mismatch");
+      if (expectedSha256 !== undefined && sha256 !== expectedSha256)
+        throw new ComputerUseError("stale_frame", "Outbox file changed since it was listed; list again");
       return { name, size: data.length, sha256, data };
     },
   };

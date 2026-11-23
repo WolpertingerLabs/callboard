@@ -277,7 +277,9 @@ test(
     assert.notEqual(after.digest, first.digest);
 
     let entries = [];
-    for (let i = 0; i < 40 && !entries.some((e) => e.name === "from-app.txt"); i++) {
+    // A file changed within the last second is listed without a digest (still settling); wait for it.
+    const settled = (name) => entries.some((e) => e.name === name && e.sha256);
+    for (let i = 0; i < 60 && !settled("from-app.txt"); i++) {
       await delay(100);
       entries = await driver.listOutbox();
     }
@@ -285,7 +287,7 @@ test(
     const appEntry = entries.find((e) => e.name === "from-app.txt");
     assert.deepEqual({ ...appEntry, mtimeMs: 0 }, { name: "from-app.txt", size: expectedApp.length, sha256: sha256(expectedApp), mtimeMs: 0 });
     assert.ok(appEntry.mtimeMs > Date.now() - 600_000);
-    const appFile = await driver.downloadOutboxFile("from-app.txt");
+    const appFile = await driver.downloadOutboxFile("from-app.txt", undefined, { expectedSha256: appEntry.sha256 });
     assert.equal(appFile.data.toString(), expectedApp.toString());
     assert.equal(appFile.sha256, sha256(expectedApp));
     log(`outbox from-app.txt: ${appEntry.size} bytes sha256 ${appEntry.sha256}`);
@@ -294,7 +296,10 @@ test(
     const payload = randomBytes(256 * 1024);
     await docker(["exec", "-i", "-u", "desktop", name, "sh", "-c", "cat > /home/desktop/outbox/exec.bin"], { input: payload });
     await docker(["exec", "-u", "desktop", name, "ln", "-s", "/etc/passwd", "/home/desktop/outbox/passwd-link"]);
-    entries = await driver.listOutbox();
+    for (let i = 0; i < 60 && !settled("exec.bin"); i++) {
+      await delay(100);
+      entries = await driver.listOutbox();
+    }
     assert.deepEqual(
       entries.map((e) => e.name),
       ["exec.bin", "from-app.txt"],
