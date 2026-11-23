@@ -657,8 +657,9 @@ export async function saveStorageItem(key: string, name: string, data: Buffer, o
 }
 
 /**
- * Save from a local file. Same checks as `render_file`: absolute, no NUL,
- * realpath'd, a regular file, within the item limit — checked before reading.
+ * Save from a local file. Same path checks as `render_file` (absolute, no NUL,
+ * realpath'd, a regular file), plus storage's own item limit — all checked
+ * before reading.
  */
 export async function saveStorageItemFromFile(key: string, name: string, sourcePath: string, opts: SaveStorageItemOptions = {}): Promise<StorageItem> {
   assertStorageKey(key);

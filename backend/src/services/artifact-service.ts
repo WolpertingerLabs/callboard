@@ -270,7 +270,7 @@ export async function saveArtifact(input: SaveArtifactInput, mode: "upsert" | "c
   });
 }
 
-/** Save a new version (or create) from a local file, with `render_file`'s checks. */
+/** Save a new version (or create) from a local file, with `render_file`'s path checks plus the artifact source size limit. */
 export async function saveArtifactFromFile(
   input: Omit<SaveArtifactInput, "content"> & { sourcePath: string },
   mode: "upsert" | "create" | "append" = "upsert",
