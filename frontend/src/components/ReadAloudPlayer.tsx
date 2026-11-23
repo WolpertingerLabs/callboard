@@ -1,4 +1,4 @@
-import type { KeyboardEvent } from "react";
+import { useEffect, useRef, type FocusEvent, type KeyboardEvent, type RefObject } from "react";
 import { Loader2, Pause, Play, RotateCcw, RotateCw, Square } from "lucide-react";
 import { useReadAloud } from "../hooks/useReadAloud";
 import { cycleRate, retry, seekBy, seekTo, stop, toggle } from "../utils/readAloudPlayer";
@@ -28,25 +28,69 @@ function rateLabel(rate: number): string {
  * Escape is claimed (`preventDefault` + `stopPropagation`) so an aside panel
  * around the chat, and the quote bar, leave it alone; the composer's dictation
  * Escape only acts on keys from inside the composer, so the two never meet.
+ * Space is play/pause only on the play button, the slider or the group
+ * itself; on any other button it is that button's own activation.
+ *
+ * Focus is kept, not dropped: when the controls swap (Cancel → play/pause
+ * once the audio is ready, Retry → Cancel) and focus was on the control that
+ * went away, it moves to the new state's main control; and when the player
+ * closes itself (Stop, Escape, Dismiss, Cancel) with focus inside, focus goes
+ * back to `returnFocusTo` — the bubble's speaker.
  */
-export default function ReadAloudPlayer({ ownerId }: { ownerId: string }) {
+export default function ReadAloudPlayer({ ownerId, returnFocusTo }: { ownerId: string; returnFocusTo?: RefObject<HTMLElement | null> }) {
   const s = useReadAloud(ownerId);
-  if (s.ownerId !== ownerId || s.status === "idle") return null;
+  const groupRef = useRef<HTMLDivElement>(null);
+  /** The current state's main control: Cancel, play/pause, or Retry/Dismiss. */
+  const primaryRef = useRef<HTMLButtonElement>(null);
+  /**
+   * Whether focus is in the player. Cleared only when focus moves to something
+   * else: a focused control that is removed fires no blur in some browsers, and
+   * a null-target blur in others, and both mean "still ours".
+   */
+  const focusInside = useRef(false);
+  const live = s.ownerId === ownerId && s.status !== "idle";
+
+  useEffect(() => {
+    if (!live || !focusInside.current) return;
+    const active = document.activeElement;
+    if (!active || active === document.body) primaryRef.current?.focus();
+  }, [s.status, live]);
+
+  if (!live) return null;
+
+  /** Stop, and if the player had focus, hand it back to the speaker. */
+  const end = () => {
+    const hadFocus = !!groupRef.current?.contains(document.activeElement);
+    focusInside.current = false;
+    stop();
+    if (hadFocus) returnFocusTo?.current?.focus();
+  };
+
+  const onFocus = () => {
+    focusInside.current = true;
+  };
+  const onBlur = (e: FocusEvent<HTMLDivElement>) => {
+    const next = e.relatedTarget;
+    if (next instanceof Node && !e.currentTarget.contains(next)) focusInside.current = false;
+  };
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (e.altKey || e.ctrlKey || e.metaKey) return;
     if (e.key === "Escape") {
       e.preventDefault();
       e.stopPropagation();
-      stop();
+      end();
       return;
     }
     if (s.status !== "playing" && s.status !== "paused") return;
     // The slider handles its own arrow keys; a second, 10 s seek on top would double up.
     const onSlider = e.target instanceof HTMLInputElement && e.target.type === "range";
     const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
-    if (key === " " || key === "k") {
-      // Claimed, so Space on a focused button does not also click it.
+    // Space activates a focused button natively; only where that would do
+    // nothing, or would itself be play/pause, is it ours.
+    const spaceIsOurs = e.target === e.currentTarget || onSlider || e.target === primaryRef.current;
+    if ((key === " " && spaceIsOurs) || key === "k") {
+      // Claimed, so Space on the play button does not toggle twice.
       e.preventDefault();
       toggle();
     } else if (!onSlider && (key === "ArrowLeft" || key === "j")) {
@@ -59,14 +103,14 @@ export default function ReadAloudPlayer({ ownerId }: { ownerId: string }) {
   };
 
   return (
-    <div className="read-aloud-player" role="group" aria-label="Read aloud player" onKeyDown={onKeyDown}>
+    <div ref={groupRef} className="read-aloud-player" role="group" aria-label="Read aloud player" onKeyDown={onKeyDown} onFocus={onFocus} onBlur={onBlur}>
       {s.status === "loading" && (
         <>
           <Loader2 size={14} className="voice-spinner" aria-hidden="true" />
           <span className="read-aloud-text" aria-live="polite">
             Preparing audio…
           </span>
-          <button type="button" className="read-aloud-btn read-aloud-btn-text" aria-label="Cancel read aloud" onClick={stop}>
+          <button ref={primaryRef} type="button" className="read-aloud-btn read-aloud-btn-text" aria-label="Cancel read aloud" onClick={end}>
             Cancel
           </button>
         </>
@@ -78,11 +122,11 @@ export default function ReadAloudPlayer({ ownerId }: { ownerId: string }) {
             {s.error}
           </span>
           {s.retryable && (
-            <button type="button" className="read-aloud-btn read-aloud-btn-text" onClick={retry}>
+            <button ref={primaryRef} type="button" className="read-aloud-btn read-aloud-btn-text" onClick={retry}>
               Retry
             </button>
           )}
-          <button type="button" className="read-aloud-btn read-aloud-btn-text" onClick={stop}>
+          <button ref={s.retryable ? undefined : primaryRef} type="button" className="read-aloud-btn read-aloud-btn-text" onClick={end}>
             Dismiss
           </button>
         </>
@@ -94,6 +138,7 @@ export default function ReadAloudPlayer({ ownerId }: { ownerId: string }) {
             <RotateCcw size={14} aria-hidden="true" />
           </button>
           <button
+            ref={primaryRef}
             type="button"
             className="read-aloud-btn read-aloud-btn-primary"
             aria-label={s.status === "playing" ? "Pause" : "Play"}
@@ -105,7 +150,7 @@ export default function ReadAloudPlayer({ ownerId }: { ownerId: string }) {
           <button type="button" className="read-aloud-btn" aria-label="Forward 10 seconds" title="Forward 10 seconds (L)" onClick={() => seekBy(SKIP_SECONDS)}>
             <RotateCw size={14} aria-hidden="true" />
           </button>
-          <button type="button" className="read-aloud-btn" aria-label="Stop" title="Stop (Esc)" onClick={stop}>
+          <button type="button" className="read-aloud-btn" aria-label="Stop" title="Stop (Esc)" onClick={end}>
             <Square size={12} aria-hidden="true" />
           </button>
           <input
@@ -133,7 +178,7 @@ export default function ReadAloudPlayer({ ownerId }: { ownerId: string }) {
             {rateLabel(s.rate)}
           </button>
           {s.hint && <span className="read-aloud-note">{s.hint}</span>}
-          {s.truncated && <span className="read-aloud-note">Reading the first ~13 minutes of this long message.</span>}
+          {s.truncated && <span className="read-aloud-note">Reading the start of this long message.</span>}
         </>
       )}
     </div>

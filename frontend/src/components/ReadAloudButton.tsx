@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, type RefObject } from "react";
 import { Loader2, Volume2 } from "lucide-react";
 import { useReadAloudStatus } from "../hooks/useReadAloud";
 import { release, start, stop } from "../utils/readAloudPlayer";
@@ -23,6 +23,7 @@ export default function ReadAloudButton({
   available,
   reason,
   right,
+  buttonRef,
 }: {
   ownerId: string;
   /** The message's markdown — converted to speech only when clicked. */
@@ -30,6 +31,8 @@ export default function ReadAloudButton({
   available: boolean;
   reason?: string;
   right: number;
+  /** The player hands focus back here when it closes with focus inside. */
+  buttonRef?: RefObject<HTMLButtonElement>;
 }) {
   const status = useReadAloudStatus(ownerId);
   const active = status !== "idle";
@@ -41,6 +44,7 @@ export default function ReadAloudButton({
 
   return (
     <button
+      ref={buttonRef}
       type="button"
       className={`read-aloud-affordance${active ? " is-active" : ""}`}
       onClick={(e) => {

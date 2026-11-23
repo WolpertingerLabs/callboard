@@ -954,6 +954,7 @@ function MessageBubble({
   // Identifies this bubble to the page-wide read-aloud playback. Called before
   // the early returns below so the hook order never changes.
   const readAloudOwner = useId();
+  const readAloudSpeaker = useRef<HTMLButtonElement>(null);
   const isUser = message.role === "user";
   const isTeamMessage = !!message.teamName;
 
@@ -1251,12 +1252,13 @@ function MessageBubble({
               available={readAloud.available}
               reason={readAloud.reason}
               right={slotRight(1)}
+              buttonRef={readAloudSpeaker}
             />
           )}
           <MarkdownRenderer content={message.content} className="message-markdown" />
           {message.imageIds && message.imageIds.length > 0 && <ImageThumbnails imageIds={message.imageIds} />}
         </div>
-        {teamReadAloud && <ReadAloudPlayer ownerId={readAloudOwner} />}
+        {teamReadAloud && <ReadAloudPlayer ownerId={readAloudOwner} returnFocusTo={readAloudSpeaker} />}
         <MessageMetadata message={message} align="left" />
       </div>
     );
@@ -1329,6 +1331,7 @@ function MessageBubble({
             available={readAloud.available}
             reason={readAloud.reason}
             right={slotRight(readAloudSlot)}
+            buttonRef={readAloudSpeaker}
           />
         )}
         {/* The quotable text, and only it: selection-to-quote clips to this
@@ -1340,7 +1343,7 @@ function MessageBubble({
         {attachedFiles.length > 0 && <AttachedFileChips files={attachedFiles} />}
         {message.imageIds && message.imageIds.length > 0 && <ImageThumbnails imageIds={message.imageIds} />}
       </div>
-      {showReadAloud && <ReadAloudPlayer ownerId={readAloudOwner} />}
+      {showReadAloud && <ReadAloudPlayer ownerId={readAloudOwner} returnFocusTo={readAloudSpeaker} />}
       <MessageMetadata message={message} align={isUser ? "right" : "left"} leading={starred && toggleStar ? <StarredIndicator /> : undefined} />
       {forks && forks.length > 0 && <ForkPointMarker forks={forks} align={isUser ? "right" : "left"} />}
       {onInsertIntoMain && !isUser && bodyText.trim() && <InsertIntoMainButton onInsert={() => onInsertIntoMain(message)} align={isUser ? "right" : "left"} />}

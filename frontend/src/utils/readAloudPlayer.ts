@@ -1,5 +1,5 @@
-import { READ_ALOUD_SERVER_BUDGET_MS, READ_ALOUD_SPEEDS } from "shared/types/readAloud.js";
-import { synthesizeSpeech } from "../api";
+import { MAX_READ_ALOUD_REQUEST_CHARS, READ_ALOUD_SERVER_BUDGET_MS, READ_ALOUD_SPEEDS } from "shared/types/readAloud.js";
+import { ReadAloudRequestError, synthesizeSpeech } from "../api";
 import { getReadAloudRate, saveReadAloudRate } from "./localStorage";
 import { markdownToSpeechText } from "./speechText";
 
@@ -162,8 +162,8 @@ function teardown(): void {
 export function start(ownerId: string, markdown: string): void {
   teardown();
   last = { ownerId, markdown };
-  const text = markdownToSpeechText(markdown);
-  if (!text) {
+  const prepared = markdownToSpeechText(markdown);
+  if (!prepared) {
     set({ ...idleState(state.rate), ownerId, status: "error", error: READ_ALOUD_EMPTY_MESSAGE, retryable: false });
     return;
   }
@@ -179,6 +179,12 @@ export function start(ownerId: string, markdown: string): void {
   timer = setTimeout(() => ctrl.abort(new DOMException(TIMEOUT_MESSAGE, "TimeoutError")), READ_ALOUD_CLIENT_TIMEOUT_MS);
   set({ ...idleState(state.rate), ownerId, status: "loading" });
 
+  // The server refuses (413) a body over MAX_READ_ALOUD_REQUEST_CHARS and reads
+  // far less than that anyway, so send its first part: a very long message
+  // then plays its start, with the truncation note, instead of failing.
+  const text = clampRequestText(prepared);
+  const clamped = text.length < prepared.length;
+
   synthesizeSpeech(text, ctrl.signal).then(
     (speech) => {
       if (gen !== generation) return;
@@ -188,7 +194,7 @@ export function start(ownerId: string, markdown: string): void {
       el.src = blobUrl;
       // Setting src runs the load algorithm, which resets playbackRate.
       applyRate(el);
-      set({ truncated: speech.truncated, duration: knownDuration(el) });
+      set({ truncated: speech.truncated || clamped, duration: knownDuration(el) });
       play(gen);
     },
     (err: unknown) => {
@@ -199,10 +205,20 @@ export function start(ownerId: string, markdown: string): void {
       set({
         status: "error",
         error: timedOut ? TIMEOUT_MESSAGE : err instanceof Error && err.message ? err.message : "Read aloud failed.",
-        retryable: true,
+        // A 400 (no text, unsupported model) or 413 is refused again on retry.
+        retryable: !(err instanceof ReadAloudRequestError && (err.status === 400 || err.status === 413)),
       });
     },
   );
+}
+
+/** `text` cut to the server's request limit, never between a surrogate pair. */
+function clampRequestText(text: string): string {
+  if (text.length <= MAX_READ_ALOUD_REQUEST_CHARS) return text;
+  let end = MAX_READ_ALOUD_REQUEST_CHARS;
+  const last = text.charCodeAt(end - 1);
+  if (last >= 0xd800 && last <= 0xdbff) end--;
+  return text.slice(0, end);
 }
 
 function finishRequest(): void {
@@ -277,7 +293,7 @@ export function cycleRate(): void {
 
 let silentWavUri: string | null = null;
 
-/** A 1-sample, 8 kHz, 8-bit mono WAV: the smallest clip that unlocks the element. */
+/** A 2-sample, 8 kHz, 8-bit mono WAV of silence: a near-empty clip that unlocks the element. */
 function silentWav(): string {
   if (silentWavUri) return silentWavUri;
   const bytes = new Uint8Array(46);

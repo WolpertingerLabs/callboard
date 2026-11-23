@@ -304,9 +304,14 @@ describe("the accent fill/ink split", () => {
   const SRC = join(dirname(fileURLToPath(import.meta.url)), "../../../frontend/src");
   /**
    * `color: "var(--accent)"` but not `backgroundColor:`/`borderTopColor:`/…,
-   * nor CSS's hyphenated `accent-color:`/`border-color:` — fills, not ink.
+   * nor the hyphenated CSS properties that are fills or lines rather than ink:
+   * `accent-color`, `background-color`, `outline-color`, `column-rule-color`
+   * and the `border-*-color` family. Every other `*-color:` that names the
+   * accent (`caret-color`, `-webkit-text-fill-color`, `text-decoration-color`)
+   * paints text, and is flagged.
    */
-  const INK = /(?<![A-Za-z-])color:\s*(["'`]?)var\(--accent\)\1/g;
+  const INK =
+    /(?<![A-Za-z]|(?:^|[^A-Za-z-])(?:accent|background|outline|column-rule|border(?:-(?:top|right|bottom|left|block|inline)(?:-(?:start|end))?)?)-)color:\s*(["'`]?)var\(--accent\)\1/g;
 
   function walk(dir: string): string[] {
     return readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
@@ -343,5 +348,16 @@ describe("the accent fill/ink split", () => {
     expect(probe(`borderTopColor: "var(--accent)"`)).toBe(false);
     expect(probe(`backgroundColor: "var(--accent)"`)).toBe(false);
     expect(probe(`color: "var(--accent-text)"`)).toBe(false);
+    // CSS's hyphenated fill properties are exempt…
+    expect(probe(`  accent-color: var(--accent);`)).toBe(false);
+    expect(probe(`  border-color: var(--accent);`)).toBe(false);
+    expect(probe(`  border-left-color: var(--accent);`)).toBe(false);
+    expect(probe(`  border-inline-start-color: var(--accent);`)).toBe(false);
+    expect(probe(`  outline-color: var(--accent);`)).toBe(false);
+    expect(probe(`  background-color: var(--accent);`)).toBe(false);
+    // …but not the hyphenated ones that paint text.
+    expect(probe(`  caret-color: var(--accent);`)).toBe(true);
+    expect(probe(`  -webkit-text-fill-color: var(--accent);`)).toBe(true);
+    expect(probe(`  text-decoration-color: var(--accent);`)).toBe(true);
   });
 });

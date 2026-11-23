@@ -5,6 +5,7 @@
  * call mocked and jsdom's media stubbed (testing/mediaStubs.ts).
  */
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { useRef } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SynthesizedSpeech } from "../api";
 import { installMediaStubs, type MediaStubs } from "../testing/mediaStubs";
@@ -12,7 +13,10 @@ import { getReadAloudAudioForTesting, getSnapshot, resetReadAloudPlayerForTestin
 import ReadAloudPlayer, { formatClock } from "./ReadAloudPlayer";
 
 const synth = vi.hoisted(() => ({ fn: vi.fn() }));
-vi.mock("../api", () => ({ synthesizeSpeech: (...args: unknown[]) => synth.fn(...args) }));
+vi.mock("../api", async (importOriginal) => ({
+  ReadAloudRequestError: (await importOriginal<typeof import("../api")>()).ReadAloudRequestError,
+  synthesizeSpeech: (...args: unknown[]) => synth.fn(...args),
+}));
 
 const speech = (extra: Partial<SynthesizedSpeech> = {}): SynthesizedSpeech => ({
   blob: new Blob(["mp3"]),
@@ -145,15 +149,43 @@ describe("ReadAloudPlayer", () => {
     expect(audio.currentTime).toBe(50);
   });
 
-  it("claims Space so it does not also click the focused button", async () => {
-    await playing();
-    render(<ReadAloudPlayer ownerId="a" />);
+  const space = (el: Element) => {
     const event = new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true });
     act(() => {
-      screen.getByRole("button", { name: "Stop" }).dispatchEvent(event);
+      el.dispatchEvent(event);
     });
-    expect(event.defaultPrevented).toBe(true);
+    return event;
+  };
+
+  it("leaves Space on the other buttons to activate them natively", async () => {
+    await playing();
+    render(<ReadAloudPlayer ownerId="a" />);
+    for (const name of ["Stop", "Back 10 seconds", "Forward 10 seconds", "Playback speed 1×"]) {
+      expect(space(screen.getByRole("button", { name })).defaultPrevented).toBe(false);
+      expect(getSnapshot().status).toBe("playing");
+    }
+  });
+
+  it("takes Space as play/pause on the play button, the slider and the group itself", async () => {
+    await playing();
+    render(<ReadAloudPlayer ownerId="a" />);
+    expect(space(screen.getByRole("button", { name: "Pause" })).defaultPrevented).toBe(true);
     expect(getSnapshot().status).toBe("paused");
+    await act(async () => {
+      space(screen.getByRole("slider", { name: "Seek" }));
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(getSnapshot().status).toBe("playing");
+    expect(space(group()).defaultPrevented).toBe(true);
+    expect(getSnapshot().status).toBe("paused");
+  });
+
+  it("leaves Space on Cancel, Retry and Dismiss alone", async () => {
+    synth.fn.mockReturnValueOnce(new Promise(() => {}));
+    act(() => start("a", "Text."));
+    render(<ReadAloudPlayer ownerId="a" />);
+    expect(space(screen.getByRole("button", { name: "Cancel read aloud" })).defaultPrevented).toBe(false);
+    expect(getSnapshot().status).toBe("loading");
   });
 
   it("leaves arrow keys on the seek slider to the slider", async () => {
@@ -185,7 +217,7 @@ describe("ReadAloudPlayer", () => {
   it("says when only the start of a long message is read", async () => {
     await playing("a", { truncated: true });
     render(<ReadAloudPlayer ownerId="a" />);
-    expect(screen.getByText(/Reading the first ~13 minutes/)).toBeTruthy();
+    expect(screen.getByText("Reading the start of this long message.")).toBeTruthy();
   });
 
   it("shows Preparing with a Cancel while loading", () => {
@@ -234,5 +266,86 @@ describe("ReadAloudPlayer", () => {
     render(<ReadAloudPlayer ownerId="a" />);
     expect(screen.getByText("Tap play to listen.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Play" })).toBeTruthy();
+  });
+
+  describe("focus", () => {
+    function Harness() {
+      const speakerRef = useRef<HTMLButtonElement>(null);
+      return (
+        <>
+          <button ref={speakerRef}>speaker</button>
+          <ReadAloudPlayer ownerId="a" returnFocusTo={speakerRef} />
+        </>
+      );
+    }
+
+    it("moves focus from Cancel to play/pause when the audio is ready", async () => {
+      const d: { resolve?: (v: SynthesizedSpeech) => void } = {};
+      synth.fn.mockReturnValueOnce(new Promise<SynthesizedSpeech>((r) => (d.resolve = r)));
+      act(() => start("a", "Text."));
+      render(<Harness />);
+      screen.getByRole("button", { name: "Cancel read aloud" }).focus();
+      await act(async () => {
+        d.resolve!(speech());
+        await new Promise((r) => setTimeout(r, 0));
+      });
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Pause" }));
+    });
+
+    it("does not steal focus that moved elsewhere while loading", async () => {
+      const d: { resolve?: (v: SynthesizedSpeech) => void } = {};
+      synth.fn.mockReturnValueOnce(new Promise<SynthesizedSpeech>((r) => (d.resolve = r)));
+      act(() => start("a", "Text."));
+      render(<Harness />);
+      screen.getByRole("button", { name: "Cancel read aloud" }).focus();
+      screen.getByRole("button", { name: "speaker" }).focus();
+      await act(async () => {
+        d.resolve!(speech());
+        await new Promise((r) => setTimeout(r, 0));
+      });
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "speaker" }));
+    });
+
+    it.each([
+      ["Stop", (el: HTMLElement) => fireEvent.click(el)],
+      ["Pause", (el: HTMLElement) => fireEvent.keyDown(el, { key: "Escape" })],
+    ])("returns focus to the speaker when %s ends playback", async (name, act_) => {
+      await playing();
+      render(<Harness />);
+      const el = screen.getByRole("button", { name });
+      el.focus();
+      act(() => act_(el));
+      expect(getSnapshot().status).toBe("idle");
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "speaker" }));
+    });
+
+    it("returns focus to the speaker on Dismiss and on Cancel", async () => {
+      synth.fn.mockRejectedValueOnce(new Error("No"));
+      await act(async () => {
+        start("a", "Text.");
+        await new Promise((r) => setTimeout(r, 0));
+      });
+      render(<Harness />);
+      const dismiss = screen.getByRole("button", { name: "Dismiss" });
+      dismiss.focus();
+      act(() => fireEvent.click(dismiss));
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "speaker" }));
+
+      synth.fn.mockReturnValueOnce(new Promise(() => {}));
+      act(() => start("a", "Text."));
+      const cancel = screen.getByRole("button", { name: "Cancel read aloud" });
+      cancel.focus();
+      act(() => fireEvent.click(cancel));
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "speaker" }));
+    });
+
+    it("leaves focus alone when the stop came from outside the player", async () => {
+      await playing();
+      render(<Harness />);
+      const outside = screen.getByRole("button", { name: "speaker" });
+      outside.blur();
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Stop" })));
+      expect(document.activeElement).toBe(document.body);
+    });
   });
 });

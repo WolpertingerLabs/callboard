@@ -16,7 +16,10 @@ import { getReadAloudAudioForTesting, getSnapshot, resetReadAloudPlayerForTestin
 import MessageBubble from "./MessageBubble";
 
 const synth = vi.hoisted(() => ({ fn: vi.fn() }));
-vi.mock("../api", () => ({ synthesizeSpeech: (...args: unknown[]) => synth.fn(...args) }));
+vi.mock("../api", async (importOriginal) => ({
+  ReadAloudRequestError: (await importOriginal<typeof import("../api")>()).ReadAloudRequestError,
+  synthesizeSpeech: (...args: unknown[]) => synth.fn(...args),
+}));
 
 const counts = vi.hoisted(() => ({ markdown: new Map<string, number>() }));
 vi.mock("./MarkdownRenderer", () => ({
@@ -182,6 +185,20 @@ describe("the speaker", () => {
     fireEvent.click(screen.getByRole("button", { name: "Stop reading aloud" }));
     expect(signal.aborted).toBe(true);
     expect(getSnapshot().status).toBe("idle");
+  });
+
+  it.each([
+    ["a reply", reply, {}],
+    ["a team message", { ...reply, teamName: "r" } as ParsedMessage, { teamColorMap: new Map([["r", 0]]) }],
+  ])("on %s, Stop in the player hands focus back to that bubble's speaker", async (_label, message, extra) => {
+    render(<MessageBubble message={message} readAloud={AVAILABLE} {...extra} />);
+    fireEvent.click(speaker());
+    await flush();
+    const stopButton = screen.getByRole("button", { name: "Stop" });
+    stopButton.focus();
+    act(() => fireEvent.click(stopButton));
+    expect(screen.queryByRole("group", { name: "Read aloud player" })).toBeNull();
+    expect(document.activeElement).toBe(speaker());
   });
 
   it("stops when its bubble unmounts", async () => {

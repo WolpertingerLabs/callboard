@@ -6,12 +6,15 @@
  * jsdom has no media pipeline; see testing/mediaStubs.ts.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { READ_ALOUD_SERVER_BUDGET_MS } from "shared/types/readAloud.js";
-import type { SynthesizedSpeech } from "../api";
+import { MAX_READ_ALOUD_REQUEST_CHARS, READ_ALOUD_SERVER_BUDGET_MS } from "shared/types/readAloud.js";
+import { ReadAloudRequestError, type SynthesizedSpeech } from "../api";
 import { installMediaStubs, type MediaStubs } from "../testing/mediaStubs";
 
 const synth = vi.hoisted(() => ({ fn: vi.fn() }));
-vi.mock("../api", () => ({ synthesizeSpeech: (...args: unknown[]) => synth.fn(...args) }));
+vi.mock("../api", async (importOriginal) => ({
+  ReadAloudRequestError: (await importOriginal<typeof import("../api")>()).ReadAloudRequestError,
+  synthesizeSpeech: (...args: unknown[]) => synth.fn(...args),
+}));
 
 import {
   READ_ALOUD_CLIENT_TIMEOUT_MS,
@@ -116,6 +119,25 @@ describe("start", () => {
     listener.mockClear();
     stop();
     expect(listener).not.toHaveBeenCalled();
+  });
+
+  it("sends no more than the server accepts, cut on a code-point boundary, and notes it", async () => {
+    // An emoji (a surrogate pair) straddling the limit is dropped whole.
+    const text = `${"a".repeat(MAX_READ_ALOUD_REQUEST_CHARS - 1)}😀 and more after it.`;
+    synth.fn.mockResolvedValueOnce(speech({ truncated: false }));
+    start("a", text);
+    const sent = synth.fn.mock.calls[0][0] as string;
+    expect(sent.length).toBe(MAX_READ_ALOUD_REQUEST_CHARS - 1);
+    expect(sent).toBe("a".repeat(MAX_READ_ALOUD_REQUEST_CHARS - 1));
+    await flush();
+    expect(getSnapshot()).toMatchObject({ status: "playing", truncated: true });
+  });
+
+  it("sends a text at exactly the limit whole", () => {
+    const text = "b".repeat(MAX_READ_ALOUD_REQUEST_CHARS);
+    synth.fn.mockReturnValueOnce(new Promise(() => {}));
+    start("a", text);
+    expect(synth.fn.mock.calls[0][0]).toBe(text);
   });
 
   it("shows the truncation note when the server read only the start", async () => {
@@ -307,6 +329,23 @@ describe("failures", () => {
     getReadAloudAudioForTesting()!.dispatchEvent(new Event("error"));
     expect(getSnapshot()).toMatchObject({ status: "error", error: "Couldn't play the audio." });
     expect(media.revokeObjectURL).toHaveBeenCalledWith("blob:test/1");
+  });
+
+  it.each([
+    [400, "READ_ALOUD_MODEL_UNSUPPORTED"],
+    [413, "TEXT_TOO_LONG"],
+  ])("offers no Retry for a %s the server will refuse again", async (status, code) => {
+    synth.fn.mockRejectedValueOnce(new ReadAloudRequestError("Refused", status, code));
+    start("a", "Text.");
+    await flush();
+    expect(getSnapshot()).toMatchObject({ status: "error", error: "Refused", retryable: false });
+  });
+
+  it.each([409, 429, 502, 504])("keeps Retry for a %s", async (status) => {
+    synth.fn.mockRejectedValueOnce(new ReadAloudRequestError("Try later", status));
+    start("a", "Text.");
+    await flush();
+    expect(getSnapshot()).toMatchObject({ status: "error", retryable: true });
   });
 
   it("times out on a timer above the server's budget", async () => {
