@@ -31,6 +31,10 @@ const BYTES = Buffer.from(Array.from({ length: SIZE }, (_, i) => i % 251));
 const UPSTREAM_SIZE = 2000;
 const UPSTREAM_BYTES = Buffer.from(Array.from({ length: UPSTREAM_SIZE }, (_, i) => (i * 7) % 253));
 const PROXY_CAP = 4096;
+const BIG_SIZE = 10_000; // > PROXY_CAP, so clamping truncates
+const BIG_BYTES = Buffer.from(Array.from({ length: BIG_SIZE }, (_, i) => (i * 13) % 241));
+const ETAG = '"v1-abc"';
+const LAST_MODIFIED = "Wed, 21 Oct 2026 07:28:00 GMT";
 
 async function pickUpstreamIp(): Promise<string> {
   const server = http.createServer();
@@ -47,31 +51,40 @@ function expectServed(res: RawResponse, mime: string) {
   expect(res.headers["content-type"]).toBe(mime);
   expect(res.headers["x-content-type-options"]).toBe("nosniff");
   expect(res.headers["content-security-policy"]).toBe(SANDBOX_CSP);
+  expect(res.headers["cache-control"]).toBe("private, no-cache");
 }
 
-/** A minimal single-range server over UPSTREAM_BYTES. */
-function rangedResponse(req: http.IncomingMessage, res: http.ServerResponse, contentType = "video/mp4") {
+/** A minimal single-range server over `data` (UPSTREAM_BYTES by default). */
+function rangedResponse(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  contentType = "video/mp4",
+  data = UPSTREAM_BYTES,
+  validators: http.OutgoingHttpHeaders = { ETag: ETAG, "Last-Modified": LAST_MODIFIED },
+) {
+  const size = data.length;
   const range = req.headers.range;
-  if (!range) return res.writeHead(200, { "Content-Type": contentType, "Content-Length": UPSTREAM_SIZE }).end(UPSTREAM_BYTES);
+  if (!range) return res.writeHead(200, { "Content-Type": contentType, "Content-Length": size, ...validators }).end(data);
   const m = /^bytes=(\d*)-(\d*)$/.exec(range)!;
   let start: number;
   let end: number;
   if (m[1] === "") {
-    start = UPSTREAM_SIZE - Number(m[2]);
-    end = UPSTREAM_SIZE - 1;
+    start = size - Number(m[2]);
+    end = size - 1;
   } else {
     start = Number(m[1]);
-    end = m[2] === "" ? UPSTREAM_SIZE - 1 : Math.min(Number(m[2]), UPSTREAM_SIZE - 1);
+    end = m[2] === "" ? size - 1 : Math.min(Number(m[2]), size - 1);
   }
-  if (start >= UPSTREAM_SIZE) return res.writeHead(416, { "Content-Range": `bytes */${UPSTREAM_SIZE}` }).end("unsatisfiable");
+  if (start >= size) return res.writeHead(416, { "Content-Range": `bytes */${size}` }).end("unsatisfiable");
   res
     .writeHead(206, {
       "Content-Type": contentType,
-      "Content-Range": `bytes ${start}-${end}/${UPSTREAM_SIZE}`,
+      "Content-Range": `bytes ${start}-${end}/${size}`,
       "Content-Length": end - start + 1,
       "Accept-Ranges": "bytes",
+      ...validators,
     })
-    .end(UPSTREAM_BYTES.subarray(start, end + 1));
+    .end(data.subarray(start, end + 1));
 }
 
 const upstreamRoutes: Record<string, (req: http.IncomingMessage, res: http.ServerResponse) => void> = {
@@ -81,15 +94,50 @@ const upstreamRoutes: Record<string, (req: http.IncomingMessage, res: http.Serve
   "/badrange.mp4": (_req, res) => res.writeHead(206, { "Content-Type": "video/mp4", "Content-Range": "bytes 0-9" }).end(UPSTREAM_BYTES.subarray(0, 10)),
   "/weird416.mp4": (_req, res) => res.writeHead(416, { "Content-Range": "bytes */<script>" }).end(),
   "/hop.mp4": (_req, res) => res.writeHead(302, { Location: "/ranged.mp4" }).end(),
-  // Ignores the (clamped) range it was sent and keeps writing past the cap, with no Content-Length.
+  "/big.mp4": (req, res) => rangedResponse(req, res, "video/mp4", BIG_BYTES),
+  "/badvalidators.mp4": (req, res) => rangedResponse(req, res, "video/mp4", UPSTREAM_BYTES, { ETag: 'v1"\tx', "Last-Modified": "yesterday<script>" }),
+  // Claims the (clamped) range it was sent, but keeps writing past the cap, with no Content-Length.
   "/overflow.mp4": (_req, res) => {
-    res.writeHead(206, { "Content-Type": "video/mp4", "Content-Range": `bytes 0-${PROXY_CAP * 4 - 1}/${PROXY_CAP * 4}` });
+    res.writeHead(206, { "Content-Type": "video/mp4", "Content-Range": `bytes 0-${PROXY_CAP - 1}/${PROXY_CAP * 4}` });
     res.end(Buffer.alloc(PROXY_CAP * 4));
+  },
+  // Consistent with the request except Content-Length.
+  "/badlength.mp4": (_req, res) => res.writeHead(206, { "Content-Range": "bytes 0-9/2000", "Content-Length": 11 }).end(Buffer.alloc(11)),
+  // Status lines whose bodies are never relayed, followed by a body that never ends.
+  "/endless416.mp4": (_req, res) => endless(res.writeHead(416, { "Content-Range": "bytes */2000" }), "/endless416.mp4"),
+  "/endless500.mp4": (_req, res) => endless(res.writeHead(500), "/endless500.mp4"),
+  "/endless302.mp4": (_req, res) => endless(res.writeHead(302, { Location: "/ranged.mp4" }), "/endless302.mp4"),
+  // A body that trickles in: one chunk every 50ms, forever.
+  "/slow.mp4": (_req, res) => {
+    res.writeHead(200, { "Content-Type": "video/mp4" });
+    const timer = setInterval(() => res.write(Buffer.alloc(16)), 50);
+    res.once("close", () => {
+      clearInterval(timer);
+      upstreamClosedAt.set("/slow.mp4", Date.now());
+    });
+  },
+  // One chunk, then nothing.
+  "/stalled.mp4": (_req, res) => {
+    res.writeHead(200, { "Content-Type": "video/mp4" }).write(Buffer.alloc(16));
+    res.once("close", () => upstreamClosedAt.set("/stalled.mp4", Date.now()));
   },
 };
 
+const upstreamClosedAt = new Map<string, number>();
+
+/** Write 1KB every 5ms until the peer goes away, recording when it did. */
+function endless(res: http.ServerResponse, name: string) {
+  const timer = setInterval(() => res.write(Buffer.alloc(1024)), 5);
+  res.once("close", () => {
+    clearInterval(timer);
+    upstreamClosedAt.set(name, Date.now());
+  });
+}
+
 let app: RawServer;
 let proxyApp: RawServer;
+let idleProxyApp: RawServer; // the same, with a 200ms idle timeout
+let proxySettled = 0;
 let upstream: http.Server;
 let upstreamOrigin: string;
 const upstreamHits: Array<{ path: string; range: string | undefined }> = [];
@@ -118,16 +166,28 @@ beforeAll(async () => {
     createFilesRouter({
       isAllowedAddress: (address) => address === UPSTREAM_IP || isPublicAddress(address),
       maxProxyBytes: PROXY_CAP,
+      onProxySettled: () => proxySettled++,
     }),
   );
   proxyApp = await listenRaw(fixture);
+
+  const idleFixture = express();
+  idleFixture.use(
+    "/api/files",
+    createFilesRouter({
+      isAllowedAddress: (address) => address === UPSTREAM_IP || isPublicAddress(address),
+      maxProxyBytes: PROXY_CAP,
+      proxyIdleTimeoutMs: 200,
+    }),
+  );
+  idleProxyApp = await listenRaw(idleFixture);
 
   mp4 = join(DATA, "clip.mp4");
   writeFileSync(mp4, BYTES);
 });
 
 afterAll(async () => {
-  await Promise.all([app.close(), proxyApp.close(), new Promise<void>((resolve) => upstream.close(() => resolve()))]);
+  await Promise.all([app.close(), proxyApp.close(), idleProxyApp.close(), new Promise<void>((resolve) => upstream.close(() => resolve()))]);
 });
 
 const local = (file: string, headers: Record<string, string> = {}, method = "GET") =>
@@ -147,7 +207,6 @@ describe("local files: Range contract", () => {
     expect(res.headers["accept-ranges"]).toBe("bytes");
     expect(res.headers["content-length"]).toBe(String(SIZE));
     expect(res.headers["content-disposition"]).toBe("inline");
-    expect(res.headers["cache-control"]).toBeUndefined();
     expect(res.body.equals(BYTES)).toBe(true);
   });
 
@@ -213,6 +272,7 @@ describe("local files: Range contract", () => {
     expect(etag).toBeTruthy();
     const res = await local(mp4, { "If-None-Match": etag });
     expect(res.status).toBe(304);
+    expect(res.headers["cache-control"]).toBe("private, no-cache");
     expect(res.headers["x-content-type-options"]).toBe("nosniff");
     expect(res.headers["content-security-policy"]).toBe(SANDBOX_CSP);
   });
@@ -262,6 +322,18 @@ describe("local files: types and paths", () => {
     const res = await local(file);
     expect(res.status).toBe(200);
     expect(res.body.equals(BYTES)).toBe(true);
+  });
+
+  it("a zero-length file: bytes=0- → 416 bytes */0", async () => {
+    const file = join(DATA, "empty.mp4");
+    writeFileSync(file, "");
+    const res = await local(file, { Range: "bytes=0-" });
+    expect(res.status).toBe(416);
+    expectServed(res, "video/mp4");
+    expect(res.headers["content-range"]).toBe("bytes */0");
+    const full = await local(file);
+    expect(full.status).toBe(200);
+    expect(full.headers["content-length"]).toBe("0");
   });
 
   it("a missing file → 404", async () => {
@@ -412,5 +484,134 @@ describe("URL proxy: Range forwarding", () => {
     expect(lastHit().range).toBe(`bytes=0-${PROXY_CAP - 1}`);
     expect(outcome.aborted).toBe(true);
     expect(outcome.received).toBeLessThanOrEqual(PROXY_CAP);
+  });
+});
+
+describe("URL proxy: clamping, suffixes, validators", () => {
+  it("an open-ended range on an upstream larger than the cap is truncated to one cap-sized window", async () => {
+    const res = await proxied("/big.mp4", { Range: "bytes=0-" });
+    expect(lastHit().range).toBe(`bytes=0-${PROXY_CAP - 1}`);
+    expect(res.status).toBe(206);
+    expectServed(res, "video/mp4");
+    expect(res.headers["content-range"]).toBe(`bytes 0-${PROXY_CAP - 1}/${BIG_SIZE}`);
+    expect(res.headers["content-length"]).toBe(String(PROXY_CAP));
+    expect(res.body.equals(BIG_BYTES.subarray(0, PROXY_CAP))).toBe(true);
+  });
+
+  it("a suffix range longer than the cap sends no Range upstream (a plain, capped response, not a 413)", async () => {
+    const res = await proxied("/ranged.mp4", { Range: `bytes=-${PROXY_CAP + 1}` });
+    expect(lastHit()).toEqual({ path: "/ranged.mp4", range: undefined });
+    expect(res.status).toBe(200);
+    expect(res.body.equals(UPSTREAM_BYTES)).toBe(true);
+  });
+
+  it("a 206 whose Content-Length disagrees with its Content-Range → 502", async () => {
+    expect((await proxied("/badlength.mp4", { Range: "bytes=0-9" })).status).toBe(502);
+  });
+
+  it("a 206 outside the requested range → 502", async () => {
+    // /overflow.mp4 always claims bytes 0-4095, which starts before the requested 10.
+    const res = await proxied("/overflow.mp4", { Range: "bytes=10-19" });
+    expect(res.status).toBe(502);
+  });
+
+  it.each([
+    ["no range", {}, 200],
+    ["a range", { Range: "bytes=0-9" }, 206],
+  ] as const)("relays a safe ETag and Last-Modified on %s", async (_label, headers, status) => {
+    const res = await proxied("/ranged.mp4", headers);
+    expect(res.status).toBe(status);
+    expect(res.headers.etag).toBe(ETAG);
+    expect(res.headers["last-modified"]).toBe(LAST_MODIFIED);
+  });
+
+  it("drops an ETag or Last-Modified that is not in a safe shape", async () => {
+    const res = await proxied("/badvalidators.mp4", { Range: "bytes=0-9" });
+    expect(res.status).toBe(206);
+    expect(res.headers.etag).toBeUndefined();
+    expect(res.headers["last-modified"]).toBeUndefined();
+  });
+});
+
+describe("URL proxy: bodies we do not relay are destroyed, not drained", () => {
+  it.each([
+    ["/endless416.mp4", { Range: "bytes=0-9" }, 416],
+    ["/endless500.mp4", {}, 502],
+  ] as const)("%s answers promptly and its endless body is cut off", async (path, headers, status) => {
+    const started = Date.now();
+    const res = await proxied(path, headers);
+    expect(res.status).toBe(status);
+    expect(Date.now() - started).toBeLessThan(2000);
+    await expect.poll(() => upstreamClosedAt.get(path), { timeout: 2000 }).toBeDefined();
+    expect(upstreamClosedAt.get(path)! - started).toBeLessThan(2000);
+  });
+
+  it("a redirect hop with an endless body is cut off, and the redirect still followed", async () => {
+    const started = Date.now();
+    const res = await proxied("/endless302.mp4", { Range: "bytes=0-9" });
+    expect(res.status).toBe(206);
+    expect(lastHit()).toEqual({ path: "/ranged.mp4", range: "bytes=0-9" });
+    await expect.poll(() => upstreamClosedAt.get("/endless302.mp4"), { timeout: 2000 }).toBeDefined();
+    expect(upstreamClosedAt.get("/endless302.mp4")! - started).toBeLessThan(2000);
+  });
+});
+
+describe("URL proxy: disconnects and idle responses", () => {
+  it("a client that aborts mid-body releases a slow upstream promptly, and the handler settles", async () => {
+    const settledBefore = proxySettled;
+    const { port } = new URL(proxyApp.origin);
+    const abortedAt = await new Promise<number>((resolve, reject) => {
+      const req = http.get({ host: "127.0.0.1", port, path: `/api/files/serve?url=${encodeURIComponent(`${upstreamOrigin}/slow.mp4`)}` }, (res) => {
+        res.once("data", () => {
+          req.destroy();
+          resolve(Date.now());
+        });
+      });
+      req.on("error", (err) => (err.message === "socket hang up" ? undefined : reject(err)));
+    });
+    await expect.poll(() => upstreamClosedAt.get("/slow.mp4"), { timeout: 2000 }).toBeDefined();
+    expect(upstreamClosedAt.get("/slow.mp4")! - abortedAt).toBeLessThan(1000);
+    await expect.poll(() => proxySettled, { timeout: 2000 }).toBe(settledBefore + 1);
+  });
+
+  it("a response that makes no progress for the idle window is destroyed", async () => {
+    const { port } = new URL(idleProxyApp.origin);
+    const started = Date.now();
+    const outcome = await new Promise<"aborted" | "ended">((resolve) => {
+      const req = http.get({ host: "127.0.0.1", port, path: `/api/files/serve?url=${encodeURIComponent(`${upstreamOrigin}/stalled.mp4`)}` }, (res) => {
+        res.resume();
+        res.on("error", () => resolve("aborted"));
+        res.on("end", () => resolve(res.complete ? "ended" : "aborted"));
+      });
+      req.on("error", () => resolve("aborted"));
+    });
+    expect(outcome).toBe("aborted");
+    const elapsed = Date.now() - started;
+    expect(elapsed).toBeGreaterThanOrEqual(150);
+    expect(elapsed).toBeLessThan(2000);
+    await expect.poll(() => upstreamClosedAt.get("/stalled.mp4"), { timeout: 2000 }).toBeDefined();
+  });
+});
+
+describe("URL proxy: error messages are generic", () => {
+  it('a refused destination → 403 "Destination not allowed", without the address', async () => {
+    const res = await proxyApp.request("GET", `/api/files/serve?url=${encodeURIComponent("http://10.1.2.3/x.png")}`);
+    expect(res.status).toBe(403);
+    expect(JSON.parse(res.body.toString())).toEqual({ error: "Destination not allowed" });
+  });
+
+  it('an upstream error status → 502 "Failed to fetch URL", without the status', async () => {
+    const res = await proxied("/missing.mp4");
+    expect(res.status).toBe(502);
+    expect(JSON.parse(res.body.toString())).toEqual({ error: "Failed to fetch URL" });
+  });
+
+  it('a connection failure → 502 "Failed to fetch URL", without the error text', async () => {
+    const res = await proxyApp.request(
+      "GET",
+      `/api/files/serve?url=${encodeURIComponent(`http://${UPSTREAM_IP.includes(":") ? `[${UPSTREAM_IP}]` : UPSTREAM_IP}:1/x.mp4`)}`,
+    );
+    expect(res.status).toBe(502);
+    expect(JSON.parse(res.body.toString())).toEqual({ error: "Failed to fetch URL" });
   });
 });

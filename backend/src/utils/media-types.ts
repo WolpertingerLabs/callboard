@@ -11,7 +11,9 @@
  * and plain text never belong here.
  *
  * Deliberately absent (browser playback is unreliable): .mkv, .avi, .3gp,
- * .heic, .jxl, .tif/.tiff.
+ * .heic, .jxl, .tif/.tiff. The Ogg formats (.ogv, .oga, .opus) are included
+ * even though Safari's support for them is patchy, because Chrome and Firefox
+ * play them reliably.
  *
  * Backend-only on purpose: the frontend never maps extensions, so this need
  * not ship in the bundle or require `build:shared` for each new format.

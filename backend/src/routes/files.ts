@@ -3,8 +3,11 @@ import { existsSync, realpathSync, statSync } from "fs";
 import path from "path";
 import { setSandboxedContentHeaders } from "../utils/served-content.js";
 import { BlockedDestinationError, fetchPublicUrl, type PublicFetchOptions } from "../utils/public-url-fetch.js";
-import { MEDIA_TYPES, mediaTypeForPath } from "../utils/media-types.js";
-import { parseRangeHeader, serializeUpstreamRange } from "../utils/http-range.js";
+import { mediaTypeForPath } from "../utils/media-types.js";
+import { formatByteRange, parseRangeHeader, upstreamRangeFor, validateUpstreamContentRange } from "../utils/http-range.js";
+import { createLogger } from "../utils/logger.js";
+
+const log = createLogger("files");
 
 /**
  * Per-response cap on proxied bodies: a full 200, or each relayed 206. Every
@@ -14,13 +17,30 @@ import { parseRangeHeader, serializeUpstreamRange } from "../utils/http-range.js
  */
 export const MAX_PROXY_BYTES = 100 * 1024 * 1024; // 100MB
 
-const UPSTREAM_CONTENT_RANGE = /^bytes \d+-\d+\/(\d+|\*)$/;
+/** How long a proxied response may make no socket progress before it is dropped. */
+export const PROXY_IDLE_TIMEOUT_MS = 60_000;
+
 const UPSTREAM_UNSATISFIED_RANGE = /^bytes \*\/\d+$/;
+/** Validators relayed from upstream only in these shapes: a quoted (optionally weak) ETag, and an IMF-fixdate. */
+const SAFE_ETAG = /^(W\/)?"[\x21\x23-\x7e]{0,200}"$/;
+const SAFE_HTTP_DATE = /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT$/;
+
+/**
+ * Served bytes may be rewritten in place (an agent regenerating a chart) and
+ * are private to this user: revalidate on every use (ETag/Last-Modified make
+ * that a cheap 304 locally) and never store in a shared cache. Without an
+ * explicit header the validators alone invite heuristic freshness.
+ */
+const SERVED_CACHE_CONTROL = "private, no-cache";
 
 /** Test seam for the URL proxy's address policy and resolver; production passes nothing. */
 export type FilesRouterOptions = Pick<PublicFetchOptions, "isAllowedAddress" | "lookup"> & {
   /** Overrides {@link MAX_PROXY_BYTES}, for tests. */
   maxProxyBytes?: number;
+  /** Overrides {@link PROXY_IDLE_TIMEOUT_MS}, for tests. */
+  proxyIdleTimeoutMs?: number;
+  /** Called when a proxy request's handler has fully finished, for tests. */
+  onProxySettled?: () => void;
 };
 
 /**
@@ -38,7 +58,7 @@ export function createFilesRouter(proxyOptions: FilesRouterOptions = {}) {
     const urlParam = req.query.url as string | undefined;
 
     if (urlParam) {
-      return serveUrl(urlParam, req, res, proxyOptions);
+      return serveUrl(urlParam, req, res, proxyOptions).finally(() => proxyOptions.onProxySettled?.());
     }
 
     if (!filePath || typeof filePath !== "string") {
@@ -95,6 +115,7 @@ function serveLocalFile(filePath: string, req: Request, res: Response) {
   // the sandbox headers.
   res.setHeader("Content-Type", info.mime);
   res.setHeader("Content-Disposition", "inline");
+  res.setHeader("Cache-Control", SERVED_CACHE_CONTROL);
   setSandboxedContentHeaders(res);
 
   // RFC 9110: a syntactically invalid Range is ignored. `send` would answer
@@ -110,7 +131,7 @@ function serveLocalFile(filePath: string, req: Request, res: Response) {
       // The default ("ignore") 404s anything under a dot-directory, e.g. ~/.cache/x.mp4.
       dotfiles: "allow",
       acceptRanges: true,
-      cacheControl: false,
+      cacheControl: false, // ours (SERVED_CACHE_CONTROL) is already set
       lastModified: true,
       etag: true,
     },
@@ -143,7 +164,7 @@ function serveLocalFile(filePath: string, req: Request, res: Response) {
  * on every hop; see {@link fetchPublicUrl}.
  */
 async function serveUrl(url: string, req: Request, res: Response, proxyOptions: FilesRouterOptions) {
-  const { maxProxyBytes = MAX_PROXY_BYTES, ...fetchOptions } = proxyOptions;
+  const { maxProxyBytes = MAX_PROXY_BYTES, proxyIdleTimeoutMs = PROXY_IDLE_TIMEOUT_MS, onProxySettled: _onSettled, ...fetchOptions } = proxyOptions;
 
   // Validate URL format and protocol
   let parsed: URL;
@@ -158,16 +179,15 @@ async function serveUrl(url: string, req: Request, res: Response, proxyOptions: 
   }
 
   // The extension decides the served type
-  const ext = path.extname(parsed.pathname).toLowerCase();
-  const mimeType = Object.hasOwn(MEDIA_TYPES, ext) ? MEDIA_TYPES[ext].mime : undefined;
+  const mimeType = mediaTypeForPath(parsed.pathname)?.mime;
   if (!mimeType) {
     return res.status(415).json({ error: "Unsupported file type" });
   }
 
   // Forward one range, re-serialised from integers; never the client's string.
-  // Multi-range or invalid → no Range upstream, i.e. a plain full response.
+  // Multi-range, invalid, or a suffix longer than the cap → no Range upstream.
   const clientRange = req.headers.range === undefined ? undefined : parseRangeHeader(req.headers.range);
-  const upstreamRange = clientRange?.kind === "single" ? serializeUpstreamRange(clientRange.range, maxProxyBytes) : undefined;
+  const requested = clientRange?.kind === "single" ? upstreamRangeFor(clientRange.range, maxProxyBytes) : undefined;
 
   try {
     const upstream = await fetchPublicUrl(parsed.href, {
@@ -175,7 +195,7 @@ async function serveUrl(url: string, req: Request, res: Response, proxyOptions: 
       headers: {
         "User-Agent": "Callboard/1.0 (media proxy)",
         Accept: mimeType + ", */*",
-        ...(upstreamRange && { Range: upstreamRange }),
+        ...(requested && { Range: formatByteRange(requested) }),
       },
       signal: AbortSignal.timeout(30_000),
     });
@@ -186,32 +206,41 @@ async function serveUrl(url: string, req: Request, res: Response, proxyOptions: 
     const setServedHeaders = () => {
       res.setHeader("Content-Type", mimeType);
       res.setHeader("Content-Disposition", "inline");
+      res.setHeader("Cache-Control", SERVED_CACHE_CONTROL);
       setSandboxedContentHeaders(res);
     };
 
-    if (status === 416 && upstreamRange) {
-      upstream.resume();
-      setServedHeaders();
+    // Responses whose body we do not relay are destroyed, not drained: a
+    // hostile upstream could otherwise stream forever until the abort timer.
+    // (Each hop uses its own socket, so there is no connection to keep.)
+    if (status === 416 && requested) {
       const contentRange = upstream.headers["content-range"];
+      upstream.destroy();
+      setServedHeaders();
       if (contentRange && UPSTREAM_UNSATISFIED_RANGE.test(contentRange)) {
         res.setHeader("Content-Range", contentRange);
       }
       return res.status(416).end();
     }
 
-    // Only relay a 206 we asked for, with a Content-Range we can vouch for.
+    // Only relay a 206 we asked for, with a Content-Range consistent with that request.
     const partial = status === 206;
-    if (partial && (!upstreamRange || !UPSTREAM_CONTENT_RANGE.test(upstream.headers["content-range"] ?? ""))) {
-      upstream.destroy();
-      return res.status(502).json({ error: "Upstream returned an invalid partial response" });
+    const contentLength = upstream.headers["content-length"];
+    let contentRange: string | undefined;
+    if (partial) {
+      contentRange = requested && validateUpstreamContentRange(upstream.headers["content-range"], contentLength, requested);
+      if (!contentRange) {
+        upstream.destroy();
+        log.warn(`media proxy: invalid partial response from ${parsed.host} (Content-Range ${JSON.stringify(upstream.headers["content-range"])})`);
+        return res.status(502).json({ error: "Failed to fetch URL" });
+      }
     }
 
     if (status < 200 || status >= 300) {
-      upstream.resume();
-      return res.status(502).json({ error: `Upstream returned ${status}` });
+      upstream.destroy();
+      log.warn(`media proxy: upstream ${parsed.host} returned ${status}`);
+      return res.status(502).json({ error: "Failed to fetch URL" });
     }
-
-    const contentLength = upstream.headers["content-length"];
 
     // Check size if known
     if (contentLength && parseInt(contentLength) > maxProxyBytes) {
@@ -223,11 +252,15 @@ async function serveUrl(url: string, req: Request, res: Response, proxyOptions: 
     if (contentLength && /^\d+$/.test(contentLength)) {
       res.setHeader("Content-Length", contentLength);
     }
-    if (partial) {
+    const etag = upstream.headers.etag;
+    if (etag && SAFE_ETAG.test(etag)) res.setHeader("ETag", etag);
+    const lastModified = upstream.headers["last-modified"];
+    if (lastModified && SAFE_HTTP_DATE.test(lastModified)) res.setHeader("Last-Modified", lastModified);
+    if (contentRange) {
       // Upstream ignoring the range (a 200) gets no Accept-Ranges: the browser
       // then treats the stream as unseekable, which is the honest answer.
       res.status(206);
-      res.setHeader("Content-Range", upstream.headers["content-range"]!);
+      res.setHeader("Content-Range", contentRange);
       res.setHeader("Accept-Ranges", "bytes");
     }
 
@@ -239,6 +272,18 @@ async function serveUrl(url: string, req: Request, res: Response, proxyOptions: 
       res.end();
       return;
     }
+
+    // A response that makes no progress for the idle window (an upstream that
+    // stalled, or a client that stopped reading so we never drain) is dropped
+    // rather than held open forever. Our own timer, re-armed on every chunk
+    // relayed, so the socket's keep-alive timeout is left alone.
+    let idle: NodeJS.Timeout | undefined;
+    const touch = () => {
+      clearTimeout(idle);
+      idle = setTimeout(() => res.destroy(), proxyIdleTimeoutMs);
+    };
+    touch();
+    res.once("close", () => clearTimeout(idle));
 
     let totalBytes = 0;
     for await (const chunk of upstream as AsyncIterable<Buffer>) {
@@ -261,19 +306,24 @@ async function serveUrl(url: string, req: Request, res: Response, proxyOptions: 
         });
         if (res.destroyed) return;
       }
+      touch();
     }
+    clearTimeout(idle);
     res.end();
   } catch (err: any) {
     if (res.headersSent) {
       res.destroy();
       return;
     }
+    // Details stay in the server log; the client gets a generic message.
     if (err instanceof BlockedDestinationError) {
-      return res.status(403).json({ error: err.message });
+      log.warn(`media proxy: refused ${parsed.host}: ${err.message}`);
+      return res.status(403).json({ error: "Destination not allowed" });
     }
     if (err.name === "TimeoutError" || err.name === "AbortError") {
       return res.status(504).json({ error: "Upstream request timed out" });
     }
-    return res.status(502).json({ error: `Failed to fetch URL: ${err.message}` });
+    log.warn(`media proxy: fetch from ${parsed.host} failed: ${err.message}`);
+    return res.status(502).json({ error: "Failed to fetch URL" });
   }
 }

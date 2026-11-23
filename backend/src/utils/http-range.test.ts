@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseRangeHeader, serializeUpstreamRange } from "./http-range.js";
+import { formatByteRange, parseRangeHeader, upstreamRangeFor, validateUpstreamContentRange } from "./http-range.js";
 
 describe("parseRangeHeader", () => {
   it.each([
@@ -23,11 +23,47 @@ describe("parseRangeHeader", () => {
   });
 });
 
-describe("serializeUpstreamRange", () => {
-  it("builds the header from integers, clamping a from-start range to the cap", () => {
-    expect(serializeUpstreamRange({ start: 0, end: 99 }, 1000)).toBe("bytes=0-99");
-    expect(serializeUpstreamRange({ start: 0, end: 5000 }, 1000)).toBe("bytes=0-999");
-    expect(serializeUpstreamRange({ start: 10 }, 1000)).toBe("bytes=10-1009");
-    expect(serializeUpstreamRange({ suffix: 5000 }, 1000)).toBe("bytes=-5000");
+describe("upstreamRangeFor + formatByteRange", () => {
+  const upstream = (range: Parameters<typeof upstreamRangeFor>[0], max: number) => {
+    const r = upstreamRangeFor(range, max);
+    return r && formatByteRange(r);
+  };
+
+  it("clamps a from-start range to the cap", () => {
+    expect(upstream({ start: 0, end: 99 }, 1000)).toBe("bytes=0-99");
+    expect(upstream({ start: 0, end: 5000 }, 1000)).toBe("bytes=0-999");
+    expect(upstream({ start: 10 }, 1000)).toBe("bytes=10-1009");
+  });
+
+  it("forwards a suffix range only when it fits the cap", () => {
+    expect(upstream({ suffix: 1000 }, 1000)).toBe("bytes=-1000");
+    expect(upstream({ suffix: 1001 }, 1000)).toBeUndefined();
+  });
+});
+
+describe("validateUpstreamContentRange", () => {
+  const req = { start: 10, end: 19 };
+  it.each([
+    ["bytes 10-19/2000", "10", req],
+    ["bytes 10-19/*", undefined, req],
+    ["bytes 12-15/2000", "4", req],
+    ["bytes 1950-1999/2000", "50", { suffix: 50 }],
+    ["bytes 0-9/10", "10", { suffix: 50 }],
+  ] as const)("%s (Content-Length %s) is accepted", (header, length, requested) => {
+    expect(validateUpstreamContentRange(header, length, requested)).toBe(header);
+  });
+
+  it.each([
+    ["bytes 0-9", "10", req], // malformed
+    ["bytes 19-10/2000", undefined, req], // first > last
+    ["bytes 10-19/15", undefined, req], // last >= total
+    ["bytes 10-19/2000", "11", req], // length mismatch
+    ["bytes 10-19/2000", "ten", req],
+    ["bytes 5-19/2000", "15", req], // before the requested start
+    ["bytes 10-29/2000", "20", req], // past the requested end
+    ["bytes 1900-1999/2000", "100", { suffix: 50 }], // longer than the suffix
+    [`bytes 10-19/${"9".repeat(20)}`, undefined, req], // unsafe integer
+  ] as const)("%s (Content-Length %s) is rejected", (header, length, requested) => {
+    expect(validateUpstreamContentRange(header, length, requested)).toBeUndefined();
   });
 });

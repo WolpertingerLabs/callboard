@@ -121,6 +121,8 @@ Forward one **re-serialised** range upstream and relay the upstream `206`. The c
 
 The public-address policy, the 30 s timeout and the disconnect handling (`res.once("close")`) are unchanged.
 
+**Follow-up (deferred from PR1 review): forward `If-Range` upstream.** The proxy relays the upstream's `ETag` and `Last-Modified` on 200/206, but does not yet forward the client's `If-Range`. Until it does, a remote file that changes between two range requests can be stitched from two versions. To fix it: forward `If-Range` only if it matches the same safe ETag or IMF-fixdate pattern the relayed validators use, and treat an upstream 200 to a conditional range request as a full response (as today).
+
 ### 4. Caps
 
 - **Local files: remove the cap.** Two reasons:
