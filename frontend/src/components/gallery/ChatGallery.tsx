@@ -2,12 +2,12 @@ import { createContext, useCallback, useContext, useEffect, useLayoutEffect, use
 import ImageLightbox, { type LightboxItem } from "./ImageLightbox";
 
 /**
- * One gallery per open chat: every image in the transcript, in display order,
- * so the lightbox swipes across messages rather than stopping at the edge of
- * the one that was tapped.
+ * One gallery per open chat: every image and rendered video in the
+ * transcript, in display order, so the lightbox swipes across messages rather
+ * than stopping at the edge of the one that was tapped.
  *
  * Image sites (`ImageThumbnails` in MessageBubble and ToolCallBubble, and
- * MediaRenderer's images) register their element through `useGalleryItem`.
+ * MediaRenderer's images and videos) register their element through `useGalleryItem`.
  * The registry is a ref, not state: an image mounting or unmounting never
  * re-renders the transcript, and the context value is created once, so the
  * memoized message bubbles keep their benefit.
@@ -104,7 +104,13 @@ export function ChatGalleryProvider({ children, resetKey }: { children: ReactNod
     const sorted = sortByDocumentOrder([...entries.current.values()].filter((e) => e.el.isConnected));
     const startIndex = sorted.findIndex((e) => e.el === session.el);
     setSession(
-      startIndex < 0 ? null : { ...session, startIndex, items: sorted.map(({ src, alt, caption, referrerPolicy }) => ({ src, alt, caption, referrerPolicy })) },
+      startIndex < 0
+        ? null
+        : {
+            ...session,
+            startIndex,
+            items: sorted.map(({ src, alt, caption, referrerPolicy, kind, poster }) => ({ src, alt, caption, referrerPolicy, kind, poster })),
+          },
     );
   }, [session]);
 
@@ -124,6 +130,9 @@ export function ChatGalleryProvider({ children, resetKey }: { children: ReactNod
       },
       open(el, opts) {
         const auto = !!opts?.auto;
+        // The viewer plays its own copy of a video: pause the inline one so
+        // the two never play at once.
+        el.querySelectorAll("video").forEach((v) => v.pause());
         // An auto-open restores focus nowhere: what was focused is usually the
         // composer, and focusing it on close would pop the phone keyboard.
         const returnFocusTo = auto ? null : focusTarget(el);
@@ -144,7 +153,7 @@ export function ChatGalleryProvider({ children, resetKey }: { children: ReactNod
   );
 }
 
-/** Whether a `ChatGalleryProvider` is above — i.e. images here open the chat-wide viewer. */
+/** Whether a `ChatGalleryProvider` is above — i.e. images and videos here open the chat-wide viewer. */
 export function useHasChatGallery(): boolean {
   return useContext(GalleryContext) !== null;
 }
@@ -168,12 +177,14 @@ export function useGalleryItem(ref: RefObject<HTMLElement>, item: LightboxItem |
   const alt = item?.alt;
   const caption = item?.caption;
   const referrerPolicy = item?.referrerPolicy;
+  const kind = item?.kind;
+  const poster = item?.poster;
 
   useEffect(() => {
     const el = ref.current;
     if (!api || !el || !enabled || src === undefined) return;
-    return api.register({ el, src, alt: alt ?? "", caption, referrerPolicy });
-  }, [api, ref, enabled, src, alt, caption, referrerPolicy]);
+    return api.register({ el, src, alt: alt ?? "", caption, referrerPolicy, kind, poster });
+  }, [api, ref, enabled, src, alt, caption, referrerPolicy, kind, poster]);
 
   return useMemo(
     () =>

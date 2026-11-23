@@ -1,5 +1,5 @@
 import type { ParsedMessage } from "shared";
-import { callboardUiTool } from "shared/types/callboard-ui-tools.js";
+import { callboardUiTool, RENDER_FILE_MEDIA_TYPES } from "shared/types/callboard-ui-tools.js";
 import type { RenderFileData } from "./MediaRenderer";
 import type { RenderCanvasData } from "./CanvasRenderer";
 import { ARTIFACT_ID_PATTERN, isValidStorageKey, type RenderArtifactToolResult } from "../api";
@@ -24,7 +24,8 @@ export function parseUiToolResult(use: ParsedMessage, result?: ParsedMessage | n
         (p.file_path !== undefined) === (p.url !== undefined) ||
         (p.file_path !== undefined && !path) ||
         (p.url !== undefined && !url) ||
-        !["image", "audio", "video", "pdf"].includes(p.media_type) ||
+        // An unknown value (from a newer daemon) stays a generic tool bubble.
+        !(RENDER_FILE_MEDIA_TYPES as readonly unknown[]).includes(p.media_type) ||
         typeof p.mime_type !== "string" ||
         !p.mime_type ||
         !["inline", "fullscreen"].includes(p.display_mode) ||

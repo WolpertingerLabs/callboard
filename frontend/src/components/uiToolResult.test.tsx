@@ -119,6 +119,30 @@ describe("trusted UI renderer contract", () => {
     ])
       expect(parseUiToolResult(...pair("callboard-ui__create_canvas", payload))).toBeNull();
   });
+  it('accepts a media_type "file" result and renders its download card', () => {
+    const file = {
+      type: "render_file",
+      file_path: "/tmp/report.zip",
+      media_type: "file",
+      mime_type: "application/zip",
+      display_mode: "inline",
+      file_size: 2048,
+    };
+    const [toolUse, toolResult] = pair("render_file", file, "mcp__callboard_ui");
+    expect(parseUiToolResult(toolUse, toolResult)).toEqual(file);
+    const { container } = render(<ToolCallBubble toolUse={toolUse} toolResult={toolResult} isRunning={false} />);
+    expect(container.querySelector("a[download]")?.getAttribute("href")).toBe(`/api/files/serve?path=${encodeURIComponent("/tmp/report.zip")}&download=1`);
+  });
+  it("an unknown media_type (a newer daemon's) stays a generic tool bubble showing the raw result", () => {
+    // Pins the graceful degradation that lets new media_type values ship
+    // without a capability gate (see RENDER_FILE_MEDIA_TYPES).
+    const future = { ...image, url: undefined, file_path: "/tmp/scene.glb", media_type: "model3d", mime_type: "model/gltf-binary" };
+    const [toolUse, toolResult] = pair("render_file", future, "mcp__callboard_ui");
+    expect(parseUiToolResult(toolUse, toolResult)).toBeNull();
+    const { container } = render(<ToolCallBubble toolUse={toolUse} toolResult={toolResult} isRunning={false} />);
+    expect(container.querySelector("img, iframe, audio, video, a[download]")).toBeNull();
+    expect(container.textContent).toMatch(/render_file|Render/i);
+  });
   it("retains the untrusted-content warning gate", () => {
     const [toolUse, toolResult] = pair("render_file", { ...image, untrusted: true, untrusted_reason: "Smoke warning" });
     const { container } = render(<ToolCallBubble toolUse={toolUse} toolResult={toolResult} isRunning={false} />);

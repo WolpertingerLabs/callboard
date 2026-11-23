@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useRef, useState, type ReactNode } from "react";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { ChatGalleryProvider, sortByDocumentOrder, useGalleryItem } from "./ChatGallery";
@@ -7,7 +7,7 @@ import MediaRenderer, { type RenderFileData } from "../MediaRenderer";
 
 afterEach(cleanup);
 
-const dialog = () => screen.getByRole("dialog", { name: "Image viewer" });
+const dialog = () => screen.getByRole("dialog", { name: "Media viewer" });
 const counter = () => within(dialog()).queryByText(/^\d+ \/ \d+$/)?.textContent ?? null;
 /** The image currently shown: the one in the slot that is not aria-hidden. */
 const currentSrc = () => dialog().querySelector('[aria-hidden="false"] img')?.getAttribute("src");
@@ -58,7 +58,7 @@ describe("ChatGalleryProvider", () => {
     expect(counter()).toBe("2 / 3");
     expect(currentSrc()).toBe("/api/images/m1b");
 
-    fireEvent.click(within(dialog()).getByRole("button", { name: "Next image" }));
+    fireEvent.click(within(dialog()).getByRole("button", { name: "Next item" }));
     expect(counter()).toBe("3 / 3");
     expect(currentSrc()).toBe("/api/images/m2a");
   });
@@ -95,7 +95,7 @@ describe("ChatGalleryProvider", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Open image" }));
     expect(currentSrc()).toBe("/api/images/b");
-    expect(within(dialog()).queryByRole("button", { name: "Next image" })).toBeNull();
+    expect(within(dialog()).queryByRole("button", { name: "Next item" })).toBeNull();
   });
 
   it("keeps the open viewer's list fixed while new images arrive", () => {
@@ -142,7 +142,7 @@ describe("ChatGalleryProvider", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Open image 1 of 3" }));
     expect(counter()).toBe("2 / 4");
-    fireEvent.click(within(dialog()).getByRole("button", { name: "Close image viewer" }));
+    fireEvent.click(within(dialog()).getByRole("button", { name: "Close viewer" }));
     expect(renders).toBe(before);
   });
 
@@ -165,7 +165,7 @@ describe("ChatGalleryProvider", () => {
     );
     fireEvent.click(screen.getAllByRole("button", { name: "Open image" })[0]);
     expect(currentSrc()).toBe("/api/images/tapped");
-    expect(within(dialog()).queryByRole("button", { name: "Next image" })).toBeNull();
+    expect(within(dialog()).queryByRole("button", { name: "Next item" })).toBeNull();
   });
 
   it("closes the viewer when the chat changes", () => {
@@ -233,7 +233,7 @@ describe("MediaRenderer in the chat gallery", () => {
     expect(within(dialog()).getByText("Quarterly chart")).toBeTruthy();
     expect(currentSrc()).toBe(`/api/files/serve?path=${encodeURIComponent("/tmp/chart.png")}`);
 
-    fireEvent.click(within(dialog()).getByRole("button", { name: "Previous image" }));
+    fireEvent.click(within(dialog()).getByRole("button", { name: "Previous item" }));
     expect(currentSrc()).toBe("/api/images/upload");
   });
 
@@ -255,8 +255,8 @@ describe("MediaRenderer in the chat gallery", () => {
       </Chat>,
     );
     fireEvent.click(screen.getByRole("button", { name: "Open image" }));
-    expect(within(dialog()).queryByRole("button", { name: "Next image" })).toBeNull();
-    fireEvent.click(within(dialog()).getByRole("button", { name: "Close image viewer" }));
+    expect(within(dialog()).queryByRole("button", { name: "Next item" })).toBeNull();
+    fireEvent.click(within(dialog()).getByRole("button", { name: "Close viewer" }));
 
     fireEvent.click(screen.getByRole("button", { name: "View anyway" }));
     fireEvent.click(screen.getByRole("button", { name: "Open image" }));
@@ -272,7 +272,7 @@ describe("MediaRenderer in the chat gallery", () => {
     );
     fireEvent.error(screen.getByAltText("Broken"));
     fireEvent.click(screen.getByRole("button", { name: "Open image" }));
-    expect(within(dialog()).queryByRole("button", { name: "Next image" })).toBeNull();
+    expect(within(dialog()).queryByRole("button", { name: "Next item" })).toBeNull();
   });
 
   it("display_mode fullscreen opens the gallery at that image, with siblings before and after it", () => {
@@ -286,7 +286,7 @@ describe("MediaRenderer in the chat gallery", () => {
       </Chat>,
     );
     expect(counter()).toBe("2 / 4");
-    fireEvent.click(within(dialog()).getByRole("button", { name: "Next image" }));
+    fireEvent.click(within(dialog()).getByRole("button", { name: "Next item" }));
     expect(currentSrc()).toBe("/api/images/after1");
   });
 
@@ -318,29 +318,147 @@ describe("MediaRenderer in the chat gallery", () => {
       </>,
     );
     // The composer had focus when the viewer opened itself.
-    expect(document.activeElement).toBe(within(dialog()).getByRole("button", { name: "Close image viewer" }));
-    fireEvent.click(within(dialog()).getByRole("button", { name: "Close image viewer" }));
+    expect(document.activeElement).toBe(within(dialog()).getByRole("button", { name: "Close viewer" }));
+    fireEvent.click(within(dialog()).getByRole("button", { name: "Close viewer" }));
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(document.activeElement).not.toBe(screen.getByLabelText("composer"));
   });
 
-  it("video keeps the FullscreenFrame viewer", () => {
+  describe("video", () => {
+    const clip = (overrides: Partial<RenderFileData> = {}) =>
+      media({ media_type: "video", mime_type: "video/mp4", file_path: "/tmp/clip.mp4", caption: "Clip", ...overrides });
+    const clipSrc = `/api/files/serve?path=${encodeURIComponent("/tmp/clip.mp4")}`;
+    const currentVideo = () => dialog().querySelector<HTMLVideoElement>('[aria-hidden="false"] video');
+    const loadVideos = () => document.querySelectorAll("video").forEach((el) => fireEvent.loadedMetadata(el));
+    let pauseSpy: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+      pauseSpy = vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+    });
+    afterEach(() => {
+      cleanup(); // unmount (which pauses) while pause is still stubbed
+      vi.restoreAllMocks();
+    });
+
+    it("joins the gallery in DOM order between images, as a native video slide", () => {
+      render(
+        <Chat>
+          <ImageThumbnails imageIds={["before"]} />
+          <MediaRenderer data={clip()} />
+          <ImageThumbnails imageIds={["after"]} />
+        </Chat>,
+      );
+      loadVideos();
+      fireEvent.click(screen.getByTitle("Fullscreen"));
+      expect(counter()).toBe("2 / 3");
+      const v = currentVideo()!;
+      expect(v.getAttribute("src")).toBe(clipSrc);
+      expect(v.controls).toBe(true);
+      expect(v.hasAttribute("playsinline")).toBe(true);
+      expect(within(dialog()).getByText("Clip")).toBeTruthy();
+
+      fireEvent.click(within(dialog()).getByRole("button", { name: "Previous item" }));
+      expect(currentSrc()).toBe("/api/images/before");
+      fireEvent.click(within(dialog()).getByRole("button", { name: "Next item" }));
+      fireEvent.click(within(dialog()).getByRole("button", { name: "Next item" }));
+      expect(currentSrc()).toBe("/api/images/after");
+    });
+
+    it("the expand button opens the gallery at its own video, pauses the inline one, and gets focus back on close", () => {
+      render(
+        <Chat>
+          <MediaRenderer data={clip({ file_path: "/tmp/one.mp4", caption: "One" })} />
+          <MediaRenderer data={clip()} />
+        </Chat>,
+      );
+      loadVideos();
+      const inline = document.querySelectorAll("video")[1];
+      const expand = screen.getAllByTitle("Fullscreen")[1];
+      expand.focus();
+      fireEvent.click(expand);
+      expect(counter()).toBe("2 / 2");
+      expect(currentVideo()!.getAttribute("src")).toBe(clipSrc);
+      expect(pauseSpy.mock.contexts).toContain(inline);
+      // FullscreenFrame stays closed: only the inline videos and the viewer's.
+      expect(document.querySelectorAll("video")).toHaveLength(4);
+
+      fireEvent.click(within(dialog()).getByRole("button", { name: "Close viewer" }));
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(document.activeElement).toBe(expand);
+    });
+
+    it("navigating away from a video slide pauses it", () => {
+      render(
+        <Chat>
+          <MediaRenderer data={clip()} />
+          <ImageThumbnails imageIds={["after"]} />
+        </Chat>,
+      );
+      loadVideos();
+      fireEvent.click(screen.getByTitle("Fullscreen"));
+      const slide = currentVideo()!;
+      pauseSpy.mockClear();
+      fireEvent.click(within(dialog()).getByRole("button", { name: "Next item" }));
+      expect(pauseSpy.mock.contexts).toContain(slide);
+    });
+
+    it("an untrusted video stays out of the gallery until the user chooses to view it", () => {
+      render(
+        <Chat>
+          <ImageThumbnails imageIds={["upload"]} />
+          <MediaRenderer data={clip({ untrusted: true })} />
+        </Chat>,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Open image" }));
+      expect(within(dialog()).queryByRole("button", { name: "Next item" })).toBeNull();
+      fireEvent.click(within(dialog()).getByRole("button", { name: "Close viewer" }));
+
+      fireEvent.click(screen.getByRole("button", { name: "View anyway" }));
+      fireEvent.click(screen.getByRole("button", { name: "Open image" }));
+      expect(counter()).toBe("1 / 2");
+    });
+
+    it("a video that failed to load leaves the gallery", () => {
+      render(
+        <Chat>
+          <ImageThumbnails imageIds={["upload"]} />
+          <MediaRenderer data={clip()} />
+        </Chat>,
+      );
+      fireEvent.error(document.querySelector("video")!);
+      fireEvent.click(screen.getByRole("button", { name: "Open image" }));
+      expect(within(dialog()).queryByRole("button", { name: "Next item" })).toBeNull();
+    });
+
+    it("display_mode fullscreen opens the gallery at that video", () => {
+      render(
+        <Chat>
+          <ImageThumbnails imageIds={["before"]} />
+          <MediaRenderer data={clip({ display_mode: "fullscreen" })} />
+        </Chat>,
+      );
+      expect(counter()).toBe("2 / 2");
+      expect(currentVideo()!.getAttribute("src")).toBe(clipSrc);
+    });
+  });
+
+  it("audio keeps the FullscreenFrame viewer", () => {
     render(
       <Chat>
-        <MediaRenderer data={media({ media_type: "video", mime_type: "video/mp4", file_path: "/tmp/clip.mp4" })} />
+        <MediaRenderer data={media({ media_type: "audio", mime_type: "audio/mpeg", file_path: "/tmp/voice.mp3" })} />
       </Chat>,
     );
-    document.querySelectorAll("video").forEach((el) => fireEvent.loadedMetadata(el));
+    document.querySelectorAll("audio").forEach((el) => fireEvent.loadedMetadata(el));
     fireEvent.click(screen.getByTitle("Fullscreen"));
-    expect(screen.queryByRole("dialog", { name: "Image viewer" })).toBeNull();
-    expect(document.querySelectorAll("video")).toHaveLength(2);
+    expect(screen.queryByRole("dialog", { name: "Media viewer" })).toBeNull();
+    expect(document.querySelectorAll("audio")).toHaveLength(2);
   });
 
   it("outside a chat, an image still opens FullscreenFrame", () => {
     render(<MediaRenderer data={media({ caption: "Standalone" })} />);
     loadMedia();
     fireEvent.click(screen.getByTitle("Fullscreen"));
-    expect(screen.queryByRole("dialog", { name: "Image viewer" })).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "Media viewer" })).toBeNull();
     expect(screen.getAllByAltText("Standalone")).toHaveLength(2);
   });
 });

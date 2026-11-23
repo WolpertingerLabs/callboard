@@ -1,14 +1,16 @@
 import { useEffect, useRef, useState } from "react";
-import { ShieldAlert } from "lucide-react";
+import { Download, File as FileIcon, ShieldAlert } from "lucide-react";
+import type { RenderFileMediaType } from "shared/types/callboard-ui-tools.js";
 import FullscreenFrame, { FullscreenButton } from "./FullscreenFrame";
 import { useGalleryItem, useHasChatGallery } from "./gallery/ChatGallery";
-import { formatBytes } from "../utils/formatBytes";
+import { BYTES_UP_TO_GB, formatBytes } from "../utils/formatBytes";
 
 export interface RenderFileData {
   type: "render_file";
   file_path?: string;
   url?: string;
-  media_type: "image" | "audio" | "video" | "pdf";
+  /** `file`: no inline renderer; shown as a download card (local paths only). */
+  media_type: RenderFileMediaType;
   mime_type: string;
   display_mode: "inline" | "fullscreen";
   file_size: number;
@@ -33,10 +35,72 @@ function getFileNameFromUrl(url: string): string {
   }
 }
 
+/** `/api/files/serve?…&download=1`: always an octet-stream attachment. Local paths only. */
+function downloadUrl(filePath: string): string {
+  return `/api/files/serve?path=${encodeURIComponent(filePath)}&download=1`;
+}
+
+const downloadLinkStyle = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 6,
+  padding: "6px 12px",
+  fontSize: 13,
+  fontWeight: 500,
+  background: "var(--accent)",
+  color: "var(--text-on-accent)",
+  borderRadius: 6,
+  textDecoration: "none",
+  flexShrink: 0,
+} as const;
+
+/** The card for a `file` result: name, size, type and a Download button. No preview. */
+function FileCard({ data, fileName }: { data: RenderFileData; fileName: string }) {
+  return (
+    <div style={{ margin: "4px 0", maxWidth: "92%" }}>
+      <div
+        style={{
+          border: "1px solid var(--border)",
+          borderRadius: "var(--radius)",
+          background: "var(--surface)",
+          padding: "12px",
+          display: "flex",
+          flexDirection: "column",
+          gap: 8,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <FileIcon size={28} aria-hidden="true" style={{ color: "var(--text-muted)", flexShrink: 0 }} />
+          <div style={{ display: "flex", flexDirection: "column", minWidth: 0, flex: 1 }}>
+            <span
+              title={data.file_path}
+              style={{ fontWeight: 500, fontSize: 13, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+            >
+              {fileName}
+            </span>
+            <span style={{ fontSize: 12, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {formatBytes(data.file_size, BYTES_UP_TO_GB)} · {data.mime_type}
+            </span>
+          </div>
+          {data.file_path && (
+            <a href={downloadUrl(data.file_path)} download={fileName} style={downloadLinkStyle}>
+              <Download size={14} aria-hidden="true" />
+              Download
+            </a>
+          )}
+        </div>
+        {data.caption && <div style={{ fontSize: 12, fontStyle: "italic", color: "var(--text-muted)" }}>{data.caption}</div>}
+      </div>
+    </div>
+  );
+}
+
 export default function MediaRenderer({ data }: MediaRendererProps) {
-  // Images in a chat open the chat-wide gallery (swipe, pinch-zoom) instead
-  // of FullscreenFrame; audio, video and PDFs keep FullscreenFrame.
-  const inGallery = useHasChatGallery() && data.media_type === "image";
+  // Images and videos in a chat open the chat-wide gallery (swipe, and
+  // pinch-zoom for images) instead of FullscreenFrame; audio and PDFs keep
+  // FullscreenFrame.
+  const galleryKind = data.media_type === "image" || data.media_type === "video" ? data.media_type : null;
+  const inGallery = useHasChatGallery() && galleryKind !== null;
   const [expanded, setExpanded] = useState(data.display_mode === "fullscreen" && !inGallery);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -45,18 +109,18 @@ export default function MediaRenderer({ data }: MediaRendererProps) {
   const contentUrl = data.url ? `/api/files/serve?url=${encodeURIComponent(data.url)}` : `/api/files/serve?path=${encodeURIComponent(data.file_path!)}`;
   const fileName = data.url ? getFileNameFromUrl(data.url) : getFileName(data.file_path!);
 
-  // An image joins the gallery only once it is actually shown: never while it
+  // Media joins the gallery only once it is actually shown: never while it
   // is behind the untrusted-content gate, and not after it failed to load.
   const mediaRef = useRef<HTMLDivElement>(null);
   const gated = !!data.untrusted && !trustDismissed;
   const openInGallery = useGalleryItem(
     mediaRef,
-    data.media_type === "image" && !gated && !error
-      ? { src: contentUrl, alt: data.caption || fileName, caption: data.caption, referrerPolicy: "no-referrer" }
+    galleryKind && !gated && !error
+      ? { src: contentUrl, alt: data.caption || fileName, caption: data.caption, referrerPolicy: "no-referrer", kind: galleryKind }
       : null,
   );
 
-  // display_mode "fullscreen" opens the gallery at this image as soon as it
+  // display_mode "fullscreen" opens the gallery at this media as soon as it
   // can — on mount, or right after "View anyway" for a gated image — once.
   // As an "auto" open it never takes over a viewer that is already open.
   const autoOpenPending = useRef(data.display_mode === "fullscreen" && inGallery);
@@ -113,6 +177,12 @@ export default function MediaRenderer({ data }: MediaRendererProps) {
               <span style={{ fontWeight: 500 }}>Type: </span>
               {data.media_type} ({data.mime_type})
             </div>
+            {data.media_type === "file" && (
+              <div>
+                <span style={{ fontWeight: 500 }}>Size: </span>
+                {formatBytes(data.file_size, BYTES_UP_TO_GB)}
+              </div>
+            )}
           </div>
 
           <button
@@ -135,6 +205,8 @@ export default function MediaRenderer({ data }: MediaRendererProps) {
       </div>
     );
   }
+
+  if (data.media_type === "file") return <FileCard data={data} fileName={fileName} />;
 
   if (error) {
     return (
@@ -193,6 +265,7 @@ export default function MediaRenderer({ data }: MediaRendererProps) {
         return (
           <video
             controls
+            playsInline
             preload="metadata"
             onLoadedMetadata={onLoad}
             onError={onError}
@@ -307,7 +380,21 @@ export default function MediaRenderer({ data }: MediaRendererProps) {
               >
                 {fileName}
               </span>
-              <span style={{ flexShrink: 0, marginLeft: 8 }}>{data.file_size > 0 ? formatBytes(data.file_size) : data.url ? "URL" : ""}</span>
+              <span style={{ flexShrink: 0, marginLeft: 8, display: "flex", alignItems: "center", gap: 8 }}>
+                {data.file_size > 0 ? formatBytes(data.file_size) : data.url ? "URL" : ""}
+                {/* Saving inline media is awkward on iOS; this always downloads. */}
+                {data.file_path && (
+                  <a
+                    href={downloadUrl(data.file_path)}
+                    download={fileName}
+                    title="Download"
+                    aria-label={`Download ${fileName}`}
+                    style={{ display: "flex", color: "var(--text-muted)" }}
+                  >
+                    <Download size={14} />
+                  </a>
+                )}
+              </span>
             </div>
             {data.caption && <div style={{ fontStyle: "italic" }}>{data.caption}</div>}
           </div>
