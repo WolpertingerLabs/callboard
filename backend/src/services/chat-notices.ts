@@ -43,6 +43,7 @@
  * so a notice persisted across one would describe a session that is gone.
  */
 import { randomUUID } from "node:crypto";
+import { formatRideAlongBlock } from "shared/types/index.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("chat-notices");
@@ -112,9 +113,8 @@ export function peekChatNotices(chatId: string): ChatNotice[] {
   return (notices.get(chatId) ?? []).filter((notice) => notice.wake);
 }
 
-/** Brackets a ride-along block in the user prompt, so it cannot be mistaken for the human's words. */
-export const RIDE_ALONG_HEADER = "[Callboard system notice — not typed by the human. Computer-control updates since your last turn:]";
-export const RIDE_ALONG_FOOTER = "[End of Callboard notice. The human's message, if any, follows.]";
+/** The block's fixed format lives in shared/, where everything that splits it back off reads it. */
+export { RIDE_ALONG_FOOTER, RIDE_ALONG_HEADER } from "shared/types/index.js";
 
 /** Notices a starting turn is carrying, not yet known to have been delivered. */
 const claimed = new Map<string, ChatNotice[][]>();
@@ -153,7 +153,7 @@ export function claimRideAlongNotices(chatId: string): RideAlongClaim | null {
     else claimed.delete(chatId);
   };
   return {
-    text: [RIDE_ALONG_HEADER, ...riding.map((notice) => `- ${notice.text}`), RIDE_ALONG_FOOTER].join("\n"),
+    text: formatRideAlongBlock(riding.map((notice) => notice.text)),
     commit: () => {
       if (settled) return;
       settled = true;

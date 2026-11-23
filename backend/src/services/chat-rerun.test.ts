@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { COMPRESSION_SUMMARY_HEADINGS, type ParsedMessage } from "shared/types/index.js";
+import { COMPRESSION_SUMMARY_HEADINGS, formatRideAlongBlock, type ParsedMessage } from "shared/types/index.js";
 import { isRerunPrompt, planRerun } from "./chat-rerun.js";
 
 const t = (s: number, ms = 0) => new Date(Date.UTC(2026, 0, 1, 10, 0, s, ms)).toISOString();
@@ -13,6 +13,14 @@ const history: ParsedMessage[] = [
   msg({ role: "assistant", type: "tool_result", content: "ok", timestamp: t(12) }),
   msg({ role: "assistant", type: "text", content: "a2", timestamp: t(13) }),
 ];
+
+describe("planRerun — ride-along notices", () => {
+  it("never re-sends an old notice block: the prompt is only what the human typed", () => {
+    const block = formatRideAlongBlock(["🖥️ Computer control update — GUI action request withdrawn. Your request R1 was withdrawn."]);
+    const withBlock = history.map((m) => (m.content === "q2" ? { ...m, content: `${block}\n\nq2` } : m));
+    expect(planRerun(withBlock, t(10))).toMatchObject({ ok: true, text: "q2" });
+  });
+});
 
 describe("planRerun", () => {
   it("reruns a user prompt from strictly before it", () => {

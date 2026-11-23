@@ -46,7 +46,10 @@ export interface ParsedMessage {
   teamName?: string;
   /**
    * Present on system messages: `compact_boundary`, `clear_boundary`,
-   * `interrupted`, `session_error`, `background_task`, `agent_message`.
+   * `interrupted`, `session_error`, `background_task`, `agent_message`,
+   * `callboard_notice` (a ride-along notice block split off the front of a
+   * user message — see `splitRideAlongMessages` in rideAlong.ts; a client that
+   * does not know the value renders it as a plain system divider).
    */
   subtype?: string;
   /**

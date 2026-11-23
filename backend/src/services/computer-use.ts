@@ -8,7 +8,7 @@ import { hostname } from "node:os";
 // nothing that the dynamic import in `getComputerUseHost` was avoiding.
 import { actionSchema } from "@wolpertingerlabs/computer-use";
 import type { Action, AuthorizationRequest, ComputerUseService, Driver, Lease, Principal, SessionStatus } from "@wolpertingerlabs/computer-use";
-import { CU_ACTION_TOOL_NAME, CU_REQUEST_CONTROL_TOOL_NAME } from "shared/types/index.js";
+import { CU_ACTION_TOOL_NAME, CU_REQUEST_CONTROL_TOOL_NAME, RIDE_ALONG_NOTICE_PREFIX } from "shared/types/index.js";
 import { assertNativeAgentControllable } from "./codex-native-agents.js";
 import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { createLogger } from "../utils/logger.js";
@@ -666,7 +666,8 @@ function enableFailure(code: string): string {
   }
 }
 
-const noticeHeader = (what: string) => `🖥️ Computer control update — ${what}. (This message is from Callboard, not typed by the human.)`;
+/** Every notice opens with the shared prefix, so a ride-along block of them matches `splitRideAlongBlock`'s strict format. */
+const noticeHeader = (what: string) => `${RIDE_ALONG_NOTICE_PREFIX}${what}. (This message is from Callboard, not typed by the human.)`;
 
 /**
  * How a notice names an action: its request id and its type, nothing else.

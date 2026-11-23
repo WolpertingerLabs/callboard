@@ -17,7 +17,7 @@
  * Pure: messages in, a plan out. The route writes the session and starts the
  * run.
  */
-import { findReplyPrompt, isRerunPrompt, isUserTurn, type ParsedMessage } from "shared/types/index.js";
+import { findReplyPrompt, isRerunPrompt, isUserTurn, type ParsedMessage, withoutRideAlongBlock } from "shared/types/index.js";
 
 export { isRerunPrompt };
 
@@ -94,8 +94,10 @@ export function planRerun(messages: readonly ParsedMessage[], timestamp: string,
   // One user turn with several content blocks parses as several messages at
   // one timestamp, its images on the last of them.
   const blocks = messages.filter((m) => isUserTurn(m) && ms(m.timestamp) === promptMs);
+  // The transcript route splits ride-along notice blocks off already; this
+  // keeps a rerun from ever re-sending one, whoever handed it the messages.
   const text = blocks
-    .map((m) => m.content)
+    .map((m) => withoutRideAlongBlock(m.content))
     .filter((c) => c.trim())
     .join("\n\n");
   const imageIds = [...new Set(blocks.flatMap((m) => m.imageIds ?? []))];

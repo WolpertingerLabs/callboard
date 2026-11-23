@@ -1,4 +1,5 @@
 import type { Chat } from "shared/types/index.js";
+import { splitRideAlongMessages } from "shared/types/index.js";
 import { parseChatMetadata } from "./chat-metadata.js";
 import { nativeMetadata, refreshNativeMetadata } from "../services/codex-native-agents.js";
 import { statSync } from "fs";
@@ -20,7 +21,10 @@ export function readChatSessionMessages(chat: { metadata?: string | null; sessio
   if (!sessionIds && chat.session_id && !ids.includes(chat.session_id)) ids.push(chat.session_id);
   const provider = getSessionProviders().find((p) => p.kind === (meta.provider ?? "claude-code"));
   if (!provider) return [];
-  return provider.parseSessionMessages(ids);
+  // Ride-along notice blocks ride in the human's message (chat-notices.ts);
+  // every reader of a transcript — the chat view, rerun, seeded forks and
+  // compression, read_session_messages — gets them as their own system row.
+  return splitRideAlongMessages(provider.parseSessionMessages(ids));
 }
 
 /**
