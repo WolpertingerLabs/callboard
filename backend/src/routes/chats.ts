@@ -2924,7 +2924,7 @@ chatsRouter.post("/:id/regenerate-title", async (req, res) => {
 chatsRouter.patch("/:id/permissions", (req, res) => {
   // #swagger.tags = ['Chats']
   // #swagger.summary = 'Update chat permissions'
-  // #swagger.description = 'Update the default tool permissions for a chat. Changes take effect immediately for future tool use checks. The browserControl (Browser Use) and computerControl (Computer Use) axes are the exception to this router\'s bearer-key access: CHANGING either requires a logged-in same-origin session, because allow means unattended GUI control and an agent must not be able to raise the level that governs it. Requests that leave them unchanged — or omit them, which preserves the stored value — are unaffected.'
+  // #swagger.description = 'Update the default tool permissions for a chat. Changes take effect immediately for future tool use checks. The browserControl (Browser Use) and computerControl (Computer Use) axes are the exception to this router\'s bearer-key access: CHANGING either requires a logged-in same-origin session, because allow means unattended GUI control and an agent must not be able to raise the level that governs it. Requests that leave them unchanged — or omit them, which preserves the stored value — are unaffected. Exception: if computerControl changes and browserControl is omitted, the request is treated as coming from a pre-split client — deny also denies browserControl, and ask or allow is refused with 409 stale_client.'
   /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
   /* #swagger.requestBody = {
     required: true,
@@ -2942,7 +2942,7 @@ chatsRouter.patch("/:id/permissions", (req, res) => {
                 fileWrite: { type: "string", enum: ["allow", "ask", "deny"] },
                 codeExecution: { type: "string", enum: ["allow", "ask", "deny"] },
                 webAccess: { type: "string", enum: ["allow", "ask", "deny"] },
-                browserControl: { type: "string", enum: ["allow", "ask", "deny"], description: "Browser Use. Changing it requires a logged-in same-origin session. Omit to keep the stored value." },
+                browserControl: { type: "string", enum: ["allow", "ask", "deny"], description: "Browser Use. Changing it requires a logged-in same-origin session. Omit to keep the stored value. — unless computerControl changes in the same request (pre-split client): then a computerControl deny also denies this, and ask/allow is refused with 409." },
                 computerControl: { type: "string", enum: ["allow", "ask", "deny"], description: "Computer Use (desktop). Changing it requires a logged-in same-origin session. Omit to keep the stored value." }
               }
             },
