@@ -2436,6 +2436,20 @@ export interface SynthesizedSpeech {
 }
 
 /**
+ * A percent-encoded `X-Read-Aloud-*` id (the server escapes `%` and anything
+ * outside printable ASCII), decoded. A malformed escape is kept as sent rather
+ * than failing a playback that has already been paid for.
+ */
+function decodeHeader(value: string | null): string {
+  if (!value) return "";
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+/**
  * Read `text` (speakable plain text, not markdown) aloud. Resolves with the
  * whole mp3 and what the server reported about it. Throws with the server's
  * message (no key, too long, unsupported model, upstream failure, timeout).
@@ -2449,8 +2463,8 @@ export async function synthesizeSpeech(text: string, signal?: AbortSignal): Prom
   const cache = header(READ_ALOUD_HEADERS.cache);
   return {
     blob,
-    model: header(READ_ALOUD_HEADERS.model) || "",
-    voice: header(READ_ALOUD_HEADERS.voice) || null,
+    model: decodeHeader(header(READ_ALOUD_HEADERS.model)),
+    voice: decodeHeader(header(READ_ALOUD_HEADERS.voice)) || null,
     ...(Number.isFinite(duration) && duration > 0 ? { durationMs: duration } : {}),
     truncated: header(READ_ALOUD_HEADERS.truncated) === "1",
     ...(Number.isInteger(chunks) && chunks > 0 ? { chunks } : {}),

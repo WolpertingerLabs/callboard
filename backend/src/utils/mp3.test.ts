@@ -129,3 +129,90 @@ describe("joinMp3", () => {
     expect(result.durationMs).toBeUndefined();
   });
 });
+
+/**
+ * A frame of any MPEG version, Layer III, built from its header fields.
+ * `version` is the header's two bits: 3 = MPEG-1, 2 = MPEG-2, 0 = MPEG-2.5.
+ */
+function frameOf(opts: {
+  version: 0 | 2 | 3;
+  bitrateIndex: number;
+  sampleRateIndex: number;
+  length: number;
+  mono?: boolean;
+  crc?: boolean;
+  tag?: "Xing" | "Info";
+  fill?: number;
+}): Buffer {
+  const { version, bitrateIndex, sampleRateIndex, length, mono = false, crc = false, tag, fill = 0x22 } = opts;
+  const buf = Buffer.alloc(length, fill);
+  buf[0] = 0xff;
+  buf[1] = 0xe0 | (version << 3) | (0b01 << 1) | (crc ? 0 : 1);
+  buf[2] = (bitrateIndex << 4) | (sampleRateIndex << 2);
+  buf[3] = mono ? 0xc0 : 0x00;
+  if (tag) {
+    const sideInfo = version === 3 ? (mono ? 17 : 32) : mono ? 9 : 17;
+    buf.write(tag, 4 + (crc ? 2 : 0) + sideInfo, "ascii");
+  }
+  return buf;
+}
+
+// MPEG-2 Layer III, 64 kbps / 24 kHz: 72 × 64000 / 24000 = 192 bytes, 576 samples, 24 ms.
+const MPEG2 = { version: 2, bitrateIndex: 8, sampleRateIndex: 1, length: 192 } as const;
+// MPEG-2.5 Layer III, 32 kbps / 12 kHz: 72 × 32000 / 12000 = 192 bytes, 576 samples, 48 ms.
+const MPEG25 = { version: 0, bitrateIndex: 4, sampleRateIndex: 1, length: 192 } as const;
+
+describe("MPEG-2 and MPEG-2.5 Layer III", () => {
+  it("reads an MPEG-2 frame: 576 samples at 24 kHz", () => {
+    expect(parseMp3Frame(frameOf(MPEG2), 0)).toEqual({ length: 192, samples: 576, sampleRate: 24000 });
+  });
+
+  it("reads an MPEG-2.5 frame: 576 samples at 12 kHz", () => {
+    expect(parseMp3Frame(frameOf(MPEG25), 0)).toEqual({ length: 192, samples: 576, sampleRate: 12000 });
+  });
+
+  it.each([
+    ["MPEG-2", MPEG2, 24],
+    ["MPEG-2.5", MPEG25, 48],
+  ] as const)("times %s frames exactly", (_label, base, msPerFrame) => {
+    const audio = Buffer.concat([frameOf(base), frameOf(base), frameOf(base)]);
+    expect(stripMp3Container(audio)?.durationMs).toBe(3 * msPerFrame);
+  });
+
+  it.each([
+    ["MPEG-2 stereo", { ...MPEG2 }],
+    ["MPEG-2 mono", { ...MPEG2, mono: true }],
+    ["MPEG-2.5 stereo", { ...MPEG25 }],
+    ["MPEG-2.5 mono", { ...MPEG25, mono: true }],
+  ] as const)("drops the Xing/Info header of a %s stream", (_label, base) => {
+    const audio = Buffer.concat([frameOf(base), frameOf(base)]);
+    for (const tag of ["Xing", "Info"] as const) {
+      const result = stripMp3Container(Buffer.concat([frameOf({ ...base, tag, fill: 0 }), audio]));
+      expect(result?.frames.equals(audio)).toBe(true);
+    }
+  });
+
+  it("joins two MPEG-2 chunks into one stream with one duration", () => {
+    const a = frameOf({ ...MPEG2, fill: 0xa1 });
+    const b = frameOf({ ...MPEG2, fill: 0xb1 });
+    const result = joinMp3([Buffer.concat([frameOf({ ...MPEG2, tag: "Xing", fill: 0 }), a]), Buffer.concat([frameOf({ ...MPEG2, tag: "Info", fill: 0 }), b])]);
+    expect(result.audio.equals(Buffer.concat([a, b]))).toBe(true);
+    expect(result.durationMs).toBe(48);
+  });
+});
+
+describe("CRC-protected frames", () => {
+  it.each([
+    ["MPEG-1 stereo", { version: 3, bitrateIndex: 9, sampleRateIndex: 1, length: 384 }],
+    ["MPEG-1 mono", { version: 3, bitrateIndex: 9, sampleRateIndex: 1, length: 384, mono: true }],
+    ["MPEG-2 mono", { ...MPEG2, mono: true }],
+  ] as const)("finds the Xing header after the 2-byte CRC (%s)", (_label, base) => {
+    const audio = Buffer.concat([frameOf({ ...base, crc: true }), frameOf({ ...base, crc: true })]);
+    const result = stripMp3Container(Buffer.concat([frameOf({ ...base, crc: true, tag: "Xing", fill: 0 }), audio]));
+    expect(result?.frames.equals(audio)).toBe(true);
+  });
+
+  it("reads a CRC-protected frame's length the same as an unprotected one", () => {
+    expect(parseMp3Frame(frameOf({ ...MPEG2, crc: true }), 0)).toEqual({ length: 192, samples: 576, sampleRate: 24000 });
+  });
+});

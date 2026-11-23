@@ -470,3 +470,67 @@ describe("the chunk cache", () => {
     expect((await synthesizeSpeech({ text: "Hi." })).cache).toBe("miss");
   });
 });
+
+describe("cuts never split a surrogate pair", () => {
+  /** Whether `s` holds a lone high or low surrogate. */
+  const hasLoneSurrogate = (s: string) => /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(s);
+
+  it("hard-cuts an unbroken emoji run on code-point boundaries", () => {
+    // 1,000 two-unit emoji: 2,000 UTF-16 units, no whitespace. An odd max
+    // forces a naive slice into the middle of a pair.
+    const emoji = "😀".repeat(1000);
+    for (const max of [READ_ALOUD_CHUNK_CHARS, 1499, 7]) {
+      const chunks = chunkSpeechText(emoji, max);
+      for (const c of chunks) {
+        expect(c.length).toBeLessThanOrEqual(max);
+        expect(hasLoneSurrogate(c)).toBe(false);
+      }
+      expect(chunks.join("")).toBe(emoji);
+    }
+  });
+
+  it("hard-cuts a mixed CJK and astral-plane run without breaking characters", () => {
+    const run = "日本語𠮷".repeat(500); // 2,500 units, no whitespace or punctuation
+    const chunks = chunkSpeechText(run);
+    for (const c of chunks) {
+      expect(c.length).toBeLessThanOrEqual(READ_ALOUD_CHUNK_CHARS);
+      expect(hasLoneSurrogate(c)).toBe(false);
+    }
+    expect(chunks.join("")).toBe(run);
+  });
+
+  it("truncates an unbroken emoji run on a code-point boundary", () => {
+    const { text, truncated } = truncateSpeechText("😀".repeat(1000), 1501);
+    expect(truncated).toBe(true);
+    expect(text.length).toBe(1500);
+    expect(hasLoneSurrogate(text)).toBe(false);
+  });
+});
+
+describe("truncation after a short first sentence", () => {
+  it("keeps the start of an overflowing sentence rather than reading only the first", () => {
+    // Capitalized, so the segmenter really breaks after "Note." (it does not
+    // before a lowercase word).
+    const long = "Word " + "word ".repeat(3000).trim() + "."; // ~15,000 chars, one sentence
+    const { text, truncated } = truncateSpeechText(`Note. ${long}`);
+    expect(truncated).toBe(true);
+    expect(text.startsWith("Note. Word word")).toBe(true);
+    expect(text.length).toBeLessThanOrEqual(MAX_READ_ALOUD_CHARS);
+    expect(text.length).toBeGreaterThan(MAX_READ_ALOUD_CHARS - 10);
+    expect(text.endsWith("word")).toBe(true); // cut at whitespace, not mid-word
+  });
+
+  it("cuts the overflowing sentence without splitting a surrogate pair", () => {
+    const { text } = truncateSpeechText(`Note. ${"😀".repeat(8000)}`);
+    expect(text.startsWith("Note. 😀")).toBe(true);
+    expect(text.length).toBeLessThanOrEqual(MAX_READ_ALOUD_CHARS);
+    expect(text.length).toBeGreaterThan(MAX_READ_ALOUD_CHARS / 2);
+    expect(/[\uD800-\uDBFF]$/.test(text)).toBe(false);
+  });
+
+  it("still stops at a sentence boundary when that keeps most of the budget", () => {
+    const sentences = Array.from({ length: 40 }, (_, i) => sentence(String(i), 500));
+    const { text } = truncateSpeechText(sentences.join(" "));
+    expect(text.endsWith(".")).toBe(true);
+  });
+});

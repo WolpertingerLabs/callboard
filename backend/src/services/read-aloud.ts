@@ -135,21 +135,40 @@ function sentencesOf(text: string): string[] {
 }
 
 /**
+ * `end`, moved back one UTF-16 unit if cutting there would split a surrogate
+ * pair (an emoji, or a CJK Extension B character) in half.
+ */
+function safeCut(text: string, end: number): number {
+  if (end <= 0 || end >= text.length) return end;
+  const before = text.charCodeAt(end - 1);
+  return before >= 0xd800 && before <= 0xdbff ? end - 1 : end;
+}
+
+/** At most `max` units of `text`: up to its last whitespace when there is one, else a surrogate-safe hard cut. */
+function cutAtWhitespace(text: string, max: number): string {
+  const head = text.slice(0, safeCut(text, max));
+  const space = head.search(/\s\S*$/);
+  return space > 0 ? head.slice(0, space) : head;
+}
+
+/**
  * `text` cut to at most `max` characters at the last sentence boundary that
- * fits — or, for a first sentence longer than `max`, at the last whitespace.
+ * fits. When that boundary keeps less than half the budget — a short first
+ * sentence followed by a huge one, say — the overflowing sentence is cut at
+ * its last whitespace instead, so "Note. <12k of text>" reads more than "Note."
  */
 export function truncateSpeechText(text: string, max = MAX_READ_ALOUD_CHARS): { text: string; truncated: boolean } {
   if (text.length <= max) return { text, truncated: false };
   let out = "";
+  let overflow = "";
   for (const s of sentencesOf(text)) {
-    if (out.length + s.length > max) break;
+    if (out.length + s.length > max) {
+      overflow = s;
+      break;
+    }
     out += s;
   }
-  if (!out.trim()) {
-    const head = text.slice(0, max);
-    const space = head.search(/\s\S*$/);
-    out = space > 0 ? head.slice(0, space) : head;
-  }
+  if (out.trim().length < max / 2 && overflow) out += cutAtWhitespace(overflow, max - out.length);
   return { text: out.trim(), truncated: true };
 }
 
@@ -160,8 +179,13 @@ function splitPiece(piece: string, max: number): string[] {
     const parts = piece.split(pattern).filter(Boolean);
     if (parts.length > 1) return pack(parts, max, (p) => splitPiece(p, max));
   }
+  // One unbroken run: cut by length, never inside a surrogate pair.
   const out: string[] = [];
-  for (let i = 0; i < piece.length; i += max) out.push(piece.slice(i, i + max));
+  for (let i = 0; i < piece.length; ) {
+    const end = Math.max(i + 1, safeCut(piece, i + max));
+    out.push(piece.slice(i, end));
+    i = end;
+  }
   return out;
 }
 

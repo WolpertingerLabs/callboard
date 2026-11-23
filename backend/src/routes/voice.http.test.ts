@@ -369,3 +369,43 @@ describe("GET /api/voice/speech/models", () => {
     expect(await res.json()).toEqual({ models: [kokoro], defaultModel: DEFAULT_READ_ALOUD_MODEL, defaultVoice: DEFAULT_READ_ALOUD_VOICE });
   });
 });
+
+describe("POST /api/voice/speech — header-unsafe model and voice ids", () => {
+  it("percent-encodes a non-Latin-1 voice and model rather than failing after billing", async () => {
+    mockSynthesize.mockResolvedValue({ audio: SPEECH_BYTES, model: "someone/モデル", voice: "日本語", truncated: false, chunks: 1, cache: "miss" });
+    const res = await fetch(server.origin + "/api/voice/speech", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "Hi." }),
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-read-aloud-voice")).toBe(encodeURIComponent("日本語"));
+    // Only `%` and non-printable-ASCII are escaped, so a plain slug stays readable.
+    expect(res.headers.get("x-read-aloud-model")).toBe(`someone/${encodeURIComponent("モデル")}`);
+    expect(decodeURIComponent(res.headers.get("x-read-aloud-model") ?? "")).toBe("someone/モデル");
+    expect(decodeURIComponent(res.headers.get("x-read-aloud-voice") ?? "")).toBe("日本語");
+    expect(Buffer.from(await res.arrayBuffer()).equals(SPEECH_BYTES)).toBe(true);
+  });
+
+  it("escapes a literal % so the value round-trips", async () => {
+    mockSynthesize.mockResolvedValue({ audio: SPEECH_BYTES, model: "a/b", voice: "100%", truncated: false, chunks: 1, cache: "miss" });
+    const res = await fetch(server.origin + "/api/voice/speech", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "Hi." }),
+    });
+    expect(res.headers.get("x-read-aloud-voice")).toBe("100%25");
+  });
+
+  it("percent-encodes control characters too", async () => {
+    mockSynthesize.mockResolvedValue({ audio: SPEECH_BYTES, model: "a/b", voice: "evil\r\nX-Injected: 1", truncated: false, chunks: 1, cache: "miss" });
+    const res = await fetch(server.origin + "/api/voice/speech", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "Hi." }),
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-injected")).toBeNull();
+    expect(decodeURIComponent(res.headers.get("x-read-aloud-voice") ?? "")).toBe("evil\r\nX-Injected: 1");
+  });
+});

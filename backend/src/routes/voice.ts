@@ -159,6 +159,23 @@ voiceRouter.post("/transcribe", parseAudio, async (req, res) => {
   }
 });
 
+/**
+ * `value` safe to send as a header: `%` and everything outside printable ASCII
+ * percent-encoded as UTF-8, so `decodeURIComponent` restores it exactly. A
+ * free-text voice id ("日本語") or a stray CR/LF would otherwise make
+ * `res.set` throw — after the audio was already synthesized and billed, and on
+ * every cached replay after that. Plain ASCII slugs pass through unchanged.
+ */
+export function headerSafe(value: string): string {
+  return value.replace(/[^\x20-\x24\x26-\x7e]/gu, (ch) => {
+    try {
+      return encodeURIComponent(ch);
+    } catch {
+      return "%EF%BF%BD"; // A lone surrogate: U+FFFD.
+    }
+  });
+}
+
 voiceRouter.get("/speech/models", async (_req, res) => {
   // #swagger.tags = ['Voice']
   // #swagger.summary = 'List read-aloud models'
@@ -210,8 +227,8 @@ voiceRouter.post("/speech", async (req, res) => {
       "Content-Type": "audio/mpeg",
       "Content-Length": String(result.audio.length),
       "Cache-Control": "no-store",
-      [READ_ALOUD_HEADERS.model]: result.model,
-      [READ_ALOUD_HEADERS.voice]: result.voice ?? "",
+      [READ_ALOUD_HEADERS.model]: headerSafe(result.model),
+      [READ_ALOUD_HEADERS.voice]: headerSafe(result.voice ?? ""),
       [READ_ALOUD_HEADERS.chunks]: String(result.chunks),
       [READ_ALOUD_HEADERS.cache]: result.cache,
       ...(result.durationMs !== undefined ? { [READ_ALOUD_HEADERS.durationMs]: String(result.durationMs) } : {}),

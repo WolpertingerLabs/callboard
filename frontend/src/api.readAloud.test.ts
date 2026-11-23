@@ -81,3 +81,38 @@ describe("getReadAloudModels", () => {
     await expect(getReadAloudModels()).resolves.toEqual({ models: [], defaultModel: "hexgrad/kokoro-82m", defaultVoice: "af_heart" });
   });
 });
+
+describe("synthesizeSpeech — percent-encoded ids", () => {
+  it("decodes a percent-encoded non-ASCII voice and model", async () => {
+    stubFetch(
+      new Response(MP3, {
+        status: 200,
+        headers: {
+          "Content-Type": "audio/mpeg",
+          "X-Read-Aloud-Voice": encodeURIComponent("日本語"),
+          "X-Read-Aloud-Model": encodeURIComponent("someone/モデル"),
+        },
+      }),
+    );
+    const result = await synthesizeSpeech("Hi.");
+    expect(result.voice).toBe("日本語");
+    expect(result.model).toBe("someone/モデル");
+  });
+
+  it("keeps a malformed escape as-is rather than throwing", async () => {
+    stubFetch(new Response(MP3, { status: 200, headers: { "Content-Type": "audio/mpeg", "X-Read-Aloud-Voice": "100%-bad%E0%A4%A" } }));
+    const result = await synthesizeSpeech("Hi.");
+    expect(result.voice).toBe("100%-bad%E0%A4%A");
+  });
+
+  it("reads plain ASCII ids unchanged", async () => {
+    stubFetch(
+      new Response(MP3, {
+        status: 200,
+        headers: { "Content-Type": "audio/mpeg", "X-Read-Aloud-Voice": "af_heart", "X-Read-Aloud-Model": "hexgrad/kokoro-82m" },
+      }),
+    );
+    const result = await synthesizeSpeech("Hi.");
+    expect(result).toMatchObject({ voice: "af_heart", model: "hexgrad/kokoro-82m" });
+  });
+});

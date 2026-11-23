@@ -312,6 +312,19 @@ describe("PUT /api/agent-settings — read-aloud model and voice round-trip", ()
     expect(onDisk().openRouterTtsVoice).toBeUndefined();
   });
 
+  it("strips control characters, keeping non-ASCII voice ids intact", async () => {
+    const res = await put({ openRouterTtsModel: "deepgram/\u0000aura-2\r\n", openRouterTtsVoice: "日本\r\n語\t\u007f" });
+    expect(res.code).toBe(200);
+    expect(onDisk().openRouterTtsModel).toBe("deepgram/aura-2");
+    expect(onDisk().openRouterTtsVoice).toBe("日本語");
+  });
+
+  it("clears a value that is only control characters", async () => {
+    await put({ openRouterTtsVoice: "luna" });
+    await put({ openRouterTtsVoice: "\r\n\u0000" });
+    expect(onDisk().openRouterTtsVoice).toBeUndefined();
+  });
+
   it("is left alone when an unrelated field is saved", async () => {
     await put({ openRouterTtsModel: "deepgram/aura-2", openRouterTtsVoice: "luna" });
     await put({ openRouterApiKey: "sk-or-other" });
