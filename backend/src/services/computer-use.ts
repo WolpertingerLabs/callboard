@@ -988,12 +988,18 @@ export class ComputerUseHost {
     );
     return result;
   }
-  private presentation(value: SessionStatus) {
+  /**
+   * A session as the viewer DTO. `legacy` is for a client without
+   * `sandbox_target`: a sandbox session is shown to it as `"native"` (a kind it
+   * accepts) with its own `sandbox <endpoint>` label, so its emergency Stop
+   * still finds and stops it. See {@link status}.
+   */
+  private presentation(value: SessionStatus, legacy = false) {
     const kind = kindOfTarget(value.targetId);
     return {
       ...value,
       id: value.sessionId,
-      kind: viewerKind(kind),
+      kind: legacy && kind === "sandbox" ? ("native" as const) : viewerKind(kind),
       controller: value.controller === "none" ? null : value.controller,
       targetLabel: this.targetLabel(kind),
       target: this.targetLabel(kind),
@@ -1004,17 +1010,27 @@ export class ComputerUseHost {
    *
    * `options.sandbox` says whether the caller understands the sandbox target
    * (`CLIENT_CAPS.sandboxTarget`, read off the request's handshake headers by
-   * routes/computer-use.ts). Without it the sandbox is left out entirely — its
-   * capability, its sessions, its pending requests and their events — and the
-   * aggregate `permission` covers the other two axes only: `"sandbox"` is a
-   * `ComputerUseKind` an older bundle has no branch for. Default `true` for
-   * in-process callers (the agent's `cu_open`), which are not old tabs.
+   * routes/computer-use.ts). `"sandbox"` is a `ComputerUseKind` an older
+   * bundle has no branch for (its `validateStatus` rejects the whole status),
+   * so without it:
+   *  - the sandbox capability is left out, and the aggregate `permission`
+   *    covers the other two axes only — that tab can neither see nor offer
+   *    an Enable for it;
+   *  - its pending requests are left out — a pending row is one the panel
+   *    offers to approve, and that tab cannot know what it would approve;
+   *  - its sessions are NOT left out: they are listed as `"native"`, labelled
+   *    `sandbox <endpoint>`. That tab's emergency Stop discovers sessions, and
+   *    verifies they stopped, through this status; hiding a live sandbox
+   *    session would let it report "stopped" while the agent kept acting.
+   *    Their events are listed with them.
+   * Default `true` for in-process callers (the agent's `cu_open`), which are
+   * not old tabs.
    */
   async status(chatId: string, options: { sandbox?: boolean } = {}) {
     const { policy } = this.readPolicy(chatId);
     await this.expire();
-    const kinds = options.sandbox === false ? COMPUTER_TARGET_KINDS.filter((kind) => kind !== "sandbox") : COMPUTER_TARGET_KINDS;
-    const shown = (id: string) => kinds.includes(kindOfTarget(id));
+    const legacy = options.sandbox === false;
+    const kinds = legacy ? COMPUTER_TARGET_KINDS.filter((kind) => kind !== "sandbox") : COMPUTER_TARGET_KINDS;
     const capabilities = await Promise.all(
       kinds.map(async (kind) => {
         const restriction = computerUseScopeError(kind, policy);
@@ -1044,8 +1060,7 @@ export class ComputerUseHost {
         }
       }),
     );
-    const live = this.service.status(controlPrincipal(chatId, "human")).filter((session) => shown(session.targetId));
-    const sessions = live.map((session) => this.presentation(session));
+    const sessions = this.service.status(controlPrincipal(chatId, "human")).map((session) => this.presentation(session, legacy));
     for (const [id, pending] of this.pending)
       if (pending.chatId === chatId && kinds.includes(pending.kind)) {
         // Bound to a variable, not pushed as a fresh literal: `reason` is a
@@ -1067,13 +1082,6 @@ export class ComputerUseHost {
         };
         sessions.push(request);
       }
-    // A hidden target's events are hidden with it. Events of a session already
-    // reaped from status cannot be attributed, so they go only to a client
-    // that is shown every target.
-    const visibleIds = new Set(live.map((session) => session.sessionId));
-    const events = (this.events.get(chatId) ?? []).filter(
-      (event) => kinds.length === COMPUTER_TARGET_KINDS.length || visibleIds.has(String((event as { sessionId?: unknown }).sessionId)),
-    );
     return {
       capabilities,
       sessions,
@@ -1081,7 +1089,8 @@ export class ComputerUseHost {
       permission: aggregateControlLevel(policy, kinds),
       target: hostname(),
       platform: process.platform,
-      events,
+      // Every session is listed for every client (see above), so are its events.
+      events: this.events.get(chatId) ?? [],
       modelVision:
         "Runtime image delivery requires a tool/vision-capable configured model; live artistic/model qualification has not been established on this host.",
     };
@@ -1777,11 +1786,35 @@ export class ComputerUseHost {
   }
 }
 
+/**
+ * The variables #587 used to point the *desktop* target at a container. They
+ * shipped on main for one change, so a host may still set them. Read as
+ * nothing they would silently hand the agent this machine's real X11 session,
+ * which the operator set them to avoid; so their presence makes the local
+ * desktop unavailable with the rename instead. Keep for at least one release.
+ */
+export const RENAMED_REMOTE_DESKTOP_VARS = ["CALLBOARD_REMOTE_DESKTOP_URL", "CALLBOARD_REMOTE_DESKTOP_TOKEN", "CALLBOARD_REMOTE_DESKTOP_TOKEN_FILE"] as const;
+const RENAMED_REMOTE_DESKTOP_REASON =
+  "CALLBOARD_REMOTE_DESKTOP_* was renamed to CALLBOARD_SANDBOX_DESKTOP_*: that container is now the Sandbox desktop target, with its own permission. The desktop target is this machine's display only, and stays unavailable while any CALLBOARD_REMOTE_DESKTOP_* variable is set. Rename them (or unset them to use this machine's display), then restart Callboard.";
+
 /** The local desktop target's driver: this machine's X11 display, and nothing else. */
 export function localDesktopDriver(
   pkg: Pick<typeof import("@wolpertingerlabs/computer-use"), "createNativeDesktopDriver">,
   env: NodeJS.ProcessEnv = process.env,
 ): Driver {
+  // `||` semantics, as for the new names: an empty variable is an unset one.
+  const renamed = RENAMED_REMOTE_DESKTOP_VARS.filter((name) => env[name]?.trim());
+  if (renamed.length) {
+    log.error(`${renamed.join(", ")} set: ${RENAMED_REMOTE_DESKTOP_REASON}`);
+    return {
+      kind: "native-desktop",
+      lockDomain: "native-desktop:renamed-variables",
+      probe: async () => ({ available: false, kind: "native-desktop", readiness: "setup-required", reason: RENAMED_REMOTE_DESKTOP_REASON, capabilities: [] }),
+      open: async () => {
+        throw controlError("unsupported", RENAMED_REMOTE_DESKTOP_REASON);
+      },
+    };
+  }
   return pkg.createNativeDesktopDriver({
     enabled: true,
     display: env.CALLBOARD_NATIVE_DISPLAY ?? env.DISPLAY,

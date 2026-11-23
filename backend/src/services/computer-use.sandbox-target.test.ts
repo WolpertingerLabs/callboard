@@ -63,12 +63,27 @@ it("is a remote driver only when the URL and a token are set, and says how to se
   }
 });
 
-it("no longer reads the pre-release CALLBOARD_REMOTE_DESKTOP_* names", async () => {
-  const env = { CALLBOARD_REMOTE_DESKTOP_URL: "http://127.0.0.1:7801", CALLBOARD_REMOTE_DESKTOP_TOKEN: TOKEN };
-  const driver = sandboxDesktopDriver(pkg, env);
-  expect("endpoint" in driver).toBe(false);
-  expect((await driver.probe()).reason).toMatch(/^Sandbox desktop is not configured/);
-  expect("endpoint" in localDesktopDriver(pkg, env)).toBe(false);
+it("does not let the renamed CALLBOARD_REMOTE_DESKTOP_* names fall back to this machine's display", async () => {
+  for (const env of [
+    { DISPLAY: ":0", CALLBOARD_REMOTE_DESKTOP_URL: "http://127.0.0.1:7801", CALLBOARD_REMOTE_DESKTOP_TOKEN: TOKEN },
+    { DISPLAY: ":0", CALLBOARD_REMOTE_DESKTOP_TOKEN_FILE: "/tmp/token" },
+    { DISPLAY: ":0", CALLBOARD_REMOTE_DESKTOP_URL: "http://127.0.0.1:7801" },
+  ]) {
+    // The desktop target refuses, naming the rename, and never opens the local session.
+    const desktop = localDesktopDriver(pkg, env);
+    const probe = await desktop.probe();
+    expect(probe).toMatchObject({ available: false, readiness: "setup-required", reason: expect.stringContaining("renamed to CALLBOARD_SANDBOX_DESKTOP_*") });
+    expect(probe.reason).toContain("Sandbox desktop target");
+    expect(probe.reason).not.toContain(TOKEN);
+    await expect(desktop.open({ sessionId: "s", signal: new AbortController().signal })).rejects.toMatchObject({ code: "unsupported" });
+    // …and the old names configure nothing on the sandbox either.
+    const sandbox = sandboxDesktopDriver(pkg, env);
+    expect("endpoint" in sandbox).toBe(false);
+    expect((await sandbox.probe()).reason).toMatch(/^Sandbox desktop is not configured/);
+  }
+  // Empty values are unset: the local display is used as usual.
+  const local = localDesktopDriver(pkg, { DISPLAY: ":0", CALLBOARD_REMOTE_DESKTOP_URL: "", CALLBOARD_REMOTE_DESKTOP_TOKEN: " " });
+  expect(local.lockDomain).not.toBe("native-desktop:renamed-variables");
 });
 
 it("treats empty sandbox variables as unset: all empty is not configured", async () => {

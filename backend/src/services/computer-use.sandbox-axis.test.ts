@@ -24,7 +24,7 @@ type Levels = Partial<Record<"browserControl" | "computerControl" | "sandboxCont
 const OTHERS = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow" } as const;
 const ALL_DENIED = { browserControl: "deny", computerControl: "deny", sandboxControl: "deny" } as const;
 
-function fixture(levels: Levels, { withOthers = true } = {}) {
+function fixture(levels: Levels, { withOthers = true, terminalRetentionMs }: { withOthers?: boolean; terminalRetentionMs?: number } = {}) {
   const policyOf = (value: Levels): HostPolicy => ({
     policy: readComputerUsePolicy({ ...(withOthers ? OTHERS : {}), ...value }),
     signature: JSON.stringify(value),
@@ -71,6 +71,7 @@ function fixture(levels: Levels, { withOthers = true } = {}) {
       { id: "sandbox-desktop", enabled: true, driver: drivers.sandbox },
     ],
     authorize: (request) => host.authorize(request),
+    ...(terminalRetentionMs !== undefined ? { terminalRetentionMs } : {}),
   });
   const host: ComputerUseHost = new ComputerUseHost(
     service,
@@ -155,23 +156,62 @@ it("status reports the sandbox's own level, readiness and kind", async () => {
   });
 });
 
-it("a client without the sandbox capability is never shown the sandbox", async () => {
-  const f = fixture({ ...ALL_DENIED, sandboxControl: "allow" });
+/** What a bundle from before the sandbox accepts: its `validateStatus` rejects the whole status for any other kind. */
+const PRE_SANDBOX_KINDS = ["browser", "native"];
+const isTerminal = (state: string) => !["ready", "starting", "pending_approval"].includes(state);
+
+it("a client without the sandbox capability is not offered the sandbox, but is shown its sessions as native", async () => {
+  const f = fixture({ ...ALL_DENIED, sandboxControl: "ask" });
+  // A live sandbox session (opened under ask via the panel's own approve)…
   const sandbox = await f.enable("sandbox");
-  // A pending panel request for the sandbox too (under ask), and the session's events.
-  f.set({ ...ALL_DENIED, sandboxControl: "ask" });
-  await f.expire();
-  await f.host.open("a", "sandbox");
-  const full = await f.host.status("a");
-  expect(full.sessions.some((s) => s.kind === "sandbox")).toBe(true);
+  // …and a second, pending panel request for it, which an old tab must not be offered to approve.
+  await f.host.stop("a", sandbox.id);
+  const live = await f.enable("sandbox");
+  const pending = await f.host.open("a", "sandbox");
+  expect(pending.state).toBe("pending_approval");
 
   const old = await f.host.status("a", { sandbox: false });
+  // No sandbox capability, no Enable: the aggregate covers what it is shown.
   expect(old.capabilities.map((c) => c.kind)).toEqual(["browser", "native"]);
-  expect(old.sessions).toEqual([]);
-  expect(JSON.stringify(old)).not.toContain("sandbox");
-  expect((old.events as { sessionId?: string }[]).some((event) => event.sessionId === sandbox.id)).toBe(false);
-  // The aggregate covers only the targets it is shown: nothing it can enable.
   expect(old.permission).toBe("deny");
+  // Every row is a kind that tab accepts…
+  expect(old.sessions.every((s) => PRE_SANDBOX_KINDS.includes(s.kind))).toBe(true);
+  // …the live (and the ended) sandbox sessions are listed, as native with their own label…
+  expect(old.sessions.find((s) => s.id === live.id)).toMatchObject({ kind: "native", targetLabel: "sandbox 127.0.0.1:7801", state: "ready" });
+  expect(old.sessions.find((s) => s.id === sandbox.id)).toMatchObject({ kind: "native", targetLabel: "sandbox 127.0.0.1:7801" });
+  // …the pending request is not, and neither are their events missing.
+  expect(old.sessions.some((s) => s.id === pending.id)).toBe(false);
+  expect((old.events as { sessionId?: string }[]).some((event) => event.sessionId === live.id)).toBe(true);
+
+  // A current client sees the same sessions as sandbox, and the pending request.
+  const full = await f.host.status("a");
+  expect(full.sessions.find((s) => s.id === live.id)).toMatchObject({ kind: "sandbox" });
+  expect(full.sessions.some((s) => s.id === pending.id)).toBe(true);
+});
+
+it("an old tab's emergency Stop stops a live sandbox session the agent is driving unattended", async () => {
+  const f = fixture({ ...ALL_DENIED, sandboxControl: "allow" });
+  const sandbox = await f.enable("sandbox");
+  await expect(f.act(sandbox)).resolves.toEqual({ ok: true });
+  // The old bundle's stopAll: discover through status, stop each by id, verify through status.
+  const discovered = (await f.host.status("a", { sandbox: false })).sessions.filter((s) => !isTerminal(s.state));
+  expect(discovered.map((s) => s.id)).toEqual([sandbox.id]);
+  for (const session of discovered) await f.host.stop("a", session.id);
+  const verified = await f.host.status("a", { sandbox: false });
+  expect(verified.sessions.some((s) => !isTerminal(s.state))).toBe(false);
+  // Really stopped, not just hidden: the agent cannot act on it any more.
+  expect((await f.host.status("a")).sessions.find((s) => s.id === sandbox.id)?.state).toBe("stopped");
+  await expect(f.act(sandbox)).rejects.toBeDefined();
+});
+
+it("an old client keeps the event history of ended browser and desktop sessions, even once they are reaped", async () => {
+  const f = fixture({ browserControl: "allow", computerControl: "deny", sandboxControl: "deny" }, { terminalRetentionMs: 0 });
+  const browser = await f.enable("browser");
+  await f.host.stop("a", browser.id);
+  // The stopped row is reaped from status; its history must not go with it.
+  await vi.waitFor(async () => expect((await f.host.status("a", { sandbox: false })).sessions).toEqual([]));
+  const old = await f.host.status("a", { sandbox: false });
+  expect((old.events as { sessionId?: string; type?: string }[]).filter((event) => event.sessionId === browser.id).length).toBeGreaterThan(0);
 });
 
 it("an old client still sees the browser and desktop, with their own aggregate", async () => {
