@@ -131,6 +131,10 @@ export default function MediaRenderer({ data }: MediaRendererProps) {
   }, [openInGallery]);
 
   const onLoad = () => setLoading(false);
+  // Whichever arrives first: some browsers (iOS) may not fetch metadata for
+  // preload="metadata" until the user presses play.
+  const mediaLoadHandlers = { onLoadedMetadata: onLoad, onLoadedData: onLoad, onCanPlay: onLoad };
+  const timedMedia = data.media_type === "audio" || data.media_type === "video";
   const onError = () => {
     setLoading(false);
     setError(true);
@@ -256,18 +260,28 @@ export default function MediaRenderer({ data }: MediaRendererProps) {
 
       case "audio":
         return (
-          <audio controls preload="metadata" onLoadedMetadata={onLoad} onError={onError} style={{ width: "100%", maxWidth: isModal ? "600px" : "100%" }}>
-            <source src={contentUrl} type={data.mime_type} />
-          </audio>
+          // `src` on the element, not a <source> child: a <source> that fails
+          // fires `error` on itself (it doesn't bubble), so the media
+          // element's onError would never run.
+          <audio
+            src={contentUrl}
+            controls
+            preload="metadata"
+            {...mediaLoadHandlers}
+            onError={onError}
+            style={{ width: "100%", maxWidth: isModal ? "600px" : "100%" }}
+          />
         );
 
       case "video":
         return (
+          // `src` on the element for the same reason as <audio> above.
           <video
+            src={contentUrl}
             controls
             playsInline
             preload="metadata"
-            onLoadedMetadata={onLoad}
+            {...mediaLoadHandlers}
             onError={onError}
             style={{
               maxHeight,
@@ -275,9 +289,7 @@ export default function MediaRenderer({ data }: MediaRendererProps) {
               display: "block",
               borderRadius: isModal ? 0 : "var(--radius)",
             }}
-          >
-            <source src={contentUrl} type={data.mime_type} />
-          </video>
+          />
         );
 
       case "pdf":
@@ -346,6 +358,8 @@ export default function MediaRenderer({ data }: MediaRendererProps) {
                   justifyContent: "center",
                   color: "var(--text-muted)",
                   fontSize: 13,
+                  // Never in the way of the native controls underneath.
+                  pointerEvents: timedMedia ? "none" : undefined,
                 }}
               >
                 Loading...
@@ -353,7 +367,8 @@ export default function MediaRenderer({ data }: MediaRendererProps) {
             )}
             {renderMedia(false)}
             {/* Fullscreen button */}
-            {!loading && <FullscreenButton onClick={openInGallery ? () => openInGallery() : () => setExpanded(true)} />}
+            {/* Video gets it while loading too: iOS may not load metadata until play. */}
+            {(!loading || data.media_type === "video") && <FullscreenButton onClick={openInGallery ? () => openInGallery() : () => setExpanded(true)} />}
           </div>
 
           {/* Footer: filename, size, caption */}
@@ -389,9 +404,10 @@ export default function MediaRenderer({ data }: MediaRendererProps) {
                     download={fileName}
                     title="Download"
                     aria-label={`Download ${fileName}`}
-                    style={{ display: "flex", color: "var(--text-muted)" }}
+                    // A 32px hit area around the 14px icon, without growing the footer.
+                    style={{ display: "flex", color: "var(--text-muted)", padding: 9, margin: -9 }}
                   >
-                    <Download size={14} />
+                    <Download size={14} aria-hidden="true" />
                   </a>
                 )}
               </span>

@@ -479,17 +479,86 @@ describe("ImageLightbox: video slides", () => {
     vi.restoreAllMocks();
   });
 
-  it("renders a native <video controls playsInline>, preloading only when current", () => {
+  it("renders a native <video controls playsInline> that preloads metadata as a neighbour too", () => {
     renderLightbox(0, MIXED);
     expect(video().tagName).toBe("VIDEO");
     expect(video().controls).toBe(true);
     expect(video().hasAttribute("playsinline")).toBe(true);
     expect(video().getAttribute("poster")).toBe("/clip.jpg");
     expect(video().getAttribute("src")).toBe("/clip.mp4");
-    // A neighbour fetches nothing.
-    expect(video().getAttribute("preload")).toBe("none");
+    // A neighbour loads metadata too, so swiping to it shows a frame, not black.
+    // (Slides further away are not mounted at all.)
+    expect(video().getAttribute("preload")).toBe("metadata");
     fireEvent.click(screen.getByRole("button", { name: "Next item" }));
     expect(video().getAttribute("preload")).toBe("metadata");
+  });
+
+  it("Tab reaches the current slide's video; a neighbour's video is skipped", () => {
+    renderLightbox(1, MIXED);
+    expect(video().tabIndex).toBe(0);
+    const next = screen.getByRole("button", { name: "Next item" });
+    next.focus();
+    fireEvent.keyDown(next, { key: "Tab" });
+    expect(document.activeElement).toBe(video());
+    fireEvent.keyDown(video(), { key: "Tab", shiftKey: true });
+    expect(document.activeElement).toBe(next);
+
+    cleanup();
+    renderLightbox(0, MIXED);
+    expect(video().tabIndex).toBe(-1);
+    const last = screen.getByRole("button", { name: "Next item" });
+    last.focus();
+    fireEvent.keyDown(last, { key: "Tab" });
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Close viewer" }));
+  });
+
+  it("←/→ on a focused video are left to it; Escape still closes", () => {
+    const { onClose } = renderLightbox(1, MIXED);
+    video().focus();
+    fireEvent.keyDown(video(), { key: "ArrowRight" });
+    fireEvent.keyDown(video(), { key: "ArrowLeft" });
+    expect(screen.getByText("2 / 3")).toBeTruthy();
+    fireEvent.keyDown(video(), { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+    // Off the video the arrows navigate as before.
+    fireEvent.keyDown(document, { key: "ArrowRight" });
+    expect(screen.getByText("3 / 3")).toBeTruthy();
+  });
+
+  it("a second finger on the backdrop starts nothing while one is on the video", () => {
+    renderLightbox(1, MIXED);
+    fireEvent.pointerDown(video(), { pointerId: 1, pointerType: "touch", clientX: 200, clientY: 400, isPrimary: true });
+    fireEvent.pointerDown(surface(), { pointerId: 2, pointerType: "touch", clientX: 300, clientY: 600, isPrimary: false });
+    move(2, 150, 600);
+    move(2, 50, 600);
+    up(2, 50, 600);
+    expect(screen.getByText("2 / 3")).toBeTruthy();
+    // The video finger lifts; the next touch sequence swipes normally.
+    up(1, 200, 400);
+    fireEvent.pointerDown(surface(), { pointerId: 3, pointerType: "touch", clientX: 300, clientY: 600, isPrimary: true });
+    move(3, 150, 600);
+    move(3, 50, 600);
+    up(3, 50, 600);
+    expect(screen.getByText("3 / 3")).toBeTruthy();
+  });
+
+  it("seeks to startTime on the first load only", () => {
+    renderLightbox(1, [MIXED[0], { ...MIXED[1], startTime: 12.5 }, MIXED[2]]);
+    fireEvent.loadedMetadata(video());
+    expect(video().currentTime).toBe(12.5);
+    video().currentTime = 3;
+    fireEvent.loadedMetadata(video());
+    expect(video().currentTime).toBe(3);
+  });
+
+  it("calls onVideoShown when a video slide becomes current, not for images", () => {
+    const onVideoShown = vi.fn();
+    render(<ImageLightbox items={MIXED} startIndex={0} onClose={() => {}} onVideoShown={onVideoShown} />);
+    expect(onVideoShown).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Next item" }));
+    expect(onVideoShown).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Next item" }));
+    expect(onVideoShown).toHaveBeenCalledTimes(1);
   });
 
   it("a drag that starts on the video is left to its controls; on the backdrop it swipes", () => {

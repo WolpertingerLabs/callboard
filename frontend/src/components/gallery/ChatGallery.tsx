@@ -109,7 +109,16 @@ export function ChatGalleryProvider({ children, resetKey }: { children: ReactNod
         : {
             ...session,
             startIndex,
-            items: sorted.map(({ src, alt, caption, referrerPolicy, kind, poster }) => ({ src, alt, caption, referrerPolicy, kind, poster })),
+            items: sorted.map(({ el, src, alt, caption, referrerPolicy, kind, poster }) => ({
+              src,
+              alt,
+              caption,
+              referrerPolicy,
+              kind,
+              poster,
+              // The slide picks up where the inline copy was; play state is not carried.
+              startTime: kind === "video" ? el.querySelector("video")?.currentTime || undefined : undefined,
+            })),
           },
     );
   }, [session]);
@@ -117,6 +126,15 @@ export function ChatGalleryProvider({ children, resetKey }: { children: ReactNod
   // Stable, with the viewer memoized: the transcript re-renders per streamed
   // token, and that must not re-render an open viewer mid-pinch.
   const close = useCallback(() => setSession(null), []);
+
+  /**
+   * The viewer plays its own copy of each video: pause every inline one, not
+   * just the opened item's, so two never play at once. Run on open and
+   * whenever a video slide becomes current.
+   */
+  const pauseInlineVideos = useCallback(() => {
+    entries.current.forEach(({ el }) => el.querySelectorAll("video").forEach((v) => v.pause()));
+  }, []);
 
   const api = useMemo<GalleryApi>(
     () => ({
@@ -130,9 +148,7 @@ export function ChatGalleryProvider({ children, resetKey }: { children: ReactNod
       },
       open(el, opts) {
         const auto = !!opts?.auto;
-        // The viewer plays its own copy of a video: pause the inline one so
-        // the two never play at once.
-        el.querySelectorAll("video").forEach((v) => v.pause());
+        pauseInlineVideos();
         // An auto-open restores focus nowhere: what was focused is usually the
         // composer, and focusing it on close would pop the phone keyboard.
         const returnFocusTo = auto ? null : focusTarget(el);
@@ -140,14 +156,21 @@ export function ChatGalleryProvider({ children, resetKey }: { children: ReactNod
         setSession((prev) => (auto && prev?.items ? prev : { id, el, items: null, startIndex: 0, returnFocusTo }));
       },
     }),
-    [],
+    [pauseInlineVideos],
   );
 
   return (
     <GalleryContext.Provider value={api}>
       {children}
       {session?.items && (
-        <ImageLightbox key={session.id} items={session.items} startIndex={session.startIndex} returnFocusTo={session.returnFocusTo} onClose={close} />
+        <ImageLightbox
+          key={session.id}
+          items={session.items}
+          startIndex={session.startIndex}
+          returnFocusTo={session.returnFocusTo}
+          onClose={close}
+          onVideoShown={pauseInlineVideos}
+        />
       )}
     </GalleryContext.Provider>
   );

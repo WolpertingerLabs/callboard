@@ -41,6 +41,8 @@ export interface LightboxItem {
   kind?: "image" | "video";
   /** Video only: the `poster` frame. */
   poster?: string;
+  /** Video only: seconds to seek to once it loads (where the inline copy was). Play state is not carried. */
+  startTime?: number;
 }
 
 interface ImageLightboxProps {
@@ -53,6 +55,8 @@ interface ImageLightboxProps {
    * focus a button on click. Null: nowhere (an open nobody asked for).
    */
   returnFocusTo?: HTMLElement | null;
+  /** Called whenever a video slide becomes current (and at open, if it is one). */
+  onVideoShown?: () => void;
 }
 
 /**
@@ -118,7 +122,7 @@ const stopPropagation = (e: SyntheticEvent) => e.stopPropagation();
  * cannot reach handlers on the message bubble that opened it (React
  * propagates portal events through the component tree).
  */
-function ImageLightbox({ items, startIndex, onClose, returnFocusTo }: ImageLightboxProps) {
+function ImageLightbox({ items, startIndex, onClose, returnFocusTo, onVideoShown }: ImageLightboxProps) {
   const count = items.length;
   const [rawIndex, setIndex] = useState(() => Math.max(0, startIndex));
   // `items` can shrink under an open viewer; every read goes through this
@@ -166,9 +170,15 @@ function ImageLightbox({ items, startIndex, onClose, returnFocusTo }: ImageLight
   // Callers pass a fresh inline onClose every render; the listeners below read
   // it through a ref so they attach once per open.
   const onCloseRef = useRef(onClose);
+  const onVideoShownRef = useRef(onVideoShown);
   useLayoutEffect(() => {
     onCloseRef.current = onClose;
+    onVideoShownRef.current = onVideoShown;
   });
+  /** Slides whose `startTime` has been applied: only the first load seeks. */
+  const startApplied = useRef(new Set<number>());
+  /** A pointer that went down on the current video, and is still down. */
+  const videoPointer = useRef<number | null>(null);
 
   // ---- imperative style writers ---------------------------------------------
 
@@ -240,11 +250,12 @@ function ImageLightbox({ items, startIndex, onClose, returnFocusTo }: ImageLight
       // Leaving a video's slide pauses it.
       if (i !== index && el instanceof HTMLVideoElement) el.pause();
     });
+    if (currentIsVideo()) onVideoShownRef.current?.();
     writeStrip(0, hasMounted.current);
     writeBackdrop(1);
     writeImage(IDENTITY, false);
     hasMounted.current = true;
-  }, [index, writeBackdrop, writeImage, writeStrip]);
+  }, [currentIsVideo, index, writeBackdrop, writeImage, writeStrip]);
 
   // Closing pauses every video still mounted. (Removal from the document
   // pauses a media element too; this does not rely on it.) A layout effect:
@@ -273,6 +284,8 @@ function ImageLightbox({ items, startIndex, onClose, returnFocusTo }: ImageLight
       // Alt+← is browser Back, Cmd+← / Ctrl+← are text and OS shortcuts —
       // leave every modified key to the browser.
       if (e.altKey || e.metaKey || e.ctrlKey) return;
+      // A focused video seeks with ←/→; Escape still closes.
+      if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && e.target instanceof HTMLMediaElement) return;
       if (e.key === "Escape") {
         onCloseRef.current();
       } else if (e.key === "ArrowLeft") {
@@ -401,8 +414,13 @@ function ImageLightbox({ items, startIndex, onClose, returnFocusTo }: ImageLight
     // swipe, pinch, pan or double-tap, and no pointer capture to steal it.
     if (e.target instanceof HTMLVideoElement) {
       closeOnClick.current = false;
+      videoPointer.current = e.pointerId;
       return;
     }
+    if (e.isPrimary) videoPointer.current = null;
+    // A second finger on the backdrop while one is working the video's
+    // controls starts nothing either.
+    else if (videoPointer.current !== null) return;
     // A primary pointer starts a fresh sequence: no other pointer can be down,
     // so anything still in the map leaked (an up or cancel the browser never
     // delivered). Drop it rather than let it turn every later touch into a pinch.
@@ -541,6 +559,10 @@ function ImageLightbox({ items, startIndex, onClose, returnFocusTo }: ImageLight
     if (isTap && !cancelled) handleTap({ t: e.timeStamp, ...p });
   };
 
+  const releaseVideoPointer = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (videoPointer.current === e.pointerId) videoPointer.current = null;
+  };
+
   const onSurfaceClick = () => {
     if (!closeOnClick.current) return;
     closeOnClick.current = false;
@@ -585,8 +607,14 @@ function ImageLightbox({ items, startIndex, onClose, returnFocusTo }: ImageLight
           data-testid="lightbox-surface"
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
-          onPointerUp={(e) => endPointer(e, false)}
-          onPointerCancel={(e) => endPointer(e, true)}
+          onPointerUp={(e) => {
+            releaseVideoPointer(e);
+            endPointer(e, false);
+          }}
+          onPointerCancel={(e) => {
+            releaseVideoPointer(e);
+            endPointer(e, true);
+          }}
           // Capture lost without a pointerup or pointercancel (the element was
           // re-parented, the browser revoked it): treat it as a cancel. After a
           // normal pointerup this is a no-op, as the pointer is already gone.
@@ -614,10 +642,18 @@ function ImageLightbox({ items, startIndex, onClose, returnFocusTo }: ImageLight
                       src={item.src}
                       poster={item.poster}
                       aria-label={item.alt}
+                      // Reachable by Tab only on the current slide.
+                      tabIndex={i === index ? 0 : -1}
+                      onLoadedMetadata={(e) => {
+                        if (!item.startTime || startApplied.current.has(i)) return;
+                        startApplied.current.add(i);
+                        e.currentTarget.currentTime = item.startTime;
+                      }}
                       controls
                       playsInline
-                      // Neighbours fetch nothing until they are the current slide.
-                      preload={i === index ? "metadata" : "none"}
+                      // Current and neighbour slides (the only ones mounted) load
+                      // metadata, so a video swiped to shows its first frame, not black.
+                      preload="metadata"
                       style={imageStyle}
                     />
                   ) : (
@@ -689,7 +725,10 @@ function ImageLightbox({ items, startIndex, onClose, returnFocusTo }: ImageLight
 /** Keep Tab / Shift+Tab cycling inside the dialog. */
 function trapFocus(e: KeyboardEvent, dialog: HTMLElement | null) {
   if (!dialog) return;
-  const focusable = [...dialog.querySelectorAll<HTMLElement>("button:not([disabled]), [href], [tabindex]:not([tabindex='-1'])")];
+  // Native-controls video is focusable without a tabindex; neighbour slides opt out with -1.
+  const focusable = [
+    ...dialog.querySelectorAll<HTMLElement>("button:not([disabled]), [href], video[controls]:not([tabindex='-1']), [tabindex]:not([tabindex='-1'])"),
+  ];
   if (focusable.length === 0) return;
   const first = focusable[0];
   const last = focusable[focusable.length - 1];

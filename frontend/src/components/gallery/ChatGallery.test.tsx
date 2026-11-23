@@ -425,9 +425,58 @@ describe("MediaRenderer in the chat gallery", () => {
           <MediaRenderer data={clip()} />
         </Chat>,
       );
-      fireEvent.error(document.querySelector("video")!);
+      // A browser fires `error` on whichever element holds the failing URL; a
+      // <source> child's error doesn't bubble. The URL must be on the <video>.
+      const v = document.querySelector("video")!;
+      expect(v.getAttribute("src")).toBe(clipSrc);
+      expect(v.querySelector("source")).toBeNull();
+      fireEvent.error(v);
+      expect(screen.getByText("Failed to load video: clip.mp4")).toBeTruthy();
       fireEvent.click(screen.getByRole("button", { name: "Open image" }));
       expect(within(dialog()).queryByRole("button", { name: "Next item" })).toBeNull();
+    });
+
+    it("opening any item pauses every inline video, not just the opened one's", () => {
+      render(
+        <Chat>
+          <MediaRenderer data={clip({ file_path: "/tmp/one.mp4", caption: "One" })} />
+          <ImageThumbnails imageIds={["pic"]} />
+          <MediaRenderer data={clip()} />
+        </Chat>,
+      );
+      const inline = [...document.querySelectorAll("video")];
+      fireEvent.click(screen.getByRole("button", { name: "Open image" }));
+      for (const v of inline) expect(pauseSpy.mock.contexts).toContain(v);
+    });
+
+    it("a video slide becoming current pauses the inline videos again", () => {
+      render(
+        <Chat>
+          <ImageThumbnails imageIds={["pic"]} />
+          <MediaRenderer data={clip()} />
+        </Chat>,
+      );
+      const inline = document.querySelector("video")!;
+      fireEvent.click(screen.getByRole("button", { name: "Open image" }));
+      pauseSpy.mockClear();
+      fireEvent.click(within(dialog()).getByRole("button", { name: "Next item" }));
+      expect(pauseSpy.mock.contexts).toContain(inline);
+    });
+
+    it("the slide starts where the inline video was, and the inline copy is not played", () => {
+      const play = vi.spyOn(HTMLMediaElement.prototype, "play").mockImplementation(() => Promise.resolve());
+      render(
+        <Chat>
+          <MediaRenderer data={clip()} />
+        </Chat>,
+      );
+      const inline = document.querySelector("video")!;
+      inline.currentTime = 42;
+      fireEvent.click(screen.getByTitle("Fullscreen"));
+      const slide = currentVideo()!;
+      fireEvent.loadedMetadata(slide);
+      expect(slide.currentTime).toBe(42);
+      expect(play).not.toHaveBeenCalled();
     });
 
     it("display_mode fullscreen opens the gallery at that video", () => {
