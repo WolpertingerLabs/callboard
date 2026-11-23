@@ -1,0 +1,32 @@
+{
+  "name": "Google Slides (read-write, service account)",
+  "stability": "beta",
+  "category": "productivity",
+  "description": "Google Slides, read and edit (scope presentations): presentations.create, get, batchUpdate (slides, shapes, text, images, tables, comments, …); pages.get and pages.getThumbnail. A thumbnail comes back as a contentUrl on a Google image host that drawlatch doesn't fetch; anyone holding that URL can open the image for about 30 minutes. No Drive endpoints, so it cannot share, move, export, or delete files. Auth: drawlatch signs a JWT with GOOGLE_SERVICE_ACCOUNT_KEY (base64 of the service-account JSON key file) and mints short-lived access tokens for exactly this scope; the agent never sees the key. Without a subject it edits presentations shared with the service account as Editor (sharing as Viewer or Commenter does not let it change their content) and link-shared ones whose link grants edit, and cannot create presentations (service accounts own no files); with one (domain-wide delegation) every presentation that user can open, and it can create presentations owned by that user. See CONNECTIONS.md \"Google (scoped)\".",
+  "docsUrl": "https://developers.google.com/workspace/slides/api/reference/rest",
+  "secrets": {
+    "GOOGLE_SERVICE_ACCOUNT_KEY": "${GOOGLE_SERVICE_ACCOUNT_KEY}"
+  },
+  "oauth2": {
+    "tokenUrl": "https://oauth2.googleapis.com/token",
+    "grant": "jwt_bearer",
+    "secretRefs": {
+      "serviceAccountKey": "GOOGLE_SERVICE_ACCOUNT_KEY"
+    },
+    "scopes": ["https://www.googleapis.com/auth/presentations"]
+  },
+  "allowedEndpoints": [
+    "https://slides.googleapis.com/v1/presentations",
+    "https://slides.googleapis.com/v1/presentations?**",
+    "https://slides.googleapis.com/v1/presentations/*",
+    "https://slides.googleapis.com/v1/presentations/*?**",
+    "https://slides.googleapis.com/v1/presentations/*/pages/*",
+    "https://slides.googleapis.com/v1/presentations/*/pages/*?**",
+    "https://slides.googleapis.com/v1/presentations/*/pages/*/thumbnail",
+    "https://slides.googleapis.com/v1/presentations/*/pages/*/thumbnail?**"
+  ],
+  "testConnection": {
+    "url": "https://slides.googleapis.com/v1/presentations/1EAYk18WDjIG-zp_0vLm3CsfQh_i8eXc67Jo2O9C6Vuc?fields=presentationId",
+    "description": "Reads the ID of the public sample presentation from Google's Slides API quickstart (needs the Slides API enabled)"
+  }
+}

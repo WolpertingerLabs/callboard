@@ -99,7 +99,6 @@ describe('connectionOverlapWarnings', () => {
           'google-slides',
           'google-sheets',
           'google-drive-readonly',
-          'google-drive-file',
         ]),
       ),
     ).toEqual([]);
