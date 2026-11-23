@@ -59,11 +59,29 @@ export type FilesRouterOptions = Pick<PublicFetchOptions, "isAllowedAddress" | "
  * render as a document) gets an opaque origin and runs nothing, however it is
  * opened.
  */
+/** Headers that describe a media body; stripped before answering with a JSON error instead. */
+const MEDIA_BODY_HEADERS = ["ETag", "Last-Modified", "Content-Range", "Accept-Ranges", "Content-Disposition"];
+
+/**
+ * A JSON error after media headers may already be set (by us or by `send`).
+ * `res.json` keeps an existing Content-Type, so without this a late error
+ * would go out as e.g. `video/mp4` with a stale Content-Range/ETag.
+ */
+function lateJsonError(res: Response, status: number, error: string) {
+  for (const name of MEDIA_BODY_HEADERS) res.removeHeader(name);
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  return res.status(status).json({ error });
+}
+
 export function createFilesRouter(proxyOptions: FilesRouterOptions = {}) {
   const router = Router();
 
   // Serve a local file by absolute path, or proxy an http(s) URL
   router.get("/serve", (req, res) => {
+    // First, so every response — including the early 400/403/413/415/502/504
+    // JSON errors — carries nosniff and the sandbox CSP.
+    setSandboxedContentHeaders(res);
+
     const filePath = req.query.path as string | undefined;
     const urlParam = req.query.url as string | undefined;
 
@@ -158,10 +176,10 @@ function serveLocalFile(filePath: string, req: Request, res: Response) {
         return;
       }
       if (status === 404 || err.code === "ENOENT") {
-        res.status(404).json({ error: "File not found" });
+        lateJsonError(res, 404, "File not found");
         return;
       }
-      res.status(500).json({ error: "Failed to read file" });
+      lateJsonError(res, 500, "Failed to read file");
     },
   );
 }
@@ -345,12 +363,12 @@ async function serveUrl(url: string, req: Request, res: Response, proxyOptions: 
     // Details stay in the server log; the client gets a generic message.
     if (err instanceof BlockedDestinationError) {
       log.warn(`media proxy: refused ${parsed.host}: ${err.message}`);
-      return res.status(403).json({ error: "Destination not allowed" });
+      return lateJsonError(res, 403, "Destination not allowed");
     }
     if (err.name === "TimeoutError" || err.name === "AbortError") {
-      return res.status(504).json({ error: "Upstream request timed out" });
+      return lateJsonError(res, 504, "Upstream request timed out");
     }
     log.warn(`media proxy: fetch from ${parsed.host} failed: ${err.message}`);
-    return res.status(502).json({ error: "Failed to fetch URL" });
+    return lateJsonError(res, 502, "Failed to fetch URL");
   }
 }

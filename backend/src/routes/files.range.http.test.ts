@@ -14,7 +14,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import express from "express";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
-import { mkdirSync, mkdtempSync, openSync, closeSync, ftruncateSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, openSync, closeSync, ftruncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { listenRaw, type RawResponse, type RawServer } from "./__fixtures__/raw-http.js";
@@ -128,6 +128,12 @@ const upstreamRoutes: Record<string, (req: http.IncomingMessage, res: http.Serve
       }
     }, 50);
     res.once("close", () => clearInterval(timer));
+  },
+  // Valid 206 headers, then the connection dies before any body byte.
+  "/dies.mp4": (_req, res) => {
+    res.writeHead(206, { "Content-Type": "video/mp4", "Content-Range": "bytes 0-9/2000", "Content-Length": 10, ETag: ETAG, "Last-Modified": LAST_MODIFIED });
+    res.flushHeaders();
+    setTimeout(() => res.socket?.destroy(), 20);
   },
   // Accepts the request and never answers.
   "/noheaders.mp4": (req) => {
@@ -656,5 +662,67 @@ describe("URL proxy: the headers timeout covers connect + headers only", () => {
     expect(elapsed).toBeGreaterThanOrEqual(150);
     expect(elapsed).toBeLessThan(2000);
     await expect.poll(() => upstreamClosedAt.get("/noheaders.mp4"), { timeout: 2000 }).toBeDefined();
+  });
+});
+
+describe("URL proxy: a client that leaves before upstream headers", () => {
+  it("cancels the upstream fetch at once, not at the headers timeout, and the handler settles", async () => {
+    upstreamClosedAt.delete("/noheaders.mp4");
+    const settledBefore = proxySettled;
+    const { port } = new URL(proxyApp.origin); // the default 30s headers timeout
+    const req = http.get({ host: "127.0.0.1", port, path: `/api/files/serve?url=${encodeURIComponent(`${upstreamOrigin}/noheaders.mp4`)}` });
+    req.on("error", () => undefined);
+    await expect.poll(() => upstreamHits.some((h) => h.path === "/noheaders.mp4"), { timeout: 2000 }).toBe(true);
+    await new Promise((r) => setTimeout(r, 50));
+    const abortedAt = Date.now();
+    req.destroy();
+    await expect.poll(() => upstreamClosedAt.get("/noheaders.mp4"), { timeout: 2000 }).toBeDefined();
+    expect(upstreamClosedAt.get("/noheaders.mp4")! - abortedAt).toBeLessThan(1000);
+    await expect.poll(() => proxySettled, { timeout: 2000 }).toBe(settledBefore + 1);
+  });
+});
+
+describe("late JSON errors drop the media headers", () => {
+  const expectCleanJsonError = (res: RawResponse, status: number, error: string) => {
+    expect(res.status).toBe(status);
+    expect(res.headers["content-type"]).toBe("application/json; charset=utf-8");
+    // Express may add its own weak ETag for the JSON body; the media validator must be gone.
+    const media = (etag: string | undefined) => etag === ETAG || /^W\/"3e8-/.test(etag ?? "");
+    expect(media(res.headers.etag)).toBe(false);
+    for (const h of ["last-modified", "content-range", "accept-ranges", "content-disposition"]) expect(res.headers[h]).toBeUndefined();
+    expect(res.headers["x-content-type-options"]).toBe("nosniff");
+    expect(res.headers["content-security-policy"]).toBe(SANDBOX_CSP);
+    expect(JSON.parse(res.body.toString())).toEqual({ error });
+  };
+
+  it("proxy: upstream dies after 206 headers, before any body → clean 502", async () => {
+    const res = await proxied("/dies.mp4", { Range: "bytes=0-9" });
+    expectCleanJsonError(res, 502, "Failed to fetch URL");
+  });
+
+  it.skipIf(process.getuid?.() === 0)("local: a file send cannot read (after its headers are set) → clean 500", async () => {
+    const file = join(DATA, "unreadable.mp4");
+    writeFileSync(file, BYTES);
+    chmodSync(file, 0o000);
+    try {
+      expectCleanJsonError(await local(file, { Range: "bytes=0-9" }), 500, "Failed to read file");
+    } finally {
+      chmodSync(file, 0o644);
+    }
+  });
+});
+
+describe("early JSON errors are sandboxed too", () => {
+  it.each([
+    ["missing parameter", "/api/files/serve", 400],
+    ["relative path", "/api/files/serve?path=relative.mp4", 400],
+    ["unsupported type", `/api/files/serve?url=${encodeURIComponent("https://example.com/x.html")}`, 415],
+    ["refused destination", `/api/files/serve?url=${encodeURIComponent("http://10.1.2.3/x.png")}`, 403],
+  ])("%s → %i with nosniff + CSP", async (_label, path, status) => {
+    const res = await app.request("GET", path);
+    expect(res.status).toBe(status);
+    expect(res.headers["content-type"]).toMatch(/^application\/json/);
+    expect(res.headers["x-content-type-options"]).toBe("nosniff");
+    expect(res.headers["content-security-policy"]).toBe(SANDBOX_CSP);
   });
 });

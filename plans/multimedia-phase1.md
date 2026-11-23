@@ -121,7 +121,11 @@ Forward one **re-serialised** range upstream and relay the upstream `206`. The c
 
 The public-address policy and the disconnect handling (`res.once("close")`) are unchanged. The 30 s timeout now covers connect + response headers only (across every redirect hop) and is cleared once headers arrive; the body is bounded by a 60 s idle timeout instead (changed in PR1 review, so a 100 MB window from a slow upstream is not cut off).
 
-**Follow-up (deferred from PR1 review): forward `If-Range` upstream.** The proxy relays the upstream's `ETag` and `Last-Modified` on 200/206, but does not yet forward the client's `If-Range`. Until it does, a remote file that changes between two range requests can be stitched from two versions. To fix it: forward `If-Range` only if it matches the same safe ETag or IMF-fixdate pattern the relayed validators use, and treat an upstream 200 to a conditional range request as a full response (as today).
+**Follow-ups (deferred from PR1 review):**
+
+- **Forward `If-Range` upstream.** The proxy relays the upstream's `ETag` and `Last-Modified` on 200/206, but does not yet forward the client's `If-Range`. Until it does, a remote file that changes between two range requests can be stitched from two versions. To fix it: forward `If-Range` only if it matches the same safe ETag or IMF-fixdate pattern the relayed validators use, and treat an upstream 200 to a conditional range request as a full response (as today).
+- **Paused remote video drops after 60 s when the upstream ignores Range.** With a 200 (no `Accept-Ranges`), Chrome keeps the one connection open while paused and stops reading; the 60 s idle timeout then destroys it, and the video cannot resume by seeking because the stream is unseekable. Ranged upstreams are unaffected (the browser re-requests a window). Options: a longer idle window for unranged 200s, or accept it and document it.
+- **Manually verify Safari with a shortened 206 for >100 MB remote video.** The proxy clamps `bytes=0-` to one 100 MB window, so Safari receives a 206 shorter than it asked for. Chrome handles this; confirm Safari/iOS keep requesting the next window and play through.
 
 ### 4. Caps
 
