@@ -6,7 +6,7 @@
  */
 import { afterEach, expect, it, vi } from "vitest";
 import { ComputerUseService, type Driver, type Probe } from "@wolpertingerlabs/computer-use";
-import { ComputerUseHost, controlPrincipal, type ConfirmAgentAction, type HostPolicy } from "./computer-use.js";
+import { ComputerUseHost, controlPrincipal, type HostPolicy, type RaiseHumanApproval } from "./computer-use.js";
 import { readComputerUsePolicy } from "./computer-use-policy.js";
 
 const hosts: ComputerUseHost[] = [];
@@ -19,7 +19,8 @@ const OTHERS = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", 
 function fixture(levels: { browserControl: string; computerControl: string }) {
   const policyOf = (value: typeof levels): HostPolicy => ({ policy: readComputerUsePolicy({ ...OTHERS, ...value }), signature: JSON.stringify(value) });
   let current = policyOf(levels);
-  const confirm = vi.fn<ConfirmAgentAction>(async () => ({ approved: true, reason: "human" }));
+  // Records each question raised; nothing waits on it (approvals are non-blocking).
+  const confirm = vi.fn<RaiseHumanApproval>(() => ({ requestId: "prompt", isOpen: () => true, cancel: () => true }));
   const driver = (kind: "browser" | "native-desktop"): Driver => ({
     kind,
     lockDomain: kind === "native-desktop" ? "split-axes-test" : undefined,
@@ -39,7 +40,7 @@ function fixture(levels: { browserControl: string; computerControl: string }) {
     ],
     authorize: (request) => host.authorize(request),
   });
-  const host: ComputerUseHost = new ComputerUseHost(service, drivers, () => current, confirm);
+  const host: ComputerUseHost = new ComputerUseHost(service, drivers, () => current, confirm, () => {});
   hosts.push(host);
   /** Enable as the human does: one click under allow, click plus panel confirmation under ask. */
   const enable = async (kind: "browser" | "desktop") => {
@@ -56,7 +57,7 @@ function fixture(levels: { browserControl: string; computerControl: string }) {
 it("Browser Use: Ask prompts for a browser action even when Computer Use is Allow", async () => {
   const f = fixture({ browserControl: "ask", computerControl: "allow" });
   const browser = await f.enable("browser");
-  await expect(f.act(browser)).resolves.toEqual({ ok: true });
+  await expect(f.act(browser)).resolves.toMatchObject({ status: "approval_pending" });
   expect(f.confirm).toHaveBeenCalledTimes(1);
   // …and the desktop is refused outright: it needs Browser Use on allow too.
   await expect(f.host.open("a", "desktop")).rejects.toMatchObject({ code: "denied", message: expect.stringContaining("browserControl") });
@@ -65,10 +66,10 @@ it("Browser Use: Ask prompts for a browser action even when Computer Use is Allo
 it("Browser Use Allow runs browser actions unattended while Computer Use Ask still prompts on the desktop", async () => {
   const f = fixture({ browserControl: "allow", computerControl: "ask" });
   const browser = await f.enable("browser");
-  await f.act(browser);
+  await expect(f.act(browser)).resolves.toEqual({ ok: true });
   expect(f.confirm).not.toHaveBeenCalled();
   const desktop = await f.enable("desktop");
-  await f.act(desktop);
+  await expect(f.act(desktop)).resolves.toMatchObject({ status: "approval_pending" });
   expect(f.confirm).toHaveBeenCalledTimes(1);
 });
 

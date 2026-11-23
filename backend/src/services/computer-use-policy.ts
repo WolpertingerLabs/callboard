@@ -14,15 +14,17 @@
  *  - `deny`  — no target can be enabled; `cu_*` calls are refused by the service
  *              (and, on Claude Code, by `canUseTool` before they reach it).
  *  - `ask`   — the human's Enable click creates a request the human confirms
- *              separately; then EVERY agent GUI action blocks on its own prompt
- *              in the chat, which only that signed-in human can answer.
+ *              separately; then EVERY agent GUI action raises its own prompt
+ *              in the chat (non-blocking: the tool call returns at once and the
+ *              action runs only when that signed-in human approves it).
  *  - `allow` — the human's Enable click opens the target immediately, and the
  *              agent then acts without a per-action prompt. The action is
  *              recorded for the operator instead (`logUnattendedAction`).
  *
  * The one thing no level changes: **only a human can enable a target.**
- * In-chat `cu_request_control` always waits for human target consent under both
- * Ask and Allow, then starts without the Computer panel’s second Ask click.
+ * In-chat `cu_request_control` always asks for human target consent under both
+ * Ask and Allow (without holding the tool call open), then starts without the
+ * Computer panel’s second Ask click.
  * `open`/`approve` are reached only from the signed-in human's control plane,
  * and the agent's `cu_open` lists ready sessions and grants nothing. `allow`
  * governs what happens after you enable, never who enables.
