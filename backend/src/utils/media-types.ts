@@ -71,3 +71,59 @@ export function mediaTypeForPath(p: string): MediaTypeInfo | undefined {
   const ext = path.extname(p).toLowerCase();
   return Object.hasOwn(MEDIA_TYPES, ext) ? MEDIA_TYPES[ext] : undefined;
 }
+
+/**
+ * Display-only MIME labels for render_file's generic `file` card. These never
+ * decide a served type: `/api/files/serve?download=1` always answers
+ * `application/octet-stream`, and the inline route serves only
+ * {@link MEDIA_TYPES}.
+ */
+export const DESCRIPTIVE_MIME: Readonly<Record<string, string>> = Object.freeze({
+  ".zip": "application/zip",
+  ".tar": "application/x-tar",
+  ".gz": "application/gzip",
+  ".tgz": "application/gzip",
+  ".bz2": "application/x-bzip2",
+  ".xz": "application/x-xz",
+  ".7z": "application/x-7z-compressed",
+  ".json": "application/json",
+  ".csv": "text/csv",
+  ".tsv": "text/tab-separated-values",
+  ".txt": "text/plain",
+  ".log": "text/plain",
+  ".md": "text/markdown",
+  ".html": "text/html",
+  ".htm": "text/html",
+  ".xml": "application/xml",
+  ".yaml": "application/yaml",
+  ".yml": "application/yaml",
+  ".js": "text/javascript",
+  ".ts": "text/x-typescript",
+  ".css": "text/css",
+  ".vtt": "text/vtt",
+  ".srt": "application/x-subrip",
+  ".doc": "application/msword",
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".xls": "application/vnd.ms-excel",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ".ppt": "application/vnd.ms-powerpoint",
+  ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  ".odt": "application/vnd.oasis.opendocument.text",
+  ".ods": "application/vnd.oasis.opendocument.spreadsheet",
+  ".rtf": "application/rtf",
+  ".epub": "application/epub+zip",
+  ".mkv": "video/x-matroska",
+  ".avi": "video/x-msvideo",
+  ".3gp": "video/3gpp",
+  ".heic": "image/heic",
+  ".jxl": "image/jxl",
+  ".tif": "image/tiff",
+  ".tiff": "image/tiff",
+  ".wasm": "application/wasm",
+});
+
+/** A display-only MIME label for `p` (see {@link DESCRIPTIVE_MIME}), defaulting to `application/octet-stream`. */
+export function descriptiveMimeForPath(p: string): string {
+  const ext = path.extname(p).toLowerCase();
+  return Object.hasOwn(DESCRIPTIVE_MIME, ext) ? DESCRIPTIVE_MIME[ext] : "application/octet-stream";
+}

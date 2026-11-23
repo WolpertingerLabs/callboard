@@ -84,6 +84,12 @@ export function createFilesRouter(proxyOptions: FilesRouterOptions = {}) {
 
     const filePath = req.query.path as string | undefined;
     const urlParam = req.query.url as string | undefined;
+    const download = req.query.download === "1";
+
+    // Phase 1 never proxies arbitrary downloads: a URL must be typed media.
+    if (download && urlParam !== undefined) {
+      return res.status(400).json({ error: "download is only supported for local paths" });
+    }
 
     if (urlParam) {
       return serveUrl(urlParam, req, res, proxyOptions).finally(() => proxyOptions.onProxySettled?.());
@@ -93,7 +99,7 @@ export function createFilesRouter(proxyOptions: FilesRouterOptions = {}) {
       return res.status(400).json({ error: "Missing path or url query parameter" });
     }
 
-    return serveLocalFile(filePath, req, res);
+    return serveLocalFile(filePath, req, res, download);
   });
 
   return router;
@@ -101,7 +107,31 @@ export function createFilesRouter(proxyOptions: FilesRouterOptions = {}) {
 
 export const filesRouter = createFilesRouter();
 
-function serveLocalFile(filePath: string, req: Request, res: Response) {
+/**
+ * `Content-Disposition: attachment` for `name`: an ASCII `filename` fallback
+ * with quotes, backslashes and control characters removed (and any other
+ * non-ASCII replaced), plus the exact name as RFC 5987 `filename*`.
+ */
+export function attachmentDisposition(name: string): string {
+  const ascii =
+    name
+      // eslint-disable-next-line no-control-regex
+      .replace(/["\\\x00-\x1f\x7f]/g, "")
+      .replace(/[^\x20-\x7e]/g, "_")
+      .trim() || "download";
+  // encodeURIComponent leaves ' ( ) * ! — not attr-chars in RFC 5987.
+  const encoded = encodeURIComponent(name).replace(/['()*!]/g, (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase());
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encoded}`;
+}
+
+/**
+ * Serve a local file by absolute path. Inline, only types in the media table
+ * are served, typed from it. With `download`, any regular file is served —
+ * but always as `application/octet-stream` + `attachment`, so its bytes are
+ * never interpreted on the app origin (and the sandbox CSP covers a browser
+ * that ignores `attachment`).
+ */
+function serveLocalFile(filePath: string, req: Request, res: Response, download = false) {
   // Validate absolute path, no null bytes
   if (!path.isAbsolute(filePath)) {
     return res.status(400).json({ error: "Path must be absolute" });
@@ -131,18 +161,22 @@ function serveLocalFile(filePath: string, req: Request, res: Response) {
     return res.status(400).json({ error: "Not a regular file" });
   }
 
-  // MIME allowlist
-  const info = mediaTypeForPath(realPath);
-  if (!info) {
-    return res.status(415).json({ error: "Unsupported file type" });
-  }
-
   // Our headers go on first. `send` leaves an existing Content-Type alone, and
   // with a callback it reports errors to us instead of clearing headers, so
-  // every status below (200, 206, 304, 416, HEAD) keeps the table's type and
-  // the sandbox headers.
-  res.setHeader("Content-Type", info.mime);
-  res.setHeader("Content-Disposition", "inline");
+  // every status below (200, 206, 304, 416, HEAD) keeps our type, the cache
+  // policy and the sandbox headers — downloads included.
+  if (download) {
+    res.setHeader("Content-Type", "application/octet-stream");
+    res.setHeader("Content-Disposition", attachmentDisposition(path.basename(realPath)));
+  } else {
+    // MIME allowlist
+    const info = mediaTypeForPath(realPath);
+    if (!info) {
+      return res.status(415).json({ error: "Unsupported file type" });
+    }
+    res.setHeader("Content-Type", info.mime);
+    res.setHeader("Content-Disposition", "inline");
+  }
   res.setHeader("Cache-Control", SERVED_CACHE_CONTROL);
   setSandboxedContentHeaders(res);
 
