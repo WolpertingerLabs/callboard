@@ -159,6 +159,7 @@ import { useSpaces } from "../contexts/SpaceContext";
 import { ALL_SPACES, DEFAULT_SPACE_ID } from "shared/types/space.js";
 import { isImageAttachmentType } from "shared/types/attachment.js";
 import { isRerunPrompt, rerunnableReplies } from "shared/types/rerun.js";
+import { VOICE_NOT_CONFIGURED_MESSAGE } from "shared/types/voice.js";
 import ModalOverlay from "../components/ModalOverlay";
 import { writesBrowserFallback } from "../utils/spaceDefaults";
 
@@ -955,6 +956,11 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
   // The cached default, not `refresh`: every field read off it here only
   // shapes what the composer displays.
   const { info: systemInfo } = useSystemInfo();
+  const voiceInputAvailable = systemInfo?.voiceInputAvailable === true;
+  const voiceInput = useMemo(
+    () => (systemInfo ? { available: voiceInputAvailable, reason: voiceInputAvailable ? undefined : VOICE_NOT_CONFIGURED_MESSAGE } : undefined),
+    [systemInfo, voiceInputAvailable],
+  );
 
   // Null for a retired harness, because forking copies the source's session
   // log, and nothing left in the process can read one the removed engine wrote.
@@ -5270,6 +5276,10 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
           sendVariants={sendVariants}
           onSendVariant={handleSendVariant}
           sendInterrupts={streaming || globalSessionActive?.type === "web"}
+          // The mic, once system-info says whether the server can transcribe:
+          // rendered disabled (with the reason) without an OpenRouter key, not
+          // hidden. The same composer serves /chat/new and /chat/:id.
+          voiceInput={voiceInput}
           onFocusRequest={setFocusComposer}
           onSnapshotRequest={registerComposerSnapshot}
           isCommandPrompt={isCommandPrompt}

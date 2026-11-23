@@ -24,6 +24,11 @@ import type { Keyword } from "../api";
 import { getBusyHintDismissed, getComposerDraft, saveBusyHintDismissed, saveComposerDraft } from "../utils/localStorage";
 import { canAutoFocusTextInput, isEditingElsewhere } from "../utils/autoFocus";
 import { escapeIsInScope } from "../utils/escapeScope";
+import { isModalOpen } from "../utils/modalOpen";
+import { insertDictation } from "../utils/dictation";
+import { useVoiceDictation } from "../hooks/useVoiceDictation";
+import VoiceInputButton from "./VoiceInputButton";
+import VoiceStatus from "./VoiceStatus";
 
 export type PromptMenuItem = MenuItem;
 export type { SendVariant, SendVariants, SendVariantState } from "./SendMenu";
@@ -283,6 +288,17 @@ interface Props {
   onSendVariant?: (variant: SendVariant, prompt: string, files: File[]) => Promise<void>;
   /** A run is going and Send would interrupt it — the send menu says so. */
   sendInterrupts?: boolean;
+  /**
+   * Voice input. Absent, there is no mic at all (the page has not learned yet
+   * whether the server can transcribe — no flash of a button that then turns
+   * off). Present, the mic is shown; `available: false` renders it disabled
+   * with `reason` as its tooltip (no OpenRouter key). The browser's own limits
+   * (plain HTTP, no MediaRecorder) are detected here and win over `reason`.
+   *
+   * A transcript is only ever inserted at the caret — never sent, enqueued or
+   * asked as an aside — and never replaces the selection.
+   */
+  voiceInput?: { available: boolean; reason?: string };
 }
 
 /** How long typing has to pause before the draft is written to storage. */
@@ -317,6 +333,7 @@ export default function PromptInput({
   sendVariants,
   onSendVariant,
   sendInterrupts,
+  voiceInput,
 }: Props) {
   // The stored draft, read once for the first render. Later chats load theirs
   // in the `draftKey` effect below. Mounting paused shows nothing of it: the
@@ -399,6 +416,18 @@ export default function PromptInput({
    * dep-less effect below, rather than a `setSelectionRange` inline.
    */
   const pendingCaretRef = useRef<number | null>(null);
+  /**
+   * Whether the pending caret restore may also focus the textarea. Off for a
+   * dictated transcript on a phone: focusing would raise the on-screen
+   * keyboard over the chat the user was just talking to.
+   */
+  const pendingCaretFocusRef = useRef(true);
+  /**
+   * The draft key the textarea was last focused under. Its selection is only
+   * the user's caret if they have been in it since this chat was loaded;
+   * otherwise a dictated transcript goes at the end.
+   */
+  const focusedKeyRef = useRef<string | undefined | null>(null);
   /**
    * The current value, for callbacks that must stay referentially stable —
    * `insertAtCaret` is handed to the parent, and re-registering it on every
@@ -1083,6 +1112,34 @@ export default function PromptInput({
     [commitInsertion],
   );
 
+  /**
+   * Put a dictated transcript into the composer: at the caret, or after the
+   * selection (never over it — see {@link insertDictation}), or at the end if
+   * the user has not been in the textarea since this chat loaded. That is all
+   * it does: no send of any kind follows.
+   *
+   * A plain function reading the live `value`: the dictation hook keeps the
+   * latest one in a ref and calls it seconds after the click, by which time
+   * the user may have typed more.
+   */
+  const insertTranscript = (text: string) => {
+    const el = textareaRef.current;
+    const useSelection = !!el && focusedKeyRef.current === draftKey;
+    const start = useSelection ? (el.selectionStart ?? value.length) : value.length;
+    const end = useSelection ? (el.selectionEnd ?? start) : value.length;
+    const { value: next, caret: nextCaret } = insertDictation(value, start, end, text);
+    if (next === value) return;
+    pendingCaretFocusRef.current = !isMobile;
+    commitInsertion(next, nextCaret);
+  };
+
+  const dictation = useVoiceDictation({
+    available: !!voiceInput?.available && !disabled,
+    reason: voiceInput?.reason,
+    resetKey: draftKey,
+    onTranscript: insertTranscript,
+  });
+
   useEffect(() => {
     // Wrapped in an arrow for the same reason `onSetValue` is: the parent holds
     // this in a `useState`, which would otherwise call it as an updater.
@@ -1153,9 +1210,11 @@ export default function PromptInput({
     const target = pendingCaretRef.current;
     if (target === null) return;
     pendingCaretRef.current = null;
+    const focus = pendingCaretFocusRef.current;
+    pendingCaretFocusRef.current = true;
     const el = textareaRef.current;
     if (!el) return;
-    el.focus();
+    if (focus) el.focus();
     el.setSelectionRange(target, target);
     handleInput();
   });
@@ -1189,6 +1248,9 @@ export default function PromptInput({
   const showBusyHint = !isMobile && !busyHintDismissed && !!sendVariants?.enqueue?.enabled && !!canSend && !!(value.trim() || activeCommand);
 
   const menuHasActiveItem = menuItems.some((item) => item.active);
+  // Room on the right of the field for its icons: the paperclip, and the mic
+  // left of it (8 + 24 + 4 + 24 + 8).
+  const fieldRightPad = voiceInput ? 68 : 40;
   const composerRootRef = useRef<HTMLDivElement>(null);
 
   // Close the menu on Escape — and claim it (capture, preventDefault), so a
@@ -1208,6 +1270,47 @@ export default function PromptInput({
     document.addEventListener("keydown", onKeyDown, true);
     return () => document.removeEventListener("keydown", onKeyDown, true);
   }, [menuOpen]);
+
+  /**
+   * Whether something else in this composer owns an Escape right now — a
+   * menu, the chip's popover, the keyword modal. Those close first; only a
+   * second Escape cancels dictation. Read by the listener below through a ref
+   * so it need not re-subscribe per keystroke.
+   */
+  const escapeOwnedElsewhere = showAutocomplete || keywordMenuOpen || menuOpen || !!sendMenu || chipPopoverOpen || saveKeywordBody !== null;
+  const escapeOwnedElsewhereRef = useRef(escapeOwnedElsewhere);
+  useEffect(() => {
+    escapeOwnedElsewhereRef.current = escapeOwnedElsewhere;
+  }, [escapeOwnedElsewhere]);
+
+  // Escape cancels dictation in progress, claimed with preventDefault so the
+  // aside panel does not also close on it. Capture phase, like the menu's: it
+  // has to see the key before the panel's handler does — which is also why it
+  // must be narrow. Only an Escape *in this composer*, or one with focus on
+  // the page body (nowhere else for it to go); never one from elsewhere in
+  // the chat (a bubble's copy menu), never while a modal is up, never one the
+  // quote bar is about to use to clear a message selection, and never one a
+  // menu of this composer owns.
+  const dictationActive = dictation.active;
+  const cancelDictation = dictation.cancel;
+  useEffect(() => {
+    if (!dictationActive) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented || e.isComposing || e.keyCode === 229) return;
+      const root = composerRootRef.current;
+      if (!root || escapeOwnedElsewhereRef.current || isModalOpen()) return;
+      const target = e.target;
+      const onBody = !(target instanceof Node) || target === document || target === document.body || target === document.documentElement;
+      if (onBody) {
+        const selection = window.getSelection();
+        if (selection && !selection.isCollapsed && selection.rangeCount > 0 && !root.contains(selection.getRangeAt(0).commonAncestorContainer)) return;
+      } else if (!root.contains(target)) return;
+      e.preventDefault();
+      cancelDictation();
+    };
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => document.removeEventListener("keydown", onKeyDown, true);
+  }, [dictationActive, cancelDictation]);
 
   return (
     <div
@@ -1236,6 +1339,8 @@ export default function PromptInput({
 
       {/* Attachment previews */}
       <ImageUpload images={images} onImagesChange={setImages} />
+
+      {voiceInput && <VoiceStatus state={dictation.state} showEscapeHint={!isMobile} />}
 
       {/* Message input area */}
       <div
@@ -1295,7 +1400,7 @@ export default function PromptInput({
           />
 
           {activeCommand && (
-            <div style={{ padding: "8px 40px 0 12px" }}>
+            <div style={{ padding: `8px ${fieldRightPad}px 0 12px` }}>
               <CommandChip
                 // Keyed on the command: the chip caches the body it fetched,
                 // so replacing one command with another has to be a new chip
@@ -1363,11 +1468,25 @@ export default function PromptInput({
                   ? keywordOptionId(keywordListboxId, keywordHighlight)
                   : undefined
             }
-            onKeyUp={(e) => syncCaret(e.currentTarget)}
-            onSelect={(e) => syncCaret(e.currentTarget)}
-            onClick={(e) => syncCaret(e.currentTarget)}
+            // A caret the user placed is theirs under the chat now on screen
+            // — even if focus never left the textarea across a chat switch.
+            onKeyUp={(e) => {
+              focusedKeyRef.current = draftKey;
+              syncCaret(e.currentTarget);
+            }}
+            onSelect={(e) => {
+              focusedKeyRef.current = draftKey;
+              syncCaret(e.currentTarget);
+            }}
+            onClick={(e) => {
+              focusedKeyRef.current = draftKey;
+              syncCaret(e.currentTarget);
+            }}
             onInput={handleInput}
-            onFocus={() => setFocused(true)}
+            onFocus={() => {
+              setFocused(true);
+              focusedKeyRef.current = draftKey;
+            }}
             onBlur={() => setFocused(false)}
             placeholder={images.length > 0 ? "Add a message (optional)..." : "Send a message..."}
             disabled={disabled}
@@ -1382,7 +1501,7 @@ export default function PromptInput({
               // outrank every rule in index.css and take the :focus-visible and
               // forced-colors fallbacks down with it. `.composer-textarea` owns
               // both halves of that trade-off in the stylesheet.
-              padding: "10px 40px 10px 14px",
+              padding: `10px ${fieldRightPad}px 10px 14px`,
               fontSize: 15,
               resize: "none",
               maxHeight: 120,
@@ -1442,6 +1561,8 @@ export default function PromptInput({
           >
             <Paperclip size={14} />
           </button>
+
+          {voiceInput && <VoiceInputButton dictation={dictation} disabled={disabled} />}
         </div>
 
         {/* Hamburger menu — consolidates save-draft and caller-supplied
