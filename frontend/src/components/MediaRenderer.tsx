@@ -347,24 +347,44 @@ export default function MediaRenderer({ data }: MediaRendererProps) {
               padding: data.media_type === "audio" ? "12px 16px" : 0,
             }}
           >
-            {loading && (
-              <div
-                style={{
-                  position: "absolute",
-                  inset: 0,
-                  background: "var(--surface)",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  color: "var(--text-muted)",
-                  fontSize: 13,
-                  // Never in the way of the native controls underneath.
-                  pointerEvents: timedMedia ? "none" : undefined,
-                }}
-              >
-                Loading...
-              </div>
-            )}
+            {loading &&
+              (timedMedia ? (
+                // Audio/video: a small corner label, transparent and click-through,
+                // so the native controls (iOS's play button above all) stay visible
+                // and usable while metadata loads — or until play, on iOS.
+                <div
+                  data-testid="media-loading"
+                  style={{
+                    position: "absolute",
+                    top: 8,
+                    left: 8,
+                    padding: "2px 8px",
+                    borderRadius: 6,
+                    background: "var(--media-control-bg)",
+                    color: "var(--media-control-text)",
+                    fontSize: 12,
+                    pointerEvents: "none",
+                  }}
+                >
+                  Loading...
+                </div>
+              ) : (
+                <div
+                  data-testid="media-loading"
+                  style={{
+                    position: "absolute",
+                    inset: 0,
+                    background: "var(--surface)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    color: "var(--text-muted)",
+                    fontSize: 13,
+                  }}
+                >
+                  Loading...
+                </div>
+              ))}
             {renderMedia(false)}
             {/* Fullscreen button */}
             {/* Video gets it while loading too: iOS may not load metadata until play. */}

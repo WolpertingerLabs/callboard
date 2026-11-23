@@ -63,9 +63,13 @@ describe("MediaRenderer: audio and video loading", () => {
     expect(screen.getByText(new RegExp(`^Failed to load ${kind}:`))).toBeTruthy();
   });
 
-  it("the Loading overlay never blocks the controls, and the video's expand button shows while loading", () => {
+  it("the Loading label never covers or blocks the controls, and the video's expand button shows while loading", () => {
     render(<MediaRenderer data={video()} />);
-    expect(overlay()!.style.pointerEvents).toBe("none");
+    const label = overlay()!;
+    expect(label.style.pointerEvents).toBe("none");
+    // A corner label, not a full-size opaque cover.
+    expect(label.style.inset).toBe("");
+    expect(label.style.background).not.toBe("var(--surface)");
     expect(screen.getByTitle("Fullscreen")).toBeTruthy();
   });
 
@@ -79,6 +83,7 @@ describe("MediaRenderer: audio and video loading", () => {
   it("an image's overlay is unchanged: no pointer-events override, no expand button until load", () => {
     render(<MediaRenderer data={fileData({ media_type: "image", mime_type: "image/png", file_path: "/tmp/a.png" })} />);
     expect(overlay()!.style.pointerEvents).toBe("");
+    expect(overlay()!.style.background).toBe("var(--surface)");
     expect(screen.queryByTitle("Fullscreen")).toBeNull();
   });
 });

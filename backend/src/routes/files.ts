@@ -180,7 +180,7 @@ function serveLocalFile(filePath: string, req: Request, res: Response, download 
     res.setHeader("Content-Type", info.mime);
     res.setHeader("Content-Disposition", "inline");
   }
-  res.setHeader("Cache-Control", SERVED_CACHE_CONTROL);
+  // Cache-Control, nosniff and the CSP are already set at the top of /serve.
   setSandboxedContentHeaders(res);
 
   // RFC 9110: a syntactically invalid Range is ignored. `send` would answer

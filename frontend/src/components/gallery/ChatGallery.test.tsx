@@ -449,6 +449,27 @@ describe("MediaRenderer in the chat gallery", () => {
       for (const v of inline) expect(pauseSpy.mock.contexts).toContain(v);
     });
 
+    it("an auto-open that yields to an open viewer pauses nothing", () => {
+      const { rerender } = render(
+        <Chat>
+          <ImageThumbnails key="pic" imageIds={["pic"]} />
+          <MediaRenderer key="a" data={clip()} />
+        </Chat>,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Open image" }));
+      pauseSpy.mockClear();
+      rerender(
+        <Chat>
+          <ImageThumbnails key="pic" imageIds={["pic"]} />
+          <MediaRenderer key="a" data={clip()} />
+          <MediaRenderer key="late" data={clip({ file_path: "/tmp/late.mp4", display_mode: "fullscreen" })} />
+        </Chat>,
+      );
+      expect(counter()).toBe("1 / 2"); // the viewer it opened as, not taken over
+      expect(currentSrc()).toBe("/api/images/pic");
+      expect(pauseSpy).not.toHaveBeenCalled();
+    });
+
     it("a video slide becoming current pauses the inline videos again", () => {
       render(
         <Chat>

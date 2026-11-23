@@ -734,6 +734,11 @@ function trapFocus(e: KeyboardEvent, dialog: HTMLElement | null) {
   const last = focusable[focusable.length - 1];
   const active = document.activeElement;
   const inside = active instanceof Node && dialog.contains(active);
+  // When the current video is `first`, Shift+Tab from inside its native
+  // controls also wraps to `last` rather than stepping back through them:
+  // the controls live in the browser's closed shadow root, so Chrome (and
+  // Safari) report the <video> itself as activeElement either way and the two
+  // cannot be told apart. Accepted — every control stays reachable forwards.
   if (e.shiftKey && (active === first || !inside)) {
     e.preventDefault();
     last.focus();

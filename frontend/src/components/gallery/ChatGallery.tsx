@@ -78,6 +78,11 @@ export function ChatGalleryProvider({ children, resetKey }: { children: ReactNod
   const entries = useRef(new Map<HTMLElement, GalleryEntry>());
   const nextId = useRef(0);
   const [session, setSession] = useState<GallerySession | null>(null);
+  /** Whether a viewer is showing, for `open` (which must stay stable) to read. */
+  const viewerOpen = useRef(false);
+  useLayoutEffect(() => {
+    viewerOpen.current = !!session?.items;
+  });
 
   // The provider outlives a chat switch (the page reuses one Chat instance
   // across /chat/:id), so the open viewer — still showing the old chat's
@@ -148,6 +153,8 @@ export function ChatGalleryProvider({ children, resetKey }: { children: ReactNod
       },
       open(el, opts) {
         const auto = !!opts?.auto;
+        // An auto-open yields to a viewer already showing — and then pauses nothing.
+        if (auto && viewerOpen.current) return;
         pauseInlineVideos();
         // An auto-open restores focus nowhere: what was focused is usually the
         // composer, and focusing it on close would pop the phone keyboard.
