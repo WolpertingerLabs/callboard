@@ -84,6 +84,8 @@ describe("Settings → API Save payload", () => {
       openRouterUtilitySonnetModel: "",
       openRouterUtilityOpusModel: "",
       openRouterVoiceModel: "",
+      openRouterTtsModel: "",
+      openRouterTtsVoice: "",
       piProviderId: "",
       piModel: "",
       piApiKey: "",

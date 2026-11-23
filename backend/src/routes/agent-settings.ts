@@ -138,7 +138,11 @@ function favoritesOf(settings: Pick<AgentSettings, "favoriteSkills" | "favoriteJ
   favoriteJobs: string[];
   starredSidebarFolders: string[];
 } {
-  return { favoriteSkills: settings.favoriteSkills ?? [], favoriteJobs: settings.favoriteJobs ?? [], starredSidebarFolders: settings.starredSidebarFolders ?? [] };
+  return {
+    favoriteSkills: settings.favoriteSkills ?? [],
+    favoriteJobs: settings.favoriteJobs ?? [],
+    starredSidebarFolders: settings.starredSidebarFolders ?? [],
+  };
 }
 
 /**
@@ -231,6 +235,8 @@ agentSettingsRouter.put("/", requireSessionAuth, async (req: Request, res: Respo
     openRouterUtilitySonnetModel,
     openRouterUtilityOpusModel,
     openRouterVoiceModel,
+    openRouterTtsModel,
+    openRouterTtsVoice,
     openRouterModelAliases,
     modelAliases,
     codexAuthMode,
@@ -257,6 +263,10 @@ agentSettingsRouter.put("/", requireSessionAuth, async (req: Request, res: Respo
 
   // Empty strings clear an override; undefined leaves the field untouched.
   const normalize = (v: unknown): string | undefined => (typeof v === "string" ? (v.trim() === "" ? undefined : v.trim()) : undefined);
+  // An id that ends up in a request body and a response header: control
+  // characters (CR/LF, NUL, tab, DEL) can only be paste accidents.
+  // eslint-disable-next-line no-control-regex
+  const normalizeId = (v: unknown): string | undefined => normalize(typeof v === "string" ? v.replace(/[\u0000-\u001f\u007f]/g, "") : v);
 
   // Numeric counterpart — accepts numbers or numeric strings, clears on
   // empty or non-finite input (NaN, Infinity). Negative inputs are clamped
@@ -531,6 +541,8 @@ agentSettingsRouter.put("/", requireSessionAuth, async (req: Request, res: Respo
       ...(openRouterUtilitySonnetModel !== undefined && { openRouterUtilitySonnetModel: normalize(openRouterUtilitySonnetModel) }),
       ...(openRouterUtilityOpusModel !== undefined && { openRouterUtilityOpusModel: normalize(openRouterUtilityOpusModel) }),
       ...(openRouterVoiceModel !== undefined && { openRouterVoiceModel: normalize(openRouterVoiceModel) }),
+      ...(openRouterTtsModel !== undefined && { openRouterTtsModel: normalizeId(openRouterTtsModel) }),
+      ...(openRouterTtsVoice !== undefined && { openRouterTtsVoice: normalizeId(openRouterTtsVoice) }),
       ...(openRouterModelAliases !== undefined && { openRouterModelAliases: normalizedAliases }),
       // Writing the unified registry retires the deprecated OR-only map (its
       // entries are already folded into the openrouter targets on load). Skip

@@ -27,13 +27,28 @@ vi.mock("../services/openrouter-voice-models.js", async (importOriginal) => ({
   getVoiceModelsAsync: vi.fn(async () => []),
 }));
 
+vi.mock("../services/read-aloud.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../services/read-aloud.js")>()),
+  synthesizeSpeech: vi.fn(),
+}));
+
+vi.mock("../services/openrouter-speech-models.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../services/openrouter-speech-models.js")>()),
+  getReadAloudModelsAsync: vi.fn(async () => []),
+}));
+
 const { voiceRouter } = await import("./voice.js");
 const { transcribeAudio, VoiceNotConfiguredError, VoiceUpstreamError } = await import("../services/voice-transcription.js");
 const { getVoiceModelsAsync } = await import("../services/openrouter-voice-models.js");
 const { DEFAULT_VOICE_MODEL, MAX_VOICE_UPLOAD_BYTES, VOICE_NOT_CONFIGURED_MESSAGE } = await import("shared");
+const { synthesizeSpeech, ReadAloudNotConfiguredError, ReadAloudUnsupportedModelError, ReadAloudUpstreamError } = await import("../services/read-aloud.js");
+const { getReadAloudModelsAsync } = await import("../services/openrouter-speech-models.js");
+const { DEFAULT_READ_ALOUD_MODEL, DEFAULT_READ_ALOUD_VOICE, MAX_READ_ALOUD_REQUEST_CHARS, READ_ALOUD_NOT_CONFIGURED_MESSAGE } = await import("shared");
 
 const mockTranscribe = vi.mocked(transcribeAudio);
 const mockModels = vi.mocked(getVoiceModelsAsync);
+const mockSynthesize = vi.mocked(synthesizeSpeech);
+const mockSpeechModels = vi.mocked(getReadAloudModelsAsync);
 
 let server: RawServer;
 
@@ -52,7 +67,18 @@ afterAll(async () => {
 beforeEach(() => {
   vi.clearAllMocks();
   mockTranscribe.mockResolvedValue({ text: "hello world", model: DEFAULT_VOICE_MODEL, durationMs: 42 });
+  mockSynthesize.mockResolvedValue({
+    audio: SPEECH_BYTES,
+    model: DEFAULT_READ_ALOUD_MODEL,
+    voice: DEFAULT_READ_ALOUD_VOICE,
+    durationMs: 1234,
+    truncated: false,
+    chunks: 1,
+    cache: "miss",
+  });
 });
+
+const SPEECH_BYTES = Buffer.from([0xff, 0xfb, 0x94, 0x00, 1, 2, 3, 4]);
 
 /** A minimal RIFF/WAVE file: `fmt ` chunk with the given format and depth, then `data`. */
 function wav(opts: { audioFormat?: number; bitsPerSample?: number; dataBytes?: number } = {}): Uint8Array {
@@ -216,5 +242,170 @@ describe("GET /api/voice/models", () => {
       ],
       defaultModel: DEFAULT_VOICE_MODEL,
     });
+  });
+});
+
+describe("POST /api/voice/speech", () => {
+  async function speak(body: unknown, init?: RequestInit): Promise<Response> {
+    return fetch(server.origin + "/api/voice/speech", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: typeof body === "string" ? body : JSON.stringify(body),
+      ...init,
+    });
+  }
+
+  it("answers mp3 bytes with every read-aloud header", async () => {
+    const res = await speak({ text: "Hello there." });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("audio/mpeg");
+    expect(res.headers.get("content-length")).toBe(String(SPEECH_BYTES.length));
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(res.headers.get("x-read-aloud-model")).toBe(DEFAULT_READ_ALOUD_MODEL);
+    expect(res.headers.get("x-read-aloud-voice")).toBe(DEFAULT_READ_ALOUD_VOICE);
+    expect(res.headers.get("x-read-aloud-duration-ms")).toBe("1234");
+    expect(res.headers.get("x-read-aloud-truncated")).toBeNull();
+    expect(res.headers.get("x-read-aloud-chunks")).toBe("1");
+    expect(res.headers.get("x-read-aloud-cache")).toBe("miss");
+    expect(Buffer.from(await res.arrayBuffer()).equals(SPEECH_BYTES)).toBe(true);
+    const call = mockSynthesize.mock.calls[0][0];
+    expect(call.text).toBe("Hello there.");
+    expect(call.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("flags truncation, omits an unknown duration, and sends an empty voice header when none was used", async () => {
+    mockSynthesize.mockResolvedValue({ audio: SPEECH_BYTES, model: "fish-audio/s1", voice: null, truncated: true, chunks: 8, cache: "partial" });
+    const res = await speak({ text: "Long." });
+    expect(res.headers.get("x-read-aloud-truncated")).toBe("1");
+    expect(res.headers.get("x-read-aloud-duration-ms")).toBeNull();
+    expect(res.headers.get("x-read-aloud-voice")).toBe("");
+    expect(res.headers.get("x-read-aloud-chunks")).toBe("8");
+    expect(res.headers.get("x-read-aloud-cache")).toBe("partial");
+  });
+
+  it.each([
+    ["missing", {}],
+    ["not a string", { text: 42 }],
+    ["whitespace only", { text: " \n\t " }],
+  ])("is a 400 NO_TEXT when text is %s", async (_label, body) => {
+    const res = await speak(body);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "No text to read aloud", code: "NO_TEXT" });
+    expect(mockSynthesize).not.toHaveBeenCalled();
+  });
+
+  it("is a 413 TEXT_TOO_LONG past the request cap", async () => {
+    const res = await speak({ text: "a".repeat(MAX_READ_ALOUD_REQUEST_CHARS + 1) });
+    expect(res.status).toBe(413);
+    expect(((await res.json()) as Body).code).toBe("TEXT_TOO_LONG");
+    expect(mockSynthesize).not.toHaveBeenCalled();
+  });
+
+  it("is a 409 with the read-aloud hint when no OpenRouter key is configured", async () => {
+    mockSynthesize.mockRejectedValue(new ReadAloudNotConfiguredError());
+    const res = await speak({ text: "Hi." });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: READ_ALOUD_NOT_CONFIGURED_MESSAGE, code: "OPENROUTER_NOT_CONFIGURED" });
+  });
+
+  it("is a 400 READ_ALOUD_MODEL_UNSUPPORTED for a PCM-only model", async () => {
+    mockSynthesize.mockRejectedValue(new ReadAloudUnsupportedModelError("google/gemini-3.8-flash-tts"));
+    const res = await speak({ text: "Hi." });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as Body;
+    expect(body.code).toBe("READ_ALOUD_MODEL_UNSUPPORTED");
+    expect(body.error).toMatch(/google\/gemini-3\.8-flash-tts/);
+  });
+
+  it("is a 502 SPEECH_FAILED carrying OpenRouter's message", async () => {
+    mockSynthesize.mockRejectedValue(new ReadAloudUpstreamError("Invalid voice", 400));
+    const res = await speak({ text: "Hi." });
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: "Read aloud failed: Invalid voice", code: "SPEECH_FAILED" });
+
+    mockSynthesize.mockRejectedValue(new Error("ECONNRESET"));
+    expect(((await (await speak({ text: "Hi." })).json()) as Body).code).toBe("SPEECH_FAILED");
+  });
+
+  it("is a 504 SPEECH_TIMEOUT when synthesis times out", async () => {
+    mockSynthesize.mockRejectedValue(Object.assign(new Error("timed out"), { name: "TimeoutError" }));
+    const res = await speak({ text: "Hi." });
+    expect(res.status).toBe(504);
+    expect(await res.json()).toEqual({ error: "Read aloud timed out", code: "SPEECH_TIMEOUT" });
+  });
+
+  it("aborts synthesis when the client goes away", async () => {
+    let seen: AbortSignal | undefined;
+    mockSynthesize.mockImplementation(
+      ({ signal }) =>
+        new Promise((_resolve, reject) => {
+          seen = signal;
+          signal?.addEventListener("abort", () => reject(Object.assign(new Error("cancelled"), { name: "AbortError" })), { once: true });
+        }),
+    );
+    const controller = new AbortController();
+    const pending = speak({ text: "Hi." }, { signal: controller.signal }).catch(() => undefined);
+    await vi.waitFor(() => expect(seen).toBeDefined());
+    controller.abort();
+    await pending;
+    await vi.waitFor(() => expect(seen?.aborted).toBe(true));
+  });
+});
+
+describe("GET /api/voice/speech/models", () => {
+  it("answers the list, the default model and the default voice", async () => {
+    const kokoro = {
+      id: DEFAULT_READ_ALOUD_MODEL,
+      name: "hexgrad: Kokoro 82M",
+      voices: ["af_heart"],
+      defaultVoice: "af_heart",
+      formats: ["mp3", "pcm"],
+      mp3: true,
+      pricePerMillionChars: 0.99,
+    };
+    mockSpeechModels.mockResolvedValue([kokoro]);
+    const res = await fetch(server.origin + "/api/voice/speech/models");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ models: [kokoro], defaultModel: DEFAULT_READ_ALOUD_MODEL, defaultVoice: DEFAULT_READ_ALOUD_VOICE });
+  });
+});
+
+describe("POST /api/voice/speech — header-unsafe model and voice ids", () => {
+  it("percent-encodes a non-Latin-1 voice and model rather than failing after billing", async () => {
+    mockSynthesize.mockResolvedValue({ audio: SPEECH_BYTES, model: "someone/モデル", voice: "日本語", truncated: false, chunks: 1, cache: "miss" });
+    const res = await fetch(server.origin + "/api/voice/speech", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "Hi." }),
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-read-aloud-voice")).toBe(encodeURIComponent("日本語"));
+    // Only `%` and non-printable-ASCII are escaped, so a plain slug stays readable.
+    expect(res.headers.get("x-read-aloud-model")).toBe(`someone/${encodeURIComponent("モデル")}`);
+    expect(decodeURIComponent(res.headers.get("x-read-aloud-model") ?? "")).toBe("someone/モデル");
+    expect(decodeURIComponent(res.headers.get("x-read-aloud-voice") ?? "")).toBe("日本語");
+    expect(Buffer.from(await res.arrayBuffer()).equals(SPEECH_BYTES)).toBe(true);
+  });
+
+  it("escapes a literal % so the value round-trips", async () => {
+    mockSynthesize.mockResolvedValue({ audio: SPEECH_BYTES, model: "a/b", voice: "100%", truncated: false, chunks: 1, cache: "miss" });
+    const res = await fetch(server.origin + "/api/voice/speech", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "Hi." }),
+    });
+    expect(res.headers.get("x-read-aloud-voice")).toBe("100%25");
+  });
+
+  it("percent-encodes control characters too", async () => {
+    mockSynthesize.mockResolvedValue({ audio: SPEECH_BYTES, model: "a/b", voice: "evil\r\nX-Injected: 1", truncated: false, chunks: 1, cache: "miss" });
+    const res = await fetch(server.origin + "/api/voice/speech", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "Hi." }),
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-injected")).toBeNull();
+    expect(decodeURIComponent(res.headers.get("x-read-aloud-voice") ?? "")).toBe("evil\r\nX-Injected: 1");
   });
 });

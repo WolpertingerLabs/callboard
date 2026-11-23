@@ -261,6 +261,22 @@ export interface AgentSettings {
   openRouterVoiceModel?: string;
 
   /**
+   * Model for message read-aloud (`POST /api/voice/speech`), billed to
+   * {@link openRouterApiKey}. An OpenRouter speech slug served by
+   * `/audio/speech`; it must be able to answer mp3. Blank ⇒
+   * `DEFAULT_READ_ALOUD_MODEL` from `shared/types/readAloud.ts`.
+   */
+  openRouterTtsModel?: string;
+
+  /**
+   * Voice for read aloud, sent verbatim as `voice`. Voices are model-specific,
+   * so Settings clears this when the model changes. Blank ⇒ the model's default:
+   * `DEFAULT_READ_ALOUD_VOICE` for the default model, else the model's first
+   * listed voice, else no `voice` at all (provider default).
+   */
+  openRouterTtsVoice?: string;
+
+  /**
    * @deprecated Superseded by the cross-harness {@link modelAliases} registry.
    * Retained for backward compatibility: on load, each `{name → slug}` entry is
    * folded into the `openrouter` target of a matching {@link ModelAlias} (see

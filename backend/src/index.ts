@@ -240,7 +240,7 @@ app.use("/api/storage", storageRouter);
 app.use("/api/artifacts", artifactsRouter);
 app.use("/api/mcp-tools", mcpToolsRouter);
 app.use("/api/openrouter", openRouterRouter);
-// Composer voice input; spends OpenRouter credit like /api/themes/generate.
+// Composer voice input and message read-aloud; spends OpenRouter credit like /api/themes/generate.
 app.use("/api/voice", voiceRouter);
 app.use("/api/codex", codexRouter);
 app.use("/api/pi", piRouter);

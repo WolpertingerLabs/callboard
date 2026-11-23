@@ -6,6 +6,10 @@
  * account-wide key (`AgentSettings.openRouterApiKey`) and answers with the
  * transcript. The transcript is only ever inserted into the composer — never
  * sent on the user's behalf.
+ *
+ * Message read-aloud (`POST /api/voice/speech`, `GET /api/voice/speech/models`)
+ * shares this router and {@link VOICE_ERROR_CODES}; its own constants and types
+ * are in `./readAloud.ts`.
  */
 
 /**
@@ -83,6 +87,12 @@ export const VOICE_ERROR_CODES = {
   tooLarge: "LIMIT_FILE_SIZE",
   failed: "TRANSCRIPTION_FAILED",
   timeout: "TRANSCRIPTION_TIMEOUT",
+  // Read aloud (`POST /api/voice/speech`). `notConfigured` is shared.
+  noText: "NO_TEXT",
+  textTooLong: "TEXT_TOO_LONG",
+  modelUnsupported: "READ_ALOUD_MODEL_UNSUPPORTED",
+  speechFailed: "SPEECH_FAILED",
+  speechTimeout: "SPEECH_TIMEOUT",
 } as const;
 
 export type VoiceErrorCode = (typeof VOICE_ERROR_CODES)[keyof typeof VOICE_ERROR_CODES];

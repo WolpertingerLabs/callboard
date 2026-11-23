@@ -8,7 +8,8 @@
  *  - the five `claudeCodeOpenRouter*Model` role fields (→ `ANTHROPIC_*MODEL`);
  *  - `codexOpenRouterModel`;
  *  - the three `openRouterUtility*Model` tiers;
- *  - `openRouterVoiceModel` (composer voice input).
+ *  - `openRouterVoiceModel` (composer voice input);
+ *  - `openRouterTtsModel` (message read-aloud).
  *
  * #465 stopped offering those aliases, but values saved before it still went
  * out as `ANTHROPIC_MODEL="planner"`. The load path now swaps in the alias's
@@ -71,7 +72,7 @@ const ROLE_FIELDS = [
   "claudeCodeOpenRouterSubagentModel",
 ] as const;
 const UTILITY_FIELDS = ["openRouterUtilityHaikuModel", "openRouterUtilitySonnetModel", "openRouterUtilityOpusModel"] as const;
-const ALL_FIELDS = [...ROLE_FIELDS, "codexOpenRouterModel", ...UTILITY_FIELDS, "openRouterVoiceModel"] as const;
+const ALL_FIELDS = [...ROLE_FIELDS, "codexOpenRouterModel", ...UTILITY_FIELDS, "openRouterVoiceModel", "openRouterTtsModel"] as const;
 
 const SLUG = "deepseek/deepseek-chat";
 
