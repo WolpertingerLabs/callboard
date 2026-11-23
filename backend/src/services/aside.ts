@@ -62,4 +62,4 @@ export function resolveAsidePermissions(
  * running code and never controls the computer. Applied as a cap, so an axis
  * the parent already holds stricter (a "deny") stays so.
  */
-export const READ_ONLY_CEILING: DefaultPermissions = { fileRead: "allow", fileWrite: "ask", codeExecution: "ask", webAccess: "allow", computerControl: "deny" };
+export const READ_ONLY_CEILING: DefaultPermissions = { fileRead: "allow", fileWrite: "ask", codeExecution: "ask", webAccess: "allow", browserControl: "deny", computerControl: "deny" };

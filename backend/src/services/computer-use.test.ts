@@ -54,7 +54,7 @@ async function enable(host: ComputerUseHost, chatId = "a") {
 
 function fixture(level = "allow", confirm: ConfirmAgentAction = alwaysApproves, fileRead = "allow") {
   let current: HostPolicy = {
-    policy: readComputerUsePolicy({ computerControl: level, webAccess: "allow", fileRead, fileWrite: "allow", codeExecution: "allow" }),
+    policy: readComputerUsePolicy({ browserControl: level, computerControl: level, webAccess: "allow", fileRead, fileWrite: "allow", codeExecution: "allow" }),
     signature: level,
   };
   const observe = vi.fn(async () => ({ data: "AA==", mimeType: "image/png" as const, width: 100, height: 100, capturedAt: Date.now() }));
@@ -75,7 +75,7 @@ function fixture(level = "allow", confirm: ConfirmAgentAction = alwaysApproves, 
     observe,
     probe,
     change: (level: string) => {
-      current = { policy: readComputerUsePolicy({ ...current.policy, computerControl: level }), signature: level };
+      current = { policy: readComputerUsePolicy({ ...current.policy, browserControl: level, computerControl: level }), signature: level };
     },
   };
 }

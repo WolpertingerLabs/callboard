@@ -16,7 +16,7 @@ import { buildCanUseTool, getPendingRequest, respondToPermission, type Permissio
 import { pendingRequestRequiresHuman, pendingRequests } from "./pending-requests.js";
 import type { ReviewVerdict } from "./permission-review.js";
 
-const FULL_ASK: DefaultPermissions = { fileRead: "ask", fileWrite: "ask", codeExecution: "ask", webAccess: "ask", computerControl: "deny" };
+const FULL_ASK: DefaultPermissions = { fileRead: "ask", fileWrite: "ask", codeExecution: "ask", webAccess: "ask", browserControl: "deny", computerControl: "deny" };
 
 function setup(opts: { settings: PermissionReviewSettings; verdict?: ReviewVerdict; parent?: string; hookAskOverride?: { reason: string } }) {
   const emitter = new EventEmitter();

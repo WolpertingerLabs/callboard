@@ -203,8 +203,16 @@ export default function PermissionSettings({ permissions, onChange, title, provi
       )}
 
       <PermissionRow
-        label="Browser & Computer Control"
-        description="Control a managed browser or desktop on the service host"
+        label="Browser Use"
+        description="Control a managed Chromium browser on the service host. Includes unrestricted browser network access, independent of Web Access."
+        category="browserControl"
+        permissions={permissions}
+        onUpdate={updatePermission}
+      />
+
+      <PermissionRow
+        label="Computer Use"
+        description="Control the Linux X11 desktop on the service host. Requires every other axis on Allow."
         category="computerControl"
         permissions={permissions}
         onUpdate={updatePermission}

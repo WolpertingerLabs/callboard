@@ -711,6 +711,7 @@ exports[`sendMessage queryOpts characterization > codex: subscription, default r
       "codex": {
         "authMode": "subscription",
         "permissions": {
+          "browserControl": "deny",
           "codeExecution": "ask",
           "computerControl": "deny",
           "fileRead": "allow",

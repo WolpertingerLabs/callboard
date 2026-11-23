@@ -5,27 +5,39 @@ import PermissionSettings from "./PermissionSettings";
 import ChatPermissionsModal from "./ChatPermissionsModal";
 
 afterEach(cleanup);
-it("renders the fifth permission as one line, in the same register as the other four", () => {
+const rowOf = (label: string) => screen.getByText(label).parentElement!.parentElement!;
+
+it("renders Browser Use immediately before Computer Use, each a separate axis defaulting to deny", () => {
   const onChange = vi.fn();
   render(<PermissionSettings permissions={normalizePermissions({ fileRead: "allow" })} onChange={onChange} />);
-  // Allow now means allow — the agent acts without a per-action prompt — so the
-  // row no longer needs a paragraph explaining away a label that did not match
-  // its behaviour. It reads like "Read files, search code, and list
-  // directories": what the axis governs, one line, no caveats.
-  const description = screen.getByText("Control a managed browser or desktop on the service host");
-  expect(description.textContent!.length).toBeLessThan(80);
-  expect(description.textContent).not.toMatch(/confirm/i);
-  const row = screen.getByText("Browser & Computer Control").parentElement!.parentElement!;
-  expect((within(row).getByRole("radio", { name: "Deny" }) as HTMLInputElement).checked).toBe(true);
-  fireEvent.click(within(row).getByRole("radio", { name: "Ask" }));
-  expect(onChange).toHaveBeenCalledWith({ fileRead: "allow", fileWrite: "ask", codeExecution: "ask", webAccess: "ask", computerControl: "ask" });
+  const labels = ["Web Access", "Browser Use", "Computer Use"].map((label) => screen.getByText(label));
+  // Document order: Web Access → Browser Use → Computer Use, with nothing between the last two.
+  expect(labels[0].compareDocumentPosition(labels[1]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(labels[1].compareDocumentPosition(labels[2]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(rowOf("Browser Use").nextElementSibling).toBe(rowOf("Computer Use"));
+  // What each axis governs and what it depends on, in one line each. Allow
+  // means allow, so neither row explains away its levels with confirmation caveats.
+  for (const [pattern, dependency] of [
+    [/Control a managed Chromium browser on the service host/, /independent of Web Access/],
+    [/Control the Linux X11 desktop on the service host/, /every other axis on Allow/],
+  ] as const) {
+    const description = screen.getByText(pattern).textContent!;
+    expect(description).toMatch(dependency);
+    expect(description).not.toMatch(/confirm/i);
+    expect(description.length).toBeLessThan(140);
+  }
+  for (const label of ["Browser Use", "Computer Use"])
+    expect((within(rowOf(label)).getByRole("radio", { name: "Deny" }) as HTMLInputElement).checked).toBe(true);
+  fireEvent.click(within(rowOf("Browser Use")).getByRole("radio", { name: "Ask" }));
+  expect(onChange).toHaveBeenLastCalledWith({ fileRead: "allow", fileWrite: "ask", codeExecution: "ask", webAccess: "ask", browserControl: "ask", computerControl: "deny" });
+  fireEvent.click(within(rowOf("Computer Use")).getByRole("radio", { name: "Ask" }));
+  expect(onChange).toHaveBeenLastCalledWith({ fileRead: "allow", fileWrite: "ask", codeExecution: "ask", webAccess: "ask", browserControl: "deny", computerControl: "ask" });
 });
-it("enables modal Save for a computer-control-only change", () => {
+it.each(["Browser Use", "Computer Use"])("enables modal Save for a %s-only change", (label) => {
   render(<ChatPermissionsModal isOpen onClose={() => {}} chatId={undefined} permissions={normalizePermissions(undefined)} onPermissionsChange={() => {}} />);
   const save = screen.getByRole("button", { name: "Save" }) as HTMLButtonElement;
   expect(save.disabled).toBe(true);
-  const row = screen.getByText("Browser & Computer Control").parentElement!.parentElement!;
-  fireEvent.click(within(row).getByRole("radio", { name: "Allow" }));
+  fireEvent.click(within(rowOf(label)).getByRole("radio", { name: "Allow" }));
   expect(save.disabled).toBe(false);
 });
 it("renders the review toggles only when asked, and greys parent-can-answer without a parent", () => {

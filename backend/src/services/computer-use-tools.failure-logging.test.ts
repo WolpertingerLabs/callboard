@@ -54,7 +54,7 @@ function harness(observe: () => Promise<typeof frame>, confirm?: ConfirmAgentAct
   host = new ComputerUseHost(
     service,
     { browser: driver, desktop: { ...driver, kind: "native-desktop" } },
-    () => ({ policy: readComputerUsePolicy({ computerControl: level, webAccess: "allow" }), signature: "scope" }),
+    () => ({ policy: readComputerUsePolicy({ browserControl: level, computerControl: level, webAccess: "allow" }), signature: "scope" }),
     confirm,
   );
   vi.mocked(getComputerUseHost).mockResolvedValue(host);
@@ -263,7 +263,8 @@ it("records each unprompted action an allow chat attempts, so an operator can re
   const line = infoLine("attempting unattended")!;
   expect(line).toBeDefined();
   expect(line).toContain(`chat=chat session=${opened.id}`);
-  expect(line).toContain("computerControl=allow");
+  // The browser target's axis is Browser Use.
+  expect(line).toContain("browserControl=allow");
   expect(line).toMatch(/Open https:\/\/example\.com\/dashboard in the managed browser on \S+$/);
   // It completed, so nothing corrects it. That absence is the success signal.
   expect(infoLine("did NOT complete")).toBeUndefined();

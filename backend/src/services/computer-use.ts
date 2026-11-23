@@ -14,7 +14,15 @@ import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { createLogger } from "../utils/logger.js";
 import { resolveSessionContext } from "../utils/session-provenance.js";
 import { chatFileService } from "./chat-file-service.js";
-import { computerUseScopeError, readComputerUsePolicy, type ComputerTargetKind, type ComputerUsePolicy } from "./computer-use-policy.js";
+import {
+  aggregateControlLevel,
+  axisFor,
+  computerUseScopeError,
+  levelFor,
+  readComputerUsePolicy,
+  type ComputerTargetKind,
+  type ComputerUsePolicy,
+} from "./computer-use-policy.js";
 import { sessionRegistry } from "./session-registry.js";
 import { getPendingRequest, requestHumanApproval, type HumanApprovalOutcome, type ApprovalCompletion } from "./pending-requests.js";
 
@@ -217,8 +225,8 @@ export function logComputerUseFailure(operation: string, ids: { chatId?: unknown
 }
 
 /**
- * Record that an unattended GUI action is about to run — `computerControl:
- * "allow"`, nobody asked.
+ * Record that an unattended GUI action is about to run — the target's axis
+ * (`browserControl` or `computerControl`) is `"allow"`, nobody asked.
  *
  * Under `ask` the record already exists and is better than a log line: the
  * confirmation is a `permission_request` in the chat, so the transcript carries
@@ -245,8 +253,13 @@ export function logComputerUseFailure(operation: string, ids: { chatId?: unknown
  *
  * It cannot flood: one line per action the agent was going to take anyway.
  */
-export function logUnattendedAction(chatId: string, sessionId: string, redactedSummary: string): void {
-  log.info(`Computer control ${controlIds({ chatId, sessionId })} attempting unattended (computerControl=allow): ${oneLine(redactedSummary).slice(0, 500)}`);
+export function logUnattendedAction(
+  chatId: string,
+  sessionId: string,
+  redactedSummary: string,
+  axis: "browserControl" | "computerControl" = "computerControl",
+): void {
+  log.info(`Computer control ${controlIds({ chatId, sessionId })} attempting unattended (${axis}=allow): ${oneLine(redactedSummary).slice(0, 500)}`);
 }
 
 /**
@@ -269,9 +282,15 @@ export function logUnattendedAction(chatId: string, sessionId: string, redactedS
  * failure. The caller holds the signal; it says so, exactly as `call()`'s own
  * `logContext()` does. `escalate` has no meaning here — nobody approved this.
  */
-function logUnattendedFailure(chatId: string, sessionId: string, error: unknown, context: FailureContext = {}): void {
+function logUnattendedFailure(
+  chatId: string,
+  sessionId: string,
+  error: unknown,
+  context: FailureContext = {},
+  axis: "browserControl" | "computerControl" = "computerControl",
+): void {
   const label = context.cancelled || isAbort(error) ? "cancelled" : controlCode(error) || envelopeCode(error) || "unavailable";
-  log.info(`Computer control ${controlIds({ chatId, sessionId })} unattended action did NOT complete (computerControl=allow) code=${label}`);
+  log.info(`Computer control ${controlIds({ chatId, sessionId })} unattended action did NOT complete (${axis}=allow) code=${label}`);
 }
 
 export interface HostPolicy {
@@ -302,7 +321,9 @@ export function loadComputerUsePolicy(chatId: string): HostPolicy {
   }
   const policy = readComputerUsePolicy(metadata.defaultPermissions);
   // The signature is what a grant is bound to; drift revokes the live session.
-  // Sign only what changes the authority itself: the permission axes and the
+  // Sign only what changes the authority itself: the permission axes (all of
+  // them, both control axes included, so changing Browser Use also revokes a
+  // live desktop grant) and the
   // engine identity the provenance check just verified. The wider chat
   // fingerprint (session ids, last branch, model, folder) used to be in here,
   // and a nudge resume appending a session id or an acknowledged branch drift
@@ -486,7 +507,7 @@ export { CU_ACTION_TOOL_NAME };
 /**
  * The production confirmation: the chat's own blocking prompt.
  *
- * Note what is NOT threaded in here — the chat's `computerControl` level, or
+ * Note what is NOT threaded in here — the target's control level, or
  * any policy at all. The level decides *whether this function is called*, once,
  * in {@link ComputerUseHost.requestAgentAction}; it can never decide what the
  * function answers. `requestHumanApproval` has no auto-decide branch, so once a
@@ -688,6 +709,7 @@ export class ComputerUseHost {
             kind: kind === "browser" ? "browser" : "native",
             available: probe.available && !restriction,
             reason: restriction ?? detailed,
+            permission: levelFor(kind, policy),
             ...(kind === "desktop" && restriction ? { readiness: "permission-blocked" as const } : {}),
           };
         } catch {
@@ -696,6 +718,7 @@ export class ComputerUseHost {
             available: false,
             capabilities: [],
             reason: restriction ?? "Driver probe unavailable. Retry status or ask your agent to check readiness on the Callboard service host.",
+            permission: levelFor(kind, policy),
             ...(kind === "desktop" ? { readiness: restriction ? ("permission-blocked" as const) : ("unknown" as const) } : {}),
           };
         }
@@ -724,7 +747,8 @@ export class ComputerUseHost {
     return {
       capabilities,
       sessions,
-      permission: policy.computerControl,
+      // Aggregate (most permissive) for old panels; per-target levels are on each capability.
+      permission: aggregateControlLevel(policy),
       target: hostname(),
       platform: process.platform,
       events: this.events.get(chatId) ?? [],
@@ -780,7 +804,7 @@ export class ComputerUseHost {
         toolName: CU_REQUEST_CONTROL_TOOL_NAME,
         controlRequest: true,
         completion,
-        input: { kind, target, reason: reason.trim(), permission: current.policy.computerControl, durationMinutes: 15, expiresAt },
+        input: { kind, target, reason: reason.trim(), permission: levelFor(kind, current.policy), durationMinutes: 15, expiresAt },
         signal: combined,
         timeoutMs: Math.max(1, expiresAt - Date.now()),
       });
@@ -849,7 +873,7 @@ export class ComputerUseHost {
     const current = this.readPolicy(chatId);
     const restriction = computerUseScopeError(kind, current.policy);
     if (restriction) throw controlError("denied", restriction);
-    if (current.policy.computerControl === "ask") {
+    if (levelFor(kind, current.policy) === "ask") {
       if ([...this.pending.values()].filter((p) => p.chatId === chatId).length >= 2)
         throw controlError("queue_full", "Resolve the existing target approval first");
       const id = randomUUID();
@@ -878,7 +902,7 @@ export class ComputerUseHost {
       pending.chatId !== chatId ||
       pending.expiresAt <= Date.now() ||
       pending.signature !== current.signature ||
-      current.policy.computerControl === "deny"
+      levelFor(pending.kind, current.policy) === "deny"
     )
       throw controlError("denied", "Approval expired or its scope changed; enable the target again");
     return this.openApproved(chatId, pending.kind, current);
@@ -990,7 +1014,8 @@ export class ComputerUseHost {
   /**
    * Perform one GUI action, asking the human first if the chat says to.
    *
-   * The chat's `computerControl` level is read here, once, and it decides
+   * The level of the grant's target axis (`browserControl` for the browser,
+   * `computerControl` for the desktop) is read here, once, and it decides
    * exactly one thing — whether {@link ConfirmAgentAction} is called at all:
    *
    * - **`ask`** — the agent's tool call blocks on a prompt in the chat and
@@ -1044,9 +1069,12 @@ export class ComputerUseHost {
       !ACTION_TYPES.includes(String((action as { type?: unknown }).type))
     )
       throw controlError("invalid_request", "Action must be a bounded GUI operation");
-    const level = this.readPolicy(chatId).policy.computerControl;
-    if (level === "deny") throw controlError("denied", "Browser & Computer Control is denied for this chat; no GUI action can be performed");
-    const target = humanTarget(uiKind(grant.lease.kind));
+    const kind = uiKind(grant.lease.kind);
+    const axis = axisFor(kind);
+    const level = levelFor(kind, this.readPolicy(chatId).policy);
+    if (level === "deny")
+      throw controlError("denied", `${kind === "browser" ? "Browser Use" : "Computer Use"} is denied for this chat; no GUI action can be performed`);
+    const target = humanTarget(kind);
     // Prompt and execution share one immutable snapshot: what the human is
     // shown is what runs, even if the caller mutates its object afterwards.
     const request = structuredClone(action) as Record<string, unknown>;
@@ -1056,7 +1084,7 @@ export class ComputerUseHost {
       // do is leave a trace of it — an attempt before, and a correction after if
       // it did not happen, because this log is the only account anyone gets and
       // an over-report is the worst way for it to be wrong.
-      logUnattendedAction(chatId, id, describeAgentActionForLog(request, target));
+      logUnattendedAction(chatId, id, describeAgentActionForLog(request, target), axis);
       // A stopped turn is not a fault, and it does not arrive as one: `call()`
       // hands back an `isError` result whatever happened, so the abort has to
       // travel with the signal the caller gave us rather than with the error.
@@ -1065,12 +1093,12 @@ export class ComputerUseHost {
       try {
         result = await execute(randomUUID(), request, { confirmedByHuman: false });
       } catch (error) {
-        logUnattendedFailure(chatId, id, error, outcome());
+        logUnattendedFailure(chatId, id, error, outcome(), axis);
         throw error;
       }
       // The MCP layer answers a fault as an `isError` result rather than a
       // throw, so the successful-looking return above is not proof of anything.
-      if (result && typeof result === "object" && (result as { isError?: unknown }).isError === true) logUnattendedFailure(chatId, id, result, outcome());
+      if (result && typeof result === "object" && (result as { isError?: unknown }).isError === true) logUnattendedFailure(chatId, id, result, outcome(), axis);
       return result;
     }
     // A queue cannot form when the call blocks: the agent's own turn is parked
@@ -1098,7 +1126,7 @@ export class ComputerUseHost {
     // those in the operator's log at error level — see {@link FailureContext}.
     try {
       const current = this.readPolicy(chatId);
-      if (grant.signature !== current.signature || current.policy.computerControl === "deny")
+      if (grant.signature !== current.signature || levelFor(kind, current.policy) === "deny")
         throw controlError("denied", "The chat's control scope changed while this action was awaiting confirmation; enable the target again");
       // Re-derives the grant: expiry, ownership, signature, generation, controller.
       this.agentLease(chatId, id, generation);

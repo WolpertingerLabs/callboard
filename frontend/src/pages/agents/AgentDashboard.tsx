@@ -77,6 +77,7 @@ export default function AgentDashboard() {
       fileWrite: "allow",
       codeExecution: "allow",
       webAccess: "allow",
+      browserControl: "deny",
       computerControl: "deny",
     };
 

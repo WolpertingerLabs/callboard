@@ -106,7 +106,7 @@ To turn the button off, set `allowEngineInstalls: false` in `~/.callboard/agent-
 ### In a chat
 
 - **Streaming:** text, thinking, tool calls and permission prompts, on any engine.
-- **Tool permissions:** set `allow`, `ask` or `deny` per chat on five axes: file read, file write, code execution, web access, and Browser & Computer Control.
+- **Tool permissions:** set `allow`, `ask` or `deny` per chat on six axes: file read, file write, code execution, web access, Browser Use and Computer Use.
 - **Images:** drag in PNG, JPEG, GIF or WebP files, up to 10 MB each.
 - **Branches and worktrees:** pick a base branch, name a new branch (or generate a name from the prompt), and optionally run the chat in its own worktree.
 - **Diffs:** view the chat's working-tree diff file by file.
@@ -130,23 +130,26 @@ To turn the button off, set `allowEngineInstalls: false` in `~/.callboard/agent-
 - **Model aliases:** one name, such as `planner`, that maps to a different model per engine. Aliases work anywhere a model is set.
 - **Plugins & MCP:** Callboard scans directories you register for Claude Code plugin marketplaces and picks up their commands, hooks and MCP servers. Plugins are toggled per directory.
 - **Themes:** every UI colour is a CSS variable, with light and dark sets. Custom themes are files in `~/.callboard/themes/`, and an agent can generate one for you.
-- **API keys:** mint `cbk_` bearer tokens under Settings → Account for scripts. These keys can't perform human-only actions: minting more keys, changing a chat's computer-control setting or answering its prompts, changing settings (they can read them, with credentials masked), restarting the server or changing the password.
+- **API keys:** mint `cbk_` bearer tokens under Settings → Account for scripts. These keys can't perform human-only actions: minting more keys, changing a chat's Browser Use or Computer Use setting or answering its prompts, changing settings (they can read them, with credentials masked), restarting the server or changing the password.
 
-### Browser & Computer Control (preview)
+### Browser & Computer Use (preview)
 
 This lets an agent drive a managed Chromium browser, or a Linux X11 desktop, **on the machine running Callboard**. It is off unless you turn it on. Agents with unrestricted code execution may still run their own automation.
 
-- **Permission:** Browser & Computer Control is the fifth permission axis. It defaults to **Deny**, and new child chats, job steps and agent sessions start with it denied. To use it, set it to **Ask** or **Allow** in the chat's permission dialog.
+- **Permissions:** two axes, one per target. Both default to **Deny**, and new child chats, job steps, agent sessions and Read only asides start with both denied. Set them in the chat's permission dialog.
+  - **Browser Use** governs the managed browser. It needs no other axis: Web Access doesn't have to be Allow. The browser's network access is unrestricted, and Callboard treats Browser Use as the explicit opt-in to that, independent of Web Access (which governs only the agent's own web tools). If Web Access restrictions must also cover the browser, confine it on the host or leave Browser Use denied.
+  - **Computer Use** governs the desktop. It also needs every other axis on **Allow**, including Browser Use, because a desktop session can open any app, a browser among them, and can't honour a narrower restriction.
+- **Existing chats:** chats created before Browser Use existed read it as **Deny**. A chat that had Browser & Computer Control on Ask or Allow keeps that level as Computer Use, but loses the browser until you set Browser Use, and loses the desktop until Browser Use is Allow. A chat with Web Access on Deny or Ask can now browse if Browser Use is on. Saved defaults (new-chat defaults in the browser and space defaults) migrate the same way: a saved Browser & Computer Control on Ask or Allow now means Computer Use on and Browser Use off. A tab still running an older bundle can turn its old row off (that also denies Browser Use) but can't turn it on; it's asked to reload.
 - **Enabling a target is always a human action.** The agent can call `cu_request_control` to put an **Enable browser control** or **Enable desktop control** card in the chat. You can also enable a target from the Computer view, which you open with the monitor icon (**Show computer control**) in the chat header. The agent can't grant itself access.
-- **Ask vs Allow:** under **Ask**, every GUI action pauses the turn until you approve it in the chat. Only a signed-in browser can approve, not an API key. Under **Allow**, the agent acts unattended and each action is written to the server log.
+- **Ask vs Allow** (per target, from its own axis): under **Ask**, every GUI action pauses the turn until you approve it in the chat. Only a signed-in browser can approve, not an API key. Under **Allow**, the agent acts unattended and each action is written to the server log.
 - **Subagents share the grant.** Claude Code Task subagents and Codex native subagents act as the parent chat.
 - **Stop computer control** in the chat header stops every session in the chat. Take over before you type or click yourself, and choose **Resume agent** to hand control back. Images already sent to a model can't be recalled.
 - If a tab is running an older Callboard bundle, it shows **Reload this Callboard tab** instead of an approval card.
 
 Set up the host first:
 
-- **Browser:** Playwright installs with Callboard as an optional dependency, but no browser is downloaded. Provide Chromium and its OS libraries, and set `CALLBOARD_BROWSER_EXECUTABLE=/absolute/path/to/chrome` if Playwright won't find it. Chromium's sandbox is mandatory. On Linux, run as a non-root user with sandbox support. The chat's Web Access permission must be Allow.
-- **Desktop:** only an existing Linux X11 session works. It needs `/usr/bin/xdotool`, ImageMagick's `/usr/bin/import`, and `CALLBOARD_NATIVE_DISPLAY` (or `DISPLAY`). All four other permission axes must be Allow, because desktop control can reach everything the user can. This isn't an isolation boundary. macOS, Windows and Wayland aren't supported.
+- **Browser:** Playwright installs with Callboard as an optional dependency, but no browser is downloaded. Provide Chromium and its OS libraries, and set `CALLBOARD_BROWSER_EXECUTABLE=/absolute/path/to/chrome` if Playwright won't find it. Chromium's sandbox is mandatory. On Linux, run as a non-root user with sandbox support. The chat's Browser Use permission must be Ask or Allow.
+- **Desktop:** only an existing Linux X11 session works. It needs `/usr/bin/xdotool`, ImageMagick's `/usr/bin/import`, and `CALLBOARD_NATIVE_DISPLAY` (or `DISPLAY`). Computer Use must be Ask or Allow and all five other permission axes (Browser Use included) must be Allow, because desktop control can reach everything the user can. This isn't an isolation boundary. macOS, Windows and Wayland aren't supported.
 
 Live sandboxed-browser use and native desktop workflows haven't been qualified yet. For the security model and limits, see [`packages/computer-use/README.md`](packages/computer-use/README.md).
 
@@ -158,7 +161,7 @@ Each agent gets:
 
 - **A workspace** at `~/.callboard/agent-workspaces/<alias>/`, seeded with `CLAUDE.md`, `SOUL.md`, `USER.md`, `TOOLS.md`, `HEARTBEAT.md` and `MEMORY.md`.
 - **Two-tier memory:** daily journals in `memory/YYYY-MM-DD.md`, plus a curated `MEMORY.md`. Every session preloads `SOUL.md`, `USER.md`, `TOOLS.md`, `HEARTBEAT.md`, `MEMORY.md`, today's journal and yesterday's journal. Yesterday's journal is capped by the **journal budget** on the Memory tab, which defaults to 16k tokens. A capped journal keeps its tail and includes a note telling the agent to read the full file.
-- **Permissions:** the four original axes default to allow, and Browser & Computer Control is denied.
+- **Permissions:** the four original axes default to allow, and Browser Use and Computer Use are denied.
 - **A caller identity** for the connection proxy, which decides which external APIs the agent can reach.
 
 Setting `enabled: false` turns off an agent's crons, triggers and sessions.

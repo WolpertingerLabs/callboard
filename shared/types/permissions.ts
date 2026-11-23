@@ -5,15 +5,19 @@ export interface DefaultPermissions {
   fileWrite: PermissionLevel;
   codeExecution: PermissionLevel;
   webAccess: PermissionLevel;
+  /** Browser Use: drive the managed browser target. Independent of `webAccess`. */
+  browserControl: PermissionLevel;
+  /** Computer Use: drive the desktop target. */
   computerControl: PermissionLevel;
 }
 
-const keys = ["fileRead", "fileWrite", "codeExecution", "webAccess", "computerControl"] as const;
+const keys = ["fileRead", "fileWrite", "codeExecution", "webAccess", "browserControl", "computerControl"] as const;
 const defaults: DefaultPermissions = {
   fileRead: "ask",
   fileWrite: "ask",
   codeExecution: "ask",
   webAccess: "ask",
+  browserControl: "deny",
   computerControl: "deny",
 };
 
@@ -25,7 +29,15 @@ function level(value: unknown): PermissionLevel {
   return value === "allow" || value === "ask" || value === "deny" ? value : "deny";
 }
 
-/** Legacy records keep the old four defaults; missing computer control never grants access.
+/** The most permissive of the given levels (`deny` for none) — e.g. "does any control axis accept enabling". */
+export function mostPermissiveLevel(...levels: PermissionLevel[]): PermissionLevel {
+  if (levels.includes("allow")) return "allow";
+  if (levels.includes("ask")) return "ask";
+  return "deny";
+}
+
+/** Legacy records keep the old four defaults; a missing control axis (`browserControl`,
+ * `computerControl`) never grants access — it reads as `deny`, with no inheritance between them.
  * Explicit malformed values fail closed. Unknown/inherited keys are discarded.
  */
 export function normalizePermissions(value: unknown): DefaultPermissions {
@@ -37,7 +49,7 @@ export function normalizePermissions(value: unknown): DefaultPermissions {
   return result;
 }
 
-/** Partial updates preserve omitted axes, including existing computer-control denial.
+/** Partial updates preserve omitted axes, including existing browser/computer-control denial.
  * This is a settings merge, not a child-grant operation or authority intersection.
  */
 export function mergePermissions(current: unknown, patch: unknown): DefaultPermissions {

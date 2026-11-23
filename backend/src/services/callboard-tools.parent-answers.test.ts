@@ -39,7 +39,7 @@ import type { PendingRequest } from "./pending-requests.js";
 import type { ToolDefinition } from "../agents/ports/tools.js";
 import type { SendMessageOptions } from "./claude.js";
 
-const ALLOW_ALL: DefaultPermissions = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", computerControl: "deny" };
+const ALLOW_ALL: DefaultPermissions = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", browserControl: "deny", computerControl: "deny" };
 const ASK_EXEC: DefaultPermissions = { ...ALLOW_ALL, codeExecution: "ask" };
 
 function writeChat(id: string, metadata: Record<string, unknown>): void {
@@ -152,8 +152,8 @@ describe("start_chat_session — delegation", () => {
   });
 
   it("cannot be looser than the caller, and computer control stays denied", async () => {
-    const { sent } = await spawn("cautious", "y", { permissions: { codeExecution: "allow", computerControl: "allow" } });
-    expect(sent.defaultPermissions).toMatchObject({ codeExecution: "ask", computerControl: "deny" });
+    const { sent } = await spawn("cautious", "y", { permissions: { codeExecution: "allow", browserControl: "allow", computerControl: "allow" } });
+    expect(sent.defaultPermissions).toMatchObject({ codeExecution: "ask", browserControl: "deny", computerControl: "deny" });
   });
 
   it("a plain spawn is capped at the caller (asks only where the caller asks)", () => {

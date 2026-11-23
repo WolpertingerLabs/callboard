@@ -97,7 +97,7 @@ describe("NewChatPanel in a space", () => {
 });
 
 describe("NewChatPanel — space defaults do not leak", () => {
-  const ALLOW = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", computerControl: "deny" } as const;
+  const ALLOW = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", browserControl: "deny", computerControl: "deny" } as const;
   const LEAKY: SpaceListItem[] = [
     { id: "default", name: "General", order: 0, chatCount: 0, createdAt: "", updatedAt: "" },
     { id: "sp_work", name: "Work", order: 1, chatCount: 0, createdAt: "", updatedAt: "", defaults: { provider: "codex", defaultPermissions: { ...ALLOW } } },

@@ -20,9 +20,9 @@ import { requestHumanApproval } from "./pending-requests.js";
 import { CU_ACTION_TOOL_NAME } from "shared/types/index.js";
 import { sessionRegistry } from "./session-registry.js";
 
-const FULL_ALLOW: DefaultPermissions = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", computerControl: "deny" };
-const FULL_DENY: DefaultPermissions = { fileRead: "deny", fileWrite: "deny", codeExecution: "deny", webAccess: "deny", computerControl: "deny" };
-const FULL_ASK: DefaultPermissions = { fileRead: "ask", fileWrite: "ask", codeExecution: "ask", webAccess: "ask", computerControl: "deny" };
+const FULL_ALLOW: DefaultPermissions = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", browserControl: "deny", computerControl: "deny" };
+const FULL_DENY: DefaultPermissions = { fileRead: "deny", fileWrite: "deny", codeExecution: "deny", webAccess: "deny", browserControl: "deny", computerControl: "deny" };
+const FULL_ASK: DefaultPermissions = { fileRead: "ask", fileWrite: "ask", codeExecution: "ask", webAccess: "ask", browserControl: "deny", computerControl: "deny" };
 
 type CanUseTool = ReturnType<typeof buildCanUseTool>;
 
@@ -88,11 +88,11 @@ describe("buildCanUseTool — computerControl reaches the gate", () => {
   const withComputerControl = (perms: DefaultPermissions | null) => makePolicy(perms, categorizeClaudeTool);
   const tool = "mcp__computer_use__cu_observe";
 
-  it("denies a managed computer tool when the axis is deny, without interrupting the turn", async () => {
-    const { canUseTool } = make({ policy: withComputerControl({ ...FULL_ALLOW, computerControl: "deny" }) });
+  it("denies a managed computer tool when both control axes are deny, without interrupting the turn", async () => {
+    const { canUseTool } = make({ policy: withComputerControl({ ...FULL_ALLOW, browserControl: "deny", computerControl: "deny" }) });
     const result = await canUseTool(tool, { sessionId: "s", generation: 1 }, unsignaled());
     expect(result).toMatchObject({ behavior: "deny", interrupt: false });
-    expect((result as { message: string }).message).toContain("computerControl");
+    expect((result as { message: string }).message).toContain("Browser Use and Computer Use");
   });
 
   it("denies when the axis is absent (legacy four-axis record) or there are no permissions at all", async () => {
@@ -105,7 +105,7 @@ describe("buildCanUseTool — computerControl reaches the gate", () => {
 
   it("admits the transport call under ask and allow so the service can decide scope; never prompts here", async () => {
     for (const level of ["ask", "allow"] as const) {
-      const { canUseTool, emitter } = make({ policy: withComputerControl({ ...FULL_ALLOW, computerControl: level }) });
+      const { canUseTool, emitter } = make({ policy: withComputerControl({ ...FULL_ALLOW, browserControl: level, computerControl: level }) });
       const seen: StreamEvent[] = [];
       emitter.on("event", (e: StreamEvent) => seen.push(e));
       expect(await canUseTool(tool, { sessionId: "s" }, unsignaled())).toEqual({ behavior: "allow", updatedInput: { sessionId: "s" } });

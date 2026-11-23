@@ -140,11 +140,11 @@ describe("ToolPermissionPolicy", () => {
   it("defaults to 'ask' when category or settings are missing", () => {
     expect(decidePermission(null, null)).toBe("ask");
     expect(decidePermission("fileRead", null)).toBe("ask");
-    expect(decidePermission(null, { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", computerControl: "deny" })).toBe("ask");
+    expect(decidePermission(null, { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", browserControl: "deny", computerControl: "deny" })).toBe("ask");
   });
 
   it("maps category policy → decision", () => {
-    const perms = { fileRead: "allow", fileWrite: "deny", codeExecution: "ask", webAccess: "deny", computerControl: "deny" } as const;
+    const perms = { fileRead: "allow", fileWrite: "deny", codeExecution: "ask", webAccess: "deny", browserControl: "deny", computerControl: "deny" } as const;
     expect(decidePermission("fileRead", perms)).toBe("allow");
     expect(decidePermission("fileWrite", perms)).toBe("deny");
     expect(decidePermission("codeExecution", perms)).toBe("ask");
@@ -154,7 +154,7 @@ describe("ToolPermissionPolicy", () => {
   it("class form re-reads settings on every decide() (live policy changes)", () => {
     let current: "allow" | "deny" | "ask" = "allow";
     const categorize = (_: string) => "fileRead" as const;
-    const getPerms = () => ({ fileRead: current, fileWrite: "ask", codeExecution: "ask", webAccess: "ask", computerControl: "deny" }) as const;
+    const getPerms = () => ({ fileRead: current, fileWrite: "ask", codeExecution: "ask", webAccess: "ask", browserControl: "deny", computerControl: "deny" }) as const;
 
     const policy = new ToolPermissionPolicy(categorize, getPerms);
     expect(policy.decide("Read").decision).toBe("allow");
@@ -165,7 +165,7 @@ describe("ToolPermissionPolicy", () => {
   it("null category from the adapter collapses to 'ask' regardless of settings", () => {
     const policy = new ToolPermissionPolicy(
       () => null,
-      () => ({ fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", computerControl: "deny" }),
+      () => ({ fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", browserControl: "deny", computerControl: "deny" }),
     );
     expect(policy.decide("TodoWrite").decision).toBe("ask");
   });

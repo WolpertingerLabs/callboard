@@ -90,6 +90,7 @@ export default function ChatPermissionsModal({
     localPermissions.fileWrite !== permissions.fileWrite ||
     localPermissions.codeExecution !== permissions.codeExecution ||
     localPermissions.webAccess !== permissions.webAccess ||
+    localPermissions.browserControl !== normalizePermissions(permissions).browserControl ||
     localPermissions.computerControl !== normalizePermissions(permissions).computerControl ||
     localReview.modelReview !== review.modelReview ||
     localReview.parentAnswers !== review.parentAnswers;

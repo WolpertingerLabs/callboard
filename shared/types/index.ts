@@ -1,5 +1,5 @@
 export type { PermissionLevel, DefaultPermissions, PermissionReviewSettings } from "./permissions.js";
-export { normalizePermissions, mergePermissions, normalizeReviewSettings } from "./permissions.js";
+export { normalizePermissions, mergePermissions, normalizeReviewSettings, mostPermissiveLevel } from "./permissions.js";
 
 export type { PluginCommand, PluginManifest, Plugin } from "./plugins.js";
 

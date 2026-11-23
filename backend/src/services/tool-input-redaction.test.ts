@@ -37,7 +37,7 @@ import type { AuditRecordInput } from "./audit-log.js";
 import { REDACTED, redactToolInputForReview } from "./tool-input-redaction.js";
 
 const SECRET = "hunter2-correct-horse";
-const FULL_ASK: DefaultPermissions = { fileRead: "ask", fileWrite: "ask", codeExecution: "ask", webAccess: "ask", computerControl: "deny" };
+const FULL_ASK: DefaultPermissions = { fileRead: "ask", fileWrite: "ask", codeExecution: "ask", webAccess: "ask", browserControl: "deny", computerControl: "deny" };
 
 function vaultInput(): Record<string, unknown> {
   return { name: "gh", kind: "password", values: { value: SECRET, username: "octocat" }, notes: "CI token" };

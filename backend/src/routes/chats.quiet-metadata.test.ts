@@ -116,8 +116,8 @@ const ROUTES: { name: string; path: string; body: unknown; check: (meta: any) =>
   {
     name: "permissions",
     path: "/:id/permissions",
-    body: { defaultPermissions: { ...FOUR, computerControl: "ask" } },
-    check: (meta) => expect(meta.defaultPermissions).toMatchObject({ ...FOUR, computerControl: "ask" }),
+    body: { defaultPermissions: { ...FOUR, browserControl: "ask", computerControl: "ask" } },
+    check: (meta) => expect(meta.defaultPermissions).toMatchObject({ ...FOUR, browserControl: "ask", computerControl: "ask" }),
   },
   { name: "summon", path: "/:id/summon", body: { dismiss: true }, check: (meta) => expect(meta.summon).toBeNull() },
 ];

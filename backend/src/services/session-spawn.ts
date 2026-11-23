@@ -28,7 +28,7 @@ export function toPromptIterable(content: string): AsyncIterable<UserPromptMessa
  * computer control. A fresh object per call — it is stored on the chat record.
  */
 export function unattendedPermissions(): DefaultPermissions {
-  return { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", computerControl: "deny" };
+  return { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", browserControl: "deny", computerControl: "deny" };
 }
 
 export interface AwaitChatCreatedOptions {

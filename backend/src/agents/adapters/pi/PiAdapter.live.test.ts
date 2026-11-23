@@ -57,8 +57,8 @@ process.env.CALLBOARD_DATA_DIR = tmpRoot;
 const { PiAdapter } = await import("./PiAdapter.js");
 const { customSkillsService } = await import("../../../services/custom-skills-service.js");
 
-const ALL_ALLOW: DefaultPermissions = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", computerControl: "deny" };
-const ALL_ASK: DefaultPermissions = { fileRead: "ask", fileWrite: "ask", codeExecution: "ask", webAccess: "ask", computerControl: "deny" };
+const ALL_ALLOW: DefaultPermissions = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", browserControl: "deny", computerControl: "deny" };
+const ALL_ASK: DefaultPermissions = { fileRead: "ask", fileWrite: "ask", codeExecution: "ask", webAccess: "ask", browserControl: "deny", computerControl: "deny" };
 
 /** A scratch project, deliberately NOT under /tmp's ignored prefix for realism. */
 let repo: string;

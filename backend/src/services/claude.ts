@@ -540,9 +540,10 @@ export function buildCanUseTool(
         category = decided.category;
         log.info(`[PERM-DIAG] tool=${toolName}, category=${category}, decision=${decision}`);
         // computerControl never decides "ask" here: a scoped grant/approval
-        // belongs to the service, so `decidePermission` maps "ask" to allow
-        // (transport admitted, service still checks every target/action/frame)
-        // and an absent or "deny" axis to deny.
+        // belongs to the service, so `decidePermission` admits the transport
+        // when either Browser Use or Computer Use is ask/allow (the service
+        // still checks every target/action/frame against that target's axis)
+        // and denies only when both axes are absent or "deny".
         if (decision === "allow") {
           return { behavior: "allow", updatedInput: input };
         }
@@ -550,7 +551,9 @@ export function buildCanUseTool(
           // A denied computer-control call is a harmless service lookup the
           // model should read and relay ("enable it in the panel"), not a
           // reason to abort the turn the way a denied write or shell is.
-          return { behavior: "deny", message: `Auto-denied by default ${category} policy`, interrupt: category !== "computerControl" };
+          if (category === "computerControl" || category === "browserControl")
+            return { behavior: "deny", message: "Auto-denied: Browser Use and Computer Use are both denied for this chat", interrupt: false };
+          return { behavior: "deny", message: `Auto-denied by default ${category} policy`, interrupt: true };
         }
         // "ask" — fall through to the user-prompt path
       } catch (err) {
@@ -1472,8 +1475,8 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
 
   const formattedPrompt = buildFormattedPrompt(prompt, imageMetadata, providerKind);
 
-  // Stored records are normalized on read: a legacy four-axis record has no
-  // `computerControl`, and absence must read as deny, never as "not set".
+  // Stored records are normalized on read: a legacy record may lack
+  // `browserControl`/`computerControl`, and absence must read as deny, never as "not set".
   // `null` (no permissions at all) stays null — the Codex/pi option builders
   // treat it as "use the SDK default", and decidePermission already denies
   // computer control for a missing axis.
@@ -1604,10 +1607,11 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
   // Importing/registering the surface does not start a browser or desktop.
   //
   // Deliberately NOT added to `allowedTools`: that list is auto-approved by the
-  // SDK before `canUseTool` fires, which made the chat's `computerControl: deny`
+  // SDK before `canUseTool` fires, which made the chat's control-axis `deny`
   // unenforceable at this layer (only the service's own authorizer stood). With
   // no allow-list entry every `mcp__computer_use__*` call reaches `canUseTool`,
-  // whose computerControl branch denies, or admits the transport call and lets
+  // whose computerControl branch denies (both Browser Use and Computer Use
+  // denied), or admits the transport call and lets
   // the service decide scope. Codex has no per-call hook, so for
   // it the service remains the sole gate — see their adapters.
   //

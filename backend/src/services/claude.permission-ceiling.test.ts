@@ -141,7 +141,7 @@ afterAll(() => {
 
 describe("sendMessage wires the session's own policy in as the spawn ceiling", () => {
   it("an ask parent's child is capped at the parent's policy", async () => {
-    const parent: DefaultPermissions = { fileRead: "allow", fileWrite: "ask", codeExecution: "ask", webAccess: "deny", computerControl: "deny" };
+    const parent: DefaultPermissions = { fileRead: "allow", fileWrite: "ask", codeExecution: "ask", webAccess: "deny", browserControl: "deny", computerControl: "deny" };
     expect(await childPermissionsFor(parent)).toEqual(parent);
   });
 
@@ -150,7 +150,7 @@ describe("sendMessage wires the session's own policy in as the spawn ceiling", (
   });
 
   it("computer control stays denied for the child of a parent that allows it", async () => {
-    expect(await childPermissionsFor({ ...unattendedPermissions(), computerControl: "allow" })).toEqual(unattendedPermissions());
+    expect(await childPermissionsFor({ ...unattendedPermissions(), browserControl: "allow", computerControl: "allow" })).toEqual(unattendedPermissions());
   });
 });
 

@@ -65,7 +65,7 @@ function fixture(computerControl: PermissionLevel) {
   // level change is visible to the branch under test rather than short-circuited
   // by the grant revocation a real signature change would trigger first.
   const host: ComputerUseHost = new ComputerUseHost(service, { browser: driver, desktop: { ...driver, kind: "native-desktop" } }, () => ({
-    policy: readComputerUsePolicy({ computerControl: level, webAccess: "allow", fileRead: "allow", fileWrite: "allow", codeExecution: "allow" }),
+    policy: readComputerUsePolicy({ browserControl: level, computerControl: level, webAccess: "allow", fileRead: "allow", fileWrite: "allow", codeExecution: "allow" }),
     signature: "pinned",
   }));
   hosts.push(host);

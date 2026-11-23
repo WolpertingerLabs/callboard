@@ -305,7 +305,7 @@ describe("POST /api/chats/bulk-archive", () => {
     // this test can tell the two names apart.
     expect(probe(make({ triggered: true, archived: true }))).toBe("error: Chat is unavailable");
 
-    const root = make({ triggered: true, defaultPermissions: { computerControl: "allow" } });
+    const root = make({ triggered: true, defaultPermissions: { browserControl: "allow", computerControl: "allow" } });
     const before = probe(root);
     expect(before).not.toContain("unavailable");
 
