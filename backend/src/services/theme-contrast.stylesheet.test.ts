@@ -302,8 +302,11 @@ describe("the dimmed chat row", () => {
  */
 describe("the accent fill/ink split", () => {
   const SRC = join(dirname(fileURLToPath(import.meta.url)), "../../../frontend/src");
-  /** `color: "var(--accent)"` but not `backgroundColor:`/`borderTopColor:`/… */
-  const INK = /(?<![A-Za-z])color:\s*(["'`]?)var\(--accent\)\1/g;
+  /**
+   * `color: "var(--accent)"` but not `backgroundColor:`/`borderTopColor:`/…,
+   * nor CSS's hyphenated `accent-color:`/`border-color:` — fills, not ink.
+   */
+  const INK = /(?<![A-Za-z-])color:\s*(["'`]?)var\(--accent\)\1/g;
 
   function walk(dir: string): string[] {
     return readdirSync(dir, { withFileTypes: true }).flatMap((e) => {

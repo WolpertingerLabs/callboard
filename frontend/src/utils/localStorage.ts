@@ -1,6 +1,7 @@
 import { normalizePermissions } from "shared/types/permissions.js";
 import type { DefaultPermissions, EffortLevel, UiAgentProviderKind } from "shared/types/index.js";
 import { ARTIFACT_ID_PATTERN, isValidStorageKey, UI_AGENT_PROVIDER_KINDS } from "shared/types/index.js";
+import { READ_ALOUD_SPEEDS } from "shared/types/readAloud.js";
 
 export type { EffortLevel };
 export type AgentProviderKind = UiAgentProviderKind;
@@ -198,6 +199,12 @@ interface LocalStorageData {
   asideRecentTarget?: AsideTarget;
   /** The desktop aside panel's dragged width, px. */
   asidePanelWidth?: number;
+  /**
+   * The read-aloud player's last playback speed, one of `READ_ALOUD_SPEEDS`.
+   * Client-only (`HTMLMediaElement.playbackRate`), never sent to the server.
+   * Absent or unknown = 1×.
+   */
+  readAloudRate?: number;
 }
 
 /** A harness, and optionally a model on it, for an aside. */
@@ -696,6 +703,16 @@ export function getJsonViewMode(): JsonViewMode {
 
 export function saveJsonViewMode(mode: JsonViewMode): void {
   updateStorage({ jsonViewMode: mode });
+}
+
+/** The read-aloud speed last chosen — {@link readEnum}'s check, for a number. */
+export function getReadAloudRate(): number {
+  const value = getStorageData().readAloudRate;
+  return typeof value === "number" && (READ_ALOUD_SPEEDS as readonly number[]).includes(value) ? value : 1;
+}
+
+export function saveReadAloudRate(rate: number): void {
+  updateStorage({ readAloudRate: rate });
 }
 
 function artifactWriteGrantKey(artifactId: string, storageKey: string): string | null {

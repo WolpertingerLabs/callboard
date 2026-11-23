@@ -161,6 +161,7 @@ import { isImageAttachmentType } from "shared/types/attachment.js";
 import { isRerunPrompt, rerunnableReplies } from "shared/types/rerun.js";
 import { withoutRideAlongBlock } from "shared/types/rideAlong.js";
 import { VOICE_NOT_CONFIGURED_MESSAGE } from "shared/types/voice.js";
+import { READ_ALOUD_NOT_CONFIGURED_MESSAGE } from "shared/types/readAloud.js";
 import ModalOverlay from "../components/ModalOverlay";
 import { writesBrowserFallback } from "../utils/spaceDefaults";
 import { onComputerControlSettled } from "../utils/computerControlEvents";
@@ -1005,6 +1006,15 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
   const voiceInput = useMemo(
     () => (systemInfo ? { available: voiceInputAvailable, reason: voiceInputAvailable ? undefined : VOICE_NOT_CONFIGURED_MESSAGE } : undefined),
     [systemInfo, voiceInputAvailable],
+  );
+  // The bubbles' read-aloud speaker. One object for every bubble, keyed on the
+  // two booleans rather than the system-info object, so a refetch that changes
+  // nothing here does not re-render every memoized bubble.
+  const systemInfoLoaded = !!systemInfo;
+  const readAloudAvailable = systemInfo?.readAloudAvailable === true;
+  const readAloud = useMemo(
+    () => (systemInfoLoaded ? { available: readAloudAvailable, reason: readAloudAvailable ? undefined : READ_ALOUD_NOT_CONFIGURED_MESSAGE } : undefined),
+    [systemInfoLoaded, readAloudAvailable],
   );
 
   // Null for a retired harness, because forking copies the source's session
@@ -5076,6 +5086,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
                         onInsertIntoMain={
                           embedded?.insertIntoMain && item.message.role === "assistant" && hasMarkerSlot(item.message) ? handleInsertIntoMain : undefined
                         }
+                        readAloud={readAloud}
                       />
                     </div>
                   );

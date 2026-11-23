@@ -1,4 +1,4 @@
-import { memo, useState, useMemo, useEffect, useRef, type CSSProperties, type ReactNode } from "react";
+import { memo, useId, useState, useMemo, useEffect, useRef, type CSSProperties, type ReactNode } from "react";
 import { Check, ClipboardType, Copy, CornerDownLeft, FileText, GitFork, RotateCw, Square, Star } from "lucide-react";
 import type { ChatTreeNode, ForkProvider, ParsedMessage } from "../api";
 import type { ChatRewriteAction } from "../utils/chatRewrite";
@@ -6,6 +6,8 @@ import { parseTaskList, splitAttachmentBlocks, type AttachedFile, type TaskListI
 import MarkdownRenderer from "./MarkdownRenderer";
 import CopyButton from "./CopyButton";
 import ForkPointMarker from "./ForkPointMarker";
+import ReadAloudButton from "./ReadAloudButton";
+import ReadAloudPlayer from "./ReadAloudPlayer";
 import JsonContentView from "./JsonContentView";
 import { useCopy } from "../hooks/useCopy";
 import { useRelativeTime } from "../hooks/useRelativeTime";
@@ -747,6 +749,13 @@ interface Props {
    * reason as `onFork`.
    */
   onInsertIntoMain?: (message: ParsedMessage) => boolean;
+  /**
+   * Read aloud: with this set, a text bubble's hover row gets a speaker that
+   * reads the message aloud, `aria-disabled` with `reason` as its tooltip
+   * when `available` is false. Absent (system-info not loaded yet) = no
+   * speaker. Must be identity-stable between renders (see the memo).
+   */
+  readAloud?: { available: boolean; reason?: string };
 }
 
 /** "Insert into main chat", with a moment of "Inserted" after a click. */
@@ -939,8 +948,12 @@ function MessageBubble({
   starred = false,
   onToggleStar,
   onInsertIntoMain,
+  readAloud,
 }: Props) {
   const [expanded, setExpanded] = useState(false);
+  // Identifies this bubble to the page-wide read-aloud playback. Called before
+  // the early returns below so the hook order never changes.
+  const readAloudOwner = useId();
   const isUser = message.role === "user";
   const isTeamMessage = !!message.teamName;
 
@@ -1192,6 +1205,7 @@ function MessageBubble({
 
   // Team messages render on the left with team color accent
   if (isTeamMessage && teamColor) {
+    const teamReadAloud = !!readAloud && !!message.content.trim();
     return (
       <div
         style={{
@@ -1216,6 +1230,7 @@ function MessageBubble({
           className="msg-bubble"
           style={{
             maxWidth: "92%",
+            ...(teamReadAloud && { minWidth: HOVER_ACTION_EDGE + 2 * HOVER_ACTION_PITCH }),
             padding: "10px 14px",
             borderRadius: "var(--radius)",
             background: "var(--assistant-bg)",
@@ -1229,9 +1244,19 @@ function MessageBubble({
           }}
         >
           <MessageCopyButton text={message.content} />
+          {teamReadAloud && (
+            <ReadAloudButton
+              ownerId={readAloudOwner}
+              markdown={message.content}
+              available={readAloud.available}
+              reason={readAloud.reason}
+              right={slotRight(1)}
+            />
+          )}
           <MarkdownRenderer content={message.content} className="message-markdown" />
           {message.imageIds && message.imageIds.length > 0 && <ImageThumbnails imageIds={message.imageIds} />}
         </div>
+        {teamReadAloud && <ReadAloudPlayer ownerId={readAloudOwner} />}
         <MessageMetadata message={message} align="left" />
       </div>
     );
@@ -1245,13 +1270,16 @@ function MessageBubble({
   const toggleStar = starKey && onToggleStar ? () => onToggleStar(starKey, !starred) : undefined;
   const rerun = canFork && onRerun ? () => onRerun(message.timestamp!, message.role) : undefined;
   // The hover actions line up right-to-left from the bubble's right edge: copy,
-  // fork, star — each present one taking the next slot. On a bubble narrower
+  // fork, star, read aloud — each present one taking the next slot. On a bubble narrower
   // than the row they stick out past its LEFT edge — for a left-aligned reply,
   // out of the message column and under the sidebar, where they cannot be
   // clicked. A reply is therefore never narrower than its actions. User bubbles
   // are right-aligned, so their overflow lands in the column and needs nothing.
   const starSlot = canFork ? 2 : 1;
-  const actionSlots = starSlot + (toggleStar ? 1 : 0);
+  const readAloudSlot = starSlot + (toggleStar ? 1 : 0);
+  // Not on a built-in command: what it shows is a command line, not prose.
+  const showReadAloud = !!readAloud && !message.isBuiltInCommand && !!bodyText.trim();
+  const actionSlots = readAloudSlot + (showReadAloud ? 1 : 0);
   const actionsMinWidth = isUser ? undefined : HOVER_ACTION_EDGE + actionSlots * HOVER_ACTION_PITCH;
 
   return (
@@ -1294,6 +1322,15 @@ function MessageBubble({
           />
         )}
         {toggleStar && <StarButton starred={starred} onToggle={toggleStar} right={slotRight(starSlot)} />}
+        {showReadAloud && (
+          <ReadAloudButton
+            ownerId={readAloudOwner}
+            markdown={bodyText}
+            available={readAloud.available}
+            reason={readAloud.reason}
+            right={slotRight(readAloudSlot)}
+          />
+        )}
         {/* The quotable text, and only it: selection-to-quote clips to this
             element, so the buttons above, the metadata line below and any
             open menu stay out of a quote (hooks/useMessageTextSelection.ts). */}
@@ -1303,6 +1340,7 @@ function MessageBubble({
         {attachedFiles.length > 0 && <AttachedFileChips files={attachedFiles} />}
         {message.imageIds && message.imageIds.length > 0 && <ImageThumbnails imageIds={message.imageIds} />}
       </div>
+      {showReadAloud && <ReadAloudPlayer ownerId={readAloudOwner} />}
       <MessageMetadata message={message} align={isUser ? "right" : "left"} leading={starred && toggleStar ? <StarredIndicator /> : undefined} />
       {forks && forks.length > 0 && <ForkPointMarker forks={forks} align={isUser ? "right" : "left"} />}
       {onInsertIntoMain && !isUser && bodyText.trim() && <InsertIntoMainButton onInsert={() => onInsertIntoMain(message)} align={isUser ? "right" : "left"} />}
