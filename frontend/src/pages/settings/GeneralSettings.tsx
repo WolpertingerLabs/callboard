@@ -547,7 +547,7 @@ export default function GeneralSettings() {
                     channel needs the user to click. Unavailability is carried
                     by the recessed input, the cursor, and the note instead. */}
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <label htmlFor={`contact-${key}`} style={{ fontSize: 13, fontWeight: 600, color: "var(--text)", width: 130, flexShrink: 0 }}>
+                  <label htmlFor={`contact-${key}`} style={{ fontSize: 13, fontWeight: 600, color: "var(--text)", width: 90, flexShrink: 0 }}>
                     {label}
                     {field.comingSoon && <span style={{ fontWeight: 400, color: "var(--text-muted)", fontSize: 11 }}> (soon)</span>}
                   </label>

@@ -28,22 +28,22 @@ export interface ContactField {
 export const CONTACT_FIELDS: ContactField[] = [
   {
     key: "discord",
-    label: "Discord username",
+    label: "Discord",
     placeholder: "username",
     help: "Needs a Discord connection on your drawlatch credential.",
     channel: "discord",
   },
   {
     key: "telegram",
-    label: "Telegram account",
+    label: "Telegram",
     placeholder: "@handle",
     help: "Needs a Telegram connection on your drawlatch credential.",
     channel: "telegram",
   },
-  { key: "phone", label: "Phone number", placeholder: "+1 555 123 4567", help: "Coming soon.", comingSoon: true },
+  { key: "phone", label: "Phone", placeholder: "+1 555 123 4567", help: "Coming soon.", comingSoon: true },
   {
     key: "email",
-    label: "Email address",
+    label: "Email",
     placeholder: "you@example.com",
     help: "Needs the AgentMail connection on your drawlatch credential.",
     channel: "email",
