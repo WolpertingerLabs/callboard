@@ -5,7 +5,7 @@
  */
 import { afterEach, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import * as pkg from "@wolpertingerlabs/computer-use";
@@ -57,7 +57,11 @@ it("reads the token from CALLBOARD_REMOTE_DESKTOP_TOKEN_FILE with the package's 
     const file = join(dir, "token");
     writeFileSync(file, `${TOKEN}\n`, { mode: 0o400 });
     symlinkSync(file, join(dir, "link"));
-    writeFileSync(join(dir, "open"), `${TOKEN}\n`, { mode: 0o666 });
+    // chmod, not writeFileSync's `mode`: the umask masks that (CI's 022 turned
+    // 0o666 into a perfectly valid 0o644 and the "bad" file was accepted).
+    writeFileSync(join(dir, "open"), `${TOKEN}\n`);
+    chmodSync(join(dir, "open"), 0o666);
+    expect(statSync(join(dir, "open")).mode & 0o777).toBe(0o666);
     const url = "http://127.0.0.1:9";
     // A file, a symlink to one (Kubernetes secrets), and a file beside an empty _TOKEN all configure the remote driver.
     for (const tokenFile of [file, join(dir, "link")])
