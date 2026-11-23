@@ -107,7 +107,7 @@ function DesktopReadinessNotice({ capability }: { capability?: ComputerUseCapabi
     case "permission-blocked":
       heading = "Desktop permissions required";
       guidance =
-        "Check this chat's permissions. Native desktop control on the Callboard service host requires file, network, and code permissions to be Allow because it cannot confine applications. Review that broader access before changing permissions; nothing is changed automatically.";
+        "Check this chat's permissions. Native desktop control on the Callboard service host requires Computer Use to be Ask or Allow, and file, network, code and Browser Use permissions to be Allow because it cannot confine applications. Review that broader access before changing permissions; nothing is changed automatically.";
       break;
   }
   return (
@@ -139,12 +139,16 @@ export function framePoint(clientX: number, clientY: number, rect: Pick<DOMRect,
 export default function ComputerUsePanel({
   chatId,
   permission = "deny",
+  targetPermissions,
   onPermissions,
   controller,
   provider,
 }: {
   chatId: string;
+  /** The most permissive of the chat's Browser Use and Computer Use levels. */
   permission?: PermissionLevel;
+  /** This tab's copy of each target's level; the server's per-capability level wins. */
+  targetPermissions?: Partial<Record<ComputerUseKind, PermissionLevel>>;
   onPermissions?: () => void;
   controller: ComputerUseController;
   /** The chat's harness, when known. Only used for harness-specific grant notes. */
@@ -193,6 +197,7 @@ export default function ComputerUsePanel({
   // land on a stopped session with every control disabled while a live one exists.
   const session = status?.sessions.find((item) => item.id === selected) ?? status?.sessions.find((item) => !terminal(item)) ?? status?.sessions[0];
   const capability = status?.capabilities.find((item) => item.kind === kind);
+  // Both Browser Use and Computer Use denied: nothing can be enabled at all.
   const denied = permission === "deny" || status?.permission === "deny";
   // What the Enable click actually consents to. Since the level began governing
   // per-action prompts, this button IS the consent boundary for unattended
@@ -200,7 +205,12 @@ export default function ComputerUsePanel({
   // ago, looks identical either way. The server's level wins over the prop: the
   // prop is this tab's copy of the chat record, and a change made elsewhere
   // reaches the panel through status first.
-  const level = status?.permission ?? permission;
+  //
+  // Per target: Browser Use governs the browser and Computer Use the desktop.
+  // An older daemon sends no per-capability level; fall back to the aggregate.
+  const level = capability?.permission ?? (status ? status.permission : (targetPermissions?.[kind] ?? permission));
+  const targetDenied = denied || level === "deny";
+  const axisLabel = kind === "browser" ? "Browser Use" : "Computer Use";
   const active =
     !controller.statusError &&
     !controller.stopping &&
@@ -441,7 +451,7 @@ export default function ComputerUsePanel({
   };
 
   return (
-    <section className="computer-use-panel" aria-label="Browser & Computer Control">
+    <section className="computer-use-panel" aria-label="Browser & Computer Use">
       {expanded && frame && session && (
         <ComputerUseExpandedView
           frame={frame}
@@ -464,7 +474,7 @@ export default function ComputerUsePanel({
             </label>
             <button
               className="computer-use-primary"
-              disabled={busy || denied || capability?.available !== true}
+              disabled={busy || targetDenied || capability?.available !== true}
               aria-describedby={sharedGrantNote}
               onClick={() => {
                 void run(
@@ -489,16 +499,16 @@ export default function ComputerUsePanel({
                 level: the general Allow/Ask explanation moved into the
                 disclosure below, so what stays on screen is which one *this*
                 chat is — at the moment you consent to it. */}
-            {!denied && (
+            {!targetDenied && (
               <span className="computer-use-consent" role="note" aria-label="What Enable grants">
                 {level === "allow" ? (
                   <>
-                    <strong>This chat is set to Allow:</strong> once you enable a target, the agent acts on it without asking you again. Each action is recorded
+                    <strong>{axisLabel} is set to Allow:</strong> once you enable a target, the agent acts on it without asking you again. Each action is recorded
                     in the server log.
                   </>
                 ) : (
                   <>
-                    <strong>This chat is set to Ask:</strong> the agent&apos;s turn stops and asks you here in the chat before every action on the target.
+                    <strong>{axisLabel} is set to Ask:</strong> the agent&apos;s turn stops and asks you here in the chat before every action on the target.
                   </>
                 )}
               </span>
@@ -527,9 +537,10 @@ export default function ComputerUsePanel({
             computer. Model visual capability is not established by this viewer.
           </p>
           <details className="computer-use-about">
-            <summary>How browser &amp; computer control works</summary>
+            <summary>How browser &amp; computer use works</summary>
             <p>
-              Controls Callboard&apos;s browser and desktop tools. Enabling a target is always your own action; after that, Allow lets the agent act on its own,
+              Controls Callboard&apos;s browser and desktop tools. Browser Use governs the managed browser and Computer Use the desktop; each target
+              follows its own setting, and the desktop also needs every other permission on Allow. Enabling a target is always your own action; after that, Allow lets the agent act on its own,
               while Ask stops its turn and asks you in the chat before each action. Agents with unrestricted code execution may still run their own automation.
             </p>
           </details>
@@ -552,7 +563,8 @@ export default function ComputerUsePanel({
           )}
           {denied && (
             <p className="computer-use-notice" role="status">
-              Computer control is denied. Set Browser &amp; Computer Control to Ask or Allow in chat permissions, then retry status. Ask confirms each agent
+              Browser Use and Computer Use are both denied. Set Browser Use (managed browser) or Computer Use (desktop) to Ask or Allow in chat permissions,
+              then retry status. Ask confirms each agent
               action with you in the chat; Allow lets the agent act unattended. Either way, only your Enable click starts a target.
             </p>
           )}

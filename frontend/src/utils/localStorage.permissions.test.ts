@@ -19,6 +19,7 @@ describe("stored permission defaults", () => {
       fileWrite: "allow",
       codeExecution: "allow",
       webAccess: "allow",
+      browserControl: "deny",
       computerControl: "deny",
     });
   });
@@ -29,7 +30,7 @@ describe("stored permission defaults", () => {
     }
   });
   it("persists an explicit choice and normalizes invalid values", () => {
-    saveDefaultPermissions({ ...getDefaultPermissions(), computerControl: "ask" });
+    saveDefaultPermissions({ ...getDefaultPermissions(), browserControl: "ask", computerControl: "ask" });
     expect(getDefaultPermissions().computerControl).toBe("ask");
     localStorage.setItem("claude-code-settings", '{"defaultPermissions":{"computerControl":"ALLOW"}}');
     expect(getDefaultPermissions().computerControl).toBe("deny");

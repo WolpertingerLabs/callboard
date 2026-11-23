@@ -40,7 +40,7 @@ it("keeps counts, pending approval and named controllers visible with full acces
   const summary = screen.getByRole("status");
   expect(summary.getAttribute("aria-label")).toContain("1 waiting for approval");
   expect(summary.title).toBe(summary.getAttribute("aria-label"));
-  expect(summary.textContent).not.toContain("Browser & Computer Control:");
+  expect(summary.textContent).not.toContain("Browser & Computer Use:");
   expect(control.stopAll).not.toHaveBeenCalled();
   expect(control.readStatus).not.toHaveBeenCalled();
   expect(control.beginMutation).not.toHaveBeenCalled();

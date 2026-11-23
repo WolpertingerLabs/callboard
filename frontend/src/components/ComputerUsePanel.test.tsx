@@ -120,7 +120,7 @@ describe("ComputerUsePanel", () => {
     await ready();
     expect(button("Enable").disabled).toBe(true);
     expect(button("Refresh screenshot").disabled).toBe(true);
-    const denied = screen.getByText(/Computer control is denied/);
+    const denied = screen.getByText(/Browser Use and Computer Use are both denied/);
     expect(denied.textContent).toContain("Ask confirms each agent action with you in the chat; Allow lets the agent act unattended.");
     expect(denied.textContent).toContain("Either way, only your Enable click starts a target.");
     // The two facts a viewer mis-assumes stay on the panel itself; only the
@@ -145,8 +145,8 @@ describe("ComputerUsePanel", () => {
    * the moment you click, not two screens away in Chat permissions.
    */
   it.each([
-    ["allow", "This chat is set to Allow:", /acts on it without asking you again/],
-    ["ask", "This chat is set to Ask:", /asks you here in the chat before every action/],
+    ["allow", "Browser Use is set to Allow:", /acts on it without asking you again/],
+    ["ask", "Browser Use is set to Ask:", /asks you here in the chat before every action/],
   ] as const)("says what Enable grants when the chat is %s", async (permission, heading, detail) => {
     status.permission = permission;
     render(<Viewer permission={permission} />);
@@ -172,7 +172,35 @@ describe("ComputerUsePanel", () => {
     render(<Viewer permission="ask" />);
     await ready();
 
-    expect(screen.getByRole("note", { name: "What Enable grants" }).textContent).toContain("This chat is set to Allow:");
+    expect(screen.getByRole("note", { name: "What Enable grants" }).textContent).toContain("Browser Use is set to Allow:");
+  });
+
+  it("states each target's own level, from the server's per-target permission", async () => {
+    status.permission = "allow";
+    status.capabilities = status.capabilities.map((item) =>
+      item.kind === "browser" ? { ...item, permission: "ask" as const } : { ...item, available: true, permission: "allow" as const },
+    );
+    render(<Viewer permission="allow" />);
+    await ready();
+    expect(screen.getByRole("note", { name: "What Enable grants" }).textContent).toContain("Browser Use is set to Ask:");
+    fireEvent.change(screen.getByLabelText("Target"), { target: { value: "native" } });
+    expect(screen.getByRole("note", { name: "What Enable grants" }).textContent).toContain("Computer Use is set to Allow:");
+  });
+
+  it("disables Enable for a target whose own axis is denied while the other is on", async () => {
+    status.permission = "allow";
+    status.capabilities = status.capabilities.map((item) =>
+      item.kind === "browser"
+        ? { ...item, available: false, permission: "deny" as const, reason: "Browser Use is denied." }
+        : { ...item, available: true, permission: "allow" as const },
+    );
+    render(<Viewer permission="allow" />);
+    await ready();
+    expect(button("Enable").disabled).toBe(true);
+    expect(screen.queryByRole("note", { name: "What Enable grants" })).toBeNull();
+    expect(screen.queryByText(/Browser Use and Computer Use are both denied/)).toBeNull();
+    fireEvent.change(screen.getByLabelText("Target"), { target: { value: "native" } });
+    expect(button("Enable").disabled).toBe(false);
   });
 
   it.each(["codex", "claude-code", "pi", undefined])(
@@ -601,7 +629,7 @@ it("recovers a real stale-frame rejection without denying authorized refresh or 
     expect(client.action).toHaveBeenCalledTimes(1);
     expect(fixture.service.status(fixture.human)[0].state).toBe("ready");
     expect(screen.queryByRole("img")).toBeNull();
-    expect(screen.queryByText(/Computer control is denied/)).toBeNull();
+    expect(screen.queryByText(/Browser Use and Computer Use are both denied/)).toBeNull();
     fireEvent.click(button("Refresh screenshot"));
     await screen.findByRole("img");
     await waitFor(() => expect(manualInput().disabled).toBe(false));
@@ -673,7 +701,7 @@ describe("desktop readiness guidance", () => {
   it.each([
     ["setup-required", "Desktop setup required", /Ask your agent in chat/],
     ["unsupported", "Desktop environment unsupported", /compatible native driver/],
-    ["permission-blocked", "Desktop permissions required", /file, network, and code/],
+    ["permission-blocked", "Desktop permissions required", /file, network, code and Browser Use/],
     ["unknown", "Desktop readiness unconfirmed", /Retry status to check/],
     [undefined, "Desktop readiness unconfirmed", /Retry status to check/],
     ["future-classification", "Desktop readiness unconfirmed", /Retry status to check/],
@@ -702,7 +730,7 @@ describe("desktop readiness guidance", () => {
     render(<Viewer permission="deny" />);
     await ready();
     fireEvent.change(screen.getByLabelText("Target"), { target: { value: "native" } });
-    expect(screen.getByText(/Computer control is denied/)).toBeTruthy();
+    expect(screen.getByText(/Browser Use and Computer Use are both denied/)).toBeTruthy();
     expect(screen.queryByRole("heading", { name: /Desktop setup/ })).toBeNull();
     expect(screen.queryByText("No display")).toBeNull();
   });

@@ -45,7 +45,8 @@ function getPermissionsSummary(permissions: DefaultPermissions): string {
     fileWrite: "File Write",
     codeExecution: "Code Execution",
     webAccess: "Web Access",
-    computerControl: "Browser & Computer Control",
+    browserControl: "Browser Use",
+    computerControl: "Computer Use",
   };
 
   const values = Object.values(permissions);
@@ -381,6 +382,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
       fileWrite: "allow",
       codeExecution: "allow",
       webAccess: "allow",
+      browserControl: "deny",
       computerControl: "deny",
     };
 

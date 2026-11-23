@@ -27,7 +27,7 @@ export default function ComputerUseHeader({ controller, viewOpen = false }: { co
           ? "Idle"
           : "";
   const details = [
-    "Browser & Computer Control",
+    "Browser & Computer Use",
     statusError
       ? status
         ? "Status unavailable (last known)"
@@ -42,7 +42,7 @@ export default function ComputerUseHeader({ controller, viewOpen = false }: { co
       : []),
   ].join(": ");
   return (
-    <div className="computer-use-header" aria-label="Browser & Computer Control">
+    <div className="computer-use-header" aria-label="Browser & Computer Use">
       <span className="computer-use-summary" role="status" aria-label={details} title={details}>
         <Monitor size={14} aria-hidden="true" />
         {state && (

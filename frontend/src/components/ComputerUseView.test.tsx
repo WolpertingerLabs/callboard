@@ -35,7 +35,7 @@ function Harness({
   );
 }
 const click = (name: string) => fireEvent.click(screen.getByRole("button", { name }));
-const summary = () => screen.getByRole("status", { name: /^Browser & Computer Control/ });
+const summary = () => screen.getByRole("status", { name: /^Browser & Computer Use/ });
 function expectIdle() {
   expect(screen.getByText("Idle")).toBeTruthy();
   expect(summary().getAttribute("aria-label")).toContain("0 active · 0 waiting for approval");

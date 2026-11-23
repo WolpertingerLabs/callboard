@@ -1,5 +1,5 @@
 import { originatingChatView } from "../utils/chat-view.js";
-import { normalizePermissions } from "shared/types/permissions.js";
+import { mostPermissiveLevel, normalizePermissions } from "shared/types/permissions.js";
 import type { PermissionReviewSettings } from "shared/types/permissions.js";
 import ComputerUseHeader from "../components/ComputerUseHeader";
 import { usePendingFeedback } from "../hooks/usePendingFeedback";
@@ -1220,7 +1220,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
     if (chatMeta.defaultPermissions) return normalizePermissions(chatMeta.defaultPermissions);
 
     // Existing legacy chats must not inherit a browser grant from UI defaults.
-    return normalizePermissions({ ...getLocalDefaultPermissions(), computerControl: "deny" });
+    return normalizePermissions({ ...getLocalDefaultPermissions(), browserControl: "deny", computerControl: "deny" });
   }, [id, defaultPermissions, chatMeta, chatPermissions]);
 
   // Compute team color map - assigns colors to teams in order of appearance
@@ -4770,7 +4770,8 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
               chatId={computerChatId}
               controller={computerController}
               provider={chatProvider}
-              permission={effectivePermissions.computerControl}
+              permission={mostPermissiveLevel(effectivePermissions.browserControl, effectivePermissions.computerControl)}
+              targetPermissions={{ browser: effectivePermissions.browserControl, native: effectivePermissions.computerControl }}
               onPermissions={() => setShowPermissionsModal(true)}
             />
           )
