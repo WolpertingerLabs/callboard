@@ -199,6 +199,41 @@ describe("PATCH /api/chats/:id/permissions — the control axes", () => {
     }
   });
 
+  describe("an older tab changing computerControl without sending browserControl", () => {
+    // Such a body can only come from a bundle where that row was "Browser &
+    // Computer Control". Its Deny meant "no GUI control"; its Ask/Allow meant
+    // the browser, which computerControl no longer governs.
+    it("Deny also denies Browser Use, so the old row's Deny is honoured", async () => {
+      setStored("allow", "allow");
+      const result = await patch({ ...FOUR, computerControl: "deny" });
+      expect(result.code).toBe(200);
+      expect(written()).toMatchObject({ browserControl: "deny", computerControl: "deny" });
+    });
+
+    it.each(["ask", "allow"] as const)("%s is refused with 409 and applies nothing, rather than granting desktop-only Computer Use", async (requested) => {
+      setStored("deny", "deny");
+      const result = await patch({ ...FOUR, fileWrite: "allow", computerControl: requested });
+      expect(result.code).toBe(409);
+      expect(result.body).toMatchObject({ code: "stale_client", error: expect.stringMatching(/Reload the tab/) });
+      expect(updateChatMetadata).not.toHaveBeenCalled();
+    });
+
+    it("still needs a same-origin session before anything else: an API key gets 403, not 409", async () => {
+      setStored("deny", "deny");
+      expect((await patch({ ...FOUR, computerControl: "allow" }, { authMethod: "bearer" })).code).toBe(403);
+      setStored("allow", "allow");
+      expect((await patch({ ...FOUR, computerControl: "deny" }, { authMethod: "bearer" })).code).toBe(403);
+      expect(updateChatMetadata).not.toHaveBeenCalled();
+    });
+
+    it("an unchanged computerControl keeps the stored Browser Use level", async () => {
+      setStored("deny", "allow");
+      const result = await patch({ ...FOUR, computerControl: "deny" });
+      expect(result.code).toBe(200);
+      expect(written()).toMatchObject({ browserControl: "allow", computerControl: "deny" });
+    });
+  });
+
   it("lets a human change Browser Use independently of Computer Use", async () => {
     const result = await patch({ ...FOUR, browserControl: "allow", computerControl: "deny" });
     expect(result.code).toBe(200);

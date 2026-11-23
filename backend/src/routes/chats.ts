@@ -2956,6 +2956,7 @@ chatsRouter.patch("/:id/permissions", (req, res) => {
   /* #swagger.responses[200] = { description: "Updated chat" } */
   /* #swagger.responses[400] = { description: "Invalid request body" } */
   /* #swagger.responses[403] = { description: "Changing browserControl or computerControl from a bearer key or a cross-origin request" } */
+  /* #swagger.responses[409] = { description: "A request that changes computerControl to ask/allow without a browserControl key (an older tab, from before the axes were split); nothing is applied" } */
   /* #swagger.responses[404] = { description: "Chat not found" } */
   const { defaultPermissions } = req.body;
   if (!defaultPermissions || typeof defaultPermissions !== "object" || Array.isArray(defaultPermissions)) {
@@ -3011,16 +3012,28 @@ chatsRouter.patch("/:id/permissions", (req, res) => {
      * key. Leaving it alone is unrestricted — an API client updating the other
      * four axes is unaffected, and an omitted key preserves the stored value
      * rather than being normalized down to `deny` behind the human's back.
-     * That includes a tab whose bundle predates `browserControl`: it sends the
-     * other five axes, and the stored Browser Use level is kept.
+     * That includes a tab whose bundle predates `browserControl` when it
+     * leaves `computerControl` alone: the stored Browser Use level is kept.
+     *
+     * A body that CHANGES `computerControl` without any `browserControl` key
+     * can only come from such a tab, where that row meant "Browser & Computer
+     * Control". Taking it at face value would be wrong both ways, so:
+     *  - Deny → also deny Browser Use. Tightening only, and it is what the
+     *    person asked for: no GUI control.
+     *  - Ask/Allow → refused with 409 (after the auth checks). They meant the
+     *    browser; applying it would silently grant desktop-only Computer Use.
+     *    Reloading the tab shows the two separate rows.
      */
     const level = (value: unknown) => (value === "allow" || value === "ask" ? value : "deny");
     const AXIS_LABELS = { browserControl: "Browser Use", computerControl: "Computer Use" } as const;
-    const resolvedControl = {} as Record<(typeof CONTROL_AXES)[number], "allow" | "ask" | "deny">;
+    const stored = { browserControl: level(meta.defaultPermissions?.browserControl), computerControl: level(meta.defaultPermissions?.computerControl) };
+    const resolvedControl = { ...stored };
+    for (const axis of CONTROL_AXES) if (Object.hasOwn(defaultPermissions, axis)) resolvedControl[axis] = level(defaultPermissions[axis]);
+    const staleTabChange = !Object.hasOwn(defaultPermissions, "browserControl") && resolvedControl.computerControl !== stored.computerControl;
+    if (staleTabChange && resolvedControl.computerControl === "deny") resolvedControl.browserControl = "deny";
     for (const axis of CONTROL_AXES) {
-      const stored = level(meta.defaultPermissions?.[axis]);
-      const requested = Object.hasOwn(defaultPermissions, axis) ? level(defaultPermissions[axis]) : stored;
-      if (requested !== stored) {
+      const requested = resolvedControl[axis];
+      if (requested !== stored[axis]) {
         if (res.locals?.authMethod !== "session") {
           log.warn(`Rejected a ${res.locals?.authMethod ?? "unauthenticated"} attempt to set ${axis}=${requested} on ${chat.id}`);
           return res.status(403).json({ error: `Changing ${AXIS_LABELS[axis]} requires a logged-in session, not an API key.`, code: "denied" });
@@ -3028,7 +3041,14 @@ chatsRouter.patch("/:id/permissions", (req, res) => {
         const originError = controlOriginError(req);
         if (originError) return res.status(403).json({ error: originError, code: "denied" });
       }
-      resolvedControl[axis] = requested;
+    }
+    if (staleTabChange && resolvedControl.computerControl !== "deny") {
+      log.warn(`Refused a stale-tab attempt to set computerControl=${resolvedControl.computerControl} without browserControl on ${chat.id}`);
+      return res.status(409).json({
+        error:
+          "This tab is running an older Callboard version. Browser & Computer Control has been split into Browser Use and Computer Use. Reload the tab and set them again; nothing was changed.",
+        code: "stale_client",
+      });
     }
 
     // Configuration, not activity, so quiet like /read. Nothing keys on this
