@@ -56,8 +56,7 @@ it("is silent for a signed-in human setting Sandbox desktop", () => {
 
 it("says nothing for the calls that are every ordinary call", () => {
   // A signed-in human, at any level: that is the supported way to set it.
-  for (const level of ["allow", "ask", "deny"])
-    noteComputerControlAtCreation("POST /api/chats", "session", { ...FOUR, browserControl: level, computerControl: level });
+  for (const level of ["allow", "ask", "deny"]) noteComputerControlAtCreation("POST /api/chats", "session", { ...FOUR, browserControl: level, computerControl: level });
   // A key, but not asking for computer control — including the shapes every
   // in-repo agent-facing spawn actually sends.
   noteComputerControlAtCreation("POST /api/chats", "bearer", { ...FOUR, browserControl: "deny", computerControl: "deny" });

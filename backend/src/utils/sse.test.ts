@@ -334,10 +334,7 @@ it("a legacy client gets hard-stop reload guidance for a reviewer hard stop, not
   const { HARD_STOP_PROMPT_RELOAD, HUMAN_PROMPT_RELOAD, GENERIC_HUMAN_PROMPT_RELOAD, humanPromptReloadMessage } = await import("./sse.js");
   const f = fakeResponse();
   beginSSE(fakeRequest({}), f.res);
-  createSSEHandler(
-    f.res,
-    new EventEmitter(),
-  )({
+  createSSEHandler(f.res, new EventEmitter())({
     type: "permission_request",
     content: "",
     toolName: "Bash",

@@ -7,15 +7,7 @@ import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { assertNativeAgentControllable, nativeAgentForChat } from "./codex-native-agents.js";
 import { beginComputerUseTurn, buildComputerUseToolsSpec } from "./computer-use-tools.js";
 import { getAgentProvider } from "../agents/factory.js";
-import {
-  isInternalProvider,
-  isRetiredProvider,
-  RETIRED_PROVIDER_LABELS,
-  type AgentProviderKind,
-  type RetiredProviderKind,
-  type AgentQuery,
-  type InternalProviderKind,
-} from "../agents/ports/AgentProvider.js";
+import { isInternalProvider, isRetiredProvider, RETIRED_PROVIDER_LABELS, type AgentProviderKind, type RetiredProviderKind, type AgentQuery, type InternalProviderKind } from "../agents/ports/AgentProvider.js";
 import type { EffortLevel } from "shared/types/index.js";
 import type { PermissionResult } from "../agents/adapters/claude-code/types.js";
 import type { ToolServerSpec } from "../agents/ports/tools.js";
@@ -48,7 +40,13 @@ import {
 } from "./stream-recovery.js";
 import { buildProxyToolsSpec } from "./proxy-tools.js";
 import { ensureCallerEnrolled, fetchProxyRoutes } from "./proxy-singleton.js";
-import { getAgentSettings, resolveAgentKeyAlias, resolveDefaultCaller, getApiEnvOverrides, resolveModelAlias } from "./agent-settings.js";
+import {
+  getAgentSettings,
+  resolveAgentKeyAlias,
+  resolveDefaultCaller,
+  getApiEnvOverrides,
+  resolveModelAlias,
+} from "./agent-settings.js";
 import { getClaudeCodeExecutablePath } from "./claude-binary.js";
 import { sanitizeInheritedAgentEnv } from "../agents/agentEnvPolicy.js";
 import { appendActivity } from "./agent-activity.js";
@@ -60,15 +58,7 @@ import { reopenArchivedChildChain } from "./child-archive.js";
 import { clearListCaches } from "./list-caches.js";
 import { sessionRegistry } from "./session-registry.js";
 import { pendingRequests, type PendingRequest } from "./pending-requests.js";
-import {
-  detectHardStop,
-  isReviewableTool,
-  reviewerNotesFor,
-  reviewToolCall,
-  type ReviewOptions,
-  type ReviewRequest,
-  type ReviewVerdict,
-} from "./permission-review.js";
+import { detectHardStop, isReviewableTool, reviewerNotesFor, reviewToolCall, type ReviewOptions, type ReviewRequest, type ReviewVerdict } from "./permission-review.js";
 import { startReviewAudit, type PermissionAuditHooks, type ReviewAuditResult, type ReviewAuditTrace } from "./permission-review-audit.js";
 import { redactToolInputForReview } from "./tool-input-redaction.js";
 import { notifyParentOfChildPrompt } from "./parent-answers.js";
@@ -587,8 +577,7 @@ export function buildCanUseTool(
     let auditVerdict: ReviewVerdict | undefined;
     let auditDowngrade: ReviewAuditResult["downgrade"];
     const reportAudit = (outcome: ReviewAuditResult["outcome"], requestId?: string): void => {
-      if (auditTrace && auditVerdict)
-        auditTrace.result({ verdict: auditVerdict, outcome, ...(requestId && { requestId }), ...(auditDowngrade && { downgrade: auditDowngrade }) });
+      if (auditTrace && auditVerdict) auditTrace.result({ verdict: auditVerdict, outcome, ...(requestId && { requestId }), ...(auditDowngrade && { downgrade: auditDowngrade }) });
     };
     const audited = (result: PermissionResult, outcome: ReviewAuditResult["outcome"]): PermissionResult => {
       reportAudit(outcome);
@@ -1583,11 +1572,7 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
     cwd: folder,
     getTaskExcerpt: () => {
       const title = readLiveMetadata().title;
-      return (
-        [typeof title === "string" && title ? `Chat title: ${title}` : "", promptExcerpt ? `Current request: ${promptExcerpt}` : ""]
-          .filter(Boolean)
-          .join("\n") || undefined
-      );
+      return [typeof title === "string" && title ? `Chat title: ${title}` : "", promptExcerpt ? `Current request: ${promptExcerpt}` : ""].filter(Boolean).join("\n") || undefined;
     },
   };
 
@@ -1720,12 +1705,7 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
   // ── Objective tools: injected only when explicit completion is required ──
   // Job steps are excluded — they report through complete_job_step above.
   if (requireCompletion && !isJobStepSession) {
-    inject(
-      "objective-tools",
-      () => buildObjectiveToolsSpec(() => trackingId),
-      "objective-tools server",
-      "Injected objective-tools MCP server (explicit completion required)",
-    );
+    inject("objective-tools", () => buildObjectiveToolsSpec(() => trackingId), "objective-tools server", "Injected objective-tools MCP server (explicit completion required)");
   }
 
   // ── Proxy tools: injected for ALL sessions (regular + agent) ──
@@ -1753,12 +1733,7 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
       log.warn(`Caller enrollment for "${proxyKeyAlias}" failed: ${err.message}`);
     }
 
-    inject(
-      "mcp-proxy",
-      () => buildProxyToolsSpec(proxyKeyAlias),
-      "proxy tools server",
-      `Injected proxy tools (mode=${agentSettings.proxyMode}, alias=${proxyKeyAlias})`,
-    );
+    inject("mcp-proxy", () => buildProxyToolsSpec(proxyKeyAlias), "proxy tools server", `Injected proxy tools (mode=${agentSettings.proxyMode}, alias=${proxyKeyAlias})`);
   } else if (opts.agentAlias && !proxyKeyAlias) {
     log.info(`Agent "${opts.agentAlias}" has no caller alias assigned — proxy tools not injected`);
   }

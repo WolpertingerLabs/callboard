@@ -65,6 +65,7 @@ function nothingToSend(prompt: string, imageIds: unknown, loaded?: unknown[]): b
   return !hasAttachments(imageIds) || !anyUploadExists(imageIds);
 }
 
+
 // Send first message to create a new chat (no existing chat ID required)
 streamRouter.post("/new/message", async (req, res) => {
   // #swagger.tags = ['Stream']
@@ -168,10 +169,12 @@ streamRouter.post("/new/message", async (req, res) => {
   // nothing is created on the way to refusing.
   if (isRetiredProvider(provider)) {
     const label = RETIRED_PROVIDER_LABELS[provider];
-    return res.status(400).json({
-      error: `${label.charAt(0).toUpperCase()}${label.slice(1)} has been removed from Callboard. Pick another harness for this chat.`,
-      code: "retired_provider",
-    });
+    return res
+      .status(400)
+      .json({
+        error: `${label.charAt(0).toUpperCase()}${label.slice(1)} has been removed from Callboard. Pick another harness for this chat.`,
+        code: "retired_provider",
+      });
   }
 
   // Check if folder exists — before effort validation, which probes the Codex

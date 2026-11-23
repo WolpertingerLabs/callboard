@@ -7,7 +7,8 @@
  *   CALLBOARD_DOCKER_TESTS=1 npx vitest run backend/src/services/computer-use.sandbox-docker.test.ts
  *
  * Builds packages/computer-use/docker/Dockerfile as
- * callboard/computer-use-desktop:local if it is missing (the package's own
+ * callboard/computer-use-desktop:local if it is missing or its protocol label
+ * (SANDBOX_IMAGE_LABELS.protocol) is not this release's (the package's own
  * Docker test leaves it in place), runs it with `sandboxRunArgs` (the hardened
  * flags) on a random loopback port, on a private network, under a unique
  * name, and removes the container, the network and the token file whatever
@@ -49,7 +50,10 @@ let host: ComputerUseHost | undefined;
 
 beforeAll(async () => {
   if (!enabled) return;
-  await docker(["image", "inspect", image]).catch(() => docker(["build", "-q", "-t", image, "-f", join(packageDir, "docker", "Dockerfile"), packageDir]));
+  // Reuse the image only if it speaks this release's protocol (its label); a
+  // missing or stale `:local` image is rebuilt, never run as it is.
+  const label = await docker(["image", "inspect", "--format", `{{ index .Config.Labels "${pkg.SANDBOX_IMAGE_LABELS.protocol}" }}`, image]).catch(() => "");
+  if (label.trim() !== pkg.SANDBOX_PROTOCOL_LABEL_VALUE) await docker(["build", "-q", "-t", image, "-f", join(packageDir, "docker", "Dockerfile"), packageDir]);
   tokenDir = await mkdtemp(join(tmpdir(), "callboard-cu-backend-test-"));
   await chmod(tokenDir, 0o700);
   const token = randomBytes(32).toString("hex");
@@ -142,7 +146,7 @@ it.skipIf(!enabled)(
 
     // The agent's path: consent asked about this container instance, and the
     // session that opened is checked against it (openedInstance), not re-asked.
-    await expect(host.requestControl("chat", "sandbox", "Open an untrusted file", new AbortController().signal)).resolves.toMatchObject({
+    await expect(host.requestControl("chat", "sandbox", "Open a downloaded file", new AbortController().signal)).resolves.toMatchObject({
       status: "consent_pending",
       kind: "sandbox",
     });

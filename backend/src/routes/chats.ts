@@ -32,14 +32,7 @@ import { SessionRoutingError } from "../agents/ports/SessionProvider.js";
 import { readChatSessionMessages, withSessionProvider, withSessionProviderMeta, findChat } from "../utils/chat-lookup.js";
 import { buildChatTree, buildLineageIndex, getParentChatId, paginateTreeRows, walkToRootId } from "../services/chat-lineage.js";
 import { detachChatFromParent } from "../services/chat-detach.js";
-import {
-  inheritedChatFields,
-  resolveForkSource,
-  UnsupportedForkError,
-  writeCompressedSession,
-  writeForkedSession,
-  type ForkSource,
-} from "../services/chat-fork.js";
+import { inheritedChatFields, resolveForkSource, UnsupportedForkError, writeCompressedSession, writeForkedSession, type ForkSource } from "../services/chat-fork.js";
 import { checkSupersedable, supersedeChat, SupersedeRefusedError, type SupersedeKind, type SupersedeResult } from "../services/chat-supersede.js";
 import { planRerun } from "../services/chat-rerun.js";
 import { sendMessage, stopSession, type SendMessageOptions } from "../services/claude.js";
@@ -57,28 +50,8 @@ import { getSessionProviders } from "../agents/factory.js";
 import { isRetiredProvider, isRoutableProvider, RETIRED_PROVIDER_LABELS, type InternalProviderKind } from "../agents/ports/AgentProvider.js";
 import { providerLabel } from "../agents/handoff.js";
 import { generateChatTitleFromTranscript } from "../services/quick-completion.js";
-import {
-  ASIDE_MAX_PROMPT_CHARS,
-  ASIDE_ROLE,
-  asideForkPoint,
-  asideTitle,
-  parseAsideQuotes,
-  quoteTimeFormatter,
-  renderQuotedPrompt,
-  type AsideQuote,
-  type DefaultPermissions,
-} from "shared/types/index.js";
-import {
-  ALL_SPACES,
-  normalizePermissions,
-  isSidebarFolderEligible,
-  parseSidebarFolder,
-  readSidebarFolder,
-  sameSidebarFolder,
-  type ParsedMessage,
-  type Chat as SharedChat,
-  type SpaceAgentScope,
-} from "shared/types/index.js";
+import { ASIDE_MAX_PROMPT_CHARS, ASIDE_ROLE, asideForkPoint, asideTitle, parseAsideQuotes, quoteTimeFormatter, renderQuotedPrompt, type AsideQuote, type DefaultPermissions } from "shared/types/index.js";
+import { ALL_SPACES, normalizePermissions, isSidebarFolderEligible, parseSidebarFolder, readSidebarFolder, sameSidebarFolder, type ParsedMessage, type Chat as SharedChat, type SpaceAgentScope } from "shared/types/index.js";
 import { createLogger } from "../utils/logger.js";
 import { buildWorkspaceIndex, viewForDirectory } from "../services/workspace-views.js";
 // The chat-list cache lives in a standalone module so services can invalidate
@@ -728,8 +701,7 @@ chatsRouter.get("/", (req, res) => {
     // needs the full session list so out-of-window tree relatives can be augmented,
     // and includePinned for the same reason: a pinned chat is appended precisely
     // when it is NOT in the window, so its session is never in a paged fetch.
-    const needsPostFilter =
-      bookmarkedFilter || excludeTriggered || includeLineage || scopedByCardLifecycle || includePinned || includeFoldered || spaceFiltering;
+    const needsPostFilter = bookmarkedFilter || excludeTriggered || includeLineage || scopedByCardLifecycle || includePinned || includeFoldered || spaceFiltering;
     const fetchLimit = needsPostFilter ? Number.MAX_SAFE_INTEGER : limit;
     const fetchOffset = needsPostFilter ? 0 : offset;
     const { sessions: discoveredSessions, total: rawTotal } = discoverSessionsPaginated(fetchLimit, fetchOffset);
@@ -903,6 +875,7 @@ chatsRouter.get("/", (req, res) => {
      * cannot put the badge on the wrong row.
      */
     const anyApprovalParked = hasParkedApprovals();
+
 
     /**
      * Is this row the single row that should carry "needs you"?
@@ -1491,8 +1464,7 @@ chatsRouter.post("/:id/fork", async (req, res) => {
   try {
     forked = writeForkedSession({ chat, source, targetKind, targetProvider, timestamp, newSessionId });
   } catch (error) {
-    if (error instanceof UnsupportedForkError)
-      return res.status(400).json({ error: `Forking into ${providerLabel(targetKind)} is not supported`, code: FORK_TARGET_INVALID });
+    if (error instanceof UnsupportedForkError) return res.status(400).json({ error: `Forking into ${providerLabel(targetKind)} is not supported`, code: FORK_TARGET_INVALID });
     log.error(`Failed to fork session (${providerKind} → ${targetKind}): ${error}`);
   }
   if (!forked) {
@@ -1748,10 +1720,7 @@ function latestMessageTimestamp(messages: readonly { timestamp?: string }[]): st
  * the cutoff, resolve the chat and its provider, and refuse what cannot be
  * superseded — all before anything is written or a model is called.
  */
-function resolveSupersedeRequest(
-  req: Request,
-  verb: string,
-): { ok: true; chat: any; source: ForkSource; timestamp: string } | { ok: false; status: number; error: string } {
+function resolveSupersedeRequest(req: Request, verb: string): { ok: true; chat: any; source: ForkSource; timestamp: string } | { ok: false; status: number; error: string } {
   const { timestamp } = req.body ?? {};
   if (!timestamp || typeof timestamp !== "string") return { ok: false, status: 400, error: "timestamp is required" };
   if (isNaN(new Date(timestamp).getTime())) return { ok: false, status: 400, error: "timestamp is not a valid date" };
@@ -1768,11 +1737,7 @@ function resolveSupersedeRequest(
     const expected = req.body.expectedParentChatId;
     if (expected !== null && typeof expected !== "string") return { ok: false, status: 400, error: "expectedParentChatId must be a string or null" };
     if ((getParentChatId(source.meta) ?? null) !== (expected || null)) {
-      return {
-        ok: false,
-        status: 409,
-        error: "This chat was moved in the chat tree since you opened it (another tab may have continued or compressed it). Reload and try again.",
-      };
+      return { ok: false, status: 409, error: "This chat was moved in the chat tree since you opened it (another tab may have continued or compressed it). Reload and try again." };
     }
   }
   return { ok: true, chat, source, timestamp };
@@ -1875,8 +1840,7 @@ chatsRouter.post("/:id/continue-from", (req, res) => {
   try {
     written = writeForkedSession({ chat, source, targetKind: source.providerKind, targetProvider: source.provider, timestamp, newSessionId });
   } catch (error) {
-    if (error instanceof UnsupportedForkError)
-      return res.status(400).json({ error: `${providerLabel(source.providerKind)} chats cannot be continued from a message` });
+    if (error instanceof UnsupportedForkError) return res.status(400).json({ error: `${providerLabel(source.providerKind)} chats cannot be continued from a message` });
     log.error(`Failed to write continuation of ${chat.id}: ${error}`);
   }
   if (!written) return res.status(400).json({ error: "Could not continue: no messages found at or before that point" });
@@ -1909,11 +1873,7 @@ function recheckSupersedable(chat: any, expectedParent: string | null): { ok: tr
   const check = checkSupersedable(chat);
   if (!check.ok) return check;
   if ((getParentChatId(parseChatMetadata(chat.metadata)) ?? null) !== expectedParent) {
-    return {
-      ok: false,
-      status: 409,
-      error: "This chat was moved in the chat tree while the rerun was starting (another tab may have continued or compressed it)",
-    };
+    return { ok: false, status: 409, error: "This chat was moved in the chat tree while the rerun was starting (another tab may have continued or compressed it)" };
   }
   return { ok: true };
 }
@@ -1982,9 +1942,7 @@ chatsRouter.post("/:id/rerun", async (req, res) => {
   const loaded = plan.imageIds.length > 0 ? loadImageBuffers(plan.imageIds) : [];
   if (loaded.length < plan.imageIds.length) {
     const missing = plan.imageIds.length - loaded.length;
-    return res
-      .status(400)
-      .json({ error: `${missing} of this message's ${plan.imageIds.length} image(s) are no longer stored, so it cannot be rerun as it was sent` });
+    return res.status(400).json({ error: `${missing} of this message's ${plan.imageIds.length} image(s) are no longer stored, so it cannot be rerun as it was sent` });
   }
   const images = loaded.filter((u) => u.name === undefined);
   if (!prompt.trim() && images.length === 0) return res.status(400).json({ error: "That message has nothing left to send" });
@@ -2014,8 +1972,7 @@ chatsRouter.post("/:id/rerun", async (req, res) => {
         newSessionId,
       });
     } catch (error) {
-      if (error instanceof UnsupportedForkError)
-        return res.status(400).json({ error: `${providerLabel(source.providerKind)} chats cannot be rerun from a message` });
+      if (error instanceof UnsupportedForkError) return res.status(400).json({ error: `${providerLabel(source.providerKind)} chats cannot be rerun from a message` });
       // A writer that threw is a server fault, not "nothing before the prompt".
       log.error(`Failed to write rerun of ${chat.id}: ${error}`);
       return res.status(500).json({ error: `Could not write the rerun's session: ${(error as Error).message}` });
@@ -2094,9 +2051,7 @@ chatsRouter.post("/:id/rerun", async (req, res) => {
   // or compressed from another tab, or moved in the tree since the request's
   // checks: re-read it, check again, and supersede the record as it is now.
   const current = findChat(chat.id, false) as any;
-  const recheck = current
-    ? recheckSupersedable(current, parentAtStart)
-    : { ok: false as const, status: 404, error: "The chat was deleted while the rerun was starting" };
+  const recheck = current ? recheckSupersedable(current, parentAtStart) : { ok: false as const, status: 404, error: "The chat was deleted while the rerun was starting" };
   if (!recheck.ok) {
     return res.status(recheck.status).json({ error: `${recheck.error}. The rerun is running as a separate chat.`, chatId: fresh.id });
   }
@@ -2209,8 +2164,7 @@ chatsRouter.post("/:id/compress", (req, res) => {
   const direction: CompressDirection = req.body.direction;
   const summary = typeof req.body.summary === "string" ? req.body.summary.trim() : "";
   if (!summary) return res.status(400).json({ error: "summary is required" });
-  if (summary.length > MAX_COMPRESSION_SUMMARY_CHARS)
-    return res.status(400).json({ error: `summary is longer than ${MAX_COMPRESSION_SUMMARY_CHARS} characters` });
+  if (summary.length > MAX_COMPRESSION_SUMMARY_CHARS) return res.status(400).json({ error: `summary is longer than ${MAX_COMPRESSION_SUMMARY_CHARS} characters` });
   const fingerprint = typeof req.body.fingerprint === "string" ? req.body.fingerprint : "";
   if (!fingerprint) return res.status(400).json({ error: "fingerprint is required — pass the one /compress/preview returned with the summary" });
   const resolved = resolveSupersedeRequest(req, "compressed");
@@ -2223,9 +2177,7 @@ chatsRouter.post("/:id/compress", (req, res) => {
     // compress-later preview followed by more conversation would otherwise drop
     // the new messages without a trace.
     if (spanFingerprint(summarised) !== fingerprint) {
-      return res
-        .status(409)
-        .json({ error: "The conversation changed since the summary was generated. Regenerate the summary and try again.", code: "summary_stale" });
+      return res.status(409).json({ error: "The conversation changed since the summary was generated. Regenerate the summary and try again.", code: "summary_stale" });
     }
   } catch (error: any) {
     if (error instanceof CompressionInputError) return res.status(400).json({ error: error.message });
@@ -2925,9 +2877,7 @@ chatsRouter.post("/:id/regenerate-title", async (req, res) => {
     // readable conversation" — false of a chat that has a conversation no
     // surviving provider can read.
     if (isRetiredProvider(meta.provider)) {
-      return res
-        .status(400)
-        .json({ error: `This chat ran on ${RETIRED_PROVIDER_LABELS[meta.provider]}, which has been removed. Its title cannot be regenerated.` });
+      return res.status(400).json({ error: `This chat ran on ${RETIRED_PROVIDER_LABELS[meta.provider]}, which has been removed. Its title cannot be regenerated.` });
     }
 
     // Same session set and provider resolution as GET /:id/messages: a chat's
@@ -2994,7 +2944,7 @@ chatsRouter.patch("/:id/permissions", (req, res) => {
                 webAccess: { type: "string", enum: ["allow", "ask", "deny"] },
                 browserControl: { type: "string", enum: ["allow", "ask", "deny"], description: "Browser Use. Changing it requires a logged-in same-origin session. Omit to keep the stored value. — unless computerControl changes in the same request (pre-split client): then a computerControl deny also denies this, and ask/allow is refused with 409." },
                 computerControl: { type: "string", enum: ["allow", "ask", "deny"], description: "Computer Use (desktop). Changing it requires a logged-in same-origin session. Omit to keep the stored value." },
-                sandboxControl: { type: "string", enum: ["allow", "ask", "deny"], description: "Sandbox desktop (a disposable desktop in a hardened container). Changing it requires a logged-in same-origin session. Omit to keep the stored value." }
+                sandboxControl: { type: "string", enum: ["allow", "ask", "deny"], description: "Sandbox desktop (a desktop in a hardened container, shared by every chat). Changing it requires a logged-in same-origin session. Omit to keep the stored value." }
               }
             },
             modelReview: { type: "boolean", description: "Screen permission asks with the model safety reviewer before a person sees them. Omit to keep the stored value." },
@@ -3032,10 +2982,7 @@ chatsRouter.patch("/:id/permissions", (req, res) => {
   // the four axes: an API key that may set an axis to "allow" gains nothing
   // by letting a reviewer or a parent (capped at its own policy) answer.
   const { modelReview, parentAnswers } = req.body;
-  for (const [key, value] of [
-    ["modelReview", modelReview],
-    ["parentAnswers", parentAnswers],
-  ] as const) {
+  for (const [key, value] of [["modelReview", modelReview], ["parentAnswers", parentAnswers]] as const) {
     if (value !== undefined && typeof value !== "boolean") return res.status(400).json({ error: `${key} must be a boolean` });
   }
 
@@ -3121,10 +3068,7 @@ chatsRouter.patch("/:id/permissions", (req, res) => {
     // services/claude.ts), and the list caches are cleared below.
     const fields: Record<string, any> = { ...meta, defaultPermissions: { ...normalizePermissions(defaultPermissions), ...resolvedControl } };
     // Stored only when on; turning one off clears the key (absent = off).
-    for (const [key, value] of [
-      ["modelReview", modelReview],
-      ["parentAnswers", parentAnswers],
-    ] as const) {
+    for (const [key, value] of [["modelReview", modelReview], ["parentAnswers", parentAnswers]] as const) {
       if (value !== undefined) fields[key] = value ? true : null;
     }
     if (writeQuietMetadata(chat, fields) === "unwritten") {

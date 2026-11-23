@@ -331,9 +331,7 @@ describe("PATCH /api/chats/:id/permissions — review-chain toggles", () => {
   const fields = () => updateChatMetadata.mock.calls.at(-1)?.[1] as Record<string, unknown> | undefined;
 
   it("stores modelReview / parentAnswers when on, clears them when off", async () => {
-    expect(
-      (await patch({ ...FOUR, browserControl: "ask", computerControl: "ask" }, { authMethod: "bearer" }, { modelReview: true, parentAnswers: true })).code,
-    ).toBe(200);
+    expect((await patch({ ...FOUR, browserControl: "ask", computerControl: "ask" }, { authMethod: "bearer" }, { modelReview: true, parentAnswers: true })).code).toBe(200);
     expect(fields()).toMatchObject({ modelReview: true, parentAnswers: true });
     expect((await patch({ ...FOUR, browserControl: "ask", computerControl: "ask" }, { authMethod: "session" }, { modelReview: false })).code).toBe(200);
     expect(fields()).toMatchObject({ modelReview: null });
