@@ -55,7 +55,8 @@ import {
   SHUTDOWN_FORCE_EXIT_MS,
 } from '../shared/config.js';
 import { IngestorManager } from './ingestors/index.js';
-import { listConnectionTemplates } from '../shared/connections.js';
+import { callerRequiredSecrets, listConnectionTemplates } from '../shared/connections.js';
+import { googleBootNotes } from '../shared/google.js';
 import { isSecretSetForCaller } from '../shared/env-utils.js';
 import { beginAuditShutdown, flushQuotaMarkersWithin, resumeAuditIngest } from './audit-log.js';
 import { toolHandlers, type ToolContext } from './tool-dispatch.js';
@@ -476,7 +477,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const tpl = templateMap.get(connName);
       if (!tpl) continue; // custom connector, skip
 
-      for (const secret of tpl.requiredSecrets) {
+      for (const secret of callerRequiredSecrets(tpl, caller)) {
         const isSet = isSecretSetForCaller(secret, callerAlias, caller.env);
         if (!isSet) {
           secretIssues.push(`    ${connName.padEnd(16)} ${secret.padEnd(28)} [NOT SET]`);
@@ -493,11 +494,15 @@ export function createApp(options: CreateAppOptions = {}) {
     }
   }
 
-  // Boot-time oauth2 check: invalid custom-connector oauth2 blocks and
-  // oauth2Overrides entries. Each one drops only that connection for that
-  // caller (see resolveCallerRoutesChecked), so log them up front.
+  // Boot-time config check: invalid custom-connector oauth2 blocks,
+  // oauth2Overrides entries and google selections, and removed template IDs.
+  // Each one drops only that connection for that caller (see
+  // resolveCallerRoutesChecked), so log them up front.
   for (const problem of validateRemoteConfig(config)) {
     console.error(`[remote] ${problem}`);
+  }
+  for (const note of googleBootNotes(config.callers)) {
+    console.log(`[remote] Note: ${note}`);
   }
   for (const warning of connectionOverlapWarnings(config)) {
     console.warn(`[remote] Warning: ${warning}`);

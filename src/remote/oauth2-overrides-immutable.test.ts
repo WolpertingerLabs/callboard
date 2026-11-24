@@ -1,5 +1,6 @@
 /**
- * `oauth2Overrides` is admin config only: no tool may change it.
+ * `oauth2Overrides` and `google` (the Google selection) are admin config
+ * only: no tool may change them (invariant 1 in plans/google-unified.md).
  *
  * Several tools write the caller's config (set_listener_params,
  * delete_listener_instance, set_connection_enabled), and the admin API reaches
@@ -26,8 +27,14 @@ import { resetSharedTokenManager } from './oauth/shared-token-manager.js';
 import { dispatchTool, toolHandlers, type ToolContext } from './tool-dispatch.js';
 
 const OVERRIDES = { svc: { scopes: ['items.read'] } };
+/** The Google selection fixture: a service account acting as a user. */
+const GOOGLE = {
+  auth: 'service-account',
+  subject: 'alice@example.com',
+  services: { gmail: 'read', sheets: 'edit' },
+};
 
-describe('oauth2Overrides cannot be changed by any tool', () => {
+describe('oauth2Overrides and the google selection cannot be changed by any tool', () => {
   let dir: string;
   let prevConfigDir: string | undefined;
   let manager: IngestorManager;
@@ -82,12 +89,21 @@ describe('oauth2Overrides cannot be changed by any tool', () => {
             fields: [
               { key: 'oauth2Overrides', label: 'x', type: 'text' },
               { key: 'scopes', label: 'y', type: 'text', instanceKey: true },
+              // Field names matching the google selection, so params carrying
+              // them get past validation to the config write.
+              { key: 'google', label: 'g', type: 'text' },
+              { key: 'services', label: 's', type: 'text' },
+              { key: 'subject', label: 'u', type: 'text' },
             ],
           },
         },
       ],
       callers: {
-        alice: { connections: ['svc'], oauth2Overrides: structuredClone(OVERRIDES) },
+        alice: {
+          connections: ['svc', 'google'],
+          oauth2Overrides: structuredClone(OVERRIDES),
+          google: structuredClone(GOOGLE) as RemoteServerConfig['callers'][string]['google'],
+        },
       },
     };
     baseline = structuredClone(config);
@@ -104,18 +120,38 @@ describe('oauth2Overrides cannot be changed by any tool', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  /** The stored value; `undefined` if a tool removed the caller entirely. */
-  const stored = () =>
-    JSON.stringify(
-      (loadRemoteConfig().callers as Partial<RemoteServerConfig['callers']>).alice?.oauth2Overrides,
-    );
+  /** The stored values; `undefined` if a tool removed the caller entirely. */
+  const stored = () => {
+    const alice = (loadRemoteConfig().callers as Partial<RemoteServerConfig['callers']>).alice;
+    return JSON.stringify({ oauth2Overrides: alice?.oauth2Overrides, google: alice?.google });
+  };
 
+  /** A widened google selection, carried by every hostile input. */
+  const WIDE_GOOGLE = {
+    auth: 'user',
+    services: { drive: 'read', gmail: 'read' },
+    subject: 'mallory@example.com',
+  };
+  // Aimed at `svc`, which has a listener, so the listener tools get as far as
+  // writing the caller config: each payload names both admin-only fields.
   const hostile = (scopes: unknown) => ({
     oauth2Overrides: { svc: { scopes } },
+    google: WIDE_GOOGLE,
     scopes,
-    params: { oauth2Overrides: { svc: { scopes } }, scopes: 'items.admin' },
-    overrides: { oauth2Overrides: { svc: { scopes } } },
-    secrets: { oauth2Overrides: JSON.stringify({ svc: { scopes } }) },
+    services: WIDE_GOOGLE.services,
+    subject: WIDE_GOOGLE.subject,
+    params: {
+      oauth2Overrides: { svc: { scopes } },
+      google: WIDE_GOOGLE,
+      scopes: 'items.admin',
+      services: WIDE_GOOGLE.services,
+      subject: WIDE_GOOGLE.subject,
+    },
+    overrides: { oauth2Overrides: { svc: { scopes } }, google: WIDE_GOOGLE },
+    secrets: {
+      oauth2Overrides: JSON.stringify({ svc: { scopes } }),
+      google: JSON.stringify(WIDE_GOOGLE),
+    },
     caller: 'alice',
     connection: 'svc',
     instance_id: 'items.admin',
@@ -127,9 +163,23 @@ describe('oauth2Overrides cannot be changed by any tool', () => {
     url: 'https://api.example.com/items',
   });
 
+  /** Hostile input aimed at the google selection. */
+  const hostileGoogle = (services: unknown) => ({
+    ...hostile(['items.read', 'items.write', 'admin']),
+    connection: 'google',
+    google: { auth: 'user', services },
+    services,
+    auth: 'user',
+    subject: 'mallory@example.com',
+    params: { google: { auth: 'user', services }, services, subject: 'mallory@example.com' },
+    secrets: { google: JSON.stringify({ auth: 'user', services }) },
+    paramKey: 'google',
+    url: 'https://gmail.googleapis.com/gmail/v1/users/me/profile',
+  });
+
   it('every tool, both origins, leaves the stored value byte-identical', async () => {
     const before = stored();
-    expect(before).toBe(JSON.stringify(OVERRIDES));
+    expect(before).toBe(JSON.stringify({ oauth2Overrides: OVERRIDES, google: GOOGLE }));
     const { instance_id: _omit, ...noInstance } = hostile(['items.read', 'items.write', 'admin']);
     const inputs: Record<string, unknown>[] = [
       { timeout_ms: 0 },
@@ -138,6 +188,14 @@ describe('oauth2Overrides cannot be changed by any tool', () => {
       { ...hostile('*'), create_instance: true },
       { ...hostile(['admin']), enabled: false },
       { ...hostile(null), connection: '__proto__' },
+      hostileGoogle({ drive: 'full', gmail: 'read' }),
+      { ...hostileGoogle({ drive: 'read' }), enabled: false },
+      { ...hostileGoogle({ calendar: 'read' }), create_instance: true },
+      { ...hostileGoogle(null), connection: 'google', instance_id: 'google' },
+      // google-shaped input on the listener connection, which reaches the writes.
+      { ...hostileGoogle({ drive: 'read' }), connection: 'svc' },
+      { ...hostileGoogle({ drive: 'read' }), connection: 'svc', paramKey: 'google' },
+      { ...hostileGoogle({ sheets: 'edit' }), connection: 'svc', create_instance: true },
     ];
 
     const changed: string[] = [];

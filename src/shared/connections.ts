@@ -16,11 +16,15 @@ import { isEndpointAllowed, isExclusionPattern } from '../remote/url-policy.js';
 import {
   AWS_SIGV4_REQUIRED_SECRETS,
   MAX_OAUTH2_REFRESH_SKEW_MS,
+  type CallerConfig,
   type ConnectionCategory,
+  type GoogleAuthMode,
+  type GoogleServiceId,
   type OAuth2Config,
   type OAuth2Grant,
   type Route,
 } from './config.js';
+import { loadGoogleCatalog } from './google.js';
 
 /** Metadata about a built-in connection template — used by UIs to render
  *  connection cards, form fields, and badges without parsing raw JSON. */
@@ -65,6 +69,9 @@ export interface ConnectionTemplateInfo {
   /** How the connection authenticates, when drawlatch mints the credential
    *  itself. Names only: no secret values. */
   auth?: { type: 'oauth2'; grant: OAuth2Grant; scopes: string[]; subjectRequired?: boolean };
+  /** Set on a base template whose route is composed per caller (`google`:
+   *  from `callers.<alias>.google`). It has no fixed `auth` or allowlist. */
+  composed?: 'google';
 }
 
 /** Directory containing connection template JSON files. */
@@ -128,6 +135,8 @@ export function loadConnection(name: string): Route {
   const filePath = index.get(name);
 
   if (!filePath) {
+    const removed = removedConnectionMessage(name);
+    if (removed) throw new Error(removed);
     const available = listAvailableConnections();
     throw new Error(
       `Unknown connection "${name}". Available connections: ${available.join(', ') || '(none)'}`,
@@ -136,6 +145,13 @@ export function loadConnection(name: string): Route {
 
   const raw = fs.readFileSync(filePath, 'utf-8');
   const route = JSON.parse(raw) as Route;
+  // Hand-written JSON: the declared type is not a guarantee.
+  const composed: unknown = route.composed;
+  if (composed !== undefined && (composed !== 'google' || name !== 'google')) {
+    throw new Error(
+      `Connection template "${name}": composed is only used by the "google" template`,
+    );
+  }
   if (route.oauth2 !== undefined) {
     try {
       validateOAuth2Route(route, 'template');
@@ -144,6 +160,59 @@ export function loadConnection(name: string): Route {
     }
   }
   return route;
+}
+
+// ── Removed templates ─────────────────────────────────────────────────────
+
+/** A removed per-scope Google template, and the `google` selection that replaces it. */
+export interface RemovedConnection {
+  service: GoogleServiceId;
+  level: string;
+  auth: GoogleAuthMode;
+}
+
+/**
+ * The per-scope Google templates replaced by the one `google` connection
+ * (plans/google-unified.md). Kept so a stale ID in remote.config.json says
+ * what replaces it instead of "Unknown connection".
+ */
+export const REMOVED_CONNECTIONS: Readonly<Record<string, RemovedConnection>> = Object.freeze({
+  'google-gmail-metadata': { service: 'gmail', level: 'metadata', auth: 'user' },
+  'google-gmail-readonly': { service: 'gmail', level: 'read', auth: 'user' },
+  'google-gmail-readonly-sa': { service: 'gmail', level: 'read', auth: 'service-account' },
+  'google-calendar-freebusy': { service: 'calendar', level: 'freebusy', auth: 'user' },
+  'google-calendar-readonly': { service: 'calendar', level: 'read', auth: 'user' },
+  'google-calendar-readonly-sa': { service: 'calendar', level: 'read', auth: 'service-account' },
+  'google-drive-file': { service: 'drive', level: 'file', auth: 'user' },
+  'google-drive-readonly': { service: 'drive', level: 'read', auth: 'user' },
+  'google-drive-readonly-sa': { service: 'drive', level: 'read', auth: 'service-account' },
+  'google-sheets-readonly': { service: 'sheets', level: 'read', auth: 'user' },
+  'google-sheets-readonly-sa': { service: 'sheets', level: 'read', auth: 'service-account' },
+  'google-sheets': { service: 'sheets', level: 'edit', auth: 'user' },
+  'google-sheets-sa': { service: 'sheets', level: 'edit', auth: 'service-account' },
+  'google-docs': { service: 'docs', level: 'edit', auth: 'user' },
+  'google-docs-sa': { service: 'docs', level: 'edit', auth: 'service-account' },
+  'google-slides': { service: 'slides', level: 'edit', auth: 'user' },
+  'google-slides-sa': { service: 'slides', level: 'edit', auth: 'service-account' },
+});
+
+/** The one-line message for a removed template ID, or undefined for any other name. */
+export function removedConnectionMessage(
+  name: string,
+  callerAlias = '<alias>',
+): string | undefined {
+  if (!Object.hasOwn(REMOVED_CONNECTIONS, name)) return undefined;
+  const { service, level, auth } = REMOVED_CONNECTIONS[name];
+  return (
+    `Connection "${name}" was removed: use "google" with ` +
+    `callers.${callerAlias}.google.services.${service} = "${level}" (auth "${auth}"). ` +
+    'See CONNECTIONS.md → Google.'
+  );
+}
+
+/** A removed template ID that no shipped template file answers to. */
+export function isRemovedConnection(name: string): boolean {
+  return Object.hasOwn(REMOVED_CONNECTIONS, name) && !getConnectionIndex().has(name);
 }
 
 // ── OAuth2 validation ─────────────────────────────────────────────────────
@@ -494,6 +563,15 @@ export function describeConnectionTemplate(alias: string, route: Route): Connect
     }
   }
 
+  // A composed base (`google`) has no fixed auth: its default mode's
+  // credentials (user OAuth) are the required ones, the rest optional.
+  if (route.composed === 'google') {
+    const { clientId, clientSecret, refreshToken } = loadGoogleCatalog().auth.user.secretRefs;
+    for (const name of [clientId, clientSecret, refreshToken]) {
+      if (name) authSecretNames.add(name);
+    }
+  }
+
   // Partition secrets into required (used for auth) vs optional (elsewhere)
   const allSecretNames = Object.keys(route.secrets ?? {});
   const requiredSecrets = allSecretNames.filter((s) => authSecretNames.has(s));
@@ -511,11 +589,16 @@ export function describeConnectionTemplate(alias: string, route: Route): Connect
     optionalSecrets,
     hasIngestor: route.ingestor !== undefined,
     ...(route.ingestor !== undefined && { ingestorType: route.ingestor.type }),
-    hasTestConnection: route.testConnection !== undefined,
+    // A composed route's tests come from its selection.
+    hasTestConnection:
+      route.testConnection !== undefined ||
+      route.testConnections !== undefined ||
+      route.composed !== undefined,
     hasTestIngestor: route.testIngestor !== undefined && route.testIngestor !== null,
     hasListenerConfig: route.listenerConfig !== undefined,
     supportsMultiInstance: route.listenerConfig?.supportsMultiInstance ?? false,
     allowedEndpoints: route.allowedEndpoints,
+    ...(route.composed !== undefined && { composed: route.composed }),
     ...(route.oauth2 !== undefined && {
       auth: {
         type: 'oauth2' as const,
@@ -525,4 +608,42 @@ export function describeConnectionTemplate(alias: string, route: Route): Connect
       },
     }),
   };
+}
+
+/** The auth mode a caller's `google` block selects; user OAuth when absent or unreadable. */
+function googleAuthModeOf(caller: CallerConfig | undefined): GoogleAuthMode {
+  const google: unknown = caller && Object.hasOwn(caller, 'google') ? caller.google : undefined;
+  return google !== null &&
+    typeof google === 'object' &&
+    Object.hasOwn(google, 'auth') &&
+    (google as { auth: unknown }).auth === 'service-account'
+    ? 'service-account'
+    : 'user';
+}
+
+/**
+ * A template's required secrets for one caller. Same as `tpl.requiredSecrets`,
+ * except for the composed `google` base: there they are the credentials of the
+ * auth mode the caller selects (user OAuth when it has no selection yet).
+ * Used by the boot table, the admin API and the CLI.
+ */
+export function callerRequiredSecrets(
+  tpl: ConnectionTemplateInfo,
+  caller: CallerConfig | undefined,
+): string[] {
+  if (tpl.composed !== 'google') return tpl.requiredSecrets;
+  const { clientId, clientSecret, refreshToken, serviceAccountKey } =
+    loadGoogleCatalog().auth[googleAuthModeOf(caller)].secretRefs;
+  const names = new Set([clientId, clientSecret, refreshToken, serviceAccountKey]);
+  return [...tpl.requiredSecrets, ...tpl.optionalSecrets].filter((n) => names.has(n));
+}
+
+/** The rest of a template's secrets for one caller (see callerRequiredSecrets). */
+export function callerOptionalSecrets(
+  tpl: ConnectionTemplateInfo,
+  caller: CallerConfig | undefined,
+): string[] {
+  if (tpl.composed !== 'google') return tpl.optionalSecrets;
+  const required = new Set(callerRequiredSecrets(tpl, caller));
+  return [...tpl.requiredSecrets, ...tpl.optionalSecrets].filter((n) => !required.has(n));
 }

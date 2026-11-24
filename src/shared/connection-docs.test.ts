@@ -15,7 +15,7 @@ const read = (name: string) => fs.readFileSync(path.join(ROOT, name), 'utf8');
 describe('connection docs', () => {
   const templates = listAvailableConnections();
 
-  it('README counts every template file, -sa twins included', () => {
+  it('README counts every template file', () => {
     const m = /\*\*(\d+) pre-built connections\*\*/.exec(read('README.md'));
     expect(m, 'README "**N pre-built connections**"').not.toBeNull();
     expect(Number(m?.[1])).toBe(templates.length);

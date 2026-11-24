@@ -55,7 +55,7 @@ describe('selfManage lock on set_connection_enabled / set_secrets', () => {
       await expect(
         dispatchTool(
           'set_connection_enabled',
-          { connection: 'google', enabled: true },
+          { connection: 'notion', enabled: true },
           [],
           ctx('locked', origin),
         ),
@@ -72,30 +72,30 @@ describe('selfManage lock on set_connection_enabled / set_secrets', () => {
   it('lets the admin path change a locked caller', async () => {
     await dispatchTool(
       'set_connection_enabled',
-      { connection: 'google', enabled: true },
+      { connection: 'notion', enabled: true },
       [],
       ctx('locked', 'admin'),
     );
     await dispatchTool(
       'set_secrets',
-      { secrets: { GOOGLE_API_TOKEN: 'admin-set' } },
+      { secrets: { NOTION_API_KEY: 'admin-set' } },
       [],
       ctx('locked', 'admin'),
     );
     const after = loadRemoteConfig().callers.locked;
-    expect(after.connections).toContain('google');
-    expect(Object.keys(after.env ?? {})).toContain('GOOGLE_API_TOKEN');
-    delete process.env.LOCKED_GOOGLE_API_TOKEN;
+    expect(after.connections).toContain('notion');
+    expect(Object.keys(after.env ?? {})).toContain('NOTION_API_KEY');
+    delete process.env.LOCKED_NOTION_API_KEY;
   });
 
   it.each(['legacy', 'open'])('allows the agent path when selfManage is %s', async (alias) => {
     await dispatchTool(
       'set_connection_enabled',
-      { connection: 'google', enabled: true },
+      { connection: 'notion', enabled: true },
       [],
       ctx(alias, 'agent'),
     );
-    expect(loadRemoteConfig().callers[alias].connections).toContain('google');
+    expect(loadRemoteConfig().callers[alias].connections).toContain('notion');
   });
 
   it('tells the agent in list_connection_templates whether it can self-manage', async () => {
@@ -158,12 +158,19 @@ describe('OAuth2 connections and credentials on the agent path', () => {
         },
       ],
       callers: {
-        open: { connections: ['github', 'google-gmail-readonly'], selfManage: true },
+        open: { connections: ['github', 'acme'], selfManage: true },
         legacy: { connections: ['github'] },
-        // Read-write Sheets, enabled by the operator.
-        sheets: { connections: ['github', 'google-sheets'], selfManage: true },
-        // Read-write Docs and Slides, enabled by the operator.
-        editors: { connections: ['github', 'google-docs', 'google-slides'], selfManage: true },
+        // google enabled by the operator, in each auth mode.
+        sheets: {
+          connections: ['github', 'google'],
+          selfManage: true,
+          google: { auth: 'user', services: { sheets: 'edit' } },
+        },
+        editors: {
+          connections: ['github', 'google'],
+          selfManage: true,
+          google: { auth: 'service-account', services: { docs: 'edit', slides: 'edit' } },
+        },
       },
     });
   });
@@ -175,25 +182,9 @@ describe('OAuth2 connections and credentials on the agent path', () => {
   });
 
   it.each([
-    ['open', 'google-drive-file'],
-    ['open', 'google-drive-readonly-sa'],
-    ['open', 'acme'],
-    ['legacy', 'google-gmail-readonly'],
-    ['open', 'google-sheets'],
-    ['open', 'google-sheets-sa'],
-    ['legacy', 'google-sheets'],
-    ['sheets', 'google-sheets-sa'],
-    ['sheets', 'google-sheets-readonly'],
-    ['open', 'google-docs'],
-    ['open', 'google-docs-sa'],
-    ['open', 'google-slides'],
-    ['open', 'google-slides-sa'],
-    ['legacy', 'google-docs'],
-    ['legacy', 'google-slides'],
-    ['sheets', 'google-docs'],
-    ['sheets', 'google-slides'],
-    ['editors', 'google-docs-sa'],
-    ['editors', 'google-slides-sa'],
+    ['open', 'google'],
+    ['legacy', 'google'],
+    ['legacy', 'acme'],
   ])(
     'refuses to enable OAuth2 connection for caller %s: %s, even with selfManage',
     async (caller, connection) => {
@@ -215,17 +206,17 @@ describe('OAuth2 connections and credentials on the agent path', () => {
   it('still lets the agent enable a static connection and disable an OAuth2 one', async () => {
     await dispatchTool(
       'set_connection_enabled',
-      { connection: 'google', enabled: true },
+      { connection: 'notion', enabled: true },
       [],
       ctx('open', 'agent'),
     );
     await dispatchTool(
       'set_connection_enabled',
-      { connection: 'google-gmail-readonly', enabled: false },
+      { connection: 'acme', enabled: false },
       [],
       ctx('open', 'agent'),
     );
-    expect(loadRemoteConfig().callers.open.connections).toEqual(['github', 'google']);
+    expect(loadRemoteConfig().callers.open.connections).toEqual(['github', 'notion']);
   });
 
   it.each([
@@ -254,7 +245,7 @@ describe('OAuth2 connections and credentials on the agent path', () => {
     'GOOGLE_OAUTH_CLIENT_SECRET',
     'GOOGLE_OAUTH_REFRESH_TOKEN',
     'GOOGLE_SERVICE_ACCOUNT_KEY',
-  ])('refuses set_secrets on %s for a caller with google-sheets enabled', async (name) => {
+  ])('refuses set_secrets on %s for a caller with google enabled (user OAuth)', async (name) => {
     for (const value of ['attacker-value', '']) {
       for (const origin of ['agent', undefined] as const) {
         await expect(
@@ -271,7 +262,7 @@ describe('OAuth2 connections and credentials on the agent path', () => {
     'GOOGLE_OAUTH_REFRESH_TOKEN',
     'GOOGLE_SERVICE_ACCOUNT_KEY',
   ])(
-    'refuses set_secrets on %s for a caller with google-docs and google-slides enabled',
+    'refuses set_secrets on %s for a caller with google enabled (service account)',
     async (name) => {
       for (const value of ['attacker-value', '']) {
         for (const origin of ['agent', undefined] as const) {
@@ -284,26 +275,14 @@ describe('OAuth2 connections and credentials on the agent path', () => {
     },
   );
 
-  it('still lets the agent disable google-docs and google-slides', async () => {
-    for (const connection of ['google-docs', 'google-slides']) {
-      await dispatchTool(
-        'set_connection_enabled',
-        { connection, enabled: false },
-        [],
-        ctx('editors', 'agent'),
-      );
-    }
-    expect(loadRemoteConfig().callers.editors.connections).toEqual(['github']);
-  });
-
-  it('still lets the agent disable google-sheets', async () => {
+  it.each(['sheets', 'editors'])('still lets the agent of %s disable google', async (caller) => {
     await dispatchTool(
       'set_connection_enabled',
-      { connection: 'google-sheets', enabled: false },
+      { connection: 'google', enabled: false },
       [],
-      ctx('sheets', 'agent'),
+      ctx(caller, 'agent'),
     );
-    expect(loadRemoteConfig().callers.sheets.connections).toEqual(['github']);
+    expect(loadRemoteConfig().callers[caller].connections).toEqual(['github']);
   });
 
   it('lets the agent set other secrets', async () => {
@@ -319,7 +298,7 @@ describe('OAuth2 connections and credentials on the agent path', () => {
   it('leaves the admin path unaffected', async () => {
     await dispatchTool(
       'set_connection_enabled',
-      { connection: 'google-drive-file', enabled: true },
+      { connection: 'google', enabled: true },
       [],
       ctx('open', 'admin'),
     );
@@ -330,13 +309,13 @@ describe('OAuth2 connections and credentials on the agent path', () => {
       ctx('open', 'admin'),
     );
     const after = loadRemoteConfig().callers.open;
-    expect(after.connections).toContain('google-drive-file');
+    expect(after.connections).toContain('google');
     expect(Object.keys(after.env ?? {}).sort()).toEqual(['ACME_RT', 'GOOGLE_OAUTH_REFRESH_TOKEN']);
   });
 });
 
 describe('list_connection_templates reports oauth2 auth', () => {
-  it('includes auth for OAuth2 templates only', async () => {
+  it('includes no fixed auth for any built-in template, and marks google composed', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'drawlatch-oauth2-list-'));
     process.env.MCP_CONFIG_DIR = dir;
     try {
@@ -351,12 +330,12 @@ describe('list_connection_templates reports oauth2 auth', () => {
         origin: 'agent',
         ingestorManager: {} as IngestorManager,
         refreshRoutes: () => undefined,
-      })) as { alias: string; auth?: { type: string; grant: string } }[];
+      })) as { alias: string; composed?: string; auth?: { type: string; grant: string } }[];
       const by = Object.fromEntries(list.map((t) => [t.alias, t]));
-      expect(by['google-drive-file'].auth).toMatchObject({
-        type: 'oauth2',
-        grant: 'refresh_token',
-      });
+      expect(by.trello.auth).toBeUndefined();
+      // google is composed per caller: no fixed auth, marked composed.
+      expect(by.google).toMatchObject({ composed: 'google' });
+      expect(by.google.auth).toBeUndefined();
       expect(by.github.auth).toBeUndefined();
     } finally {
       delete process.env.MCP_CONFIG_DIR;

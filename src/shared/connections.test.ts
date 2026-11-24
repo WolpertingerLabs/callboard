@@ -271,16 +271,29 @@ describe('bundled connection templates', () => {
     expect(route.openApiUrl).toBeTruthy();
   });
 
-  it('should load google connection template', () => {
+  it('should load the google base template (composed per caller, matches nothing)', () => {
     const route = loadConnection('google');
 
-    expect(route.name).toBe('Google APIs');
-    expect(route.allowedEndpoints).toContain('https://www.googleapis.com/**');
-    expect(route.allowedEndpoints).toContain('https://sheets.googleapis.com/**');
-    expect(route.allowedEndpoints).toContain('https://drive.googleapis.com/**');
-    expect(route.secrets).toHaveProperty('GOOGLE_API_TOKEN');
-    expect(route.headers).toHaveProperty('Authorization');
+    expect(route.name).toBe('Google');
+    expect(route.composed).toBe('google');
+    expect(route.allowedEndpoints).toEqual([]);
+    expect(route.headers).toBeUndefined();
+    expect(route.oauth2).toBeUndefined();
+    expect(Object.keys(route.secrets ?? {}).sort()).toEqual([
+      'GOOGLE_OAUTH_CLIENT_ID',
+      'GOOGLE_OAUTH_CLIENT_SECRET',
+      'GOOGLE_OAUTH_REFRESH_TOKEN',
+      'GOOGLE_SERVICE_ACCOUNT_KEY',
+    ]);
     expect(route.docsUrl).toBeTruthy();
+  });
+
+  it('refuses composed on any template but google', () => {
+    // Only the shipped `google` base may set it; checked by loadConnection().
+    for (const alias of listAvailableConnections()) {
+      if (alias === 'google') continue;
+      expect(loadConnection(alias).composed, alias).toBeUndefined();
+    }
   });
 
   it('should load google-ai connection template', () => {
@@ -683,7 +696,9 @@ describe('listConnectionTemplates (integration)', () => {
 
     for (const t of templates) {
       expect(t.name).toBeTruthy();
-      expect(t.allowedEndpoints.length).toBeGreaterThan(0);
+      // A composed base matches nothing until composed per caller.
+      if (t.composed) expect(t.allowedEndpoints).toEqual([]);
+      else expect(t.allowedEndpoints.length).toBeGreaterThan(0);
     }
   });
 
@@ -1083,6 +1098,9 @@ describe('connection template JSON structure validation', () => {
   it('should have valid testConnection URL for all templates', () => {
     for (const t of templates) {
       const route = loadConnection(t.alias);
+      // The composed google base gets one test per selected service
+      // (testConnections, from the catalog: google-catalog.test.ts).
+      if (route.composed) continue;
       expect(route.testConnection).toBeDefined();
       expect(route.testConnection!.url).toBeTruthy();
       expect(typeof route.testConnection!.url).toBe('string');
@@ -1360,6 +1378,7 @@ describe('listConnectionTemplates — stability field (integration)', () => {
       'digitalocean',
       'vercel',
       'aws',
+      'google',
     ];
 
     for (const alias of betaAliases) {
@@ -1368,9 +1387,9 @@ describe('listConnectionTemplates — stability field (integration)', () => {
     }
   });
 
-  it('should report stability="dev" for devin, hex, discord-oauth, google', () => {
+  it('should report stability="dev" for devin, hex, discord-oauth', () => {
     const templates = listConnectionTemplates();
-    const devAliases = ['devin', 'hex', 'discord-oauth', 'google'];
+    const devAliases = ['devin', 'hex', 'discord-oauth'];
 
     for (const alias of devAliases) {
       const t = templates.find((t) => t.alias === alias)!;

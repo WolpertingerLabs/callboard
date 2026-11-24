@@ -430,31 +430,27 @@ describe('connectionOverlapWarnings', () => {
   });
 
   it('is quiet for every built-in template together, but one of each overlapping pair', () => {
-    // Alternatives for one API overlap by design: keep one of each. The scoped
-    // Google templates for different services share www.googleapis.com but
-    // not paths, so they stay in.
-    const alternatives = new Set([
-      'discord-oauth',
-      'google', // static, all of Google
-      'google-gmail-metadata', // vs google-gmail-readonly
-      'google-calendar-freebusy', // vs google-calendar-readonly
-      'google-drive-file', // vs google-drive-readonly
-      'google-sheets', // vs google-sheets-readonly
-    ]);
+    // Alternatives for one API overlap by design: keep one of each. The
+    // composed google route, every service selected, shares
+    // www.googleapis.com between Calendar and Drive but not paths.
+    const alternatives = new Set(['discord-oauth']);
     const all = listConnectionTemplates()
       .map((t) => t.alias)
-      .filter((alias) => !alternatives.has(alias) && !alias.endsWith('-sa'));
-    expect(all).toEqual(
-      expect.arrayContaining([
-        'google-gmail-readonly',
-        'google-calendar-readonly',
-        'google-drive-readonly',
-        'google-sheets-readonly',
-        'google-docs',
-        'google-slides',
-      ]),
-    );
-    expect(connectionOverlapWarnings(cfg(all))).toEqual([]);
+      .filter((alias) => !alternatives.has(alias));
+    expect(all).toContain('google');
+    const config = cfg(all);
+    config.callers.alice.google = {
+      auth: 'user',
+      services: {
+        gmail: 'read',
+        calendar: 'read',
+        drive: 'read',
+        sheets: 'edit',
+        docs: 'edit',
+        slides: 'edit',
+      },
+    };
+    expect(connectionOverlapWarnings(config)).toEqual([]);
   });
 
   it('flags discord-bot with discord-oauth (two auth modes for one API)', () => {
@@ -641,17 +637,27 @@ describe('jwt_bearer subject (oauth2Overrides)', () => {
     expect(problems.join('\n')).toContain('subject must be an email address');
   });
 
-  it('applies to the built-in Gmail service-account template', () => {
+  it('applies to a jwt_bearer custom connector with subjectRequired', () => {
+    const connector: Route = {
+      alias: 'mailbox',
+      secrets: { SA_KEY: 'x' },
+      allowedEndpoints: ['https://gmail.googleapis.com/gmail/v1/users/me/**'],
+      oauth2: {
+        tokenUrl: 'https://oauth2.googleapis.com/token',
+        grant: 'jwt_bearer',
+        secretRefs: { serviceAccountKey: 'SA_KEY' },
+        scopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+        subjectRequired: true,
+      },
+    };
     const base = {
       host: '127.0.0.1',
       port: 0,
       rateLimitPerMinute: 60,
+      connectors: [connector],
     };
     const without = resolveCallerRoutesChecked(
-      {
-        ...base,
-        callers: { a: { connections: ['google-gmail-readonly-sa'] } },
-      } as RemoteServerConfig,
+      { ...base, callers: { a: { connections: ['mailbox'] } } } as RemoteServerConfig,
       'a',
     );
     expect(without.routes).toEqual([]);
@@ -660,13 +666,13 @@ describe('jwt_bearer subject (oauth2Overrides)', () => {
         ...base,
         callers: {
           a: {
-            connections: ['google-gmail-readonly-sa'],
-            oauth2Overrides: { 'google-gmail-readonly-sa': { subject: 'me@example.com' } },
+            connections: ['mailbox'],
+            oauth2Overrides: { mailbox: { subject: 'me@example.com' } },
           },
         },
       } as RemoteServerConfig,
       'a',
     );
-    expect(withSubject.routes.map((r) => r.alias)).toEqual(['google-gmail-readonly-sa']);
+    expect(withSubject.routes.map((r) => r.alias)).toEqual(['mailbox']);
   });
 });

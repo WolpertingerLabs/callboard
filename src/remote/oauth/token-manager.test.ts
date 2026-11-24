@@ -596,6 +596,37 @@ describe('TokenManager', () => {
       ).rejects.toBeInstanceOf(OAuth2ScopeError);
     });
 
+    it('names the extra scopes on OAuth2ScopeError, with the message unchanged', async () => {
+      fetchMock.mockImplementation(
+        alwaysRespond({ access_token: ACCESS_TOKEN, expires_in: 3600, scope: 'read write admin' }),
+      );
+      const err = await accessToken(
+        makeManager(),
+        KEY,
+        refreshConfig({ scopes: ['read'] }),
+        resolveSecret,
+      ).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(OAuth2ScopeError);
+      expect((err as OAuth2ScopeError).extraScopes).toEqual(['admin', 'write']);
+      expect((err as Error).message).toBe(
+        `OAuth2 token for connection "${KEY.connection}" refused: the token endpoint granted ` +
+          'scopes broader than this connection allows (admin, write). Mint a dedicated refresh ' +
+          "token with exactly the connection's scopes.",
+      );
+    });
+
+    it('sets no extraScopes when the refusal is a missing scope field', async () => {
+      fetchMock.mockImplementation(alwaysRespond({ access_token: ACCESS_TOKEN, expires_in: 3600 }));
+      const err = await accessToken(
+        makeManager(),
+        KEY,
+        refreshConfig({ scopes: ['read'] }),
+        resolveSecret,
+      ).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(OAuth2ScopeError);
+      expect((err as OAuth2ScopeError).extraScopes).toBeUndefined();
+    });
+
     it('allows fewer scopes than requested and reports the missing ones', async () => {
       fetchMock.mockImplementation(
         alwaysRespond({ access_token: ACCESS_TOKEN, expires_in: 3600, scope: 'read' }),

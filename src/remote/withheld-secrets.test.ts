@@ -347,7 +347,16 @@ describe('built-in templates under header-only withholding', () => {
 
   it('withholds the bearer tokens the issue names, and keeps URL-auth templates working', () => {
     const w = (alias: string) => withheldSecretNames({ ...loadConnection(alias), alias });
-    expect(w('google').has('GOOGLE_API_TOKEN')).toBe(true);
+    expect(w('notion').has('NOTION_API_KEY')).toBe(true);
+    // The composed google base withholds every credential it holds.
+    for (const name of [
+      'GOOGLE_OAUTH_CLIENT_ID',
+      'GOOGLE_OAUTH_CLIENT_SECRET',
+      'GOOGLE_OAUTH_REFRESH_TOKEN',
+      'GOOGLE_SERVICE_ACCOUNT_KEY',
+    ]) {
+      expect(w('google').has(name)).toBe(true);
+    }
     expect(w('github').has('GITHUB_TOKEN')).toBe(true);
     expect(w('github').has('GITHUB_WEBHOOK_SECRET')).toBe(true);
     expect(w('discord-oauth').has('DISCORD_OAUTH_TOKEN')).toBe(true);

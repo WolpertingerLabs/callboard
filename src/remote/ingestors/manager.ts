@@ -16,6 +16,7 @@
 
 import {
   resolveCallerRoutes,
+  resolveCallerRoutesChecked,
   resolveRoutes,
   resolveSecrets,
   templateSecrets,
@@ -125,15 +126,30 @@ export class IngestorManager {
    */
   async startAll(): Promise<void> {
     for (const [callerAlias, callerConfig] of Object.entries(this.config.callers)) {
-      // Resolve routes for this caller (raw + resolved)
-      const rawRoutes = resolveCallerRoutes(this.config, callerAlias);
+      // Resolve routes for this caller (raw + resolved). One caller whose
+      // config can't be resolved (an unknown connection name) must not stop
+      // the listeners of the callers after it.
+      let rawRoutes: ReturnType<typeof resolveCallerRoutes>;
+      try {
+        rawRoutes = resolveCallerRoutes(this.config, callerAlias);
+      } catch (err) {
+        log.error(
+          `Not starting listeners for caller "${callerAlias}": ` +
+            (err instanceof Error ? err.message : String(err)),
+        );
+        continue;
+      }
       const callerEnvResolved = resolveSecrets(callerConfig.env ?? {});
       const resolvedRoutes = resolveRoutes(rawRoutes, callerEnvResolved, callerAlias);
 
       for (let i = 0; i < rawRoutes.length; i++) {
         const rawRoute = rawRoutes[i];
         const resolvedRoute = resolvedRoutes[i];
-        const connectionAlias = callerConfig.connections[i];
+        // By alias, which resolution sets on every route: a connection dropped
+        // at resolve time (a removed template ID, an invalid google selection,
+        // …) leaves no route, so positions in `connections` don't line up.
+        const connectionAlias = rawRoute.alias;
+        if (connectionAlias === undefined) continue;
 
         // Skip connections without an ingestor config
         if (!rawRoute.ingestor) continue;
@@ -521,8 +537,7 @@ export class IngestorManager {
       };
     }
 
-    const connectionIndex = callerConfig.connections.indexOf(connectionAlias);
-    if (connectionIndex === -1) {
+    if (!callerConfig.connections.includes(connectionAlias)) {
       return {
         success: false,
         connection: connectionAlias,
@@ -530,7 +545,29 @@ export class IngestorManager {
       };
     }
 
-    const rawRoutes = resolveCallerRoutes(config, callerAlias);
+    let resolved: ReturnType<typeof resolveCallerRoutesChecked>;
+    try {
+      resolved = resolveCallerRoutesChecked(config, callerAlias);
+    } catch (err) {
+      return {
+        success: false,
+        connection: connectionAlias,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+    // By alias, not by position in `connections`: dropped connections leave
+    // no route (see startAll).
+    const connectionIndex = resolved.routes.findIndex((r) => r.alias === connectionAlias);
+    if (connectionIndex === -1) {
+      return {
+        success: false,
+        connection: connectionAlias,
+        error:
+          `Connection "${connectionAlias}" is not loaded for this caller: ` +
+          (ownEntry(resolved.dropped, connectionAlias) ?? 'see the daemon log'),
+      };
+    }
+    const rawRoutes = resolved.routes;
     const callerEnvResolved = resolveSecrets(callerConfig.env ?? {});
     const resolvedRoutes = resolveRoutes(rawRoutes, callerEnvResolved, callerAlias);
     const rawRoute = rawRoutes[connectionIndex];

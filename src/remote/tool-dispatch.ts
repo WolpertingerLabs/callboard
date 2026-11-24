@@ -36,11 +36,18 @@ import {
   OAUTH2_TOKEN_TIMEOUT_MS,
   type CallerConfig,
   type IngestorOverrides,
+  type NamedTestConnection,
   type RemoteServerConfig,
   type ResolvedRoute,
   type Route,
 } from '../shared/config.js';
-import { listConnectionTemplates, loadConnection } from '../shared/connections.js';
+import {
+  callerOptionalSecrets,
+  callerRequiredSecrets,
+  listConnectionTemplates,
+  loadConnection,
+} from '../shared/connections.js';
+import { googleCredentialRoutes, googleLevelScopes, googleScopeLabel } from '../shared/google.js';
 import { assertSafeConnectionKey, assertSafeInstanceId, ownEntry } from '../shared/safe-keys.js';
 import { isSecretSetForCaller, setCallerSecrets } from '../shared/env-utils.js';
 import {
@@ -58,6 +65,7 @@ import {
   type OAuth2AuthResult,
   type OAuth2Route,
 } from './oauth/authenticate.js';
+import { OAuth2ScopeError } from './oauth/token-manager.js';
 import type { IngestorManager } from './ingestors/index.js';
 import { safeFetch } from './safe-fetch.js';
 import { assertNoControlChars, isEndpointAllowed, normalizeOutboundUrl } from './url-policy.js';
@@ -901,8 +909,8 @@ function invalidListenerKeys(
  * agent path when the caller has `selfManage: false`. Without this, an agent
  * could enable any connection template for itself, and because secrets
  * resolve per caller *by name*, a newly enabled connection sharing a secret
- * name with an existing one (another google-* connector) would come up with
- * the existing token already attached.
+ * name with an existing one (a custom connector reading GITHUB_TOKEN next to
+ * `github`) would come up with the existing token already attached.
  */
 function assertMaySelfManage(
   tool: string,
@@ -919,17 +927,26 @@ function assertMaySelfManage(
 
 /**
  * OAuth2 connections are operator-only on the agent path, whatever
- * `selfManage` says. Their credentials are shared by name across templates
- * (every google-* user template reads GOOGLE_OAUTH_REFRESH_TOKEN), so an agent
- * that could enable one more OAuth2 connection would inherit the caller's
- * credentials at that connection's scopes, and one that could set an oauth2
- * credential could swap in its own grant.
+ * `selfManage` says. Their credentials are shared by name (every caller's
+ * `google` connection reads GOOGLE_OAUTH_REFRESH_TOKEN, and a custom
+ * connector may read the same names), so an agent that could enable one more
+ * OAuth2 connection would inherit the caller's credentials at that
+ * connection's scopes, and one that could set an oauth2 credential could swap
+ * in its own grant.
+ *
+ * A composed base template (`google`) has no `oauth2` block of its own: its
+ * route is composed per caller at resolve time. It counts as OAuth2 here, in
+ * either auth mode, whatever the caller has selected (invariant 2 in
+ * plans/google-unified.md).
  */
 function oauth2Connection(config: RemoteServerConfig, alias: string): Route | undefined {
   const custom = (config.connectors ?? []).find((c) => c.alias === alias);
   if (custom) return custom.oauth2 ? custom : undefined;
   try {
     const route = loadConnection(alias);
+    // Any composed base counts, without composing anything: nothing that
+    // could throw here may turn the refusal into an allow.
+    if (route.composed !== undefined) return route;
     return route.oauth2 ? route : undefined;
   } catch {
     return undefined;
@@ -949,12 +966,17 @@ function signingCredentialNames(config: RemoteServerConfig): Set<string> {
   const names = new Set<string>();
   const routes: Route[] = [...(config.connectors ?? [])];
   for (const t of listConnectionTemplates()) {
+    let route: Route;
     try {
-      const route = loadConnection(t.alias);
-      if (route.oauth2 || route.awsSigV4) routes.push(route);
+      route = loadConnection(t.alias);
     } catch {
-      // listConnectionTemplates() already loaded it; nothing to add
+      continue; // listConnectionTemplates() already loaded it; nothing to add
     }
+    if (route.oauth2 || route.awsSigV4) routes.push(route);
+    // A composed base: both auth modes' credentials, for every caller
+    // (invariant 2). Outside the try: if composing failed, refusing every
+    // set_secrets is the safe outcome, not dropping these names.
+    if (route.composed === 'google') routes.push(...googleCredentialRoutes(route));
   }
   for (const route of routes) {
     for (const name of signerOnlySecretNames(route)) {
@@ -994,6 +1016,115 @@ function assertAgentMaySetSecrets(
       'AWS signing credentials are operator-only. Ask the operator to set them (drawlatch ' +
       'dashboard or .env).',
   );
+}
+
+// ── test_connection with several tests (testConnections) ─────────────────
+
+/**
+ * `consentScopes` and, when the scope mismatch is known, a `hint` that maps
+ * each scope to its Google service and level. Scope names only: never a
+ * token, a credential, or the service account's subject.
+ */
+function consentReport(
+  route: ResolvedRoute,
+  mismatch: { extraScopes?: string[]; missingScopes?: string[] },
+): { consentScopes?: string; hint?: string } {
+  if (!route.oauth2) return {};
+  const consentScopes = route.oauth2.effectiveScopes.join(' ');
+  const serviceAccount = route.oauth2.grant === 'jwt_bearer';
+  const labels = (scopes: string[]) => scopes.map(googleScopeLabel).join(', ');
+  let hint: string | undefined;
+  if (mismatch.extraScopes?.length) {
+    // Lead with the remedy that keeps the agent's access as configured;
+    // selecting more services widens it, so it comes second, with that said.
+    hint =
+      `The token was granted scopes this selection does not include: ` +
+      `${labels(mismatch.extraScopes)}. ` +
+      (serviceAccount
+        ? 'drawlatch asked only for the scopes in consentScopes; check the service ' +
+          "account's domain-wide delegation (Admin console)."
+        : 'Re-consent the refresh token with exactly the scopes in consentScopes. (Selecting ' +
+          'those services instead also works, but widens what the agent can reach.)');
+  } else if (mismatch.missingScopes?.length) {
+    hint =
+      `The token was not granted ${labels(mismatch.missingScopes)}. ` +
+      (serviceAccount
+        ? // The assertion asks only for the selection, so a wider delegation
+          // list still works: it must include these, not equal them.
+          "Make sure the service account's domain-wide delegation (Admin console) includes " +
+          'the scopes in consentScopes.'
+        : 'Re-consent the refresh token with exactly the scopes in consentScopes.');
+  }
+  return { consentScopes, ...(hint !== undefined && { hint }) };
+}
+
+/**
+ * Run every entry of a route's `testConnections` in parallel, sharing the
+ * remaining budget, and report each under its name. `success` is true only
+ * when every test passes. On an OAuth2 route the token is already minted.
+ */
+async function runTestConnections(
+  route: ResolvedRoute,
+  tests: NamedTestConnection[],
+  context: ToolContext,
+  budgetMs: number | undefined,
+  minted: { oauth2Report?: Record<string, unknown>; missingScopes?: string[] },
+): Promise<Record<string, unknown>> {
+  const missing = new Set(minted.missingScopes ?? []);
+  const entries = await Promise.all(
+    tests.map(async (test): Promise<[string, Record<string, unknown>]> => {
+      const expectedStatus = test.expectedStatus ?? [200];
+      const levelScopes =
+        test.level !== undefined ? googleLevelScopes(test.name, test.level) : undefined;
+      const notConsented = levelScopes?.some((s) => missing.has(s)) === true;
+      const base = {
+        ...(test.level !== undefined && { level: test.level }),
+      };
+      try {
+        const result = await executeProxyRequest(
+          { method: test.method ?? 'GET', url: test.url, headers: test.headers, body: test.body },
+          // The template's own request: its route only (see ProxyRequestOptions).
+          [route],
+          budgetMs,
+          { templateAuthored: true, caller: context.callerAlias },
+        );
+        const ok = expectedStatus.includes(result.status);
+        return [
+          test.name,
+          {
+            ...base,
+            success: ok,
+            status: result.status,
+            statusText: result.statusText,
+            ...(notConsented && { notConsented: true }),
+            ...(test.description !== undefined && { description: test.description }),
+            ...(!ok && {
+              error: `Unexpected status ${result.status} (expected ${expectedStatus.join(' or ')})`,
+            }),
+          },
+        ];
+      } catch (err) {
+        return [
+          test.name,
+          {
+            ...base,
+            success: false,
+            ...(notConsented && { notConsented: true }),
+            ...(test.description !== undefined && { description: test.description }),
+            error: err instanceof Error ? err.message : String(err),
+          },
+        ];
+      }
+    }),
+  );
+  const services = Object.fromEntries(entries);
+  return {
+    success: entries.every(([, r]) => r.success === true),
+    connection: route.alias,
+    ...(minted.oauth2Report && { oauth2: minted.oauth2Report }),
+    services,
+    ...(route.oauth2 && consentReport(route, { missingScopes: minted.missingScopes })),
+  };
 }
 
 /** Context passed to every tool handler, providing caller identity and shared services. */
@@ -1100,7 +1231,8 @@ export const toolHandlers: Record<string, ToolHandler> = {
       );
 
       // Ingestor & testing metadata
-      info.hasTestConnection = route.testConnection !== undefined;
+      info.hasTestConnection =
+        route.testConnection !== undefined || route.testConnections !== undefined;
       info.hasIngestor = route.ingestorConfig !== undefined;
       if (route.ingestorConfig) {
         info.ingestorType = route.ingestorConfig.type;
@@ -1202,8 +1334,30 @@ export const toolHandlers: Record<string, ToolHandler> = {
           success: false,
           connection,
           oauth2: { tokenMinted: false, requestedScopes: route.oauth2.effectiveScopes },
+          ...(route.testConnections && {
+            services: Object.fromEntries(
+              route.testConnections.map((t) => [
+                t.name,
+                {
+                  ...(t.level !== undefined && { level: t.level }),
+                  success: false,
+                  skipped: 'no token',
+                },
+              ]),
+            ),
+          }),
           error: err instanceof Error ? err.message : String(err),
+          ...(route.testConnections &&
+            consentReport(route, {
+              extraScopes: err instanceof OAuth2ScopeError ? err.extraScopes : undefined,
+            })),
         };
+      }
+      if (route.testConnections) {
+        return runTestConnections(route, route.testConnections, context, remainingBudget(), {
+          oauth2Report,
+          missingScopes: (oauth2Report.missingScopes as string[] | undefined) ?? undefined,
+        });
       }
       if (!route.testConnection) {
         return {
@@ -1213,6 +1367,10 @@ export const toolHandlers: Record<string, ToolHandler> = {
           description: 'Minted an OAuth2 access token (this connection has no test request).',
         };
       }
+    }
+
+    if (route.testConnections) {
+      return runTestConnections(route, route.testConnections, context, remainingBudget(), {});
     }
 
     if (!route.testConnection) {
@@ -1912,6 +2070,8 @@ export const toolHandlers: Record<string, ToolHandler> = {
         allowedEndpoints: t.allowedEndpoints,
         // OAuth2 (names only). The agent can't enable these itself.
         ...(t.auth !== undefined && { auth: t.auth }),
+        // Composed per caller by the operator (`google`); also operator-only.
+        ...(t.composed !== undefined && { composed: t.composed }),
         enabled: enabledSet.has(t.alias),
         requiredSecretsSet,
         optionalSecretsSet,
@@ -2091,13 +2251,14 @@ export const toolHandlers: Record<string, ToolHandler> = {
     const caller = config.callers[context.callerAlias];
     const callerEnv = caller.env;
 
+    // Per caller: `google` needs the credentials of the mode it selects.
     const requiredSecretsSet: Record<string, boolean> = {};
-    for (const s of template.requiredSecrets) {
+    for (const s of callerRequiredSecrets(template, caller)) {
       requiredSecretsSet[s] = isSecretSetForCaller(s, context.callerAlias, callerEnv);
     }
 
     const optionalSecretsSet: Record<string, boolean> = {};
-    for (const s of template.optionalSecrets) {
+    for (const s of callerOptionalSecrets(template, caller)) {
       optionalSecretsSet[s] = isSecretSetForCaller(s, context.callerAlias, callerEnv);
     }
 
