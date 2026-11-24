@@ -14,6 +14,7 @@ import { appendAttachmentBlocks, formatAttachmentBlock } from "shared/types/inde
 import type { ParsedMessage, SynthesizedSpeech } from "../api";
 import { installMediaStubs } from "../testing/mediaStubs";
 import { getReadAloudAudioForTesting, getSnapshot, resetReadAloudPlayerForTesting } from "../utils/readAloudPlayer";
+import { starKeysByIndex } from "../utils/starredMessages";
 import MessageBubble from "./MessageBubble";
 import ReadAloudPlayer from "./ReadAloudPlayer";
 
@@ -201,15 +202,25 @@ describe("the speaker", () => {
     expect(speaker().classList.contains("is-active")).toBe(false);
   });
 
-  it("cancels while loading", () => {
+  it.each([
+    ["the speaker again", "Stop reading aloud"],
+    ["the docked bar's X (named Cancel while preparing)", "Cancel read aloud"],
+  ])("cancels while loading from %s", (_label, name) => {
     synth.fn.mockReturnValueOnce(new Promise(() => {}));
-    render(<MessageBubble message={reply} readAloud={AVAILABLE} />);
+    render(
+      <>
+        <MessageBubble message={reply} readAloud={AVAILABLE} />
+        <ReadAloudPlayer />
+      </>,
+    );
     fireEvent.click(speaker());
     expect(getSnapshot().status).toBe("loading");
+    expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
     const signal = synth.fn.mock.calls[0][1] as AbortSignal;
-    fireEvent.click(screen.getByRole("button", { name: "Stop reading aloud" }));
+    fireEvent.click(screen.getByRole("button", { name }));
     expect(signal.aborted).toBe(true);
     expect(getSnapshot().status).toBe("idle");
+    expect(screen.queryByRole("group", { name: "Read aloud player" })).toBeNull();
   });
 
   it.each([
@@ -237,6 +248,7 @@ describe("the speaker", () => {
     await flush();
     expect(getSnapshot().status).toBe("playing");
     unmount();
+    await flush();
     expect(getSnapshot().status).toBe("idle");
   });
 });
@@ -276,5 +288,61 @@ describe("re-render containment", () => {
     // And the bubbles stay memoized against parent re-renders.
     fireEvent.change(screen.getByLabelText("composer"), { target: { value: "x" } });
     expect(counts.markdown.get(reply.content)).toBe(ownerBefore);
+  });
+});
+
+describe("the owner follows the message, not its position", () => {
+  const at = (minute: number, role: "user" | "assistant", content: string) =>
+    ({ role, type: "text", content, timestamp: `2026-01-01T10:${String(minute).padStart(2, "0")}:00.000Z` }) as ParsedMessage;
+  const older = [at(1, "user", "Oldest question?"), at(2, "assistant", "Oldest answer.")];
+  const recent = [at(3, "user", "Recent question?"), at(4, "assistant", "Recent answer.")];
+
+  /** Keyed by position and given Chat's star keys, as Chat renders the transcript. */
+  function Transcript({ messages }: { messages: ParsedMessage[] }) {
+    const keys = starKeysByIndex(messages);
+    return (
+      <>
+        {messages.map((m, i) => (
+          <div key={i}>
+            <MessageBubble message={m} starKey={keys.get(i)} readAloud={AVAILABLE} />
+          </div>
+        ))}
+        <ReadAloudPlayer />
+      </>
+    );
+  }
+
+  const speakerOf = (text: string) => {
+    const bubble = screen.getByText(text, { selector: ".msg-bubble div" }).closest(".msg-bubble")!;
+    return bubble.querySelector<HTMLButtonElement>(":scope > .read-aloud-affordance")!;
+  };
+
+  it("keeps the active speaker and the label on the message being read when older messages load above it", async () => {
+    const { rerender } = render(<Transcript messages={recent} />);
+    fireEvent.click(speakerOf("Recent answer."));
+    await flush();
+    expect(getSnapshot().status).toBe("playing");
+
+    rerender(<Transcript messages={[...older, ...recent]} />);
+    await flush();
+    // Same playback, still running; the bubble now at index 1 is not it.
+    expect(getSnapshot().status).toBe("playing");
+    expect(speakerOf("Recent answer.").classList.contains("is-active")).toBe(true);
+    expect(speakerOf("Oldest answer.").classList.contains("is-active")).toBe(false);
+    expect(screen.getAllByRole("button", { name: "Stop reading aloud" })).toEqual([speakerOf("Recent answer.")]);
+    expect(screen.getByText("Recent answer.", { selector: ".read-aloud-label-text" })).toBeTruthy();
+
+    // And its speaker still stops it.
+    fireEvent.click(speakerOf("Recent answer."));
+    expect(getSnapshot().status).toBe("idle");
+  });
+
+  it("still stops when the message being read leaves the transcript", async () => {
+    const { rerender } = render(<Transcript messages={[...older, ...recent]} />);
+    fireEvent.click(speakerOf("Recent answer."));
+    await flush();
+    rerender(<Transcript messages={older} />);
+    await flush();
+    expect(getSnapshot().status).toBe("idle");
   });
 });

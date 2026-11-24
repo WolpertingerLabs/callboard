@@ -1,6 +1,8 @@
 import { useEffect, useRef, type FocusEvent, type KeyboardEvent } from "react";
 import { Loader2, Pause, Play, RotateCcw, RotateCw, X } from "lucide-react";
+import { useIsMobile } from "../hooks/useIsMobile";
 import { useReadAloudPlayback } from "../hooks/useReadAloud";
+import { isCoarsePointer } from "../utils/pointer";
 import { cycleRate, getSpeaker, retry, seekBy, seekTo, stop, toggle } from "../utils/readAloudPlayer";
 
 const SKIP_SECONDS = 10;
@@ -29,8 +31,10 @@ function rateLabel(rate: number): string {
  * Detached from its message, it names it: "Reading: <the start of its text>".
  *
  * The X closes the whole thing — the store's `stop`: the fetch aborted, the
- * audio paused, the blob URL revoked, the bar gone. Cancel (while preparing),
- * Dismiss (an error) and Escape do the same.
+ * audio paused, the blob URL revoked, the bar gone. It is the bar's one close
+ * control in every state — named "Cancel read aloud" while preparing, "Close
+ * audio player" otherwise — and Escape does the same. An error offers Retry
+ * beside it when retrying can help.
  *
  * Shortcuts are taken only from inside the bar (`onKeyDown` on the group, no
  * global listener): Space/K play-pause, J/L or ←/→ skip 10 s, Escape closes.
@@ -41,17 +45,27 @@ function rateLabel(rate: number): string {
  * play/pause only on the play button, the slider or the group itself; on any
  * other button it is that button's own activation.
  *
- * Focus is kept, not dropped: when the controls swap (Cancel → play/pause
- * once the audio is ready, Retry → Cancel) and focus was on the control that
- * went away, it moves to the new state's main control; and when the bar
- * closes (X, Escape, Dismiss, Cancel) with focus inside, focus goes back to
- * the playing bubble's speaker if it is still there, and stays put otherwise.
+ * Focus is kept, not dropped. When the controls swap and focus was on the
+ * control that went away, it moves to the new state's main control: the X
+ * while preparing, play/pause once the audio is ready, Retry on an error it
+ * can help, the X on one it cannot. The X is one element throughout, so focus
+ * on it simply stays.
+ *
+ * When the bar closes (X or Escape) with focus inside, focus goes back to the
+ * playing bubble's speaker — but only if that speaker is in view in the
+ * transcript, and always with `preventScroll`: the bar outlives its message's
+ * scroll position, and focusing a far-off bubble would yank the transcript
+ * there (and unlatch auto-scroll from the live tail). Otherwise, on desktop,
+ * focus goes to the composer (`getComposer`, also without scrolling); on a
+ * narrow or touch screen it is let go, since focusing the composer there
+ * would pop the on-screen keyboard.
  */
-export default function ReadAloudPlayer({ scope }: { scope?: string }) {
+export default function ReadAloudPlayer({ scope, getComposer }: { scope?: string; getComposer?: () => HTMLElement | null }) {
   const s = useReadAloudPlayback(scope);
+  const isMobile = useIsMobile();
   const groupRef = useRef<HTMLDivElement>(null);
-  /** The current state's main control: Cancel, play/pause, or Retry/Dismiss. */
-  const primaryRef = useRef<HTMLButtonElement>(null);
+  /** The current state's main control: the X, play/pause, or Retry. */
+  const primaryRef = useRef<HTMLButtonElement | null>(null);
   /**
    * Whether focus is in the player. Cleared only when focus moves to something
    * else: a focused control that is removed fires no blur in some browsers, and
@@ -59,29 +73,35 @@ export default function ReadAloudPlayer({ scope }: { scope?: string }) {
    */
   const focusInside = useRef(false);
   const live = s.ownerId !== null && s.status !== "idle";
+  const loading = s.status === "loading";
+  const xIsPrimary = loading || (s.status === "error" && !s.retryable);
+  const closeRef = useRef<HTMLButtonElement | null>(null);
+  /** Whether the X was the main control in the previous state. */
+  const xWasPrimary = useRef(xIsPrimary);
 
   useEffect(() => {
+    const wasPrimary = xWasPrimary.current;
+    xWasPrimary.current = xIsPrimary;
     if (!live || !focusInside.current) return;
     const active = document.activeElement;
-    if (!active || active === document.body) primaryRef.current?.focus();
-  }, [s.status, live]);
+    // Focus lost with its control, or left on the X when it stopped being the
+    // main control (the audio arrived; a load failed in a way Retry can help).
+    const onDemotedX = active === closeRef.current && wasPrimary && !xIsPrimary;
+    if (!active || active === document.body || onDemotedX) primaryRef.current?.focus();
+  }, [s.status, live, xIsPrimary]);
 
   if (!live) return null;
 
-  /** Close, and if the bar had focus, hand it back to the playing bubble's speaker. */
+  /** Close; if the bar had focus, hand it on (see the component's doc). */
   const end = () => {
     const hadFocus = !!groupRef.current?.contains(document.activeElement);
     const speaker = s.ownerId ? getSpeaker(s.ownerId) : null;
     focusInside.current = false;
     stop();
-    if (hadFocus && speaker?.isConnected) speaker.focus();
+    if (!hadFocus) return;
+    if (speaker?.isConnected && isInScrollView(speaker)) speaker.focus({ preventScroll: true });
+    else if (!isMobile && !isCoarsePointer()) getComposer?.()?.focus({ preventScroll: true });
   };
-
-  const close = (
-    <button type="button" className="read-aloud-btn read-aloud-close" aria-label="Close audio player" title="Close (Esc)" onClick={end}>
-      <X size={16} aria-hidden="true" />
-    </button>
-  );
 
   const onFocus = () => {
     focusInside.current = true;
@@ -133,10 +153,6 @@ export default function ReadAloudPlayer({ scope }: { scope?: string }) {
           <span className="read-aloud-text" aria-live="polite">
             Preparing audio…
           </span>
-          <button ref={primaryRef} type="button" className="read-aloud-btn read-aloud-btn-text" aria-label="Cancel read aloud" onClick={end}>
-            Cancel
-          </button>
-          {close}
         </>
       )}
 
@@ -150,10 +166,6 @@ export default function ReadAloudPlayer({ scope }: { scope?: string }) {
               Retry
             </button>
           )}
-          <button ref={s.retryable ? undefined : primaryRef} type="button" className="read-aloud-btn read-aloud-btn-text" onClick={end}>
-            Dismiss
-          </button>
-          {close}
         </>
       )}
 
@@ -199,11 +211,45 @@ export default function ReadAloudPlayer({ scope }: { scope?: string }) {
           >
             {rateLabel(s.rate)}
           </button>
-          {close}
-          {s.hint && <span className="read-aloud-note">{s.hint}</span>}
-          {s.truncated && <span className="read-aloud-note">Reading the start of this long message.</span>}
         </>
       )}
+
+      {/* One element in every state (a fixed slot among the children), so
+          focus on it survives a state change. */}
+      <button
+        ref={(el) => {
+          closeRef.current = el;
+          if (xIsPrimary) primaryRef.current = el;
+        }}
+        type="button"
+        className="read-aloud-btn read-aloud-close"
+        aria-label={loading ? "Cancel read aloud" : "Close audio player"}
+        title={loading ? "Cancel (Esc)" : "Close (Esc)"}
+        onClick={end}
+      >
+        <X size={16} aria-hidden="true" />
+      </button>
+
+      {(s.status === "playing" || s.status === "paused") && s.hint && <span className="read-aloud-note">{s.hint}</span>}
+      {(s.status === "playing" || s.status === "paused") && s.truncated && <span className="read-aloud-note">Reading the start of this long message.</span>}
     </div>
   );
+}
+
+/**
+ * Whether `el` is on screen: within every scrolling ancestor's visible box
+ * and the viewport. Edges are inclusive, so an element with no layout box
+ * (jsdom) counts as in view.
+ */
+function isInScrollView(el: HTMLElement): boolean {
+  const r = el.getBoundingClientRect();
+  if (r.bottom < 0 || r.top > window.innerHeight) return false;
+  for (let node = el.parentElement; node; node = node.parentElement) {
+    const style = getComputedStyle(node);
+    const overflow = `${style.overflowY} ${style.overflow}`;
+    if (!/auto|scroll|hidden/.test(overflow)) continue;
+    const box = node.getBoundingClientRect();
+    if (r.bottom < box.top || r.top > box.bottom) return false;
+  }
+  return true;
 }

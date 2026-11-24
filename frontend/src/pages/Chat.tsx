@@ -3389,6 +3389,8 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
   // The mobile sheet covers the main chat; nothing under it may take focus or
   // be read out (React 18 has no `inert` prop, so it is set directly).
   const pageLayoutRef = useRef<HTMLDivElement>(null);
+  // Where the bar hands focus on close when the message's speaker is off screen (desktop only; see ReadAloudPlayer).
+  const getReadAloudComposer = useCallback(() => pageLayoutRef.current?.querySelector<HTMLElement>("[data-composer] textarea:not([disabled])") ?? null, []);
   const sheetOpen = !embedded && isMobile && !!asideId && !asideInvalid;
   useEffect(() => {
     const el = pageLayoutRef.current;
@@ -5435,7 +5437,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
             has scrolled. A sibling of the composer's root rather than inside
             it, so the composer's dictation Escape never sees the bar's keys.
             Renders nothing unless one of this chat's bubbles is reading. */}
-        <ReadAloudPlayer scope={readAloudScope} />
+        <ReadAloudPlayer scope={readAloudScope} getComposer={getReadAloudComposer} />
         <PromptInput
           onSend={handleComposerSend}
           sendVariants={sendVariants}

@@ -950,9 +950,13 @@ function MessageBubble({
   readAloud,
 }: Props) {
   const [expanded, setExpanded] = useState(false);
-  // Identifies this bubble to the page-wide read-aloud playback. Called before
-  // the early returns below so the hook order never changes.
-  const readAloudOwner = useId();
+  // Identifies this message to the page-wide read-aloud playback: its star key
+  // (role@timestamp#ordinal) where it has one, so the owner follows the
+  // message when older ones load above and the position-keyed bubble is
+  // handed another message. Team messages have none and keep a per-bubble id.
+  // Called before the early returns below so the hook order never changes.
+  const bubbleId = useId();
+  const readAloudOwner = starKey ? `msg:${starKey}` : bubbleId;
   const isUser = message.role === "user";
   const isTeamMessage = !!message.teamName;
 

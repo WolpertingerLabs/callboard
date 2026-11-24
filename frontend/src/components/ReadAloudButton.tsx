@@ -1,7 +1,7 @@
 import { useContext, useEffect, useRef } from "react";
 import { Loader2, Volume2 } from "lucide-react";
 import { ReadAloudScope, useReadAloudStatus } from "../hooks/useReadAloud";
-import { registerSpeaker, release, start, stop } from "../utils/readAloudPlayer";
+import { getSpeaker, registerSpeaker, release, start, stop } from "../utils/readAloudPlayer";
 
 /**
  * The speaker in a bubble's hover row (beside copy, fork and star). Reads that
@@ -18,8 +18,14 @@ import { registerSpeaker, release, start, stop } from "../utils/readAloudPlayer"
  * under the chat view's `ReadAloudScope`; this button registers itself with
  * the store so the bar can hand focus back to it when it closes.
  *
- * The bubble owning this button owns the playback: unmounting it (navigating
- * away, the bubble's key changing) stops whatever it was reading.
+ * The message owns the playback, not the component: `ownerId` is derived
+ * from the message (its star key) where it has one, and is prefixed here with
+ * the chat view's scope. Bubbles are keyed by position, so when older
+ * messages load above, a mounted button can be handed a different message and
+ * another button the one being read; the active state and the playback
+ * follow the message. A button losing its owner — unmounting, or being handed
+ * another message — stops that playback only if no other mounted speaker has
+ * taken the owner over, checked once the commit's effects have all run.
  */
 export default function ReadAloudButton({
   ownerId,
@@ -28,6 +34,7 @@ export default function ReadAloudButton({
   reason,
   right,
 }: {
+  /** Stable per message where possible (see MessageBubble); unique within the scope. */
   ownerId: string;
   /** The message's markdown — converted to speech only when clicked. */
   markdown: string;
@@ -35,13 +42,23 @@ export default function ReadAloudButton({
   reason?: string;
   right: number;
 }) {
-  const status = useReadAloudStatus(ownerId);
   const scope = useContext(ReadAloudScope);
+  const owner = scope ? `${scope}|${ownerId}` : ownerId;
+  const status = useReadAloudStatus(owner);
   const active = status !== "idle";
   const buttonRef = useRef<HTMLButtonElement>(null);
 
-  useEffect(() => () => release(ownerId), [ownerId]);
-  useEffect(() => (buttonRef.current ? registerSpeaker(ownerId, buttonRef.current) : undefined), [ownerId]);
+  useEffect(() => (buttonRef.current ? registerSpeaker(owner, buttonRef.current) : undefined), [owner]);
+  useEffect(
+    () => () => {
+      // After the rest of this commit's effects: a speaker that has just been
+      // handed this message has registered by then.
+      queueMicrotask(() => {
+        if (!getSpeaker(owner)) release(owner);
+      });
+    },
+    [owner],
+  );
 
   const stoppable = available && status !== "idle" && status !== "error";
   const label = stoppable ? "Stop reading aloud" : "Read aloud";
@@ -56,7 +73,7 @@ export default function ReadAloudButton({
         if (!available) return;
         // Synchronous, inside the click: the store unlocks iOS audio here.
         if (stoppable) stop();
-        else start(ownerId, markdown, scope);
+        else start(owner, markdown, scope);
       }}
       title={available ? label : reason}
       aria-label={label}

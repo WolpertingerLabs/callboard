@@ -8,7 +8,7 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { useEffect, useRef } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { SynthesizedSpeech } from "../api";
+import { ReadAloudRequestError, type SynthesizedSpeech } from "../api";
 import { installMediaStubs, type MediaStubs } from "../testing/mediaStubs";
 import { getReadAloudAudioForTesting, getSnapshot, registerSpeaker, resetReadAloudPlayerForTesting, start, stop } from "../utils/readAloudPlayer";
 import ReadAloudPlayer, { formatClock } from "./ReadAloudPlayer";
@@ -149,12 +149,13 @@ describe("ReadAloudPlayer", () => {
     expect(screen.queryByRole("group", { name: "Read aloud player" })).toBeNull();
   });
 
-  it("X while preparing aborts the synthesis", () => {
+  it("X while preparing is named Cancel, and aborts the synthesis", () => {
     synth.fn.mockReturnValueOnce(new Promise(() => {}));
     act(() => start("a", "Text."));
     render(<ReadAloudPlayer />);
     const signal = synth.fn.mock.calls[0][1] as AbortSignal;
-    fireEvent.click(screen.getByRole("button", { name: "Close audio player" }));
+    expect(screen.queryByRole("button", { name: "Close audio player" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel read aloud" }));
     expect(signal.aborted).toBe(true);
     expect(getSnapshot().status).toBe("idle");
   });
@@ -225,12 +226,22 @@ describe("ReadAloudPlayer", () => {
     expect(getSnapshot().status).toBe("paused");
   });
 
-  it("leaves Space on Cancel, Retry and Dismiss alone", async () => {
+  it("leaves Space on the X while preparing, and on Retry and the X on an error, alone", async () => {
     synth.fn.mockReturnValueOnce(new Promise(() => {}));
     act(() => start("a", "Text."));
     render(<ReadAloudPlayer />);
     expect(space(screen.getByRole("button", { name: "Cancel read aloud" })).defaultPrevented).toBe(false);
     expect(getSnapshot().status).toBe("loading");
+
+    synth.fn.mockRejectedValueOnce(new Error("No"));
+    await act(async () => {
+      start("a", "Text.");
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    for (const name of ["Retry", "Close audio player"]) {
+      expect(space(screen.getByRole("button", { name })).defaultPrevented).toBe(false);
+      expect(getSnapshot().status).toBe("error");
+    }
   });
 
   it("leaves arrow keys on the seek slider to the slider", async () => {
@@ -272,7 +283,7 @@ describe("ReadAloudPlayer", () => {
       start("a", "Text.");
       await new Promise((r) => setTimeout(r, 0));
     });
-    fireEvent.keyDown(screen.getByRole("button", { name: "Dismiss" }), { key: "Escape" });
+    fireEvent.keyDown(screen.getByRole("button", { name: "Retry" }), { key: "Escape" });
     expect(getSnapshot().status).toBe("idle");
   });
 
@@ -282,16 +293,17 @@ describe("ReadAloudPlayer", () => {
     expect(screen.getByText("Reading the start of this long message.")).toBeTruthy();
   });
 
-  it("shows Preparing with a Cancel while loading", () => {
+  it("shows Preparing with the X (as Cancel) as its only button while loading", () => {
     synth.fn.mockReturnValueOnce(new Promise(() => {}));
     act(() => start("a", "Text."));
     render(<ReadAloudPlayer />);
     expect(screen.getByText("Preparing audio…")).toBeTruthy();
+    expect(screen.getAllByRole("button").map((b) => b.getAttribute("aria-label"))).toEqual(["Cancel read aloud"]);
     fireEvent.click(screen.getByRole("button", { name: "Cancel read aloud" }));
     expect(getSnapshot().status).toBe("idle");
   });
 
-  it("shows an error with Retry and Dismiss", async () => {
+  it("shows an error with Retry and the X, and no Dismiss", async () => {
     synth.fn.mockRejectedValueOnce(new Error("Upstream said no"));
     await act(async () => {
       start("a", "Text.");
@@ -299,6 +311,8 @@ describe("ReadAloudPlayer", () => {
     });
     render(<ReadAloudPlayer />);
     expect(screen.getByRole("alert").textContent).toContain("Upstream said no");
+    expect(screen.queryByRole("button", { name: "Dismiss" })).toBeNull();
+    expect(screen.getAllByRole("button").map((b) => b.textContent || b.getAttribute("aria-label"))).toEqual(["Retry", "Close audio player"]);
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Retry" }));
       await new Promise((r) => setTimeout(r, 0));
@@ -311,7 +325,7 @@ describe("ReadAloudPlayer", () => {
       start("a", "Text.");
       await new Promise((r) => setTimeout(r, 0));
     });
-    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close audio player" }));
     expect(getSnapshot().status).toBe("idle");
   });
 
@@ -320,6 +334,7 @@ describe("ReadAloudPlayer", () => {
     render(<ReadAloudPlayer />);
     expect(screen.getByRole("alert").textContent).toContain("only code");
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Close audio player" })).toBeTruthy();
   });
 
   it("shows the tap-to-play hint when autoplay was refused", async () => {
@@ -331,20 +346,53 @@ describe("ReadAloudPlayer", () => {
   });
 
   describe("focus", () => {
-    /** A stand-in for bubble "a"'s speaker, registered as a real one is. */
-    function Harness({ speaker = true }: { speaker?: boolean }) {
+    /**
+     * A stand-in for bubble "a"'s speaker, registered as a real one is, inside
+     * a scrolling transcript, and a composer for the bar's fallback.
+     */
+    function Harness({ speaker = true, composer = true }: { speaker?: boolean; composer?: boolean }) {
       const speakerRef = useRef<HTMLButtonElement>(null);
+      const composerRef = useRef<HTMLTextAreaElement>(null);
       useEffect(() => (speaker && speakerRef.current ? registerSpeaker("a", speakerRef.current) : undefined), [speaker]);
       return (
         <>
-          {speaker && <button ref={speakerRef}>speaker</button>}
+          <div data-testid="transcript" style={{ overflow: "auto" }}>
+            {speaker && <button ref={speakerRef}>speaker</button>}
+          </div>
           <button>elsewhere</button>
-          <ReadAloudPlayer />
+          <ReadAloudPlayer getComposer={composer ? () => composerRef.current : undefined} />
+          {composer && <textarea aria-label="composer" ref={composerRef} />}
         </>
       );
     }
 
-    it("moves focus from Cancel to play/pause when the audio is ready", async () => {
+    const rect = (top: number, bottom: number) =>
+      ({ top, bottom, left: 0, right: 100, width: 100, height: bottom - top, x: 0, y: top, toJSON() {} }) as DOMRect;
+    /** The transcript shows 0–400px; the speaker sits at `top`. */
+    function place(speakerTop: number) {
+      vi.spyOn(screen.getByTestId("transcript"), "getBoundingClientRect").mockReturnValue(rect(0, 400));
+      vi.spyOn(screen.getByRole("button", { name: "speaker" }), "getBoundingClientRect").mockReturnValue(rect(speakerTop, speakerTop + 24));
+    }
+    function setTouch(on: boolean) {
+      vi.stubGlobal(
+        "matchMedia",
+        vi.fn((query: string) => ({ matches: on && query === "(pointer: coarse)", media: query, addEventListener() {}, removeEventListener() {} })),
+      );
+    }
+    afterEach(() => {
+      vi.unstubAllGlobals();
+      vi.restoreAllMocks();
+      Object.defineProperty(window, "innerWidth", { value: 1024, configurable: true });
+    });
+
+    async function closeFromInside() {
+      const close = screen.getByRole("button", { name: "Close audio player" });
+      close.focus();
+      act(() => fireEvent.click(close));
+      expect(getSnapshot().status).toBe("idle");
+    }
+
+    it("moves focus from the X (Cancel) to play/pause when the audio is ready", async () => {
       const d: { resolve?: (v: SynthesizedSpeech) => void } = {};
       synth.fn.mockReturnValueOnce(new Promise<SynthesizedSpeech>((r) => (d.resolve = r)));
       act(() => start("a", "Text."));
@@ -371,29 +419,68 @@ describe("ReadAloudPlayer", () => {
       expect(document.activeElement).toBe(screen.getByRole("button", { name: "speaker" }));
     });
 
+    it("makes Retry primary on a retryable error, and the X on one that is not", async () => {
+      synth.fn.mockRejectedValueOnce(new Error("Flaky"));
+      await act(async () => {
+        start("a", "Text.");
+        await new Promise((r) => setTimeout(r, 0));
+      });
+      render(<Harness />);
+      const retryButton = screen.getByRole("button", { name: "Retry" });
+      retryButton.focus();
+      // Retry → loading: Retry is gone, the X (now Cancel) takes focus.
+      const d: { reject?: (e: unknown) => void } = {};
+      synth.fn.mockReturnValueOnce(new Promise((_r, rej) => (d.reject = rej)));
+      act(() => fireEvent.click(retryButton));
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Cancel read aloud" }));
+      // → a 400, which Retry cannot help: the X stays primary, as Close.
+      await act(async () => {
+        d.reject!(new ReadAloudRequestError("Unsupported model", 400));
+        await new Promise((r) => setTimeout(r, 0));
+      });
+      expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Close audio player" }));
+    });
+
+    it("moves focus from the X (Cancel) to Retry when a load fails in a way Retry can help", async () => {
+      const d: { reject?: (e: unknown) => void } = {};
+      synth.fn.mockReturnValueOnce(new Promise((_r, rej) => (d.reject = rej)));
+      act(() => start("a", "Text."));
+      render(<Harness />);
+      const x = screen.getByRole("button", { name: "Cancel read aloud" });
+      x.focus();
+      await act(async () => {
+        d.reject!(new Error("Flaky"));
+        await new Promise((r) => setTimeout(r, 0));
+      });
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Retry" }));
+    });
+
     it.each([
       ["Close audio player", (el: HTMLElement) => fireEvent.click(el)],
       ["Pause", (el: HTMLElement) => fireEvent.keyDown(el, { key: "Escape" })],
-    ])("returns focus to the speaker when %s ends playback", async (name, act_) => {
+    ])("returns focus to an in-view speaker when %s ends playback, without scrolling", async (name, act_) => {
       await playing();
       render(<Harness />);
+      place(100);
+      const speakerEl = screen.getByRole("button", { name: "speaker" });
+      const focus = vi.spyOn(speakerEl, "focus");
       const el = screen.getByRole("button", { name });
       el.focus();
       act(() => act_(el));
       expect(getSnapshot().status).toBe("idle");
-      expect(document.activeElement).toBe(screen.getByRole("button", { name: "speaker" }));
+      expect(document.activeElement).toBe(speakerEl);
+      expect(focus).toHaveBeenCalledWith({ preventScroll: true });
     });
 
-    it("returns focus to the speaker on Dismiss and on Cancel", async () => {
+    it("returns focus to the speaker on the X while preparing and on an error", async () => {
       synth.fn.mockRejectedValueOnce(new Error("No"));
       await act(async () => {
         start("a", "Text.");
         await new Promise((r) => setTimeout(r, 0));
       });
       render(<Harness />);
-      const dismiss = screen.getByRole("button", { name: "Dismiss" });
-      dismiss.focus();
-      act(() => fireEvent.click(dismiss));
+      await closeFromInside();
       expect(document.activeElement).toBe(screen.getByRole("button", { name: "speaker" }));
 
       synth.fn.mockReturnValueOnce(new Promise(() => {}));
@@ -402,6 +489,39 @@ describe("ReadAloudPlayer", () => {
       cancel.focus();
       act(() => fireEvent.click(cancel));
       expect(document.activeElement).toBe(screen.getByRole("button", { name: "speaker" }));
+    });
+
+    it.each([
+      ["above", -200],
+      ["below", 900],
+    ])("on desktop, with the speaker scrolled out of view (%s), focuses the composer without scrolling", async (_where, top) => {
+      setTouch(false);
+      await playing();
+      render(<Harness />);
+      place(top);
+      const speakerFocus = vi.spyOn(screen.getByRole("button", { name: "speaker" }), "focus");
+      const composerEl = screen.getByLabelText("composer");
+      const composerFocus = vi.spyOn(composerEl, "focus");
+      await closeFromInside();
+      expect(speakerFocus).not.toHaveBeenCalled();
+      expect(document.activeElement).toBe(composerEl);
+      expect(composerFocus).toHaveBeenCalledWith({ preventScroll: true });
+    });
+
+    it.each([
+      ["a narrow screen", () => Object.defineProperty(window, "innerWidth", { value: 400, configurable: true })],
+      ["a touch screen", () => setTouch(true)],
+    ])("on %s, with the speaker out of view, focuses neither the speaker nor the composer (no keyboard pop)", async (_label, setup) => {
+      setup();
+      await playing();
+      render(<Harness />);
+      place(-500);
+      const speakerFocus = vi.spyOn(screen.getByRole("button", { name: "speaker" }), "focus");
+      const composerFocus = vi.spyOn(screen.getByLabelText("composer"), "focus");
+      await closeFromInside();
+      expect(speakerFocus).not.toHaveBeenCalled();
+      expect(composerFocus).not.toHaveBeenCalled();
+      expect(document.activeElement).not.toBe(screen.getByLabelText("composer"));
     });
 
     it("leaves focus alone when the close came without focus in the bar", async () => {
@@ -414,13 +534,17 @@ describe("ReadAloudPlayer", () => {
       expect(document.activeElement).toBe(elsewhere);
     });
 
-    it("does not move focus when the speaker is gone", async () => {
+    it("with the speaker gone, falls back to the composer on desktop", async () => {
       await playing();
       render(<Harness speaker={false} />);
-      const close = screen.getByRole("button", { name: "Close audio player" });
-      close.focus();
-      act(() => fireEvent.click(close));
-      expect(getSnapshot().status).toBe("idle");
+      await closeFromInside();
+      expect(document.activeElement).toBe(screen.getByLabelText("composer"));
+    });
+
+    it("with neither speaker nor composer, moves focus nowhere in particular", async () => {
+      await playing();
+      render(<Harness speaker={false} composer={false} />);
+      await closeFromInside();
       expect(screen.queryByRole("button", { name: "speaker" })).toBeNull();
     });
   });

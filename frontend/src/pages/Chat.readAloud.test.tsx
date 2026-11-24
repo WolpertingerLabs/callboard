@@ -5,7 +5,7 @@
  * when the server cannot synthesize — and a playback shows its controls in
  * the bar docked directly above the composer. Harness as Chat.voice.test.tsx.
  */
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
 import { READ_ALOUD_NOT_CONFIGURED_MESSAGE } from "shared/types/readAloud.js";
@@ -13,19 +13,43 @@ import { installMediaStubs } from "../testing/mediaStubs";
 import { getSnapshot, resetReadAloudPlayerForTesting } from "../utils/readAloudPlayer";
 import Chat from "./Chat";
 
-const state = vi.hoisted(() => ({ systemInfo: {} as Record<string, unknown>, synth: vi.fn() }));
+const state = vi.hoisted(() => ({ systemInfo: {} as Record<string, unknown>, synth: vi.fn(), withAside: false }));
+const ASIDE_AT = "2026-01-01T10:00:01.000Z";
 
 vi.mock("../api/computerUse", () => ({ computerUseClient: { status: vi.fn(), open: vi.fn(), observe: vi.fn(), control: vi.fn(), action: vi.fn() } }));
 vi.mock("../api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../api")>()),
   getChat: vi.fn(async (id: string) => ({ id, title: "Work", folder: "/tmp", is_git_repo: true, metadata: "{}", slash_commands: [] })),
-  getChatTree: vi.fn(async (id: string) => ({
-    targetChatId: id,
-    rootChatId: id,
-    ancestors: [],
-    tree: { chatId: id, title: "Work", provider: "claude-code", status: "ongoing", folder: "/tmp", createdAt: "", updatedAt: "", children: [] },
-  })),
-  getMessages: vi.fn(async () => [{ role: "assistant", type: "text", content: "an answer", timestamp: "2026-01-01T10:00:01.000Z" }]),
+  getChatTree: vi.fn(async (id: string) => {
+    const node = (chatId: string, extra: Record<string, unknown> = {}) => ({
+      chatId,
+      title: chatId,
+      provider: "claude-code",
+      status: "ongoing",
+      folder: "/tmp",
+      createdAt: "2026-01-01T11:00:00.000Z",
+      updatedAt: "",
+      children: [],
+      ...extra,
+    });
+    const aside = node("aside-1", {
+      role: "aside",
+      title: "Aside: why?",
+      forkedAt: ASIDE_AT,
+      asideQuotes: [{ timestamp: ASIDE_AT, role: "assistant", text: "an" }],
+    });
+    return {
+      targetChatId: id,
+      rootChatId: "original",
+      ancestors: [],
+      tree: id === "original" ? node("original", { children: state.withAside ? [aside] : [] }) : node(id),
+    };
+  }),
+  getMessages: vi.fn(async (id: string) =>
+    id === "aside-1"
+      ? [{ role: "assistant", type: "text", content: "an aside reply", timestamp: "2026-01-01T11:00:01.000Z" }]
+      : [{ role: "assistant", type: "text", content: "an answer", timestamp: "2026-01-01T10:00:01.000Z" }],
+  ),
   getPending: vi.fn(async () => null),
   getActivity: vi.fn(async () => ({ activities: [], conditionWatch: null, awaitingChildren: 0, heldMessages: [] })),
   markAsRead: vi.fn(async () => ({})),
@@ -45,6 +69,7 @@ vi.mock("../components/ChatDebugPanel", () => ({ default: () => <div /> }));
 
 beforeEach(() => {
   state.systemInfo = {};
+  state.withAside = false;
   state.synth.mockReset().mockResolvedValue({ blob: new Blob(["mp3"]), model: "m", voice: null, truncated: false });
   Object.defineProperty(window, "innerWidth", { value: 1200, configurable: true });
   Object.defineProperty(window, "isSecureContext", { value: true, configurable: true });
@@ -87,9 +112,9 @@ function SwitchChat() {
   return <button onClick={() => navigate("/chat/other")}>switch chat</button>;
 }
 
-function renderChat() {
+function renderChat(search = "") {
   return render(
-    <MemoryRouter initialEntries={[{ pathname: "/chat/original" }]}>
+    <MemoryRouter initialEntries={[{ pathname: "/chat/original", search }]}>
       <SwitchChat />
       <Routes>
         <Route path="/chat/:id" element={<Chat />} />
@@ -203,5 +228,70 @@ describe("the docked read-aloud bar", () => {
     await flush();
     expect(getSnapshot().status).toBe("idle");
     expect(bar()).toBeNull();
+  });
+
+  describe("with the aside panel open", () => {
+    const panel = () => screen.getByTestId("aside-panel");
+    const bars = () => screen.queryAllByRole("group", { name: "Read aloud player" });
+
+    beforeEach(() => {
+      state.withAside = true;
+    });
+
+    async function openBoth() {
+      renderChat("?aside=aside-1");
+      await within(panel()).findByText("an aside reply");
+      await screen.findByText("an answer");
+      await waitFor(() => expect(screen.getAllByRole("button", { name: "Read aloud" })).toHaveLength(2));
+    }
+    const mainSpeaker = () =>
+      screen
+        .getAllByText("an answer")
+        .map((el) => el.closest(".msg-bubble"))
+        .find(Boolean)!
+        .querySelector<HTMLButtonElement>(":scope > .read-aloud-affordance")!;
+    const asideSpeaker = () => within(panel()).getByRole("button", { name: /Read aloud|Stop reading aloud/ });
+
+    it("reading in the main chat: one bar, in the main chat's view; closing the aside leaves it playing", async () => {
+      await openBoth();
+      fireEvent.click(mainSpeaker());
+      await flush();
+      expect(bars()).toHaveLength(1);
+      expect(panel().contains(bars()[0])).toBe(false);
+
+      fireEvent.click(within(panel()).getByRole("button", { name: "Close aside" }));
+      await waitFor(() => expect(screen.queryByTestId("aside-panel")).toBeNull());
+      await flush();
+      expect(getSnapshot().status).toBe("playing");
+      expect(bars()).toHaveLength(1);
+      expect(mainSpeaker().classList.contains("is-active")).toBe(true);
+    });
+
+    it("reading in the aside: one bar, in the aside's view; closing the aside stops it and leaves no bar", async () => {
+      await openBoth();
+      fireEvent.click(asideSpeaker());
+      await flush();
+      expect(bars()).toHaveLength(1);
+      expect(panel().contains(bars()[0])).toBe(true);
+      expect(within(bars()[0]).getByText("an aside reply")).toBeTruthy();
+      expect(mainSpeaker().classList.contains("is-active")).toBe(false);
+
+      fireEvent.click(within(panel()).getByRole("button", { name: "Close aside" }));
+      await waitFor(() => expect(screen.queryByTestId("aside-panel")).toBeNull());
+      await flush();
+      expect(getSnapshot().status).toBe("idle");
+      expect(bars()).toHaveLength(0);
+    });
+
+    it("starting in one view moves the single bar to the other", async () => {
+      await openBoth();
+      fireEvent.click(asideSpeaker());
+      await flush();
+      fireEvent.click(mainSpeaker());
+      await flush();
+      expect(bars()).toHaveLength(1);
+      expect(panel().contains(bars()[0])).toBe(false);
+      expect(asideSpeaker().classList.contains("is-active")).toBe(false);
+    });
   });
 });
