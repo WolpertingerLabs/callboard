@@ -127,6 +127,9 @@ export interface AdminConnectionAuth {
   /** jwt_bearer: the user the service account acts as (admin config). */
   subject?: string;
   subjectRequired?: boolean;
+  /** The `google` connection: the caller's selection (callers.<alias>.google),
+   *  services in catalog order. The subject, if any, is `subject` above. */
+  google?: { auth: AdminGoogleAuthMode; services: Record<string, string> };
 }
 
 // ── /admin/callers/:alias/connection-status ──────────────────────────────

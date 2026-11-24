@@ -37,6 +37,7 @@ import {
   listConnectionTemplates,
   loadConnection,
 } from '../shared/connections.js';
+import { validateGoogleSelection } from '../shared/google.js';
 import type { ListenerConfigSchema } from '../shared/listener-config.js';
 import { isSecretSetForCaller } from '../shared/env-utils.js';
 import { callerFingerprint } from '../shared/crypto/key-manager.js';
@@ -202,9 +203,27 @@ export function createAdminRouter(deps: AdminRouterDeps): express.Router {
         narrowed: declared !== undefined && sorted(declared).join(' ') !== scopes.join(' '),
         ...(o.subject !== undefined && { subject: o.subject }),
         ...(o.subjectRequired === true && { subjectRequired: true }),
+        ...(route.alias === 'google' && googleView(config, alias)),
       });
     }
     return { auth, dropped: new Map(Object.entries(dropped)) };
+  }
+
+  /** The caller's Google mode and services, when `google` resolved from the
+   *  built-in template (not a custom connector named `google`). */
+  function googleView(
+    config: RemoteServerConfig,
+    alias: string,
+  ): { google?: NonNullable<AdminConnectionAuth['google']> } {
+    if ((config.connectors ?? []).some((c) => c.alias === 'google')) return {};
+    const caller = config.callers[alias];
+    if (!Object.hasOwn(caller, 'google')) return {};
+    try {
+      const sel = validateGoogleSelection(caller.google);
+      return { google: { auth: sel.auth, services: { ...sel.services } } };
+    } catch {
+      return {};
+    }
   }
 
   /** A connection's own `oauth2.scopes`, before any caller override.
@@ -281,7 +300,9 @@ export function createAdminRouter(deps: AdminRouterDeps): express.Router {
     const out: AdminCallerConnection[] = caller.connections.map((connectionAlias) => {
       const tpl = tplMap.get(connectionAlias);
       const customRoute = customMap.get(connectionAlias);
-      const isCustom = !tpl;
+      // A configured connector. A name that is neither (a removed template
+      // ID, a typo) is not custom: it has a `problem` instead.
+      const isCustom = !tpl && customRoute !== undefined;
       const requiredNames = tpl ? callerRequiredSecrets(tpl, caller) : [];
       const optionalNames = tpl ? callerOptionalSecrets(tpl, caller) : [];
 
