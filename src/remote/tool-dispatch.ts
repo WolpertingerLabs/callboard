@@ -2108,13 +2108,7 @@ export const toolHandlers: Record<string, ToolHandler> = {
     }
     if (enabled) assertAgentMayEnable(config, connection, context);
 
-    const connectionSet = new Set(caller.connections);
-
-    if (enabled) {
-      connectionSet.add(connection);
-    } else {
-      connectionSet.delete(connection);
-
+    if (!enabled) {
       // Stop any running ingestors for this connection
       const ingestorManager = context.ingestorManager;
       try {
@@ -2124,8 +2118,19 @@ export const toolHandlers: Record<string, ToolHandler> = {
       }
     }
 
-    caller.connections = [...connectionSet];
-    saveRemoteConfig(config);
+    // Re-load after the await: another writer (the dashboard's Google
+    // selection, say) may have saved meanwhile, and saving the copy loaded
+    // above would undo it. The checks above don't depend on what can change.
+    const fresh = loadRemoteConfig();
+    const freshCaller = Object.hasOwn(fresh.callers, context.callerAlias)
+      ? fresh.callers[context.callerAlias]
+      : undefined;
+    if (!freshCaller) throw new Error(`Unknown caller: ${context.callerAlias}`);
+    const connectionSet = new Set(freshCaller.connections);
+    if (enabled) connectionSet.add(connection);
+    else connectionSet.delete(connection);
+    freshCaller.connections = [...connectionSet];
+    saveRemoteConfig(fresh);
 
     // Invalidate cached resolved routes so connection changes take effect immediately
     context.refreshRoutes();

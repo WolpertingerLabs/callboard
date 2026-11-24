@@ -1144,34 +1144,40 @@ describe('resolveCallerRoutes', () => {
 });
 
 describe('saveRemoteConfig', () => {
-  it('should create config directory and write remote config file', () => {
-    const mkdirSpy = vi.spyOn(fs, 'mkdirSync').mockReturnValue(undefined);
-    const writeSpy = vi.spyOn(fs, 'writeFileSync').mockReturnValue(undefined);
+  it('creates the config directory and writes the remote config file atomically', () => {
+    const prev = process.env.MCP_CONFIG_DIR;
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'drawlatch-save-remote-'));
+    process.env.MCP_CONFIG_DIR = path.join(root, 'nested');
+    const rename = vi.spyOn(fs, 'renameSync');
+    try {
+      saveRemoteConfig({
+        host: '127.0.0.1',
+        port: 9999,
+        callers: {
+          laptop: { connections: ['github'] },
+        },
+        rateLimitPerMinute: 60,
+      });
 
-    saveRemoteConfig({
-      host: '127.0.0.1',
-      port: 9999,
-      callers: {
-        laptop: { connections: ['github'] },
-      },
-      rateLimitPerMinute: 60,
-    });
+      expect(fs.statSync(getConfigDir()).mode & 0o777).toBe(0o700);
+      // Temp file in the same directory, renamed over the target.
+      expect(rename).toHaveBeenCalledTimes(1);
+      expect(rename.mock.calls[0][1]).toBe(getRemoteConfigPath());
+      expect(fs.statSync(getRemoteConfigPath()).mode & 0o777).toBe(0o600);
+      expect(fs.readdirSync(getConfigDir())).toEqual(['remote.config.json']);
 
-    expect(mkdirSpy).toHaveBeenCalledWith(getConfigDir(), { recursive: true, mode: 0o700 });
-    expect(writeSpy).toHaveBeenCalledWith(getRemoteConfigPath(), expect.any(String), {
-      mode: 0o600,
-    });
-
-    // Verify written content is valid JSON with flat structure (no .remote wrapper)
-    const writtenContent = writeSpy.mock.calls[0][1] as string;
-    const parsed = JSON.parse(writtenContent);
-    expect(parsed.host).toBe('127.0.0.1');
-    expect(parsed.port).toBe(9999);
-    expect(parsed.callers.laptop.connections).toEqual(['github']);
-    expect(parsed.remote).toBeUndefined(); // Should be flat, not nested
-
-    mkdirSpy.mockRestore();
-    writeSpy.mockRestore();
+      // Valid JSON with a flat structure (no .remote wrapper)
+      const parsed = JSON.parse(fs.readFileSync(getRemoteConfigPath(), 'utf-8'));
+      expect(parsed.host).toBe('127.0.0.1');
+      expect(parsed.port).toBe(9999);
+      expect(parsed.callers.laptop.connections).toEqual(['github']);
+      expect(parsed.remote).toBeUndefined(); // Should be flat, not nested
+    } finally {
+      rename.mockRestore();
+      if (prev === undefined) delete process.env.MCP_CONFIG_DIR;
+      else process.env.MCP_CONFIG_DIR = prev;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

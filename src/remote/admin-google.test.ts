@@ -271,6 +271,17 @@ describe('PUT /callers/:alias/google', () => {
     expect(fs.statSync(getRemoteConfigPath()).mode & 0o777).toBe(0o600);
   });
 
+  it('replaces the file atomically (new inode) and keeps another mode', async () => {
+    fs.chmodSync(getRemoteConfigPath(), 0o640);
+    const inode = fs.statSync(getRemoteConfigPath()).ino;
+    const res = await req('PUT', '/callers/alice/google', valid);
+    expect(res.status).toBe(200);
+    const st = fs.statSync(getRemoteConfigPath());
+    expect(st.ino).not.toBe(inode);
+    expect(st.mode & 0o777).toBe(0o640);
+    expect(fs.readdirSync(configDir).filter((f) => f.endsWith('.tmp'))).toEqual([]);
+  });
+
   it('replacing an existing block changes only that block', async () => {
     const before = fs.readFileSync(getRemoteConfigPath(), 'utf8');
     const res = await req('PUT', '/callers/bob/google', {

@@ -10,6 +10,7 @@
  * Keys directory: ~/.drawlatch/keys/
  */
 
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -997,7 +998,39 @@ export function loadRemoteConfig(): RemoteServerConfig {
 
 export function saveRemoteConfig(config: RemoteServerConfig): void {
   fs.mkdirSync(getConfigDir(), { recursive: true, mode: 0o700 });
-  fs.writeFileSync(getRemoteConfigPath(), JSON.stringify(config, null, 2), { mode: 0o600 });
+  writeFileAtomic(getRemoteConfigPath(), JSON.stringify(config, null, 2));
+}
+
+/**
+ * Replace `file` atomically: write a temp file in the same directory, then
+ * rename it over the target, so a reader (or a crash) never sees a partial
+ * file. The target's mode is kept; a new file is 0600.
+ */
+export function writeFileAtomic(file: string, data: string): void {
+  let mode = 0o600;
+  try {
+    mode = fs.statSync(file).mode & 0o777;
+  } catch {
+    // New file.
+  }
+  const tmp = path.join(
+    path.dirname(file),
+    `.${path.basename(file)}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`,
+  );
+  const fd = fs.openSync(tmp, 'wx', 0o600);
+  try {
+    fs.writeSync(fd, data);
+    fs.fsyncSync(fd);
+    fs.fchmodSync(fd, mode);
+  } finally {
+    fs.closeSync(fd);
+  }
+  try {
+    fs.renameSync(tmp, file);
+  } catch (err) {
+    fs.rmSync(tmp, { force: true });
+    throw err;
+  }
 }
 
 // ── Per-caller route resolution ──────────────────────────────────────────

@@ -27,6 +27,7 @@ import fs from 'node:fs';
 import {
   getRemoteConfigPath,
   resolveCallerRoutesChecked,
+  writeFileAtomic,
   type GoogleCallerConfig,
   type RemoteServerConfig,
 } from '../shared/config.js';
@@ -53,7 +54,7 @@ type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v);
 
 /** The catalog without allowlists, tests or the scope audit. */
-function catalogPayload(): AdminGoogleCatalog {
+export function catalogPayload(): AdminGoogleCatalog {
   const catalog = loadGoogleCatalog();
   return {
     authModes: GOOGLE_AUTH_MODES.map((id) => ({
@@ -137,7 +138,8 @@ class HttpError extends Error {
  * remote.config.json, leaving every other byte as the daemon would write it.
  * The file is parsed and re-serialised as raw JSON (2-space, as
  * saveRemoteConfig writes, keeping a trailing newline if there was one), so
- * the defaults loadRemoteConfig merges in are never written back. Returns the
+ * the defaults loadRemoteConfig merges in are never written back. The write
+ * is atomic (writeFileAtomic: temp file + rename, mode kept). Returns the
  * block that was there before.
  */
 function writeSelection(alias: string, next: GoogleCallerConfig | undefined): unknown {
@@ -160,7 +162,8 @@ function writeSelection(alias: string, next: GoogleCallerConfig | undefined): un
     caller.google = next;
   }
   const out = JSON.stringify(raw, null, 2) + (text.endsWith('\n') ? '\n' : '');
-  fs.writeFileSync(file, out, { mode: 0o600 });
+  // Temp file + rename, keeping the file's mode (shared with saveRemoteConfig).
+  writeFileAtomic(file, out);
   return before;
 }
 
