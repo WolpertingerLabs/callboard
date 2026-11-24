@@ -14,7 +14,8 @@
  *     reported via `isSecretSetForCaller()` (booleans only).
  *   - Caller `env` mappings (e.g. "GITHUB_TOKEN": "${ACME_GITHUB_TOKEN}") are
  *     reduced to key-name lists — the value strings are NOT returned.
- *   - No mutations: every endpoint is GET.
+ *   - No mutations here: the mutating routes are mounted from
+ *     admin-mutations.ts, admin-vault.ts and admin-google.ts.
  *   - No CORS.
  */
 
@@ -41,6 +42,7 @@ import { isSecretSetForCaller } from '../shared/env-utils.js';
 import { callerFingerprint } from '../shared/crypto/key-manager.js';
 import { getTunnelUrl } from './tunnel-state.js';
 import { mountAdminMutations, type AdminMutationDeps } from './admin-mutations.js';
+import { mountAdminGoogle } from './admin-google.js';
 import { mountAdminVault } from './admin-vault.js';
 import { itemCounts } from './vault/service.js';
 import type { IngestorManager } from './ingestors/index.js';
@@ -472,6 +474,10 @@ export function createAdminRouter(deps: AdminRouterDeps): express.Router {
   // Vault items and status (src/remote/admin-vault.ts). Only POST …/reveal
   // ever returns a vault value.
   mountAdminVault(router, deps);
+
+  // The Google selection (src/remote/admin-google.ts): callers.<alias>.google
+  // is written here and in remote.config.json only, never through a tool.
+  mountAdminGoogle(router, deps);
 
   return router;
 }
