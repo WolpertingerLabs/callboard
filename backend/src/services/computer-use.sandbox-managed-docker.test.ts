@@ -177,11 +177,39 @@ it.skipIf(!enabled)(
     expect(after.frame.data).not.toBe(first.frame.data);
     log("observed, typed and pressed Enter; the frame changed");
 
-    // 4. Stop: the container and its token file are gone.
+    // 4. Stop: the drain hook runs first, against the still-running container
+    // (what PR 4's outbox sync needs: list, then get by digest), and then the
+    // container and its token file are gone.
+    const payload = "drained before destroy\n";
+    await docker([
+      "exec",
+      "-u",
+      "desktop",
+      ids[0],
+      "sh",
+      "-c",
+      `mkdir -p /home/desktop/outbox && printf '%s' '${payload.trim()}' > /home/desktop/outbox/.r.part && mv /home/desktop/outbox/.r.part /home/desktop/outbox/result.txt`,
+    ]);
+    await delay(1_200); // past the host's settle window, so the listing carries a digest
+    const drained: { chatId: string; instanceId: string; names: string[]; body?: string; stillRunning: boolean }[] = [];
+    manager.drainBeforeDestroy = async (sandbox, signal) => {
+      const entries = await sandbox.driver.listOutbox(signal);
+      const entry = entries.find((e) => e.name === "result.txt");
+      const file = entry?.sha256 ? await sandbox.driver.downloadOutboxFile(entry.name, signal, { expectedSha256: entry.sha256 }) : undefined;
+      drained.push({
+        chatId: sandbox.chatId,
+        instanceId: sandbox.instanceId,
+        names: entries.map((e) => e.name),
+        body: file?.data.toString("utf8"),
+        stillRunning: (await mine(manager.owner)).length === 1,
+      });
+    };
     started = Date.now();
     await host.stop(chatId, opened.id);
     await until(async () => (await mine(manager.owner)).length === 0 && !existsSync(tokenDir), "container and token removal");
-    log(`stopped; container and token removed in ${Date.now() - started}ms`);
+    expect(drained).toEqual([{ chatId, instanceId: expect.any(String), names: ["result.txt"], body: payload.trim(), stillRunning: true }]);
+    manager.drainBeforeDestroy = async () => {};
+    log(`stopped; drain listed and fetched result.txt by digest, then container and token removed in ${Date.now() - started}ms`);
 
     // 6 (set up first). A container with another owner's label, started the same way.
     const foreignToken = join(dataDir, "foreign-token");

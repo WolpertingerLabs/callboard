@@ -16,6 +16,7 @@
 import {
   SANDBOX_BUILD_COMMAND,
   type ComputerUseSandboxInfo,
+  type SandboxDesktopVariant,
   type SandboxDesktopBuild,
   type SandboxDesktopMode,
   type SandboxDesktopStatus,
@@ -24,6 +25,7 @@ import { SandboxContainerManager } from "./sandbox-containers.js";
 import { readSandboxSettings, resolveSandboxSettings } from "./sandbox-desktop-settings.js";
 import { buildSandboxImage, execDocker } from "./sandbox-image.js";
 import { DATA_DIR } from "../utils/paths.js";
+import { chatFileService } from "./chat-file-service.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("sandbox-desktop");
@@ -46,7 +48,17 @@ export function getSandboxManager(): SandboxContainerManager {
     docker: execDocker(),
     dataDir: DATA_DIR,
     settings: () => resolveSandboxSettings(readSandboxSettings()),
+    chatContext: (chatId) => {
+      const chat = chatFileService.getChat(chatId);
+      return chat ? { workspaceId: chat.workspaceId, folder: chat.folder } : undefined;
+    },
   }));
+}
+
+/** How the sandbox is run now, for wording (`sandboxDesktopText`): the mode, and for managed containers the network. */
+export function currentSandboxVariant(env: NodeJS.ProcessEnv = process.env): SandboxDesktopVariant {
+  const { mode } = currentSandboxMode(env);
+  return mode === "managed" ? { mode, network: resolveSandboxSettings(readSandboxSettings()).network } : { mode };
 }
 
 /** The Computer view's sandbox line: mode, and why a managed sandbox cannot start, if it cannot. */

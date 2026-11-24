@@ -6,7 +6,7 @@ vi.mock("./computer-use.js", async (original) => ({
   ...(await original<typeof import("./computer-use.js")>()),
   getComputerUseHost: vi.fn(),
 }));
-import { SANDBOX_DESKTOP_TEXT } from "shared/types/index.js";
+import { SANDBOX_DESKTOP_TEXT, sandboxDesktopText } from "shared/types/index.js";
 import { ComputerUseHost, getComputerUseHost } from "./computer-use.js";
 import { readComputerUsePolicy } from "./computer-use-policy.js";
 import { clearOpenApprovalsForTest, getPendingRequest, respondToPermission } from "./pending-requests.js";
@@ -111,8 +111,11 @@ it("sandboxControl alone does not let the agent ask for the user's desktop or th
   }
 });
 
-it("the tool descriptions say when to use the sandbox rather than the browser or the user's desktop", () => {
-  const spec = buildComputerUseToolsSpec(() => CHAT);
+it("the tool descriptions say when to use the sandbox rather than the browser or the user's desktop (endpoint: a shared container)", () => {
+  const spec = buildComputerUseToolsSpec(
+    () => CHAT,
+    () => ({ mode: "endpoint" }),
+  );
   for (const name of ["cu_status", "cu_open", "cu_request_control"]) {
     const description = spec.tools.find((item) => item.name === name)!.description;
     expect(description).toContain(`Sandbox desktop, ${SANDBOX_DESKTOP_TEXT.what}`);
@@ -122,5 +125,38 @@ it("the tool descriptions say when to use the sandbox rather than the browser or
     // Not promised until containers are per session: fresh, resettable, safe for anything untrusted.
     expect(description).not.toMatch(/disposable|can be reset|anything untrusted/);
     expect(description).toMatch(/"desktop" — the user's own desktop/);
+    expect(description).toContain("later sessions and other chats can see");
   }
+});
+
+it("in managed mode the descriptions say each session gets a fresh container that is removed, with the network as configured", () => {
+  for (const [network, reach] of [
+    ["internet", "it can reach the internet, and any service on this machine that listens on all interfaces"],
+    ["none", "no internet access, but it can still reach any service on this machine that listens on all interfaces"],
+  ] as const) {
+    const spec = buildComputerUseToolsSpec(
+      () => CHAT,
+      () => ({ mode: "managed", network }),
+    );
+    for (const name of ["cu_status", "cu_open", "cu_request_control"]) {
+      const description = spec.tools.find((item) => item.name === name)!.description;
+      expect(description).toContain(`Sandbox desktop, ${sandboxDesktopText({ mode: "managed", network }).what}`);
+      expect(description).toContain("starts a fresh one for each session and removes it, with everything in it, when the session ends");
+      expect(description).toContain(reach);
+      expect(description).toContain("no other chat ever sees it");
+      expect(description).not.toContain("shared by every chat");
+    }
+  }
+});
+
+it("reads the mode when the tool spec is built, so a mode change reaches the next session's descriptions", () => {
+  let variant: { mode: "managed" | "endpoint" } = { mode: "endpoint" };
+  const describe = () =>
+    buildComputerUseToolsSpec(
+      () => CHAT,
+      () => variant,
+    ).tools.find((item) => item.name === "cu_open")!.description;
+  expect(describe()).toContain("shared by every chat");
+  variant = { mode: "managed" };
+  expect(describe()).toContain("fresh one for each session");
 });

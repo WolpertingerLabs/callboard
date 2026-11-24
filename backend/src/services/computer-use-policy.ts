@@ -5,12 +5,13 @@
  *    other axis; in particular it does NOT require `webAccess`. Browser
  *    networking is unrestricted, and opting into Browser Use opts into that.
  *  - `sandboxControl` ("Sandbox desktop") — a Linux desktop in a hardened
- *    container (packages/computer-use/docker). In this release it is one
- *    operator-started container shared by every chat, not fresh per session. It needs no other axis
+ *    container (packages/computer-use/docker): by default a fresh container
+ *    Callboard starts per session (managed), or one operator-run container
+ *    shared by every chat (endpoint); see sandboxDesktopText. It needs no other axis
  *    either: the container is the boundary. Nothing of this machine is mounted
  *    into it — no files, no credentials, no Docker socket — so the file and
  *    code axes have nothing there to govern. Its outbound network is
- *    unrestricted, and, as for Browser Use, opting into the Sandbox desktop
+ *    unrestricted by default, and, as for Browser Use, opting into the Sandbox desktop
  *    opts into that; `webAccess` is not consulted.
  *  - `computerControl` ("Computer Use") — the desktop target, this machine's
  *    own session. It additionally requires `fileRead`, `fileWrite`,

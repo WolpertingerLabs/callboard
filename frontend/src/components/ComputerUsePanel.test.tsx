@@ -314,10 +314,21 @@ describe("ComputerUsePanel", () => {
         render(<Viewer permission="allow" />);
         await ready();
         fireEvent.change(screen.getByLabelText("Target"), { target: { value: "sandbox" } });
-        const note = screen.getByText(/Disposable sandbox desktop:/).closest("p")!.textContent!;
-        expect(note).toContain("starts a fresh container when you enable it and removes it");
-        expect(note).toContain("no internet access");
-        expect(note).not.toContain("unrestricted");
+        const note = screen.getByText(/Sandbox desktop:/, { selector: "strong" }).closest("p")!.textContent!;
+        expect(note).toContain("starts a fresh one for each session and removes it, with everything in it, when the session ends");
+        expect(note).toContain("no internet access, but it can still reach any service on this machine");
+        expect(note).not.toContain("shared by every chat");
+      });
+
+      it("an endpoint daemon (or one that says nothing) keeps the shared-container wording", async () => {
+        status.capabilities = [...status.capabilities, { ...sandboxCapability, sandbox: { mode: "endpoint" } }];
+        render(<Viewer permission="allow" />);
+        await ready();
+        fireEvent.change(screen.getByLabelText("Target"), { target: { value: "sandbox" } });
+        const note = screen.getByText(/Sandbox desktop:/, { selector: "strong" }).closest("p")!.textContent!;
+        expect(note).toContain("shared by every chat and kept until the container is restarted");
+        expect(note).toContain("later sessions and other chats can see");
+        expect(note).toContain("it can reach the internet");
       });
 
       it.each([

@@ -8,7 +8,7 @@
  * action on session a47b366c-…, frame 1e638c55-…: {"type":"navigate","url":…}`.
  */
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import FeedbackPanel from "./FeedbackPanel";
 
 afterEach(cleanup);
@@ -167,4 +167,59 @@ it("says a GUI action on the Sandbox desktop is on the container, not this machi
   cleanup();
   render(<FeedbackPanel action={{ ...guiAction, input: { ...guiAction.input, kind: "browser" } }} onRespond={() => {}} />);
   expect(screen.getByText(/This chat asks before every GUI action/).textContent).not.toContain("Sandbox desktop");
+});
+
+describe("the sandbox cards follow how the daemon runs it (input.sandbox)", () => {
+  const consent = (sandbox?: unknown) => (
+    <FeedbackPanel
+      action={{
+        type: "permission_request",
+        toolName: "mcp__computer_use__cu_request_control",
+        requestId: "server-id",
+        humanOnly: true,
+        controlRequest: true,
+        input: { kind: "sandbox", target: "sandbox (container on this machine)", reason: "Try it", permission: "ask", ...(sandbox ? { sandbox } : {}) },
+      }}
+      onRespond={() => {}}
+    />
+  );
+  const note = () => screen.getByText(/The Sandbox desktop is a Linux desktop in a hardened container/).textContent!;
+
+  it("managed: a fresh container per session, removed at the end, with an open network", () => {
+    render(consent({ mode: "managed", network: "internet" }));
+    expect(note()).toContain("starts a fresh one for each session and removes it, with everything in it, when the session ends");
+    expect(note()).toContain("no other chat ever sees it");
+    expect(note()).toContain("it can reach the internet, and any service on this machine that listens on all interfaces");
+    expect(note()).not.toContain("shared by every chat");
+  });
+
+  it("managed with network none: no internet, but this machine's services are still reachable", () => {
+    render(consent({ mode: "managed", network: "none" }));
+    expect(note()).toContain("no internet access, but it can still reach any service on this machine that listens on all interfaces");
+    expect(note()).not.toContain("it can reach the internet");
+  });
+
+  it.each([
+    ["endpoint", { mode: "endpoint" }],
+    ["missing (an older daemon)", undefined],
+    ["malformed", { mode: "fresh!", network: 7 }],
+  ])("%s: the shared-container wording", (_name, sandbox) => {
+    render(consent(sandbox));
+    expect(note()).toContain("shared by every chat and kept until the container is restarted");
+    expect(note()).toContain("later sessions and other chats can see");
+  });
+
+  it("the per-action card says the action is on a fresh managed container", () => {
+    render(
+      <FeedbackPanel
+        action={{ ...guiAction, input: { ...guiAction.input, kind: "sandbox", sandbox: { mode: "managed", network: "none" } } }}
+        onRespond={() => {}}
+      />,
+    );
+    const text = screen.getByText(/This chat asks before every GUI action/).textContent!;
+    expect(text).toContain("Callboard starts a fresh one for each session");
+    expect(text).not.toContain("shared by every chat");
+    // The prompt body shows the summary and the action, never the variant.
+    expect(screen.getByText(/Open https:\/\/example.com/).textContent).not.toContain(`"mode"`);
+  });
 });

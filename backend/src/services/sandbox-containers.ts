@@ -69,11 +69,32 @@ const CONTAINER_ID = /^[0-9a-f]{12,64}$/;
 /**
  * Called just before a managed sandbox is removed, while its container is
  * still running: the place to copy anything out of it. PR 4 (outbox sync)
- * drains the outbox here. Bounded by {@link DRAIN_TIMEOUT_MS}; a failure is
- * logged and removal goes ahead, because a container must never outlive its
- * session for the sake of a copy.
+ * drains the outbox here. Bounded by {@link DRAIN_TIMEOUT_MS} (the signal
+ * aborts then); a failure is logged and removal goes ahead, because a
+ * container must never outlive its session for the sake of a copy. Called
+ * only for a sandbox that reached ready, after its session was closed.
  */
-export type DrainBeforeDestroy = (sandbox: { sessionId: string; chatId: string; driver: RemoteDriver }, signal: AbortSignal) => Promise<void>;
+export interface DrainableSandbox {
+  sessionId: string;
+  chatId: string;
+  /**
+   * Where the chat's work lives, captured when the sandbox started (the chat
+   * may be deleted by the time it is drained). `workspaceId` is opaque and
+   * absent for most chats; key a per-workspace copy on it when present and on
+   * `folder` (the chat's cwd) when not — never parse one into the other.
+   */
+  workspaceId?: string;
+  folder?: string;
+  /**
+   * The container's driver host, still reachable: `listOutbox(signal)` and
+   * `downloadOutboxFile(name, signal, { expectedSha256 })`. Outbox calls need
+   * no session, so they work after the session has closed.
+   */
+  driver: RemoteDriver;
+  /** The driver host instance that proved this session's token; the same one `driver` talks to. */
+  instanceId: string;
+}
+export type DrainBeforeDestroy = (sandbox: DrainableSandbox, signal: AbortSignal) => Promise<void>;
 export const DRAIN_TIMEOUT_MS = 30_000;
 /** No drain yet: PR 4 replaces this. */
 export const noDrain: DrainBeforeDestroy = async () => {};
@@ -90,6 +111,10 @@ export interface SandboxManagerOptions {
   /** How long a Docker/image check is reused by probes (default 3s). Starting a sandbox always checks afresh. */
   preflightCacheMs?: number;
   drainBeforeDestroy?: DrainBeforeDestroy;
+  /** The drain's bound (default {@link DRAIN_TIMEOUT_MS}). */
+  drainTimeoutMs?: number;
+  /** The chat's workspace and folder, captured at start for the drain hook. Default: none. */
+  chatContext?: (chatId: string) => { workspaceId?: string; folder?: string } | undefined;
   /** Network names, for tests; default `callboard-sandbox` and `callboard-sandbox-internal`. */
   networks?: { internet: string; none: string };
 }
@@ -97,6 +122,8 @@ export interface SandboxManagerOptions {
 interface Box {
   sessionId: string;
   chatId: string;
+  workspaceId?: string;
+  folder?: string;
   name: string;
   dir: string;
   tokenFile: string;
@@ -282,6 +309,13 @@ export class SandboxContainerManager {
       created: false,
     };
     this.boxes.set(sessionId, box);
+    try {
+      const where = box.chatId !== "unknown" ? this.options.chatContext?.(box.chatId) : undefined;
+      if (where?.workspaceId) box.workspaceId = where.workspaceId;
+      if (where?.folder) box.folder = where.folder;
+    } catch {
+      /* Labels and the drain do without it. */
+    }
     const step = (text: string) => {
       signal.throwIfAborted();
       box.step = text;
@@ -427,11 +461,21 @@ export class SandboxContainerManager {
       const wasReady = box.phase === "ready";
       box.phase = "stopping";
       box.step = undefined;
-      if (wasReady && box.driver) {
-        const signal = AbortSignal.timeout(DRAIN_TIMEOUT_MS);
+      if (wasReady && box.driver && box.instanceId) {
+        const signal = AbortSignal.timeout(this.options.drainTimeoutMs ?? DRAIN_TIMEOUT_MS);
         try {
           await Promise.race([
-            this.drainBeforeDestroy({ sessionId, chatId: box.chatId, driver: box.driver }, signal),
+            this.drainBeforeDestroy(
+              {
+                sessionId,
+                chatId: box.chatId,
+                ...(box.workspaceId ? { workspaceId: box.workspaceId } : {}),
+                ...(box.folder ? { folder: box.folder } : {}),
+                driver: box.driver,
+                instanceId: box.instanceId!,
+              },
+              signal,
+            ),
             new Promise((_, reject) => signal.addEventListener("abort", () => reject(new Error("drain timed out")), { once: true })),
           ]);
         } catch (error) {

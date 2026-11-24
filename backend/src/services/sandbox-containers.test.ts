@@ -27,6 +27,7 @@ async function setup(
     docker?: ReturnType<typeof fakeDocker>;
     dataDir?: string;
     helloTimeoutMs?: number;
+    drainTimeoutMs?: number;
   } = {},
 ) {
   const dataDir = options.dataDir ?? (await mkdtemp(join(tmpdir(), "cb-sandbox-mgr-")));
@@ -42,6 +43,9 @@ async function setup(
     helloTimeoutMs: options.helloTimeoutMs ?? 2_000,
     helloIntervalMs: 5,
     preflightCacheMs: 0,
+    drainTimeoutMs: options.drainTimeoutMs,
+    chatContext: (chatId) =>
+      chatId === "chat-ws" ? { workspaceId: "ws-opaque-1", folder: "/work/repo" } : chatId === "chat-folder" ? { folder: "/work/plain" } : undefined,
   });
   return { manager, docker, remote, settings, dataDir };
 }
@@ -278,8 +282,52 @@ describe("destroy and the drain hook", () => {
     order.push(`after:${docker.state.containers.size}`);
     expect(order).toEqual(["drain:2", "after:1"]);
     expect(manager.drainBeforeDestroy).toHaveBeenCalledWith(expect.objectContaining({ sessionId: ready.sessionId, chatId: "chat-9" }), expect.any(AbortSignal));
+    expect(vi.mocked(manager.drainBeforeDestroy).mock.calls[0][0]).not.toHaveProperty("workspaceId");
     await manager.destroy(notReady.sessionId);
     expect(manager.drainBeforeDestroy).toHaveBeenCalledTimes(1);
+    expect(docker.state.containers.size).toBe(0);
+  });
+
+  it("hands the drain everything an outbox sync needs: the live driver (list/get with expectedSha256), chat, workspace or folder, instance, and a signal", async () => {
+    const { manager, docker } = await setup();
+    const seen: unknown[] = [];
+    manager.drainBeforeDestroy = async (sandbox, signal) => {
+      // The container is still there, and the driver can still reach the outbox.
+      expect(docker.state.containers.size).toBe(1);
+      expect(await sandbox.driver.listOutbox(signal)).toEqual([]);
+      await expect(sandbox.driver.downloadOutboxFile("report.pdf", signal, { expectedSha256: "0".repeat(64) })).rejects.toMatchObject({ code: "not_found" });
+      expect(signal.aborted).toBe(false);
+      seen.push({ ...sandbox, driver: typeof sandbox.driver.downloadOutboxFile });
+    };
+    for (const chatId of ["chat-ws", "chat-folder"]) {
+      const box = await manager.start({ sessionId: sid(), chatId, signal: new AbortController().signal });
+      manager.ready(box.sessionId);
+      await manager.destroy(box.sessionId);
+    }
+    expect(seen).toEqual([
+      {
+        sessionId: expect.any(String),
+        chatId: "chat-ws",
+        workspaceId: "ws-opaque-1",
+        folder: "/work/repo",
+        driver: "function",
+        instanceId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+      },
+      { sessionId: expect.any(String), chatId: "chat-folder", folder: "/work/plain", driver: "function", instanceId: expect.stringMatching(/^[0-9a-f-]{36}$/) },
+    ]);
+  });
+
+  it("aborts a drain that overruns its bound and removes the container anyway", async () => {
+    const { manager, docker } = await setup({ drainTimeoutMs: 50 });
+    let aborted = false;
+    manager.drainBeforeDestroy = (_sandbox, signal) =>
+      new Promise(() => {
+        signal.addEventListener("abort", () => (aborted = true));
+      });
+    const box = await manager.start({ sessionId: sid(), signal: new AbortController().signal });
+    manager.ready(box.sessionId);
+    await manager.destroy(box.sessionId);
+    expect(aborted).toBe(true);
     expect(docker.state.containers.size).toBe(0);
   });
 

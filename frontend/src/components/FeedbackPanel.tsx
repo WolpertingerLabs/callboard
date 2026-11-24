@@ -1,8 +1,21 @@
 import { useState } from "react";
 import { Maximize2, Minimize2 } from "lucide-react";
-import { CU_ACTION_TOOL_NAME, CU_REQUEST_CONTROL_TOOL_NAME, SANDBOX_DESKTOP_TEXT } from "shared/types/index.js";
+import { CU_ACTION_TOOL_NAME, CU_REQUEST_CONTROL_TOOL_NAME, sandboxDesktopText, type SandboxDesktopVariant } from "shared/types/index.js";
 import MarkdownRenderer from "./MarkdownRenderer";
 import type { PendingAction } from "../api";
+
+/**
+ * How the daemon runs the sandbox this prompt is about (`input.sandbox`), read
+ * strictly: anything else, or an older daemon that sends nothing, reads as the
+ * shared container — the stricter description.
+ */
+export function promptSandboxVariant(input: Record<string, unknown> | undefined): SandboxDesktopVariant {
+  const value = input?.sandbox as { mode?: unknown; network?: unknown } | undefined;
+  if (!value || typeof value !== "object") return {};
+  const mode = value.mode === "managed" || value.mode === "endpoint" || value.mode === "off" ? value.mode : undefined;
+  const network = value.network === "internet" || value.network === "none" ? value.network : undefined;
+  return { ...(mode ? { mode } : {}), ...(network ? { network } : {}) };
+}
 
 export type { PendingAction };
 
@@ -79,8 +92,8 @@ function FeedbackContent({ action, onRespond, agentName = "Claude", approveLocke
           )}
           {sandbox && (
             <p>
-              The Sandbox desktop is {SANDBOX_DESKTOP_TEXT.what}, not this machine or the service host&apos;s own desktop. Whatever the agent leaves there,
-              later sessions and other chats can see. {SANDBOX_DESKTOP_TEXT.network}
+              The Sandbox desktop is {sandboxDesktopText(promptSandboxVariant(action.input)).what}, not this machine or the service host&apos;s own desktop.{" "}
+              {sandboxDesktopText(promptSandboxVariant(action.input)).persistence} {sandboxDesktopText(promptSandboxVariant(action.input)).network}
             </p>
           )}
           <p>Subagents running inside this chat’s turn share this grant and this chat’s permissions.</p>
@@ -128,7 +141,7 @@ function FeedbackContent({ action, onRespond, agentName = "Claude", approveLocke
         {guiAction && (
           <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 0, marginBottom: 10 }}>
             This chat asks before every GUI action: a pixel action may transmit data, change files or execute code.
-            {sandboxAction && ` This action is on the Sandbox desktop, ${SANDBOX_DESKTOP_TEXT.what}, not this machine.`}
+            {sandboxAction && ` This action is on the Sandbox desktop, ${sandboxDesktopText(promptSandboxVariant(action.input)).what}, not this machine.`}
             {action.nonBlocking &&
               ` ${agentName} isn’t waiting on this: it will be told your answer, and a confirmed action runs only if the screen it was aimed at hasn’t changed. It is withdrawn if you press Stop (while a run is going), Stop computer control, take over or revoke the session, or the session ends.`}
           </p>

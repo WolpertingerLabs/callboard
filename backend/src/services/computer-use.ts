@@ -39,7 +39,7 @@ import {
 import { sessionRegistry } from "./session-registry.js";
 import { enqueueChatNotice } from "./chat-notices.js";
 import { openHumanApproval, type ApprovalCompletion, type OpenHumanApproval } from "./pending-requests.js";
-import type { ComputerUseContainerState, ComputerUseSandboxInfo, SandboxDesktopMode } from "shared/types/index.js";
+import type { ComputerUseContainerState, ComputerUseSandboxInfo, SandboxDesktopMode, SandboxDesktopVariant } from "shared/types/index.js";
 import { managedSandboxDriver } from "./sandbox-containers.js";
 import { currentSandboxMode, getSandboxManager, sandboxInfo } from "./sandbox-desktop.js";
 
@@ -1027,6 +1027,23 @@ export class ComputerUseHost {
       target: this.targetLabel(kind),
     };
   }
+  /**
+   * How the sandbox is run, for a prompt's `input.sandbox`: the consent and
+   * per-action cards describe a managed container (fresh per session, its
+   * network) and a shared endpoint differently (`sandboxDesktopText`). `input`
+   * is an opaque record, so this is no wire change; a card without it reads
+   * as the shared container, the stricter description.
+   */
+  private sandboxPromptVariant(kind: ComputerTargetKind): { sandbox?: SandboxDesktopVariant } {
+    if (kind !== "sandbox") return {};
+    try {
+      const info = sandboxView(this.drivers.sandbox)?.sandboxInfo();
+      if (!info) return {};
+      return { sandbox: { mode: info.mode, ...(info.mode === "managed" && info.network ? { network: info.network } : {}) } };
+    } catch {
+      return {};
+    }
+  }
   /** The sandbox capability's extra field (mode, problem, running/limit), when its driver reports one. */
   private sandboxCapability(kind: ComputerTargetKind): { sandbox?: ComputerUseSandboxInfo } {
     if (kind !== "sandbox") return {};
@@ -1229,7 +1246,7 @@ export class ComputerUseHost {
       {
         toolName: CU_REQUEST_CONTROL_TOOL_NAME,
         controlRequest: true,
-        input: { kind, target, reason: reason.trim(), permission: levelFor(kind, current.policy), durationMinutes: 15 },
+        input: { kind, target, reason: reason.trim(), permission: levelFor(kind, current.policy), durationMinutes: 15, ...this.sandboxPromptVariant(kind) },
       },
       (approved) => (approved ? this.enableApproved(id, record) : this.refuseControl(id, record)),
     );
@@ -1633,9 +1650,13 @@ export class ComputerUseHost {
     this.actionRequests.set(chatId, record);
     // `kind` travels with the prompt so the stream can keep a sandbox prompt
     // from a tab that does not know the sandbox (utils/sse.ts).
-    record.approval = this.raiseApproval(chatId, { toolName: CU_ACTION_TOOL_NAME, input: { summary, target, action: request, kind } }, (approved) => {
-      void this.answerAction(record, approved).catch((error) => logComputerUseFailure("cu_action", { chatId, sessionId: id }, error, { escalate: true }));
-    });
+    record.approval = this.raiseApproval(
+      chatId,
+      { toolName: CU_ACTION_TOOL_NAME, input: { summary, target, action: request, kind, ...this.sandboxPromptVariant(kind) } },
+      (approved) => {
+        void this.answerAction(record, approved).catch((error) => logComputerUseFailure("cu_action", { chatId, sessionId: id }, error, { escalate: true }));
+      },
+    );
     return {
       status: "approval_pending",
       requestId: record.id,

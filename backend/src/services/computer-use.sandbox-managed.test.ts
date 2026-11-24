@@ -57,7 +57,7 @@ async function fixture(options: { ttlMs?: number; maxConcurrent?: number; remote
     mode: () => mode,
     managed: managedSandboxDriver(manager),
     endpoint: unconfigured,
-    info: () => ({ mode, running: manager.liveCount(), limit: manager.limit() }),
+    info: () => ({ mode, network: settings.network, running: manager.liveCount(), limit: manager.limit() }),
     containerState: (sessionId) => manager.containerState(sessionId),
   });
   const never: Driver = {
@@ -241,12 +241,33 @@ describe("the Computer view's lifecycle fields", () => {
     expect(status.sessions.find((s) => s.id === session.id)).toMatchObject({ state: "stopped", container: { phase: "removed" } });
   });
 
-  it("an old client without the sandbox capability is shown none of it", async () => {
+  it("an old client sees a managed sandbox session as a native one with a sensible sandbox label, and its Stop removes the container", async () => {
     const f = await fixture();
-    await enable(f);
+    const session = await enable(f);
     const status = await f.host.status("chat-a", { sandbox: false });
     expect(status.capabilities.some((c) => c.kind === "sandbox")).toBe(false);
-    expect(status.sessions).toEqual([]);
+    expect(status.sessions).toHaveLength(1);
+    expect(status.sessions[0]).toMatchObject({ id: session.id, kind: "native", targetLabel: "sandbox (container on this machine)" });
+    expect(String(status.sessions[0].targetLabel)).toMatch(/^sandbox /);
+    // That tab's emergency Stop finds the session by status, and stops it.
+    await f.host.stop("chat-a", status.sessions[0].id);
+    await f.gone();
+  });
+
+  it("tags both prompts with how the sandbox is run, so the cards describe a fresh managed container", async () => {
+    const f = await fixture();
+    f.policies.set("chat-a", policyOf("ask"));
+    await f.host.requestControl("chat-a", "sandbox", "test", new AbortController().signal);
+    expect(f.cards[0].input).toMatchObject({ kind: "sandbox", sandbox: { mode: "managed", network: "internet" } });
+    await expect(f.cards[0].answer(true)).resolves.toEqual({ ok: true });
+    const [live] = f.service.status(controlPrincipal("chat-a", "agent"));
+    const frame = await f.service.observe(controlPrincipal("chat-a", "agent"), { sessionId: live.sessionId, generation: live.generation });
+    const pending = await f.host.requestAgentAction("chat-a", live.sessionId, live.generation, frame.frameId, { type: "click", x: 1, y: 1 }, async () => {
+      throw new Error("must not run under Ask");
+    });
+    expect(pending).toMatchObject({ status: "approval_pending" });
+    expect(f.cards[1].input).toMatchObject({ kind: "sandbox", sandbox: { mode: "managed", network: "internet" } });
+    expect(String(f.cards[1].input.summary)).toContain("disposable container on");
   });
 });
 
