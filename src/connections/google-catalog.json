@@ -393,7 +393,7 @@
         "https://www.googleapis.com/auth/calendar.readonly"
       ],
       "write": [],
-      "note": "the watch methods (events, calendarList, settings, acl) and channels.stop accept calendar.readonly; calendar.read excludes the watch paths and no level allowlists channels/stop"
+      "note": "events.watch, calendarList.watch, settings.watch and channels.stop accept calendar.readonly (acl.watch does not: it takes only calendar and calendar.acls*); calendar.read excludes the watch paths and no level allowlists channels/stop"
     },
     "drive": {
       "revision": "20261117",
