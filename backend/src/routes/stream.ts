@@ -6,7 +6,7 @@ import { Router } from "express";
 import { NOTHING_TO_SEND, startChatTurn } from "../services/chat-turn.js";
 import { sendMessage, getActiveSession, stopSession, respondToPermission, hasPendingRequest, getPendingRequest } from "../services/claude.js";
 import { pendingRequestRequiresHuman, recentResolution } from "../services/pending-requests.js";
-import { peekComputerUseHost, WITHDRAWN } from "../services/computer-use.js";
+import { peekComputerUseHost, peekSandboxProfileProposals, WITHDRAWN } from "../services/computer-use.js";
 import { controlOriginError } from "../auth.js";
 import { noteComputerControlAtCreation } from "../services/computer-use-policy.js";
 import { isRoutableProvider, type AgentProviderKind } from "../agents/ports/AgentProvider.js";
@@ -64,7 +64,6 @@ function nothingToSend(prompt: string, imageIds: unknown, loaded?: unknown[]): b
   if (loaded) return loaded.length === 0;
   return !hasAttachments(imageIds) || !anyUploadExists(imageIds);
 }
-
 
 // Send first message to create a new chat (no existing chat ID required)
 streamRouter.post("/new/message", async (req, res) => {
@@ -169,12 +168,10 @@ streamRouter.post("/new/message", async (req, res) => {
   // nothing is created on the way to refusing.
   if (isRetiredProvider(provider)) {
     const label = RETIRED_PROVIDER_LABELS[provider];
-    return res
-      .status(400)
-      .json({
-        error: `${label.charAt(0).toUpperCase()}${label.slice(1)} has been removed from Callboard. Pick another harness for this chat.`,
-        code: "retired_provider",
-      });
+    return res.status(400).json({
+      error: `${label.charAt(0).toUpperCase()}${label.slice(1)} has been removed from Callboard. Pick another harness for this chat.`,
+      code: "retired_provider",
+    });
   }
 
   // Check if folder exists — before effort validation, which probes the Codex
@@ -911,6 +908,8 @@ streamRouter.post("/:id/stop", (req, res) => {
   // outlive the turn that raised them, so stopping the run does not reach
   // them on its own. Only this explicit Stop: a message sent while the run is
   // busy also stops it, and must not. A host nobody started has none.
+  // Its open Sandbox desktop profile proposals too (they need no computer-use host).
+  peekSandboxProfileProposals()?.withdrawChat(chatId, "stopped");
   void peekComputerUseHost()
     ?.then((host) => host.withdrawChatRequests(chatId, WITHDRAWN.stopped))
     .catch((err: unknown) =>

@@ -29,6 +29,14 @@ export const CU_ACTION_TOOL_NAME = "mcp__computer_use__cu_action";
 export const CU_REQUEST_CONTROL_TOOL_NAME = "mcp__computer_use__cu_request_control";
 
 /**
+ * Only host-issued human-only prompts with this exact name may render the
+ * Sandbox desktop profile proposal card (`ComputerUseHost`'s profile
+ * proposals, `sandbox-profile-proposals.ts`). Exact match, for the reason
+ * given at {@link CU_ACTION_TOOL_NAME}: the card's chrome is trust-side.
+ */
+export const SANDBOX_PROFILE_PROPOSE_TOOL_NAME = "mcp__computer_use__sandbox_profile_propose";
+
+/**
  * How Callboard describes the Sandbox desktop — to the human (consent card,
  * per-action card, permission row, Computer view) and to the agent (tool
  * descriptions). One place, because the truth depends on how the container

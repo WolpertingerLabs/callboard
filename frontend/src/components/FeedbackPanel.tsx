@@ -1,7 +1,14 @@
 import { useState } from "react";
 import { Maximize2, Minimize2 } from "lucide-react";
-import { CU_ACTION_TOOL_NAME, CU_REQUEST_CONTROL_TOOL_NAME, sandboxDesktopText, type SandboxDesktopVariant } from "shared/types/index.js";
+import {
+  CU_ACTION_TOOL_NAME,
+  CU_REQUEST_CONTROL_TOOL_NAME,
+  SANDBOX_PROFILE_PROPOSE_TOOL_NAME,
+  sandboxDesktopText,
+  type SandboxDesktopVariant,
+} from "shared/types/index.js";
 import MarkdownRenderer from "./MarkdownRenderer";
+import SandboxProfileProposalCard, { promptProfileProposal } from "./SandboxProfileProposalCard";
 import type { PendingAction } from "../api";
 
 /**
@@ -147,6 +154,38 @@ function FeedbackContent({ action, onRespond, agentName = "Claude", approveLocke
             Deny
           </button>
         </div>
+      </div>
+    );
+  }
+
+  // A Sandbox desktop profile an agent proposed: only the host raises this
+  // name, as a human-only open approval (exact match; see the shared constant).
+  if (
+    action.type === "permission_request" &&
+    action.toolName === SANDBOX_PROFILE_PROPOSE_TOOL_NAME &&
+    action.humanOnly === true &&
+    action.controlRequest === true &&
+    action.requestId
+  ) {
+    const proposal = promptProfileProposal(action.input);
+    if (proposal)
+      return (
+        <SandboxProfileProposalCard
+          input={proposal}
+          agentName={agentName}
+          approveLocked={approveLocked}
+          nonBlocking={action.nonBlocking}
+          onRespond={(allow) => onRespond(allow)}
+        />
+      );
+    // Malformed: never fall through to the generic card with an Allow button.
+    return (
+      <div style={panelStyle} role="alert">
+        <strong>Sandbox desktop profile proposal</strong>
+        <p>This proposal could not be shown safely, so it cannot be approved here. Refuse it, or reload this tab.</p>
+        <button onClick={() => onRespond(false)} style={denyBtn}>
+          Refuse
+        </button>
       </div>
     );
   }

@@ -17,8 +17,10 @@ vi.mock("./claude.js", () => ({ getActiveSession: () => null, hasPendingRequest:
 vi.mock("./session-registry.js", () => ({ sessionRegistry: { has: (id: string) => running.has(id), get: () => undefined, notifyMetadata: () => {} } }));
 
 const cuHost = vi.hoisted(() => ({ withdrawChatRequests: vi.fn() }));
+const proposals = vi.hoisted(() => ({ withdrawChat: vi.fn() }));
 vi.mock("./computer-use.js", () => ({
   peekComputerUseHost: () => Promise.resolve(cuHost),
+  peekSandboxProfileProposals: () => proposals,
   WITHDRAWN: { superseded: "superseded-reason" },
 }));
 
@@ -323,6 +325,8 @@ describe("supersedeChat — open computer-control requests", () => {
       expect(checkSupersedable(chat as Parameters<typeof checkSupersedable>[0])).toEqual({ ok: true });
       const { chat: n } = supersede(chat);
       await vi.waitFor(() => expect(cuHost.withdrawChatRequests).toHaveBeenCalledWith(chat.id, "superseded-reason", n.id));
+      // Its open Sandbox desktop profile proposals too, even with no computer-use host.
+      expect(proposals.withdrawChat).toHaveBeenCalledWith(chat.id, "superseded", n.id);
       // A blocking prompt still refuses, as before.
       openPrompt(n.id);
       expect(checkSupersedable(chatFileService.getChat(n.id) as Parameters<typeof checkSupersedable>[0])).toMatchObject({ ok: false, status: 409 });

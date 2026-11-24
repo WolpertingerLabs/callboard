@@ -1,5 +1,13 @@
 import { ASIDE_ROLE, asideForkPoint, handshakeHeaders, type AsideQuote } from "shared/types/index.js";
-import type { PermissionReviewSettings, ReasoningCapability, SandboxDesktopBuild, SandboxDesktopSettings, SandboxDesktopStatus } from "shared/types/index.js";
+import type {
+  PermissionReviewSettings,
+  ReasoningCapability,
+  SandboxAgentProfileSummary,
+  SandboxDesktopBuild,
+  SandboxDesktopSettings,
+  SandboxDesktopStatus,
+  SandboxProfileBuildReview,
+} from "shared/types/index.js";
 import { DEFAULT_VOICE_MODEL, type TranscribeResponse, type VoiceModelsResponse } from "shared/types/voice.js";
 import {
   DEFAULT_READ_ALOUD_MODEL,
@@ -1714,12 +1722,21 @@ export async function updateSandboxDesktopSettings(patch: {
 /**
  * Queue the explicit image build (the base, or one profile's, by name and scope);
  * poll {@link getSandboxDesktopStatus} (or {@link getSandboxBuild}) for its progress.
+ * A profile that is not built in needs `digest`: the one its review
+ * ({@link getSandboxProfileReview}) showed. The build is pinned to it.
  */
-export async function buildSandboxDesktopImage(profile?: string, scope?: string): Promise<SandboxDesktopBuild> {
+export async function buildSandboxDesktopImage(profile?: string, scope?: string, digest?: string): Promise<SandboxDesktopBuild> {
   return requestField("/sandbox-desktop/build", "build", {
     method: "POST",
-    json: profile ? { profile, ...(scope && scope !== "global" ? { scope } : {}) } : {},
+    json: profile ? { profile, ...(scope && scope !== "global" ? { scope } : {}), ...(digest ? { digest } : {}) } : {},
     error: profile ? `Failed to start building profile ${profile}` : "Failed to start the sandbox image build",
+  });
+}
+
+/** What to read before building a profile that is not built in: its recipe, the risky parts, its digest and its (unverified) stored provenance. */
+export async function getSandboxProfileReview(name: string, scope = "global"): Promise<SandboxProfileBuildReview> {
+  return requestField(`/sandbox-desktop/profiles/${encodeURIComponent(name)}/review?scope=${encodeURIComponent(scope)}`, "review", {
+    error: `Failed to read profile ${name}'s recipe`,
   });
 }
 
@@ -1737,6 +1754,27 @@ export async function cancelSandboxBuild(id: string): Promise<SandboxDesktopBuil
 export async function removeSandboxProfile(name: string, scope = "global"): Promise<{ removed: boolean; status: SandboxDesktopStatus }> {
   const query = scope === "global" ? "" : `?scope=${encodeURIComponent(scope)}`;
   return request(`/sandbox-desktop/profiles/${encodeURIComponent(name)}${query}`, { method: "DELETE", error: `Failed to remove profile ${name}` });
+}
+
+const agentProfilePath = (name: string, scope: string, suffix = "") =>
+  `/sandbox-desktop/agent-profiles/${encodeURIComponent(name)}${suffix}?scope=${encodeURIComponent(scope)}`;
+
+/** One agent-built profile with every kept version's recipe (its history). */
+export async function getAgentSandboxProfile(name: string, scope: string): Promise<SandboxAgentProfileSummary> {
+  return requestField(agentProfilePath(name, scope), "profile", { error: `Failed to read the history of profile ${name}` });
+}
+
+/** Make an agent-built profile global (a signed-in session only): the exact image tested in its scope is relabelled, not rebuilt. */
+export async function promoteAgentSandboxProfile(
+  name: string,
+  scope: string,
+): Promise<{ profile: SandboxAgentProfileSummary; image: string; status: SandboxDesktopStatus }> {
+  return request(agentProfilePath(name, scope, "/promote"), { method: "POST", json: {}, error: `Failed to promote profile ${name}` });
+}
+
+/** Forget an agent-built profile: every version and its image. Refused while it is being built or a container uses it. */
+export async function removeAgentSandboxProfile(name: string, scope: string): Promise<{ removedImage: boolean; status: SandboxDesktopStatus }> {
+  return request(agentProfilePath(name, scope), { method: "DELETE", error: `Failed to remove profile ${name}` });
 }
 
 // Agent settings API functions

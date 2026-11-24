@@ -5,7 +5,7 @@
  * as interrupted); logs are capped; old records are pruned.
  */
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SandboxBuilds, type BuildTarget } from "./sandbox-builds.js";
@@ -113,5 +113,34 @@ describe("sandbox build records", () => {
     expect(builds.list()).toHaveLength(3);
     expect(builds.get(big.id)).toBeUndefined();
     expect(readdirSync(dir).filter((f) => f.startsWith(big.id))).toEqual([]);
+  });
+});
+
+describe("agent-requested builds", () => {
+  const agent = (chatId: string) => ({ kind: "agent" as const, chatId, approvalId: `approval-${chatId}` });
+  it("are never merged into another build, are counted, and keep their digest and version", () => {
+    const runner = controllable();
+    const builds = new SandboxBuilds({ dir: freshDir(), run: runner.run });
+    const human = builds.enqueue(profile("eyes"));
+    const pinned = { ...profile("eyes"), digest: "a".repeat(64), version: 3 };
+    const mine = builds.enqueue(pinned, agent("chat-a"));
+    const theirs = builds.enqueue(pinned, agent("chat-b"));
+    expect(new Set([human.id, mine.id, theirs.id]).size).toBe(3);
+    expect(mine).toMatchObject({ digest: "a".repeat(64), version: 3, requestedBy: agent("chat-a") });
+    expect(builds.activeAgentBuilds().map((b) => b.id)).toEqual([mine.id, theirs.id]);
+    // A human asking again for the unpinned target gets the human's build back, not an agent's.
+    expect(builds.enqueue(profile("eyes")).id).toBe(human.id);
+  });
+  it("read a malformed agent requester back as a human's (so no chat may cancel it)", () => {
+    const dir = freshDir();
+    const runner = controllable();
+    const first = new SandboxBuilds({ dir, run: runner.run });
+    const record = first.enqueue(profile("eyes"), agent("chat-a"));
+    first.dispose();
+    const file = join(dir, `${record.id}.json`);
+    const raw = JSON.parse(readFileSync(file, "utf8"));
+    raw.requestedBy = { kind: "agent", chatId: 42 };
+    writeFileSync(file, JSON.stringify(raw));
+    expect(new SandboxBuilds({ dir, run: runner.run }).get(record.id)!.requestedBy).toEqual({ kind: "human" });
   });
 });

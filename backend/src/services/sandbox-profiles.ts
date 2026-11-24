@@ -21,10 +21,12 @@
  * workspace's, then its folder's — both owner scopes, as the deliverables
  * read both, so a chat that gains a workspace record keeps seeing what its
  * folder had. A name an earlier scope has is never shadowed by a later one.
- * **Where a chat's new profile goes** ({@link workspaceScopeKey}, for the
- * later change that lets agents propose them): its workspace's scope when it
- * has one, else its folder's. The seam for those is {@link ProfileSource}: a
- * source per scope, stored under `<data dir>/sandbox-desktop/profiles/<scope>/`.
+ * **Where a chat's new profile goes** ({@link workspaceScopeKey}): an agent's
+ * proposal is stored in its workspace's scope when it has one, else its
+ * folder's (sandbox-profile-proposals.ts). Each stored scope is one
+ * {@link ProfileSource} ({@link storeSource}), read from
+ * `<data dir>/sandbox-desktop/profiles/<scope>/` (sandbox-profile-store.ts);
+ * a profile a human promoted lives under `global/` there.
  *
  * **Builds are explicit** — `callboard sandbox build --profile <name>` or
  * Settings → Sandbox desktop — never implicit, and only a signed-in human may
@@ -47,6 +49,7 @@ import {
   PROTOCOL,
   SANDBOX_IMAGE_LABELS,
   SANDBOX_SECURITY_FLOOR,
+  canonicalProfileRecipe,
   compileProfile,
   isProfileName,
   isProfileScopeKey,
@@ -75,11 +78,17 @@ import {
   sandboxContentDigest,
   type DockerRunner,
 } from "./sandbox-image.js";
+import { ProfileStore, currentRecipe, getProfileStore } from "./sandbox-profile-store.js";
+import { BUILTIN_PROFILE_DIGESTS } from "./sandbox-builtin-digests.generated.js";
 
 export type { ProfileScopeKey };
 
-/** Where a profile's recipe comes from. `builtin`: shipped with Callboard. */
-export type ProfileSourceKind = "builtin";
+/**
+ * Where a profile's recipe comes from. `builtin`: shipped with Callboard.
+ * `agent`: proposed by an agent and approved by a human
+ * (sandbox-profile-store.ts); only the approved version is an entry.
+ */
+export type ProfileSourceKind = "builtin" | "agent";
 
 /** A recipe the registry knows, validated, with its identity and the image it builds. */
 export interface ProfileEntry {
@@ -92,6 +101,28 @@ export interface ProfileEntry {
   source: ProfileSourceKind;
   /** `<repository>:<name>` (global) or `<repository>:<scope>-<name>`. */
   image: string;
+  /** Agent-built profiles: the approved version this entry is. */
+  version?: number;
+  /**
+   * Built-ins only: whether the file's recipe is exactly the one shipped
+   * with this Callboard (its digest is pinned in source,
+   * sandbox-builtin-digests.generated.ts). Only a pinned built-in is trusted
+   * ({@link isTrustedBuiltin}); any other is treated like a store-backed
+   * profile: reviewed and digest-pinned before a build, unverified until then.
+   */
+  pinned?: boolean;
+  /** Built-ins that are not pinned: `unknown` (no shipped recipe has this name) or `modified` (another recipe than the shipped one). */
+  builtinProblem?: "unknown" | "modified";
+}
+
+/**
+ * A built-in that is exactly what this Callboard shipped: the one kind of
+ * profile that builds with one click and no review. Not "a file in the
+ * built-ins' directory": that directory is user-writable in a source
+ * checkout or a user-level npm install, so location proves nothing.
+ */
+export function isTrustedBuiltin(entry: Pick<ProfileEntry, "source" | "pinned">): boolean {
+  return entry.source === "builtin" && entry.pinned === true;
 }
 
 /** Which chat is asking: where its work lives. */
@@ -115,8 +146,8 @@ export function folderScopeKey(folder: string | undefined): ProfileScopeKey | un
   return folder && isAbsolute(folder) ? scopeHash(`folder\0${resolve(folder)}`) : undefined;
 }
 /**
- * The scope a profile proposed in this chat is stored under (a later change):
- * its workspace's when it has a `workspaceId`, else its folder's. Undefined
+ * The scope a profile proposed in this chat is stored under: its
+ * workspace's when it has a `workspaceId`, else its folder's. Undefined
  * with neither. One-way: never parsed back.
  */
 export function workspaceScopeKey(chat: ProfileChatScope): ProfileScopeKey | undefined {
@@ -146,13 +177,27 @@ export function builtinProfilesDir(context = sandboxBuildContext()): string {
   return join(context, "docker", "profiles");
 }
 
-const builtinMemo = new Map<string, { stamp: string; entries: ProfileEntry[]; errors: string[] }>();
+const builtinMemo = new Map<string, { entries: ProfileEntry[]; errors: string[] }>();
 /**
- * The built-in recipes (global scope), validated. A file that does not
- * validate is left out and reported in `errors` (a test keeps every shipped
- * recipe valid).
+ * The built-in recipes (global scope), validated, each checked against the
+ * digest pinned for its name ({@link BUILTIN_PROFILE_DIGESTS}). A file that
+ * does not validate is left out and reported in `errors`; one that validates
+ * but is not the shipped recipe (an unknown name, or an edited one) is kept,
+ * unpinned, so Settings can show it — and it is never trusted
+ * ({@link isTrustedBuiltin}).
+ *
+ * Read once per process (per directory and repository), not live: a file
+ * dropped in or edited after the daemon started is not picked up until it
+ * restarts, and then it is checked against the pins like any other.
  */
-export function loadBuiltinProfiles(dir = builtinProfilesDir(), repository = profileRepository()): { entries: ProfileEntry[]; errors: string[] } {
+export function loadBuiltinProfiles(
+  dir = builtinProfilesDir(),
+  repository = profileRepository(),
+  pins: Readonly<Record<string, string>> = BUILTIN_PROFILE_DIGESTS,
+): { entries: ProfileEntry[]; errors: string[] } {
+  const key = `${dir}|${repository}|${pins === BUILTIN_PROFILE_DIGESTS ? "shipped" : JSON.stringify(pins)}`;
+  const memo = builtinMemo.get(key);
+  if (memo) return memo;
   let files: string[];
   try {
     files = readdirSync(dir)
@@ -161,23 +206,30 @@ export function loadBuiltinProfiles(dir = builtinProfilesDir(), repository = pro
   } catch {
     return { entries: [], errors: [] };
   }
-  const stamp = `${repository}|${files.map((file) => `${file}:${statSync(join(dir, file)).mtimeMs}`).join("|")}`;
-  const memo = builtinMemo.get(dir);
-  if (memo?.stamp === stamp) return memo;
   const entries: ProfileEntry[] = [];
   const errors: string[] = [];
   for (const file of files) {
     try {
       const recipe = parseProfileRecipe(readFileSync(join(dir, file), "utf8"));
       if (`${recipe.name}.json` !== file) throw new Error(`the file must be named ${recipe.name}.json`);
-      entries.push(makeEntry(recipe, "global", "builtin", repository));
+      const entry = makeEntry(recipe, "global", "builtin", repository);
+      const pin = Object.hasOwn(pins, recipe.name) ? pins[recipe.name] : undefined;
+      entries.push(pin === entry.digest ? { ...entry, pinned: true } : { ...entry, pinned: false, builtinProblem: pin === undefined ? "unknown" : "modified" });
     } catch (error) {
       errors.push(`${file}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  const result = { stamp, entries, errors };
-  builtinMemo.set(dir, result);
+  const result = { entries, errors };
+  builtinMemo.set(key, result);
   return result;
+}
+/** The canonical recipe of an entry: exactly what builds and what its digest covers (for `callboard sandbox build --show-recipe`). */
+export function profileRecipeText(entry: ProfileEntry): string {
+  return canonicalProfileRecipe(entry.recipe);
+}
+/** Tests: forget the built-ins read so far. */
+export function reloadBuiltinProfilesForTest(): void {
+  builtinMemo.clear();
 }
 
 export function makeEntry(recipe: ProfileRecipe, scope: ProfileScopeKey, source: ProfileSourceKind, repository = profileRepository()): ProfileEntry {
@@ -191,9 +243,41 @@ export function makeEntry(recipe: ProfileRecipe, scope: ProfileScopeKey, source:
   };
 }
 
-export const builtinSource = (dir?: string): ProfileSource => ({ kind: "builtin", scope: "global", list: () => loadBuiltinProfiles(dir).entries });
-/** Every source this Callboard has. Today: the built-ins. */
-export const defaultSources = (): ProfileSource[] => [builtinSource()];
+let builtinDirForTest: string | undefined;
+/** Tests: read the built-ins from another directory (the pins still apply: a test directory grants no trust). */
+export function setBuiltinProfilesDirForTest(dir?: string): void {
+  builtinDirForTest = dir;
+}
+export const builtinSource = (dir?: string): ProfileSource => ({
+  kind: "builtin",
+  scope: "global",
+  list: () => loadBuiltinProfiles(dir ?? builtinDirForTest).entries,
+});
+/**
+ * One scope's agent-built profiles: each one's approved version, if it has
+ * one. A stored draft is never an entry, so it can be neither built nor
+ * started until a human approves it.
+ */
+export function storeSource(scope: ProfileScopeKey, store: ProfileStore = getProfileStore(), repository = profileRepository()): ProfileSource {
+  return {
+    kind: "agent",
+    scope,
+    list: () =>
+      store.list(scope).flatMap((profile) => {
+        const current = currentRecipe(profile);
+        return current ? [{ ...makeEntry(current.recipe, scope, "agent", repository), version: current.version.version }] : [];
+      }),
+  };
+}
+/**
+ * Every source this Callboard has: the built-ins, then each stored scope's
+ * agent-built profiles. The built-ins come first, so a built-in name is
+ * never shadowed by a promoted profile (promotion refuses one anyway).
+ */
+export const defaultSources = (store: ProfileStore = getProfileStore()): ProfileSource[] => [
+  builtinSource(),
+  ...[...new Set<ProfileScopeKey>(["global", ...store.scopes()])].map((scope) => storeSource(scope, store)),
+];
 
 /**
  * Every profile a chat may use: the global scope's, then its own workspace's,
@@ -252,7 +336,17 @@ export function entryIdOf(profile: unknown, scope: unknown = "global"): string |
  * - `incompatible`: another protocol major. Refused.
  */
 export type ProfileImageState = "missing" | "current" | "outdated" | "rebuild-required" | "unlabelled" | "insecure" | "incompatible";
+/**
+ * Set only by {@link relabelProfileImage}, the promote route's relabel of the
+ * exact image a human tested: `<from scope>/<name>@v<version>`. It lives on
+ * the image, in Docker, not in the data directory, so a hand-written store
+ * file cannot fake it.
+ */
+export const PROFILE_PROMOTED_LABEL = "dev.callboard.computer-use.profile.promoted";
+
 export interface ProfileImageInfo {
+  /** The image's promotion label ({@link PROFILE_PROMOTED_LABEL}), when it was promoted by Callboard. */
+  promoted?: string;
   state: ProfileImageState;
   outdatedBy?: ("base" | "compiler")[];
   detail?: string;
@@ -310,6 +404,7 @@ export async function inspectProfileImage(docker: DockerRunner, entry: ProfileEn
     ...(created ? { builtAt: created } : {}),
     ...(size && /^\d+$/.test(size) ? { sizeBytes: Number(size) } : {}),
     ...(recipe ? { recipe } : {}),
+    ...(/^(global|w[0-9a-f]{12})\/[a-z0-9-]{2,32}@v\d{1,6}$/.test(labels[PROFILE_PROMOTED_LABEL] ?? "") ? { promoted: labels[PROFILE_PROMOTED_LABEL] } : {}),
   };
   const protocol = labels[SANDBOX_IMAGE_LABELS.protocol];
   if (typeof protocol !== "string" || !/^\d+\.\d+$/.test(protocol) || Number(protocol.split(".")[0]) !== PROTOCOL.major)
@@ -686,6 +781,57 @@ export async function buildProfileImage(options: ProfileBuildOptions): Promise<{
     await docker(["rmi", intermediate], { timeoutMs: 60_000 }).catch(() => {});
   }
   return { image: entry.image, id: await imageId(docker, entry.image).catch(() => undefined) };
+}
+
+/** The relabel build's Dockerfile: a constant. The source is an image ID, passed as a build argument. */
+export const PROFILE_RELABEL_DOCKERFILE = "ARG CALLBOARD_SOURCE\nFROM ${CALLBOARD_SOURCE}\n";
+
+/**
+ * Promotion: give the exact image a human tested in its scope the global
+ * entry's labels and tag, without rebuilding it. A rebuild would install
+ * packages again from mirrors that may have moved on, and could differ from
+ * what was tested; this is a metadata-only build `FROM` that image's ID,
+ * with no network, changing only the scope label and recording the
+ * promotion ({@link PROFILE_PROMOTED_LABEL}). Every other label (name,
+ * recipe digest, compiler, base content, floors) is inherited, so the global
+ * entry judges it exactly as the scoped one was judged.
+ */
+export async function relabelProfileImage(options: {
+  docker: DockerRunner;
+  dataDir: string;
+  sourceId: string;
+  target: ProfileEntry;
+  promotedFrom: { scope: ProfileScopeKey; version: number };
+  binary?: string;
+  signal?: AbortSignal;
+}): Promise<{ image: string; id?: string }> {
+  const { sourceId, target, promotedFrom } = options;
+  if (!/^sha256:[0-9a-f]{64}$/.test(sourceId)) throw new Error("Invalid source image ID");
+  if (!isProfileScopeKey(promotedFrom.scope) || !Number.isInteger(promotedFrom.version)) throw new Error("Invalid promotion");
+  const root = join(options.dataDir, "sandbox-desktop", "profile-builds", `relabel-${target.recipe.name}-${randomBytes(6).toString("hex")}`);
+  await mkdir(root, { recursive: true, mode: 0o700 });
+  try {
+    await writeFile(join(root, "Dockerfile"), PROFILE_RELABEL_DOCKERFILE, { mode: 0o644 });
+    await runDockerBuild(
+      [
+        "build",
+        "--network=none",
+        "--build-arg",
+        `CALLBOARD_SOURCE=${sourceId}`,
+        "--label",
+        `${PROFILE_LABELS.scope}=${target.scope}`,
+        "--label",
+        `${PROFILE_PROMOTED_LABEL}=${promotedFrom.scope}/${target.recipe.name}@v${promotedFrom.version}`,
+        "-t",
+        target.image,
+        root,
+      ],
+      { binary: options.binary, signal: options.signal },
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true }).catch(() => {});
+  }
+  return { image: target.image, id: await imageId(options.docker, target.image).catch(() => undefined) };
 }
 
 /**

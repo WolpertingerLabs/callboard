@@ -334,7 +334,10 @@ it("a legacy client gets hard-stop reload guidance for a reviewer hard stop, not
   const { HARD_STOP_PROMPT_RELOAD, HUMAN_PROMPT_RELOAD, GENERIC_HUMAN_PROMPT_RELOAD, humanPromptReloadMessage } = await import("./sse.js");
   const f = fakeResponse();
   beginSSE(fakeRequest({}), f.res);
-  createSSEHandler(f.res, new EventEmitter())({
+  createSSEHandler(
+    f.res,
+    new EventEmitter(),
+  )({
     type: "permission_request",
     content: "",
     toolName: "Bash",
@@ -431,5 +434,63 @@ describe("Sandbox desktop for a client without sandbox_target", () => {
   it("does not let another tool's `kind: sandbox` argument hide its prompt", () => {
     const other = { type: "permission_request", content: "", toolName: "mcp__other__tool", requestId: "x", input: { kind: "sandbox" } } as StreamEvent;
     expect(replay(preSandbox(), [other]).filter((frame) => frame.type === "permission_request")).toHaveLength(1);
+  });
+});
+
+describe("Sandbox desktop profile proposals for a client without sandbox_profile_proposal", () => {
+  /** The bundle just before profile proposals: it knows the sandbox target, not the proposal card. */
+  const preProposal = (): IncomingHttpHeaders => {
+    const headers = handshakeAsReceived();
+    const caps = String(headers["x-callboard-caps"])
+      .split(",")
+      .filter((cap) => cap !== CLIENT_CAPS.sandboxProfileProposal)
+      .join(",");
+    expect(caps).toContain(CLIENT_CAPS.sandboxTarget);
+    return { ...headers, "x-callboard-caps": caps };
+  };
+  const card = {
+    type: "permission_request",
+    content: "",
+    toolName: "mcp__computer_use__sandbox_profile_propose",
+    requestId: "proposal",
+    humanOnly: true,
+    controlRequest: true,
+    nonBlocking: true,
+    input: { name: "eyes", version: 1, recipe: '{ "setup": "SECRET-SETUP" }' },
+  } as unknown as StreamEvent;
+  const result = {
+    type: "tool_result",
+    content: "",
+    controlRequestResult: { requestId: "proposal", message: "Approved: build queued." },
+    requiredCap: CLIENT_CAPS.sandboxProfileProposal,
+  } as unknown as StreamEvent;
+  function replay(headers: IncomingHttpHeaders, events: StreamEvent[]) {
+    const f = fakeResponse();
+    beginSSE(fakeRequest(headers), f.res);
+    f.chunks.length = 0;
+    const handler = createSSEHandler(f.res, new EventEmitter());
+    for (const event of events) handler(event);
+    return parseAsFrontend(f.chunks);
+  }
+
+  it("replaces the card with a reload notice (never raw JSON behind an Allow button) and drops its outcome", async () => {
+    const { SANDBOX_PROFILE_PROMPT_RELOAD, requiresPromptReload } = await import("./sse.js");
+    for (const headers of [preProposal(), {}]) {
+      const frames = replay(headers, [card, result]);
+      expect(frames.filter((frame) => frame.type === "permission_request")).toEqual([]);
+      expect(frames.filter((frame) => frame.type === "message_error").map((frame) => frame.content)).toEqual([
+        headers["x-callboard-caps"] ? SANDBOX_PROFILE_PROMPT_RELOAD : expect.any(String),
+      ]);
+      expect(frames.filter((frame) => frame.type === "message_update")).toEqual([{ type: "message_update" }]);
+      expect(JSON.stringify(frames)).not.toContain("SECRET-SETUP");
+    }
+    // The same decision serves `GET /pending` and the SSE replay.
+    expect(requiresPromptReload(card as unknown as Record<string, unknown>, undefined)).toBe(true);
+  });
+
+  it("sends a current client the card and its outcome, without the internal requiredCap field", () => {
+    const frames = replay(handshakeAsReceived(), [card, result]);
+    expect(frames.filter((frame) => frame.type === "permission_request")).toHaveLength(1);
+    expect(frames.at(-1)).toEqual({ type: "message_update", controlRequestResult: { requestId: "proposal", message: "Approved: build queued." } });
   });
 });

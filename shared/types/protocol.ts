@@ -69,6 +69,16 @@ export const CLIENT_CAPS = {
    * replaces its prompts with a reload notice (`message_error`).
    */
   sandboxTarget: "sandbox_target",
+  /**
+   * Understands the Sandbox desktop profile proposal card: the human-only
+   * prompt raised under `SANDBOX_PROFILE_PROPOSE_TOOL_NAME` when an agent
+   * proposes a profile recipe, and its `controlRequestResult`. An older bundle
+   * would render that prompt as a generic permission request showing raw
+   * JSON, so without this cap the daemon replaces it with a reload notice
+   * (`message_error`) on every path that serves a prompt, and withholds its
+   * result.
+   */
+  sandboxProfileProposal: "sandbox_profile_proposal",
 } as const;
 
 /** Union of the capability strings in {@link CLIENT_CAPS}. */

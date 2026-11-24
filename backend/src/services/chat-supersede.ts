@@ -3,7 +3,7 @@ import { buildLineageIndex, getParentChatId, walkToRootId } from "./chat-lineage
 import { isNativeRecord } from "./card-membership.js";
 import { mergeTrails, parseGitTrail } from "./git-trail.js";
 import { pendingRequests, repointParentOffers } from "./pending-requests.js";
-import { peekComputerUseHost, WITHDRAWN } from "./computer-use.js";
+import { peekComputerUseHost, peekSandboxProfileProposals, WITHDRAWN } from "./computer-use.js";
 import { repointCallbacksForParent } from "./session-callbacks.js";
 import { sessionRegistry } from "./session-registry.js";
 import { isRetiredProvider, RETIRED_PROVIDER_LABELS } from "../agents/ports/AgentProvider.js";
@@ -402,6 +402,9 @@ export function supersedeChat(opts: SupersedeOptions): SupersedeResult {
   // C's open computer-control requests belong to the history being replaced,
   // and its sessions stay C's. Withdraw them; the notice goes to N, which is
   // where the conversation — and the agent that asked — carries on.
+  // Its open Sandbox desktop profile proposals too; the notice goes to N.
+  const proposals = peekSandboxProfileProposals();
+  if (proposals) for (const key of parentKeys) proposals.withdrawChat(key, "superseded", created.id);
   const host = peekComputerUseHost();
   if (host)
     void host

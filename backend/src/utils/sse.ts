@@ -1,7 +1,7 @@
 import type { Request, Response } from "express";
 import type { EventEmitter } from "events";
 import type { StreamEvent } from "../services/claude.js";
-import { CLIENT_CAPS, CU_ACTION_TOOL_NAME, CU_REQUEST_CONTROL_TOOL_NAME } from "shared/types/index.js";
+import { CLIENT_CAPS, CU_ACTION_TOOL_NAME, CU_REQUEST_CONTROL_TOOL_NAME, SANDBOX_PROFILE_PROPOSE_TOOL_NAME } from "shared/types/index.js";
 import type { ControlResultEvent } from "../services/computer-use.js";
 import { buildServerInfo, createStreamSession, type StreamSession } from "../services/stream-session.js";
 import { createLogger } from "./logger.js";
@@ -21,6 +21,20 @@ export const GENERIC_HUMAN_PROMPT_RELOAD =
 export const SANDBOX_PROMPT_RELOAD =
   "Reload this Callboard tab to answer a Sandbox desktop request. This browser bundle predates the Sandbox desktop and cannot show it. No action has been approved. After reloading, answer the current prompt; if it expired, ask the agent to request it again.";
 
+/** A Sandbox desktop profile proposal for a bundle that predates the proposal card. */
+export const SANDBOX_PROFILE_PROMPT_RELOAD =
+  "Reload this Callboard tab to review a Sandbox desktop profile an agent proposed. This browser bundle predates profile proposals and cannot show the recipe safely. Nothing has been approved or built. After reloading, approve or refuse it in the prompt panel.";
+
+/**
+ * A Sandbox desktop profile proposal card (`SandboxProfileProposals`): exact
+ * tool name, raised by the host as a human-only open approval. An older
+ * bundle would show it as a generic permission request — raw JSON, and an
+ * Allow button that approves a build.
+ */
+export function isProfileProposalPrompt(data: Record<string, unknown>): boolean {
+  return data.toolName === SANDBOX_PROFILE_PROPOSE_TOOL_NAME;
+}
+
 /**
  * A computer-control prompt about the Sandbox desktop: the host's own consent
  * card or per-action prompt, both of which carry the target's `kind` in their
@@ -36,6 +50,7 @@ export function isSandboxPrompt(data: Record<string, unknown>): boolean {
 /** The reload guidance that names what is actually waiting, rather than always "computer control". */
 export function humanPromptReloadMessage(data: Record<string, unknown>): string {
   if (data.reviewerVerdict === "kill") return HARD_STOP_PROMPT_RELOAD;
+  if (isProfileProposalPrompt(data)) return SANDBOX_PROFILE_PROMPT_RELOAD;
   if (isSandboxPrompt(data)) return SANDBOX_PROMPT_RELOAD;
   const tool = typeof data.toolName === "string" ? data.toolName : "";
   if (data.controlRequest === true || tool.startsWith("mcp__computer_use__")) return HUMAN_PROMPT_RELOAD;
@@ -45,7 +60,9 @@ export function humanPromptReloadMessage(data: Record<string, unknown>): string 
  * them an actionable consent card: their optimistic ID-less reply is unsafe.
  * The server keeps the real prompt pending for a reloaded capable client.
  *
- * The same goes for a Sandbox desktop prompt to a bundle without
+ * The same goes for a Sandbox desktop profile proposal to a bundle without
+ * `sandbox_profile_proposal` (it would render raw JSON behind an Allow
+ * button), and for a Sandbox desktop prompt to a bundle without
  * `sandbox_target`: its consent card titles every `kind` but "desktop" as the
  * browser, so a sandbox request would read as "Enable browser control". It
  * gets the reload notice
@@ -54,6 +71,7 @@ export function humanPromptReloadMessage(data: Record<string, unknown>): string 
  */
 export function requiresPromptReload(data: Record<string, unknown>, client: StreamSession | undefined): boolean {
   if (data.humanOnly === true && !client?.supports(CLIENT_CAPS.humanPromptIdentity)) return true;
+  if (isProfileProposalPrompt(data) && !client?.supports(CLIENT_CAPS.sandboxProfileProposal)) return true;
   return isSandboxPrompt(data) && !client?.supports(CLIENT_CAPS.sandboxTarget);
 }
 function presentPendingPrompt(data: Record<string, unknown>, client: StreamSession | undefined): Record<string, unknown> {
@@ -196,7 +214,9 @@ export function createSSEHandler(res: Response, emitter: EventEmitter, options: 
     } else {
       // A sandbox card's outcome is not sent to a tab that was never sent the
       // card (see requiresPromptReload). `controlTarget` itself stays off the wire.
-      const hiddenResult = (event as ControlResultEvent).controlTarget === "sandbox" && !streamClients.get(res)?.supports(CLIENT_CAPS.sandboxTarget);
+      const client = streamClients.get(res);
+      const { controlTarget, requiredCap } = event as ControlResultEvent;
+      const hiddenResult = (controlTarget === "sandbox" && !client?.supports(CLIENT_CAPS.sandboxTarget)) || (!!requiredCap && !client?.supports(requiredCap));
       sendSSE(res, {
         type: "message_update",
         ...(event.controlRequestResult && !hiddenResult && { controlRequestResult: event.controlRequestResult }),
