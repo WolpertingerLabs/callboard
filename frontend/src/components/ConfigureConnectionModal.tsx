@@ -10,9 +10,24 @@ import {
   RotateCcw,
   X,
 } from "lucide-react";
-import type { AdminConnectionStatus } from "drawlatch-admin-types";
-import { api } from "../api";
-import { AuthSummary, SECRET_HELP } from "./AuthSummary";
+import type {
+  AdminConnectionStatus,
+  AdminGoogleCatalog,
+  AdminGoogleSelection,
+} from "drawlatch-admin-types";
+import { api, isDaemonDown } from "../api";
+import { AuthSummary, SECRET_HELP, shortScope } from "./AuthSummary";
+import ConfirmDialog from "./ConfirmDialog";
+import GoogleSelectionEditor, {
+  consentScopesOf,
+  draftFrom,
+  draftProblem,
+  pickedLevels,
+  sameSelection,
+  selectionFrom,
+  type GoogleDraft,
+} from "./GoogleSelectionEditor";
+import { TestResultView, toOutcome, type TestOutcome } from "./TestResult";
 import "./ConfigureConnectionModal.css";
 
 interface ConfigureConnectionModalProps {
@@ -20,7 +35,9 @@ interface ConfigureConnectionModalProps {
   caller: string;
   connection: AdminConnectionStatus;
   onClose: () => void;
-  /** Parent refetches connection status after this fires. */
+  /** Parent refetches connection status after this fires. The modal closes
+   *  itself after a save, except for `google`, where it stays open to offer
+   *  a test. */
   onSaved: () => void;
 }
 
@@ -43,7 +60,63 @@ export default function ConfigureConnectionModal({
   const [showOptional, setShowOptional] = useState(false);
   const [save, setSave] = useState<SaveState>({ phase: "idle" });
 
-  const { requiredSecrets, optionalSecrets } = connection;
+  // ── Google: the selection editor (callers.<alias>.google) ──
+  const isGoogle = connection.composed === "google";
+  const [catalog, setCatalog] = useState<AdminGoogleCatalog | null>(null);
+  const [googleView, setGoogleView] = useState<AdminGoogleSelection | null>(null);
+  const [googleLoadError, setGoogleLoadError] = useState<string | null>(null);
+  const [draft, setDraft] = useState<GoogleDraft | null>(null);
+  const [widen, setWiden] = useState<string[] | null>(null);
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<TestOutcome | null>(null);
+
+  // Close on Escape, unless a confirm dialog is open (Escape cancels that).
+  const dialogOpen = widen !== null || confirmRemove;
+  useEffect(() => {
+    if (dialogOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose, dialogOpen]);
+
+  useEffect(() => {
+    if (!isGoogle) return;
+    let live = true;
+    void Promise.all([api.googleCatalog(), api.googleSelection(caller)]).then(
+      ([cat, view]) => {
+        if (!live) return;
+        if (isDaemonDown(cat)) return setGoogleLoadError(cat.error);
+        if (isDaemonDown(view)) return setGoogleLoadError(view.error);
+        setCatalog(cat);
+        setGoogleView(view);
+        setDraft(draftFrom(view.selection));
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [isGoogle, caller]);
+
+  const draftSelection = useMemo(
+    () => (catalog && draft ? selectionFrom(catalog, draft) : null),
+    [catalog, draft],
+  );
+  const selectionDirty =
+    draftSelection !== null &&
+    !sameSelection(draftSelection, googleView?.selection ?? null);
+  const selectionProblem =
+    selectionDirty && catalog && draft ? draftProblem(catalog, draft) : null;
+
+  // For google, the secrets section follows the draft's auth mode.
+  const modeSecrets =
+    isGoogle && catalog && draft
+      ? catalog.authModes.find((m) => m.id === draft.auth)?.secrets ?? []
+      : null;
+  const requiredSecrets = modeSecrets ?? connection.requiredSecrets;
+  const optionalSecrets = modeSecrets ? [] : connection.optionalSecrets;
 
   const isSetMap = useMemo<Record<string, boolean>>(
     () => ({
@@ -53,14 +126,6 @@ export default function ConfigureConnectionModal({
     [connection.requiredSecretsSet, connection.optionalSecretsSet],
   );
 
-  // Close on Escape.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
 
   const setValue = useCallback((name: string, value: string) => {
     setValues((prev) => ({ ...prev, [name]: value }));
@@ -93,31 +158,115 @@ export default function ConfigureConnectionModal({
   }, []);
 
   // Build the payload of *only* modified fields.
+  // Only the fields on screen: a value typed for the other Google mode is
+  // not sent.
   const pendingSecrets = useMemo<Record<string, string>>(() => {
+    const shown = new Set([...requiredSecrets, ...optionalSecrets]);
     const out: Record<string, string> = {};
     for (const [name, value] of Object.entries(values)) {
-      if (value !== "") out[name] = value;
+      if (value !== "" && shown.has(name)) out[name] = value;
     }
     for (const name of clearing) {
-      out[name] = "";
+      if (shown.has(name)) out[name] = "";
     }
     return out;
-  }, [values, clearing]);
+  }, [values, clearing, requiredSecrets, optionalSecrets]);
 
-  const hasChanges = Object.keys(pendingSecrets).length > 0;
+  const hasChanges = Object.keys(pendingSecrets).length > 0 || selectionDirty;
 
-  const handleSave = useCallback(async () => {
-    if (!hasChanges) return;
+  const doSave = useCallback(async () => {
+    setWiden(null);
     setSave({ phase: "saving" });
-    const result = await api.setSecrets(caller, connection.alias, pendingSecrets);
-    if (!result.ok) {
-      setSave({ phase: "error", message: result.error });
-      return;
+    if (selectionDirty && draftSelection) {
+      // Written by the admin Google route directly, never through a tool.
+      const put = await api.setGoogleSelection(caller, draftSelection);
+      if (!put.ok) {
+        setSave({ phase: "error", message: put.error });
+        return;
+      }
+      setGoogleView(put.data);
+      setDraft(draftFrom(put.data.selection));
+    }
+    if (Object.keys(pendingSecrets).length > 0) {
+      // Secrets still go through set_secrets with origin "admin".
+      const result = await api.setSecrets(caller, connection.alias, pendingSecrets);
+      if (!result.ok) {
+        setSave({ phase: "error", message: result.error });
+        return;
+      }
+      setValues({});
+      setClearing(new Set());
     }
     setSave({ phase: "saved" });
     onSaved();
-    onClose();
-  }, [hasChanges, caller, connection.alias, pendingSecrets, onSaved, onClose]);
+    if (!isGoogle) onClose();
+  }, [
+    selectionDirty,
+    draftSelection,
+    pendingSecrets,
+    caller,
+    connection.alias,
+    isGoogle,
+    onSaved,
+    onClose,
+  ]);
+
+  const handleSave = useCallback(async () => {
+    if (!hasChanges || selectionProblem) return;
+    if (selectionDirty && catalog && draftSelection) {
+      // Confirm before widening: list each level that brings a new scope.
+      const before = googleView?.consentScopes ?? [];
+      const added = consentScopesOf(catalog, draftSelection).filter(
+        (s) => !before.includes(s),
+      );
+      const lines = pickedLevels(catalog, draftSelection)
+        .filter((p) => p.level.scopes.some((s) => added.includes(s)))
+        .map((p) => `${p.service} · ${p.level.id}: ${p.level.summary}`);
+      const subject = draftSelection.subject;
+      if (subject !== undefined && subject !== googleView?.selection?.subject) {
+        lines.push(`acts as ${subject} for every selected service`);
+      }
+      if (lines.length > 0) {
+        setWiden(lines);
+        return;
+      }
+    }
+    await doSave();
+  }, [
+    hasChanges,
+    selectionProblem,
+    selectionDirty,
+    catalog,
+    draftSelection,
+    googleView,
+    doSave,
+  ]);
+
+  const handleRemove = useCallback(async () => {
+    const res = await api.deleteGoogleSelection(caller);
+    setConfirmRemove(false);
+    if (!res.ok) {
+      setSave({ phase: "error", message: res.error });
+      return;
+    }
+    setGoogleView(res.data);
+    setDraft(draftFrom(null));
+    onSaved();
+  }, [caller, onSaved]);
+
+  const runTest = useCallback(async () => {
+    setTesting(true);
+    setTestResult(null);
+    setTestResult(toOutcome("Test", await api.testConnection(caller, connection.alias)));
+    setTesting(false);
+  }, [caller, connection.alias]);
+
+  const addedScopes =
+    widen && catalog && draftSelection
+      ? consentScopesOf(catalog, draftSelection).filter(
+          (s) => !(googleView?.consentScopes ?? []).includes(s),
+        )
+      : [];
 
   const hasAnySecret = requiredSecrets.length > 0 || optionalSecrets.length > 0;
 
@@ -128,7 +277,7 @@ export default function ConfigureConnectionModal({
       onClick={onClose}
     >
       <div
-        className="dl-secrets-panel"
+        className={"dl-secrets-panel" + (isGoogle ? " is-wide" : "")}
         role="dialog"
         aria-modal="true"
         aria-label={`Configure secrets for ${connection.name}`}
@@ -146,7 +295,12 @@ export default function ConfigureConnectionModal({
             {connection.description && (
               <p className="dl-secrets-desc">{connection.description}</p>
             )}
-            {(connection.auth || connection.problem) && (
+            {isGoogle && googleView?.problem && (
+              <div className="dl-secrets-auth">
+                <AuthSummary problem={googleView.problem} />
+              </div>
+            )}
+            {!isGoogle && (connection.auth || connection.problem) && (
               <div className="dl-secrets-auth">
                 <AuthSummary
                   auth={connection.auth}
@@ -180,7 +334,42 @@ export default function ConfigureConnectionModal({
 
         {/* ── Body ── */}
         <div className="dl-secrets-body">
-          {!hasAnySecret ? (
+          {isGoogle && googleLoadError && (
+            <div className="dl-gsel-error" role="alert">
+              Could not load the Google catalog: {googleLoadError}
+            </div>
+          )}
+          {isGoogle && !googleLoadError && (!catalog || !draft) && (
+            <div className="dl-secrets-help">
+              <Loader2 size={12} className="dl-secrets-spin" /> Loading the
+              Google catalog…
+            </div>
+          )}
+          {isGoogle && catalog && draft && (
+            <>
+              <GoogleSelectionEditor
+                catalog={catalog}
+                draft={draft}
+                saved={googleView?.selection ?? null}
+                onChange={(d) => {
+                  setDraft(d);
+                  setTestResult(null);
+                  if (save.phase !== "saving") setSave({ phase: "idle" });
+                }}
+              />
+              {googleView?.selection && (
+                <button
+                  type="button"
+                  className="dl-secrets-clear-btn dl-gsel-remove"
+                  onClick={() => setConfirmRemove(true)}
+                >
+                  <X size={11} />
+                  Remove this caller&apos;s Google selection
+                </button>
+              )}
+            </>
+          )}
+          {isGoogle && (!catalog || !draft) ? null : !hasAnySecret ? (
             <div className="dl-secrets-empty">
               <span className="dl-secrets-empty-title">No secrets needed</span>
               This connection works without any configured secrets.
@@ -189,7 +378,11 @@ export default function ConfigureConnectionModal({
             <>
               {requiredSecrets.length > 0 && (
                 <div className="dl-secrets-section">
-                  <h3 className="dl-secrets-section-title">Required Secrets</h3>
+                  <h3 className="dl-secrets-section-title">
+                    {isGoogle && draft
+                      ? `Secrets for ${draft.auth === "user" ? "user OAuth" : "the service account"}`
+                      : "Required Secrets"}
+                  </h3>
                   <div className="dl-secrets-fields">
                     {requiredSecrets.map((name) => (
                       <SecretField
@@ -257,11 +450,27 @@ export default function ConfigureConnectionModal({
             }
           >
             {save.phase === "error" && save.message}
+            {save.phase !== "error" && selectionProblem}
             {save.phase === "saved" && (
               <>
                 <Check size={14} />
                 Saved
               </>
+            )}
+            {isGoogle && save.phase === "saved" && (
+              connection.enabled ? (
+                <button
+                  type="button"
+                  className="dl-secrets-btn dl-secrets-btn-secondary dl-gsel-test-btn"
+                  onClick={() => void runTest()}
+                  disabled={testing}
+                >
+                  {testing && <Loader2 size={14} className="dl-secrets-spin" />}
+                  Run the test now
+                </button>
+              ) : (
+                <span>Enable the Google card to test it.</span>
+              )
             )}
           </div>
           <div className="dl-secrets-actions">
@@ -281,8 +490,9 @@ export default function ConfigureConnectionModal({
               onClick={handleSave}
               disabled={
                 !hasChanges ||
+                selectionProblem !== null ||
                 save.phase === "saving" ||
-                save.phase === "saved"
+                (save.phase === "saved" && !hasChanges)
               }
             >
               {save.phase === "saving" && (
@@ -291,13 +501,67 @@ export default function ConfigureConnectionModal({
               {save.phase === "saved" && <Check size={14} />}
               {save.phase === "saving"
                 ? "Saving…"
-                : save.phase === "saved"
+                : save.phase === "saved" && !hasChanges
                   ? "Saved"
                   : "Save"}
             </button>
           </div>
         </div>
+        {testResult && (
+          <div className="dl-gsel-test-result">
+            <TestResultView result={testResult} onDismiss={() => setTestResult(null)} />
+          </div>
+        )}
+
+        {/* Inside the panel, whose onClick stops propagation: a click on a
+            dialog's overlay must not reach this modal's overlay. */}
+        {widen && (
+          <ConfirmDialog
+            title={`Widen Google access for "${caller}"?`}
+            confirmLabel="Save and widen"
+            busy={save.phase === "saving"}
+            description={
+              <>
+                <p>
+                This selection asks for access the caller doesn&apos;t have
+                now. Its agent will be able to use:
+              </p>
+                <ul className="dl-gsel-widen-list">
+                  {widen.map((line) => (
+                    <li key={line}>{line}</li>
+                  ))}
+                </ul>
+                {addedScopes.length > 0 && (
+                  <p>
+                    {draft?.auth === "service-account"
+                      ? "The Admin console's domain-wide delegation entry must include: "
+                      : "The refresh token must be re-consented for: "}
+                    <span className="mono">
+                      {addedScopes.map(shortScope).join(", ")}
+                    </span>
+                  </p>
+                )}
+              </>
+            }
+            onConfirm={doSave}
+            onCancel={() => setWiden(null)}
+          />
+        )}
+        {confirmRemove && (
+          <ConfirmDialog
+            title={`Remove "${caller}"'s Google selection?`}
+            confirmLabel="Remove"
+            description={
+              connection.enabled
+                ? "The Google connection stays enabled but is dropped for this caller until a selection is saved."
+                : "The caller keeps its Google secrets; only the services and levels are removed."
+            }
+            onConfirm={handleRemove}
+            onCancel={() => setConfirmRemove(false)}
+          />
+        )}
       </div>
+
     </div>
   );
 }

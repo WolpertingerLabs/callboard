@@ -197,6 +197,18 @@ export default function CallerDetail() {
         </div>
       </header>
 
+      {caller.configProblem && (
+        // The caller can't be resolved at all (say, a connection that is
+        // neither a template nor a connector): its handshakes fail.
+        <div className="banner banner-offline" role="alert">
+          <span className="status-dot down" aria-hidden="true" />
+          <span>
+            This caller&apos;s config can&apos;t be loaded, so its agent
+            can&apos;t connect: {caller.configProblem}
+          </span>
+        </div>
+      )}
+
       <section className="detail-section">
         <h2 className="section-title">Credentials</h2>
         <div className="dl-cred-lifecycle">

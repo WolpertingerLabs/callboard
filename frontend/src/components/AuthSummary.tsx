@@ -6,8 +6,10 @@ import type {
 /**
  * Read-only view of how drawlatch mints a connection's token: the grant and
  * the scopes this caller gets. Overrides (narrower scopes, a service-account
- * subject) and the google connection's selection (callers.<alias>.google:
- * services, auth mode, subject) are edited in remote.config.json, not here.
+ * subject) are edited in remote.config.json. The google connection's
+ * selection (callers.<alias>.google: auth mode, services, subject) is shown
+ * as a mode badge and service chips; it is edited in the Configure dialog's
+ * Google services editor (GoogleSelectionEditor) or remote.config.json.
  */
 
 type TemplateAuth = NonNullable<AdminConnectionTemplate["auth"]>;
@@ -25,6 +27,34 @@ export function shortScope(scope: string): string {
   return scope.startsWith(GOOGLE_SCOPE_PREFIX)
     ? scope.slice(GOOGLE_SCOPE_PREFIX.length)
     : scope;
+}
+
+/** The google connection's auth mode badge and `service · level` chips. */
+export function GoogleBadges({
+  callerAuth,
+}: {
+  callerAuth?: AdminConnectionAuth;
+}) {
+  const g = callerAuth?.google;
+  if (!g) return null;
+  const mode =
+    g.auth === "user"
+      ? "User OAuth"
+      : callerAuth?.subject !== undefined
+        ? "Service account · delegated"
+        : "Service account";
+  return (
+    <>
+      <span className="dl-google-mode" title="Google auth mode">
+        {mode}
+      </span>
+      {Object.entries(g.services).map(([svc, level]) => (
+        <span key={svc} className="dl-google-chip mono">
+          {svc} · {level}
+        </span>
+      ))}
+    </>
+  );
 }
 
 export function AuthSummary({
@@ -63,7 +93,12 @@ export function AuthSummary({
           <span className="auth-summary-grant">{GRANT_LABELS[grant]}</span>
         </div>
       )}
-      {scopes.length > 0 && (
+      {callerAuth?.google && (
+        <div className="dl-google-badges">
+          <GoogleBadges callerAuth={callerAuth} />
+        </div>
+      )}
+      {scopes.length > 0 && !(compact && callerAuth?.google) && (
         <ul className="auth-summary-scopes" aria-label="Scopes">
           {scopes.map((s) => (
             <li key={s} className="mono" title={s}>
@@ -90,8 +125,8 @@ export function AuthSummary({
           needs a subject: set <span className="mono">oauth2Overrides</span>
           {" → "}
           <span className="mono">subject</span> for the caller in
-          remote.config.json (for <span className="mono">google</span>:{" "}
-          <span className="mono">google.subject</span>)
+          remote.config.json (for <span className="mono">google</span>, set
+          the subject in Connections → Google → Configure)
         </div>
       )}
       {problem && (

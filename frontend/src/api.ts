@@ -4,6 +4,9 @@ import type {
   AdminConnectionStatus,
   AdminConnectionTemplate,
   AdminEvent,
+  AdminGoogleCatalog,
+  AdminGoogleSelection,
+  AdminGoogleSelectionConfig,
   AdminHealth,
   AdminIngestor,
   AdminMeta,
@@ -245,6 +248,23 @@ export const api = {
       "PUT",
       `/api/admin/callers/${enc(alias)}/self-manage`,
       { enabled },
+    ),
+
+  // ── Google selection (callers.<alias>.google) ─────────────────────────
+  // Admin-only config: these routes write it directly, never through a tool.
+  googleCatalog: () => getJson<AdminGoogleCatalog>("/api/admin/google/catalog"),
+  googleSelection: (alias: string) =>
+    getJson<AdminGoogleSelection>(`/api/admin/callers/${enc(alias)}/google`),
+  setGoogleSelection: (alias: string, selection: AdminGoogleSelectionConfig) =>
+    mutate<AdminGoogleSelection>(
+      "PUT",
+      `/api/admin/callers/${enc(alias)}/google`,
+      selection,
+    ),
+  deleteGoogleSelection: (alias: string) =>
+    mutate<AdminGoogleSelection>(
+      "DELETE",
+      `/api/admin/callers/${enc(alias)}/google`,
     ),
 
   // ── Connection enable / secrets / test ────────────────────────────────

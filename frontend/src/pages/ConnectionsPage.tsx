@@ -33,6 +33,12 @@ import { useDaemon } from "../contexts/DaemonContext";
 import StabilityBadge from "../components/StabilityBadge";
 import ConfigureConnectionModal from "../components/ConfigureConnectionModal";
 import ListenerConfigPanel from "../components/ListenerConfigPanel";
+import {
+  TestResultView,
+  toOutcome,
+  type TestOutcome,
+} from "../components/TestResult";
+import { GoogleBadges } from "../components/AuthSummary";
 import "./ConnectionsPage.css";
 
 const INGESTOR_POLL_MS = 5_000;
@@ -462,10 +468,8 @@ export default function ConnectionsPage() {
           caller={selectedCaller}
           connection={configuring}
           onClose={() => setConfiguring(null)}
-          onSaved={() => {
-            setConfiguring(null);
-            triggerRefetch();
-          }}
+          // The modal closes itself (google stays open to offer a test).
+          onSaved={triggerRefetch}
         />
       )}
 
@@ -484,21 +488,6 @@ export default function ConnectionsPage() {
 }
 
 // ── Connection card ─────────────────────────────────────────────────────
-
-interface TestResult {
-  ok: boolean;
-  label: string;
-  detail?: string;
-}
-
-function extractDetail(data: Record<string, unknown>): string | undefined {
-  for (const key of ["error", "message", "description", "status"]) {
-    const v = data[key];
-    if (typeof v === "string" && v) return v;
-    if (typeof v === "number") return String(v);
-  }
-  return undefined;
-}
 
 function ConnectionCard({
   caller,
@@ -523,7 +512,7 @@ function ConnectionCard({
   const [testing, setTesting] = useState<"connection" | "ingestor" | null>(
     null,
   );
-  const [testResult, setTestResult] = useState<TestResult | null>(null);
+  const [testResult, setTestResult] = useState<TestOutcome | null>(null);
   const [controlAction, setControlAction] = useState<
     "start" | "stop" | "restart" | null
   >(null);
@@ -559,28 +548,17 @@ function ConnectionCard({
   const handleTestConnection = async () => {
     setTesting("connection");
     setTestResult(null);
-    const res = await api.testConnection(caller, c.alias);
-    if (res.ok) {
-      setTestResult({ ok: true, label: "Test passed", detail: extractDetail(res.data) });
-    } else {
-      setTestResult({ ok: false, label: "Test failed", detail: res.error });
-    }
+    // The verdict is the result's own `success`, not the HTTP status.
+    setTestResult(toOutcome("Test", await api.testConnection(caller, c.alias)));
     setTesting(null);
   };
 
   const handleTestIngestor = async () => {
     setTesting("ingestor");
     setTestResult(null);
-    const res = await api.testIngestor(caller, c.alias);
-    if (res.ok) {
-      setTestResult({
-        ok: true,
-        label: "Listener test passed",
-        detail: extractDetail(res.data),
-      });
-    } else {
-      setTestResult({ ok: false, label: "Listener test failed", detail: res.error });
-    }
+    setTestResult(
+      toOutcome("Listener test", await api.testIngestor(caller, c.alias)),
+    );
     setTesting(null);
   };
 
@@ -626,11 +604,17 @@ function ConnectionCard({
       <div className="dl-conn-badges">
         <StabilityBadge stability={c.stability} />
 
-        <span className="dl-conn-badge mono">
-          <Globe size={10} />
-          {c.allowedEndpoints.length} endpoint
-          {c.allowedEndpoints.length === 1 ? "" : "s"}
-        </span>
+        {c.composed === "google" ? (
+          // The composed connection has no fixed allowlist: it is the
+          // caller's selection. Show that instead.
+          c.enabled && <GoogleBadges callerAuth={c.callerAuth} />
+        ) : (
+          <span className="dl-conn-badge mono">
+            <Globe size={10} />
+            {c.allowedEndpoints.length} endpoint
+            {c.allowedEndpoints.length === 1 ? "" : "s"}
+          </span>
+        )}
 
         {c.hasIngestor && c.ingestorType && (
           <span className="dl-conn-badge dl-conn-badge-ingestor">
@@ -672,6 +656,13 @@ function ConnectionCard({
           </a>
         )}
       </div>
+
+      {c.enabled && c.problem && (
+        <div className="dl-conn-problem" role="status">
+          <AlertTriangle size={12} />
+          <span>not loaded: {c.problem}</span>
+        </div>
+      )}
 
       {/* Primary actions */}
       <div className="dl-conn-actions">
@@ -762,29 +753,7 @@ function ConnectionCard({
 
       {/* Transient test result */}
       {testResult && (
-        <div
-          className={`dl-conn-result ${testResult.ok ? "dl-conn-result-ok" : "dl-conn-result-err"}`}
-        >
-          {testResult.ok ? (
-            <Check size={14} className="dl-conn-result-icon" />
-          ) : (
-            <AlertTriangle size={14} className="dl-conn-result-icon" />
-          )}
-          <div className="dl-conn-result-text">
-            <div className="dl-conn-result-label">{testResult.label}</div>
-            {testResult.detail && (
-              <div className="dl-conn-result-detail">{testResult.detail}</div>
-            )}
-          </div>
-          <button
-            type="button"
-            className="dl-conn-result-close"
-            onClick={() => setTestResult(null)}
-            title="Dismiss"
-          >
-            ×
-          </button>
-        </div>
+        <TestResultView result={testResult} onDismiss={() => setTestResult(null)} />
       )}
     </article>
   );
