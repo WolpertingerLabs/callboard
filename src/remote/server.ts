@@ -195,11 +195,17 @@ const FORWARDING_HEADERS = [
 
 /**
  * True only for a direct connection from this machine: the socket's peer is
- * loopback AND the request carries no forwarding header. A reverse proxy on the
- * same host (Caddy, nginx, `tailscale serve`, `ssh -R`) connects from loopback,
- * so the socket address alone would admit every client behind it. A proxy that
- * forwards without marking the hop is indistinguishable at this layer — don't
- * put one in front of loopback-only routes.
+ * loopback AND the request carries no forwarding header. Anything that forwards
+ * from the same host connects from loopback, so the socket address alone would
+ * admit every client behind it.
+ *
+ * Detected (refused): Caddy's `reverse_proxy` and Cloudflare (including the
+ * built-in cloudflared tunnel, see tunnel.ts) add X-Forwarded-* /
+ * CF-Connecting-IP by default.
+ * NOT detected: a default nginx `proxy_pass` (no X-Forwarded-* unless
+ * `proxy_set_header` adds them), `ssh -R` and socat add nothing and are
+ * indistinguishable from a local client at this layer. Don't put such a
+ * forwarder in front of loopback-only routes.
  */
 export function isDirectLoopbackClient(req: express.Request): boolean {
   // Typed as always present, but hand-built requests (tests, adapters) may omit it.
@@ -344,7 +350,7 @@ setInterval(() => {
  * Project the active sessions into a sanitized snapshot for read-only use.
  *
  * Drops `channel` (holds AES keys) and `resolvedRoutes` (carry decrypted
- * secrets). Used by the loopback /admin API; never call res.json(session).
+ * secrets). Used by the password-gated /api/admin API; never call res.json(session).
  */
 export function getSessionsSnapshot(): SessionSnapshot[] {
   const out: SessionSnapshot[] = [];

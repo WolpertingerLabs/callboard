@@ -68,6 +68,18 @@ describe('GET /events/stream loopback guard', () => {
     expect(await res.json()).toEqual({ error: 'Forbidden: local access only' });
   });
 
+  it('refuses a request shaped like the cloudflared tunnel (CF-Connecting-IP)', async () => {
+    // cloudflared connects from loopback; Cloudflare's edge adds these.
+    for (const headers of [
+      { 'CF-Connecting-IP': '203.0.113.7' },
+      { 'CF-Connecting-IP': '203.0.113.7', 'X-Forwarded-For': '203.0.113.7' },
+    ]) {
+      const res = await fetch(`${url}/events/stream`, { headers });
+      expect(res.status, JSON.stringify(headers)).toBe(403);
+      expect(await res.json()).toEqual({ error: 'Forbidden: local access only' });
+    }
+  });
+
   it('refuses a loopback request carrying Forwarded or Via', async () => {
     for (const headers of [{ Forwarded: 'for=192.168.1.50' }, { Via: '1.1 caddy' }]) {
       const res = await fetch(`${url}/events/stream`, { headers });
