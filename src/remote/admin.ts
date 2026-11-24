@@ -30,7 +30,12 @@ import {
   resolveCallerRoutesChecked,
   type RemoteServerConfig,
 } from '../shared/config.js';
-import { listConnectionTemplates, loadConnection } from '../shared/connections.js';
+import {
+  callerOptionalSecrets,
+  callerRequiredSecrets,
+  listConnectionTemplates,
+  loadConnection,
+} from '../shared/connections.js';
 import type { ListenerConfigSchema } from '../shared/listener-config.js';
 import { isSecretSetForCaller } from '../shared/env-utils.js';
 import { callerFingerprint } from '../shared/crypto/key-manager.js';
@@ -143,10 +148,26 @@ export function createAdminRouter(deps: AdminRouterDeps): express.Router {
         selfManage: callerMaySelfManage(caller),
         vaultItems:
           vaultCounts === null ? null : Object.hasOwn(vaultCounts, alias) ? vaultCounts[alias] : 0,
+        ...configProblemOf(config, alias),
       };
     });
     res.json(out);
   });
+
+  /**
+   * Why a caller can't be resolved at all (say, a connection name that is
+   * neither a template, a removed template, nor a connector): its handshakes
+   * fail until it is fixed. A dropped connection is reported per connection
+   * (`problem`), not here.
+   */
+  function configProblemOf(config: RemoteServerConfig, alias: string): { configProblem?: string } {
+    try {
+      resolveCallerRoutesChecked(config, alias);
+      return {};
+    } catch (err) {
+      return { configProblem: err instanceof Error ? err.message : String(err) };
+    }
+  }
 
   /**
    * Per-connection auth for one caller, after its oauth2Overrides, plus the
@@ -184,7 +205,9 @@ export function createAdminRouter(deps: AdminRouterDeps): express.Router {
     return { auth, dropped: new Map(Object.entries(dropped)) };
   }
 
-  /** A connection's own `oauth2.scopes`, before any caller override. */
+  /** A connection's own `oauth2.scopes`, before any caller override.
+   *  Undefined for the composed `google` base (no fixed scopes: its route is
+   *  the caller's selection), so `narrowed` is false there. */
   function connectionScopes(config: RemoteServerConfig, alias: string): string[] | undefined {
     const custom = (config.connectors ?? []).find((c) => c.alias === alias);
     try {
@@ -214,16 +237,21 @@ export function createAdminRouter(deps: AdminRouterDeps): express.Router {
     const enabled = new Set(caller.connections);
     const { auth, dropped } = callerAuthView(config, req.params.alias);
     const out: AdminConnectionStatus[] = listConnectionTemplates().map((t) => {
+      // Per caller: `google` needs the credentials of the mode it selects.
+      const requiredSecrets = callerRequiredSecrets(t, caller);
+      const optionalSecrets = callerOptionalSecrets(t, caller);
       const requiredSecretsSet: Record<string, boolean> = {};
-      for (const s of t.requiredSecrets) {
+      for (const s of requiredSecrets) {
         requiredSecretsSet[s] = isSecretSetForCaller(s, req.params.alias, caller.env);
       }
       const optionalSecretsSet: Record<string, boolean> = {};
-      for (const s of t.optionalSecrets) {
+      for (const s of optionalSecrets) {
         optionalSecretsSet[s] = isSecretSetForCaller(s, req.params.alias, caller.env);
       }
       return {
         ...t,
+        requiredSecrets,
+        optionalSecrets,
         enabled: enabled.has(t.alias),
         requiredSecretsSet,
         optionalSecretsSet,
@@ -252,8 +280,8 @@ export function createAdminRouter(deps: AdminRouterDeps): express.Router {
       const tpl = tplMap.get(connectionAlias);
       const customRoute = customMap.get(connectionAlias);
       const isCustom = !tpl;
-      const requiredNames = tpl?.requiredSecrets ?? [];
-      const optionalNames = tpl?.optionalSecrets ?? [];
+      const requiredNames = tpl ? callerRequiredSecrets(tpl, caller) : [];
+      const optionalNames = tpl ? callerOptionalSecrets(tpl, caller) : [];
 
       const requiredSecrets: AdminSecretRef[] = requiredNames.map((name) => ({
         name,
@@ -412,7 +440,7 @@ export function createAdminRouter(deps: AdminRouterDeps): express.Router {
       for (const connectionAlias of caller.connections) {
         const tpl = tplMap.get(connectionAlias);
         if (!tpl) continue; // custom connector — no template-defined secrets to enumerate
-        for (const name of tpl.requiredSecrets) {
+        for (const name of callerRequiredSecrets(tpl, caller)) {
           out.push({
             callerAlias,
             connection: connectionAlias,
@@ -421,7 +449,7 @@ export function createAdminRouter(deps: AdminRouterDeps): express.Router {
             present: isSecretSetForCaller(name, callerAlias, caller.env),
           });
         }
-        for (const name of tpl.optionalSecrets) {
+        for (const name of callerOptionalSecrets(tpl, caller)) {
           out.push({
             callerAlias,
             connection: connectionAlias,

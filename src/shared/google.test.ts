@@ -10,9 +10,19 @@ import {
   type RemoteServerConfig,
   type Route,
 } from './config.js';
-import { describeConnectionTemplate, loadConnection, validateOAuth2Route } from './connections.js';
+import {
+  REMOVED_CONNECTIONS,
+  callerOptionalSecrets,
+  callerRequiredSecrets,
+  describeConnectionTemplate,
+  loadConnection,
+  removedConnectionMessage,
+  validateOAuth2Route,
+} from './connections.js';
 import {
   composeGoogleRoute,
+  googleBootNotes,
+  googleCrossScopeNotes,
   googleConsentScopes,
   googleCredentialRoutes,
   loadGoogleCatalog,
@@ -574,5 +584,94 @@ describe('resolveCallerRoutesChecked with the google connection', () => {
 
   it('googleCredentialRoutes reads the shipped base template by default', () => {
     expect(googleCredentialRoutes()).toEqual(googleCredentialRoutes(loadConnection('google')));
+  });
+});
+
+describe('REMOVED_CONNECTIONS', () => {
+  it('lists the 17 per-scope templates, each naming a catalog level and mode', () => {
+    expect(Object.keys(REMOVED_CONNECTIONS)).toHaveLength(17);
+    const catalog = loadGoogleCatalog();
+    for (const [id, { service, level, auth }] of Object.entries(REMOVED_CONNECTIONS)) {
+      expect(id.startsWith('google-'), id).toBe(true);
+      expect(auth, id).toBe(id.endsWith('-sa') ? 'service-account' : 'user');
+      const l = catalog.services[service].levels[level];
+      expect(l, id).toBeDefined();
+      expect(l.auth, id).toContain(auth);
+    }
+  });
+
+  it('formats one line per removed ID, with the caller alias when given', () => {
+    expect(removedConnectionMessage('google-sheets')).toBe(
+      'Connection "google-sheets" was removed: use "google" with callers.<alias>.google.services.sheets = "edit" (auth "user"). See CONNECTIONS.md → Google.',
+    );
+    expect(removedConnectionMessage('google-gmail-readonly-sa', 'mail')).toBe(
+      'Connection "google-gmail-readonly-sa" was removed: use "google" with callers.mail.google.services.gmail = "read" (auth "service-account"). See CONNECTIONS.md → Google.',
+    );
+    expect(removedConnectionMessage('github')).toBeUndefined();
+    expect(removedConnectionMessage('__proto__')).toBeUndefined();
+  });
+});
+
+describe('callerRequiredSecrets / callerOptionalSecrets', () => {
+  const info = describeConnectionTemplate('google', loadConnection('google'));
+  const USER = [
+    'GOOGLE_OAUTH_CLIENT_ID',
+    'GOOGLE_OAUTH_CLIENT_SECRET',
+    'GOOGLE_OAUTH_REFRESH_TOKEN',
+  ];
+
+  it('google, user mode or no block: the user trio is required, the key optional', () => {
+    for (const caller of [
+      { connections: ['google'], google: { auth: 'user' as const, services: { docs: 'edit' } } },
+      { connections: ['google'] },
+      undefined,
+    ]) {
+      expect(callerRequiredSecrets(info, caller)).toEqual(USER);
+      expect(callerOptionalSecrets(info, caller)).toEqual(['GOOGLE_SERVICE_ACCOUNT_KEY']);
+    }
+  });
+
+  it('google, service-account mode: the key is required, the user trio optional', () => {
+    const caller = {
+      connections: ['google'],
+      google: { auth: 'service-account' as const, services: { docs: 'edit' } },
+    };
+    expect(callerRequiredSecrets(info, caller)).toEqual(['GOOGLE_SERVICE_ACCOUNT_KEY']);
+    expect(callerOptionalSecrets(info, caller)).toEqual(USER);
+  });
+
+  it('other templates: their own lists, whatever the caller', () => {
+    const github = describeConnectionTemplate('github', loadConnection('github'));
+    const caller = {
+      connections: ['github'],
+      google: { auth: 'service-account' as const, services: { docs: 'edit' } },
+    };
+    expect(callerRequiredSecrets(github, caller)).toEqual(github.requiredSecrets);
+    expect(callerOptionalSecrets(github, caller)).toEqual(github.optionalSecrets);
+  });
+});
+
+describe('cross-scope notes for a selection', () => {
+  it('applies the sheets read + drive file note only to selections containing both', () => {
+    expect(
+      googleCrossScopeNotes({ auth: 'user', services: { sheets: 'read', drive: 'file' } }),
+    ).toEqual([loadGoogleCatalog().crossScopeNotes[0].text]);
+    expect(
+      googleCrossScopeNotes({ auth: 'user', services: { sheets: 'read', drive: 'read' } }),
+    ).toEqual([]);
+    expect(
+      googleCrossScopeNotes({ auth: 'user', services: { sheets: 'edit', drive: 'file' } }),
+    ).toEqual([]);
+  });
+
+  it('googleBootNotes lists enabled, valid selections only', () => {
+    const sel = { auth: 'user' as const, services: { sheets: 'read', drive: 'file' } };
+    expect(
+      googleBootNotes({
+        on: { connections: ['google'], google: sel },
+        off: { connections: [], google: sel },
+        bad: { connections: ['google'], google: { ...sel, auth: 'nope' } as never },
+      }),
+    ).toEqual([`Caller "on": google: ${loadGoogleCatalog().crossScopeNotes[0].text}`]);
   });
 });

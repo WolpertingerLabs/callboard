@@ -41,7 +41,12 @@ import {
   type ResolvedRoute,
   type Route,
 } from '../shared/config.js';
-import { listConnectionTemplates, loadConnection } from '../shared/connections.js';
+import {
+  callerOptionalSecrets,
+  callerRequiredSecrets,
+  listConnectionTemplates,
+  loadConnection,
+} from '../shared/connections.js';
 import { googleCredentialRoutes, googleLevelScopes, googleScopeLabel } from '../shared/google.js';
 import { assertSafeConnectionKey, assertSafeInstanceId, ownEntry } from '../shared/safe-keys.js';
 import { isSecretSetForCaller, setCallerSecrets } from '../shared/env-utils.js';
@@ -2238,13 +2243,14 @@ export const toolHandlers: Record<string, ToolHandler> = {
     const caller = config.callers[context.callerAlias];
     const callerEnv = caller.env;
 
+    // Per caller: `google` needs the credentials of the mode it selects.
     const requiredSecretsSet: Record<string, boolean> = {};
-    for (const s of template.requiredSecrets) {
+    for (const s of callerRequiredSecrets(template, caller)) {
       requiredSecretsSet[s] = isSecretSetForCaller(s, context.callerAlias, callerEnv);
     }
 
     const optionalSecretsSet: Record<string, boolean> = {};
-    for (const s of template.optionalSecrets) {
+    for (const s of callerOptionalSecrets(template, caller)) {
       optionalSecretsSet[s] = isSecretSetForCaller(s, context.callerAlias, callerEnv);
     }
 

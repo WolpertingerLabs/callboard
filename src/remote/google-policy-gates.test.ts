@@ -187,4 +187,20 @@ describe('the composed google connection on the agent path', () => {
     // No fixed scopes, so no auth block.
     expect(google?.auth).toBeUndefined();
   });
+
+  it('get_secret_status reports the credentials of the mode the caller selects', async () => {
+    const statusOf = async (caller: string) =>
+      (await dispatchTool('get_secret_status', { connection: 'google' }, [], ctx(caller))) as {
+        requiredSecretsSet: Record<string, boolean>;
+        optionalSecretsSet: Record<string, boolean>;
+      };
+    const sa = await statusOf('sa');
+    expect(Object.keys(sa.requiredSecretsSet)).toEqual(['GOOGLE_SERVICE_ACCOUNT_KEY']);
+    expect(Object.keys(sa.optionalSecretsSet)).toEqual(GOOGLE_CREDENTIALS.slice(0, 3));
+    const user = await statusOf('user');
+    expect(Object.keys(user.requiredSecretsSet)).toEqual(GOOGLE_CREDENTIALS.slice(0, 3));
+    expect(Object.keys((await statusOf('none')).requiredSecretsSet)).toEqual(
+      GOOGLE_CREDENTIALS.slice(0, 3),
+    );
+  });
 });

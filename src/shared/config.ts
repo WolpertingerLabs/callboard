@@ -14,7 +14,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { isValidOAuth2Subject, loadConnection, validateOAuth2Route } from './connections.js';
+import {
+  isRemovedConnection,
+  isValidOAuth2Subject,
+  loadConnection,
+  removedConnectionMessage,
+  validateOAuth2Route,
+} from './connections.js';
 import { isSecretSetForCaller } from './env-utils.js';
 import { composeGoogleRoute, validateGoogleSelection } from './google.js';
 import { ownEntry } from './safe-keys.js';
@@ -1065,9 +1071,20 @@ export function resolveCallerRoutesChecked(
   }
 
   const routes: Route[] = [];
+  const drop = (name: string, reason: string) => {
+    dropped[name] = reason;
+    problems.push(`Caller "${callerAlias}": connection "${name}" dropped: ${reason}`);
+  };
   for (const name of caller.connections) {
     // Custom connectors take precedence over built-in templates
     const custom = connectorsByAlias.get(name);
+    // A removed per-scope Google template drops only that connection, with
+    // what replaces it. Any other unknown name still throws below, for the
+    // whole caller, as before.
+    if (!custom && isRemovedConnection(name)) {
+      drop(name, removedConnectionMessage(name, callerAlias) ?? `Connection "${name}" was removed`);
+      continue;
+    }
     let route = custom ?? loadConnection(name);
     // Ensure every route carries its alias so it survives resolution
     if (route.alias !== name) route = { ...route, alias: name };
@@ -1092,8 +1109,7 @@ export function resolveCallerRoutesChecked(
         );
       }
     } catch (err) {
-      dropped[name] = (err as Error).message;
-      problems.push(`Caller "${callerAlias}": connection "${name}" dropped: ${dropped[name]}`);
+      drop(name, (err as Error).message);
       continue;
     }
     routes.push(route);

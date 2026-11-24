@@ -16,6 +16,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import type {
+  CallerConfig,
   GoogleAuthMode,
   GoogleCallerConfig,
   GoogleServiceId,
@@ -519,4 +520,35 @@ export function googleLevelScopes(svc: string, levelId: string): readonly string
   if (!(GOOGLE_SERVICE_IDS as string[]).includes(svc)) return undefined;
   const levels = catalog.services[svc as GoogleServiceId].levels;
   return Object.hasOwn(levels, levelId) ? levels[levelId].scopes : undefined;
+}
+
+/** The catalog's cross-service scope notes that apply to a selection. */
+export function googleCrossScopeNotes(sel: GoogleCallerConfig): string[] {
+  return loadGoogleCatalog()
+    .crossScopeNotes.filter((note) =>
+      Object.entries(note.when).every(
+        ([svc, level]) =>
+          Object.hasOwn(sel.services, svc) && sel.services[svc as GoogleServiceId] === level,
+      ),
+    )
+    .map((note) => note.text);
+}
+
+/**
+ * Boot-time info lines: each caller with `google` enabled whose valid
+ * selection matches a cross-scope note (plans/google-unified.md, Q4).
+ */
+export function googleBootNotes(callers: Record<string, CallerConfig>): string[] {
+  const lines: string[] = [];
+  for (const [alias, caller] of Object.entries(callers)) {
+    if (!caller.connections.includes('google') || !Object.hasOwn(caller, 'google')) continue;
+    let sel: GoogleCallerConfig;
+    try {
+      sel = validateGoogleSelection(caller.google);
+    } catch {
+      continue; // reported as a dropped connection
+    }
+    for (const text of googleCrossScopeNotes(sel)) lines.push(`Caller "${alias}": google: ${text}`);
+  }
+  return lines;
 }

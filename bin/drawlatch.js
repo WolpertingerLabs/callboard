@@ -28,7 +28,7 @@ const SERVER_ENTRY = join(PKG_ROOT, "dist/remote/server.js");
 const GENERATE_KEYS_ENTRY = join(PKG_ROOT, "dist/cli/generate-keys.js");
 
 // Import config helpers from compiled drawlatch code
-const { getConfigDir, getEnvFilePath, getCallerKeysDir, getServerKeysDir, getProxyConfigPath, getRemoteConfigPath, loadProxyConfig, loadRemoteConfig, connectorWithholdingWarnings, STOP_KILL_AFTER_MS } = await import(
+const { getConfigDir, getEnvFilePath, getCallerKeysDir, getServerKeysDir, getProxyConfigPath, getRemoteConfigPath, loadProxyConfig, loadRemoteConfig, connectorWithholdingWarnings, resolveCallerRoutesChecked, STOP_KILL_AFTER_MS } = await import(
   join(PKG_ROOT, "dist/shared/config.js")
 );
 
@@ -38,7 +38,7 @@ const { generateKeyBundle, saveKeyBundle, extractPublicKeys, fingerprint, loadKe
 );
 
 // Import connection template helpers
-const { listConnectionTemplates } = await import(
+const { listConnectionTemplates, callerRequiredSecrets, removedConnectionMessage } = await import(
   join(PKG_ROOT, "dist/shared/connections.js")
 );
 
@@ -717,13 +717,18 @@ function cmdConfig() {
     console.log(
       `    ${alias}: ${caller.connections ? caller.connections.length : 0} connection(s)`,
     );
+    const customAliases = new Set((config.connectors || []).map((c) => c.alias));
     for (const connName of caller.connections || []) {
       const tpl = templateMap.get(connName);
       if (!tpl) {
-        console.log(`      ${connName} (custom connector)`);
+        const removed = customAliases.has(connName)
+          ? undefined
+          : removedConnectionMessage(connName, alias);
+        console.log(removed ? `      ${connName}: ${removed}` : `      ${connName} (custom connector)`);
         continue;
       }
-      const secretStatuses = tpl.requiredSecrets.map((s) => {
+      // For google: the credentials of the auth mode this caller selects.
+      const secretStatuses = callerRequiredSecrets(tpl, caller).map((s) => {
         const set = isSecretSetForCaller(s, alias, caller.env);
         return `${s}: ${set ? "SET" : "NOT SET"}`;
       });
@@ -857,10 +862,32 @@ async function cmdDoctor() {
         for (const connName of caller.connections) {
           const tpl = templateMap.get(connName);
           if (!tpl) continue;
-          for (const secret of tpl.requiredSecrets) {
+          // For google: the credentials of the auth mode this caller selects.
+          for (const secret of callerRequiredSecrets(tpl, caller)) {
             const isSet = isSecretSetForCaller(secret, callerAlias, caller.env);
             check(`  ${callerAlias}/${connName}: ${secret}`, isSet, `Set ${secret} in ${ENV_FILE}`);
           }
+        }
+      }
+    } catch { /* skip */ }
+  }
+
+  // 9a. Connections the daemon drops for a caller (a removed template ID, an
+  // invalid google selection or oauth2Overrides entry, …), and callers it
+  // can't resolve at all (an unknown connection name: their handshakes fail).
+  if (hasRemoteConfig) {
+    try {
+      const config = loadRemoteConfig();
+      for (const callerAlias of Object.keys(config.callers)) {
+        let dropped;
+        try {
+          ({ dropped } = resolveCallerRoutesChecked(config, callerAlias));
+        } catch (err) {
+          check(`Caller "${callerAlias}": config`, false, err instanceof Error ? err.message : String(err));
+          continue;
+        }
+        for (const [connName, reason] of Object.entries(dropped)) {
+          check(`  ${callerAlias}/${connName}: dropped`, false, reason);
         }
       }
     } catch { /* skip */ }

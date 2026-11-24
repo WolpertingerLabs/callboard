@@ -347,6 +347,126 @@ describe('oauth2 auth on caller connections (read-only)', () => {
   });
 });
 
+describe('the google connection on caller views (read-only)', () => {
+  const SA_KEY_VALUE = 'google-sa-key-must-not-leak-xyz';
+  const USER_TRIO = [
+    'GOOGLE_OAUTH_CLIENT_ID',
+    'GOOGLE_OAUTH_CLIENT_SECRET',
+    'GOOGLE_OAUTH_REFRESH_TOKEN',
+  ];
+  beforeAll(() => {
+    process.env.GSA_KEY = SA_KEY_VALUE;
+    testConfig.callers.gsa = {
+      connections: ['google', 'github'],
+      env: { GOOGLE_SERVICE_ACCOUNT_KEY: '${GSA_KEY}' },
+      google: {
+        auth: 'service-account',
+        subject: 'ceo@example.com',
+        services: { gmail: 'read', calendar: 'read' },
+      },
+    };
+    testConfig.callers.guser = {
+      connections: ['google'],
+      google: { auth: 'user', services: { sheets: 'edit' } },
+    };
+    testConfig.callers.gbad = {
+      connections: ['google'],
+      google: { auth: 'user', services: { drive: 'full' } } as never,
+    };
+    testConfig.callers.stale = { connections: ['github', 'google-sheetz'] };
+  });
+  afterAll(() => {
+    for (const alias of ['gsa', 'guser', 'gbad', 'stale'])
+      Reflect.deleteProperty(testConfig.callers, alias);
+    delete process.env.GSA_KEY;
+  });
+
+  it('connections: composed auth with the subject, and the selected mode’s secrets', async () => {
+    const resp = await fetch(`${baseUrl}/admin/callers/gsa/connections`);
+    const body = (await resp.json()) as AdminCallerConnection[];
+    const google = body.find((c) => c.connectionAlias === 'google');
+    expect(google?.auth).toEqual({
+      type: 'oauth2',
+      grant: 'jwt_bearer',
+      scopes: [
+        'https://www.googleapis.com/auth/calendar.readonly',
+        'https://www.googleapis.com/auth/gmail.readonly',
+      ],
+      narrowed: false,
+      subject: 'ceo@example.com',
+    });
+    expect(google?.requiredSecrets).toEqual([
+      { name: 'GOOGLE_SERVICE_ACCOUNT_KEY', present: true },
+    ]);
+    expect(google?.optionalSecrets.map((s) => s.name)).toEqual(USER_TRIO);
+    expect(google?.problem).toBeUndefined();
+    expect(JSON.stringify(body)).not.toContain(SA_KEY_VALUE);
+  });
+
+  it('connection-status: per-mode required secrets, callerAuth, and composed', async () => {
+    const statusOf = async (alias: string) => {
+      const resp = await fetch(`${baseUrl}/admin/callers/${alias}/connection-status`);
+      const body = (await resp.json()) as AdminConnectionStatus[];
+      return body.find((c) => c.alias === 'google');
+    };
+    const sa = await statusOf('gsa');
+    expect(sa).toMatchObject({
+      enabled: true,
+      composed: 'google',
+      requiredSecrets: ['GOOGLE_SERVICE_ACCOUNT_KEY'],
+      requiredSecretsSet: { GOOGLE_SERVICE_ACCOUNT_KEY: true },
+      optionalSecrets: USER_TRIO,
+      callerAuth: { grant: 'jwt_bearer', subject: 'ceo@example.com', narrowed: false },
+    });
+    expect(sa?.auth).toBeUndefined();
+    const user = await statusOf('guser');
+    expect(user).toMatchObject({
+      requiredSecrets: USER_TRIO,
+      optionalSecrets: ['GOOGLE_SERVICE_ACCOUNT_KEY'],
+      callerAuth: {
+        grant: 'refresh_token',
+        scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+      },
+    });
+    // Not enabled: the default (user) mode's secrets, no callerAuth.
+    const none = await statusOf('acme');
+    expect(none).toMatchObject({ enabled: false, requiredSecrets: USER_TRIO });
+    expect(none?.callerAuth).toBeUndefined();
+    // An invalid selection is a problem on the card.
+    const bad = await statusOf('gbad');
+    expect(bad?.problem).toMatch(/^google\.services\.drive: "full" is not offered/);
+    expect(bad?.callerAuth).toBeUndefined();
+  });
+
+  it('secrets: the selected mode’s names are the required ones', async () => {
+    const resp = await fetch(`${baseUrl}/admin/secrets`);
+    const body = (await resp.json()) as {
+      callerAlias: string;
+      connection: string;
+      name: string;
+      required: boolean;
+      present: boolean;
+    }[];
+    const rows = body.filter((r) => r.callerAlias === 'gsa' && r.connection === 'google');
+    expect(rows.filter((r) => r.required).map((r) => r.name)).toEqual([
+      'GOOGLE_SERVICE_ACCOUNT_KEY',
+    ]);
+    expect(rows.find((r) => r.required)?.present).toBe(true);
+    expect(JSON.stringify(body)).not.toContain(SA_KEY_VALUE);
+  });
+
+  it('callers: configProblem for a caller that cannot be resolved, none otherwise', async () => {
+    const resp = await fetch(`${baseUrl}/admin/callers`);
+    const body = (await resp.json()) as { alias: string; configProblem?: string }[];
+    const by = Object.fromEntries(body.map((c) => [c.alias, c]));
+    expect(by.stale.configProblem).toMatch(/^Unknown connection "google-sheetz"/);
+    expect(by.gsa.configProblem).toBeUndefined();
+    // A dropped connection is a per-connection problem, not a caller one.
+    expect(by.gbad.configProblem).toBeUndefined();
+    expect(by.acme.configProblem).toBeUndefined();
+  });
+});
+
 describe('/admin/sessions', () => {
   it('returns only the sanitized SessionSnapshot keys (no channel, no resolvedRoutes)', async () => {
     snapshots = [

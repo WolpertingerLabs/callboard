@@ -67,6 +67,9 @@ export interface AdminCaller {
   selfManage: boolean;
   /** Items in the caller's vault; null when the vault can't be read. */
   vaultItems: number | null;
+  /** Set when the caller's config can't be resolved at all (e.g. a connection
+   *  name that is neither a template nor a connector): its handshakes fail. */
+  configProblem?: string;
 }
 
 // ── /admin/connections ───────────────────────────────────────────────────
@@ -96,6 +99,9 @@ export interface AdminConnectionTemplate {
   hasListenerConfig: boolean;
   supportsMultiInstance: boolean;
   allowedEndpoints: string[];
+  /** Set on a base composed per caller (`google`: from callers.<alias>.google).
+   *  It has no fixed `auth`; a caller's own is `callerAuth`. */
+  composed?: 'google';
   /** Present when drawlatch mints the token itself (names only). */
   auth?: {
     type: 'oauth2';
@@ -128,6 +134,8 @@ export interface AdminConnectionAuth {
  *  enabled, and which secrets are configured (booleans only, never values).
  *  This is the one-call payload the dashboard Connections page renders from. */
 export interface AdminConnectionStatus extends AdminConnectionTemplate {
+  /** `requiredSecrets` / `optionalSecrets` are this caller's: for `google`,
+   *  those of the auth mode it selects (user OAuth when it has none). */
   enabled: boolean;
   requiredSecretsSet: Record<string, boolean>;
   optionalSecretsSet: Record<string, boolean>;
