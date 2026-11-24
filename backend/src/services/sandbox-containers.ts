@@ -5,7 +5,7 @@
  *
  * The container is created inside the package's `Driver.open` and removed in
  * its session's `close`, so every way a session ends reaches the same removal:
- * Stop, Revoke, the 15-minute expiry, a permission change, chat archive or
+ * Stop, Revoke, the session's expiry, a permission change, chat archive or
  * delete (the host revokes on all of those), a lost connection (the service
  * fences and cleans up), and daemon shutdown (the service's `dispose`). What a
  * crash leaves behind, the {@link SandboxContainerManager.reap reaper} removes.
@@ -39,8 +39,16 @@ import {
   type RemoteDriver,
   type RemoteDriverOptions,
 } from "@wolpertingerlabs/computer-use";
-import { SANDBOX_BUILD_COMMAND, type ComputerUseContainerState, type SandboxDesktopDiagnostics, type SandboxDesktopProblem } from "shared/types/index.js";
-import type { ResolvedSandboxSettings } from "./sandbox-desktop-settings.js";
+import {
+  SANDBOX_BUILD_COMMAND,
+  SANDBOX_PROFILE_BUILD_COMMAND,
+  type ComputerUseContainerState,
+  type ComputerUseSandboxProfile,
+  type SandboxDesktopDiagnostics,
+  type SandboxDesktopProblem,
+} from "shared/types/index.js";
+import { effectiveProfileLimits, type ResolvedSandboxSettings } from "./sandbox-desktop-settings.js";
+import { currentBase, inspectProfileImage, parseProfileVariant, type ProfileEntry } from "./sandbox-profiles.js";
 import {
   DockerError,
   inspectSandboxImage,
@@ -62,6 +70,8 @@ export const MANAGED_LABEL = "dev.callboard.managed";
 export const OWNER_LABEL = "dev.callboard.owner";
 export const CHAT_LABEL = "dev.callboard.chat-id";
 export const SESSION_LABEL = "dev.callboard.session-id";
+/** The sandbox profile a container runs (informational). */
+export const PROFILE_LABEL = "dev.callboard.sandbox-profile";
 
 /** The service's session ids are UUIDs; anything else never reaches a path or a label. */
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -160,6 +170,11 @@ export interface SandboxManagerOptions {
    * is not running.
    */
   adoptPaused?: (sandbox: { sessionId: string; chatId: string; workspaceId?: string; folder?: string; name: string }) => boolean | Promise<boolean>;
+  /**
+   * The sandbox profile a session's variant names (`<name>@<digest>`, see
+   * `profileVariant`), for a chat. Default: none, so any variant is refused.
+   */
+  profile?: (name: string, chatId: string) => ProfileEntry | undefined;
 }
 
 /** `session.json` beside the token: everything the reaper needs to drain a sandbox whose daemon died. */
@@ -176,6 +191,8 @@ interface SessionMeta {
   url?: string;
   instanceId?: string;
   createdAt: number;
+  /** The sandbox profile it runs, if any (for diagnostics; never trusted to pick an image). */
+  profile?: string;
   /** Set once a drain finished, so a container Docker would not remove is not drained twice. */
   drainedAt?: number;
   /** Set when a drain hook asked to keep it ({@link DrainResult}): no reaper touches it until released. */
@@ -213,6 +230,8 @@ interface Box {
   /** The instance whose proof was checked when the container first answered. */
   instanceId?: string;
   destroyed?: Promise<void>;
+  /** The profile it runs: its name, the recipe's summary and the clamped limits it was started with. */
+  profile?: ComputerUseSandboxProfile & { image: string };
 }
 
 interface Problem {
@@ -404,7 +423,7 @@ export class SandboxContainerManager {
    * `/hello` (the proof checked against that token). On any failure or
    * cancellation everything created so far is removed before this rejects.
    */
-  async start(context: { sessionId: string; chatId?: string; signal: AbortSignal }): Promise<Box> {
+  async start(context: { sessionId: string; chatId?: string; signal: AbortSignal; variant?: string }): Promise<Box> {
     const { sessionId, signal } = context;
     if (!SESSION_ID.test(sessionId)) throw new ComputerUseError("invalid_request", "Invalid session id");
     if (this.disposed) throw new ComputerUseError("unsupported", "Callboard is shutting down");
@@ -414,6 +433,18 @@ export class SandboxContainerManager {
     // last slot cannot both pass, and the reaper never sees this container as
     // an orphan, from before `docker run` until it is removed.
     if (this.boxes.size >= settings.maxConcurrent) throw problemError("unsupported", this.capProblem());
+    // A profile, by the variant the host opened the session with: the name
+    // and the digest of the recipe the human consented to. A recipe that
+    // changed since (or a profile that no longer exists) is refused, never
+    // swapped in.
+    let entry: ProfileEntry | undefined;
+    if (context.variant !== undefined) {
+      const wanted = parseProfileVariant(context.variant);
+      entry = wanted ? this.options.profile?.(wanted.name, context.chatId ?? "") : undefined;
+      if (!wanted || !entry) throw new ComputerUseError("unsupported", "That sandbox profile does not exist on this Callboard");
+      if (!entry.digest.startsWith(wanted.digest))
+        throw new ComputerUseError("unsupported", `Sandbox profile ${wanted.name} changed since it was requested; request it again`);
+    }
     const network = this.networkFor(settings);
     const dir = join(this.sessionsDir, sessionId);
     const box: Box = {
@@ -427,6 +458,17 @@ export class SandboxContainerManager {
       internal: network.internal,
       created: false,
       createdAt: Date.now(),
+      ...(entry
+        ? {
+            profile: {
+              name: entry.recipe.name,
+              description: entry.recipe.description,
+              gl: entry.recipe.gl,
+              limits: (({ clamped: _clamped, ...limits }) => limits)(effectiveProfileLimits(entry.recipe, settings)),
+              image: entry.image,
+            },
+          }
+        : {}),
     };
     this.boxes.set(sessionId, box);
     try {
@@ -453,9 +495,12 @@ export class SandboxContainerManager {
         throw error;
       }
       step("Checking the image");
-      const imageProblem = await this.imageCheck(signal);
-      this.lastProblem = imageProblem;
-      if (imageProblem) throw problemError("unsupported", imageProblem);
+      if (entry) await this.profileCheck(entry, signal);
+      else {
+        const imageProblem = await this.imageCheck(signal);
+        this.lastProblem = imageProblem;
+        if (imageProblem) throw problemError("unsupported", imageProblem);
+      }
       step("Creating the session token");
       await this.writeToken(box);
       await this.writeMeta(box);
@@ -469,11 +514,20 @@ export class SandboxContainerManager {
           port: 0,
           publish: !box.internal,
           tokenFile: box.tokenFile,
-          image: this.image,
+          image: box.profile?.image ?? this.image,
           name: box.name,
           network: box.network,
-          labels: { [MANAGED_LABEL]: "1", [OWNER_LABEL]: this.owner, [CHAT_LABEL]: box.chatId, [SESSION_LABEL]: sessionId },
-          limits: { cpus: settings.cpus, memory: `${settings.memoryMb}m` },
+          labels: {
+            [MANAGED_LABEL]: "1",
+            [OWNER_LABEL]: this.owner,
+            [CHAT_LABEL]: box.chatId,
+            [SESSION_LABEL]: sessionId,
+            ...(box.profile ? { [PROFILE_LABEL]: box.profile.name } : {}),
+          },
+          // A profile's limits are its recipe's, clamped to the Settings caps; the hardening is identical.
+          limits: box.profile?.limits
+            ? { cpus: box.profile.limits.cpus, memory: `${box.profile.limits.memoryMb}m`, homeSize: `${box.profile.limits.homeMb}m` }
+            : { cpus: settings.cpus, memory: `${settings.memoryMb}m` },
         }),
         { timeoutMs: 60_000 },
       );
@@ -490,6 +544,38 @@ export class SandboxContainerManager {
       await this.destroy(sessionId);
       throw startError(error, signal);
     }
+  }
+
+  /**
+   * A profile image may start only if it exists and is not refused (another
+   * protocol major, below a security floor, not labelled as this profile).
+   * Out of date (an older recipe or base) still starts, with a warning in the log.
+   */
+  private async profileCheck(entry: ProfileEntry, signal: AbortSignal): Promise<void> {
+    let info;
+    try {
+      info = await inspectProfileImage(this.docker, entry, await currentBase(this.docker, this.image, signal), signal);
+    } catch (error) {
+      if (signal.aborted) throw error;
+      throw problemError("unsupported", this.dockerProblem(error));
+    }
+    const build = `\`${SANDBOX_PROFILE_BUILD_COMMAND} ${entry.recipe.name}\` (or Settings → Sandbox desktop → Profiles)`;
+    if (info.state === "missing")
+      throw new ComputerUseError("unsupported", `Sandbox profile ${entry.recipe.name} is not built. Build it with ${build}, then retry.`);
+    if (info.state === "insecure" || info.state === "incompatible")
+      throw new ComputerUseError(
+        "unsupported",
+        `Sandbox profile ${entry.recipe.name}'s image is refused: ${info.detail ?? info.state}. Rebuild it with ${build}.`,
+      );
+    if (info.state === "outdated") log.warn(`Sandbox profile ${entry.recipe.name} is out of date (${(info.outdatedBy ?? []).join(", ")}); starting it anyway`);
+  }
+
+  /** The profile a session's sandbox runs (name, summary, limits), while it is live. */
+  profileOf(sessionId: string): ComputerUseSandboxProfile | undefined {
+    const profile = this.boxes.get(sessionId)?.profile;
+    if (!profile) return undefined;
+    const { image: _image, ...rest } = profile;
+    return rest;
   }
 
   /** Mark a session's sandbox ready once its session opened on the instance that answered first. */
@@ -709,6 +795,7 @@ export class SandboxContainerManager {
       ...(box.url ? { url: box.url } : {}),
       ...(box.instanceId ? { instanceId: box.instanceId } : {}),
       createdAt: box.createdAt,
+      ...(box.profile ? { profile: box.profile.name } : {}),
       ...extra,
     };
     const file = join(box.dir, SESSION_META);
@@ -1067,7 +1154,12 @@ export function managedSandboxDriver(manager: SandboxContainerManager): Driver &
     openedInstance: (sessionId) => (manager.verifiedInstance(sessionId) ? MANAGED_INSTANCE : undefined),
     probe: () => manager.probe(),
     async open(context): Promise<DriverSession> {
-      const box = await manager.start({ sessionId: context.sessionId, chatId: context.ownerId, signal: context.signal });
+      const box = await manager.start({
+        sessionId: context.sessionId,
+        chatId: context.ownerId,
+        signal: context.signal,
+        ...(context.variant !== undefined ? { variant: context.variant } : {}),
+      });
       let session: Awaited<ReturnType<RemoteDriver["open"]>>;
       try {
         session = await box.driver!.open({

@@ -110,6 +110,13 @@ export interface Driver {
      * once instead of waiting for the next call to fail. Optional to call.
      */
     onLost?: () => void;
+    /**
+     * The host's opaque per-session selector ({@link OpenOptions.variant}),
+     * e.g. which image a container-per-session driver starts. The service
+     * validates its grammar and passes it through; it means nothing to the
+     * service. A driver that does not support variants should refuse one.
+     */
+    variant?: string;
   }): Promise<DriverSession>;
 }
 export interface Target {
@@ -122,10 +129,30 @@ export interface ServiceOptions {
   authorize?: Authorizer;
   actionTimeoutMs?: number;
   maxQueue?: number;
+  /** The absolute session TTL, unless an `open` asks for its own ({@link OpenOptions.ttlMs}). Default 15 minutes, at most 2 hours. */
   sessionTtlMs?: number;
+  /**
+   * The longest per-session TTL an `open` may ask for. Default: `sessionTtlMs`
+   * (so a host must opt in to longer sessions); at most 24 hours.
+   */
+  maxSessionTtlMs?: number;
   maxSessions?: number;
   /** How long a stopped/failed/revoked session stays listed in status after cleanup. Default 60s. */
   terminalRetentionMs?: number;
+}
+/** Per-session options of `ComputerUseService.open`, set by the host, never by a model. */
+export interface OpenOptions {
+  /**
+   * This session's absolute TTL, from 1 second to `maxSessionTtlMs`. Default
+   * `sessionTtlMs`. Out of range is `invalid_request`, never clamped.
+   */
+  ttlMs?: number;
+  /**
+   * An opaque selector passed to the driver's `open` (`variant`) and shown in
+   * status: 1–128 characters of `[A-Za-z0-9._@:-]`, starting with a letter or
+   * digit. Callboard uses it for a Sandbox desktop profile (`blender@<digest>`).
+   */
+  variant?: string;
 }
 export interface SessionRef {
   sessionId: string;
@@ -147,6 +174,8 @@ export interface SessionStatus extends SessionRef {
   state: SessionState;
   controller: "agent" | "human" | "none";
   expiresAt: number;
+  /** The session's {@link OpenOptions.variant}, when it was opened with one. */
+  variant?: string;
 }
 export interface Lease extends SessionStatus {
   leaseId: string;

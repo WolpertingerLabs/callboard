@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, Box, Check, Hammer, Loader2, RefreshCw, X } from "lucide-react";
-import { SANDBOX_DESKTOP_BOUNDS, type SandboxDesktopMode, type SandboxDesktopNetwork, type SandboxDesktopStatus } from "shared/types/index.js";
-import { buildSandboxDesktopImage, getSandboxDesktopStatus, updateSandboxDesktopSettings } from "../../api";
+import { AlertTriangle, Box, Check, Hammer, Layers, Loader2, RefreshCw, Trash2, X } from "lucide-react";
+import {
+  SANDBOX_DESKTOP_BOUNDS,
+  SANDBOX_PROFILE_BUILD_COMMAND,
+  type SandboxDesktopBuild,
+  type SandboxDesktopMode,
+  type SandboxDesktopNetwork,
+  type SandboxDesktopStatus,
+  type SandboxProfileStatus,
+} from "shared/types/index.js";
+import { buildSandboxDesktopImage, getSandboxDesktopStatus, removeSandboxProfile, updateSandboxDesktopSettings } from "../../api";
 import { errorMessage } from "../../utils/errorMessage";
 import { headerStyle, helpStyle, inputStyle, labelStyle, sectionStyle, subtitleStyle } from "./styles";
 
@@ -67,6 +75,10 @@ interface Draft {
   keepHours: string;
   maxKept: string;
   deliverablesGb: string;
+  profileMaxCpus: string;
+  profileMaxMemoryMb: string;
+  profileMaxHomeMb: string;
+  profileMaxSessionMinutes: string;
 }
 
 function draftFrom(status: SandboxDesktopStatus): Draft {
@@ -80,7 +92,149 @@ function draftFrom(status: SandboxDesktopStatus): Draft {
     keepHours: String(s.keepHours ?? SANDBOX_DESKTOP_BOUNDS.keepHours.default),
     maxKept: String(s.maxKept ?? SANDBOX_DESKTOP_BOUNDS.maxKept.default),
     deliverablesGb: String(s.deliverablesGb ?? SANDBOX_DESKTOP_BOUNDS.deliverablesGb.default),
+    profileMaxCpus: String(s.profileMaxCpus ?? SANDBOX_DESKTOP_BOUNDS.profileMaxCpus.default),
+    profileMaxMemoryMb: String(s.profileMaxMemoryMb ?? SANDBOX_DESKTOP_BOUNDS.profileMaxMemoryMb.default),
+    profileMaxHomeMb: String(s.profileMaxHomeMb ?? SANDBOX_DESKTOP_BOUNDS.profileMaxHomeMb.default),
+    profileMaxSessionMinutes: String(s.profileMaxSessionMinutes ?? SANDBOX_DESKTOP_BOUNDS.profileMaxSessionMinutes.default),
   };
+}
+
+const PROFILE_STATE_LABELS: Record<SandboxProfileStatus["image"]["state"], string> = {
+  missing: "Not built",
+  current: "Up to date",
+  outdated: "Out of date",
+  insecure: "Refused: rebuild",
+  incompatible: "Refused: rebuild",
+};
+function profileStateColor(state: SandboxProfileStatus["image"]["state"]): string {
+  return state === "current" ? "var(--success)" : state === "outdated" ? "var(--warning)" : state === "missing" ? "var(--text-muted)" : "var(--danger)";
+}
+const formatMb = (mb: number) => (mb >= 1024 && mb % 1024 === 0 ? `${mb / 1024} GiB` : `${mb} MiB`);
+
+/** The output of the build in progress (or the last one), with its outcome. */
+function BuildLog({ build, label }: { build: SandboxDesktopBuild; label: string }) {
+  return (
+    <div style={{ marginTop: 12 }}>
+      <p style={{ fontSize: 13, margin: "0 0 6px 0" }} role="status">
+        {build.state === "running"
+          ? `Building ${label}…`
+          : build.state === "succeeded"
+            ? `Built ${label}.`
+            : `Building ${label} failed${build.error ? `: ${build.error}` : "."}`}
+      </p>
+      {build.output && (
+        <pre
+          data-testid="sandbox-build-log"
+          style={{
+            maxHeight: 220,
+            overflow: "auto",
+            fontSize: 11,
+            background: "var(--code-bg)",
+            color: "var(--text)",
+            padding: 8,
+            borderRadius: 6,
+            whiteSpace: "pre-wrap",
+            wordBreak: "break-word",
+          }}
+        >
+          {build.output.slice(-3000)}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+/** One profile: what it is, what a session gets, its image, and (for a signed-in human) build and remove. */
+function ProfileCard({
+  profile,
+  editable,
+  busy,
+  onBuild,
+  onRemove,
+}: {
+  profile: SandboxProfileStatus;
+  editable: boolean;
+  busy: boolean;
+  onBuild: () => void;
+  onRemove: () => void;
+}) {
+  const { image, limits } = profile;
+  const built = image.state !== "missing";
+  const clamped = new Set(profile.clamped ?? []);
+  const limit = (key: keyof typeof limits, text: string) => (
+    <span>
+      {text}
+      {clamped.has(key) ? (
+        <span style={{ color: "var(--warning)" }} title={`The recipe asks for ${String(profile.requested[key])}; capped below`}>
+          {" "}
+          (capped)
+        </span>
+      ) : null}
+    </span>
+  );
+  return (
+    <div
+      data-testid={`sandbox-profile-${profile.name}`}
+      style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 12, marginTop: 12, minWidth: 0 }}
+    >
+      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, justifyContent: "space-between" }}>
+        <strong style={{ fontSize: 14 }}>{profile.name}</strong>
+        <span
+          role="status"
+          style={{ fontSize: 12, color: profileStateColor(image.state), border: "1px solid currentColor", borderRadius: 10, padding: "1px 8px" }}
+        >
+          {PROFILE_STATE_LABELS[image.state] ?? image.state}
+        </span>
+      </div>
+      <p style={{ ...helpStyle, margin: "6px 0" }}>{profile.description}</p>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 16px", fontSize: 13 }}>
+        {limit("cpus", `${limits.cpus} CPU${limits.cpus === 1 ? "" : "s"}`)}
+        {limit("memoryMb", `${formatMb(limits.memoryMb)} memory`)}
+        {limit("homeMb", `${formatMb(limits.homeMb)} home`)}
+        {limit("sessionMinutes", `${limits.sessionMinutes} min sessions`)}
+        <span>{profile.gl === "software" ? "Software OpenGL" : "No OpenGL"}</span>
+      </div>
+      <p style={{ ...helpStyle, margin: "6px 0 0 0", wordBreak: "break-word" }}>
+        <code style={codeStyle}>{image.name}</code>
+        {image.sizeBytes ? ` · ${Math.round(image.sizeBytes / 1024 / 1024)} MB` : ""}
+        {image.builtAt ? ` · built ${new Date(image.builtAt).toLocaleString()}` : ""}
+        {image.detail ? ` · ${image.detail}` : ""}
+      </p>
+      <details style={{ marginTop: 6, fontSize: 12 }}>
+        <summary style={{ cursor: "pointer", color: "var(--text-muted)" }}>What the build installs</summary>
+        <p style={{ ...helpStyle, wordBreak: "break-word" }}>
+          Debian packages: {profile.packages.length ? profile.packages.join(", ") : "none"}
+          {profile.gl === "software" ? " (plus Mesa for software OpenGL)" : ""}.
+        </p>
+        {profile.downloads.map((d) => (
+          <p key={d.dest} style={{ ...helpStyle, wordBreak: "break-all" }}>
+            /opt/{d.dest} ← {d.url} (sha256 {d.sha256.slice(0, 16)}…)
+          </p>
+        ))}
+      </details>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 10 }}>
+        <button
+          style={{ ...(built ? secondaryButton : primaryButton), opacity: editable && !busy ? 1 : 0.5 }}
+          disabled={!editable || busy}
+          onClick={onBuild}
+          aria-label={`${built ? "Rebuild" : "Build"} profile ${profile.name}`}
+        >
+          <Hammer size={14} />
+          {!built ? "Build" : image.state === "current" ? "Rebuild" : "Rebuild (needed)"}
+        </button>
+        {built && (
+          <button
+            style={{ ...secondaryButton, opacity: editable && !busy ? 1 : 0.5 }}
+            disabled={!editable || busy}
+            onClick={onRemove}
+            aria-label={`Remove profile ${profile.name}'s image`}
+          >
+            <Trash2 size={14} /> Remove image
+          </button>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function Diagnostic({ ok, label, children }: { ok: boolean | "warn" | undefined; label: string; children: React.ReactNode }) {
@@ -161,6 +315,10 @@ export default function SandboxDesktopSettings() {
         keepHours: Number(draft.keepHours),
         maxKept: Number(draft.maxKept),
         deliverablesGb: Number(draft.deliverablesGb),
+        profileMaxCpus: Number(draft.profileMaxCpus),
+        profileMaxMemoryMb: Number(draft.profileMaxMemoryMb),
+        profileMaxHomeMb: Number(draft.profileMaxHomeMb),
+        profileMaxSessionMinutes: Number(draft.profileMaxSessionMinutes),
       });
       setStatus(next);
       setDraft(draftFrom(next));
@@ -173,13 +331,24 @@ export default function SandboxDesktopSettings() {
     }
   };
 
-  const build = async () => {
+  const build = async (profile?: string) => {
     setError(null);
     try {
-      const state = await buildSandboxDesktopImage();
+      const state = await buildSandboxDesktopImage(profile);
       setStatus((current) => (current ? { ...current, build: state } : current));
     } catch (e) {
       setError(errorMessage(e, "Failed to start the image build"));
+    }
+  };
+
+  const remove = async (profile: string) => {
+    if (!window.confirm(`Remove profile ${profile}'s image? Building it again downloads and installs everything again.`)) return;
+    setError(null);
+    try {
+      const { status: next } = await removeSandboxProfile(profile);
+      setStatus(next);
+    } catch (e) {
+      setError(errorMessage(e, `Failed to remove profile ${profile}`));
     }
   };
 
@@ -193,7 +362,30 @@ export default function SandboxDesktopSettings() {
 
   const { diagnostics: d } = status;
   const editable = status.canEdit;
-  const { cpus, memoryMb, maxConcurrent, keepHours, maxKept, deliverablesGb } = SANDBOX_DESKTOP_BOUNDS;
+  const { cpus, memoryMb, maxConcurrent, keepHours, maxKept, deliverablesGb, profileMaxCpus, profileMaxMemoryMb, profileMaxHomeMb, profileMaxSessionMinutes } =
+    SANDBOX_DESKTOP_BOUNDS;
+  const profiles = status.profiles ?? [];
+  const capField = (id: string, key: keyof Draft, label: string, bound: { min: number; max: number }, step: number) => (
+    <div>
+      <label style={labelStyle} htmlFor={id}>
+        {label}
+      </label>
+      <input
+        id={id}
+        style={inputStyle}
+        type="number"
+        min={bound.min}
+        max={bound.max}
+        step={step}
+        value={draft[key]}
+        disabled={!editable}
+        onChange={field(key)}
+      />
+      <p style={helpStyle}>
+        {bound.min}–{bound.max}
+      </p>
+    </div>
+  );
   const field = (key: keyof Draft) => (event: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
     setDraft((current) => (current ? { ...current, [key]: event.target.value } : current));
 
@@ -383,6 +575,18 @@ export default function SandboxDesktopSettings() {
         </div>
         <p style={helpStyle}>Limits apply to sandboxes started after saving; running ones keep theirs.</p>
 
+        <h3 style={{ fontSize: 13, fontWeight: 600, margin: "16px 0 4px 0" }}>Profile caps</h3>
+        <p style={helpStyle}>
+          A sandbox profile asks for its own CPUs, memory, home size and session length; each is capped here. The base desktop keeps the limits above and
+          15-minute sessions.
+        </p>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, marginTop: 8 }}>
+          {capField("sandbox-profile-max-cpus", "profileMaxCpus", "Max CPUs per profile", profileMaxCpus, 0.5)}
+          {capField("sandbox-profile-max-memory", "profileMaxMemoryMb", "Max memory (MiB)", profileMaxMemoryMb, 256)}
+          {capField("sandbox-profile-max-home", "profileMaxHomeMb", "Max home size (MiB)", profileMaxHomeMb, 256)}
+          {capField("sandbox-profile-max-minutes", "profileMaxSessionMinutes", "Max session (minutes)", profileMaxSessionMinutes, 5)}
+        </div>
+
         <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 16 }}>
           <button style={{ ...primaryButton, opacity: editable && !saving ? 1 : 0.5 }} disabled={!editable || saving} onClick={() => void save()}>
             {saving ? <Loader2 size={14} className="spin" /> : saved ? <Check size={14} /> : null}
@@ -464,34 +668,36 @@ export default function SandboxDesktopSettings() {
                   ? "Rebuild image (out of date)"
                   : "Rebuild image"}
         </button>
-        {status.build.state !== "idle" && (
-          <div style={{ marginTop: 12 }}>
-            <p style={{ fontSize: 13, margin: "0 0 6px 0" }} role="status">
-              {status.build.state === "running"
-                ? "Building…"
-                : status.build.state === "succeeded"
-                  ? "Build succeeded."
-                  : `Build failed${status.build.error ? `: ${status.build.error}` : "."}`}
-            </p>
-            {status.build.output && (
-              <pre
-                style={{
-                  maxHeight: 220,
-                  overflow: "auto",
-                  fontSize: 11,
-                  background: "var(--code-bg)",
-                  color: "var(--text)",
-                  padding: 8,
-                  borderRadius: 6,
-                  whiteSpace: "pre-wrap",
-                }}
-              >
-                {status.build.output.slice(-3000)}
-              </pre>
-            )}
-          </div>
-        )}
+        {status.build.state !== "idle" && !status.build.profile && <BuildLog build={status.build} label="the image" />}
       </section>
+
+      {profiles.length > 0 && (
+        <section style={sectionStyle} aria-labelledby="sandbox-profiles-heading">
+          <div style={headerStyle}>
+            <Layers size={16} />
+            <h3 id="sandbox-profiles-heading" style={{ fontSize: 14, fontWeight: 600, margin: 0 }}>
+              Profiles
+            </h3>
+          </div>
+          <p style={subtitleStyle}>
+            A profile is a pre-built image for one purpose, such as Blender with software OpenGL, built once from a recipe and started fresh for every session
+            with the same hardening as the base desktop. An agent asks for one by name; you still consent in the chat. Build them here or with{" "}
+            <code style={codeStyle}>{SANDBOX_PROFILE_BUILD_COMMAND} &lt;name&gt;</code>; a build downloads the recipe&apos;s pinned files and Debian packages,
+            and can take several minutes.
+          </p>
+          {profiles.map((profile) => (
+            <ProfileCard
+              key={profile.name}
+              profile={profile}
+              editable={editable}
+              busy={building}
+              onBuild={() => void build(profile.name)}
+              onRemove={() => void remove(profile.name)}
+            />
+          ))}
+          {status.build.state !== "idle" && status.build.profile && <BuildLog build={status.build} label={`profile ${status.build.profile}`} />}
+        </section>
+      )}
     </div>
   );
 }

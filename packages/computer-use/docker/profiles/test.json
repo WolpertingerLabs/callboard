@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "name": "test",
+  "description": "A tiny profile for Callboard's own tests: x11-apps (xeyes, xclock), mesa-utils (glxinfo, glxgears) and one pinned download.",
+  "packages": ["x11-apps", "mesa-utils"],
+  "downloads": [
+    {
+      "url": "https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-1.7.1.tar.gz",
+      "sha256": "478c9ca129fd2e3443fe27314b455e211e0d8c60bc8ff7df703873deeee580c2",
+      "dest": "jq-src",
+      "unpack": "tar.gz",
+      "stripComponents": 1
+    }
+  ],
+  "setup": [
+    "test -f /opt/jq-src/COPYING",
+    "mkdir -p /opt/profile/bin",
+    "printf '#!/bin/sh\\necho \"profile-test-ok $PROFILE_TEST\"\\n' > /opt/profile/bin/profile-hello",
+    "chmod 0755 /opt/profile/bin/profile-hello"
+  ],
+  "path": ["/opt/profile/bin"],
+  "env": { "PROFILE_TEST": "1" },
+  "gl": "software",
+  "limits": { "cpus": 1, "memoryMb": 1024, "homeMb": 256, "sessionMinutes": 10 }
+}

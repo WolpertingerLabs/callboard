@@ -2,9 +2,14 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SandboxDesktopStatus } from "shared/types/index.js";
 import SandboxDesktopSettings from "./SandboxDesktopSettings";
-import { buildSandboxDesktopImage, getSandboxDesktopStatus, updateSandboxDesktopSettings } from "../../api";
+import { buildSandboxDesktopImage, getSandboxDesktopStatus, removeSandboxProfile, updateSandboxDesktopSettings } from "../../api";
 
-vi.mock("../../api", () => ({ getSandboxDesktopStatus: vi.fn(), updateSandboxDesktopSettings: vi.fn(), buildSandboxDesktopImage: vi.fn() }));
+vi.mock("../../api", () => ({
+  getSandboxDesktopStatus: vi.fn(),
+  updateSandboxDesktopSettings: vi.fn(),
+  buildSandboxDesktopImage: vi.fn(),
+  removeSandboxProfile: vi.fn(),
+}));
 
 function status(overrides: Partial<SandboxDesktopStatus> = {}): SandboxDesktopStatus {
   return {
@@ -38,7 +43,22 @@ beforeEach(() => {
   vi.mocked(getSandboxDesktopStatus).mockReset();
   vi.mocked(updateSandboxDesktopSettings).mockReset();
   vi.mocked(buildSandboxDesktopImage).mockReset();
+  vi.mocked(removeSandboxProfile).mockReset();
 });
+
+const blender: NonNullable<SandboxDesktopStatus["profiles"]>[number] = {
+  name: "blender",
+  description: "Blender 4.5 LTS with software OpenGL.",
+  source: "builtin",
+  gl: "software",
+  requested: { cpus: 8, memoryMb: 4096, homeMb: 2048, sessionMinutes: 60 },
+  limits: { cpus: 4, memoryMb: 4096, homeMb: 2048, sessionMinutes: 60 },
+  clamped: ["cpus"],
+  digest: "d".repeat(64),
+  packages: ["libxi6"],
+  downloads: [{ url: "https://download.blender.org/release/x.tar.xz", sha256: "b".repeat(64), dest: "blender" }],
+  image: { name: "callboard/computer-use-profile:blender", state: "missing" },
+};
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
@@ -93,6 +113,10 @@ describe("Settings → Sandbox desktop", () => {
         keepHours: 24,
         maxKept: 2,
         deliverablesGb: 5,
+        profileMaxCpus: 4,
+        profileMaxMemoryMb: 8192,
+        profileMaxHomeMb: 4096,
+        profileMaxSessionMinutes: 120,
       }),
     );
   });
@@ -211,5 +235,68 @@ describe("Settings → Sandbox desktop", () => {
     render(<SandboxDesktopSettings />);
     expect((await screen.findByTestId("sandbox-diagnostic-image")).textContent).toContain("known security issue (security level 0, at least 1 required)");
     expect(screen.getByRole("button", { name: "Rebuild image (security fix)" })).toBeTruthy();
+  });
+
+  it("lists profiles with their state and clamped limits, builds one, and shows its build log", async () => {
+    const outdated = {
+      ...blender,
+      name: "test",
+      image: { name: "callboard/computer-use-profile:test", state: "outdated" as const, outdatedBy: ["base" as const], sizeBytes: 300 * 1024 * 1024 },
+    };
+    vi.mocked(getSandboxDesktopStatus).mockResolvedValue(status({ profiles: [blender, outdated] }));
+    vi.mocked(buildSandboxDesktopImage).mockResolvedValue({
+      state: "running",
+      profile: "blender",
+      startedAt: 1,
+      output: "Downloading https://download.blender.org/…",
+    });
+    render(<SandboxDesktopSettings />);
+    const card = await screen.findByTestId("sandbox-profile-blender");
+    expect(card.textContent).toContain("Not built");
+    expect(card.textContent).toContain("4 CPUs");
+    expect(card.textContent).toContain("(capped)");
+    expect(card.textContent).toContain("4 GiB memory");
+    expect(card.textContent).toContain("60 min sessions");
+    expect(card.textContent).toContain("Software OpenGL");
+    expect(screen.getByTestId("sandbox-profile-test").textContent).toContain("Out of date");
+    expect(screen.getByTestId("sandbox-profile-test").textContent).toContain("300 MB");
+    fireEvent.click(screen.getByRole("button", { name: "Build profile blender" }));
+    await waitFor(() => expect(buildSandboxDesktopImage).toHaveBeenCalledWith("blender"));
+    expect((await screen.findByTestId("sandbox-build-log")).textContent).toContain("Downloading");
+    expect(screen.getByText("Building profile blender…")).toBeTruthy();
+    // One build at a time: every build button waits.
+    expect((screen.getByRole("button", { name: "Rebuild profile test" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("removes a profile's image after asking", async () => {
+    const built = { ...blender, image: { ...blender.image, state: "current" as const } };
+    vi.mocked(getSandboxDesktopStatus).mockResolvedValue(status({ profiles: [built] }));
+    vi.mocked(removeSandboxProfile).mockResolvedValue({ removed: true, status: status({ profiles: [blender] }) });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<SandboxDesktopSettings />);
+    fireEvent.click(await screen.findByRole("button", { name: "Remove profile blender's image" }));
+    expect(confirm).toHaveBeenCalled();
+    await waitFor(() => expect(removeSandboxProfile).toHaveBeenCalledWith("blender"));
+    expect((await screen.findByTestId("sandbox-profile-blender")).textContent).toContain("Not built");
+  });
+
+  it("is read only for an API key: profiles can't be built or removed, caps can't be changed", async () => {
+    const built = { ...blender, image: { ...blender.image, state: "current" as const } };
+    vi.mocked(getSandboxDesktopStatus).mockResolvedValue(status({ canEdit: false, profiles: [built] }));
+    render(<SandboxDesktopSettings />);
+    expect(((await screen.findByRole("button", { name: "Rebuild profile blender" })) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Remove profile blender's image" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByLabelText("Max session (minutes)") as HTMLInputElement).disabled).toBe(true);
+  });
+
+  it("edits the profile caps within their bounds", async () => {
+    vi.mocked(getSandboxDesktopStatus).mockResolvedValue(status());
+    vi.mocked(updateSandboxDesktopSettings).mockResolvedValue(status({ settings: { profileMaxSessionMinutes: 240 } }));
+    render(<SandboxDesktopSettings />);
+    const minutes = (await screen.findByLabelText("Max session (minutes)")) as HTMLInputElement;
+    expect([minutes.value, minutes.min, minutes.max]).toEqual(["120", "5", "480"]);
+    fireEvent.change(minutes, { target: { value: "240" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(updateSandboxDesktopSettings).toHaveBeenCalledWith(expect.objectContaining({ profileMaxSessionMinutes: 240 })));
   });
 });

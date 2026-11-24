@@ -62,6 +62,7 @@ try {
       "no-follow": { type: "boolean", default: false },
       path: { type: "boolean", default: false },
       force: { type: "boolean", default: false },
+      profile: { type: "string" },
     },
     strict: false,
     allowPositionals: true,
@@ -157,15 +158,48 @@ switch (subcommand) {
 
 // ── Commands ─────────────────────────────────────────────────────────
 
-// `callboard sandbox build|status`: the Sandbox desktop's image. Building is
-// only ever explicit (this command or Settings → Sandbox desktop → Build
-// image); Callboard never builds or pulls it on its own. The context is the
-// shipped packages/computer-use (dist/ + docker/), so this works from an npm
-// install as well as from a source checkout.
+// `callboard sandbox build|status|profiles|rm`: the Sandbox desktop's images.
+// Building is only ever explicit (this command or Settings → Sandbox desktop);
+// Callboard never builds or pulls one on its own. The context is the shipped
+// packages/computer-use (dist/ + docker/), so this works from an npm install as
+// well as from a source checkout.
 async function cmdSandbox() {
-  const action = rawArgs.find((arg) => !arg.startsWith("-"));
+  const action = rawArgs.find((arg, i) => !arg.startsWith("-") && rawArgs[i - 1] !== "--profile");
   const image = await import(join(PKG_ROOT, "backend/dist/services/sandbox-image.js"));
   const docker = image.execDocker();
+  if (values.profile !== undefined && action !== "build" && action !== "rm") {
+    console.error("--profile goes with build or rm\n");
+    printSandboxHelp();
+    process.exit(1);
+  }
+  if (action === "build" && values.profile !== undefined) {
+    await cmdSandboxProfileBuild(image, docker, values.profile);
+    return;
+  }
+  if (action === "profiles") {
+    await cmdSandboxProfiles(image, docker);
+    return;
+  }
+  if (action === "rm") {
+    if (!values.profile) {
+      console.error("Usage: callboard sandbox rm --profile <name>");
+      process.exit(1);
+    }
+    const profiles = await import(join(PKG_ROOT, "backend/dist/services/sandbox-profiles.js"));
+    const entry = profiles.resolveProfile(values.profile);
+    if (!entry) {
+      console.error(`No sandbox profile named ${JSON.stringify(values.profile)}. See: callboard sandbox profiles`);
+      process.exit(1);
+    }
+    try {
+      const removed = await profiles.removeProfileImage(docker, entry);
+      console.log(removed ? `Removed ${entry.image}.` : `${entry.image} was not built; nothing to remove.`);
+    } catch (err) {
+      console.error(err.message);
+      process.exit(1);
+    }
+    return;
+  }
   if (action === "build") {
     const present = await image.inspectSandboxImage(docker).catch(() => undefined);
     if (present?.present && present.compatible && present.secure && present.current && !values.force) {
@@ -181,7 +215,7 @@ async function cmdSandbox() {
             ? `${image.SANDBOX_IMAGE} has a known security issue (security level ${present.securityFloor ?? "unlabelled"}, at least ${image.SANDBOX_SECURITY_FLOOR} required); rebuilding.`
             : `${image.SANDBOX_IMAGE} is out of date (not built from the files this Callboard ships); rebuilding.`,
       );
-    console.log(`Building ${image.SANDBOX_IMAGE} from ${image.sandboxBuildContext()} ...`);
+    console.log(`Building ${image.SANDBOX_IMAGE} (and its builder stage, ${image.SANDBOX_BUILDER}) from ${image.sandboxBuildContext()} ...`);
     try {
       await image.buildSandboxImage({ stdio: "inherit" });
     } catch (err) {
@@ -218,6 +252,61 @@ async function cmdSandbox() {
   console.error(`Unknown sandbox command: ${action}\n`);
   printSandboxHelp();
   process.exit(1);
+}
+
+// `callboard sandbox build --profile <name>`: one profile's image, after the
+// base and its builder if they are not current. Up-to-date images are left
+// alone unless --force.
+async function cmdSandboxProfileBuild(image, docker, name) {
+  const profiles = await import(join(PKG_ROOT, "backend/dist/services/sandbox-profiles.js"));
+  const entry = profiles.resolveProfile(name);
+  if (!entry) {
+    console.error(`No sandbox profile named ${JSON.stringify(name)}. See: callboard sandbox profiles`);
+    process.exit(1);
+  }
+  const info = await profiles
+    .inspectProfileImage(docker, entry, await profiles.currentBase(docker, image.SANDBOX_IMAGE))
+    .catch((err) => ({ state: "unknown", detail: err.message }));
+  if (info.state === "current" && !values.force) {
+    console.log(`${entry.image} is up to date (recipe ${entry.digest.slice(0, 12)}, on the current base).`);
+    console.log(`Rebuild it anyway with: callboard sandbox build --profile ${name} --force`);
+    return;
+  }
+  if (info.state !== "missing" && info.detail) console.log(`${entry.image}: ${info.detail}`);
+  console.log(`Building sandbox profile ${name} as ${entry.image} ...`);
+  const started = Date.now();
+  try {
+    await profiles.buildProfileImage({ entry, docker, dataDir: DATA_DIR, stdio: "inherit" });
+  } catch (err) {
+    console.error(`\nBuild failed: ${err.message.split("\n")[0]}`);
+    process.exit(1);
+  }
+  console.log(
+    `\nBuilt ${entry.image} in ${Math.round((Date.now() - started) / 1000)}s. An agent can now ask for it: cu_request_control with profile "${name}".`,
+  );
+}
+
+// `callboard sandbox profiles`: every profile, its limits and its image's state.
+async function cmdSandboxProfiles(image, docker) {
+  const profiles = await import(join(PKG_ROOT, "backend/dist/services/sandbox-profiles.js"));
+  const { errors } = profiles.loadBuiltinProfiles();
+  for (const error of errors) console.log(`Skipped an invalid built-in recipe: ${error}`);
+  const base = await profiles.currentBase(docker, image.SANDBOX_IMAGE).catch(() => ({}));
+  const entries = profiles.listProfiles();
+  if (!entries.length) console.log("No sandbox profiles.");
+  for (const entry of entries) {
+    const info = await profiles.inspectProfileImage(docker, entry, base).catch((err) => ({ state: "unknown", detail: err.message }));
+    const r = entry.recipe;
+    const limits = Object.entries(r.limits)
+      .map(([key, value]) => `${key} ${value}`)
+      .join(", ");
+    const size = info.sizeBytes ? `, ${Math.round(info.sizeBytes / 1024 / 1024)} MB` : "";
+    console.log(`${r.name}  [${info.state}${info.outdatedBy ? `: ${info.outdatedBy.join(" and ")} changed` : ""}${size}]`);
+    console.log(`  ${r.description}`);
+    console.log(`  image ${entry.image}, gl ${r.gl}, requests ${limits || "the base limits"} (clamped by Settings → Sandbox desktop)`);
+    if (info.state === "missing" || info.state === "outdated" || info.state === "insecure" || info.state === "incompatible")
+      console.log(`  ${info.detail ? `${info.detail} ` : ""}Build: callboard sandbox build --profile ${r.name}`);
+  }
 }
 
 async function cmdDefault() {
@@ -820,7 +909,7 @@ Commands:
   logs           View and follow server logs
   config         Show effective configuration
   set-password   Set or change the server password
-  sandbox        Build or check the Sandbox desktop image (Docker)
+  sandbox        Build or check the Sandbox desktop image and profiles (Docker)
 
 Options:
   -h, --help     Show this help message
@@ -846,14 +935,19 @@ callboard sandbox
 Build or check the Sandbox desktop image. Callboard starts and stops one
 container per computer-control session itself; this only provides the image.
 
-Usage: callboard sandbox <build|status> [options]
+Usage: callboard sandbox <build|status|profiles|rm> [options]
 
 Commands:
-  build          Build the image (docker build); skipped if it is up to date
-  status         Show Docker, the image and running managed sandboxes
+  build             Build the image and its builder stage (docker build); skipped if up to date
+  build --profile <name>
+                    Build one sandbox profile's image (the base first, if needed)
+  profiles          List the sandbox profiles, their limits and image state
+  rm --profile <name>
+                    Remove a profile's image
+  status            Show Docker, the image and running managed sandboxes
 
 Options:
-  --force        build: rebuild even if the image is up to date
+  --force           build: rebuild even if the image is up to date
 `);
 }
 

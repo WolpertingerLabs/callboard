@@ -9,7 +9,16 @@
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { SANDBOX_DESKTOP_BOUNDS, type SandboxDesktopMode, type SandboxDesktopNetwork, type SandboxDesktopSettings } from "shared/types/index.js";
+import { clampProfileLimits, type ProfileRecipe } from "@wolpertingerlabs/computer-use";
+import {
+  SANDBOX_BASE_HOME_MB,
+  SANDBOX_BASE_SESSION_MINUTES,
+  SANDBOX_DESKTOP_BOUNDS,
+  type SandboxDesktopMode,
+  type SandboxDesktopNetwork,
+  type SandboxDesktopSettings,
+  type SandboxProfileLimits,
+} from "shared/types/index.js";
 import { DATA_DIR } from "../utils/paths.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -30,6 +39,8 @@ export interface ResolvedSandboxSettings {
   keepHours: number;
   maxKept: number;
   deliverablesGb: number;
+  /** Caps on a sandbox profile's requested limits. */
+  profileCaps: { cpus: number; memoryMb: number; homeMb: number; sessionMinutes: number };
 }
 
 export class SandboxSettingsError extends Error {
@@ -57,7 +68,20 @@ export function normalizeSandboxSettings(input: unknown, strict: boolean): Sandb
     log.warn(`Ignoring sandbox-desktop.json ${field}: not ${rule}`);
   };
   if (strict) {
-    const known = new Set(["mode", "network", "cpus", "memoryMb", "maxConcurrent", "keepHours", "maxKept", "deliverablesGb"]);
+    const known = new Set([
+      "mode",
+      "network",
+      "cpus",
+      "memoryMb",
+      "maxConcurrent",
+      "keepHours",
+      "maxKept",
+      "deliverablesGb",
+      "profileMaxCpus",
+      "profileMaxMemoryMb",
+      "profileMaxHomeMb",
+      "profileMaxSessionMinutes",
+    ]);
     const unknown = Object.keys(value).filter((key) => !known.has(key));
     if (unknown.length) throw new SandboxSettingsError(`Unknown sandbox desktop setting ${JSON.stringify(unknown[0])}`);
   }
@@ -96,6 +120,24 @@ export function normalizeSandboxSettings(input: unknown, strict: boolean): Sandb
     if (inBounds(value.deliverablesGb, deliverablesGb, true)) out.deliverablesGb = value.deliverablesGb;
     else bad("deliverablesGb", `a whole number of GiB from ${deliverablesGb.min} to ${deliverablesGb.max}`);
   }
+  const { profileMaxCpus, profileMaxMemoryMb, profileMaxHomeMb, profileMaxSessionMinutes } = SANDBOX_DESKTOP_BOUNDS;
+  if (value.profileMaxCpus !== undefined && value.profileMaxCpus !== null) {
+    if (inBounds(value.profileMaxCpus, profileMaxCpus, false) && Math.round(value.profileMaxCpus * 100) === value.profileMaxCpus * 100)
+      out.profileMaxCpus = value.profileMaxCpus;
+    else bad("profileMaxCpus", `a number from ${profileMaxCpus.min} to ${profileMaxCpus.max}, in steps of 0.01`);
+  }
+  if (value.profileMaxMemoryMb !== undefined && value.profileMaxMemoryMb !== null) {
+    if (inBounds(value.profileMaxMemoryMb, profileMaxMemoryMb, true)) out.profileMaxMemoryMb = value.profileMaxMemoryMb;
+    else bad("profileMaxMemoryMb", `a whole number of MiB from ${profileMaxMemoryMb.min} to ${profileMaxMemoryMb.max}`);
+  }
+  if (value.profileMaxHomeMb !== undefined && value.profileMaxHomeMb !== null) {
+    if (inBounds(value.profileMaxHomeMb, profileMaxHomeMb, true)) out.profileMaxHomeMb = value.profileMaxHomeMb;
+    else bad("profileMaxHomeMb", `a whole number of MiB from ${profileMaxHomeMb.min} to ${profileMaxHomeMb.max}`);
+  }
+  if (value.profileMaxSessionMinutes !== undefined && value.profileMaxSessionMinutes !== null) {
+    if (inBounds(value.profileMaxSessionMinutes, profileMaxSessionMinutes, true)) out.profileMaxSessionMinutes = value.profileMaxSessionMinutes;
+    else bad("profileMaxSessionMinutes", `a whole number of minutes from ${profileMaxSessionMinutes.min} to ${profileMaxSessionMinutes.max}`);
+  }
   return out;
 }
 
@@ -109,6 +151,12 @@ export function resolveSandboxSettings(settings: SandboxDesktopSettings): Resolv
     keepHours: settings.keepHours ?? SANDBOX_DESKTOP_BOUNDS.keepHours.default,
     maxKept: settings.maxKept ?? SANDBOX_DESKTOP_BOUNDS.maxKept.default,
     deliverablesGb: settings.deliverablesGb ?? SANDBOX_DESKTOP_BOUNDS.deliverablesGb.default,
+    profileCaps: {
+      cpus: settings.profileMaxCpus ?? SANDBOX_DESKTOP_BOUNDS.profileMaxCpus.default,
+      memoryMb: settings.profileMaxMemoryMb ?? SANDBOX_DESKTOP_BOUNDS.profileMaxMemoryMb.default,
+      homeMb: settings.profileMaxHomeMb ?? SANDBOX_DESKTOP_BOUNDS.profileMaxHomeMb.default,
+      sessionMinutes: settings.profileMaxSessionMinutes ?? SANDBOX_DESKTOP_BOUNDS.profileMaxSessionMinutes.default,
+    },
   };
 }
 
@@ -139,4 +187,21 @@ export function updateSandboxSettings(patch: unknown, file = SANDBOX_SETTINGS_FI
   writeFileSync(temp, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
   renameSync(temp, file);
   return next as SandboxDesktopSettings;
+}
+
+/**
+ * A profile's limits for a session: what its recipe asks for, else the base
+ * sandbox's (the Settings CPUs and memory, a 512 MiB home, 15 minutes), each
+ * clamped to the Settings profile caps.
+ */
+export function effectiveProfileLimits(
+  recipe: Pick<ProfileRecipe, "limits">,
+  settings: ResolvedSandboxSettings,
+): SandboxProfileLimits & { clamped?: (keyof SandboxProfileLimits)[] } {
+  const { clamped, ...limits } = clampProfileLimits(
+    recipe.limits,
+    { cpus: settings.cpus, memoryMb: settings.memoryMb, homeMb: SANDBOX_BASE_HOME_MB, sessionMinutes: SANDBOX_BASE_SESSION_MINUTES },
+    settings.profileCaps,
+  );
+  return clamped.length ? { ...limits, clamped } : limits;
 }

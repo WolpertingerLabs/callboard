@@ -1711,9 +1711,18 @@ export async function updateSandboxDesktopSettings(patch: {
   return request("/sandbox-desktop", { method: "PUT", json: patch, error: "Failed to save the sandbox desktop settings" });
 }
 
-/** Start the explicit image build; poll {@link getSandboxDesktopStatus} for its progress. */
-export async function buildSandboxDesktopImage(): Promise<SandboxDesktopBuild> {
-  return requestField("/sandbox-desktop/build", "build", { method: "POST", json: {}, error: "Failed to start the sandbox image build" });
+/** Start the explicit image build (the base, or one profile's); poll {@link getSandboxDesktopStatus} for its progress. */
+export async function buildSandboxDesktopImage(profile?: string): Promise<SandboxDesktopBuild> {
+  return requestField("/sandbox-desktop/build", "build", {
+    method: "POST",
+    json: profile ? { profile } : {},
+    error: profile ? `Failed to start building profile ${profile}` : "Failed to start the sandbox image build",
+  });
+}
+
+/** Remove a sandbox profile's image. Refused while a build runs or a container uses it. */
+export async function removeSandboxProfile(name: string): Promise<{ removed: boolean; status: SandboxDesktopStatus }> {
+  return request(`/sandbox-desktop/profiles/${encodeURIComponent(name)}`, { method: "DELETE", error: `Failed to remove profile ${name}` });
 }
 
 // Agent settings API functions

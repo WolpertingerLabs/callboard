@@ -28,6 +28,7 @@ Types and `ComputerUseError` live in `src/contracts.ts` and are exported from bo
 - `createBrowserDriver(options?)`, `BrowserDriverOptions`
 - `createNativeDesktopDriver(options?)`, `NativeDesktopDriverOptions`
 - `createDriverHost(options)`, `readTokenFile(path, { allowSymlink? })`, `createRemoteDriver(options)` (with `openedInstance`, `listOutbox`, `downloadOutboxFile`), `sandboxRunArgs(options)`, `ensureSandboxNetwork(options?)`, `sandboxNetworkCreateArgs(name?, { internal? })`, `PROTOCOL`, `HOST_CAPABILITIES`, `SANDBOX_NETWORK`, `SANDBOX_INTERNAL_NETWORK`, `SANDBOX_IMAGE_LABELS`, and their types: see [Sandbox desktop container](#sandbox-desktop-container)
+- `validateProfileRecipe`, `parseProfileRecipe`, `canonicalProfileRecipe`, `profileRecipeDigest`, `compileProfile`, `profilePackagesBuildArgs`, `profileImageBuildArgs`, `clampProfileLimits`, `PROFILE_LABELS`, `PROFILE_SECURITY_FLOOR`, `SANDBOX_BUILDER_IMAGE` and their types: see [Sandbox desktop profiles](#sandbox-desktop-profiles)
 - `createMcpServer(service, principal): McpServer`
 - `getToolDefinitions(service, principal): ToolDefinition[]`, `ToolDefinition`
 - `actionSchema`, the Zod schema the service validates actions against, so a host can check an action before acting on it
@@ -54,7 +55,7 @@ interface ActionRequest extends LeaseRef {
 const service = new ComputerUseService({ targets, authorize });
 service.status(principal, sessionId?);                 // SessionStatus[]; redacted, no leases
 await service.probe(principal, targetId);              // Probe
-await service.open(principal, targetId, signal?);      // Lease; observe before the first act
+await service.open(principal, targetId, signal?, { ttlMs?, variant? }?); // Lease; observe before the first act
 await service.observe(principal, sessionRef, signal?); // Observation { ...ref, frameId, frame }
 await service.act(principal, actionRequest, signal?);  // SessionStatus
 await service.takeover(humanPrincipal, sessionRef);    // Lease for that human actor
@@ -64,6 +65,8 @@ await service.revoke(principal, sessionId);            // SessionStatus; irrever
 await service.dispose();
 const unsubscribe = service.subscribe(principal, (event) => {});
 ```
+
+**Per-session options.** `open` takes an optional `{ ttlMs, variant }`, set by the host, never by a model. `ttlMs` is that session's absolute TTL, from 1 second to `maxSessionTtlMs` (a service option, which defaults to `sessionTtlMs`, so a host must opt in to longer sessions; at most 24 hours); out of range is `invalid_request`, never clamped. `variant` is an opaque selector (`[A-Za-z0-9][A-Za-z0-9._@:-]{0,127}`) passed to the driver's `open` and shown in `status` (`SessionStatus.variant`); Callboard uses it to name a Sandbox desktop profile. Both are checked before policy, so a malformed one never reaches the authorizer or the driver.
 
 **Takeover and resume.** `takeover` and `resume` are trusted human control-plane APIs, never model tools. Human observation and input go through the same service, and human input requires the human lease. `resume` restores the original opener's immutable identity with a **new lease and generation**, and captures a fresh frame under that identity's current authorization before it returns. Hosts normally open sessions as an agent principal, even when a signed-in user clicks Enable.
 
@@ -127,7 +130,7 @@ const service = new ComputerUseService({
 | ------------------------------------------ | ------------------ |
 | Operation and policy timeout               | 30 seconds         |
 | Queue depth                                | 16                 |
-| Absolute session TTL                       | 15 minutes         |
+| Absolute session TTL                       | 15 minutes (`sessionTtlMs`, at most 2 hours; per session up to `maxSessionTtlMs`) |
 | Active sessions                            | 16                 |
 | Action IDs per session                     | 10,000             |
 | `terminalRetentionMs`                      | 60 seconds         |
@@ -229,7 +232,7 @@ docker/run.sh 7801   # hardened flags, its own network, a fresh token in a priva
 - **Kept for recovery:** if that final copy fails, whatever the `cause` (including an orphan the reaper drains), Callboard's drain hook pauses the container (`docker pause`, not `docker stop`: the home, and so the outbox, is tmpfs, which a stop erases) and returns `{ keep: true }`. The manager records the keep in `session.json`, the one record of it, so a restart finds it kept rather than orphaned. Callboard bounds how many are kept and for how long (Settings), and ends a keep with `release()`: after a successful **Retry export**, on **Discard**, when the retention ends, or when the chat is deleted. Before copying, the hook checks the chat still exists; a deleted chat's outbox is discarded, not copied.
 - **Labels:** `dev.callboard.managed=1`, the chat, the session, and an owner derived from Callboard's data directory. A reaper removes containers with Callboard's own owner label that belong to no live session, at startup and periodically, and never touches another owner's or an unlabelled container.
 - **Network:** `callboard-sandbox` by default, or with internet access turned off, `callboard-sandbox-internal`: the same bridge with inter-container traffic off, plus `--internal`. Docker publishes no ports on an internal network, so there `sandboxRunArgs({ publish: false })` leaves the port unpublished and Callboard connects to the container's bridge address with `createRemoteDriver({ localDockerBridge: true })`, which accepts plain `http` to a private IPv4 literal. This needs the host to reach container bridge addresses: Docker Engine on Linux, not Docker Desktop or rootless Docker. `ensureSandboxNetwork({ internal })` refuses an existing network whose `--internal` setting differs.
-- **The image** is never built or pulled implicitly: `callboard sandbox build` (or Callboard's Settings) runs `docker build` on this directory.
+- **The image** is never built or pulled implicitly: `callboard sandbox build` (or Callboard's Settings) runs `docker build` on this directory, twice: the final image, and its `builder` stage (`--target builder`, tagged `callboard/computer-use-desktop-builder:local`) that [profiles](#sandbox-desktop-profiles) build from.
 
 In **endpoint** mode, Callboard uses a container you run yourself instead:
 
@@ -271,6 +274,7 @@ In **endpoint** mode, Callboard uses a container you run yourself instead:
 - **Desktop:** Xvfb on `:99` at 1280×800×24, icewm, and one xterm (respawned if it exits) as the test target.
 - **Tools:** `/usr/bin/xdotool`, ImageMagick's `/usr/bin/import`, DejaVu fonts plus WenQuanYi Micro Hei for CJK and Hangul.
 - **Runtime:** Node 22 and this package, with only `zod` among its dependencies (the driver host loads nothing else).
+- **No OpenGL:** Xvfb runs with `-extension GLX`, and Mesa's drivers are purged. `COMPUTER_USE_GL=none` in the image's environment says so; a [profile](#sandbox-desktop-profiles) built with `gl: "software"` sets it to `software`.
 
 How it's built:
 - The base image is pinned by digest, and the package builds with `npm ci` from `docker/package-lock.json`. That lock is pinned to the versions Callboard runs; `npm ci` fails if it drifts from `package.json`.
@@ -315,6 +319,90 @@ Users and permissions:
 - **Digests:** a listing streams each file's hash and caches it by device, inode, size, mtime and ctime (ctime because a writer can set mtime back), so unchanged files aren't re-read. Files over 64 MiB are listed without a digest and not served, and a listing stops at 200 entries. The client checks a download's digest against the bytes it received.
 - **Write `.name.part`, then rename to `name`.** Dot-names are never listed, and a rename is atomic, so a listing never sees a half-written file. A file that changed in the last second (`outboxSettleMs`), or changes while it's being hashed (re-checked with `fstat` afterwards, so a same-size rewrite in place is caught too), is listed with `sha256: null` and not cached. Pass a listed digest to `downloadOutboxFile(name, signal, { expectedSha256 })` to refuse a file that changed since (`stale_frame`).
 - **Syncing and draining:** copying the outbox anywhere, and draining it before the container is destroyed, are the host's job (Callboard's, above). For agents and humans the rule is the same: write `~/outbox/.NAME.part`, then rename it to `~/outbox/NAME`, a plain name with no spaces or subfolders.
+
+## Sandbox desktop profiles
+
+The base image is deliberately bare: no package installs, no OpenGL, small limits, and everything gone after each session. A **profile** is a reusable image for one purpose (Blender, say), built once from a **recipe** and started fresh for every session with exactly the same run-time hardening (`sandboxRunArgs`); only its limits differ.
+
+### Recipes
+
+A recipe is JSON: strict to parse, unambiguous (no YAML type coercion, anchors or multiple documents), hashable in a canonical form, and what an agent proposing one (a later change) produces most reliably. Every field is checked against a fixed grammar, unknown keys are errors, and every problem is reported with its path (`packages[3]: "Foo" is not a Debian package name (…)`). The built-ins live in `docker/profiles/` (`blender.json`, `test.json`).
+
+```json
+{
+  "schema": 1,
+  "name": "blender",
+  "description": "Blender 4.5 LTS with software OpenGL.",
+  "packages": ["libxi6", "libxkbcommon0"],
+  "downloads": [
+    { "url": "https://download.blender.org/release/Blender4.5/blender-4.5.17-linux-x64.tar.xz",
+      "sha256": "b7d09d1a…", "dest": "blender", "unpack": "tar.xz", "stripComponents": 1 }
+  ],
+  "setup": ["/opt/blender/blender --version"],
+  "path": ["/opt/blender"],
+  "env": {},
+  "gl": "software",
+  "limits": { "cpus": 4, "memoryMb": 4096, "homeMb": 2048, "sessionMinutes": 60 }
+}
+```
+
+| Field | Rule |
+| --- | --- |
+| `schema` | `1`. |
+| `name` | 2–32 of `[a-z0-9-]`, starting with a letter; `base`, `default`, `builder`, `none` and `local` are reserved. The image is `callboard/computer-use-profile:<name>`. |
+| `description` | One line of plain text, at most 300 characters: no control, line-separator or bidi characters. |
+| `packages` | At most 300 Debian package names (`[a-z0-9][a-z0-9+.-]*[a-z0-9]`): no versions, architectures, releases, paths or apt patterns, and no trailing `-`/`+` (apt's remove/install suffixes). Installed from the builder's own Debian sources; a recipe cannot add a source. |
+| `downloads` | At most 8. `url`: `https://`, a public host name (no IP literal, `localhost`, `.local`, `.internal` or bare name), no credentials or fragment. `sha256`: **required**. `dest`: unpacked into `/opt/<dest>` (`computer-use` and `profile` are reserved). `unpack`: `tar.gz`, `tar.xz`, `zip` or `file` (with `filename` and optional `executable`); `stripComponents` (0–8) for tar. |
+| `setup` | A bash script (a string, or an array of lines), at most 32 KiB, no control characters but newline and tab. Runs at build time **as the desktop user**, with **no network**, `set -euo pipefail`, in a clean environment with the profile's `path` and `env`. It can write only to `/opt/profile` and the download destinations (and its own build-time home, which is not kept). |
+| `path` | At most 16 directories under `/opt` or `/usr`, prepended to the desktop's `PATH`. |
+| `env` | At most 32 variables (`[A-Z_][A-Z0-9_]*`, one-line values up to 1024 characters) for every desktop process. Reserved: `PATH`, `HOME`, `USER`, `SHELL`, `DISPLAY`, `TMPDIR`, `IFS`, `ENV`, `BASH_ENV`, `NODE_OPTIONS`, `GALLIUM_DRIVER` and the like, and anything starting `LD_`, `COMPUTER_USE_`, `CALLBOARD_`, `LIBGL_`, `MESA_`, `LP_` or `BASH_FUNC_`. |
+| `gl` | `none` (the default: no GLX, as the base) or `software`: Mesa's llvmpipe (added to the packages) and Xvfb with GLX. |
+| `limits` | Optional requests: `cpus` (0.5–32, steps of 0.01), `memoryMb` (512–65536), `homeMb` (256–65536), `sessionMinutes` (5–480). A host clamps each to its own caps (`clampProfileLimits`); an omitted one gets the host's base value. |
+
+`canonicalProfileRecipe` is the recipe with every default filled in and keys in a fixed order: what is hashed, built, and should be shown to anyone reviewing one (raw JSON may repeat a key; the canonical form cannot). `profileRecipeDigest` hashes it together with the compiler's own constant output (the Dockerfiles, the scripts, the epilogue) and `PROFILE_COMPILER_VERSION`, so a change to the recipe *or* to what Callboard compiles it to makes a built image out of date, without anyone having to remember a version bump.
+
+### How a profile is built
+
+`compileProfile(recipe)` returns two Docker build contexts. **Their Dockerfiles are constants** (`PROFILE_PACKAGES_DOCKERFILE`, `PROFILE_DOCKERFILE`): the same bytes for every recipe, with no continuations, heredocs or parser directives, and every `RUN` in exec form. A recipe reaches the build only as data files (`packages.txt`, `downloads.tsv`, `setup.sh`, `profile.env`), read by Callboard's own scripts, each of which checks its input again. So no recipe text can become a Dockerfile instruction, whatever it contains. A unit test compiles hostile recipes (newlines, `\` continuations, heredocs, `# syntax=` lines, `${…}` and `$(…)`, quotes) and checks the Dockerfiles are byte-identical and contain none of it.
+
+1. **The builder.** The base Dockerfile's `builder` stage is the same desktop as the final image, users and files included, but with apt working and nothing purged, plus `libcap2-bin`, `xz-utils` and `unzip`. Profiles always build from it, by image ID.
+2. **Downloads** are fetched by the host, over https, and kept only if their SHA-256 matches (Callboard caches them by digest and re-hashes before each use). Nothing is unpacked on the host.
+3. **Packages** (first build, with the network): `apt-get install --no-install-recommends --no-remove` of the package list, as root. This is the only root step a recipe influences, and only by naming Debian packages: their maintainer scripts run as root at build time, but only Debian's.
+4. **Profile** (second build, `--network=none`): the downloads are unpacked **as the desktop user** in a separate stage (so the archives never reach the image) and copied into `/opt`; the setup script runs as the desktop user.
+5. **The epilogue**, last, as root, and never influenced by the recipe:
+   - purges what the base purges, unless an installed package needs it (GL stays for `gl: "software"`);
+   - removes apt, dpkg, npm, npx and corepack;
+   - removes `/etc/ld.so.preload`, and the build's leftovers;
+   - gives every file a user owns back to root (except the desktop's home and the token directory), removes world-write bits, strips every setuid/setgid bit and file capability, and runs `ldconfig`;
+   - restores from the **final base image** (by ID): `/etc/passwd`, `group`, `shadow`, `gshadow` and `nsswitch.conf` (so a package cannot add a uid-0 account or an NSS module), the entrypoint, `profile-env`, the driver host, tini and node (each removed first, so the restore replaces rather than merges);
+   - writes the profile's environment file, and then **verifies** all of it (users and uids, no second uid 0, no preload, no package tooling, no setuid or capability, nothing outside the home owned by a user, the token directory `root:driver 0750`, the trusted files present and root's, swrast present for `gl: "software"`) and fails the build otherwise;
+   - sets `COMPUTER_USE_GL` from the `CALLBOARD_GL` build argument, which Callboard passes from the validated recipe, and ends as root with the trusted entrypoint.
+6. **Labels**, set by `docker build --label`, never by the recipe: `dev.callboard.computer-use.profile` (the name), `.profile.recipe` (the digest), `.profile.base-content` and `.profile.base-image` (what it was built on), `.profile.gl`, and `.profile.security-floor` (`PROFILE_SECURITY_FLOOR`). The base's protocol and security-floor labels are inherited from the builder.
+
+**At run time** a profile is started with `sandboxRunArgs`, like the base: only `cpus`, `memory` and `homeSize` change. The entrypoint decides GL from its own environment (`COMPUTER_USE_GL`, `none` or `software`; anything else refuses to start), never from a file the recipe wrote: `software` adds `+extension GLX` to Xvfb and gives desktop processes `LIBGL_ALWAYS_SOFTWARE=1`, `GALLIUM_DRIVER=llvmpipe` and `LP_NUM_THREADS` from the container's CPU quota. The profile's `PATH` and variables are read from `/etc/computer-use/profile.env` by `profile-env`, **as the desktop user** (after `setpriv` dropped root), line by line and never sourced, so nothing in a value is expanded or run. The entrypoint calls the desktop's helpers (Xvfb, xdotool, xhost, icewm, xterm) by absolute path.
+
+A host judges a profile image like a base image, plus its own labels: another protocol major, or below either security floor, or not labelled as this profile, is **refused**; a different recipe digest or base image is **out of date** (it still starts).
+
+### Threat model
+
+**Assume the recipe author is hostile.** A later change lets agents propose recipes (a human approves and builds them), so a recipe must not be able to do anything the base sandbox cannot.
+
+- **What a recipe controls:** which Debian packages are installed; which pinned files are downloaded and unpacked into `/opt`; a script run as the unprivileged desktop user, offline, at build time; the desktop's `PATH` and some variables; GL on or off; resource requests.
+- **What it cannot:**
+  - *Inject build instructions:* the Dockerfiles are constants, the recipe is data, and every data file is validated twice (by the compiler and by the script that reads it).
+  - *Run code as root*, except Debian's own maintainer scripts for the packages it names. It cannot add an apt source, key or option, pin a version, install a local `.deb`, or remove a package (`--no-remove`).
+  - *Fetch anything unpinned*: downloads need a SHA-256, and the setup script has no network.
+  - *Keep a privilege into the image:* setuid/setgid bits, file capabilities, extra uid-0 accounts, `ld.so.preload`, package tooling and ownership by any user are all removed or reset by the epilogue and checked after it. Files under `/opt` are root's and, at run time, on a read-only root filesystem.
+  - *Replace what root runs at start:* the entrypoint, `profile-env`, the driver host, tini, node and the account files are restored from the final base image after every recipe step; root reads no recipe-written file at run time (the environment file is read as the desktop user); GL is decided from Callboard's build argument; helpers are called by absolute path.
+  - *Weaken the container:* run-time flags are `sandboxRunArgs`'s, identical for every profile; only CPUs, memory and the home size change, each clamped to the host's caps. No profile gets a device, a GPU, a mount, a capability or a network the base doesn't.
+  - *Read the token:* `/run/computer-use` stays `root:driver 0750` (checked), and the driver host runs as `driver`, as in the base.
+- **What remains, and is accepted or out of scope:**
+  - **Debian packages are trusted**: their maintainer scripts run as root at build time, and a package may ship any file. The epilogue resets privileges and the trusted files, but a malicious Debian package could still, for example, change a shared library the driver host loads. The node image's sources are Debian `main` only.
+  - **Downloads are as trustworthy as their pin**: a SHA-256 guarantees the bytes a human approved, not that they are benign. Whatever they contain runs as the desktop user inside the sandbox, which is what the sandbox is for.
+  - **The host fetches the download URLs**, so a hostile recipe can make this machine send one https GET to a public host name of its choosing (DNS can still resolve it to a private address). Building is human-only and shows the URLs first.
+  - **The build itself** runs on this machine's Docker with Docker's default build isolation, as root inside build containers for the package step. A kernel or Docker escape from a build container is out of scope, as it is for the base image.
+  - **Resource use while building** (disk for packages and downloads, up to 4 GiB per download and 8 GiB per profile) is bounded but not small.
+  - **Description, names and URLs are shown to humans**; they are plain text checked for control, line-separator and bidi characters, but can still say anything. They are never put in an agent's ride-along notices.
 
 ## MCP server
 
@@ -369,6 +457,7 @@ The offline suites cover:
 - **MCP:** real in-memory initialize/list/call, stdio subprocess discovery, and a stdio run whose enabled target has no authorizer and must deny `probe` and `open` without opening the driver.
 - **Native lock directory:** PID record, dead-holder reclaim, quarantine and concurrent reclaim, all without a display.
 - **Native typing:** chained `xdotool` argument vectors, delay only for remapped characters, and the 1000-character refusal.
+- **Sandbox profiles:** every built-in recipe valid; exact, path-prefixed validation errors; canonical form and digest; hostile recipe text (newlines, continuations, heredocs, directives, substitutions) never reaching the constant Dockerfiles; the epilogue present, last, and only Callboard's steps; the data files; the build arguments and labels; limit clamping; `profile-env` exporting values verbatim and running nothing; the entrypoint deciding GL from its own environment; per-session TTLs (bounded, defaulting to the service TTL, expiring on their own schedule) and the variant reaching the driver and status.
 - **Sandbox run arguments:** every hardening flag, the network argv (and its `--internal` variant), `publish: false`, `ensureSandboxNetwork` through a caller's runner (creating, and refusing an ICC or internal/external mismatch), input validation, `run.sh` kept in step, the image labels matching `package.json` and `PROTOCOL`, and the Docker context shipping in the package and building from `dist/`.
 - **Lock scope:** a `lockScope: "session"` driver serves concurrent sessions and receives the owner id; the default scope still allows one.
 - **Remote driver host:** the handshake (a squatting host without the token learns nothing and gets no request past `/hello`; credentials for another instance or secret are refused), protocol negotiation failing closed in both directions (another major, none, a missing capability), slow and oversized requests cut off, `maxConnections`, the attach stream outliving the request deadline, the probe's fixed human words and readiness whitelist, `openedInstance`, token files (symlinks on the client side), the outbox symlink race, digest caching and the `.part` convention, token refusal on every endpoint, schema refusal on both sides, abort and operation bounds, disconnect and heartbeat fencing through the service, open cancellation, outbox path safety (`..`, absolute paths, hidden files, directories, symlinks, size cap) and digest checking.
@@ -398,6 +487,6 @@ Under the hardened flags (1 CPU, 1 GB), 1000 CJK characters still type in about 
 
 - Live sandboxed browser operation. Earlier Chromium smoke passes predate the sandbox fix, and the sandboxed smoke couldn't run on the build host.
 - A live native desktop other than Xvfb in the container above: a physical X server, other window managers and toolkits.
-- GPU, Wayland, macOS and Windows.
+- GPU (profiles have software OpenGL only), Wayland, macOS and Windows.
 - Image-to-model vision across the five engine routes.
 - Durable host policy, crash watchdogs, and drawing or modelling workflows.

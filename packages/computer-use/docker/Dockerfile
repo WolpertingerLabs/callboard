@@ -6,8 +6,10 @@
 #
 #   docker build -t callboard/computer-use-desktop:local -f docker/Dockerfile .
 #
-# or `callboard sandbox build`, which does exactly that. Only package.json,
-# dist/ and docker/ are sent to the daemon (.dockerignore).
+# or `callboard sandbox build`, which does exactly that, and also builds the
+# `builder` stage (below) as callboard/computer-use-desktop-builder:local for
+# sandbox profiles. Only package.json, dist/ and docker/'s own files are sent
+# to the daemon (.dockerignore).
 #
 # Run it with the hardened flags in docker/run.sh (or sandboxRunArgs() from the
 # package): read-only root, tmpfs home and /tmp, no capabilities but SETUID and
@@ -16,6 +18,8 @@
 
 # Pinned by digest: node:22-bookworm-slim as of 2026-11-23. Bump deliberately.
 ARG NODE_IMAGE=node:22-bookworm-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee
+# The desktop's packages, the same in the builder and the final image.
+ARG DESKTOP_PACKAGES="xvfb xdotool imagemagick icewm xterm x11-xserver-utils fonts-dejavu-core fonts-wqy-microhei tini"
 
 FROM ${NODE_IMAGE} AS build
 WORKDIR /pkg
@@ -30,15 +34,59 @@ COPY dist ./dist
 # Fails the build, rather than the first sandbox, if dist/ was never built.
 RUN test -f dist/driver-host-cli.js
 
-FROM ${NODE_IMAGE}
+# The builder: the same desktop, users and files as the final image, but with
+# apt still working and nothing purged (mesa's swrast included), plus the
+# tools a profile build needs (libcap2-bin to strip file capabilities, xz-utils
+# and unzip to unpack downloads). Sandbox profiles build FROM it
+# (`docker build --target builder`, tagged callboard/computer-use-desktop-builder:local);
+# their epilogue then re-applies everything the final stage below does, and
+# restores the trusted files from the final image. Never run as a sandbox.
+FROM ${NODE_IMAGE} AS builder
+ARG DESKTOP_PACKAGES
 RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-      xvfb xdotool imagemagick icewm xterm x11-xserver-utils fonts-dejavu-core fonts-wqy-microhei tini \
+ && apt-get install -y --no-install-recommends $DESKTOP_PACKAGES libcap2-bin xz-utils unzip \
+ && rm -rf /var/lib/apt/lists/* /usr/share/doc /usr/share/man \
+ && rm -rf /usr/local/lib/node_modules /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack /opt/yarn-* /usr/local/bin/yarn /usr/local/bin/yarnpkg \
+ && mkdir -p /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix
+RUN useradd --create-home --uid 10001 --shell /bin/bash desktop \
+ && useradd --no-create-home --home-dir /nonexistent --uid 10002 --shell /usr/sbin/nologin driver \
+ && chmod 0755 /home/desktop \
+ && mkdir -p /run/computer-use \
+ && chown root:driver /run/computer-use \
+ && chmod 0750 /run/computer-use
+COPY --from=build /pkg/package.json /opt/computer-use/package.json
+COPY --from=build /pkg/dist /opt/computer-use/dist
+COPY --from=build /pkg/node_modules/zod /opt/computer-use/node_modules/zod
+COPY docker/start-desktop.sh /usr/local/bin/start-desktop.sh
+COPY docker/profile-env.sh /usr/local/lib/computer-use/profile-env
+RUN chmod 0755 /usr/local/bin/start-desktop.sh /usr/local/lib/computer-use/profile-env
+ENV COMPUTER_USE_DISPLAY=:99 \
+    COMPUTER_USE_SCREEN=1280x800x24 \
+    COMPUTER_USE_HOST_LISTEN=0.0.0.0 \
+    COMPUTER_USE_HOST_PORT=7801 \
+    COMPUTER_USE_HOST_TOKEN_FILE=/run/computer-use/token \
+    COMPUTER_USE_OUTBOX=/home/desktop/outbox \
+    COMPUTER_USE_ACKNOWLEDGE_FULL_DESKTOP_ACCESS=1 \
+    COMPUTER_USE_GL=none
+LABEL org.opencontainers.image.title="callboard-computer-use-desktop-builder" \
+      org.opencontainers.image.version="0.1.0" \
+      org.opencontainers.image.source="https://github.com/WolpertingerLabs/callboard" \
+      org.opencontainers.image.licenses="MIT" \
+      dev.callboard.computer-use.protocol="2.0" \
+      dev.callboard.computer-use.security-floor="1" \
+      dev.callboard.computer-use.stage="builder"
+ENTRYPOINT ["/usr/local/bin/start-desktop.sh"]
+
+# The final image (the default target): what sandboxes run.
+FROM ${NODE_IMAGE}
+ARG DESKTOP_PACKAGES
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends $DESKTOP_PACKAGES \
  # The dependency closure drags in things this headless, GL-less desktop never
  # loads; purged deliberately (about 250 MB), and verified by the Docker test.
  # --force-depends leaves apt's dependency state broken ON PURPOSE: nothing
- # installs packages at runtime (npm and apt lists are gone too), and a later
- # `apt-get install` in a derived image must start by `apt-get -f install`.
+ # installs packages at runtime (npm and apt lists are gone too). Sandbox
+ # profiles that need any of this build from the builder stage above instead.
  #  - mesa's DRI drivers + LLVM + z3: Xvfb's optional GLX loader. Without them
  #    Xvfb runs without GLX, which xdotool, import, icewm and xterm don't use.
  #  - cpp: needed only by xrdb in x11-xserver-utils; we use xhost alone.
@@ -75,7 +123,10 @@ COPY --from=build /pkg/dist /opt/computer-use/dist
 # test fails at startup if that ever stops being true.
 COPY --from=build /pkg/node_modules/zod /opt/computer-use/node_modules/zod
 COPY docker/start-desktop.sh /usr/local/bin/start-desktop.sh
-RUN chmod 0755 /usr/local/bin/start-desktop.sh
+# A sandbox profile's PATH and variables, read as the desktop user (it reads
+# nothing in the base image, which has no /etc/computer-use/profile.env).
+COPY docker/profile-env.sh /usr/local/lib/computer-use/profile-env
+RUN chmod 0755 /usr/local/bin/start-desktop.sh /usr/local/lib/computer-use/profile-env
 
 ENV COMPUTER_USE_DISPLAY=:99 \
     COMPUTER_USE_SCREEN=1280x800x24 \
@@ -88,7 +139,10 @@ ENV COMPUTER_USE_DISPLAY=:99 \
     # Inside this container that is correct: the container is the boundary
     # (its filesystem, processes and network), and authorization lives in the
     # Callboard ComputerUseService that connects to the driver host.
-    COMPUTER_USE_ACKNOWLEDGE_FULL_DESKTOP_ACCESS=1
+    COMPUTER_USE_ACKNOWLEDGE_FULL_DESKTOP_ACCESS=1 \
+    # No GLX. A sandbox profile built with `gl: "software"` sets this to
+    # `software` from a Callboard build argument (never from the recipe).
+    COMPUTER_USE_GL=none
 
 # For a host to check before `docker run` (SANDBOX_IMAGE_LABELS in the package).
 # A unit test keeps these in step with package.json and PROTOCOL.

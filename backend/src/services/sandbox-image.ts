@@ -14,6 +14,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   PROTOCOL,
+  SANDBOX_BUILDER_IMAGE,
   SANDBOX_DEFAULT_IMAGE,
   SANDBOX_IMAGE_LABELS,
   SANDBOX_PROTOCOL_LABEL_VALUE,
@@ -40,6 +41,16 @@ export function sandboxOwnerId(dataDir: string): string {
 
 /** The tag managed sandboxes run, and `callboard sandbox build` builds. */
 export const SANDBOX_IMAGE = process.env.CALLBOARD_SANDBOX_IMAGE?.trim() || SANDBOX_DEFAULT_IMAGE;
+/**
+ * The base's builder stage, which sandbox profiles build from: the package's
+ * default, or for a custom `CALLBOARD_SANDBOX_IMAGE` (`repo:tag`) `repo-builder:tag`.
+ */
+export function sandboxBuilderImage(image = SANDBOX_IMAGE): string {
+  if (image === SANDBOX_DEFAULT_IMAGE) return SANDBOX_BUILDER_IMAGE;
+  const at = image.lastIndexOf(":");
+  return at > image.lastIndexOf("/") ? `${image.slice(0, at)}-builder${image.slice(at)}` : `${image}-builder`;
+}
+export const SANDBOX_BUILDER = sandboxBuilderImage();
 
 /** Run `docker <args>`; resolve stdout. Rejects with a {@link DockerError}. */
 export type DockerRunner = (args: readonly string[], options?: { signal?: AbortSignal; timeoutMs?: number }) => Promise<string>;
@@ -118,9 +129,21 @@ export function sandboxContentDigest(context = sandboxBuildContext()): string {
   return packageContentDigest(context);
 }
 
-/** `docker build` arguments (everything after `docker`), with the content label. */
-export function sandboxImageBuildArgs(options: { context?: string; image?: string } = {}): string[] {
-  return packageImageBuildArgs({ context: options.context ?? sandboxBuildContext(), image: options.image ?? SANDBOX_IMAGE });
+/** `docker build` arguments (everything after `docker`), with the content label. `target: "builder"`: the builder stage. */
+export function sandboxImageBuildArgs(options: { context?: string; image?: string; target?: "builder" } = {}): string[] {
+  const image = options.image ?? (options.target === "builder" ? sandboxBuilderImage() : SANDBOX_IMAGE);
+  return packageImageBuildArgs({ context: options.context ?? sandboxBuildContext(), image, ...(options.target ? { target: options.target } : {}) });
+}
+
+/** An image's ID (`sha256:…`), or undefined when it is not present. */
+export async function imageId(docker: DockerRunner, image: string, signal?: AbortSignal): Promise<string | undefined> {
+  try {
+    const id = (await docker(["image", "inspect", "--format", "{{.Id}}", image], { signal, timeoutMs: 15_000 })).trim();
+    return /^sha256:[0-9a-f]{64}$/.test(id) ? id : undefined;
+  } catch (error) {
+    if (error instanceof DockerError && error.reason === "failed" && /no such image|not found/i.test(error.stderr)) return undefined;
+    throw error;
+  }
 }
 
 /** The computer-use package version this Callboard ships (the image's version label should match). */
@@ -190,26 +213,17 @@ export async function inspectSandboxImage(
 export { SANDBOX_PROTOCOL_LABEL_VALUE };
 
 /**
- * Run a build, streaming its output to `onOutput`. Resolves on success;
- * rejects with the tail of the output on failure. Explicit only: nothing in
- * Callboard calls this except `callboard sandbox build` and the Settings
- * button.
+ * Run one `docker <args>` build, streaming its output to `onOutput` (or the
+ * terminal with `stdio: "inherit"`). Resolves on success; rejects with the
+ * tail of the output on failure.
  */
-export function buildSandboxImage(options: {
-  binary?: string;
-  context?: string;
-  image?: string;
-  onOutput?: (chunk: string) => void;
-  signal?: AbortSignal;
-  stdio?: "inherit";
-}): Promise<void> {
-  const context = options.context ?? sandboxBuildContext();
-  const problem = sandboxBuildContextProblem(context);
-  if (problem) return Promise.reject(new Error(problem));
+export function runDockerBuild(
+  args: readonly string[],
+  options: { binary?: string; onOutput?: (chunk: string) => void; signal?: AbortSignal; stdio?: "inherit" } = {},
+): Promise<void> {
   const binary = options.binary ?? (process.env.CALLBOARD_DOCKER_BIN?.trim() || "docker");
-  const args = sandboxImageBuildArgs({ context, image: options.image });
   return new Promise((resolve, reject) => {
-    const child = spawn(binary, args, { stdio: options.stdio === "inherit" ? "inherit" : ["ignore", "pipe", "pipe"], signal: options.signal });
+    const child = spawn(binary, [...args], { stdio: options.stdio === "inherit" ? "inherit" : ["ignore", "pipe", "pipe"], signal: options.signal });
     let tail = "";
     const collect = (chunk: Buffer) => {
       const text = chunk.toString("utf8");
@@ -223,4 +237,29 @@ export function buildSandboxImage(options: {
     );
     child.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`docker build exited with ${code}${tail ? `:\n${tail.slice(-2000)}` : ""}`))));
   });
+}
+
+/**
+ * Build the image, and its builder stage (what sandbox profiles build from),
+ * streaming the output to `onOutput`. Resolves on success; rejects with the
+ * tail of the output on failure. Explicit only: nothing in Callboard calls
+ * this except `callboard sandbox build` and the Settings button.
+ */
+export async function buildSandboxImage(options: {
+  binary?: string;
+  context?: string;
+  image?: string;
+  builderImage?: string;
+  onOutput?: (chunk: string) => void;
+  signal?: AbortSignal;
+  stdio?: "inherit";
+}): Promise<void> {
+  const context = options.context ?? sandboxBuildContext();
+  const problem = sandboxBuildContextProblem(context);
+  if (problem) throw new Error(problem);
+  const image = options.image ?? SANDBOX_IMAGE;
+  const builder = options.builderImage ?? sandboxBuilderImage(image);
+  // The builder first: the final stage's build then reuses the shared `build` stage from cache.
+  await runDockerBuild(sandboxImageBuildArgs({ context, image: builder, target: "builder" }), options);
+  await runDockerBuild(sandboxImageBuildArgs({ context, image }), options);
 }

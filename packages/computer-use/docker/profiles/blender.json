@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "name": "blender",
+  "description": "Blender 4.5 LTS (the official Linux build from blender.org) with software OpenGL (Mesa llvmpipe). Start it with `blender` in the terminal.",
+  "packages": [
+    "libx11-6",
+    "libx11-xcb1",
+    "libxcursor1",
+    "libxext6",
+    "libxfixes3",
+    "libxi6",
+    "libxinerama1",
+    "libxkbcommon0",
+    "libxkbcommon-x11-0",
+    "libxrandr2",
+    "libxrender1",
+    "libxxf86vm1",
+    "libsm6",
+    "libice6",
+    "libglu1-mesa",
+    "libwayland-client0",
+    "libwayland-cursor0",
+    "libwayland-egl1",
+    "libdecor-0-0",
+    "libdbus-1-3",
+    "libfontconfig1",
+    "libfreetype6"
+  ],
+  "downloads": [
+    {
+      "url": "https://download.blender.org/release/Blender4.5/blender-4.5.17-linux-x64.tar.xz",
+      "sha256": "b7d09d1aa7c346fed1e56390e815dbf1589d47324734fbad9e2007fe75ca0b8d",
+      "dest": "blender",
+      "unpack": "tar.xz",
+      "stripComponents": 1
+    }
+  ],
+  "setup": [
+    "# Fails the build, not the first session, if a library is missing.",
+    "/opt/blender/blender --version",
+    "missing=\"$(ldd /opt/blender/blender | grep 'not found' || true)\"",
+    "if [ -n \"$missing\" ]; then echo \"$missing\" >&2; exit 1; fi"
+  ],
+  "path": ["/opt/blender"],
+  "env": {},
+  "gl": "software",
+  "limits": { "cpus": 4, "memoryMb": 4096, "homeMb": 2048, "sessionMinutes": 60 }
+}

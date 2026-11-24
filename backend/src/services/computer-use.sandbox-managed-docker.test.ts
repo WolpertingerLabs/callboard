@@ -14,7 +14,7 @@
  *
  * Builds the image from the shipped Docker context (dist/ + docker/, exactly
  * what `callboard sandbox build` does) under a unique tag, and removes that
- * tag, its containers, networks and data directory afterwards. Set
+ * tag (and its builder stage's), its containers, networks and data directory afterwards. Set
  * CALLBOARD_DOCKER_MANAGED_IMAGE to reuse an image instead (left in place).
  * Everything it creates carries a per-run name or owner, so it never touches
  * another chat's sandboxes, networks or the shared `:local` image.
@@ -48,6 +48,7 @@ import {
   SANDBOX_SECURITY_FLOOR_LABEL,
   buildSandboxImage,
   execDocker,
+  sandboxBuilderImage,
   sandboxContentDigest,
 } from "./sandbox-image.js";
 
@@ -145,7 +146,7 @@ afterAll(async () => {
   for (const owner of [...owners, foreignOwner]) for (const id of await mine(owner).catch(() => [])) await docker(["rm", "--force", id]).catch(() => {});
   await docker(["rm", "--force", foreignName]).catch(() => {});
   for (const name of Object.values(networks)) await docker(["network", "rm", name]).catch(() => {});
-  if (!reuse) await docker(["image", "rm", image]).catch(() => {});
+  if (!reuse) for (const tag of [image, sandboxBuilderImage(image)]) await docker(["image", "rm", tag]).catch(() => {});
   if (dataDir) await rm(dataDir, { recursive: true, force: true });
 }, 120_000);
 

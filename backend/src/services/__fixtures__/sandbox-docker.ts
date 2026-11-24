@@ -50,6 +50,10 @@ export function fakeDocker(
     /** Make `docker pause` fail. */
     pauseFailure: undefined as string | undefined,
     nextPort: 40000,
+    /** Images by reference, with an ID and labels (a profile, say); anything else answers with `imageLabels`. */
+    images: new Map<string, { id: string; labels: Record<string, string> }>(),
+    /** The ID every other image (the base) reports. */
+    baseImageId: `sha256:${"0".repeat(64)}`,
   };
   const find = (ref: string) => containers.get(ref) ?? [...containers.values()].find((c) => c.id === ref || c.id.startsWith(ref));
   const noSuch = (what: string, ref: string) => new DockerError("failed", `docker failed`, `Error response from daemon: No such ${what}: ${ref}`);
@@ -61,8 +65,15 @@ export function fakeDocker(
     const [command, sub] = args;
     if (command === "version") return "29.1.3\n";
     if (command === "image" && sub === "inspect") {
-      if (state.imageLabels === null) throw noSuch("image", args.at(-1)!);
-      return `${JSON.stringify(state.imageLabels)}\n`;
+      const ref = args.at(-1)!;
+      const format = args[args.indexOf("--format") + 1] ?? "";
+      const image =
+        state.images.get(ref) ??
+        (state.imageLabels === null || ref.includes("computer-use-profile") ? undefined : { id: state.baseImageId, labels: state.imageLabels });
+      if (!image) throw noSuch("image", ref);
+      if (format === "{{.Id}}") return `${image.id}\n`;
+      if (format.startsWith("{{json .Config.Labels}}\t")) return `${JSON.stringify(image.labels)}\t${image.id}\t2026-11-24T00:00:00Z\t123456789\n`;
+      return `${JSON.stringify(image.labels)}\n`;
     }
     if (command === "network" && sub === "inspect") {
       const network = networks.get(args[2]);

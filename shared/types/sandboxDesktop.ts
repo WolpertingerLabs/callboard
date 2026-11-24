@@ -42,6 +42,16 @@ export interface SandboxDesktopSettings {
    * are refused (and reported); nothing delivered is deleted to make room.
    */
   deliverablesGb?: number;
+  /**
+   * Caps on what a sandbox profile's recipe may ask for (its `limits`). A
+   * profile's CPUs, memory, home size and session length are the recipe's,
+   * each clamped to these; a recipe that omits one gets the base sandbox's
+   * value (`cpus`, `memoryMb`, a 512 MiB home, 15 minutes).
+   */
+  profileMaxCpus?: number;
+  profileMaxMemoryMb?: number;
+  profileMaxHomeMb?: number;
+  profileMaxSessionMinutes?: number;
 }
 
 /** Bounds and defaults, shared so the form and the server agree. */
@@ -52,10 +62,68 @@ export const SANDBOX_DESKTOP_BOUNDS = {
   keepHours: { min: 1, max: 168, default: 24 },
   maxKept: { min: 0, max: 8, default: 2 },
   deliverablesGb: { min: 1, max: 1024, default: 5 },
+  profileMaxCpus: { min: 0.5, max: 32, default: 4 },
+  profileMaxMemoryMb: { min: 512, max: 65536, default: 8192 },
+  profileMaxHomeMb: { min: 256, max: 65536, default: 4096 },
+  profileMaxSessionMinutes: { min: 5, max: 480, default: 120 },
 } as const;
+
+/** The base sandbox's home size and session length, which a profile that does not ask for its own gets. */
+export const SANDBOX_BASE_HOME_MB = 512;
+export const SANDBOX_BASE_SESSION_MINUTES = 15;
 
 /** The one-time image build, for docs and messages. */
 export const SANDBOX_BUILD_COMMAND = "callboard sandbox build";
+/** A profile's build: `${SANDBOX_PROFILE_BUILD_COMMAND} <name>`. */
+export const SANDBOX_PROFILE_BUILD_COMMAND = "callboard sandbox build --profile";
+
+/** A sandbox profile's resources, after the Settings caps. */
+export interface SandboxProfileLimits {
+  cpus: number;
+  memoryMb: number;
+  /** The desktop user's tmpfs home (the outbox included). */
+  homeMb: number;
+  sessionMinutes: number;
+}
+
+/**
+ * A profile image's state, for Settings and `callboard sandbox profiles`:
+ * - `missing`: not built.
+ * - `current`: built from this recipe on the current base.
+ * - `outdated`: the recipe or the base changed since (see `outdatedBy`); it still starts.
+ * - `insecure`: below a security floor (the base's or the profile compiler's); refused until rebuilt.
+ * - `incompatible`: another protocol major; refused until rebuilt.
+ */
+export type SandboxProfileState = "missing" | "current" | "outdated" | "insecure" | "incompatible";
+
+/** One sandbox profile: its recipe's summary, its effective limits and its image. */
+export interface SandboxProfileStatus {
+  name: string;
+  description: string;
+  /** Where the recipe comes from. Today only `builtin` (shipped with Callboard). */
+  source: "builtin";
+  gl: "none" | "software";
+  /** What the recipe asks for (absent: the base sandbox's value). */
+  requested: Partial<SandboxProfileLimits>;
+  /** What a session gets: the request, clamped to the Settings caps. */
+  limits: SandboxProfileLimits;
+  /** The limits the caps reduced. */
+  clamped?: (keyof SandboxProfileLimits)[];
+  /** The recipe digest a current image carries. */
+  digest: string;
+  /** What the build installs, for review: Debian packages and pinned downloads. */
+  packages: string[];
+  downloads: { url: string; sha256: string; dest: string }[];
+  image: { name: string; state: SandboxProfileState; outdatedBy?: ("recipe" | "base")[]; detail?: string; builtAt?: string; sizeBytes?: number };
+}
+
+/** A sandbox session's profile, for the Computer view and the consent card. Absent: the base sandbox. */
+export interface ComputerUseSandboxProfile {
+  name: string;
+  description?: string;
+  gl?: "none" | "software";
+  limits?: SandboxProfileLimits;
+}
 
 /** Something worth fixing that does not stop a sandbox starting. */
 export type SandboxDesktopWarning = "image-outdated";
@@ -105,6 +173,8 @@ export interface SandboxDesktopDiagnostics {
 
 export interface SandboxDesktopBuild {
   state: "idle" | "running" | "succeeded" | "failed";
+  /** The profile being (or last) built; absent: the base image. */
+  profile?: string;
   startedAt?: number;
   finishedAt?: number;
   /** The last few KB of `docker build` output. */
@@ -132,6 +202,8 @@ export interface SandboxDesktopStatus {
   canEdit: boolean;
   /** This daemon's owner label value, derived from its data directory. */
   owner: string;
+  /** The sandbox profiles this Callboard knows, with their image state. Absent from an older daemon. */
+  profiles?: SandboxProfileStatus[];
 }
 
 /** The sandbox part of the Computer view's sandbox capability. */

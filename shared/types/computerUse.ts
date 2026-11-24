@@ -1,5 +1,5 @@
 import type { PermissionLevel } from "./permissions.js";
-import type { ComputerUseContainerState, ComputerUseSandboxInfo } from "./sandboxDesktop.js";
+import type { ComputerUseContainerState, ComputerUseSandboxInfo, ComputerUseSandboxProfile } from "./sandboxDesktop.js";
 
 /**
  * The tool name the per-action computer-control confirmation is raised under,
@@ -140,6 +140,10 @@ export interface ComputerUseSession {
   reason?: string;
   /** A managed sandbox's container: starting (with the step), ready, stopping, removed. Additive. */
   container?: ComputerUseContainerState;
+  /** A managed sandbox session started from a profile: its name and limits. Absent: the base sandbox. Additive. */
+  profile?: ComputerUseSandboxProfile;
+  /** When the session ends (epoch ms). Additive. */
+  expiresAt?: number;
 }
 export interface ComputerUseStatus {
   capabilities: ComputerUseCapability[];

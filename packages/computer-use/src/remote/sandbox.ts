@@ -15,6 +15,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { ComputerUseError } from "../contracts.js";
 import { PROTOCOL } from "./protocol.js";
+import { SANDBOX_BUILDER_IMAGE } from "./profile.js";
 
 /** Where the image expects the token file (a read-only bind mount; see the Dockerfile). */
 export const SANDBOX_TOKEN_PATH = "/run/computer-use/token";
@@ -285,14 +286,14 @@ function contentFiles(context: string): string[] {
     }
   };
   if (existsSync(join(context, "dist"))) walk(join(context, "dist"));
-  for (const file of ["package.json", "docker/Dockerfile", "docker/package-lock.json", "docker/start-desktop.sh"])
+  for (const file of ["package.json", "docker/Dockerfile", "docker/package-lock.json", "docker/start-desktop.sh", "docker/profile-env.sh"])
     if (existsSync(join(context, file))) out.push(file);
   return out.sort();
 }
 const digestMemo = new Map<string, { stamp: string; digest: string }>();
 /**
  * A SHA-256 over the build context's content files (this package directory:
- * `dist/` without source maps, `package.json` and docker/'s three files), by
+ * `dist/` without source maps, `package.json` and docker/'s own files), by
  * path and bytes in order: the same value for the same files, whatever the
  * mtimes. Memoized on sizes and mtimes, so a status poll does not re-read the
  * files, while a rebuilt `dist/` is noticed.
@@ -323,14 +324,20 @@ export function sandboxContentDigest(context: string): string {
  * package directory, labelled with its {@link sandboxContentDigest}. Never
  * pulls anything but the Dockerfile's pinned base. No `--progress`: the
  * legacy builder (Docker without buildx) rejects it.
+ *
+ * `target: "builder"` builds the Dockerfile's builder stage instead (the
+ * same desktop with apt still working), which sandbox profiles build from;
+ * tag it {@link SANDBOX_BUILDER_IMAGE}. It carries the same content label, so
+ * a host can tell a builder and a base built from the same files.
  */
-export function sandboxImageBuildArgs(options: { context: string; image?: string }): string[] {
-  const image = options.image ?? SANDBOX_DEFAULT_IMAGE;
+export function sandboxImageBuildArgs(options: { context: string; image?: string; target?: "builder" }): string[] {
+  const image = options.image ?? (options.target === "builder" ? SANDBOX_BUILDER_IMAGE : SANDBOX_DEFAULT_IMAGE);
   if (image.startsWith("-")) throw new ComputerUseError("invalid_request", "Invalid image");
   return [
     "build",
     "--label",
     `${SANDBOX_IMAGE_LABELS.content}=${sandboxContentDigest(options.context)}`,
+    ...(options.target === "builder" ? ["--target", "builder"] : []),
     "-t",
     image,
     "-f",
