@@ -266,7 +266,7 @@ const badgeStyle: React.CSSProperties = {
   alignItems: "center",
   gap: 4,
   fontSize: 12,
-  color: "var(--accent)",
+  color: "var(--accent-text)",
   border: "1px solid currentColor",
   borderRadius: 10,
   padding: "1px 8px",

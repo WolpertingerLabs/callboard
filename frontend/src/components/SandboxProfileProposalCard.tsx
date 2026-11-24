@@ -262,7 +262,7 @@ const preStyle: React.CSSProperties = {
   whiteSpace: "pre-wrap",
   wordBreak: "break-word",
 };
-const linkBtn: React.CSSProperties = { background: "transparent", border: "none", color: "var(--accent)", cursor: "pointer", padding: "2px 0", fontSize: 13 };
+const linkBtn: React.CSSProperties = { background: "transparent", border: "none", color: "var(--accent-text)", cursor: "pointer", padding: "2px 0", fontSize: 13 };
 const allowBtn: React.CSSProperties = {
   background: "var(--accent)",
   color: "var(--text-on-accent)",

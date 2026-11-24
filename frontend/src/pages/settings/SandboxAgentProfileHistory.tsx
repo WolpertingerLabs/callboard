@@ -78,7 +78,7 @@ function VersionRow({ profileId, version, previous }: { profileId: string; versi
         <strong>v{version.version}</strong>
         <span style={{ color: versionStateColor(version.state) }}>{VERSION_STATE_LABELS[version.state] ?? version.state}</span>
         {version.pending && (
-          <span role="status" style={{ fontSize: 12, color: "var(--accent)", border: "1px solid currentColor", borderRadius: 10, padding: "0 6px" }}>
+          <span role="status" style={{ fontSize: 12, color: "var(--accent-text)", border: "1px solid currentColor", borderRadius: 10, padding: "0 6px" }}>
             card open in chat
           </span>
         )}

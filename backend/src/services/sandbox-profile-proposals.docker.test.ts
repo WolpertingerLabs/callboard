@@ -109,6 +109,14 @@ afterAll(async () => {
   for (const name of Object.values(networks)) await docker(["network", "rm", name]).catch(() => {});
   // Every image this run built, by tag and by ID (version 1's image lost its tag to version 2's).
   for (const ref of imagesBuilt) await docker(["image", "rm", "--force", ref]).catch(() => {});
+  // And anything else labelled with this run's scope (unique to its temporary folder): an untagged earlier version, say.
+  if (dataDir) {
+    const scope = workspaceScopeKey({ folder: join(dataDir, "work") });
+    for (const id of (await docker(["images", "--all", "--quiet", "--filter", `label=${PROFILE_LABELS.scope}=${scope}`]).catch(() => ""))
+      .split("\n")
+      .filter(Boolean))
+      await docker(["image", "rm", "--force", id]).catch(() => {});
+  }
   if (!reuse) for (const tag of [image, sandboxBuilderImage(image)]) await docker(["image", "rm", tag]).catch(() => {});
   if (previousRepository === undefined) delete process.env.CALLBOARD_SANDBOX_PROFILE_REPOSITORY;
   else process.env.CALLBOARD_SANDBOX_PROFILE_REPOSITORY = previousRepository;
