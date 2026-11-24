@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -35,6 +35,8 @@ const enabled = process.env.CALLBOARD_DOCKER_TESTS === "1";
 const packageDir = join(dirname(fileURLToPath(import.meta.url)), "..");
 const reuse = process.env.CALLBOARD_DOCKER_IMAGE?.trim();
 const image = reuse || `callboard/computer-use-desktop:cu-test-${randomUUID().slice(0, 8)}`;
+// After every test's own cleanup (its container goes first; t.after hooks run in the order they were added).
+after(() => (enabled && !reuse ? docker(["image", "rm", image]).catch(() => {}) : undefined));
 
 function docker(args, { input, timeout = 600_000 } = {}) {
   return new Promise((resolve, reject) => {
@@ -56,7 +58,6 @@ test(
     if (!reuse) {
       const [, ...args] = sandboxImageBuildArgs({ context: packageDir, image });
       await docker(["build", "-q", ...args]);
-      t.after(() => docker(["image", "rm", image]).catch(() => {}));
       log(`built ${image}`);
     }
     // Labels a host checks before `docker run`.

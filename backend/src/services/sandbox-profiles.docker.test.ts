@@ -406,12 +406,21 @@ it.skipIf(!heavy)(
       ),
     ).toMatch(/LIBGL_ALWAYS_SOFTWARE=1\nGALLIUM_DRIVER=llvmpipe|GALLIUM_DRIVER=llvmpipe\nLIBGL_ALWAYS_SOFTWARE=1/);
 
-    // Its own Save dialog, by keyboard: dismiss the splash, Ctrl+S, and type the full path into the
-    // file name field (which the dialog opens in edit mode), Enter to confirm it and Enter to save.
+    // Its own Save dialog, as an agent would drive it. Blender's file name field rewrites "/" to "_"
+    // (typing a full path there saves "_home_desktop_outbox_scene.blend"), so the path goes into the
+    // directory field and the name into the file name field; a click starts editing a field, Enter
+    // confirms it, and Enter on the hovered field then runs the save (no click on the Save button).
+    const edit = async (x: number, y: number, text: string) => {
+      await s.act({ type: "move", x, y });
+      await s.act({ type: "wait", durationMs: 300 });
+      await s.act({ type: "click", x, y });
+      await s.act({ type: "key", key: "Control+a" });
+      await s.act({ type: "type", text });
+      await s.act({ type: "key", key: "Enter" });
+    };
     await s.act({ type: "move", x: 200, y: 600 });
     await s.act({ type: "wait", durationMs: 300 });
     await s.act({ type: "click", x: 200, y: 600 }); // outside the splash closes it
-    await s.act({ type: "key", key: "Escape" });
     await s.act({ type: "move", x: 520, y: 380 });
     await s.act({ type: "key", key: "Control+s" });
     await until(
@@ -421,11 +430,11 @@ it.skipIf(!heavy)(
       30_000,
     );
     await delay(1000);
-    await s.act({ type: "key", key: "Control+a" });
-    await s.act({ type: "type", text: "/home/desktop/outbox/scene.blend" });
-    await s.act({ type: "key", key: "Enter" });
+    await edit(670, 142, "/home/desktop/outbox/"); // the directory field
     await delay(800);
-    if (!(await asDesktop(s.container, "ls ~/outbox")).split("\n").includes("scene.blend")) await s.act({ type: "key", key: "Enter" });
+    await edit(600, 724, "scene.blend"); // the file name field
+    await delay(800);
+    await s.act({ type: "key", key: "Enter" }); // runs the save
     await until(async () => (await asDesktop(s.container, "ls ~/outbox")).split("\n").includes("scene.blend"), "scene.blend in the outbox", 60_000, 500);
     await until(
       async () =>
