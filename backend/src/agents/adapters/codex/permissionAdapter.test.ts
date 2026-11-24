@@ -20,6 +20,7 @@ function perms(overrides: Partial<DefaultPermissions> = {}): DefaultPermissions 
     webAccess: "deny",
     browserControl: "deny",
     computerControl: "deny",
+    sandboxControl: "deny",
     ...overrides,
   };
 }
@@ -98,7 +99,17 @@ describe("mapPermissionsToCodex — plan table rows", () => {
 
   it("all allow → danger-full-access + never", () => {
     expect(
-      mapPermissionsToCodex(perms({ fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", browserControl: "deny", computerControl: "deny" })),
+      mapPermissionsToCodex(
+        perms({
+          fileRead: "allow",
+          fileWrite: "allow",
+          codeExecution: "allow",
+          webAccess: "allow",
+          browserControl: "deny",
+          computerControl: "deny",
+          sandboxControl: "deny",
+        }),
+      ),
     ).toEqual({ sandboxMode: "danger-full-access", approvalPolicy: "never" });
   });
 

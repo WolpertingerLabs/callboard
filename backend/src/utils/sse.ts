@@ -1,7 +1,8 @@
 import type { Request, Response } from "express";
 import type { EventEmitter } from "events";
 import type { StreamEvent } from "../services/claude.js";
-import { CLIENT_CAPS } from "shared/types/index.js";
+import { CLIENT_CAPS, CU_ACTION_TOOL_NAME, CU_REQUEST_CONTROL_TOOL_NAME } from "shared/types/index.js";
+import type { ControlResultEvent } from "../services/computer-use.js";
 import { buildServerInfo, createStreamSession, type StreamSession } from "../services/stream-session.js";
 import { createLogger } from "./logger.js";
 
@@ -16,9 +17,26 @@ export const HARD_STOP_PROMPT_RELOAD =
 export const GENERIC_HUMAN_PROMPT_RELOAD =
   "Reload this Callboard tab to answer the pending confirmation. This browser bundle cannot safely identify it. No action has been approved. After reloading, answer the current prompt.";
 
+/** A Sandbox desktop prompt for a bundle that predates the sandbox target. */
+export const SANDBOX_PROMPT_RELOAD =
+  "Reload this Callboard tab to answer a Sandbox desktop request. This browser bundle predates the Sandbox desktop and cannot show it. No action has been approved. After reloading, answer the current prompt; if it expired, ask the agent to request it again.";
+
+/**
+ * A computer-control prompt about the Sandbox desktop: the host's own consent
+ * card or per-action prompt, both of which carry the target's `kind` in their
+ * input (`ComputerUseHost.requestControl` / `requestAgentAction`). Matched on
+ * the exact tool names, so no other tool's `kind` argument can hide a prompt.
+ */
+export function isSandboxPrompt(data: Record<string, unknown>): boolean {
+  const tool = data.toolName;
+  const input = data.input as { kind?: unknown } | null | undefined;
+  return (tool === CU_REQUEST_CONTROL_TOOL_NAME || tool === CU_ACTION_TOOL_NAME) && input?.kind === "sandbox";
+}
+
 /** The reload guidance that names what is actually waiting, rather than always "computer control". */
 export function humanPromptReloadMessage(data: Record<string, unknown>): string {
   if (data.reviewerVerdict === "kill") return HARD_STOP_PROMPT_RELOAD;
+  if (isSandboxPrompt(data)) return SANDBOX_PROMPT_RELOAD;
   const tool = typeof data.toolName === "string" ? data.toolName : "";
   if (data.controlRequest === true || tool.startsWith("mcp__computer_use__")) return HUMAN_PROMPT_RELOAD;
   return GENERIC_HUMAN_PROMPT_RELOAD;
@@ -26,9 +44,17 @@ export function humanPromptReloadMessage(data: Record<string, unknown>): string 
 /** Old browsers already render message_error in the transcript. Never send
  * them an actionable consent card: their optimistic ID-less reply is unsafe.
  * The server keeps the real prompt pending for a reloaded capable client.
+ *
+ * The same goes for a Sandbox desktop prompt to a bundle without
+ * `sandbox_target`: its consent card titles every `kind` but "desktop" as the
+ * browser, so a sandbox request would read as "Enable browser control". It
+ * gets the reload notice
+ * instead, on every path that serves a prompt — live SSE, SSE attach replay
+ * and `GET /pending`, which all ask this function.
  */
 export function requiresPromptReload(data: Record<string, unknown>, client: StreamSession | undefined): boolean {
-  return data.humanOnly === true && !client?.supports(CLIENT_CAPS.humanPromptIdentity);
+  if (data.humanOnly === true && !client?.supports(CLIENT_CAPS.humanPromptIdentity)) return true;
+  return isSandboxPrompt(data) && !client?.supports(CLIENT_CAPS.sandboxTarget);
 }
 function presentPendingPrompt(data: Record<string, unknown>, client: StreamSession | undefined): Record<string, unknown> {
   return requiresPromptReload(data, client) ? { type: "message_error", content: humanPromptReloadMessage(data) } : data;
@@ -168,9 +194,12 @@ export function createSSEHandler(res: Response, emitter: EventEmitter, options: 
         ...(typeof event.maxBudgetUsd === "number" && { maxBudgetUsd: event.maxBudgetUsd }),
       });
     } else {
+      // A sandbox card's outcome is not sent to a tab that was never sent the
+      // card (see requiresPromptReload). `controlTarget` itself stays off the wire.
+      const hiddenResult = (event as ControlResultEvent).controlTarget === "sandbox" && !streamClients.get(res)?.supports(CLIENT_CAPS.sandboxTarget);
       sendSSE(res, {
         type: "message_update",
-        ...(event.controlRequestResult && { controlRequestResult: event.controlRequestResult }),
+        ...(event.controlRequestResult && !hiddenResult && { controlRequestResult: event.controlRequestResult }),
         // A parent chat answered a prompt this tab may be showing (parent-answers.ts).
         ...(event.promptResolved && { promptResolved: event.promptResolved }),
       });

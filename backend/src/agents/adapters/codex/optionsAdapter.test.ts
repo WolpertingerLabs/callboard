@@ -292,6 +292,7 @@ function perms(overrides: Partial<DefaultPermissions> = {}): DefaultPermissions 
     webAccess: "deny",
     browserControl: "deny",
     computerControl: "deny",
+    sandboxControl: "deny",
     ...overrides,
   };
 }

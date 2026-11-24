@@ -36,7 +36,7 @@ function Viewer({
 }: {
   chatId?: string;
   permission?: PermissionLevel;
-  targetPermissions?: Partial<Record<"browser" | "native", PermissionLevel>>;
+  targetPermissions?: Partial<Record<"browser" | "native" | "sandbox", PermissionLevel>>;
   provider?: string;
   onPermissions?: () => void;
   onRender?: (controller: ReturnType<typeof useComputerUseController>) => void;
@@ -123,7 +123,7 @@ describe("ComputerUsePanel", () => {
     await ready();
     expect(button("Enable").disabled).toBe(true);
     expect(button("Refresh screenshot").disabled).toBe(true);
-    const denied = screen.getByText(/Browser Use and Computer Use are both denied/);
+    const denied = screen.getByText(/Browser Use, Sandbox desktop and Computer Use are all denied/);
     expect(denied.textContent).toContain("Ask confirms each agent action with you in the chat; Allow lets the agent act unattended.");
     expect(denied.textContent).toContain("Either way, only your Enable click starts a target.");
     // The two facts a viewer mis-assumes stay on the panel itself; only the
@@ -201,7 +201,7 @@ describe("ComputerUsePanel", () => {
     await ready();
     expect(button("Enable").disabled).toBe(true);
     expect(screen.queryByRole("note", { name: "What Enable grants" })).toBeNull();
-    expect(screen.queryByText(/Browser Use and Computer Use are both denied/)).toBeNull();
+    expect(screen.queryByText(/Browser Use, Sandbox desktop and Computer Use are all denied/)).toBeNull();
     fireEvent.change(screen.getByLabelText("Target"), { target: { value: "native" } });
     expect(button("Enable").disabled).toBe(false);
   });
@@ -215,6 +215,85 @@ describe("ComputerUsePanel", () => {
     fireEvent.change(screen.getByLabelText("Target"), { target: { value: "native" } });
     expect(screen.queryByRole("note", { name: "What Enable grants" })).toBeNull();
     expect(button("Enable").disabled).toBe(true);
+  });
+
+  describe("Sandbox desktop target", () => {
+    const sandboxCapability = { kind: "sandbox" as const, available: true, permission: "allow" as const };
+
+    it("is its own target, enabled by its own level while Computer Use is denied", async () => {
+      status.permission = "allow";
+      status.capabilities = [
+        { kind: "browser", available: true, permission: "deny" },
+        { kind: "native", available: true, permission: "deny" },
+        sandboxCapability,
+      ];
+      render(<Viewer permission="allow" />);
+      await ready();
+      expect(button("Enable").disabled).toBe(true);
+      fireEvent.change(screen.getByLabelText("Target"), { target: { value: "sandbox" } });
+      expect(button("Enable").disabled).toBe(false);
+      expect(screen.getByRole("note", { name: "What Enable grants" }).textContent).toContain("Sandbox desktop is set to Allow:");
+      const note = screen.getByText(/^Sandbox desktop:$/).closest("p")!.textContent!;
+      expect(note).toContain("shared by every chat and kept until the container is restarted, not this computer");
+      expect(note).toContain("any service on this machine that listens on all interfaces");
+      expect(screen.queryByText(/Same-machine native control/)).toBeNull();
+      fireEvent.change(screen.getByLabelText("Target"), { target: { value: "native" } });
+      expect(button("Enable").disabled).toBe(true);
+      fireEvent.change(screen.getByLabelText("Target"), { target: { value: "sandbox" } });
+      fireEvent.click(button("Enable"));
+      await waitFor(() => expect(client.open).toHaveBeenCalledWith("c1", "sandbox"));
+    });
+
+    it("stays disabled under its own deny while Computer Use is allowed", async () => {
+      status.permission = "allow";
+      status.capabilities = [
+        { kind: "browser", available: true, permission: "deny" },
+        { kind: "native", available: true, permission: "allow" },
+        { ...sandboxCapability, permission: "deny" },
+      ];
+      render(<Viewer permission="allow" />);
+      await ready();
+      fireEvent.change(screen.getByLabelText("Target"), { target: { value: "sandbox" } });
+      expect(button("Enable").disabled).toBe(true);
+      expect(screen.queryByRole("note", { name: "What Enable grants" })).toBeNull();
+      fireEvent.change(screen.getByLabelText("Target"), { target: { value: "native" } });
+      expect(button("Enable").disabled).toBe(false);
+    });
+
+    it("shows the server's setup reason when no sandbox is configured", async () => {
+      status.capabilities = [
+        ...status.capabilities,
+        { kind: "sandbox", available: false, readiness: "setup-required", reason: "No sandbox desktop endpoint is configured.", permission: "allow" },
+      ];
+      render(<Viewer permission="allow" />);
+      await ready();
+      fireEvent.change(screen.getByLabelText("Target"), { target: { value: "sandbox" } });
+      expect(button("Enable").disabled).toBe(true);
+      expect(screen.getByText("No sandbox desktop endpoint is configured.")).toBeTruthy();
+    });
+
+    it("is not offered by a daemon that lists no sandbox capability", async () => {
+      render(<Viewer permission="allow" />);
+      await ready();
+      const options = [...(screen.getByLabelText("Target") as HTMLSelectElement).options].map((option) => option.value);
+      expect(options).toEqual(["browser", "native"]);
+    });
+
+    it("before the first status read, states its level from this tab's copy", async () => {
+      vi.mocked(client.status).mockReturnValue(new Promise(() => {}));
+      render(<Viewer permission="ask" targetPermissions={{ browser: "deny", native: "deny", sandbox: "ask" }} />);
+      fireEvent.change(await screen.findByLabelText("Target"), { target: { value: "sandbox" } });
+      expect(screen.getByRole("note", { name: "What Enable grants" }).textContent).toContain("Sandbox desktop is set to Ask:");
+    });
+
+    it("labels a sandbox session as the sandbox desktop", async () => {
+      status.capabilities = [...status.capabilities, sandboxCapability];
+      status.sessions = [{ id: "s1", kind: "sandbox", state: "active", controller: "agent", generation: 1 }];
+      render(<Viewer permission="allow" />);
+      await ready();
+      expect(screen.getByText("Sandbox desktop (container)", { selector: "strong" })).toBeTruthy();
+      expect(screen.getByText(/^Sandbox desktop:$/)).toBeTruthy();
+    });
   });
 
   it.each(["codex", "claude-code", "pi", undefined])(
@@ -659,7 +738,7 @@ it("recovers a real stale-frame rejection without denying authorized refresh or 
     expect(client.action).toHaveBeenCalledTimes(1);
     expect(fixture.service.status(fixture.human)[0].state).toBe("ready");
     expect(screen.queryByRole("img")).toBeNull();
-    expect(screen.queryByText(/Browser Use and Computer Use are both denied/)).toBeNull();
+    expect(screen.queryByText(/Browser Use, Sandbox desktop and Computer Use are all denied/)).toBeNull();
     fireEvent.click(button("Refresh screenshot"));
     await screen.findByRole("img");
     await waitFor(() => expect(manualInput().disabled).toBe(false));
@@ -760,7 +839,7 @@ describe("desktop readiness guidance", () => {
     render(<Viewer permission="deny" />);
     await ready();
     fireEvent.change(screen.getByLabelText("Target"), { target: { value: "native" } });
-    expect(screen.getByText(/Browser Use and Computer Use are both denied/)).toBeTruthy();
+    expect(screen.getByText(/Browser Use, Sandbox desktop and Computer Use are all denied/)).toBeTruthy();
     expect(screen.queryByRole("heading", { name: /Desktop setup/ })).toBeNull();
     expect(screen.queryByText("No display")).toBeNull();
   });

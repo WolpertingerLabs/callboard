@@ -81,3 +81,40 @@ it.skipIf(process.env.CODEX_SANDBOX_NETWORK_DISABLED === "1")(
     }
   },
 );
+
+it.skipIf(process.env.CODEX_SANDBOX_NETWORK_DISABLED === "1")(
+  "status includes the Sandbox desktop only for a client that advertises sandbox_target, and open accepts it",
+  async () => {
+    const { CAPS_HEADER, CLIENT_CAPS, handshakeHeaders } = await import("shared/types/index.js");
+    const status = vi.fn(async () => ({ capabilities: [], sessions: [], permission: "deny" }));
+    const open = vi.fn(async () => ({ id: "s" }));
+    vi.mocked(getComputerUseHost).mockResolvedValue({ status, open } as never);
+    const app = express();
+    app.use(express.json());
+    app.use("/api/computer-use", computerUseRouter);
+    const server = app.listen(0, "127.0.0.1");
+    await new Promise<void>((resolve) => server.once("listening", resolve));
+    const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    const preSandbox = handshakeHeaders()[CAPS_HEADER].replace(`,${CLIENT_CAPS.sandboxTarget}`, "");
+    try {
+      for (const [headers, sandbox] of [
+        [handshakeHeaders(), true],
+        [{ ...handshakeHeaders(), [CAPS_HEADER]: preSandbox }, false],
+        [{}, false],
+      ] as const) {
+        expect((await fetch(`${origin}/api/computer-use/chat/status`, { headers })).status).toBe(200);
+        expect(status).toHaveBeenLastCalledWith("chat", { sandbox });
+      }
+      const res = await fetch(`${origin}/api/computer-use/chat/open`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Origin: origin },
+        body: JSON.stringify({ kind: "sandbox" }),
+      });
+      expect(res.status).toBe(200);
+      expect(open).toHaveBeenCalledWith("chat", "sandbox");
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  },
+);

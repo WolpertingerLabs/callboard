@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Maximize2, Minimize2 } from "lucide-react";
-import { CU_ACTION_TOOL_NAME, CU_REQUEST_CONTROL_TOOL_NAME } from "shared/types/index.js";
+import { CU_ACTION_TOOL_NAME, CU_REQUEST_CONTROL_TOOL_NAME, SANDBOX_DESKTOP_TEXT } from "shared/types/index.js";
 import MarkdownRenderer from "./MarkdownRenderer";
 import type { PendingAction } from "../api";
 
@@ -51,8 +51,10 @@ function FeedbackContent({ action, onRespond, agentName = "Claude", approveLocke
     action.controlRequest === true &&
     action.requestId
   ) {
+    // `kind` is the backend's target kind: "browser" | "desktop" | "sandbox".
     const desktop = action.input?.kind === "desktop";
-    const label = desktop ? "desktop" : "browser";
+    const sandbox = action.input?.kind === "sandbox";
+    const label = desktop ? "desktop" : sandbox ? "Sandbox desktop" : "browser";
     return (
       <div style={questionPanelStyle}>
         <strong>Enable {label} control</strong>
@@ -75,6 +77,12 @@ function FeedbackContent({ action, onRespond, agentName = "Claude", approveLocke
           {desktop && (
             <p>Native desktop control covers the full desktop and existing app windows on the service host, not an isolated browser or your viewing device.</p>
           )}
+          {sandbox && (
+            <p>
+              The Sandbox desktop is {SANDBOX_DESKTOP_TEXT.what}, not this machine or the service host&apos;s own desktop. Whatever the agent leaves there,
+              later sessions and other chats can see. {SANDBOX_DESKTOP_TEXT.network}
+            </p>
+          )}
           <p>Subagents running inside this chat’s turn share this grant and this chat’s permissions.</p>
         </div>
         <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
@@ -91,6 +99,7 @@ function FeedbackContent({ action, onRespond, agentName = "Claude", approveLocke
 
   if (action.type === "permission_request") {
     const guiAction = isComputerUseAction(action.toolName);
+    const sandboxAction = guiAction && action.input?.kind === "sandbox";
     // A reviewer hard stop: suspected prompt injection or a self-destructive
     // act. Only a signed-in human may answer it, so it must look different.
     const hardStop = action.reviewerVerdict === "kill";
@@ -119,6 +128,7 @@ function FeedbackContent({ action, onRespond, agentName = "Claude", approveLocke
         {guiAction && (
           <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 0, marginBottom: 10 }}>
             This chat asks before every GUI action: a pixel action may transmit data, change files or execute code.
+            {sandboxAction && ` This action is on the Sandbox desktop, ${SANDBOX_DESKTOP_TEXT.what}, not this machine.`}
             {action.nonBlocking &&
               ` ${agentName} isn’t waiting on this: it will be told your answer, and a confirmed action runs only if the screen it was aimed at hasn’t changed. It is withdrawn if you press Stop (while a run is going), Stop computer control, take over or revoke the session, or the session ends.`}
           </p>

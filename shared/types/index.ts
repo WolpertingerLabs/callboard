@@ -101,6 +101,8 @@ export type { ParsedMessage } from "./message.js";
 export {
   GUI_ACTION_TYPES,
   RIDE_ALONG_WITHDRAW_TEXT,
+  RIDE_ALONG_TARGETS,
+  type RideAlongTarget,
   actionWithdrawnNotice,
   callboardNoticeHeader,
   controlWithdrawnNotice,
@@ -329,7 +331,7 @@ export type {
 } from "./jobs.js";
 
 export * from "./reasoning.js";
-export { CU_ACTION_TOOL_NAME, CU_REQUEST_CONTROL_TOOL_NAME } from "./computerUse.js";
+export { CU_ACTION_TOOL_NAME, CU_REQUEST_CONTROL_TOOL_NAME, SANDBOX_DESKTOP_TEXT } from "./computerUse.js";
 export type {
   ComputerUseKind,
   ComputerUseCapability,

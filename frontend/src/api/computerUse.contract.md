@@ -4,10 +4,10 @@ Network and envelope handling lives in `computerUse.ts`. Shared DTOs are in `sha
 
 ## Endpoints
 
-All paths start with `/api/computer-use/:chatId`. Requests send cookies (`credentials: include`), and POST bodies are JSON. The backend enforces Origin/CSRF, ownership, grants, the human-controller lease and stale frames.
+All paths start with `/api/computer-use/:chatId`. Requests send cookies (`credentials: include`) and the handshake headers (`X-Callboard-Protocol`, `X-Callboard-Caps` from `handshakeHeaders()`), and POST bodies are JSON. The backend enforces Origin/CSRF, ownership, grants, the human-controller lease and stale frames.
 
-- `GET /status` → `{ capabilities: [{ kind, available, reason?, readiness? }], sessions, permission, events? }`. `events` entries are `{ sessionId, generation, type, at }`.
-- `POST /open` with `{ kind: "browser" | "native" }` → `{ session }`. The backend also accepts `"desktop"` and `"native-desktop"` as aliases for `"native"`.
+- `GET /status` → `{ capabilities: [{ kind, available, reason?, readiness?, permission? }], sessions, permission, events? }`. `events` entries are `{ sessionId, generation, type, at }`. `kind` is `"browser"`, `"native"` or `"sandbox"`; the daemon includes the `"sandbox"` capability and sessions only when `X-Callboard-Caps` lists `sandbox_target`, so an older bundle never sees a kind it can't render. A capability's `permission` is its own axis (`browserControl`, `computerControl`, `sandboxControl`); top-level `permission` is the most permissive of the axes for the targets sent. The client rejects any other `kind`.
+- `POST /open` with `{ kind: "browser" | "native" | "sandbox" }` → `{ session }`. The backend also accepts `"desktop"` and `"native-desktop"` as aliases for `"native"`.
 - `POST /:sessionId/observe` with `{}` → `{ frame: { data, mimeType, width, height }, frameId, generation }`. `data` is raw base64 raster bytes, not a URL. Screenshots are never written to localStorage.
 - `POST /:sessionId/action` with `{ action, expectedGeneration, frameId, requestId }`. `action` is the shared union: `click`, `move`, `drag`, `scroll`, `key`, `type`, `navigate`. Pointer coordinates are screenshot pixels; the driver handles capture, DPI and native-coordinate transforms. The viewer sends a fresh UUID as `requestId` on every call, but nothing reads it: the server mints its own action ID.
 - `POST /:sessionId/takeover|resume|stop|revoke|approve` with `{ expectedGeneration }`. Responses may be JSON or 204, and the viewer refreshes status afterwards. `approve` is an authenticated, session-scoped human decision. There's no endpoint that lets an agent grant itself access.
@@ -26,7 +26,7 @@ The client throws the message and attaches `code` to the error (`controlErrorCod
 
 ## Sessions
 
-A session has `id`, `kind`, `state`, `controller` (`"agent" | "human" | null`) and `generation`, plus an optional immutable `targetLabel` and an optional actionable `reason`.
+A session has `id`, `kind` (`"browser" | "native" | "sandbox"`), `state`, `controller` (`"agent" | "human" | null`) and `generation`, plus an optional immutable `targetLabel` and an optional actionable `reason`.
 
 The host emits the package states `starting | ready | stopped | revoked | failed`, plus `pending_approval` for its own generation-zero requests. The viewer groups them like this:
 
@@ -54,5 +54,7 @@ The common Chat page is also the agent-chat destination (both agent dashboard en
 **Frames.** A `frameId` is a UUID, not a generation or an image label. A missing ID returns 400, and a stale one returns 409. The viewer sends the ID paired with the capture it's showing, then captures again after each action. A capture in another controlling tab supersedes the old frame, and later captures can't revive an old ID. Approval cards keep their exact frame and action snapshot. Asynchronous UI changes can't always be detected, so re-observe after any suspected change.
 
 **Readiness.** Capability availability must reflect server, runtime and engine readiness. On headless or unsupported hosts, native capability must be unavailable, with an actionable reason. The viewer doesn't qualify models or platforms, install browsers or helpers, or substitute the viewer's own machine for the service host.
+
+The Sandbox desktop (`"sandbox"`) is a Linux desktop in a hardened container, not the service host's own desktop or the viewer's machine. It is isolated from the host's files and credentials but, in this release, shared by every chat and kept until the container is restarted, and its network is open (the internet, and host services listening on all interfaces). User-facing wording comes from `SANDBOX_DESKTOP_TEXT` (`shared/types/computerUse.ts`). It is governed by `sandboxControl` alone. With no sandbox endpoint configured its capability is `available: false` with `readiness: "setup-required"` and a reason; with `sandboxControl: deny` it is `readiness: "permission-blocked"`. The viewer shows the sandbox target only when status lists its capability (or before the first read), and shows the server's `reason` when it is unavailable.
 
 A native capability may carry an optional `readiness` value: `setup-required`, `unsupported`, `permission-blocked` or `unknown`. This is driver or host metadata; the viewer never derives it from `reason`. Missing or unrecognized values get generic retry guidance. Chat permission restrictions take precedence over the driver's classification, even when a probe throws. Readiness grants nothing: setup guidance is passive, and enabling a target remains a separate human action. Technical details are escaped text in the authenticated viewer, and the package's `operatorDetail` never reaches model-visible probe results.

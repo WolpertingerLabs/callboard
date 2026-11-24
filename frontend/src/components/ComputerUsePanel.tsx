@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { Monitor } from "lucide-react";
 import type { ComputerUseCapability, ComputerUseAction, ComputerUseKind, ComputerUseObservation, ComputerUseSession } from "shared/types/computerUse.js";
+import { SANDBOX_DESKTOP_TEXT } from "shared/types/computerUse.js";
 import type { PermissionLevel } from "shared/types/permissions.js";
 import { computerUseClient as client, controlErrorCode } from "../api/computerUse";
 import "./ComputerUsePanel.css";
@@ -146,7 +147,7 @@ export default function ComputerUsePanel({
   provider,
 }: {
   chatId: string;
-  /** The most permissive of the chat's Browser Use and Computer Use levels. */
+  /** The most permissive of the chat's Browser Use, Sandbox desktop and Computer Use levels. */
   permission?: PermissionLevel;
   /** This tab's copy of each target's level; the server's per-capability level wins. */
   targetPermissions?: Partial<Record<ComputerUseKind, PermissionLevel>>;
@@ -198,7 +199,7 @@ export default function ComputerUsePanel({
   // land on a stopped session with every control disabled while a live one exists.
   const session = status?.sessions.find((item) => item.id === selected) ?? status?.sessions.find((item) => !terminal(item)) ?? status?.sessions[0];
   const capability = status?.capabilities.find((item) => item.kind === kind);
-  // Both Browser Use and Computer Use denied: nothing can be enabled at all.
+  // Browser Use, Sandbox desktop and Computer Use all denied: nothing can be enabled at all.
   const denied = permission === "deny" || status?.permission === "deny";
   // What the Enable click actually consents to. Since the level began governing
   // per-action prompts, this button IS the consent boundary for unattended
@@ -207,11 +208,16 @@ export default function ComputerUsePanel({
   // prop is this tab's copy of the chat record, and a change made elsewhere
   // reaches the panel through status first.
   //
-  // Per target: Browser Use governs the browser and Computer Use the desktop.
-  // An older daemon sends no per-capability level; fall back to the aggregate.
+  // Per target: Browser Use governs the browser, Sandbox desktop the container
+  // desktop and Computer Use the service host's desktop. An older daemon sends
+  // no per-capability level; fall back to the aggregate.
   const level = capability?.permission ?? (status ? status.permission : (targetPermissions?.[kind] ?? permission));
   const targetDenied = denied || level === "deny";
-  const axisLabel = kind === "browser" ? "Browser Use" : "Computer Use";
+  const axisLabel = kind === "browser" ? "Browser Use" : kind === "sandbox" ? "Sandbox desktop" : "Computer Use";
+  // A daemon that predates the sandbox (or a client without `sandbox_target`)
+  // lists no sandbox capability; offer the option only when it does, or
+  // before the first read so this tab's own level can still be stated.
+  const offerSandbox = !status || kind === "sandbox" || status.capabilities.some((item) => item.kind === "sandbox");
   const active =
     !controller.statusError &&
     !controller.stopping &&
@@ -457,7 +463,7 @@ export default function ComputerUsePanel({
   };
 
   return (
-    <section className="computer-use-panel" aria-label="Browser & Computer Use">
+    <section className="computer-use-panel" aria-label="Computer control">
       {expanded && frame && session && (
         <ComputerUseExpandedView
           frame={frame}
@@ -475,6 +481,7 @@ export default function ComputerUsePanel({
               Target{" "}
               <select value={kind} onChange={(event) => setKind(event.target.value as ComputerUseKind)}>
                 <option value="browser">Managed browser</option>
+                {offerSandbox && <option value="sandbox">Sandbox desktop (container)</option>}
                 <option value="native">Native desktop (service host)</option>
               </select>
             </label>
@@ -543,16 +550,17 @@ export default function ComputerUsePanel({
             computer. Model visual capability is not established by this viewer.
           </p>
           <details className="computer-use-about">
-            <summary>How browser &amp; computer use works</summary>
+            <summary>How computer control works</summary>
             <p>
-              Controls Callboard&apos;s browser and desktop tools. Browser Use governs the managed browser and Computer Use the desktop; each target
-              follows its own setting, and the desktop also needs every other permission on Allow. Enabling a target is always your own action; after that, Allow lets the agent act on its own,
-              while Ask stops its turn and asks you in the chat before each action. Agents with unrestricted code execution may still run their own automation.
+              Controls Callboard&apos;s browser and desktop tools. Browser Use governs the managed browser, Sandbox desktop the container desktop,
+              and Computer Use the service host&apos;s desktop; each target follows its own setting, and the host desktop also needs every other permission
+              except Sandbox desktop on Allow. Enabling a target is always your own action; after that, Allow lets the agent act on its own, while Ask stops its
+              turn and asks you in the chat before each action. Agents with unrestricted code execution may still run their own automation.
             </p>
           </details>
           {/* Demoted, but never hidden behind the disclosure: a description a
               button points at has to stay in the accessibility tree, and the
-              native note only appears when native is the target in play. */}
+              native and sandbox notes only appear when that target is in play. */}
           {sharedGrantNote && (
             <p className="computer-use-note" id={sharedGrantNote} role="note">
               <strong>Shared with subagents:</strong> a grant you enable or approve here is shared with any subagents the agent runs inside this chat&apos;s
@@ -567,18 +575,26 @@ export default function ComputerUsePanel({
               applications.
             </p>
           )}
+          {(kind === "sandbox" || session?.kind === "sandbox") && (
+            <p className="computer-use-note" role="note">
+              <strong>Sandbox desktop:</strong> this targets {SANDBOX_DESKTOP_TEXT.what}, not this computer or the service host&apos;s own desktop.{" "}
+              {SANDBOX_DESKTOP_TEXT.network}
+            </p>
+          )}
           {denied && (
             <p className="computer-use-notice" role="status">
-              Browser Use and Computer Use are both denied. Set Browser Use (managed browser) or Computer Use (desktop) to Ask or Allow in chat permissions,
-              then retry status. Ask confirms each agent
-              action with you in the chat; Allow lets the agent act unattended. Either way, only your Enable click starts a target.
+              Browser Use, Sandbox desktop and Computer Use are all denied. Set Browser Use (managed browser), Sandbox desktop (container) or Computer Use
+              (service host desktop) to Ask or Allow in chat permissions, then retry status. Ask confirms each agent action with you in the chat; Allow lets the
+              agent act unattended. Either way, only your Enable click starts a target.
             </p>
           )}
           {kind === "native" && !denied && !capability?.available && <DesktopReadinessNotice capability={capability} />}
           {kind !== "native" && !capability?.available && (
             <p className="computer-use-notice" role="status">
               {capability?.reason ??
-                "Target readiness has not been confirmed. Retry status; configure the browser runtime or a supported native display on the service host."}
+                (kind === "sandbox"
+                  ? "Sandbox desktop readiness has not been confirmed. Retry status; a sandbox desktop container must be configured for the service host."
+                  : "Target readiness has not been confirmed. Retry status; configure the browser runtime or a supported native display on the service host.")}
             </p>
           )}
           {(error || controller?.statusError) && <p role="alert">{error || controller?.statusError}</p>}
@@ -655,8 +671,15 @@ export default function ComputerUsePanel({
             <>
               <p className="computer-use-session-meta">
                 Target:{" "}
-                <strong>{session.targetLabel ?? (session.kind === "native" ? "Native desktop on service host" : "Managed browser on service host")}</strong> ·
-                State: {session.state} · Controller: {session.controller ?? "none"} · Generation: {session.generation}
+                <strong>
+                  {session.targetLabel ??
+                    (session.kind === "native"
+                      ? "Native desktop on service host"
+                      : session.kind === "sandbox"
+                        ? "Sandbox desktop (container)"
+                        : "Managed browser on service host")}
+                </strong>{" "}
+                · State: {session.state} · Controller: {session.controller ?? "none"} · Generation: {session.generation}
               </p>
               {session.reason && (
                 <p className="computer-use-notice" role="status">
@@ -698,8 +721,12 @@ export default function ComputerUsePanel({
               {human && (
                 <p className="computer-use-note" id={resumePrivacyId} role="note">
                   Resuming immediately captures a new agent-visible screenshot of{" "}
-                  {session.kind === "native" ? "the full native desktop on the service host" : "the managed browser page"}. Remove sensitive windows or content
-                  from that target first. Previewing during takeover does not itself send those images to the agent.
+                  {session.kind === "native"
+                    ? "the full native desktop on the service host"
+                    : session.kind === "sandbox"
+                      ? "the full sandbox desktop"
+                      : "the managed browser page"}
+                  . Remove sensitive windows or content from that target first. Previewing during takeover does not itself send those images to the agent.
                 </p>
               )}
               {!frame && (
@@ -802,7 +829,7 @@ export default function ComputerUsePanel({
                   is the duplication this layout exists to remove. */}
               <p>
                 No target is enabled in this chat.
-                {!denied && (kind !== "native" || capability?.available) && " Choose a target above and enable it; the screenshot appears here."}
+                {!denied && (kind === "browser" || capability?.available) && " Choose a target above and enable it; the screenshot appears here."}
               </p>
             </div>
           )}

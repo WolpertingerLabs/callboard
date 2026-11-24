@@ -246,6 +246,75 @@ describe("PATCH /api/chats/:id/permissions — the control axes", () => {
     expect(result.body.error).toContain("browserControl");
   });
 
+  describe("Sandbox desktop (sandboxControl)", () => {
+    const withSandbox = (sandboxControl: string) => {
+      setStored("ask");
+      const meta = JSON.parse(chat.metadata);
+      meta.defaultPermissions.sandboxControl = sandboxControl;
+      chat.metadata = JSON.stringify(meta);
+    };
+    const STORED = { browserControl: "ask", computerControl: "ask" } as const;
+
+    it("refuses a bearer key that changes only Sandbox desktop, naming it, either way", async () => {
+      for (const [stored, requested] of [
+        ["deny", "allow"],
+        ["allow", "deny"],
+      ] as const) {
+        withSandbox(stored);
+        const result = await patch({ ...FOUR, ...STORED, sandboxControl: requested }, { authMethod: "bearer" });
+        expect(result.code).toBe(403);
+        expect(result.body.error).toContain("Sandbox desktop");
+        expect(updateChatMetadata).not.toHaveBeenCalled();
+      }
+    });
+
+    it("refuses a cross-origin session that changes it", async () => {
+      withSandbox("deny");
+      const result = await patch({ ...FOUR, ...STORED, sandboxControl: "ask" }, { authMethod: "session", origin: "https://evil.example" });
+      expect(result.code).toBe(403);
+      expect(updateChatMetadata).not.toHaveBeenCalled();
+    });
+
+    it("lets a same-origin human set it independently of the other control axes", async () => {
+      withSandbox("deny");
+      const result = await patch({ ...FOUR, browserControl: "deny", computerControl: "deny", sandboxControl: "allow" });
+      expect(result.code).toBe(200);
+      expect(written()).toMatchObject({ browserControl: "deny", computerControl: "deny", sandboxControl: "allow" });
+    });
+
+    it("keeps the stored level when a tab that predates it sends the six other axes — from a human or a key", async () => {
+      for (const actor of [{ authMethod: "session" as const }, { authMethod: "bearer" as const }]) {
+        withSandbox("allow");
+        const result = await patch({ ...FOUR, ...STORED, fileWrite: "allow" }, actor);
+        expect(result.code, actor.authMethod).toBe(200);
+        expect(written()).toMatchObject({ fileWrite: "allow", sandboxControl: "allow" });
+      }
+    });
+
+    it("treats an absent stored value as deny: a key may write deny, never ask", async () => {
+      setStored("ask");
+      expect((await patch({ ...FOUR, ...STORED, sandboxControl: "ask" }, { authMethod: "bearer" })).code).toBe(403);
+      expect((await patch({ ...FOUR, ...STORED, sandboxControl: "deny" }, { authMethod: "bearer" })).code).toBe(200);
+      expect(written()).toMatchObject({ sandboxControl: "deny" });
+    });
+
+    it("a pre-split tab's Computer Use Deny also denies an unsent Sandbox desktop (tightening only)", async () => {
+      setStored("allow", "allow");
+      const meta = JSON.parse(chat.metadata);
+      meta.defaultPermissions.sandboxControl = "allow";
+      chat.metadata = JSON.stringify(meta);
+      const result = await patch({ ...FOUR, computerControl: "deny" });
+      expect(result.code).toBe(200);
+      expect(written()).toMatchObject({ browserControl: "deny", computerControl: "deny", sandboxControl: "deny" });
+    });
+
+    it("validates sandboxControl", async () => {
+      const result = await patch({ ...FOUR, sandboxControl: "sometimes" }, { authMethod: "session" });
+      expect(result.code).toBe(400);
+      expect(result.body.error).toContain("sandboxControl");
+    });
+  });
+
   it("writes quietly: configuration is not activity, so updated_at is left alone", async () => {
     await patch({ ...FOUR });
     expect(updateChatMetadata.mock.calls.at(-1)?.[2]).toEqual({ touch: false });

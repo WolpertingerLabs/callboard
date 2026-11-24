@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ComputerUseSession, ComputerUseStatus } from "shared/types/computerUse.js";
-import { computerUseClient as client, controlErrorCode } from "../api/computerUse";
+import { computerUseClient as client, controlErrorCode, isComputerUseKind } from "../api/computerUse";
 import { errorMessage } from "../utils/errorMessage";
 import { emitComputerControlSettled } from "../utils/computerControlEvents";
 
@@ -75,7 +75,7 @@ export function useComputerUseController(
       if (typeof value.id !== "string" || typeof value.state !== "string") return;
       // Visibility follows valid ledger evidence, not display authority. Terminal
       // history also counts, and later empty/error reads never erase this latch.
-      const validSession = ["browser", "native"].includes(value.kind ?? "") && Number.isSafeInteger(value.generation) && value.generation! >= 0;
+      const validSession = isComputerUseKind(value.kind) && Number.isSafeInteger(value.generation) && value.generation! >= 0;
       if (validSession || emergency.current.has(value.id)) setUsageChatId(chatId);
       if (isTerminal(value as ComputerUseSession)) {
         terminalIds.current.add(value.id);
@@ -84,7 +84,7 @@ export function useComputerUseController(
       }
       if (terminalIds.current.has(value.id)) return; // Session IDs cannot be revived.
       const previous = emergency.current.get(value.id);
-      if (!["browser", "native"].includes(value.kind ?? "") || !Number.isSafeInteger(value.generation) || value.generation! < 0) return;
+      if (!isComputerUseKind(value.kind) || !Number.isSafeInteger(value.generation) || value.generation! < 0) return;
       if (!previous || value.generation! >= previous.generation)
         emergency.current.set(value.id, { ...value, controller: value.controller ?? null } as ComputerUseSession);
     },
@@ -143,7 +143,7 @@ export function useComputerUseController(
       };
       if (
         !status.sessions.some((session) => session.id === value.id) &&
-        ["browser", "native"].includes(value.kind ?? "") &&
+        isComputerUseKind(value.kind) &&
         Number.isSafeInteger(value.generation) &&
         value.controller !== undefined &&
         ["agent", "human", null].includes(value.controller)
@@ -335,7 +335,7 @@ export function useComputerUseController(
       } catch {
         report("Could not discover all sessions; attempting every last-known session.");
       }
-      // All known browser/native sessions, including pending approvals. Each wait
+      // All known browser/native/sandbox sessions, including pending approvals. Each wait
       // is bounded, but accepted stop requests are not aborted. Late settlements
       // of timed-out requests have no publication callbacks and cannot undo retry.
       if (valid()) for (const [id, session] of emergency.current) sessions.set(id, session);

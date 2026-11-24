@@ -176,18 +176,20 @@
         "tool_source",
         "budget_events",
         "plan_review",
-        "human_prompt_identity"
+        "human_prompt_identity",
+        "sandbox_target"
       ],
       "CLIENT_CAPS": {
         "toolSource": "tool_source",
         "budgetEvents": "budget_events",
         "planReview": "plan_review",
-        "humanPromptIdentity": "human_prompt_identity"
+        "humanPromptIdentity": "human_prompt_identity",
+        "sandboxTarget": "sandbox_target"
       },
       "handshakeHeaders": {
         "(returns)": {
           "X-Callboard-Protocol": "2",
-          "X-Callboard-Caps": "tool_source,budget_events,plan_review,human_prompt_identity"
+          "X-Callboard-Caps": "tool_source,budget_events,plan_review,human_prompt_identity,sandbox_target"
         }
       },
       "MIN_PROTOCOL_VERSION": 1,
@@ -197,7 +199,8 @@
         "tool_source",
         "budget_events",
         "plan_review",
-        "human_prompt_identity"
+        "human_prompt_identity",
+        "sandbox_target"
       ]
     }
   }

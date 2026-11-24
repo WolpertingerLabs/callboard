@@ -73,7 +73,8 @@ export default function ComputerUseExpandedView({
           Close
         </button>
         <p className="computer-use-expanded-target">
-          {session.kind === "native" ? "Native desktop" : "Managed browser"} · {session.targetLabel ?? session.id}
+          {session.kind === "native" ? "Native desktop" : session.kind === "sandbox" ? "Sandbox desktop" : "Managed browser"} ·{" "}
+          {session.targetLabel ?? session.id}
           {" · "}
           {session.state} · Controller: {session.controller ?? "none"} · Watch only
         </p>

@@ -96,6 +96,7 @@ export default function ChatPermissionsModal({
     localPermissions.webAccess !== permissions.webAccess ||
     localPermissions.browserControl !== normalizePermissions(permissions).browserControl ||
     localPermissions.computerControl !== normalizePermissions(permissions).computerControl ||
+    localPermissions.sandboxControl !== normalizePermissions(permissions).sandboxControl ||
     localReview.modelReview !== review.modelReview ||
     localReview.parentAnswers !== review.parentAnswers;
 

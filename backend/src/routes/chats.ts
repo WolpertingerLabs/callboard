@@ -1342,8 +1342,8 @@ chatsRouter.post("/:id/fork", async (req, res) => {
             forkAtLatest: { type: "boolean", description: "Aside only: fork at the newest message of this chat instead of at quotes. Omit timestamp and quotes; give a prompt or imageIds." },
             quotes: { type: "array", maxItems: 20, items: { type: "object", required: ["timestamp", "role", "text"], properties: { timestamp: { type: "string" }, role: { type: "string", enum: ["user", "assistant", "system"] }, text: { type: "string", maxLength: 10000 } } }, description: "Aside only, required unless forkAtLatest: the quoted passages. `timestamp` must equal the latest of their timestamps (the fork point)." },
             prompt: { type: "string", maxLength: 20000, description: "Aside only: the question. When given, the first turn is started immediately." },
-            readOnly: { type: "boolean", description: "Aside only: Read only. fileWrite and codeExecution at most ask, browserControl and computerControl deny (all still capped by this chat), and the model reviewer is not inherited, so every such ask reaches the user." },
-            permissions: { type: "object", description: "Aside only: permissions (full or partial — fileRead, fileWrite, codeExecution, webAccess, browserControl, computerControl; allow/ask/deny). Merged over the permissions of this chat and capped so no category is looser. Omit to inherit them." },
+            readOnly: { type: "boolean", description: "Aside only: Read only. fileWrite and codeExecution at most ask, browserControl, computerControl and sandboxControl deny (all still capped by this chat), and the model reviewer is not inherited, so every such ask reaches the user." },
+            permissions: { type: "object", description: "Aside only: permissions (full or partial — fileRead, fileWrite, codeExecution, webAccess, browserControl, computerControl, sandboxControl; allow/ask/deny). Merged over the permissions of this chat and capped so no category is looser. Omit to inherit them." },
             timeZone: { type: "string", description: "Aside only: IANA time zone for the HH:MM on the quote origin lines (the browser zone). Unknown zones fall back to the daemon zone." },
             imageIds: { type: "array", items: { type: "string" }, description: "Aside only: uploads (POST /images/upload) attached to the first turn, which then starts even without a prompt. All or nothing: 409 when any is missing. The 201 then carries attachedImages." },
             activePlugins: { type: "array", items: { type: "string" }, description: "Aside with prompt or imageIds only: active plugin IDs for the first turn, as on POST /chats/:id/message." },
@@ -2924,7 +2924,7 @@ chatsRouter.post("/:id/regenerate-title", async (req, res) => {
 chatsRouter.patch("/:id/permissions", (req, res) => {
   // #swagger.tags = ['Chats']
   // #swagger.summary = 'Update chat permissions'
-  // #swagger.description = 'Update the default tool permissions for a chat. Changes take effect immediately for future tool use checks. The browserControl (Browser Use) and computerControl (Computer Use) axes are the exception to this router\'s bearer-key access: CHANGING either requires a logged-in same-origin session, because allow means unattended GUI control and an agent must not be able to raise the level that governs it. Requests that leave them unchanged — or omit them, which preserves the stored value — are unaffected. Exception: if computerControl changes and browserControl is omitted, the request is treated as coming from a pre-split client — deny also denies browserControl, and ask or allow is refused with 409 stale_client.'
+  // #swagger.description = 'Update the default tool permissions for a chat. Changes take effect immediately for future tool use checks. The browserControl (Browser Use), computerControl (Computer Use) and sandboxControl (Sandbox desktop) axes are the exception to this router\'s bearer-key access: CHANGING any of them requires a logged-in same-origin session, because allow means unattended GUI control and an agent must not be able to raise the level that governs it. Requests that leave them unchanged — or omit them, which preserves the stored value — are unaffected. Exception: if computerControl changes and browserControl is omitted, the request is treated as coming from a pre-split client — deny also denies browserControl (and sandboxControl, if omitted), and ask or allow is refused with 409 stale_client.'
   /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
   /* #swagger.requestBody = {
     required: true,
@@ -2943,7 +2943,8 @@ chatsRouter.patch("/:id/permissions", (req, res) => {
                 codeExecution: { type: "string", enum: ["allow", "ask", "deny"] },
                 webAccess: { type: "string", enum: ["allow", "ask", "deny"] },
                 browserControl: { type: "string", enum: ["allow", "ask", "deny"], description: "Browser Use. Changing it requires a logged-in same-origin session. Omit to keep the stored value. — unless computerControl changes in the same request (pre-split client): then a computerControl deny also denies this, and ask/allow is refused with 409." },
-                computerControl: { type: "string", enum: ["allow", "ask", "deny"], description: "Computer Use (desktop). Changing it requires a logged-in same-origin session. Omit to keep the stored value." }
+                computerControl: { type: "string", enum: ["allow", "ask", "deny"], description: "Computer Use (desktop). Changing it requires a logged-in same-origin session. Omit to keep the stored value." },
+                sandboxControl: { type: "string", enum: ["allow", "ask", "deny"], description: "Sandbox desktop (a desktop in a hardened container, shared by every chat). Changing it requires a logged-in same-origin session. Omit to keep the stored value." }
               }
             },
             modelReview: { type: "boolean", description: "Screen permission asks with the model safety reviewer before a person sees them. Omit to keep the stored value." },
@@ -2955,7 +2956,7 @@ chatsRouter.patch("/:id/permissions", (req, res) => {
   } */
   /* #swagger.responses[200] = { description: "Updated chat" } */
   /* #swagger.responses[400] = { description: "Invalid request body" } */
-  /* #swagger.responses[403] = { description: "Changing browserControl or computerControl from a bearer key or a cross-origin request" } */
+  /* #swagger.responses[403] = { description: "Changing browserControl, computerControl or sandboxControl from a bearer key or a cross-origin request" } */
   /* #swagger.responses[409] = { description: "A request that changes computerControl to ask/allow without a browserControl key (an older tab, from before the axes were split); nothing is applied" } */
   /* #swagger.responses[404] = { description: "Chat not found" } */
   const { defaultPermissions } = req.body;
@@ -2971,7 +2972,7 @@ chatsRouter.patch("/:id/permissions", (req, res) => {
     }
   }
 
-  const CONTROL_AXES = ["browserControl", "computerControl"] as const;
+  const CONTROL_AXES = ["browserControl", "computerControl", "sandboxControl"] as const;
   for (const axis of CONTROL_AXES) {
     if (Object.hasOwn(defaultPermissions, axis) && !validLevels.includes(defaultPermissions[axis])) {
       return res.status(400).json({ error: `${axis} must be one of: allow, ask, deny` });
@@ -2992,9 +2993,9 @@ chatsRouter.patch("/:id/permissions", (req, res) => {
     const meta: Record<string, any> = parseChatMetadata(chat.metadata);
 
     /**
-     * The two control axes (`browserControl` — Browser Use, `computerControl` —
-     * Computer Use) are not like the other four: they are the ones an agent
-     * could usefully raise on its own chat.
+     * The control axes (`browserControl` — Browser Use, `computerControl` —
+     * Computer Use, `sandboxControl` — Sandbox desktop) are not like the other
+     * four: they are the ones an agent could usefully raise on its own chat.
      *
      * This router sits under `requireAuth`, which accepts a Bearer `cbk_` key —
      * correct for the four axes, where the API is a supported way to widen a
@@ -3006,31 +3007,41 @@ chatsRouter.patch("/:id/permissions", (req, res) => {
      * `ask` behaviour they configured — would hand over unattended control.
      * Before the level governed prompting, that flip bought almost nothing.
      *
-     * So changing either axis keeps the guarantees of the control plane it
+     * So changing any of them keeps the guarantees of the control plane it
      * governs (`requireSessionAuth` + `requireControlOrigin` in
      * routes/computer-use.ts): a logged-in, same-origin human, never an API
      * key. Leaving it alone is unrestricted — an API client updating the other
      * four axes is unaffected, and an omitted key preserves the stored value
      * rather than being normalized down to `deny` behind the human's back.
      * That includes a tab whose bundle predates `browserControl` when it
-     * leaves `computerControl` alone: the stored Browser Use level is kept.
+     * leaves `computerControl` alone: the stored Browser Use level is kept —
+     * and a tab whose bundle predates `sandboxControl`, which never sends it:
+     * the stored Sandbox desktop level is kept, whatever else it changes.
      *
      * A body that CHANGES `computerControl` without any `browserControl` key
      * can only come from such a tab, where that row meant "Browser & Computer
      * Control". Taking it at face value would be wrong both ways, so:
-     *  - Deny → also deny Browser Use. Tightening only, and it is what the
-     *    person asked for: no GUI control.
+     *  - Deny → also deny Browser Use (and Sandbox desktop, which that tab
+     *    cannot show). Tightening only, and it is what the person asked for:
+     *    no GUI control.
      *  - Ask/Allow → refused with 409 (after the auth checks). They meant the
      *    browser; applying it would silently grant desktop-only Computer Use.
      *    Reloading the tab shows the two separate rows.
      */
     const level = (value: unknown) => (value === "allow" || value === "ask" ? value : "deny");
-    const AXIS_LABELS = { browserControl: "Browser Use", computerControl: "Computer Use" } as const;
-    const stored = { browserControl: level(meta.defaultPermissions?.browserControl), computerControl: level(meta.defaultPermissions?.computerControl) };
+    const AXIS_LABELS = { browserControl: "Browser Use", computerControl: "Computer Use", sandboxControl: "Sandbox desktop" } as const;
+    const stored = {
+      browserControl: level(meta.defaultPermissions?.browserControl),
+      computerControl: level(meta.defaultPermissions?.computerControl),
+      sandboxControl: level(meta.defaultPermissions?.sandboxControl),
+    };
     const resolvedControl = { ...stored };
     for (const axis of CONTROL_AXES) if (Object.hasOwn(defaultPermissions, axis)) resolvedControl[axis] = level(defaultPermissions[axis]);
     const staleTabChange = !Object.hasOwn(defaultPermissions, "browserControl") && resolvedControl.computerControl !== stored.computerControl;
-    if (staleTabChange && resolvedControl.computerControl === "deny") resolvedControl.browserControl = "deny";
+    if (staleTabChange && resolvedControl.computerControl === "deny") {
+      resolvedControl.browserControl = "deny";
+      if (!Object.hasOwn(defaultPermissions, "sandboxControl")) resolvedControl.sandboxControl = "deny";
+    }
     for (const axis of CONTROL_AXES) {
       const requested = resolvedControl[axis];
       if (requested !== stored[axis]) {

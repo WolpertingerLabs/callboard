@@ -716,6 +716,7 @@ exports[`sendMessage queryOpts characterization > codex: subscription, default r
           "computerControl": "deny",
           "fileRead": "allow",
           "fileWrite": "ask",
+          "sandboxControl": "deny",
           "webAccess": "allow",
         },
         "reasoningRoute": "native",

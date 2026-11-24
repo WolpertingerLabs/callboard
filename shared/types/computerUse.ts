@@ -3,7 +3,8 @@ import type { PermissionLevel } from "./permissions.js";
 /**
  * The tool name the per-action computer-control confirmation is raised under,
  * on every engine — that is, when the target's axis (`browserControl` for the
- * browser, `computerControl` for the desktop) is `ask`; under `allow` no
+ * browser, `computerControl` for the desktop, `sandboxControl` for the sandbox
+ * desktop) is `ask`; under `allow` no
  * per-action confirmation is raised. Initial enablement always
  * requires human consent under both policies (CU_REQUEST_CONTROL_TOOL_NAME).
  *
@@ -26,8 +27,35 @@ export const CU_ACTION_TOOL_NAME = "mcp__computer_use__cu_action";
 /** Only host-issued human-only prompts with this exact name may render the enablement security card. */
 export const CU_REQUEST_CONTROL_TOOL_NAME = "mcp__computer_use__cu_request_control";
 
-/** Callboard HTTP viewer DTOs. Driver/package types stay outside shared. */
-export type ComputerUseKind = "browser" | "native";
+/**
+ * How Callboard describes the Sandbox desktop — to the human (consent card,
+ * permission row, Computer view) and to the agent (tool descriptions). One
+ * place, because the truth depends on how the container is run, and that
+ * changes: today one operator-started container is shared by every chat and
+ * keeps its state until it is restarted, so it is NOT fresh per session and
+ * NOT safe for arbitrary untrusted work. When containers are started per
+ * session, change these strings (and only these) to say so.
+ */
+export const SANDBOX_DESKTOP_TEXT = {
+  /** What it is, as a phrase: "the Sandbox desktop is …". */
+  what: "a Linux desktop in a hardened container, isolated from this machine's files and credentials, but shared by every chat and kept until the container is restarted",
+  /** What it can reach. Shown on the consent card and wherever the network is mentioned. */
+  network: "Its network is open: it can reach the internet, and any service on this machine that listens on all interfaces, Callboard included.",
+  /** When to choose it. */
+  use: "Use it for desktop apps and downloads that should stay off this machine.",
+} as const;
+
+/**
+ * Callboard HTTP viewer DTOs. Driver/package types stay outside shared.
+ *
+ * `"sandbox"` (the Sandbox desktop: a desktop in a hardened container, not
+ * the user's machine) is a later enum value. A client that has
+ * a `switch` on this cannot be assumed to handle it, so the daemon sends
+ * sandbox capabilities, sessions and prompts only to a client that advertises
+ * `CLIENT_CAPS.sandboxTarget` (shared/types/protocol.ts) — on the status REST
+ * endpoint and on the stream alike.
+ */
+export type ComputerUseKind = "browser" | "native" | "sandbox";
 export interface ComputerUseCapability {
   kind: ComputerUseKind;
   available: boolean;
@@ -36,7 +64,8 @@ export interface ComputerUseCapability {
   readiness?: "setup-required" | "unsupported" | "permission-blocked" | "unknown";
   /**
    * The level of the axis that governs this target (`browserControl` for
-   * `browser`, `computerControl` for `native`). Additive; older daemons omit
+   * `browser`, `computerControl` for `native`, `sandboxControl` for
+   * `sandbox`). Additive; older daemons omit
    * it, in which case fall back to `ComputerUseStatus.permission`.
    */
   permission?: PermissionLevel;
@@ -54,8 +83,10 @@ export interface ComputerUseStatus {
   capabilities: ComputerUseCapability[];
   sessions: ComputerUseSession[];
   /**
-   * The most permissive of the chat's `browserControl` and `computerControl`
-   * levels — "does any target accept enabling". Per-target levels are on
+   * The most permissive of the chat's control levels for the targets this
+   * client is sent — `browserControl` and `computerControl`, plus
+   * `sandboxControl` for a client with `CLIENT_CAPS.sandboxTarget` — i.e. "does
+   * any target shown accept enabling". Per-target levels are on
    * `ComputerUseCapability.permission`.
    */
   permission: PermissionLevel;

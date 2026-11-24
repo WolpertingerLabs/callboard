@@ -39,7 +39,15 @@ import type { PendingRequest } from "./pending-requests.js";
 import type { ToolDefinition } from "../agents/ports/tools.js";
 import type { SendMessageOptions } from "./claude.js";
 
-const ALLOW_ALL: DefaultPermissions = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", browserControl: "deny", computerControl: "deny" };
+const ALLOW_ALL: DefaultPermissions = {
+  fileRead: "allow",
+  fileWrite: "allow",
+  codeExecution: "allow",
+  webAccess: "allow",
+  browserControl: "deny",
+  computerControl: "deny",
+  sandboxControl: "deny",
+};
 const ASK_EXEC: DefaultPermissions = { ...ALLOW_ALL, codeExecution: "ask" };
 
 function writeChat(id: string, metadata: Record<string, unknown>): void {
@@ -152,8 +160,10 @@ describe("start_chat_session — delegation", () => {
   });
 
   it("cannot be looser than the caller, and computer control stays denied", async () => {
-    const { sent } = await spawn("cautious", "y", { permissions: { codeExecution: "allow", browserControl: "allow", computerControl: "allow" } });
-    expect(sent.defaultPermissions).toMatchObject({ codeExecution: "ask", browserControl: "deny", computerControl: "deny" });
+    const { sent } = await spawn("cautious", "y", {
+      permissions: { codeExecution: "allow", browserControl: "allow", computerControl: "allow", sandboxControl: "deny" },
+    });
+    expect(sent.defaultPermissions).toMatchObject({ codeExecution: "ask", browserControl: "deny", computerControl: "deny", sandboxControl: "deny" });
   });
 
   it("a plain spawn is capped at the caller (asks only where the caller asks)", () => {
@@ -166,7 +176,15 @@ describe("list_pending_requests", () => {
     const { requestId } = park("child");
     const result = payload(await tool("list_pending_requests", "parent").handler({}));
     expect(result.requests).toEqual([
-      expect.objectContaining({ chatId: "child", title: "child task", requestId, toolName: "Bash", category: "codeExecution", canApprove: true, reviewerNotes: expect.stringContaining("escalate") }),
+      expect.objectContaining({
+        chatId: "child",
+        title: "child task",
+        requestId,
+        toolName: "Bash",
+        category: "codeExecution",
+        canApprove: true,
+        reviewerNotes: expect.stringContaining("escalate"),
+      }),
     ]);
   });
 
@@ -217,7 +235,9 @@ describe("list_pending_requests", () => {
 
 describe("respond_to_request — checks", () => {
   const respond = (callerId: string, args: Record<string, unknown>) =>
-    tool("respond_to_request", callerId).handler({ reason: "looks fine", ...args }).then(payload);
+    tool("respond_to_request", callerId)
+      .handler({ reason: "looks fine", ...args })
+      .then(payload);
 
   it("the parent approves a delegated child's prompt", async () => {
     const { resolve, requestId } = park("child");
@@ -239,7 +259,9 @@ describe("respond_to_request — checks", () => {
   it("a deny reaches the child with the reason, without interrupting", async () => {
     const { resolve, requestId } = park("child");
     await expect(respond("parent", { chatId: "child", requestId, allow: false, reason: "use the test script" })).resolves.toMatchObject({ ok: true });
-    expect(resolve).toHaveBeenCalledWith(expect.objectContaining({ behavior: "deny", interrupt: false, message: expect.stringContaining("use the test script") }));
+    expect(resolve).toHaveBeenCalledWith(
+      expect.objectContaining({ behavior: "deny", interrupt: false, message: expect.stringContaining("use the test script") }),
+    );
   });
 
   it("refuses the grandparent — only the direct parent answers", async () => {
@@ -393,14 +415,20 @@ describe("notification", () => {
 describe("start_chat_session — review settings", () => {
   it("a child inherits modelReview from the caller", async () => {
     const sender = stubSender();
-    const result = payload(await tool("start_chat_session", "parent", { review: { modelReview: true, parentAnswers: false } }).handler({ prompt: "go", folder: "/tmp/project" }));
+    const result = payload(
+      await tool("start_chat_session", "parent", { review: { modelReview: true, parentAnswers: false } }).handler({ prompt: "go", folder: "/tmp/project" }),
+    );
     expect(sender.calls[0]).toMatchObject({ modelReview: true });
     expect(result).toMatchObject({ modelReview: true, parentAnswers: false });
   });
 
   it("a caller without modelReview cannot turn it on for a child", async () => {
     const sender = stubSender();
-    await tool("start_chat_session", "parent", { review: { modelReview: false, parentAnswers: false } }).handler({ prompt: "go", folder: "/tmp/project", modelReview: true });
+    await tool("start_chat_session", "parent", { review: { modelReview: false, parentAnswers: false } }).handler({
+      prompt: "go",
+      folder: "/tmp/project",
+      modelReview: true,
+    });
     expect(sender.calls[0].modelReview).toBeUndefined();
   });
 

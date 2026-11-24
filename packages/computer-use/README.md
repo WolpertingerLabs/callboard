@@ -212,10 +212,19 @@ docker build -t callboard/computer-use-desktop:local -f docker/Dockerfile .
 docker/run.sh 7801   # hardened flags, its own network, a fresh token in a private temp file, 127.0.0.1:7801
 ```
 
-- **What `run.sh` prints:** `CALLBOARD_REMOTE_DESKTOP_URL` and `CALLBOARD_REMOTE_DESKTOP_TOKEN_FILE` for Callboard, and the commands to stop it, delete the token and remove the image.
+- **What `run.sh` prints:** `CALLBOARD_SANDBOX_DESKTOP_URL` and `CALLBOARD_SANDBOX_DESKTOP_TOKEN_FILE` for Callboard, and the commands to stop it, delete the token and remove the image.
 - **Failure:** if it fails part-way, it removes the token it created.
 - **Rebuilding:** it builds the image only if it's missing. After pulling changes, run it with `COMPUTER_USE_DESKTOP_REBUILD=1` (or `docker build` again). `docker rmi callboard/computer-use-desktop:local` removes the image.
 - **Labels:** the image carries `org.opencontainers.image.version` (this package's version) and `dev.callboard.computer-use.protocol` (`"2.0"`), named by `SANDBOX_IMAGE_LABELS`, so a host can check compatibility before `docker run`.
+
+**How Callboard wires it.** Callboard registers the container as its own target, `sandbox-desktop` (kind `sandbox` in its viewer API), next to `managed-browser` and `native-desktop`. It never replaces the local desktop.
+
+- **Driver:** a `createRemoteDriver` built from `CALLBOARD_SANDBOX_DESKTOP_URL` and either `tokenFile: CALLBOARD_SANDBOX_DESKTOP_TOKEN_FILE` or `token: CALLBOARD_SANDBOX_DESKTOP_TOKEN` (discouraged). The file is read with `readTokenFile(path, { allowSymlink: true })` at each handshake, so a rotated or symlinked secret works. Empty variables count as unset.
+- **Readiness:** with none set, the target probes unavailable with `readiness: "setup-required"`; with a partial or rejected setting, the same with the reason. A bad token file or an unreachable or incompatible host is the driver's own probe result (its fixed `reason`, with the host's detail only in `operatorDetail`, which Callboard shows only on the signed-in human's status view).
+- **Kinds:** the remote driver's kind is `native-desktop`, so Callboard tells the two desktops apart by target id, never by driver kind.
+- **Permission:** the target is gated on Callboard's own **Sandbox desktop** permission (`sandboxControl`) and nothing else. The container is the boundary, so the file and code permissions have nothing in it to govern, and its unrestricted outbound network is part of what that permission opts into, as for Browser Use. That network reaches this machine's all-interface services too (see above).
+- **Consent:** bound to the endpoint and the `instanceId` the host proved in `POST /hello`, checked before the human is asked and again before opening, and then compared with `openedInstance(sessionId)` for the session that actually opened. A container replaced in between gets nothing.
+- **Not yet:** Callboard doesn't start, stop or sync the container.
 
 **The token is a file, never an environment variable.** An environment variable shows in `docker inspect` and in every `docker exec` shell.
 

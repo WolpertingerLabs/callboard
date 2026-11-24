@@ -766,7 +766,7 @@ export function buildCallboardToolsSpec(
           "Do NOT sleep by running `sleep` as a background Bash command: `wait` shows the user a live countdown they can end early, while a background shell shows nothing and forces this session to be held open until it finishes. " +
           "The spawned chat is automatically linked as a child of THIS chat in the chat parentage tree (see get_chat_tree); pass `role` to label its node, " +
           "or `independent` to spawn it as its own top-level chat instead. " +
-          "The child never gets looser tool permissions than THIS chat: each category is the stricter of what you request (default allow) and this chat's own setting, and browser and computer use are always denied. " +
+          "The child never gets looser tool permissions than THIS chat: each category is the stricter of what you request (default allow) and this chat's own setting, and Browser Use, Computer Use and Sandbox desktop are always denied. " +
           "Where this chat asks, the child asks too — its prompts wait for the user on the board — and the result's `permissions` shows what the child got. " +
           "To review a child's calls yourself, pass `permissions` with \"ask\" on a category THIS chat allows (e.g. {codeExecution: \"ask\"}) together with `parentAnswers: true`: " +
           "the child's prompts in that category come to you (a wait you are in ends early) and you can approve or deny them with respond_to_request. " +
@@ -824,7 +824,7 @@ export function buildCallboardToolsSpec(
             .optional()
             .describe(
               "Per-category permissions for the child (allow / ask / deny; omitted categories default to allow). Each is capped at THIS chat's own setting — you can make the child stricter, never looser. " +
-                "Browser Use and Computer Use are always denied. Use \"ask\" on a category you allow, with parentAnswers: true, to review those calls yourself.",
+                "Browser Use, Computer Use and Sandbox desktop are always denied. Use \"ask\" on a category you allow, with parentAnswers: true, to review those calls yourself.",
             ),
           parentAnswers: z
             .boolean()
@@ -869,8 +869,14 @@ export function buildCallboardToolsSpec(
             // Checked before resolveBranch so a refusal leaves no worktree behind.
             // `permissions` lets the caller ask for STRICTER than allow on an
             // axis (deliberate delegation: the child asks, the parent answers);
-            // the cap still applies, and browser and computer use are always denied.
-            const requested = { ...unattendedPermissions(), ...(args.permissions ?? {}), browserControl: "deny" as const, computerControl: "deny" as const };
+            // the cap still applies, and browser, computer and sandbox use are always denied.
+            const requested = {
+              ...unattendedPermissions(),
+              ...(args.permissions ?? {}),
+              browserControl: "deny" as const,
+              computerControl: "deny" as const,
+              sandboxControl: "deny" as const,
+            };
             const childPermissions = capPermissions(requested, opts?.getPermissions?.() ?? null);
             // No loosening via spawn, for the review chain too: a chat whose
             // asks are screened by the reviewer cannot spawn one whose asks

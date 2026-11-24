@@ -1282,7 +1282,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
     if (chatMeta.defaultPermissions) return normalizePermissions(chatMeta.defaultPermissions);
 
     // Existing legacy chats must not inherit a browser grant from UI defaults.
-    return normalizePermissions({ ...getLocalDefaultPermissions(), browserControl: "deny", computerControl: "deny" });
+    return normalizePermissions({ ...getLocalDefaultPermissions(), browserControl: "deny", computerControl: "deny", sandboxControl: "deny" });
   }, [id, defaultPermissions, chatMeta, chatPermissions]);
 
   // Compute team color map - assigns colors to teams in order of appearance
@@ -4897,8 +4897,12 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
               chatId={computerChatId}
               controller={computerController}
               provider={chatProvider}
-              permission={mostPermissiveLevel(effectivePermissions.browserControl, effectivePermissions.computerControl)}
-              targetPermissions={{ browser: effectivePermissions.browserControl, native: effectivePermissions.computerControl }}
+              permission={mostPermissiveLevel(effectivePermissions.browserControl, effectivePermissions.computerControl, effectivePermissions.sandboxControl)}
+              targetPermissions={{
+                browser: effectivePermissions.browserControl,
+                native: effectivePermissions.computerControl,
+                sandbox: effectivePermissions.sandboxControl,
+              }}
               onPermissions={() => setShowPermissionsModal(true)}
             />
           )

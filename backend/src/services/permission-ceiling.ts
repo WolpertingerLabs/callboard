@@ -13,12 +13,12 @@
  *
  * Order is deny < ask < allow, per axis. Both sides go through
  * `normalizePermissions`, so `null` (a chat created with no permissions) reads
- * as "ask" on every axis and "deny" for browser and computer use — the same policy
+ * as "ask" on every axis and "deny" for browser, computer and sandbox use — the same policy
  * `decidePermission` actually holds that chat to.
  *
  * What is covered:
  * - `start_chat_session` — the child gets the stricter of allow-all and the
- *   caller, per axis; browser and computer use are always denied ({@link capPermissions}).
+ *   caller, per axis; browser, computer and sandbox use are always denied ({@link capPermissions}).
  * - `continue_chat` — refused when the target is looser than the caller on any
  *   axis ({@link axesAboveCeiling}).
  * - Codex targets of both — refused when an explicit `codexSandboxMode`
@@ -52,7 +52,15 @@ import { unattendedPermissions } from "./session-spawn.js";
 const RANK: Record<PermissionLevel, number> = { deny: 0, ask: 1, allow: 2 };
 
 /** Every permission category, in display order. */
-export const AXES = ["fileRead", "fileWrite", "codeExecution", "webAccess", "browserControl", "computerControl"] as const satisfies readonly (keyof DefaultPermissions)[];
+export const AXES = [
+  "fileRead",
+  "fileWrite",
+  "codeExecution",
+  "webAccess",
+  "browserControl",
+  "computerControl",
+  "sandboxControl",
+] as const satisfies readonly (keyof DefaultPermissions)[];
 
 /** Whether `value` is a permission category name. */
 export function isPermissionAxis(value: unknown): value is (typeof AXES)[number] {
@@ -107,7 +115,7 @@ export function codexSandboxRefusal(permissions: DefaultPermissions, explicitSan
 /**
  * Refuse each named tool unless the caller is already allow-all on every
  * built-in axis — i.e. unless {@link unattendedPermissions} fits under it.
- * Browser and computer use are aside: unattended work always denies them.
+ * Browser, computer and sandbox use are aside: unattended work always denies them.
  *
  * For tools that create, schedule or start sessions that run allow-all with
  * nobody watching (job steps, agent runs, cron, triggers). A caller that is

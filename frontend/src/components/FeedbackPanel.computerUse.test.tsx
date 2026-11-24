@@ -129,3 +129,42 @@ it("a lookalike name or input-supplied trust markers cannot render the enablemen
   expect(screen.queryByRole("button", { name: "Enable desktop control" })).toBeNull();
   expect(screen.getByRole("button", { name: "Allow" })).toBeTruthy();
 });
+
+it("titles a Sandbox desktop request as such and says it is a container desktop, not this machine", () => {
+  const onRespond = vi.fn();
+  render(
+    <FeedbackPanel
+      action={{
+        type: "permission_request",
+        toolName: "mcp__computer_use__cu_request_control",
+        requestId: "server-id",
+        humanOnly: true,
+        controlRequest: true,
+        input: { kind: "sandbox", target: "sandbox 127.0.0.1:7801", reason: "Test the signup flow", permission: "allow" },
+      }}
+      onRespond={onRespond}
+    />,
+  );
+  expect(screen.getByText("Enable Sandbox desktop control", { selector: "strong" })).toBeTruthy();
+  expect(screen.queryByText(/Enable browser control/)).toBeNull();
+  const note = screen.getByText(/The Sandbox desktop is a Linux desktop in a hardened container/).textContent!;
+  expect(note).toContain("not this machine");
+  // What it is today: shared and persistent, with an open network that reaches this machine's services.
+  expect(note).toContain("shared by every chat and kept until the container is restarted");
+  expect(note).toContain("later sessions and other chats can see");
+  expect(note).toContain("any service on this machine that listens on all interfaces, Callboard included");
+  expect(note).not.toMatch(/disposable|fresh|reset/i);
+  expect(screen.queryByText(/existing app windows on the service host/)).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Enable Sandbox desktop control" }));
+  expect(onRespond).toHaveBeenCalledWith(true);
+});
+
+it("says a GUI action on the Sandbox desktop is on the container, not this machine", () => {
+  render(<FeedbackPanel action={{ ...guiAction, input: { ...guiAction.input, kind: "sandbox" } }} onRespond={() => {}} />);
+  expect(screen.getByText(/This chat asks before every GUI action/).textContent).toContain(
+    "Sandbox desktop, a Linux desktop in a hardened container, isolated from this machine's files and credentials, but shared by every chat",
+  );
+  cleanup();
+  render(<FeedbackPanel action={{ ...guiAction, input: { ...guiAction.input, kind: "browser" } }} onRespond={() => {}} />);
+  expect(screen.getByText(/This chat asks before every GUI action/).textContent).not.toContain("Sandbox desktop");
+});
