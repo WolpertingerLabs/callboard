@@ -17,10 +17,14 @@ import { fileURLToPath } from 'node:url';
 
 import type {
   GoogleAuthMode,
+  GoogleCallerConfig,
   GoogleServiceId,
+  OAuth2Config,
   OAuth2SecretRefs,
+  Route,
   TestConnectionConfig,
 } from './config.js';
+import { isValidOAuth2Subject, loadConnection } from './connections.js';
 
 /** Catalog order. Composition walks services in this order, whatever the
  *  key order of a caller's selection. */
@@ -264,5 +268,224 @@ export function validateGoogleCatalog(raw: unknown): asserts raw is GoogleCatalo
         fail(`${where}.when`, `names an unknown level ${svc}: ${JSON.stringify(level)}`);
       }
     }
+  });
+}
+
+// ── Selection ─────────────────────────────────────────────────────────────
+
+const SELECTION_FIELDS = ['auth', 'services', 'subject'];
+/** Levels people may expect for Drive that the catalog refuses on purpose. */
+const REFUSED_DRIVE_LEVELS = new Set(['full', 'edit', 'write']);
+
+/**
+ * Validate a caller's `google` block (hand-edited JSON). Returns a fresh
+ * object with services in catalog order. Throws with the documented messages
+ * (plans/google-unified.md, "Validation rules and messages"). Only own
+ * properties are read, so `__proto__`/`constructor` never pick up
+ * Object.prototype.
+ */
+export function validateGoogleSelection(raw: unknown): GoogleCallerConfig {
+  const catalog = loadGoogleCatalog();
+  if (!isObj(raw)) {
+    throw new Error(
+      'google must be an object: { "auth": "user" | "service-account", "services": { … } }',
+    );
+  }
+  for (const key of Object.keys(raw)) {
+    if (!SELECTION_FIELDS.includes(key)) {
+      throw new Error(
+        `google has unknown field "${key}" (allowed: ${SELECTION_FIELDS.join(', ')})`,
+      );
+    }
+  }
+  const auth = Object.hasOwn(raw, 'auth') ? raw.auth : undefined;
+  if (auth !== 'user' && auth !== 'service-account') {
+    throw new Error('google.auth must be "user" or "service-account"');
+  }
+  const known = GOOGLE_SERVICE_IDS.join(', ');
+  const services = Object.hasOwn(raw, 'services') ? raw.services : undefined;
+  if (!isObj(services) || Object.keys(services).length === 0) {
+    throw new Error(`google.services must name at least one service (${known})`);
+  }
+  const picked = new Map<GoogleServiceId, string>();
+  for (const [id, levelId] of Object.entries(services)) {
+    if (!(GOOGLE_SERVICE_IDS as string[]).includes(id)) {
+      throw new Error(
+        `google.services: unknown service "${id}" (known: ${known}). For other Google APIs, ` +
+          'define a custom connector: CONNECTIONS.md → Other Google APIs',
+      );
+    }
+    const svc = id as GoogleServiceId;
+    const levels = catalog.services[svc].levels;
+    if (svc === 'drive' && typeof levelId === 'string' && REFUSED_DRIVE_LEVELS.has(levelId)) {
+      throw new Error(
+        `google.services.drive: "${levelId}" is not offered: the drive scope would also make ` +
+          'the Sheets read level writable and reach every file. Use "read" or "file", or a ' +
+          'custom connector',
+      );
+    }
+    if (typeof levelId !== 'string' || !Object.hasOwn(levels, levelId)) {
+      throw new Error(
+        `google.services.${svc}: unknown level ${JSON.stringify(levelId)} ` +
+          `(levels: ${Object.keys(levels).join(', ')})`,
+      );
+    }
+    if (!levels[levelId].auth.includes(auth)) {
+      const available = Object.entries(levels)
+        .filter(([, l]) => l.auth.includes(auth))
+        .map(([lid]) => lid);
+      throw new Error(
+        `google.services.${svc}: level "${levelId}" is not available with auth "${auth}" ` +
+          `(available: ${available.join(', ') || 'none'})`,
+      );
+    }
+    picked.set(svc, levelId);
+  }
+  let subject: string | undefined;
+  if (Object.hasOwn(raw, 'subject')) {
+    if (auth === 'user') throw new Error('google.subject is only used with auth "service-account"');
+    if (!isValidOAuth2Subject(raw.subject)) {
+      throw new Error('google.subject must be an email address');
+    }
+    subject = raw.subject;
+  }
+  if (auth === 'service-account' && subject === undefined) {
+    for (const [svc, levelId] of picked) {
+      if (catalog.services[svc].levels[levelId].subjectRequired) {
+        throw new Error(
+          `google.services.${svc} needs google.subject with auth "service-account": a service ` +
+            'account has no mailbox, so it must act as a Workspace user (domain-wide delegation)',
+        );
+      }
+    }
+  }
+  const ordered: Partial<Record<GoogleServiceId, string>> = {};
+  for (const svc of GOOGLE_SERVICE_IDS) {
+    const levelId = picked.get(svc);
+    if (levelId !== undefined) ordered[svc] = levelId;
+  }
+  return { auth, services: ordered, ...(subject !== undefined && { subject }) };
+}
+
+interface PickedLevel {
+  svc: GoogleServiceId;
+  levelId: string;
+  level: GoogleLevel;
+}
+
+/** The selected levels, in catalog order. Assumes a validated selection. */
+function pickedLevels(sel: GoogleCallerConfig): PickedLevel[] {
+  const catalog = loadGoogleCatalog();
+  const out: PickedLevel[] = [];
+  for (const svc of GOOGLE_SERVICE_IDS) {
+    const levelId = Object.hasOwn(sel.services, svc) ? sel.services[svc] : undefined;
+    if (levelId === undefined) continue;
+    const level = Object.hasOwn(catalog.services[svc].levels, levelId)
+      ? catalog.services[svc].levels[levelId]
+      : undefined;
+    if (!level) throw new Error(`google.services.${svc}: unknown level "${levelId}"`);
+    out.push({ svc, levelId, level });
+  }
+  return out;
+}
+
+const unique = <T>(items: T[]): T[] => [...new Set(items)];
+
+/** The scopes a selection's refresh token must be consented for: the sorted union. */
+export function googleConsentScopes(sel: GoogleCallerConfig): string[] {
+  return unique(pickedLevels(sel).flatMap((p) => p.level.scopes)).sort();
+}
+
+/**
+ * Turn the base `google` template and a validated selection into one ordinary
+ * OAuth2 route: the union of the chosen levels' scopes and allowlists, the
+ * selected mode's credentials only, and one test per service.
+ */
+export function composeGoogleRoute(base: Route, sel: GoogleCallerConfig): Route {
+  const catalog = loadGoogleCatalog();
+  const mode = catalog.auth[sel.auth];
+  const picked = pickedLevels(sel);
+  if (picked.length === 0) throw new Error('google.services must name at least one service');
+
+  const scopes = unique(picked.flatMap((p) => p.level.scopes));
+  // Catalog order, exclusions in place. Services' patterns never overlap
+  // (google-catalog.test.ts), so the order doesn't change what matches.
+  const allowedEndpoints = unique(picked.flatMap((p) => p.level.allowedEndpoints));
+
+  const secrets: Record<string, string> = {};
+  for (const name of Object.values(mode.secretRefs)) {
+    if (typeof name !== 'string') continue;
+    const value =
+      base.secrets && Object.hasOwn(base.secrets, name) ? base.secrets[name] : undefined;
+    if (value === undefined) {
+      throw new Error(`the base "google" template has no secret ${name}`);
+    }
+    secrets[name] = value;
+  }
+
+  const oauth2: OAuth2Config =
+    sel.auth === 'user'
+      ? {
+          tokenUrl: catalog.tokenUrl,
+          grant: 'refresh_token',
+          clientAuth: 'body',
+          secretRefs: { ...mode.secretRefs },
+          scopes,
+        }
+      : {
+          tokenUrl: catalog.tokenUrl,
+          grant: 'jwt_bearer',
+          secretRefs: { ...mode.secretRefs },
+          scopes,
+          ...(sel.subject !== undefined && { subject: sel.subject }),
+        };
+
+  const authText =
+    sel.auth === 'user'
+      ? 'user OAuth'
+      : sel.subject !== undefined
+        ? 'service account, delegated'
+        : 'service account';
+  const list = picked.map((p) => `${p.svc} ${p.levelId}`).join(', ');
+  const details = picked.map((p) => `${p.svc} ${p.levelId}: ${p.level.summary}.`).join(' ');
+
+  return {
+    alias: 'google',
+    name: 'Google',
+    description: `Google (${authText}): ${list}. ${details}`,
+    ...(base.docsUrl !== undefined && { docsUrl: base.docsUrl }),
+    ...(base.stability !== undefined && { stability: base.stability }),
+    ...(base.category !== undefined && { category: base.category }),
+    secrets,
+    oauth2,
+    allowedEndpoints,
+    testConnections: picked.map((p) => ({
+      name: p.svc,
+      level: p.levelId,
+      ...structuredClone(p.level.testConnection),
+    })),
+  };
+}
+
+/**
+ * One composed `google` route per auth mode, each selecting every level that
+ * mode offers. For the agent-path policy gates only (tool-dispatch.ts): they
+ * need the credential names of both modes, whatever a caller has selected.
+ */
+export function googleCredentialRoutes(base: Route = loadConnection('google')): Route[] {
+  const catalog = loadGoogleCatalog();
+  return GOOGLE_AUTH_MODES.map((auth) => {
+    const services: Partial<Record<GoogleServiceId, string>> = {};
+    for (const svc of GOOGLE_SERVICE_IDS) {
+      const levelId = Object.entries(catalog.services[svc].levels).find(([, l]) =>
+        l.auth.includes(auth),
+      )?.[0];
+      if (levelId !== undefined) services[svc] = levelId;
+    }
+    return composeGoogleRoute(base, {
+      auth,
+      services,
+      ...(auth === 'service-account' && { subject: 'policy-gate@example.invalid' }),
+    });
   });
 }

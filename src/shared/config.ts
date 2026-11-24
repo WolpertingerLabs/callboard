@@ -486,6 +486,9 @@ export const OAUTH2_ROTATED_TOKEN_IDLE_MS = 30 * 24 * 60 * 60 * 1000;
 /** Largest token-endpoint response body read, in bytes. */
 export const OAUTH2_TOKEN_RESPONSE_MAX_BYTES = 64 * 1024;
 
+/** One of a route's `testConnections`: a test request with a name to report it under. */
+export type NamedTestConnection = TestConnectionConfig & { name: string; level?: string };
+
 /** A single route / connector definition — scopes secrets and headers to a set of endpoints */
 export interface Route {
   /** Alias for referencing this connector from caller connection lists.
@@ -566,6 +569,13 @@ export interface Route {
   /** Pre-configured test request for verifying connection credentials.
    *  Must be a non-destructive, read-only endpoint with zero side effects. */
   testConnection?: TestConnectionConfig;
+  /** Several named tests, run by `test_connection` and reported per name
+   *  (the composed `google` route has one per selected service). */
+  testConnections?: NamedTestConnection[];
+  /** Built-in templates only: the template is a base that resolution
+   *  composes per caller (`'google'`: from `callers.<alias>.google`). The
+   *  base itself matches nothing. Refused on a custom connector. */
+  composed?: 'google';
   /** Pre-configured test for verifying ingestor / event listener configuration.
    *  Set to null to explicitly indicate this listener cannot be tested.
    *  Omitted if the connection has no ingestor. */
@@ -614,6 +624,8 @@ export interface ResolvedRoute {
   requestTimeoutMs?: number;
   /** Pre-configured test request for verifying connection credentials (carried from config) */
   testConnection?: TestConnectionConfig;
+  /** Several named tests (carried from config). See Route.testConnections. */
+  testConnections?: NamedTestConnection[];
   /** Pre-configured test for verifying ingestor / event listener (carried from config) */
   testIngestor?: TestIngestorConfig | null;
   /** Listener configuration schema for UI rendering (carried from config) */
@@ -1526,6 +1538,7 @@ export function resolveRoutes(
       resolveSecretsInBody: route.resolveSecretsInBody ?? false,
       ...(route.requestTimeoutMs !== undefined && { requestTimeoutMs: route.requestTimeoutMs }),
       ...(route.testConnection !== undefined && { testConnection: route.testConnection }),
+      ...(route.testConnections !== undefined && { testConnections: route.testConnections }),
       ...(route.testIngestor !== undefined && { testIngestor: route.testIngestor }),
       ...(route.listenerConfig !== undefined && { listenerConfig: route.listenerConfig }),
       ...(route.ingestor !== undefined && { ingestorConfig: route.ingestor }),
