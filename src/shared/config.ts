@@ -448,6 +448,22 @@ export interface OAuth2CallerOverride {
   subject?: string;
 }
 
+/** How a caller's `google` connection authenticates. */
+export type GoogleAuthMode = 'user' | 'service-account';
+
+/** A service of the built-in `google` connection (src/connections/google-catalog.json). */
+export type GoogleServiceId = 'gmail' | 'calendar' | 'drive' | 'sheets' | 'docs' | 'slides';
+
+/** Admin-only selection for the built-in `google` connection. Validated by
+ *  validateGoogleSelection() (shared/google.ts). */
+export interface GoogleCallerConfig {
+  auth: GoogleAuthMode;
+  /** service id → level id, both from the catalog. Non-empty. */
+  services: Partial<Record<GoogleServiceId, string>>;
+  /** service-account only: the Workspace user to act as (JWT `sub`). */
+  subject?: string;
+}
+
 /** Longest (ms) one token-endpoint request may take. A request's own
  *  remaining budget can make it shorter. */
 export const OAUTH2_TOKEN_TIMEOUT_MS = 10_000;
