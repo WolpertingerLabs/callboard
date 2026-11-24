@@ -18,113 +18,24 @@ import type {
   AdminGoogleSelectionConfig,
 } from "drawlatch-admin-types";
 import { shortScope } from "./AuthSummary";
-
-export interface GoogleDraft {
-  auth: AdminGoogleAuthMode;
-  /** service id → level id; a missing service is Off. */
-  services: Record<string, string>;
-  /** Kept while switching modes; only sent in service-account mode. */
-  subject: string;
-}
-
-type Level = AdminGoogleCatalog["services"][number]["levels"][number];
+import {
+  consentScopesOf,
+  draftProblem,
+  notesFor,
+  pickedLevels,
+  selectionFrom,
+  type GoogleDraft,
+} from "../utils/googleSelection";
 
 const MODE_LABELS: Record<AdminGoogleAuthMode, string> = {
   user: "User OAuth",
   "service-account": "Service account",
 };
-
-export function draftFrom(sel: AdminGoogleSelectionConfig | null): GoogleDraft {
-  return {
-    auth: sel?.auth ?? "user",
-    services: { ...(sel?.services ?? {}) },
-    subject: sel?.subject ?? "",
-  };
-}
-
-/** The PUT body: services in catalog order, subject only in SA mode. */
-export function selectionFrom(
-  catalog: AdminGoogleCatalog,
-  d: GoogleDraft,
-): AdminGoogleSelectionConfig {
-  const services: Record<string, string> = {};
-  for (const svc of catalog.services) {
-    if (Object.hasOwn(d.services, svc.id)) services[svc.id] = d.services[svc.id];
-  }
-  const subject = d.subject.trim();
-  return {
-    auth: d.auth,
-    services,
-    ...(d.auth === "service-account" && subject !== "" && { subject }),
-  };
-}
-
-export function sameSelection(
-  a: AdminGoogleSelectionConfig | null,
-  b: AdminGoogleSelectionConfig | null,
-): boolean {
-  return JSON.stringify(a) === JSON.stringify(b);
-}
-
-/** Each selected level, in catalog order. */
-export function pickedLevels(
-  catalog: AdminGoogleCatalog,
-  sel: AdminGoogleSelectionConfig,
-): { service: string; name: string; level: Level }[] {
-  const out: { service: string; name: string; level: Level }[] = [];
-  for (const svc of catalog.services) {
-    const levelId = Object.hasOwn(sel.services, svc.id) ? sel.services[svc.id] : undefined;
-    const level = svc.levels.find((l) => l.id === levelId);
-    if (level) out.push({ service: svc.id, name: svc.name, level });
-  }
-  return out;
-}
-
-/** The sorted union of the selected levels' scopes (googleConsentScopes). */
-export function consentScopesOf(
-  catalog: AdminGoogleCatalog,
-  sel: AdminGoogleSelectionConfig,
-): string[] {
-  return [
-    ...new Set(pickedLevels(catalog, sel).flatMap((p) => p.level.scopes)),
-  ].sort();
-}
-
-/** What would stop the daemon accepting the draft, or null. */
-export function draftProblem(
-  catalog: AdminGoogleCatalog,
-  d: GoogleDraft,
-): string | null {
-  const sel = selectionFrom(catalog, d);
-  if (Object.keys(sel.services).length === 0) {
-    return "Choose a level for at least one service.";
-  }
-  if (d.auth === "service-account") {
-    const subject = d.subject.trim();
-    if (subject !== "" && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(subject)) {
-      return "The subject must be an email address.";
-    }
-    const needs = pickedLevels(catalog, sel).filter((p) => p.level.subjectRequired);
-    if (subject === "" && needs.length > 0) {
-      return `${needs.map((p) => p.name).join(", ")} needs a subject with a service account: it has no mailbox, so it must act as a Workspace user.`;
-    }
-  }
-  return null;
-}
-
-/** The catalog notes whose `when` the selection contains. */
-export function notesFor(
-  catalog: AdminGoogleCatalog,
-  sel: AdminGoogleSelectionConfig,
-): string[] {
-  return catalog.crossScopeNotes
-    .filter((n) =>
-      Object.entries(n.when).every(
-        ([svc, level]) => Object.hasOwn(sel.services, svc) && sel.services[svc] === level,
-      ),
-    )
-    .map((n) => n.text);
-}
+/** For running text: "not available with a service account". */
+const MODE_PHRASES: Record<AdminGoogleAuthMode, string> = {
+  user: "user OAuth",
+  "service-account": "a service account",
+};
 
 export default function GoogleSelectionEditor({
   catalog,
@@ -202,7 +113,7 @@ export default function GoogleSelectionEditor({
         <div className="dl-gsel-warn" role="status">
           <AlertTriangle size={12} />
           <span>
-            Turned off (not available with {MODE_LABELS[draft.auth].toLowerCase()}
+            Turned off (not available with {MODE_PHRASES[draft.auth]}
             ): <span className="mono">{dropped.join(", ")}</span>
           </span>
         </div>
@@ -253,7 +164,10 @@ export default function GoogleSelectionEditor({
                         title={
                           available
                             ? l.scopes.map(shortScope).join(", ")
-                            : "not available with a service account"
+                            : // From the level's own auth list, not a fixed mode.
+                              `not available with ${MODE_PHRASES[draft.auth]} (only with ${l.auth
+                                .map((a) => MODE_PHRASES[a])
+                                .join(" or ")})`
                         }
                       >
                         <input

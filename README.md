@@ -632,10 +632,10 @@ Edits, value replacements, and deletes are sent with the vault revision the page
 
 - **Auth mode:** switching it swaps the secrets section below to that mode's credentials (saved through `set_secrets` as the admin, like any card) and turns off any level the new mode doesn't offer, saying which.
 - **Services:** one row per service with `Off` and its levels, each with its summary, all taken from the catalog (`GET /google/catalog`). A level the mode doesn't offer is disabled ("not available with a service account").
-- **Subject** (service account): the Workspace user to act as. Required, with an inline error, when Gmail is selected.
+- **Subject** (service account): the Workspace user to act as. Required, with an inline error, when Gmail is selected; checked with the daemon's own rule.
 - **Consent scopes:** the selection's scopes as you click, as a `SCOPES="…"` line for the refresh-token recipe (user OAuth) or a comma-separated list for the Admin console's domain-wide delegation entry (service account), with a copy button. A change that removes scopes says the old token will be refused until it's re-consented.
 - **Notes:** each cross-service scope note that applies (for example `sheets: read` with `drive: file`).
-- **Save:** if the new selection asks for scopes the caller doesn't have, or sets or changes the subject, a confirmation lists each added level's summary and the scopes to re-consent; then the selection is saved (`PUT /callers/:alias/google`), and the dialog offers to run the test. **Remove this caller's Google selection** deletes the block; an enabled `google` is then dropped for the caller until a selection is saved.
+- **Save:** if the change could let the agent reach more (a scope the caller doesn't have, any change of auth mode, or a subject set or changed), a confirmation lists why (each added level's summary, the mode change, the subject) and the scopes to re-consent; then the selection is saved (`PUT /callers/:alias/google`), and the dialog offers to run the test. **Remove this caller's Google selection** deletes the block; an enabled `google` is then dropped for the caller until a selection is saved.
 
 Changes apply to the caller's open sessions at once. Each save or removal writes a `google_selection` line to the daemon's `[audit]` log with the before and after modes and services and whether a subject is set, never the subject itself.
 

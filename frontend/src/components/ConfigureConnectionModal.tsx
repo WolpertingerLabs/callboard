@@ -18,15 +18,16 @@ import type {
 import { api, isDaemonDown } from "../api";
 import { AuthSummary, SECRET_HELP, shortScope } from "./AuthSummary";
 import ConfirmDialog from "./ConfirmDialog";
-import GoogleSelectionEditor, {
-  consentScopesOf,
+import GoogleSelectionEditor from "./GoogleSelectionEditor";
+import {
+  addedScopes,
   draftFrom,
   draftProblem,
-  pickedLevels,
   sameSelection,
   selectionFrom,
+  wideningReasons,
   type GoogleDraft,
-} from "./GoogleSelectionEditor";
+} from "../utils/googleSelection";
 import { TestResultView, toOutcome, type TestOutcome } from "./TestResult";
 import "./ConfigureConnectionModal.css";
 
@@ -187,11 +188,21 @@ export default function ConfigureConnectionModal({
       setGoogleView(put.data);
       setDraft(draftFrom(put.data.selection));
     }
+    const selectionSaved = selectionDirty && draftSelection !== null;
     if (Object.keys(pendingSecrets).length > 0) {
       // Secrets still go through set_secrets with origin "admin".
       const result = await api.setSecrets(caller, connection.alias, pendingSecrets);
       if (!result.ok) {
-        setSave({ phase: "error", message: result.error });
+        if (selectionSaved) {
+          // The selection did save: refresh the card, and say which half failed.
+          onSaved();
+          setSave({
+            phase: "error",
+            message: `Selection saved, but the secrets were not: ${result.error}`,
+          });
+        } else {
+          setSave({ phase: "error", message: result.error });
+        }
         return;
       }
       setValues({});
@@ -214,18 +225,13 @@ export default function ConfigureConnectionModal({
   const handleSave = useCallback(async () => {
     if (!hasChanges || selectionProblem) return;
     if (selectionDirty && catalog && draftSelection) {
-      // Confirm before widening: list each level that brings a new scope.
-      const before = googleView?.consentScopes ?? [];
-      const added = consentScopesOf(catalog, draftSelection).filter(
-        (s) => !before.includes(s),
+      // Confirm whenever reach could grow: a new scope, a mode change, or a
+      // subject set or changed.
+      const lines = wideningReasons(
+        catalog,
+        googleView?.selection ?? null,
+        draftSelection,
       );
-      const lines = pickedLevels(catalog, draftSelection)
-        .filter((p) => p.level.scopes.some((s) => added.includes(s)))
-        .map((p) => `${p.service} · ${p.level.id}: ${p.level.summary}`);
-      const subject = draftSelection.subject;
-      if (subject !== undefined && subject !== googleView?.selection?.subject) {
-        lines.push(`acts as ${subject} for every selected service`);
-      }
       if (lines.length > 0) {
         setWiden(lines);
         return;
@@ -261,11 +267,9 @@ export default function ConfigureConnectionModal({
     setTesting(false);
   }, [caller, connection.alias]);
 
-  const addedScopes =
+  const newScopes =
     widen && catalog && draftSelection
-      ? consentScopesOf(catalog, draftSelection).filter(
-          (s) => !(googleView?.consentScopes ?? []).includes(s),
-        )
+      ? addedScopes(catalog, googleView?.selection ?? null, draftSelection)
       : [];
 
   const hasAnySecret = requiredSecrets.length > 0 || optionalSecrets.length > 0;
@@ -523,21 +527,21 @@ export default function ConfigureConnectionModal({
             description={
               <>
                 <p>
-                This selection asks for access the caller doesn&apos;t have
-                now. Its agent will be able to use:
+                This change can let the caller&apos;s agent reach more than it
+                can now:
               </p>
                 <ul className="dl-gsel-widen-list">
                   {widen.map((line) => (
                     <li key={line}>{line}</li>
                   ))}
                 </ul>
-                {addedScopes.length > 0 && (
+                {newScopes.length > 0 && (
                   <p>
                     {draft?.auth === "service-account"
                       ? "The Admin console's domain-wide delegation entry must include: "
                       : "The refresh token must be re-consented for: "}
                     <span className="mono">
-                      {addedScopes.map(shortScope).join(", ")}
+                      {newScopes.map(shortScope).join(", ")}
                     </span>
                   </p>
                 )}
