@@ -1648,7 +1648,8 @@ Options:
   --full         Include a live handshake test (requires server running)
   -h, --help     Show this help message
 
-Checks config files, keys, peer directories, secrets, the vault, and server health.
+Checks config files, keys, peer directories, secrets, connections the daemon drops for
+a caller (removed template IDs, invalid google selections, …), the vault, and server health.
 Each failure includes the exact command to fix it.
 `);
 }

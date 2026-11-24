@@ -10,7 +10,7 @@ Then set the secrets for that caller. Caller `default` reads `GITHUB_TOKEN` from
 
 ## Available connections
 
-**Bold** secrets are needed for API calls. The others are used only by the event listener, if at all. `doctor`, `config`, and the dashboard flag missing secrets only for built-in templates, and only those used in headers, so they won't catch a missing Telegram or Trello token. (`aws` and the OAuth2 templates are the exceptions: their signing keys and `secretRefs` count as required.) Set `<ALIAS>_<NAME>` even where `doctor` prints the bare name. Header secrets, listener `signatureSecret`s, and Slack's `SLACK_APP_TOKEN` are [withheld](README.md#header-only-secrets): the agent can't reference them as `${NAME}` in a request, and they're scrubbed from response bodies and listener events. That includes public values sent in headers, such as Twitch's `TWITCH_CLIENT_ID` and Reddit's `REDDIT_USER_AGENT`, which appear in responses as `${NAME}`; a custom connector can opt one out with `placeholderSecrets`. Listener types are described in [INGESTORS.md](INGESTORS.md).
+**Bold** secrets are needed for API calls. The others are used only by the event listener, if at all. `doctor`, `config`, and the dashboard flag missing secrets only for built-in templates, and only those used in headers, so they won't catch a missing Telegram or Trello token. (`aws` and `google` are the exceptions: their signing keys and credentials count as required, for `google` those of the auth mode the caller selects.) Set `<ALIAS>_<NAME>` even where `doctor` prints the bare name. Header secrets, listener `signatureSecret`s, and Slack's `SLACK_APP_TOKEN` are [withheld](README.md#header-only-secrets): the agent can't reference them as `${NAME}` in a request, and they're scrubbed from response bodies and listener events. That includes public values sent in headers, such as Twitch's `TWITCH_CLIENT_ID` and Reddit's `REDDIT_USER_AGENT`, which appear in responses as `${NAME}`; a custom connector can opt one out with `placeholderSecrets`. Listener types are described in [INGESTORS.md](INGESTORS.md).
 
 | Connection | API | Secrets | Auth | Listener |
 | --- | --- | --- | --- | --- |
@@ -79,7 +79,7 @@ A secret that isn't set is sent as the literal placeholder (for example, `Bearer
 
 Some GitHub endpoints answer with a 302 to another host: release-asset downloads with `Accept: application/octet-stream` (to a `*.githubusercontent.com` host), `tarball` and `zipball` (to `codeload.github.com`), and Actions log and artifact downloads (to a storage host). Those hosts aren't allowlisted, so drawlatch [doesn't follow](README.md#redirects) the redirect: you get the 302, and its `Location` is a short-lived, pre-signed URL you can download without credentials. Don't add those hosts to `allowedEndpoints` to make the redirect work: every request to an allowlisted URL gets the connection's `Authorization: Bearer ${GITHUB_TOKEN}` header, and those hosts would then receive the token on direct requests.
 
-**Google / Google AI.** `google` covers Workspace and other Google APIs with a static OAuth token you supply and refresh yourself, with whatever scopes it has. Prefer the [scoped Google templates](#google-scoped), whose tokens drawlatch mints for one scope and one service. Allowlisted hosts: `www`, `sheets`, `docs`, `drive`, `calendar-json`, `gmail`, `slides`, `people`, `tasks`, `admin`, `chat`, `forms`, `youtube`, `youtubeanalytics`, and `cloudresourcemanager` `.googleapis.com`. Add others with a custom connector that uses the same secret. `google-ai` is Gemini (`generativelanguage.googleapis.com`, both `v1` and `v1beta`).
+**Google / Google AI.** `google` is Gmail, Calendar, Drive, Sheets, Docs, and Slides through one credential, with the services and levels set per caller: see [Google](#google). Other Google APIs need a custom connector: see [Other Google APIs](#other-google-apis). The static-token `google` template that read `GOOGLE_API_TOKEN` and the per-scope `google-*` templates were removed; a caller that still lists one of them has that connection dropped, with a message saying what replaces it. `google-ai` is Gemini (`generativelanguage.googleapis.com`, both `v1` and `v1beta`).
 
 **Lichess.** Allowlists `explorer.lichess.ovh` (opening explorer) and `lichess.org/api`. The token is sent on every request. Lichess rejects an invalid token even on public endpoints, so set a [personal access token](https://lichess.org/account/oauth/token).
 
@@ -105,35 +105,67 @@ Some GitHub endpoints answer with a 302 to another host: release-asset downloads
 
 **X.** Uses an app-only Bearer token from the [developer portal](https://developer.x.com/en/portal/dashboard). `api.x.com` and `api.twitter.com` are allowlisted. Use `api.x.com`: if `api.twitter.com` redirects there, it's a [cross-origin redirect](README.md#redirects), and the `Authorization` header doesn't follow it, so the request fails with 401. The listener searches recent tweets for `X_SEARCH_QUERY`, which is not URL-encoded, so encode it yourself. It fails without one. API access and limits depend on your X tier.
 
-### Google (scoped)
+### Google
 
-The `google-*` templates give an agent one Google API at one scope. Drawlatch mints short-lived access tokens itself through [OAuth2 token minting](README.md#oauth2-token-minting). The agent never sees the client secret, the refresh token, the service-account key, or the access token, and can't ask for more scope than the template's. Each allowlist covers only that service's REST paths. None allows `oauth2.googleapis.com`, `tokeninfo`, `userinfo`, or a `/batch` endpoint (a batch request carries sub-requests that path rules can't see).
+The `google` connection gives an agent Gmail, Calendar, Drive, Sheets, Docs, and Slides through one credential. The operator picks, per caller, how it authenticates and one level for each service it may use. Drawlatch then mints short-lived access tokens for exactly the scopes of those levels, through [OAuth2 token minting](README.md#oauth2-token-minting). The agent never sees the client secret, the refresh token, the service-account key, or the access token. It can't choose its services or ask for more scope: the selection is admin config that no tool reads or writes. Each level's allowlist covers only that service's REST paths. None allows `oauth2.googleapis.com`, `tokeninfo`, `userinfo`, or a `/batch` endpoint (a batch request carries sub-requests that path rules can't see).
 
-| Template | Scope (`https://www.googleapis.com/auth/…`) | Reaches | `test_connection` |
-| --- | --- | --- | --- |
-| `google-gmail-metadata` | `gmail.metadata` | `users/me`: `profile`, `labels`, `messages`, `threads`, `history` | `GET users/me/profile` |
-| `google-gmail-readonly`, `-sa` | `gmail.readonly` | The above, plus `messages/*/attachments/*` and `drafts` | `GET users/me/profile` |
-| `google-calendar-freebusy` | `calendar.freebusy` | `POST /freeBusy` only | `POST /freeBusy` for `primary` over a fixed hour |
-| `google-calendar-readonly`, `-sa` | `calendar.readonly` | `users/me/calendarList`, `users/me/settings`, `calendars/{id}`, `calendars/{id}/events`, `events/{id}`, `events/{id}/instances`, `freeBusy`, `colors` | `GET users/me/calendarList?maxResults=1` |
-| `google-drive-readonly`, `-sa` | `drive.readonly` | `files`, `files/{id}`, `files/{id}/export`, `files/{id}/revisions`, `about`, `drives`, `changes`, `changes/startPageToken` | `GET about?fields=user` |
-| `google-drive-file` | `drive.file` | `files`, `files/{id}`, `files/{id}/export`, `files/{id}/copy`, `upload/drive/v3/files`, `about` (not `permissions`) | `GET about?fields=user` |
-| `google-sheets-readonly`, `-sa` | `spreadsheets.readonly` | `sheets.googleapis.com/v4/spreadsheets/**` | `GET` Google's public sample spreadsheet, `fields=spreadsheetId` |
-| `google-sheets`, `-sa` | `spreadsheets` (read and edit) | On `sheets.googleapis.com/v4/spreadsheets`: create (`POST` the bare path; needs user OAuth or, for `-sa`, a `subject`), `{id}` and `{id}:batchUpdate` / `:getByDataFilter`, `{id}/values/{range}` (and `:append`, `:clear`), `{id}/values:batchGet` / `:batchUpdate` / `:batchClear` and their `…ByDataFilter` forms, `{id}/sheets/{sheetId}:copyTo`, `{id}/developerMetadata/{metadataId}`, `{id}/developerMetadata:search`. Nothing on Drive | Same as `google-sheets-readonly` |
-| `google-docs`, `-sa` | `documents` (read and edit) | On `docs.googleapis.com/v1/documents`: create (`POST` the bare path; needs user OAuth or, for `-sa`, a `subject`), `{id}` (get), `{id}:batchUpdate`. Nothing on Drive | `GET` the public sample document from Google's Docs quickstart, `fields=documentId` |
-| `google-slides`, `-sa` | `presentations` (read and edit) | On `slides.googleapis.com/v1/presentations`: create (`POST` the bare path; needs user OAuth or, for `-sa`, a `subject`), `{id}` (get), `{id}:batchUpdate`, `{id}/pages/{pageId}`, `{id}/pages/{pageId}/thumbnail` (returns an image URL drawlatch doesn't fetch; see [Template notes](#template-notes)). Nothing on Drive | `GET` the public sample presentation from Google's Slides quickstart, `fields=presentationId` |
+```json
+{
+  "callers": {
+    "household": {
+      "connections": ["google"],
+      "selfManage": false,
+      "google": {
+        "auth": "user",
+        "services": { "sheets": "edit", "docs": "edit", "slides": "edit", "drive": "read" }
+      }
+    }
+  }
+}
+```
 
-**Which flavour.** The plain templates use **user OAuth**: one consent from a Google account, stored as a refresh token. The `-sa` twins use a **service account** and have the same scope, allowlist, and test as their twin (a test checks they don't drift). Without a `subject`, a service account reaches what is shared with its `client_email`, plus:
+`google` with no `google` block, or with an invalid one, is dropped for that caller, with the reason in the boot log, on the dashboard card, and in `drawlatch doctor`. Its other connections keep working. A `google` block is kept while the connection is disabled. `oauth2Overrides` doesn't apply to `google`: an `oauth2Overrides.google` entry drops it. The levels come from a catalog that ships with drawlatch (`src/connections/google-catalog.json`).
+
+#### Services and levels
+
+The levels of one service are alternatives, not a ladder: `drive: "file"` and `drive: "read"` reach different things. Pick one per service, or leave the service out.
+
+| Service | Level | Scope (`https://www.googleapis.com/auth/…`) | Reaches | `test_connection` | Service account |
+| --- | --- | --- | --- | --- | --- |
+| `gmail` | `metadata` | `gmail.metadata` | `users/me`: `profile`, `labels`, `messages`, `threads`, `history` | `GET users/me/profile` | no |
+| `gmail` | `read` | `gmail.readonly` | The above, plus `messages/*/attachments/*` and `drafts` | `GET users/me/profile` | yes, with `subject` |
+| `calendar` | `freebusy` | `calendar.freebusy` | `POST /freeBusy` only | `POST /freeBusy` for `primary` over a fixed hour | no |
+| `calendar` | `read` | `calendar.readonly` | `users/me/calendarList`, `users/me/settings`, `calendars/{id}`, `calendars/{id}/events`, `events/{id}`, `events/{id}/instances`, `freeBusy`, `colors` | `GET users/me/calendarList?maxResults=1` | yes |
+| `drive` | `file` | `drive.file` | `files`, `files/{id}`, `files/{id}/export`, `files/{id}/copy`, `upload/drive/v3/files`, `about` (not `permissions`) | `GET about?fields=user` | no |
+| `drive` | `read` | `drive.readonly` | `files`, `files/{id}`, `files/{id}/export`, `files/{id}/revisions`, `about`, `drives`, `changes`, `changes/startPageToken` | `GET about?fields=user` | yes |
+| `sheets` | `read` | `spreadsheets.readonly` | `sheets.googleapis.com/v4/spreadsheets/**` (not the bare path, so not `create`) | `GET` Google's public sample spreadsheet, `fields=spreadsheetId` | yes |
+| `sheets` | `edit` | `spreadsheets` (read and edit) | On `sheets.googleapis.com/v4/spreadsheets`: create (`POST` the bare path), `{id}` and `{id}:batchUpdate` / `:getByDataFilter`, `{id}/values/{range}` (and `:append`, `:clear`), `{id}/values:batchGet` / `:batchUpdate` / `:batchClear` and their `…ByDataFilter` forms, `{id}/sheets/{sheetId}:copyTo`, `{id}/developerMetadata/{metadataId}`, `{id}/developerMetadata:search`. Nothing on Drive | Same as `sheets: read` |
+| `docs` | `edit` | `documents` (read and edit) | On `docs.googleapis.com/v1/documents`: create (`POST` the bare path), `{id}` (get), `{id}:batchUpdate`. Nothing on Drive | `GET` the public sample document from Google's Docs quickstart, `fields=documentId` | yes |
+| `slides` | `edit` | `presentations` (read and edit) | On `slides.googleapis.com/v1/presentations`: create (`POST` the bare path), `{id}` (get), `{id}:batchUpdate`, `{id}/pages/{pageId}`, `{id}/pages/{pageId}/thumbnail` (returns an image URL drawlatch doesn't fetch; see [Service notes](#service-notes)). Nothing on Drive | `GET` the public sample presentation from Google's Slides quickstart, `fields=presentationId` | yes |
+
+The full `drive` scope isn't offered, at any level name: Sheets, Docs, and Slides write methods all accept it, so it would make `sheets: read` writable and reach every file. Neither are Gmail send, Calendar write, Tasks, People, or other Google APIs; see [Other Google APIs](#other-google-apis).
+
+The composed connection's allowlist is the selected levels' allowlists side by side: no two services' patterns overlap (a test checks this), so one service's exclusions never touch another. `list_routes` shows the selection in the connection's description, and its scopes.
+
+`test_connection` on `google` mints one token and runs each selected service's test, reporting `services: { <service>: { level, success, status, … } }`. `success` is true only when every service passes. It also returns `consentScopes`, the space-separated scopes the token must be consented for, and, when the token's scopes don't match, a `hint` that names the services and levels involved (`drive.readonly (drive: read)`). A service whose scope the token wasn't granted is marked `notConsented`.
+
+#### Auth modes
+
+- **`"auth": "user"`** (user OAuth): one consent from a Google account, stored as a refresh token. Every level is available. See [User OAuth setup](#user-oauth-setup).
+- **`"auth": "service-account"`**: a service-account key; drawlatch signs a JWT with the selection's scopes. Only the levels in the table's last column are offered (they're the ones that had service-account templates before). Optionally `"subject": "alice@example.com"`, a Workspace user to act as through domain-wide delegation, for every selected service. `gmail: "read"` requires a `subject`. See [Service-account setup](#service-account-setup).
+
+A caller uses one mode for all its Google services, one subject, and one Google account. To mix them (Gmail through user OAuth next to Sheets through a service account, two subjects, two accounts), add a [custom connector](#other-google-apis) for the other one.
+
+**What a service account reaches.** Without a `subject`, it reaches what is shared with its `client_email`, plus:
 
 - Drive files, spreadsheets, documents, and presentations shared *anyone with the link*, given the ID (some older link-shared Drive files also need their resource key);
 - calendars shared with the public, given the calendar ID (Calendar has no link sharing).
 
-It owns nothing itself: ["Service accounts don't have storage quota and can't own files"](https://developers.google.com/workspace/drive/api/guides/about-shareddrives). So `spreadsheets.create`, `documents.create`, and `presentations.create` through `google-sheets-sa`, `google-docs-sa`, or `google-slides-sa` without a `subject` fail (reported as `403 storageQuotaExceeded`; this hasn't been run against Google for Docs or Slides). Creating a file needs the user-OAuth template (`google-sheets`, `google-docs`, `google-slides`) or a `subject`, who then owns it.
+It owns nothing itself: ["Service accounts don't have storage quota and can't own files"](https://developers.google.com/workspace/drive/api/guides/about-shareddrives). So `spreadsheets.create`, `documents.create`, and `presentations.create` through a service account without a `subject` fail (reported as `403 storageQuotaExceeded`; this hasn't been run against Google for Docs or Slides). Creating a file needs user OAuth or a `subject`, who then owns it.
 
-With [domain-wide delegation](#service-account-setup) in a Workspace domain, it acts as the `subject` user instead and reaches what that user can. Nothing in Gmail can be shared with a service account, so Gmail always needs delegation, and `google-gmail-readonly-sa` is unusable without a `subject`. For editing a few shared sheets, documents, or decks, `google-sheets-sa`, `google-docs-sa`, or `google-slides-sa` without a subject is the narrowest option: share just those files with the service account's `client_email` as **Editor**. Beyond those, it can open only link-shared files of that kind (editing them only if the link grants edit), and it can't create one. The user-OAuth templates reach every file of that kind the Google account can open (see [Template notes](#template-notes)).
+With a `subject` it acts as that user instead and reaches what that user can. Nothing in Gmail can be shared with a service account, so Gmail always needs delegation. For editing a few shared sheets, documents, or decks, a service account without a subject is the narrowest option: share just those files with its `client_email` as **Editor**. Beyond those, it can open only link-shared files of that kind (editing them only if the link grants edit), and it can't create one. User OAuth reaches every file of that kind the Google account can open (see [Service notes](#service-notes)).
 
-**Secrets.** All user-OAuth templates share `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, and `GOOGLE_OAUTH_REFRESH_TOKEN`, and all `-sa` templates share `GOOGLE_SERVICE_ACCOUNT_KEY`. As with every secret, caller `mail-agent` reads them from `MAIL_AGENT_GOOGLE_OAUTH_REFRESH_TOKEN` and so on. They're signer-only: the agent can't reference them as `${NAME}`. Because one refresh token can serve several templates, the agent may not configure any of this itself: on the agent path, `set_connection_enabled` refuses to enable an OAuth2 connection (say `google-drive-file` next to `google-gmail-readonly`, which would inherit the same refresh token) and `set_secrets` refuses to set or delete these secrets, whatever `selfManage` says. Only the dashboard, the admin API, or `remote.config.json` can. Set [`selfManage: false`](README.md#callers) on these callers too, so the agent can't enable other connections either.
-
-**Mixing with `google`.** A caller with both the static `google` template and a scoped one, or two scoped ones for one service (`google-gmail-metadata` and `google-gmail-readonly`, `google-sheets` and `google-sheets-readonly`, or a template and its `-sa` twin, such as `google-docs` and `google-docs-sa`), has two connections that match the same URLs. `google` allowlists `docs.googleapis.com/**` and `slides.googleapis.com/**`, so it overlaps `google-docs` and `google-slides` (and their twins) as it does the others. Because the scoped ones use OAuth2, a request matching both is refused with an error naming them, and the daemon logs a warning naming the pair at boot ([README → Overlapping connections](README.md#overlapping-connections)). Use one connection per Google service.
+**Secrets.** User mode reads `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, and `GOOGLE_OAUTH_REFRESH_TOKEN`; service-account mode reads `GOOGLE_SERVICE_ACCOUNT_KEY`. As with every secret, caller `household` reads them from `HOUSEHOLD_GOOGLE_OAUTH_REFRESH_TOKEN` and so on. Only the selected mode's secrets count as required (boot table, dashboard, `drawlatch doctor`); the other mode's are never resolved. They're signer-only: the agent can't reference them as `${NAME}`. The agent can't configure any of this: on the agent path, `set_connection_enabled` refuses to enable `google`, and `set_secrets` refuses to set or delete any of the four names, in either mode and whatever `selfManage` says. Only the dashboard, the admin API, or `remote.config.json` can. Set [`selfManage: false`](README.md#callers) on these callers too, so the agent can't enable other connections either.
 
 #### User OAuth setup
 
@@ -143,19 +175,19 @@ With [domain-wide delegation](#service-account-setup) in a Workspace domain, it 
 2. **Publish the app.** Under **Audience**, move an External app from *Testing* to **In production**. In Testing, refresh tokens for these scopes expire after 7 days.
    - An unverified External app that requests sensitive or restricted scopes (`spreadsheets`, `spreadsheets.readonly`, `documents`, and `presentations` are sensitive; `gmail.*` and `drive.readonly` restricted) shows a "Google hasn't verified this app" warning and is limited to 100 users. That's fine for your own account: choose **Advanced → Go to … (unsafe)**.
    - An Internal app needs neither verification nor publishing.
-3. **Consent for the scopes you'll use.** Set `SCOPES` to the scopes of exactly the templates this token will serve (the table above lists them): every scope one of them asks for, and nothing else. The example is for `google-sheets` alone. A token granted several scopes serves several templates only if Google narrows it on refresh, which isn't verified; if Google doesn't, every template on it refuses it (see **One master token for several templates** below for how to find out, and the fallback). In a shell (bash), set the client ID, the scopes, and a [PKCE](https://www.rfc-editor.org/rfc/rfc7636) verifier and challenge. `read -rs` keeps the client secret out of your shell history:
+3. **Consent for exactly the selection's scopes.** Set `SCOPES` to the caller's consent scopes: one scope per selected level (the table above lists them), and nothing else. `test_connection` on `google` returns them as `consentScopes`. The example is the `household` selection above (`sheets: edit`, `docs: edit`, `slides: edit`, `drive: read`). In a shell (bash), set the client ID, the scopes, and a [PKCE](https://www.rfc-editor.org/rfc/rfc7636) verifier and challenge. `read -rs` keeps the client secret out of your shell history:
 
    ```bash
    CLIENT_ID=1234-abc.apps.googleusercontent.com
    read -rs -p 'Client secret: ' CLIENT_SECRET; echo
-   SCOPES="https://www.googleapis.com/auth/spreadsheets"   # google-sheets; space-separate more
+   SCOPES="https://www.googleapis.com/auth/documents https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/presentations https://www.googleapis.com/auth/spreadsheets"
    CODE_VERIFIER=$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=\n')
    CODE_CHALLENGE=$(printf '%s' "$CODE_VERIFIER" | openssl dgst -sha256 -binary | base64 | tr '+/' '-_' | tr -d '=\n')
    STATE=$(openssl rand -hex 16)
    echo "https://accounts.google.com/o/oauth2/v2/auth?client_id=$CLIENT_ID&redirect_uri=http://127.0.0.1:8085&response_type=code&access_type=offline&prompt=consent&state=$STATE&code_challenge=$CODE_CHALLENGE&code_challenge_method=S256&scope=${SCOPES// /%20}"
    ```
 
-   For an agent that edits sheets, `https://www.googleapis.com/auth/spreadsheets` is enough. To let it find spreadsheets by name, also give it `google-drive-readonly` (`https://www.googleapis.com/auth/drive.readonly`): the Sheets API has no list or search call, so every request needs the spreadsheet ID. That is two templates, so either rely on narrowing or mint a second token (below). Never put `spreadsheets.readonly` next to `spreadsheets` for one caller: `google-sheets` and `google-sheets-readonly` overlap (see **Mixing with `google`** above), so a caller has only one of them.
+   `drive: read` is there to let the agent find files by name: the Sheets, Docs, and Slides APIs have no list or search call, so every request needs the file's ID.
 
    Open the printed URL in a browser. `access_type=offline` asks for a refresh token. `prompt=consent` makes Google issue a new one even if you consented before. On the consent screen, tick every scope: Google lets users decline individual ones. Nothing listens on `127.0.0.1:8085`, so the browser then shows a connection error. Copy the whole URL from its address bar and exchange the code, with the verifier, within a few minutes. The snippet checks that `state` came back unchanged, and passes the code as it appears in the URL (already URL-encoded). The client secret goes to `curl` on stdin rather than in its arguments, where other users could see it in the process list. (Use `printf '%s'`: a `<<<` here-string adds a newline that would become part of the secret.) The response contains the refresh token, so it goes to a private file rather than the terminal:
 
@@ -175,9 +207,9 @@ With [domain-wide delegation](#service-account-setup) in a Workspace domain, it 
 
    ```bash
    (umask 077; {
-     printf 'MAIL_AGENT_GOOGLE_OAUTH_CLIENT_ID=%s\n' "$CLIENT_ID"
-     printf 'MAIL_AGENT_GOOGLE_OAUTH_CLIENT_SECRET=%s\n' "$CLIENT_SECRET"
-     printf 'MAIL_AGENT_GOOGLE_OAUTH_REFRESH_TOKEN=%s\n' "$(jq -r .refresh_token token.json)"
+     printf 'HOUSEHOLD_GOOGLE_OAUTH_CLIENT_ID=%s\n' "$CLIENT_ID"
+     printf 'HOUSEHOLD_GOOGLE_OAUTH_CLIENT_SECRET=%s\n' "$CLIENT_SECRET"
+     printf 'HOUSEHOLD_GOOGLE_OAUTH_REFRESH_TOKEN=%s\n' "$(jq -r .refresh_token token.json)"
    } >> ~/.drawlatch/.env)
    rm token.json; unset CLIENT_SECRET CODE CODE_VERIFIER STATE REDIRECT
    drawlatch restart
@@ -185,80 +217,33 @@ With [domain-wide delegation](#service-account-setup) in a Workspace domain, it 
 
    If a refresh token did end up on screen (a `curl` without `-o`, say), clear the terminal's scrollback.
 
-   Then run `test_connection` on each template. It reports the scopes Google granted.
+   Then run `test_connection` on `google`. Every service should pass, with `oauth2.grantedScopes` equal to `oauth2.requestedScopes`.
+
+If the response lists scopes beyond the consented set (for example, ones carried over by `include_granted_scopes` from an earlier grant), the token is refused: drawlatch refuses any token whose reported `scope` includes something it didn't request, and any token that doesn't report a `scope`. Mint a token for this client without them.
 
 **Ways a refresh token dies** (each then fails as `invalid_grant`; mint a new one):
 
 - The app is External and in *Testing*: 7 days.
-- Six months unused. Any template's token refresh counts as use.
+- Six months unused. Any token refresh counts as use.
 - You change your password, if the token includes Gmail scopes.
 - You revoke access at [myaccount.google.com/permissions](https://myaccount.google.com/permissions), or a Workspace admin's policy does.
-- The limit of 100 refresh tokens per Google account per OAuth client: minting a 101st silently revokes the oldest. Keep that in mind if you mint one per scope set (below).
+- The limit of 100 refresh tokens per Google account per OAuth client: minting a 101st silently revokes the oldest.
 
-**Narrowing on refresh is not verified.** Google doesn't document whether a refresh request's `scope` parameter narrows the access token to a subset of the grant. Drawlatch handles either outcome safely:
+One token serves every selected service, so a dead token, or any other terminal error (`invalid_grant`, `invalid_scope`, a refused scope), stops all of a caller's Google services until it is fixed. A terminal error is retried after 60 s, or as soon as the caller's secret or selection changes. `test_connection` reports each service, so you can still see which one caused it.
 
-- On every refresh, the engine requests exactly the template's scopes (after the caller's `oauth2Overrides`).
-- It refuses any token whose reported `scope` includes something else, and any token that doesn't report a `scope`.
+#### Changing the selection
 
-If Google narrows, one master refresh token serves every template. If it doesn't, every request fails closed with *"the token endpoint granted scopes broader than this connection allows (…)"*, and nothing leaks. Scopes are compared as exact strings, with no notion that one covers another, so this holds even when the extra scope is narrower: an un-narrowed token granted `spreadsheets` and `drive.readonly` is refused by `google-sheets` (naming `drive.readonly`) and by `google-drive-readonly` (naming `spreadsheets`), and one granted `spreadsheets` and `spreadsheets.readonly` is refused by both Sheets templates. The fix is then **one refresh token per scope set**, each consented (step 3) with only that template's scopes:
+Every token request asks for exactly the selection's scopes, and the token is refused if Google grants anything else. So after changing a caller's `google` block:
 
-- **One scope set per caller:** nothing to configure. Each caller already has its own `<ALIAS>_GOOGLE_OAUTH_REFRESH_TOKEN`, so give each caller a token minted for its template.
-- **Several Google templates on one caller** (say `google-sheets` with `google-drive-readonly` to find sheets by name): override all but one of them with a [custom connector](README.md#custom-connectors) under the same alias that reads a differently named refresh token. Copy the template from `src/connections/productivity/`, add `alias`, and rename the refresh-token secret:
+- **Adding a service** needs a refresh token consented for the new scopes too: redo step 3 with the new `consentScopes`. Until then Google either refuses the request (`invalid_scope`, which stops every service) or grants the old scopes only, in which case `test_connection` marks the new service `notConsented` and Google answers its requests with `403`.
+- **Removing a service** works with the old token only if Google narrows a token to the requested scopes on refresh, which Google doesn't document and drawlatch hasn't confirmed. If Google returns the whole grant, every request fails closed with *"the token endpoint granted scopes broader than this connection allows (…)"*, and `test_connection`'s `hint` names the levels those scopes belong to. Plan to re-consent with exactly the new `consentScopes` instead. (The live e2e suite has an informational check of this, `google-scope-probe`.)
+- **Changing a level** (`sheets: "read"` to `"edit"`) is both: one scope added, one removed.
 
-  ```json
-  {
-    "connectors": [
-      {
-        "alias": "google-gmail-readonly",
-        "secrets": {
-          "GOOGLE_OAUTH_CLIENT_ID": "${GOOGLE_OAUTH_CLIENT_ID}",
-          "GOOGLE_OAUTH_CLIENT_SECRET": "${GOOGLE_OAUTH_CLIENT_SECRET}",
-          "GMAIL_RO_REFRESH_TOKEN": "${GMAIL_RO_REFRESH_TOKEN}"
-        },
-        "oauth2": {
-          "tokenUrl": "https://oauth2.googleapis.com/token",
-          "grant": "refresh_token",
-          "clientAuth": "body",
-          "secretRefs": {
-            "clientId": "GOOGLE_OAUTH_CLIENT_ID",
-            "clientSecret": "GOOGLE_OAUTH_CLIENT_SECRET",
-            "refreshToken": "GMAIL_RO_REFRESH_TOKEN"
-          },
-          "scopes": ["https://www.googleapis.com/auth/gmail.readonly"]
-        },
-        "allowedEndpoints": ["…copied from google-gmail-readonly.json…"],
-        "testConnection": { "url": "https://gmail.googleapis.com/gmail/v1/users/me/profile" }
-      }
-    ],
-    "callers": {
-      "mail-agent": {
-        "connections": ["google-gmail-readonly", "google-drive-readonly"],
-        "selfManage": false
-      }
-    }
-  }
-  ```
-
-  `mail-agent` then reads the Gmail token from `MAIL_AGENT_GMAIL_RO_REFRESH_TOKEN` and the Drive token from `MAIL_AGENT_GOOGLE_OAUTH_REFRESH_TOKEN`. (Redirecting a secret through the caller's `env`, as in `"GOOGLE_OAUTH_REFRESH_TOKEN": "${GMAIL_RO_REFRESH_TOKEN}"`, doesn't work today; see [README → Secrets](README.md#secrets). Nor does [`oauth2Overrides`](README.md#callers): it can narrow a connection's requested scopes or set a `subject`, but not pick a different refresh token.)
-
-**One master token for several templates.** You can try one refresh token for several templates, say `google-docs`, `google-slides`, and `google-sheets`. Consent once (step 3) with the union of their scopes, which is still exactly the scopes of the templates the token serves:
-
-```bash
-SCOPES="https://www.googleapis.com/auth/documents https://www.googleapis.com/auth/presentations https://www.googleapis.com/auth/spreadsheets"
-```
-
-Only pick templates for different services. Two templates for one service can both be enabled on a caller, but every request matching both is refused as ambiguous, and the daemon warns about the pair at boot (see **Mixing with `google`**). So the union should never hold a same-service pair such as `spreadsheets.readonly` next to `spreadsheets`: enable only one of the two, and the other scope is just an extra that makes the token fail. Store the token as the caller's `GOOGLE_OAUTH_REFRESH_TOKEN`, enable the templates, and run `test_connection` on each:
-
-- **Google narrowed it:** `oauth2.tokenMinted: true`, with `oauth2.grantedScopes` equal to `oauth2.requestedScopes`, that template's one scope (and `success: true` once the test request succeeds too). Keep the master token.
-- **Google didn't:** `success: false`, `oauth2.tokenMinted: false`, and the error *"…granted scopes broader than this connection allows (…)"*, naming the other templates' scopes. The test request isn't sent. Switch to one token per scope set as above, each consented with only that template's scopes.
-
-The trade-off: one consent and one token to rotate instead of several, against a token that carries every scope in the union if it leaks from the daemon's `.env`. Narrowing is undocumented, so it could also stop working later. If requests start failing with that error, run `test_connection` again and fall back.
-
-If the response lists scopes beyond the consented set (for example, ones carried over by `include_granted_scopes` from an earlier grant), the token is refused the same way. Mint a token for this client without them.
+Changing the selection never reuses a token minted for the old one: the token cache is keyed by the requested scopes and the subject.
 
 #### Service-account setup
 
-1. **Create the service account and a key.** In the Cloud console, open **IAM & Admin → Service Accounts**, create an account, and choose **Keys → Add key → JSON**. Your organization's policy may forbid key creation (`iam.disableServiceAccountKeyCreation`). Enable the APIs the templates use in that project.
+1. **Create the service account and a key.** In the Cloud console, open **IAM & Admin → Service Accounts**, create an account, and choose **Keys → Add key → JSON**. Your organization's policy may forbid key creation (`iam.disableServiceAccountKeyCreation`). Enable the APIs you'll use in that project.
 2. **Store the key as base64.** This has no quotes or newlines to break `.env`. Write it straight into drawlatch's `.env` (here `~/.drawlatch/.env`; use your config directory) rather than printing it, then delete the key file and restart the daemon:
 
    ```bash
@@ -269,54 +254,124 @@ If the response lists scopes beyond the consented set (for example, ones carried
    ```
 
    You can also paste the key file's JSON, or its base64, into the dashboard field.
-3. **Without delegation**, the account reaches what is shared with its `client_email` (calendars, files, spreadsheets, documents, and presentations), plus link-shared files, spreadsheets, documents, and presentations, and public calendars, whose ID it is given (see **Which flavour** above). `google-sheets-sa`, `google-docs-sa`, and `google-slides-sa` can edit the files shared with them as **Editor** and link-shared ones whose link grants edit, but can't create one. A **Viewer** share is read-only. A **Commenter** share doesn't let them change content. But the Docs, Slides, and Sheets `batchUpdate` requests all include comment requests (see **What `batchUpdate` can change** below), so the account may still be able to comment on such a file. This hasn't been tested against Google. `test_connection` on `google-calendar-readonly-sa` lists the account's own (often empty) calendar list.
-4. **With domain-wide delegation** (Workspace only), the account can act as a domain user. In the [Admin console](https://admin.google.com/), open **Security → Access and data control → API controls → Manage Domain Wide Delegation → Add new**. Enter the service account's numeric client ID (`client_id` in the key file), and under OAuth scopes enter exactly the scopes of the templates you'll use, comma-separated. For example, `https://www.googleapis.com/auth/gmail.readonly,https://www.googleapis.com/auth/calendar.readonly`. Then name the user per caller:
+3. **Without delegation**, the account reaches what is shared with its `client_email` (calendars, files, spreadsheets, documents, and presentations), plus link-shared files, spreadsheets, documents, and presentations, and public calendars, whose ID it is given (see [Auth modes](#auth-modes)). With `sheets: "edit"`, `docs: "edit"`, or `slides: "edit"` it can edit the files shared with it as **Editor** and link-shared ones whose link grants edit, but can't create one. A **Viewer** share is read-only. A **Commenter** share doesn't let it change content. But the Docs, Slides, and Sheets `batchUpdate` requests all include comment requests (see **What `batchUpdate` can change** below), so the account may still be able to comment on such a file. This hasn't been tested against Google. `test_connection` with `calendar: "read"` lists the account's own (often empty) calendar list. Gmail isn't available without delegation.
+4. **With domain-wide delegation** (Workspace only), the account acts as a domain user for every selected service. In the [Admin console](https://admin.google.com/), open **Security → Access and data control → API controls → Manage Domain Wide Delegation → Add new**. Enter the service account's numeric client ID (`client_id` in the key file), and under OAuth scopes enter exactly the selection's consent scopes, comma-separated. For the example below, `https://www.googleapis.com/auth/calendar.readonly,https://www.googleapis.com/auth/gmail.readonly`. Then name the user in the caller's `google` block:
 
    ```json
    {
      "callers": {
        "mail-agent": {
-         "connections": ["google-gmail-readonly-sa"],
+         "connections": ["google"],
          "selfManage": false,
-         "oauth2Overrides": { "google-gmail-readonly-sa": { "subject": "alice@example.com" } }
+         "google": {
+           "auth": "service-account",
+           "subject": "alice@example.com",
+           "services": { "gmail": "read", "calendar": "read" }
+         }
        }
      }
    }
    ```
 
-   `subject` is admin-only config: templates can't set it, and no tool or dashboard control writes it. `list_routes` tells the agent only that the connection is `delegated`, not who the user is. `google-gmail-readonly-sa` without a subject is dropped for that caller with a boot-log message. With a subject, `users/me` in the Gmail URLs means that user.
+   `subject` is admin-only config, like the rest of the block: no tool writes it, and the dashboard shows it but has no control that edits it yet. `list_routes` tells the agent only that the connection is `delegated`, not who the user is, and `test_connection` never reports it. A selection with `gmail: "read"` and no subject is invalid, so `google` is dropped for that caller with a boot-log message. With a subject, `users/me` in the Gmail URLs means that user.
 
 Errors carry service-account hints:
 
 - `unauthorized_client`: delegation isn't set up for this client ID.
-- `access_denied`: the template's scopes aren't in the client ID's delegated scope list.
+- `access_denied`: the selection's scopes aren't in the client ID's delegated scope list.
 - `invalid_grant`: the key was deleted, the subject isn't a user in the domain, or the daemon's clock is off.
 
 The 100-token limit doesn't apply to service accounts.
 
-#### Template notes
+#### Service notes
 
-- **Scopes bound reach, not intent.** A read-only template can still read everything in that scope, including mail an attacker sent to the account. `drive.file` can create, upload, overwrite, and delete the files it covers. The template leaves out the `permissions` endpoints, so the agent can't share a file (publicly or with anyone), but it can still put data into files it creates. Prefer the read-only templates.
-- **`spreadsheets` covers every spreadsheet the account can open.** `google-sheets` can read every spreadsheet the Google account can see and edit every one it can edit, including ones other people shared with it, not just the household sheets you had in mind. There is no per-file Sheets scope: the only per-file Google scope is `drive.file` (the Drive API's, for files the OAuth client created or the user picked; see `google-drive-file`). To limit editing to chosen spreadsheets, use `google-sheets-sa` and share only those with the service account. A write scope is also a way out for data: the agent can write what it has read into any spreadsheet the account can edit, such as one an attacker shared with it, and formulas it writes (`IMPORTDATA`, `IMAGE`, …) may make Google fetch URLs it picks. `batchUpdate` can delete tabs, rows, and ranges; deleting, sharing, or moving the file itself needs the Drive API, which neither Sheets template reaches. A spreadsheet's version history (File → Version history) undoes edits.
-- **`documents` and `presentations` cover every document and deck the account can open.** As with `spreadsheets`, `google-docs` and `google-slides` can read every Google Doc or Slides deck the account can see and edit every one it can edit, including ones other people shared with it. There is no per-file Docs or Slides scope either (only `drive.file`, as above). To limit editing to chosen files, use the `-sa` twin and share only those files with the service account.
+- **Scopes bound reach, not intent.** A read-only level can still read everything in its scope, including mail an attacker sent to the account. `drive: "file"` can create, upload, overwrite, and delete the files it covers. Its allowlist leaves out the `permissions` endpoints, so the agent can't share a file (publicly or with anyone), but it can still put data into files it creates. Prefer read-only levels.
+- **One token carries every selected scope.** Each request still goes only to an allowlisted URL, and the agent never sees the token, but a token leaked from the daemon carries the whole selection, and Google accepts some scopes across APIs (see [Cross-service scopes](#cross-service-scopes)).
+- **`sheets: "edit"` covers every spreadsheet the account can open.** It can read every spreadsheet the Google account can see and edit every one it can edit, including ones other people shared with it, not just the household sheets you had in mind. There is no per-file Sheets scope: the only per-file Google scope is `drive.file` (the Drive API's, for files the OAuth client created or the user picked). To limit editing to chosen spreadsheets, use a service account and share only those with it. A write scope is also a way out for data: the agent can write what it has read into any spreadsheet the account can edit, such as one an attacker shared with it, and formulas it writes (`IMPORTDATA`, `IMAGE`, …) may make Google fetch URLs it picks. `batchUpdate` can delete tabs, rows, and ranges; deleting, sharing, or moving the file itself needs the Drive API, which no Sheets level reaches. A spreadsheet's version history (File → Version history) undoes edits.
+- **`sheets: "read"` next to `drive: "file"` can edit some spreadsheets.** The Sheets API's write methods accept the `drive.file` scope, so with both selected the agent can edit (not create: the bare `POST …/v4/spreadsheets` isn't in the read allowlist) the spreadsheets `drive.file` covers: the ones this OAuth client created, or that the user picked with it. `drive: "file"` can already overwrite or delete those files through Drive, so the set of files the agent can change doesn't grow. The daemon notes this at boot. It can't happen with a service account (`drive: "file"` is user-only).
+- **`docs: "edit"` and `slides: "edit"` cover every document and deck the account can open.** As with Sheets, they can read every Google Doc or Slides deck the account can see and edit every one it can edit, including ones other people shared with it. There is no per-file Docs or Slides scope either (only `drive.file`, as above). To limit editing to chosen files, use a service account and share only those files with it.
   - **A write scope is a way out for data.** The agent can write what it has read into any document or deck the account can edit, such as one an attacker shared with it. Some `batchUpdate` requests make Google fetch a URL the agent picks: Docs `insertInlineImage` and `replaceImage`, and Slides `createImage`, `replaceImage`, and `replaceAllShapesWithImage`. Google fetches the image once, at insertion time, from a public URL, so the URL itself, query string included, can carry data to a server the agent chooses.
-  - **What `batchUpdate` can change.** It can delete text, tables, tabs, slides, and page elements, and accept or reject suggestions. It can also add comments and replies (`insertComment`, `addCommentReply`) and edit its own posts (`updateCommentPost`). `deleteComment` deletes a whole comment thread and only checks that the account wrote the thread's first post, so it also removes other people's replies to a thread the account started. `deleteCommentReply` deletes one of the account's own replies, unless the reply contains an action or an assignee. Discovery says Google refuses these requests with `400` otherwise. In Docs, `updateCommentPost` also can't edit the first post of a suggestion thread. Docs and Slides have the same five comment requests, and so does the Sheets v4 `batchUpdate` (all revision `20261118`). Deleting, sharing, moving, copying, or exporting the file itself needs the Drive API, which none of these templates reach. Version history undoes edits.
-  - **Linked Sheets charts and Drive videos need more scope.** Slides `createSheetsChart` (and refreshing or replacing shapes with such a chart) needs a Sheets or Drive scope too, and `createVideo` from Drive needs a Drive scope. A `google-slides` token carries only `presentations`, and each template mints its own token, so these requests get `403` even if the caller also has `google-sheets`.
+  - **What `batchUpdate` can change.** It can delete text, tables, tabs, slides, and page elements, and accept or reject suggestions. It can also add comments and replies (`insertComment`, `addCommentReply`) and edit its own posts (`updateCommentPost`). `deleteComment` deletes a whole comment thread and only checks that the account wrote the thread's first post, so it also removes other people's replies to a thread the account started. `deleteCommentReply` deletes one of the account's own replies, unless the reply contains an action or an assignee. Discovery says Google refuses these requests with `400` otherwise. In Docs, `updateCommentPost` also can't edit the first post of a suggestion thread. Docs and Slides have the same five comment requests, and so does the Sheets v4 `batchUpdate` (all revision `20261118`). Deleting, sharing, moving, copying, or exporting the file itself needs the Drive API, which no Docs or Slides level reaches. Version history undoes edits.
+  - **Linked Sheets charts and Drive videos use the other services' scopes.** Discovery lists `spreadsheets`, `spreadsheets.readonly`, and `drive.readonly` among the scopes Slides `batchUpdate` accepts. So with `slides: "edit"` and a Sheets level selected, `createSheetsChart` (and refreshing or replacing shapes with such a chart) can work, and with a Drive level, `createVideo` from Drive. Without them these requests get `403`. They read data the caller may already read. This hasn't been run against Google.
 - **Methods aren't restricted by the allowlist.** Read-only is enforced by Google through the scope, so a `POST` to an allowlisted path that needs a broader scope gets `403`. A `403` from drawlatch carries a hint naming the token's scopes.
-- **No push channels.** Read scopes would let an agent register a push channel (`events/watch`, `calendarList/watch`, `settings/watch`, `files/{id}/watch`, `changes/watch`) that sends change notifications to any `https` URL it names. No template allows the `watch` or `channels/stop` endpoints. Calendar event IDs and the literal `watch` are both one path segment, so the Calendar templates refuse `watch` with [exclusion entries](README.md#custom-connectors) (`!…/events/watch`). Exclusions are also checked with unreserved percent-escapes decoded, so `w%61tch` is refused too, and a fragment is dropped before matching, so `watch#x` is too.
+- **No push channels.** Read scopes would let an agent register a push channel (`events/watch`, `calendarList/watch`, `settings/watch`, `files/{id}/watch`, `changes/watch`, Gmail `watch`) that sends change notifications to a target it names. No level allows the `watch`, `stop`, or `channels/stop` endpoints. Calendar event IDs and the literal `watch` are both one path segment, so the Calendar levels refuse `watch` with [exclusion entries](README.md#custom-connectors) (`!…/events/watch`). Exclusions are also checked with unreserved percent-escapes decoded, so `w%61tch` is refused too, and a fragment is dropped before matching, so `watch#x` is too.
 - **Path boundaries.** `**` appears only after `?` or `/`, so a pattern for `files` can't match `filesX`.
-- **`gmail.metadata`:**
+- **`gmail: "metadata"`:**
   - `messages.list` and `threads.list` refuse `q=` (no search).
   - `format=full` and `format=raw` are refused. Use `format=metadata` (with `metadataHeaders`) or `minimal`.
   - No attachments or drafts.
-- **`drive.file`** sees only files this OAuth client created, or that the user opened with it through the Google Picker. With a refresh token minted as above, that means only the files the agent created. It uploads through `https://www.googleapis.com/upload/drive/v3/files`.
-- **Calendar.** `calendars/*/acl` isn't allowlisted: listing ACLs needs more than `calendar.readonly`. `google-calendar-freebusy`'s test queries a fixed past hour and returns busy times only.
-- **Sheets** has no read call that doesn't take a spreadsheet ID. `test_connection` reads `spreadsheetId` from Google's public sample spreadsheet (`1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms`), which also catches a project where the Sheets API isn't enabled. This hasn't been run against Google yet: if the sample sheet ever disappears, the test fails with `404` while real reads still work. Read with `GET …/v4/spreadsheets/{id}` or `…/values/{range}`. `google-sheets` uses the same test.
-- **Sheets method suffixes.** Google writes custom methods as a `:` suffix on a path segment (`{id}:batchUpdate`, `values/{range}:append`, `sheets/{sheetId}:copyTo`). In an allowlist pattern `*` matches anything within one segment, `:` included, so `…/spreadsheets/*` covers `{id}`, `{id}:batchUpdate`, and `{id}:getByDataFilter` alike. Ranges work as written (`Sheet1!A1:B2`, `'My Sheet'!A:A`) or percent-encoded (`Sheet1%21A1%3AB2`). A `values:…` or `developerMetadata:search` suffix must use a literal `:` when it is its own segment: `{id}/values%3AbatchUpdate` matches no pattern and is refused. A `%2F` doesn't split a segment for matching, though, so `…/spreadsheets/*` also accepts `{id}%2Fvalues%3AbatchUpdate` as one segment. Whatever Google makes of such a path, the request still goes to `sheets.googleapis.com` under `/v4/spreadsheets` with the same token and scope, and a `.` or `..` segment in any encoding (`%2e`, or `%2f` / `%5c` / `\` as the separator) is refused before matching.
+- **`drive: "file"`** sees only files this OAuth client created, or that the user opened with it through the Google Picker. With a refresh token minted as above, that means only the files the agent created. It uploads through `https://www.googleapis.com/upload/drive/v3/files`.
+- **Calendar.** `calendars/*/acl` isn't allowlisted: listing ACLs needs more than `calendar.readonly`. The `freebusy` level's test queries a fixed past hour and returns busy times only.
+- **Sheets** has no read call that doesn't take a spreadsheet ID. `test_connection` reads `spreadsheetId` from Google's public sample spreadsheet (`1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms`), which also catches a project where the Sheets API isn't enabled. This hasn't been run against Google yet: if the sample sheet ever disappears, the test fails with `404` while real reads still work. Read with `GET …/v4/spreadsheets/{id}` or `…/values/{range}`. Both Sheets levels use the same test.
+- **Sheets method suffixes.** Google writes custom methods as a `:` suffix on a path segment (`{id}:batchUpdate`, `values/{range}:append`, `sheets/{sheetId}:copyTo`). In an allowlist pattern `*` matches anything within one segment, `:` included, so `…/spreadsheets/*` covers `{id}`, `{id}:batchUpdate`, and `{id}:getByDataFilter` alike. Ranges work as written (`Sheet1!A1:B2`, `'My Sheet'!A:A`) or percent-encoded (`Sheet1%21A1%3AB2`). A `values:…` or `developerMetadata:search` suffix must use a literal `:` when it is its own segment: `{id}/values%3AbatchUpdate` matches no pattern and is refused. A `%2F` doesn't split a segment for matching, though, so `…/spreadsheets/*` also accepts `{id}%2Fvalues%3AbatchUpdate` as one segment. Whatever Google makes of such a path, the request still goes to `sheets.googleapis.com` under `/v4/spreadsheets` with the same token and scopes, and a `.` or `..` segment in any encoding (`%2e`, or `%2f` / `%5c` / `\` as the separator) is refused before matching.
 - **Docs and Slides methods.** The allowlists cover every method in the [Docs v1](https://docs.googleapis.com/$discovery/rest?version=v1) and [Slides v1](https://slides.googleapis.com/$discovery/rest?version=v1) Discovery documents (revision `20261118`): `documents.create`, `.get`, `.batchUpdate`; `presentations.create`, `.get`, `.batchUpdate`, `pages.get`, `pages.getThumbnail`. As for Sheets, `…/documents/*` and `…/presentations/*` cover `{id}` and `{id}:batchUpdate` alike, and a `%2F` or `%3A` stays inside one segment: `{id}%2Fx` matches and still goes to the same host under `/v1/documents` or `/v1/presentations`, and dot segments are refused in any encoding. Query parameters (`includeTabsContent`, `suggestionsViewMode`, `commentsViewMode`, `thumbnailProperties.*`, `fields`) don't affect matching. Without `includeTabsContent=true` (or a `fields` mask naming `tabs`), `documents.get` returns only the first tab's content. Discovery writes the `presentations.get` path as `{+presentationId}`, which may contain `/`, but the allowlist matches a one-segment ID only. Slides IDs don't contain `/`.
 - **Docs and Slides tests.** `test_connection` reads `documentId` from the public sample document in Google's Docs quickstart (`195j9eDD3ccgjQRttHhJPymLJUCOUjs-jmwTrekvdjFE`), or `presentationId` from the Slides quickstart's sample presentation (`1EAYk18WDjIG-zp_0vLm3CsfQh_i8eXc67Jo2O9C6Vuc`). That also catches a project where the API isn't enabled. As with Sheets, this hasn't been run against Google yet: if a sample file disappears, the test fails with `404` while real requests still work.
-- **Slides thumbnails aren't fetched.** `pages.getThumbnail` returns JSON with a `contentUrl` for the image. That URL is on a Google image host, not on `slides.googleapis.com`, so no Google template allowlists it, and a `secure_request` to it is refused unless another of the caller's connections allows that host. The templates don't add the image host, because a host like `*.googleusercontent.com` serves content for many Google products, not just Slides thumbnails. The agent still receives the URL. Google's reference says it lasts 30 minutes by default, "is tagged with the account of the requester", and "anyone with the URL effectively accesses the image as the original requester". So anyone the agent passes it to (a chat, a log, a web page) can view that slide for as long as the URL lasts, with no Google credential. Treat the URL like the slide itself. Each call counts as an expensive read in Google's quota.
-- **The rest of Google** (Tasks, People, a Gmail listener) isn't templated yet. Use a [custom connector](README.md#oauth2-token-minting) with the same secrets and an `oauth2` block for one scope.
+- **Slides thumbnails aren't fetched.** `pages.getThumbnail` returns JSON with a `contentUrl` for the image. That URL is on a Google image host, not on `slides.googleapis.com`, so no level allowlists it, and a `secure_request` to it is refused unless another of the caller's connections allows that host. The catalog doesn't add the image host, because a host like `*.googleusercontent.com` serves content for many Google products, not just Slides thumbnails. The agent still receives the URL. Google's reference says it lasts 30 minutes by default, "is tagged with the account of the requester", and "anyone with the URL effectively accesses the image as the original requester". So anyone the agent passes it to (a chat, a log, a web page) can view that slide for as long as the URL lasts, with no Google credential. Treat the URL like the slide itself. Each call counts as an expensive read in Google's quota.
+
+#### Cross-service scopes
+
+One token carries every selected scope, and some Google APIs accept other APIs' scopes. From the Discovery documents (fetched 2026-11-24; Sheets v4, Docs v1 and Slides v1 revision `20261118`, Drive v3 `20261117`, Calendar v3 `20261118`, Gmail v1 `20261116`), limited to the scopes the catalog offers:
+
+| API | Read methods accept | Write methods accept |
+| --- | --- | --- |
+| Sheets | `spreadsheets.readonly`, `spreadsheets`, `drive.readonly`, `drive.file` | `spreadsheets`, `drive.file` |
+| Docs | `documents`, `drive.readonly`, `drive.file` | `documents`, `drive.file` |
+| Slides | `presentations`, `drive.readonly`, `drive.file` | `create`: `presentations`, `drive.file`. `batchUpdate`: also `drive.readonly`, `spreadsheets`, `spreadsheets.readonly` |
+| Drive, Calendar, Gmail | only their own scopes | only their own scopes |
+
+So of every selection the catalog allows, only `sheets: "read"` with `drive: "file"` makes a read-only level writable (see [Service notes](#service-notes)), and Slides `batchUpdate` can link Sheets charts and Drive videos when those services are selected. Gmail's `users.watch` and `users.stop` accept the Gmail scopes, but no level allowlists them. A test sweeps every valid selection against this table and fails if a new widening appears that isn't documented, so adding a level means redoing this audit.
+
+#### Other Google APIs
+
+Tasks, People, YouTube, Gmail send, Calendar write, the full `drive` scope, and the rest of Google aren't in the catalog. Use a [custom connector](README.md#custom-connectors) with its own `oauth2` block. For example, Tasks, read-only:
+
+```json
+{
+  "connectors": [
+    {
+      "alias": "google-tasks",
+      "name": "Google Tasks (read-only)",
+      "secrets": {
+        "GOOGLE_OAUTH_CLIENT_ID": "${GOOGLE_OAUTH_CLIENT_ID}",
+        "GOOGLE_OAUTH_CLIENT_SECRET": "${GOOGLE_OAUTH_CLIENT_SECRET}",
+        "GOOGLE_TASKS_REFRESH_TOKEN": "${GOOGLE_TASKS_REFRESH_TOKEN}"
+      },
+      "oauth2": {
+        "tokenUrl": "https://oauth2.googleapis.com/token",
+        "grant": "refresh_token",
+        "clientAuth": "body",
+        "secretRefs": {
+          "clientId": "GOOGLE_OAUTH_CLIENT_ID",
+          "clientSecret": "GOOGLE_OAUTH_CLIENT_SECRET",
+          "refreshToken": "GOOGLE_TASKS_REFRESH_TOKEN"
+        },
+        "scopes": ["https://www.googleapis.com/auth/tasks.readonly"]
+      },
+      "allowedEndpoints": [
+        "https://tasks.googleapis.com/tasks/v1/users/@me/lists",
+        "https://tasks.googleapis.com/tasks/v1/users/@me/lists?**",
+        "https://tasks.googleapis.com/tasks/v1/users/@me/lists/*",
+        "https://tasks.googleapis.com/tasks/v1/lists/*/tasks",
+        "https://tasks.googleapis.com/tasks/v1/lists/*/tasks?**",
+        "https://tasks.googleapis.com/tasks/v1/lists/*/tasks/*"
+      ],
+      "testConnection": {
+        "url": "https://tasks.googleapis.com/tasks/v1/users/@me/lists?maxResults=1",
+        "description": "Lists one task list"
+      }
+    }
+  ],
+  "callers": {
+    "household": {
+      "connections": ["google", "google-tasks"],
+      "selfManage": false,
+      "google": { "auth": "user", "services": { "sheets": "edit" } }
+    }
+  }
+}
+```
+
+It must use **its own refresh token** (`HOUSEHOLD_GOOGLE_TASKS_REFRESH_TOKEN`, consented for `tasks.readonly` only, with step 3 above). The `google` token is consented for exactly the selection, and adding `tasks.readonly` to that consent would make `google`'s tokens fail as broader than the connection allows. It may share the OAuth client. Keep its allowlist off the catalog's paths: a request both connections allow is refused as ambiguous, and the daemon warns about the pair at boot ([README → Overlapping connections](README.md#overlapping-connections)). On the agent path, `set_secrets` refuses a custom connector's `secretRefs` and `set_connection_enabled` refuses to enable it, as for `google`.
 
 ### Web search and fetch
 
