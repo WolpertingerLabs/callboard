@@ -226,8 +226,9 @@ describe('test_connection on google', () => {
       consentScopes: `${S}drive.readonly ${S}spreadsheets`,
       hint:
         'The token was granted scopes this selection does not include: documents (docs: edit), ' +
-        'gmail.readonly (gmail: read). Add those services, or re-consent the refresh token with ' +
-        'exactly the scopes in consentScopes.',
+        'gmail.readonly (gmail: read). Re-consent the refresh token with exactly the scopes in ' +
+        'consentScopes. (Selecting those services instead also works, but widens what the agent ' +
+        'can reach.)',
     });
     expect(String(result.error)).toContain('granted scopes broader than this connection allows');
     expect(seen).toEqual([]);
@@ -285,6 +286,18 @@ describe('test_connection on google', () => {
     expect(refused.success).toBe(false);
     expect(refused.hint).toContain('drive.readonly (drive: read)');
     expect(refused.hint).toContain('domain-wide delegation');
+    expect(refused.hint).not.toMatch(/exactly|Selecting those services/);
+
+    // A scope the service account wasn't granted: the delegation must include it.
+    resetSharedTokenManager();
+    setSharedTokenManager(new TokenManager({ fetchImpl: fakeFetch as typeof fetch }));
+    grant = () => [S + 'calendar.readonly'];
+    const missing = await testConnection(routes);
+    expect(missing.hint).toBe(
+      "The token was not granted gmail.readonly (gmail: read). Make sure the service account's " +
+        'domain-wide delegation (Admin console) includes the scopes in consentScopes.',
+    );
+    expect(JSON.stringify(missing)).not.toContain(SUBJECT);
     expect(JSON.stringify(refused)).not.toContain(SUBJECT);
     const listed = await dispatchTool('list_routes', {}, routes, context);
     expect(JSON.stringify(listed)).not.toContain(SUBJECT);

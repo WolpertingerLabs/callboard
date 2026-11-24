@@ -1031,21 +1031,29 @@ function consentReport(
 ): { consentScopes?: string; hint?: string } {
   if (!route.oauth2) return {};
   const consentScopes = route.oauth2.effectiveScopes.join(' ');
-  const remedy =
-    route.oauth2.grant === 'jwt_bearer'
-      ? "make the service account's domain-wide delegation (Admin console) cover exactly the " +
-        'scopes in consentScopes'
-      : 're-consent the refresh token with exactly the scopes in consentScopes';
+  const serviceAccount = route.oauth2.grant === 'jwt_bearer';
   const labels = (scopes: string[]) => scopes.map(googleScopeLabel).join(', ');
   let hint: string | undefined;
   if (mismatch.extraScopes?.length) {
+    // Lead with the remedy that keeps the agent's access as configured;
+    // selecting more services widens it, so it comes second, with that said.
     hint =
       `The token was granted scopes this selection does not include: ` +
-      `${labels(mismatch.extraScopes)}. Add those services, or ${remedy}.`;
+      `${labels(mismatch.extraScopes)}. ` +
+      (serviceAccount
+        ? 'drawlatch asked only for the scopes in consentScopes; check the service ' +
+          "account's domain-wide delegation (Admin console)."
+        : 'Re-consent the refresh token with exactly the scopes in consentScopes. (Selecting ' +
+          'those services instead also works, but widens what the agent can reach.)');
   } else if (mismatch.missingScopes?.length) {
     hint =
       `The token was not granted ${labels(mismatch.missingScopes)}. ` +
-      `${remedy[0].toUpperCase()}${remedy.slice(1)}.`;
+      (serviceAccount
+        ? // The assertion asks only for the selection, so a wider delegation
+          // list still works: it must include these, not equal them.
+          "Make sure the service account's domain-wide delegation (Admin console) includes " +
+          'the scopes in consentScopes.'
+        : 'Re-consent the refresh token with exactly the scopes in consentScopes.');
   }
   return { consentScopes, ...(hint !== undefined && { hint }) };
 }
