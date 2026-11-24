@@ -260,6 +260,7 @@ export function sandboxInfo(env: NodeJS.ProcessEnv = process.env): ComputerUseSa
 /** A build record as the Settings API shows it (`state` in the values every bundle knows; `phase` precise). */
 export function buildDto(record: BuildRecord, output?: string): SandboxDesktopBuild {
   return {
+    // queued → running, interrupted and cancelled → failed: the values an older tab knows.
     state: record.phase === "queued" || record.phase === "running" ? "running" : record.phase === "succeeded" ? "succeeded" : "failed",
     id: record.id,
     kind: record.kind,
@@ -268,6 +269,7 @@ export function buildDto(record: BuildRecord, output?: string): SandboxDesktopBu
     ...(record.profile ? { profileId: record.profile } : {}),
     ...(record.scope ? { scope: record.scope } : {}),
     requestedAt: record.requestedAt,
+    requestedBy: record.requestedBy,
     ...(record.startedAt ? { startedAt: record.startedAt } : {}),
     ...(record.finishedAt ? { finishedAt: record.finishedAt } : {}),
     ...(record.error ? { error: record.error } : {}),
@@ -284,11 +286,11 @@ let builds: SandboxBuilds | undefined;
 export function getSandboxBuilds(): SandboxBuilds {
   return (builds ??= new SandboxBuilds({
     dir: join(DATA_DIR, "sandbox-desktop", "builds"),
-    run: (target: BuildTarget, onOutput) => {
-      if (target.kind === "base") return buildSandboxImage({ onOutput });
+    run: (target: BuildTarget, onOutput, signal) => {
+      if (target.kind === "base") return buildSandboxImage({ onOutput, signal });
       const entry = resolveProfileId(target.id);
       if (!entry) return Promise.reject(new Error(`Sandbox profile ${target.id} no longer exists`));
-      return buildProfileImage({ entry, docker: execDocker(), dataDir: DATA_DIR, onOutput }).then(() => {});
+      return buildProfileImage({ entry, docker: execDocker(), dataDir: DATA_DIR, onOutput, signal }).then(() => {});
     },
     onFinished: (record) => {
       const what = record.kind === "base" ? "the sandbox desktop image" : `sandbox profile ${record.profile}`;
@@ -315,15 +317,29 @@ export function startSandboxBuild(profileId?: string): SandboxDesktopBuild {
   log.info(`Queued a build of ${target.kind === "base" ? "the sandbox desktop image" : `sandbox profile ${record.profile}`} (requested from Settings)`);
   return buildDto(record, getSandboxBuilds().log(record.id, 12_000) ?? "");
 }
-/** The latest build (any kind), with the tail of its log: the Settings page's single "build" field, kept for older bundles. */
+/**
+ * The Settings page's single "build" field (older bundles read only this): the
+ * build running now, else the newest, with the tail of its log. Not simply the
+ * newest: a build queued behind a running one would hide the running one's log.
+ */
 export function sandboxBuildState(): SandboxDesktopBuild {
-  const latest = getSandboxBuilds().list()[0];
+  const latest = getSandboxBuilds().runningBuild() ?? getSandboxBuilds().list()[0];
   return latest ? buildDto(latest, getSandboxBuilds().log(latest.id, 12_000) ?? "") : { state: "idle" };
 }
 /** One build by id, with its log (the whole capped log, or its tail). */
 export function sandboxBuild(id: string, tail?: number): SandboxDesktopBuild | undefined {
   const record = getSandboxBuilds().get(id);
   return record ? buildDto(record, getSandboxBuilds().log(id, tail) ?? "") : undefined;
+}
+
+/** Cancel a queued or running build (Settings → Cancel). Undefined if there is no such build. */
+export function cancelSandboxBuild(id: string): SandboxDesktopBuild | undefined {
+  const record = getSandboxBuilds().cancel(id);
+  if (record)
+    log.info(
+      `Cancel requested for build ${id} (${record.kind === "base" ? "the sandbox desktop image" : `sandbox profile ${record.profile}`}, ${record.phase})`,
+    );
+  return record ? buildDto(record) : undefined;
 }
 
 /**

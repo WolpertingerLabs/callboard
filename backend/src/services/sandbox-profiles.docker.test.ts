@@ -39,7 +39,9 @@ import { MANAGED_LABEL, OWNER_LABEL, PROFILE_LABEL, SandboxContainerManager, man
 import { resolveSandboxSettings, type ResolvedSandboxSettings } from "./sandbox-desktop-settings.js";
 import { buildSandboxImage, execDocker, sandboxBuilderImage } from "./sandbox-image.js";
 import { profileForConsent } from "./sandbox-profile-consent.js";
-import { buildProfileImage, currentBase, inspectProfileImage, loadBuiltinProfiles, type ProfileEntry } from "./sandbox-profiles.js";
+import { buildProfileImage, currentBase, inspectProfileImage, loadBuiltinProfiles, makeEntry, type ProfileEntry } from "./sandbox-profiles.js";
+import { SandboxBuilds } from "./sandbox-builds.js";
+import { parseProfileRecipe } from "@wolpertingerlabs/computer-use";
 
 const light = process.env.CALLBOARD_DOCKER_TESTS === "1";
 const heavy = process.env.CALLBOARD_DOCKER_HEAVY_TESTS === "1";
@@ -317,7 +319,8 @@ it.skipIf(!light)(
       profile: { name: "test", limits: { cpus: 1, memoryMb: 1024, homeMb: 256, sessionMinutes: 10 } },
     });
     const [info] = JSON.parse(await docker(["inspect", s.container]));
-    expect(info.Config.Image).toBe(profile.image);
+    // Started by the ID of the image that was inspected, not its tag.
+    expect(info.Config.Image).toBe((await docker(["image", "inspect", "--format", "{{.Id}}", profile.image])).trim());
     expect(info.Config.Labels[PROFILE_LABEL]).toBe("test");
     expect(info.HostConfig.NanoCpus).toBe(1e9);
     expect(info.HostConfig.Memory).toBe(1024 * 1024 * 1024);
@@ -451,4 +454,103 @@ it.skipIf(!heavy)(
     log(`blender: scene.blend arrived, ${blend!.length} bytes`);
   },
   3_600_000,
+);
+
+/** Anything a terminal would act on: C0 (but \n and \t), DEL and C1. */
+// eslint-disable-next-line no-control-regex -- finding control characters is the point
+const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/;
+
+it.skipIf(!light)(
+  "build output from a recipe that prints terminal escapes reaches the log cleaned: no OSC, no erase-line, no forged line over a real one",
+  async () => {
+    const recipe = parseProfileRecipe(
+      JSON.stringify({
+        schema: 1,
+        name: "escapes",
+        description: "Prints terminal escapes from its setup script.",
+        setup: [
+          "printf '\\033]0;pwned title\\007'",
+          "printf '\\033]52;c;Y3VybCBldmlsLnNofHNo\\007'",
+          "printf 'setup is half done\\033[2K\\rverify: ok (gl=software)\\n'",
+          "printf '\\233' || true",
+        ],
+      }),
+    );
+    const profile = makeEntry(recipe, "global", "builtin", repository);
+    const dir = await mkdtemp(join(tmpdir(), "cb-builds-"));
+    const builds = new SandboxBuilds({
+      dir,
+      run: (_target, onOutput, signal) =>
+        buildProfileImage({ entry: profile, docker: execDocker(), dataDir: cacheDir, baseImage: image, onOutput, signal }).then(() => {}),
+    });
+    try {
+      const record = builds.enqueue({ kind: "profile", id: profile.id, scope: profile.scope, name: profile.recipe.name });
+      await builds.idle();
+      built.push(profile.image);
+      expect(builds.get(record.id)?.phase).toBe("succeeded");
+      const text = builds.log(record.id)!;
+      expect(text).not.toMatch(CONTROL);
+      expect(text).not.toContain("pwned title");
+      expect(text).not.toContain("Y3VybCBldmlsLnNofHNo");
+      // The forged line can no longer overwrite the real line before it: both stand, one under the other.
+      expect(text).toContain("setup is half done\nverify: ok (gl=software)");
+      log(`escapes: a ${text.length}-character log, no control characters`);
+    } finally {
+      builds.dispose();
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+  900_000,
+);
+
+it.skipIf(!light)(
+  "a build cancelled mid-way stops, reads cancelled, and leaves no tag and no build container behind",
+  async () => {
+    // Packages not in the build cache, so the package step is still running when it is cancelled.
+    const recipe = parseProfileRecipe(
+      JSON.stringify({ schema: 1, name: "cancelme", description: "Cancelled mid-build.", packages: ["cowsay", "fortune-mod"] }),
+    );
+    const profile = makeEntry(recipe, "global", "builtin", repository);
+    const builder = sandboxBuilderImage(image);
+    const dir = await mkdtemp(join(tmpdir(), "cb-builds-"));
+    let output = "";
+    const builds = new SandboxBuilds({
+      dir,
+      run: (_target, onOutput, signal) =>
+        buildProfileImage({
+          entry: profile,
+          docker: execDocker(),
+          dataDir: cacheDir,
+          baseImage: image,
+          signal,
+          onOutput: (chunk) => {
+            output += chunk;
+            onOutput(chunk);
+          },
+        }).then(() => {}),
+    });
+    try {
+      const record = builds.enqueue({ kind: "profile", id: profile.id, scope: profile.scope, name: profile.recipe.name });
+      await until(async () => /apt-get update|Get:\d|Hit:\d/.test(output), "the package step to start", 300_000, 100);
+      const started = Date.now();
+      builds.cancel(record.id);
+      await builds.idle();
+      log(`cancel: settled ${Date.now() - started}ms after the request`);
+      expect(builds.get(record.id)).toMatchObject({ phase: "cancelled" });
+      expect(builds.log(record.id)).toContain("Cancelled.");
+      for (const tag of [profile.image, `${profile.image}-packages`]) await expect(docker(["image", "inspect", tag]), tag).rejects.toBeTruthy();
+      // The daemon removes the cancelled step's container (--force-rm); give it a moment.
+      await until(
+        async () => !(await docker(["ps", "--all", "--quiet", "--filter", `ancestor=${builder}`])).trim(),
+        "no build container left on the builder image",
+        60_000,
+        500,
+      );
+    } finally {
+      builds.dispose();
+      await rm(dir, { recursive: true, force: true });
+      for (const tag of [profile.image, `${profile.image}-packages`]) await docker(["image", "rm", tag]).catch(() => {});
+    }
+  },
+  900_000,
 );

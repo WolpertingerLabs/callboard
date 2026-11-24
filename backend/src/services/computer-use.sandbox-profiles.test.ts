@@ -100,6 +100,12 @@ describe("the registry", () => {
     expect(workspaceScopeKey({ workspaceId: "w1", folder: "/b" })).toBe(ws);
     expect(workspaceScopeKey({ folder: "/a" })).not.toBe(ws);
     expect(scopesFor({})).toEqual(["global"]);
+    // A folder is resolved first, as the deliverables key it; a relative one has no scope.
+    expect(workspaceScopeKey({ folder: "/a/b/../c/" })).toBe(workspaceScopeKey({ folder: "/a/c" }));
+    expect(workspaceScopeKey({ folder: "relative/dir" })).toBeUndefined();
+    // A chat sees global, its workspace's and its folder's: gaining a workspace record does not hide the folder's profiles.
+    const folderOnly = workspaceScopeKey({ folder: "/a" })!;
+    expect(scopesFor({ workspaceId: "w1", folder: "/a" })).toEqual(["global", ws, folderOnly]);
     const mine = makeEntry(parseProfileRecipe(JSON.stringify({ schema: 1, name: "mine", description: "A workspace profile" })), ws, "builtin");
     expect([mine.id, mine.image]).toEqual([`${ws}/mine`, `callboard/computer-use-profile:${ws}-mine`]);
     const shadow = makeEntry(testProfile().recipe, ws, "builtin");
@@ -198,8 +204,10 @@ describe("the download address policy", () => {
       "ff02::1",
     ])
       expect(addressProblem(address), address).toBeDefined();
-    for (const address of ["93.184.215.14", "151.101.1.69", "2606:4700::6810:84e5", "::ffff:93.184.215.14"])
-      expect(addressProblem(address), address).toBeUndefined();
+    // IPv4-compatible (::/96), IPv4-translated (::ffff:0:0:0/96) and IPv4-mapped (::ffff:0:0/96), whatever they embed.
+    for (const address of ["::5db8:d70e", "::ffff:0:5db8:d70e", "::ffff:93.184.215.14", "0:0:0:0:0:ffff:5db8:d70e"])
+      expect(addressProblem(address), address).toBeDefined();
+    for (const address of ["93.184.215.14", "151.101.1.69", "2606:4700::6810:84e5"]) expect(addressProblem(address), address).toBeUndefined();
     expect(addressProblem("example.com")).toBe("is not an IP address");
   });
 });
@@ -378,7 +386,8 @@ describe("consent → open on a profile", () => {
     await f.cards[0]!.answer(true);
     const [args] = f.runArgs();
     expect(args).toBeDefined();
-    expect(args!.at(-1)).toBe(testProfile().image);
+    // Run by the ID of the image that was inspected, never the tag again: a retag in between cannot start an unchecked image.
+    expect(args!.at(-1)).toBe(`sha256:${"1".repeat(64)}`);
     expect(args).toEqual(expect.arrayContaining(["--cpus=1", "--memory=1024m", "--memory-swap=1024m", `--label`, `${PROFILE_LABEL}=test`]));
     expect(args).toContain("/home/desktop:rw,nosuid,nodev,size=256m,uid=10001,gid=10001,mode=0755");
     // Exactly sandboxRunArgs' hardening: the same argv as a base run but for the image, limits and labels.
@@ -392,7 +401,8 @@ describe("consent → open on a profile", () => {
           !arg.startsWith("/home/desktop:") &&
           arg !== "--label" &&
           a[i - 1] !== "--label" &&
-          !arg.includes("computer-use-"),
+          !arg.includes("computer-use-") &&
+          !arg.startsWith("sha256:"),
       );
     expect(strip(args!)).toEqual(strip(base));
     const session = f.service.status(controlPrincipal("chat-p", "agent"))[0]!;

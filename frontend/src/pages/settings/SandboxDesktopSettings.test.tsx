@@ -2,13 +2,22 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SandboxDesktopStatus } from "shared/types/index.js";
 import SandboxDesktopSettings from "./SandboxDesktopSettings";
-import { buildSandboxDesktopImage, getSandboxDesktopStatus, removeSandboxProfile, updateSandboxDesktopSettings } from "../../api";
+import {
+  buildSandboxDesktopImage,
+  cancelSandboxBuild,
+  getSandboxBuild,
+  getSandboxDesktopStatus,
+  removeSandboxProfile,
+  updateSandboxDesktopSettings,
+} from "../../api";
 
 vi.mock("../../api", () => ({
   getSandboxDesktopStatus: vi.fn(),
   updateSandboxDesktopSettings: vi.fn(),
   buildSandboxDesktopImage: vi.fn(),
   removeSandboxProfile: vi.fn(),
+  getSandboxBuild: vi.fn(),
+  cancelSandboxBuild: vi.fn(),
 }));
 
 function status(overrides: Partial<SandboxDesktopStatus> = {}): SandboxDesktopStatus {
@@ -272,9 +281,9 @@ describe("Settings → Sandbox desktop", () => {
     await waitFor(() => expect(buildSandboxDesktopImage).toHaveBeenCalledWith("blender", "global"));
     expect((await screen.findByTestId("sandbox-build-log")).textContent).toContain("Downloading");
     expect(screen.getByText("Building profile blender…")).toBeTruthy();
-    // Builds queue (one runs at a time): another can still be asked for; removing waits.
+    // Builds queue (one runs at a time): another can still be asked for, and removing waits only for that profile's own build.
     expect((screen.getByRole("button", { name: "Rebuild profile test" }) as HTMLButtonElement).disabled).toBe(false);
-    expect((screen.getByRole("button", { name: "Remove profile test's image" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Remove profile test's image" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("removes a profile's image after asking", async () => {
@@ -332,5 +341,53 @@ describe("Settings → Sandbox desktop", () => {
     render(<SandboxDesktopSettings />);
     expect((await screen.findByTestId("sandbox-profile-blender")).textContent).toContain("Refused: recipe changed");
     expect(screen.getByTestId("sandbox-profile-other").textContent).toContain("Refused: unlabelled");
+  });
+
+  it("lists builds with their phases, shows any build's log on request, and cancels a queued or running one", async () => {
+    const running = {
+      state: "running" as const,
+      id: "11111111-1111-1111-1111-111111111111",
+      kind: "profile" as const,
+      phase: "running" as const,
+      profile: "blender",
+      profileId: "global/blender",
+      requestedAt: 2,
+    };
+    const queued = { state: "running" as const, id: "22222222-2222-2222-2222-222222222222", kind: "base" as const, phase: "queued" as const, requestedAt: 3 };
+    const done = {
+      state: "failed" as const,
+      id: "33333333-3333-3333-3333-333333333333",
+      kind: "profile" as const,
+      phase: "cancelled" as const,
+      profile: "test",
+      profileId: "global/test",
+      requestedAt: 1,
+    };
+    vi.mocked(getSandboxDesktopStatus).mockResolvedValue(
+      status({ profiles: [blender], build: { ...running, output: "running output" }, builds: [queued, running, done] }),
+    );
+    vi.mocked(getSandboxBuild).mockResolvedValue({ ...done, output: "the cancelled build's log" });
+    vi.mocked(cancelSandboxBuild).mockResolvedValue({ ...queued, state: "failed", phase: "cancelled" });
+    render(<SandboxDesktopSettings />);
+    const list = await screen.findByTestId("sandbox-build-list");
+    expect(screen.getByTestId(`sandbox-build-${queued.id}`).textContent).toContain("Queued");
+    expect(screen.getByTestId(`sandbox-build-${running.id}`).textContent).toContain("Running");
+    expect(screen.getByTestId(`sandbox-build-${done.id}`).textContent).toContain("Cancelled");
+    // The base build is queued behind the running profile build: its button waits, and the profile's remove waits too.
+    expect((screen.getByRole("button", { name: /Building…/ }) as HTMLButtonElement).disabled).toBe(true);
+    expect(list.textContent).toContain("One runs at a time");
+    fireEvent.click(screen.getByRole("button", { name: "View the log of profile global/test" }));
+    await waitFor(() => expect(getSandboxBuild).toHaveBeenCalledWith(done.id));
+    expect(await screen.findByText("the cancelled build's log")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Cancel the build of profile global/test" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel the build of the base image" }));
+    await waitFor(() => expect(cancelSandboxBuild).toHaveBeenCalledWith(queued.id));
+  });
+
+  it("an API key sees the builds but cannot cancel one", async () => {
+    const running = { state: "running" as const, id: "11111111-1111-1111-1111-111111111111", kind: "base" as const, phase: "running" as const, requestedAt: 2 };
+    vi.mocked(getSandboxDesktopStatus).mockResolvedValue(status({ canEdit: false, profiles: [blender], build: running, builds: [running] }));
+    render(<SandboxDesktopSettings />);
+    expect(((await screen.findByRole("button", { name: "Cancel the build of the base image" })) as HTMLButtonElement).disabled).toBe(true);
   });
 });

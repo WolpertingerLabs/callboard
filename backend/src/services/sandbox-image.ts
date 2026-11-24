@@ -8,6 +8,7 @@
  * `ensureSandboxNetwork` does.
  */
 import { execFile, spawn } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -213,9 +214,37 @@ export async function inspectSandboxImage(
 export { SANDBOX_PROTOCOL_LABEL_VALUE };
 
 /**
- * Run one `docker <args>` build, streaming its output to `onOutput` (or the
- * terminal with `stdio: "inherit"`). Resolves on success; rejects with the
- * tail of the output on failure.
+ * Build output is untrusted: a recipe's setup script writes into it. Raw, an
+ * OSC 0 or OSC 52 sequence would retitle the operator's terminal or write
+ * their clipboard, and `ESC[2K\r` would erase a line to print a fake one (a
+ * forged `verify: ok`). So every byte of build output is cleaned before it
+ * reaches a terminal or a log: escape sequences (CSI, OSC, DCS and the rest)
+ * are dropped whole, every other C0/C1 control character but `\n` and `\t`
+ * is dropped, and `\r` becomes a line break (`\r\n` one line break), so
+ * nothing can return to the start of a line and overwrite it.
+ */
+/* eslint-disable no-control-regex -- matching escape sequences and control characters is the point */
+export function sanitizeBuildOutput(text: string): string {
+  return (
+    text
+      // OSC, DCS, SOS, PM and APC strings, up to their terminator (BEL or ST) or the end of the chunk.
+      .replace(/(?:\u001b[\]P^_X]|[\u0090\u0098\u009d\u009e\u009f])[^\u0007\u001b\u009c]*(?:\u0007|\u001b\\|\u009c)?/g, "")
+      // CSI sequences (ESC [ or the 8-bit CSI), then any other two-byte escape.
+      .replace(/(?:\u001b\[|\u009b)[0-?]*[ -/]*[@-~]?/g, "")
+      .replace(/\u001b[ -/]*[0-~]?/g, "")
+      .replace(/\r\n?/g, "\n")
+      .replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, "")
+  );
+}
+/* eslint-enable no-control-regex */
+
+/**
+ * Run one `docker <args>` build. Its output is always piped and cleaned
+ * ({@link sanitizeBuildOutput}), then streamed to `onOutput` and, with
+ * `stdio: "inherit"`, to this process's stdout: never the raw bytes.
+ * Resolves on success; rejects with the tail of the output on failure. On
+ * abort the docker CLI is killed (the daemon then stops the build, and a build
+ * tags its image only when it succeeds) and this rejects once it has exited.
  */
 export function runDockerBuild(
   args: readonly string[],
@@ -223,20 +252,58 @@ export function runDockerBuild(
 ): Promise<void> {
   const binary = options.binary ?? (process.env.CALLBOARD_DOCKER_BIN?.trim() || "docker");
   return new Promise((resolve, reject) => {
-    const child = spawn(binary, [...args], { stdio: options.stdio === "inherit" ? "inherit" : ["ignore", "pipe", "pipe"], signal: options.signal });
+    if (options.signal?.aborted) return reject(new BuildCancelledError());
+    const child = spawn(binary, [...args], { stdio: ["ignore", "pipe", "pipe"], signal: options.signal });
     let tail = "";
-    const collect = (chunk: Buffer) => {
-      const text = chunk.toString("utf8");
+    let failed: Error | undefined;
+    const emit = (text: string) => {
+      if (!text) return;
       tail = (tail + text).slice(-8192);
+      if (options.stdio === "inherit") process.stdout.write(text);
       options.onOutput?.(text);
     };
-    child.stdout?.on("data", collect);
-    child.stderr?.on("data", collect);
-    child.on("error", (error: NodeJS.ErrnoException) =>
-      reject(error.code === "ENOENT" ? new Error(`The Docker CLI (${binary}) is not installed or not on PATH`) : error),
-    );
-    child.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`docker build exited with ${code}${tail ? `:\n${tail.slice(-2000)}` : ""}`))));
+    // One decoder per stream, so a character split across chunks is not mangled; a lone
+    // trailing \r waits for the next chunk, so \r\n split in two is still one line break.
+    for (const stream of [child.stdout, child.stderr]) {
+      const decoder = new StringDecoder("utf8");
+      let pending = "";
+      stream?.on("data", (chunk: Buffer) => {
+        let text = pending + decoder.write(chunk);
+        pending = text.endsWith("\r") ? "\r" : "";
+        if (pending) text = text.slice(0, -1);
+        emit(sanitizeBuildOutput(text));
+      });
+      stream?.on("end", () => emit(sanitizeBuildOutput(pending + decoder.end())));
+    }
+    child.on("error", (error: NodeJS.ErrnoException) => {
+      failed =
+        error.name === "AbortError" || options.signal?.aborted
+          ? new BuildCancelledError()
+          : error.code === "ENOENT"
+            ? new Error(`The Docker CLI (${binary}) is not installed or not on PATH`)
+            : error;
+      // A spawn that never started emits no close.
+      if (child.pid === undefined) reject(failed);
+    });
+    // Cancelled: settle when the CLI has exited, not when its pipes close (an orphaned grandchild could hold them).
+    child.on("exit", () => {
+      if (options.signal?.aborted) reject(failed ?? new BuildCancelledError());
+    });
+    child.on("close", (code) => {
+      if (failed || options.signal?.aborted) reject(failed ?? new BuildCancelledError());
+      else if (code === 0) resolve();
+      else reject(new Error(`docker build exited with ${code}${tail ? `:\n${tail.slice(-2000)}` : ""}`));
+    });
   });
+}
+
+/** A build stopped by its signal (Cancel in Settings, Ctrl+C in the CLI). */
+export class BuildCancelledError extends Error {
+  readonly code = "cancelled";
+  constructor() {
+    super("The build was cancelled");
+    this.name = "BuildCancelledError";
+  }
 }
 
 /**

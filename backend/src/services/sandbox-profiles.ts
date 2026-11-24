@@ -10,16 +10,21 @@
  *
  * **Scope and identity.** Every profile lives in a scope: `global` (the
  * built-ins, shipped in the package's `docker/profiles/*.json`, and later any
- * profile every chat may use) or one workspace's (`w<12 hex>`, a hash of the
- * chat's `workspaceId` when it has one and of its folder otherwise — never
- * parsed back; see CLAUDE.md, "Workspace keying"). Its **entry id** is
+ * profile every chat may use) or one owner's (`w<12 hex>`): a hash of a
+ * `workspaceId`, or of a resolved folder path (as the deliverables key them),
+ * never parsed back; see CLAUDE.md, "Workspace keying". Its **entry id** is
  * `<scope>/<name>` (`global/blender`); the id drives its image tag
- * (`callboard/computer-use-profile:blender`, or `…:<scope>-<name>` for a
- * workspace's) and the variant a session is opened with. The seam for
- * agent-proposed profiles (a later change) is {@link ProfileSource}: a source
- * per scope, stored under `<data dir>/sandbox-desktop/profiles/<scope>/`. A
- * chat sees the global scope and its own workspace's; a global name is never
- * shadowed.
+ * (`callboard/computer-use-profile:blender`, or `…:<scope>-<name>`) and the
+ * variant a session is opened with.
+ *
+ * **Which scopes a chat sees** ({@link scopesFor}): global, then its
+ * workspace's, then its folder's — both owner scopes, as the deliverables
+ * read both, so a chat that gains a workspace record keeps seeing what its
+ * folder had. A name an earlier scope has is never shadowed by a later one.
+ * **Where a chat's new profile goes** ({@link workspaceScopeKey}, for the
+ * later change that lets agents propose them): its workspace's scope when it
+ * has one, else its folder's. The seam for those is {@link ProfileSource}: a
+ * source per scope, stored under `<data dir>/sandbox-desktop/profiles/<scope>/`.
  *
  * **Builds are explicit** — `callboard sandbox build --profile <name>` or
  * Settings → Sandbox desktop — never implicit, and only a signed-in human may
@@ -32,7 +37,7 @@ import { chmod, copyFile, link, mkdir, rename, rm, writeFile } from "node:fs/pro
 import { request as httpsRequest } from "node:https";
 import type { IncomingMessage } from "node:http";
 import { BlockList, isIP } from "node:net";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import {
@@ -104,18 +109,31 @@ export interface ProfileSource {
   list(): ProfileEntry[];
 }
 
+const scopeHash = (basis: string): ProfileScopeKey => `w${createHash("sha256").update(`callboard-profile-scope\0${basis}`).digest("hex").slice(0, 12)}`;
+/** The scope of a folder: a hash of its resolved absolute path (as the deliverables key a folder). Undefined for a relative path. */
+export function folderScopeKey(folder: string | undefined): ProfileScopeKey | undefined {
+  return folder && isAbsolute(folder) ? scopeHash(`folder\0${resolve(folder)}`) : undefined;
+}
 /**
- * A chat's workspace scope key: a hash of its `workspaceId` when it has one,
- * else of its folder; undefined with neither. One-way: never parsed back.
+ * The scope a profile proposed in this chat is stored under (a later change):
+ * its workspace's when it has a `workspaceId`, else its folder's. Undefined
+ * with neither. One-way: never parsed back.
  */
 export function workspaceScopeKey(chat: ProfileChatScope): ProfileScopeKey | undefined {
-  const basis = chat.workspaceId ? `workspace\0${chat.workspaceId}` : chat.folder ? `folder\0${chat.folder}` : undefined;
-  return basis ? `w${createHash("sha256").update(`callboard-profile-scope\0${basis}`).digest("hex").slice(0, 12)}` : undefined;
+  return chat.workspaceId ? scopeHash(`workspace\0${chat.workspaceId}`) : folderScopeKey(chat.folder);
 }
-/** The scopes a chat may use profiles from, in precedence order: global first, then its workspace's. */
+/**
+ * The scopes a chat may use profiles from, in precedence order: global, then
+ * its workspace's, then its folder's. Both, not one or the other, as the
+ * deliverables read both (`forChat`): a chat that gains a workspace record
+ * after its folder already had profiles keeps seeing them. A name taken by
+ * an earlier scope is never shadowed by a later one.
+ */
 export function scopesFor(chat: ProfileChatScope): ProfileScopeKey[] {
-  const own = workspaceScopeKey(chat);
-  return own ? ["global", own] : ["global"];
+  const scopes: ProfileScopeKey[] = ["global"];
+  for (const key of [chat.workspaceId ? scopeHash(`workspace\0${chat.workspaceId}`) : undefined, folderScopeKey(chat.folder)])
+    if (key && !scopes.includes(key)) scopes.push(key);
+  return scopes;
 }
 
 /** The repository profile images are tagged in (`CALLBOARD_SANDBOX_PROFILE_REPOSITORY` overrides it, for tests). */
@@ -372,8 +390,10 @@ const BLOCKED = (() => {
   ] as const)
     list.addSubnet(net, prefix, "ipv4");
   for (const [net, prefix] of [
-    ["::", 128],
-    ["::1", 128],
+    // IPv4-compatible (::a.b.c.d, deprecated), :: and ::1 among them.
+    ["::", 96],
+    // IPv4-translated (RFC 2765, ::ffff:0:a.b.c.d).
+    ["::ffff:0:0:0", 96],
     // (No ::ffff:0:0/96 rule: BlockList matches every IPv4 address against it. A mapped address is judged as its IPv4 below.)
     ["64:ff9b::", 96],
     ["64:ff9b:1::", 48],
@@ -389,13 +409,18 @@ const BLOCKED = (() => {
     list.addSubnet(net, prefix, "ipv6");
   return list;
 })();
+const BLOCKED_MAPPED = (() => {
+  const list = new BlockList();
+  list.addSubnet("::ffff:0:0", 96, "ipv6");
+  return list;
+})();
 /** Why a download may not connect to `address`, or undefined. */
 export function addressProblem(address: string): string | undefined {
   const family = isIP(address);
   if (family === 0) return "is not an IP address";
-  // An IPv4-mapped IPv6 address is judged as the IPv4 address it is.
-  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(address)?.[1];
-  if (mapped) return addressProblem(mapped);
+  // IPv4-mapped (::ffff:0:0/96) is refused outright: no download needs it. It has a list of its
+  // own, checked for IPv6 literals only: BLOCKED would match every IPv4 address against that range.
+  if (family === 6 && BLOCKED_MAPPED.check(address, "ipv6")) return "is an IPv4-mapped IPv6 address";
   return BLOCKED.check(address, family === 4 ? "ipv4" : "ipv6") ? "is a loopback, private, link-local or reserved address" : undefined;
 }
 

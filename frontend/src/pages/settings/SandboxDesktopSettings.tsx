@@ -9,7 +9,14 @@ import {
   type SandboxDesktopStatus,
   type SandboxProfileStatus,
 } from "shared/types/index.js";
-import { buildSandboxDesktopImage, getSandboxDesktopStatus, removeSandboxProfile, updateSandboxDesktopSettings } from "../../api";
+import {
+  buildSandboxDesktopImage,
+  cancelSandboxBuild,
+  getSandboxBuild,
+  getSandboxDesktopStatus,
+  removeSandboxProfile,
+  updateSandboxDesktopSettings,
+} from "../../api";
 import { errorMessage } from "../../utils/errorMessage";
 import { headerStyle, helpStyle, inputStyle, labelStyle, sectionStyle, subtitleStyle } from "./styles";
 
@@ -156,6 +163,84 @@ function BuildLog({ build, label }: { build: SandboxDesktopBuild; label: string 
           {build.output.slice(-3000)}
         </pre>
       )}
+    </div>
+  );
+}
+
+const PHASE_LABELS: Record<string, string> = {
+  queued: "Queued",
+  running: "Running",
+  succeeded: "Succeeded",
+  failed: "Failed",
+  interrupted: "Interrupted",
+  cancelled: "Cancelled",
+};
+const isActive = (build: SandboxDesktopBuild) => build.phase === "queued" || build.phase === "running" || (!build.phase && build.state === "running");
+const buildLabel = (build: SandboxDesktopBuild) =>
+  build.kind === "profile" || build.profile ? `profile ${build.profileId ?? build.profile}` : "the base image";
+
+/** Recent builds, newest first: each with its phase, its log on request, and Cancel while it is queued or running. */
+function BuildList({ builds, editable, onChanged }: { builds: SandboxDesktopBuild[]; editable: boolean; onChanged: () => void }) {
+  const [viewing, setViewing] = useState<SandboxDesktopBuild | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const view = async (id: string) => {
+    setError(null);
+    try {
+      setViewing(await getSandboxBuild(id));
+    } catch (e) {
+      setError(errorMessage(e, "Failed to read the build"));
+    }
+  };
+  const cancel = async (id: string) => {
+    setError(null);
+    try {
+      await cancelSandboxBuild(id);
+      onChanged();
+    } catch (e) {
+      setError(errorMessage(e, "Failed to cancel the build"));
+    }
+  };
+  if (!builds.length) return null;
+  return (
+    <div style={{ marginTop: 16 }} data-testid="sandbox-build-list">
+      <h4 style={{ fontSize: 13, fontWeight: 600, margin: "0 0 6px 0" }}>Builds</h4>
+      <p style={{ ...helpStyle, margin: "0 0 6px 0" }}>One runs at a time, in the order asked.</p>
+      {error && (
+        <p role="alert" style={{ ...helpStyle, color: "var(--danger)" }}>
+          {error}
+        </p>
+      )}
+      {builds.slice(0, 10).map((build) => (
+        <div
+          key={build.id}
+          data-testid={`sandbox-build-${build.id}`}
+          style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, fontSize: 13, padding: "4px 0", borderTop: "1px solid var(--border)" }}
+        >
+          <span style={{ minWidth: 0, flex: "1 1 180px", wordBreak: "break-word" }}>
+            {buildLabel(build)}
+            {build.requestedAt ? <span style={{ color: "var(--text-muted)" }}> · {new Date(build.requestedAt).toLocaleString()}</span> : null}
+          </span>
+          <span role="status" style={{ color: isActive(build) ? "var(--accent)" : build.phase === "succeeded" ? "var(--success)" : "var(--text-muted)" }}>
+            {PHASE_LABELS[build.phase ?? build.state] ?? build.phase ?? build.state}
+          </span>
+          {build.id && (
+            <button style={secondaryButton} onClick={() => void view(build.id!)} aria-label={`View the log of ${buildLabel(build)}`}>
+              View log
+            </button>
+          )}
+          {build.id && isActive(build) && (
+            <button
+              style={{ ...secondaryButton, opacity: editable ? 1 : 0.5 }}
+              disabled={!editable}
+              onClick={() => void cancel(build.id!)}
+              aria-label={`Cancel the build of ${buildLabel(build)}`}
+            >
+              <X size={14} /> Cancel
+            </button>
+          )}
+        </div>
+      ))}
+      {viewing && <BuildLog build={viewing} label={buildLabel(viewing)} />}
     </div>
   );
 }
@@ -324,8 +409,10 @@ export default function SandboxDesktopSettings() {
   }, [refresh]);
 
   // Poll while a build runs, so its output and outcome appear without a reload.
-  const building = status?.build.state === "running";
-  const baseBuilding = building && !status?.build.profile;
+  // From the list of builds when the daemon sends one: `build` alone is one record, and a queued build is not the running one.
+  const activeBuilds = (status?.builds ?? (status?.build.state === "running" ? [status.build] : [])).filter(isActive);
+  const building = activeBuilds.length > 0 || status?.build.state === "running";
+  const baseBuilding = activeBuilds.some((b) => b.kind === "base" || (!b.kind && !b.profile));
   useEffect(() => {
     if (!building) return;
     const timer = setInterval(() => void refresh(false), 2000);
@@ -735,12 +822,13 @@ export default function SandboxDesktopSettings() {
               key={profile.name}
               profile={profile}
               editable={editable}
-              busy={building}
+              busy={activeBuilds.some((b) => b.profileId === profile.id || (!b.profileId && b.profile === profile.name))}
               onBuild={() => void build(profile.name, profile.scope)}
               onRemove={() => void remove(profile.name, profile.scope)}
             />
           ))}
           {status.build.state !== "idle" && status.build.profile && <BuildLog build={status.build} label={`profile ${status.build.profile}`} />}
+          <BuildList builds={status.builds ?? []} editable={editable} onChanged={() => void refresh(false)} />
         </section>
       )}
     </div>

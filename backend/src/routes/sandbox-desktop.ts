@@ -7,6 +7,7 @@
  *   GET  /api/sandbox-desktop/builds — recent builds, newest first
  *   GET  /api/sandbox-desktop/builds/:id — one build, with the tail of its log (`?tail=` characters, default 64 KB)
  *   GET  /api/sandbox-desktop/builds/:id/log — its whole (capped) log, as text
+ *   POST /api/sandbox-desktop/builds/:id/cancel — cancel a queued or running build
  *   DELETE /api/sandbox-desktop/profiles/:name?scope= — remove a profile's image (scope default `global`)
  *
  * Reading is open to any authenticated caller, API keys included. Changing
@@ -22,6 +23,7 @@ import { requireControlOrigin } from "./computer-use.js";
 import { peekComputerUseHost } from "../services/computer-use.js";
 import {
   buildDto,
+  cancelSandboxBuild,
   currentSandboxMode,
   getSandboxBuilds,
   removeSandboxProfile,
@@ -113,6 +115,12 @@ sandboxDesktopRouter.get("/builds/:id/log", (req: Request, res: Response) => {
   const log = getSandboxBuilds().log(String(req.params.id));
   if (log === undefined) res.status(404).json({ error: "No such build" });
   else res.type("text/plain").send(log);
+});
+
+sandboxDesktopRouter.post("/builds/:id/cancel", requireSessionAuth, requireControlOrigin, (req: Request, res: Response) => {
+  const build = cancelSandboxBuild(String(req.params.id));
+  if (!build) res.status(404).json({ error: "No such build" });
+  else res.json({ build });
 });
 
 sandboxDesktopRouter.delete("/profiles/:name", requireSessionAuth, requireControlOrigin, async (req: Request, res: Response) => {

@@ -201,8 +201,10 @@ export interface SandboxDesktopBuild {
   /** The build's record id: `GET /api/sandbox-desktop/builds/:id` (and `/log`). */
   id?: string;
   kind?: "base" | "profile";
-  /** The precise state. `interrupted`: Callboard stopped before it finished. */
-  phase?: "queued" | "running" | "succeeded" | "failed" | "interrupted";
+  /** The precise state. `interrupted`: Callboard stopped before it finished. `cancelled`: a human cancelled it. */
+  phase?: "queued" | "running" | "succeeded" | "failed" | "interrupted" | "cancelled";
+  /** Who asked for it. Today always a human; a later change adds an agent's approved request. */
+  requestedBy?: { kind: "human" };
   /** The profile being (or last) built: its name; absent: the base image. */
   profile?: string;
   /** The profile's entry id (`global/blender`) and scope. */

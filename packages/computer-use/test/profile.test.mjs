@@ -94,7 +94,10 @@ test("validation refuses with exact, path-prefixed errors", () => {
       { ...minimal, name: "Blender" },
       'name: "Blender" must be 2–32 characters: lowercase letters, digits and "-", starting with a letter and not ending with "-"',
     ],
-    [{ ...minimal, name: "base" }, 'name: "base" is reserved'],
+    [
+      { ...minimal, name: "base" },
+      'name: "base" is reserved (base, default, builder, none, local, names starting "w" + 12 hex digits + "-", and names ending "-packages")',
+    ],
     [{ ...minimal, description: "two\nlines" }, "description: must be one line of plain text (no control, line-separator or bidi characters)"],
     [{ ...minimal, description: "evil \u202e txt" }, "description: must be one line of plain text (no control, line-separator or bidi characters)"],
     [
@@ -532,7 +535,7 @@ test("errors quote untrusted keys and values: no raw newline, bidi override or c
     limits: { "gpu\n": 1 },
     downloads: [{ url: "https://example.com/a", sha256: "a".repeat(64), dest: "x", unpack: "zip", "k\u2028": 1 }],
   });
-    // eslint-disable-next-line no-control-regex -- checking that no control character survives is the point
+  // eslint-disable-next-line no-control-regex -- checking that no control character survives is the point
   for (const issue of issues) assert.doesNotMatch(issue, /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/, issue);
   assert.ok(
     issues.includes(
@@ -609,4 +612,12 @@ test("a variant reaches only a driver that declares support for it", async () =>
   } finally {
     await service.dispose();
   }
+});
+
+test("names that would collide with another image's tag are reserved", () => {
+  const reserved = 'is reserved (base, default, builder, none, local, names starting "w" + 12 hex digits + "-", and names ending "-packages")';
+  for (const name of ["w0123456789ab-blender", "blender-packages", "base"])
+    assert.deepEqual(issuesOf({ ...minimal, name }), [`name: ${JSON.stringify(name)} ${reserved}`]);
+  // Close but not colliding: fine.
+  for (const name of ["w0123456789a-x", "wxyz", "packages", "my-packages-x"]) assert.equal(validateProfileRecipe({ ...minimal, name }).name, name);
 });

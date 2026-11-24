@@ -218,9 +218,15 @@ async function cmdSandbox() {
             : `${image.SANDBOX_IMAGE} is out of date (not built from the files this Callboard ships); rebuilding.`,
       );
     console.log(`Building ${image.SANDBOX_IMAGE} (and its builder stage, ${image.SANDBOX_BUILDER}) from ${image.sandboxBuildContext()} ...`);
+    const abort = new AbortController();
+    process.once("SIGINT", () => abort.abort());
     try {
-      await image.buildSandboxImage({ stdio: "inherit" });
+      await image.buildSandboxImage({ stdio: "inherit", signal: abort.signal });
     } catch (err) {
+      if (abort.signal.aborted) {
+        console.error("\nBuild cancelled.");
+        process.exit(130);
+      }
       console.error(`\nBuild failed: ${err.message.split("\n")[0]}`);
       process.exit(1);
     }
@@ -286,9 +292,19 @@ async function cmdSandboxProfileBuild(image, docker, name) {
   if (info.state !== "missing" && info.detail) console.log(`${entry.image}: ${info.detail}`);
   console.log(`Building sandbox profile ${entry.id} as ${entry.image} ...`);
   const started = Date.now();
+  // Ctrl+C cancels through the build's own signal, so its cleanup (the intermediate tag) still runs.
+  const abort = new AbortController();
+  process.once("SIGINT", () => {
+    console.error("\nCancelling the build …");
+    abort.abort();
+  });
   try {
-    await profiles.buildProfileImage({ entry, docker, dataDir: DATA_DIR, stdio: "inherit" });
+    await profiles.buildProfileImage({ entry, docker, dataDir: DATA_DIR, stdio: "inherit", signal: abort.signal });
   } catch (err) {
+    if (abort.signal.aborted) {
+      console.error("Build cancelled; nothing was tagged.");
+      process.exit(130);
+    }
     console.error(`\nBuild failed: ${err.message.split("\n")[0]}`);
     process.exit(1);
   }

@@ -23,7 +23,13 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renam
 import { join } from "node:path";
 import type { ProfileScopeKey } from "./sandbox-profiles.js";
 
-export type BuildPhase = "queued" | "running" | "succeeded" | "failed" | "interrupted";
+export type BuildPhase = "queued" | "running" | "succeeded" | "failed" | "interrupted" | "cancelled";
+/**
+ * Who asked for a build. Today only a signed-in human (Settings) or the
+ * operator's shell; an agent's request, approved by a human, is a later
+ * change (`{ kind: "agent", chatId, approvalId }`).
+ */
+export type BuildRequester = { kind: "human" };
 export interface BuildRecord {
   id: string;
   kind: "base" | "profile";
@@ -37,6 +43,7 @@ export interface BuildRecord {
   finishedAt?: number;
   /** The first line of the failure. */
   error?: string;
+  requestedBy: BuildRequester;
 }
 export type BuildTarget = { kind: "base" } | { kind: "profile"; id: string; scope: ProfileScopeKey; name: string };
 
@@ -51,13 +58,14 @@ export class SandboxBuilds {
   private readonly records = new Map<string, BuildRecord>();
   private readonly queue: { record: BuildRecord; target: BuildTarget }[] = [];
   private running?: Promise<void>;
+  private current?: { id: string; abort: AbortController };
   private disposed = false;
 
   constructor(
     private readonly options: {
       dir: string;
-      /** Run one build, streaming its output. */
-      run: (target: BuildTarget, onOutput: (chunk: string) => void) => Promise<void>;
+      /** Run one build, streaming its output; stop it (and reject) when `signal` aborts. */
+      run: (target: BuildTarget, onOutput: (chunk: string) => void, signal: AbortSignal) => Promise<void>;
       logLimit?: number;
       keep?: number;
       onFinished?: (record: BuildRecord) => void;
@@ -78,6 +86,7 @@ export class SandboxBuilds {
       try {
         const record = JSON.parse(readFileSync(join(this.options.dir, file), "utf8")) as BuildRecord;
         if (!ID.test(record.id) || `${record.id}.json` !== file) continue;
+        record.requestedBy ??= { kind: "human" };
         if (record.phase === "queued" || record.phase === "running") {
           record.phase = "interrupted";
           record.finishedAt ??= Date.now();
@@ -117,7 +126,7 @@ export class SandboxBuilds {
   }
 
   /** Queue a build (or return the one already queued or running for the same target). */
-  enqueue(target: BuildTarget): BuildRecord {
+  enqueue(target: BuildTarget, requestedBy: BuildRequester = { kind: "human" }): BuildRecord {
     if (this.disposed) throw new Error("Callboard is shutting down");
     const pending = [...this.records.values()].find((r) => (r.phase === "queued" || r.phase === "running") && this.same(target, r));
     if (pending) return pending;
@@ -127,6 +136,7 @@ export class SandboxBuilds {
       ...(target.kind === "profile" ? { profile: target.id, scope: target.scope, name: target.name } : {}),
       phase: "queued",
       requestedAt: Date.now(),
+      requestedBy,
     };
     this.records.set(record.id, record);
     this.save(record);
@@ -144,13 +154,23 @@ export class SandboxBuilds {
     record.phase = "running";
     record.startedAt = Date.now();
     this.save(record);
-    this.running = this.options
-      .run(target, (chunk) => this.append(record, chunk))
+    const abort = new AbortController();
+    this.current = { id: record.id, abort };
+    this.running = Promise.resolve()
+      .then(() => this.options.run(target, (chunk) => this.append(record, chunk), abort.signal))
       .then(
         () => {
+          // A build that finished as it was cancelled did finish.
           record.phase = "succeeded";
         },
         (error) => {
+          if (abort.signal.aborted) {
+            // Stopped by shutdown reads as interrupted, like a build a crash cut short.
+            record.phase = this.disposed ? "interrupted" : "cancelled";
+            record.error = this.disposed ? "Callboard stopped before this build finished" : "Cancelled";
+            this.append(record, this.disposed ? "\nInterrupted: Callboard is stopping.\n" : "\nCancelled.\n");
+            return;
+          }
           record.phase = "failed";
           record.error = error instanceof Error ? error.message.split("\n")[0] : "Build failed";
           this.append(record, `\n${error instanceof Error ? error.message : String(error)}\n`);
@@ -160,6 +180,7 @@ export class SandboxBuilds {
         record.finishedAt = Date.now();
         this.save(record);
         this.running = undefined;
+        this.current = undefined;
         try {
           this.options.onFinished?.(record);
         } catch {
@@ -178,6 +199,35 @@ export class SandboxBuilds {
       this.records.delete(old.id);
       for (const ext of ["json", "log"]) rmSync(join(this.options.dir, `${old.id}.${ext}`), { force: true });
     }
+  }
+
+  /**
+   * Cancel a queued build (it never starts) or the running one (its signal
+   * aborts; the record reads `cancelled` once the build has stopped). Returns
+   * the record, or undefined if there is no such build; a finished one is
+   * returned unchanged.
+   */
+  cancel(id: string): BuildRecord | undefined {
+    const record = this.get(id);
+    if (!record) return undefined;
+    if (record.phase === "queued") {
+      const at = this.queue.findIndex((entry) => entry.record.id === id);
+      if (at >= 0) this.queue.splice(at, 1);
+      record.phase = "cancelled";
+      record.error = "Cancelled before it started";
+      record.finishedAt = Date.now();
+      this.save(record);
+      try {
+        this.options.onFinished?.(record);
+      } catch {
+        /* A listener cannot break the queue. */
+      }
+    } else if (record.phase === "running" && this.current?.id === id) this.current.abort.abort();
+    return record;
+  }
+  /** The build running now, if any. */
+  runningBuild(): BuildRecord | undefined {
+    return this.current ? this.records.get(this.current.id) : undefined;
   }
 
   /** Newest first. */
@@ -200,8 +250,10 @@ export class SandboxBuilds {
   async idle(): Promise<void> {
     while (this.running) await this.running;
   }
+  /** Shutdown: nothing new starts, and the running build is stopped (it reads back as interrupted). */
   dispose(): void {
     this.disposed = true;
     this.queue.length = 0;
+    this.current?.abort.abort();
   }
 }

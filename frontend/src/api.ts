@@ -1728,6 +1728,11 @@ export async function getSandboxBuild(id: string): Promise<SandboxDesktopBuild> 
   return requestField(`/sandbox-desktop/builds/${encodeURIComponent(id)}`, "build", { error: "Failed to read the build" });
 }
 
+/** Cancel a queued or running build (a signed-in session only). */
+export async function cancelSandboxBuild(id: string): Promise<SandboxDesktopBuild> {
+  return requestField(`/sandbox-desktop/builds/${encodeURIComponent(id)}/cancel`, "build", { method: "POST", json: {}, error: "Failed to cancel the build" });
+}
+
 /** Remove a sandbox profile's image. Refused while it is being built or a container uses it. */
 export async function removeSandboxProfile(name: string, scope = "global"): Promise<{ removed: boolean; status: SandboxDesktopStatus }> {
   const query = scope === "global" ? "" : `?scope=${encodeURIComponent(scope)}`;

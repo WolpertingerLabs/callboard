@@ -504,7 +504,8 @@ export class SandboxContainerManager {
         throw error;
       }
       step("Checking the image");
-      if (entry) await this.profileCheck(entry, signal);
+      // The profile is started by the image ID that was inspected, not its tag: a retag in between cannot start an unchecked image.
+      if (entry && box.profile) box.profile.image = await this.profileCheck(entry, signal);
       else {
         const imageProblem = await this.imageCheck(signal);
         this.lastProblem = imageProblem;
@@ -561,7 +562,8 @@ export class SandboxContainerManager {
    * major, below a security floor, not labelled as this profile). Out of date
    * (an older base or compiler) still starts, with a warning in the log.
    */
-  private async profileCheck(entry: ProfileEntry, signal: AbortSignal): Promise<void> {
+  /** Judge the profile's image and return the ID of the image judged, to be run by that ID. */
+  private async profileCheck(entry: ProfileEntry, signal: AbortSignal): Promise<string> {
     let info;
     try {
       info = await inspectProfileImage(this.docker, entry, await currentBase(this.docker, this.image, signal), signal);
@@ -578,7 +580,9 @@ export class SandboxContainerManager {
         "unsupported",
         `Sandbox profile ${entry.recipe.name}'s image is refused: ${info.detail ?? info.state}. Rebuild it with ${build}.`,
       );
+    if (!info.id) throw new ComputerUseError("unsupported", `Docker did not report the ID of sandbox profile ${entry.recipe.name}'s image`);
     if (info.state === "outdated") log.warn(`Sandbox profile ${entry.recipe.name} is out of date (${(info.outdatedBy ?? []).join(", ")}); starting it anyway`);
+    return info.id;
   }
 
   /** The profile a session's sandbox runs (name, summary, limits), while it is live. */

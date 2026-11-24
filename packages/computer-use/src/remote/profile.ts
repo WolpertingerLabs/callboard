@@ -266,7 +266,15 @@ function assertName(name: string): string {
 }
 /** Whether `name` could name a profile (the grammar, not whether one exists). */
 export function isProfileName(name: unknown): name is string {
-  return typeof name === "string" && NAME.test(name) && !RESERVED_NAMES.has(name);
+  return typeof name === "string" && NAME.test(name) && !reservedName(name);
+}
+/**
+ * Names that mean something else, or would collide with another image's tag:
+ * a workspace profile's tag is `<w + 12 hex>-<name>`, and a profile's package
+ * stage is `<name>-packages`, so neither prefix nor suffix may start or end a name.
+ */
+function reservedName(name: string): boolean {
+  return RESERVED_NAMES.has(name) || /^w[0-9a-f]{12}-/.test(name) || name.endsWith("-packages");
 }
 
 /**
@@ -319,7 +327,8 @@ export function validateProfileRecipe(input: unknown): ProfileRecipe {
   const name = input.name;
   if (typeof name !== "string" || !NAME.test(name))
     issue("name", `${quote(name)} must be 2–32 characters: lowercase letters, digits and "-", starting with a letter and not ending with "-"`);
-  else if (RESERVED_NAMES.has(name)) issue("name", `${quote(name)} is reserved`);
+  else if (reservedName(name))
+    issue("name", `${quote(name)} is reserved (base, default, builder, none, local, names starting "w" + 12 hex digits + "-", and names ending "-packages")`);
 
   const description = input.description;
   if (typeof description !== "string" || !description.trim()) issue("description", "must be a non-empty string");
