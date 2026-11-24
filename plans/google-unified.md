@@ -1,7 +1,14 @@
 # Plan: one `google` connection, with services and levels chosen per caller
 
-Status: proposed. Base: `main` at 1054456 (after PR #65, Docs/Slides templates).
+Status: accepted, with the owner decisions below. Base: `main` at 1054456 (after PR #65, Docs/Slides templates).
 Owner: drawlatch. Scope: the Google connection templates, the config that selects them, `test_connection`, the admin API, the dashboard, and docs.
+
+## Owner decisions (2026-11-24)
+
+- **Q1–Q7:** every default below is accepted: remove the static-token `google`; a dedicated `google` caller key; service-account levels are exactly today's `-sa` twins; allow `sheets: read` + `drive: file` with the documented note; a removed ID does not stop the daemon; the dashboard may edit `subject` (PR 2); keep the scope-probe e2e.
+- **Simpler migration.** The owner is the only user, so the migration machinery is cut down. `REMOVED_CONNECTIONS` stays, with one one-line message per removed ID. The consolidated multi-line `googleMigration()` suggestion generator, and its mixed-mode and same-service-twice cases, are dropped. "Migration and boot errors" below is rewritten to match.
+- **A removed ID drops only that connection.** It doesn't make the caller's whole handshake fail: it is dropped like an invalid `oauth2Overrides` entry, logged at boot, shown as a `problem` on the dashboard, and printed by `drawlatch doctor`.
+- The hard invariants 1–5 stand as written. Invariant 2 (the policy gates must cover the composed `google` route in both auth modes) is the main risk, so its tests come first.
 
 ## Problem
 
@@ -194,9 +201,8 @@ A generic `connectionOptions: { "<alias>": {...} }` would need a per-connection 
 - `loadGoogleCatalog()`: read once, validate the shape (every level has scopes, an allowlist and a test, `auth` ⊆ the two modes, and so on), and cache. An invalid catalog throws. That's shipped code, and tests cover it.
 - `validateGoogleSelection(raw)`: see above.
 - `composeGoogleRoute(base: Route, sel: GoogleCallerConfig): Route`: see the next section.
-- `googleConsentScopes(sel): string[]`: the sorted union. Used by the dashboard, `test_connection`, and the migration message.
+- `googleConsentScopes(sel): string[]`: the sorted union. Used by the dashboard and `test_connection`.
 - `googleCredentialRoutes(): Route[]`: one composed route per auth mode, for policy gates (invariant 2).
-- `googleMigration(caller): string | undefined`: the removed-ID message (see "Migration").
 
 **The base template:** `src/connections/productivity/google.json` is rewritten. It keeps the alias `google` and becomes the one dashboard card:
 
@@ -264,7 +270,7 @@ Each of these is audited, and changed where needed, in PR 1:
 | `server.ts:468-494` boot secret table | `tpl.requiredSecrets` | `callerRequiredSecrets(tpl, caller)`: for `google`, the selected mode's `secretRefs` (user mode when there's no block) |
 | `admin.ts` `connection-status`, `callers/:alias/connections` | `t.requiredSecrets` | same helper. `callerAuth` and `problem` already come from `resolveCallerRoutesChecked` and work as they are |
 | `admin.ts` `connectionScopes()` (the "narrowed" flag) | template `oauth2.scopes` | `google` returns the composed scopes, so `narrowed` is false |
-| `bin/drawlatch.js:706-730, 853-865` (`config`, `doctor`) | `tpl.requiredSecrets` | same helper. `doctor` also prints `googleMigration()` for callers that list removed IDs |
+| `bin/drawlatch.js:706-730, 853-865` (`config`, `doctor`) | `tpl.requiredSecrets` | same helper. `doctor` also prints each caller's dropped connections, removed IDs included |
 | `list_connection_templates` tool | template info | `google` reports both modes' secrets: required = user trio, optional = `GOOGLE_SERVICE_ACCOUNT_KEY`. `selfManageable` is unchanged |
 | `describeConnectionTemplate` | — | `auth` omitted for `google` (no fixed scopes); new `composed: 'google'` flag so UIs can tell |
 
@@ -421,27 +427,17 @@ This is mechanised in the catalog. `apiAccepts` records the table above per serv
 
 **Today**, measured on 1054456 with a probe test: a caller listing an unknown ID such as `google-sheetz` gets one boot line, `[remote] Caller "a": Unknown connection "google-sheetz". Available connections: <all 49>`, from `validateRemoteConfig`. The daemon keeps running. Every `resolveCallerRoutes` for that caller then throws, because `loadConnection` sits outside the per-connection `try` (`config.ts:1012`). The caller's handshakes fail with `403 { error: "Unknown connection …" }`, so all of its connections stop working, not just that one. The dashboard's `callerAuthView` swallows the error (`admin.ts:161-165`).
 
-**New:**
+**New** (simplified by the owner decisions):
 
-1. `src/shared/connections.ts` gets `REMOVED_CONNECTIONS: Record<string, { service, level, auth }>` for the 17 IDs. `loadConnection(name)` checks it before the "Unknown connection" error and throws:
-   `Connection "google-sheets" was removed: use "google" with callers.<alias>.google = { "auth": "user", "services": { "sheets": "edit" } }. See CONNECTIONS.md → Google.`
-   That's the message the caller's agent gets in the handshake `403`.
-2. `validateRemoteConfig` adds one consolidated `googleMigration(caller)` problem per caller, built from all of its removed IDs plus any `oauth2Overrides[<id>].subject`:
-   ```
-   Caller "household": "google-sheets", "google-drive-readonly" were replaced by the single "google" connection. In remote.config.json, replace them with:
-     "connections": [ …, "google" ],
-     "google": { "auth": "user", "services": { "drive": "read", "sheets": "edit" } }
-   and consent the caller's GOOGLE_OAUTH_REFRESH_TOKEN for exactly: https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/spreadsheets
-   Until then this caller cannot connect (CONNECTIONS.md → Google).
-   ```
-   - All IDs ending in `-sa` give `"auth": "service-account"`, plus `"subject"` if every override agrees.
-   - A mix of user and `-sa` IDs: `…mixes user-OAuth and service-account templates; one "google" connection uses one auth mode. Pick one, and use a custom connector for the other (CONNECTIONS.md → Other Google APIs).`
-   - Two levels of one service (`google-sheets` and `google-sheets-readonly`): `…lists two levels for sheets (edit, read); pick one.` The suggestion uses the first one listed.
-3. `server.ts` prints those problems with an `ERROR` prefix and a blank line around each, so the multi-line JSON stays readable.
-4. `bin/drawlatch.js doctor` prints the same text.
-5. `GET /api/admin/callers` gains `configProblem?: string` for callers that can't be resolved, so the dashboard shows a red banner instead of silently empty auth. That's a small generic fix for any unknown ID, in PR 1, so the dashboard isn't misleading between the PRs.
+1. `src/shared/connections.ts` gets `REMOVED_CONNECTIONS: Record<string, { service, level, auth }>` for the 17 IDs. `loadConnection(name)` checks it before the "Unknown connection" error and throws one line:
+   `Connection "google-sheets" was removed: use "google" with callers.<alias>.google.services.sheets = "edit" (auth "user"). See CONNECTIONS.md → Google.`
+   A `-sa` ID says `(auth "service-account")`.
+2. In `resolveCallerRoutesChecked`, the removed-ID check runs inside the per-connection `try`, so a removed ID drops only that connection for the caller: `Caller "<alias>": connection "google-sheets" dropped: Connection "google-sheets" was removed: …`. The caller's other connections keep working and its handshake succeeds. The message is logged at boot by `validateRemoteConfig`, shown as the connection's `problem` on the dashboard, and printed by `drawlatch doctor`. Genuinely unknown IDs keep today's behaviour unless the change is trivially the same code path (the PR says which).
+3. `GET /api/admin/callers` gains `configProblem?: string` for callers that can't be resolved at all, so the dashboard shows a red banner instead of silently empty auth. That's a small generic fix, in PR 1, so the dashboard isn't misleading between the PRs.
 
-The daemon does not exit. One stale caller shouldn't take down the others, and this matches how unknown IDs behave today (Q5). `REMOVED_CONNECTIONS` stays until a later cleanup. It is 17 lines and costs nothing.
+There is no consolidated multi-line suggestion and no special handling for a caller that lists several removed IDs, mixes user and `-sa` IDs, or lists two levels of one service: each removed ID gets its own one-line message, and the operator writes the `google` block from CONNECTIONS.md → Google.
+
+The daemon does not exit. One stale caller shouldn't take down the others (Q5). `REMOVED_CONNECTIONS` stays until a later cleanup. It is 17 lines and costs nothing.
 
 ## Other Google APIs (replaces the static template)
 
@@ -504,7 +500,7 @@ PR 1, each step red first:
 4. **`validateGoogleSelection`:** table-driven, one case per message above, plus prototype keys and non-string levels.
 5. **`composeGoogleRoute`:** user and SA shapes; order and de-duplication whatever the key order; secrets limited to the mode; subject carried, `subjectRequired` absent; `validateOAuth2Route(…, 'connector')` passes; the description has no subject; the result has `testConnections` but no `testConnection`.
 6. **`resolveCallerRoutesChecked`:** each row of the resolution table; the `GOOGLE_API_TOKEN` hint; a custom connector named `google` wins; `composed` on a custom connector is rejected.
-7. **Removed IDs:** the `loadConnection` message for all 17; `googleMigration` for single, multiple, all-`-sa` with subject, mixed, and same-service-twice; handshake `403` carries the message (`server.test.ts`); `configProblem` in `GET /admin/callers`.
+7. **Removed IDs:** the `loadConnection` message for all 17; a removed ID drops only that connection (the caller's other connections resolve and its handshake succeeds); the message is a `problem` at boot, on the dashboard, and in `drawlatch doctor`; `configProblem` in `GET /admin/callers`.
 8. **Policy gates** (`self-manage.test.ts`): agent `set_connection_enabled('google', true)` refused, `false` allowed; agent `set_secrets` refuses all four names for a user-mode caller, an SA caller, and a caller without `google`; admin origin allowed. The canary grows the `google` block fixture.
 9. **`test_connection`** (`google-compose.test.ts`, mock token endpoint and upstream through the existing test fetch hooks): all pass; one service `403` with `missingScopes` gives `notConsented` and a `hint`; `OAuth2ScopeError.extraScopes` gives a level-mapped `hint`; mint failure gives `skipped`; output never contains the subject; a generic `testConnections` on a custom connector works.
 10. **Token manager:** `OAuth2ScopeError.extraScopes` is set, and the message is unchanged (`token-manager.test.ts`).
@@ -578,6 +574,6 @@ Why not three PRs (additive engine, then removals, then dashboard)? The new conn
 - **Q2. A dedicated caller key `google` instead of a generic per-connection options bag?** Default: **`google`**. Generalise when a second composed connection exists.
 - **Q3. Service-account levels.** Offer only the levels that had `-sa` twins: not `gmail: metadata`, `calendar: freebusy` or `drive: file`. Default: **yes, only those.** `gmail: metadata` and `calendar: freebusy` through domain-wide delegation would probably work, but have never been tried, and `drive.file` means little for an account that owns no files. Adding them later is one catalog change plus the audit test.
 - **Q4. `sheets: read` + `drive: file`.** Default: **allow it, with a documented note** shown in the dashboard and as info at boot, since it doesn't grow the set of files the agent can change. The alternative is to refuse the combination in the validator.
-- **Q5. Should a removed template ID stop the daemon from starting?** Default: **no.** That caller fails, with a multi-line boot error, the handshake `403` message, and a dashboard banner. The other callers keep working, which matches how unknown IDs behave today.
+- **Q5. Should a removed template ID stop the daemon from starting?** Default: **no.** (Accepted, and narrowed by the owner: only that connection is dropped for the caller, with a one-line boot problem, a dashboard `problem`, and a `drawlatch doctor` line. The caller's other connections and every other caller keep working.)
 - **Q6. Can the dashboard edit `subject`?** It's admin config that no dashboard control writes today. Default: **yes**, through the PR 2 `PUT`, audited as `subjectSet` only. `list_routes` keeps hiding it from agents.
 - **Q7. Keep the `google-scope-probe` narrowing e2e?** Default: **keep it** as an informational, skippable check. If it ever shows that Google narrows, CONNECTIONS.md "Changing the selection" can say so and drop the advice to re-consent when removing a service.
