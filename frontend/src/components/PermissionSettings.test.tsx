@@ -28,7 +28,9 @@ it("renders Browser Use, Sandbox desktop and Computer Use in that order, each a 
   }
   // The sandbox row says what the container is today, which takes more than one short line.
   const sandbox = screen.getByText(/Control a Linux desktop in a hardened container/).textContent!;
-  expect(sandbox).toContain("shared by every chat and kept until the container is restarted");
+  // It cannot know the host's mode, so it says what is true of both.
+  expect(sandbox).toContain("a fresh one per session when Callboard manages it, or a shared one you run yourself");
+  expect(sandbox).toContain("any service on this machine that listens on all interfaces");
   expect(sandbox).toContain("Needs no other permission");
   expect(sandbox).toContain("any service on this machine that listens on all interfaces");
   expect(sandbox).not.toMatch(/disposable/i);

@@ -34,6 +34,9 @@ const LOG_FILE = join(LOG_DIR, "callboard.log");
 const VERSION_CACHE_FILE = join(DATA_DIR, "version-check.json");
 const VERSION_CHECK_TTL = 4 * 60 * 60 * 1000; // 4 hours
 const DEFAULT_PORT = 8000;
+// How long `stop` (and `restart`) waits for a graceful shutdown before SIGKILL: the
+// 30 s sandbox drain bound plus removal and the rest of shutdown.
+const STOP_GRACE_MS = 45_000;
 
 // Read version from package.json
 const pkgJson = JSON.parse(readFileSync(join(PKG_ROOT, "package.json"), "utf-8"));
@@ -58,6 +61,7 @@ try {
       follow: { type: "boolean", default: true },
       "no-follow": { type: "boolean", default: false },
       path: { type: "boolean", default: false },
+      force: { type: "boolean", default: false },
     },
     strict: false,
     allowPositionals: true,
@@ -132,6 +136,13 @@ switch (subcommand) {
       await cmdSetPassword();
     }
     break;
+  case "sandbox":
+    if (values.help) {
+      printSandboxHelp();
+    } else {
+      await cmdSandbox();
+    }
+    break;
   case "help": {
     printHelp();
     const latestVersion = await checkForUpdate();
@@ -145,6 +156,69 @@ switch (subcommand) {
 }
 
 // ── Commands ─────────────────────────────────────────────────────────
+
+// `callboard sandbox build|status`: the Sandbox desktop's image. Building is
+// only ever explicit (this command or Settings → Sandbox desktop → Build
+// image); Callboard never builds or pulls it on its own. The context is the
+// shipped packages/computer-use (dist/ + docker/), so this works from an npm
+// install as well as from a source checkout.
+async function cmdSandbox() {
+  const action = rawArgs.find((arg) => !arg.startsWith("-"));
+  const image = await import(join(PKG_ROOT, "backend/dist/services/sandbox-image.js"));
+  const docker = image.execDocker();
+  if (action === "build") {
+    const present = await image.inspectSandboxImage(docker).catch(() => undefined);
+    if (present?.present && present.compatible && present.secure && present.current && !values.force) {
+      console.log(`${image.SANDBOX_IMAGE} is up to date (protocol ${present.protocol}, built from the files this Callboard ships).`);
+      console.log("Rebuild it anyway with: callboard sandbox build --force");
+      return;
+    }
+    if (present?.present && !values.force)
+      console.log(
+        !present.compatible
+          ? `${image.SANDBOX_IMAGE} speaks protocol ${present.protocol ?? "unlabelled"}, not ${image.SANDBOX_PROTOCOL_LABEL_VALUE}; rebuilding.`
+          : !present.secure
+            ? `${image.SANDBOX_IMAGE} has a known security issue (security level ${present.securityFloor ?? "unlabelled"}, at least ${image.SANDBOX_SECURITY_FLOOR} required); rebuilding.`
+            : `${image.SANDBOX_IMAGE} is out of date (not built from the files this Callboard ships); rebuilding.`,
+      );
+    console.log(`Building ${image.SANDBOX_IMAGE} from ${image.sandboxBuildContext()} ...`);
+    try {
+      await image.buildSandboxImage({ stdio: "inherit" });
+    } catch (err) {
+      console.error(`\nBuild failed: ${err.message.split("\n")[0]}`);
+      process.exit(1);
+    }
+    console.log(`\nBuilt ${image.SANDBOX_IMAGE}. Turn on Sandbox desktop in a chat's permissions to use it.`);
+    return;
+  }
+  if (action === "status" || action === undefined) {
+    let server;
+    try {
+      server = (await docker(["version", "--format", "{{.Server.Version}}"], { timeoutMs: 10000 })).trim();
+    } catch (err) {
+      console.log(`Docker:  not reachable (${err.message})`);
+      process.exit(1);
+    }
+    console.log(`Docker:  ${server}`);
+    const info = await image.inspectSandboxImage(docker).catch((err) => ({ error: err.message }));
+    if (info.error) console.log(`Image:   ${image.SANDBOX_IMAGE}: ${info.error}`);
+    else if (!info.present) console.log(`Image:   ${image.SANDBOX_IMAGE} is not built. Run: callboard sandbox build`);
+    else
+      console.log(
+        `Image:   ${image.SANDBOX_IMAGE} (protocol ${info.protocol ?? "unlabelled"}${info.compatible ? "" : `, INCOMPATIBLE with ${image.SANDBOX_PROTOCOL_LABEL_VALUE}`}, ${!info.secure ? `KNOWN SECURITY ISSUE (level ${info.securityFloor ?? "unlabelled"} < ${image.SANDBOX_SECURITY_FLOOR}): refused until you run callboard sandbox build` : info.current ? "up to date" : "OUT OF DATE: run callboard sandbox build"}, version ${info.version ?? "unknown"})`,
+      );
+    const owner = image.sandboxOwnerId(DATA_DIR);
+    const running = await docker(["ps", "--quiet", "--filter", "label=dev.callboard.managed=1", "--filter", `label=dev.callboard.owner=${owner}`]).catch(
+      () => "",
+    );
+    console.log(`Owner:   ${owner} (from ${DATA_DIR})`);
+    console.log(`Running: ${running.split("\n").filter((line) => line.trim()).length} managed sandbox container(s)`);
+    return;
+  }
+  console.error(`Unknown sandbox command: ${action}\n`);
+  printSandboxHelp();
+  process.exit(1);
+}
 
 async function cmdDefault() {
   ensureDataDir();
@@ -243,7 +317,14 @@ async function cmdStop() {
     return;
   }
 
-  const stopped = await waitForExit(pid, 5000);
+  // Long enough for a graceful shutdown to drain managed Sandbox desktops
+  // (each drain is bounded at 30 s, all in parallel) and remove them. A
+  // daemon with nothing to drain exits in well under a second.
+  let stopped = await waitForExit(pid, 5000);
+  if (!stopped) {
+    console.log("Still stopping (sandbox desktops may be draining)...");
+    stopped = await waitForExit(pid, STOP_GRACE_MS - 5000);
+  }
   if (!stopped) {
     console.log("Server did not stop gracefully, sending SIGKILL...");
     try {
@@ -739,6 +820,7 @@ Commands:
   logs           View and follow server logs
   config         Show effective configuration
   set-password   Set or change the server password
+  sandbox        Build or check the Sandbox desktop image (Docker)
 
 Options:
   -h, --help     Show this help message
@@ -754,6 +836,24 @@ Examples:
   callboard start --port 3000  Start on a custom port
   callboard status             Check if server is running
   callboard logs -n 100        View last 100 log lines
+`);
+}
+
+function printSandboxHelp() {
+  console.log(`
+callboard sandbox
+
+Build or check the Sandbox desktop image. Callboard starts and stops one
+container per computer-control session itself; this only provides the image.
+
+Usage: callboard sandbox <build|status> [options]
+
+Commands:
+  build          Build the image (docker build); skipped if it is up to date
+  status         Show Docker, the image and running managed sandboxes
+
+Options:
+  --force        build: rebuild even if the image is up to date
 `);
 }
 
@@ -787,7 +887,8 @@ Options:
   -h, --help   Show this help message
 
 Sends SIGTERM to the server process and waits for graceful shutdown.
-Falls back to SIGKILL if the process does not exit within 5 seconds.
+Falls back to SIGKILL if the process does not exit within 45 seconds
+(time for managed Sandbox desktops to be drained and removed).
 `);
 }
 

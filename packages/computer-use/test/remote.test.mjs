@@ -119,6 +119,12 @@ test("the remote driver refuses unsafe configuration", () => {
   assert.throws(() => createRemoteDriver({ url: "http://user:pw@127.0.0.1:7801", token: TOKEN }), { code: "invalid_request" });
   assert.throws(() => createRemoteDriver({ url: "file:///tmp/x", token: TOKEN }), { code: "invalid_request" });
   assert.doesNotThrow(() => createRemoteDriver({ url: "https://desktop.example:8443", token: TOKEN }));
+  // A container's address on a local Docker bridge (an --internal network publishes no ports): only when asked, only private IPv4.
+  assert.throws(() => createRemoteDriver({ url: "http://172.18.0.2:7801", token: TOKEN }), { code: "invalid_request" });
+  for (const url of ["http://172.18.0.2:7801", "http://10.1.2.3:7801", "http://192.168.0.9:7801"])
+    assert.doesNotThrow(() => createRemoteDriver({ url, token: TOKEN, localDockerBridge: true }), url);
+  for (const url of ["http://8.8.8.8:7801", "http://172.32.0.1:7801", "http://desktop.example:7801", "http://172.18.0.999:7801"])
+    assert.throws(() => createRemoteDriver({ url, token: TOKEN, localDockerBridge: true }), { code: "invalid_request" }, url);
   assert.doesNotThrow(() => createRemoteDriver({ url: "http://localhost:7801", token: TOKEN }));
 });
 

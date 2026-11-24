@@ -4,18 +4,25 @@ import { z } from "zod";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { defineTool, type ToolCallResult, type ToolServerSpec } from "../agents/ports/tools.js";
-import { SANDBOX_DESKTOP_TEXT } from "shared/types/index.js";
+import { sandboxDesktopText, type SandboxDesktopVariant } from "shared/types/index.js";
+import { currentSandboxVariant } from "./sandbox-desktop.js";
 import { TARGET_IDS, controlError, controlPrincipal, getComputerUseHost, logComputerUseFailure, type FailureContext } from "./computer-use.js";
 
 /**
  * When to use which target — the part of every description that tells the
- * model which one to ask for. Shared so the three tools cannot disagree.
+ * model which one to ask for. Shared so the three tools cannot disagree. The
+ * sandbox's description depends on how it is run (a fresh managed container
+ * per session, or a shared endpoint), so this is built with the tool spec.
  */
-const TARGET_GUIDE =
-  'Targets: "browser" — a managed Chromium on the Callboard service host, for websites. ' +
-  `"sandbox" — the Sandbox desktop, ${SANDBOX_DESKTOP_TEXT.what}; it is not the user's machine. ${SANDBOX_DESKTOP_TEXT.network} ${SANDBOX_DESKTOP_TEXT.use} Anything you leave in it is visible to later sessions and other chats. ` +
-  '"desktop" — the user\'s own desktop session on the service host, which reaches everything they can; use it only when the task needs their real apps or data. ' +
-  "Each target has its own permission (Browser Use, Sandbox desktop, Computer Use), and enabling one never grants another.";
+export function targetGuide(variant: SandboxDesktopVariant): string {
+  const sandbox = sandboxDesktopText(variant);
+  return (
+    'Targets: "browser" — a managed Chromium on the Callboard service host, for websites. ' +
+    `"sandbox" — the Sandbox desktop, ${sandbox.what}; it is not the user's machine. ${sandbox.network} ${sandbox.use} ${sandbox.persistence} ` +
+    '"desktop" — the user\'s own desktop session on the service host, which reaches everything they can; use it only when the task needs their real apps or data. ' +
+    "Each target has its own permission (Browser Use, Sandbox desktop, Computer Use), and enabling one never grants another."
+  );
+}
 /** Kind names as cu_open and cu_request_control take them, by the service's target id that cu_status reports. */
 const TARGET_KINDS: Record<string, "browser" | "desktop" | "sandbox"> = {
   [TARGET_IDS.browser]: "browser",
@@ -212,7 +219,8 @@ function mcpFailure(content: unknown[]): Error & { code?: string } {
  * the chat whose identity it is acting under: under Ask it raises a
  * confirmation there, and a subagent has no level of its own to raise.
  */
-export function buildComputerUseToolsSpec(getChatId: () => string): ToolServerSpec {
+export function buildComputerUseToolsSpec(getChatId: () => string, sandboxVariant: () => SandboxDesktopVariant = currentSandboxVariant): ToolServerSpec {
+  const TARGET_GUIDE = targetGuide(sandboxVariant());
   type Context = { signal?: AbortSignal; toolCallId?: string };
   /**
    * One call through the in-process MCP pair, inside the live turn. A

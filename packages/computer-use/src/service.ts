@@ -56,6 +56,8 @@ interface Session {
   reaper?: NodeJS.Timeout;
   cleanup?: Promise<void>;
   inflight?: Promise<unknown>;
+  /** The lock this session holds: the driver's domain, plus the session id for a `lockScope: "session"` driver. */
+  lock?: string;
 }
 /** Single authoritative service; transports bind identities, never accept them in input schemas. */
 export class ComputerUseService {
@@ -117,6 +119,7 @@ export class ComputerUseService {
           driver: Object.freeze({
             kind: t.driver.kind,
             lockDomain: t.driver.lockDomain,
+            lockScope: t.driver.lockScope === "session" ? "session" : "driver",
             probe: t.driver.probe.bind(t.driver),
             open: t.driver.open.bind(t.driver),
           }),
@@ -253,7 +256,7 @@ export class ComputerUseService {
           await s.driver.close();
         }
       }
-      const domain = s.target.driver.lockDomain;
+      const domain = s.lock;
       if (domain && domains.get(domain) === s.id) domains.delete(domain);
     })()
       .catch(() => {
@@ -393,7 +396,7 @@ export class ComputerUseService {
       }
     }
     const id = randomUUID(),
-      domain = t.driver.lockDomain;
+      domain = t.driver.lockDomain && (t.driver.lockScope === "session" ? `${t.driver.lockDomain}#${id}` : t.driver.lockDomain);
     if (domain && domains.has(domain)) fail("lease_conflict");
     if (domain) domains.set(domain, id);
     const s: Session = {
@@ -411,6 +414,7 @@ export class ComputerUseService {
       pending: 0,
       seen: new Set(),
       revision: 0,
+      lock: domain,
     };
     this.sessions.set(id, s);
     const ref = { sessionId: id, generation: 1 };
@@ -423,6 +427,7 @@ export class ComputerUseService {
           if (!probe.available) throw new ComputerUseError("unsupported", probe.reason ?? "Target unavailable");
           const driver = await t.driver.open({
             sessionId: id,
+            ownerId: p.ownerId,
             signal: sig,
             onTargetChanged: () => this.invalidateFrame(s),
             // Same fencing a failed call would cause, without waiting for one.

@@ -4,7 +4,9 @@
 #
 #   packages/computer-use/docker/run.sh [host-port]
 #
-# From a source checkout (the Dockerfile builds the package from src/).
+# From a source checkout after `npm run build`, or an installed package (the
+# Dockerfile takes the compiled dist/). Callboard users: `callboard sandbox build`
+# builds the image, and Callboard starts and stops containers itself.
 # COMPUTER_USE_DESKTOP_REBUILD=1 rebuilds an existing :local image, e.g. after
 # pulling changes; `docker rmi callboard/computer-use-desktop:local` removes it.
 #
@@ -19,7 +21,16 @@ network="${COMPUTER_USE_DESKTOP_NETWORK:-callboard-sandbox}"
 port="${1:-7801}"
 
 if [ "${COMPUTER_USE_DESKTOP_REBUILD:-}" = 1 ] || ! docker image inspect "$image" >/dev/null 2>&1; then
-  docker build -t "$image" -f "$here/docker/Dockerfile" "$here"
+  # The image is built from the compiled package, not from src/.
+  if [ ! -f "$here/dist/driver-host-cli.js" ]; then
+    echo "run.sh: $here/dist is not built; run \`npm run build\` in $here first" >&2
+    exit 1
+  fi
+  # The same content label sandboxImageBuildArgs() sets (Callboard's `callboard
+  # sandbox build`), from the same function, so a host can tell whether this
+  # image is the build it ships.
+  digest="$(node --input-type=module --eval 'const m = await import(process.argv[1]); console.log(m.sandboxContentDigest(process.argv[2]));' "$here/dist/remote/sandbox.js" "$here")"
+  docker build --label "dev.callboard.computer-use.content=$digest" -t "$image" -f "$here/docker/Dockerfile" "$here"
 fi
 
 # A bridge network with inter-container communication disabled, so nothing

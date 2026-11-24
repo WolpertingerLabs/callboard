@@ -1,5 +1,5 @@
 import { ASIDE_ROLE, asideForkPoint, handshakeHeaders, type AsideQuote } from "shared/types/index.js";
-import type { PermissionReviewSettings, ReasoningCapability } from "shared/types/index.js";
+import type { PermissionReviewSettings, ReasoningCapability, SandboxDesktopBuild, SandboxDesktopSettings, SandboxDesktopStatus } from "shared/types/index.js";
 import { DEFAULT_VOICE_MODEL, type TranscribeResponse, type VoiceModelsResponse } from "shared/types/voice.js";
 import {
   DEFAULT_READ_ALOUD_MODEL,
@@ -1696,6 +1696,24 @@ export async function getProxyEvents(caller: string, limit?: number, offset?: nu
   if (offset !== undefined) params.append("offset", offset.toString());
 
   return request(`/proxy/events?${params}`, { error: "Failed to get proxy events" });
+}
+
+// Sandbox desktop (Settings → Sandbox desktop)
+
+export async function getSandboxDesktopStatus(): Promise<SandboxDesktopStatus> {
+  return request("/sandbox-desktop", { error: "Failed to read the sandbox desktop status" });
+}
+
+/** Partial: an omitted field is unchanged, `null` puts it back to its default (`mode: null` → automatic). */
+export async function updateSandboxDesktopSettings(patch: {
+  [K in keyof SandboxDesktopSettings]?: SandboxDesktopSettings[K] | null;
+}): Promise<SandboxDesktopStatus> {
+  return request("/sandbox-desktop", { method: "PUT", json: patch, error: "Failed to save the sandbox desktop settings" });
+}
+
+/** Start the explicit image build; poll {@link getSandboxDesktopStatus} for its progress. */
+export async function buildSandboxDesktopImage(): Promise<SandboxDesktopBuild> {
+  return requestField("/sandbox-desktop/build", "build", { method: "POST", json: {}, error: "Failed to start the sandbox image build" });
 }
 
 // Agent settings API functions

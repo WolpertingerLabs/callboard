@@ -45,6 +45,8 @@
     "!**/__fixtures__",
     "!backend/dist/swagger.*",
     "packages/computer-use/dist",
+    "packages/computer-use/docker",
+    "packages/computer-use/.dockerignore",
     "packages/computer-use/package.json",
     "packages/computer-use/README.md",
     "packages/computer-use/LICENSE"

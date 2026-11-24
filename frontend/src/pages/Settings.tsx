@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useLocation, useParams } from "react-router-dom";
-import { ChevronLeft, SlidersHorizontal, Plug, Globe, Wifi, LogOut, Info, Key, Sparkles, Workflow, Tags, Braces, Database, AppWindow, Layers } from "lucide-react";
+import { ChevronLeft, SlidersHorizontal, Plug, Globe, Wifi, LogOut, Info, Key, Sparkles, Workflow, Tags, Braces, Database, AppWindow, Layers, Box } from "lucide-react";
 import { useIsMobile } from "../hooks/useIsMobile";
 import GeneralSettings from "./settings/GeneralSettings";
 import PluginsSettings from "./settings/PluginsSettings";
@@ -16,6 +16,7 @@ import ModelAliasesSettings from "./settings/ModelAliasesSettings";
 import StorageSettings from "./settings/StorageSettings";
 import ArtifactsSettings from "./settings/ArtifactsSettings";
 import SpacesSettings from "./settings/SpacesSettings";
+import SandboxDesktopSettings from "./settings/SandboxDesktopSettings";
 
 const tabs = [
   { key: "general", label: "General", icon: SlidersHorizontal },
@@ -27,6 +28,7 @@ const tabs = [
   { key: "jobs", label: "Jobs", icon: Workflow },
   { key: "storage", label: "Storage", icon: Database },
   { key: "artifacts", label: "Artifacts", icon: AppWindow },
+  { key: "sandbox", label: "Sandbox desktop", icon: Box },
   { key: "plugins", label: "Plugins & MCP", icon: Plug },
   { key: "proxy", label: "Proxy", icon: Globe },
   { key: "remote", label: "Remote Access", icon: Wifi },
@@ -167,6 +169,7 @@ export default function Settings({ onLogout }: SettingsProps) {
         {activeTab === "jobs" && <JobsSettings />}
         {activeTab === "storage" && <StorageSettings />}
         {activeTab === "artifacts" && <ArtifactsSettings />}
+        {activeTab === "sandbox" && <SandboxDesktopSettings />}
         {activeTab === "plugins" && <PluginsSettings />}
         {activeTab === "proxy" && <ProxySettings />}
         {activeTab === "remote" && <RemoteAccessSettings />}

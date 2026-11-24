@@ -331,7 +331,8 @@ export type {
 } from "./jobs.js";
 
 export * from "./reasoning.js";
-export { CU_ACTION_TOOL_NAME, CU_REQUEST_CONTROL_TOOL_NAME, SANDBOX_DESKTOP_TEXT } from "./computerUse.js";
+export { CU_ACTION_TOOL_NAME, CU_REQUEST_CONTROL_TOOL_NAME, SANDBOX_DESKTOP_TEXT, SANDBOX_DESKTOP_TEXT_ANY_MODE, sandboxDesktopText } from "./computerUse.js";
+export type { SandboxDesktopText, SandboxDesktopVariant } from "./computerUse.js";
 export type {
   ComputerUseKind,
   ComputerUseCapability,
@@ -342,5 +343,6 @@ export type {
   ComputerUseAction,
   ComputerUseActionRequest,
 } from "./computerUse.js";
+export * from "./sandboxDesktop.js";
 export * from "./storage.js";
 export * from "./artifact.js";

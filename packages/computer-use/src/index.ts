@@ -20,10 +20,14 @@ export { createRemoteDriver, type RemoteDriver, type RemoteDriverOptions, type R
 export { PROTOCOL, HOST_CAPABILITIES, type HostIdentity, type HostCapability, type OutboxEntry, type OutboxFile } from "./remote/protocol.js";
 export {
   ensureSandboxNetwork,
+  sandboxContentDigest,
+  sandboxImageBuildArgs,
   sandboxNetworkCreateArgs,
   sandboxRunArgs,
+  SANDBOX_SECURITY_FLOOR,
   SANDBOX_IMAGE_LABELS,
   SANDBOX_NETWORK,
+  SANDBOX_INTERNAL_NETWORK,
   SANDBOX_NETWORK_LABEL,
   SANDBOX_PROTOCOL_LABEL_VALUE,
   SANDBOX_CONTAINER_PORT,

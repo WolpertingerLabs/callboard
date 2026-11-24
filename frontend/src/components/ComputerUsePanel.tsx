@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { Monitor } from "lucide-react";
 import type { ComputerUseCapability, ComputerUseAction, ComputerUseKind, ComputerUseObservation, ComputerUseSession } from "shared/types/computerUse.js";
-import { SANDBOX_DESKTOP_TEXT } from "shared/types/computerUse.js";
+import { sandboxDesktopText } from "shared/types/computerUse.js";
 import type { PermissionLevel } from "shared/types/permissions.js";
 import { computerUseClient as client, controlErrorCode } from "../api/computerUse";
 import "./ComputerUsePanel.css";
@@ -126,6 +126,105 @@ function DesktopReadinessNotice({ capability }: { capability?: ComputerUseCapabi
   );
 }
 
+/**
+ * Why the Sandbox desktop cannot start, from the daemon's classification
+ * (`capability.sandbox.problem`), never from its prose. Older daemons send
+ * none: then the reason alone, as before.
+ */
+function SandboxReadinessNotice({ capability }: { capability?: ComputerUseCapability }) {
+  const headingId = useId();
+  const info = capability?.sandbox;
+  let heading: string | undefined;
+  let guidance: React.ReactNode;
+  // A permission block is the chat's to fix first, whatever the host's state.
+  switch (capability?.readiness === "permission-blocked" ? undefined : info?.problem) {
+    case "docker-unreachable":
+      heading = "Docker isn't reachable";
+      guidance =
+        "Callboard starts the sandbox desktop as a Docker container on its service host. Install or start Docker there, and make sure the user running Callboard can use it, then retry status.";
+      break;
+    case "image-missing":
+      heading = "Sandbox image not built";
+      guidance = (
+        <>
+          Build it once on the Callboard service host with <code>callboard sandbox build</code>, or with <strong>Build image</strong> in Settings → Sandbox
+          desktop. Callboard never builds or downloads it on its own.
+        </>
+      );
+      break;
+    case "image-incompatible":
+      heading = "Sandbox image is incompatible";
+      guidance = (
+        <>
+          The image was built for another protocol version. Rebuild it with <code>callboard sandbox build</code>, or from Settings → Sandbox desktop.
+        </>
+      );
+      break;
+    case "image-insecure":
+      heading = "Sandbox image has a known security issue";
+      guidance = (
+        <>
+          This image is below the security level this Callboard requires, so it won&apos;t start. Rebuild it on the Callboard service host with{" "}
+          <code>callboard sandbox build</code>, or with <strong>Rebuild image</strong> in Settings → Sandbox desktop.
+        </>
+      );
+      break;
+    case "cap-reached":
+      heading = "Sandbox limit reached";
+      guidance = `${info?.running ?? info?.limit ?? "The maximum number of"} of ${info?.limit ?? "the allowed"} sandbox desktops are running. Stop one in its chat, or raise the limit in Settings → Sandbox desktop, then retry.`;
+      break;
+    case "turned-off":
+      heading = "Sandbox desktop is turned off";
+      guidance = "It is turned off for this Callboard in Settings → Sandbox desktop.";
+      break;
+    case "endpoint-unset":
+      heading = "No sandbox endpoint configured";
+      guidance =
+        "Settings → Sandbox desktop is set to an endpoint you run yourself, and none is configured. Switch to managed mode, or set the endpoint variables.";
+      break;
+    case "network":
+      heading = "Sandbox network needs attention";
+      break;
+  }
+  if (!heading)
+    return (
+      <p className="computer-use-notice" role="status">
+        {capability?.reason ??
+          "Sandbox desktop readiness has not been confirmed. Retry status; a sandbox desktop must be set up on the Callboard service host."}
+      </p>
+    );
+  return (
+    <div className="computer-use-notice computer-use-readiness" role="status" aria-labelledby={headingId}>
+      <h3 id={headingId}>{heading}</h3>
+      {guidance && <p>{guidance}</p>}
+      {capability?.reason && (
+        <details>
+          <summary>Technical details</summary>
+          <p>{capability.reason}</p>
+        </details>
+      )}
+    </div>
+  );
+}
+
+/** A managed sandbox's container, in words: "Starting (Waiting for the desktop)", "Ready", "Stopping", "Removed". */
+export function containerPhaseLabel(container: NonNullable<ComputerUseSession["container"]>): string {
+  switch (container.phase) {
+    case "starting":
+      return container.step ? `Starting: ${container.step}…` : "Starting…";
+    case "ready":
+      return "Ready";
+    case "stopping":
+      return "Stopping and removing the container…";
+    case "removed":
+      return "Removed";
+    case "kept":
+      return "Session ended; the container is kept for recovery";
+    default:
+      return String(container.phase);
+  }
+}
+
 export function framePoint(clientX: number, clientY: number, rect: Pick<DOMRect, "left" | "top" | "width" | "height">, width: number, height: number) {
   return {
     x: Math.max(0, Math.min(width - 1, Math.floor(((clientX - rect.left) * width) / rect.width))),
@@ -199,6 +298,9 @@ export default function ComputerUsePanel({
   // land on a stopped session with every control disabled while a live one exists.
   const session = status?.sessions.find((item) => item.id === selected) ?? status?.sessions.find((item) => !terminal(item)) ?? status?.sessions[0];
   const capability = status?.capabilities.find((item) => item.kind === kind);
+  const sandboxCapability = status?.capabilities.find((item) => item.kind === "sandbox");
+  // The daemon says how its sandbox is run (managed or endpoint, and the network); an older one says nothing, which reads as the shared container.
+  const sandboxText = sandboxDesktopText(sandboxCapability?.sandbox);
   // Browser Use, Sandbox desktop and Computer Use all denied: nothing can be enabled at all.
   const denied = permission === "deny" || status?.permission === "deny";
   // What the Enable click actually consents to. Since the level began governing
@@ -516,8 +618,8 @@ export default function ComputerUsePanel({
               <span className="computer-use-consent" role="note" aria-label="What Enable grants">
                 {level === "allow" ? (
                   <>
-                    <strong>{axisLabel} is set to Allow:</strong> once you enable a target, the agent acts on it without asking you again. Each action is recorded
-                    in the server log.
+                    <strong>{axisLabel} is set to Allow:</strong> once you enable a target, the agent acts on it without asking you again. Each action is
+                    recorded in the server log.
                   </>
                 ) : (
                   <>
@@ -552,10 +654,10 @@ export default function ComputerUsePanel({
           <details className="computer-use-about">
             <summary>How computer control works</summary>
             <p>
-              Controls Callboard&apos;s browser and desktop tools. Browser Use governs the managed browser, Sandbox desktop the container desktop,
-              and Computer Use the service host&apos;s desktop; each target follows its own setting, and the host desktop also needs every other permission
-              except Sandbox desktop on Allow. Enabling a target is always your own action; after that, Allow lets the agent act on its own, while Ask stops its
-              turn and asks you in the chat before each action. Agents with unrestricted code execution may still run their own automation.
+              Controls Callboard&apos;s browser and desktop tools. Browser Use governs the managed browser, Sandbox desktop the container desktop, and Computer
+              Use the service host&apos;s desktop; each target follows its own setting, and the host desktop also needs every other permission except Sandbox
+              desktop on Allow. Enabling a target is always your own action; after that, Allow lets the agent act on its own, while Ask stops its turn and asks
+              you in the chat before each action. Agents with unrestricted code execution may still run their own automation.
             </p>
           </details>
           {/* Demoted, but never hidden behind the disclosure: a description a
@@ -577,8 +679,8 @@ export default function ComputerUsePanel({
           )}
           {(kind === "sandbox" || session?.kind === "sandbox") && (
             <p className="computer-use-note" role="note">
-              <strong>Sandbox desktop:</strong> this targets {SANDBOX_DESKTOP_TEXT.what}, not this computer or the service host&apos;s own desktop.{" "}
-              {SANDBOX_DESKTOP_TEXT.network}
+              <strong>Sandbox desktop:</strong> this targets {sandboxText.what}, not this computer or the service host&apos;s own desktop.{" "}
+              {sandboxText.persistence} {sandboxText.network}
             </p>
           )}
           {denied && (
@@ -589,12 +691,18 @@ export default function ComputerUsePanel({
             </p>
           )}
           {kind === "native" && !denied && !capability?.available && <DesktopReadinessNotice capability={capability} />}
-          {kind !== "native" && !capability?.available && (
+          {kind === "sandbox" && !capability?.available && <SandboxReadinessNotice capability={capability} />}
+          {kind === "sandbox" && capability?.available && capability.sandbox?.warning === "image-outdated" && (
+            <p className="computer-use-notice" role="status">
+              <strong>Sandbox image out of date:</strong> it wasn&apos;t built from the files this Callboard ships, so it may lack driver-host fixes. It still
+              starts. Rebuild it with <code>callboard sandbox build</code> on the service host, or with <strong>Rebuild image</strong> in Settings → Sandbox
+              desktop.
+            </p>
+          )}
+          {kind === "browser" && !capability?.available && (
             <p className="computer-use-notice" role="status">
               {capability?.reason ??
-                (kind === "sandbox"
-                  ? "Sandbox desktop readiness has not been confirmed. Retry status; a sandbox desktop container must be configured for the service host."
-                  : "Target readiness has not been confirmed. Retry status; configure the browser runtime or a supported native display on the service host.")}
+                "Target readiness has not been confirmed. Retry status; configure the browser runtime or a supported native display on the service host."}
             </p>
           )}
           {(error || controller?.statusError) && <p role="alert">{error || controller?.statusError}</p>}
@@ -681,6 +789,11 @@ export default function ComputerUsePanel({
                 </strong>{" "}
                 · State: {session.state} · Controller: {session.controller ?? "none"} · Generation: {session.generation}
               </p>
+              {session.container && (
+                <p className="computer-use-session-meta computer-use-container-phase" role="status" data-phase={session.container.phase}>
+                  Container: {containerPhaseLabel(session.container)}
+                </p>
+              )}
               {session.reason && (
                 <p className="computer-use-notice" role="status">
                   {session.reason}

@@ -1,5 +1,5 @@
 import { normalizePermissions } from "shared/types/permissions.js";
-import { SANDBOX_DESKTOP_TEXT } from "shared/types/computerUse.js";
+import { SANDBOX_DESKTOP_TEXT_ANY_MODE as SANDBOX_DESKTOP_TEXT } from "shared/types/computerUse.js";
 import type { PermissionReviewSettings } from "shared/types/permissions.js";
 import { DefaultPermissions, PermissionLevel } from "../api";
 

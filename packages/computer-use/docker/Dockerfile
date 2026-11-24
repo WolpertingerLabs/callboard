@@ -1,7 +1,13 @@
 # Sandbox desktop for computer use: Xvfb + icewm + xterm, driven by
-# computer-use-driver-host. Build from packages/computer-use:
+# computer-use-driver-host. Build from packages/computer-use, after `npm run
+# build` (the image takes the compiled dist/, so the same context works from a
+# source checkout and from an npm-installed Callboard, which ships dist/ and
+# docker/ but not src/):
 #
 #   docker build -t callboard/computer-use-desktop:local -f docker/Dockerfile .
+#
+# or `callboard sandbox build`, which does exactly that. Only package.json,
+# dist/ and docker/ are sent to the daemon (.dockerignore).
 #
 # Run it with the hardened flags in docker/run.sh (or sandboxRunArgs() from the
 # package): read-only root, tmpfs home and /tmp, no capabilities but SETUID and
@@ -15,14 +21,14 @@ FROM ${NODE_IMAGE} AS build
 WORKDIR /pkg
 # docker/package-lock.json is this package's own lockfile (the repository's root
 # lockfile covers the whole workspace), pinned to the versions Callboard runs.
-# Playwright is installed only so the browser driver type-checks
-# (--ignore-scripts: no browser is downloaded), then pruned.
-COPY package.json tsconfig.json ./
+# Only the runtime dependencies are installed (no TypeScript, no Playwright):
+# the code is already compiled.
+COPY package.json ./
 COPY docker/package-lock.json ./package-lock.json
-RUN npm ci --ignore-scripts --no-audit --no-fund
-COPY src ./src
-RUN npm run build \
- && npm prune --omit=dev --omit=optional --no-audit --no-fund
+RUN npm ci --omit=dev --omit=optional --ignore-scripts --no-audit --no-fund
+COPY dist ./dist
+# Fails the build, rather than the first sandbox, if dist/ was never built.
+RUN test -f dist/driver-host-cli.js
 
 FROM ${NODE_IMAGE}
 RUN apt-get update \
@@ -90,7 +96,10 @@ LABEL org.opencontainers.image.title="callboard-computer-use-desktop" \
       org.opencontainers.image.version="0.1.0" \
       org.opencontainers.image.source="https://github.com/WolpertingerLabs/callboard" \
       org.opencontainers.image.licenses="MIT" \
-      dev.callboard.computer-use.protocol="2.0"
+      dev.callboard.computer-use.protocol="2.0" \
+      # Bump only for a security fix in the driver host or the image (SANDBOX_SECURITY_FLOOR):
+      # older images then refuse to start until rebuilt.
+      dev.callboard.computer-use.security-floor="1"
 
 EXPOSE 7801
 # Starts as root only to split the desktop and the driver host into their two

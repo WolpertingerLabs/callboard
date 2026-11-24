@@ -56,6 +56,15 @@ export interface RemoteDriverOptions {
   heartbeatTimeoutMs?: number;
   /** Largest outbox download accepted (default 64 MiB). */
   maxOutboxFileBytes?: number;
+  /**
+   * The URL's host is a container's address on a Docker bridge network of
+   * this machine: an `--internal` network publishes no ports, so the host
+   * reaches the container there. Plain http is then accepted for a private
+   * IPv4 literal (10/8, 172.16/12, 192.168/16) as well as loopback. Traffic to
+   * a local bridge never leaves the machine; set this only for an address
+   * Docker reported for a container you started, never for a LAN host.
+   */
+  localDockerBridge?: boolean;
 }
 
 /** A session opened on a driver host, with the host instance it opened on. */
@@ -96,6 +105,12 @@ class TokenFileError extends ComputerUseError {
 }
 
 const LOOPBACK = (host: string) => host === "localhost" || host === "[::1]" || /^127(?:\.\d{1,3}){3}$/.test(host);
+const PRIVATE_V4 = (host: string) => {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (!m || m.slice(1).some((part) => Number(part) > 255)) return false;
+  const [a, b] = [Number(m[1]), Number(m[2])];
+  return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
+};
 const READINESS = new Set(["setup-required", "unsupported", "permission-blocked", "unknown"]);
 
 /** Read a response body within `max` bytes. Any failure part-way — an abort, a reset — is a ComputerUseError. */
@@ -144,7 +159,7 @@ export function createRemoteDriver(options: RemoteDriverOptions): RemoteDriver {
   if (!["http:", "https:"].includes(base.protocol) || base.username || base.password || base.search || base.hash)
     throw new ComputerUseError("invalid_request", "Remote driver URL must be a plain http(s) origin");
   // Nothing secret crosses the wire, but screenshots and typed text do.
-  if (base.protocol === "http:" && !LOOPBACK(base.hostname))
+  if (base.protocol === "http:" && !LOOPBACK(base.hostname) && !(options.localDockerBridge === true && PRIVATE_V4(base.hostname)))
     throw new ComputerUseError("invalid_request", "Plain http is allowed only for a loopback driver host; put anything else behind TLS");
   if ((options.token === undefined) === (options.tokenFile === undefined))
     throw new ComputerUseError("invalid_request", "Give the remote driver a token or a tokenFile, not both or neither");

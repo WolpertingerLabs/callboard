@@ -2944,7 +2944,7 @@ chatsRouter.patch("/:id/permissions", (req, res) => {
                 webAccess: { type: "string", enum: ["allow", "ask", "deny"] },
                 browserControl: { type: "string", enum: ["allow", "ask", "deny"], description: "Browser Use. Changing it requires a logged-in same-origin session. Omit to keep the stored value. — unless computerControl changes in the same request (pre-split client): then a computerControl deny also denies this, and ask/allow is refused with 409." },
                 computerControl: { type: "string", enum: ["allow", "ask", "deny"], description: "Computer Use (desktop). Changing it requires a logged-in same-origin session. Omit to keep the stored value." },
-                sandboxControl: { type: "string", enum: ["allow", "ask", "deny"], description: "Sandbox desktop (a desktop in a hardened container, shared by every chat). Changing it requires a logged-in same-origin session. Omit to keep the stored value." }
+                sandboxControl: { type: "string", enum: ["allow", "ask", "deny"], description: "Sandbox desktop (a desktop in a hardened container: fresh per session when Callboard manages it, or a shared one the operator runs). Changing it requires a logged-in same-origin session. Omit to keep the stored value." }
               }
             },
             modelReview: { type: "boolean", description: "Screen permission asks with the model safety reviewer before a person sees them. Omit to keep the stored value." },
