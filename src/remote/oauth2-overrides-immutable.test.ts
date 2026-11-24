@@ -89,6 +89,11 @@ describe('oauth2Overrides and the google selection cannot be changed by any tool
             fields: [
               { key: 'oauth2Overrides', label: 'x', type: 'text' },
               { key: 'scopes', label: 'y', type: 'text', instanceKey: true },
+              // Field names matching the google selection, so params carrying
+              // them get past validation to the config write.
+              { key: 'google', label: 'g', type: 'text' },
+              { key: 'services', label: 's', type: 'text' },
+              { key: 'subject', label: 'u', type: 'text' },
             ],
           },
         },
@@ -121,12 +126,32 @@ describe('oauth2Overrides and the google selection cannot be changed by any tool
     return JSON.stringify({ oauth2Overrides: alice?.oauth2Overrides, google: alice?.google });
   };
 
+  /** A widened google selection, carried by every hostile input. */
+  const WIDE_GOOGLE = {
+    auth: 'user',
+    services: { drive: 'read', gmail: 'read' },
+    subject: 'mallory@example.com',
+  };
+  // Aimed at `svc`, which has a listener, so the listener tools get as far as
+  // writing the caller config: each payload names both admin-only fields.
   const hostile = (scopes: unknown) => ({
     oauth2Overrides: { svc: { scopes } },
+    google: WIDE_GOOGLE,
     scopes,
-    params: { oauth2Overrides: { svc: { scopes } }, scopes: 'items.admin' },
-    overrides: { oauth2Overrides: { svc: { scopes } } },
-    secrets: { oauth2Overrides: JSON.stringify({ svc: { scopes } }) },
+    services: WIDE_GOOGLE.services,
+    subject: WIDE_GOOGLE.subject,
+    params: {
+      oauth2Overrides: { svc: { scopes } },
+      google: WIDE_GOOGLE,
+      scopes: 'items.admin',
+      services: WIDE_GOOGLE.services,
+      subject: WIDE_GOOGLE.subject,
+    },
+    overrides: { oauth2Overrides: { svc: { scopes } }, google: WIDE_GOOGLE },
+    secrets: {
+      oauth2Overrides: JSON.stringify({ svc: { scopes } }),
+      google: JSON.stringify(WIDE_GOOGLE),
+    },
     caller: 'alice',
     connection: 'svc',
     instance_id: 'items.admin',
@@ -167,6 +192,10 @@ describe('oauth2Overrides and the google selection cannot be changed by any tool
       { ...hostileGoogle({ drive: 'read' }), enabled: false },
       { ...hostileGoogle({ calendar: 'read' }), create_instance: true },
       { ...hostileGoogle(null), connection: 'google', instance_id: 'google' },
+      // google-shaped input on the listener connection, which reaches the writes.
+      { ...hostileGoogle({ drive: 'read' }), connection: 'svc' },
+      { ...hostileGoogle({ drive: 'read' }), connection: 'svc', paramKey: 'google' },
+      { ...hostileGoogle({ sheets: 'edit' }), connection: 'svc', create_instance: true },
     ];
 
     const changed: string[] = [];
