@@ -489,3 +489,34 @@ export function googleCredentialRoutes(base: Route = loadConnection('google')): 
     });
   });
 }
+
+const SCOPE_PREFIX = 'https://www.googleapis.com/auth/';
+
+/** The catalog level a scope belongs to, as `service: level`, or undefined. */
+function levelOfScope(scope: string): string | undefined {
+  const catalog = loadGoogleCatalog();
+  for (const svc of GOOGLE_SERVICE_IDS) {
+    for (const [levelId, level] of Object.entries(catalog.services[svc].levels)) {
+      if (level.scopes.includes(scope)) return `${svc}: ${levelId}`;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * A scope for a hint: `drive.readonly (drive: read)` for a catalog scope, the
+ * scope itself otherwise. Scope names only.
+ */
+export function googleScopeLabel(scope: string): string {
+  const level = levelOfScope(scope);
+  const short = scope.startsWith(SCOPE_PREFIX) ? scope.slice(SCOPE_PREFIX.length) : scope;
+  return level ? `${short} (${level})` : scope;
+}
+
+/** A catalog level's scopes, or undefined when `svc`/`levelId` isn't one. */
+export function googleLevelScopes(svc: string, levelId: string): readonly string[] | undefined {
+  const catalog = loadGoogleCatalog();
+  if (!(GOOGLE_SERVICE_IDS as string[]).includes(svc)) return undefined;
+  const levels = catalog.services[svc as GoogleServiceId].levels;
+  return Object.hasOwn(levels, levelId) ? levels[levelId].scopes : undefined;
+}

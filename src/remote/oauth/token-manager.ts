@@ -214,9 +214,14 @@ export class OAuth2InvalidGrantError extends OAuth2TerminalError {
 
 /** The token endpoint granted scopes outside the requested set, or none at all. */
 export class OAuth2ScopeError extends OAuth2TerminalError {
-  constructor(message: string) {
+  /** Granted scopes outside the requested set, when that is the reason.
+   *  Scope names only. */
+  readonly extraScopes?: string[];
+
+  constructor(message: string, extraScopes?: string[]) {
     super(message);
     this.name = 'OAuth2ScopeError';
+    if (extraScopes !== undefined) this.extraScopes = extraScopes;
   }
 }
 
@@ -782,6 +787,7 @@ export class TokenManager {
           `OAuth2 token for connection "${connection}" refused: the token endpoint granted ` +
             `scopes broader than this connection allows (${extra.join(', ')}). Mint a ` +
             "dedicated refresh token with exactly the connection's scopes.",
+          extra,
         );
       }
       const grantedSet = new Set(granted);

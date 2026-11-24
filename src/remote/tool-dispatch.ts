@@ -36,12 +36,13 @@ import {
   OAUTH2_TOKEN_TIMEOUT_MS,
   type CallerConfig,
   type IngestorOverrides,
+  type NamedTestConnection,
   type RemoteServerConfig,
   type ResolvedRoute,
   type Route,
 } from '../shared/config.js';
 import { listConnectionTemplates, loadConnection } from '../shared/connections.js';
-import { googleCredentialRoutes } from '../shared/google.js';
+import { googleCredentialRoutes, googleLevelScopes, googleScopeLabel } from '../shared/google.js';
 import { assertSafeConnectionKey, assertSafeInstanceId, ownEntry } from '../shared/safe-keys.js';
 import { isSecretSetForCaller, setCallerSecrets } from '../shared/env-utils.js';
 import {
@@ -59,6 +60,7 @@ import {
   type OAuth2AuthResult,
   type OAuth2Route,
 } from './oauth/authenticate.js';
+import { OAuth2ScopeError } from './oauth/token-manager.js';
 import type { IngestorManager } from './ingestors/index.js';
 import { safeFetch } from './safe-fetch.js';
 import { assertNoControlChars, isEndpointAllowed, normalizeOutboundUrl } from './url-policy.js';
@@ -1011,6 +1013,107 @@ function assertAgentMaySetSecrets(
   );
 }
 
+// ── test_connection with several tests (testConnections) ─────────────────
+
+/**
+ * `consentScopes` and, when the scope mismatch is known, a `hint` that maps
+ * each scope to its Google service and level. Scope names only: never a
+ * token, a credential, or the service account's subject.
+ */
+function consentReport(
+  route: ResolvedRoute,
+  mismatch: { extraScopes?: string[]; missingScopes?: string[] },
+): { consentScopes?: string; hint?: string } {
+  if (!route.oauth2) return {};
+  const consentScopes = route.oauth2.effectiveScopes.join(' ');
+  const remedy =
+    route.oauth2.grant === 'jwt_bearer'
+      ? "make the service account's domain-wide delegation (Admin console) cover exactly the " +
+        'scopes in consentScopes'
+      : 're-consent the refresh token with exactly the scopes in consentScopes';
+  const labels = (scopes: string[]) => scopes.map(googleScopeLabel).join(', ');
+  let hint: string | undefined;
+  if (mismatch.extraScopes?.length) {
+    hint =
+      `The token was granted scopes this selection does not include: ` +
+      `${labels(mismatch.extraScopes)}. Add those services, or ${remedy}.`;
+  } else if (mismatch.missingScopes?.length) {
+    hint =
+      `The token was not granted ${labels(mismatch.missingScopes)}. ` +
+      `${remedy[0].toUpperCase()}${remedy.slice(1)}.`;
+  }
+  return { consentScopes, ...(hint !== undefined && { hint }) };
+}
+
+/**
+ * Run every entry of a route's `testConnections` in parallel, sharing the
+ * remaining budget, and report each under its name. `success` is true only
+ * when every test passes. On an OAuth2 route the token is already minted.
+ */
+async function runTestConnections(
+  route: ResolvedRoute,
+  tests: NamedTestConnection[],
+  context: ToolContext,
+  budgetMs: number | undefined,
+  minted: { oauth2Report?: Record<string, unknown>; missingScopes?: string[] },
+): Promise<Record<string, unknown>> {
+  const missing = new Set(minted.missingScopes ?? []);
+  const entries = await Promise.all(
+    tests.map(async (test): Promise<[string, Record<string, unknown>]> => {
+      const expectedStatus = test.expectedStatus ?? [200];
+      const levelScopes =
+        test.level !== undefined ? googleLevelScopes(test.name, test.level) : undefined;
+      const notConsented = levelScopes?.some((s) => missing.has(s)) === true;
+      const base = {
+        ...(test.level !== undefined && { level: test.level }),
+      };
+      try {
+        const result = await executeProxyRequest(
+          { method: test.method ?? 'GET', url: test.url, headers: test.headers, body: test.body },
+          // The template's own request: its route only (see ProxyRequestOptions).
+          [route],
+          budgetMs,
+          { templateAuthored: true, caller: context.callerAlias },
+        );
+        const ok = expectedStatus.includes(result.status);
+        return [
+          test.name,
+          {
+            ...base,
+            success: ok,
+            status: result.status,
+            statusText: result.statusText,
+            ...(notConsented && { notConsented: true }),
+            ...(test.description !== undefined && { description: test.description }),
+            ...(!ok && {
+              error: `Unexpected status ${result.status} (expected ${expectedStatus.join(' or ')})`,
+            }),
+          },
+        ];
+      } catch (err) {
+        return [
+          test.name,
+          {
+            ...base,
+            success: false,
+            ...(notConsented && { notConsented: true }),
+            ...(test.description !== undefined && { description: test.description }),
+            error: err instanceof Error ? err.message : String(err),
+          },
+        ];
+      }
+    }),
+  );
+  const services = Object.fromEntries(entries);
+  return {
+    success: entries.every(([, r]) => r.success === true),
+    connection: route.alias,
+    ...(minted.oauth2Report && { oauth2: minted.oauth2Report }),
+    services,
+    ...(route.oauth2 && consentReport(route, { missingScopes: minted.missingScopes })),
+  };
+}
+
 /** Context passed to every tool handler, providing caller identity and shared services. */
 export interface ToolContext {
   /** The caller alias for the session making this request. */
@@ -1218,8 +1321,30 @@ export const toolHandlers: Record<string, ToolHandler> = {
           success: false,
           connection,
           oauth2: { tokenMinted: false, requestedScopes: route.oauth2.effectiveScopes },
+          ...(route.testConnections && {
+            services: Object.fromEntries(
+              route.testConnections.map((t) => [
+                t.name,
+                {
+                  ...(t.level !== undefined && { level: t.level }),
+                  success: false,
+                  skipped: 'no token',
+                },
+              ]),
+            ),
+          }),
           error: err instanceof Error ? err.message : String(err),
+          ...(route.testConnections &&
+            consentReport(route, {
+              extraScopes: err instanceof OAuth2ScopeError ? err.extraScopes : undefined,
+            })),
         };
+      }
+      if (route.testConnections) {
+        return runTestConnections(route, route.testConnections, context, remainingBudget(), {
+          oauth2Report,
+          missingScopes: (oauth2Report.missingScopes as string[] | undefined) ?? undefined,
+        });
       }
       if (!route.testConnection) {
         return {
@@ -1229,6 +1354,10 @@ export const toolHandlers: Record<string, ToolHandler> = {
           description: 'Minted an OAuth2 access token (this connection has no test request).',
         };
       }
+    }
+
+    if (route.testConnections) {
+      return runTestConnections(route, route.testConnections, context, remainingBudget(), {});
     }
 
     if (!route.testConnection) {
