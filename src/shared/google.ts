@@ -449,11 +449,16 @@ export function composeGoogleRoute(base: Route, sel: GoogleCallerConfig): Route 
         : 'service account';
   const list = picked.map((p) => `${p.svc} ${p.levelId}`).join(', ');
   const details = picked.map((p) => `${p.svc} ${p.levelId}: ${p.level.summary}.`).join(' ');
+  // Cross-service scope notes that apply (sheets read next to drive file can
+  // edit), so the agent isn't told less than it can do.
+  const notes = googleCrossScopeNotes(sel)
+    .map((text) => ` Note: ${text}`)
+    .join('');
 
   return {
     alias: 'google',
     name: 'Google',
-    description: `Google (${authText}): ${list}. ${details}`,
+    description: `Google (${authText}): ${list}. ${details}${notes}`,
     ...(base.docsUrl !== undefined && { docsUrl: base.docsUrl }),
     ...(base.stability !== undefined && { stability: base.stability }),
     ...(base.category !== undefined && { category: base.category }),

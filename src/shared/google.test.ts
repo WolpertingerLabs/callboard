@@ -308,6 +308,21 @@ describe('composeGoogleRoute', () => {
     expect(JSON.stringify({ ...route, oauth2: undefined })).not.toContain('alice');
   });
 
+  it('tells the agent when sheets read can edit, next to drive file', () => {
+    const both = composeGoogleRoute(BASE, {
+      auth: 'user',
+      services: { sheets: 'read', drive: 'file' },
+    }).description;
+    const note = catalog.crossScopeNotes[0].text;
+    expect(both).toContain(`Note: ${note}`);
+    // Nothing in the description says Sheets can't edit at all.
+    expect(both).not.toMatch(/sheets read: [^.]*; cannot edit/);
+    expect(catalog.services.sheets.levels.read.summary).not.toMatch(/; cannot edit$/);
+    // Without drive file there is no note.
+    const alone = composeGoogleRoute(BASE, { auth: 'user', services: { sheets: 'read' } });
+    expect(alone.description).not.toContain('Note:');
+  });
+
   it('omits subject for a service account without one', () => {
     const route = composeGoogleRoute(BASE, {
       auth: 'service-account',

@@ -255,7 +255,7 @@
       "enableApi": "Google Sheets API",
       "levels": {
         "read": {
-          "summary": "spreadsheets.get and values get / batchGet by spreadsheet ID; cannot edit",
+          "summary": "spreadsheets.get and values get / batchGet by spreadsheet ID; its scope (spreadsheets.readonly) grants no edits",
           "readOnly": true,
           "scopes": [
             "https://www.googleapis.com/auth/spreadsheets.readonly"
