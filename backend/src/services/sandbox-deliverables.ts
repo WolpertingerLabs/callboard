@@ -37,7 +37,7 @@
  */
 import { createHash, randomUUID } from "node:crypto";
 import { OUTBOX_NAME } from "@wolpertingerlabs/computer-use";
-import { constants, existsSync, realpathSync } from "node:fs";
+import { constants, existsSync, readdirSync, realpathSync } from "node:fs";
 import { chmod, link, lstat, mkdir, open, readdir, readFile, rename, rm, unlink } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -246,6 +246,8 @@ export class SandboxDeliveries {
   private readonly deletedChats = new Set<string>();
   /** Their directory names, for the disk guards (a path names the chat by segment). */
   private readonly deletedSegments = new Set<string>();
+  /** A deleted chat's in-flight passes, which {@link deleteFiles} waits for before removing anything. */
+  private readonly settling = new Map<string, Promise<unknown>>();
   /** Bytes every manifest under the root accounts for; computed once, then kept up to date. */
   private usage?: Promise<number>;
 
@@ -591,12 +593,25 @@ export class SandboxDeliveries {
         if (live.ended) running.push(live.ended.catch(() => {}));
         this.forgetSession(sessionId);
       }
-    await Promise.all(running);
+    const settled = Promise.all(running);
+    this.settling.set(chatId, settled);
+    await settled;
     if (!options.keepFiles) await this.deleteFiles(chatId);
+  }
+
+  /** Whether a chat has a deliverables directory under any owner key. Disk only, synchronous. */
+  hasFiles(chatId: string): boolean {
+    const chat = chatSegment(chatId);
+    try {
+      return readdirSync(this.root).some((key) => OWNER_KEY.test(key) && existsSync(join(this.root, key, chat)));
+    } catch {
+      return false;
+    }
   }
 
   /** Remove a chat's deliverables directory under every owner key. */
   async deleteFiles(chatId: string): Promise<void> {
+    await this.settling.get(chatId);
     const chat = chatSegment(chatId);
     for (const key of await readdir(this.root).catch(() => [] as string[]))
       if (OWNER_KEY.test(key)) await rm(join(this.root, key, chat), { recursive: true, force: true }).catch(() => {});

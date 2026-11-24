@@ -107,9 +107,9 @@ describe("end to end, on real chat records", () => {
     (await getSandboxDeliveries().forSources(chatDeliverySources(chatId), { folder: "/work/lineage" })).flatMap((s) => s.files.map((f) => f.name)).sort();
   async function remove(chatId: string) {
     const record = chatFileService.getChat(chatId)!;
-    const sources = chatDeliverySources(chatId);
     chatFileService.deleteChat(record.session_id);
-    deleteSandboxChatData(chatId, sources);
+    // As deleteOneChat does: the metadata of the record it already holds.
+    deleteSandboxChatData(chatId, JSON.parse(record.metadata || "{}"));
     await flushSandboxDeletes();
   }
 

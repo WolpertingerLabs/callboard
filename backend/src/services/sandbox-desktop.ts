@@ -24,7 +24,7 @@ import {
 import { SandboxContainerManager, type DrainBeforeDestroy } from "./sandbox-containers.js";
 import { SandboxDeliveries } from "./sandbox-deliverables.js";
 import { SandboxRecovery, managedDelivery } from "./sandbox-recovery.js";
-import { deliverySources, sourcesKeptAlive, type DeliverySource } from "./sandbox-lineage.js";
+import { copiedFrom, deliverySources, sourcesKeptAlive, type DeliverySource } from "./sandbox-lineage.js";
 import { parseChatMetadataRecord } from "../utils/chat-metadata.js";
 import { readSandboxSettings, resolveSandboxSettings } from "./sandbox-desktop-settings.js";
 import { buildSandboxImage, execDocker } from "./sandbox-image.js";
@@ -105,39 +105,50 @@ export function replacedChats(sources: readonly DeliverySource[]): string[] {
     .map((s) => s.chatId);
 }
 
-const pendingDeletes: { chatId: string; sources: DeliverySource[] }[] = [];
+const pendingDeletes: { chatId: string; meta: Record<string, unknown> }[] = [];
 let deleteFlush: ReturnType<typeof setTimeout> | undefined;
 /**
  * A chat was deleted. Its kept sandboxes are discarded now (a kept sandbox
  * is its session's unfinished copy, and there is no chat left to copy
- * into), and nothing more is ever written for it. Its deliverables — and
- * those of earlier deleted chats only it still showed — are deleted once no
- * surviving chat shows them (sandbox-lineage.ts `sourcesKeptAlive`): a
- * Continue-from successor or a fork keeps them until it, too, is deleted.
+ * into), and nothing more is ever written for it, from this moment on. Its
+ * deliverables — and those of earlier deleted chats only it still showed —
+ * are deleted once no surviving chat shows them (sandbox-lineage.ts
+ * `sourcesKeptAlive`): a Continue-from successor or a fork keeps them until
+ * it, too, is deleted.
  *
- * `sources` must be taken before the chat's record is deleted. Batched per
- * tick, so a bulk delete scans the chat records once.
+ * `meta` is the deleted chat's metadata, from the record the caller already
+ * holds (its lineage links). No chat record is looked up here: a chat with
+ * no deliverables and no copied history needs nothing more, and otherwise
+ * the work is batched per tick over one snapshot of the records.
  */
-export function deleteSandboxChatData(chatId: string, sources: DeliverySource[] = [{ chatId }]): void {
+export function deleteSandboxChatData(chatId: string, meta: Record<string, unknown> = {}): void {
+  const deliveries = getSandboxDeliveries();
+  // Synchronously refuses every later write for it; the files are decided below.
+  void deliveries.deleteForChat(chatId, { keepFiles: true }).catch(() => {});
   void getSandboxRecovery()
     .discardForChat(chatId)
     .catch((error) => log.warn(`Could not discard the kept sandboxes of a deleted chat: ${error instanceof Error ? error.message : "unknown"}`));
-  pendingDeletes.push({ chatId, sources });
+  if (!deliveries.hasFiles(chatId) && !copiedFrom(meta).length) return;
+  pendingDeletes.push({ chatId, meta });
   deleteFlush ??= setTimeout(() => void flushSandboxDeletes(), 0);
 }
-/** Apply queued chat deletions (exported for tests). */
+/** Apply queued chat deletions: one snapshot of the records for the whole batch (exported for tests). */
 export async function flushSandboxDeletes(): Promise<void> {
+  if (deleteFlush) clearTimeout(deleteFlush);
   deleteFlush = undefined;
   const batch = pendingDeletes.splice(0);
   if (!batch.length) return;
-  const exists = (id: string) => !!chatFileService.getChat(id);
-  const all = chatFileService.getAllChats().map((chat) => ({ id: chat.id, meta: parseChatMetadataRecord(chat.metadata) }));
+  const survivors = chatFileService.getAllChats().map((chat) => ({ id: chat.id, meta: parseChatMetadataRecord(chat.metadata) }));
+  const index = new Map(survivors.map((chat) => [chat.id, chat.meta]));
+  const deleted = new Map(batch.map((entry) => [entry.chatId, entry.meta]));
+  // Walk through survivors and through the chats deleted in this batch (their links are known).
+  const metaOf = (id: string) => index.get(id) ?? deleted.get(id);
+  const exists = (id: string) => index.has(id);
   const deliveries = getSandboxDeliveries();
-  for (const { chatId, sources } of batch) {
-    const { remove, keep } = sourcesKeptAlive(chatId, sources, exists, () => all);
+  for (const { chatId, meta } of batch) {
+    const { remove, keep } = sourcesKeptAlive(chatId, deliverySources(chatId, metaOf, meta), exists, () => survivors, metaOf);
     try {
-      await deliveries.deleteForChat(chatId, { keepFiles: keep.includes(chatId) });
-      for (const id of remove) if (id !== chatId) await deliveries.deleteFiles(id);
+      for (const id of remove) await deliveries.deleteFiles(id);
       if (keep.length) log.info(`Kept the Sandbox desktop deliverables of ${keep.length} deleted chat(s) that a surviving chat still shows`);
     } catch (error) {
       log.warn(`Could not delete the Sandbox desktop deliverables of a deleted chat: ${error instanceof Error ? error.message : "unknown"}`);

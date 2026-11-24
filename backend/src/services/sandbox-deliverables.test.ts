@@ -485,6 +485,20 @@ describe("deleting a chat while a copy is in flight (review round 1)", () => {
     }
   }, 60_000);
 
+  it("a later deleteFiles (the batched flush) waits for the deleted chat's in-flight pass", async () => {
+    const { dataDir, deliveries } = await setup();
+    const slow = slowOutbox();
+    const ctx = context(slow.source, { chatId: "flushed" });
+    void deliveries.start(ctx);
+    await slow.started;
+    slow.release();
+    await new Promise((r) => setImmediate(r));
+    void deliveries.deleteForChat(ctx.chatId, { keepFiles: true });
+    await deliveries.deleteFiles(ctx.chatId);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(existsSync(join(deliverablesRoot(dataDir), ownerKey(ctx), chatSegment(ctx.chatId)))).toBe(false);
+  });
+
   it("keepFiles: the chat stops being written, its files stay (a surviving chat still shows them)", async () => {
     const { deliveries } = await setup();
     const report = await deliveries.drain(context(fakeOutbox({ "keep.txt": "k" }).source, { chatId: "orig" }), AbortSignal.timeout(5_000));
