@@ -127,3 +127,120 @@ describe('saveRemoteConfig is atomic', () => {
     expect(fs.statSync(getRemoteConfigPath()).mode & 0o777).toBe(0o600);
   });
 });
+
+describe('saveRemoteConfig keeps what worked before', () => {
+  const tmps = (d: string) => fs.readdirSync(d).filter((f) => f.endsWith('.tmp'));
+
+  it('writes through a symlinked config: the link stays, its target is updated', () => {
+    const realDir = fs.mkdtempSync(path.join(os.tmpdir(), 'drawlatch-config-real-'));
+    try {
+      const real = path.join(realDir, 'remote.config.json');
+      fs.renameSync(getRemoteConfigPath(), real);
+      fs.chmodSync(real, 0o640);
+      fs.symlinkSync(real, getRemoteConfigPath());
+
+      saveRemoteConfig({ ...base(), rateLimitPerMinute: 62 });
+
+      expect(fs.lstatSync(getRemoteConfigPath()).isSymbolicLink()).toBe(true);
+      expect(fs.readlinkSync(getRemoteConfigPath())).toBe(real);
+      expect(
+        (JSON.parse(fs.readFileSync(real, 'utf8')) as RemoteServerConfig).rateLimitPerMinute,
+      ).toBe(62);
+      expect(fs.statSync(real).mode & 0o777).toBe(0o640);
+      expect(tmps(realDir)).toEqual([]);
+      expect(tmps(dir)).toEqual([]);
+    } finally {
+      fs.rmSync(realDir, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.getuid?.() === 0)(
+    'a read-only directory with a writable file still saves (in place)',
+    () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      fs.chmodSync(dir, 0o500);
+      try {
+        saveRemoteConfig({ ...base(), rateLimitPerMinute: 63 });
+        expect(loadRemoteConfig().rateLimitPerMinute).toBe(63);
+        expect(tmps(dir)).toEqual([]);
+        expect(warn).toHaveBeenCalledWith(expect.stringMatching(/not atomic/));
+      } finally {
+        fs.chmodSync(dir, 0o700);
+        warn.mockRestore();
+      }
+    },
+  );
+
+  it.each(['writeSync', 'fsyncSync', 'fchmodSync', 'renameSync'] as const)(
+    'a failing %s leaves no temp file and the old config intact',
+    (fn) => {
+      const before = fs.readFileSync(getRemoteConfigPath(), 'utf8');
+      const spy = vi.spyOn(fs, fn).mockImplementation(() => {
+        throw Object.assign(new Error(`simulated ${fn} failure`), { code: 'EIO' });
+      });
+      try {
+        expect(() => saveRemoteConfig({ ...base(), rateLimitPerMinute: 64 })).toThrow(
+          `simulated ${fn} failure`,
+        );
+      } finally {
+        spy.mockRestore();
+      }
+      expect(tmps(dir)).toEqual([]);
+      expect(fs.readFileSync(getRemoteConfigPath(), 'utf8')).toBe(before);
+    },
+  );
+});
+
+describe('delete_listener_instance vs a concurrent config write', () => {
+  function withInstance(): void {
+    const cfg = base();
+    cfg.callers.alice.listenerInstances = { github: { one: {}, two: {} } };
+    saveRemoteConfig(cfg);
+  }
+
+  function mgr(stop: () => Promise<unknown>): IngestorManager {
+    return { has: () => true, stopOne: stop } as unknown as IngestorManager;
+  }
+
+  it('a google selection saved while the listener stops is kept', async () => {
+    withInstance();
+    const result = await dispatchTool(
+      'delete_listener_instance',
+      { connection: 'github', instance_id: 'one' },
+      [],
+      {
+        ...ctx(() => Promise.resolve({ success: true })),
+        ingestorManager: mgr(() => {
+          concurrentGoogleSave();
+          return Promise.resolve({ success: true });
+        }),
+      },
+    );
+    expect(result).toMatchObject({ success: true, instance_id: 'one' });
+    const after = loadRemoteConfig().callers.alice;
+    expect(after.google).toEqual(GOOGLE);
+    expect(after.listenerInstances).toEqual({ github: { two: {} } });
+  });
+
+  it('a caller deleted during the await is not recreated', async () => {
+    withInstance();
+    const result = await dispatchTool(
+      'delete_listener_instance',
+      { connection: 'github', instance_id: 'one' },
+      [],
+      {
+        ...ctx(() => Promise.resolve({ success: true })),
+        ingestorManager: mgr(() => {
+          const raw = JSON.parse(fs.readFileSync(getRemoteConfigPath(), 'utf8')) as {
+            callers: Record<string, unknown>;
+          };
+          delete raw.callers.alice;
+          fs.writeFileSync(getRemoteConfigPath(), JSON.stringify(raw, null, 2));
+          return Promise.resolve({ success: true });
+        }),
+      },
+    );
+    expect(result).toMatchObject({ success: false });
+    expect(Object.hasOwn(loadRemoteConfig().callers, 'alice')).toBe(false);
+  });
+});

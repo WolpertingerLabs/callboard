@@ -150,7 +150,7 @@ Each key directory holds `signing.{pub,key}.pem` and `exchange.{pub,key}.pem`. P
 
 `LOG_LEVEL` in `.env` or the environment sets daemon log verbosity: `error`, `warn`, `info` (default), or `debug`.
 
-The daemon re-reads `remote.config.json` for each new session and after dashboard changes. Hand edits that add callers or change listeners need `drawlatch restart`.
+The daemon re-reads `remote.config.json` for each new session and after dashboard changes. When drawlatch saves it (dashboard, tools), it writes a temp file next to it and renames it into place, so a reader never sees a half-written file. A symlinked `remote.config.json` is written through to its target, and the file's mode is kept. If the directory isn't writable but the file is, the file is written in place instead, with a one-time warning. Hand edits that add callers or change listeners need `drawlatch restart`.
 
 ### Callers
 

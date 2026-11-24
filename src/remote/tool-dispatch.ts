@@ -2003,24 +2003,43 @@ export const toolHandlers: Record<string, ToolHandler> = {
       }
     }
 
-    // Remove from config
-    const { [instance_id]: _removed, ...remainingInstances } = instances;
-
-    // Clean up empty maps
-    if (Object.keys(remainingInstances).length === 0) {
-      if (callerConfig.listenerInstances) {
-        const { [connection]: _removedConn, ...remainingConns } = callerConfig.listenerInstances;
-        if (Object.keys(remainingConns).length === 0) {
-          delete callerConfig.listenerInstances;
-        } else {
-          callerConfig.listenerInstances = remainingConns;
-        }
-      }
-    } else {
-      callerConfig.listenerInstances![connection] = remainingInstances;
+    // Re-load after the await: another writer (the dashboard's Google
+    // selection, say) may have saved meanwhile, and saving the copy loaded
+    // above would undo it.
+    const fresh = loadRemoteConfig();
+    const freshCaller = Object.hasOwn(fresh.callers, context.callerAlias)
+      ? fresh.callers[context.callerAlias]
+      : undefined;
+    if (!freshCaller) {
+      return {
+        success: false,
+        connection,
+        instance_id,
+        error: `Caller not found: ${context.callerAlias}`,
+      };
     }
+    const freshInstances = ownEntry(freshCaller.listenerInstances, connection);
+    if (freshInstances && Object.hasOwn(freshInstances, instance_id)) {
+      // Remove from config
+      const { [instance_id]: _removed, ...remainingInstances } = freshInstances;
 
-    saveRemoteConfig(config);
+      // Clean up empty maps
+      if (Object.keys(remainingInstances).length === 0) {
+        if (freshCaller.listenerInstances) {
+          const { [connection]: _removedConn, ...remainingConns } = freshCaller.listenerInstances;
+          if (Object.keys(remainingConns).length === 0) {
+            delete freshCaller.listenerInstances;
+          } else {
+            freshCaller.listenerInstances = remainingConns;
+          }
+        }
+      } else {
+        freshCaller.listenerInstances![connection] = remainingInstances;
+      }
+
+      saveRemoteConfig(fresh);
+    }
+    // Already removed meanwhile: nothing to save.
 
     return { success: true, connection, instance_id };
   },
