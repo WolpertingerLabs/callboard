@@ -18,6 +18,7 @@ import {
   type ComputerUseSandboxInfo,
   type SandboxAgentProfileSummary,
   type SandboxAgentProfileVersion,
+  type SandboxProfileBuildReview,
   type SandboxProfileStatus,
   type SandboxDesktopVariant,
   type SandboxDesktopBuild,
@@ -44,15 +45,19 @@ import {
   listAllProfiles,
   listProfiles,
   loadBuiltinProfiles,
+  makeEntry,
+  relabelProfileImage,
   removeProfileImage,
   resolveProfile,
   resolveProfileId,
   scopesFor,
   type ProfileChatScope,
+  type ProfileEntry,
   type ProfileImageInfo,
 } from "./sandbox-profiles.js";
 import { SandboxBuilds, type BuildRecord, type BuildTarget } from "./sandbox-builds.js";
 import { getProfileStore, type StoredProfile } from "./sandbox-profile-store.js";
+import { recipeReview } from "./sandbox-profile-review.js";
 import type { ProfileScopeKey } from "./sandbox-profiles.js";
 import { DATA_DIR } from "../utils/paths.js";
 import { chatFileService } from "./chat-file-service.js";
@@ -326,17 +331,89 @@ export function getSandboxBuilds(): SandboxBuilds {
  * profile's image by entry id (`global/blender`). Returns its record; the
  * Settings page polls it by id. Asking for a build already queued or running
  * returns that one.
+ *
+ * **A profile that is not built in needs `digest`**: the recipe digest from
+ * the review the human just read ({@link profileBuildReview}). The build is
+ * pinned to it, and refused if the stored recipe no longer has it. The store
+ * is plain JSON in the data directory, so an agent that can write files there
+ * could put any recipe, state or provenance in it; this is what makes sure
+ * nothing it wrote is built without a human reading exactly that recipe.
+ * Built-ins ship in the package and keep their one-click build.
  */
-export function startSandboxBuild(profileId?: string): SandboxDesktopBuild {
+export function startSandboxBuild(profileId?: string, options: { digest?: string } = {}): SandboxDesktopBuild {
   let target: BuildTarget = { kind: "base" };
   if (profileId !== undefined) {
     const entry = resolveProfileId(profileId);
     if (!entry) throw Object.assign(new Error(`There is no sandbox profile ${JSON.stringify(profileId)}`), { code: "not_found" });
-    target = { kind: "profile", id: entry.id, scope: entry.scope, name: entry.recipe.name };
+    if (entry.source !== "builtin") {
+      if (!options.digest)
+        throw Object.assign(new Error(`Profile ${entry.id} is not built in: review its recipe first, and build it with the reviewed digest`), {
+          code: "review_required",
+        });
+      if (options.digest !== entry.digest)
+        throw Object.assign(new Error(`Profile ${entry.id}'s recipe changed since it was reviewed; review it again`), { code: "changed" });
+    }
+    target = {
+      kind: "profile",
+      id: entry.id,
+      scope: entry.scope,
+      name: entry.recipe.name,
+      ...(entry.source !== "builtin" ? { digest: entry.digest } : {}),
+      ...(entry.version !== undefined ? { version: entry.version } : {}),
+    };
   }
   const record = getSandboxBuilds().enqueue(target);
   log.info(`Queued a build of ${target.kind === "base" ? "the sandbox desktop image" : `sandbox profile ${record.profile}`} (requested from Settings)`);
   return buildDto(record, getSandboxBuilds().log(record.id, 12_000) ?? "");
+}
+
+/**
+ * A store-backed global profile with no image Callboard built for it. An
+ * image labelled with a profile's name, scope and recipe digest exists only
+ * if Callboard built it — the approval card, a reviewed Settings build, a
+ * `--digest`-pinned CLI build, or the promote route's relabel — and it lives
+ * in Docker, which an agent cannot write without the Docker socket (and with
+ * it, it is root). So a global store file with no such image is one nothing
+ * this daemon recorded vouches for: a forged `profiles/global/*.json`, or a
+ * promoted profile whose image was removed. Agents do not see it, and it
+ * cannot start, until a human reviews and builds it.
+ */
+export function isUnverifiedGlobal(entry: ProfileEntry, image: ProfileImageInfo): boolean {
+  return entry.scope === "global" && entry.source !== "builtin" && !(STARTABLE_PROFILE_STATES as readonly string[]).includes(image.state);
+}
+
+/** What a human reads before building a profile that is not built in; its `digest` is what `POST /build` must quote. */
+export async function profileBuildReview(profileId: string): Promise<SandboxProfileBuildReview> {
+  const entry = resolveProfileId(profileId);
+  if (!entry) throw Object.assign(new Error(`There is no sandbox profile ${JSON.stringify(profileId)}`), { code: "not_found" });
+  const docker = execDocker();
+  const base = await currentBase(docker, getSandboxManager().image).catch(() => ({}));
+  const image: ProfileImageInfo = await inspectProfileImage(docker, entry, base).catch(() => ({ state: "missing" }));
+  const stored = entry.source === "agent" ? getProfileStore().read(entry.scope, entry.recipe.name) : undefined;
+  const inForce = stored?.versions.find((v) => v.version === stored.current);
+  const builtVersion = image.recipe ? stored?.versions.find((v) => v.digest === image.recipe) : undefined;
+  return {
+    id: entry.id,
+    scope: entry.scope,
+    name: entry.recipe.name,
+    ...(entry.version !== undefined ? { version: entry.version } : {}),
+    digest: entry.digest,
+    recipe: canonicalProfileRecipe(entry.recipe),
+    review: recipeReview(entry.recipe, resolveSandboxSettings(readSandboxSettings())),
+    ...(image.recipe ? { built: { digest: image.recipe, ...(builtVersion ? { recipe: builtVersion.recipe, version: builtVersion.version } : {}) } } : {}),
+    ...(isUnverifiedGlobal(entry, image) ? { unverified: true as const } : {}),
+    ...(stored
+      ? {
+          provenance: {
+            createdBy: stored.createdBy,
+            ...(stored.ownerLabel ? { ownerLabel: stored.ownerLabel } : {}),
+            ...(inForce?.approvedAt ? { approvedAt: inForce.approvedAt } : {}),
+            ...(inForce?.approvalId ? { approvalId: inForce.approvalId } : {}),
+            ...(stored.promoted ? { promoted: stored.promoted } : {}),
+          },
+        }
+      : {}),
+  };
 }
 /**
  * The Settings page's single "build" field (older bundles read only this): the
@@ -392,9 +469,12 @@ export async function sandboxProfileStatuses(chat?: ProfileChatScope): Promise<S
   const { errors } = loadBuiltinProfiles();
   for (const error of errors) log.warn(`Ignoring a built-in sandbox profile: ${error}`);
   const [base, arch] = await Promise.all([currentBase(docker, getSandboxManager().image).catch(() => ({})), hostArchitecture(docker).catch(() => undefined)]);
-  return Promise.all(
-    (chat ? listProfiles(chat) : listAllProfiles()).map(async (entry) => {
+  const statuses = await Promise.all(
+    (chat ? listProfiles(chat) : listAllProfiles()).map(async (entry): Promise<SandboxProfileStatus | undefined> => {
       const image: ProfileImageInfo = await inspectProfileImage(docker, entry, base).catch(() => ({ state: "missing", detail: "Docker did not answer" }));
+      const unverified = isUnverifiedGlobal(entry, image);
+      // What a chat sees (cu_open, the profile tools): never an unverified global, whose description nobody vouched for.
+      if (chat && unverified) return undefined;
       const { clamped, ...limits } = effectiveProfileLimits(entry.recipe, settings);
       const stored = entry.source === "agent" ? getProfileStore().read(entry.scope, entry.recipe.name) : undefined;
       return {
@@ -403,6 +483,8 @@ export async function sandboxProfileStatuses(chat?: ProfileChatScope): Promise<S
         name: entry.recipe.name,
         description: entry.recipe.description,
         source: entry.source,
+        ...(unverified ? { unverified: true as const } : {}),
+        ...(entry.source !== "builtin" ? { reviewRequired: true as const } : {}),
         ...(stored && entry.version !== undefined
           ? {
               agent: {
@@ -438,6 +520,7 @@ export async function sandboxProfileStatuses(chat?: ProfileChatScope): Promise<S
       } satisfies SandboxProfileStatus;
     }),
   );
+  return statuses.filter((status) => status !== undefined);
 }
 
 export type { ConsentProfile };
@@ -566,6 +649,7 @@ export function agentProfileSummary(profile: StoredProfile, pending: ReadonlySet
         ...(pending.has(v.version) ? { pending: true } : {}),
         ...(v.approvedAt ? { approvedAt: v.approvedAt } : {}),
         ...(v.buildId ? { buildId: v.buildId } : {}),
+        ...(v.requestId ? { requestId: v.requestId } : {}),
         ...(v.note ? { note: v.note } : {}),
         ...(withRecipes ? { recipe: v.recipe } : {}),
       }),
@@ -625,15 +709,20 @@ function assertNotBuilding(id: string): void {
 /**
  * Promote an agent-built profile to the global scope (Settings, a signed-in
  * human): the same versions and the same approved recipe (so the same
- * digest), with its provenance recorded, and every chat can then use it. A
- * profile's image is labelled with its scope, so the scoped image cannot be
- * retagged as the global one: promotion queues a build of the global entry
- * (the human's own click asked for it) and removes the scoped image if no
- * container uses it. Refused while a proposal for it is open, while it is
- * being built, when a global profile (built in or promoted) has the name,
- * and when it has no approved version.
+ * digest), with its provenance kept, and every chat can then use it.
+ *
+ * **The exact tested image is relabelled, not rebuilt** (`relabelProfileImage`):
+ * a rebuild would install packages again from mirrors that may have moved
+ * on, so it could differ from what was tested. So the scoped profile must be
+ * built (`current` or `outdated`) from the version in force. The relabelled
+ * image carries a promotion label, in Docker: the record a forged global
+ * store file cannot have. Then the store moves the profile to `global/`, and
+ * the scoped tag is removed (the layers stay: the global image is built on
+ * them). Refused while a proposal for it is open, while it is being built,
+ * when a global profile (built in or promoted) has the name, and when it has
+ * no approved version or no built image.
  */
-export async function promoteAgentProfile(id: string): Promise<{ profile: SandboxAgentProfileSummary; build: SandboxDesktopBuild }> {
+export async function promoteAgentProfile(id: string): Promise<{ profile: SandboxAgentProfileSummary; image: string }> {
   const { scope, name } = splitId(id);
   const store = getProfileStore();
   const profile = store.read(scope, name);
@@ -645,14 +734,38 @@ export async function promoteAgentProfile(id: string): Promise<{ profile: Sandbo
   if (listProfiles({}).some((entry) => entry.recipe.name === name))
     throw Object.assign(new Error(`A global profile named ${name} exists already`), { code: "conflict" });
   const scoped = resolveProfileId(id);
-  const promoted = store.promote(scope, name);
-  log.info(`Promoted agent-built sandbox profile ${id} to global/${name} (version ${promoted.current})`);
-  if (scoped)
-    await removeProfileImage(execDocker(), scoped).catch((error) =>
-      log.info(`Kept ${scoped.image} after promoting it: ${error instanceof Error ? error.message : "unknown"}`),
+  if (!scoped || scoped.version === undefined) throw Object.assign(new Error("It has no approved version to promote"), { code: "conflict" });
+  const docker = execDocker();
+  const base = await currentBase(docker, getSandboxManager().image).catch(() => ({}));
+  const tested = await inspectProfileImage(docker, scoped, base).catch(() => ({ state: "missing" }) as ProfileImageInfo);
+  if (!(STARTABLE_PROFILE_STATES as readonly string[]).includes(tested.state) || !tested.id)
+    throw Object.assign(
+      new Error(
+        `Build it (and test it) in its scope first: promotion relabels the exact image built from version ${scoped.version}, and there is none (${tested.state}).`,
+      ),
+      { code: "conflict" },
     );
-  const build = startSandboxBuild(`global/${name}`);
-  return { profile: agentProfileSummary(promoted), build };
+  const target = makeEntry(scoped.recipe, "global", "agent");
+  await relabelProfileImage({ docker, dataDir: DATA_DIR, sourceId: tested.id, target, promotedFrom: { scope, version: scoped.version } });
+  const relabelled = await inspectProfileImage(docker, target, base);
+  if (!(STARTABLE_PROFILE_STATES as readonly string[]).includes(relabelled.state)) {
+    await docker(["rmi", "--no-prune", target.image], { timeoutMs: 60_000 }).catch(() => {});
+    throw Object.assign(new Error(`The relabelled image did not check out as global/${name} (${relabelled.state}); nothing was promoted`), {
+      code: "conflict",
+    });
+  }
+  let promoted: StoredProfile;
+  try {
+    promoted = store.promote(scope, name);
+  } catch (error) {
+    await docker(["rmi", "--no-prune", target.image], { timeoutMs: 60_000 }).catch(() => {});
+    throw error;
+  }
+  log.info(`Promoted agent-built sandbox profile ${id} to global/${name} (version ${promoted.current}), relabelling image ${tested.id}`);
+  await docker(["rmi", "--no-prune", scoped.image], { timeoutMs: 60_000 }).catch((error) =>
+    log.info(`Kept ${scoped.image} after promoting it: ${error instanceof Error ? error.message : "unknown"}`),
+  );
+  return { profile: agentProfileSummary(promoted), image: target.image };
 }
 
 /**

@@ -64,6 +64,7 @@ try {
       force: { type: "boolean", default: false },
       profile: { type: "string" },
       scope: { type: "string" },
+      digest: { type: "string" },
     },
     strict: false,
     allowPositionals: true,
@@ -284,6 +285,26 @@ async function cmdSandboxProfileBuild(image, docker, name) {
   const info = await profiles
     .inspectProfileImage(docker, entry, await profiles.currentBase(docker, image.SANDBOX_IMAGE))
     .catch((err) => ({ state: "unknown", detail: err.message }));
+  // Not built in: its recipe came from the profile store (an agent's proposal), which is plain JSON in the data
+  // directory. Show what would build, and build only with the digest of exactly that recipe.
+  if (entry.source !== "builtin") {
+    const r = entry.recipe;
+    if (values.digest !== entry.digest) {
+      console.log(`Sandbox profile ${entry.id} is not built in. Review exactly what would build:\n`);
+      console.log(`  Setup script (runs at build time as the desktop user, offline):\n${r.setup ? r.setup.replace(/^/gm, "    ") : "    (none)\n"}`);
+      console.log(`  Debian packages (${r.packages.length}, installed as root): ${r.packages.join(" ") || "(none)"}`);
+      console.log(`  Downloads: ${r.downloads.map((d) => `${d.url} (sha256 ${d.sha256})`).join("\n             ") || "(none)"}`);
+      console.log(`  Limits asked for: ${JSON.stringify(r.limits)}; architectures: ${r.architectures.join(", ") || "any"}; GL: ${r.gl}`);
+      console.log(`  Recipe digest: ${entry.digest}\n`);
+      console.log(`The full canonical recipe: GET /api/sandbox-desktop/profiles/${name}/review?scope=${entry.scope}, or Settings → Sandbox desktop.`);
+      console.log(
+        values.digest
+          ? `--digest does not match: the recipe changed. Review it again.`
+          : `To build exactly this recipe: callboard sandbox build --profile ${name} --scope ${entry.scope} --digest ${entry.digest}`,
+      );
+      process.exit(values.digest ? 1 : 2);
+    }
+  }
   if (info.state === "current" && !values.force) {
     console.log(`${entry.image} is up to date (recipe ${entry.digest.slice(0, 12)}, on the current base).`);
     console.log(`Rebuild it anyway with: callboard sandbox build --profile ${name}${entry.scope === "global" ? "" : ` --scope ${entry.scope}`} --force`);
@@ -973,8 +994,9 @@ Usage: callboard sandbox <build|status|profiles|rm> [options]
 
 Commands:
   build             Build the image and its builder stage (docker build); skipped if up to date
-  build --profile <name> [--scope <scope>]
-                    Build one sandbox profile's image (the base first, if needed)
+  build --profile <name> [--scope <scope>] [--digest <sha256>]
+                    Build one sandbox profile's image (the base first, if needed). A profile
+                    that is not built in prints its recipe and needs --digest of that recipe
   profiles          List the sandbox profiles, their limits and image state
   rm --profile <name> [--scope <scope>]
                     Remove a profile's image (scope: global, the default, or a workspace key)

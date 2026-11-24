@@ -3,7 +3,9 @@
  *
  *   GET  /api/sandbox-desktop        — settings, the mode in force, diagnostics, build state
  *   PUT  /api/sandbox-desktop        — change settings (partial; `null` clears a field)
- *   POST /api/sandbox-desktop/build  — queue a build of the image, or with `{ profile, scope? }` one profile's image (explicit only); returns its record
+ *   POST /api/sandbox-desktop/build  — queue a build of the image, or with `{ profile, scope?, digest? }` one profile's image (explicit only); returns its record.
+ *                                      A profile that is not built in needs `digest`: the one its review showed (the build is pinned to it)
+ *   GET  /api/sandbox-desktop/profiles/:name/review?scope= — what a human reads before that build
  *   GET  /api/sandbox-desktop/builds — recent builds, newest first
  *   GET  /api/sandbox-desktop/builds/:id — one build, with the tail of its log (`?tail=` characters, default 64 KB)
  *   GET  /api/sandbox-desktop/builds/:id/log — its whole (capped) log, as text
@@ -11,7 +13,7 @@
  *   DELETE /api/sandbox-desktop/profiles/:name?scope= — remove a profile's image (scope default `global`)
  *   GET  /api/sandbox-desktop/agent-profiles — every stored agent-built profile, with its versions (no recipes)
  *   GET  /api/sandbox-desktop/agent-profiles/:name?scope= — one, with every version's recipe (the history)
- *   POST /api/sandbox-desktop/agent-profiles/:name/promote?scope= — make it global (and queue its global build)
+ *   POST /api/sandbox-desktop/agent-profiles/:name/promote?scope= — make it global: relabel the exact image tested in its scope
  *   DELETE /api/sandbox-desktop/agent-profiles/:name?scope= — forget it: its versions and its image
  *
  * Agent-built profiles are proposed by agents (`sandbox_profile_propose`)
@@ -36,6 +38,7 @@ import {
   agentProfileSummaries,
   buildDto,
   cancelSandboxBuild,
+  profileBuildReview,
   promoteAgentProfile,
   removeAgentProfile,
   currentSandboxMode,
@@ -88,9 +91,13 @@ sandboxDesktopRouter.put("/", requireSessionAuth, requireControlOrigin, async (r
 });
 
 sandboxDesktopRouter.post("/build", requireSessionAuth, requireControlOrigin, (req: Request, res: Response) => {
-  const body = (req.body ?? {}) as { profile?: unknown; scope?: unknown };
-  if (Object.keys(body).some((key) => key !== "profile" && key !== "scope") || (body.scope !== undefined && body.profile === undefined)) {
-    res.status(400).json({ error: "The body may only name a profile: { profile?: string, scope?: string }" });
+  const body = (req.body ?? {}) as { profile?: unknown; scope?: unknown; digest?: unknown };
+  if (
+    Object.keys(body).some((key) => key !== "profile" && key !== "scope" && key !== "digest") ||
+    ((body.scope !== undefined || body.digest !== undefined) && body.profile === undefined) ||
+    (body.digest !== undefined && (typeof body.digest !== "string" || !/^[0-9a-f]{64}$/.test(body.digest)))
+  ) {
+    res.status(400).json({ error: "The body may only name a profile: { profile?: string, scope?: string, digest?: <the reviewed recipe's sha256> }" });
     return;
   }
   const id = body.profile === undefined ? undefined : entryIdOf(body.profile, body.scope ?? "global");
@@ -99,14 +106,31 @@ sandboxDesktopRouter.post("/build", requireSessionAuth, requireControlOrigin, (r
     return;
   }
   try {
-    const build = startSandboxBuild(id);
+    const build = startSandboxBuild(id, typeof body.digest === "string" ? { digest: body.digest } : {});
     res.status(202).json({ build, id: build.id });
   } catch (error) {
-    if ((error as { code?: string }).code === "not_found") {
-      res.status(404).json({ error: error instanceof Error ? error.message : "No such profile" });
-      return;
-    }
-    throw error;
+    const code = (error as { code?: string }).code;
+    const message = error instanceof Error ? error.message : "No such profile";
+    if (code === "not_found") res.status(404).json({ error: message });
+    // Not built in: the caller must have shown the review and quote its digest; a changed recipe needs a new review.
+    else if (code === "review_required") res.status(400).json({ error: message, reviewRequired: true });
+    else if (code === "changed") res.status(409).json({ error: message, reviewRequired: true });
+    else throw error;
+  }
+});
+
+/** The review a human reads before building a profile that is not built in: its canonical recipe, the risky parts, its digest, and what the store claims about it. */
+sandboxDesktopRouter.get("/profiles/:name/review", async (req: Request, res: Response) => {
+  const id = entryIdOf(String(req.params.name), req.query.scope ?? "global");
+  if (!id) {
+    res.status(400).json({ error: "Invalid profile name or scope" });
+    return;
+  }
+  try {
+    res.json({ review: await profileBuildReview(id) });
+  } catch (error) {
+    if ((error as { code?: string }).code === "not_found") res.status(404).json({ error: error instanceof Error ? error.message : "No such profile" });
+    else throw error;
   }
 });
 
@@ -194,8 +218,8 @@ sandboxDesktopRouter.post("/agent-profiles/:name/promote", requireSessionAuth, r
   try {
     // Its open cards are visible to the promotion check only once the manager exists.
     getSandboxProfileProposals();
-    const { profile, build } = await promoteAgentProfile(id);
-    res.json({ profile, build, status: await sandboxDesktopStatus(true) });
+    const { profile, image } = await promoteAgentProfile(id);
+    res.json({ profile, image, status: await sandboxDesktopStatus(true) });
   } catch (error) {
     sendProfileError(res, error, `promote ${id}`);
   }

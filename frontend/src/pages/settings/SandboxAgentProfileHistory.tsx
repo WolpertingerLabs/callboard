@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
-import { recipeLineDiff, type SandboxAgentProfileSummary, type SandboxAgentProfileVersion } from "shared/types/index.js";
+import { type SandboxAgentProfileSummary, type SandboxAgentProfileVersion } from "shared/types/index.js";
+import { RecipeDiffView } from "../../components/SandboxProfileReviewParts";
 import { getAgentSandboxProfile } from "../../api";
 import { errorMessage } from "../../utils/errorMessage";
 import { helpStyle } from "./styles";
@@ -43,28 +44,12 @@ function versionStateColor(state: string): string {
   return state === "approved" ? "var(--success)" : state === "refused" ? "var(--danger)" : state === "proposed" ? "var(--warning)" : "var(--text-muted)";
 }
 
-/** A line diff of two recipes: adds and removes coloured with the diff tokens, a "+ "/"- "/"  " prefix on each line. */
+/** Two versions compared: the setup script line by line, then every other field (SandboxProfileReviewParts). */
 function RecipeDiff({ before, after, testId }: { before: string; after: string; testId: string }) {
-  const lines = recipeLineDiff(before, after);
   return (
-    <pre style={{ ...preStyle, whiteSpace: "pre", padding: 0 }} data-testid={testId}>
-      {lines.map((line, i) => (
-        <div
-          key={i}
-          data-op={line.op}
-          style={{
-            padding: "0 8px",
-            whiteSpace: "pre-wrap",
-            wordBreak: "break-word",
-            background: line.op === "add" ? "var(--diff-added-bg)" : line.op === "remove" ? "var(--diff-removed-bg)" : "transparent",
-            color: line.op === "add" ? "var(--diff-added-text)" : line.op === "remove" ? "var(--diff-removed-text)" : "var(--text)",
-          }}
-        >
-          {line.op === "add" ? "+ " : line.op === "remove" ? "- " : "  "}
-          {line.text}
-        </div>
-      ))}
-    </pre>
+    <div data-testid={testId} style={{ minWidth: 0 }}>
+      <RecipeDiffView before={before} after={after} />
+    </div>
   );
 }
 
@@ -84,6 +69,7 @@ function VersionRow({ profileId, version, previous }: { profileId: string; versi
         )}
         <span style={{ color: "var(--text-muted)", fontSize: 12 }}>proposed {new Date(version.proposedAt).toLocaleString()}</span>
         {version.approvedAt ? <span style={{ color: "var(--text-muted)", fontSize: 12 }}>approved {new Date(version.approvedAt).toLocaleString()}</span> : null}
+        {version.requestId ? <span style={{ color: "var(--text-muted)", fontSize: 12, wordBreak: "break-all" }}>proposal {version.requestId}</span> : null}
         {version.buildId ? <span style={{ color: "var(--text-muted)", fontSize: 12, wordBreak: "break-all" }}>build {version.buildId}</span> : null}
       </div>
       {version.note ? (

@@ -63,6 +63,7 @@ import {
   profileScope,
   sandboxInfo,
   sandboxProfileForConsent,
+  sandboxProfileStatuses,
   setPendingProposalView,
   type ConsentProfile,
 } from "./sandbox-desktop.js";
@@ -2235,6 +2236,7 @@ export function getSandboxProfileProposals(): SandboxProfileProposals {
       return kind === "workspace" ? `this chat's workspace${folder ? ` (${folder})` : ""}` : `the folder ${folder}`;
     },
     visibleProfiles: (chatId) => listProfiles(profileScope(chatId)),
+    agentVisibleIds: async (chatId) => new Set((await sandboxProfileStatuses(profileScope(chatId))).map((p) => p.id)),
     globalNames: () => new Set(listProfiles({}).map((entry) => entry.recipe.name)),
     builds: getSandboxBuilds,
     emitResult: (chatId, requestId, message) => {

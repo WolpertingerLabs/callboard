@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { recipeLineDiff, type SandboxProfileProposalCardInput } from "shared/types/index.js";
+import { type SandboxProfileProposalCardInput } from "shared/types/index.js";
+import { RecipeDiffView, RecipeRiskReview, box, codeStyle, linkBtn, muted, preStyle } from "./SandboxProfileReviewParts";
 
 /**
  * The card a human answers to approve and build a Sandbox desktop profile an
@@ -71,10 +72,6 @@ export function promptProfileProposal(input: Record<string, unknown> | undefined
   };
 }
 
-const mb = (value: number) => (value >= 1024 && value % 1024 === 0 ? `${value / 1024} GiB` : `${value} MiB`);
-const LIMIT_LABELS: Record<keyof Limits, string> = { cpus: "CPUs", memoryMb: "Memory", homeMb: "Home (tmpfs)", sessionMinutes: "Session" };
-const formatLimit = (key: keyof Limits, value: number) => (key === "cpus" ? String(value) : key === "sessionMinutes" ? `${value} min` : mb(value));
-
 interface Props {
   input: SandboxProfileProposalCardInput;
   agentName: string;
@@ -85,10 +82,6 @@ interface Props {
 
 export default function SandboxProfileProposalCard({ input, agentName, approveLocked, nonBlocking, onRespond }: Props) {
   const [showRecipe, setShowRecipe] = useState(false);
-  const [showPackages, setShowPackages] = useState(input.review.packages.length <= 12);
-  const { review } = input;
-  const diff = input.previous ? recipeLineDiff(input.previous.recipe, input.recipe) : undefined;
-  const unchanged = diff ? diff.every((line) => line.op === "same") : false;
   return (
     <div style={panelStyle} data-testid="profile-proposal-card">
       <strong>Approve and build a Sandbox desktop profile?</strong>
@@ -103,99 +96,13 @@ export default function SandboxProfileProposalCard({ input, agentName, approveLo
           <strong>Scope:</strong> {input.scope.kind === "workspace" ? "this chat's workspace" : "this chat's folder"} — {input.scope.label}. Chats there can use
           it; it stays labelled agent-built until you promote it to global in Settings.
         </p>
-        {input.note && (
-          <div style={noteStyle} data-testid="proposal-note">
-            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>The agent&apos;s note — its own words, not checked by Callboard:</div>
-            <div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{input.note}</div>
-          </div>
-        )}
 
         <h4 style={h4}>Review the risky parts</h4>
-        <div style={dangerBox} data-testid="proposal-setup">
-          <div style={{ fontWeight: 600, marginBottom: 4 }}>
-            Setup script{review.setup ? ` (${review.setupLines} line${review.setupLines === 1 ? "" : "s"})` : ""} — runs at build time as the desktop user, with
-            no network
-          </div>
-          {review.setup ? <pre style={preStyle}>{review.setup}</pre> : <div style={muted}>No setup script.</div>}
-        </div>
-        <div style={box} data-testid="proposal-downloads">
-          <div style={{ fontWeight: 600, marginBottom: 4 }}>
-            Downloads:{" "}
-            {review.downloads.length ? `${review.downloads.length} file${review.downloads.length === 1 ? "" : "s"} from ${review.hosts.join(", ")}` : "none"}
-          </div>
-          {review.downloads.length > 0 && (
-            <>
-              <div style={muted}>Callboard&apos;s host fetches these over https, and keeps a file only if its SHA-256 matches the pin below.</div>
-              <ul style={listStyle}>
-                {review.downloads.map((d) => (
-                  <li key={d.dest} style={{ wordBreak: "break-all" }}>
-                    <code style={codeStyle}>{d.url}</code> → /opt/{d.dest} ({d.unpack}), sha256 <code style={codeStyle}>{d.sha256}</code>
-                  </li>
-                ))}
-              </ul>
-            </>
-          )}
-        </div>
-        <div style={box} data-testid="proposal-packages">
-          <div style={{ fontWeight: 600, marginBottom: 4 }}>
-            Debian packages: {review.packages.length} — installed as root at build time (their maintainer scripts run as root)
-          </div>
-          {review.packages.length > 0 &&
-            (showPackages ? (
-              <div style={{ wordBreak: "break-word", fontFamily: "var(--font-mono)", fontSize: 12 }}>{review.packages.join(" ")}</div>
-            ) : (
-              <button type="button" style={linkBtn} onClick={() => setShowPackages(true)}>
-                Show all {review.packages.length}
-              </button>
-            ))}
-        </div>
-        <div style={box} data-testid="proposal-limits">
-          <div style={{ fontWeight: 600, marginBottom: 4 }}>Limits a session gets (asked for → after this Callboard&apos;s caps)</div>
-          <div style={limitGrid}>
-            {(Object.keys(LIMIT_LABELS) as (keyof Limits)[]).map((key) => (
-              <div key={key} style={{ minWidth: 0 }}>
-                {LIMIT_LABELS[key]}: {review.requested[key] !== undefined ? formatLimit(key, review.requested[key]!) : "default"} →{" "}
-                <strong>{formatLimit(key, review.limits[key])}</strong>
-                {review.clamped?.includes(key) ? <span style={{ color: "var(--warning)" }}> (capped at {formatLimit(key, review.caps[key])})</span> : null}
-              </div>
-            ))}
-          </div>
-          <div style={muted}>The home is in memory: its files count toward the memory limit.</div>
-        </div>
-        <div style={box}>
-          <div>
-            <strong>Architectures:</strong> {review.architectures.length ? review.architectures.join(", ") : "any"} · <strong>OpenGL:</strong>{" "}
-            {review.gl === "software" ? "software (Mesa llvmpipe)" : "none"}
-          </div>
-          {(review.path.length > 0 || Object.keys(review.env).length > 0) && (
-            <div style={{ ...muted, wordBreak: "break-word" }}>
-              {review.path.length > 0 && <>PATH adds {review.path.join(":")}. </>}
-              {Object.keys(review.env).length > 0 && <>Variables: {Object.keys(review.env).join(", ")}.</>}
-            </div>
-          )}
-        </div>
+        <RecipeRiskReview review={input.review} />
 
         <h4 style={h4}>{input.previous ? `Changes since version ${input.previous.version} (${input.previous.state})` : "New profile"}</h4>
-        {diff ? (
-          unchanged ? (
-            <div style={muted}>The recipe is identical to version {input.previous!.version}: approving rebuilds it.</div>
-          ) : (
-            <pre style={{ ...preStyle, padding: 0 }} data-testid="proposal-diff">
-              {diff.map((line, i) => (
-                <div
-                  key={i}
-                  style={{
-                    padding: "0 8px",
-                    background: line.op === "add" ? "var(--diff-added-bg)" : line.op === "remove" ? "var(--diff-removed-bg)" : undefined,
-                    color: line.op === "add" ? "var(--diff-added-text)" : line.op === "remove" ? "var(--diff-removed-text)" : undefined,
-                  }}
-                >
-                  {line.op === "add" ? "+ " : line.op === "remove" ? "- " : "  "}
-                  {line.text}
-                </div>
-              ))}
-            </pre>
-          )
+        {input.previous ? (
+          <RecipeDiffView before={input.previous.recipe} after={input.recipe} />
         ) : (
           <div style={muted}>There is no earlier version of {input.name} in this scope.</div>
         )}
@@ -208,6 +115,13 @@ export default function SandboxProfileProposalCard({ input, agentName, approveLo
             {agentName} isn&apos;t waiting on this: it will be told your answer. The card stays until you answer it, or it is withdrawn by Stop, a permission
             change, archiving the chat, or removing the profile in Settings.
           </p>
+        )}
+        {/* Last, after what Callboard computed: a prompt-injected "safe to approve" should not be the first thing read. */}
+        {input.note && (
+          <div style={noteStyle} data-testid="proposal-note">
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>The agent&apos;s note — its own words, not checked by Callboard:</div>
+            <div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{input.note}</div>
+          </div>
         )}
       </div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", flexShrink: 0 }}>
@@ -242,27 +156,7 @@ const scrollArea: React.CSSProperties = {
   minWidth: 0,
 };
 const h4: React.CSSProperties = { margin: "12px 0 6px 0", fontSize: 14 };
-const muted: React.CSSProperties = { fontSize: 12, color: "var(--text-muted)" };
-const box: React.CSSProperties = { border: "1px solid var(--border)", borderRadius: 6, padding: "6px 10px", margin: "6px 0", minWidth: 0 };
-const dangerBox: React.CSSProperties = { ...box, border: "1px solid var(--danger-border)", background: "var(--danger-bg)" };
 const noteStyle: React.CSSProperties = { ...box, borderStyle: "dashed", background: "var(--bg)", fontSize: 13 };
-const listStyle: React.CSSProperties = { margin: "4px 0 0 0", paddingLeft: 18, fontSize: 12 };
-const codeStyle: React.CSSProperties = { fontSize: 12, wordBreak: "break-all" };
-const limitGrid: React.CSSProperties = { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 4, fontSize: 13 };
-const preStyle: React.CSSProperties = {
-  background: "var(--bg)",
-  border: "1px solid var(--border)",
-  borderRadius: 6,
-  padding: "8px 10px",
-  fontSize: 12,
-  overflow: "auto",
-  maxHeight: 260,
-  maxWidth: "100%",
-  margin: "4px 0",
-  whiteSpace: "pre-wrap",
-  wordBreak: "break-word",
-};
-const linkBtn: React.CSSProperties = { background: "transparent", border: "none", color: "var(--accent-text)", cursor: "pointer", padding: "2px 0", fontSize: 13 };
 const allowBtn: React.CSSProperties = {
   background: "var(--accent)",
   color: "var(--text-on-accent)",

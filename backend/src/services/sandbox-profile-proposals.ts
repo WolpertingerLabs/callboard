@@ -62,7 +62,8 @@ import {
 import { computerUseScopeError } from "./computer-use-policy.js";
 import type { HostPolicy, NotifyAgent, RaiseHumanApproval } from "./computer-use.js";
 import type { OpenHumanApproval } from "./pending-requests.js";
-import { effectiveProfileLimits, type ResolvedSandboxSettings } from "./sandbox-desktop-settings.js";
+import type { ResolvedSandboxSettings } from "./sandbox-desktop-settings.js";
+import { recipeReview } from "./sandbox-profile-review.js";
 import { ProfileStoreLimitError, type ProfileStore, type StoredProfile, type StoredVersion } from "./sandbox-profile-store.js";
 import { folderScopeKey, workspaceScopeKey, type ProfileChatScope, type ProfileEntry } from "./sandbox-profiles.js";
 import type { BuildRecord, SandboxBuilds } from "./sandbox-builds.js";
@@ -115,6 +116,12 @@ export interface ProposalDeps {
   ownerLabel: (chatId: string, kind: "workspace" | "folder") => string;
   /** The profiles this chat sees now (every scope, built-ins included). */
   visibleProfiles: (chatId: string) => ProfileEntry[];
+  /**
+   * Of those, the ids an agent may be shown: every one but a store-backed
+   * global with no image Callboard built (`isUnverifiedGlobal`), whose
+   * description and recipe nothing vouches for. Absent: all of them (tests).
+   */
+  agentVisibleIds?: (chatId: string) => Promise<ReadonlySet<string>>;
   /** Names a global profile has (built-ins and promoted ones): never proposed over. */
   globalNames: () => ReadonlySet<string>;
   builds: () => SandboxBuilds;
@@ -245,6 +252,11 @@ export class SandboxProfileProposals {
         throw new ProposalError("profile_busy", `Another chat's proposal for this profile is waiting for the human; wait for it to be answered.`);
     }
     const settings = this.deps.settings();
+    if (settings.agentCaps.profilesPerScope === 0)
+      throw new ProposalError(
+        "limit",
+        "Agents may not propose sandbox profiles on this Callboard (Settings → Sandbox desktop: agent profiles per scope is 0). Nothing was stored; ask the human.",
+      );
     const active = this.deps.builds().activeAgentBuilds().length;
     if (active >= settings.agentCaps.queuedBuilds)
       throw new ProposalError(
@@ -253,6 +265,7 @@ export class SandboxProfileProposals {
       );
     const note = typeof input.note === "string" && input.note.trim() ? escapeNote(input.note.trim()) : undefined;
     const store = this.deps.store();
+    const id = randomUUID();
     let stored: { profile: StoredProfile; version: StoredVersion };
     try {
       stored = store.addVersion({
@@ -260,6 +273,7 @@ export class SandboxProfileProposals {
         recipe,
         ...(note ? { note } : {}),
         chatId,
+        requestId: id,
         ownerLabel: this.deps.ownerLabel(chatId, kind),
         maxProfiles: settings.agentCaps.profilesPerScope,
         maxVersions: settings.agentCaps.versions,
@@ -271,11 +285,8 @@ export class SandboxProfileProposals {
     const { profile, version } = stored;
     const before = profile.versions.filter((v) => v.version !== version.version);
     const previous = before.find((v) => v.version === profile.current) ?? before.at(-1);
-    const id = randomUUID();
     const record: PendingProposal = { id, chatId, scope, name, version: version.version, digest: version.digest, signature: current.signature };
     this.pending.set(id, record);
-    const { clamped, ...limits } = effectiveProfileLimits(recipe, settings);
-    const hosts = [...new Set(recipe.downloads.map((d) => new URL(d.url).hostname))];
     const input_: SandboxProfileProposalCardInput = {
       name,
       version: version.version,
@@ -284,22 +295,7 @@ export class SandboxProfileProposals {
       recipe: version.recipe,
       ...(previous ? { previous: { version: previous.version, digest: previous.digest, state: previous.state, recipe: previous.recipe } } : {}),
       ...(note ? { note } : {}),
-      review: {
-        description: recipe.description,
-        setup: recipe.setup,
-        setupLines: recipe.setup ? recipe.setup.replace(/\n$/, "").split("\n").length : 0,
-        downloads: recipe.downloads.map((d) => ({ host: new URL(d.url).hostname, url: d.url, sha256: d.sha256, dest: d.dest, unpack: d.unpack })),
-        hosts,
-        packages: recipe.packages,
-        gl: recipe.gl,
-        architectures: recipe.architectures,
-        requested: recipe.limits,
-        limits,
-        ...(clamped ? { clamped } : {}),
-        caps: settings.profileCaps,
-        path: recipe.path,
-        env: recipe.env,
-      },
+      review: recipeReview(recipe, settings),
     };
     record.approval = this.deps.raiseApproval(
       chatId,
@@ -432,7 +428,7 @@ export class SandboxProfileProposals {
   }
 
   /** `sandbox_profile_status`. */
-  status(chatId: string, name?: string): Record<string, unknown> {
+  async status(chatId: string, name?: string): Promise<Record<string, unknown>> {
     this.gate(chatId);
     if (name !== undefined && !isProfileName(name)) throw new ProposalError("invalid_request", "name must be a valid profile name.");
     const chat = this.deps.chatScope(chatId);
@@ -441,7 +437,9 @@ export class SandboxProfileProposals {
     const kindOf = (scope: ProfileScopeKey) => (scope === "global" ? "global" : scope === ws ? "workspace" : scope === folder ? "folder" : "other");
     const store = this.deps.store();
     const stored = [ws, folder].filter((s): s is ProfileScopeKey => !!s).flatMap((scope) => store.list(scope));
-    const visible = this.deps.visibleProfiles(chatId);
+    const listed = this.deps.visibleProfiles(chatId);
+    const shown = this.deps.agentVisibleIds ? await this.deps.agentVisibleIds(chatId) : undefined;
+    const visible = shown ? listed.filter((entry) => entry.source === "builtin" || entry.scope !== "global" || shown.has(entry.id)) : listed;
     const builds = this.deps
       .builds()
       .list()
@@ -503,6 +501,8 @@ export class SandboxProfileProposals {
     const open = this.pendingVersions(record.scope, record.name);
     return record.versions.map((v) => ({
       version: v.version,
+      // The id this chat's notices name the proposal by, so it can tell which profile a "refused <id>" was about.
+      ...(v.requestId ? { requestId: v.requestId } : {}),
       digest: v.digest,
       state: v.state,
       ...(open.has(v.version) ? { pending: true } : {}),

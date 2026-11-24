@@ -22,6 +22,7 @@ import {
 } from "../../api";
 import { errorMessage } from "../../utils/errorMessage";
 import SandboxAgentProfileHistory from "./SandboxAgentProfileHistory";
+import SandboxProfileBuildReview from "./SandboxProfileBuildReview";
 import { headerStyle, helpStyle, inputStyle, labelStyle, sectionStyle, subtitleStyle } from "./styles";
 
 const primaryButton: React.CSSProperties = {
@@ -360,12 +361,16 @@ function ProfileCard({
   profile: SandboxProfileStatus;
   editable: boolean;
   busy: boolean;
-  onBuild: () => void;
+  /** Start the build; a profile that is not built in passes the digest of the recipe the human just reviewed. */
+  onBuild: (digest?: string) => void;
   /** The image's removal; for an agent-built profile, forgetting the whole profile. */
   onRemove: () => void;
   onPromote: () => void;
 }) {
   const [history, setHistory] = useState(false);
+  // Anything but a built-in builds only after its review (SandboxProfileBuildReview), pinned to the reviewed digest.
+  const [reviewing, setReviewing] = useState(false);
+  const needsReview = profile.source !== "builtin" || profile.reviewRequired === true;
   const { image, limits } = profile;
   const built = image.state !== "missing";
   const unsupported = profile.architectureSupported === false;
@@ -400,6 +405,11 @@ function ProfileCard({
               {agent ? ` · v${agent.version}` : ""}
             </span>
           )}
+          {profile.unverified && (
+            <span data-testid={`sandbox-profile-unverified-${profile.name}`} style={{ ...badgeStyle, color: "var(--warning)", borderColor: "var(--warning)" }}>
+              unverified
+            </span>
+          )}
         </span>
         <span
           role="status"
@@ -409,6 +419,12 @@ function ProfileCard({
         </span>
       </div>
       {isAgent && <AgentProvenance ownerLabel={agent?.ownerLabel} promoted={agent?.promoted} />}
+      {profile.unverified && (
+        <p role="status" style={{ ...helpStyle, color: "var(--warning)", margin: "4px 0" }}>
+          A global profile from the store with no promotion Callboard recorded and no image it built. Agents don&apos;t see it and it can&apos;t start until you
+          review and build it.
+        </p>
+      )}
       <p style={{ ...helpStyle, margin: "6px 0", wordBreak: "break-word" }}>{profile.description}</p>
       <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 16px", fontSize: 13 }}>
         {limit("cpus", `${limits.cpus} CPU${limits.cpus === 1 ? "" : "s"}`)}
@@ -460,11 +476,13 @@ function ProfileCard({
         <button
           style={{ ...(built ? secondaryButton : primaryButton), opacity: editable && !unsupported ? 1 : 0.5 }}
           disabled={!editable || unsupported}
-          onClick={onBuild}
+          onClick={() => (needsReview ? setReviewing((open) => !open) : onBuild())}
+          aria-expanded={needsReview ? reviewing : undefined}
           aria-label={`${built ? "Rebuild" : "Build"} profile ${profile.name}`}
         >
           <Hammer size={14} />
           {!built ? "Build" : image.state === "current" ? "Rebuild" : "Rebuild (needed)"}
+          {needsReview ? "…" : ""}
         </button>
         {built && !isAgent && (
           <button
@@ -488,6 +506,17 @@ function ProfileCard({
           />
         )}
       </div>
+      {needsReview && editable && reviewing && (
+        <SandboxProfileBuildReview
+          name={profile.name}
+          scope={profile.scope}
+          onCancel={() => setReviewing(false)}
+          onBuild={(digest) => {
+            setReviewing(false);
+            onBuild(digest);
+          }}
+        />
+      )}
       {isAgent && editable && history && <SandboxAgentProfileHistory name={profile.name} scope={profile.scope} id={profile.id} />}
     </div>
   );
@@ -593,10 +622,10 @@ export default function SandboxDesktopSettings() {
     }
   };
 
-  const build = async (profile?: string, scope?: string) => {
+  const build = async (profile?: string, scope?: string, digest?: string) => {
     setError(null);
     try {
-      const state = await buildSandboxDesktopImage(profile, scope);
+      const state = await buildSandboxDesktopImage(profile, scope, digest);
       setStatus((current) => (current ? { ...current, build: state } : current));
     } catch (e) {
       setError(errorMessage(e, "Failed to start the image build"));
@@ -617,7 +646,7 @@ export default function SandboxDesktopSettings() {
   const promote = async (profile: string, scope: string) => {
     if (
       !window.confirm(
-        `Promote profile ${profile} to global? It becomes usable by every chat, not just this workspace or folder, and is rebuilt under the global name. Its scoped image is removed.`,
+        `Promote profile ${profile} to global? It becomes usable by every chat, not just this workspace or folder. The exact image you tested in its scope is relabelled as the global one (nothing is rebuilt), so build and test it there first.`,
       )
     )
       return;
@@ -904,8 +933,14 @@ export default function SandboxDesktopSettings() {
             agentMaxProfilesPerScope,
             1,
           )}
-          {capField("sandbox-agent-max-versions", "agentMaxVersions", "Versions kept per agent profile", agentMaxVersions, 1)}
-          {capField("sandbox-agent-max-queued", "agentMaxQueuedBuilds", "Agent builds queued at once", agentMaxQueuedBuilds, 1)}
+          {capField(
+            "sandbox-agent-max-versions",
+            "agentMaxVersions",
+            "Versions kept per agent profile (the oldest not in force are dropped)",
+            agentMaxVersions,
+            1,
+          )}
+          {capField("sandbox-agent-max-queued", "agentMaxQueuedBuilds", "Agent builds queued at once, across all chats", agentMaxQueuedBuilds, 1)}
         </div>
 
         <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 16 }}>
@@ -1014,7 +1049,7 @@ export default function SandboxDesktopSettings() {
               profile={profile}
               editable={editable}
               busy={activeBuilds.some((b) => b.profileId === profile.id || (!b.profileId && b.profile === profile.name))}
-              onBuild={() => void build(profile.name, profile.scope)}
+              onBuild={(digest) => void build(profile.name, profile.scope, digest)}
               onRemove={() => void (profile.source === "agent" ? removeAgent(profile.name, profile.scope) : remove(profile.name, profile.scope))}
               onPromote={() => void promote(profile.name, profile.scope)}
             />

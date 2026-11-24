@@ -284,7 +284,17 @@ export function entryIdOf(profile: unknown, scope: unknown = "global"): string |
  * - `incompatible`: another protocol major. Refused.
  */
 export type ProfileImageState = "missing" | "current" | "outdated" | "rebuild-required" | "unlabelled" | "insecure" | "incompatible";
+/**
+ * Set only by {@link relabelProfileImage}, the promote route's relabel of the
+ * exact image a human tested: `<from scope>/<name>@v<version>`. It lives on
+ * the image, in Docker, not in the data directory, so a hand-written store
+ * file cannot fake it.
+ */
+export const PROFILE_PROMOTED_LABEL = "dev.callboard.computer-use.profile.promoted";
+
 export interface ProfileImageInfo {
+  /** The image's promotion label ({@link PROFILE_PROMOTED_LABEL}), when it was promoted by Callboard. */
+  promoted?: string;
   state: ProfileImageState;
   outdatedBy?: ("base" | "compiler")[];
   detail?: string;
@@ -342,6 +352,7 @@ export async function inspectProfileImage(docker: DockerRunner, entry: ProfileEn
     ...(created ? { builtAt: created } : {}),
     ...(size && /^\d+$/.test(size) ? { sizeBytes: Number(size) } : {}),
     ...(recipe ? { recipe } : {}),
+    ...(/^(global|w[0-9a-f]{12})\/[a-z0-9-]{2,32}@v\d{1,6}$/.test(labels[PROFILE_PROMOTED_LABEL] ?? "") ? { promoted: labels[PROFILE_PROMOTED_LABEL] } : {}),
   };
   const protocol = labels[SANDBOX_IMAGE_LABELS.protocol];
   if (typeof protocol !== "string" || !/^\d+\.\d+$/.test(protocol) || Number(protocol.split(".")[0]) !== PROTOCOL.major)
@@ -718,6 +729,57 @@ export async function buildProfileImage(options: ProfileBuildOptions): Promise<{
     await docker(["rmi", intermediate], { timeoutMs: 60_000 }).catch(() => {});
   }
   return { image: entry.image, id: await imageId(docker, entry.image).catch(() => undefined) };
+}
+
+/** The relabel build's Dockerfile: a constant. The source is an image ID, passed as a build argument. */
+export const PROFILE_RELABEL_DOCKERFILE = "ARG CALLBOARD_SOURCE\nFROM ${CALLBOARD_SOURCE}\n";
+
+/**
+ * Promotion: give the exact image a human tested in its scope the global
+ * entry's labels and tag, without rebuilding it. A rebuild would install
+ * packages again from mirrors that may have moved on, and could differ from
+ * what was tested; this is a metadata-only build `FROM` that image's ID,
+ * with no network, changing only the scope label and recording the
+ * promotion ({@link PROFILE_PROMOTED_LABEL}). Every other label (name,
+ * recipe digest, compiler, base content, floors) is inherited, so the global
+ * entry judges it exactly as the scoped one was judged.
+ */
+export async function relabelProfileImage(options: {
+  docker: DockerRunner;
+  dataDir: string;
+  sourceId: string;
+  target: ProfileEntry;
+  promotedFrom: { scope: ProfileScopeKey; version: number };
+  binary?: string;
+  signal?: AbortSignal;
+}): Promise<{ image: string; id?: string }> {
+  const { sourceId, target, promotedFrom } = options;
+  if (!/^sha256:[0-9a-f]{64}$/.test(sourceId)) throw new Error("Invalid source image ID");
+  if (!isProfileScopeKey(promotedFrom.scope) || !Number.isInteger(promotedFrom.version)) throw new Error("Invalid promotion");
+  const root = join(options.dataDir, "sandbox-desktop", "profile-builds", `relabel-${target.recipe.name}-${randomBytes(6).toString("hex")}`);
+  await mkdir(root, { recursive: true, mode: 0o700 });
+  try {
+    await writeFile(join(root, "Dockerfile"), PROFILE_RELABEL_DOCKERFILE, { mode: 0o644 });
+    await runDockerBuild(
+      [
+        "build",
+        "--network=none",
+        "--build-arg",
+        `CALLBOARD_SOURCE=${sourceId}`,
+        "--label",
+        `${PROFILE_LABELS.scope}=${target.scope}`,
+        "--label",
+        `${PROFILE_PROMOTED_LABEL}=${promotedFrom.scope}/${target.recipe.name}@v${promotedFrom.version}`,
+        "-t",
+        target.image,
+        root,
+      ],
+      { binary: options.binary, signal: options.signal },
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true }).catch(() => {});
+  }
+  return { image: target.image, id: await imageId(options.docker, target.image).catch(() => undefined) };
 }
 
 /**

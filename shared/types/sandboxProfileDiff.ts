@@ -52,3 +52,62 @@ export function recipeLineDiff(before: string, after: string): RecipeDiffLine[] 
 
 /** Whether a diff changes anything. */
 export const recipeDiffChanged = (diff: readonly RecipeDiffLine[]) => diff.some((line) => line.op !== "same");
+
+/**
+ * A reviewer's diff of two canonical recipes: every field but `setup` as
+ * pretty-printed JSON, and `setup` on its own, line by line. In the
+ * canonical JSON the setup script is one escaped string, so a one-line change
+ * to it would show as one giant removed line and one giant added one; this
+ * shows the script's own lines.
+ */
+export interface RecipeReviewDiff {
+  fields: RecipeDiffLine[];
+  setup: RecipeDiffLine[];
+}
+function splitRecipe(canonical: string): { fields: string; setup: string } {
+  try {
+    const parsed = JSON.parse(canonical) as Record<string, unknown>;
+    const setup = typeof parsed.setup === "string" ? parsed.setup : "";
+    delete parsed.setup;
+    return { fields: JSON.stringify(parsed, null, 2), setup };
+  } catch {
+    return { fields: canonical, setup: "" };
+  }
+}
+export function recipeReviewDiff(before: string, after: string): RecipeReviewDiff {
+  const a = splitRecipe(before);
+  const b = splitRecipe(after);
+  const lines = (script: string) => (script ? script.replace(/\n$/, "").split("\n") : []);
+  const [from, to] = [lines(a.setup), lines(b.setup)];
+  const setup: RecipeDiffLine[] = !from.length
+    ? to.map((text) => ({ op: "add", text }))
+    : !to.length
+      ? from.map((text) => ({ op: "remove", text }))
+      : recipeLineDiff(from.join("\n"), to.join("\n"));
+  return { fields: recipeLineDiff(a.fields, b.fields), setup };
+}
+
+/** A diff with long unchanged runs folded: `context` lines kept around each change, the rest one `fold` marker. */
+export type FoldedDiffLine = RecipeDiffLine | { op: "fold"; count: number };
+export function foldRecipeDiff(lines: readonly RecipeDiffLine[], context = 3): FoldedDiffLine[] {
+  const keep = lines.map(() => false);
+  lines.forEach((line, i) => {
+    if (line.op === "same") return;
+    for (let j = Math.max(0, i - context); j <= Math.min(lines.length - 1, i + context); j++) keep[j] = true;
+  });
+  const out: FoldedDiffLine[] = [];
+  for (let i = 0; i < lines.length; ) {
+    if (keep[i]) {
+      out.push(lines[i]!);
+      i++;
+      continue;
+    }
+    let j = i;
+    while (j < lines.length && !keep[j]) j++;
+    // Folding one line saves nothing.
+    if (j - i <= 1) out.push(...lines.slice(i, j));
+    else out.push({ op: "fold", count: j - i });
+    i = j;
+  }
+  return out;
+}

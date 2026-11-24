@@ -14,6 +14,9 @@
  * 4. The agent re-proposes a changed recipe: the card diffs it against
  *    version 1, the digest is new, and once approved and built the image is
  *    labelled with the new digest.
+ * 5. Promotion relabels exactly that tested image as the global entry's:
+ *    the same layers, the global scope label, and the promotion recorded on
+ *    the image (no rebuild, so nothing can drift from what was tested).
  *
  * Builds the base under a per-run tag (layers come from the build cache)
  * and the profile in a per-run repository, and removes both, their
@@ -37,7 +40,18 @@ import { MANAGED_LABEL, OWNER_LABEL, SandboxContainerManager, managedSandboxDriv
 import { resolveSandboxSettings, type ResolvedSandboxSettings } from "./sandbox-desktop-settings.js";
 import { buildSandboxImage, execDocker, sandboxBuilderImage } from "./sandbox-image.js";
 import { profileForConsent } from "./sandbox-profile-consent.js";
-import { buildProfileImage, defaultSources, listProfiles, resolveProfile, resolveProfileId, workspaceScopeKey } from "./sandbox-profiles.js";
+import {
+  buildProfileImage,
+  currentBase,
+  defaultSources,
+  inspectProfileImage,
+  listProfiles,
+  makeEntry,
+  relabelProfileImage,
+  resolveProfile,
+  resolveProfileId,
+  workspaceScopeKey,
+} from "./sandbox-profiles.js";
 import { SandboxBuilds } from "./sandbox-builds.js";
 import { ProfileStore } from "./sandbox-profile-store.js";
 import { SandboxProfileProposals } from "./sandbox-profile-proposals.js";
@@ -108,16 +122,18 @@ afterAll(async () => {
       await docker(["rm", "--force", id]).catch(() => {});
   for (const name of Object.values(networks)) await docker(["network", "rm", name]).catch(() => {});
   // Every image this run built, by tag and by ID (version 1's image lost its tag to version 2's).
-  for (const ref of imagesBuilt) await docker(["image", "rm", "--force", ref]).catch(() => {});
+  // Newest first (the promoted image is a child of the scoped one), and --no-prune: untagged parents are build cache
+  // that other builds share, so a removal here never cascades into them.
+  for (const ref of [...imagesBuilt].reverse()) await docker(["image", "rm", "--force", "--no-prune", ref]).catch(() => {});
   // And anything else labelled with this run's scope (unique to its temporary folder): an untagged earlier version, say.
   if (dataDir) {
     const scope = workspaceScopeKey({ folder: join(dataDir, "work") });
     for (const id of (await docker(["images", "--all", "--quiet", "--filter", `label=${PROFILE_LABELS.scope}=${scope}`]).catch(() => ""))
       .split("\n")
       .filter(Boolean))
-      await docker(["image", "rm", "--force", id]).catch(() => {});
+      await docker(["image", "rm", "--force", "--no-prune", id]).catch(() => {});
   }
-  if (!reuse) for (const tag of [image, sandboxBuilderImage(image)]) await docker(["image", "rm", tag]).catch(() => {});
+  if (!reuse) for (const tag of [image, sandboxBuilderImage(image)]) await docker(["image", "rm", "--no-prune", tag]).catch(() => {});
   if (previousRepository === undefined) delete process.env.CALLBOARD_SANDBOX_PROFILE_REPOSITORY;
   else process.env.CALLBOARD_SANDBOX_PROFILE_REPOSITORY = previousRepository;
   if (dataDir) await rm(dataDir, { recursive: true, force: true });
@@ -297,6 +313,21 @@ it.skipIf(!enabled)(
       [1, "superseded"],
       [2, "approved"],
     ]);
+
+    // 5. Promotion relabels exactly the tested image as the global one: same layers, the global scope, the promotion recorded on it.
+    const testedId = await imageIdOf(entry2.image);
+    const target = makeEntry(entry2.recipe, "global", "agent");
+    expect(target.image).toBe(`${repository}:agent-eyes`);
+    await relabelProfileImage({ docker: exec, dataDir, sourceId: testedId, target, promotedFrom: { scope, version: 2 } });
+    imagesBuilt.add(target.image);
+    imagesBuilt.add(await imageIdOf(target.image));
+    const judged = await inspectProfileImage(exec, target, await currentBase(exec, image));
+    expect(judged).toMatchObject({ state: "current", recipe: second.digest, promoted: `${scope}/agent-eyes@v2` });
+    const layers = async (ref: string) => (await docker(["image", "inspect", "--format", "{{json .RootFS.Layers}}", ref])).trim();
+    expect(await layers(target.image)).toBe(await layers(entry2.image));
+    const labels = JSON.parse(await docker(["image", "inspect", "--format", "{{json .Config.Labels}}", target.image])) as Record<string, string>;
+    expect(labels[PROFILE_LABELS.scope]).toBe("global");
+    expect(labels[PROFILE_LABELS.compiler]).toBe(labels2[PROFILE_LABELS.compiler]);
   },
   1_800_000,
 );

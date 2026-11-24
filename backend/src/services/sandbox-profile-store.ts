@@ -48,6 +48,8 @@ export interface StoredVersion {
   digest: string;
   /** The canonical recipe text (`canonicalProfileRecipe`). */
   recipe: string;
+  /** The proposal's request id: what the agent's notices name it by. */
+  requestId?: string;
   /** The agent's note: untrusted, already escaped and capped by the proposal manager. */
   note?: string;
   proposedAt: number;
@@ -129,6 +131,7 @@ function readVersion(raw: unknown, name: string): StoredVersion | undefined {
     version: v.version as number,
     digest: v.digest,
     recipe: v.recipe,
+    ...(typeof v.requestId === "string" && /^[0-9a-f-]{36}$/.test(v.requestId) ? { requestId: v.requestId } : {}),
     ...(typeof v.note === "string" ? { note: v.note.slice(0, NOTE_MAX) } : {}),
     proposedAt: v.proposedAt,
     proposedBy: v.proposedBy,
@@ -264,6 +267,7 @@ export class ProfileStore {
     recipe: ProfileRecipe;
     note?: string;
     chatId: string;
+    requestId?: string;
     ownerLabel?: string;
     maxProfiles: number;
     maxVersions: number;
@@ -272,6 +276,12 @@ export class ProfileStore {
     const { scope, recipe } = options;
     const now = options.now ?? Date.now();
     const canonical = canonicalProfileRecipe(recipe);
+    // 0 means agents may not propose at all: not a new profile, nor a new version of an old one.
+    if (options.maxProfiles === 0)
+      throw new ProfileStoreLimitError(
+        "profiles",
+        "Agents may not propose sandbox profiles on this Callboard (Settings → Sandbox desktop: agent profiles per scope is 0).",
+      );
     let profile = this.read(scope, recipe.name);
     if (!profile) {
       const count = this.list(scope).length;
@@ -302,6 +312,7 @@ export class ProfileStore {
       version: profile.nextVersion,
       digest: profileRecipeDigest(recipe),
       recipe: canonical,
+      ...(options.requestId ? { requestId: options.requestId } : {}),
       ...(options.note ? { note: options.note.slice(0, NOTE_MAX) } : {}),
       proposedAt: now,
       proposedBy: options.chatId,

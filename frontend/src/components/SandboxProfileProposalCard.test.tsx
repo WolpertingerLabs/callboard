@@ -67,9 +67,12 @@ it("shows the setup script, download hosts, packages, limits vs caps, architectu
 
 it("diffs against the previous version", () => {
   render(<FeedbackPanel action={action()} onRespond={() => {}} />);
-  const diff = screen.getByTestId("proposal-diff").textContent!;
-  expect(diff).toMatch(/- +"setup": "echo one\\n"/);
-  expect(diff).toMatch(/\+ +"setup": "echo two\\n"/);
+  // The setup script is diffed on its own, line by line, not as one escaped JSON string.
+  const setup = screen.getByTestId("proposal-diff-setup");
+  expect([...setup.querySelectorAll("[data-op='remove']")].map((row) => row.textContent)).toEqual(["- echo one"]);
+  expect([...setup.querySelectorAll("[data-op='add']")].map((row) => row.textContent)).toEqual(["+ echo two"]);
+  expect(screen.getByText("No other field changed.")).toBeTruthy();
+  expect(screen.queryByTestId("proposal-diff-fields")).toBeNull();
   expect(screen.getByText(/Changes since version 1/)).toBeTruthy();
 });
 
@@ -115,4 +118,23 @@ it("a malformed card can only be refused, never shown as a generic Allow prompt"
 it("is the proposal card only when the host raised it (human-only, control request)", () => {
   render(<FeedbackPanel action={action({ humanOnly: undefined, controlRequest: undefined })} onRespond={() => {}} />);
   expect(screen.queryByTestId("profile-proposal-card")).toBeNull();
+});
+
+it("shows a one-line change in a long script as that line, with the unchanged runs folded", () => {
+  const script = (changed: string) => Array.from({ length: 40 }, (_, i) => (i === 20 ? changed : `echo line ${i}`)).join("\n") + "\n";
+  const long = { ...input, recipe: recipe(script("echo NEW"), 2), previous: { ...input.previous, recipe: recipe(script("echo old"), 2) } };
+  render(<FeedbackPanel action={action({ input: long })} onRespond={() => {}} />);
+  const setup = screen.getByTestId("proposal-diff-setup");
+  expect([...setup.querySelectorAll("[data-op='remove']")].map((row) => row.textContent)).toEqual(["- echo old"]);
+  expect([...setup.querySelectorAll("[data-op='add']")].map((row) => row.textContent)).toEqual(["+ echo NEW"]);
+  expect([...setup.querySelectorAll("[data-op='fold']")].map((row) => row.textContent!.trim())).toEqual(["… 17 unchanged lines", "… 16 unchanged lines"]);
+});
+
+it("puts the agent's note after the risky parts and the diff, just above the buttons", () => {
+  render(<FeedbackPanel action={action()} onRespond={() => {}} />);
+  const order = (a: Element, b: Element) => a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING;
+  const note = screen.getByTestId("proposal-note");
+  for (const id of ["proposal-setup", "proposal-downloads", "proposal-packages", "proposal-limits", "proposal-diff"])
+    expect(order(screen.getByTestId(id), note)).toBeTruthy();
+  expect(order(note, screen.getByText("Approve & build"))).toBeTruthy();
 });

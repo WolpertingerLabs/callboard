@@ -129,8 +129,17 @@ export interface SandboxProfileStatus {
    * read it), so the new value needs no capability.
    */
   source: "builtin" | "agent";
-  /** Agent-built profiles: which version is in force, and where it came from. Absent for built-ins. */
+  /** Agent-built profiles: which version is in force, and where it came from (stored data, unverified). Absent for built-ins. */
   agent?: SandboxProfileAgentInfo;
+  /**
+   * A store-backed global profile with no image Callboard built for it (by a
+   * promotion, or a build a human reviewed): nothing this daemon recorded
+   * says a human ever read it. Agents do not see it, and it cannot start,
+   * until a human reviews and builds it.
+   */
+  unverified?: true;
+  /** Building it needs the review (`GET …/profiles/:name/review`) and its digest: every profile but a built-in. */
+  reviewRequired?: true;
   gl: "none" | "software";
   /** What the recipe asks for (absent: the base sandbox's value). */
   requested: Partial<SandboxProfileLimits>;
@@ -276,6 +285,36 @@ export interface SandboxDesktopStatus {
   agentProfiles?: SandboxAgentProfileSummary[];
 }
 
+/**
+ * What a human reads before building a profile that is not built in
+ * (`GET /api/sandbox-desktop/profiles/:name/review?scope=`), and must quote
+ * back as `digest` on `POST /build`: the build is pinned to it, so a recipe
+ * edited after the review is refused rather than built.
+ */
+export interface SandboxProfileBuildReview {
+  id: string;
+  scope: string;
+  name: string;
+  /** The stored version in force, if the store says so (unverified). */
+  version?: number;
+  digest: string;
+  /** The canonical recipe: exactly what builds. */
+  recipe: string;
+  review: SandboxProfileProposalCardInput["review"];
+  /** What the image there now was built from: its digest, and its recipe when the store still has that version. */
+  built?: { digest: string; recipe?: string; version?: number };
+  /** Store-backed global with no image Callboard built (see `SandboxProfileStatus.unverified`). */
+  unverified?: true;
+  /** The store's own account of where it came from. Plain JSON in the data directory: anything that can write there could have written it. */
+  provenance?: {
+    createdBy?: string;
+    ownerLabel?: string;
+    approvedAt?: number;
+    approvalId?: string;
+    promoted?: { at: number; fromScope: string; fromVersion: number };
+  };
+}
+
 /** Who asked for a build. */
 export type SandboxBuildRequester = { kind: "human" } | { kind: "agent"; chatId: string; approvalId: string };
 
@@ -304,6 +343,8 @@ export interface SandboxAgentProfileVersion {
   approvedAt?: number;
   /** The build its approval queued. */
   buildId?: string;
+  /** The proposal's request id (the id in the agent's notices, and a build's `approvalId`). */
+  requestId?: string;
   /** The agent's own words about it: untrusted, plain text, at most 1000 characters. */
   note?: string;
   /** The canonical recipe (`GET …/agent-profiles/:name/versions` only). */
