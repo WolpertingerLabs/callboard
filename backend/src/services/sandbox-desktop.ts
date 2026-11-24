@@ -21,7 +21,7 @@ import {
   type SandboxDesktopMode,
   type SandboxDesktopStatus,
 } from "shared/types/index.js";
-import { SandboxContainerManager } from "./sandbox-containers.js";
+import { SandboxContainerManager, type DrainBeforeDestroy } from "./sandbox-containers.js";
 import { readSandboxSettings, resolveSandboxSettings } from "./sandbox-desktop-settings.js";
 import { buildSandboxImage, execDocker } from "./sandbox-image.js";
 import { DATA_DIR } from "../utils/paths.js";
@@ -133,12 +133,22 @@ export async function sandboxDesktopStatus(canEdit: boolean, env: NodeJS.Process
       "image-incompatible",
       `The image speaks protocol ${diagnostics.image.protocol ?? "(unlabelled)"}; rebuild it with \`${SANDBOX_BUILD_COMMAND}\`.`,
     ];
+  else if (!diagnostics.image.secure)
+    [problem, hint] = [
+      "image-insecure",
+      `The image has a known security issue (security level ${diagnostics.image.securityFloor ?? "unlabelled"}, at least ${diagnostics.image.requiredSecurityFloor ?? 1} required), so sandboxes are refused. Rebuild it with \`${SANDBOX_BUILD_COMMAND}\` or Rebuild image below.`,
+    ];
   else if (diagnostics.network.state === "misconfigured") [problem, hint] = ["network", diagnostics.network.detail];
   else if (diagnostics.running.sessions >= diagnostics.running.limit)
     [problem, hint] = ["cap-reached", "The concurrency limit is reached; new sandboxes wait for one to stop."];
-  const outdated = mode === "managed" && diagnostics.image.present && diagnostics.image.compatible && diagnostics.image.current === false;
+  const outdated =
+    mode === "managed" &&
+    diagnostics.image.present &&
+    diagnostics.image.compatible &&
+    diagnostics.image.secure !== false &&
+    diagnostics.image.current === false;
   // Automatic managed mode that cannot start a sandbox reads as off, with the step to take.
-  const setupMissing = problem === "docker-unreachable" || problem === "image-missing" || problem === "image-incompatible";
+  const setupMissing = problem === "docker-unreachable" || problem === "image-missing" || problem === "image-incompatible" || problem === "image-insecure";
   return {
     settings,
     effectiveMode: automatic && mode === "managed" && setupMissing ? "off" : mode,
@@ -176,11 +186,15 @@ export async function reaperHasWork(manager = getSandboxManager(), env: NodeJS.P
  * pass first checks {@link reaperHasWork}, so leaving managed mode stops the
  * Docker calls once nothing is left. Quiet when Docker is absent.
  *
- * A drain hook (PR 4) must be set on {@link getSandboxManager} before this
- * runs, or the startup pass removes a crashed run's sandboxes undrained.
+ * Pass the drain hook here (`drainBeforeDestroy`), so it is installed before
+ * the first pass; otherwise the startup pass removes a crashed run's
+ * sandboxes undrained (and the manager logs a warning when it finds one).
  */
-export function startSandboxReaper(intervalMs = 5 * 60_000): void {
+export function startSandboxReaper(options: number | { intervalMs?: number; drainBeforeDestroy?: DrainBeforeDestroy } = {}): void {
   if (reaperTimer) return;
+  const { intervalMs = 5 * 60_000, drainBeforeDestroy } = typeof options === "number" ? { intervalMs: options } : options;
+  // Installed before the first pass, so a crashed run's sandboxes are drained, not just removed.
+  if (drainBeforeDestroy) getSandboxManager().drainBeforeDestroy = drainBeforeDestroy;
   let running = false;
   const run = async () => {
     if (running) return;

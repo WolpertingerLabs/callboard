@@ -160,6 +160,15 @@ function SandboxReadinessNotice({ capability }: { capability?: ComputerUseCapabi
         </>
       );
       break;
+    case "image-insecure":
+      heading = "Sandbox image has a known security issue";
+      guidance = (
+        <>
+          This image is below the security level this Callboard requires, so it won&apos;t start. Rebuild it on the Callboard service host with{" "}
+          <code>callboard sandbox build</code>, or with <strong>Rebuild image</strong> in Settings → Sandbox desktop.
+        </>
+      );
+      break;
     case "cap-reached":
       heading = "Sandbox limit reached";
       guidance = `${info?.running ?? info?.limit ?? "The maximum number of"} of ${info?.limit ?? "the allowed"} sandbox desktops are running. Stop one in its chat, or raise the limit in Settings → Sandbox desktop, then retry.`;
@@ -209,6 +218,8 @@ export function containerPhaseLabel(container: NonNullable<ComputerUseSession["c
       return "Stopping and removing the container…";
     case "removed":
       return "Removed";
+    case "kept":
+      return "Session ended; the container is kept for recovery";
     default:
       return String(container.phase);
   }

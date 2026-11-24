@@ -45,7 +45,16 @@ export const SANDBOX_BUILD_COMMAND = "callboard sandbox build";
 export type SandboxDesktopWarning = "image-outdated";
 
 /** Why a managed sandbox cannot start right now. */
-export type SandboxDesktopProblem = "turned-off" | "docker-unreachable" | "image-missing" | "image-incompatible" | "network" | "cap-reached" | "endpoint-unset";
+export type SandboxDesktopProblem =
+  | "turned-off"
+  | "docker-unreachable"
+  | "image-missing"
+  | "image-incompatible"
+  /** Below the image security floor, or without the label: refused until rebuilt. */
+  | "image-insecure"
+  | "network"
+  | "cap-reached"
+  | "endpoint-unset";
 
 export interface SandboxDesktopDiagnostics {
   docker: { reachable: boolean; version?: string; error?: string };
@@ -62,6 +71,10 @@ export interface SandboxDesktopDiagnostics {
     expectedProtocol: string;
     /** The computer-use package version this Callboard ships; an image built from another is worth rebuilding. */
     packageVersion: string;
+    /** Its security level label, and whether it meets this Callboard's floor (below it, the image is refused). */
+    securityFloor?: number;
+    secure?: boolean;
+    requiredSecurityFloor?: number;
     /** Built from exactly the files this Callboard ships (its content label matches). False: out of date, still starts. */
     current?: boolean;
     /** The image's `dev.callboard.computer-use.content` label, and the digest a current image carries. */
@@ -122,7 +135,8 @@ export interface ComputerUseSandboxInfo {
 
 /** A managed sandbox session's container, for the Computer view. */
 export interface ComputerUseContainerState {
-  phase: "starting" | "ready" | "stopping" | "removed";
+  /** `kept`: the session ended, but a drain hook kept the container for recovery (it is not removed yet). */
+  phase: "starting" | "ready" | "stopping" | "removed" | "kept";
   /** While starting: which step, in words ("Starting the container", "Waiting for the desktop"). */
   step?: string;
 }

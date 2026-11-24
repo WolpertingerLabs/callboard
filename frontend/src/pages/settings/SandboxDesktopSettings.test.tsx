@@ -149,4 +149,39 @@ describe("Settings → Sandbox desktop", () => {
     expect(screen.getByTestId("sandbox-diagnostic-image").textContent).toContain("Sandboxes still start");
     expect(screen.getByRole("button", { name: "Rebuild image (out of date)" })).toBeTruthy();
   });
+
+  it("does not warn when Automatic already means managed and Managed is chosen (the mode in force is unchanged)", async () => {
+    const running = status({ settings: {}, automatic: true, effectiveMode: "managed" });
+    running.diagnostics.running.sessions = 2;
+    vi.mocked(getSandboxDesktopStatus).mockResolvedValue(running);
+    vi.mocked(updateSandboxDesktopSettings).mockResolvedValue(status({ settings: { mode: "managed" }, automatic: false }));
+    const confirm = vi.spyOn(window, "confirm");
+    render(<SandboxDesktopSettings />);
+    fireEvent.change(await screen.findByLabelText("Mode"), { target: { value: "managed" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(updateSandboxDesktopSettings).toHaveBeenCalledWith(expect.objectContaining({ mode: "managed" })));
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it("does warn when Automatic means endpoint and Managed is chosen", async () => {
+    const running = status({ settings: {}, automatic: true, effectiveMode: "endpoint" });
+    running.diagnostics.running.sessions = 1;
+    running.diagnostics.endpoint = { configured: true, url: "http://127.0.0.1:7801" };
+    vi.mocked(getSandboxDesktopStatus).mockResolvedValue(running);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    render(<SandboxDesktopSettings />);
+    fireEvent.change(await screen.findByLabelText("Mode"), { target: { value: "managed" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(confirm).toHaveBeenCalledWith("Changing the mode ends 1 running sandbox session. Continue?");
+    expect(updateSandboxDesktopSettings).not.toHaveBeenCalled();
+  });
+
+  it("reports an image below the security floor as refused, with a security rebuild action", async () => {
+    const insecure = status({ effectiveMode: "off", problem: "image-insecure", hint: "The image has a known security issue." });
+    insecure.diagnostics.image = { ...insecure.diagnostics.image, secure: false, securityFloor: 0, requiredSecurityFloor: 1 };
+    vi.mocked(getSandboxDesktopStatus).mockResolvedValue(insecure);
+    render(<SandboxDesktopSettings />);
+    expect((await screen.findByTestId("sandbox-diagnostic-image")).textContent).toContain("known security issue (security level 0, at least 1 required)");
+    expect(screen.getByRole("button", { name: "Rebuild image (security fix)" })).toBeTruthy();
+  });
 });

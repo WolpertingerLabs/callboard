@@ -29,7 +29,14 @@ import { ComputerUseHost, controlPrincipal, sandboxTargetDriver, type HostPolicy
 import { readComputerUsePolicy } from "./computer-use-policy.js";
 import { MANAGED_LABEL, OWNER_LABEL, SESSION_LABEL, CHAT_LABEL, SandboxContainerManager, managedSandboxDriver } from "./sandbox-containers.js";
 import { resolveSandboxSettings, type ResolvedSandboxSettings } from "./sandbox-desktop-settings.js";
-import { SANDBOX_CONTENT_LABEL, buildSandboxImage, execDocker, sandboxContentDigest } from "./sandbox-image.js";
+import {
+  SANDBOX_CONTENT_LABEL,
+  SANDBOX_SECURITY_FLOOR,
+  SANDBOX_SECURITY_FLOOR_LABEL,
+  buildSandboxImage,
+  execDocker,
+  sandboxContentDigest,
+} from "./sandbox-image.js";
 
 const enabled = process.env.CALLBOARD_DOCKER_TESTS === "1";
 const suffix = randomUUID().slice(0, 8);
@@ -138,7 +145,8 @@ it.skipIf(!enabled)(
     // 0. The image carries the digest of what it was built from, so it reads as current.
     const [imageInfo] = JSON.parse(await docker(["image", "inspect", image]));
     expect(imageInfo.Config.Labels[SANDBOX_CONTENT_LABEL]).toBe(reuse ? imageInfo.Config.Labels[SANDBOX_CONTENT_LABEL] : sandboxContentDigest());
-    if (!reuse) expect((await manager.diagnostics()).image).toMatchObject({ present: true, compatible: true, current: true });
+    expect(imageInfo.Config.Labels[SANDBOX_SECURITY_FLOOR_LABEL]).toBe(String(SANDBOX_SECURITY_FLOOR));
+    if (!reuse) expect((await manager.diagnostics()).image).toMatchObject({ present: true, compatible: true, current: true, secure: true });
 
     // 1. Enable the sandbox target (the human's Enable click, under Allow).
     let started = Date.now();

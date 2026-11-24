@@ -15,6 +15,8 @@ export interface FakeContainer {
   running: boolean;
   network?: string;
   published: boolean;
+  /** The host port Docker assigned, once asked (stable, as Docker's is). */
+  port?: number;
   tokenFile?: string;
   args: string[];
 }
@@ -34,7 +36,9 @@ export function fakeDocker(
     calls: [] as string[][],
     reachable: true,
     imageLabels:
-      options.imageLabels === undefined ? { "dev.callboard.computer-use.protocol": "2.0", "org.opencontainers.image.version": "0.1.0" } : options.imageLabels,
+      options.imageLabels === undefined
+        ? { "dev.callboard.computer-use.protocol": "2.0", "org.opencontainers.image.version": "0.1.0", "dev.callboard.computer-use.security-floor": "1" }
+        : options.imageLabels,
     /** Make `docker rm` fail (the daemon refusing), e.g. to check a session directory is kept. */
     rmFailure: undefined as string | undefined,
     /** Make `docker run` fail, e.g. with a port clash. */
@@ -97,7 +101,8 @@ export function fakeDocker(
       const container = find(args[1]);
       if (!container) throw noSuch("container", args[1]);
       if (!container.published) throw new DockerError("failed", "docker port failed", `no public port '7801/tcp' published for ${args[1]}`);
-      return `127.0.0.1:${state.nextPort++}\n`;
+      container.port ??= state.nextPort++;
+      return `127.0.0.1:${container.port}\n`;
     }
     if (command === "inspect") {
       const container = find(args.at(-1)!);

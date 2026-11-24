@@ -10,7 +10,9 @@
  * only the path of a file holding it.
  */
 import { execFile } from "node:child_process";
-import { isAbsolute } from "node:path";
+import { createHash } from "node:crypto";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { isAbsolute, join, relative, sep } from "node:path";
 import { ComputerUseError } from "../contracts.js";
 import { PROTOCOL } from "./protocol.js";
 
@@ -44,7 +46,25 @@ export const SANDBOX_NETWORK_LABEL = "dev.callboard.sandbox-network";
 export const SANDBOX_IMAGE_LABELS = Object.freeze({
   version: "org.opencontainers.image.version",
   protocol: "dev.callboard.computer-use.protocol",
+  /** {@link sandboxContentDigest} of what the image was built from, set by {@link sandboxImageBuildArgs} (and docker/run.sh). */
+  content: "dev.callboard.computer-use.content",
+  /** An integer, the image's security level: see {@link SANDBOX_SECURITY_FLOOR}. Set in the Dockerfile. */
+  securityFloor: "dev.callboard.computer-use.security-floor",
 });
+
+/**
+ * The image's security level, and the minimum a host should accept. The
+ * Dockerfile's `dev.callboard.computer-use.security-floor` label carries it
+ * (a test keeps the two equal), and a host refuses to run an image below it
+ * or without the label (Callboard does).
+ *
+ * **Bump it only for a security fix in the driver host or the image** — a
+ * fix an existing image must not keep running without. Each bump makes every
+ * older image refuse to start until it is rebuilt, which is the point; an
+ * ordinary change is caught by the content label as "out of date" instead,
+ * and keeps working.
+ */
+export const SANDBOX_SECURITY_FLOOR = 1;
 
 export interface SandboxLimits {
   /** Memory, and memory+swap (no swap beyond it). Docker syntax, default "1g". */
@@ -253,3 +273,68 @@ export async function ensureSandboxNetwork(
 
 /** The protocol label value this release's image carries. */
 export const SANDBOX_PROTOCOL_LABEL_VALUE = `${PROTOCOL.major}.${PROTOCOL.minor}`;
+
+/** Everything the image is built from: what .dockerignore sends, plus the Dockerfile. Relative to `context`, sorted. */
+function contentFiles(context: string): string[] {
+  const out: string[] = [];
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) walk(path);
+      else if (entry.isFile() && !entry.name.endsWith(".map")) out.push(relative(context, path).split(sep).join("/"));
+    }
+  };
+  if (existsSync(join(context, "dist"))) walk(join(context, "dist"));
+  for (const file of ["package.json", "docker/Dockerfile", "docker/package-lock.json", "docker/start-desktop.sh"])
+    if (existsSync(join(context, file))) out.push(file);
+  return out.sort();
+}
+const digestMemo = new Map<string, { stamp: string; digest: string }>();
+/**
+ * A SHA-256 over the build context's content files (this package directory:
+ * `dist/` without source maps, `package.json` and docker/'s three files), by
+ * path and bytes in order: the same value for the same files, whatever the
+ * mtimes. Memoized on sizes and mtimes, so a status poll does not re-read the
+ * files, while a rebuilt `dist/` is noticed.
+ */
+export function sandboxContentDigest(context: string): string {
+  const files = contentFiles(context);
+  const stamp = files
+    .map((file) => {
+      const stat = statSync(join(context, file));
+      return `${file}:${stat.size}:${stat.mtimeMs}`;
+    })
+    .join("|");
+  const memo = digestMemo.get(context);
+  if (memo?.stamp === stamp) return memo.digest;
+  const hash = createHash("sha256").update("callboard-sandbox-content\0");
+  for (const file of files)
+    hash
+      .update(`${file}\0`)
+      .update(readFileSync(join(context, file)))
+      .update("\0");
+  const digest = hash.digest("hex");
+  digestMemo.set(context, { stamp, digest });
+  return digest;
+}
+
+/**
+ * `docker build` arguments (everything after `docker`) for the image, from a
+ * package directory, labelled with its {@link sandboxContentDigest}. Never
+ * pulls anything but the Dockerfile's pinned base. No `--progress`: the
+ * legacy builder (Docker without buildx) rejects it.
+ */
+export function sandboxImageBuildArgs(options: { context: string; image?: string }): string[] {
+  const image = options.image ?? SANDBOX_DEFAULT_IMAGE;
+  if (image.startsWith("-")) throw new ComputerUseError("invalid_request", "Invalid image");
+  return [
+    "build",
+    "--label",
+    `${SANDBOX_IMAGE_LABELS.content}=${sandboxContentDigest(options.context)}`,
+    "-t",
+    image,
+    "-f",
+    join(options.context, "docker", "Dockerfile"),
+    options.context,
+  ];
+}

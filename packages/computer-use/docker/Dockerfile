@@ -96,7 +96,10 @@ LABEL org.opencontainers.image.title="callboard-computer-use-desktop" \
       org.opencontainers.image.version="0.1.0" \
       org.opencontainers.image.source="https://github.com/WolpertingerLabs/callboard" \
       org.opencontainers.image.licenses="MIT" \
-      dev.callboard.computer-use.protocol="2.0"
+      dev.callboard.computer-use.protocol="2.0" \
+      # Bump only for a security fix in the driver host or the image (SANDBOX_SECURITY_FLOOR):
+      # older images then refuse to start until rebuilt.
+      dev.callboard.computer-use.security-floor="1"
 
 EXPOSE 7801
 # Starts as root only to split the desktop and the driver host into their two

@@ -48,6 +48,7 @@ import {
   sandboxOwnerId,
   sandboxPackageVersion,
   SANDBOX_IMAGE,
+  SANDBOX_SECURITY_FLOOR,
   SANDBOX_PROTOCOL_LABEL_VALUE,
   type DockerRunner,
 } from "./sandbox-image.js";
@@ -104,10 +105,29 @@ export interface DrainableSandbox {
    */
   cause: "session-end" | "shutdown" | "orphan";
 }
-export type DrainBeforeDestroy = (sandbox: DrainableSandbox, signal: AbortSignal) => Promise<void>;
+/**
+ * What a drain hook may return. Nothing (or `{}`) is the default: the
+ * container and its session directory are removed straight after.
+ *
+ * `{ keep: true }` keeps both, on every path (session end, shutdown, orphan):
+ * the container keeps running with nothing attached, its session directory
+ * (token and `session.json`) stays, and the manager records the keep in
+ * `session.json` so no reaper pass — in this run or a later one — drains,
+ * removes or deletes it. It stays until {@link SandboxContainerManager.release}
+ * is called for it (see also {@link SandboxContainerManager.keptSandboxes},
+ * which lists them after a restart). A kept container is no longer a session:
+ * it is not counted against the concurrency cap, so whoever keeps one owns
+ * bounding how many and for how long. A hook that throws or times out never
+ * keeps anything.
+ */
+export interface DrainResult {
+  keep?: true;
+}
+export type DrainBeforeDestroy = (sandbox: DrainableSandbox, signal: AbortSignal) => Promise<void | DrainResult>;
 export const DRAIN_TIMEOUT_MS = 30_000;
 /** No drain yet: PR 4 replaces this. */
 export const noDrain: DrainBeforeDestroy = async () => {};
+type DrainOutcome = "drained" | "kept" | "failed";
 
 export interface SandboxManagerOptions {
   docker: DockerRunner;
@@ -147,6 +167,19 @@ interface SessionMeta {
   createdAt: number;
   /** Set once a drain finished, so a container Docker would not remove is not drained twice. */
   drainedAt?: number;
+  /** Set when a drain hook asked to keep it ({@link DrainResult}): no reaper touches it until released. */
+  keptAt?: number;
+  keptCause?: DrainableSandbox["cause"];
+}
+/** A sandbox a drain hook kept, as {@link SandboxContainerManager.keptSandboxes} lists it. */
+export interface KeptSandbox {
+  sessionId: string;
+  chatId: string;
+  workspaceId?: string;
+  folder?: string;
+  name: string;
+  keptAt: number;
+  cause?: DrainableSandbox["cause"];
 }
 
 interface Box {
@@ -193,6 +226,8 @@ export class SandboxContainerManager {
   private readonly expectedContent: () => string;
   private disposed = false;
   private shuttingDown = false;
+  private warnedNoDrain = false;
+  private readonly keptRecently = new Set<string>();
   drainBeforeDestroy: DrainBeforeDestroy;
 
   constructor(private readonly options: SandboxManagerOptions) {
@@ -249,7 +284,8 @@ export class SandboxContainerManager {
     const box = this.boxes.get(sessionId);
     if (box) return { phase: box.phase, ...(box.step ? { step: box.step } : {}) };
     const at = this.removed.get(sessionId);
-    return at !== undefined ? { phase: "removed" } : undefined;
+    if (at === undefined) return undefined;
+    return this.keptRecently.has(sessionId) ? { phase: "kept" } : { phase: "removed" };
   }
 
   /** The instance a session's container proved, once it has opened on exactly that instance. Fails closed. */
@@ -276,7 +312,7 @@ export class SandboxContainerManager {
       // Outdated (compatible, but not built from what this Callboard ships) is
       // a warning, not a refusal: see {@link currentWarning}.
       this.lastWarning =
-        image.present && image.compatible && !image.current
+        image.present && image.compatible && image.secure && !image.current
           ? {
               warning: "image-outdated",
               hint: `The sandbox image ${this.image} was built from ${image.content ? "another release's" : "an older"} files, not the ones this Callboard ships, so it may lack driver-host fixes. It still starts. Rebuild it with \`${SANDBOX_BUILD_COMMAND}\` (or Settings → Sandbox desktop → Rebuild image).`,
@@ -291,6 +327,12 @@ export class SandboxContainerManager {
         return {
           problem: "image-incompatible",
           hint: `The sandbox image ${this.image} speaks protocol ${image.protocol ?? "(unlabelled)"}, and this Callboard speaks ${SANDBOX_PROTOCOL_LABEL_VALUE}. Rebuild it with \`${SANDBOX_BUILD_COMMAND}\`, then retry.`,
+        };
+      // Below the security floor (or from before the label): refused, unlike a merely outdated image.
+      if (!image.secure)
+        return {
+          problem: "image-insecure",
+          hint: `The sandbox image ${this.image} has a known security issue: its security level is ${image.securityFloor ?? "unlabelled"}, and this Callboard requires at least ${SANDBOX_SECURITY_FLOOR}. Rebuild it with \`${SANDBOX_BUILD_COMMAND}\` (or Settings → Sandbox desktop → Rebuild image), then retry.`,
         };
       return undefined;
     } catch (error) {
@@ -454,25 +496,33 @@ export class SandboxContainerManager {
   }
 
   /** Published loopback port, or for an internal network the container's bridge address. */
-  private async address(box: Box, signal: AbortSignal): Promise<string> {
-    if (!box.internal) {
-      const out = await this.docker(["port", box.name, `${SANDBOX_CONTAINER_PORT}/tcp`], { signal, timeoutMs: 15_000 });
+  private address(box: Box, signal: AbortSignal): Promise<string> {
+    return this.addressOf(box.name, box.network, box.internal, signal);
+  }
+  /**
+   * Where a container's driver host answers, as Docker reports it now: its
+   * published 127.0.0.1 port, or on an internal network its private IPv4
+   * address on that network. Never read from a file. Exactly the two shapes
+   * the manager uses; anything else is refused.
+   */
+  private async addressOf(container: string, network: string, internal: boolean, signal?: AbortSignal): Promise<string> {
+    if (!internal) {
+      const out = await this.docker(["port", container, `${SANDBOX_CONTAINER_PORT}/tcp`], { signal, timeoutMs: 15_000 });
       const port = out
         .split("\n")
         .map((line) => /^127\.0\.0\.1:(\d{1,5})$/.exec(line.trim())?.[1])
-        .find(Boolean);
+        .find((value) => value !== undefined && Number(value) > 0 && Number(value) <= 65535);
       if (!port) throw new ComputerUseError("driver_error", "Docker did not report the sandbox's loopback port");
       return `http://127.0.0.1:${port}`;
     }
-    const out = await this.docker(["inspect", "--format", "{{json .NetworkSettings.Networks}}", box.name], { signal, timeoutMs: 15_000 });
+    const out = await this.docker(["inspect", "--format", "{{json .NetworkSettings.Networks}}", container], { signal, timeoutMs: 15_000 });
     let ip: unknown;
     try {
-      ip = (JSON.parse(out) as Record<string, { IPAddress?: unknown }>)[box.network]?.IPAddress;
+      ip = (JSON.parse(out) as Record<string, { IPAddress?: unknown }>)[network]?.IPAddress;
     } catch {
       ip = undefined;
     }
-    if (typeof ip !== "string" || !/^(10|172|192)\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip))
-      throw new ComputerUseError("driver_error", "Docker did not report the sandbox's address on its network");
+    if (typeof ip !== "string" || !isPrivateIpv4(ip)) throw new ComputerUseError("driver_error", "Docker did not report the sandbox's address on its network");
     return `http://${ip}:${SANDBOX_CONTAINER_PORT}`;
   }
 
@@ -522,7 +572,8 @@ export class SandboxContainerManager {
       box.phase = "stopping";
       box.step = undefined;
       if (wasReady && box.driver && box.instanceId) {
-        const ok = await this.drain(
+        const cause = this.shuttingDown ? "shutdown" : "session-end";
+        const outcome = await this.drain(
           {
             sessionId,
             chatId: box.chatId,
@@ -530,11 +581,20 @@ export class SandboxContainerManager {
             ...(box.folder ? { folder: box.folder } : {}),
             driver: box.driver,
             instanceId: box.instanceId,
-            cause: this.shuttingDown ? "shutdown" : "session-end",
+            cause,
           },
           box.name,
         );
-        if (ok) await this.writeMeta(box, { drainedAt: Date.now() }).catch(() => {});
+        if (outcome === "kept") {
+          // Recorded before anything else, so no reaper removes it even if this process dies now.
+          await this.writeMeta(box, { keptAt: Date.now(), keptCause: cause }).catch((error) =>
+            log.error(`Sandbox ${box.name}: could not record that it is kept (${error instanceof Error ? error.message : "unknown"}); a reaper may remove it`),
+          );
+          log.info(`Sandbox ${box.name}: kept by the drain hook (${cause}); not removed until released`);
+          this.keptRecently.add(sessionId);
+          return;
+        }
+        if (outcome === "drained") await this.writeMeta(box, { drainedAt: Date.now() }).catch(() => {});
       }
       let removed = true;
       if (box.created) {
@@ -556,22 +616,30 @@ export class SandboxContainerManager {
     })().finally(() => {
       if (this.boxes.get(sessionId) === box) this.boxes.delete(sessionId);
       this.removed.set(sessionId, Date.now());
-      for (const [id, at] of this.removed) if (this.removed.size > 64 || Date.now() - at > 120_000) this.removed.delete(id);
+      for (const [id, at] of this.removed)
+        if (this.removed.size > 64 || Date.now() - at > 120_000) {
+          this.removed.delete(id);
+          this.keptRecently.delete(id);
+        }
     }));
   }
 
-  /** Run the drain hook within its bound. True if it finished; a failure or timeout is logged and removal goes ahead. */
-  private async drain(sandbox: DrainableSandbox, name: string): Promise<boolean> {
+  /**
+   * Run the drain hook within its bound. "drained" if it finished, "kept" if
+   * it returned `{ keep: true }`; a failure or timeout ("failed") is logged
+   * and removal goes ahead — it never keeps anything.
+   */
+  private async drain(sandbox: DrainableSandbox, name: string): Promise<DrainOutcome> {
     const signal = AbortSignal.timeout(this.options.drainTimeoutMs ?? DRAIN_TIMEOUT_MS);
     try {
-      await Promise.race([
+      const result = await Promise.race([
         this.drainBeforeDestroy(sandbox, signal),
-        new Promise((_, reject) => signal.addEventListener("abort", () => reject(new Error("drain timed out")), { once: true })),
+        new Promise<never>((_, reject) => signal.addEventListener("abort", () => reject(new Error("drain timed out")), { once: true })),
       ]);
-      return true;
+      return result && typeof result === "object" && (result as DrainResult).keep === true ? "kept" : "drained";
     } catch (error) {
       log.warn(`Sandbox ${name}: drain before removal (${sandbox.cause}) failed (${error instanceof Error ? error.message : "unknown"}); removing anyway`);
-      return false;
+      return "failed";
     }
   }
 
@@ -585,7 +653,7 @@ export class SandboxContainerManager {
   }
 
   /** The session's metadata, beside its token: what the reaper needs to drain it after a crash. Atomic, 0600. */
-  private async writeMeta(box: Box, extra: { drainedAt?: number } = {}): Promise<void> {
+  private async writeMeta(box: Box, extra: Pick<SessionMeta, "drainedAt" | "keptAt" | "keptCause"> = {}): Promise<void> {
     const meta: SessionMeta = {
       version: 1,
       sessionId: box.sessionId,
@@ -615,6 +683,58 @@ export class SandboxContainerManager {
     }
   }
 
+  /** Merge fields into a session's `session.json`, atomically (temp file, rename), 0600. */
+  private async patchMeta(sessionId: string, patch: Partial<SessionMeta>): Promise<void> {
+    const meta = await this.readMeta(sessionId);
+    if (!meta) throw new Error("no session metadata");
+    const file = join(this.sessionsDir, sessionId, SESSION_META);
+    const temp = `${file}.${process.pid}.tmp`;
+    await writeFile(temp, `${JSON.stringify({ ...meta, ...patch })}\n`, { mode: 0o600 });
+    await rename(temp, file);
+  }
+
+  /** Sandboxes a drain hook kept ({@link DrainResult}), from disk: they survive a restart. */
+  async keptSandboxes(): Promise<KeptSandbox[]> {
+    const out: KeptSandbox[] = [];
+    for (const entry of await readdir(this.sessionsDir).catch(() => [] as string[])) {
+      if (!SESSION_ID.test(entry) || this.boxes.has(entry)) continue;
+      const meta = await this.readMeta(entry);
+      if (!meta?.keptAt) continue;
+      out.push({
+        sessionId: meta.sessionId,
+        chatId: meta.chatId,
+        ...(meta.workspaceId ? { workspaceId: meta.workspaceId } : {}),
+        ...(meta.folder ? { folder: meta.folder } : {}),
+        name: meta.name,
+        keptAt: meta.keptAt,
+        ...(meta.keptCause ? { cause: meta.keptCause } : {}),
+      });
+    }
+    return out;
+  }
+
+  /**
+   * Let go of a kept sandbox: remove its container and its session directory
+   * now, without another drain. False if it is not kept (nothing is touched).
+   * If Docker will not remove the container, the keep is cleared so the
+   * reaper finishes the job, and this rejects.
+   */
+  async release(sessionId: string): Promise<boolean> {
+    if (!SESSION_ID.test(sessionId) || this.boxes.has(sessionId)) return false;
+    const meta = await this.readMeta(sessionId);
+    if (!meta?.keptAt) return false;
+    try {
+      await this.docker(["rm", "--force", meta.name], { timeoutMs: 30_000 });
+    } catch (error) {
+      if (!(error instanceof DockerError && /no such container/i.test(error.stderr))) {
+        await this.patchMeta(sessionId, { keptAt: undefined, keptCause: undefined, drainedAt: Date.now() }).catch(() => {});
+        throw error;
+      }
+    }
+    await rm(join(this.sessionsDir, sessionId), { recursive: true, force: true });
+    return true;
+  }
+
   /**
    * Drain a container whose daemon-side state is gone, from what it left on
    * disk. Only when it is running, its metadata names the URL and the
@@ -622,27 +742,49 @@ export class SandboxContainerManager {
    * this session's token and is that same instance; otherwise there is
    * nothing safe to drain, and it is just removed.
    */
-  private async drainOrphan(sessionId: string, state: string, signal?: AbortSignal): Promise<void> {
-    if (state !== "running") return;
-    const meta = await this.readMeta(sessionId);
+  private async drainOrphan(
+    sessionId: string,
+    container: string,
+    state: string,
+    meta: SessionMeta | undefined,
+    signal?: AbortSignal,
+  ): Promise<DrainOutcome | "none"> {
+    if (state !== "running") return "none";
     if (!meta || meta.drainedAt || !meta.url || !meta.instanceId) {
       if (!meta?.drainedAt) log.info(`Reaper: sandbox ${sessionId} has no drainable metadata (it never finished starting); removing it without a drain`);
-      return;
+      return "none";
+    }
+    // The endpoint comes from Docker, for the container this pass listed, not
+    // from the file: `session.json` only says which of our two networks it
+    // was on, and that has to be one of ours, consistently.
+    const names = this.options.networks ?? { internet: SANDBOX_NETWORK, none: SANDBOX_INTERNAL_NETWORK };
+    const network = meta.internal ? names.none : names.internet;
+    if (meta.network !== network || typeof meta.internal !== "boolean") {
+      log.warn(`Reaper: sandbox ${sessionId}'s metadata names a network that is not ours; removing it without a drain`);
+      return "none";
+    }
+    if (this.drainBeforeDestroy === noDrain && !this.warnedNoDrain) {
+      this.warnedNoDrain = true;
+      log.warn(
+        "Reaper: found a drainable sandbox left by a previous run, but no drain hook is installed yet, so its files are not copied out. Install the hook before the first reaper pass (startSandboxReaper({ drainBeforeDestroy }) or the manager's options).",
+      );
     }
     const tokenFile = join(this.sessionsDir, sessionId, "token");
     let driver: RemoteDriver;
     try {
-      driver = this.createRemote({ url: meta.url, tokenFile, ...(meta.internal ? { localDockerBridge: true } : {}) });
+      const url = await this.addressOf(container, network, meta.internal, signal);
+      if (url !== meta.url) log.info(`Reaper: sandbox ${sessionId} now answers at ${url}, not ${meta.url}; using Docker's`);
+      driver = this.createRemote({ url, tokenFile, ...(meta.internal ? { localDockerBridge: true } : {}) });
       const { instanceId } = await driver.identity(AbortSignal.any([AbortSignal.timeout(5_000), ...(signal ? [signal] : [])]));
       if (instanceId !== meta.instanceId) {
         log.warn(`Reaper: sandbox ${sessionId} answers as another instance than the one its session opened on; removing it without a drain`);
-        return;
+        return "none";
       }
     } catch (error) {
       log.warn(`Reaper: could not reach orphaned sandbox ${sessionId} to drain it (${error instanceof Error ? error.message : "unknown"}); removing it`);
-      return;
+      return "none";
     }
-    await this.drain(
+    const outcome = await this.drain(
       {
         sessionId,
         chatId: meta.chatId,
@@ -654,6 +796,16 @@ export class SandboxContainerManager {
       },
       meta.name,
     );
+    // Recorded atomically, so a later pass (Docker refusing the removal, or
+    // this process dying first) neither drains it again nor removes a kept one.
+    try {
+      if (outcome === "drained") await this.patchMeta(sessionId, { drainedAt: Date.now() });
+      if (outcome === "kept") await this.patchMeta(sessionId, { keptAt: Date.now(), keptCause: "orphan" });
+    } catch (error) {
+      log.warn(`Reaper: could not record the drain of sandbox ${sessionId}: ${error instanceof Error ? error.message : "unknown"}`);
+      if (outcome === "kept") return "kept";
+    }
+    return outcome;
   }
 
   /**
@@ -676,7 +828,16 @@ export class SandboxContainerManager {
       const [id, managed, owner, session, state] = line.trim().split("\t");
       if (!id || !CONTAINER_ID.test(id) || managed !== "1" || owner !== this.owner) continue;
       if (session && this.boxes.has(session)) continue;
-      if (session && SESSION_ID.test(session)) await this.drainOrphan(session, state ?? "", signal);
+      const meta = session && SESSION_ID.test(session) ? await this.readMeta(session) : undefined;
+      // Kept by a drain hook: not ours to drain, remove or delete until released.
+      if (session && meta?.keptAt) {
+        keep.add(session);
+        continue;
+      }
+      if (session && SESSION_ID.test(session) && (await this.drainOrphan(session, id, state ?? "", meta, signal)) === "kept") {
+        keep.add(session);
+        continue;
+      }
       try {
         await this.docker(["rm", "--force", id], { signal, timeoutMs: 30_000 });
         removed.push(id);
@@ -688,15 +849,17 @@ export class SandboxContainerManager {
       }
     }
     for (const entry of await readdir(this.sessionsDir).catch(() => [] as string[]))
-      if (SESSION_ID.test(entry) && !this.boxes.has(entry) && !keep.has(entry))
+      if (SESSION_ID.test(entry) && !this.boxes.has(entry) && !keep.has(entry) && !(await this.readMeta(entry))?.keptAt)
         await rm(join(this.sessionsDir, entry), { recursive: true, force: true }).catch(() => {});
     if (removed.length) log.info(`Reaper removed ${removed.length} orphaned sandbox container(s)`);
     return removed;
   }
 
-  /** Whether anything of a previous run may be left: a session directory not of a live sandbox. Disk only, no Docker. */
+  /** Whether anything of a previous run may be left for a reaper: a session directory not of a live or kept sandbox. Disk only, no Docker. */
   async hasLeftovers(): Promise<boolean> {
-    return (await readdir(this.sessionsDir).catch(() => [] as string[])).some((entry) => SESSION_ID.test(entry) && !this.boxes.has(entry));
+    for (const entry of await readdir(this.sessionsDir).catch(() => [] as string[]))
+      if (SESSION_ID.test(entry) && !this.boxes.has(entry) && !(await this.readMeta(entry))?.keptAt) return true;
+    return false;
   }
 
   /** Settings → Sandbox desktop: Docker, the image and its labels, the network, and what is running. Creates nothing. */
@@ -713,6 +876,8 @@ export class SandboxContainerManager {
         expectedProtocol: SANDBOX_PROTOCOL_LABEL_VALUE,
         packageVersion: sandboxPackageVersion(),
         expectedContent: safeDigest(this.expectedContent),
+        secure: false,
+        requiredSecurityFloor: SANDBOX_SECURITY_FLOOR,
       },
       network: { name: network.name, internal: network.internal, state: "unknown" },
       running: { sessions: this.boxes.size, limit: settings.maxConcurrent },
@@ -848,4 +1013,12 @@ function safeDigest(digest: () => string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** A dotted IPv4 literal in 10/8, 172.16/12 or 192.168/16, the private ranges Docker bridges use. */
+function isPrivateIpv4(value: string): boolean {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(value);
+  if (!m || m.slice(1).some((part) => Number(part) > 255 || (part.length > 1 && part.startsWith("0")))) return false;
+  const [a, b] = [Number(m[1]), Number(m[2])];
+  return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
 }

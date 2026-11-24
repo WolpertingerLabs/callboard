@@ -168,3 +168,16 @@ describe("reaper scheduling (review round 1)", () => {
     expect(await reaperHasWork(manager, endpoint)).toBe(false);
   });
 });
+
+describe("startSandboxReaper installs the drain hook before its first pass (review round 2)", () => {
+  it("sets the manager's hook synchronously, before the startup pass can run", async () => {
+    const { startSandboxReaper, shutdownSandboxDesktop, getSandboxManager } = await import("../services/sandbox-desktop.js");
+    const hook = async () => {};
+    startSandboxReaper({ intervalMs: 3_600_000, drainBeforeDestroy: hook });
+    try {
+      expect(getSandboxManager().drainBeforeDestroy).toBe(hook);
+    } finally {
+      await shutdownSandboxDesktop();
+    }
+  });
+});

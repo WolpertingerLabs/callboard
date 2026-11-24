@@ -168,16 +168,18 @@ async function cmdSandbox() {
   const docker = image.execDocker();
   if (action === "build") {
     const present = await image.inspectSandboxImage(docker).catch(() => undefined);
-    if (present?.present && present.compatible && present.current && !values.force) {
+    if (present?.present && present.compatible && present.secure && present.current && !values.force) {
       console.log(`${image.SANDBOX_IMAGE} is up to date (protocol ${present.protocol}, built from the files this Callboard ships).`);
       console.log("Rebuild it anyway with: callboard sandbox build --force");
       return;
     }
     if (present?.present && !values.force)
       console.log(
-        present.compatible
-          ? `${image.SANDBOX_IMAGE} is out of date (not built from the files this Callboard ships); rebuilding.`
-          : `${image.SANDBOX_IMAGE} speaks protocol ${present.protocol ?? "unlabelled"}, not ${image.SANDBOX_PROTOCOL_LABEL_VALUE}; rebuilding.`,
+        !present.compatible
+          ? `${image.SANDBOX_IMAGE} speaks protocol ${present.protocol ?? "unlabelled"}, not ${image.SANDBOX_PROTOCOL_LABEL_VALUE}; rebuilding.`
+          : !present.secure
+            ? `${image.SANDBOX_IMAGE} has a known security issue (security level ${present.securityFloor ?? "unlabelled"}, at least ${image.SANDBOX_SECURITY_FLOOR} required); rebuilding.`
+            : `${image.SANDBOX_IMAGE} is out of date (not built from the files this Callboard ships); rebuilding.`,
       );
     console.log(`Building ${image.SANDBOX_IMAGE} from ${image.sandboxBuildContext()} ...`);
     try {
@@ -203,7 +205,7 @@ async function cmdSandbox() {
     else if (!info.present) console.log(`Image:   ${image.SANDBOX_IMAGE} is not built. Run: callboard sandbox build`);
     else
       console.log(
-        `Image:   ${image.SANDBOX_IMAGE} (protocol ${info.protocol ?? "unlabelled"}${info.compatible ? "" : `, INCOMPATIBLE with ${image.SANDBOX_PROTOCOL_LABEL_VALUE}`}, ${info.current ? "up to date" : "OUT OF DATE: run callboard sandbox build"}, version ${info.version ?? "unknown"})`,
+        `Image:   ${image.SANDBOX_IMAGE} (protocol ${info.protocol ?? "unlabelled"}${info.compatible ? "" : `, INCOMPATIBLE with ${image.SANDBOX_PROTOCOL_LABEL_VALUE}`}, ${!info.secure ? `KNOWN SECURITY ISSUE (level ${info.securityFloor ?? "unlabelled"} < ${image.SANDBOX_SECURITY_FLOOR}): refused until you run callboard sandbox build` : info.current ? "up to date" : "OUT OF DATE: run callboard sandbox build"}, version ${info.version ?? "unknown"})`,
       );
     const owner = image.sandboxOwnerId(DATA_DIR);
     const running = await docker(["ps", "--quiet", "--filter", "label=dev.callboard.managed=1", "--filter", `label=dev.callboard.owner=${owner}`]).catch(

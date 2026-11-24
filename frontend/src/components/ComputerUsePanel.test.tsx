@@ -301,6 +301,7 @@ describe("ComputerUsePanel", () => {
         ["ready", { phase: "ready" }, "Container: Ready"],
         ["stopping", { phase: "stopping" }, "Container: Stopping and removing the container…"],
         ["removed", { phase: "removed" }, "Container: Removed"],
+        ["kept", { phase: "kept" }, "Container: Session ended; the container is kept for recovery"],
       ] as const)("shows the container's lifecycle: %s", async (_name, container, text) => {
         status.capabilities = [...status.capabilities, { ...sandboxCapability, sandbox: { mode: "managed", network: "internet", running: 1, limit: 2 } }];
         status.sessions = [{ id: "s1", kind: "sandbox", state: "active", controller: "agent", generation: 1, container }];
@@ -346,6 +347,7 @@ describe("ComputerUsePanel", () => {
         ["docker-unreachable", "Docker isn't reachable", /Install or start Docker/],
         ["image-missing", "Sandbox image not built", /callboard sandbox build/],
         ["image-incompatible", "Sandbox image is incompatible", /built for another protocol version. Rebuild it with callboard sandbox build,/],
+        ["image-insecure", "Sandbox image has a known security issue", /won.t start. Rebuild it on the Callboard service host with callboard sandbox build/],
         ["cap-reached", "Sandbox limit reached", /2 of 2 sandbox desktops are running/],
         ["turned-off", "Sandbox desktop is turned off", /Settings → Sandbox desktop/],
       ] as const)("explains %s with its own heading and the step to take", async (problem, heading, guidance) => {

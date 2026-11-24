@@ -12,6 +12,9 @@ import {
   SANDBOX_PROTOCOL_LABEL_VALUE,
   SANDBOX_TOKEN_PATH,
   ensureSandboxNetwork,
+  sandboxContentDigest,
+  sandboxImageBuildArgs,
+  SANDBOX_SECURITY_FLOOR,
   sandboxNetworkCreateArgs,
   sandboxRunArgs,
 } from "../dist/index.js";
@@ -190,4 +193,20 @@ test("the Docker context ships in the package and builds from dist, not src", as
   const ignore = await readFile(join(packageDir, ".dockerignore"), "utf8");
   for (const line of ["*", "!package.json", "!dist", "!docker/package-lock.json", "!docker/start-desktop.sh"])
     assert.ok(ignore.split("\n").includes(line), line);
+});
+
+test("the image declares the security floor the package requires, and run.sh labels its build with the content digest", async () => {
+  const dockerfile = await readFile(join(packageDir, "docker", "Dockerfile"), "utf8");
+  assert.ok(Number.isInteger(SANDBOX_SECURITY_FLOOR) && SANDBOX_SECURITY_FLOOR >= 1);
+  assert.ok(
+    dockerfile.includes(`${SANDBOX_IMAGE_LABELS.securityFloor}="${SANDBOX_SECURITY_FLOOR}"`),
+    "Dockerfile security-floor label out of step with SANDBOX_SECURITY_FLOOR",
+  );
+  const script = await readFile(join(packageDir, "docker", "run.sh"), "utf8");
+  assert.ok(script.includes(`--label "${SANDBOX_IMAGE_LABELS.content}=$digest"`), "run.sh must label its build with the content digest");
+  assert.ok(script.includes("sandboxContentDigest"), "run.sh must compute the digest with the package's function");
+  const args = sandboxImageBuildArgs({ context: packageDir, image: "callboard/test:x" });
+  assert.deepEqual(args.slice(0, 5), ["build", "--label", `${SANDBOX_IMAGE_LABELS.content}=${sandboxContentDigest(packageDir)}`, "-t", "callboard/test:x"]);
+  assert.match(sandboxContentDigest(packageDir), /^[0-9a-f]{64}$/);
+  assert.throws(() => sandboxImageBuildArgs({ context: packageDir, image: "--evil" }), { code: "invalid_request" });
 });

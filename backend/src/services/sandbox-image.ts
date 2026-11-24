@@ -9,10 +9,18 @@
  */
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { join, relative, resolve, sep } from "node:path";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PROTOCOL, SANDBOX_DEFAULT_IMAGE, SANDBOX_IMAGE_LABELS, SANDBOX_PROTOCOL_LABEL_VALUE } from "@wolpertingerlabs/computer-use";
+import {
+  PROTOCOL,
+  SANDBOX_DEFAULT_IMAGE,
+  SANDBOX_IMAGE_LABELS,
+  SANDBOX_PROTOCOL_LABEL_VALUE,
+  SANDBOX_SECURITY_FLOOR,
+  sandboxContentDigest as packageContentDigest,
+  sandboxImageBuildArgs as packageImageBuildArgs,
+} from "@wolpertingerlabs/computer-use";
 
 /**
  * This daemon's owner label: a hash of its data directory's real path. Two
@@ -96,61 +104,23 @@ export function sandboxBuildContextProblem(context = sandboxBuildContext()): str
  * The image label carrying {@link sandboxContentDigest} of what it was built
  * from. The protocol label says whether an image can talk to this Callboard;
  * this one says whether it is the build this Callboard ships, so a driver-host
- * fix (a security fix included) is noticed on an install that already has an
- * image, instead of never reaching it.
+ * fix is noticed on an install that already has an image, instead of never
+ * reaching it. The digest and the build arguments are the package's
+ * (`docker/run.sh` labels its builds through the same function).
  */
-export const SANDBOX_CONTENT_LABEL = "dev.callboard.computer-use.content";
+export const SANDBOX_CONTENT_LABEL = SANDBOX_IMAGE_LABELS.content;
+/** The integer security level an image declares; below {@link SANDBOX_SECURITY_FLOOR} (or without it) it is refused. */
+export const SANDBOX_SECURITY_FLOOR_LABEL = SANDBOX_IMAGE_LABELS.securityFloor;
+export { SANDBOX_SECURITY_FLOOR };
 
-/** Everything the image is built from: what .dockerignore sends, plus the Dockerfile. Relative, sorted. */
-function contentFiles(context: string): string[] {
-  const out: string[] = [];
-  const walk = (dir: string) => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const path = join(dir, entry.name);
-      if (entry.isDirectory()) walk(path);
-      else if (entry.isFile() && !entry.name.endsWith(".map")) out.push(relative(context, path).split(sep).join("/"));
-    }
-  };
-  if (existsSync(join(context, "dist"))) walk(join(context, "dist"));
-  for (const file of ["package.json", "docker/Dockerfile", "docker/package-lock.json", "docker/start-desktop.sh"])
-    if (existsSync(join(context, file))) out.push(file);
-  return out.sort();
-}
-const digestMemo = new Map<string, { stamp: string; digest: string }>();
-/**
- * A SHA-256 over the build context's content files (path and bytes, in
- * order): the same value for the same shipped `dist/` and `docker/`, whatever
- * the mtimes. Memoized on sizes and mtimes, so a status poll does not re-read
- * the files; a rebuilt `dist/` is noticed.
- */
+/** The digest a current image carries, of the shipped build context. */
 export function sandboxContentDigest(context = sandboxBuildContext()): string {
-  const files = contentFiles(context);
-  const stamp = files
-    .map((file) => {
-      const stat = statSync(join(context, file));
-      return `${file}:${stat.size}:${stat.mtimeMs}`;
-    })
-    .join("|");
-  const memo = digestMemo.get(context);
-  if (memo?.stamp === stamp) return memo.digest;
-  const hash = createHash("sha256").update("callboard-sandbox-content\0");
-  for (const file of files)
-    hash
-      .update(`${file}\0`)
-      .update(readFileSync(join(context, file)))
-      .update("\0");
-  const digest = hash.digest("hex");
-  digestMemo.set(context, { stamp, digest });
-  return digest;
+  return packageContentDigest(context);
 }
 
-/** `docker build` arguments (everything after `docker`). Never pulls anything but the Dockerfile's pinned base. */
+/** `docker build` arguments (everything after `docker`), with the content label. */
 export function sandboxImageBuildArgs(options: { context?: string; image?: string } = {}): string[] {
-  const context = options.context ?? sandboxBuildContext();
-  const image = options.image ?? SANDBOX_IMAGE;
-  if (image.startsWith("-")) throw new Error("Invalid image name");
-  // No `--progress`: the legacy builder (Docker without buildx) rejects it.
-  return ["build", "--label", `${SANDBOX_CONTENT_LABEL}=${sandboxContentDigest(context)}`, "-t", image, "-f", join(context, "docker", "Dockerfile"), context];
+  return packageImageBuildArgs({ context: options.context ?? sandboxBuildContext(), image: options.image ?? SANDBOX_IMAGE });
 }
 
 /** The computer-use package version this Callboard ships (the image's version label should match). */
@@ -172,6 +142,10 @@ export interface SandboxImageInfo {
   content?: string;
   /** Built from exactly what this Callboard ships. False for an older build: still compatible, but worth rebuilding. */
   current: boolean;
+  /** The image's security level label, when it is a whole number. */
+  securityFloor?: number;
+  /** Its security level is at least {@link SANDBOX_SECURITY_FLOOR}. False (or no label): refused, "known security issue — rebuild". */
+  secure: boolean;
 }
 
 /** `docker image inspect`, read for the two labels a host checks before `docker run`. */
@@ -186,7 +160,7 @@ export async function inspectSandboxImage(
     labels = JSON.parse(await docker(["image", "inspect", "--format", "{{json .Config.Labels}}", image], { signal, timeoutMs: 15_000 }));
   } catch (error) {
     if (error instanceof DockerError && error.reason === "failed" && /no such image|not found/i.test(error.stderr))
-      return { present: false, compatible: false, current: false };
+      return { present: false, compatible: false, current: false, secure: false };
     throw error;
   }
   const protocol = labels?.[SANDBOX_IMAGE_LABELS.protocol];
@@ -199,7 +173,18 @@ export async function inspectSandboxImage(
   } catch {
     current = false;
   }
-  return { present: true, protocol, version, compatible: major === PROTOCOL.major, ...(content ? { content } : {}), current };
+  const floorLabel = labels?.[SANDBOX_IMAGE_LABELS.securityFloor];
+  const securityFloor = typeof floorLabel === "string" && /^\d{1,6}$/.test(floorLabel) ? Number(floorLabel) : undefined;
+  return {
+    present: true,
+    protocol,
+    version,
+    compatible: major === PROTOCOL.major,
+    ...(content ? { content } : {}),
+    current,
+    ...(securityFloor !== undefined ? { securityFloor } : {}),
+    secure: securityFloor !== undefined && securityFloor >= SANDBOX_SECURITY_FLOOR,
+  };
 }
 
 export { SANDBOX_PROTOCOL_LABEL_VALUE };

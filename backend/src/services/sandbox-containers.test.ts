@@ -15,6 +15,16 @@ import { CHAT_LABEL, MANAGED_LABEL, OWNER_LABEL, SESSION_LABEL, SandboxContainer
 import { resolveSandboxSettings, type ResolvedSandboxSettings } from "./sandbox-desktop-settings.js";
 import { fakeDocker, fakeRemote, type FakeRemoteBehaviour } from "./__fixtures__/sandbox-docker.js";
 
+const logged = vi.hoisted(() => ({ warn: [] as string[] }));
+vi.mock("../utils/logger.js", () => ({
+  createLogger: () => ({
+    info: () => {},
+    debug: () => {},
+    error: () => {},
+    warn: (message: string) => void logged.warn.push(message),
+  }),
+}));
+
 const dirs: string[] = [];
 afterEach(async () => {
   await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
@@ -467,13 +477,23 @@ describe("managedSandboxDriver", () => {
 
 describe("image freshness (review round 1, finding 2)", () => {
   it("an image without the current content digest still starts, with an out-of-date warning; another protocol major is refused", async () => {
-    const docker = fakeDocker({ imageLabels: { "dev.callboard.computer-use.protocol": "2.0", "dev.callboard.computer-use.content": "old" } });
+    const docker = fakeDocker({
+      imageLabels: {
+        "dev.callboard.computer-use.protocol": "2.0",
+        "dev.callboard.computer-use.content": "old",
+        "dev.callboard.computer-use.security-floor": "1",
+      },
+    });
     const { manager } = await setup({ docker, expectedContent: "new" });
     expect(await manager.probe()).toMatchObject({ available: true });
     expect(manager.currentWarning()).toMatchObject({ warning: "image-outdated", hint: expect.stringMatching(/callboard sandbox build/) });
     await expect(manager.start({ sessionId: sid(), signal: new AbortController().signal })).resolves.toBeTruthy();
     expect((await manager.diagnostics()).image).toMatchObject({ present: true, compatible: true, current: false, content: "old", expectedContent: "new" });
-    docker.state.imageLabels = { "dev.callboard.computer-use.protocol": "2.0", "dev.callboard.computer-use.content": "new" };
+    docker.state.imageLabels = {
+      "dev.callboard.computer-use.protocol": "2.0",
+      "dev.callboard.computer-use.content": "new",
+      "dev.callboard.computer-use.security-floor": "1",
+    };
     await manager.probe();
     expect(manager.currentWarning()).toBeUndefined();
     expect((await manager.diagnostics()).image.current).toBe(true);
@@ -604,5 +624,177 @@ describe("drains that survive a crash (review round 1, finding 3)", () => {
     manager.beginShutdown();
     await manager.dispose();
     expect(causes).toEqual(["shutdown"]);
+  });
+});
+
+describe("review round 2", () => {
+  const readMeta = async (dir: string) => JSON.parse(await readFile(join(dir, "session.json"), "utf8"));
+  /** A sandbox started, made ready and then abandoned by a "crashed" daemon; returns a new manager on the same data directory. */
+  async function orphaned(options: { remoteFake?: ReturnType<typeof fakeRemote>; docker?: ReturnType<typeof fakeDocker> } = {}) {
+    const docker = options.docker ?? fakeDocker();
+    const remote = options.remoteFake ?? fakeRemote();
+    const first = await setup({ docker, remoteFake: remote });
+    const box = await first.manager.start({ sessionId: sid(), chatId: "chat-ws", signal: new AbortController().signal });
+    first.manager.ready(box.sessionId);
+    const next = await setup({ docker, remoteFake: remote, dataDir: first.dataDir });
+    return { docker, remote, box, next: next.manager, dataDir: first.dataDir };
+  }
+
+  it("item 1: an orphan whose removal keeps failing is drained once over three reaper passes", async () => {
+    const { docker, box, next } = await orphaned();
+    const drains = vi.fn(async () => {});
+    next.drainBeforeDestroy = drains;
+    docker.state.rmFailure = "device or resource busy";
+    for (let pass = 0; pass < 3; pass++) expect(await next.reap()).toEqual([]);
+    expect(drains).toHaveBeenCalledTimes(1);
+    expect((await readMeta(box.dir)).drainedAt).toEqual(expect.any(Number));
+    expect(existsSync(join(box.dir, "token"))).toBe(true);
+    docker.state.rmFailure = undefined;
+    expect(await next.reap()).toHaveLength(1);
+    expect(drains).toHaveBeenCalledTimes(1);
+    expect(existsSync(box.dir)).toBe(false);
+  });
+
+  describe("item 2: a hook may keep the container for recovery", () => {
+    it("on session end: nothing is removed, the keep is recorded, no reaper touches it, and release removes it", async () => {
+      const { manager, docker, dataDir } = await setup();
+      manager.drainBeforeDestroy = async () => ({ keep: true });
+      const box = await manager.start({ sessionId: sid(), chatId: "chat-ws", signal: new AbortController().signal });
+      manager.ready(box.sessionId);
+      await manager.destroy(box.sessionId);
+      expect(docker.state.containers.has(box.name)).toBe(true);
+      expect(existsSync(box.tokenFile)).toBe(true);
+      expect(await readMeta(box.dir)).toMatchObject({ keptAt: expect.any(Number), keptCause: "session-end" });
+      expect(manager.containerState(box.sessionId)).toEqual({ phase: "kept" });
+      expect(manager.liveCount()).toBe(0);
+      // Neither this run's reaper nor a later run's touches it, nor counts it as a leftover.
+      const later = await setup({ docker, dataDir });
+      later.manager.drainBeforeDestroy = vi.fn(async () => {});
+      for (const reaper of [manager, later.manager]) {
+        expect(await reaper.reap()).toEqual([]);
+        expect(await reaper.hasLeftovers()).toBe(false);
+      }
+      expect(later.manager.drainBeforeDestroy).not.toHaveBeenCalled();
+      expect(docker.state.containers.has(box.name)).toBe(true);
+      expect(await later.manager.keptSandboxes()).toEqual([
+        {
+          sessionId: box.sessionId,
+          chatId: "chat-ws",
+          workspaceId: "ws-opaque-1",
+          folder: "/work/repo",
+          name: box.name,
+          keptAt: expect.any(Number),
+          cause: "session-end",
+        },
+      ]);
+      expect(await later.manager.release(randomUUID())).toBe(false);
+      expect(await later.manager.release(box.sessionId)).toBe(true);
+      expect(docker.state.containers.has(box.name)).toBe(false);
+      expect(existsSync(box.dir)).toBe(false);
+      expect(await later.manager.keptSandboxes()).toEqual([]);
+    });
+
+    it("on shutdown and for an orphan too", async () => {
+      const shut = await setup();
+      shut.manager.drainBeforeDestroy = async (sandbox) => (sandbox.cause === "shutdown" ? { keep: true } : undefined);
+      const box = await shut.manager.start({ sessionId: sid(), signal: new AbortController().signal });
+      shut.manager.ready(box.sessionId);
+      shut.manager.beginShutdown();
+      await shut.manager.dispose();
+      expect(shut.docker.state.containers.has(box.name)).toBe(true);
+      expect((await readMeta(box.dir)).keptCause).toBe("shutdown");
+
+      const { docker, box: orphan, next } = await orphaned();
+      next.drainBeforeDestroy = async () => ({ keep: true });
+      expect(await next.reap()).toEqual([]);
+      expect(docker.state.containers.has(orphan.name)).toBe(true);
+      expect((await readMeta(orphan.dir)).keptCause).toBe("orphan");
+      next.drainBeforeDestroy = vi.fn(async () => {});
+      expect(await next.reap()).toEqual([]);
+      expect(next.drainBeforeDestroy).not.toHaveBeenCalled();
+    });
+
+    it("returning nothing, {} or a non-object keeps the default; a throwing or timed-out hook never keeps", async () => {
+      for (const hook of [async () => undefined, async () => ({}), async () => "keep" as never, async () => ({ keep: "yes" }) as never]) {
+        const { manager, docker } = await setup();
+        manager.drainBeforeDestroy = hook;
+        const box = await manager.start({ sessionId: sid(), signal: new AbortController().signal });
+        manager.ready(box.sessionId);
+        await manager.destroy(box.sessionId);
+        expect(docker.state.containers.size).toBe(0);
+      }
+      const { manager, docker } = await setup({ drainTimeoutMs: 30 });
+      manager.drainBeforeDestroy = () => new Promise(() => {});
+      const box = await manager.start({ sessionId: sid(), signal: new AbortController().signal });
+      manager.ready(box.sessionId);
+      await manager.destroy(box.sessionId);
+      expect(docker.state.containers.size).toBe(0);
+    });
+  });
+
+  describe("item 3: the security floor", () => {
+    it.each([
+      ["no security-floor label", undefined],
+      ["a floor below the minimum", "0"],
+      ["a malformed floor", "one"],
+    ])("refuses an image with %s, as a known security issue distinct from out of date", async (_name, floor) => {
+      const docker = fakeDocker({
+        imageLabels: { "dev.callboard.computer-use.protocol": "2.0", ...(floor !== undefined ? { "dev.callboard.computer-use.security-floor": floor } : {}) },
+      });
+      const { manager } = await setup({ docker });
+      expect(await manager.probe()).toMatchObject({
+        available: false,
+        readiness: "setup-required",
+        reason: expect.stringMatching(/known security issue.*callboard sandbox build/),
+      });
+      expect(manager.currentProblem()?.problem).toBe("image-insecure");
+      expect(manager.currentWarning()).toBeUndefined();
+      await expect(manager.start({ sessionId: sid(), signal: new AbortController().signal })).rejects.toMatchObject({
+        code: "unsupported",
+        problem: "image-insecure",
+      });
+      expect(docker.state.calls.some((args) => args[0] === "run")).toBe(false);
+      expect((await manager.diagnostics()).image).toMatchObject({ present: true, compatible: true, secure: false, requiredSecurityFloor: 1 });
+    });
+
+    it("accepts an image at or above the floor", async () => {
+      const docker = fakeDocker({ imageLabels: { "dev.callboard.computer-use.protocol": "2.0", "dev.callboard.computer-use.security-floor": "2" } });
+      const { manager } = await setup({ docker });
+      expect(await manager.probe()).toMatchObject({ available: true });
+      expect((await manager.diagnostics()).image).toMatchObject({ secure: true, securityFloor: 2 });
+    });
+  });
+
+  describe("item 4: an orphan's endpoint comes from Docker, not session.json", () => {
+    it("ignores a rewritten URL and drains at the address Docker reports for the listed container", async () => {
+      const { remote, box, next } = await orphaned();
+      await writeFile(join(box.dir, "session.json"), JSON.stringify({ ...(await readMeta(box.dir)), url: "http://evil.example:80" }));
+      next.drainBeforeDestroy = vi.fn(async () => {});
+      expect(await next.reap()).toHaveLength(1);
+      expect(next.drainBeforeDestroy).toHaveBeenCalledTimes(1);
+      expect(remote.created.at(-1)?.url).toBe(box.url);
+      expect(remote.created.map((c) => c.url)).not.toContain("http://evil.example:80");
+    });
+
+    it.each([
+      ["a network that is not ours", { network: "some-other-net" }],
+      ["internal on the internet network", { internal: true }],
+      ["a non-boolean internal", { internal: "yes" }],
+    ])("does not drain an orphan whose metadata names %s", async (_name, patch) => {
+      const { remote, box, next } = await orphaned();
+      await writeFile(join(box.dir, "session.json"), JSON.stringify({ ...(await readMeta(box.dir)), ...patch }));
+      const before = remote.created.length;
+      next.drainBeforeDestroy = vi.fn(async () => {});
+      expect(await next.reap()).toHaveLength(1);
+      expect(next.drainBeforeDestroy).not.toHaveBeenCalled();
+      expect(remote.created.length).toBe(before);
+    });
+  });
+
+  it("item 5: warns when a drainable orphan is found before any drain hook is installed", async () => {
+    const { next } = await orphaned();
+    logged.warn.length = 0;
+    expect(await next.reap()).toHaveLength(1);
+    expect(logged.warn.filter((message) => /no drain hook is installed/.test(message))).toHaveLength(1);
   });
 });
