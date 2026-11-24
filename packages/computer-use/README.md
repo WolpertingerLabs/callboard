@@ -326,7 +326,7 @@ The base image is deliberately bare: no package installs, no OpenGL, small limit
 
 ### Recipes
 
-A recipe is JSON: strict to parse, unambiguous (no YAML type coercion, anchors or multiple documents), hashable in a canonical form, and what an agent proposing one (a later change) produces most reliably. Every field is checked against a fixed grammar, unknown keys are errors, and every problem is reported with its path (`packages[3]: "Foo" is not a Debian package name (…)`). The built-ins live in `docker/profiles/` (`blender.json`, `test.json`).
+A recipe is JSON: strict to parse, unambiguous (no YAML type coercion, anchors or multiple documents), hashable in a canonical form, and what an agent proposing one produces most reliably. Every field is checked against a fixed grammar, unknown keys are errors, and every problem is reported with its path (`packages[3]: "Foo" is not a Debian package name (…)`). The built-ins live in `docker/profiles/` (`blender.json`, `test.json`).
 
 ```json
 {
@@ -386,9 +386,19 @@ Two digests, two meanings. `profileRecipeDigest` hashes the canonical recipe alo
 
 A host judges a profile image like a base image, plus its own labels. **Refused:** another protocol major; below either security floor; not labelled as this profile's (name and scope: `unlabelled`); built from another recipe (`rebuild-required`: the consent was to this recipe, so a session never starts on an image built from another). **Out of date** (it still starts): built on other base *content*, or by another compiler. An out-of-date profile keeps running the driver host and the hardening of the build it came from until it is rebuilt, so rebuilding the base from new files makes every profile out of date. Staleness compares the base's content digest, not its image ID: a base rebuilt from identical files changes nothing a profile depends on.
 
+### Agent-built profiles
+
+Callboard lets an agent propose a recipe (`sandbox_profile_propose`, in the same tool server as the `cu_*` tools); a human approves **every** build. This package supplies the validator, the canonical form and the digest; the host (Callboard, `backend/src/services/sandbox-profile-proposals.ts` and `sandbox-profile-store.ts`) supplies the rest:
+
+- **Validate, then store.** A proposal is checked with `validateProfileRecipe` (or `parseProfileRecipe` for JSON text); the agent gets every issue with its path, and nothing is stored. A valid one is stored, in canonical form with its `profileRecipeDigest`, as the next version of that profile in the proposing chat's **scope** (its workspace's, else its folder's). Paths come only from the scope key (`w` + 12 hex) and the name (the recipe grammar), checked before any `join`; directories are 0700, files 0600 and written atomically; a symlinked store directory is refused; on every read each version must re-parse, be canonical and hash to its stored digest, or it is dropped.
+- **Approve, bound to the digest.** The human-only card shows the canonical recipe, its diff against the earlier version, and the risky parts (setup script, download hosts, package count, limits against caps, architectures, scope); the agent's note is boxed, escaped and capped. On approval the host re-reads the stored draft and refuses unless it is still the latest version with exactly the digest the card showed, re-checks the chat's permissions, the mode and the queue cap, then marks the version approved and queues one build **pinned to that digest** (`requestedBy: { kind: "agent", chatId, approvalId }`). The build fails before downloading anything if the recipe in force has another digest.
+- **Only approved versions are entries.** A draft can be neither built nor started. A session starts only on an image labelled with the approved digest, after the usual consent.
+- **Notices** to the agent are fixed templates whose only variables are Callboard-minted ids, a version number and an enumerated outcome: never the name, description, note, recipe or build output.
+- **Human-only afterwards:** promote to global (same digest, versions and provenance kept, rebuilt under the global tag because the image's scope label differs), remove, rebuild.
+
 ### Threat model
 
-**Assume the recipe author is hostile.** A later change lets agents propose recipes (a human approves and builds them), so a recipe must not be able to do anything the base sandbox cannot.
+**Assume the recipe author is hostile.** With agent-built profiles the author *is* an agent, and it may be prompt-injected by anything it read (a web page, a file, a build log). So a recipe must not be able to do anything the base sandbox cannot, and nothing in the path from proposal to build may let it skip the human.
 
 - **What a recipe controls:** which Debian packages are installed; which pinned files are downloaded and unpacked into `/opt`; a script run as the unprivileged desktop user, offline, at build time; the desktop's `PATH` and some variables; GL on or off; resource requests.
 - **What it cannot:**
@@ -409,7 +419,18 @@ A host judges a profile image like a base image, plus its own labels. **Refused:
   - **The host fetches the download URLs** (SSRF). Redirects are followed by hand, at most 5, and every hop is checked as a fresh URL (https, a public host name). Every hop's name is resolved by Callboard, and every address it resolves to must be public (no loopback, RFC 1918, link-local, CGNAT `100.64/10`, ULA `fc00::/7`, multicast, documentation, benchmarking or reserved ranges, no IPv4-compatible `::/96`, IPv4-mapped `::ffff:0:0/96` or IPv4-translated `::ffff:0:0:0/96` address, and no NAT64, 6to4 or Teredo one); the connection is then pinned to the address that was checked, so DNS rebinding between the check and the connect is impossible. A mismatched checksum is reported as a mismatch, never with the digest that arrived. What remains: a recipe can still make this machine send a few https GETs to public hosts of its choosing, and building is human-only and shows the URLs first.
   - **The build itself** runs on this machine's Docker with Docker's default build isolation, as root inside build containers for the package step. A kernel or Docker escape from a build container is out of scope, as it is for the base image.
   - **Resource use while building** (disk for packages and downloads, up to 4 GiB per download and 8 GiB per profile) is bounded but not small.
-  - **Description, names and URLs are shown to humans**; they are plain text checked for control, line-separator and bidi characters, but can still say anything. They are never put in an agent's ride-along notices.
+  - **Description, names and URLs are shown to humans**; they are plain text checked for control, line-separator and bidi characters, but can still say anything. They are never put in an agent's notices.
+- **The proposal path (agent-built profiles):**
+  - *Writing outside the store:* a store path is built only from a validated scope key and a validated name (no `.`, `/` or `\`); the scope is the proposing chat's, chosen by Callboard, never by the recipe or the tool input. Writes are temp-file-then-rename, so a planted symlink is replaced, not followed, and a symlinked directory is refused.
+  - *Reaching root:* proposing runs nothing. Only an approved build runs the recipe, through the constant compiler above; the proposal path adds no new step that runs as root.
+  - *Skipping the human:* there is no agent tool that approves, builds, rebuilds, promotes or removes. The card is a human-only open approval: only a signed-in, same-origin `/respond` that names its prompt id answers it (an API key is refused; a parent chat's `respond_to_request` sees only the blocking prompt slot, never these). Nothing is built without that answer, and no earlier approval carries over to a new version, or to the same recipe proposed again.
+  - *Swapping the recipe after the human read it:* the approval is bound to the digest on the card, re-checked against the stored draft on approval (and that draft must be the latest version), and the build is pinned to the same digest; a stored version whose text no longer hashes to its digest is dropped on read.
+  - *Shadowing a trusted name:* a proposal may not use the name of any global profile (built in or promoted), nor one this chat already sees in another scope; built-ins always win the lookup.
+  - *Acting on another chat's work:* `sandbox_profile_cancel` acts only on builds whose `requestedBy.chatId` is the calling chat, and answers the same "not found" for anyone else's. Status lists only this chat's builds.
+  - *Talking to the agent in Callboard's voice:* notices carry ids, a version and fixed text only. Build output reaches the agent only through `sandbox_profile_status`, labelled untrusted.
+  - *Wearing down the human:* one open proposal per chat and per profile, and Settings caps on profiles per scope, versions kept and agent builds queued at once. Every proposal is still a card a human must answer; a refusal is final.
+  - *Who may propose:* only a chat whose Sandbox desktop permission is Ask or Allow (children, jobs and agent chats default to Deny), in managed mode.
+  - **Accepted:** an agent with its own way to write files on the Callboard host (a shell tool with host access) can write anything in the data directory, including this store; that is outside this model, as it is for every other setting. A store edit still cannot start an image built from another recipe, and the digest check drops a tampered version; but a human who clicks Rebuild builds what the store holds, which Settings shows first.
 
 ## MCP server
 

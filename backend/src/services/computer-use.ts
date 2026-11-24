@@ -1961,8 +1961,6 @@ export class ComputerUseHost {
    * chat that carries the conversation on — and none starts a turn.
    */
   withdrawChatRequests(chatId: string, reason: WithdrawReason, noticeTo = chatId) {
-    // The chat's open Sandbox profile proposals go the same way (Stop and supersede only).
-    if (reason === WITHDRAWN.stopped || reason === WITHDRAWN.superseded) proposals?.withdrawChat(chatId, reason, noticeTo);
     for (const [id, request] of [...this.controlRequests])
       if (request.chatId === chatId && !request.sessionId) this.cancelControlRequest(id, request, reason, noticeTo);
     const action = this.actionRequests.get(chatId);
@@ -2253,6 +2251,11 @@ export function getSandboxProfileProposals(): SandboxProfileProposals {
   onSandboxBuildFinished((record) => created.onBuildFinished(record));
   setPendingProposalView(created);
   return (proposals = created);
+}
+
+/** The proposal manager if anything has started it; never starts one (Stop and supersede: a chat with no proposals needs nothing). */
+export function peekSandboxProfileProposals(): SandboxProfileProposals | undefined {
+  return proposals;
 }
 
 let hostPromise: Promise<ComputerUseHost> | undefined;
