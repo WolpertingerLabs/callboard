@@ -8,6 +8,7 @@ import {
   type Lease,
   type LeaseRef,
   type Observation,
+  type OpenOptions,
   type Operation,
   type Principal,
   type Probe,
@@ -58,7 +59,9 @@ interface Session {
   inflight?: Promise<unknown>;
   /** The lock this session holds: the driver's domain, plus the session id for a `lockScope: "session"` driver. */
   lock?: string;
+  variant?: string;
 }
+const VARIANT = /^[A-Za-z0-9][A-Za-z0-9._@:-]{0,127}$/;
 /** Single authoritative service; transports bind identities, never accept them in input schemas. */
 export class ComputerUseService {
   private targets = new Map<string, Target>();
@@ -68,6 +71,7 @@ export class ComputerUseService {
   private timeout: number;
   private maxQueue: number;
   private ttl: number;
+  private maxTtl: number;
   private maxSessions: number;
   private retention: number;
   private disposed = false;
@@ -91,6 +95,12 @@ export class ComputerUseService {
       .min(100)
       .max(7200000)
       .parse(options.sessionTtlMs ?? 900000);
+    this.maxTtl = z
+      .number()
+      .int()
+      .min(this.ttl)
+      .max(86400000)
+      .parse(options.maxSessionTtlMs ?? this.ttl);
     this.maxSessions = z
       .number()
       .int()
@@ -120,6 +130,7 @@ export class ComputerUseService {
             kind: t.driver.kind,
             lockDomain: t.driver.lockDomain,
             lockScope: t.driver.lockScope === "session" ? "session" : "driver",
+            supportsVariants: t.driver.supportsVariants === true,
             probe: t.driver.probe.bind(t.driver),
             open: t.driver.open.bind(t.driver),
           }),
@@ -190,6 +201,7 @@ export class ComputerUseService {
       state: s.state,
       controller: s.state === "ready" ? s.controller.role : "none",
       expiresAt: s.expiresAt,
+      ...(s.variant ? { variant: s.variant } : {}),
     };
   }
   private grant(s: Session): Lease {
@@ -380,9 +392,18 @@ export class ComputerUseService {
       clearTimeout(timer);
     }
   }
-  async open(principal: Principal, targetId: string, signal?: AbortSignal): Promise<Lease> {
+  async open(principal: Principal, targetId: string, signal?: AbortSignal, options: OpenOptions = {}): Promise<Lease> {
     const p = identity(principal),
       t = this.target(targetId);
+    // Checked before policy, so a malformed request never reaches the authorizer or the driver.
+    const parsed = z
+      .object({ ttlMs: z.number().int().min(1000).max(this.maxTtl).optional(), variant: z.string().regex(VARIANT).optional() })
+      .strict()
+      .safeParse(options ?? {});
+    if (!parsed.success) fail("invalid_request");
+    const ttl = parsed.data.ttlMs ?? this.ttl;
+    const variant = parsed.data.variant;
+    if (variant !== undefined && !t.driver.supportsVariants) fail("invalid_request");
     await this.allowed(p, "open", t);
     if (this.disposed) fail("disposed");
     if (signal?.aborted) fail("cancelled");
@@ -408,13 +429,14 @@ export class ComputerUseService {
       generation: 1,
       leaseId: randomUUID(),
       state: "starting",
-      expiresAt: Date.now() + this.ttl,
+      expiresAt: Date.now() + ttl,
       abort: new AbortController(),
       tail: Promise.resolve(),
       pending: 0,
       seen: new Set(),
       revision: 0,
       lock: domain,
+      ...(variant ? { variant } : {}),
     };
     this.sessions.set(id, s);
     const ref = { sessionId: id, generation: 1 };
@@ -428,6 +450,7 @@ export class ComputerUseService {
           const driver = await t.driver.open({
             sessionId: id,
             ownerId: p.ownerId,
+            ...(variant ? { variant } : {}),
             signal: sig,
             onTargetChanged: () => this.invalidateFrame(s),
             // Same fencing a failed call would cause, without waiting for one.

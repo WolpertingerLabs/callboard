@@ -39,9 +39,26 @@ import {
 import { sessionRegistry } from "./session-registry.js";
 import { enqueueChatNotice } from "./chat-notices.js";
 import { openHumanApproval, type ApprovalCompletion, type OpenHumanApproval } from "./pending-requests.js";
-import type { ComputerUseContainerState, ComputerUseSandboxInfo, SandboxDesktopMode, SandboxDesktopVariant } from "shared/types/index.js";
+import {
+  SANDBOX_BASE_SESSION_MINUTES,
+  SANDBOX_DESKTOP_BOUNDS,
+  type ComputerUseContainerState,
+  type ComputerUseSandboxInfo,
+  type ComputerUseSandboxProfile,
+  type SandboxDesktopMode,
+  type SandboxDesktopVariant,
+} from "shared/types/index.js";
 import { managedSandboxDriver } from "./sandbox-containers.js";
-import { chatDeliveryOwner, currentSandboxMode, getSandboxDeliveries, getSandboxManager, sandboxInfo } from "./sandbox-desktop.js";
+import { parseProfileVariant } from "./sandbox-profiles.js";
+import {
+  chatDeliveryOwner,
+  currentSandboxMode,
+  getSandboxDeliveries,
+  getSandboxManager,
+  sandboxInfo,
+  sandboxProfileForConsent,
+  type ConsentProfile,
+} from "./sandbox-desktop.js";
 import type { DeliveryContext, DeliveryOwner, OutboxSource } from "./sandbox-deliverables.js";
 
 const log = createLogger("computer-use");
@@ -394,6 +411,8 @@ interface ControlRequest {
   withdrawn?: { reason: WithdrawReason; noticeTo: string };
   /** Which target the human is asked about ({@link ComputerUseHost.targetIdentity}); re-checked on approval. */
   identity?: string;
+  /** The Sandbox desktop profile the human is asked to start (its recipe digest is in `variant`). */
+  profile?: ConsentProfile;
 }
 
 /**
@@ -491,6 +510,10 @@ interface SandboxView {
   sandboxMode?(): string;
   sandboxInfo(): ComputerUseSandboxInfo;
   containerState(sessionId: string): ComputerUseContainerState | undefined;
+  /** A profile a session can start from now, for this chat; throws with a code and words for the agent otherwise. */
+  profileForConsent?(name: string, chatId: string): Promise<ConsentProfile>;
+  /** The profile a live session runs (name, summary, limits). */
+  sessionProfile?(sessionId: string): ComputerUseSandboxProfile | undefined;
 }
 const sandboxView = (driver: Driver): SandboxView | undefined => {
   const candidate = driver as Partial<SandboxView>;
@@ -1048,10 +1071,14 @@ export class ComputerUseHost {
    */
   private presentation(value: SessionStatus, legacy = false) {
     const kind = kindOfTarget(value.targetId);
-    const container = kind === "sandbox" ? sandboxView(this.drivers.sandbox)?.containerState(value.sessionId) : undefined;
+    const view = kind === "sandbox" ? sandboxView(this.drivers.sandbox) : undefined;
+    const container = view?.containerState(value.sessionId);
+    const profileName = kind === "sandbox" ? sessionProfileName(value.variant) : undefined;
+    const profile = profileName ? (view?.sessionProfile?.(value.sessionId) ?? { name: profileName }) : undefined;
     return {
       ...value,
       ...(container ? { container } : {}),
+      ...(profile ? { profile } : {}),
       id: value.sessionId,
       kind: legacy && kind === "sandbox" ? ("native" as const) : viewerKind(kind),
       controller: value.controller === "none" ? null : value.controller,
@@ -1229,9 +1256,13 @@ export class ComputerUseHost {
    * open in the Computer view — is reported back as `consent_pending` rather
    * than refused, so a forgotten one is not a dead end.
    */
-  async requestControl(chatId: string, kind: ComputerTargetKind, reason: string, signal: AbortSignal) {
+  async requestControl(chatId: string, kind: ComputerTargetKind, reason: string, signal: AbortSignal, options: { profile?: string } = {}) {
     if (!COMPUTER_TARGET_KINDS.includes(kind) || typeof reason !== "string" || !reason.trim() || reason.length > 500)
       throw controlError("invalid_request", "Provide a target kind and a reason of 1–500 characters.");
+    // "base" (or nothing) is the base sandbox desktop; any other name is a profile, sandbox only.
+    const profileName = options.profile === undefined || options.profile === "base" ? undefined : options.profile;
+    if (profileName !== undefined && (kind !== "sandbox" || typeof profileName !== "string" || !/^[a-z][a-z0-9-]{0,30}[a-z0-9]$/.test(profileName)))
+      throw controlError("invalid_request", kind !== "sandbox" ? "A profile applies only to the sandbox target." : "Invalid profile name.");
     signal.throwIfAborted();
     const current = this.readPolicy(chatId);
     const restriction = computerUseScopeError(kind, current.policy);
@@ -1242,6 +1273,12 @@ export class ComputerUseHost {
     if (existing) {
       this.agentLease(chatId, existing.sessionId, existing.generation);
       if (existing.state !== "ready") throw controlError("lease_conflict", "Target is already starting; check cu_open later.");
+      const running = kind === "sandbox" ? sessionProfileName(existing.variant) : undefined;
+      if (running !== profileName)
+        throw controlError(
+          "lease_conflict",
+          `This chat already has a sandbox session (${running ? `profile ${running}` : "the base desktop"}), not ${profileName ? `profile ${profileName}` : "the base desktop"}. Stop it with cu_stop first if you need the other one; starting it needs fresh consent.`,
+        );
       return this.presentation(existing);
     }
     // One target request per chat. Rather than refuse, say what is already
@@ -1264,6 +1301,20 @@ export class ComputerUseHost {
     const id = randomUUID();
     const target = this.targetLabel(kind);
     const record: ControlRequest = { chatId, kind, signature: current.signature, abort: new AbortController(), expiresAt: Infinity };
+    if (profileName !== undefined) {
+      const view = sandboxView(this.drivers.sandbox);
+      if (!view?.profileForConsent) throw controlError("unsupported", "Sandbox profiles are not available on this Callboard.");
+      try {
+        record.profile = await view.profileForConsent(profileName, chatId);
+      } catch (error) {
+        const code = (error as { code?: unknown }).code;
+        throw controlError(
+          code === "invalid_request" ? "invalid_request" : "unsupported",
+          error instanceof Error ? error.message : "That profile is not available.",
+        );
+      }
+      signal.throwIfAborted();
+    }
     // Reserve before the first asynchronous probe. Stop can discover this even
     // before the card arrives, and it stays discoverable until it is answered.
     this.controlRequests.set(id, record);
@@ -1291,7 +1342,18 @@ export class ComputerUseHost {
       {
         toolName: CU_REQUEST_CONTROL_TOOL_NAME,
         controlRequest: true,
-        input: { kind, target, reason: reason.trim(), permission: levelFor(kind, current.policy), durationMinutes: 15, ...this.sandboxPromptVariant(kind) },
+        input: {
+          kind,
+          target,
+          reason: reason.trim(),
+          permission: levelFor(kind, current.policy),
+          durationMinutes: record.profile?.limits.sessionMinutes ?? SANDBOX_BASE_SESSION_MINUTES,
+          ...this.sandboxPromptVariant(kind),
+          // The profile the human is asked to start: its name, summary and the limits it will get.
+          ...(record.profile
+            ? { profile: { name: record.profile.name, description: record.profile.description, gl: record.profile.gl, limits: record.profile.limits } }
+            : {}),
+        },
       },
       (approved) => (approved ? this.enableApproved(id, record) : this.refuseControl(id, record)),
     );
@@ -1367,7 +1429,13 @@ export class ComputerUseHost {
       const ready = await boundedProbe(this.drivers[kind], signal, Date.now() + CONTROL_PROBE_TIMEOUT_MS);
       signal.throwIfAborted();
       if (!ready.available) throw controlError("unsupported", ready.reason ?? "Target is no longer available. Fix host setup before retrying.");
-      const session = await this.openApproved(chatId, kind, current, signal);
+      const session = await this.openApproved(
+        chatId,
+        kind,
+        current,
+        signal,
+        record.profile ? { variant: record.profile.variant, ttlMs: record.profile.limits.sessionMinutes * 60_000 } : undefined,
+      );
       // openApproved has its own await boundary. Stop can land after it
       // registers a grant but before this continuation publishes the alias.
       // Fence that session before reporting failure.
@@ -1398,7 +1466,7 @@ export class ComputerUseHost {
       this.emitControlResult(chatId, CU_REQUEST_CONTROL_TOOL_NAME, record.approval?.requestId, `${label} control enabled.`, kind);
       this.notify(
         chatId,
-        `${noticeHeader(`${label.toLowerCase()} control enabled`)}\n\nThe human approved your request ${id}. Session ${session.id} (generation ${session.generation}) is ready and agent-controlled for up to 15 minutes. Call cu_observe with it for a fresh frame before acting.`,
+        `${noticeHeader(`${label.toLowerCase()} control enabled`)}\n\nThe human approved your request ${id}. Session ${session.id} (generation ${session.generation})${record.profile ? ` on sandbox profile ${record.profile.name}` : ""} is ready and agent-controlled for up to ${Math.max(1, Math.round((session.expiresAt - Date.now()) / 60_000))} minutes. Call cu_observe with it for a fresh frame before acting.`,
       );
       return { ok: true };
     } catch (error) {
@@ -1454,7 +1522,13 @@ export class ComputerUseHost {
       throw controlError("denied", "Approval was withdrawn or its scope changed; enable the target again");
     return this.openApproved(chatId, pending.kind, current);
   }
-  private async openApproved(chatId: string, kind: ComputerTargetKind, current: HostPolicy, signal?: AbortSignal) {
+  private async openApproved(
+    chatId: string,
+    kind: ComputerTargetKind,
+    current: HostPolicy,
+    signal?: AbortSignal,
+    openOptions?: { variant: string; ttlMs: number },
+  ) {
     const key = `${chatId}:${targetId(kind)}`;
     if (this.opening.has(key)) throw controlError("lease_conflict", "Target is already starting");
     if (this.service.status(controlPrincipal(chatId, "human")).some((s) => s.targetId === targetId(kind) && ["starting", "ready"].includes(s.state)))
@@ -1463,7 +1537,7 @@ export class ComputerUseHost {
     const binding = this.targetBinding(kind);
     this.opening.set(key, { ...current, binding });
     try {
-      const lease = await this.service.open(controlPrincipal(chatId, "agent"), targetId(kind), signal);
+      const lease = await this.service.open(controlPrincipal(chatId, "agent"), targetId(kind), signal, openOptions);
       try {
         if (signal?.aborted || this.readPolicy(chatId).signature !== current.signature || !this.bindingHolds(kind, binding))
           throw controlError("cancelled", "Control startup was cancelled or its authority changed.");
@@ -1945,6 +2019,11 @@ export function localDesktopDriver(
   });
 }
 
+/** The profile name in a sandbox session's service variant (`<scope>:<name>@<digest>`), or undefined for the base desktop. */
+export function sessionProfileName(variant: unknown): string | undefined {
+  return typeof variant === "string" ? parseProfileVariant(variant)?.name : undefined;
+}
+
 /** A sandbox target that can never open, and says why. Its own lock domain, so it never contends with a real one. */
 function unavailableSandboxDriver(reason: string): Driver {
   return {
@@ -1979,6 +2058,8 @@ export function sandboxTargetDriver(options: {
   endpoint: Driver;
   info?: () => ComputerUseSandboxInfo;
   containerState?: (sessionId: string) => ComputerUseContainerState | undefined;
+  profileForConsent?: (name: string, chatId: string) => Promise<ConsentProfile>;
+  sessionProfile?: (sessionId: string) => ComputerUseSandboxProfile | undefined;
 }): Driver & Partial<RemoteTarget> & SandboxView {
   const off = unavailableSandboxDriver(SANDBOX_TURNED_OFF);
   const current = (): Driver => {
@@ -1990,8 +2071,14 @@ export function sandboxTargetDriver(options: {
     kind: "native-desktop",
     lockDomain: "sandbox-desktop",
     lockScope: "session",
+    // A variant names a managed profile; open refuses it in any other mode.
+    supportsVariants: true,
     probe: () => current().probe(),
-    open: (context) => current().open(context),
+    // A profile is a managed container's image: an endpoint (or off) cannot honour one, so it never opens without it.
+    open: (context) =>
+      context.variant !== undefined && options.mode() !== "managed"
+        ? Promise.reject(controlError("unsupported", "Sandbox profiles need managed mode."))
+        : current().open(context),
     get endpoint() {
       return remote()?.endpoint;
     },
@@ -2010,6 +2097,8 @@ export function sandboxTargetDriver(options: {
     sandboxMode: () => options.mode(),
     sandboxInfo: () => options.info?.() ?? { mode: options.mode() },
     containerState: (sessionId: string) => options.containerState?.(sessionId),
+    ...(options.profileForConsent ? { profileForConsent: options.profileForConsent } : {}),
+    sessionProfile: (sessionId: string) => options.sessionProfile?.(sessionId),
   } as Driver & Partial<RemoteTarget> & SandboxView;
 }
 
@@ -2122,10 +2211,14 @@ export function getComputerUseHost(): Promise<ComputerUseHost> {
         endpoint: withOutboxSync(sandboxDesktopDriver(pkg), getSandboxDeliveries(), chatDeliveryOwner),
         info: () => sandboxInfo(),
         containerState: (sessionId) => manager.containerState(sessionId),
+        profileForConsent: (name, chatId) => sandboxProfileForConsent(name, chatId),
+        sessionProfile: (sessionId) => manager.profileOf(sessionId),
       }),
     };
     const service = new pkg.ComputerUseService({
       targets: COMPUTER_TARGET_KINDS.map((kind) => ({ id: TARGET_IDS[kind], enabled: true, driver: drivers[kind] })),
+      // A sandbox profile's session length comes from its recipe, clamped to the Settings cap (at most 8 hours); every other session keeps 15 minutes.
+      maxSessionTtlMs: SANDBOX_DESKTOP_BOUNDS.profileMaxSessionMinutes.max * 60_000,
       authorize: (request) => host?.authorize(request) ?? "deny",
     });
     const host: ComputerUseHost = new ComputerUseHost(service, drivers);

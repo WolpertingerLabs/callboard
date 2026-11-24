@@ -223,3 +223,54 @@ describe("the sandbox cards follow how the daemon runs it (input.sandbox)", () =
     expect(screen.getByText(/Open https:\/\/example.com/).textContent).not.toContain(`"mode"`);
   });
 });
+
+describe("a sandbox profile on the consent card (input.profile)", () => {
+  const card = (extra: Record<string, unknown>) => (
+    <FeedbackPanel
+      action={{
+        type: "permission_request",
+        toolName: "mcp__computer_use__cu_request_control",
+        requestId: "server-id",
+        humanOnly: true,
+        controlRequest: true,
+        input: {
+          kind: "sandbox",
+          target: "sandbox (container on this machine)",
+          reason: "Model a teapot",
+          permission: "ask",
+          sandbox: { mode: "managed" },
+          ...extra,
+        },
+      }}
+      onRespond={() => {}}
+    />
+  );
+
+  it("names the profile and what the session gets, and the grant lasts the profile's session length", () => {
+    render(
+      card({
+        durationMinutes: 60,
+        profile: {
+          name: "blender",
+          description: "Blender with software OpenGL.",
+          gl: "software",
+          limits: { cpus: 4, memoryMb: 4096, homeMb: 2048, sessionMinutes: 60 },
+        },
+      }),
+    );
+    const profile = screen.getByTestId("consent-sandbox-profile").textContent!;
+    expect(profile).toContain("Profile: blender");
+    expect(profile).toContain("Blender with software OpenGL.");
+    expect(profile).toContain("4 CPUs, 4 GiB memory, 2 GiB home (in memory, counted toward it), 60-minute session, software OpenGL");
+    expect(screen.getByText("Grant duration: up to 60 minutes. You can Stop computer control at any time.")).toBeTruthy();
+  });
+
+  it("without a profile (or from an older daemon) it is the base desktop for 15 minutes; malformed limits are left out", () => {
+    render(card({}));
+    expect(screen.queryByTestId("consent-sandbox-profile")).toBeNull();
+    expect(screen.getByText("Grant duration: up to 15 minutes. You can Stop computer control at any time.")).toBeTruthy();
+    cleanup();
+    render(card({ profile: { name: "odd", limits: { cpus: "lots" } } }));
+    expect(screen.getByTestId("consent-sandbox-profile").textContent).toBe("Profile: odd");
+  });
+});

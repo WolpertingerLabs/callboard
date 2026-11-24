@@ -794,6 +794,15 @@ export default function ComputerUsePanel({
                   Container: {containerPhaseLabel(session.container)}
                 </p>
               )}
+              {session.kind === "sandbox" && session.profile && (
+                <p className="computer-use-session-meta" data-testid="computer-use-session-profile">
+                  Profile: <strong>{session.profile.name}</strong>
+                  {session.profile.limits
+                    ? ` · ${session.profile.limits.cpus} CPU${session.profile.limits.cpus === 1 ? "" : "s"}, ${session.profile.limits.memoryMb} MiB memory, ${session.profile.limits.homeMb} MiB home, ${session.profile.limits.sessionMinutes}-minute session`
+                    : ""}
+                  {session.profile.gl === "software" ? " · software OpenGL" : ""}
+                </p>
+              )}
               {session.reason && (
                 <p className="computer-use-notice" role="status">
                   {session.reason}

@@ -9,6 +9,30 @@ import type { PendingAction } from "../api";
  * strictly: anything else, or an older daemon that sends nothing, reads as the
  * shared container — the stricter description.
  */
+/**
+ * The Sandbox desktop profile a consent card asks about (`input.profile`),
+ * checked field by field: `input` is an opaque record, and an older daemon
+ * sends none (the base desktop).
+ */
+export function promptSandboxProfile(
+  input: Record<string, unknown> | undefined,
+): { name: string; description?: string; gl?: string; limits?: { cpus: number; memoryMb: number; homeMb: number; sessionMinutes: number } } | undefined {
+  const value = input?.profile as { name?: unknown; description?: unknown; gl?: unknown; limits?: Record<string, unknown> } | undefined;
+  if (!value || typeof value.name !== "string" || !value.name) return undefined;
+  const l = value.limits;
+  const limits =
+    l && ["cpus", "memoryMb", "homeMb", "sessionMinutes"].every((key) => typeof l[key] === "number" && Number.isFinite(l[key]))
+      ? { cpus: l.cpus as number, memoryMb: l.memoryMb as number, homeMb: l.homeMb as number, sessionMinutes: l.sessionMinutes as number }
+      : undefined;
+  return {
+    name: value.name,
+    ...(typeof value.description === "string" ? { description: value.description } : {}),
+    ...(typeof value.gl === "string" ? { gl: value.gl } : {}),
+    ...(limits ? { limits } : {}),
+  };
+}
+const mb = (value: number) => (value >= 1024 && value % 1024 === 0 ? `${value / 1024} GiB` : `${value} MiB`);
+
 export function promptSandboxVariant(input: Record<string, unknown> | undefined): SandboxDesktopVariant {
   const value = input?.sandbox as { mode?: unknown; network?: unknown } | undefined;
   if (!value || typeof value !== "object") return {};
@@ -68,6 +92,8 @@ function FeedbackContent({ action, onRespond, agentName = "Claude", approveLocke
     const desktop = action.input?.kind === "desktop";
     const sandbox = action.input?.kind === "sandbox";
     const label = desktop ? "desktop" : sandbox ? "Sandbox desktop" : "browser";
+    const profile = sandbox ? promptSandboxProfile(action.input) : undefined;
+    const minutes = typeof action.input?.durationMinutes === "number" && action.input.durationMinutes > 0 ? action.input.durationMinutes : 15;
     return (
       <div style={questionPanelStyle}>
         <strong>Enable {label} control</strong>
@@ -80,7 +106,22 @@ function FeedbackContent({ action, onRespond, agentName = "Claude", approveLocke
               ? "Ask: each agent action requires a separate confirmation here in chat."
               : "Allow: the agent can act unattended after you enable control."}
           </p>
-          <p>Grant duration: up to 15 minutes. You can Stop computer control at any time.</p>
+          {profile && (
+            <div data-testid="consent-sandbox-profile" style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "6px 10px", margin: "6px 0" }}>
+              <p style={{ margin: 0 }}>
+                <strong>Profile: {profile.name}</strong>
+                {profile.description ? ` — ${profile.description}` : ""}
+              </p>
+              {profile.limits && (
+                <p style={{ margin: "4px 0 0 0" }}>
+                  {profile.limits.cpus} CPU{profile.limits.cpus === 1 ? "" : "s"}, {mb(profile.limits.memoryMb)} memory, {mb(profile.limits.homeMb)} home (in
+                  memory, counted toward it), {profile.limits.sessionMinutes}-minute session{profile.gl === "software" ? ", software OpenGL" : ""}. A fresh
+                  container from this profile&apos;s image, hardened like the base desktop.
+                </p>
+              )}
+            </div>
+          )}
+          <p>Grant duration: up to {minutes} minutes. You can Stop computer control at any time.</p>
           {action.nonBlocking && (
             <p>
               {agentName} isn’t waiting on this: it will be told your answer. The request stays open until you enable or deny it — or it is withdrawn by Stop

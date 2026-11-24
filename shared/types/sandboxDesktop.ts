@@ -42,6 +42,16 @@ export interface SandboxDesktopSettings {
    * are refused (and reported); nothing delivered is deleted to make room.
    */
   deliverablesGb?: number;
+  /**
+   * Caps on what a sandbox profile's recipe may ask for (its `limits`). A
+   * profile's CPUs, memory, home size and session length are the recipe's,
+   * each clamped to these; a recipe that omits one gets the base sandbox's
+   * value (`cpus`, `memoryMb`, a 512 MiB home, 15 minutes).
+   */
+  profileMaxCpus?: number;
+  profileMaxMemoryMb?: number;
+  profileMaxHomeMb?: number;
+  profileMaxSessionMinutes?: number;
 }
 
 /** Bounds and defaults, shared so the form and the server agree. */
@@ -52,10 +62,89 @@ export const SANDBOX_DESKTOP_BOUNDS = {
   keepHours: { min: 1, max: 168, default: 24 },
   maxKept: { min: 0, max: 8, default: 2 },
   deliverablesGb: { min: 1, max: 1024, default: 5 },
+  profileMaxCpus: { min: 0.5, max: 32, default: 4 },
+  profileMaxMemoryMb: { min: 512, max: 65536, default: 8192 },
+  profileMaxHomeMb: { min: 256, max: 65536, default: 4096 },
+  profileMaxSessionMinutes: { min: 5, max: 480, default: 120 },
 } as const;
+
+/** The base sandbox's home size and session length, which a profile that does not ask for its own gets. */
+export const SANDBOX_BASE_HOME_MB = 512;
+export const SANDBOX_BASE_SESSION_MINUTES = 15;
 
 /** The one-time image build, for docs and messages. */
 export const SANDBOX_BUILD_COMMAND = "callboard sandbox build";
+/** A profile's build: `${SANDBOX_PROFILE_BUILD_COMMAND} <name>`. */
+export const SANDBOX_PROFILE_BUILD_COMMAND = "callboard sandbox build --profile";
+
+/** A sandbox profile's resources, after the Settings caps. */
+export interface SandboxProfileLimits {
+  cpus: number;
+  memoryMb: number;
+  /** The desktop user's tmpfs home (the outbox included). */
+  homeMb: number;
+  sessionMinutes: number;
+}
+
+/**
+ * A profile image's state, for Settings and `callboard sandbox profiles`:
+ * - `missing`: not built.
+ * - `current`: built from this recipe, by this compiler, on the current base content.
+ * - `outdated`: the base's content or the profile compiler changed since (see
+ *   `outdatedBy`). It still starts, but runs the driver host and hardening of
+ *   the build it came from; rebuilding the base makes every profile outdated.
+ * - `rebuild-required`: built from another version of the recipe. Refused: a
+ *   consent is to the current recipe, and this image is not built from it.
+ * - `unlabelled`: not labelled as this profile's image. Refused.
+ * - `insecure`: below a security floor (the base's or the profile compiler's). Refused.
+ * - `incompatible`: another protocol major. Refused.
+ */
+export type SandboxProfileState = "missing" | "current" | "outdated" | "rebuild-required" | "unlabelled" | "insecure" | "incompatible";
+
+/** One sandbox profile: its recipe's summary, its effective limits and its image. */
+export interface SandboxProfileStatus {
+  /** `<scope>/<name>`, e.g. `global/blender`: what a build or a removal names. */
+  id: string;
+  /** `global` (built-ins), or a workspace's key (`w<12 hex>`). */
+  scope: string;
+  name: string;
+  description: string;
+  /** Where the recipe comes from. Today only `builtin` (shipped with Callboard). */
+  source: "builtin";
+  gl: "none" | "software";
+  /** What the recipe asks for (absent: the base sandbox's value). */
+  requested: Partial<SandboxProfileLimits>;
+  /** What a session gets: the request, clamped to the Settings caps. */
+  limits: SandboxProfileLimits;
+  /** The limits the caps reduced. */
+  clamped?: (keyof SandboxProfileLimits)[];
+  /** The recipe digest a current image carries. */
+  digest: string;
+  /** What the build installs, for review: Debian packages and pinned downloads. */
+  packages: string[];
+  downloads: { url: string; sha256: string; dest: string }[];
+  /** The setup script, run at build time as the desktop user with no network: the riskiest part to review. */
+  setup: string;
+  path: string[];
+  env: Record<string, string>;
+  /** Docker host architectures it builds on; empty: any. */
+  architectures: string[];
+  /** False when this Docker host's architecture is not listed (it cannot be built here). Absent: unknown. */
+  architectureSupported?: boolean;
+  /** The canonical recipe (JSON): exactly what is built and what the digest covers. */
+  recipe: string;
+  image: { name: string; state: SandboxProfileState; outdatedBy?: ("base" | "compiler")[]; detail?: string; builtAt?: string; sizeBytes?: number };
+}
+
+/** A sandbox session's profile, for the Computer view and the consent card. Absent: the base sandbox. */
+export interface ComputerUseSandboxProfile {
+  name: string;
+  /** `<scope>/<name>`. */
+  id?: string;
+  description?: string;
+  gl?: "none" | "software";
+  limits?: SandboxProfileLimits;
+}
 
 /** Something worth fixing that does not stop a sandbox starting. */
 export type SandboxDesktopWarning = "image-outdated";
@@ -104,7 +193,24 @@ export interface SandboxDesktopDiagnostics {
 }
 
 export interface SandboxDesktopBuild {
+  /**
+   * `running` also covers a build still queued (see `phase`), and `failed` an
+   * interrupted one: the values an older bundle knows.
+   */
   state: "idle" | "running" | "succeeded" | "failed";
+  /** The build's record id: `GET /api/sandbox-desktop/builds/:id` (and `/log`). */
+  id?: string;
+  kind?: "base" | "profile";
+  /** The precise state. `interrupted`: Callboard stopped before it finished. `cancelled`: a human cancelled it. */
+  phase?: "queued" | "running" | "succeeded" | "failed" | "interrupted" | "cancelled";
+  /** Who asked for it. Today always a human; a later change adds an agent's approved request. */
+  requestedBy?: { kind: "human" };
+  /** The profile being (or last) built: its name; absent: the base image. */
+  profile?: string;
+  /** The profile's entry id (`global/blender`) and scope. */
+  profileId?: string;
+  scope?: string;
+  requestedAt?: number;
   startedAt?: number;
   finishedAt?: number;
   /** The last few KB of `docker build` output. */
@@ -132,6 +238,10 @@ export interface SandboxDesktopStatus {
   canEdit: boolean;
   /** This daemon's owner label value, derived from its data directory. */
   owner: string;
+  /** The sandbox profiles this Callboard knows, with their image state. Absent from an older daemon. */
+  profiles?: SandboxProfileStatus[];
+  /** Recent builds, newest first (no output; fetch a build by id for its log). */
+  builds?: SandboxDesktopBuild[];
 }
 
 /** The sandbox part of the Computer view's sandbox capability. */

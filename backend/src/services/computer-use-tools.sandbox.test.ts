@@ -1,4 +1,5 @@
 /** The agent tools and the Sandbox desktop: asked for by kind, listed by kind, and told apart from the user's desktop. */
+import { z } from "zod";
 import { afterEach, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { ComputerUseService, type Driver } from "@wolpertingerlabs/computer-use";
@@ -159,4 +160,29 @@ it("reads the mode when the tool spec is built, so a mode change reaches the nex
   expect(describe()).toContain("shared by every chat");
   variant = { mode: "managed" };
   expect(describe()).toContain("fresh one for each session");
+});
+
+it("profiles: cu_request_control takes an optional profile, and only the managed descriptions explain them (no recipe text)", () => {
+  const managed = buildComputerUseToolsSpec(
+    () => CHAT,
+    () => ({ mode: "managed", network: "internet" }),
+  );
+  const request = managed.tools.find((item) => item.name === "cu_request_control")!;
+  const schema = z.object(request.inputSchema as z.ZodRawShape);
+  expect(schema.safeParse({ kind: "sandbox", reason: "r", profile: "blender" }).success).toBe(true);
+  expect(schema.safeParse({ kind: "sandbox", reason: "r" }).success).toBe(true);
+  for (const profile of ["Blender", "../x", "a b", "x".repeat(40)]) expect(schema.safeParse({ kind: "sandbox", reason: "r", profile }).success).toBe(false);
+  for (const name of ["cu_status", "cu_open", "cu_request_control"]) {
+    const description = managed.tools.find((item) => item.name === name)!.description;
+    expect(description).toContain('cu_request_control {kind:"sandbox", profile:"<name>"}');
+    expect(description).toContain("building one is the human's job");
+    // Built-in recipe text (descriptions, packages, URLs) never reaches a tool description.
+    expect(description).not.toContain("download.blender.org");
+    expect(description).not.toContain("x11-apps");
+  }
+  const endpoint = buildComputerUseToolsSpec(
+    () => CHAT,
+    () => ({ mode: "endpoint" }),
+  );
+  for (const tool of endpoint.tools) expect(tool.description).not.toContain("Sandbox profiles:");
 });
