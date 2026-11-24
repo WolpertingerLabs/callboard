@@ -173,15 +173,54 @@ function resolvePort(envValue: string | undefined, fallback: number): number {
   return parsed;
 }
 
-/** Loopback guard — used by /events/stream, /admin.
- *  Hoisted to module scope so the admin router and its tests can reuse it. */
+/**
+ * Headers that mean "something forwarded this request to me". Their presence
+ * is the signal; their values are never read or trusted. Callboard's
+ * `FORWARDING_HEADERS` (backend/src/utils/client-ip.ts) plus `via`, which a
+ * proxy such as Squid or Apache with `ProxyVia` adds without any X-Forwarded-*.
+ */
+const FORWARDING_HEADERS = [
+  'x-forwarded-for',
+  'x-forwarded-host',
+  'x-forwarded-proto',
+  'x-real-ip',
+  'forwarded',
+  'via',
+  'cf-connecting-ip',
+  'x-client-ip',
+  'true-client-ip',
+  'fastly-client-ip',
+  'fly-client-ip',
+] as const;
+
+/**
+ * True only for a direct connection from this machine: the socket's peer is
+ * loopback AND the request carries no forwarding header. A reverse proxy on the
+ * same host (Caddy, nginx, `tailscale serve`, `ssh -R`) connects from loopback,
+ * so the socket address alone would admit every client behind it. A proxy that
+ * forwards without marking the hop is indistinguishable at this layer — don't
+ * put one in front of loopback-only routes.
+ */
+export function isDirectLoopbackClient(req: express.Request): boolean {
+  // Typed as always present, but hand-built requests (tests, adapters) may omit it.
+  const headers = (req.headers as express.Request['headers'] | undefined) ?? {};
+  for (const name of FORWARDING_HEADERS) {
+    // An empty value still means a hop announced itself.
+    if (headers[name] !== undefined) return false;
+  }
+  const addr = req.socket.remoteAddress;
+  return addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1';
+}
+
+/** Loopback guard — used by /events/stream. Refuses proxied requests even from
+ *  a loopback socket (see {@link isDirectLoopbackClient}).
+ *  Hoisted to module scope so tests can reuse it. */
 export function requireLoopback(
   req: express.Request,
   res: express.Response,
   next: express.NextFunction,
 ): void {
-  const addr = req.socket.remoteAddress;
-  if (addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1') {
+  if (isDirectLoopbackClient(req)) {
     next();
   } else {
     res.status(403).json({ error: 'Forbidden: local access only' });
