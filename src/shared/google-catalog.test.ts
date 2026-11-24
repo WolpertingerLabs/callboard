@@ -829,6 +829,12 @@ describe('cross-service scope audit', () => {
     }
   });
 
+  it('notes the watch and stop methods read scopes reach, and that no level allowlists them', () => {
+    for (const svc of ['gmail', 'drive', 'calendar'] as const) {
+      expect(catalog.apiAccepts[svc].note, svc).toMatch(/watch[\s\S]*no level allowlists/);
+    }
+  });
+
   it('apiAccepts lists only scopes the catalog offers', () => {
     const offered = new Set(LEVELS.flatMap(([, l]) => l.scopes));
     for (const svc of GOOGLE_SERVICE_IDS) {

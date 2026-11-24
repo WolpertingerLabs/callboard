@@ -392,7 +392,8 @@
         "https://www.googleapis.com/auth/calendar.freebusy",
         "https://www.googleapis.com/auth/calendar.readonly"
       ],
-      "write": []
+      "write": [],
+      "note": "the watch methods (events, calendarList, settings, acl) and channels.stop accept calendar.readonly; calendar.read excludes the watch paths and no level allowlists channels/stop"
     },
     "drive": {
       "revision": "20261117",
@@ -402,7 +403,8 @@
       ],
       "write": [
         "https://www.googleapis.com/auth/drive.file"
-      ]
+      ],
+      "note": "files.watch, changes.watch, channels.stop and the POST files.download also accept drive.readonly; they are not data writes, and no level allowlists them"
     },
     "sheets": {
       "revision": "20261118",
