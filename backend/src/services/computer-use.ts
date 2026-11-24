@@ -49,6 +49,7 @@ import {
   type SandboxDesktopVariant,
 } from "shared/types/index.js";
 import { managedSandboxDriver } from "./sandbox-containers.js";
+import { parseProfileVariant } from "./sandbox-profiles.js";
 import {
   chatDeliveryOwner,
   currentSandboxMode,
@@ -2018,9 +2019,9 @@ export function localDesktopDriver(
   });
 }
 
-/** The profile name in a sandbox session's service variant (`<name>@<digest>`), or undefined for the base desktop. */
+/** The profile name in a sandbox session's service variant (`<scope>:<name>@<digest>`), or undefined for the base desktop. */
 export function sessionProfileName(variant: unknown): string | undefined {
-  return typeof variant === "string" ? /^([a-z][a-z0-9-]{0,30}[a-z0-9])@[0-9a-f]{16}$/.exec(variant)?.[1] : undefined;
+  return typeof variant === "string" ? parseProfileVariant(variant)?.name : undefined;
 }
 
 /** A sandbox target that can never open, and says why. Its own lock domain, so it never contends with a real one. */
@@ -2070,6 +2071,8 @@ export function sandboxTargetDriver(options: {
     kind: "native-desktop",
     lockDomain: "sandbox-desktop",
     lockScope: "session",
+    // A variant names a managed profile; open refuses it in any other mode.
+    supportsVariants: true,
     probe: () => current().probe(),
     // A profile is a managed container's image: an endpoint (or off) cannot honour one, so it never opens without it.
     open: (context) =>

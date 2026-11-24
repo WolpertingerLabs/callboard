@@ -1711,18 +1711,27 @@ export async function updateSandboxDesktopSettings(patch: {
   return request("/sandbox-desktop", { method: "PUT", json: patch, error: "Failed to save the sandbox desktop settings" });
 }
 
-/** Start the explicit image build (the base, or one profile's); poll {@link getSandboxDesktopStatus} for its progress. */
-export async function buildSandboxDesktopImage(profile?: string): Promise<SandboxDesktopBuild> {
+/**
+ * Queue the explicit image build (the base, or one profile's, by name and scope);
+ * poll {@link getSandboxDesktopStatus} (or {@link getSandboxBuild}) for its progress.
+ */
+export async function buildSandboxDesktopImage(profile?: string, scope?: string): Promise<SandboxDesktopBuild> {
   return requestField("/sandbox-desktop/build", "build", {
     method: "POST",
-    json: profile ? { profile } : {},
+    json: profile ? { profile, ...(scope && scope !== "global" ? { scope } : {}) } : {},
     error: profile ? `Failed to start building profile ${profile}` : "Failed to start the sandbox image build",
   });
 }
 
-/** Remove a sandbox profile's image. Refused while a build runs or a container uses it. */
-export async function removeSandboxProfile(name: string): Promise<{ removed: boolean; status: SandboxDesktopStatus }> {
-  return request(`/sandbox-desktop/profiles/${encodeURIComponent(name)}`, { method: "DELETE", error: `Failed to remove profile ${name}` });
+/** One build by id, with the tail of its log. */
+export async function getSandboxBuild(id: string): Promise<SandboxDesktopBuild> {
+  return requestField(`/sandbox-desktop/builds/${encodeURIComponent(id)}`, "build", { error: "Failed to read the build" });
+}
+
+/** Remove a sandbox profile's image. Refused while it is being built or a container uses it. */
+export async function removeSandboxProfile(name: string, scope = "global"): Promise<{ removed: boolean; status: SandboxDesktopStatus }> {
+  const query = scope === "global" ? "" : `?scope=${encodeURIComponent(scope)}`;
+  return request(`/sandbox-desktop/profiles/${encodeURIComponent(name)}${query}`, { method: "DELETE", error: `Failed to remove profile ${name}` });
 }
 
 // Agent settings API functions

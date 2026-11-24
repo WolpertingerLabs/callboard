@@ -3,8 +3,11 @@
  *
  *   GET  /api/sandbox-desktop        — settings, the mode in force, diagnostics, build state
  *   PUT  /api/sandbox-desktop        — change settings (partial; `null` clears a field)
- *   POST /api/sandbox-desktop/build  — build the image, or with `{ profile }` one profile's image, in the background (explicit only)
- *   DELETE /api/sandbox-desktop/profiles/:name — remove a profile's image
+ *   POST /api/sandbox-desktop/build  — queue a build of the image, or with `{ profile, scope? }` one profile's image (explicit only); returns its record
+ *   GET  /api/sandbox-desktop/builds — recent builds, newest first
+ *   GET  /api/sandbox-desktop/builds/:id — one build, with the tail of its log (`?tail=` characters, default 64 KB)
+ *   GET  /api/sandbox-desktop/builds/:id/log — its whole (capped) log, as text
+ *   DELETE /api/sandbox-desktop/profiles/:name?scope= — remove a profile's image (scope default `global`)
  *
  * Reading is open to any authenticated caller, API keys included. Changing
  * settings, building and removing need a signed-in session, as for every other host
@@ -17,7 +20,16 @@ import { Router, type Request, type Response } from "express";
 import { requireSessionAuth } from "../auth.js";
 import { requireControlOrigin } from "./computer-use.js";
 import { peekComputerUseHost } from "../services/computer-use.js";
-import { currentSandboxMode, removeSandboxProfile, sandboxDesktopStatus, startSandboxBuild } from "../services/sandbox-desktop.js";
+import {
+  buildDto,
+  currentSandboxMode,
+  getSandboxBuilds,
+  removeSandboxProfile,
+  sandboxBuild,
+  sandboxDesktopStatus,
+  startSandboxBuild,
+} from "../services/sandbox-desktop.js";
+import { entryIdOf } from "../services/sandbox-profiles.js";
 import { SandboxSettingsError, updateSandboxSettings } from "../services/sandbox-desktop-settings.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -60,14 +72,19 @@ sandboxDesktopRouter.put("/", requireSessionAuth, requireControlOrigin, async (r
 });
 
 sandboxDesktopRouter.post("/build", requireSessionAuth, requireControlOrigin, (req: Request, res: Response) => {
-  const body = (req.body ?? {}) as { profile?: unknown };
-  const keys = Object.keys(body);
-  if (keys.some((key) => key !== "profile") || (body.profile !== undefined && typeof body.profile !== "string")) {
-    res.status(400).json({ error: "The body may only name a profile: { profile?: string }" });
+  const body = (req.body ?? {}) as { profile?: unknown; scope?: unknown };
+  if (Object.keys(body).some((key) => key !== "profile" && key !== "scope") || (body.scope !== undefined && body.profile === undefined)) {
+    res.status(400).json({ error: "The body may only name a profile: { profile?: string, scope?: string }" });
+    return;
+  }
+  const id = body.profile === undefined ? undefined : entryIdOf(body.profile, body.scope ?? "global");
+  if (body.profile !== undefined && !id) {
+    res.status(400).json({ error: "Invalid profile name or scope" });
     return;
   }
   try {
-    res.status(202).json({ build: startSandboxBuild(body.profile as string | undefined) });
+    const build = startSandboxBuild(id);
+    res.status(202).json({ build, id: build.id });
   } catch (error) {
     if ((error as { code?: string }).code === "not_found") {
       res.status(404).json({ error: error instanceof Error ? error.message : "No such profile" });
@@ -77,17 +94,42 @@ sandboxDesktopRouter.post("/build", requireSessionAuth, requireControlOrigin, (r
   }
 });
 
+sandboxDesktopRouter.get("/builds", (_req: Request, res: Response) => {
+  res.json({
+    builds: getSandboxBuilds()
+      .list()
+      .map((record) => buildDto(record)),
+  });
+});
+
+sandboxDesktopRouter.get("/builds/:id", (req: Request, res: Response) => {
+  const tail = Number(req.query.tail ?? 64 * 1024);
+  const build = sandboxBuild(String(req.params.id), Number.isInteger(tail) && tail > 0 ? tail : 64 * 1024);
+  if (!build) res.status(404).json({ error: "No such build" });
+  else res.json({ build });
+});
+
+sandboxDesktopRouter.get("/builds/:id/log", (req: Request, res: Response) => {
+  const log = getSandboxBuilds().log(String(req.params.id));
+  if (log === undefined) res.status(404).json({ error: "No such build" });
+  else res.type("text/plain").send(log);
+});
+
 sandboxDesktopRouter.delete("/profiles/:name", requireSessionAuth, requireControlOrigin, async (req: Request, res: Response) => {
+  const id = entryIdOf(String(req.params.name), req.query.scope ?? "global");
+  if (!id) {
+    res.status(400).json({ error: "Invalid profile name or scope" });
+    return;
+  }
   try {
-    const removed = await removeSandboxProfile(String(req.params.name));
+    const removed = await removeSandboxProfile(id);
     res.json({ removed, status: await sandboxDesktopStatus(true) });
   } catch (error) {
     const code = (error as { code?: string }).code;
     const message = error instanceof Error ? error.message : "Could not remove the profile's image";
     if (code === "not_found") res.status(404).json({ error: message });
-    else if (code === "conflict") res.status(409).json({ error: message });
     else {
-      log.warn(`Removing sandbox profile ${String(req.params.name)} failed: ${message}`);
+      if (code !== "conflict") log.warn(`Removing sandbox profile ${id} failed: ${message}`);
       res.status(409).json({ error: message });
     }
   }

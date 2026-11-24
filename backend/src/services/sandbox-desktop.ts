@@ -30,18 +30,26 @@ import { parseChatMetadataRecord } from "../utils/chat-metadata.js";
 import { effectiveProfileLimits, readSandboxSettings, resolveSandboxSettings } from "./sandbox-desktop-settings.js";
 import { profileForConsent, type ConsentProfile } from "./sandbox-profile-consent.js";
 import { buildSandboxImage, execDocker } from "./sandbox-image.js";
+import { join } from "node:path";
+import { canonicalProfileRecipe } from "@wolpertingerlabs/computer-use";
 import {
+  STARTABLE_PROFILE_STATES,
+  architectureProblem,
   buildProfileImage,
   currentBase,
+  hostArchitecture,
   inspectProfileImage,
+  listAllProfiles,
   listProfiles,
   loadBuiltinProfiles,
   removeProfileImage,
   resolveProfile,
-  type ProfileEntry,
+  resolveProfileId,
+  scopesFor,
+  type ProfileChatScope,
   type ProfileImageInfo,
-  type ProfileScope,
 } from "./sandbox-profiles.js";
+import { SandboxBuilds, type BuildRecord, type BuildTarget } from "./sandbox-builds.js";
 import { DATA_DIR } from "../utils/paths.js";
 import { chatFileService } from "./chat-file-service.js";
 import { createLogger } from "../utils/logger.js";
@@ -88,12 +96,16 @@ export function getSandboxManager(): SandboxContainerManager {
         .start(managedDelivery(sandbox))
         .catch((error) => log.warn(`Outbox sync did not start: ${error instanceof Error ? error.message : "unknown"}`)),
     adoptPaused: (sandbox) => getSandboxRecovery().adoptPaused(sandbox),
-    profile: (name, chatId) => resolveProfile(name, profileScope(chatId)),
+    // By the session's variant: that entry, if this chat may use its scope.
+    profile: (ref, chatId) => {
+      const entry = resolveProfileId(ref.id);
+      return entry && scopesFor(profileScope(chatId)).includes(entry.scope) ? entry : undefined;
+    },
   }));
 }
 
-/** The profiles a chat may use are scoped by where its work lives (today every chat sees the built-ins). */
-export function profileScope(chatId: string): ProfileScope {
+/** The profiles a chat may use are scoped by where its work lives: the global scope and its workspace's. */
+export function profileScope(chatId: string): ProfileChatScope {
   try {
     return chatDeliveryOwner(chatId) ?? {};
   } catch {
@@ -245,62 +257,111 @@ export function sandboxInfo(env: NodeJS.ProcessEnv = process.env): ComputerUseSa
   };
 }
 
-let build: SandboxDesktopBuild = { state: "idle" };
-/**
- * Build the base image (and its builder stage), or one profile's image, in
- * the background; the Settings page polls status. The same builds as
- * `callboard sandbox build [--profile <name>]`. One at a time, of either kind.
- */
-export function startSandboxBuild(profile?: string): SandboxDesktopBuild {
-  if (build.state === "running") return build;
-  let entry: ProfileEntry | undefined;
-  if (profile !== undefined) {
-    entry = resolveProfile(profile);
-    if (!entry) throw Object.assign(new Error(`There is no sandbox profile named ${JSON.stringify(profile)}`), { code: "not_found" });
-  }
-  const current: SandboxDesktopBuild = { state: "running", startedAt: Date.now(), output: "", ...(entry ? { profile: entry.recipe.name } : {}) };
-  build = current;
-  const what = entry ? `sandbox profile ${entry.recipe.name}` : "the sandbox desktop image";
-  log.info(`Building ${what} (requested from Settings)`);
-  const onOutput = (chunk: string) => {
-    current.output = (current.output + chunk).slice(-12000);
+/** A build record as the Settings API shows it (`state` in the values every bundle knows; `phase` precise). */
+export function buildDto(record: BuildRecord, output?: string): SandboxDesktopBuild {
+  return {
+    state: record.phase === "queued" || record.phase === "running" ? "running" : record.phase === "succeeded" ? "succeeded" : "failed",
+    id: record.id,
+    kind: record.kind,
+    phase: record.phase,
+    ...(record.name ? { profile: record.name } : {}),
+    ...(record.profile ? { profileId: record.profile } : {}),
+    ...(record.scope ? { scope: record.scope } : {}),
+    requestedAt: record.requestedAt,
+    ...(record.startedAt ? { startedAt: record.startedAt } : {}),
+    ...(record.finishedAt ? { finishedAt: record.finishedAt } : {}),
+    ...(record.error ? { error: record.error } : {}),
+    ...(output !== undefined ? { output } : {}),
   };
-  (entry ? buildProfileImage({ entry, docker: execDocker(), dataDir: DATA_DIR, onOutput }) : buildSandboxImage({ onOutput })).then(
-    () => {
-      Object.assign(current, { state: "succeeded", finishedAt: Date.now() });
-      log.info(`Built ${what}`);
-    },
-    (error) => {
-      Object.assign(current, { state: "failed", finishedAt: Date.now(), error: error instanceof Error ? error.message.split("\n")[0] : "Build failed" });
-      log.warn(`Building ${what} failed: ${error instanceof Error ? error.message.split("\n")[0] : "unknown"}`);
-    },
-  );
-  return build;
 }
-export const sandboxBuildState = (): SandboxDesktopBuild => build;
 
-/** Remove a profile's image (Settings → Remove). Refused while a build runs, or while a container uses it. */
-export async function removeSandboxProfile(name: string): Promise<boolean> {
-  const entry = resolveProfile(name);
-  if (!entry) throw Object.assign(new Error(`There is no sandbox profile named ${JSON.stringify(name)}`), { code: "not_found" });
-  if (build.state === "running") throw Object.assign(new Error("A build is running; wait for it to finish"), { code: "conflict" });
+let builds: SandboxBuilds | undefined;
+/**
+ * The build queue: base and profile builds as records, one at a time in the
+ * order asked, persisted with their logs (sandbox-builds.ts). The same builds
+ * as `callboard sandbox build [--profile <name>]`.
+ */
+export function getSandboxBuilds(): SandboxBuilds {
+  return (builds ??= new SandboxBuilds({
+    dir: join(DATA_DIR, "sandbox-desktop", "builds"),
+    run: (target: BuildTarget, onOutput) => {
+      if (target.kind === "base") return buildSandboxImage({ onOutput });
+      const entry = resolveProfileId(target.id);
+      if (!entry) return Promise.reject(new Error(`Sandbox profile ${target.id} no longer exists`));
+      return buildProfileImage({ entry, docker: execDocker(), dataDir: DATA_DIR, onOutput }).then(() => {});
+    },
+    onFinished: (record) => {
+      const what = record.kind === "base" ? "the sandbox desktop image" : `sandbox profile ${record.profile}`;
+      if (record.phase === "succeeded") log.info(`Built ${what}`);
+      else log.warn(`Building ${what} ${record.phase}: ${record.error ?? "unknown"}`);
+    },
+  }));
+}
+
+/**
+ * Queue a build of the base image (and its builder stage), or of one
+ * profile's image by entry id (`global/blender`). Returns its record; the
+ * Settings page polls it by id. Asking for a build already queued or running
+ * returns that one.
+ */
+export function startSandboxBuild(profileId?: string): SandboxDesktopBuild {
+  let target: BuildTarget = { kind: "base" };
+  if (profileId !== undefined) {
+    const entry = resolveProfileId(profileId);
+    if (!entry) throw Object.assign(new Error(`There is no sandbox profile ${JSON.stringify(profileId)}`), { code: "not_found" });
+    target = { kind: "profile", id: entry.id, scope: entry.scope, name: entry.recipe.name };
+  }
+  const record = getSandboxBuilds().enqueue(target);
+  log.info(`Queued a build of ${target.kind === "base" ? "the sandbox desktop image" : `sandbox profile ${record.profile}`} (requested from Settings)`);
+  return buildDto(record, getSandboxBuilds().log(record.id, 12_000) ?? "");
+}
+/** The latest build (any kind), with the tail of its log: the Settings page's single "build" field, kept for older bundles. */
+export function sandboxBuildState(): SandboxDesktopBuild {
+  const latest = getSandboxBuilds().list()[0];
+  return latest ? buildDto(latest, getSandboxBuilds().log(latest.id, 12_000) ?? "") : { state: "idle" };
+}
+/** One build by id, with its log (the whole capped log, or its tail). */
+export function sandboxBuild(id: string, tail?: number): SandboxDesktopBuild | undefined {
+  const record = getSandboxBuilds().get(id);
+  return record ? buildDto(record, getSandboxBuilds().log(id, tail) ?? "") : undefined;
+}
+
+/**
+ * Remove a profile's image by entry id. Refused while a build of that profile
+ * is queued or running, or while a container uses it (Docker refuses).
+ */
+export async function removeSandboxProfile(profileId: string): Promise<boolean> {
+  const entry = resolveProfileId(profileId);
+  if (!entry) throw Object.assign(new Error(`There is no sandbox profile ${JSON.stringify(profileId)}`), { code: "not_found" });
+  if (
+    getSandboxBuilds()
+      .list()
+      .some((r) => r.profile === entry.id && (r.phase === "queued" || r.phase === "running"))
+  )
+    throw Object.assign(new Error(`Profile ${entry.id} is being built; wait for that to finish`), { code: "conflict" });
   const removed = await removeProfileImage(execDocker(), entry);
-  if (removed) log.info(`Removed sandbox profile ${name}'s image`);
+  if (removed) log.info(`Removed sandbox profile ${entry.id}'s image`);
   return removed;
 }
 
-/** Every profile with its effective limits and image state, for Settings. Docker unreachable: images read as missing. */
-export async function sandboxProfileStatuses(scope: ProfileScope = {}): Promise<SandboxProfileStatus[]> {
+/**
+ * Profiles with their effective limits, full recipe and image state: every
+ * scope for the operator (Settings), or what one chat may use. Docker
+ * unreachable: images read as missing.
+ */
+export async function sandboxProfileStatuses(chat?: ProfileChatScope): Promise<SandboxProfileStatus[]> {
   const settings = resolveSandboxSettings(readSandboxSettings());
   const docker = execDocker();
   const { errors } = loadBuiltinProfiles();
   for (const error of errors) log.warn(`Ignoring a built-in sandbox profile: ${error}`);
-  const base = await currentBase(docker, getSandboxManager().image).catch(() => ({}));
+  const [base, arch] = await Promise.all([currentBase(docker, getSandboxManager().image).catch(() => ({})), hostArchitecture(docker).catch(() => undefined)]);
   return Promise.all(
-    listProfiles(scope).map(async (entry) => {
+    (chat ? listProfiles(chat) : listAllProfiles()).map(async (entry) => {
       const image: ProfileImageInfo = await inspectProfileImage(docker, entry, base).catch(() => ({ state: "missing", detail: "Docker did not answer" }));
       const { clamped, ...limits } = effectiveProfileLimits(entry.recipe, settings);
       return {
+        id: entry.id,
+        scope: entry.scope,
         name: entry.recipe.name,
         description: entry.recipe.description,
         source: entry.source,
@@ -311,6 +372,12 @@ export async function sandboxProfileStatuses(scope: ProfileScope = {}): Promise<
         digest: entry.digest,
         packages: entry.recipe.packages,
         downloads: entry.recipe.downloads.map((d) => ({ url: d.url, sha256: d.sha256, dest: d.dest })),
+        setup: entry.recipe.setup,
+        path: entry.recipe.path,
+        env: entry.recipe.env,
+        architectures: entry.recipe.architectures,
+        ...(arch ? { architectureSupported: !architectureProblem(entry, arch) } : {}),
+        recipe: canonicalProfileRecipe(entry.recipe),
         image: {
           name: entry.image,
           state: image.state,
@@ -333,6 +400,7 @@ export function sandboxProfileForConsent(name: string, chatId: string, env: Node
     baseImage: getSandboxManager().image,
     settings: resolveSandboxSettings(readSandboxSettings()),
     resolve: (profile) => resolveProfile(profile, profileScope(chatId)),
+    arch: () => hostArchitecture(execDocker()),
     names: () => listProfiles(profileScope(chatId)).map((entry) => entry.recipe.name),
   });
 }
@@ -345,7 +413,7 @@ export async function agentSandboxProfiles(
   return statuses.map((p) => ({
     name: p.name,
     description: p.description,
-    built: p.image.state === "current" || p.image.state === "outdated",
+    built: (STARTABLE_PROFILE_STATES as readonly string[]).includes(p.image.state),
     ...(p.image.state === "outdated" ? { outOfDate: true as const } : {}),
     limits: p.limits,
     gl: p.gl,
@@ -404,7 +472,11 @@ export async function sandboxDesktopStatus(canEdit: boolean, env: NodeJS.Process
         }
       : {}),
     diagnostics,
-    build,
+    build: sandboxBuildState(),
+    builds: getSandboxBuilds()
+      .list()
+      .slice(0, 20)
+      .map((record) => buildDto(record)),
     buildCommand: SANDBOX_BUILD_COMMAND,
     canEdit,
     owner: m.owner,
@@ -475,4 +547,5 @@ export async function shutdownSandboxDesktop(): Promise<void> {
   reaperTimer = undefined;
   await manager?.dispose();
   deliveries?.dispose();
+  builds?.dispose();
 }

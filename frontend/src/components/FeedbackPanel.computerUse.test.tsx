@@ -261,7 +261,7 @@ describe("a sandbox profile on the consent card (input.profile)", () => {
     const profile = screen.getByTestId("consent-sandbox-profile").textContent!;
     expect(profile).toContain("Profile: blender");
     expect(profile).toContain("Blender with software OpenGL.");
-    expect(profile).toContain("4 CPUs, 4 GiB memory, 2 GiB home, 60-minute session, software OpenGL");
+    expect(profile).toContain("4 CPUs, 4 GiB memory, 2 GiB home (in memory, counted toward it), 60-minute session, software OpenGL");
     expect(screen.getByText("Grant duration: up to 60 minutes. You can Stop computer control at any time.")).toBeTruthy();
   });
 

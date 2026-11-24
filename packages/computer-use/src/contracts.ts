@@ -94,6 +94,12 @@ export interface Driver {
    * Only a driver that really gives each session its own device may say so.
    */
   readonly lockScope?: "driver" | "session";
+  /**
+   * The driver understands {@link OpenOptions.variant}. The service refuses
+   * an `open` with a variant (`invalid_request`) for a driver that does not
+   * say so, so a selector is never silently ignored.
+   */
+  readonly supportsVariants?: boolean;
   probe(): Promise<Probe>;
   open(context: {
     sessionId: string;
@@ -114,7 +120,7 @@ export interface Driver {
      * The host's opaque per-session selector ({@link OpenOptions.variant}),
      * e.g. which image a container-per-session driver starts. The service
      * validates its grammar and passes it through; it means nothing to the
-     * service. A driver that does not support variants should refuse one.
+     * service. Only a driver with `supportsVariants` ever receives one.
      */
     variant?: string;
   }): Promise<DriverSession>;

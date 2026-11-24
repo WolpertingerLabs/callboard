@@ -114,9 +114,9 @@ function FeedbackContent({ action, onRespond, agentName = "Claude", approveLocke
               </p>
               {profile.limits && (
                 <p style={{ margin: "4px 0 0 0" }}>
-                  {profile.limits.cpus} CPU{profile.limits.cpus === 1 ? "" : "s"}, {mb(profile.limits.memoryMb)} memory, {mb(profile.limits.homeMb)} home,{" "}
-                  {profile.limits.sessionMinutes}-minute session{profile.gl === "software" ? ", software OpenGL" : ""}. A fresh container from this
-                  profile&apos;s image, hardened like the base desktop.
+                  {profile.limits.cpus} CPU{profile.limits.cpus === 1 ? "" : "s"}, {mb(profile.limits.memoryMb)} memory, {mb(profile.limits.homeMb)} home (in
+                  memory, counted toward it), {profile.limits.sessionMinutes}-minute session{profile.gl === "software" ? ", software OpenGL" : ""}. A fresh
+                  container from this profile&apos;s image, hardened like the base desktop.
                 </p>
               )}
             </div>

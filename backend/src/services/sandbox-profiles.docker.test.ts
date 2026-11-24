@@ -18,9 +18,9 @@
  *
  * Builds the base under a per-run tag (layers come from the build cache) and
  * the profiles in a per-run repository, and removes both, their containers and
- * networks afterwards. Set CALLBOARD_DOCKER_PROFILE_REPOSITORY (e.g.
- * `callboard/computer-use-profile`) to build into that repository and keep the
- * profile images; CALLBOARD_DOCKER_PROFILE_CACHE to a directory to keep
+ * networks afterwards. Set CALLBOARD_DOCKER_PROFILE_REPOSITORY (any but the
+ * production `callboard/computer-use-profile`, which it refuses) to build into
+ * that repository and keep the profile images; CALLBOARD_DOCKER_PROFILE_CACHE to a directory to keep
  * downloads between runs; CALLBOARD_DOCKER_MANAGED_IMAGE to reuse a base image
  * (and its `-builder` tag) instead of building one.
  */
@@ -48,6 +48,11 @@ const suffix = randomUUID().slice(0, 8);
 const reuse = process.env.CALLBOARD_DOCKER_MANAGED_IMAGE?.trim();
 const image = reuse || `callboard/computer-use-desktop:ptest-${suffix}`;
 const keepRepository = process.env.CALLBOARD_DOCKER_PROFILE_REPOSITORY?.trim();
+// Never the production repository: its images belong to the running Callboard.
+if (keepRepository === "callboard/computer-use-profile" || reuseIsProduction()) throw new Error("Refusing to build into or reuse a production image");
+function reuseIsProduction() {
+  return process.env.CALLBOARD_DOCKER_MANAGED_IMAGE?.trim() === "callboard/computer-use-desktop:local";
+}
 const repository = keepRepository || `callboard/computer-use-profile-ptest-${suffix}`;
 const networks = { internet: `callboard-sandbox-ptest-${suffix}`, none: `callboard-sandbox-ptest-${suffix}-int` };
 const log = (...parts: unknown[]) => console.log("[profiles-docker]", ...parts);
@@ -113,7 +118,7 @@ function wire(profile: ProfileEntry) {
     settings: () => settings,
     image,
     networks,
-    profile: (name) => (name === profile.recipe.name ? profile : undefined),
+    profile: (ref) => (ref.id === profile.id ? profile : undefined),
   });
   managers.push(manager);
   const files = new Map<string, Buffer>();
@@ -401,13 +406,12 @@ it.skipIf(!heavy)(
       ),
     ).toMatch(/LIBGL_ALWAYS_SOFTWARE=1\nGALLIUM_DRIVER=llvmpipe|GALLIUM_DRIVER=llvmpipe\nLIBGL_ALWAYS_SOFTWARE=1/);
 
-    // Its own Save dialog: dismiss the splash, Ctrl+S, into ~/outbox, as scene.blend.
-    const click = async (x: number, y: number) => {
-      await s.act({ type: "move", x, y });
-      await s.act({ type: "wait", durationMs: 300 });
-      await s.act({ type: "click", x, y });
-    };
-    await click(200, 600); // outside the splash closes it
+    // Its own Save dialog, by keyboard: dismiss the splash, Ctrl+S, and type the full path into the
+    // file name field (which the dialog opens in edit mode), Enter to confirm it and Enter to save.
+    await s.act({ type: "move", x: 200, y: 600 });
+    await s.act({ type: "wait", durationMs: 300 });
+    await s.act({ type: "click", x: 200, y: 600 }); // outside the splash closes it
+    await s.act({ type: "key", key: "Escape" });
     await s.act({ type: "move", x: 520, y: 380 });
     await s.act({ type: "key", key: "Control+s" });
     await until(
@@ -417,17 +421,11 @@ it.skipIf(!heavy)(
       30_000,
     );
     await delay(1000);
-    await click(670, 142); // the directory field
     await s.act({ type: "key", key: "Control+a" });
-    await s.act({ type: "type", text: "/home/desktop/outbox/" });
+    await s.act({ type: "type", text: "/home/desktop/outbox/scene.blend" });
     await s.act({ type: "key", key: "Enter" });
     await delay(800);
-    await click(600, 724); // the file name field
-    await s.act({ type: "key", key: "Control+a" });
-    await s.act({ type: "type", text: "scene.blend" });
-    await s.act({ type: "key", key: "Enter" });
-    await delay(500);
-    await click(1124, 724); // Save Blender File
+    if (!(await asDesktop(s.container, "ls ~/outbox")).split("\n").includes("scene.blend")) await s.act({ type: "key", key: "Enter" });
     await until(async () => (await asDesktop(s.container, "ls ~/outbox")).split("\n").includes("scene.blend"), "scene.blend in the outbox", 60_000, 500);
     await until(
       async () =>

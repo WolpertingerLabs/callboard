@@ -7,7 +7,15 @@
 import { SANDBOX_PROFILE_BUILD_COMMAND, type ComputerUseSandboxProfile, type SandboxDesktopMode } from "shared/types/index.js";
 import { effectiveProfileLimits, type ResolvedSandboxSettings } from "./sandbox-desktop-settings.js";
 import type { DockerRunner } from "./sandbox-image.js";
-import { currentBase, inspectProfileImage, profileVariant, type ProfileEntry, type ProfileImageInfo } from "./sandbox-profiles.js";
+import {
+  STARTABLE_PROFILE_STATES,
+  architectureProblem,
+  currentBase,
+  inspectProfileImage,
+  profileVariant,
+  type ProfileEntry,
+  type ProfileImageInfo,
+} from "./sandbox-profiles.js";
 
 /** A profile as a session will run it: summary, clamped limits, and the variant that binds a consent to this exact recipe. */
 export type ConsentProfile = ComputerUseSandboxProfile & { limits: NonNullable<ComputerUseSandboxProfile["limits"]>; variant: string };
@@ -20,6 +28,8 @@ export interface ProfileConsentDeps {
   settings: ResolvedSandboxSettings;
   resolve: (name: string) => ProfileEntry | undefined;
   names: () => string[];
+  /** The Docker host's architecture (`docker version`); optional, as a profile can only be built for the right one anyway. */
+  arch?: () => Promise<string>;
 }
 
 const fail = (code: "invalid_request" | "unsupported", message: string) => Object.assign(new Error(message), { code });
@@ -42,6 +52,9 @@ export async function profileForConsent(name: string, deps: ProfileConsentDeps):
       "invalid_request",
       `There is no sandbox profile named ${JSON.stringify(name)}. Available: ${deps.names().join(", ") || "none"} (or omit profile for the base desktop).`,
     );
+  const arch = deps.arch ? await deps.arch().catch(() => undefined) : undefined;
+  const archProblem = architectureProblem(entry, arch);
+  if (archProblem) throw fail("unsupported", `${archProblem} It cannot run here; ask for another profile or the base desktop.`);
   const image: ProfileImageInfo = await inspectProfileImage(deps.docker, entry, await currentBase(deps.docker, deps.baseImage)).catch(() => ({
     state: "missing",
   }));
@@ -50,7 +63,7 @@ export async function profileForConsent(name: string, deps: ProfileConsentDeps):
       "unsupported",
       `Sandbox profile ${entry.recipe.name} is not built on this Callboard. Ask the human to build it (Settings → Sandbox desktop → Profiles, or \`${SANDBOX_PROFILE_BUILD_COMMAND} ${entry.recipe.name}\` on the service host); building is theirs to start, never yours.`,
     );
-  if (image.state === "insecure" || image.state === "incompatible")
+  if (!STARTABLE_PROFILE_STATES.includes(image.state))
     throw fail(
       "unsupported",
       `Sandbox profile ${entry.recipe.name}'s image must be rebuilt before it can start. Ask the human to rebuild it (Settings → Sandbox desktop → Profiles).`,

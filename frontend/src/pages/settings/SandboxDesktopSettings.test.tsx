@@ -47,6 +47,8 @@ beforeEach(() => {
 });
 
 const blender: NonNullable<SandboxDesktopStatus["profiles"]>[number] = {
+  id: "global/blender",
+  scope: "global",
   name: "blender",
   description: "Blender 4.5 LTS with software OpenGL.",
   source: "builtin",
@@ -57,6 +59,12 @@ const blender: NonNullable<SandboxDesktopStatus["profiles"]>[number] = {
   digest: "d".repeat(64),
   packages: ["libxi6"],
   downloads: [{ url: "https://download.blender.org/release/x.tar.xz", sha256: "b".repeat(64), dest: "blender" }],
+  setup: "/opt/blender/blender --version\n",
+  path: ["/opt/blender"],
+  env: { BLENDER_X: "1" },
+  architectures: ["amd64"],
+  architectureSupported: true,
+  recipe: '{\n  "schema": 1,\n  "name": "blender"\n}',
   image: { name: "callboard/computer-use-profile:blender", state: "missing" },
 };
 afterEach(() => {
@@ -261,11 +269,12 @@ describe("Settings → Sandbox desktop", () => {
     expect(screen.getByTestId("sandbox-profile-test").textContent).toContain("Out of date");
     expect(screen.getByTestId("sandbox-profile-test").textContent).toContain("300 MB");
     fireEvent.click(screen.getByRole("button", { name: "Build profile blender" }));
-    await waitFor(() => expect(buildSandboxDesktopImage).toHaveBeenCalledWith("blender"));
+    await waitFor(() => expect(buildSandboxDesktopImage).toHaveBeenCalledWith("blender", "global"));
     expect((await screen.findByTestId("sandbox-build-log")).textContent).toContain("Downloading");
     expect(screen.getByText("Building profile blender…")).toBeTruthy();
-    // One build at a time: every build button waits.
-    expect((screen.getByRole("button", { name: "Rebuild profile test" }) as HTMLButtonElement).disabled).toBe(true);
+    // Builds queue (one runs at a time): another can still be asked for; removing waits.
+    expect((screen.getByRole("button", { name: "Rebuild profile test" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole("button", { name: "Remove profile test's image" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("removes a profile's image after asking", async () => {
@@ -276,7 +285,7 @@ describe("Settings → Sandbox desktop", () => {
     render(<SandboxDesktopSettings />);
     fireEvent.click(await screen.findByRole("button", { name: "Remove profile blender's image" }));
     expect(confirm).toHaveBeenCalled();
-    await waitFor(() => expect(removeSandboxProfile).toHaveBeenCalledWith("blender"));
+    await waitFor(() => expect(removeSandboxProfile).toHaveBeenCalledWith("blender", "global"));
     expect((await screen.findByTestId("sandbox-profile-blender")).textContent).toContain("Not built");
   });
 
@@ -298,5 +307,30 @@ describe("Settings → Sandbox desktop", () => {
     fireEvent.change(minutes, { target: { value: "240" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(updateSandboxDesktopSettings).toHaveBeenCalledWith(expect.objectContaining({ profileMaxSessionMinutes: 240 })));
+  });
+
+  it("shows the whole recipe, the setup script included, and says when this host cannot build a profile", async () => {
+    const elsewhere = { ...blender, architectureSupported: false };
+    vi.mocked(getSandboxDesktopStatus).mockResolvedValue(status({ profiles: [elsewhere] }));
+    render(<SandboxDesktopSettings />);
+    const recipe = await screen.findByTestId("sandbox-profile-recipe-blender");
+    expect(recipe.textContent).toContain("/opt/blender/blender --version");
+    expect(recipe.textContent).toContain("run at build time as the unprivileged desktop user, with no network");
+    expect(recipe.textContent).toContain("BLENDER_X=1");
+    expect(recipe.textContent).toContain("PATH additions: /opt/blender");
+    expect(recipe.textContent).toContain(`sha256 ${"b".repeat(64)}`);
+    expect(recipe.textContent).toContain('"schema": 1');
+    expect(screen.getByTestId("sandbox-profile-blender").textContent).toContain("Builds only on amd64");
+    expect((screen.getByRole("button", { name: "Build profile blender" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByTestId("sandbox-profile-blender").textContent).toContain("home (counts toward memory)");
+  });
+
+  it("names the new refusal states", async () => {
+    const changed = { ...blender, image: { ...blender.image, state: "rebuild-required" as const } };
+    const foreign = { ...blender, name: "other", id: "global/other", image: { ...blender.image, name: "x:other", state: "unlabelled" as const } };
+    vi.mocked(getSandboxDesktopStatus).mockResolvedValue(status({ profiles: [changed, foreign] }));
+    render(<SandboxDesktopSettings />);
+    expect((await screen.findByTestId("sandbox-profile-blender")).textContent).toContain("Refused: recipe changed");
+    expect(screen.getByTestId("sandbox-profile-other").textContent).toContain("Refused: unlabelled");
   });
 });

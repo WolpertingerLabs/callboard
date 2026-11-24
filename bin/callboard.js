@@ -63,6 +63,7 @@ try {
       path: { type: "boolean", default: false },
       force: { type: "boolean", default: false },
       profile: { type: "string" },
+      scope: { type: "string" },
     },
     strict: false,
     allowPositionals: true,
@@ -164,7 +165,7 @@ switch (subcommand) {
 // packages/computer-use (dist/ + docker/), so this works from an npm install as
 // well as from a source checkout.
 async function cmdSandbox() {
-  const action = rawArgs.find((arg, i) => !arg.startsWith("-") && rawArgs[i - 1] !== "--profile");
+  const action = rawArgs.find((arg, i) => !arg.startsWith("-") && rawArgs[i - 1] !== "--profile" && rawArgs[i - 1] !== "--scope");
   const image = await import(join(PKG_ROOT, "backend/dist/services/sandbox-image.js"));
   const docker = image.execDocker();
   if (values.profile !== undefined && action !== "build" && action !== "rm") {
@@ -186,9 +187,10 @@ async function cmdSandbox() {
       process.exit(1);
     }
     const profiles = await import(join(PKG_ROOT, "backend/dist/services/sandbox-profiles.js"));
-    const entry = profiles.resolveProfile(values.profile);
+    const id = profiles.entryIdOf(values.profile, values.scope ?? "global");
+    const entry = id && profiles.resolveProfileId(id);
     if (!entry) {
-      console.error(`No sandbox profile named ${JSON.stringify(values.profile)}. See: callboard sandbox profiles`);
+      console.error(`No sandbox profile ${JSON.stringify(values.profile)} in scope ${values.scope ?? "global"}. See: callboard sandbox profiles`);
       process.exit(1);
     }
     try {
@@ -223,6 +225,9 @@ async function cmdSandbox() {
       process.exit(1);
     }
     console.log(`\nBuilt ${image.SANDBOX_IMAGE}. Turn on Sandbox desktop in a chat's permissions to use it.`);
+    console.log(
+      "Sandbox profiles built on an older base are now out of date: they still start, but run the old driver host. Rebuild them (callboard sandbox profiles lists them).",
+    );
     return;
   }
   if (action === "status" || action === undefined) {
@@ -259,9 +264,15 @@ async function cmdSandbox() {
 // alone unless --force.
 async function cmdSandboxProfileBuild(image, docker, name) {
   const profiles = await import(join(PKG_ROOT, "backend/dist/services/sandbox-profiles.js"));
-  const entry = profiles.resolveProfile(name);
+  const id = profiles.entryIdOf(name, values.scope ?? "global");
+  const entry = id && profiles.resolveProfileId(id);
   if (!entry) {
-    console.error(`No sandbox profile named ${JSON.stringify(name)}. See: callboard sandbox profiles`);
+    console.error(`No sandbox profile ${JSON.stringify(name)} in scope ${values.scope ?? "global"}. See: callboard sandbox profiles`);
+    process.exit(1);
+  }
+  const arch = profiles.architectureProblem(entry, await profiles.hostArchitecture(docker).catch(() => undefined));
+  if (arch) {
+    console.error(`${arch} Nothing was built.`);
     process.exit(1);
   }
   const info = await profiles
@@ -269,11 +280,11 @@ async function cmdSandboxProfileBuild(image, docker, name) {
     .catch((err) => ({ state: "unknown", detail: err.message }));
   if (info.state === "current" && !values.force) {
     console.log(`${entry.image} is up to date (recipe ${entry.digest.slice(0, 12)}, on the current base).`);
-    console.log(`Rebuild it anyway with: callboard sandbox build --profile ${name} --force`);
+    console.log(`Rebuild it anyway with: callboard sandbox build --profile ${name}${entry.scope === "global" ? "" : ` --scope ${entry.scope}`} --force`);
     return;
   }
   if (info.state !== "missing" && info.detail) console.log(`${entry.image}: ${info.detail}`);
-  console.log(`Building sandbox profile ${name} as ${entry.image} ...`);
+  console.log(`Building sandbox profile ${entry.id} as ${entry.image} ...`);
   const started = Date.now();
   try {
     await profiles.buildProfileImage({ entry, docker, dataDir: DATA_DIR, stdio: "inherit" });
@@ -292,7 +303,8 @@ async function cmdSandboxProfiles(image, docker) {
   const { errors } = profiles.loadBuiltinProfiles();
   for (const error of errors) console.log(`Skipped an invalid built-in recipe: ${error}`);
   const base = await profiles.currentBase(docker, image.SANDBOX_IMAGE).catch(() => ({}));
-  const entries = profiles.listProfiles();
+  const entries = profiles.listAllProfiles();
+  const arch = await profiles.hostArchitecture(docker).catch(() => undefined);
   if (!entries.length) console.log("No sandbox profiles.");
   for (const entry of entries) {
     const info = await profiles.inspectProfileImage(docker, entry, base).catch((err) => ({ state: "unknown", detail: err.message }));
@@ -301,11 +313,17 @@ async function cmdSandboxProfiles(image, docker) {
       .map(([key, value]) => `${key} ${value}`)
       .join(", ");
     const size = info.sizeBytes ? `, ${Math.round(info.sizeBytes / 1024 / 1024)} MB` : "";
-    console.log(`${r.name}  [${info.state}${info.outdatedBy ? `: ${info.outdatedBy.join(" and ")} changed` : ""}${size}]`);
+    console.log(`${entry.id}  [${info.state}${info.outdatedBy ? `: ${info.outdatedBy.join(" and ")} changed` : ""}${size}]`);
     console.log(`  ${r.description}`);
-    console.log(`  image ${entry.image}, gl ${r.gl}, requests ${limits || "the base limits"} (clamped by Settings → Sandbox desktop)`);
-    if (info.state === "missing" || info.state === "outdated" || info.state === "insecure" || info.state === "incompatible")
-      console.log(`  ${info.detail ? `${info.detail} ` : ""}Build: callboard sandbox build --profile ${r.name}`);
+    console.log(
+      `  image ${entry.image}, gl ${r.gl}, ${r.architectures.length ? r.architectures.join("/") : "any architecture"}, requests ${limits || "the base limits"} (clamped by Settings → Sandbox desktop)`,
+    );
+    const archProblem = profiles.architectureProblem(entry, arch);
+    if (archProblem) console.log(`  ${archProblem}`);
+    else if (info.state !== "current")
+      console.log(
+        `  ${info.detail ? `${info.detail} ` : ""}Build: callboard sandbox build --profile ${r.name}${entry.scope === "global" ? "" : ` --scope ${entry.scope}`}`,
+      );
   }
 }
 
@@ -939,11 +957,11 @@ Usage: callboard sandbox <build|status|profiles|rm> [options]
 
 Commands:
   build             Build the image and its builder stage (docker build); skipped if up to date
-  build --profile <name>
+  build --profile <name> [--scope <scope>]
                     Build one sandbox profile's image (the base first, if needed)
   profiles          List the sandbox profiles, their limits and image state
-  rm --profile <name>
-                    Remove a profile's image
+  rm --profile <name> [--scope <scope>]
+                    Remove a profile's image (scope: global, the default, or a workspace key)
   status            Show Docker, the image and running managed sandboxes
 
 Options:

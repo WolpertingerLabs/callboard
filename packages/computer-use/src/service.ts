@@ -130,6 +130,7 @@ export class ComputerUseService {
             kind: t.driver.kind,
             lockDomain: t.driver.lockDomain,
             lockScope: t.driver.lockScope === "session" ? "session" : "driver",
+            supportsVariants: t.driver.supportsVariants === true,
             probe: t.driver.probe.bind(t.driver),
             open: t.driver.open.bind(t.driver),
           }),
@@ -402,6 +403,7 @@ export class ComputerUseService {
     if (!parsed.success) fail("invalid_request");
     const ttl = parsed.data.ttlMs ?? this.ttl;
     const variant = parsed.data.variant;
+    if (variant !== undefined && !t.driver.supportsVariants) fail("invalid_request");
     await this.allowed(p, "open", t);
     if (this.disposed) fail("disposed");
     if (signal?.aborted) fail("cancelled");

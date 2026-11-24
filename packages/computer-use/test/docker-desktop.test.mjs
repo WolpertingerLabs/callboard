@@ -13,6 +13,7 @@ import {
   SANDBOX_PROTOCOL_LABEL_VALUE,
   createRemoteDriver,
   ensureSandboxNetwork,
+  sandboxImageBuildArgs,
   sandboxRunArgs,
 } from "../dist/index.js";
 import { PROTOCOL, hostProof, newNonce, sessionCredential } from "../dist/remote/protocol.js";
@@ -22,14 +23,18 @@ import { PROTOCOL, hostProof, newNonce, sessionCredential } from "../dist/remote
 //
 //   CALLBOARD_DOCKER_TESTS=1 npm test
 //
-// Builds docker/Dockerfile as callboard/computer-use-desktop:local (left in
-// place afterwards), runs it with sandboxRunArgs() (the hardened flags) on a
+// Builds docker/Dockerfile under a per-run tag (with sandboxImageBuildArgs, so
+// it carries the content label `callboard sandbox build` sets) and removes that
+// tag afterwards — never the production callboard/computer-use-desktop:local.
+// Set CALLBOARD_DOCKER_IMAGE to test an existing image instead (left in place).
+// Runs it with sandboxRunArgs() (the hardened flags) on a
 // random 127.0.0.1 port with a random token in a read-only mounted file, and
 // removes the container and the token file whatever happens.
 
 const enabled = process.env.CALLBOARD_DOCKER_TESTS === "1";
 const packageDir = join(dirname(fileURLToPath(import.meta.url)), "..");
-const image = process.env.CALLBOARD_DOCKER_IMAGE ?? "callboard/computer-use-desktop:local";
+const reuse = process.env.CALLBOARD_DOCKER_IMAGE?.trim();
+const image = reuse || `callboard/computer-use-desktop:cu-test-${randomUUID().slice(0, 8)}`;
 
 function docker(args, { input, timeout = 600_000 } = {}) {
   return new Promise((resolve, reject) => {
@@ -48,8 +53,12 @@ test(
   { skip: !enabled && "set CALLBOARD_DOCKER_TESTS=1 to run (needs Docker)", timeout: 900_000 },
   async (t) => {
     const log = (...m) => t.diagnostic(m.join(" "));
-    await docker(["build", "-q", "-t", image, "-f", join(packageDir, "docker", "Dockerfile"), packageDir]);
-    log(`built ${image}`);
+    if (!reuse) {
+      const [, ...args] = sandboxImageBuildArgs({ context: packageDir, image });
+      await docker(["build", "-q", ...args]);
+      t.after(() => docker(["image", "rm", image]).catch(() => {}));
+      log(`built ${image}`);
+    }
     // Labels a host checks before `docker run`.
     const [imageInfo] = JSON.parse((await docker(["image", "inspect", image])).toString());
     const { version } = JSON.parse((await import("node:fs")).readFileSync(join(packageDir, "package.json"), "utf8"));

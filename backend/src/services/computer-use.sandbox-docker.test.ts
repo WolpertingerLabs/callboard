@@ -6,13 +6,13 @@
  *
  *   CALLBOARD_DOCKER_TESTS=1 npx vitest run backend/src/services/computer-use.sandbox-docker.test.ts
  *
- * Builds packages/computer-use/docker/Dockerfile as
- * callboard/computer-use-desktop:local if it is missing or its protocol label
- * (SANDBOX_IMAGE_LABELS.protocol) is not this release's (the package's own
- * Docker test leaves it in place), runs it with `sandboxRunArgs` (the hardened
- * flags) on a random loopback port, on a private network, under a unique
- * name, and removes the container, the network and the token file whatever
- * happens. The image is left in place: another chat may be using it.
+ * Builds packages/computer-use/docker/Dockerfile under a per-run tag (with
+ * `sandboxImageBuildArgs`, so it carries the content label) — never the
+ * production callboard/computer-use-desktop:local — runs it with
+ * `sandboxRunArgs` (the hardened flags) on a random loopback port, on a
+ * private network, under a unique name, and removes the container, the
+ * network, the token file and that tag whatever happens. Set
+ * CALLBOARD_DOCKER_IMAGE to test an existing image instead (left in place).
  */
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { execFile } from "node:child_process";
@@ -29,8 +29,9 @@ import { readComputerUsePolicy } from "./computer-use-policy.js";
 
 const enabled = process.env.CALLBOARD_DOCKER_TESTS === "1";
 const packageDir = join(dirname(fileURLToPath(import.meta.url)), "../../../packages/computer-use");
-const image = process.env.CALLBOARD_DOCKER_IMAGE ?? "callboard/computer-use-desktop:local";
 const suffix = randomUUID().slice(0, 8);
+const reuse = process.env.CALLBOARD_DOCKER_IMAGE?.trim();
+const image = reuse || `callboard/computer-use-desktop:backend-test-${suffix}`;
 const name = `callboard-cu-backend-test-${suffix}`;
 // Its own network, never the shared `callboard-sandbox` another chat's sandbox may be on.
 const network = `callboard-sandbox-backend-test-${suffix}`;
@@ -50,10 +51,10 @@ let host: ComputerUseHost | undefined;
 
 beforeAll(async () => {
   if (!enabled) return;
-  // Reuse the image only if it speaks this release's protocol (its label); a
-  // missing or stale `:local` image is rebuilt, never run as it is.
-  const label = await docker(["image", "inspect", "--format", `{{ index .Config.Labels "${pkg.SANDBOX_IMAGE_LABELS.protocol}" }}`, image]).catch(() => "");
-  if (label.trim() !== pkg.SANDBOX_PROTOCOL_LABEL_VALUE) await docker(["build", "-q", "-t", image, "-f", join(packageDir, "docker", "Dockerfile"), packageDir]);
+  if (!reuse) {
+    const [, ...args] = pkg.sandboxImageBuildArgs({ context: packageDir, image });
+    await docker(["build", "-q", ...args]);
+  }
   tokenDir = await mkdtemp(join(tmpdir(), "callboard-cu-backend-test-"));
   await chmod(tokenDir, 0o700);
   const token = randomBytes(32).toString("hex");
@@ -80,6 +81,7 @@ afterAll(async () => {
   await docker(["rm", "-f", name]).catch(() => {});
   if (networkCreated) await docker(["network", "rm", network]).catch(() => {});
   if (tokenDir) await rm(tokenDir, { recursive: true, force: true });
+  if (!reuse) await docker(["image", "rm", image]).catch(() => {});
 }, 60_000);
 
 it.skipIf(!enabled)(

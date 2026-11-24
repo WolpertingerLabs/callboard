@@ -44,5 +44,6 @@
   "path": ["/opt/blender"],
   "env": {},
   "gl": "software",
-  "limits": { "cpus": 4, "memoryMb": 4096, "homeMb": 2048, "sessionMinutes": 60 }
+  "limits": { "cpus": 4, "memoryMb": 4096, "homeMb": 2048, "sessionMinutes": 60 },
+  "architectures": ["amd64"]
 }

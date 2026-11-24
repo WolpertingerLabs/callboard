@@ -17,6 +17,9 @@ import {
   SANDBOX_BUILDER_IMAGE,
   canonicalProfileRecipe,
   clampProfileLimits,
+  profileCompilerDigest,
+  profileImageTag,
+  profileMaxHomeMb,
   compileProfile,
   parseProfileRecipe,
   profileImageBuildArgs,
@@ -66,6 +69,7 @@ test("a minimal recipe gets every default, in canonical form", () => {
     env: {},
     gl: "none",
     limits: {},
+    architectures: [],
   });
   // setup as lines is the same recipe as setup as one string; trailing whitespace is normalised.
   const a = validateProfileRecipe({ ...minimal, setup: ["echo a", "echo b"] });
@@ -82,7 +86,10 @@ test("validation refuses with exact, path-prefixed errors", () => {
   const cases = [
     [null, "recipe: must be a JSON object"],
     [{ ...minimal, schema: 2 }, "schema: must be 1"],
-    [{ ...minimal, extra: 1 }, "extra: is not a recipe field (allowed: schema, name, description, packages, downloads, setup, path, env, gl, limits)"],
+    [
+      { ...minimal, extra: 1 },
+      "extra: is not a recipe field (allowed: schema, name, description, packages, downloads, setup, path, env, gl, limits, architectures)",
+    ],
     [
       { ...minimal, name: "Blender" },
       'name: "Blender" must be 2–32 characters: lowercase letters, digits and "-", starting with a letter and not ending with "-"',
@@ -398,7 +405,9 @@ test("build arguments: the builder target, the package build, and the offline, l
   ]);
   assert.deepEqual(after("--label"), [
     `${PROFILE_LABELS.name}=demo`,
+    `${PROFILE_LABELS.scope}=global`,
     `${PROFILE_LABELS.recipe}=${"f".repeat(64)}`,
+    `${PROFILE_LABELS.compiler}=${profileCompilerDigest()}`,
     `${PROFILE_LABELS.baseContent}=${"e".repeat(64)}`,
     `${PROFILE_LABELS.baseImage}=${id("c")}`,
     `${PROFILE_LABELS.gl}=software`,
@@ -442,6 +451,7 @@ test("per-session TTL: bounded by maxSessionTtlMs, defaulting to the service TTL
     kind: "native-desktop",
     lockDomain: "ttl-test",
     lockScope: "session",
+    supportsVariants: true,
     probe: async () => ({ available: true, kind: "native-desktop", capabilities: [] }),
     open: async (context) => {
       opened.push(context.variant);
@@ -509,6 +519,93 @@ test("a per-session TTL expires the session on its own schedule", async () => {
     await new Promise((resolve) => setTimeout(resolve, 900));
     assert.equal(service.status(principal, long.sessionId)[0].state, "stopped");
     assert.deepEqual(closed.sort(), [short.sessionId, long.sessionId].sort());
+  } finally {
+    await service.dispose();
+  }
+});
+
+test("errors quote untrusted keys and values: no raw newline, bidi override or control character reaches a message", () => {
+  const issues = issuesOf({
+    ...minimal,
+    "evil\nname: forged line": 1,
+    env: { "A\u202eB": "x", OK: "v\u202e" },
+    limits: { "gpu\n": 1 },
+    downloads: [{ url: "https://example.com/a", sha256: "a".repeat(64), dest: "x", unpack: "zip", "k\u2028": 1 }],
+  });
+    // eslint-disable-next-line no-control-regex -- checking that no control character survives is the point
+  for (const issue of issues) assert.doesNotMatch(issue, /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/, issue);
+  assert.ok(
+    issues.includes(
+      '"evil\\nname: forged line": is not a recipe field (allowed: schema, name, description, packages, downloads, setup, path, env, gl, limits, architectures)',
+    ),
+    issues.join("\n"),
+  );
+  assert.ok(
+    issues.some((issue) => issue.startsWith('env."A\\u202eB": is not a variable name')),
+    issues.join("\n"),
+  );
+  assert.ok(issues.includes("env.OK: must be one line without control characters"));
+  assert.ok(issues.some((issue) => issue.startsWith('limits."gpu\\n": is not a limit')));
+  assert.ok(issues.some((issue) => issue.startsWith('downloads[0]."k\\u2028": is not a download field')));
+  // Values are escaped the same way.
+  assert.deepEqual(issuesOf({ ...minimal, name: "x\u202ey" }), [
+    'name: "x\\u202ey" must be 2–32 characters: lowercase letters, digits and "-", starting with a letter and not ending with "-"',
+  ]);
+});
+
+test("the home is memory: a recipe may not ask for a home that leaves the desktop under its headroom, and clamping keeps it inside", () => {
+  assert.equal(profileMaxHomeMb(1024), 512);
+  assert.equal(profileMaxHomeMb(4096), 3072);
+  assert.equal(profileMaxHomeMb(512), 256);
+  assert.deepEqual(issuesOf({ ...minimal, limits: { memoryMb: 1024, homeMb: 1024 } }), [
+    "limits.homeMb: must be at most 512 with memoryMb 1024: the home is memory, and the desktop needs 512 MiB of the rest",
+  ]);
+  assert.deepEqual(validateProfileRecipe({ ...minimal, limits: { memoryMb: 4096, homeMb: 3072 } }).limits, { memoryMb: 4096, homeMb: 3072 });
+  const defaults = { cpus: 1, memoryMb: 1024, homeMb: 512, sessionMinutes: 15 };
+  const caps = { cpus: 4, memoryMb: 8192, homeMb: 8192, sessionMinutes: 120 };
+  // A home asked for alone, beyond what the (default) memory allows, is brought inside it.
+  assert.deepEqual(clampProfileLimits({ homeMb: 4096 }, defaults, caps), { cpus: 1, memoryMb: 1024, homeMb: 512, sessionMinutes: 15, clamped: ["homeMb"] });
+});
+
+test("architectures: an optional list of amd64/arm64, canonical order, no duplicates", () => {
+  assert.deepEqual(validateProfileRecipe({ ...minimal, architectures: ["arm64", "amd64"] }).architectures, ["amd64", "arm64"]);
+  assert.deepEqual(validateProfileRecipe({ ...minimal, architectures: [] }).architectures, []);
+  assert.deepEqual(issuesOf({ ...minimal, architectures: ["x86_64"] }), ['architectures[0]: "x86_64" must be one of amd64, arm64']);
+  assert.deepEqual(issuesOf({ ...minimal, architectures: ["amd64", "amd64"] }), ['architectures[1]: "amd64" is listed twice']);
+  assert.match(canonicalProfileRecipe(validateProfileRecipe({ ...minimal, architectures: ["amd64"] })), /"architectures": \[\n\s+"amd64"\n\s+\]/);
+  assert.doesNotMatch(canonicalProfileRecipe(validateProfileRecipe(minimal)), /architectures/);
+});
+
+test("the recipe digest covers the recipe alone; the compiler has its own; scopes drive tags", () => {
+  const a = validateProfileRecipe(minimal);
+  assert.match(profileRecipeDigest(a), /^[0-9a-f]{64}$/);
+  assert.notEqual(profileRecipeDigest(a), profileCompilerDigest());
+  assert.equal(profileCompilerDigest(), profileCompilerDigest());
+  assert.equal(profileImageTag("demo"), "callboard/computer-use-profile:demo");
+  assert.equal(profileImageTag("demo", "w0123456789ab"), "callboard/computer-use-profile:w0123456789ab-demo");
+  assert.throws(() => profileImageTag("demo", "w123"));
+  assert.throws(() => profileImageTag("demo", "../x"));
+});
+
+test("packages install by exact name only: the script refuses apt patterns and checks what apt marked manual", () => {
+  const script = compileProfile(validateProfileRecipe({ ...minimal, packages: ["netcat-openbsd"] })).packagesContext["install-packages.sh"];
+  // Every name must be in apt-cache pkgnames (exact, real packages; no pure virtual ones) before apt sees it.
+  assert.match(script, /apt-cache pkgnames \| LC_ALL=C sort -u > "\$known"/);
+  assert.match(script, /missing="\$\(LC_ALL=C sort -u "\$list" \| LC_ALL=C comm -23 - "\$known"\)"/);
+  // Afterwards, packages newly marked manual must all be listed ones.
+  assert.match(script, /apt-mark showmanual \| LC_ALL=C sort -u \| LC_ALL=C comm -23 - "\$before" \| LC_ALL=C comm -23 - "\$listed"/);
+  assert.ok(script.indexOf('comm -23 - "$known"') < script.indexOf("apt-get install"), "checked before installing");
+});
+
+test("a variant reaches only a driver that declares support for it", async () => {
+  const plain = {
+    kind: "browser",
+    probe: async () => ({ available: true, kind: "browser", capabilities: [] }),
+    open: async () => assert.fail("a variant must not reach a driver without supportsVariants"),
+  };
+  const service = new ComputerUseService({ targets: [{ id: "t", enabled: true, driver: plain }], authorize: () => "allow" });
+  try {
+    await assert.rejects(service.open({ ownerId: "o", actorId: "a", role: "agent" }, "t", undefined, { variant: "x" }), { code: "invalid_request" });
   } finally {
     await service.dispose();
   }

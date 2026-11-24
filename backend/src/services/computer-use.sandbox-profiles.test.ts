@@ -1,19 +1,29 @@
 /**
- * Sandbox desktop profiles, without Docker: the registry of built-in recipes,
- * how a profile image is judged (current, out of date, refused), verified
- * downloads, the Settings caps, and the whole consent → open path through the
- * real host, service and container manager on an in-memory Docker — the
- * profile's image and clamped limits reach `docker run` with the base
- * hardening unchanged, its session length reaches the service as a
- * per-session TTL, and the Computer view and cu_status show it.
+ * Sandbox desktop profiles, without Docker: the registry of built-in recipes
+ * (scopes, entry ids, variants), how a profile image is judged (current, out
+ * of date, refused), the download address policy, the Settings caps, and the
+ * whole consent → open path through the real host, service and container
+ * manager on an in-memory Docker — the profile's image and clamped limits
+ * reach `docker run` with the base hardening unchanged, its session length
+ * reaches the service as a per-session TTL, an image not built from the
+ * consented recipe never starts, and the Computer view and cu_status show it.
+ * The downloads themselves (redirects, DNS, pinning) are tested against a
+ * local TLS server in sandbox-profiles.download.test.ts.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ComputerUseService, PROFILE_LABELS, PROFILE_SECURITY_FLOOR, sandboxRunArgs, type Driver } from "@wolpertingerlabs/computer-use";
+import {
+  ComputerUseService,
+  PROFILE_LABELS,
+  PROFILE_SECURITY_FLOOR,
+  parseProfileRecipe,
+  profileCompilerDigest,
+  sandboxRunArgs,
+  type Driver,
+} from "@wolpertingerlabs/computer-use";
 import { SANDBOX_DESKTOP_BOUNDS, type SandboxDesktopMode } from "shared/types/index.js";
 import { ComputerUseHost, controlPrincipal, sandboxTargetDriver, sessionProfileName, type HostPolicy, type RaiseHumanApproval } from "./computer-use.js";
 import { readComputerUsePolicy } from "./computer-use-policy.js";
@@ -21,13 +31,19 @@ import { SandboxContainerManager, managedSandboxDriver, PROFILE_LABEL } from "./
 import { effectiveProfileLimits, normalizeSandboxSettings, resolveSandboxSettings, type ResolvedSandboxSettings } from "./sandbox-desktop-settings.js";
 import { profileForConsent } from "./sandbox-profile-consent.js";
 import {
-  fetchVerified,
+  addressProblem,
+  architectureProblem,
+  entryIdOf,
   inspectProfileImage,
   listProfiles,
   loadBuiltinProfiles,
+  makeEntry,
   parseProfileVariant,
   profileVariant,
   resolveProfile,
+  resolveProfileId,
+  scopesFor,
+  workspaceScopeKey,
   type ProfileEntry,
   type ProfileSource,
 } from "./sandbox-profiles.js";
@@ -47,7 +63,9 @@ const currentLabels = (entry: ProfileEntry, overrides: Record<string, string> = 
   "dev.callboard.computer-use.protocol": "2.0",
   "dev.callboard.computer-use.security-floor": "1",
   [PROFILE_LABELS.name]: entry.recipe.name,
+  [PROFILE_LABELS.scope]: entry.scope,
   [PROFILE_LABELS.recipe]: entry.digest,
+  [PROFILE_LABELS.compiler]: profileCompilerDigest(),
   [PROFILE_LABELS.baseImage]: BASE_ID,
   [PROFILE_LABELS.baseContent]: sandboxContentDigest(),
   [PROFILE_LABELS.gl]: entry.recipe.gl,
@@ -56,32 +74,68 @@ const currentLabels = (entry: ProfileEntry, overrides: Record<string, string> = 
 });
 
 describe("the registry", () => {
-  it("ships blender and test, both valid, tagged in the profile repository", () => {
+  it("ships blender and test in the global scope, valid, tagged by entry id", () => {
     const { entries, errors } = loadBuiltinProfiles();
     expect(errors).toEqual([]);
-    expect(entries.map((e) => [e.recipe.name, e.image, e.source])).toEqual([
-      ["blender", "callboard/computer-use-profile:blender", "builtin"],
-      ["test", "callboard/computer-use-profile:test", "builtin"],
+    expect(entries.map((e) => [e.id, e.scope, e.image, e.source])).toEqual([
+      ["global/blender", "global", "callboard/computer-use-profile:blender", "builtin"],
+      ["global/test", "global", "callboard/computer-use-profile:test", "builtin"],
     ]);
-    expect(resolveProfile("blender")?.recipe.gl).toBe("software");
+    expect(resolveProfile("blender")?.recipe.architectures).toEqual(["amd64"]);
+    expect(resolveProfileId("global/test")?.recipe.name).toBe("test");
     for (const name of ["base", "nope", "../test", "Test"]) expect(resolveProfile(name)).toBeUndefined();
+    expect(entryIdOf("blender")).toBe("global/blender");
+    for (const [profile, scope] of [
+      ["Blender", "global"],
+      ["blender", "w123"],
+      ["blender", "../x"],
+    ])
+      expect(entryIdOf(profile, scope)).toBeUndefined();
   });
 
-  it("a later (scoped) source never shadows an earlier one's name", () => {
-    const fake: ProfileSource = { kind: "builtin", list: () => [{ ...testProfile(), digest: "shadow" }] };
-    const merged = listProfiles({ workspaceId: "w1" }, [{ kind: "builtin", list: builtins }, fake]);
-    expect(merged.filter((e) => e.recipe.name === "test")).toHaveLength(1);
-    expect(merged.find((e) => e.recipe.name === "test")?.digest).toBe(testProfile().digest);
+  it("scopes: a chat sees global and its own workspace's (keyed on workspaceId, else folder); a global name is never shadowed", () => {
+    const ws = workspaceScopeKey({ workspaceId: "w1", folder: "/a" })!;
+    expect(ws).toMatch(/^w[0-9a-f]{12}$/);
+    // The workspace id decides when there is one; the folder only without it.
+    expect(workspaceScopeKey({ workspaceId: "w1", folder: "/b" })).toBe(ws);
+    expect(workspaceScopeKey({ folder: "/a" })).not.toBe(ws);
+    expect(scopesFor({})).toEqual(["global"]);
+    const mine = makeEntry(parseProfileRecipe(JSON.stringify({ schema: 1, name: "mine", description: "A workspace profile" })), ws, "builtin");
+    expect([mine.id, mine.image]).toEqual([`${ws}/mine`, `callboard/computer-use-profile:${ws}-mine`]);
+    const shadow = makeEntry(testProfile().recipe, ws, "builtin");
+    const sources: ProfileSource[] = [
+      { kind: "builtin", scope: "global", list: builtins },
+      { kind: "builtin", scope: ws, list: () => [shadow, mine] },
+    ];
+    const seen = listProfiles({ workspaceId: "w1" }, sources);
+    expect(seen.find((e) => e.recipe.name === "test")?.id).toBe("global/test");
+    expect(seen.map((e) => e.id)).toContain(`${ws}/mine`);
+    // Another workspace sees neither.
+    expect(listProfiles({ workspaceId: "w2" }, sources).map((e) => e.id)).not.toContain(`${ws}/mine`);
   });
 
-  it("a variant binds a name to a recipe digest", () => {
+  it("a variant binds a scope, a name and a recipe digest", () => {
     const entry = testProfile();
     const variant = profileVariant(entry);
-    expect(variant).toBe(`test@${entry.digest.slice(0, 16)}`);
-    expect(parseProfileVariant(variant)).toEqual({ name: "test", digest: entry.digest.slice(0, 16) });
+    expect(variant).toBe(`global:test@${entry.digest.slice(0, 16)}`);
+    expect(parseProfileVariant(variant)).toEqual({ scope: "global", name: "test", id: "global/test", digest: entry.digest.slice(0, 16) });
     expect(sessionProfileName(variant)).toBe("test");
-    for (const bad of ["test", "test@xyz", "base@0123456789abcdef", "Test@0123456789abcdef", "test@0123456789abcdef0"])
+    for (const bad of [
+      "test",
+      "test@0123456789abcdef",
+      "global:test@xyz",
+      "global:base@0123456789abcdef",
+      "w12:test@0123456789abcdef",
+      "global:Test@0123456789abcdef",
+    ])
       expect(parseProfileVariant(bad)).toBeUndefined();
+  });
+
+  it("an architecture the recipe does not list is a problem; no list means any", () => {
+    const blender = resolveProfile("blender")!;
+    expect(architectureProblem(blender, "amd64")).toBeUndefined();
+    expect(architectureProblem(blender, "arm64")).toBe("Profile blender builds only on amd64, and this Docker host is arm64.");
+    expect(architectureProblem(testProfile(), "arm64")).toBeUndefined();
   });
 });
 
@@ -92,69 +146,66 @@ describe("judging a profile image", () => {
     if (labels) docker.state.images.set(entry.image, { id: `sha256:${"1".repeat(64)}`, labels });
     return inspectProfileImage(docker.run, entry, base);
   };
-  it("missing, current, and out of date by recipe or base (still startable)", async () => {
+  it("missing; current; out of date (still startable) only when the base content or the compiler changed", async () => {
     const entry = testProfile();
     expect((await judge(null)).state).toBe("missing");
     expect(await judge(currentLabels(entry))).toMatchObject({ state: "current", id: `sha256:${"1".repeat(64)}`, sizeBytes: 123456789 });
-    expect(await judge(currentLabels(entry, { [PROFILE_LABELS.recipe]: "old" }))).toMatchObject({ state: "outdated", outdatedBy: ["recipe"] });
-    expect(await judge(currentLabels(entry), { imageId: `sha256:${"2".repeat(64)}`, content: sandboxContentDigest() })).toMatchObject({
-      state: "outdated",
-      outdatedBy: ["base"],
-    });
     expect(await judge(currentLabels(entry, { [PROFILE_LABELS.baseContent]: "older" }))).toMatchObject({ state: "outdated", outdatedBy: ["base"] });
-    expect(await judge(currentLabels(entry, { [PROFILE_LABELS.recipe]: "old" }), {} as never)).toMatchObject({ outdatedBy: ["recipe", "base"] });
+    expect(await judge(currentLabels(entry, { [PROFILE_LABELS.compiler]: "older" }))).toMatchObject({ state: "outdated", outdatedBy: ["compiler"] });
+    const outdated = await judge(currentLabels(entry, { [PROFILE_LABELS.baseContent]: "older" }));
+    expect(outdated.detail).toMatch(/runs the driver host and hardening of the build it came from/);
+    // A base rebuilt from identical files (a new image ID) changes nothing a profile depends on.
+    expect((await judge(currentLabels(entry), { imageId: `sha256:${"2".repeat(64)}`, content: sandboxContentDigest() })).state).toBe("current");
   });
-  it("refused below either security floor, without our labels, or on another protocol major", async () => {
+  it("refused: another recipe (rebuild-required), unlabelled, below either floor, another protocol major", async () => {
     const entry = testProfile();
+    expect(await judge(currentLabels(entry, { [PROFILE_LABELS.recipe]: "f".repeat(64) }))).toMatchObject({ state: "rebuild-required", recipe: "f".repeat(64) });
+    expect((await judge(currentLabels(entry, { [PROFILE_LABELS.name]: "blender" }))).state).toBe("unlabelled");
+    expect((await judge(currentLabels(entry, { [PROFILE_LABELS.scope]: "w0123456789ab" }))).state).toBe("unlabelled");
+    const { [PROFILE_LABELS.name]: _name, ...anonymous } = currentLabels(entry);
+    expect((await judge(anonymous)).state).toBe("unlabelled");
     expect((await judge(currentLabels(entry, { "dev.callboard.computer-use.security-floor": "0" }))).state).toBe("insecure");
     expect((await judge(currentLabels(entry, { [PROFILE_LABELS.floor]: "0" }))).state).toBe("insecure");
-    const { [PROFILE_LABELS.floor]: _floor, ...noFloor } = currentLabels(entry);
-    expect((await judge(noFloor)).state).toBe("insecure");
-    expect((await judge(currentLabels(entry, { [PROFILE_LABELS.name]: "blender" }))).state).toBe("insecure");
     expect((await judge(currentLabels(entry, { "dev.callboard.computer-use.protocol": "3.0" }))).state).toBe("incompatible");
   });
 });
 
-describe("verified downloads", () => {
-  const body = Buffer.from("profile download bytes");
-  const sha = createHash("sha256").update(body).digest("hex");
-  const respond = (init: { url?: string; status?: number; bytes?: Buffer } = {}) =>
-    vi.fn(async () =>
-      Object.defineProperty(new Response(init.bytes ?? body, { status: init.status ?? 200 }), "url", { value: init.url ?? "https://example.com/f" }),
-    );
-  const dataDir = async () => {
-    const dir = await mkdtemp(join(tmpdir(), "cb-profile-dl-"));
-    cleanups.push(() => rm(dir, { recursive: true, force: true }));
-    return dir;
-  };
-
-  it("keeps only a file whose SHA-256 matches, and reuses it from the cache", async () => {
-    const dir = await dataDir();
-    const fetchImpl = respond();
-    const file = await fetchVerified({ url: "https://example.com/f", sha256: sha }, { dataDir: dir, fetchImpl: fetchImpl as never });
-    expect(file).toBe(join(dir, "sandbox-desktop", "profile-downloads", sha));
-    expect(await fetchVerified({ url: "https://example.com/f", sha256: sha }, { dataDir: dir, fetchImpl: fetchImpl as never })).toBe(file);
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-  });
-
-  it("refuses a mismatch (and caches nothing), a failed response, and a redirect off https", async () => {
-    const dir = await dataDir();
-    const wrong = "f".repeat(64);
-    await expect(fetchVerified({ url: "https://example.com/f", sha256: wrong }, { dataDir: dir, fetchImpl: respond() as never })).rejects.toThrow(
-      `has sha256 ${sha}, but the recipe requires ${wrong}`,
-    );
-    expect(await readdir(join(dir, "sandbox-desktop", "profile-downloads"))).toEqual([]);
-    await expect(fetchVerified({ url: "https://example.com/f", sha256: sha }, { dataDir: dir, fetchImpl: respond({ status: 404 }) as never })).rejects.toThrow(
-      "answered 404",
-    );
-    await expect(
-      fetchVerified({ url: "https://example.com/f", sha256: sha }, { dataDir: dir, fetchImpl: respond({ url: "http://example.com/f" }) as never }),
-    ).rejects.toThrow("redirected away from https");
+describe("the download address policy", () => {
+  it("refuses this machine, private, link-local, CGNAT, ULA, multicast, reserved and tunnelled addresses", () => {
+    for (const address of [
+      "127.0.0.1",
+      "0.0.0.0",
+      "10.1.2.3",
+      "100.64.0.1",
+      "169.254.169.254",
+      "172.17.0.1",
+      "192.168.1.1",
+      "192.0.2.1",
+      "198.18.0.1",
+      "224.0.0.1",
+      "240.0.0.1",
+      "255.255.255.255",
+      "::",
+      "::1",
+      "::ffff:127.0.0.1",
+      "::ffff:10.0.0.1",
+      "64:ff9b::a00:1",
+      "2002:a00:1::1",
+      "2001:db8::1",
+      "fc00::1",
+      "fd12:3456::1",
+      "fe80::1",
+      "ff02::1",
+    ])
+      expect(addressProblem(address), address).toBeDefined();
+    for (const address of ["93.184.215.14", "151.101.1.69", "2606:4700::6810:84e5", "::ffff:93.184.215.14"])
+      expect(addressProblem(address), address).toBeUndefined();
+    expect(addressProblem("example.com")).toBe("is not an IP address");
   });
 });
 
 describe("the Settings caps", () => {
-  it("validate strictly, default sanely, and clamp a recipe's request", () => {
+  it("validate strictly, default sanely, and clamp a recipe's request (the home within memory)", () => {
     expect(() => normalizeSandboxSettings({ profileMaxCpus: 64 }, true)).toThrow("profileMaxCpus must be a number from 0.5 to 32, in steps of 0.01");
     expect(() => normalizeSandboxSettings({ profileMaxSessionMinutes: 1000 }, true)).toThrow(
       "profileMaxSessionMinutes must be a whole number of minutes from 5 to 480",
@@ -171,7 +222,10 @@ describe("the Settings caps", () => {
     expect(effectiveProfileLimits(blender, settings)).toEqual({ cpus: 4, memoryMb: 4096, homeMb: 2048, sessionMinutes: 60 });
     const tight = resolveSandboxSettings({ profileMaxCpus: 2, profileMaxSessionMinutes: 30 });
     expect(effectiveProfileLimits(blender, tight)).toEqual({ cpus: 2, memoryMb: 4096, homeMb: 2048, sessionMinutes: 30, clamped: ["cpus", "sessionMinutes"] });
-    // Nothing requested: the base sandbox's own values.
+    // A memory cap below the request shrinks the home with it: the home is memory, and the desktop keeps its headroom.
+    const lowMemory = resolveSandboxSettings({ profileMaxMemoryMb: 2048 });
+    expect(effectiveProfileLimits(blender, lowMemory)).toEqual({ cpus: 4, memoryMb: 2048, homeMb: 1536, sessionMinutes: 60, clamped: ["memoryMb", "homeMb"] });
+    // Nothing requested: the base sandbox's own values (a 512 MiB home within 1 GiB leaves the desktop 512 MiB).
     expect(effectiveProfileLimits({ limits: {} }, settings)).toEqual({ cpus: 1, memoryMb: 1024, homeMb: 512, sessionMinutes: 15 });
   });
 });
@@ -204,13 +258,19 @@ describe("before the human is asked", () => {
       variant: profileVariant(testProfile()),
     });
   });
-  it("refuses outside managed mode, an unknown name (listing the real ones), and an image not built or refused", async () => {
+  it("refuses outside managed mode, an unknown name (listing the real ones), another architecture, and an image not built or refused", async () => {
     await expect(profileForConsent("test", deps({ mode: "endpoint" }).deps)).rejects.toMatchObject({ code: "unsupported", message: /need managed mode/ });
     await expect(profileForConsent("maya", deps().deps)).rejects.toMatchObject({ code: "invalid_request", message: /Available: blender, test/ });
     await expect(profileForConsent("blender", deps().deps)).rejects.toMatchObject({ code: "unsupported", message: /is not built.*building is theirs/ });
-    const { docker, deps: d } = deps();
-    docker.state.images.set(testProfile().image, { id: `sha256:${"1".repeat(64)}`, labels: currentLabels(testProfile(), { [PROFILE_LABELS.floor]: "0" }) });
-    await expect(profileForConsent("test", d)).rejects.toMatchObject({ code: "unsupported", message: /must be rebuilt/ });
+    await expect(profileForConsent("blender", deps({ arch: async () => "arm64" }).deps)).rejects.toMatchObject({
+      code: "unsupported",
+      message: /builds only on amd64, and this Docker host is arm64/,
+    });
+    for (const labels of [{ [PROFILE_LABELS.floor]: "0" }, { [PROFILE_LABELS.recipe]: "f".repeat(64) }] as Record<string, string>[]) {
+      const { docker, deps: d } = deps();
+      docker.state.images.set(testProfile().image, { id: `sha256:${"1".repeat(64)}`, labels: currentLabels(testProfile(), labels) });
+      await expect(profileForConsent("test", d)).rejects.toMatchObject({ code: "unsupported", message: /must be rebuilt/ });
+    }
   });
 });
 
@@ -233,7 +293,7 @@ async function fixture(options: { settings?: Partial<ResolvedSandboxSettings>; m
     helloIntervalMs: 5,
     helloTimeoutMs: 5_000,
     preflightCacheMs: 0,
-    profile: (name) => (name === "test" ? resolveEntry() : undefined),
+    profile: (ref) => (ref.id === "global/test" ? resolveEntry() : undefined),
   });
   let mode: SandboxDesktopMode = options.mode ?? "managed";
   const never: Driver = {
@@ -398,6 +458,30 @@ describe("consent → open on a profile", () => {
     await f.cards[0]!.answer(true);
     expect(f.runArgs()).toEqual([]);
     expect(f.service.status(controlPrincipal("chat-r", "agent")).some((s) => s.state === "ready")).toBe(false);
+    expect(f.notices.at(-1)).toMatch(/was NOT enabled/);
+  });
+
+  it("consent binds the image too: an image built from another recipe never starts, even if it changed after the card was shown", async () => {
+    // Refused before asking: the image is an older recipe's build (the card would show the current one).
+    const stale = await fixture();
+    stale.docker.state.images.set(testProfile().image, {
+      id: `sha256:${"1".repeat(64)}`,
+      labels: currentLabels(testProfile(), { [PROFILE_LABELS.recipe]: "e".repeat(64) }),
+    });
+    await expect(stale.host.requestControl("chat-s", "sandbox", "x", signal(), { profile: "test" })).rejects.toMatchObject({
+      code: "unsupported",
+      message: /must be rebuilt/,
+    });
+    expect(stale.cards).toEqual([]);
+    // Swapped after consent was asked: the start re-reads the image and refuses it.
+    const f = await fixture();
+    await f.host.requestControl("chat-i", "sandbox", "x", signal(), { profile: "test" });
+    f.docker.state.images.set(testProfile().image, {
+      id: `sha256:${"2".repeat(64)}`,
+      labels: currentLabels(testProfile(), { [PROFILE_LABELS.recipe]: "e".repeat(64) }),
+    });
+    await f.cards[0]!.answer(true);
+    expect(f.runArgs()).toEqual([]);
     expect(f.notices.at(-1)).toMatch(/was NOT enabled/);
   });
 

@@ -48,7 +48,14 @@ import {
   type SandboxDesktopProblem,
 } from "shared/types/index.js";
 import { effectiveProfileLimits, type ResolvedSandboxSettings } from "./sandbox-desktop-settings.js";
-import { currentBase, inspectProfileImage, parseProfileVariant, type ProfileEntry } from "./sandbox-profiles.js";
+import {
+  STARTABLE_PROFILE_STATES,
+  currentBase,
+  inspectProfileImage,
+  parseProfileVariant,
+  type ProfileEntry,
+  type ProfileScopeKey,
+} from "./sandbox-profiles.js";
 import {
   DockerError,
   inspectSandboxImage,
@@ -171,10 +178,11 @@ export interface SandboxManagerOptions {
    */
   adoptPaused?: (sandbox: { sessionId: string; chatId: string; workspaceId?: string; folder?: string; name: string }) => boolean | Promise<boolean>;
   /**
-   * The sandbox profile a session's variant names (`<name>@<digest>`, see
-   * `profileVariant`), for a chat. Default: none, so any variant is refused.
+   * The sandbox profile a session's variant names (`<scope>:<name>@<digest>`,
+   * see `profileVariant`), if this chat may use it. Default: none, so any
+   * variant is refused.
    */
-  profile?: (name: string, chatId: string) => ProfileEntry | undefined;
+  profile?: (ref: { id: string; scope: ProfileScopeKey; name: string }, chatId: string) => ProfileEntry | undefined;
 }
 
 /** `session.json` beside the token: everything the reaper needs to drain a sandbox whose daemon died. */
@@ -440,8 +448,8 @@ export class SandboxContainerManager {
     let entry: ProfileEntry | undefined;
     if (context.variant !== undefined) {
       const wanted = parseProfileVariant(context.variant);
-      entry = wanted ? this.options.profile?.(wanted.name, context.chatId ?? "") : undefined;
-      if (!wanted || !entry) throw new ComputerUseError("unsupported", "That sandbox profile does not exist on this Callboard");
+      entry = wanted ? this.options.profile?.(wanted, context.chatId ?? "") : undefined;
+      if (!wanted || !entry || entry.id !== wanted.id) throw new ComputerUseError("unsupported", "That sandbox profile does not exist on this Callboard");
       if (!entry.digest.startsWith(wanted.digest))
         throw new ComputerUseError("unsupported", `Sandbox profile ${wanted.name} changed since it was requested; request it again`);
     }
@@ -461,6 +469,7 @@ export class SandboxContainerManager {
       ...(entry
         ? {
             profile: {
+              id: entry.id,
               name: entry.recipe.name,
               description: entry.recipe.description,
               gl: entry.recipe.gl,
@@ -547,9 +556,10 @@ export class SandboxContainerManager {
   }
 
   /**
-   * A profile image may start only if it exists and is not refused (another
-   * protocol major, below a security floor, not labelled as this profile).
-   * Out of date (an older recipe or base) still starts, with a warning in the log.
+   * A profile image may start only if it was built from exactly the recipe
+   * the human consented to, and is not otherwise refused (another protocol
+   * major, below a security floor, not labelled as this profile). Out of date
+   * (an older base or compiler) still starts, with a warning in the log.
    */
   private async profileCheck(entry: ProfileEntry, signal: AbortSignal): Promise<void> {
     let info;
@@ -562,7 +572,8 @@ export class SandboxContainerManager {
     const build = `\`${SANDBOX_PROFILE_BUILD_COMMAND} ${entry.recipe.name}\` (or Settings → Sandbox desktop → Profiles)`;
     if (info.state === "missing")
       throw new ComputerUseError("unsupported", `Sandbox profile ${entry.recipe.name} is not built. Build it with ${build}, then retry.`);
-    if (info.state === "insecure" || info.state === "incompatible")
+    // Only an image built from exactly the consented recipe (the variant bound the entry's digest to the consent).
+    if (!STARTABLE_PROFILE_STATES.includes(info.state) || info.recipe !== entry.digest)
       throw new ComputerUseError(
         "unsupported",
         `Sandbox profile ${entry.recipe.name}'s image is refused: ${info.detail ?? info.state}. Rebuild it with ${build}.`,
@@ -1148,6 +1159,7 @@ export function managedSandboxDriver(manager: SandboxContainerManager): Driver &
     kind: "native-desktop",
     lockDomain: "sandbox-desktop:managed",
     lockScope: "session",
+    supportsVariants: true,
     managed: true,
     endpoint: "managed container",
     identity: async () => ({ instanceId: MANAGED_INSTANCE }),

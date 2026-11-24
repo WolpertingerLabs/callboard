@@ -53,18 +53,42 @@ export const PROFILE_SECURITY_FLOOR = 1;
 
 /** The tag of the base image's builder stage (`docker build --target builder`), which still has apt. */
 export const SANDBOX_BUILDER_IMAGE = "callboard/computer-use-desktop-builder:local";
-/** Profile images are `<repository>:<name>`. */
+/** Profile images are `<repository>:<name>` (global scope) or `<repository>:<scope>-<name>` (a workspace's). */
 export const PROFILE_IMAGE_REPOSITORY = "callboard/computer-use-profile";
+/**
+ * Where a profile lives. `global`: built-ins (and, later, profiles every chat
+ * may use). `w<12 hex>`: one workspace's own, keyed by a hash of its
+ * workspace id (or, for a chat without one, its folder); never parsed back.
+ */
+export type ProfileScopeKey = "global" | `w${string}`;
+const SCOPE_KEY = /^(global|w[0-9a-f]{12})$/;
+export function isProfileScopeKey(value: unknown): value is ProfileScopeKey {
+  return typeof value === "string" && SCOPE_KEY.test(value);
+}
+/** A profile's identity: its scope and name (`global/blender`). Drives its image tag and its session variant. */
+export function profileEntryId(scope: ProfileScopeKey, name: string): string {
+  if (!isProfileScopeKey(scope)) throw new ComputerUseError("invalid_request", "Invalid profile scope");
+  return `${scope}/${assertName(name)}`;
+}
+const tagFor = (scope: ProfileScopeKey, name: string, repository: string) => {
+  profileEntryId(scope, name);
+  return `${repository}:${scope === "global" ? name : `${scope}-${name}`}`;
+};
+export const profileImageTag = (name: string, scope: ProfileScopeKey = "global", repository = PROFILE_IMAGE_REPOSITORY) => tagFor(scope, name, repository);
 /** The tag of a profile's first (package) build, removed once the profile is built. */
-export const profilePackagesTag = (name: string) => `${PROFILE_IMAGE_REPOSITORY}:${assertName(name)}-packages`;
-export const profileImageTag = (name: string) => `${PROFILE_IMAGE_REPOSITORY}:${assertName(name)}`;
+export const profilePackagesTag = (name: string, scope: ProfileScopeKey = "global", repository = PROFILE_IMAGE_REPOSITORY) =>
+  `${tagFor(scope, name, repository)}-packages`;
 
 /** Labels on a built profile image, set by the build (`docker build --label`), never by the recipe. */
 export const PROFILE_LABELS = Object.freeze({
   name: "dev.callboard.computer-use.profile",
-  /** {@link profileRecipeDigest} of the recipe it was built from. */
+  /** The scope it belongs to ({@link ProfileScopeKey}). */
+  scope: "dev.callboard.computer-use.profile.scope",
+  /** {@link profileRecipeDigest} of the recipe it was built from: what a consent is bound to. */
   recipe: "dev.callboard.computer-use.profile.recipe",
-  /** The base's content digest (`sandboxContentDigest`) and image ID it was built against. */
+  /** {@link profileCompilerDigest} of the compiler that built it. */
+  compiler: "dev.callboard.computer-use.profile.compiler",
+  /** The base's content digest (`sandboxContentDigest`), and for information its image ID. */
   baseContent: "dev.callboard.computer-use.profile.base-content",
   baseImage: "dev.callboard.computer-use.profile.base-image",
   gl: "dev.callboard.computer-use.profile.gl",
@@ -119,6 +143,26 @@ export interface ProfileRecipe {
   gl: ProfileGl;
   /** Requests; a host clamps each to its own caps. Omitted: the host's base-sandbox values. */
   limits: ProfileLimits;
+  /**
+   * The Docker host architectures it builds on (Debian/Docker names). Empty:
+   * any. A build on another architecture is refused before anything is downloaded.
+   */
+  architectures: ProfileArchitecture[];
+}
+export type ProfileArchitecture = "amd64" | "arm64";
+export const PROFILE_ARCHITECTURES: readonly ProfileArchitecture[] = Object.freeze(["amd64", "arm64"]);
+
+/**
+ * The tmpfs home is memory: its files count against the container's memory
+ * limit, so a home as big as the memory cap gets the session OOM-killed. A
+ * profile's home must leave this much memory for the desktop and its apps.
+ */
+export function profileHomeHeadroomMb(memoryMb: number): number {
+  return Math.max(512, Math.ceil(memoryMb / 4));
+}
+/** The largest home a memory limit allows (never below the 256 MiB floor). */
+export function profileMaxHomeMb(memoryMb: number): number {
+  return Math.max(PROFILE_LIMIT_BOUNDS.homeMb.min, memoryMb - profileHomeHeadroomMb(memoryMb));
 }
 
 /** What a recipe may ask for, before any host cap. */
@@ -186,7 +230,7 @@ const RESERVED_ENV = new Set([
   "GALLIUM_DRIVER",
 ]);
 const RESERVED_ENV_PREFIXES = ["LD_", "COMPUTER_USE_", "CALLBOARD_", "LIBGL_", "MESA_", "LP_", "BASH_FUNC_"];
-const RECIPE_KEYS = ["schema", "name", "description", "packages", "downloads", "setup", "path", "env", "gl", "limits"] as const;
+const RECIPE_KEYS = ["schema", "name", "description", "packages", "downloads", "setup", "path", "env", "gl", "limits", "architectures"] as const;
 const DOWNLOAD_KEYS = ["url", "sha256", "dest", "unpack", "stripComponents", "filename", "executable"] as const;
 const LIMIT_KEYS = ["cpus", "memoryMb", "homeMb", "sessionMinutes"] as const;
 const UNPACKS: readonly ProfileUnpack[] = ["tar.gz", "tar.xz", "zip", "file"];
@@ -197,10 +241,22 @@ const UNSAFE_TEXT = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u200e\u200f\u202a-\
 // eslint-disable-next-line no-control-regex -- matching control characters is the point
 const UNSAFE_SCRIPT = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]/;
 
+/**
+ * Untrusted text as it may appear in an error: JSON-quoted, at most 80
+ * characters, and every character outside printable ASCII escaped (`\u202e`,
+ * `\n`), so a hostile key or value can neither forge a line nor reorder what
+ * a reader sees.
+ */
 const quote = (value: unknown) => {
-  const text = typeof value === "string" ? value : JSON.stringify(value);
-  return JSON.stringify(text === undefined ? String(value) : text.length > 80 ? `${text.slice(0, 80)}…` : text);
+  const raw = typeof value === "string" ? value : JSON.stringify(value);
+  const text = raw === undefined ? String(value) : raw;
+  return JSON.stringify(text.length > 80 ? `${text.slice(0, 80)}…` : text).replace(
+    /[^\x20-\x7e]/g,
+    (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
+  );
 };
+/** A key in an error path: as is when it is a plain identifier, quoted otherwise. */
+const keyOf = (key: string) => (/^[A-Za-z0-9_]{1,64}$/.test(key) ? key : quote(key));
 const isObject = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
 const utf8Bytes = (text: string) => Buffer.byteLength(text, "utf8");
 
@@ -213,7 +269,16 @@ export function isProfileName(name: unknown): name is string {
   return typeof name === "string" && NAME.test(name) && !RESERVED_NAMES.has(name);
 }
 
-/** Why a download URL is refused, or undefined. */
+/**
+ * Why a download URL is refused, or undefined: https only, a public-looking
+ * host name (no IP literal, `localhost`, `.local`, `.internal` or bare name),
+ * no credentials or fragment. A host checks every redirect hop with this too,
+ * and the addresses its name resolves to separately: a name proves nothing
+ * about where it points.
+ */
+export function profileDownloadUrlProblem(value: string): string | undefined {
+  return urlProblem(value);
+}
 function urlProblem(value: string): string | undefined {
   if (value.length > 2048) return "is longer than 2048 characters";
   if (UNSAFE_TEXT.test(value) || /\s/.test(value)) return "contains whitespace or control characters";
@@ -247,7 +312,7 @@ export function validateProfileRecipe(input: unknown): ProfileRecipe {
   };
   if (!isObject(input)) throw new ProfileRecipeError(["recipe: must be a JSON object"]);
   for (const key of Object.keys(input))
-    if (!(RECIPE_KEYS as readonly string[]).includes(key)) issue(key, `is not a recipe field (allowed: ${RECIPE_KEYS.join(", ")})`);
+    if (!(RECIPE_KEYS as readonly string[]).includes(key)) issue(keyOf(key), `is not a recipe field (allowed: ${RECIPE_KEYS.join(", ")})`);
 
   if (input.schema !== PROFILE_RECIPE_SCHEMA) issue("schema", `must be ${PROFILE_RECIPE_SCHEMA}`);
 
@@ -287,7 +352,8 @@ export function validateProfileRecipe(input: unknown): ProfileRecipe {
         const at = `downloads[${i}]`;
         if (!isObject(entry)) return issue(at, "must be an object with url, sha256, dest and unpack");
         for (const key of Object.keys(entry))
-          if (!(DOWNLOAD_KEYS as readonly string[]).includes(key)) issue(`${at}.${key}`, `is not a download field (allowed: ${DOWNLOAD_KEYS.join(", ")})`);
+          if (!(DOWNLOAD_KEYS as readonly string[]).includes(key))
+            issue(`${at}.${keyOf(key)}`, `is not a download field (allowed: ${DOWNLOAD_KEYS.join(", ")})`);
         const out: Partial<ProfileDownload> = {};
         if (typeof entry.url !== "string") issue(`${at}.url`, "is required");
         else {
@@ -371,12 +437,12 @@ export function validateProfileRecipe(input: unknown): ProfileRecipe {
       const entries = Object.entries(input.env);
       if (entries.length > PROFILE_RECIPE_LIMITS.env) issue("env", `must have at most ${PROFILE_RECIPE_LIMITS.env} variables`);
       for (const [key, value] of entries.slice(0, PROFILE_RECIPE_LIMITS.env)) {
-        if (!ENV_NAME.test(key)) issue(`env.${key}`, "is not a variable name (uppercase letters, digits and _, not starting with a digit)");
+        if (!ENV_NAME.test(key)) issue(`env.${keyOf(key)}`, "is not a variable name (uppercase letters, digits and _, not starting with a digit)");
         else if (RESERVED_ENV.has(key) || RESERVED_ENV_PREFIXES.some((prefix) => key.startsWith(prefix)))
-          issue(`env.${key}`, `is reserved (set by Callboard; use "path" for PATH)`);
-        else if (typeof value !== "string") issue(`env.${key}`, "must be a string");
-        else if (value.length > PROFILE_RECIPE_LIMITS.envValue) issue(`env.${key}`, `must be at most ${PROFILE_RECIPE_LIMITS.envValue} characters`);
-        else if (UNSAFE_TEXT.test(value)) issue(`env.${key}`, "must be one line without control characters");
+          issue(`env.${keyOf(key)}`, `is reserved (set by Callboard; use "path" for PATH)`);
+        else if (typeof value !== "string") issue(`env.${keyOf(key)}`, "must be a string");
+        else if (value.length > PROFILE_RECIPE_LIMITS.envValue) issue(`env.${keyOf(key)}`, `must be at most ${PROFILE_RECIPE_LIMITS.envValue} characters`);
+        else if (UNSAFE_TEXT.test(value)) issue(`env.${keyOf(key)}`, "must be one line without control characters");
         else env[key] = value;
       }
     }
@@ -393,7 +459,7 @@ export function validateProfileRecipe(input: unknown): ProfileRecipe {
     if (!isObject(input.limits)) issue("limits", "must be an object");
     else {
       for (const key of Object.keys(input.limits))
-        if (!(LIMIT_KEYS as readonly string[]).includes(key)) issue(`limits.${key}`, `is not a limit (allowed: ${LIMIT_KEYS.join(", ")})`);
+        if (!(LIMIT_KEYS as readonly string[]).includes(key)) issue(`limits.${keyOf(key)}`, `is not a limit (allowed: ${LIMIT_KEYS.join(", ")})`);
       for (const key of LIMIT_KEYS) {
         const value = input.limits[key];
         if (value === undefined) continue;
@@ -408,7 +474,25 @@ export function validateProfileRecipe(input: unknown): ProfileRecipe {
         if (!ok) issue(`limits.${key}`, `must be ${integer ? "a whole number" : "a number in steps of 0.01"} from ${min} to ${max}`);
         else limits[key] = value as number;
       }
+      // The home is a tmpfs, so it is memory: leave room for the desktop and its apps.
+      if (limits.homeMb !== undefined && limits.memoryMb !== undefined && limits.homeMb > profileMaxHomeMb(limits.memoryMb))
+        issue(
+          "limits.homeMb",
+          `must be at most ${profileMaxHomeMb(limits.memoryMb)} with memoryMb ${limits.memoryMb}: the home is memory, and the desktop needs ${profileHomeHeadroomMb(limits.memoryMb)} MiB of the rest`,
+        );
     }
+  }
+
+  const architectures: ProfileArchitecture[] = [];
+  if (input.architectures !== undefined) {
+    if (!Array.isArray(input.architectures)) issue("architectures", `must be an array of ${PROFILE_ARCHITECTURES.join(", ")} (empty or omitted: any)`);
+    else
+      input.architectures.forEach((arch, i) => {
+        if (!PROFILE_ARCHITECTURES.includes(arch as ProfileArchitecture))
+          issue(`architectures[${i}]`, `${quote(arch)} must be one of ${PROFILE_ARCHITECTURES.join(", ")}`);
+        else if (architectures.includes(arch as ProfileArchitecture)) issue(`architectures[${i}]`, `${quote(arch)} is listed twice`);
+        else architectures.push(arch as ProfileArchitecture);
+      });
   }
 
   if (issues.length) throw new ProfileRecipeError(issues);
@@ -423,7 +507,13 @@ export function validateProfileRecipe(input: unknown): ProfileRecipe {
     env: Object.fromEntries(Object.entries(env).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))),
     gl,
     limits,
+    architectures: PROFILE_ARCHITECTURES.filter((arch) => architectures.includes(arch)),
   };
+}
+
+/** Whether a recipe builds on a Docker host of this architecture (`docker version`'s `Server.Arch`). */
+export function profileSupportsArchitecture(recipe: Pick<ProfileRecipe, "architectures">, arch: string): boolean {
+  return recipe.architectures.length === 0 || recipe.architectures.includes(arch as ProfileArchitecture);
 }
 
 /** Parse recipe JSON text (at most {@link PROFILE_RECIPE_LIMITS}.bytes) and validate it. */
@@ -466,6 +556,7 @@ export function canonicalProfileRecipe(recipe: ProfileRecipe): string {
       env: r.env,
       gl: r.gl,
       limits: Object.fromEntries(LIMIT_KEYS.filter((key) => r.limits[key] !== undefined).map((key) => [key, r.limits[key]])),
+      ...(r.architectures.length ? { architectures: r.architectures } : {}),
     },
     null,
     2,
@@ -473,14 +564,23 @@ export function canonicalProfileRecipe(recipe: ProfileRecipe): string {
 }
 
 /**
- * A SHA-256 over the compiler (its version and every constant it emits:
- * Dockerfiles, scripts, the GL package list) and the canonical recipe: it
- * changes when the recipe changes or when what Callboard compiles it to does.
+ * A SHA-256 of the canonical recipe alone: what a human consents to, and what
+ * a profile image must have been built from to start for that consent.
  */
 export function profileRecipeDigest(recipe: ProfileRecipe): string {
-  const hash = createHash("sha256").update(`callboard-sandbox-profile\0compiler=${PROFILE_COMPILER_VERSION}\0`);
+  return createHash("sha256").update("callboard-sandbox-profile-recipe\0").update(canonicalProfileRecipe(recipe)).digest("hex");
+}
+
+/**
+ * A SHA-256 of the compiler: its version and every constant it emits
+ * (Dockerfiles, scripts, the epilogue, the GL package list). An image built by
+ * another compiler is out of date (it still starts); a compiler change that an
+ * image must not keep running without raises {@link PROFILE_SECURITY_FLOOR}.
+ */
+export function profileCompilerDigest(): string {
+  const hash = createHash("sha256").update(`callboard-sandbox-profile-compiler\0${PROFILE_COMPILER_VERSION}\0`);
   for (const part of compilerSources()) hash.update(part).update("\0");
-  return hash.update(canonicalProfileRecipe(recipe)).digest("hex");
+  return hash.digest("hex");
 }
 
 // ── The build ───────────────────────────────────────────────────────────
@@ -562,6 +662,12 @@ const INSTALL_PACKAGES_SH = `#!/bin/sh
 # Callboard: install a profile's Debian packages. Root, with the network, in
 # the builder, from its own Debian sources (the recipe cannot add any). Every
 # line was validated by the compiler and is checked again here.
+#
+# apt reads a name that is not an exact package name, and contains "." or
+# "+", as an unanchored regex ("netcat.+" installs both netcats). So every
+# name must be an exact, real package name (apt-cache pkgnames lists those,
+# and no pure virtual one) before apt sees it, and afterwards the packages
+# newly marked manual must be exactly the ones listed.
 set -eu
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
@@ -573,8 +679,30 @@ fi
 if [ -s "$list" ]; then
   export DEBIAN_FRONTEND=noninteractive
   apt-get update
+  known=/tmp/callboard-pkgnames
+  apt-cache pkgnames | LC_ALL=C sort -u > "$known"
+  missing="$(LC_ALL=C sort -u "$list" | LC_ALL=C comm -23 - "$known")"
+  if [ -n "$missing" ]; then
+    echo "install-packages: not an exact package name in the builder's Debian sources (virtual and pattern names are refused):" >&2
+    echo "$missing" >&2
+    exit 1
+  fi
+  before=/tmp/callboard-manual-before
+  listed=/tmp/callboard-listed
+  apt-mark showmanual | LC_ALL=C sort -u > "$before"
+  LC_ALL=C sort -u "$list" > "$listed"
   # --no-remove: a package that would take another away (xvfb, tini, ...) fails the build.
   xargs apt-get install -y --no-install-recommends --no-remove < "$list"
+  extra="$(apt-mark showmanual | LC_ALL=C sort -u | LC_ALL=C comm -23 - "$before" | LC_ALL=C comm -23 - "$listed")"
+  if [ -n "$extra" ]; then
+    echo "install-packages: apt installed packages the recipe did not name:" >&2
+    echo "$extra" >&2
+    exit 1
+  fi
+  while read -r pkg; do
+    dpkg-query -W -f='\${db:Status-Abbrev}' "$pkg" 2>/dev/null | grep -q '^ii' || { echo "install-packages: $pkg is not installed" >&2; exit 1; }
+  done < "$list"
+  rm -f "$known" "$before" "$listed"
 fi
 rm -rf /var/lib/apt/lists/* /callboard-recipe /callboard-build
 `;
@@ -859,11 +987,14 @@ export function profileImageBuildArgs(options: {
   baseImage: string;
   baseContent: string;
   name: string;
+  scope?: ProfileScopeKey;
   digest: string;
   gl: ProfileGl;
   tag: string;
 }): string[] {
   if (options.gl !== "none" && options.gl !== "software") throw new ComputerUseError("invalid_request", "Invalid GL mode");
+  const scope = options.scope ?? "global";
+  if (!isProfileScopeKey(scope)) throw new ComputerUseError("invalid_request", "Invalid profile scope");
   for (const value of [options.baseContent, options.digest, options.baseImage])
     if (!LABEL_VALUE.test(value)) throw new ComputerUseError("invalid_request", "Invalid profile label value");
   return [
@@ -881,7 +1012,11 @@ export function profileImageBuildArgs(options: {
     "--label",
     `${PROFILE_LABELS.name}=${assertName(options.name)}`,
     "--label",
+    `${PROFILE_LABELS.scope}=${scope}`,
+    "--label",
     `${PROFILE_LABELS.recipe}=${options.digest}`,
+    "--label",
+    `${PROFILE_LABELS.compiler}=${profileCompilerDigest()}`,
     "--label",
     `${PROFILE_LABELS.baseContent}=${options.baseContent}`,
     "--label",
@@ -917,5 +1052,12 @@ export function clampProfileLimits(
     }
     return want;
   };
-  return { cpus: pick("cpus"), memoryMb: pick("memoryMb"), homeMb: pick("homeMb"), sessionMinutes: pick("sessionMinutes"), clamped };
+  const memoryMb = pick("memoryMb");
+  let homeMb = pick("homeMb");
+  // The home is memory: whatever the request and the caps, it leaves the desktop its headroom.
+  if (homeMb > profileMaxHomeMb(memoryMb)) {
+    homeMb = profileMaxHomeMb(memoryMb);
+    if (!clamped.includes("homeMb")) clamped.push("homeMb");
+  }
+  return { cpus: pick("cpus"), memoryMb, homeMb, sessionMinutes: pick("sessionMinutes"), clamped };
 }
