@@ -1269,3 +1269,10 @@ select option {
     }
   }
 }
+
+/* A dialog that must fit the visible viewport: dvh tracks mobile browser
+   chrome; the vh line is the fallback for browsers without dvh. */
+.modal-viewport-clamp {
+  max-height: calc(100vh - 32px);
+  max-height: calc(100dvh - 32px);
+}

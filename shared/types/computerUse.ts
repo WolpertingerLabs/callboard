@@ -44,8 +44,9 @@ export const CU_REQUEST_CONTROL_TOOL_NAME = "mcp__computer_use__cu_request_contr
  *   kept until it is restarted, so NOT fresh per session and NOT a place for
  *   work other chats must not see. The strictest description is the fallback.
  *
- * A surface that cannot know the mode (the permission row) uses
- * {@link SANDBOX_DESKTOP_TEXT_ANY_MODE}.
+ * A surface that cannot know the mode uses {@link SANDBOX_DESKTOP_TEXT_ANY_MODE}.
+ * (The permission row itself keeps to one short line; the full text lives on
+ * the consent card and in the agent guide.)
  */
 export interface SandboxDesktopVariant {
   mode?: "managed" | "endpoint" | "off";
@@ -92,7 +93,7 @@ export function sandboxDesktopText(variant: SandboxDesktopVariant = {}): Sandbox
 }
 /** The shared-container (endpoint) description: the fallback wherever the mode is unknown. */
 export const SANDBOX_DESKTOP_TEXT: SandboxDesktopText = Object.freeze(sandboxDesktopText({ mode: "endpoint" }));
-/** For a surface that cannot know the host's mode (the permission row). True of both modes. */
+/** For a surface that cannot know the host's mode. True of both modes. */
 export const SANDBOX_DESKTOP_TEXT_ANY_MODE: SandboxDesktopText = Object.freeze({
   what: "a Linux desktop in a hardened container, isolated from this machine's files and credentials (a fresh one per session when Callboard manages it, or a shared one you run yourself)",
   network:
