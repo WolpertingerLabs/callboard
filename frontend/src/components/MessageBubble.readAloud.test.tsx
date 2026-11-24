@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 /**
- * The read-aloud speaker in a bubble's hover row, and the inline player under
- * the bubble it is reading. Like the other hover affordances, the reveal rule
- * in index.css matches a DIRECT child of `.msg-bubble`, so structure is
- * asserted here; jsdom applies no stylesheet.
+ * The read-aloud speaker in a bubble's hover row. The controls are not in the
+ * bubble: they are the bar docked above the composer (ReadAloudPlayer),
+ * rendered beside the bubbles here as Chat renders it. Like the other hover
+ * affordances, the reveal rule in index.css matches a DIRECT child of
+ * `.msg-bubble`, so structure is asserted here; jsdom applies no stylesheet.
  */
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { useState } from "react";
@@ -13,7 +14,9 @@ import { appendAttachmentBlocks, formatAttachmentBlock } from "shared/types/inde
 import type { ParsedMessage, SynthesizedSpeech } from "../api";
 import { installMediaStubs } from "../testing/mediaStubs";
 import { getReadAloudAudioForTesting, getSnapshot, resetReadAloudPlayerForTesting } from "../utils/readAloudPlayer";
+import { starKeysByIndex } from "../utils/starredMessages";
 import MessageBubble from "./MessageBubble";
+import ReadAloudPlayer from "./ReadAloudPlayer";
 
 const synth = vi.hoisted(() => ({ fn: vi.fn() }));
 vi.mock("../api", async (importOriginal) => ({
@@ -137,7 +140,7 @@ describe("the speaker", () => {
     expect(synth.fn).not.toHaveBeenCalled();
   });
 
-  it("starts, shows the player under that bubble only, and stops on a second click", async () => {
+  it("starts, marks only its own speaker active, renders no player in the bubble, and stops on a second click", async () => {
     const { container } = render(
       <>
         <MessageBubble message={reply} readAloud={AVAILABLE} />
@@ -149,54 +152,92 @@ describe("the speaker", () => {
     expect(synth.fn).toHaveBeenCalledWith("A reply worth hearing.", expect.any(AbortSignal));
     await flush();
 
-    const players = container.querySelectorAll(".read-aloud-player");
-    expect(players).toHaveLength(1);
-    // Under the reply's bubble, outside it (the hover row stays the bubble's own).
-    expect(players[0].previousElementSibling?.textContent).toContain("A reply worth hearing.");
+    expect(getSnapshot().status).toBe("playing");
+    // No inline player any more: the controls live in the docked bar.
+    expect(container.querySelector(".read-aloud-player")).toBeNull();
+    expect(screen.queryByRole("group", { name: "Read aloud player" })).toBeNull();
     const stopButton = screen.getByRole("button", { name: "Stop reading aloud" });
+    expect(stopButton).toBe(first);
     expect(stopButton.classList.contains("is-active")).toBe(true);
+    expect(screen.getByRole("button", { name: "Read aloud" }).classList.contains("is-active")).toBe(false);
     fireEvent.click(stopButton);
     expect(getSnapshot().status).toBe("idle");
-    expect(container.querySelector(".read-aloud-player")).toBeNull();
+    expect(stopButton.classList.contains("is-active")).toBe(false);
   });
 
-  it("starting another bubble moves the player there", async () => {
-    const { container } = render(
+  it("starting another bubble moves the active speaker there", async () => {
+    render(
       <>
         <MessageBubble message={reply} readAloud={AVAILABLE} />
         <MessageBubble message={prompt} readAloud={AVAILABLE} />
+        <ReadAloudPlayer />
       </>,
     );
-    fireEvent.click(screen.getAllByRole("button", { name: "Read aloud" })[0]);
+    const [first, second] = screen.getAllByRole("button", { name: "Read aloud" });
+    fireEvent.click(first);
     await flush();
-    fireEvent.click(screen.getByRole("button", { name: "Read aloud" }));
+    fireEvent.click(second);
     await flush();
-    const players = container.querySelectorAll(".read-aloud-player");
-    expect(players).toHaveLength(1);
-    expect(players[0].previousElementSibling?.textContent).toContain("A question?");
+    expect(first.classList.contains("is-active")).toBe(false);
+    expect(second.classList.contains("is-active")).toBe(true);
+    expect(screen.getAllByRole("group", { name: "Read aloud player" })).toHaveLength(1);
+    expect(screen.getByText("A question?", { selector: ".read-aloud-label-text" })).toBeTruthy();
   });
 
-  it("cancels while loading", () => {
+  it("keeps the speaker active while the docked bar is paused or showing an error", async () => {
+    render(
+      <>
+        <MessageBubble message={reply} readAloud={AVAILABLE} />
+        <ReadAloudPlayer />
+      </>,
+    );
+    fireEvent.click(speaker());
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: "Pause" }));
+    expect(screen.getByRole("button", { name: "Stop reading aloud" }).classList.contains("is-active")).toBe(true);
+    act(() => getReadAloudAudioForTesting()!.dispatchEvent(new Event("error")));
+    expect(screen.getByRole("alert")).toBeTruthy();
+    expect(speaker().classList.contains("is-active")).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Close audio player" }));
+    expect(speaker().classList.contains("is-active")).toBe(false);
+  });
+
+  it.each([
+    ["the speaker again", "Stop reading aloud"],
+    ["the docked bar's X (named Cancel while preparing)", "Cancel read aloud"],
+  ])("cancels while loading from %s", (_label, name) => {
     synth.fn.mockReturnValueOnce(new Promise(() => {}));
-    render(<MessageBubble message={reply} readAloud={AVAILABLE} />);
+    render(
+      <>
+        <MessageBubble message={reply} readAloud={AVAILABLE} />
+        <ReadAloudPlayer />
+      </>,
+    );
     fireEvent.click(speaker());
     expect(getSnapshot().status).toBe("loading");
+    expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
     const signal = synth.fn.mock.calls[0][1] as AbortSignal;
-    fireEvent.click(screen.getByRole("button", { name: "Stop reading aloud" }));
+    fireEvent.click(screen.getByRole("button", { name }));
     expect(signal.aborted).toBe(true);
     expect(getSnapshot().status).toBe("idle");
+    expect(screen.queryByRole("group", { name: "Read aloud player" })).toBeNull();
   });
 
   it.each([
     ["a reply", reply, {}],
     ["a team message", { ...reply, teamName: "r" } as ParsedMessage, { teamColorMap: new Map([["r", 0]]) }],
-  ])("on %s, Stop in the player hands focus back to that bubble's speaker", async (_label, message, extra) => {
-    render(<MessageBubble message={message} readAloud={AVAILABLE} {...extra} />);
+  ])("on %s, the docked bar's X hands focus back to that bubble's speaker", async (_label, message, extra) => {
+    render(
+      <>
+        <MessageBubble message={message} readAloud={AVAILABLE} {...extra} />
+        <ReadAloudPlayer />
+      </>,
+    );
     fireEvent.click(speaker());
     await flush();
-    const stopButton = screen.getByRole("button", { name: "Stop" });
-    stopButton.focus();
-    act(() => fireEvent.click(stopButton));
+    const close = screen.getByRole("button", { name: "Close audio player" });
+    close.focus();
+    act(() => fireEvent.click(close));
     expect(screen.queryByRole("group", { name: "Read aloud player" })).toBeNull();
     expect(document.activeElement).toBe(speaker());
   });
@@ -207,6 +248,7 @@ describe("the speaker", () => {
     await flush();
     expect(getSnapshot().status).toBe("playing");
     unmount();
+    await flush();
     expect(getSnapshot().status).toBe("idle");
   });
 });
@@ -220,11 +262,12 @@ describe("re-render containment", () => {
         <textarea aria-label="composer" value={draft} onChange={(e) => setDraft(e.target.value)} />
         <MessageBubble message={reply} readAloud={AVAILABLE} />
         <MessageBubble message={prompt} readAloud={AVAILABLE} />
+        <ReadAloudPlayer />
       </>
     );
   }
 
-  it("timeupdate re-renders neither bubble body, only the owner's player", async () => {
+  it("timeupdate re-renders neither bubble body, only the docked bar", async () => {
     render(<Harness />);
     fireEvent.click(screen.getAllByRole("button", { name: "Read aloud" })[0]);
     await flush();
@@ -245,5 +288,61 @@ describe("re-render containment", () => {
     // And the bubbles stay memoized against parent re-renders.
     fireEvent.change(screen.getByLabelText("composer"), { target: { value: "x" } });
     expect(counts.markdown.get(reply.content)).toBe(ownerBefore);
+  });
+});
+
+describe("the owner follows the message, not its position", () => {
+  const at = (minute: number, role: "user" | "assistant", content: string) =>
+    ({ role, type: "text", content, timestamp: `2026-01-01T10:${String(minute).padStart(2, "0")}:00.000Z` }) as ParsedMessage;
+  const older = [at(1, "user", "Oldest question?"), at(2, "assistant", "Oldest answer.")];
+  const recent = [at(3, "user", "Recent question?"), at(4, "assistant", "Recent answer.")];
+
+  /** Keyed by position and given Chat's star keys, as Chat renders the transcript. */
+  function Transcript({ messages }: { messages: ParsedMessage[] }) {
+    const keys = starKeysByIndex(messages);
+    return (
+      <>
+        {messages.map((m, i) => (
+          <div key={i}>
+            <MessageBubble message={m} starKey={keys.get(i)} readAloud={AVAILABLE} />
+          </div>
+        ))}
+        <ReadAloudPlayer />
+      </>
+    );
+  }
+
+  const speakerOf = (text: string) => {
+    const bubble = screen.getByText(text, { selector: ".msg-bubble div" }).closest(".msg-bubble")!;
+    return bubble.querySelector<HTMLButtonElement>(":scope > .read-aloud-affordance")!;
+  };
+
+  it("keeps the active speaker and the label on the message being read when older messages load above it", async () => {
+    const { rerender } = render(<Transcript messages={recent} />);
+    fireEvent.click(speakerOf("Recent answer."));
+    await flush();
+    expect(getSnapshot().status).toBe("playing");
+
+    rerender(<Transcript messages={[...older, ...recent]} />);
+    await flush();
+    // Same playback, still running; the bubble now at index 1 is not it.
+    expect(getSnapshot().status).toBe("playing");
+    expect(speakerOf("Recent answer.").classList.contains("is-active")).toBe(true);
+    expect(speakerOf("Oldest answer.").classList.contains("is-active")).toBe(false);
+    expect(screen.getAllByRole("button", { name: "Stop reading aloud" })).toEqual([speakerOf("Recent answer.")]);
+    expect(screen.getByText("Recent answer.", { selector: ".read-aloud-label-text" })).toBeTruthy();
+
+    // And its speaker still stops it.
+    fireEvent.click(speakerOf("Recent answer."));
+    expect(getSnapshot().status).toBe("idle");
+  });
+
+  it("still stops when the message being read leaves the transcript", async () => {
+    const { rerender } = render(<Transcript messages={[...older, ...recent]} />);
+    fireEvent.click(speakerOf("Recent answer."));
+    await flush();
+    rerender(<Transcript messages={older} />);
+    await flush();
+    expect(getSnapshot().status).toBe("idle");
   });
 });

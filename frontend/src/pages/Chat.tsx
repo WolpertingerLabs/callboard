@@ -5,7 +5,7 @@ import ComputerUseHeader from "../components/ComputerUseHeader";
 import { usePendingFeedback } from "../hooks/usePendingFeedback";
 import { useComputerUseController } from "../hooks/useComputerUseController";
 import ComputerUsePanel from "../components/ComputerUsePanel";
-import { memo, useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, type ReactNode } from "react";
+import { memo, useId, useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, type ReactNode } from "react";
 import { useParams, useNavigate, useSearchParams, useLocation, useNavigationType } from "react-router-dom";
 import {
   RotateCw,
@@ -124,6 +124,9 @@ import { ChatGalleryProvider } from "../components/gallery/ChatGallery";
 import SandboxDeliveries from "../components/SandboxDeliveries";
 import { ServeChatContext } from "../contexts/ServeChatContext";
 import PromptInput, { parseLeadingCommand, type ComposerValueUpdate } from "../components/PromptInput";
+import ReadAloudPlayer from "../components/ReadAloudPlayer";
+import { ReadAloudScope } from "../hooks/useReadAloud";
+import { releaseScope } from "../utils/readAloudPlayer";
 import FeedbackPanel, { type PendingAction } from "../components/FeedbackPanel";
 import ConfirmModal from "../components/ConfirmModal";
 import ActivityDock from "../components/ActivityDock";
@@ -1018,6 +1021,18 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
     () => (systemInfoLoaded ? { available: readAloudAvailable, reason: readAloudAvailable ? undefined : READ_ALOUD_NOT_CONFIGURED_MESSAGE } : undefined),
     [systemInfoLoaded, readAloudAvailable],
   );
+  // This chat view's read-aloud scope: its bubbles start playback under it,
+  // and only its docked bar (above the composer) shows that playback — with
+  // the aside panel open, the other chat view has its own scope and bar.
+  const readAloudScope = useId();
+  // Leaving a chat stops what it was reading. Bubbles are keyed by position,
+  // so a chat switch can keep the playing bubble mounted under the new chat —
+  // its own release would never run, and the bar would read on for a message
+  // no longer on screen. Not from /chat/new, whose first send gains an id.
+  useEffect(() => {
+    if (!id) return;
+    return () => releaseScope(readAloudScope);
+  }, [id, readAloudScope]);
 
   // Null for a retired harness, because forking copies the source's session
   // log, and nothing left in the process can read one the removed engine wrote.
@@ -3374,6 +3389,8 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
   // The mobile sheet covers the main chat; nothing under it may take focus or
   // be read out (React 18 has no `inert` prop, so it is set directly).
   const pageLayoutRef = useRef<HTMLDivElement>(null);
+  // Where the bar hands focus on close when the message's speaker is off screen (desktop only; see ReadAloudPlayer).
+  const getReadAloudComposer = useCallback(() => pageLayoutRef.current?.querySelector<HTMLElement>("[data-composer] textarea:not([disabled])") ?? null, []);
   const sheetOpen = !embedded && isMobile && !!asideId && !asideInvalid;
   useEffect(() => {
     const el = pageLayoutRef.current;
@@ -5415,6 +5432,12 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
           resetKey={`${id}:${viewMode}`}
           onAsk={focusComposer ?? undefined}
         />
+        {/* The read-aloud bar: docked here, directly above the composer, so
+            the controls stay on screen however far the message being read
+            has scrolled. A sibling of the composer's root rather than inside
+            it, so the composer's dictation Escape never sees the bar's keys.
+            Renders nothing unless one of this chat's bubbles is reading. */}
+        <ReadAloudPlayer scope={readAloudScope} getComposer={getReadAloudComposer} />
         <PromptInput
           onSend={handleComposerSend}
           sendVariants={sendVariants}
@@ -5667,7 +5690,12 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
   );
 
   // The panel's own chat: and nothing in it opens a panel inside the panel.
-  if (embedded) return <AsideContext.Provider value={null}>{page}</AsideContext.Provider>;
+  if (embedded)
+    return (
+      <AsideContext.Provider value={null}>
+        <ReadAloudScope.Provider value={readAloudScope}>{page}</ReadAloudScope.Provider>
+      </AsideContext.Provider>
+    );
 
   // Always this shape, panel or not: the main chat stays the first child of
   // one element, so opening the panel never remounts it (its scroll position,
@@ -5675,7 +5703,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
   return (
     <AsideContext.Provider value={id ? asideActions : null}>
       <div className="chat-page" style={{ height: "100%", display: "flex", minWidth: 0 }}>
-        {page}
+        <ReadAloudScope.Provider value={readAloudScope}>{page}</ReadAloudScope.Provider>
         {asideId && id && !asideInvalid && embeddedOptions && (
           <AsidePanel
             label={openAsideEntry?.title ?? "Aside"}

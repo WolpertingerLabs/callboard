@@ -26,6 +26,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { SELECTION_TOOLBAR_ATTR, type SelectionRect } from "../hooks/useMessageTextSelection";
 import { isModalOpen } from "../utils/modalOpen";
+import { isCoarsePointer } from "../utils/pointer";
 
 export interface SelectionToolbarAction {
   key: string;
@@ -73,10 +74,6 @@ function useModalOpen(): boolean {
     return () => observer.disconnect();
   }, []);
   return open;
-}
-
-function isCoarsePointer(): boolean {
-  return typeof window.matchMedia === "function" && window.matchMedia("(pointer: coarse)").matches;
 }
 
 function isEditable(target: EventTarget | null): boolean {

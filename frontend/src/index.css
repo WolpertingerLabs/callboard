@@ -1027,29 +1027,50 @@ pre {
   pointer-events: auto;
 }
 
-/* The inline player under the bubble being read aloud. Always visible while
-   it exists, so none of its controls depend on hover. */
+/* The read-aloud bar, docked directly above the composer (pages/Chat.tsx) as
+   a strip of the composer's footer: in normal flow, so the transcript above
+   shrinks to make room rather than hiding its last message behind it, and it
+   rides up with the composer when the on-screen keyboard opens. Full width of
+   the chat column; one row on desktop. Always visible while it exists, so
+   none of its controls depend on hover. */
 .read-aloud-player {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 4px 6px;
-  max-width: 92%;
-  margin-top: 4px;
-  padding: 4px 8px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  padding: 4px 12px;
+  background: var(--bg-sidebar);
+  border-top: 1px solid var(--border);
   color: var(--text);
   font-size: 12px;
+  flex-shrink: 0;
+}
+
+/* "Reading: <the start of the message>", one line, ellipsized to fit. */
+.read-aloud-label {
+  flex: 0 1 260px;
+  min-width: 60px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+}
+
+.read-aloud-label-text {
+  color: var(--text);
+}
+
+/* The X: always the row's last control, at its right edge. */
+.read-aloud-close {
+  margin-left: auto;
 }
 
 .read-aloud-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 28px;
-  height: 28px;
+  min-width: 32px;
+  height: 32px;
   padding: 0 4px;
   background: transparent;
   border: 1px solid transparent;
@@ -1116,11 +1137,12 @@ pre {
   font-size: 11px;
 }
 
-/* Narrow screens and touch: the seek bar takes its own row above the buttons,
-   and every control is at least a 32px target. */
+/* Narrow screens: the label on its own row, then the seek bar on its own row
+   above the buttons. Every control is a 32px target at any width. */
 @media (max-width: 768px) {
-  .read-aloud-player {
-    max-width: 100%;
+  .read-aloud-label {
+    order: -2;
+    flex-basis: 100%;
   }
 
   .read-aloud-progress {
@@ -1128,13 +1150,6 @@ pre {
     flex-basis: 100%;
     height: 32px;
     margin: 0;
-  }
-}
-
-@media (max-width: 768px), (pointer: coarse) {
-  .read-aloud-btn {
-    min-width: 32px;
-    height: 32px;
   }
 }
 
