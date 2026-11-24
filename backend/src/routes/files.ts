@@ -6,6 +6,8 @@ import { BlockedDestinationError, fetchPublicUrl, type PublicFetchOptions } from
 import { mediaTypeForPath } from "../utils/media-types.js";
 import { formatByteRange, parseRangeHeader, upstreamRangeFor, validateUpstreamContentRange } from "../utils/http-range.js";
 import { createLogger } from "../utils/logger.js";
+import { DATA_DIR } from "../utils/paths.js";
+import { deliverablePathForChat } from "../services/sandbox-deliverables.js";
 
 const log = createLogger("files");
 
@@ -51,6 +53,8 @@ export type FilesRouterOptions = Pick<PublicFetchOptions, "isAllowedAddress" | "
   proxyHeadersTimeoutMs?: number;
   /** Called when a proxy request's handler has fully finished, for tests. */
   onProxySettled?: () => void;
+  /** The data directory whose Sandbox desktop deliverables are chat-scoped (default `DATA_DIR`), for tests. */
+  dataDir?: string;
 };
 
 /**
@@ -100,7 +104,8 @@ export function createFilesRouter(proxyOptions: FilesRouterOptions = {}) {
       return res.status(400).json({ error: "Missing path or url query parameter" });
     }
 
-    return serveLocalFile(filePath, req, res, download);
+    const chat = typeof req.query.chat === "string" ? req.query.chat : undefined;
+    return serveLocalFile(filePath, req, res, download, { dataDir: proxyOptions.dataDir ?? DATA_DIR, chat });
   });
 
   return router;
@@ -133,7 +138,7 @@ export function attachmentDisposition(name: string): string {
  * never interpreted on the app origin (and the sandbox CSP covers a browser
  * that ignores `attachment`).
  */
-function serveLocalFile(filePath: string, req: Request, res: Response, download = false) {
+function serveLocalFile(filePath: string, req: Request, res: Response, download = false, scope: { dataDir: string; chat?: string } = { dataDir: DATA_DIR }) {
   // Validate absolute path, no null bytes
   if (!path.isAbsolute(filePath)) {
     return res.status(400).json({ error: "Path must be absolute" });
@@ -154,6 +159,14 @@ function serveLocalFile(filePath: string, req: Request, res: Response, download 
   try {
     realPath = realpathSync(resolved);
   } catch {
+    return res.status(404).json({ error: "File not found" });
+  }
+
+  // Sandbox desktop deliverables are a chat's own: served only with `chat=`
+  // naming the chat they were delivered to, so one chat's card can never
+  // show another chat's (or another workspace's) files. A 404 either way,
+  // which says nothing about whether the file exists.
+  if (deliverablePathForChat(scope.dataDir, realPath, scope.chat) === "refused") {
     return res.status(404).json({ error: "File not found" });
   }
 

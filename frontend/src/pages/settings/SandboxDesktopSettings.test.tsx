@@ -56,6 +56,20 @@ describe("Settings → Sandbox desktop", () => {
     expect(screen.getByRole("button", { name: "Rebuild image" })).toBeTruthy();
   });
 
+  it("edits the kept-for-recovery retention and cap", async () => {
+    vi.mocked(getSandboxDesktopStatus).mockResolvedValue(status());
+    vi.mocked(updateSandboxDesktopSettings).mockResolvedValue(status({ settings: { keepHours: 72, maxKept: 0 } }));
+    render(<SandboxDesktopSettings />);
+    const hours = (await screen.findByLabelText("Keep for recovery (hours)")) as HTMLInputElement;
+    expect(hours.value).toBe("24");
+    expect(hours.min).toBe("1");
+    expect(hours.max).toBe("168");
+    fireEvent.change(hours, { target: { value: "72" } });
+    fireEvent.change(screen.getByLabelText("Kept at once"), { target: { value: "0" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Save/ }));
+    await waitFor(() => expect(updateSandboxDesktopSettings).toHaveBeenCalledWith(expect.objectContaining({ keepHours: 72, maxKept: 0 })));
+  });
+
   it("saves a change, sending automatic as null", async () => {
     vi.mocked(getSandboxDesktopStatus).mockResolvedValue(status({ settings: { mode: "off" }, automatic: false, effectiveMode: "off" }));
     vi.mocked(updateSandboxDesktopSettings).mockResolvedValue(status({ settings: { network: "none", maxConcurrent: 3 } }));
@@ -66,7 +80,17 @@ describe("Settings → Sandbox desktop", () => {
     fireEvent.change(screen.getByLabelText("Network (managed)"), { target: { value: "none" } });
     fireEvent.change(screen.getByLabelText("Sandboxes at once"), { target: { value: "3" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    await waitFor(() => expect(updateSandboxDesktopSettings).toHaveBeenCalledWith({ mode: null, network: "none", cpus: 1, memoryMb: 1024, maxConcurrent: 3 }));
+    await waitFor(() =>
+      expect(updateSandboxDesktopSettings).toHaveBeenCalledWith({
+        mode: null,
+        network: "none",
+        cpus: 1,
+        memoryMb: 1024,
+        maxConcurrent: 3,
+        keepHours: 24,
+        maxKept: 2,
+      }),
+    );
   });
 
   it("is read only for an API key: no save, no build", async () => {

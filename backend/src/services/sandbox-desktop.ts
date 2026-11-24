@@ -22,6 +22,8 @@ import {
   type SandboxDesktopStatus,
 } from "shared/types/index.js";
 import { SandboxContainerManager, type DrainBeforeDestroy } from "./sandbox-containers.js";
+import { SandboxDeliveries } from "./sandbox-deliverables.js";
+import { SandboxRecovery, managedDelivery } from "./sandbox-recovery.js";
 import { readSandboxSettings, resolveSandboxSettings } from "./sandbox-desktop-settings.js";
 import { buildSandboxImage, execDocker } from "./sandbox-image.js";
 import { DATA_DIR } from "../utils/paths.js";
@@ -42,17 +44,62 @@ export function currentSandboxMode(env: NodeJS.ProcessEnv = process.env): { mode
   return { mode: endpointConfigured(env) ? "endpoint" : "managed", automatic: true };
 }
 
+/** Where a chat's work lives, for keying its deliverables: its workspace when it has one, else its folder. */
+export function chatDeliveryOwner(chatId: string): { workspaceId?: string; folder?: string } | undefined {
+  const chat = chatFileService.getChat(chatId);
+  return chat ? { ...(chat.workspaceId ? { workspaceId: chat.workspaceId } : {}), ...(chat.folder ? { folder: chat.folder } : {}) } : undefined;
+}
+
+let deliveries: SandboxDeliveries | undefined;
+/** The outbox sync: managed sandboxes (from the manager's hooks) and endpoint sessions (`withOutboxSync`). */
+export function getSandboxDeliveries(): SandboxDeliveries {
+  return (deliveries ??= new SandboxDeliveries({ dataDir: DATA_DIR }));
+}
+
 let manager: SandboxContainerManager | undefined;
 export function getSandboxManager(): SandboxContainerManager {
   return (manager ??= new SandboxContainerManager({
     docker: execDocker(),
     dataDir: DATA_DIR,
     settings: () => resolveSandboxSettings(readSandboxSettings()),
-    chatContext: (chatId) => {
-      const chat = chatFileService.getChat(chatId);
-      return chat ? { workspaceId: chat.workspaceId, folder: chat.folder } : undefined;
-    },
+    chatContext: chatDeliveryOwner,
+    // Live outbox sync from the moment a sandbox is ready; the final copy is the drain hook.
+    onReady: (sandbox) =>
+      void getSandboxDeliveries()
+        .start(managedDelivery(sandbox))
+        .catch((error) => log.warn(`Outbox sync did not start: ${error instanceof Error ? error.message : "unknown"}`)),
+    adoptPaused: (sandbox) => getSandboxRecovery().adoptPaused(sandbox),
   }));
+}
+
+let recovery: SandboxRecovery | undefined;
+/** Keep-for-recovery on the manager's keep contract: the drain hook, Retry export, Discard, retention. */
+export function getSandboxRecovery(): SandboxRecovery {
+  return (recovery ??= new SandboxRecovery({
+    manager: getSandboxManager(),
+    deliveries: getSandboxDeliveries(),
+    docker: execDocker(),
+    settings: () => resolveSandboxSettings(readSandboxSettings()),
+    chatExists: (chatId) => !!chatFileService.getChat(chatId),
+  }));
+}
+/** The managed drain hook, for `startSandboxReaper({ drainBeforeDestroy })`. */
+export const sandboxDrainHook: DrainBeforeDestroy = (sandbox, signal) => getSandboxRecovery().drainHook(sandbox, signal);
+/** After each reaper pass: retention and vanished containers of kept sandboxes. */
+export const sweepKeptSandboxes = () => getSandboxRecovery().sweep();
+
+/**
+ * A chat was deleted: its deliverables are deleted with it (as the rest of
+ * what a chat owns is), and any sandbox kept to recover them is discarded.
+ * Fire-and-forget; failures are logged.
+ */
+export function deleteSandboxChatData(chatId: string): void {
+  void getSandboxDeliveries()
+    .deleteForChat(chatId)
+    .catch((error) => log.warn(`Could not delete the Sandbox desktop deliverables of a deleted chat: ${error instanceof Error ? error.message : "unknown"}`));
+  void getSandboxRecovery()
+    .discardForChat(chatId)
+    .catch((error) => log.warn(`Could not discard the kept sandboxes of a deleted chat: ${error instanceof Error ? error.message : "unknown"}`));
 }
 
 /** How the sandbox is run now, for wording (`sandboxDesktopText`): the mode, and for managed containers the network. */
@@ -190,9 +237,11 @@ export async function reaperHasWork(manager = getSandboxManager(), env: NodeJS.P
  * the first pass; otherwise the startup pass removes a crashed run's
  * sandboxes undrained (and the manager logs a warning when it finds one).
  */
-export function startSandboxReaper(options: number | { intervalMs?: number; drainBeforeDestroy?: DrainBeforeDestroy } = {}): void {
+export function startSandboxReaper(
+  options: number | { intervalMs?: number; drainBeforeDestroy?: DrainBeforeDestroy; afterPass?: () => Promise<void> } = {},
+): void {
   if (reaperTimer) return;
-  const { intervalMs = 5 * 60_000, drainBeforeDestroy } = typeof options === "number" ? { intervalMs: options } : options;
+  const { intervalMs = 5 * 60_000, drainBeforeDestroy, afterPass } = typeof options === "number" ? { intervalMs: options } : options;
   // Installed before the first pass, so a crashed run's sandboxes are drained, not just removed.
   if (drainBeforeDestroy) getSandboxManager().drainBeforeDestroy = drainBeforeDestroy;
   let running = false;
@@ -204,6 +253,12 @@ export function startSandboxReaper(options: number | { intervalMs?: number; drai
       if (await reaperHasWork(manager)) await manager.reap();
     } catch (error) {
       log.debug(`Sandbox reaper skipped: ${error instanceof Error ? error.message : "unknown"}`);
+    }
+    // Every pass, whatever the mode: kept sandboxes are not leftovers, but their retention still runs.
+    try {
+      await afterPass?.();
+    } catch (error) {
+      log.debug(`Sandbox reaper's after-pass skipped: ${error instanceof Error ? error.message : "unknown"}`);
     } finally {
       running = false;
     }
@@ -223,4 +278,5 @@ export async function shutdownSandboxDesktop(): Promise<void> {
   if (reaperTimer) clearInterval(reaperTimer);
   reaperTimer = undefined;
   await manager?.dispose();
+  deliveries?.dispose();
 }

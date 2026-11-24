@@ -64,6 +64,8 @@ interface Draft {
   cpus: string;
   memoryMb: string;
   maxConcurrent: string;
+  keepHours: string;
+  maxKept: string;
 }
 
 function draftFrom(status: SandboxDesktopStatus): Draft {
@@ -74,6 +76,8 @@ function draftFrom(status: SandboxDesktopStatus): Draft {
     cpus: String(s.cpus ?? SANDBOX_DESKTOP_BOUNDS.cpus.default),
     memoryMb: String(s.memoryMb ?? SANDBOX_DESKTOP_BOUNDS.memoryMb.default),
     maxConcurrent: String(s.maxConcurrent ?? SANDBOX_DESKTOP_BOUNDS.maxConcurrent.default),
+    keepHours: String(s.keepHours ?? SANDBOX_DESKTOP_BOUNDS.keepHours.default),
+    maxKept: String(s.maxKept ?? SANDBOX_DESKTOP_BOUNDS.maxKept.default),
   };
 }
 
@@ -152,6 +156,8 @@ export default function SandboxDesktopSettings() {
         cpus: Number(draft.cpus),
         memoryMb: Number(draft.memoryMb),
         maxConcurrent: Number(draft.maxConcurrent),
+        keepHours: Number(draft.keepHours),
+        maxKept: Number(draft.maxKept),
       });
       setStatus(next);
       setDraft(draftFrom(next));
@@ -184,7 +190,7 @@ export default function SandboxDesktopSettings() {
 
   const { diagnostics: d } = status;
   const editable = status.canEdit;
-  const { cpus, memoryMb, maxConcurrent } = SANDBOX_DESKTOP_BOUNDS;
+  const { cpus, memoryMb, maxConcurrent, keepHours, maxKept } = SANDBOX_DESKTOP_BOUNDS;
   const field = (key: keyof Draft) => (event: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
     setDraft((current) => (current ? { ...current, [key]: event.target.value } : current));
 
@@ -311,6 +317,44 @@ export default function SandboxDesktopSettings() {
             />
             <p style={helpStyle}>
               {maxConcurrent.min}–{maxConcurrent.max}, across all chats
+            </p>
+          </div>
+          <div>
+            <label style={labelStyle} htmlFor="sandbox-keep-hours">
+              Keep for recovery (hours)
+            </label>
+            <input
+              id="sandbox-keep-hours"
+              style={inputStyle}
+              type="number"
+              min={keepHours.min}
+              max={keepHours.max}
+              step={1}
+              value={draft.keepHours}
+              disabled={!editable}
+              onChange={field("keepHours")}
+            />
+            <p style={helpStyle}>
+              {keepHours.min}–{keepHours.max}. A sandbox whose files could not all be copied out is paused and kept this long
+            </p>
+          </div>
+          <div>
+            <label style={labelStyle} htmlFor="sandbox-max-kept">
+              Kept at once
+            </label>
+            <input
+              id="sandbox-max-kept"
+              style={inputStyle}
+              type="number"
+              min={maxKept.min}
+              max={maxKept.max}
+              step={1}
+              value={draft.maxKept}
+              disabled={!editable}
+              onChange={field("maxKept")}
+            />
+            <p style={helpStyle}>
+              {maxKept.min}–{maxKept.max}; each holds its memory while paused. 0 never keeps one
             </p>
           </div>
         </div>

@@ -4,6 +4,7 @@ import type { RenderFileMediaType } from "shared/types/callboard-ui-tools.js";
 import FullscreenFrame, { FullscreenButton } from "./FullscreenFrame";
 import { useGalleryItem, useHasChatGallery } from "./gallery/ChatGallery";
 import { BYTES_UP_TO_GB, formatBytes } from "../utils/formatBytes";
+import { serveChatParam, useServeChat } from "../contexts/ServeChatContext";
 
 export interface RenderFileData {
   type: "render_file";
@@ -36,8 +37,8 @@ function getFileNameFromUrl(url: string): string {
 }
 
 /** `/api/files/serve?…&download=1`: always an octet-stream attachment. Local paths only. */
-function downloadUrl(filePath: string): string {
-  return `/api/files/serve?path=${encodeURIComponent(filePath)}&download=1`;
+function downloadUrl(filePath: string, chatId?: string): string {
+  return `/api/files/serve?path=${encodeURIComponent(filePath)}&download=1${serveChatParam(chatId)}`;
 }
 
 const downloadLinkStyle = {
@@ -56,6 +57,7 @@ const downloadLinkStyle = {
 
 /** The card for a `file` result: name, size, type and a Download button. No preview. */
 function FileCard({ data, fileName }: { data: RenderFileData; fileName: string }) {
+  const chatId = useServeChat();
   return (
     <div style={{ margin: "4px 0", maxWidth: "92%" }}>
       <div
@@ -83,7 +85,7 @@ function FileCard({ data, fileName }: { data: RenderFileData; fileName: string }
             </span>
           </div>
           {data.file_path && (
-            <a href={downloadUrl(data.file_path)} download={fileName} style={downloadLinkStyle}>
+            <a href={downloadUrl(data.file_path, chatId)} download={fileName} style={downloadLinkStyle}>
               <Download size={14} aria-hidden="true" />
               Download
             </a>
@@ -106,7 +108,10 @@ export default function MediaRenderer({ data }: MediaRendererProps) {
   const [error, setError] = useState(false);
   const [trustDismissed, setTrustDismissed] = useState(false);
 
-  const contentUrl = data.url ? `/api/files/serve?url=${encodeURIComponent(data.url)}` : `/api/files/serve?path=${encodeURIComponent(data.file_path!)}`;
+  const chatId = useServeChat();
+  const contentUrl = data.url
+    ? `/api/files/serve?url=${encodeURIComponent(data.url)}`
+    : `/api/files/serve?path=${encodeURIComponent(data.file_path!)}${serveChatParam(chatId)}`;
   const fileName = data.url ? getFileNameFromUrl(data.url) : getFileName(data.file_path!);
 
   // Media joins the gallery only once it is actually shown: never while it
@@ -420,7 +425,7 @@ export default function MediaRenderer({ data }: MediaRendererProps) {
                 {/* Saving inline media is awkward on iOS; this always downloads. */}
                 {data.file_path && (
                   <a
-                    href={downloadUrl(data.file_path)}
+                    href={downloadUrl(data.file_path, chatId)}
                     download={fileName}
                     title="Download"
                     aria-label={`Download ${fileName}`}

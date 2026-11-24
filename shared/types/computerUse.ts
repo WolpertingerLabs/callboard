@@ -60,8 +60,17 @@ export interface SandboxDesktopText {
   use: string;
   /** What survives a session, as a sentence. */
   persistence: string;
+  /** How to hand files back to this machine (the outbox), as sentences. */
+  outbox: string;
 }
 const OPEN_NETWORK = "Its network is open: it can reach the internet, and any service on this machine that listens on all interfaces, Callboard included.";
+/**
+ * The outbox convention, the same in every mode: the driver host lists only
+ * plain names (`[A-Za-z0-9_][A-Za-z0-9._-]*`), so a `.name.part` file is
+ * invisible until it is renamed, and a file still changing is not copied yet.
+ */
+const OUTBOX =
+  "To hand a file back to this machine, save it in ~/outbox (/home/desktop/outbox) inside the sandbox: write it as ~/outbox/.NAME.part, then rename it to its final plain name (letters, digits, '.', '_' or '-'; no spaces, no subfolders). Callboard copies finished files to this machine while the session runs and once more when it ends, and shows them in the chat; cu_status and cu_stop list them with their paths here. No other file leaves the sandbox.";
 const NO_INTERNET = "It has no internet access, but it can still reach any service on this machine that listens on all interfaces, Callboard included.";
 export function sandboxDesktopText(variant: SandboxDesktopVariant = {}): SandboxDesktopText {
   if (variant.mode === "managed")
@@ -69,13 +78,16 @@ export function sandboxDesktopText(variant: SandboxDesktopVariant = {}): Sandbox
       what: "a Linux desktop in a hardened container, isolated from this machine's files and credentials; Callboard starts a fresh one for each session and removes it, with everything in it, when the session ends",
       network: variant.network === "none" ? NO_INTERNET : OPEN_NETWORK,
       use: "Use it for desktop apps and downloads that should stay off this machine.",
-      persistence: "Nothing in it carries over to another session: the container and everything in it are removed when the session ends.",
+      persistence:
+        "Nothing in it carries over to another session: the container and everything in it are removed when the session ends. Only the files in ~/outbox are copied to this machine first; if that copy fails, the container is paused and kept for a while (a day by default) so the copy can be retried, then removed.",
+      outbox: OUTBOX,
     };
   return {
     what: "a Linux desktop in a hardened container, isolated from this machine's files and credentials, but shared by every chat and kept until the container is restarted",
     network: OPEN_NETWORK,
     use: "Use it for desktop apps and downloads that should stay off this machine.",
     persistence: "Whatever is left there, later sessions and other chats can see.",
+    outbox: `${OUTBOX} Only files new or changed during your session are copied, and they stay in the shared outbox afterwards.`,
   };
 }
 /** The shared-container (endpoint) description: the fallback wherever the mode is unknown. */
@@ -87,6 +99,7 @@ export const SANDBOX_DESKTOP_TEXT_ANY_MODE: SandboxDesktopText = Object.freeze({
     "Its network is open by default: it can reach the internet, and in any setting any service on this machine that listens on all interfaces, Callboard included.",
   use: "Use it for desktop apps and downloads that should stay off this machine.",
   persistence: "A shared container you run yourself keeps what is left there for later sessions and other chats.",
+  outbox: OUTBOX,
 });
 
 /**

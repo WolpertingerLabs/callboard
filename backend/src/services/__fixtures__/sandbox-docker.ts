@@ -13,6 +13,8 @@ export interface FakeContainer {
   name: string;
   labels: Record<string, string>;
   running: boolean;
+  /** `docker pause`d: frozen, still there. */
+  paused?: boolean;
   network?: string;
   published: boolean;
   /** The host port Docker assigned, once asked (stable, as Docker's is). */
@@ -45,6 +47,8 @@ export function fakeDocker(
     runFailure: undefined as string | undefined,
     /** Containers exit straight after starting. */
     exitOnStart: false,
+    /** Make `docker pause` fail. */
+    pauseFailure: undefined as string | undefined,
     nextPort: 40000,
   };
   const find = (ref: string) => containers.get(ref) ?? [...containers.values()].find((c) => c.id === ref || c.id.startsWith(ref));
@@ -109,8 +113,18 @@ export function fakeDocker(
       if (!container) throw noSuch("container", args.at(-1)!);
       const format = args[args.indexOf("--format") + 1];
       if (format === "{{.State.Running}}") return `${container.running}\n`;
+      if (format === "{{.State.Status}}") return `${container.paused ? "paused" : container.running ? "running" : "exited"}\n`;
       if (format === "{{json .NetworkSettings.Networks}}") return `${JSON.stringify({ [container.network!]: { IPAddress: "172.30.0.5" } })}\n`;
       throw new Error(`unexpected inspect format ${format}`);
+    }
+    if (command === "pause" || command === "unpause") {
+      const container = find(args[1]);
+      if (!container) throw noSuch("container", args[1]);
+      if (command === "pause" && state.pauseFailure) throw new DockerError("failed", "docker pause failed", state.pauseFailure);
+      if (command === "pause" && container.paused) throw new DockerError("failed", "docker pause failed", `Container ${args[1]} is already paused`);
+      if (command === "unpause" && !container.paused) throw new DockerError("failed", "docker unpause failed", `Container ${args[1]} is not paused`);
+      container.paused = command === "pause";
+      return `${args[1]}\n`;
     }
     if (command === "rm") {
       if (state.rmFailure) throw new DockerError("failed", `docker rm failed: ${state.rmFailure}`, state.rmFailure);
@@ -133,7 +147,7 @@ export function fakeDocker(
           (c) =>
             `${format
               .replace("{{.ID}}", c.id)
-              .replace("{{.State}}", c.running ? "running" : "exited")
+              .replace("{{.State}}", c.paused ? "paused" : c.running ? "running" : "exited")
               .replace(/\{\{\.Label "([^"]+)"\}\}/g, (_m, key: string) => c.labels[key] ?? "")}\n`,
         )
         .join("");
