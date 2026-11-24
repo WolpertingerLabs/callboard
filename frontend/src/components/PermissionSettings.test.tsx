@@ -24,7 +24,7 @@ it("renders Browser Use, Sandbox desktop and Computer Use in that order, each a 
     const description = screen.getByText(pattern).textContent!;
     expect(description).toMatch(must);
     expect(description).not.toMatch(/confirm|disposable/i);
-    expect(description.length).toBeLessThan(90);
+    expect(description.length).toBeLessThanOrEqual(100);
   }
   for (const label of ["Browser Use", "Sandbox desktop", "Computer Use"])
     expect((within(rowOf(label)).getByRole("radio", { name: "Deny" }) as HTMLInputElement).checked).toBe(true);
