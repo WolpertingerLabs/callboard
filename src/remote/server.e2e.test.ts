@@ -15,7 +15,8 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { createApp, type AuthorizedPeer } from './server.js';
-import type { RemoteServerConfig } from '../shared/config.js';
+import type { GoogleCallerConfig, GoogleServiceId, RemoteServerConfig } from '../shared/config.js';
+import { googleConsentScopes, loadGoogleCatalog } from '../shared/google.js';
 import {
   generateKeyBundle,
   extractPublicKeys,
@@ -3173,16 +3174,20 @@ describe('list_listener_configs, resolve_listener_options, control_listener, and
   });
 });
 
-// ── Scoped Google templates (live; skipped unless .env.e2e has credentials) ──
+// ── The google connection (live; skipped unless .env.e2e has credentials) ──
 //
 // Needs GOOGLE_OAUTH_CLIENT_ID / _CLIENT_SECRET / _REFRESH_TOKEN, with the
-// refresh token consented for the superset of the user templates' scopes (see
-// CONNECTIONS.md "Google (scoped)"). This is also the live check of scope
-// narrowing on refresh: if Google ignores the requested scope, every template
-// fails with "granted scopes broader than this connection allows".
-// Optional: GOOGLE_SERVICE_ACCOUNT_KEY (base64 key file) for the -sa
-// templates, and GOOGLE_E2E_SUBJECT (a domain user the service account may
-// impersonate via domain-wide delegation) for google-gmail-readonly-sa.
+// refresh token consented for exactly the consent scopes of
+// GOOGLE_E2E_SELECTION (JSON service → level; default below), printed when
+// the suite skips. test_connection must pass for every selected service with
+// grantedScopes equal to requestedScopes.
+// Optional: GOOGLE_SERVICE_ACCOUNT_KEY (base64 key file) runs the same in
+// service-account mode for the levels a service account is offered, without
+// gmail; GOOGLE_E2E_SUBJECT (a Workspace user the service account may act as
+// through domain-wide delegation) adds gmail and acts as that user.
+// The google-scope-probe connector is informational: it asks the same refresh
+// token for one scope of the selection, which works only if Google narrows a
+// token on refresh (CONNECTIONS.md "Changing the selection").
 
 loadE2EEnv();
 const GOOGLE_USER_VARS = [
@@ -3193,47 +3198,66 @@ const GOOGLE_USER_VARS = [
 const googleMissing = checkEnvVars(GOOGLE_USER_VARS);
 const googleSaKey = process.env.GOOGLE_SERVICE_ACCOUNT_KEY;
 const googleSubject = process.env.GOOGLE_E2E_SUBJECT;
-
-const GOOGLE_USER_TEMPLATES: Record<string, string> = {
-  'google-gmail-metadata': 'gmail.metadata',
-  'google-gmail-readonly': 'gmail.readonly',
-  'google-calendar-freebusy': 'calendar.freebusy',
-  'google-calendar-readonly': 'calendar.readonly',
-  'google-drive-readonly': 'drive.readonly',
-  'google-drive-file': 'drive.file',
-  'google-sheets-readonly': 'spreadsheets.readonly',
-  'google-sheets': 'spreadsheets',
-  'google-docs': 'documents',
-  'google-slides': 'presentations',
+const GOOGLE_USER_SELECTION = JSON.parse(
+  process.env.GOOGLE_E2E_SELECTION ??
+    '{"gmail":"read","calendar":"read","drive":"read","sheets":"edit","docs":"edit","slides":"edit"}',
+) as GoogleCallerConfig['services'];
+const googleUser: GoogleCallerConfig = { auth: 'user', services: GOOGLE_USER_SELECTION };
+/** The user selection's levels a service account is offered; gmail only with a subject. */
+const googleSa: GoogleCallerConfig = {
+  auth: 'service-account',
+  ...(googleSubject && { subject: googleSubject }),
+  services: Object.fromEntries(
+    Object.entries(GOOGLE_USER_SELECTION).filter(
+      ([svc, level]) =>
+        (svc !== 'gmail' || googleSubject !== undefined) &&
+        loadGoogleCatalog().services[svc as GoogleServiceId].levels[level].auth.includes(
+          'service-account',
+        ),
+    ),
+  ),
 };
-const GOOGLE_SA_TEMPLATES: Record<string, string> = {
-  'google-calendar-readonly-sa': 'calendar.readonly',
-  'google-drive-readonly-sa': 'drive.readonly',
-  'google-sheets-readonly-sa': 'spreadsheets.readonly',
-  'google-sheets-sa': 'spreadsheets',
-  'google-docs-sa': 'documents',
-  'google-slides-sa': 'presentations',
-  ...(googleSubject && { 'google-gmail-readonly-sa': 'gmail.readonly' }),
-};
+if (googleMissing.length > 0) {
+  console.log(
+    `[e2e] google: skipped. Consent GOOGLE_OAUTH_REFRESH_TOKEN for exactly: ` +
+      googleConsentScopes(googleUser).join(' '),
+  );
+}
 
-describe.skipIf(googleMissing.length > 0)('Scoped Google templates (live)', () => {
-  let googleServer: Server;
-  let googleUrl: string;
+describe.skipIf(googleMissing.length > 0)('The google connection (live)', () => {
+  const servers: Server[] = [];
+  let userUrl: string;
+  let saUrl: string | undefined;
   /** Every decrypted response, for the no-credential sweep at the end. */
   const outputs: unknown[] = [];
 
+  async function start(config: RemoteServerConfig): Promise<string> {
+    const app = createApp({
+      config,
+      ownKeys: serverKeys,
+      authorizedPeers: [{ alias: 'test-client', keys: clientPub }],
+    });
+    return new Promise((resolve) => {
+      const server = app.listen(0, '127.0.0.1', () => {
+        servers.push(server);
+        resolve(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
+      });
+    });
+  }
+
   beforeAll(async () => {
-    const connections = [
-      ...Object.keys(GOOGLE_USER_TEMPLATES),
-      ...(googleSaKey ? Object.keys(GOOGLE_SA_TEMPLATES) : []),
-      'google-scope-probe',
-    ];
-    const config: RemoteServerConfig = {
+    const userEnv = {
+      GOOGLE_OAUTH_CLIENT_ID: process.env.GOOGLE_OAUTH_CLIENT_ID!,
+      GOOGLE_OAUTH_CLIENT_SECRET: process.env.GOOGLE_OAUTH_CLIENT_SECRET!,
+      GOOGLE_OAUTH_REFRESH_TOKEN: process.env.GOOGLE_OAUTH_REFRESH_TOKEN!,
+    };
+    const probeScope = googleConsentScopes(googleUser)[0];
+    userUrl = await start({
       host: '127.0.0.1',
       port: 0,
       connectors: [
         {
-          // A Calendar-scoped token pointed at a Gmail URL: Google must refuse.
+          // One scope of the selection, from the same refresh token.
           alias: 'google-scope-probe',
           secrets: {
             GOOGLE_OAUTH_CLIENT_ID: '${GOOGLE_OAUTH_CLIENT_ID}',
@@ -3249,61 +3273,55 @@ describe.skipIf(googleMissing.length > 0)('Scoped Google templates (live)', () =
               clientSecret: 'GOOGLE_OAUTH_CLIENT_SECRET',
               refreshToken: 'GOOGLE_OAUTH_REFRESH_TOKEN',
             },
-            scopes: ['https://www.googleapis.com/auth/calendar.readonly'],
+            scopes: [probeScope],
           },
-          allowedEndpoints: ['https://gmail.googleapis.com/gmail/v1/users/me/profile'],
-          testConnection: {
-            url: 'https://gmail.googleapis.com/gmail/v1/users/me/profile',
-            expectedStatus: [403],
-          },
+          allowedEndpoints: [],
         },
       ],
       callers: {
         'test-client': {
-          connections,
-          env: {
-            GOOGLE_OAUTH_CLIENT_ID: process.env.GOOGLE_OAUTH_CLIENT_ID!,
-            GOOGLE_OAUTH_CLIENT_SECRET: process.env.GOOGLE_OAUTH_CLIENT_SECRET!,
-            GOOGLE_OAUTH_REFRESH_TOKEN: process.env.GOOGLE_OAUTH_REFRESH_TOKEN!,
-            ...(googleSaKey && { GOOGLE_SERVICE_ACCOUNT_KEY: googleSaKey }),
-          },
-          ...(googleSubject && {
-            oauth2Overrides: { 'google-gmail-readonly-sa': { subject: googleSubject } },
-          }),
+          connections: ['google', 'google-scope-probe'],
+          env: userEnv,
+          google: googleUser,
         },
       },
       rateLimitPerMinute: 600,
-    };
-    const app = createApp({
-      config,
-      ownKeys: serverKeys,
-      authorizedPeers: [{ alias: 'test-client', keys: clientPub }],
     });
-    await new Promise<void>((resolve) => {
-      googleServer = app.listen(0, '127.0.0.1', () => {
-        googleUrl = `http://127.0.0.1:${(googleServer.address() as AddressInfo).port}`;
-        resolve();
+    if (googleSaKey && Object.keys(googleSa.services).length > 0) {
+      saUrl = await start({
+        host: '127.0.0.1',
+        port: 0,
+        callers: {
+          'test-client': {
+            connections: ['google'],
+            env: { GOOGLE_SERVICE_ACCOUNT_KEY: googleSaKey },
+            google: googleSa,
+          },
+        },
+        rateLimitPerMinute: 600,
       });
-    });
+    }
   });
 
   afterAll(async () => {
-    await new Promise<void>((resolve) => googleServer.close(() => resolve()));
+    for (const server of servers)
+      await new Promise<void>((resolve) => server.close(() => resolve()));
   });
 
   async function googleRequest(
+    url: string,
     toolName: string,
     toolInput: Record<string, unknown>,
   ): Promise<ProxyResponse> {
     const initiator = new HandshakeInitiator(clientKeys, serverPub);
-    const initResp = await fetch(`${googleUrl}/handshake/init`, {
+    const initResp = await fetch(`${url}/handshake/init`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(initiator.createInit()),
     });
     const sessionKeys = initiator.processReply((await initResp.json()) as HandshakeReply);
     const channel = new EncryptedChannel(sessionKeys);
-    await fetch(`${googleUrl}/handshake/finish`, {
+    await fetch(`${url}/handshake/finish`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Session-Id': sessionKeys.sessionId },
       body: JSON.stringify(initiator.createFinish(sessionKeys)),
@@ -3315,7 +3333,7 @@ describe.skipIf(googleMissing.length > 0)('Scoped Google templates (live)', () =
       toolInput,
       timestamp: Date.now(),
     };
-    const resp = await fetch(`${googleUrl}/request`, {
+    const resp = await fetch(`${url}/request`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/octet-stream', 'X-Session-Id': channel.sessionId },
       body: new Uint8Array(channel.encryptJSON(request)),
@@ -3326,46 +3344,59 @@ describe.skipIf(googleMissing.length > 0)('Scoped Google templates (live)', () =
     return response;
   }
 
-  const SCOPE = 'https://www.googleapis.com/auth/';
+  type TestResult = Record<string, unknown> & {
+    oauth2?: Record<string, unknown>;
+    services?: Record<string, Record<string, unknown>>;
+  };
 
-  it.each(Object.entries(GOOGLE_USER_TEMPLATES))(
-    '%s: test_connection mints a token for exactly %s',
-    async (alias, scope) => {
-      const { result } = await googleRequest('test_connection', { connection: alias });
-      const r = result as Record<string, unknown> & { oauth2?: Record<string, unknown> };
-      expect(r.error).toBeUndefined();
-      expect(r.success).toBe(true);
-      expect(r.oauth2).toMatchObject({ tokenMinted: true, grantedScopes: [SCOPE + scope] });
-    },
-  );
-
-  it.skipIf(!googleSaKey).each(Object.entries(GOOGLE_SA_TEMPLATES))(
-    '%s: test_connection mints a service-account token for %s',
-    async (alias, scope) => {
-      const { result } = await googleRequest('test_connection', { connection: alias });
-      const r = result as Record<string, unknown> & { oauth2?: Record<string, unknown> };
-      expect(r.error).toBeUndefined();
-      expect(r.success).toBe(true);
-      expect(r.oauth2).toMatchObject({ tokenMinted: true });
-      const granted = r.oauth2?.grantedScopes as string[] | undefined;
-      if (granted) expect(granted).toEqual([SCOPE + scope]);
-    },
-  );
-
-  it('a token for one scope is refused by another Google API (403)', async () => {
-    const { result } = await googleRequest('test_connection', {
-      connection: 'google-scope-probe',
-    });
-    expect(result).toMatchObject({ success: true, status: 403 });
+  it('user OAuth: every selected service passes, and the grant equals the request', async () => {
+    const { result } = await googleRequest(userUrl, 'test_connection', { connection: 'google' });
+    const r = result as TestResult;
+    expect(r.services && Object.keys(r.services).sort()).toEqual(
+      Object.keys(GOOGLE_USER_SELECTION).sort(),
+    );
+    for (const [svc, s] of Object.entries(r.services ?? {})) expect(s.success, svc).toBe(true);
+    expect(r.success).toBe(true);
+    expect(r.oauth2?.tokenMinted).toBe(true);
+    expect(r.oauth2?.grantedScopes).toEqual(r.oauth2?.requestedScopes);
+    expect(r.oauth2?.requestedScopes).toEqual(googleConsentScopes(googleUser));
   });
 
-  it('list_routes reports the auth of every Google connection, names only', async () => {
-    const { result } = await googleRequest('list_routes', {});
-    const routes = result as { alias: string; auth?: { grant: string; scopes: string[] } }[];
-    for (const [alias, scope] of Object.entries(GOOGLE_USER_TEMPLATES)) {
-      const route = routes.find((r) => r.alias === alias);
-      expect(route?.auth).toMatchObject({ grant: 'refresh_token', scopes: [SCOPE + scope] });
+  it.skipIf(!googleSaKey)(
+    'service account: every selected service passes (gmail only with a subject)',
+    async () => {
+      if (!saUrl) return;
+      const { result } = await googleRequest(saUrl, 'test_connection', { connection: 'google' });
+      const r = result as TestResult;
+      for (const [svc, s] of Object.entries(r.services ?? {})) expect(s.success, svc).toBe(true);
+      expect(r.success).toBe(true);
+      const granted = r.oauth2?.grantedScopes as string[] | undefined;
+      if (granted) expect(granted).toEqual(r.oauth2?.requestedScopes);
+      if (googleSubject) expect(JSON.stringify(r)).not.toContain(googleSubject);
+    },
+  );
+
+  it('google-scope-probe (informational): does Google narrow a token on refresh?', async () => {
+    const { result } = await googleRequest(userUrl, 'test_connection', {
+      connection: 'google-scope-probe',
+    });
+    const r = result as TestResult;
+    if (r.oauth2?.tokenMinted === true) {
+      console.log('[e2e] google-scope-probe: Google narrowed the token on refresh.');
+    } else {
+      console.log(`[e2e] google-scope-probe: not narrowed (${String(r.error)})`);
+      expect(String(r.error)).toContain('granted scopes broader than this connection allows');
     }
+  });
+
+  it('list_routes reports the composed route, names only', async () => {
+    const { result } = await googleRequest(userUrl, 'list_routes', {});
+    const routes = result as { alias: string; auth?: { grant: string; scopes: string[] } }[];
+    const route = routes.find((r) => r.alias === 'google');
+    expect(route?.auth).toMatchObject({
+      grant: 'refresh_token',
+      scopes: googleConsentScopes(googleUser),
+    });
   });
 
   it('no credential or access token appears in any tool output', () => {

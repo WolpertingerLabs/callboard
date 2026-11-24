@@ -27,25 +27,8 @@ Then set the secrets for that caller. Caller `default` reads `GITHUB_TOKEN` from
 | `exa` | [Exa](https://exa.ai/docs/reference/getting-started) | **`EXA_API_KEY`** | `x-api-key` | |
 | `firecrawl` | [Firecrawl](https://docs.firecrawl.dev/api-reference/introduction) | **`FIRECRAWL_API_KEY`** | Bearer | |
 | `github` | [GitHub REST](https://docs.github.com/en/rest) | **`GITHUB_TOKEN`**, `GITHUB_WEBHOOK_SECRET`, `GITHUB_WEBHOOK_URL` | Bearer | webhook |
-| `google` | [Google Workspace APIs](https://developers.google.com/apis-explorer) | **`GOOGLE_API_TOKEN`** | Bearer | |
+| `google` | [Google Workspace](https://developers.google.com/workspace): Gmail, Calendar, Drive, Sheets, Docs, Slides | **`GOOGLE_OAUTH_CLIENT_ID`**, **`GOOGLE_OAUTH_CLIENT_SECRET`**, **`GOOGLE_OAUTH_REFRESH_TOKEN`**, or **`GOOGLE_SERVICE_ACCOUNT_KEY`** | OAuth2, minted (scopes from `callers.<alias>.google`) | |
 | `google-ai` | [Google AI (Gemini)](https://ai.google.dev/api) | **`GOOGLE_AI_API_KEY`** | `x-goog-api-key` | |
-| `google-calendar-freebusy` | [Google Calendar, free/busy](https://developers.google.com/workspace/calendar/api/v3/reference) | **`GOOGLE_OAUTH_CLIENT_ID`**, **`GOOGLE_OAUTH_CLIENT_SECRET`**, **`GOOGLE_OAUTH_REFRESH_TOKEN`** | OAuth2, minted (`calendar.freebusy`) | |
-| `google-calendar-readonly` | [Google Calendar, read-only](https://developers.google.com/workspace/calendar/api/v3/reference) | **`GOOGLE_OAUTH_CLIENT_ID`**, **`GOOGLE_OAUTH_CLIENT_SECRET`**, **`GOOGLE_OAUTH_REFRESH_TOKEN`** | OAuth2, minted (`calendar.readonly`) | |
-| `google-calendar-readonly-sa` | [Google Calendar, read-only](https://developers.google.com/workspace/calendar/api/v3/reference) | **`GOOGLE_SERVICE_ACCOUNT_KEY`** | service account (`calendar.readonly`) | |
-| `google-docs` | [Google Docs, read-write](https://developers.google.com/workspace/docs/api/reference/rest) | **`GOOGLE_OAUTH_CLIENT_ID`**, **`GOOGLE_OAUTH_CLIENT_SECRET`**, **`GOOGLE_OAUTH_REFRESH_TOKEN`** | OAuth2, minted (`documents`) | |
-| `google-docs-sa` | [Google Docs, read-write](https://developers.google.com/workspace/docs/api/reference/rest) | **`GOOGLE_SERVICE_ACCOUNT_KEY`** | service account (`documents`) | |
-| `google-drive-file` | [Google Drive, app-created files](https://developers.google.com/workspace/drive/api/reference/rest/v3) | **`GOOGLE_OAUTH_CLIENT_ID`**, **`GOOGLE_OAUTH_CLIENT_SECRET`**, **`GOOGLE_OAUTH_REFRESH_TOKEN`** | OAuth2, minted (`drive.file`) | |
-| `google-drive-readonly` | [Google Drive, read-only](https://developers.google.com/workspace/drive/api/reference/rest/v3) | **`GOOGLE_OAUTH_CLIENT_ID`**, **`GOOGLE_OAUTH_CLIENT_SECRET`**, **`GOOGLE_OAUTH_REFRESH_TOKEN`** | OAuth2, minted (`drive.readonly`) | |
-| `google-drive-readonly-sa` | [Google Drive, read-only](https://developers.google.com/workspace/drive/api/reference/rest/v3) | **`GOOGLE_SERVICE_ACCOUNT_KEY`** | service account (`drive.readonly`) | |
-| `google-gmail-metadata` | [Gmail, metadata only](https://developers.google.com/workspace/gmail/api/reference/rest) | **`GOOGLE_OAUTH_CLIENT_ID`**, **`GOOGLE_OAUTH_CLIENT_SECRET`**, **`GOOGLE_OAUTH_REFRESH_TOKEN`** | OAuth2, minted (`gmail.metadata`) | |
-| `google-gmail-readonly` | [Gmail, read-only](https://developers.google.com/workspace/gmail/api/reference/rest) | **`GOOGLE_OAUTH_CLIENT_ID`**, **`GOOGLE_OAUTH_CLIENT_SECRET`**, **`GOOGLE_OAUTH_REFRESH_TOKEN`** | OAuth2, minted (`gmail.readonly`) | |
-| `google-gmail-readonly-sa` | [Gmail, read-only](https://developers.google.com/workspace/gmail/api/reference/rest) | **`GOOGLE_SERVICE_ACCOUNT_KEY`** | service account (`gmail.readonly`), needs `subject` | |
-| `google-sheets` | [Google Sheets, read-write](https://developers.google.com/workspace/sheets/api/reference/rest) | **`GOOGLE_OAUTH_CLIENT_ID`**, **`GOOGLE_OAUTH_CLIENT_SECRET`**, **`GOOGLE_OAUTH_REFRESH_TOKEN`** | OAuth2, minted (`spreadsheets`) | |
-| `google-sheets-readonly` | [Google Sheets, read-only](https://developers.google.com/workspace/sheets/api/reference/rest) | **`GOOGLE_OAUTH_CLIENT_ID`**, **`GOOGLE_OAUTH_CLIENT_SECRET`**, **`GOOGLE_OAUTH_REFRESH_TOKEN`** | OAuth2, minted (`spreadsheets.readonly`) | |
-| `google-sheets-readonly-sa` | [Google Sheets, read-only](https://developers.google.com/workspace/sheets/api/reference/rest) | **`GOOGLE_SERVICE_ACCOUNT_KEY`** | service account (`spreadsheets.readonly`) | |
-| `google-sheets-sa` | [Google Sheets, read-write](https://developers.google.com/workspace/sheets/api/reference/rest) | **`GOOGLE_SERVICE_ACCOUNT_KEY`** | service account (`spreadsheets`) | |
-| `google-slides` | [Google Slides, read-write](https://developers.google.com/workspace/slides/api/reference/rest) | **`GOOGLE_OAUTH_CLIENT_ID`**, **`GOOGLE_OAUTH_CLIENT_SECRET`**, **`GOOGLE_OAUTH_REFRESH_TOKEN`** | OAuth2, minted (`presentations`) | |
-| `google-slides-sa` | [Google Slides, read-write](https://developers.google.com/workspace/slides/api/reference/rest) | **`GOOGLE_SERVICE_ACCOUNT_KEY`** | service account (`presentations`) | |
 | `hex` | [Hex](https://learn.hex.tech/docs/api/api-overview) | **`HEX_TOKEN`** | Bearer | |
 | `lichess` | [Lichess](https://lichess.org/api) | **`LICHESS_API_TOKEN`** | Bearer | |
 | `linear` | [Linear (GraphQL)](https://developers.linear.app/docs/graphql/working-with-the-graphql-api) | **`LINEAR_API_KEY`** | `Authorization` (no prefix) | poll |

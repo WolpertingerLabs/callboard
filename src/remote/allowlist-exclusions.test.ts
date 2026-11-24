@@ -11,7 +11,8 @@ import {
   resolveRoutes,
   type RemoteServerConfig,
 } from '../shared/config.js';
-import { loadConnection, validateOAuth2Route } from '../shared/connections.js';
+import { validateOAuth2Route } from '../shared/connections.js';
+import { loadGoogleCatalog } from '../shared/google.js';
 import { executeProxyRequest } from './tool-dispatch.js';
 import { isEndpointAllowed, normalizeOutboundUrl } from './url-policy.js';
 
@@ -95,7 +96,7 @@ describe('allowlist exclusions', () => {
 
 describe('fragments never take part in matching', () => {
   const CAL = 'https://www.googleapis.com/calendar/v3';
-  const calendar = loadConnection('google-calendar-readonly').allowedEndpoints;
+  const calendar = loadGoogleCatalog().services.calendar.levels.read.allowedEndpoints;
 
   it.each([
     `${CAL}/calendars/primary/events/watch#x`,

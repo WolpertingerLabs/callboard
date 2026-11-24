@@ -6,7 +6,8 @@ import type {
 /**
  * Read-only view of how drawlatch mints a connection's token: the grant and
  * the scopes this caller gets. Overrides (narrower scopes, a service-account
- * subject) are edited in remote.config.json, not here.
+ * subject) and the google connection's selection (callers.<alias>.google:
+ * services, auth mode, subject) are edited in remote.config.json, not here.
  */
 
 type TemplateAuth = NonNullable<AdminConnectionTemplate["auth"]>;
@@ -89,7 +90,8 @@ export function AuthSummary({
           needs a subject: set <span className="mono">oauth2Overrides</span>
           {" → "}
           <span className="mono">subject</span> for the caller in
-          remote.config.json
+          remote.config.json (for <span className="mono">google</span>:{" "}
+          <span className="mono">google.subject</span>)
         </div>
       )}
       {problem && (
@@ -107,9 +109,9 @@ export const SECRET_HELP: Record<string, string> = {
     "Paste base64 of the service-account JSON key file (base64 -w0 key.json). " +
     "Pasting the JSON itself also works. Only drawlatch's signer reads it.",
   GOOGLE_OAUTH_REFRESH_TOKEN:
-    "A refresh token consented for at least this connection's scopes " +
-    "(see CONNECTIONS.md › Google (scoped)). drawlatch requests only the " +
-    "connection's scopes and refuses a broader token.",
+    "A refresh token consented for exactly the scopes of this caller's " +
+    "google selection (see CONNECTIONS.md › Google). drawlatch requests " +
+    "those scopes and refuses a broader token.",
   GOOGLE_OAUTH_CLIENT_ID: "The OAuth client ID of a Desktop app client.",
   GOOGLE_OAUTH_CLIENT_SECRET: "The OAuth client secret of the same client.",
 };

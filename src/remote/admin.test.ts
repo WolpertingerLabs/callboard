@@ -255,45 +255,6 @@ describe('/admin/callers/:alias/connections', () => {
 });
 
 describe('oauth2 auth on caller connections (read-only)', () => {
-  const SA_KEY_VALUE = 'service-account-key-must-not-leak-abc';
-  beforeAll(() => {
-    process.env.GCORP_SA = SA_KEY_VALUE;
-    testConfig.callers.gcorp = {
-      connections: [
-        'google-drive-readonly',
-        'google-calendar-readonly-sa',
-        'google-gmail-readonly-sa',
-      ],
-      env: { GOOGLE_SERVICE_ACCOUNT_KEY: '${GCORP_SA}' },
-      oauth2Overrides: {
-        'google-calendar-readonly-sa': { subject: 'ceo@example.com' },
-      },
-    };
-  });
-  afterAll(() => {
-    delete testConfig.callers.gcorp;
-    delete process.env.GCORP_SA;
-  });
-
-  it('connections: grant, effective scopes, subject, and the subjectRequired drop', async () => {
-    const resp = await fetch(`${baseUrl}/admin/callers/gcorp/connections`);
-    const body = (await resp.json()) as AdminCallerConnection[];
-    const by = Object.fromEntries(body.map((c) => [c.connectionAlias, c]));
-    expect(by['google-drive-readonly'].auth).toEqual({
-      type: 'oauth2',
-      grant: 'refresh_token',
-      scopes: ['https://www.googleapis.com/auth/drive.readonly'],
-      narrowed: false,
-    });
-    expect(by['google-calendar-readonly-sa'].auth).toMatchObject({
-      grant: 'jwt_bearer',
-      subject: 'ceo@example.com',
-    });
-    expect(by['google-gmail-readonly-sa'].auth).toBeUndefined();
-    expect(by['google-gmail-readonly-sa'].problem).toMatch(/subjectRequired/);
-    expect(JSON.stringify(body)).not.toContain(SA_KEY_VALUE);
-  });
-
   it('narrowed compares the caller scopes to the connection scopes', async () => {
     const connector = {
       alias: 'acme-oauth',
@@ -308,11 +269,10 @@ describe('oauth2 auth on caller connections (read-only)', () => {
       },
     };
     testConfig.connectors = [...(testConfig.connectors ?? []), connector];
-    const saved = structuredClone(testConfig.callers.gcorp);
+    testConfig.callers.narrow = { connections: ['acme-oauth'] };
     const narrowedFor = async (scopes: string[] | undefined) => {
-      testConfig.callers.gcorp.connections = ['acme-oauth'];
-      testConfig.callers.gcorp.oauth2Overrides = scopes ? { 'acme-oauth': { scopes } } : {};
-      const resp = await fetch(`${baseUrl}/admin/callers/gcorp/connections`);
+      testConfig.callers.narrow.oauth2Overrides = scopes ? { 'acme-oauth': { scopes } } : {};
+      const resp = await fetch(`${baseUrl}/admin/callers/narrow/connections`);
       const [row] = (await resp.json()) as AdminCallerConnection[];
       return row.auth?.narrowed;
     };
@@ -323,27 +283,8 @@ describe('oauth2 auth on caller connections (read-only)', () => {
       expect(await narrowedFor(['read'])).toBe(true);
     } finally {
       testConfig.connectors = testConfig.connectors.filter((c) => c.alias !== 'acme-oauth');
-      testConfig.callers.gcorp = saved;
+      Reflect.deleteProperty(testConfig.callers, 'narrow');
     }
-  });
-
-  it('connection-status: template auth, plus callerAuth for enabled connections', async () => {
-    const resp = await fetch(`${baseUrl}/admin/callers/gcorp/connection-status`);
-    const body = (await resp.json()) as AdminConnectionStatus[];
-    const by = Object.fromEntries(body.map((c) => [c.alias, c]));
-    expect(by['google-gmail-readonly-sa'].auth).toEqual({
-      type: 'oauth2',
-      grant: 'jwt_bearer',
-      scopes: ['https://www.googleapis.com/auth/gmail.readonly'],
-      subjectRequired: true,
-    });
-    expect(by['google-gmail-readonly-sa'].problem).toMatch(/subjectRequired/);
-    expect(by['google-calendar-readonly-sa'].callerAuth?.subject).toBe('ceo@example.com');
-    // Not enabled for this caller: template auth only.
-    expect(by['google-sheets-readonly'].auth?.grant).toBe('refresh_token');
-    expect(by['google-sheets-readonly'].callerAuth).toBeUndefined();
-    expect(by.github.auth).toBeUndefined();
-    expect(JSON.stringify(body)).not.toContain(SA_KEY_VALUE);
   });
 });
 
@@ -374,9 +315,10 @@ describe('the google connection on caller views (read-only)', () => {
       google: { auth: 'user', services: { drive: 'full' } } as never,
     };
     testConfig.callers.stale = { connections: ['github', 'google-sheetz'] };
+    testConfig.callers.migrated = { connections: ['github', 'google-sheets'] };
   });
   afterAll(() => {
-    for (const alias of ['gsa', 'guser', 'gbad', 'stale'])
+    for (const alias of ['gsa', 'guser', 'gbad', 'stale', 'migrated'])
       Reflect.deleteProperty(testConfig.callers, alias);
     delete process.env.GSA_KEY;
   });
@@ -455,6 +397,16 @@ describe('the google connection on caller views (read-only)', () => {
     expect(JSON.stringify(body)).not.toContain(SA_KEY_VALUE);
   });
 
+  it('connections: a removed template ID is a problem on that connection only', async () => {
+    const resp = await fetch(`${baseUrl}/admin/callers/migrated/connections`);
+    const body = (await resp.json()) as AdminCallerConnection[];
+    const by = Object.fromEntries(body.map((c) => [c.connectionAlias, c]));
+    expect(by['google-sheets'].problem).toBe(
+      'Connection "google-sheets" was removed: use "google" with callers.migrated.google.services.sheets = "edit" (auth "user"). See CONNECTIONS.md → Google.',
+    );
+    expect(by.github.problem).toBeUndefined();
+  });
+
   it('callers: configProblem for a caller that cannot be resolved, none otherwise', async () => {
     const resp = await fetch(`${baseUrl}/admin/callers`);
     const body = (await resp.json()) as { alias: string; configProblem?: string }[];
@@ -464,6 +416,7 @@ describe('the google connection on caller views (read-only)', () => {
     // A dropped connection is a per-connection problem, not a caller one.
     expect(by.gbad.configProblem).toBeUndefined();
     expect(by.acme.configProblem).toBeUndefined();
+    expect(by.migrated.configProblem).toBeUndefined();
   });
 });
 

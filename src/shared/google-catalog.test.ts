@@ -31,57 +31,6 @@ const level = (key: string): GoogleLevel => {
   return found[1];
 };
 
-// ── Parity with the templates it replaces (temporary) ─────────────────────
-//
-// Deleted together with the templates. Its green run in the commit before is
-// the proof that scopes, allowlists and tests moved unchanged.
-
-describe('catalog parity with the per-scope templates', () => {
-  const PARITY: [string, string, GoogleAuthMode][] = [
-    ['google-gmail-metadata', 'gmail.metadata', 'user'],
-    ['google-gmail-readonly', 'gmail.read', 'user'],
-    ['google-gmail-readonly-sa', 'gmail.read', 'service-account'],
-    ['google-calendar-freebusy', 'calendar.freebusy', 'user'],
-    ['google-calendar-readonly', 'calendar.read', 'user'],
-    ['google-calendar-readonly-sa', 'calendar.read', 'service-account'],
-    ['google-drive-file', 'drive.file', 'user'],
-    ['google-drive-readonly', 'drive.read', 'user'],
-    ['google-drive-readonly-sa', 'drive.read', 'service-account'],
-    ['google-sheets-readonly', 'sheets.read', 'user'],
-    ['google-sheets-readonly-sa', 'sheets.read', 'service-account'],
-    ['google-sheets', 'sheets.edit', 'user'],
-    ['google-sheets-sa', 'sheets.edit', 'service-account'],
-    ['google-docs', 'docs.edit', 'user'],
-    ['google-docs-sa', 'docs.edit', 'service-account'],
-    ['google-slides', 'slides.edit', 'user'],
-    ['google-slides-sa', 'slides.edit', 'service-account'],
-  ];
-
-  it('covers all 17 templates and every catalog level in each mode it offers', () => {
-    expect(PARITY).toHaveLength(17);
-    const fromTemplates = PARITY.map(([, key, mode]) => `${key}/${mode}`).sort();
-    const fromCatalog = LEVELS.flatMap(([key, l]) => l.auth.map((m) => `${key}/${m}`)).sort();
-    expect(fromCatalog).toEqual(fromTemplates);
-  });
-
-  it.each(PARITY)('%s → %s (%s): scopes, allowlist and test moved verbatim', (alias, key, mode) => {
-    const tpl = loadConnection(alias);
-    const l = level(key);
-    expect(l.scopes).toEqual(tpl.oauth2?.scopes);
-    expect(l.allowedEndpoints).toEqual(tpl.allowedEndpoints);
-    expect(l.testConnection).toEqual(tpl.testConnection);
-    expect(l.auth).toContain(mode);
-    expect(catalog.tokenUrl).toBe(tpl.oauth2?.tokenUrl);
-    const m = catalog.auth[mode];
-    expect(m.grant).toBe(tpl.oauth2?.grant);
-    expect(m.secretRefs).toEqual(tpl.oauth2?.secretRefs);
-    expect(m.clientAuth).toBe(tpl.oauth2?.clientAuth);
-    if (mode === 'service-account') {
-      expect(l.subjectRequired === true).toBe(tpl.oauth2?.subjectRequired === true);
-    }
-  });
-});
-
 // ── Invariants ────────────────────────────────────────────────────────────
 
 const GMAIL = 'https://gmail.googleapis.com/gmail/v1/users/me';

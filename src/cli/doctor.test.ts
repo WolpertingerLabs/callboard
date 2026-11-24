@@ -88,6 +88,7 @@ describe.skipIf(!built)('drawlatch doctor', () => {
           google: { auth: 'user', services: { drive: 'full' } },
         },
         stale: { connections: ['github', 'google-sheetz'] },
+        migrated: { connections: ['github', 'google-docs-sa'] },
       },
     });
     expect(run.stdout).toMatch(/household\/google: GOOGLE_OAUTH_REFRESH_TOKEN\s+FAIL/);
@@ -98,6 +99,10 @@ describe.skipIf(!built)('drawlatch doctor', () => {
     expect(run.stdout).toContain('-> google.services.drive: "full" is not offered');
     expect(run.stdout).toMatch(/Caller "stale": config\s+FAIL/);
     expect(run.stdout).toContain('-> Unknown connection "google-sheetz"');
+    expect(run.stdout).toMatch(/migrated\/google-docs-sa: dropped\s+FAIL/);
+    expect(run.stdout).toContain(
+      '-> Connection "google-docs-sa" was removed: use "google" with callers.migrated.google.services.docs = "edit" (auth "service-account"). See CONNECTIONS.md → Google.',
+    );
     expect(run.status).toBe(1);
   });
 });

@@ -6,6 +6,7 @@ import { describe, it, expect } from 'vitest';
 import {
   resolveCallerRoutesChecked,
   resolveRoutes,
+  validateRemoteConfig,
   type GoogleCallerConfig,
   type RemoteServerConfig,
   type Route,
@@ -15,6 +16,7 @@ import {
   callerOptionalSecrets,
   callerRequiredSecrets,
   describeConnectionTemplate,
+  listAvailableConnections,
   loadConnection,
   removedConnectionMessage,
   validateOAuth2Route,
@@ -609,6 +611,130 @@ describe('REMOVED_CONNECTIONS', () => {
     );
     expect(removedConnectionMessage('github')).toBeUndefined();
     expect(removedConnectionMessage('__proto__')).toBeUndefined();
+  });
+});
+
+describe('removed connection IDs', () => {
+  const USER_IDS: [string, string, string][] = [
+    ['google-gmail-metadata', 'gmail', 'metadata'],
+    ['google-gmail-readonly', 'gmail', 'read'],
+    ['google-calendar-freebusy', 'calendar', 'freebusy'],
+    ['google-calendar-readonly', 'calendar', 'read'],
+    ['google-drive-file', 'drive', 'file'],
+    ['google-drive-readonly', 'drive', 'read'],
+    ['google-sheets-readonly', 'sheets', 'read'],
+    ['google-sheets', 'sheets', 'edit'],
+    ['google-docs', 'docs', 'edit'],
+    ['google-slides', 'slides', 'edit'],
+  ];
+  const SA_IDS: [string, string, string][] = [
+    ['google-gmail-readonly-sa', 'gmail', 'read'],
+    ['google-calendar-readonly-sa', 'calendar', 'read'],
+    ['google-drive-readonly-sa', 'drive', 'read'],
+    ['google-sheets-readonly-sa', 'sheets', 'read'],
+    ['google-sheets-sa', 'sheets', 'edit'],
+    ['google-docs-sa', 'docs', 'edit'],
+    ['google-slides-sa', 'slides', 'edit'],
+  ];
+
+  it('lists exactly the 17 removed templates, each naming a catalog level', () => {
+    expect(Object.keys(REMOVED_CONNECTIONS).sort()).toEqual(
+      [...USER_IDS, ...SA_IDS].map(([id]) => id).sort(),
+    );
+    const catalog = loadGoogleCatalog();
+    for (const [id, { service, level, auth }] of Object.entries(REMOVED_CONNECTIONS)) {
+      const l = catalog.services[service].levels[level];
+      expect(l, id).toBeDefined();
+      expect(l.auth, id).toContain(auth);
+    }
+  });
+
+  it.each(USER_IDS)('loadConnection("%s") says what replaces it (user)', (id, svc, level) => {
+    expect(() => loadConnection(id)).toThrow(
+      new Error(
+        `Connection "${id}" was removed: use "google" with callers.<alias>.google.services.${svc} = "${level}" (auth "user"). See CONNECTIONS.md → Google.`,
+      ),
+    );
+  });
+
+  it.each(SA_IDS)(
+    'loadConnection("%s") says what replaces it (service account)',
+    (id, svc, level) => {
+      expect(() => loadConnection(id)).toThrow(
+        new Error(
+          `Connection "${id}" was removed: use "google" with callers.<alias>.google.services.${svc} = "${level}" (auth "service-account"). See CONNECTIONS.md → Google.`,
+        ),
+      );
+    },
+  );
+
+  it('is not listed as a template', () => {
+    const available = listAvailableConnections();
+    for (const id of Object.keys(REMOVED_CONNECTIONS)) expect(available).not.toContain(id);
+  });
+
+  it('a removed ID drops only that connection for the caller', () => {
+    const config = {
+      host: '127.0.0.1',
+      port: 0,
+      rateLimitPerMinute: 60,
+      callers: {
+        household: {
+          connections: ['github', 'google-sheets', 'google-drive-readonly-sa', 'google'],
+          google: { auth: 'user', services: { docs: 'edit' } },
+        },
+      },
+    } as RemoteServerConfig;
+    const { routes, problems, dropped } = resolveCallerRoutesChecked(config, 'household');
+    expect(routes.map((r) => r.alias)).toEqual(['github', 'google']);
+    expect(dropped).toEqual({
+      'google-sheets':
+        'Connection "google-sheets" was removed: use "google" with callers.household.google.services.sheets = "edit" (auth "user"). See CONNECTIONS.md → Google.',
+      'google-drive-readonly-sa':
+        'Connection "google-drive-readonly-sa" was removed: use "google" with callers.household.google.services.drive = "read" (auth "service-account"). See CONNECTIONS.md → Google.',
+    });
+    expect(problems).toEqual([
+      `Caller "household": connection "google-sheets" dropped: ${dropped['google-sheets']}`,
+      `Caller "household": connection "google-drive-readonly-sa" dropped: ${dropped['google-drive-readonly-sa']}`,
+    ]);
+    // validateRemoteConfig (boot) reports the same lines.
+    expect(validateRemoteConfig(config)).toEqual(problems);
+  });
+
+  it('a custom connector may still reuse a removed alias', () => {
+    const custom: Route = {
+      alias: 'google-sheets',
+      headers: { Authorization: 'Bearer ${T}' },
+      secrets: { T: 't' },
+      allowedEndpoints: ['https://example.com/**'],
+    };
+    const { routes, dropped } = resolveCallerRoutesChecked(
+      {
+        host: '127.0.0.1',
+        port: 0,
+        rateLimitPerMinute: 60,
+        connectors: [custom],
+        callers: { a: { connections: ['google-sheets'] } },
+      } as RemoteServerConfig,
+      'a',
+    );
+    expect(dropped).toEqual({});
+    expect(routes).toEqual([custom]);
+  });
+
+  it('an unknown ID still fails resolution for the whole caller (unchanged)', () => {
+    const config = {
+      host: '127.0.0.1',
+      port: 0,
+      rateLimitPerMinute: 60,
+      callers: { a: { connections: ['github', 'google-sheetz'] } },
+    } as RemoteServerConfig;
+    expect(() => resolveCallerRoutesChecked(config, 'a')).toThrow(
+      /^Unknown connection "google-sheetz"/,
+    );
+    expect(validateRemoteConfig(config)).toEqual([
+      expect.stringMatching(/^Caller "a": Unknown connection "google-sheetz"/),
+    ]);
   });
 });
 
