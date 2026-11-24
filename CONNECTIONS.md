@@ -124,7 +124,7 @@ The `google` connection gives an agent Gmail, Calendar, Drive, Sheets, Docs, and
 }
 ```
 
-`google` with no `google` block, or with an invalid one, is dropped for that caller, with the reason in the boot log, on the dashboard card, and in `drawlatch doctor`. Its other connections keep working. A `google` block is kept while the connection is disabled. `oauth2Overrides` doesn't apply to `google`: an `oauth2Overrides.google` entry drops it. The levels come from a catalog that ships with drawlatch (`src/connections/google-catalog.json`).
+`google` with no `google` block, or with an invalid one, is dropped for that caller, with the reason in the boot log, on the dashboard card, and in `drawlatch doctor` and `drawlatch config`. Its other connections keep working, event listeners included. A `google` block is kept while the connection is disabled. `oauth2Overrides` doesn't apply to `google`: an `oauth2Overrides.google` entry drops it. The levels come from a catalog that ships with drawlatch (`src/connections/google-catalog.json`).
 
 #### Services and levels
 
