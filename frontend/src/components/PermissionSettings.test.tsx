@@ -18,8 +18,8 @@ it("renders Browser Use, Sandbox desktop and Computer Use in that order, each a 
   // Each row says what the axis governs, and what it depends on, in one short line.
   for (const [pattern, must] of [
     [/managed browser on this host/, /own network access/],
-    [/isolated Linux desktop in a container/, /network is open, including to this host/],
-    [/Your real desktop on this host/, /File, Code, Web and Browser Use on Allow/],
+    [/isolated Linux desktop in a container/, /Internet by default; can always reach this host/],
+    [/Your real desktop on this host/, /File Read\/Write, Code, Web and Browser Use on Allow/],
   ] as const) {
     const description = screen.getByText(pattern).textContent!;
     expect(description).toMatch(must);
@@ -145,7 +145,7 @@ it("the chat modal fits the viewport: header and Save stay put while only the se
   // The scroll region holds the rows; the dialog around it is height-clamped and stacks as a column.
   expect(within(scroll).getByText("Sandbox desktop")).toBeTruthy();
   const dialog = scroll.parentElement!;
-  expect(dialog.style.maxHeight).toContain("100dvh");
+  expect(dialog.classList.contains("modal-viewport-clamp")).toBe(true);
   expect(dialog.style.flexDirection).toBe("column");
   // Save sits outside the scroll region, so it is always reachable.
   const save = screen.getByRole("button", { name: "Save" });

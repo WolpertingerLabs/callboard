@@ -102,7 +102,11 @@ export default function ChatPermissionsModal({
 
   return (
     <ModalOverlay onClose={onClose}>
+      {/* modal-viewport-clamp (index.css): max-height clamped to the visible
+          viewport, with a vh fallback for browsers without dvh, so the header
+          and Save stay on screen and only the settings scroll. */}
       <div
+        className="modal-viewport-clamp"
         style={{
           background: "var(--bg)",
           borderRadius: 8,
@@ -110,9 +114,6 @@ export default function ChatPermissionsModal({
           width: "90%",
           maxWidth: 480,
           border: "1px solid var(--border)",
-          // Clamp to the visible viewport (dvh tracks mobile browser chrome) so
-          // the header and Save stay on screen and only the settings scroll.
-          maxHeight: "calc(100dvh - 32px)",
           display: "flex",
           flexDirection: "column",
           boxSizing: "border-box",

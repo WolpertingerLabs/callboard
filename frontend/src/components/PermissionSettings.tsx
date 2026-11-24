@@ -203,7 +203,7 @@ export default function PermissionSettings({ permissions, onChange, title, provi
           drops the key, so the row reads back as Deny and grants nothing. */}
       <PermissionRow
         label="Sandbox desktop"
-        description="An isolated Linux desktop in a container. Its network is open, including to this host."
+        description="An isolated Linux desktop in a container. Internet by default; can always reach this host."
         category="sandboxControl"
         permissions={permissions}
         onUpdate={updatePermission}
@@ -211,7 +211,7 @@ export default function PermissionSettings({ permissions, onChange, title, provi
 
       <PermissionRow
         label="Computer Use"
-        description="Your real desktop on this host. Needs File, Code, Web and Browser Use on Allow."
+        description="Your real desktop on this host. Needs File Read/Write, Code, Web and Browser Use on Allow."
         category="computerControl"
         permissions={permissions}
         onUpdate={updatePermission}
