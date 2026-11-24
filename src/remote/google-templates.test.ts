@@ -722,14 +722,6 @@ describe('scoped Google templates', () => {
     expect(isEndpointAllowed(`${SLIDES}/1AbC`, allowedEndpoints)).toBe(true);
     expect(isEndpointAllowed(`${SLIDES}/a/b`, allowedEndpoints)).toBe(false);
   });
-
-  it('google.json is unchanged apart from recommending the scoped templates', () => {
-    const route = loadConnection('google');
-    expect(route.description).toMatch(/^Static token, full access: prefer the scoped google-\*/);
-    expect(route.headers).toEqual({ Authorization: 'Bearer ${GOOGLE_API_TOKEN}' });
-    expect(route.allowedEndpoints).toContain('https://www.googleapis.com/**');
-    expect(route.oauth2).toBeUndefined();
-  });
 });
 
 /** A template's oauth2 block (every Google template has one). */

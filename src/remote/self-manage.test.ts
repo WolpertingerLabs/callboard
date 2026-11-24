@@ -55,7 +55,7 @@ describe('selfManage lock on set_connection_enabled / set_secrets', () => {
       await expect(
         dispatchTool(
           'set_connection_enabled',
-          { connection: 'google', enabled: true },
+          { connection: 'notion', enabled: true },
           [],
           ctx('locked', origin),
         ),
@@ -72,30 +72,30 @@ describe('selfManage lock on set_connection_enabled / set_secrets', () => {
   it('lets the admin path change a locked caller', async () => {
     await dispatchTool(
       'set_connection_enabled',
-      { connection: 'google', enabled: true },
+      { connection: 'notion', enabled: true },
       [],
       ctx('locked', 'admin'),
     );
     await dispatchTool(
       'set_secrets',
-      { secrets: { GOOGLE_API_TOKEN: 'admin-set' } },
+      { secrets: { NOTION_API_KEY: 'admin-set' } },
       [],
       ctx('locked', 'admin'),
     );
     const after = loadRemoteConfig().callers.locked;
-    expect(after.connections).toContain('google');
-    expect(Object.keys(after.env ?? {})).toContain('GOOGLE_API_TOKEN');
-    delete process.env.LOCKED_GOOGLE_API_TOKEN;
+    expect(after.connections).toContain('notion');
+    expect(Object.keys(after.env ?? {})).toContain('NOTION_API_KEY');
+    delete process.env.LOCKED_NOTION_API_KEY;
   });
 
   it.each(['legacy', 'open'])('allows the agent path when selfManage is %s', async (alias) => {
     await dispatchTool(
       'set_connection_enabled',
-      { connection: 'google', enabled: true },
+      { connection: 'notion', enabled: true },
       [],
       ctx(alias, 'agent'),
     );
-    expect(loadRemoteConfig().callers[alias].connections).toContain('google');
+    expect(loadRemoteConfig().callers[alias].connections).toContain('notion');
   });
 
   it('tells the agent in list_connection_templates whether it can self-manage', async () => {
@@ -215,7 +215,7 @@ describe('OAuth2 connections and credentials on the agent path', () => {
   it('still lets the agent enable a static connection and disable an OAuth2 one', async () => {
     await dispatchTool(
       'set_connection_enabled',
-      { connection: 'google', enabled: true },
+      { connection: 'notion', enabled: true },
       [],
       ctx('open', 'agent'),
     );
@@ -225,7 +225,7 @@ describe('OAuth2 connections and credentials on the agent path', () => {
       [],
       ctx('open', 'agent'),
     );
-    expect(loadRemoteConfig().callers.open.connections).toEqual(['github', 'google']);
+    expect(loadRemoteConfig().callers.open.connections).toEqual(['github', 'notion']);
   });
 
   it.each([

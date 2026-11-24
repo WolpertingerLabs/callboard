@@ -41,6 +41,7 @@ import {
   type Route,
 } from '../shared/config.js';
 import { listConnectionTemplates, loadConnection } from '../shared/connections.js';
+import { googleCredentialRoutes } from '../shared/google.js';
 import { assertSafeConnectionKey, assertSafeInstanceId, ownEntry } from '../shared/safe-keys.js';
 import { isSecretSetForCaller, setCallerSecrets } from '../shared/env-utils.js';
 import {
@@ -901,8 +902,8 @@ function invalidListenerKeys(
  * agent path when the caller has `selfManage: false`. Without this, an agent
  * could enable any connection template for itself, and because secrets
  * resolve per caller *by name*, a newly enabled connection sharing a secret
- * name with an existing one (another google-* connector) would come up with
- * the existing token already attached.
+ * name with an existing one (a custom connector reading GITHUB_TOKEN next to
+ * `github`) would come up with the existing token already attached.
  */
 function assertMaySelfManage(
   tool: string,
@@ -919,17 +920,26 @@ function assertMaySelfManage(
 
 /**
  * OAuth2 connections are operator-only on the agent path, whatever
- * `selfManage` says. Their credentials are shared by name across templates
- * (every google-* user template reads GOOGLE_OAUTH_REFRESH_TOKEN), so an agent
- * that could enable one more OAuth2 connection would inherit the caller's
- * credentials at that connection's scopes, and one that could set an oauth2
- * credential could swap in its own grant.
+ * `selfManage` says. Their credentials are shared by name (every caller's
+ * `google` connection reads GOOGLE_OAUTH_REFRESH_TOKEN, and a custom
+ * connector may read the same names), so an agent that could enable one more
+ * OAuth2 connection would inherit the caller's credentials at that
+ * connection's scopes, and one that could set an oauth2 credential could swap
+ * in its own grant.
+ *
+ * A composed base template (`google`) has no `oauth2` block of its own: its
+ * route is composed per caller at resolve time. It counts as OAuth2 here, in
+ * either auth mode, whatever the caller has selected (invariant 2 in
+ * plans/google-unified.md).
  */
 function oauth2Connection(config: RemoteServerConfig, alias: string): Route | undefined {
   const custom = (config.connectors ?? []).find((c) => c.alias === alias);
   if (custom) return custom.oauth2 ? custom : undefined;
   try {
     const route = loadConnection(alias);
+    // Any composed base counts, without composing anything: nothing that
+    // could throw here may turn the refusal into an allow.
+    if (route.composed !== undefined) return route;
     return route.oauth2 ? route : undefined;
   } catch {
     return undefined;
@@ -949,12 +959,17 @@ function signingCredentialNames(config: RemoteServerConfig): Set<string> {
   const names = new Set<string>();
   const routes: Route[] = [...(config.connectors ?? [])];
   for (const t of listConnectionTemplates()) {
+    let route: Route;
     try {
-      const route = loadConnection(t.alias);
-      if (route.oauth2 || route.awsSigV4) routes.push(route);
+      route = loadConnection(t.alias);
     } catch {
-      // listConnectionTemplates() already loaded it; nothing to add
+      continue; // listConnectionTemplates() already loaded it; nothing to add
     }
+    if (route.oauth2 || route.awsSigV4) routes.push(route);
+    // A composed base: both auth modes' credentials, for every caller
+    // (invariant 2). Outside the try: if composing failed, refusing every
+    // set_secrets is the safe outcome, not dropping these names.
+    if (route.composed === 'google') routes.push(...googleCredentialRoutes(route));
   }
   for (const route of routes) {
     for (const name of signerOnlySecretNames(route)) {
@@ -1100,7 +1115,8 @@ export const toolHandlers: Record<string, ToolHandler> = {
       );
 
       // Ingestor & testing metadata
-      info.hasTestConnection = route.testConnection !== undefined;
+      info.hasTestConnection =
+        route.testConnection !== undefined || route.testConnections !== undefined;
       info.hasIngestor = route.ingestorConfig !== undefined;
       if (route.ingestorConfig) {
         info.ingestorType = route.ingestorConfig.type;
@@ -1912,6 +1928,8 @@ export const toolHandlers: Record<string, ToolHandler> = {
         allowedEndpoints: t.allowedEndpoints,
         // OAuth2 (names only). The agent can't enable these itself.
         ...(t.auth !== undefined && { auth: t.auth }),
+        // Composed per caller by the operator (`google`); also operator-only.
+        ...(t.composed !== undefined && { composed: t.composed }),
         enabled: enabledSet.has(t.alias),
         requiredSecretsSet,
         optionalSecretsSet,

@@ -3,8 +3,14 @@
  */
 import { describe, it, expect } from 'vitest';
 
-import type { GoogleCallerConfig, Route } from './config.js';
-import { validateOAuth2Route } from './connections.js';
+import {
+  resolveCallerRoutesChecked,
+  resolveRoutes,
+  type GoogleCallerConfig,
+  type RemoteServerConfig,
+  type Route,
+} from './config.js';
+import { describeConnectionTemplate, loadConnection, validateOAuth2Route } from './connections.js';
 import {
   composeGoogleRoute,
   googleConsentScopes,
@@ -337,5 +343,236 @@ describe('composeGoogleRoute', () => {
       'GOOGLE_OAUTH_REFRESH_TOKEN',
       'GOOGLE_SERVICE_ACCOUNT_KEY',
     ]);
+  });
+});
+
+describe('resolveCallerRoutesChecked with the google connection', () => {
+  const config = (callers: RemoteServerConfig['callers'], connectors?: Route[]) =>
+    ({
+      host: '127.0.0.1',
+      port: 0,
+      rateLimitPerMinute: 60,
+      ...(connectors && { connectors }),
+      callers,
+    }) as RemoteServerConfig;
+
+  it('the base template matches nothing and carries no credentials in headers', () => {
+    const base = loadConnection('google');
+    expect(base.composed).toBe('google');
+    expect(base.allowedEndpoints).toEqual([]);
+    expect(base.headers).toBeUndefined();
+    expect(base.oauth2).toBeUndefined();
+    expect(base.testConnection).toBeUndefined();
+    expect(Object.keys(base.secrets ?? {}).sort()).toEqual([
+      'GOOGLE_OAUTH_CLIENT_ID',
+      'GOOGLE_OAUTH_CLIENT_SECRET',
+      'GOOGLE_OAUTH_REFRESH_TOKEN',
+      'GOOGLE_SERVICE_ACCOUNT_KEY',
+    ]);
+    // Even resolved as-is (composition skipped by mistake), it reaches nothing.
+    const [resolved] = resolveRoutes([{ ...base, alias: 'google' }], {}, 'x');
+    expect(resolved.allowedEndpoints).toEqual([]);
+    expect(resolved.headers).toEqual({});
+  });
+
+  it('composes the route for a user-mode caller', () => {
+    const { routes, problems } = resolveCallerRoutesChecked(
+      config({
+        a: {
+          connections: ['github', 'google'],
+          google: { auth: 'user', services: { sheets: 'edit', drive: 'read' } },
+        },
+      }),
+      'a',
+    );
+    expect(problems).toEqual([]);
+    const google = routes.find((r) => r.alias === 'google');
+    expect(google?.oauth2?.grant).toBe('refresh_token');
+    expect(google?.oauth2?.scopes).toEqual([S + 'drive.readonly', S + 'spreadsheets']);
+    expect(google?.composed).toBeUndefined();
+    expect(google?.testConnections).toHaveLength(2);
+  });
+
+  it('composes the route for a service-account caller, subject included', () => {
+    const { routes, problems } = resolveCallerRoutesChecked(
+      config({
+        a: {
+          connections: ['google'],
+          google: {
+            auth: 'service-account',
+            subject: 'alice@example.com',
+            services: { gmail: 'read' },
+          },
+        },
+      }),
+      'a',
+    );
+    expect(problems).toEqual([]);
+    expect(routes[0].oauth2).toMatchObject({
+      grant: 'jwt_bearer',
+      subject: 'alice@example.com',
+      scopes: [S + 'gmail.readonly'],
+    });
+  });
+
+  it('drops google without a block, and names the static template when GOOGLE_API_TOKEN is set', () => {
+    const cfg = config({
+      a: { connections: ['github', 'google'] },
+      b: { connections: ['google'], env: { GOOGLE_API_TOKEN: 'ya29.static' } },
+    });
+    const a = resolveCallerRoutesChecked(cfg, 'a');
+    expect(a.routes.map((r) => r.alias)).toEqual(['github']);
+    expect(a.dropped.google).toBe(
+      'connection "google" needs callers.a.google = { "auth": "user" | "service-account", "services": { … } } (CONNECTIONS.md → Google)',
+    );
+    expect(a.problems).toEqual([`Caller "a": connection "google" dropped: ${a.dropped.google}`]);
+    const b = resolveCallerRoutesChecked(cfg, 'b');
+    expect(b.dropped.google).toBe(
+      'connection "google" needs callers.b.google = { "auth": "user" | "service-account", "services": { … } } (CONNECTIONS.md → Google). The static-token "google" template that read GOOGLE_API_TOKEN was removed.',
+    );
+  });
+
+  it('checks GOOGLE_API_TOKEN by prefixed env var too', () => {
+    process.env.PREFIXED_GOOGLE_API_TOKEN = 'ya29.static';
+    try {
+      const { dropped } = resolveCallerRoutesChecked(
+        config({ prefixed: { connections: ['google'] } }),
+        'prefixed',
+      );
+      expect(dropped.google).toContain('GOOGLE_API_TOKEN was removed');
+    } finally {
+      delete process.env.PREFIXED_GOOGLE_API_TOKEN;
+    }
+  });
+
+  it('drops google with the validator message when the block is invalid', () => {
+    const { routes, dropped } = resolveCallerRoutesChecked(
+      config({
+        a: {
+          connections: ['github', 'google'],
+          google: { auth: 'user', services: { drive: 'full' } } as never,
+        },
+      }),
+      'a',
+    );
+    expect(routes.map((r) => r.alias)).toEqual(['github']);
+    expect(dropped.google).toMatch(/^google\.services\.drive: "full" is not offered/);
+  });
+
+  it('keeps but ignores a selection when google is not enabled, and says so', () => {
+    const { routes, problems, dropped } = resolveCallerRoutesChecked(
+      config({
+        a: { connections: ['github'], google: { auth: 'user', services: { sheets: 'edit' } } },
+      }),
+      'a',
+    );
+    expect(routes.map((r) => r.alias)).toEqual(['github']);
+    expect(dropped).toEqual({});
+    expect(problems).toEqual([
+      'Caller "a": google selection is set but the "google" connection is not enabled; ignored.',
+    ]);
+  });
+
+  it('drops google when oauth2Overrides["google"] is set', () => {
+    const { routes, dropped } = resolveCallerRoutesChecked(
+      config({
+        a: {
+          connections: ['google'],
+          google: { auth: 'service-account', services: { sheets: 'edit' } },
+          oauth2Overrides: { google: { subject: 'alice@example.com' } },
+        },
+      }),
+      'a',
+    );
+    expect(routes).toEqual([]);
+    expect(dropped.google).toBe(
+      'oauth2Overrides["google"] is not used: choose services in callers.a.google, and set the service-account user in google.subject',
+    );
+  });
+
+  it('lets a custom connector named google win, ignoring the selection with a note', () => {
+    const custom: Route = {
+      alias: 'google',
+      headers: { Authorization: 'Bearer ${MY_TOKEN}' },
+      secrets: { MY_TOKEN: '${MY_TOKEN}' },
+      allowedEndpoints: ['https://tasks.googleapis.com/tasks/v1/**'],
+    };
+    const { routes, problems } = resolveCallerRoutesChecked(
+      config(
+        {
+          a: { connections: ['google'], google: { auth: 'user', services: { sheets: 'edit' } } },
+          b: { connections: ['google'] },
+        },
+        [custom],
+      ),
+      'a',
+    );
+    expect(routes).toEqual([custom]);
+    expect(problems).toEqual([
+      'Caller "a": a custom connector named "google" replaces the built-in one; callers.a.google is ignored.',
+    ]);
+  });
+
+  it('refuses composed on a custom connector', () => {
+    const custom: Route = { alias: 'mine', composed: 'google', allowedEndpoints: [] };
+    const { routes, dropped } = resolveCallerRoutesChecked(
+      config({ a: { connections: ['mine'] } }, [custom]),
+      'a',
+    );
+    expect(routes).toEqual([]);
+    expect(dropped.mine).toBe('composed is only allowed on built-in templates');
+  });
+
+  it('resolves only the selected mode’s secrets, from prefixed env vars', () => {
+    process.env.HH_GOOGLE_OAUTH_CLIENT_ID = 'cid';
+    process.env.HH_GOOGLE_OAUTH_CLIENT_SECRET = 'cs';
+    process.env.HH_GOOGLE_OAUTH_REFRESH_TOKEN = 'rt';
+    process.env.HH_GOOGLE_SERVICE_ACCOUNT_KEY = 'key';
+    try {
+      const { routes } = resolveCallerRoutesChecked(
+        config({
+          hh: { connections: ['google'], google: { auth: 'user', services: { docs: 'edit' } } },
+        }),
+        'hh',
+      );
+      const [resolved] = resolveRoutes(routes, {}, 'hh');
+      expect(resolved.secrets).toEqual({
+        GOOGLE_OAUTH_CLIENT_ID: 'cid',
+        GOOGLE_OAUTH_CLIENT_SECRET: 'cs',
+        GOOGLE_OAUTH_REFRESH_TOKEN: 'rt',
+      });
+      expect(resolved.withheldSecrets.sort()).toEqual([
+        'GOOGLE_OAUTH_CLIENT_ID',
+        'GOOGLE_OAUTH_CLIENT_SECRET',
+        'GOOGLE_OAUTH_REFRESH_TOKEN',
+      ]);
+      expect(resolved.oauth2?.effectiveScopes).toEqual([S + 'documents']);
+      expect(resolved.testConnections?.map((t) => t.name)).toEqual(['docs']);
+    } finally {
+      for (const k of Object.keys(process.env)) {
+        if (k.startsWith('HH_')) Reflect.deleteProperty(process.env, k);
+      }
+    }
+  });
+
+  it('describeConnectionTemplate marks google as composed, without a fixed auth block', () => {
+    const info = describeConnectionTemplate('google', loadConnection('google'));
+    expect(info).toMatchObject({
+      alias: 'google',
+      stability: 'beta',
+      composed: 'google',
+      requiredSecrets: [
+        'GOOGLE_OAUTH_CLIENT_ID',
+        'GOOGLE_OAUTH_CLIENT_SECRET',
+        'GOOGLE_OAUTH_REFRESH_TOKEN',
+      ],
+      optionalSecrets: ['GOOGLE_SERVICE_ACCOUNT_KEY'],
+      hasTestConnection: true,
+    });
+    expect(info.auth).toBeUndefined();
+  });
+
+  it('googleCredentialRoutes reads the shipped base template by default', () => {
+    expect(googleCredentialRoutes()).toEqual(googleCredentialRoutes(loadConnection('google')));
   });
 });

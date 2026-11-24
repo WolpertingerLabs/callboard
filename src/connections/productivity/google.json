@@ -1,34 +1,15 @@
 {
-  "name": "Google APIs",
-  "stability": "dev",
+  "name": "Google",
+  "stability": "beta",
   "category": "productivity",
-  "description": "Static token, full access: prefer the scoped google-* templates (google-gmail-readonly, google-calendar-readonly, google-drive-readonly, …), whose tokens drawlatch mints for one scope. Google APIs — Sheets, Docs, Drive, Calendar, Gmail, and more. Auth is handled automatically via the GOOGLE_API_TOKEN environment variable (OAuth2 access token or service account token). Multiple Google API domains are allowlisted.",
-  "docsUrl": "https://developers.google.com/apis-explorer",
-  "headers": {
-    "Authorization": "Bearer ${GOOGLE_API_TOKEN}"
-  },
+  "description": "Gmail, Calendar, Drive, Sheets, Docs and Slides through one credential. Each caller's services and levels are set by the operator (callers.<alias>.google); drawlatch mints tokens for exactly those scopes. See CONNECTIONS.md \"Google\".",
+  "docsUrl": "https://developers.google.com/workspace",
   "secrets": {
-    "GOOGLE_API_TOKEN": "${GOOGLE_API_TOKEN}"
+    "GOOGLE_OAUTH_CLIENT_ID": "${GOOGLE_OAUTH_CLIENT_ID}",
+    "GOOGLE_OAUTH_CLIENT_SECRET": "${GOOGLE_OAUTH_CLIENT_SECRET}",
+    "GOOGLE_OAUTH_REFRESH_TOKEN": "${GOOGLE_OAUTH_REFRESH_TOKEN}",
+    "GOOGLE_SERVICE_ACCOUNT_KEY": "${GOOGLE_SERVICE_ACCOUNT_KEY}"
   },
-  "allowedEndpoints": [
-    "https://www.googleapis.com/**",
-    "https://sheets.googleapis.com/**",
-    "https://docs.googleapis.com/**",
-    "https://drive.googleapis.com/**",
-    "https://calendar-json.googleapis.com/**",
-    "https://gmail.googleapis.com/**",
-    "https://slides.googleapis.com/**",
-    "https://people.googleapis.com/**",
-    "https://tasks.googleapis.com/**",
-    "https://admin.googleapis.com/**",
-    "https://chat.googleapis.com/**",
-    "https://forms.googleapis.com/**",
-    "https://youtube.googleapis.com/**",
-    "https://youtubeanalytics.googleapis.com/**",
-    "https://cloudresourcemanager.googleapis.com/**"
-  ],
-  "testConnection": {
-    "url": "https://www.googleapis.com/oauth2/v1/userinfo",
-    "description": "Fetches the authenticated user info"
-  }
+  "composed": "google",
+  "allowedEndpoints": []
 }

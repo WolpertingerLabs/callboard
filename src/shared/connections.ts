@@ -21,6 +21,7 @@ import {
   type OAuth2Grant,
   type Route,
 } from './config.js';
+import { loadGoogleCatalog } from './google.js';
 
 /** Metadata about a built-in connection template — used by UIs to render
  *  connection cards, form fields, and badges without parsing raw JSON. */
@@ -65,6 +66,9 @@ export interface ConnectionTemplateInfo {
   /** How the connection authenticates, when drawlatch mints the credential
    *  itself. Names only: no secret values. */
   auth?: { type: 'oauth2'; grant: OAuth2Grant; scopes: string[]; subjectRequired?: boolean };
+  /** Set on a base template whose route is composed per caller (`google`:
+   *  from `callers.<alias>.google`). It has no fixed `auth` or allowlist. */
+  composed?: 'google';
 }
 
 /** Directory containing connection template JSON files. */
@@ -136,6 +140,13 @@ export function loadConnection(name: string): Route {
 
   const raw = fs.readFileSync(filePath, 'utf-8');
   const route = JSON.parse(raw) as Route;
+  // Hand-written JSON: the declared type is not a guarantee.
+  const composed: unknown = route.composed;
+  if (composed !== undefined && (composed !== 'google' || name !== 'google')) {
+    throw new Error(
+      `Connection template "${name}": composed is only used by the "google" template`,
+    );
+  }
   if (route.oauth2 !== undefined) {
     try {
       validateOAuth2Route(route, 'template');
@@ -494,6 +505,15 @@ export function describeConnectionTemplate(alias: string, route: Route): Connect
     }
   }
 
+  // A composed base (`google`) has no fixed auth: its default mode's
+  // credentials (user OAuth) are the required ones, the rest optional.
+  if (route.composed === 'google') {
+    const { clientId, clientSecret, refreshToken } = loadGoogleCatalog().auth.user.secretRefs;
+    for (const name of [clientId, clientSecret, refreshToken]) {
+      if (name) authSecretNames.add(name);
+    }
+  }
+
   // Partition secrets into required (used for auth) vs optional (elsewhere)
   const allSecretNames = Object.keys(route.secrets ?? {});
   const requiredSecrets = allSecretNames.filter((s) => authSecretNames.has(s));
@@ -511,11 +531,16 @@ export function describeConnectionTemplate(alias: string, route: Route): Connect
     optionalSecrets,
     hasIngestor: route.ingestor !== undefined,
     ...(route.ingestor !== undefined && { ingestorType: route.ingestor.type }),
-    hasTestConnection: route.testConnection !== undefined,
+    // A composed route's tests come from its selection.
+    hasTestConnection:
+      route.testConnection !== undefined ||
+      route.testConnections !== undefined ||
+      route.composed !== undefined,
     hasTestIngestor: route.testIngestor !== undefined && route.testIngestor !== null,
     hasListenerConfig: route.listenerConfig !== undefined,
     supportsMultiInstance: route.listenerConfig?.supportsMultiInstance ?? false,
     allowedEndpoints: route.allowedEndpoints,
+    ...(route.composed !== undefined && { composed: route.composed }),
     ...(route.oauth2 !== undefined && {
       auth: {
         type: 'oauth2' as const,

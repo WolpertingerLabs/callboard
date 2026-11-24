@@ -15,6 +15,8 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { isValidOAuth2Subject, loadConnection, validateOAuth2Route } from './connections.js';
+import { isSecretSetForCaller } from './env-utils.js';
+import { composeGoogleRoute, validateGoogleSelection } from './google.js';
 import { ownEntry } from './safe-keys.js';
 import type { IngestorConfig } from '../remote/ingestors/types.js';
 import type { TriggerRule } from '../remote/triggers/types.js';
@@ -117,7 +119,8 @@ export const AWS_SIGV4_CREDENTIAL_SECRETS: readonly string[] = [
 //      the built-in cases.
 //
 // Tier 2 exists because upstreams echo identifiers back in error messages:
-// `GET /drive/v3/files/${GOOGLE_API_TOKEN}` answers `File not found: ya29…`.
+// Drive's `GET /drive/v3/files/<id>` answers `File not found: <id>`, so a
+// token written into that URL would come back in the response.
 // A token the route already injects through a header has no business in a URL.
 
 /** Shape the withholding helpers read. Both `Route` and `ResolvedRoute` fit. */
@@ -180,6 +183,12 @@ function headerOnlySecretNames(route: Route): Set<string> {
 /** Names withheld for reasons `placeholderSecrets` can't override. */
 function alwaysWithheldSecretNames(route: Route): Set<string> {
   const names = signerOnlySecretNames(route);
+  // A composed base (`google`) holds only credentials, which the composed
+  // route makes signer-only. The base itself is never sent anywhere, but if
+  // it were, none of them may be substitutable.
+  if (route.composed !== undefined) {
+    for (const name of Object.keys(route.secrets ?? {})) names.add(name);
+  }
   const signatureSecret = route.ingestor?.webhook?.signatureSecret;
   if (signatureSecret) names.add(signatureSecret);
   for (const name of route.withheldSecrets ?? []) names.add(name);
@@ -424,8 +433,9 @@ export interface OAuth2Config {
    *  template may not set it. */
   subject?: string;
   /** `jwt_bearer` only: the connection is unusable without a `subject`
-   *  (e.g. Gmail, which has no mailbox of its own for a service account).
-   *  A caller without one has the connection dropped at resolve time. */
+   *  (e.g. Gmail through a service account, which has no mailbox of its
+   *  own). A caller without one has the connection dropped at resolve time.
+   *  The built-in `google` connection checks its own (google.subject). */
   subjectRequired?: boolean;
   /** Refresh this long (ms) before the token expires.
    *  Default DEFAULT_OAUTH2_REFRESH_SKEW_MS. */
@@ -714,8 +724,15 @@ export interface CallerConfig {
    *  Admin config only: no tool reads or writes it (the dashboard does not
    *  edit it either yet). `scopes` must be a non-empty subset of the route's
    *  `oauth2.scopes`; an invalid entry drops that connection for this caller
-   *  and is logged. To widen scopes, define a custom connector. */
+   *  and is logged. To widen scopes, define a custom connector. Not used by
+   *  the built-in `google` connection (see `google`): an entry for it drops
+   *  the connection. */
   oauth2Overrides?: Record<string, OAuth2CallerOverride>;
+  /** Admin config only: which Google services and levels the built-in
+   *  `google` connection gives this caller, and how it authenticates. No tool
+   *  reads or writes it. An invalid block drops `google` for this caller and
+   *  is logged. See shared/google.ts and CONNECTIONS.md "Google". */
+  google?: GoogleCallerConfig;
 }
 
 /** Whether a caller's agent may run set_connection_enabled / set_secrets on
@@ -1033,6 +1050,20 @@ export function resolveCallerRoutesChecked(
     }
   }
 
+  // The `google` selection (admin config, see shared/google.ts). Kept while
+  // the connection is disabled, so the dashboard toggle doesn't lose it.
+  const hasGoogleSelection = Object.hasOwn(caller, 'google');
+  if (hasGoogleSelection && !caller.connections.includes('google')) {
+    problems.push(
+      `Caller "${callerAlias}": google selection is set but the "google" connection is not enabled; ignored.`,
+    );
+  } else if (hasGoogleSelection && connectorsByAlias.has('google')) {
+    problems.push(
+      `Caller "${callerAlias}": a custom connector named "google" replaces the built-in one; ` +
+        `callers.${callerAlias}.google is ignored.`,
+    );
+  }
+
   const routes: Route[] = [];
   for (const name of caller.connections) {
     // Custom connectors take precedence over built-in templates
@@ -1042,7 +1073,14 @@ export function resolveCallerRoutesChecked(
     if (route.alias !== name) route = { ...route, alias: name };
 
     try {
-      // Templates are validated by loadConnection(); custom connectors here.
+      if (custom && Object.hasOwn(custom, 'composed')) {
+        throw new Error('composed is only allowed on built-in templates');
+      }
+      if (!custom && route.composed === 'google') {
+        route = composeGoogleForCaller(route, caller, callerAlias, overrides);
+      }
+      // Templates are validated by loadConnection(); custom connectors and
+      // composed routes here.
       if (custom && route.oauth2 !== undefined) validateOAuth2Route(route, 'connector');
       // Own-property lookup: a connection named `__proto__` or `constructor`
       // must not pick up Object.prototype as its override.
@@ -1061,6 +1099,40 @@ export function resolveCallerRoutesChecked(
     routes.push(route);
   }
   return { routes, problems, dropped };
+}
+
+/**
+ * The built-in `google` route for one caller: its base template composed with
+ * `callers.<alias>.google`. Throws (dropping the connection for this caller)
+ * when the selection is missing or invalid, or when `oauth2Overrides.google`
+ * is set: a selection widens, and overrides may only narrow.
+ */
+function composeGoogleForCaller(
+  base: Route,
+  caller: CallerConfig,
+  callerAlias: string,
+  overrides: Record<string, OAuth2CallerOverride>,
+): Route {
+  if (ownEntry(overrides, 'google') !== undefined) {
+    throw new Error(
+      `oauth2Overrides["google"] is not used: choose services in callers.${callerAlias}.google, ` +
+        'and set the service-account user in google.subject',
+    );
+  }
+  if (!Object.hasOwn(caller, 'google')) {
+    const staticHint = isSecretSetForCaller('GOOGLE_API_TOKEN', callerAlias, caller.env)
+      ? '. The static-token "google" template that read GOOGLE_API_TOKEN was removed.'
+      : '';
+    throw new Error(
+      `connection "google" needs callers.${callerAlias}.google = { "auth": "user" | ` +
+        `"service-account", "services": { … } } (CONNECTIONS.md → Google)${staticHint}`,
+    );
+  }
+  const route = composeGoogleRoute(base, validateGoogleSelection(caller.google));
+  // Defence in depth: the composed route is an ordinary oauth2 route, and a
+  // connector-style check (subject allowed) must pass.
+  validateOAuth2Route(route, 'connector');
+  return route;
 }
 
 /**
@@ -1134,9 +1206,9 @@ export function allowlistPatternsOverlap(a: string, b: string): boolean {
  * request goes to the first connection whose allowlist matches, so an overlap
  * means list order silently decides which credential is used; where an OAuth2
  * connection is involved, executeProxyRequest refuses such requests outright.
- * Paths count, not just hosts: the scoped Google templates share
- * `www.googleapis.com` (Calendar, Drive) without overlapping. Logged at
- * daemon boot.
+ * `discord-bot` and `discord-oauth` both allow `discord.com/api/v10/**`, for
+ * example. Paths count, not just hosts: two connections on one host with
+ * disjoint paths don't warn. Logged at daemon boot.
  */
 export function connectionOverlapWarnings(config: RemoteServerConfig): string[] {
   const warnings: string[] = [];
