@@ -718,13 +718,30 @@ function cmdConfig() {
       `    ${alias}: ${caller.connections ? caller.connections.length : 0} connection(s)`,
     );
     const customAliases = new Set((config.connectors || []).map((c) => c.alias));
+    // Connections the daemon drops for this caller (removed template IDs,
+    // a missing or invalid google selection, …). A caller that can't be
+    // resolved at all (an unknown name) reports nothing here; `doctor` says so.
+    let dropped = {};
+    try {
+      ({ dropped } = resolveCallerRoutesChecked(config, alias));
+    } catch { /* see doctor */ }
     for (const connName of caller.connections || []) {
+      if (Object.hasOwn(dropped, connName)) {
+        console.log(`      ${connName}: dropped: ${dropped[connName]}`);
+        continue;
+      }
       const tpl = templateMap.get(connName);
       if (!tpl) {
-        const removed = customAliases.has(connName)
-          ? undefined
-          : removedConnectionMessage(connName, alias);
-        console.log(removed ? `      ${connName}: ${removed}` : `      ${connName} (custom connector)`);
+        if (customAliases.has(connName)) {
+          console.log(`      ${connName} (custom connector)`);
+          continue;
+        }
+        const removed = removedConnectionMessage(connName, alias);
+        console.log(
+          removed
+            ? `      ${connName}: ${removed}`
+            : `      ${connName}: unknown connection (neither a built-in template nor a custom connector)`,
+        );
         continue;
       }
       // For google: the credentials of the auth mode this caller selects.
@@ -859,7 +876,14 @@ async function cmdDoctor() {
       const templateMap = new Map(templates.map((t) => [t.alias, t]));
 
       for (const [callerAlias, caller] of Object.entries(config.callers)) {
+        // A dropped connection gets one "dropped" line (9a) with the reason,
+        // not secret checks that point the operator elsewhere.
+        let dropped = {};
+        try {
+          ({ dropped } = resolveCallerRoutesChecked(config, callerAlias));
+        } catch { /* reported in 9a */ }
         for (const connName of caller.connections) {
+          if (Object.hasOwn(dropped, connName)) continue;
           const tpl = templateMap.get(connName);
           if (!tpl) continue;
           // For google: the credentials of the auth mode this caller selects.

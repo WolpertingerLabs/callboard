@@ -49,13 +49,13 @@ describe.skipIf(!built)('drawlatch doctor', () => {
   });
 
   /** Run `drawlatch doctor` against a temp config dir holding `config`. */
-  function doctor(config: Record<string, unknown>) {
+  function doctor(config: Record<string, unknown>, command = 'doctor') {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'drawlatch-doctor-'));
     try {
       fs.writeFileSync(path.join(dir, 'remote.config.json'), JSON.stringify(config));
       const env: NodeJS.ProcessEnv = { ...process.env, MCP_CONFIG_DIR: dir };
       for (const k of Object.keys(env)) if (k.includes('GOOGLE_')) Reflect.deleteProperty(env, k);
-      return spawnSync(process.execPath, [path.join(repoRoot, 'bin/drawlatch.js'), 'doctor'], {
+      return spawnSync(process.execPath, [path.join(repoRoot, 'bin/drawlatch.js'), command], {
         env,
         encoding: 'utf8',
         timeout: 30_000,
@@ -96,6 +96,8 @@ describe.skipIf(!built)('drawlatch doctor', () => {
     expect(run.stdout).toMatch(/mail\/google: GOOGLE_SERVICE_ACCOUNT_KEY\s+FAIL/);
     expect(run.stdout).not.toMatch(/mail\/google: GOOGLE_OAUTH/);
     expect(run.stdout).toMatch(/broken\/google: dropped\s+FAIL/);
+    // The block is the problem: no secret FAILs that send the operator elsewhere.
+    expect(run.stdout).not.toMatch(/broken\/google: GOOGLE_/);
     expect(run.stdout).toContain('-> google.services.drive: "full" is not offered');
     expect(run.stdout).toMatch(/Caller "stale": config\s+FAIL/);
     expect(run.stdout).toContain('-> Unknown connection "google-sheetz"');
@@ -104,5 +106,35 @@ describe.skipIf(!built)('drawlatch doctor', () => {
       '-> Connection "google-docs-sa" was removed: use "google" with callers.migrated.google.services.docs = "edit" (auth "service-account"). See CONNECTIONS.md → Google.',
     );
     expect(run.status).toBe(1);
+  });
+
+  it('config shows a dropped google, and an unknown name as unknown, not as a custom connector', () => {
+    const run = doctor(
+      {
+        host: '127.0.0.1',
+        port: 1,
+        rateLimitPerMinute: 60,
+        callers: {
+          nogoogle: { connections: ['google', 'github'] },
+          broken: {
+            connections: ['google'],
+            google: { auth: 'user', services: { drive: 'full' } },
+          },
+          ok: { connections: ['google'], google: { auth: 'user', services: { docs: 'edit' } } },
+          stale: { connections: ['github', 'google-sheetz', 'google-docs'] },
+        },
+      },
+      'config',
+    );
+    expect(run.stdout).toMatch(
+      /nogoogle[\s\S]*google: dropped: connection "google" needs callers\.nogoogle\.google/,
+    );
+    expect(run.stdout).toMatch(/broken[\s\S]*google: dropped: google\.services\.drive: "full"/);
+    expect(run.stdout).toContain('google: GOOGLE_OAUTH_CLIENT_ID: NOT SET');
+    expect(run.stdout).toContain(
+      'google-sheetz: unknown connection (neither a built-in template nor a custom connector)',
+    );
+    expect(run.stdout).not.toContain('google-sheetz (custom connector)');
+    expect(run.stdout).toContain('google-docs: Connection "google-docs" was removed');
   });
 });
