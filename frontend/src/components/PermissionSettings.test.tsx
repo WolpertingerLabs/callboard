@@ -15,25 +15,17 @@ it("renders Browser Use, Sandbox desktop and Computer Use in that order, each a 
   for (let i = 1; i < labels.length; i++) expect(labels[i - 1].compareDocumentPosition(labels[i]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   expect(rowOf("Browser Use").nextElementSibling).toBe(rowOf("Sandbox desktop"));
   expect(rowOf("Sandbox desktop").nextElementSibling).toBe(rowOf("Computer Use"));
-  // What each axis governs and what it depends on, in one line each. Allow
-  // means allow, so neither row explains away its levels with confirmation caveats.
-  for (const [pattern, dependency] of [
-    [/Control a managed Chromium browser on the service host/, /independent of Web Access/],
-    [/Control the Linux X11 desktop on the service host/, /every other axis on Allow, except Sandbox desktop/],
+  // Each row says what the axis governs, and what it depends on, in one short line.
+  for (const [pattern, must] of [
+    [/managed browser on this host/, /own network access/],
+    [/isolated Linux desktop in a container/, /network is open, including to this host/],
+    [/Your real desktop on this host/, /File, Code, Web and Browser Use on Allow/],
   ] as const) {
     const description = screen.getByText(pattern).textContent!;
-    expect(description).toMatch(dependency);
-    expect(description).not.toMatch(/confirm/i);
-    expect(description.length).toBeLessThan(140);
+    expect(description).toMatch(must);
+    expect(description).not.toMatch(/confirm|disposable/i);
+    expect(description.length).toBeLessThan(90);
   }
-  // The sandbox row says what the container is today, which takes more than one short line.
-  const sandbox = screen.getByText(/Control a Linux desktop in a hardened container/).textContent!;
-  // It cannot know the host's mode, so it says what is true of both.
-  expect(sandbox).toContain("a fresh one per session when Callboard manages it, or a shared one you run yourself");
-  expect(sandbox).toContain("any service on this machine that listens on all interfaces");
-  expect(sandbox).toContain("Needs no other permission");
-  expect(sandbox).toContain("any service on this machine that listens on all interfaces");
-  expect(sandbox).not.toMatch(/disposable/i);
   for (const label of ["Browser Use", "Sandbox desktop", "Computer Use"])
     expect((within(rowOf(label)).getByRole("radio", { name: "Deny" }) as HTMLInputElement).checked).toBe(true);
   fireEvent.click(within(rowOf("Browser Use")).getByRole("radio", { name: "Ask" }));
@@ -143,4 +135,19 @@ it("a stale tab changing only permissions sends no review flags, so it cannot fl
   await vi.waitFor(() => expect(spy).toHaveBeenCalled());
   expect(spy.mock.calls[0][2]).toEqual({});
   spy.mockRestore();
+});
+
+it("the chat modal fits the viewport: header and Save stay put while only the settings scroll", () => {
+  render(<ChatPermissionsModal isOpen onClose={() => {}} chatId={undefined} permissions={normalizePermissions(undefined)} onPermissionsChange={() => {}} />);
+  const scroll = screen.getByTestId("chat-permissions-scroll");
+  expect(scroll.style.overflowY).toBe("auto");
+  expect(parseFloat(scroll.style.minHeight)).toBe(0);
+  // The scroll region holds the rows; the dialog around it is height-clamped and stacks as a column.
+  expect(within(scroll).getByText("Sandbox desktop")).toBeTruthy();
+  const dialog = scroll.parentElement!;
+  expect(dialog.style.maxHeight).toContain("100dvh");
+  expect(dialog.style.flexDirection).toBe("column");
+  // Save sits outside the scroll region, so it is always reachable.
+  const save = screen.getByRole("button", { name: "Save" });
+  expect(scroll.contains(save)).toBe(false);
 });

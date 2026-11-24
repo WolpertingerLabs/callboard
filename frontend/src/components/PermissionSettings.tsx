@@ -1,5 +1,4 @@
 import { normalizePermissions } from "shared/types/permissions.js";
-import { SANDBOX_DESKTOP_TEXT_ANY_MODE as SANDBOX_DESKTOP_TEXT } from "shared/types/computerUse.js";
 import type { PermissionReviewSettings } from "shared/types/permissions.js";
 import { DefaultPermissions, PermissionLevel } from "../api";
 
@@ -160,25 +159,13 @@ export default function PermissionSettings({ permissions, onChange, title, provi
         {title ?? "Default Permissions for New Chat"}
       </div>
 
-      <PermissionRow
-        label="File Read"
-        description="Read files, search code, and list directories"
-        category="fileRead"
-        permissions={permissions}
-        onUpdate={updatePermission}
-      />
+      <PermissionRow label="File Read" description="Read, search and list files" category="fileRead" permissions={permissions} onUpdate={updatePermission} />
 
-      <PermissionRow
-        label="File Write"
-        description="Create, edit, and modify files"
-        category="fileWrite"
-        permissions={permissions}
-        onUpdate={updatePermission}
-      />
+      <PermissionRow label="File Write" description="Create and edit files" category="fileWrite" permissions={permissions} onUpdate={updatePermission} />
 
       <PermissionRow
         label="Code Execution"
-        description="Run bash commands, scripts, and build tools"
+        description="Run commands and scripts"
         category="codeExecution"
         permissions={permissions}
         onUpdate={updatePermission}
@@ -186,7 +173,7 @@ export default function PermissionSettings({ permissions, onChange, title, provi
 
       <PermissionRow
         label="Web Access"
-        description="Fetch content from websites and search the web"
+        description="Fetch pages and search the web"
         category="webAccess"
         permissions={permissions}
         onUpdate={updatePermission}
@@ -205,7 +192,7 @@ export default function PermissionSettings({ permissions, onChange, title, provi
 
       <PermissionRow
         label="Browser Use"
-        description="Control a managed Chromium browser on the service host. Includes unrestricted browser network access, independent of Web Access."
+        description="A managed browser on this host, with its own network access."
         category="browserControl"
         permissions={permissions}
         onUpdate={updatePermission}
@@ -216,7 +203,7 @@ export default function PermissionSettings({ permissions, onChange, title, provi
           drops the key, so the row reads back as Deny and grants nothing. */}
       <PermissionRow
         label="Sandbox desktop"
-        description={`Control ${SANDBOX_DESKTOP_TEXT.what}; not your machine. Needs no other permission. ${SANDBOX_DESKTOP_TEXT.network}`}
+        description="An isolated Linux desktop in a container. Its network is open, including to this host."
         category="sandboxControl"
         permissions={permissions}
         onUpdate={updatePermission}
@@ -224,7 +211,7 @@ export default function PermissionSettings({ permissions, onChange, title, provi
 
       <PermissionRow
         label="Computer Use"
-        description="Control the Linux X11 desktop on the service host. Requires every other axis on Allow, except Sandbox desktop."
+        description="Your real desktop on this host. Needs File, Code, Web and Browser Use on Allow."
         category="computerControl"
         permissions={permissions}
         onUpdate={updatePermission}
@@ -235,7 +222,7 @@ export default function PermissionSettings({ permissions, onChange, title, provi
           <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-muted)", marginBottom: 2 }}>When a tool asks</div>
           <ToggleRow
             label="Model safety review"
-            description="A reviewer model checks each ask for safety and correctness first: it can allow, deny with a reason, or pass it on with notes. Suspected prompt injection or self-destructive actions become a hard stop for you."
+            description="A reviewer model screens each ask before it reaches you."
             checked={review.value.modelReview}
             onChange={(modelReview) => review.onChange({ ...review.value, modelReview })}
             hint={provider === "codex" ? "Not used by Codex — it has no per-call permission hook." : undefined}
@@ -243,7 +230,7 @@ export default function PermissionSettings({ permissions, onChange, title, provi
           {review.parent && (
             <ToggleRow
               label="Parent can answer"
-              description="The chat that started this one may also answer its prompts, but only allow what it is itself allowed. You can still answer; first answer wins."
+              description="The parent chat may answer prompts it is itself allowed."
               checked={review.value.parentAnswers}
               disabled={!review.parent.available}
               hint={!review.parent.available ? "This chat has no parent chat." : provider === "codex" ? "Not used by Codex." : undefined}

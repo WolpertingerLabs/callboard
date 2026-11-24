@@ -110,10 +110,16 @@ export default function ChatPermissionsModal({
           width: "90%",
           maxWidth: 480,
           border: "1px solid var(--border)",
+          // Clamp to the visible viewport (dvh tracks mobile browser chrome) so
+          // the header and Save stay on screen and only the settings scroll.
+          maxHeight: "calc(100dvh - 32px)",
+          display: "flex",
+          flexDirection: "column",
+          boxSizing: "border-box",
         }}
       >
         {/* Header */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16, flexShrink: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <Shield size={20} color="var(--accent)" />
             <h2 style={{ margin: 0, fontSize: 18, fontWeight: 600 }}>{chatId ? "Chat Permissions" : "Permissions for New Chat"}</h2>
@@ -135,25 +141,27 @@ export default function ChatPermissionsModal({
           </button>
         </div>
 
-        {/* Permission controls */}
-        <PermissionSettings
-          permissions={localPermissions}
-          onChange={setLocalPermissions}
-          title={chatId ? "Permissions for This Chat" : "Default Permissions for New Chat"}
-          provider={provider}
-          {...(chatId && { review: { value: localReview, onChange: setLocalReview, parent: { available: hasParent || localReview.parentAnswers } } })}
-        />
+        {/* Permission controls: the only part that scrolls */}
+        <div data-testid="chat-permissions-scroll" style={{ flex: "1 1 auto", minHeight: 0, overflowY: "auto", overscrollBehavior: "contain" }}>
+          <PermissionSettings
+            permissions={localPermissions}
+            onChange={setLocalPermissions}
+            title={chatId ? "Permissions for This Chat" : "Default Permissions for New Chat"}
+            provider={provider}
+            {...(chatId && { review: { value: localReview, onChange: setLocalReview, parent: { available: hasParent || localReview.parentAnswers } } })}
+          />
+        </div>
 
         {/* Info text */}
-        <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 8, marginBottom: 16 }}>
+        <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 8, marginBottom: 16, flexShrink: 0 }}>
           {chatId ? "Changes apply immediately to future tool uses in this conversation." : "These permissions will be used when the chat starts."}
         </div>
 
         {/* Error */}
-        {error && <div style={{ color: "var(--danger)", fontSize: 13, marginBottom: 12 }}>{error}</div>}
+        {error && <div style={{ color: "var(--danger)", fontSize: 13, marginBottom: 12, flexShrink: 0 }}>{error}</div>}
 
         {/* Actions */}
-        <div style={{ display: "flex", gap: 12, justifyContent: "flex-end" }}>
+        <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", flexShrink: 0 }}>
           <button
             onClick={onClose}
             style={{
