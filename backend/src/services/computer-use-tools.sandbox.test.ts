@@ -143,7 +143,7 @@ it("in managed mode the descriptions say each session gets a fresh container tha
       expect(description).toContain(`Sandbox desktop, ${sandboxDesktopText({ mode: "managed", network }).what}`);
       expect(description).toContain("starts a fresh one for each session and removes it, with everything in it, when the session ends");
       expect(description).toContain(reach);
-      expect(description).toContain("no other chat ever sees it");
+      expect(description).toContain("Nothing in it carries over to another session");
       expect(description).not.toContain("shared by every chat");
     }
   }

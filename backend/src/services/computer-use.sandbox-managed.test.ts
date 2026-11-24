@@ -224,6 +224,61 @@ describe("a container per session, removed however the session ends", () => {
   });
 });
 
+describe("a mode change while a sandbox is still starting (review round 1, finding 1)", () => {
+  const held = () => {
+    let release!: () => void;
+    return { gate: new Promise<void>((resolve) => (release = resolve)), release: () => release() };
+  };
+  const starting = async (f: Awaited<ReturnType<typeof fixture>>) =>
+    vi.waitFor(() => {
+      const live = f.service.status(controlPrincipal("chat-a", "human")).find((s) => s.state === "starting");
+      expect(f.manager.containerState(live?.sessionId ?? "")?.step).toBe("Waiting for the desktop");
+      return live!;
+    });
+
+  it("revokeTarget ends a sandbox that is still starting, and removes its container", async () => {
+    const hold = held();
+    const f = await fixture({ remote: { gate: hold.gate } });
+    const opening = f.host.open("chat-a", "sandbox").then(
+      () => "opened",
+      (error: { code?: string }) => error.code,
+    );
+    await starting(f);
+    expect(f.containers()).toHaveLength(1);
+    f.setMode("off");
+    await f.host.revokeTarget("sandbox");
+    hold.release();
+    expect(await opening).not.toBe("opened");
+    await f.gone();
+    expect(f.service.status(controlPrincipal("chat-a", "agent")).some((s) => s.state === "ready")).toBe(false);
+  });
+
+  it("without revokeTarget, a start that finishes under another mode gets no grant and its container is removed", async () => {
+    const hold = held();
+    const f = await fixture({ remote: { gate: hold.gate } });
+    const opening = f.host.open("chat-a", "sandbox").then(
+      () => "opened",
+      (error: { code?: string }) => error.code,
+    );
+    await starting(f);
+    f.setMode("off");
+    hold.release();
+    expect(await opening).not.toBe("opened");
+    await f.gone();
+    expect(f.service.status(controlPrincipal("chat-a", "agent")).some((s) => s.state === "ready")).toBe(false);
+  });
+
+  it("a grant opened under one mode stops authorizing, and is revoked, once the mode changes", async () => {
+    const f = await fixture();
+    const session = await enable(f);
+    f.setMode("endpoint");
+    await expect(f.service.observe(controlPrincipal("chat-a", "agent"), { sessionId: session.id, generation: session.generation })).rejects.toMatchObject({
+      code: "denied",
+    });
+    await f.gone();
+  });
+});
+
 describe("the Computer view's lifecycle fields", () => {
   it("shows the container ready, then stopping/removed, and the cap on the capability", async () => {
     const f = await fixture();

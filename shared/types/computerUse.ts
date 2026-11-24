@@ -62,15 +62,14 @@ export interface SandboxDesktopText {
   persistence: string;
 }
 const OPEN_NETWORK = "Its network is open: it can reach the internet, and any service on this machine that listens on all interfaces, Callboard included.";
-const NO_INTERNET =
-  "It has no internet access, but it can still reach any service on this machine that listens on all interfaces, Callboard included.";
+const NO_INTERNET = "It has no internet access, but it can still reach any service on this machine that listens on all interfaces, Callboard included.";
 export function sandboxDesktopText(variant: SandboxDesktopVariant = {}): SandboxDesktopText {
   if (variant.mode === "managed")
     return {
       what: "a Linux desktop in a hardened container, isolated from this machine's files and credentials; Callboard starts a fresh one for each session and removes it, with everything in it, when the session ends",
       network: variant.network === "none" ? NO_INTERNET : OPEN_NETWORK,
       use: "Use it for desktop apps and downloads that should stay off this machine.",
-      persistence: "Nothing carries over: the container and everything in it are removed when the session ends, and no other chat ever sees it.",
+      persistence: "Nothing in it carries over to another session: the container and everything in it are removed when the session ends.",
     };
   return {
     what: "a Linux desktop in a hardened container, isolated from this machine's files and credentials, but shared by every chat and kept until the container is restarted",

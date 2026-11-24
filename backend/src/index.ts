@@ -2,7 +2,7 @@ import { computerUseRouter } from "./routes/computer-use.js";
 import { setChatArchivedCheck, shutdownComputerUse } from "./services/computer-use.js";
 import { closeComputerUseConnections } from "./services/computer-use-tools.js";
 import { sandboxDesktopRouter } from "./routes/sandbox-desktop.js";
-import { shutdownSandboxDesktop, startSandboxReaper } from "./services/sandbox-desktop.js";
+import { beginSandboxShutdown, shutdownSandboxDesktop, startSandboxReaper } from "./services/sandbox-desktop.js";
 import dotenv from "dotenv";
 import { spawn } from "child_process";
 import { existsSync, readFileSync } from "fs";
@@ -590,6 +590,9 @@ app.listen(PORT, () => {
 async function gracefulShutdown(signal: string) {
   log.info(`${signal} received, shutting down gracefully`);
   await closeComputerUseConnections();
+  // Managed sandbox drains (bounded at 30 s each, in parallel) run inside the
+  // computer-use dispose below; `callboard stop` waits 45 s before SIGKILL.
+  beginSandboxShutdown();
   await shutdownComputerUse().catch((error) => log.warn(`Computer-control shutdown: ${error instanceof Error ? error.message : "failed"}`));
   await shutdownSandboxDesktop().catch((error) => log.warn(`Sandbox desktop shutdown: ${error instanceof Error ? error.message : "failed"}`));
   shutdownScheduler();

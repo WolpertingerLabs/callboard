@@ -153,10 +153,10 @@ function SandboxReadinessNotice({ capability }: { capability?: ComputerUseCapabi
       );
       break;
     case "image-incompatible":
-      heading = "Sandbox image is out of date";
+      heading = "Sandbox image is incompatible";
       guidance = (
         <>
-          The image was built for another protocol version. Rebuild it with <code>callboard sandbox build --force</code>, or from Settings → Sandbox desktop.
+          The image was built for another protocol version. Rebuild it with <code>callboard sandbox build</code>, or from Settings → Sandbox desktop.
         </>
       );
       break;
@@ -607,8 +607,8 @@ export default function ComputerUsePanel({
               <span className="computer-use-consent" role="note" aria-label="What Enable grants">
                 {level === "allow" ? (
                   <>
-                    <strong>{axisLabel} is set to Allow:</strong> once you enable a target, the agent acts on it without asking you again. Each action is recorded
-                    in the server log.
+                    <strong>{axisLabel} is set to Allow:</strong> once you enable a target, the agent acts on it without asking you again. Each action is
+                    recorded in the server log.
                   </>
                 ) : (
                   <>
@@ -643,10 +643,10 @@ export default function ComputerUsePanel({
           <details className="computer-use-about">
             <summary>How computer control works</summary>
             <p>
-              Controls Callboard&apos;s browser and desktop tools. Browser Use governs the managed browser, Sandbox desktop the container desktop,
-              and Computer Use the service host&apos;s desktop; each target follows its own setting, and the host desktop also needs every other permission
-              except Sandbox desktop on Allow. Enabling a target is always your own action; after that, Allow lets the agent act on its own, while Ask stops its
-              turn and asks you in the chat before each action. Agents with unrestricted code execution may still run their own automation.
+              Controls Callboard&apos;s browser and desktop tools. Browser Use governs the managed browser, Sandbox desktop the container desktop, and Computer
+              Use the service host&apos;s desktop; each target follows its own setting, and the host desktop also needs every other permission except Sandbox
+              desktop on Allow. Enabling a target is always your own action; after that, Allow lets the agent act on its own, while Ask stops its turn and asks
+              you in the chat before each action. Agents with unrestricted code execution may still run their own automation.
             </p>
           </details>
           {/* Demoted, but never hidden behind the disclosure: a description a
@@ -681,6 +681,13 @@ export default function ComputerUsePanel({
           )}
           {kind === "native" && !denied && !capability?.available && <DesktopReadinessNotice capability={capability} />}
           {kind === "sandbox" && !capability?.available && <SandboxReadinessNotice capability={capability} />}
+          {kind === "sandbox" && capability?.available && capability.sandbox?.warning === "image-outdated" && (
+            <p className="computer-use-notice" role="status">
+              <strong>Sandbox image out of date:</strong> it wasn&apos;t built from the files this Callboard ships, so it may lack driver-host fixes. It still
+              starts. Rebuild it with <code>callboard sandbox build</code> on the service host, or with <strong>Rebuild image</strong> in Settings → Sandbox
+              desktop.
+            </p>
+          )}
           {kind === "browser" && !capability?.available && (
             <p className="computer-use-notice" role="status">
               {capability?.reason ??

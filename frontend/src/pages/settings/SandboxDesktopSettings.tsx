@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Box, Check, Hammer, Loader2, RefreshCw, X } from "lucide-react";
+import { AlertTriangle, Box, Check, Hammer, Loader2, RefreshCw, X } from "lucide-react";
 import { SANDBOX_DESKTOP_BOUNDS, type SandboxDesktopMode, type SandboxDesktopNetwork, type SandboxDesktopStatus } from "shared/types/index.js";
 import { buildSandboxDesktopImage, getSandboxDesktopStatus, updateSandboxDesktopSettings } from "../../api";
 import { errorMessage } from "../../utils/errorMessage";
@@ -77,14 +77,12 @@ function draftFrom(status: SandboxDesktopStatus): Draft {
   };
 }
 
-function Diagnostic({ ok, label, children }: { ok: boolean | undefined; label: string; children: React.ReactNode }) {
+function Diagnostic({ ok, label, children }: { ok: boolean | "warn" | undefined; label: string; children: React.ReactNode }) {
+  const color = ok === undefined ? "var(--text-muted)" : ok === "warn" ? "var(--warning)" : ok ? "var(--success)" : "var(--danger)";
   return (
     <div style={rowStyle} data-testid={`sandbox-diagnostic-${label.toLowerCase()}`}>
-      <span
-        aria-hidden
-        style={{ color: ok === undefined ? "var(--text-muted)" : ok ? "var(--success)" : "var(--danger)", display: "inline-flex", marginTop: 2 }}
-      >
-        {ok === false ? <X size={14} /> : <Check size={14} />}
+      <span aria-hidden style={{ color, display: "inline-flex", marginTop: 2 }}>
+        {ok === false ? <X size={14} /> : ok === "warn" ? <AlertTriangle size={14} /> : <Check size={14} />}
       </span>
       <span>
         <strong>{label}:</strong> {children}
@@ -133,7 +131,12 @@ export default function SandboxDesktopSettings() {
   }, [building, refresh]);
 
   const save = async () => {
-    if (!draft) return;
+    if (!draft || !status) return;
+    // A mode change ends every live sandbox session (routes/sandbox-desktop.ts); say how many first.
+    const running = status.diagnostics.running.sessions;
+    const modeChanges = (draft.mode === "auto" ? undefined : draft.mode) !== status.settings.mode;
+    if (modeChanges && running > 0 && !window.confirm(`Changing the mode ends ${running} running sandbox session${running === 1 ? "" : "s"}. Continue?`))
+      return;
     setSaving(true);
     setError(null);
     setSaved(false);
@@ -210,6 +213,11 @@ export default function SandboxDesktopSettings() {
           In force: <strong>{MODE_LABELS[status.effectiveMode]}</strong>
           {status.automatic ? " (automatic)" : ""}
           {status.hint ? <> — {status.hint}</> : null}
+          {status.warning === "image-outdated" && (
+            <span role="status" style={{ display: "block", marginTop: 6, color: "var(--warning)" }}>
+              Image out of date: {status.warningHint ?? "rebuild it."}
+            </span>
+          )}
         </p>
 
         <label style={labelStyle} htmlFor="sandbox-mode">
@@ -239,6 +247,7 @@ export default function SandboxDesktopSettings() {
             Both keep sandboxes from reaching each other. &ldquo;No internet&rdquo; uses an <code style={codeStyle}>--internal</code> Docker network with no
             route off the bridge. Neither stops a sandbox reaching services on this machine that listen on all interfaces.
           </p>
+          <p style={helpStyle}>Applies to sandboxes started after saving; running ones keep theirs.</p>
         </div>
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, marginTop: 16 }}>
@@ -300,6 +309,7 @@ export default function SandboxDesktopSettings() {
             </p>
           </div>
         </div>
+        <p style={helpStyle}>Limits apply to sandboxes started after saving; running ones keep theirs.</p>
 
         <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 16 }}>
           <button style={{ ...primaryButton, opacity: editable && !saving ? 1 : 0.5 }} disabled={!editable || saving} onClick={() => void save()}>
@@ -321,13 +331,18 @@ export default function SandboxDesktopSettings() {
         <Diagnostic ok={d.docker.reachable} label="Docker">
           {d.docker.reachable ? `reachable (server ${d.docker.version || "unknown"})` : (d.docker.error ?? "not reachable")}
         </Diagnostic>
-        <Diagnostic ok={d.docker.reachable ? d.image.present && d.image.compatible : undefined} label="Image">
+        <Diagnostic
+          ok={!d.docker.reachable ? undefined : !(d.image.present && d.image.compatible) ? false : d.image.current === false ? "warn" : true}
+          label="Image"
+        >
           <code style={codeStyle}>{d.image.name}</code>{" "}
           {!d.image.present
             ? "is not built"
-            : d.image.compatible
-              ? `protocol ${d.image.protocol} (compatible), version ${d.image.version ?? "unknown"}${d.image.version && d.image.version !== d.image.packageVersion ? `; this Callboard ships ${d.image.packageVersion}, so a rebuild is recommended` : ""}`
-              : `protocol ${d.image.protocol ?? "unlabelled"}, but this Callboard speaks ${d.image.expectedProtocol}: rebuild it`}
+            : !d.image.compatible
+              ? `protocol ${d.image.protocol ?? "unlabelled"}, but this Callboard speaks ${d.image.expectedProtocol}: rebuild it`
+              : d.image.current === false
+                ? `protocol ${d.image.protocol} (compatible), but out of date: not built from the files this Callboard ships, so it may lack driver-host fixes. Sandboxes still start; rebuild it below.`
+                : `protocol ${d.image.protocol} (compatible), up to date, version ${d.image.version ?? "unknown"}`}
         </Diagnostic>
         <Diagnostic ok={d.docker.reachable ? d.network.state !== "misconfigured" : undefined} label="Network">
           <code style={codeStyle}>{d.network.name}</code> {d.network.internal ? "(internal, no internet)" : "(internet access)"}:{" "}
@@ -357,7 +372,7 @@ export default function SandboxDesktopSettings() {
         </p>
         <button style={{ ...primaryButton, opacity: editable && !building ? 1 : 0.5 }} disabled={!editable || building} onClick={() => void build()}>
           {building ? <Loader2 size={14} className="spin" /> : <Hammer size={14} />}
-          {building ? "Building…" : d.image.present ? "Rebuild image" : "Build image"}
+          {building ? "Building…" : !d.image.present ? "Build image" : d.image.current === false ? "Rebuild image (out of date)" : "Rebuild image"}
         </button>
         {status.build.state !== "idle" && (
           <div style={{ marginTop: 12 }}>

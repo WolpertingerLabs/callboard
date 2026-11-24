@@ -355,6 +355,8 @@ interface Grant {
   signature: string;
   expiresAt: number;
   lease: Lease;
+  /** What the target itself was when this opened ({@link ComputerUseHost.targetBinding}); a change revokes it. */
+  binding: string;
 }
 /**
  * A target request visible in the emergency-stop ledger. The Computer panel's
@@ -484,6 +486,8 @@ function remoteTarget(driver: Driver): RemoteTarget | undefined {
  * session's container is. Recognised by shape, like {@link RemoteTarget}.
  */
 interface SandboxView {
+  /** The mode in force now, cheaply: what a sandbox grant is bound to. */
+  sandboxMode?(): string;
   sandboxInfo(): ComputerUseSandboxInfo;
   containerState(sessionId: string): ComputerUseContainerState | undefined;
 }
@@ -820,7 +824,7 @@ function boundedProbe(driver: Driver, signal: AbortSignal, expiresAt: number): R
 
 export class ComputerUseHost {
   private readonly grants = new Map<string, Grant>();
-  private readonly opening = new Map<string, HostPolicy>();
+  private readonly opening = new Map<string, HostPolicy & { binding: string }>();
   private readonly controlRequests = new Map<string, ControlRequest>();
   private readonly pending = new Map<string, Pending>();
   private readonly events = new Map<string, unknown[]>();
@@ -892,18 +896,45 @@ export class ComputerUseHost {
     const instanceId = remote.openedInstance?.(sessionId);
     return instanceId ? `${remote.endpoint}#${instanceId}` : undefined;
   }
+  /**
+   * What a grant on this target is bound to besides the chat's policy: for
+   * the sandbox, the mode it runs in (managed, endpoint, off). A session
+   * started under one mode is not the target the host now offers under
+   * another, so a mode change denies its open (even one still starting), its
+   * every later call, and the watchdog revokes it. Empty for the browser and
+   * the local desktop.
+   */
+  private targetBinding(kind: ComputerTargetKind): string {
+    if (kind !== "sandbox") return "";
+    try {
+      const view = sandboxView(this.drivers.sandbox);
+      return `mode:${view?.sandboxMode?.() ?? view?.sandboxInfo().mode ?? "fixed"}`;
+    } catch {
+      return "mode:unknown";
+    }
+  }
+  private bindingHolds(kind: ComputerTargetKind, binding: string): boolean {
+    return this.targetBinding(kind) === binding;
+  }
   /** Called by the package before AND after every action/observation. */
   authorize = (request: AuthorizationRequest): "allow" | "deny" => {
     try {
       const current = this.readPolicy(request.principal.ownerId);
       // By target id, not driver kind: the sandbox's driver is a native-desktop one.
-      if (computerUseScopeError(kindOfTarget(request.targetId), current.policy)) return "deny";
+      const kind = kindOfTarget(request.targetId);
+      if (computerUseScopeError(kind, current.policy)) return "deny";
       if (request.operation === "open") {
         const initial = this.opening.get(`${request.principal.ownerId}:${request.targetId}`);
-        return initial?.signature === current.signature ? "allow" : "deny";
+        return initial?.signature === current.signature && this.bindingHolds(kind, initial.binding) ? "allow" : "deny";
       }
       const grant = request.sessionId ? this.grants.get(request.sessionId) : undefined;
-      return grant && grant.chatId === request.principal.ownerId && grant.signature === current.signature && grant.expiresAt > Date.now() ? "allow" : "deny";
+      return grant &&
+        grant.chatId === request.principal.ownerId &&
+        grant.signature === current.signature &&
+        grant.expiresAt > Date.now() &&
+        this.bindingHolds(kind, grant.binding)
+        ? "allow"
+        : "deny";
     } catch {
       return "deny";
     }
@@ -921,7 +952,7 @@ export class ComputerUseHost {
   }
   private async expire() {
     for (const [id, grant] of this.grants) {
-      let valid = grant.expiresAt > Date.now();
+      let valid = grant.expiresAt > Date.now() && this.bindingHolds(kindOfTarget(grant.lease.targetId), grant.binding);
       try {
         valid = valid && this.readPolicy(grant.chatId).signature === grant.signature;
       } catch {
@@ -1068,6 +1099,19 @@ export class ComputerUseHost {
       this.cancelSessionActionRequest(grant.chatId, id, WITHDRAWN.revoked);
       await this.service.revoke(controlPrincipal(grant.chatId, "human"), id).catch(() => {});
       count++;
+    }
+    // Sessions still starting have no grant yet. Stopping one fences its open
+    // (the driver's start is aborted and cleans up), so it never gets one; the
+    // mode binding in `authorize` catches any that finishes in between.
+    const suffix = `:${targetId(kind)}`;
+    for (const key of [...this.opening.keys()]) {
+      if (!key.endsWith(suffix)) continue;
+      const chatId = key.slice(0, -suffix.length);
+      for (const session of this.service.status(controlPrincipal(chatId, "human")))
+        if (session.targetId === targetId(kind) && session.state === "starting") {
+          await this.service.stop(controlPrincipal(chatId, "human"), session.sessionId).catch(() => {});
+          count++;
+        }
     }
     return count;
   }
@@ -1415,17 +1459,18 @@ export class ComputerUseHost {
     if (this.service.status(controlPrincipal(chatId, "human")).some((s) => s.targetId === targetId(kind) && ["starting", "ready"].includes(s.state)))
       throw controlError("lease_conflict", "Stop this chat's existing target session first");
     this.listen(chatId);
-    this.opening.set(key, current);
+    const binding = this.targetBinding(kind);
+    this.opening.set(key, { ...current, binding });
     try {
       const lease = await this.service.open(controlPrincipal(chatId, "agent"), targetId(kind), signal);
       try {
-        if (signal?.aborted || this.readPolicy(chatId).signature !== current.signature)
+        if (signal?.aborted || this.readPolicy(chatId).signature !== current.signature || !this.bindingHolds(kind, binding))
           throw controlError("cancelled", "Control startup was cancelled or its authority changed.");
       } catch (error) {
         await this.service.stop(controlPrincipal(chatId, "human"), lease.sessionId);
         throw error;
       }
-      this.grants.set(lease.sessionId, { chatId, signature: current.signature, expiresAt: lease.expiresAt, lease });
+      this.grants.set(lease.sessionId, { chatId, signature: current.signature, expiresAt: lease.expiresAt, lease, binding });
       return this.presentation(lease);
     } finally {
       this.opening.delete(key);
@@ -1434,7 +1479,11 @@ export class ComputerUseHost {
   private grant(chatId: string, id: string): Grant {
     const grant = this.grants.get(id);
     if (!grant || grant.chatId !== chatId) throw controlError("not_found", "Control session not found");
-    if (grant.expiresAt <= Date.now() || this.readPolicy(chatId).signature !== grant.signature) {
+    if (
+      grant.expiresAt <= Date.now() ||
+      this.readPolicy(chatId).signature !== grant.signature ||
+      !this.bindingHolds(kindOfTarget(grant.lease.targetId), grant.binding)
+    ) {
       this.grants.delete(id);
       void this.service.revoke(controlPrincipal(chatId, "human"), id);
       throw controlError("revoked", "Control grant expired or permissions changed");
@@ -1957,6 +2006,7 @@ export function sandboxTargetDriver(options: {
     // opened before a mode change still answers for itself.
     openedInstance: (sessionId: string) =>
       remoteTarget(options.managed)?.openedInstance?.(sessionId) ?? remoteTarget(options.endpoint)?.openedInstance?.(sessionId),
+    sandboxMode: () => options.mode(),
     sandboxInfo: () => options.info?.() ?? { mode: options.mode() },
     containerState: (sessionId: string) => options.containerState?.(sessionId),
   } as Driver & Partial<RemoteTarget> & SandboxView;

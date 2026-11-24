@@ -188,7 +188,7 @@ describe("the sandbox cards follow how the daemon runs it (input.sandbox)", () =
   it("managed: a fresh container per session, removed at the end, with an open network", () => {
     render(consent({ mode: "managed", network: "internet" }));
     expect(note()).toContain("starts a fresh one for each session and removes it, with everything in it, when the session ends");
-    expect(note()).toContain("no other chat ever sees it");
+    expect(note()).toContain("Nothing in it carries over to another session");
     expect(note()).toContain("it can reach the internet, and any service on this machine that listens on all interfaces");
     expect(note()).not.toContain("shared by every chat");
   });

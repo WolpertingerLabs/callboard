@@ -29,7 +29,7 @@ import { ComputerUseHost, controlPrincipal, sandboxTargetDriver, type HostPolicy
 import { readComputerUsePolicy } from "./computer-use-policy.js";
 import { MANAGED_LABEL, OWNER_LABEL, SESSION_LABEL, CHAT_LABEL, SandboxContainerManager, managedSandboxDriver } from "./sandbox-containers.js";
 import { resolveSandboxSettings, type ResolvedSandboxSettings } from "./sandbox-desktop-settings.js";
-import { buildSandboxImage, execDocker } from "./sandbox-image.js";
+import { SANDBOX_CONTENT_LABEL, buildSandboxImage, execDocker, sandboxContentDigest } from "./sandbox-image.js";
 
 const enabled = process.env.CALLBOARD_DOCKER_TESTS === "1";
 const suffix = randomUUID().slice(0, 8);
@@ -135,6 +135,11 @@ it.skipIf(!enabled)(
     const chatId = `chat-${suffix}`;
     const { manager, service, host } = wire();
 
+    // 0. The image carries the digest of what it was built from, so it reads as current.
+    const [imageInfo] = JSON.parse(await docker(["image", "inspect", image]));
+    expect(imageInfo.Config.Labels[SANDBOX_CONTENT_LABEL]).toBe(reuse ? imageInfo.Config.Labels[SANDBOX_CONTENT_LABEL] : sandboxContentDigest());
+    if (!reuse) expect((await manager.diagnostics()).image).toMatchObject({ present: true, compatible: true, current: true });
+
     // 1. Enable the sandbox target (the human's Enable click, under Allow).
     let started = Date.now();
     const opened = (await host.open(chatId, "sandbox")) as { id: string; generation: number; state: string };
@@ -229,14 +234,33 @@ it.skipIf(!enabled)(
     // 5. Kill the daemon-side state: a session is live, then the daemon "dies"
     // (its manager and host are abandoned, never disposed). The next daemon on
     // the same data directory reaps the leftover at startup.
+    // It is drained first, from the metadata persisted beside its token.
     const crashed = await host.open(`${chatId}-2`, "sandbox");
     expect((crashed as { state: string }).state).toBe("ready");
-    expect(await mine(manager.owner)).toHaveLength(1);
+    const [orphanId] = await mine(manager.owner);
+    expect(orphanId).toBeTruthy();
+    await docker([
+      "exec",
+      "-u",
+      "desktop",
+      orphanId,
+      "sh",
+      "-c",
+      "mkdir -p /home/desktop/outbox && printf orphaned > /home/desktop/outbox/.o.part && mv /home/desktop/outbox/.o.part /home/desktop/outbox/orphan.txt",
+    ]);
+    await delay(1_200);
     const next = wire().manager;
     expect(next.owner).toBe(manager.owner);
+    const orphanDrains: { cause: string; chatId: string; body?: string }[] = [];
+    next.drainBeforeDestroy = async (sandbox, signal) => {
+      const entry = (await sandbox.driver.listOutbox(signal)).find((e) => e.name === "orphan.txt");
+      const file = entry?.sha256 ? await sandbox.driver.downloadOutboxFile(entry.name, signal, { expectedSha256: entry.sha256 }) : undefined;
+      orphanDrains.push({ cause: sandbox.cause, chatId: sandbox.chatId, body: file?.data.toString("utf8") });
+    };
     const reaped = await next.reap();
-    log(`reaper after the crash removed ${reaped.length} container(s)`);
+    log(`reaper after the crash drained ${orphanDrains.length} and removed ${reaped.length} container(s)`);
     expect(reaped).toHaveLength(1);
+    expect(orphanDrains).toEqual([{ cause: "orphan", chatId: `${chatId}-2`, body: "orphaned" }]);
     await until(async () => (await mine(manager.owner)).length === 0, "the orphan's removal");
     expect(await readdir(manager.sessionsDir)).toEqual([]);
 

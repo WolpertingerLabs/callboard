@@ -7,10 +7,14 @@
  *
  * Reading is open to any authenticated caller, API keys included. Changing
  * settings and building need a signed-in session, as for every other host
- * setting: an API key may see where sandboxes run, not change it.
+ * setting: an API key may see where sandboxes run, not change it. Both
+ * mutations also need a same-origin browser request (`requireControlOrigin`,
+ * as for every `/api/computer-use` mutation): they start containers and end
+ * live sessions.
  */
 import { Router, type Request, type Response } from "express";
 import { requireSessionAuth } from "../auth.js";
+import { requireControlOrigin } from "./computer-use.js";
 import { peekComputerUseHost } from "../services/computer-use.js";
 import { currentSandboxMode, sandboxDesktopStatus, startSandboxBuild } from "../services/sandbox-desktop.js";
 import { SandboxSettingsError, updateSandboxSettings } from "../services/sandbox-desktop-settings.js";
@@ -31,7 +35,7 @@ sandboxDesktopRouter.get("/", async (_req: Request, res: Response) => {
   }
 });
 
-sandboxDesktopRouter.put("/", requireSessionAuth, async (req: Request, res: Response) => {
+sandboxDesktopRouter.put("/", requireSessionAuth, requireControlOrigin, async (req: Request, res: Response) => {
   const before = currentSandboxMode().mode;
   try {
     updateSandboxSettings(req.body);
@@ -54,6 +58,6 @@ sandboxDesktopRouter.put("/", requireSessionAuth, async (req: Request, res: Resp
   res.json(await sandboxDesktopStatus(true));
 });
 
-sandboxDesktopRouter.post("/build", requireSessionAuth, (_req: Request, res: Response) => {
+sandboxDesktopRouter.post("/build", requireSessionAuth, requireControlOrigin, (_req: Request, res: Response) => {
   res.status(202).json({ build: startSandboxBuild() });
 });

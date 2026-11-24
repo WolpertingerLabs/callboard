@@ -7,7 +7,8 @@ describe("sandboxDesktopText", () => {
   it("managed: fresh per session and removed at the end; the network as configured, host services reachable either way", () => {
     const open = sandboxDesktopText({ mode: "managed", network: "internet" });
     expect(open.what).toContain("starts a fresh one for each session and removes it, with everything in it, when the session ends");
-    expect(open.persistence).toContain("Nothing carries over");
+    expect(open.persistence).toContain("Nothing in it carries over to another session");
+    expect(open.persistence).not.toMatch(/other chat/);
     expect(open.network).toContain("it can reach the internet");
     expect(open.network).toContain(HOST_SERVICES);
     const closed = sandboxDesktopText({ mode: "managed", network: "none" });

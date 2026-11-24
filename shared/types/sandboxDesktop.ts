@@ -41,6 +41,9 @@ export const SANDBOX_DESKTOP_BOUNDS = {
 /** The one-time image build, for docs and messages. */
 export const SANDBOX_BUILD_COMMAND = "callboard sandbox build";
 
+/** Something worth fixing that does not stop a sandbox starting. */
+export type SandboxDesktopWarning = "image-outdated";
+
 /** Why a managed sandbox cannot start right now. */
 export type SandboxDesktopProblem = "turned-off" | "docker-unreachable" | "image-missing" | "image-incompatible" | "network" | "cap-reached" | "endpoint-unset";
 
@@ -59,6 +62,11 @@ export interface SandboxDesktopDiagnostics {
     expectedProtocol: string;
     /** The computer-use package version this Callboard ships; an image built from another is worth rebuilding. */
     packageVersion: string;
+    /** Built from exactly the files this Callboard ships (its content label matches). False: out of date, still starts. */
+    current?: boolean;
+    /** The image's `dev.callboard.computer-use.content` label, and the digest a current image carries. */
+    content?: string;
+    expectedContent?: string;
   };
   network: { name: string; internal: boolean; state: "ok" | "missing" | "misconfigured" | "unknown"; detail?: string };
   /** Managed sandboxes: this daemon's live ones, the cap, and labelled containers of this owner that Docker lists. */
@@ -85,6 +93,9 @@ export interface SandboxDesktopStatus {
   problem?: SandboxDesktopProblem;
   /** One line of setup guidance for `problem`. */
   hint?: string;
+  /** A soft finding: the sandbox still starts, but something is worth fixing (an out-of-date image). */
+  warning?: SandboxDesktopWarning;
+  warningHint?: string;
   diagnostics: SandboxDesktopDiagnostics;
   build: SandboxDesktopBuild;
   buildCommand: string;
@@ -101,6 +112,9 @@ export interface ComputerUseSandboxInfo {
   network?: SandboxDesktopNetwork;
   problem?: SandboxDesktopProblem;
   hint?: string;
+  /** Managed mode: a soft finding (it still starts), with what to do. */
+  warning?: SandboxDesktopWarning;
+  warningHint?: string;
   /** Managed mode: sandboxes running now, and the cap. */
   running?: number;
   limit?: number;

@@ -71,11 +71,13 @@ export function sandboxInfo(env: NodeJS.ProcessEnv = process.env): ComputerUseSa
       : { mode, problem: "endpoint-unset", hint: "Set CALLBOARD_SANDBOX_DESKTOP_URL and CALLBOARD_SANDBOX_DESKTOP_TOKEN_FILE, or switch to managed mode." };
   const m = getSandboxManager();
   const problem = m.currentProblem();
+  const warning = m.currentWarning();
   return {
     mode,
     network: resolveSandboxSettings(readSandboxSettings()).network,
     running: m.liveCount(),
     limit: m.limit(),
+    ...(warning ? { warning: warning.warning, warningHint: warning.hint } : {}),
     ...(problem ? { problem: problem.problem, hint: problem.hint } : {}),
   };
 }
@@ -134,6 +136,7 @@ export async function sandboxDesktopStatus(canEdit: boolean, env: NodeJS.Process
   else if (diagnostics.network.state === "misconfigured") [problem, hint] = ["network", diagnostics.network.detail];
   else if (diagnostics.running.sessions >= diagnostics.running.limit)
     [problem, hint] = ["cap-reached", "The concurrency limit is reached; new sandboxes wait for one to stop."];
+  const outdated = mode === "managed" && diagnostics.image.present && diagnostics.image.compatible && diagnostics.image.current === false;
   // Automatic managed mode that cannot start a sandbox reads as off, with the step to take.
   const setupMissing = problem === "docker-unreachable" || problem === "image-missing" || problem === "image-incompatible";
   return {
@@ -142,6 +145,12 @@ export async function sandboxDesktopStatus(canEdit: boolean, env: NodeJS.Process
     automatic,
     ...(problem ? { problem } : {}),
     ...(hint ? { hint } : {}),
+    ...(outdated
+      ? {
+          warning: "image-outdated" as const,
+          warningHint: `The image was not built from the files this Callboard ships, so it may lack driver-host fixes. Sandboxes still start; rebuild it with \`${SANDBOX_BUILD_COMMAND}\` or Rebuild image below.`,
+        }
+      : {}),
     diagnostics,
     build,
     buildCommand: SANDBOX_BUILD_COMMAND,
@@ -152,19 +161,47 @@ export async function sandboxDesktopStatus(canEdit: boolean, env: NodeJS.Process
 
 let reaperTimer: ReturnType<typeof setInterval> | undefined;
 /**
+ * Whether a reaper pass has anything to do: in managed mode always (a crash
+ * may have left containers), otherwise only while a session directory of a
+ * previous run is still on disk (every managed container has one until it is
+ * removed). Outside managed mode with nothing left, no `docker` is run at all.
+ */
+export async function reaperHasWork(manager = getSandboxManager(), env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
+  return currentSandboxMode(env).mode === "managed" || (await manager.hasLeftovers());
+}
+/**
  * At startup, and every `intervalMs` after: remove this owner's managed
  * containers that belong to no live session (a crash, a `kill -9`, a Docker
- * that refused a removal). Quiet when Docker is absent.
+ * that refused a removal), draining each first when it still can be. Each
+ * pass first checks {@link reaperHasWork}, so leaving managed mode stops the
+ * Docker calls once nothing is left. Quiet when Docker is absent.
+ *
+ * A drain hook (PR 4) must be set on {@link getSandboxManager} before this
+ * runs, or the startup pass removes a crashed run's sandboxes undrained.
  */
 export function startSandboxReaper(intervalMs = 5 * 60_000): void {
   if (reaperTimer) return;
-  const run = () =>
-    void getSandboxManager()
-      .reap()
-      .catch((error) => log.debug(`Sandbox reaper skipped: ${error instanceof Error ? error.message : "unknown"}`));
-  run();
-  reaperTimer = setInterval(run, intervalMs);
+  let running = false;
+  const run = async () => {
+    if (running) return;
+    running = true;
+    try {
+      const manager = getSandboxManager();
+      if (await reaperHasWork(manager)) await manager.reap();
+    } catch (error) {
+      log.debug(`Sandbox reaper skipped: ${error instanceof Error ? error.message : "unknown"}`);
+    } finally {
+      running = false;
+    }
+  };
+  void run();
+  reaperTimer = setInterval(() => void run(), intervalMs);
   reaperTimer.unref();
+}
+
+/** Shutdown is starting: drains from now on are `cause: "shutdown"`. Call before the computer-use host is disposed. */
+export function beginSandboxShutdown(): void {
+  manager?.beginShutdown();
 }
 
 /** Daemon shutdown, after the computer-use host has closed its sessions: remove anything still left. */

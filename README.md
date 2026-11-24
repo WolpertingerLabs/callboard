@@ -139,7 +139,7 @@ This lets an agent drive a managed Chromium browser or a Linux X11 desktop **on 
 
 - **Permissions:** three axes, one per target. All three default to **Deny**, and new child chats, job steps, agent sessions and Read only asides start with all three denied. Set them in the chat's permission dialog, or as defaults under Settings. None of them inherits from another: a chat created before an axis existed reads it as **Deny**.
   - **Browser Use** governs the managed browser. It needs no other axis: Web Access doesn't have to be Allow. The browser's network access is unrestricted, and Callboard treats Browser Use as the explicit opt-in to that, independent of Web Access (which governs only the agent's own web tools). If Web Access restrictions must also cover the browser, confine it on the host or leave Browser Use denied.
-  - **Sandbox desktop** governs the container desktop. It needs no other axis, because the container is the boundary: nothing of this machine is mounted into it (no files, no credentials, no Docker socket). Its outbound network is unrestricted by default (Settings → Sandbox desktop can turn internet access off for managed containers), and, as with Browser Use, turning Sandbox desktop on is the opt-in to that. That includes this machine: code in the sandbox can reach any service here that listens on all interfaces, Callboard included, in either network setting, so bind those to `127.0.0.1` or firewall the Docker bridge (see **Sandbox desktop** under setup below). Use it for desktop apps and downloads that should stay off this machine. What it keeps depends on the mode: a **managed** sandbox (the default) is a fresh container per session, removed with everything in it when the session ends, so nothing carries over between sessions or chats. An **endpoint** sandbox (one you run yourself) isn't fresh per session: everything an agent leaves there is visible to later sessions and other chats until you restart the container, so it isn't a place for work you wouldn't let them share.
+  - **Sandbox desktop** governs the container desktop. It needs no other axis, because the container is the boundary: nothing of this machine is mounted into it (no files, no credentials, no Docker socket). Its outbound network is unrestricted by default (Settings → Sandbox desktop can turn internet access off for managed containers), and, as with Browser Use, turning Sandbox desktop on is the opt-in to that. That includes this machine: code in the sandbox can reach any service here that listens on all interfaces, Callboard included, in either network setting, so bind those to `127.0.0.1` or firewall the Docker bridge (see **Sandbox desktop** under setup below). Use it for desktop apps and downloads that should stay off this machine. What it keeps depends on the mode: a **managed** sandbox (the default) is a fresh container per session, removed with everything in it when the session ends, so nothing in it carries over to another session. An **endpoint** sandbox (one you run yourself) isn't fresh per session: everything an agent leaves there is visible to later sessions and other chats until you restart the container, so it isn't a place for work you wouldn't let them share.
   - **Computer Use** governs this machine's desktop. It also needs the four built-in axes and Browser Use on **Allow**, because a desktop session can open any app, a browser among them, and can't honour a narrower restriction. It doesn't need Sandbox desktop: the sandbox reaches less than your desktop already does.
 - **Existing chats:** chats created before Browser Use existed read it as **Deny**. A chat that had Browser & Computer Control on Ask or Allow keeps that level as Computer Use, but loses the browser until you set Browser Use, and loses the desktop until Browser Use is Allow. A chat with Web Access on Deny or Ask can now browse if Browser Use is on. Saved defaults (new-chat defaults in the browser and space defaults) migrate the same way: a saved Browser & Computer Control on Ask or Allow now means Computer Use on and Browser Use off. A tab still running an older bundle can turn its old row off (that also denies Browser Use) but can't turn it on; it's asked to reload.
 - **Enabling a target is always a human action.** The agent can call `cu_request_control` to put an **Enable browser control**, **Enable Sandbox desktop control** or **Enable desktop control** card in the chat. You can also enable a target from the Computer view, which you open with the monitor icon (**Show computer control**) in the chat header. The agent can't grant itself access.
@@ -160,13 +160,16 @@ Set up the host first:
   Build the image once, on the machine running Callboard (an npm install works: the Docker context ships with it):
 
   ```sh
-  callboard sandbox build      # docker build of callboard/computer-use-desktop:local; --force rebuilds
+  callboard sandbox build      # docker build of callboard/computer-use-desktop:local; skipped if it's up to date
   callboard sandbox status     # Docker, the image and its protocol, running managed sandboxes
   ```
 
   Then turn **Sandbox desktop** on in a chat's permissions and enable it there (or let the agent ask with `cu_request_control`). That's all: there's nothing to start or point Callboard at. **Settings → Sandbox desktop** has a **Build image** button too, and shows the same diagnostics. Callboard never builds or pulls the image on its own.
 
-  - **Lifecycle:** on Enable, after your consent, Callboard checks Docker, prepares the sandbox network, checks the image and its protocol label, writes a fresh token file, runs the container, waits for it to answer (bounded) and opens the session on it. The Computer view shows each step while it starts, then **Ready**, then **Stopping** and **Removed**. It removes the container and its token when the session ends, however it ends: Stop, Revoke, the 15-minute limit, a permission change, archiving or deleting the chat, a mode change or Callboard shutting down. Anything a crash leaves behind is removed at the next startup and every few minutes after that.
+  - **Updates:** the image carries a digest of the files it was built from (`dev.callboard.computer-use.content`). After you update Callboard, an image built from older files shows as **out of date** in Settings, `callboard sandbox status` and the Computer view, because it may lack driver-host fixes. Run `callboard sandbox build` again (it rebuilds an out-of-date image without `--force`). An out-of-date image still starts; one built for another protocol version doesn't.
+
+  - **Lifecycle:** on Enable, after your consent, Callboard checks Docker, prepares the sandbox network, checks the image and its protocol label, writes a fresh token file, runs the container, waits for it to answer (bounded) and opens the session on it. The Computer view shows each step while it starts, then **Ready**, then **Stopping** and **Removed**. It removes the container and its token when the session ends, however it ends: Stop, Revoke, the 15-minute limit, a permission change, archiving or deleting the chat, a mode change or Callboard shutting down. Anything a crash leaves behind is removed at the next startup and every few minutes after that, while managed mode is on or leftovers remain.
+  - **Stopping Callboard:** before a sandbox is removed, Callboard gets up to 30 seconds to copy files out of it, all sandboxes in parallel. `callboard stop` and `restart` therefore wait up to 45 seconds before killing the daemon; one with no sandboxes stops at once. If the daemon is killed anyway, each session's metadata sits beside its token, so the next start finds the container, copies out of it the same way and then removes it.
   - **Ownership:** every container is labelled `dev.callboard.managed=1`, with its chat, its session and an **owner** derived from Callboard's data directory. A dev server (`~/.callboard-dev`) and production (`~/.callboard`) on one Docker daemon each see, count and remove only their own containers, and never touch a container without these labels.
   - **Modes** (Settings → Sandbox desktop):
     - **Automatic** (the default): **endpoint** if `CALLBOARD_SANDBOX_DESKTOP_URL` is set, so a setup from before managed mode keeps working; otherwise **managed**. Until Docker and the image are ready it shows as off, with the step to take.
@@ -175,7 +178,7 @@ Set up the host first:
     - **Off.**
 
     Changing the mode ends any live sandbox session.
-  - **Limits:** 1 CPU and 1024 MiB per sandbox, and 2 sandboxes at once across all chats, by default. Each is adjustable within bounds (0.5–8 CPUs, 512–16384 MiB, 1–8 at once). Past the cap, enabling is refused with a message saying so. Pids are capped at 256.
+  - **Limits:** 1 CPU and 1024 MiB per sandbox, and 2 sandboxes at once across all chats, by default. Each is adjustable within bounds (0.5–8 CPUs, 512–16384 MiB, 1–8 at once). Past the cap, enabling is refused with a message saying so. Limits and the network setting apply to sandboxes started after you save; running ones keep theirs. Pids are capped at 256.
   - **Network:** **Internet access** (the default) or **No internet**. Both use a bridge network Callboard creates with inter-container traffic off, so sandboxes can't reach each other. **No internet** uses an `--internal` network (`callboard-sandbox-internal`), which has no route off the bridge. Docker publishes no ports there, so Callboard reaches the container at its bridge address, which never leaves this machine. That needs this machine to reach container bridge addresses, which Docker Engine on Linux allows and Docker Desktop (macOS, Windows) and rootless Docker don't; there, keep **Internet access**.
   - **Token:** a file, never an environment variable, in a private (`0700`) directory under the data directory, one per session. It's mounted into the container read-only, and Callboard never sends it: the container first proves it holds it. It's deleted with the container.
   - **Hardening:**
@@ -186,7 +189,8 @@ Set up the host first:
   - **Endpoint mode (a box you run yourself):** build and start the container, then point Callboard at it and restart Callboard:
 
     ```sh
-    packages/computer-use/docker/run.sh 7801   # from the package directory of a source checkout or an install; prints the two variables
+    packages/computer-use/docker/run.sh 7801   # from a source checkout; prints the two variables
+    # from an npm install:  "$(npm root -g)/@wolpertingerlabs/callboard/packages/computer-use/docker/run.sh" 7801
     export CALLBOARD_SANDBOX_DESKTOP_URL=http://127.0.0.1:7801
     export CALLBOARD_SANDBOX_DESKTOP_TOKEN_FILE=/tmp/callboard-desktop-XXXXXX/token   # the path run.sh printed
     ```
@@ -198,6 +202,19 @@ Set up the host first:
   - **Network exposure, both ways:**
     - **Inbound:** keep an endpoint's port on `127.0.0.1`. It grants full control of that desktop, so reach it from another machine only through a TLS proxy that authenticates. Callboard refuses plain `http` to anything but loopback (and, in managed **No internet** mode, the container's own bridge address).
     - **Outbound:** the container *can* reach this machine through the Docker bridge gateway (for example `172.17.0.1`), in either network setting. Any service listening on all interfaces is reachable from the desktop, and Docker flags can't prevent that. That includes Callboard itself, which listens on every interface. Bind host services to `127.0.0.1` where you can, or firewall the Docker bridge on the host. With **Internet access** the desktop can also reach the internet.
+
+  - **Manual cleanup and uninstall:** Callboard removes its own containers, but to remove everything by hand (with Callboard stopped):
+
+    ```sh
+    # every managed sandbox container (add --filter label=dev.callboard.owner=<owner> for one Callboard's;
+    # `callboard sandbox status` prints its owner)
+    docker ps -aq --filter label=dev.callboard.managed=1 | xargs -r docker rm -f
+    docker network rm callboard-sandbox callboard-sandbox-internal   # whichever exist
+    docker rmi callboard/computer-use-desktop:local
+    rm -rf ~/.callboard/sandbox-desktop ~/.callboard/sandbox-desktop.json   # per-session tokens and metadata, and the settings
+    ```
+
+    Use your data directory in place of `~/.callboard` (`~/.callboard-dev` for the dev server). An endpoint container you started with `run.sh` is yours to stop: `docker rm -f callboard-computer-use-desktop`, then delete the token directory it printed.
 
   See [Sandbox desktop container](packages/computer-use/README.md#sandbox-desktop-container) for the flags, the image, the handshake and protocol versioning.
 

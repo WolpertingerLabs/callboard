@@ -320,6 +320,17 @@ describe("ComputerUsePanel", () => {
         expect(note).not.toContain("shared by every chat");
       });
 
+      it("warns about an out-of-date image without blocking Enable", async () => {
+        status.capabilities = [...status.capabilities, { ...sandboxCapability, sandbox: { mode: "managed", warning: "image-outdated", warningHint: "x" } }];
+        render(<Viewer permission="allow" />);
+        await ready();
+        fireEvent.change(screen.getByLabelText("Target"), { target: { value: "sandbox" } });
+        const notice = screen.getByText(/Sandbox image out of date:/).closest("p")!.textContent!;
+        expect(notice).toContain("callboard sandbox build");
+        expect(notice).toContain("It still starts");
+        expect(button("Enable").disabled).toBe(false);
+      });
+
       it("an endpoint daemon (or one that says nothing) keeps the shared-container wording", async () => {
         status.capabilities = [...status.capabilities, { ...sandboxCapability, sandbox: { mode: "endpoint" } }];
         render(<Viewer permission="allow" />);
@@ -334,7 +345,7 @@ describe("ComputerUsePanel", () => {
       it.each([
         ["docker-unreachable", "Docker isn't reachable", /Install or start Docker/],
         ["image-missing", "Sandbox image not built", /callboard sandbox build/],
-        ["image-incompatible", "Sandbox image is out of date", /callboard sandbox build --force/],
+        ["image-incompatible", "Sandbox image is incompatible", /built for another protocol version. Rebuild it with callboard sandbox build,/],
         ["cap-reached", "Sandbox limit reached", /2 of 2 sandbox desktops are running/],
         ["turned-off", "Sandbox desktop is turned off", /Settings → Sandbox desktop/],
       ] as const)("explains %s with its own heading and the step to take", async (problem, heading, guidance) => {

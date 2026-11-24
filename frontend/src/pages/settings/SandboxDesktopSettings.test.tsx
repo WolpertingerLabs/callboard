@@ -39,7 +39,10 @@ beforeEach(() => {
   vi.mocked(updateSandboxDesktopSettings).mockReset();
   vi.mocked(buildSandboxDesktopImage).mockReset();
 });
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 describe("Settings → Sandbox desktop", () => {
   it("shows the mode in force, diagnostics and the owner", async () => {
@@ -56,6 +59,8 @@ describe("Settings → Sandbox desktop", () => {
   it("saves a change, sending automatic as null", async () => {
     vi.mocked(getSandboxDesktopStatus).mockResolvedValue(status({ settings: { mode: "off" }, automatic: false, effectiveMode: "off" }));
     vi.mocked(updateSandboxDesktopSettings).mockResolvedValue(status({ settings: { network: "none", maxConcurrent: 3 } }));
+    // One session is running (the fixture's default), so the mode change asks first.
+    vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<SandboxDesktopSettings />);
     fireEvent.change(await screen.findByLabelText("Mode"), { target: { value: "auto" } });
     fireEvent.change(screen.getByLabelText("Network (managed)"), { target: { value: "none" } });
@@ -88,5 +93,60 @@ describe("Settings → Sandbox desktop", () => {
     fireEvent.click(screen.getByRole("button", { name: "Build image" }));
     expect(await screen.findByText("Step 1/20")).toBeTruthy();
     expect(buildSandboxDesktopImage).toHaveBeenCalledTimes(1);
+  });
+
+  it("says limits and network apply to sandboxes started after saving", async () => {
+    vi.mocked(getSandboxDesktopStatus).mockResolvedValue(status());
+    render(<SandboxDesktopSettings />);
+    await screen.findByLabelText("Mode");
+    expect(screen.getByText(/^Applies to sandboxes started after saving/)).toBeTruthy();
+    expect(screen.getByText(/^Limits apply to sandboxes started after saving/)).toBeTruthy();
+  });
+
+  it("asks before a mode change that ends running sessions, and saves nothing if declined", async () => {
+    const running = status({ settings: {}, automatic: true });
+    running.diagnostics.running.sessions = 2;
+    vi.mocked(getSandboxDesktopStatus).mockResolvedValue(running);
+    vi.mocked(updateSandboxDesktopSettings).mockResolvedValue(status({ settings: { mode: "off" } }));
+    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+    try {
+      render(<SandboxDesktopSettings />);
+      fireEvent.change(await screen.findByLabelText("Mode"), { target: { value: "off" } });
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+      expect(confirm).toHaveBeenLastCalledWith("Changing the mode ends 2 running sandbox sessions. Continue?");
+      expect(updateSandboxDesktopSettings).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+      await waitFor(() => expect(updateSandboxDesktopSettings).toHaveBeenCalledWith(expect.objectContaining({ mode: "off" })));
+    } finally {
+      confirm.mockRestore();
+    }
+  });
+
+  it("does not ask when the mode is unchanged or nothing is running", async () => {
+    const running = status({ settings: {}, automatic: true });
+    running.diagnostics.running.sessions = 1;
+    vi.mocked(getSandboxDesktopStatus).mockResolvedValue(running);
+    vi.mocked(updateSandboxDesktopSettings).mockResolvedValue(status());
+    const confirm = vi.spyOn(window, "confirm");
+    try {
+      render(<SandboxDesktopSettings />);
+      fireEvent.change(await screen.findByLabelText("Sandboxes at once"), { target: { value: "3" } });
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+      await waitFor(() => expect(updateSandboxDesktopSettings).toHaveBeenCalled());
+      expect(confirm).not.toHaveBeenCalled();
+    } finally {
+      confirm.mockRestore();
+    }
+  });
+
+  it("reports an out-of-date image as a warning with a rebuild action", async () => {
+    const outdated = status({ warning: "image-outdated", warningHint: "The image was not built from the files this Callboard ships." });
+    outdated.diagnostics.image = { ...outdated.diagnostics.image, current: false, content: "old", expectedContent: "new" };
+    vi.mocked(getSandboxDesktopStatus).mockResolvedValue(outdated);
+    render(<SandboxDesktopSettings />);
+    expect((await screen.findByTestId("sandbox-effective-mode")).textContent).toContain("Image out of date");
+    expect(screen.getByTestId("sandbox-diagnostic-image").textContent).toContain("out of date");
+    expect(screen.getByTestId("sandbox-diagnostic-image").textContent).toContain("Sandboxes still start");
+    expect(screen.getByRole("button", { name: "Rebuild image (out of date)" })).toBeTruthy();
   });
 });

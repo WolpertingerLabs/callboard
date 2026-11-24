@@ -43,10 +43,16 @@ afterAll(async () => {
   rmSync(tmpRoot, { recursive: true, force: true });
 });
 
-const call = (path: string, init: RequestInit & { auth?: "bearer" | "session" } = {}) =>
+// A browser on this origin sends Origin on every PUT/POST; `origin: null` leaves it out.
+const call = (path: string, init: RequestInit & { auth?: "bearer" | "session"; origin?: string | null } = {}) =>
   fetch(`${base}${path}`, {
     ...init,
-    headers: { "content-type": "application/json", "x-test-auth": init.auth ?? "session", ...(init.headers as Record<string, string>) },
+    headers: {
+      "content-type": "application/json",
+      "x-test-auth": init.auth ?? "session",
+      ...(init.origin === null ? {} : { origin: init.origin ?? new URL(base).origin }),
+      ...(init.headers as Record<string, string>),
+    },
   });
 const settingsFile = () => join(tmpRoot, "sandbox-desktop.json");
 
@@ -120,10 +126,45 @@ describe("POST /build", () => {
   });
 });
 
+describe("same-origin mutations (review round 1)", () => {
+  it.each([
+    ["no Origin", null],
+    ["another origin", "https://evil.example"],
+  ] as const)("PUT and POST /build refuse a signed-in session's request with %s; GET does not need one", async (_name, origin) => {
+    const before = readFileSync(settingsFile(), "utf8");
+    for (const [path, method, body] of [
+      ["/", "PUT", JSON.stringify({ mode: "off" })],
+      ["/build", "POST", "{}"],
+    ] as const) {
+      const res = await call(path, { method, body, origin });
+      expect(res.status, `${method} ${path}`).toBe(403);
+      expect((await res.json()).code).toBe("denied");
+    }
+    expect(readFileSync(settingsFile(), "utf8")).toBe(before);
+    expect((await call("/", { origin: null })).status).toBe(200);
+  });
+});
+
 describe("automatic mode", () => {
   it("is endpoint when the endpoint variables are set, so an existing setup keeps working", () => {
     expect(currentSandboxMode({ CALLBOARD_SANDBOX_DESKTOP_URL: "http://127.0.0.1:7801" })).toEqual({ mode: "endpoint", automatic: true });
     expect(currentSandboxMode({ CALLBOARD_SANDBOX_DESKTOP_URL: " " })).toEqual({ mode: "managed", automatic: true });
     expect(currentSandboxMode({})).toEqual({ mode: "managed", automatic: true });
+  });
+});
+
+describe("reaper scheduling (review round 1)", () => {
+  it("has work in managed mode, or outside it only while a previous run left a session directory", async () => {
+    const { reaperHasWork, getSandboxManager } = await import("../services/sandbox-desktop.js");
+    const { mkdirSync, rmSync } = await import("node:fs");
+    const manager = getSandboxManager();
+    const endpoint = { CALLBOARD_SANDBOX_DESKTOP_URL: "http://127.0.0.1:7801" };
+    expect(await reaperHasWork(manager, {})).toBe(true); // automatic → managed
+    expect(await reaperHasWork(manager, endpoint)).toBe(false);
+    const left = join(manager.sessionsDir, "11111111-1111-4111-8111-111111111111");
+    mkdirSync(left, { recursive: true });
+    expect(await reaperHasWork(manager, endpoint)).toBe(true);
+    rmSync(left, { recursive: true, force: true });
+    expect(await reaperHasWork(manager, endpoint)).toBe(false);
   });
 });

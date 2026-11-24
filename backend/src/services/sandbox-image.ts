@@ -9,8 +9,8 @@
  */
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PROTOCOL, SANDBOX_DEFAULT_IMAGE, SANDBOX_IMAGE_LABELS, SANDBOX_PROTOCOL_LABEL_VALUE } from "@wolpertingerlabs/computer-use";
 
@@ -92,13 +92,65 @@ export function sandboxBuildContextProblem(context = sandboxBuildContext()): str
   return undefined;
 }
 
+/**
+ * The image label carrying {@link sandboxContentDigest} of what it was built
+ * from. The protocol label says whether an image can talk to this Callboard;
+ * this one says whether it is the build this Callboard ships, so a driver-host
+ * fix (a security fix included) is noticed on an install that already has an
+ * image, instead of never reaching it.
+ */
+export const SANDBOX_CONTENT_LABEL = "dev.callboard.computer-use.content";
+
+/** Everything the image is built from: what .dockerignore sends, plus the Dockerfile. Relative, sorted. */
+function contentFiles(context: string): string[] {
+  const out: string[] = [];
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) walk(path);
+      else if (entry.isFile() && !entry.name.endsWith(".map")) out.push(relative(context, path).split(sep).join("/"));
+    }
+  };
+  if (existsSync(join(context, "dist"))) walk(join(context, "dist"));
+  for (const file of ["package.json", "docker/Dockerfile", "docker/package-lock.json", "docker/start-desktop.sh"])
+    if (existsSync(join(context, file))) out.push(file);
+  return out.sort();
+}
+const digestMemo = new Map<string, { stamp: string; digest: string }>();
+/**
+ * A SHA-256 over the build context's content files (path and bytes, in
+ * order): the same value for the same shipped `dist/` and `docker/`, whatever
+ * the mtimes. Memoized on sizes and mtimes, so a status poll does not re-read
+ * the files; a rebuilt `dist/` is noticed.
+ */
+export function sandboxContentDigest(context = sandboxBuildContext()): string {
+  const files = contentFiles(context);
+  const stamp = files
+    .map((file) => {
+      const stat = statSync(join(context, file));
+      return `${file}:${stat.size}:${stat.mtimeMs}`;
+    })
+    .join("|");
+  const memo = digestMemo.get(context);
+  if (memo?.stamp === stamp) return memo.digest;
+  const hash = createHash("sha256").update("callboard-sandbox-content\0");
+  for (const file of files)
+    hash
+      .update(`${file}\0`)
+      .update(readFileSync(join(context, file)))
+      .update("\0");
+  const digest = hash.digest("hex");
+  digestMemo.set(context, { stamp, digest });
+  return digest;
+}
+
 /** `docker build` arguments (everything after `docker`). Never pulls anything but the Dockerfile's pinned base. */
 export function sandboxImageBuildArgs(options: { context?: string; image?: string } = {}): string[] {
   const context = options.context ?? sandboxBuildContext();
   const image = options.image ?? SANDBOX_IMAGE;
   if (image.startsWith("-")) throw new Error("Invalid image name");
   // No `--progress`: the legacy builder (Docker without buildx) rejects it.
-  return ["build", "-t", image, "-f", join(context, "docker", "Dockerfile"), context];
+  return ["build", "--label", `${SANDBOX_CONTENT_LABEL}=${sandboxContentDigest(context)}`, "-t", image, "-f", join(context, "docker", "Dockerfile"), context];
 }
 
 /** The computer-use package version this Callboard ships (the image's version label should match). */
@@ -116,22 +168,38 @@ export interface SandboxImageInfo {
   version?: string;
   /** The protocol label's major equals this client's. */
   compatible: boolean;
+  /** The image's {@link SANDBOX_CONTENT_LABEL}, if it has one (images built before it don't). */
+  content?: string;
+  /** Built from exactly what this Callboard ships. False for an older build: still compatible, but worth rebuilding. */
+  current: boolean;
 }
 
 /** `docker image inspect`, read for the two labels a host checks before `docker run`. */
-export async function inspectSandboxImage(docker: DockerRunner, image = SANDBOX_IMAGE, signal?: AbortSignal): Promise<SandboxImageInfo> {
+export async function inspectSandboxImage(
+  docker: DockerRunner,
+  image = SANDBOX_IMAGE,
+  signal?: AbortSignal,
+  expectedContent: () => string = () => sandboxContentDigest(),
+): Promise<SandboxImageInfo> {
   let labels: Record<string, string> | null;
   try {
     labels = JSON.parse(await docker(["image", "inspect", "--format", "{{json .Config.Labels}}", image], { signal, timeoutMs: 15_000 }));
   } catch (error) {
     if (error instanceof DockerError && error.reason === "failed" && /no such image|not found/i.test(error.stderr))
-      return { present: false, compatible: false };
+      return { present: false, compatible: false, current: false };
     throw error;
   }
   const protocol = labels?.[SANDBOX_IMAGE_LABELS.protocol];
   const version = labels?.[SANDBOX_IMAGE_LABELS.version];
   const major = typeof protocol === "string" && /^\d+\.\d+$/.test(protocol) ? Number(protocol.split(".")[0]) : undefined;
-  return { present: true, protocol, version, compatible: major === PROTOCOL.major };
+  const content = labels?.[SANDBOX_CONTENT_LABEL];
+  let current = false;
+  try {
+    current = typeof content === "string" && content === expectedContent();
+  } catch {
+    current = false;
+  }
+  return { present: true, protocol, version, compatible: major === PROTOCOL.major, ...(content ? { content } : {}), current };
 }
 
 export { SANDBOX_PROTOCOL_LABEL_VALUE };

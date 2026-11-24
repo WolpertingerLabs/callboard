@@ -35,6 +35,8 @@ export function fakeDocker(
     reachable: true,
     imageLabels:
       options.imageLabels === undefined ? { "dev.callboard.computer-use.protocol": "2.0", "org.opencontainers.image.version": "0.1.0" } : options.imageLabels,
+    /** Make `docker rm` fail (the daemon refusing), e.g. to check a session directory is kept. */
+    rmFailure: undefined as string | undefined,
     /** Make `docker run` fail, e.g. with a port clash. */
     runFailure: undefined as string | undefined,
     /** Containers exit straight after starting. */
@@ -106,6 +108,7 @@ export function fakeDocker(
       throw new Error(`unexpected inspect format ${format}`);
     }
     if (command === "rm") {
+      if (state.rmFailure) throw new DockerError("failed", `docker rm failed: ${state.rmFailure}`, state.rmFailure);
       const ref = args.at(-1)!;
       const container = find(ref);
       if (!container) throw noSuch("container", ref);
@@ -120,7 +123,15 @@ export function fakeDocker(
       const rows = [...containers.values()].filter((c) => options.ignoreFilters || filters.every(([k, v]) => c.labels[k] === v));
       if (args.includes("--quiet")) return rows.map((c) => `${c.id.slice(0, 12)}\n`).join("");
       const format = args[args.indexOf("--format") + 1];
-      return rows.map((c) => `${format.replace("{{.ID}}", c.id).replace(/\{\{\.Label "([^"]+)"\}\}/g, (_m, key: string) => c.labels[key] ?? "")}\n`).join("");
+      return rows
+        .map(
+          (c) =>
+            `${format
+              .replace("{{.ID}}", c.id)
+              .replace("{{.State}}", c.running ? "running" : "exited")
+              .replace(/\{\{\.Label "([^"]+)"\}\}/g, (_m, key: string) => c.labels[key] ?? "")}\n`,
+        )
+        .join("");
     }
     throw new Error(`fake docker: unexpected ${args.join(" ")}`);
   };
@@ -142,15 +153,20 @@ export interface FakeRemoteBehaviour {
   denies?: boolean;
   /** The session opens on another instance than the one that said hello. */
   openOn?: string;
+  /** `/hello` waits for this before answering: holds a start mid-way. */
+  gate?: Promise<unknown>;
 }
 
 export function fakeRemote(behaviour: FakeRemoteBehaviour = {}) {
   const created: (RemoteDriverOptions & { tokenAtCreation: string })[] = [];
+  /** One host instance per URL, as one container is: a second driver on the same URL (a new daemon) meets the same instance. */
+  const instances = new Map<string, string>();
   const lost = new Map<string, () => void>();
   const closed: string[] = [];
   const factory = (options: RemoteDriverOptions): RemoteDriver => {
     created.push({ ...options, tokenAtCreation: options.tokenFile ? readFileSync(options.tokenFile, "utf8") : "" });
-    const instanceId = randomUUID();
+    const instanceId = instances.get(options.url) ?? randomUUID();
+    instances.set(options.url, instanceId);
     const opened = new Map<string, string>();
     let hellos = 0;
     return {
@@ -167,6 +183,7 @@ export function fakeRemote(behaviour: FakeRemoteBehaviour = {}) {
             signal?.addEventListener("abort", () => reject(new ComputerUseError("cancelled")), { once: true });
           });
         if (hellos <= (behaviour.helloFailures ?? 0)) throw new ComputerUseError("driver_error", "connection refused");
+        if (behaviour.gate) await behaviour.gate;
         return { instanceId, protocol: { major: 2, minor: 0 }, capabilities: [], heartbeatMs: 5000, hostname: "sandbox" };
       },
       open: async (context: { sessionId: string; onLost?: () => void }) => {
@@ -191,5 +208,5 @@ export function fakeRemote(behaviour: FakeRemoteBehaviour = {}) {
       },
     } as unknown as RemoteDriver;
   };
-  return { factory, created, lost, closed };
+  return { factory, created, lost, closed, instances };
 }

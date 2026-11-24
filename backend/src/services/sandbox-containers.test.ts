@@ -6,7 +6,7 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { existsSync, statSync } from "node:fs";
-import { mkdtemp, mkdir, readdir, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -24,6 +24,9 @@ async function setup(
   options: {
     settings?: Partial<ResolvedSandboxSettings>;
     remote?: FakeRemoteBehaviour;
+    /** Share one fake remote between managers, as one container's host instance is the same to both. */
+    remoteFake?: ReturnType<typeof fakeRemote>;
+    expectedContent?: string;
     docker?: ReturnType<typeof fakeDocker>;
     dataDir?: string;
     helloTimeoutMs?: number;
@@ -33,7 +36,7 @@ async function setup(
   const dataDir = options.dataDir ?? (await mkdtemp(join(tmpdir(), "cb-sandbox-mgr-")));
   dirs.push(dataDir);
   const docker = options.docker ?? fakeDocker();
-  const remote = fakeRemote(options.remote);
+  const remote = options.remoteFake ?? fakeRemote(options.remote);
   const settings: ResolvedSandboxSettings = { ...resolveSandboxSettings({}), ...options.settings };
   const manager = new SandboxContainerManager({
     docker: docker.run,
@@ -44,6 +47,7 @@ async function setup(
     helloIntervalMs: 5,
     preflightCacheMs: 0,
     drainTimeoutMs: options.drainTimeoutMs,
+    ...(options.expectedContent ? { expectedContent: () => options.expectedContent! } : {}),
     chatContext: (chatId) =>
       chatId === "chat-ws" ? { workspaceId: "ws-opaque-1", folder: "/work/repo" } : chatId === "chat-folder" ? { folder: "/work/plain" } : undefined,
   });
@@ -312,8 +316,16 @@ describe("destroy and the drain hook", () => {
         folder: "/work/repo",
         driver: "function",
         instanceId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+        cause: "session-end",
       },
-      { sessionId: expect.any(String), chatId: "chat-folder", folder: "/work/plain", driver: "function", instanceId: expect.stringMatching(/^[0-9a-f-]{36}$/) },
+      {
+        sessionId: expect.any(String),
+        chatId: "chat-folder",
+        folder: "/work/plain",
+        driver: "function",
+        instanceId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+        cause: "session-end",
+      },
     ]);
   });
 
@@ -450,5 +462,147 @@ describe("managedSandboxDriver", () => {
     const driver = managedSandboxDriver(manager);
     await expect(driver.open({ sessionId: sid(), signal: new AbortController().signal })).rejects.toMatchObject({ code: "unsupported" });
     expect(docker.state.containers.size).toBe(0);
+  });
+});
+
+describe("image freshness (review round 1, finding 2)", () => {
+  it("an image without the current content digest still starts, with an out-of-date warning; another protocol major is refused", async () => {
+    const docker = fakeDocker({ imageLabels: { "dev.callboard.computer-use.protocol": "2.0", "dev.callboard.computer-use.content": "old" } });
+    const { manager } = await setup({ docker, expectedContent: "new" });
+    expect(await manager.probe()).toMatchObject({ available: true });
+    expect(manager.currentWarning()).toMatchObject({ warning: "image-outdated", hint: expect.stringMatching(/callboard sandbox build/) });
+    await expect(manager.start({ sessionId: sid(), signal: new AbortController().signal })).resolves.toBeTruthy();
+    expect((await manager.diagnostics()).image).toMatchObject({ present: true, compatible: true, current: false, content: "old", expectedContent: "new" });
+    docker.state.imageLabels = { "dev.callboard.computer-use.protocol": "2.0", "dev.callboard.computer-use.content": "new" };
+    await manager.probe();
+    expect(manager.currentWarning()).toBeUndefined();
+    expect((await manager.diagnostics()).image.current).toBe(true);
+    docker.state.imageLabels = { "dev.callboard.computer-use.protocol": "3.0", "dev.callboard.computer-use.content": "new" };
+    expect(await manager.probe()).toMatchObject({ available: false, readiness: "unsupported" });
+  });
+
+  it("an image from before the content label reads as out of date, not current", async () => {
+    const { manager } = await setup({ expectedContent: "new" });
+    await manager.probe();
+    expect(manager.currentWarning()?.hint).toMatch(/an older/);
+  });
+});
+
+describe("drains that survive a crash (review round 1, finding 3)", () => {
+  const readMeta = async (dir: string) => JSON.parse(await readFile(join(dir, "session.json"), "utf8"));
+
+  it("persists the session's metadata beside its token, 0600, completed once the container answers", async () => {
+    const { manager } = await setup({ settings: { network: "none" } });
+    const box = await manager.start({ sessionId: sid(), chatId: "chat-ws", signal: new AbortController().signal });
+    const meta = await readMeta(box.dir);
+    expect(meta).toEqual({
+      version: 1,
+      sessionId: box.sessionId,
+      chatId: "chat-ws",
+      workspaceId: "ws-opaque-1",
+      folder: "/work/repo",
+      name: box.name,
+      network: SANDBOX_INTERNAL_NETWORK,
+      internal: true,
+      url: "http://172.30.0.5:7801",
+      instanceId: box.instanceId,
+      createdAt: expect.any(Number),
+    });
+    expect(statSync(join(box.dir, "session.json")).mode & 0o777).toBe(0o600);
+    expect((await readdir(box.dir)).sort()).toEqual(["session.json", "token"]);
+    await manager.destroy(box.sessionId);
+    expect(existsSync(box.dir)).toBe(false);
+  });
+
+  it("a new daemon's reaper drains a crashed run's sandbox from its metadata, then removes it", async () => {
+    const docker = fakeDocker();
+    const remote = fakeRemote();
+    const first = await setup({ docker, remoteFake: remote });
+    const box = await first.manager.start({ sessionId: sid(), chatId: "chat-ws", signal: new AbortController().signal });
+    first.manager.ready(box.sessionId);
+    // The daemon is killed: no destroy, no drain. A new one starts on the same data directory.
+    const second = await setup({ docker, remoteFake: remote, dataDir: first.dataDir });
+    const drained: unknown[] = [];
+    second.manager.drainBeforeDestroy = async (sandbox, signal) => {
+      expect(docker.state.containers.size).toBe(1);
+      await sandbox.driver.listOutbox(signal);
+      drained.push({ ...sandbox, driver: undefined });
+    };
+    expect(await second.manager.reap()).toHaveLength(1);
+    expect(drained).toEqual([
+      {
+        sessionId: box.sessionId,
+        chatId: "chat-ws",
+        workspaceId: "ws-opaque-1",
+        folder: "/work/repo",
+        driver: undefined,
+        instanceId: box.instanceId,
+        cause: "orphan",
+      },
+    ]);
+    // Rebuilt from what was on disk: the persisted URL and the session's own token file.
+    expect(remote.created.at(-1)).toMatchObject({ url: box.url, tokenFile: box.tokenFile });
+    expect(docker.state.containers.size).toBe(0);
+    expect(existsSync(box.dir)).toBe(false);
+  });
+
+  it.each([
+    ["never finished starting (no URL or instance)", "unstarted"],
+    ["answers as another instance", "replaced"],
+    ["was already drained", "drained"],
+    ["has exited", "exited"],
+  ] as const)("does not drain an orphan that %s, and still removes it", async (_name, how) => {
+    const docker = fakeDocker();
+    const remote = fakeRemote();
+    const first = await setup({ docker, remoteFake: remote });
+    const box = await first.manager.start({ sessionId: sid(), chatId: "c", signal: new AbortController().signal });
+    first.manager.ready(box.sessionId);
+    const metaFile = join(box.dir, "session.json");
+    const meta = await readMeta(box.dir);
+    if (how === "unstarted") await writeFile(metaFile, JSON.stringify({ ...meta, url: undefined, instanceId: undefined }));
+    if (how === "replaced") remote.instances.set(box.url!, randomUUID());
+    if (how === "drained") await writeFile(metaFile, JSON.stringify({ ...meta, drainedAt: Date.now() }));
+    if (how === "exited") docker.state.containers.get(box.name)!.running = false;
+    const second = await setup({ docker, remoteFake: remote, dataDir: first.dataDir });
+    second.manager.drainBeforeDestroy = vi.fn(async () => {});
+    expect(await second.manager.reap()).toHaveLength(1);
+    expect(second.manager.drainBeforeDestroy).not.toHaveBeenCalled();
+    expect(docker.state.containers.size).toBe(0);
+    expect(existsSync(box.dir)).toBe(false);
+  });
+
+  it("keeps a session's directory while Docker will not remove its container, and drains it only once", async () => {
+    const docker = fakeDocker();
+    const remote = fakeRemote();
+    const { manager, dataDir } = await setup({ docker, remoteFake: remote });
+    const drains: string[] = [];
+    manager.drainBeforeDestroy = async (sandbox) => void drains.push(sandbox.cause);
+    const box = await manager.start({ sessionId: sid(), signal: new AbortController().signal });
+    manager.ready(box.sessionId);
+    docker.state.rmFailure = "device or resource busy";
+    await manager.destroy(box.sessionId);
+    expect(existsSync(join(box.dir, "token"))).toBe(true);
+    expect((await readMeta(box.dir)).drainedAt).toEqual(expect.any(Number));
+    expect(await manager.hasLeftovers()).toBe(true);
+    // Later the reaper gets it removed, without draining it again.
+    docker.state.rmFailure = undefined;
+    const next = await setup({ docker, remoteFake: remote, dataDir });
+    next.manager.drainBeforeDestroy = vi.fn(async () => {});
+    expect(await next.manager.reap()).toHaveLength(1);
+    expect(next.manager.drainBeforeDestroy).not.toHaveBeenCalled();
+    expect(drains).toEqual(["session-end"]);
+    expect(existsSync(box.dir)).toBe(false);
+    expect(await next.manager.hasLeftovers()).toBe(false);
+  });
+
+  it("tells the drain it is a shutdown once shutdown has begun", async () => {
+    const { manager } = await setup();
+    const causes: string[] = [];
+    manager.drainBeforeDestroy = async (sandbox) => void causes.push(sandbox.cause);
+    const box = await manager.start({ sessionId: sid(), signal: new AbortController().signal });
+    manager.ready(box.sessionId);
+    manager.beginShutdown();
+    await manager.dispose();
+    expect(causes).toEqual(["shutdown"]);
   });
 });
