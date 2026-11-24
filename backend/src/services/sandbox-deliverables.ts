@@ -37,7 +37,7 @@
  */
 import { createHash, randomUUID } from "node:crypto";
 import { OUTBOX_NAME } from "@wolpertingerlabs/computer-use";
-import { constants, existsSync, readdirSync, realpathSync } from "node:fs";
+import { constants, existsSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { chmod, link, lstat, mkdir, open, readdir, readFile, rename, rm, unlink } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -58,6 +58,8 @@ const PLAIN_ID = /^[A-Za-z0-9_-]{1,160}$/;
 const OWNER_KEY = /^(?:[wf]-[0-9a-f]{32}|none)$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const MAX_VERSIONS = 1000;
+/** In a deleted chat's directory whose files were kept for a surviving reader. */
+const TOMBSTONE = ".deleted";
 
 const hash = (kind: string, value: string) => createHash("sha256").update(`${kind}\0${value}`).digest("hex").slice(0, 32);
 
@@ -94,7 +96,7 @@ export const deliverablesRoot = (dataDir: string) => join(dataDir, "sandbox-deli
 export function deliverablePathForChat(
   dataDir: string,
   realPath: string,
-  chatIds: string | readonly string[] | undefined | (() => readonly string[]),
+  chats: string | readonly (string | DeliverySource)[] | undefined | (() => readonly (string | DeliverySource)[]),
 ): "outside" | "allowed" | "refused" {
   const root = deliverablesRoot(dataDir);
   let rootReal: string;
@@ -110,13 +112,39 @@ export function deliverablePathForChat(
   const rel = inside(rootReal) ?? inside(resolve(root));
   if (rel === undefined) return "outside";
   // Resolved only for a path under the root: every other path never pays for the lineage walk.
-  const ids = typeof chatIds === "function" ? chatIds() : typeof chatIds === "string" ? [chatIds] : (chatIds ?? []);
-  const allowed = new Set(ids.filter((id) => typeof id === "string" && id).map(chatSegment));
+  const list = typeof chats === "function" ? chats() : typeof chats === "string" ? [chats] : (chats ?? []);
+  // Each allowed chat's directory name, with the copy point a read-through chat is limited to.
+  const allowed = new Map<string, number | undefined>();
+  for (const entry of list) {
+    const source = typeof entry === "string" ? { chatId: entry } : entry;
+    if (typeof source?.chatId !== "string" || !source.chatId) continue;
+    const segment = chatSegment(source.chatId);
+    if (!allowed.has(segment)) allowed.set(segment, source.until);
+    else {
+      // Reached more than once: the widest window wins (no `until` is everything).
+      const previous = allowed.get(segment);
+      allowed.set(segment, previous === undefined || source.until === undefined ? undefined : Math.max(previous, source.until));
+    }
+  }
   if (!allowed.size) return "refused";
   const parts = rel.split(sep);
   if (parts.length !== 5) return "refused";
   const [key, chat, session, files, name] = parts;
   if (!OWNER_KEY.test(key) || !allowed.has(chat) || !SESSION_ID.test(session) || files !== "files" || !STORED_NAME.test(name)) return "refused";
+  // Read through to a chat this one was copied from: only files delivered by the copy point, from its manifest.
+  const until = allowed.get(chat);
+  if (until !== undefined) {
+    const root = inside(rootReal) !== undefined ? rootReal : resolve(deliverablesRoot(dataDir));
+    try {
+      const manifest = JSON.parse(readFileSync(join(root, key, chat, session, "manifest.json"), "utf8")) as {
+        files?: { storedName?: unknown; deliveredAt?: unknown }[];
+      };
+      const file = (Array.isArray(manifest.files) ? manifest.files : []).find((f) => f?.storedName === name);
+      if (!file || typeof file.deliveredAt !== "number" || file.deliveredAt > until) return "refused";
+    } catch {
+      return "refused";
+    }
+  }
   return "allowed";
 }
 
@@ -248,8 +276,11 @@ export class SandboxDeliveries {
   private readonly deletedSegments = new Set<string>();
   /** A deleted chat's in-flight passes, which {@link deleteFiles} waits for before removing anything. */
   private readonly settling = new Map<string, Promise<unknown>>();
-  /** Bytes every manifest under the root accounts for; computed once, then kept up to date. */
-  private usage?: Promise<number>;
+  /** Bytes every manifest under the root accounts for: scanned once, then kept exactly (adds on store, subtracts on delete). */
+  private usedBytes?: number;
+  private usageScan?: Promise<number>;
+  /** Bytes of downloads in flight, reserved against the quota before they start. */
+  private reservedBytes = 0;
 
   constructor(private readonly options: SandboxDeliveriesOptions) {
     this.root = deliverablesRoot(options.dataDir);
@@ -388,41 +419,61 @@ export class SandboxDeliveries {
         refuse(entry, "session-total");
         continue;
       }
-      if ((await this.usageBytes()) + entry.size > this.quota()) {
+      // Reserved synchronously (no await between the check and the
+      // reservation), so concurrent passes cannot each pass the check and
+      // overrun the quota together; released on every way out below.
+      await this.usageBytes();
+      if (!this.reserve(entry.size)) {
         refuse(entry, "storage-full");
         continue;
       }
-      let file;
+      let reservation = entry.size;
       try {
-        file = await live.context.source.downloadOutboxFile(entry.name, signal, { expectedSha256: entry.sha256 });
-      } catch (error) {
-        if (signal.aborted) throw error;
-        if (isUnsupported(error)) throw error;
-        missing.set(entry.name, (error as { code?: string }).code === "stale_frame" ? "still being written" : message(error));
-        continue;
+        let file;
+        try {
+          file = await live.context.source.downloadOutboxFile(entry.name, signal, { expectedSha256: entry.sha256 });
+        } catch (error) {
+          if (signal.aborted) throw error;
+          if (isUnsupported(error)) throw error;
+          missing.set(entry.name, (error as { code?: string }).code === "stale_frame" ? "still being written" : message(error));
+          continue;
+        }
+        // The client checked the digest against the header and the listing; check what we write.
+        const digest = createHash("sha256").update(file.data).digest("hex");
+        if (digest !== entry.sha256 || file.data.length > this.limits.fileBytes) {
+          missing.set(entry.name, "arrived with the wrong digest");
+          continue;
+        }
+        if (totalBytes(manifest) + file.data.length > this.limits.sessionBytes) {
+          refuse({ ...entry, size: file.data.length }, "session-total");
+          continue;
+        }
+        // The listing's size is the host's word: reserve what actually arrived.
+        this.release(reservation);
+        reservation = 0;
+        if (!this.reserve(file.data.length)) {
+          refuse({ ...entry, size: file.data.length }, "storage-full");
+          continue;
+        }
+        reservation = file.data.length;
+        if (this.deletedChats.has(live.context.chatId)) throw new ChatDeletedError();
+        const storedName = await this.store(live.dir, entry.name, file.data);
+        // Deleted while it was being written: take back what was just published.
+        if (this.deletedChats.has(live.context.chatId)) {
+          await unlink(join(live.dir, "files", storedName)).catch(() => {});
+          throw new ChatDeletedError();
+        }
+        // Stored: the reservation becomes usage.
+        this.release(reservation);
+        reservation = 0;
+        this.addUsage(file.data.length);
+        manifest.files.push({ name: entry.name, storedName, size: file.data.length, sha256: digest, mtimeMs: entry.mtimeMs, deliveredAt: Date.now() });
+        manifest.refused = manifest.refused.filter((r) => r.name !== entry.name);
+        changed = true;
+        log.info(`Session ${manifest.sessionId}: delivered ${JSON.stringify(entry.name)} (${file.data.length} bytes) as ${JSON.stringify(storedName)}`);
+      } finally {
+        this.release(reservation);
       }
-      // The client checked the digest against the header and the listing; check what we write.
-      const digest = createHash("sha256").update(file.data).digest("hex");
-      if (digest !== entry.sha256 || file.data.length > this.limits.fileBytes) {
-        missing.set(entry.name, "arrived with the wrong digest");
-        continue;
-      }
-      if (totalBytes(manifest) + file.data.length > this.limits.sessionBytes) {
-        refuse({ ...entry, size: file.data.length }, "session-total");
-        continue;
-      }
-      if (this.deletedChats.has(live.context.chatId)) throw new ChatDeletedError();
-      const storedName = await this.store(live.dir, entry.name, file.data);
-      // Deleted while it was being written: take back what was just published.
-      if (this.deletedChats.has(live.context.chatId)) {
-        await unlink(join(live.dir, "files", storedName)).catch(() => {});
-        throw new ChatDeletedError();
-      }
-      this.addUsage(file.data.length);
-      manifest.files.push({ name: entry.name, storedName, size: file.data.length, sha256: digest, mtimeMs: entry.mtimeMs, deliveredAt: Date.now() });
-      manifest.refused = manifest.refused.filter((r) => r.name !== entry.name);
-      changed = true;
-      log.info(`Session ${manifest.sessionId}: delivered ${JSON.stringify(entry.name)} (${file.data.length} bytes) as ${JSON.stringify(storedName)}`);
     }
     if (changed) {
       if (this.deletedChats.has(live.context.chatId)) throw new ChatDeletedError();
@@ -609,40 +660,116 @@ export class SandboxDeliveries {
     }
   }
 
+  /**
+   * Record, on disk, that a chat was deleted while its files were kept (a
+   * surviving chat still shows them): a `.deleted` file in its directory
+   * under every owner key. It is what lets a later sweep remove them once
+   * nothing shows them any more — by any path (a detach, a restart) — and
+   * only ever for a chat known to be deleted. Synchronous, exclusive create,
+   * never through a link.
+   */
+  markDeleted(chatId: string): void {
+    const chat = chatSegment(chatId);
+    let keys: string[];
+    try {
+      keys = readdirSync(this.root).filter((key) => OWNER_KEY.test(key));
+    } catch {
+      return;
+    }
+    for (const key of keys) {
+      const dir = join(this.root, key, chat);
+      if (!existsSync(dir)) continue;
+      try {
+        writeFileSync(join(dir, TOMBSTONE), `${JSON.stringify({ chatId, at: Date.now() })}\n`, { mode: 0o600, flag: "wx" }); // O_CREAT|O_EXCL: fails on anything already there, a link included
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") log.warn(`Could not record a deleted chat's kept deliverables: ${message(error)}`);
+      }
+    }
+  }
+
+  /** Chats deleted with their files kept ({@link markDeleted}), from disk. */
+  async tombstoned(): Promise<string[]> {
+    const out = new Set<string>();
+    for (const key of await readdir(this.root).catch(() => [] as string[])) {
+      if (!OWNER_KEY.test(key)) continue;
+      for (const chat of await readdir(join(this.root, key)).catch(() => [] as string[]))
+        try {
+          const path = join(this.root, key, chat, TOMBSTONE);
+          if (!(await lstat(path)).isFile()) continue;
+          const { chatId } = JSON.parse(await readFile(path, "utf8")) as { chatId?: unknown };
+          if (typeof chatId === "string" && chatSegment(chatId) === chat) out.add(chatId);
+        } catch {
+          /* No tombstone: a chat that may still exist, never swept. */
+        }
+    }
+    return [...out];
+  }
+
   /** Remove a chat's deliverables directory under every owner key. */
   async deleteFiles(chatId: string): Promise<void> {
     await this.settling.get(chatId);
     const chat = chatSegment(chatId);
-    for (const key of await readdir(this.root).catch(() => [] as string[]))
-      if (OWNER_KEY.test(key)) await rm(join(this.root, key, chat), { recursive: true, force: true }).catch(() => {});
-    this.usage = undefined;
+    for (const key of await readdir(this.root).catch(() => [] as string[])) {
+      if (!OWNER_KEY.test(key)) continue;
+      const dir = join(this.root, key, chat);
+      const bytes = await this.bytesIn(dir);
+      try {
+        await rm(dir, { recursive: true, force: true });
+        if (this.usedBytes !== undefined) this.usedBytes = Math.max(0, this.usedBytes - bytes);
+      } catch {
+        // Partly removed: count again from disk next time.
+        this.usedBytes = undefined;
+        this.usageScan = undefined;
+      }
+    }
   }
 
   private quota(): number {
     return this.options.quotaBytes?.() ?? DEFAULT_QUOTA_BYTES;
   }
-  private addUsage(bytes: number) {
-    if (this.usage) this.usage = this.usage.then((n) => n + bytes);
+  /** Reserve bytes against the quota, synchronously. False (nothing reserved) if they do not fit. Needs {@link usageBytes} resolved first. */
+  private reserve(bytes: number): boolean {
+    if ((this.usedBytes ?? 0) + this.reservedBytes + bytes > this.quota()) return false;
+    this.reservedBytes += bytes;
+    return true;
   }
-  /** Bytes all deliverables use, from their manifests (every version counts). */
-  usageBytes(): Promise<number> {
-    return (this.usage ??= (async () => {
+  private release(bytes: number) {
+    this.reservedBytes = Math.max(0, this.reservedBytes - bytes);
+  }
+  private addUsage(bytes: number) {
+    if (this.usedBytes !== undefined) this.usedBytes += bytes;
+  }
+  /** Bytes a chat directory's manifests account for. */
+  private async bytesIn(chatDir: string): Promise<number> {
+    let total = 0;
+    for (const session of await readdir(chatDir).catch(() => [] as string[])) {
+      if (!SESSION_ID.test(session)) continue;
+      try {
+        const value = JSON.parse(await readFile(join(chatDir, session, "manifest.json"), "utf8")) as { files?: { size?: unknown }[] };
+        for (const file of Array.isArray(value.files) ? value.files : []) if (Number.isSafeInteger(file?.size)) total += Number(file.size);
+      } catch {
+        /* No manifest: nothing accounted. */
+      }
+    }
+    return total;
+  }
+  /** Bytes all deliverables use, from their manifests (every version counts). Scanned once; every pass awaits that same scan. */
+  async usageBytes(): Promise<number> {
+    if (this.usedBytes !== undefined) return this.usedBytes;
+    const scan = (this.usageScan ??= (async () => {
       let total = 0;
       for (const key of await readdir(this.root).catch(() => [] as string[])) {
         if (!OWNER_KEY.test(key)) continue;
-        for (const chat of await readdir(join(this.root, key)).catch(() => [] as string[]))
-          for (const session of await readdir(join(this.root, key, chat)).catch(() => [] as string[])) {
-            if (!SESSION_ID.test(session)) continue;
-            try {
-              const value = JSON.parse(await readFile(join(this.root, key, chat, session, "manifest.json"), "utf8")) as { files?: { size?: unknown }[] };
-              for (const file of Array.isArray(value.files) ? value.files : []) if (Number.isSafeInteger(file?.size)) total += Number(file.size);
-            } catch {
-              /* No manifest: nothing accounted. */
-            }
-          }
+        for (const chat of await readdir(join(this.root, key)).catch(() => [] as string[])) total += await this.bytesIn(join(this.root, key, chat));
       }
       return total;
     })());
+    const total = await scan;
+    if (this.usageScan === scan) {
+      this.usedBytes ??= total;
+      this.usageScan = undefined;
+    }
+    return this.usedBytes ?? total;
   }
 
   /** Whether this process is syncing a session now. */

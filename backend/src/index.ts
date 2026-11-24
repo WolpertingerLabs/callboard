@@ -2,7 +2,7 @@ import { computerUseRouter } from "./routes/computer-use.js";
 import { setChatArchivedCheck, shutdownComputerUse } from "./services/computer-use.js";
 import { closeComputerUseConnections } from "./services/computer-use-tools.js";
 import { sandboxDesktopRouter } from "./routes/sandbox-desktop.js";
-import { beginSandboxShutdown, sandboxDrainHook, shutdownSandboxDesktop, startSandboxReaper, sweepKeptSandboxes } from "./services/sandbox-desktop.js";
+import { beginSandboxShutdown, sandboxAfterReaperPass, sandboxDrainHook, shutdownSandboxDesktop, startSandboxReaper } from "./services/sandbox-desktop.js";
 import dotenv from "dotenv";
 import { spawn } from "child_process";
 import { existsSync, readFileSync } from "fs";
@@ -502,7 +502,7 @@ app.listen(PORT, () => {
   // a kill -9) are removed now and every few minutes. Only this data
   // directory's own: see sandbox-containers.ts.
   // The drain hook (outbox copy, keep-for-recovery) is installed before the first pass drains a crashed run's sandboxes.
-  startSandboxReaper({ drainBeforeDestroy: sandboxDrainHook, afterPass: sweepKeptSandboxes });
+  startSandboxReaper({ drainBeforeDestroy: sandboxDrainHook, afterPass: sandboxAfterReaperPass });
   log.info(`Log level: ${process.env.LOG_LEVEL || "info"}`);
   log.info(`Config: ${ENV_FILE}`);
 

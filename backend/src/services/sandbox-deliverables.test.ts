@@ -239,6 +239,54 @@ describe("limits", () => {
     expect(report.refused).toEqual([{ name: "big.txt", size: 2, reason: "session-total" }]);
   });
 
+  it("the quota checks what actually arrived: a host listing every size as 1 byte cannot overrun it (review round 2)", async () => {
+    const { deliveries } = await setup({ quotaBytes: 50 });
+    const data = Buffer.alloc(100, 1);
+    const liar: OutboxSource = {
+      listOutbox: async () => [{ name: "big.bin", size: 1, sha256: sha(data), mtimeMs: 0 }],
+      downloadOutboxFile: async (name) => ({ name, size: data.length, sha256: sha(data), data }),
+    };
+    const report = await deliveries.drain(context(liar), AbortSignal.timeout(5_000));
+    expect(report.files).toEqual([]);
+    expect(report.refused).toEqual([{ name: "big.bin", size: 100, reason: "storage-full" }]);
+    expect(await deliveries.usageBytes()).toBe(0);
+    // Its reservation was released: a file that fits still goes through.
+    const fits = await deliveries.drain(context(fakeOutbox({ "ok.txt": "x".repeat(40) }).source), AbortSignal.timeout(5_000));
+    expect(fits.files.map((f) => f.name)).toEqual(["ok.txt"]);
+  });
+
+  it("concurrent sessions reserve before downloading, so together they cannot overrun the quota (review round 2)", async () => {
+    const { deliveries } = await setup({ quotaBytes: 100 });
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const gated = (fill: number): OutboxSource => {
+      const data = Buffer.alloc(60, fill);
+      return {
+        listOutbox: async () => [{ name: `f${fill}.bin`, size: 60, sha256: sha(data), mtimeMs: 0 }],
+        downloadOutboxFile: async (name) => {
+          await gate;
+          return { name, size: data.length, sha256: sha(data), data };
+        },
+      };
+    };
+    const runs = [1, 2, 3].map((n) => deliveries.drain(context(gated(n), { chatId: `chat-${n}` }), AbortSignal.timeout(5_000)));
+    await new Promise((r) => setTimeout(r, 30));
+    release();
+    const reports = await Promise.all(runs);
+    expect(reports.flatMap((r) => r.files)).toHaveLength(1);
+    expect(reports.flatMap((r) => r.refused).map((r) => r.reason)).toEqual(["storage-full", "storage-full"]);
+    expect(await deliveries.usageBytes()).toBe(60);
+  });
+
+  it("a failed download releases its reservation", async () => {
+    const { deliveries } = await setup({ quotaBytes: 60 });
+    const broken = fakeOutbox({ "a.bin": "x".repeat(60) });
+    broken.failGet(() => new ComputerUseError("driver_error", "reset"));
+    await expect(deliveries.drain(context(broken.source), AbortSignal.timeout(5_000))).rejects.toThrow(/reset/);
+    const report = await deliveries.drain(context(fakeOutbox({ "b.bin": "y".repeat(60) }).source), AbortSignal.timeout(5_000));
+    expect(report.files.map((f) => f.name)).toEqual(["b.bin"]);
+  });
+
   it("a global quota across every chat refuses new files (storage-full) and never deletes delivered ones", async () => {
     const { deliveries } = await setup({ quotaBytes: 10 });
     const first = await deliveries.drain(context(fakeOutbox({ "a.txt": "12345678" }).source, { chatId: "chat-1" }), AbortSignal.timeout(5_000));

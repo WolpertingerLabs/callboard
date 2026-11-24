@@ -90,8 +90,6 @@ export function getSandboxRecovery(): SandboxRecovery {
 }
 /** The managed drain hook, for `startSandboxReaper({ drainBeforeDestroy })`. */
 export const sandboxDrainHook: DrainBeforeDestroy = (sandbox, signal) => getSandboxRecovery().drainHook(sandbox, signal);
-/** After each reaper pass: retention and vanished containers of kept sandboxes. */
-export const sweepKeptSandboxes = () => getSandboxRecovery().sweep();
 
 /** The chats whose deliverables `chatId` shows: itself and those its history was copied from (sandbox-lineage.ts). */
 export function chatDeliverySources(chatId: string): DeliverySource[] {
@@ -128,10 +126,50 @@ export function deleteSandboxChatData(chatId: string, meta: Record<string, unkno
   void getSandboxRecovery()
     .discardForChat(chatId)
     .catch((error) => log.warn(`Could not discard the kept sandboxes of a deleted chat: ${error instanceof Error ? error.message : "unknown"}`));
-  if (!deliveries.hasFiles(chatId) && !copiedFrom(meta).length) return;
+  const hasFiles = deliveries.hasFiles(chatId);
+  // Known deleted, on disk: whatever path later leaves its files unshown, a sweep can remove them.
+  if (hasFiles) deliveries.markDeleted(chatId);
+  if (!hasFiles && !copiedFrom(meta).length) return;
   pendingDeletes.push({ chatId, meta });
   deleteFlush ??= setTimeout(() => void flushSandboxDeletes(), 0);
 }
+/**
+ * Remove the deliverables of deleted chats (tombstoned when deleted with
+ * their files kept) that no surviving chat shows any more. Run after a
+ * detach (the detached chat may have been the last reader) and after each
+ * reaper pass, so any path that strands them — a detach, a restart before a
+ * flush, a lineage rewrite — is covered. One snapshot of the records.
+ */
+export async function sweepDeletedDeliverables(): Promise<number> {
+  const deliveries = getSandboxDeliveries();
+  const deleted = await deliveries.tombstoned();
+  if (!deleted.length) return 0;
+  const survivors = chatFileService.getAllChats().map((chat) => ({ id: chat.id, meta: parseChatMetadataRecord(chat.metadata) }));
+  const index = new Map(survivors.map((chat) => [chat.id, chat.meta]));
+  const metaOf = (id: string) => index.get(id);
+  let removed = 0;
+  for (const chatId of deleted) {
+    if (index.has(chatId)) continue; // a record exists again: not ours to decide
+    const { remove } = sourcesKeptAlive(
+      chatId,
+      [{ chatId }],
+      (id) => index.has(id),
+      () => survivors,
+      metaOf,
+    );
+    if (!remove.includes(chatId)) continue;
+    await deliveries.deleteFiles(chatId);
+    removed++;
+  }
+  if (removed) log.info(`Removed the Sandbox desktop deliverables of ${removed} deleted chat(s) that no surviving chat shows any more`);
+  return removed;
+}
+/** After each reaper pass: kept sandboxes' retention, then deleted chats' unshown deliverables. */
+export async function sandboxAfterReaperPass(): Promise<void> {
+  await getSandboxRecovery().sweep();
+  await sweepDeletedDeliverables();
+}
+
 /** Apply queued chat deletions: one snapshot of the records for the whole batch (exported for tests). */
 export async function flushSandboxDeletes(): Promise<void> {
   if (deleteFlush) clearTimeout(deleteFlush);

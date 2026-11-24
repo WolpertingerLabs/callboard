@@ -1,4 +1,5 @@
 import { DEFAULT_SPACE_ID } from "shared";
+import { sweepDeletedDeliverables } from "./sandbox-desktop.js";
 import { chatFileService } from "./chat-file-service.js";
 import { buildLineageIndex, getParentChatId, walkToRootId } from "./chat-lineage.js";
 import { isNativeRecord } from "./card-membership.js";
@@ -134,6 +135,9 @@ export function detachChatFromParent(chat: { id: string; session_id?: string; me
     { touch: false },
   );
   if (!ok) return { ok: false, status: 500, error: "Could not update this chat's record, so it is still a child of its parent" };
+  // It no longer reads through to its parent's Sandbox desktop deliverables:
+  // if that parent was deleted and this was its last reader, they go now.
+  void sweepDeletedDeliverables().catch(() => {});
 
   // Both ids the chat may be keyed under — its chat id and its session id.
   const keys = [chat.id, ...(chat.session_id && chat.session_id !== chat.id ? [chat.session_id] : [])];

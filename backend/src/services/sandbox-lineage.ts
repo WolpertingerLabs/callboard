@@ -11,8 +11,15 @@
  *    to the cutoff, so N shows C's deliverables delivered by then. C, the
  *    hidden "Original", keeps showing its own.
  *  - **Forks, asides and engine switches** (the fork endpoint): `chatRole`
- *    `fork` | `aside` | `engine-switch`, `parentChatId`, `forkedAt`. They show
- *    the parent's deliverables delivered by `forkedAt`.
+ *    `fork` | `aside` | `engine-switch`, `parentChatId`, and a valid
+ *    `forkedAt`. They show the parent's deliverables delivered by `forkedAt`.
+ *
+ * `forkedAt` is what proves a copy, not the role. The role is a free label:
+ * `start_chat_session` and the stream route let an agent or an API key put
+ * any role on a child (`engine-switch` is even suggested), and such a child
+ * starts with no history. Only the fork endpoint and supersede write
+ * `forkedAt` (and only supersede writes `supersedes`); no other route, tool
+ * or metadata write sets either, so a spawned child never reads through.
  *
  * Not a copy: a superseded original (`supersededBy`; its `parentChatId`
  * points at N only to place it in the tree), and ordinary child chats
@@ -56,8 +63,9 @@ export function copiedFrom(meta: Meta): { chatId: string; at?: number; supersede
   if (supersedes && typeof supersedes.chatId === "string" && supersedes.chatId)
     out.push({ chatId: supersedes.chatId, at: when(supersedes.cutoff) ?? when(supersedes.at), supersede: true });
   const parent = typeof meta.parentChatId === "string" && meta.parentChatId ? meta.parentChatId : undefined;
-  if (parent && !meta.supersededBy && typeof meta.chatRole === "string" && COPY_ROLES.has(meta.chatRole))
-    out.push({ chatId: parent, at: when(meta.forkedAt), supersede: false });
+  const forkedAt = when(meta.forkedAt);
+  if (parent && forkedAt !== undefined && !meta.supersededBy && typeof meta.chatRole === "string" && COPY_ROLES.has(meta.chatRole))
+    out.push({ chatId: parent, at: forkedAt, supersede: false });
   return out;
 }
 

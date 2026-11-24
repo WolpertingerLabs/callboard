@@ -8,7 +8,7 @@ import { formatByteRange, parseRangeHeader, upstreamRangeFor, validateUpstreamCo
 import { createLogger } from "../utils/logger.js";
 import { DATA_DIR } from "../utils/paths.js";
 import { deliverablePathForChat } from "../services/sandbox-deliverables.js";
-import { deliverySources } from "../services/sandbox-lineage.js";
+import { deliverySources, type DeliverySource } from "../services/sandbox-lineage.js";
 
 const log = createLogger("files");
 
@@ -56,8 +56,8 @@ export type FilesRouterOptions = Pick<PublicFetchOptions, "isAllowedAddress" | "
   onProxySettled?: () => void;
   /** The data directory whose Sandbox desktop deliverables are chat-scoped (default `DATA_DIR`), for tests. */
   dataDir?: string;
-  /** The chats whose deliverables a chat's cards may show (default: itself and the chats its history was copied from), for tests. */
-  deliverableChats?: (chatId: string) => readonly string[];
+  /** The chats whose deliverables a chat's cards may show, each with its copy point (default: itself and the chats its history was copied from), for tests. */
+  deliverableChats?: (chatId: string) => readonly DeliverySource[];
 };
 
 /**
@@ -108,7 +108,8 @@ export function createFilesRouter(proxyOptions: FilesRouterOptions = {}) {
     }
 
     const chat = typeof req.query.chat === "string" ? req.query.chat : undefined;
-    const chats = () => (chat ? (proxyOptions.deliverableChats ?? ((id: string) => deliverySources(id).map((s) => s.chatId)))(chat) : []);
+    // With each source's copy point: a fork's cards serve its parent's files delivered by forkedAt, not later ones.
+    const chats = () => (chat ? (proxyOptions.deliverableChats ?? ((id: string) => deliverySources(id)))(chat) : []);
     return serveLocalFile(filePath, req, res, download, { dataDir: proxyOptions.dataDir ?? DATA_DIR, chats });
   });
 
@@ -147,7 +148,7 @@ function serveLocalFile(
   req: Request,
   res: Response,
   download = false,
-  scope: { dataDir: string; chats?: () => readonly string[] } = { dataDir: DATA_DIR },
+  scope: { dataDir: string; chats?: () => readonly DeliverySource[] } = { dataDir: DATA_DIR },
 ) {
   // Validate absolute path, no null bytes
   if (!path.isAbsolute(filePath)) {
