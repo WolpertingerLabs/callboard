@@ -42,6 +42,7 @@ import {
   currentBase,
   hostArchitecture,
   inspectProfileImage,
+  isTrustedBuiltin,
   listAllProfiles,
   listProfiles,
   loadBuiltinProfiles,
@@ -338,16 +339,20 @@ export function getSandboxBuilds(): SandboxBuilds {
  * is plain JSON in the data directory, so an agent that can write files there
  * could put any recipe, state or provenance in it; this is what makes sure
  * nothing it wrote is built without a human reading exactly that recipe.
- * Built-ins ship in the package and keep their one-click build.
+ * A **shipped** built-in ({@link isTrustedBuiltin}: its recipe hashes to the
+ * digest pinned in source) keeps its one-click build, pinned to that digest
+ * too. A built-in file that is not the shipped recipe — dropped into or
+ * edited in `docker/profiles/`, which is user-writable in a source checkout
+ * or a user-level npm install — is treated like a store-backed profile.
  */
 export function startSandboxBuild(profileId?: string, options: { digest?: string } = {}): SandboxDesktopBuild {
   let target: BuildTarget = { kind: "base" };
   if (profileId !== undefined) {
     const entry = resolveProfileId(profileId);
     if (!entry) throw Object.assign(new Error(`There is no sandbox profile ${JSON.stringify(profileId)}`), { code: "not_found" });
-    if (entry.source !== "builtin") {
+    if (!isTrustedBuiltin(entry)) {
       if (!options.digest)
-        throw Object.assign(new Error(`Profile ${entry.id} is not built in: review its recipe first, and build it with the reviewed digest`), {
+        throw Object.assign(new Error(`Profile ${entry.id} is not a shipped built-in: review its recipe first, and build it with the reviewed digest`), {
           code: "review_required",
         });
       if (options.digest !== entry.digest)
@@ -358,7 +363,9 @@ export function startSandboxBuild(profileId?: string, options: { digest?: string
       id: entry.id,
       scope: entry.scope,
       name: entry.recipe.name,
-      ...(entry.source !== "builtin" ? { digest: entry.digest } : {}),
+      // Always pinned: a shipped built-in to its pinned digest, anything else to the reviewed one. A file
+      // edited after this was queued then fails the build before anything is fetched.
+      digest: entry.digest,
       ...(entry.version !== undefined ? { version: entry.version } : {}),
     };
   }
@@ -379,7 +386,7 @@ export function startSandboxBuild(profileId?: string, options: { digest?: string
  * cannot start, until a human reviews and builds it.
  */
 export function isUnverifiedGlobal(entry: ProfileEntry, image: ProfileImageInfo): boolean {
-  return entry.scope === "global" && entry.source !== "builtin" && !(STARTABLE_PROFILE_STATES as readonly string[]).includes(image.state);
+  return entry.scope === "global" && !isTrustedBuiltin(entry) && !(STARTABLE_PROFILE_STATES as readonly string[]).includes(image.state);
 }
 
 /** What a human reads before building a profile that is not built in; its `digest` is what `POST /build` must quote. */
@@ -402,6 +409,8 @@ export async function profileBuildReview(profileId: string): Promise<SandboxProf
     review: recipeReview(entry.recipe, resolveSandboxSettings(readSandboxSettings())),
     ...(image.recipe ? { built: { digest: image.recipe, ...(builtVersion ? { recipe: builtVersion.recipe, version: builtVersion.version } : {}) } } : {}),
     ...(isUnverifiedGlobal(entry, image) ? { unverified: true as const } : {}),
+    imageState: image.state,
+    ...(entry.builtinProblem ? { builtinProblem: entry.builtinProblem } : {}),
     ...(stored
       ? {
           provenance: {
@@ -484,7 +493,8 @@ export async function sandboxProfileStatuses(chat?: ProfileChatScope): Promise<S
         description: entry.recipe.description,
         source: entry.source,
         ...(unverified ? { unverified: true as const } : {}),
-        ...(entry.source !== "builtin" ? { reviewRequired: true as const } : {}),
+        ...(!isTrustedBuiltin(entry) ? { reviewRequired: true as const } : {}),
+        ...(entry.builtinProblem ? { builtinProblem: entry.builtinProblem } : {}),
         ...(stored && entry.version !== undefined
           ? {
               agent: {

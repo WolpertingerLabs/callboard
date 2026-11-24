@@ -59,13 +59,23 @@ export default function SandboxProfileBuildReview({
     <div data-testid={`sandbox-profile-review-${name}`} style={{ ...box, marginTop: 10, minWidth: 0 }}>
       <strong style={{ fontSize: 14 }}>Review before building {name}</strong>
       <p style={{ ...muted, margin: "4px 0" }}>
-        This recipe is not built in: it comes from the profile store. Read what will build. The build is pinned to this exact recipe (sha256{" "}
-        <code style={codeStyle}>{review.digest}</code>), so if the recipe changes before it runs, nothing is built.
+        This recipe is not one Callboard shipped: it comes from the profile store, or from an unrecognised file. Read what will build. The build is pinned to
+        this exact recipe (sha256 <code style={codeStyle}>{review.digest}</code>), so if the recipe changes before it runs, nothing is built.
       </p>
+      {review.builtinProblem && (
+        <p role="alert" data-testid="sandbox-profile-review-builtin-problem" style={{ ...box, borderColor: "var(--warning)", fontSize: 13 }}>
+          <strong>{review.builtinProblem === "modified" ? "Not the shipped recipe." : "Not shipped with Callboard."}</strong>{" "}
+          {review.builtinProblem === "modified"
+            ? "This file in the built-in profiles' folder differs from the recipe this Callboard version shipped."
+            : "No recipe of this name ships with this Callboard version."}{" "}
+          That folder is writable by this machine&apos;s user (in a source checkout or a user-level install), so read it like any other recipe.
+        </p>
+      )}
       {review.unverified && (
         <p role="alert" data-testid="sandbox-profile-review-unverified" style={{ ...box, borderColor: "var(--warning)", fontSize: 13 }}>
-          <strong>Unverified global profile.</strong> Callboard recorded no promotion for it: no image of it was ever built or promoted by this Callboard. A
-          global store file can be written by anything with access to the data directory. Agents do not see it, and it cannot start, until you build it here.
+          <strong>Unverified global profile.</strong> No image Callboard built for it exists now (never built here, image removed, or needs a rebuild
+          {review.imageState ? `: ${review.imageState}` : ""}). Its file can&apos;t be trusted on its own: agents don&apos;t see it and it can&apos;t start
+          until you build it here.
         </p>
       )}
       <RecipeRiskReview review={review.review} />

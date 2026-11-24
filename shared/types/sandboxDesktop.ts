@@ -132,14 +132,23 @@ export interface SandboxProfileStatus {
   /** Agent-built profiles: which version is in force, and where it came from (stored data, unverified). Absent for built-ins. */
   agent?: SandboxProfileAgentInfo;
   /**
-   * A store-backed global profile with no image Callboard built for it (by a
-   * promotion, or a build a human reviewed): nothing this daemon recorded
-   * says a human ever read it. Agents do not see it, and it cannot start,
-   * until a human reviews and builds it.
+   * A global profile that is not a shipped built-in, with no startable image
+   * Callboard built for it **now**: never built here, its image removed, or
+   * one that needs a rebuild (`image.state` says which). Its file can't be
+   * trusted on its own, so agents do not see it and it cannot start until a
+   * human reviews and builds it. Not an accusation: a legitimately promoted
+   * profile whose image was removed reads the same.
    */
   unverified?: true;
-  /** Building it needs the review (`GET …/profiles/:name/review`) and its digest: every profile but a built-in. */
+  /** Building it needs the review (`GET …/profiles/:name/review`) and its digest: every profile but a shipped built-in. */
   reviewRequired?: true;
+  /**
+   * A file in the built-ins' directory that is not a recipe this Callboard
+   * shipped: `unknown` (no shipped recipe has this name) or `modified` (its
+   * recipe differs from the shipped one, whose digest is pinned in source).
+   * It is treated like a store-backed profile: reviewed, digest-pinned.
+   */
+  builtinProblem?: "unknown" | "modified";
   gl: "none" | "software";
   /** What the recipe asks for (absent: the base sandbox's value). */
   requested: Partial<SandboxProfileLimits>;
@@ -303,8 +312,12 @@ export interface SandboxProfileBuildReview {
   review: SandboxProfileProposalCardInput["review"];
   /** What the image there now was built from: its digest, and its recipe when the store still has that version. */
   built?: { digest: string; recipe?: string; version?: number };
-  /** Store-backed global with no image Callboard built (see `SandboxProfileStatus.unverified`). */
+  /** A global that is not a shipped built-in, with no startable image Callboard built (see `SandboxProfileStatus.unverified`). */
   unverified?: true;
+  /** The image's state now (`missing`, `insecure`, `rebuild-required`…), so "unverified" can say why. */
+  imageState?: SandboxProfileState;
+  /** See `SandboxProfileStatus.builtinProblem`. */
+  builtinProblem?: "unknown" | "modified";
   /** The store's own account of where it came from. Plain JSON in the data directory: anything that can write there could have written it. */
   provenance?: {
     createdBy?: string;

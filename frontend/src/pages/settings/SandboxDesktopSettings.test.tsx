@@ -628,7 +628,7 @@ describe("Settings → Sandbox desktop", () => {
         expect(screen.queryByTestId("sandbox-profile-review-inkscape")).toBeNull();
         expect(buildSandboxDesktopImage).not.toHaveBeenCalled();
       });
-      it("an unverified global store profile is badged, and its review says no promotion was recorded", async () => {
+      it("an unverified global profile is badged with its image state, and says what is known — not that it was planted", async () => {
         const forged = {
           ...promoted,
           name: "office",
@@ -644,13 +644,50 @@ describe("Settings → Sandbox desktop", () => {
           scope: "global",
           name: "office",
           unverified: true,
+          imageState: "missing",
           built: undefined,
         });
         render(<SandboxDesktopSettings />);
-        expect((await screen.findByTestId("sandbox-profile-unverified-office")).textContent).toBe("unverified");
-        expect(screen.getByTestId("sandbox-profile-office").textContent).toMatch(/Agents don.t see it and it can.t start until you review and build it/);
+        expect((await screen.findByTestId("sandbox-profile-unverified-office")).textContent).toBe("unverified · Not built");
+        const text = screen.getByTestId("sandbox-profile-unverified-text-office").textContent!;
+        expect(text).toMatch(/No image Callboard built for this global profile exists now \(never built here, image removed, or needs a rebuild: not built\)/);
+        expect(text).toMatch(/Its file can.t be trusted on its own: agents don.t see it and it can.t start until you review and build it/);
+        expect(text).not.toMatch(/never (built or )?promoted|no promotion/i);
         fireEvent.click(screen.getByRole("button", { name: "Build profile office" }));
-        expect((await screen.findByTestId("sandbox-profile-review-unverified")).textContent).toMatch(/recorded no promotion/);
+        expect((await screen.findByTestId("sandbox-profile-review-unverified")).textContent).toMatch(/No image Callboard built for it exists now.*: missing/);
+      });
+      it("a promoted profile whose image went insecure says so in its badge", async () => {
+        const stale = { ...promoted, unverified: true as const, reviewRequired: true as const, image: { name: "x:gimp", state: "insecure" as const } };
+        vi.mocked(getSandboxDesktopStatus).mockResolvedValue(status({ profiles: [stale] }));
+        render(<SandboxDesktopSettings />);
+        expect((await screen.findByTestId("sandbox-profile-unverified-gimp")).textContent).toMatch(/^unverified · /);
+        expect(screen.getByTestId("sandbox-profile-unverified-gimp").textContent).not.toBe("unverified · Not built");
+      });
+      it("a built-in file that is not the shipped recipe is flagged, and needs the review", async () => {
+        const dropped = {
+          ...blender,
+          id: "global/zz-review-evil",
+          name: "zz-review-evil",
+          builtinProblem: "unknown" as const,
+          reviewRequired: true as const,
+          unverified: true as const,
+        };
+        const modified = { ...blender, builtinProblem: "modified" as const, reviewRequired: true as const };
+        vi.mocked(getSandboxDesktopStatus).mockResolvedValue(status({ profiles: [dropped, modified] }));
+        vi.mocked(getSandboxProfileReview).mockResolvedValue({ ...review, id: "global/blender", scope: "global", name: "blender", builtinProblem: "modified" });
+        render(<SandboxDesktopSettings />);
+        expect((await screen.findByTestId("sandbox-profile-builtin-problem-zz-review-evil")).textContent).toBe("not shipped with Callboard");
+        expect(screen.getByTestId("sandbox-profile-builtin-problem-blender").textContent).toBe("not the shipped recipe");
+        fireEvent.click(screen.getByRole("button", { name: /^(Build|Rebuild) profile blender$/ }));
+        expect((await screen.findByTestId("sandbox-profile-review-builtin-problem")).textContent).toMatch(
+          /differs from the recipe this Callboard version shipped/,
+        );
+        expect(buildSandboxDesktopImage).not.toHaveBeenCalled();
+      });
+      it("says plainly that code execution brings the Docker socket", async () => {
+        vi.mocked(getSandboxDesktopStatus).mockResolvedValue(status({ profiles: [blender] }));
+        render(<SandboxDesktopSettings />);
+        expect((await screen.findByTestId("sandbox-docker-socket-note")).textContent).toMatch(/Docker access is root access.*code execution.*consent/);
       });
     });
 

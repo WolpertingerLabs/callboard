@@ -370,7 +370,8 @@ function ProfileCard({
   const [history, setHistory] = useState(false);
   // Anything but a built-in builds only after its review (SandboxProfileBuildReview), pinned to the reviewed digest.
   const [reviewing, setReviewing] = useState(false);
-  const needsReview = profile.source !== "builtin" || profile.reviewRequired === true;
+  // `reviewRequired` from the daemon (any profile but a shipped built-in); an older daemon sends none, so agent-built ones are assumed.
+  const needsReview = profile.reviewRequired === true || profile.source !== "builtin";
   const { image, limits } = profile;
   const built = image.state !== "missing";
   const unsupported = profile.architectureSupported === false;
@@ -407,7 +408,15 @@ function ProfileCard({
           )}
           {profile.unverified && (
             <span data-testid={`sandbox-profile-unverified-${profile.name}`} style={{ ...badgeStyle, color: "var(--warning)", borderColor: "var(--warning)" }}>
-              unverified
+              unverified · {PROFILE_STATE_LABELS[image.state] ?? image.state}
+            </span>
+          )}
+          {profile.builtinProblem && (
+            <span
+              data-testid={`sandbox-profile-builtin-problem-${profile.name}`}
+              style={{ ...badgeStyle, color: "var(--warning)", borderColor: "var(--warning)" }}
+            >
+              {profile.builtinProblem === "modified" ? "not the shipped recipe" : "not shipped with Callboard"}
             </span>
           )}
         </span>
@@ -419,10 +428,19 @@ function ProfileCard({
         </span>
       </div>
       {isAgent && <AgentProvenance ownerLabel={agent?.ownerLabel} promoted={agent?.promoted} />}
-      {profile.unverified && (
+      {profile.builtinProblem && (
         <p role="status" style={{ ...helpStyle, color: "var(--warning)", margin: "4px 0" }}>
-          A global profile from the store with no promotion Callboard recorded and no image it built. Agents don&apos;t see it and it can&apos;t start until you
-          review and build it.
+          {profile.builtinProblem === "modified"
+            ? "This file in the built-in profiles' folder is not the recipe this Callboard version shipped (it was edited). "
+            : "No recipe of this name ships with this Callboard version; the file was added to the built-in profiles' folder. "}
+          It is treated like any profile from the store: you review it before every build.
+        </p>
+      )}
+      {profile.unverified && (
+        <p role="status" data-testid={`sandbox-profile-unverified-text-${profile.name}`} style={{ ...helpStyle, color: "var(--warning)", margin: "4px 0" }}>
+          No image Callboard built for this global profile exists now (never built here, image removed, or needs a rebuild:{" "}
+          {(PROFILE_STATE_LABELS[image.state] ?? image.state).toLowerCase()}). Its file can&apos;t be trusted on its own: agents don&apos;t see it and it
+          can&apos;t start until you review and build it.
         </p>
       )}
       <p style={{ ...helpStyle, margin: "6px 0", wordBreak: "break-word" }}>{profile.description}</p>
@@ -1042,6 +1060,13 @@ export default function SandboxDesktopSettings() {
             with the same hardening as the base desktop. An agent asks for one by name; you still consent in the chat. Build them here or with{" "}
             <code style={codeStyle}>{SANDBOX_PROFILE_BUILD_COMMAND} &lt;name&gt;</code>; a build downloads the recipe&apos;s pinned files and Debian packages,
             and can take several minutes.
+          </p>
+          <p style={subtitleStyle} data-testid="sandbox-docker-socket-note">
+            <strong>Docker access is root access.</strong> In managed mode Callboard&apos;s user drives Docker (for example through the{" "}
+            <code style={codeStyle}>docker</code> group), so any agent that can run code as that user — a chat with code execution allowed — can drive it too.
+            Such an agent could build an image labelled as a profile and pair it with a matching store file, so the profile shows as built and verified here.
+            Starting a session on it still needs your consent in the chat, and the reviews here protect only what Callboard builds. Allow code execution only
+            where you would allow root.
           </p>
           {profiles.map((profile) => (
             <ProfileCard

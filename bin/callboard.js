@@ -65,6 +65,7 @@ try {
       profile: { type: "string" },
       scope: { type: "string" },
       digest: { type: "string" },
+      "show-recipe": { type: "boolean", default: false },
     },
     strict: false,
     allowPositionals: true,
@@ -277,6 +278,19 @@ async function cmdSandboxProfileBuild(image, docker, name) {
     console.error(`No sandbox profile ${JSON.stringify(name)} in scope ${values.scope ?? "global"}. See: callboard sandbox profiles`);
     process.exit(1);
   }
+  // Print exactly what would build (PATH and env included) and stop: what a review of a non-shipped profile reads.
+  if (values["show-recipe"]) {
+    console.log(profiles.profileRecipeText(entry));
+    const trust = profiles.isTrustedBuiltin(entry)
+      ? "a built-in shipped with this Callboard (its digest is pinned in source)"
+      : entry.builtinProblem === "modified"
+        ? "NOT the built-in recipe this Callboard shipped (the file was edited): review it like any other"
+        : entry.builtinProblem === "unknown"
+          ? "NOT a built-in this Callboard shipped (the file was added): review it like any other"
+          : "from the profile store (agent-built or promoted): review it before building";
+    console.log(`\n# ${entry.id}, sha256 ${entry.digest}: ${trust}`);
+    return;
+  }
   const arch = profiles.architectureProblem(entry, await profiles.hostArchitecture(docker).catch(() => undefined));
   if (arch) {
     console.error(`${arch} Nothing was built.`);
@@ -287,16 +301,18 @@ async function cmdSandboxProfileBuild(image, docker, name) {
     .catch((err) => ({ state: "unknown", detail: err.message }));
   // Not built in: its recipe came from the profile store (an agent's proposal), which is plain JSON in the data
   // directory. Show what would build, and build only with the digest of exactly that recipe.
-  if (entry.source !== "builtin") {
+  if (!profiles.isTrustedBuiltin(entry)) {
     const r = entry.recipe;
     if (values.digest !== entry.digest) {
-      console.log(`Sandbox profile ${entry.id} is not built in. Review exactly what would build:\n`);
+      console.log(`Sandbox profile ${entry.id} is not a built-in shipped with this Callboard. Review exactly what would build:\n`);
       console.log(`  Setup script (runs at build time as the desktop user, offline):\n${r.setup ? r.setup.replace(/^/gm, "    ") : "    (none)\n"}`);
       console.log(`  Debian packages (${r.packages.length}, installed as root): ${r.packages.join(" ") || "(none)"}`);
       console.log(`  Downloads: ${r.downloads.map((d) => `${d.url} (sha256 ${d.sha256})`).join("\n             ") || "(none)"}`);
       console.log(`  Limits asked for: ${JSON.stringify(r.limits)}; architectures: ${r.architectures.join(", ") || "any"}; GL: ${r.gl}`);
       console.log(`  Recipe digest: ${entry.digest}\n`);
-      console.log(`The full canonical recipe: GET /api/sandbox-desktop/profiles/${name}/review?scope=${entry.scope}, or Settings → Sandbox desktop.`);
+      console.log(
+        `The full canonical recipe (PATH and env included): callboard sandbox build --profile ${name} --scope ${entry.scope} --show-recipe, or Settings → Sandbox desktop.`,
+      );
       console.log(
         values.digest
           ? `--digest does not match: the recipe changed. Review it again.`
@@ -994,9 +1010,10 @@ Usage: callboard sandbox <build|status|profiles|rm> [options]
 
 Commands:
   build             Build the image and its builder stage (docker build); skipped if up to date
-  build --profile <name> [--scope <scope>] [--digest <sha256>]
+  build --profile <name> [--scope <scope>] [--digest <sha256>] [--show-recipe]
                     Build one sandbox profile's image (the base first, if needed). A profile
-                    that is not built in prints its recipe and needs --digest of that recipe
+                    that is not a shipped built-in prints its review and needs --digest of
+                    that recipe; --show-recipe prints the canonical recipe and builds nothing
   profiles          List the sandbox profiles, their limits and image state
   rm --profile <name> [--scope <scope>]
                     Remove a profile's image (scope: global, the default, or a workspace key)
