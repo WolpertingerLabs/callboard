@@ -127,6 +127,9 @@ export interface AdminConnectionAuth {
   /** jwt_bearer: the user the service account acts as (admin config). */
   subject?: string;
   subjectRequired?: boolean;
+  /** The `google` connection: the caller's selection (callers.<alias>.google),
+   *  services in catalog order. The subject, if any, is `subject` above. */
+  google?: { auth: AdminGoogleAuthMode; services: Record<string, string> };
 }
 
 // ── /admin/callers/:alias/connection-status ──────────────────────────────
@@ -347,6 +350,58 @@ export interface AdminVaultDecision {
 export interface AdminVaultRevoke {
   grant: Omit<AdminVaultGrant, 'item' | 'effectiveMode'>;
   changed: boolean;
+}
+
+// ── /admin/google/catalog, /admin/callers/:alias/google ──────────────────
+// src/remote/admin-google.ts. The selection is admin-only config: no tool
+// reads or writes it.
+
+export type AdminGoogleAuthMode = 'user' | 'service-account';
+
+/** GET /google/catalog: what the dashboard editor renders. Names, levels,
+ *  scopes and summaries only; no allowlists or test requests. */
+export interface AdminGoogleCatalog {
+  /** Each auth mode and the credential names it reads, in catalog order. */
+  authModes: { id: AdminGoogleAuthMode; secrets: string[] }[];
+  services: {
+    id: 'gmail' | 'calendar' | 'drive' | 'sheets' | 'docs' | 'slides';
+    name: string;
+    docsUrl: string;
+    /** The API's name in the Cloud console's API library. */
+    enableApi: string;
+    levels: {
+      id: string;
+      summary: string;
+      scopes: string[];
+      auth: AdminGoogleAuthMode[];
+      /** Service-account mode only: the level needs a subject. */
+      subjectRequired?: true;
+    }[];
+  }[];
+  crossScopeNotes: { when: Record<string, string>; text: string }[];
+}
+
+/** A caller's `google` block, as stored (services in catalog order). */
+export interface AdminGoogleSelectionConfig {
+  auth: AdminGoogleAuthMode;
+  services: Record<string, string>;
+  subject?: string;
+}
+
+/** GET/PUT/DELETE /callers/:alias/google. */
+export interface AdminGoogleSelection {
+  /** `google` is in the caller's connections. */
+  enabled: boolean;
+  /** The valid selection, or null when there is none or it is invalid. */
+  selection: AdminGoogleSelectionConfig | null;
+  /** Sorted union of the selection's scopes: what the refresh token (user
+   *  mode) or the domain-wide delegation entry (service account) must cover. */
+  consentScopes: string[];
+  /** Why the connection is dropped (enabled), or why the stored block is
+   *  invalid (either way). */
+  problem?: string;
+  /** Cross-service scope notes that apply to the selection. */
+  notes: string[];
 }
 
 // ── Daemon reachability envelope ─────────────────────────────────────────

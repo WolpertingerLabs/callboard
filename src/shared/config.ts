@@ -10,6 +10,7 @@
  * Keys directory: ~/.drawlatch/keys/
  */
 
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -997,7 +998,84 @@ export function loadRemoteConfig(): RemoteServerConfig {
 
 export function saveRemoteConfig(config: RemoteServerConfig): void {
   fs.mkdirSync(getConfigDir(), { recursive: true, mode: 0o700 });
-  fs.writeFileSync(getRemoteConfigPath(), JSON.stringify(config, null, 2), { mode: 0o600 });
+  writeFileAtomic(getRemoteConfigPath(), JSON.stringify(config, null, 2));
+}
+
+/** Directories already warned about (writeFileAtomic's in-place fallback). */
+const nonAtomicWarned = new Set<string>();
+
+/**
+ * Replace `file` atomically: write a temp file next to it, then rename it
+ * over the target, so a reader (or a crash) never sees a partial file.
+ *
+ * - A symlinked `file` is written through: the link's real target is
+ *   replaced (temp file in the target's directory), the link is kept.
+ * - The target's mode is kept; a new file is 0600.
+ * - Any failure removes the temp file and leaves the old content in place.
+ * - If the temp file can't be created because the directory isn't writable
+ *   (EACCES/EPERM) while the file is, it falls back to writing the file in
+ *   place, as drawlatch did before, with a one-time warning: that's not
+ *   atomic, but a setup that used to work keeps working.
+ */
+export function writeFileAtomic(file: string, data: string): void {
+  let target = file;
+  let mode = 0o600;
+  try {
+    target = fs.realpathSync(file);
+    mode = fs.statSync(target).mode & 0o777;
+  } catch {
+    // New file (or a dangling symlink: written in place below, like before).
+    if (isSymlink(file)) {
+      fs.writeFileSync(file, data, { mode: 0o600 });
+      return;
+    }
+  }
+  const dir = path.dirname(target);
+  const tmp = path.join(
+    dir,
+    `.${path.basename(target)}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`,
+  );
+  let fd: number;
+  try {
+    fd = fs.openSync(tmp, 'wx', 0o600);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if ((code === 'EACCES' || code === 'EPERM') && fs.existsSync(target)) {
+      if (!nonAtomicWarned.has(dir)) {
+        nonAtomicWarned.add(dir);
+        console.warn(
+          `[config] ${dir} is not writable, so ${path.basename(target)} is written in place (not atomic).`,
+        );
+      }
+      fs.writeFileSync(target, data);
+      return;
+    }
+    throw err;
+  }
+  try {
+    try {
+      const buf = Buffer.from(data, 'utf-8');
+      for (let off = 0; off < buf.length; ) {
+        off += fs.writeSync(fd, buf, off, buf.length - off);
+      }
+      fs.fsyncSync(fd);
+      fs.fchmodSync(fd, mode);
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.renameSync(tmp, target);
+  } catch (err) {
+    fs.rmSync(tmp, { force: true });
+    throw err;
+  }
+}
+
+function isSymlink(file: string): boolean {
+  try {
+    return fs.lstatSync(file).isSymbolicLink();
+  } catch {
+    return false;
+  }
 }
 
 // ── Per-caller route resolution ──────────────────────────────────────────

@@ -336,6 +336,8 @@ describe('the google connection on caller views (read-only)', () => {
       ],
       narrowed: false,
       subject: 'ceo@example.com',
+      // The selection, for the dashboard's mode badge and service chips.
+      google: { auth: 'service-account', services: { gmail: 'read', calendar: 'read' } },
     });
     expect(google?.requiredSecrets).toEqual([
       { name: 'GOOGLE_SERVICE_ACCOUNT_KEY', present: true },
@@ -368,6 +370,7 @@ describe('the google connection on caller views (read-only)', () => {
       callerAuth: {
         grant: 'refresh_token',
         scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+        google: { auth: 'user', services: { sheets: 'edit' } },
       },
     });
     // Not enabled: the default (user) mode's secrets, no callerAuth.
@@ -405,6 +408,8 @@ describe('the google connection on caller views (read-only)', () => {
       'Connection "google-sheets" was removed: use "google" with callers.migrated.google.services.sheets = "edit" (auth "user"). See CONNECTIONS.md → Google.',
     );
     expect(by.github.problem).toBeUndefined();
+    // Neither a template nor a connector: not labelled custom.
+    expect(by['google-sheets'].isCustom).toBe(false);
   });
 
   it('callers: configProblem for a caller that cannot be resolved, none otherwise', async () => {

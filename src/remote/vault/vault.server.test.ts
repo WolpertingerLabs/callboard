@@ -465,6 +465,9 @@ describe('vault canary sweep', () => {
         '/callers/:alias/vault/items',
         '/vault/requests',
         '/vault/grants',
+        // The Google selection editor's reads (src/remote/admin-google.ts).
+        '/google/catalog',
+        '/callers/:alias/google',
       ]),
     );
 

@@ -2003,24 +2003,43 @@ export const toolHandlers: Record<string, ToolHandler> = {
       }
     }
 
-    // Remove from config
-    const { [instance_id]: _removed, ...remainingInstances } = instances;
-
-    // Clean up empty maps
-    if (Object.keys(remainingInstances).length === 0) {
-      if (callerConfig.listenerInstances) {
-        const { [connection]: _removedConn, ...remainingConns } = callerConfig.listenerInstances;
-        if (Object.keys(remainingConns).length === 0) {
-          delete callerConfig.listenerInstances;
-        } else {
-          callerConfig.listenerInstances = remainingConns;
-        }
-      }
-    } else {
-      callerConfig.listenerInstances![connection] = remainingInstances;
+    // Re-load after the await: another writer (the dashboard's Google
+    // selection, say) may have saved meanwhile, and saving the copy loaded
+    // above would undo it.
+    const fresh = loadRemoteConfig();
+    const freshCaller = Object.hasOwn(fresh.callers, context.callerAlias)
+      ? fresh.callers[context.callerAlias]
+      : undefined;
+    if (!freshCaller) {
+      return {
+        success: false,
+        connection,
+        instance_id,
+        error: `Caller not found: ${context.callerAlias}`,
+      };
     }
+    const freshInstances = ownEntry(freshCaller.listenerInstances, connection);
+    if (freshInstances && Object.hasOwn(freshInstances, instance_id)) {
+      // Remove from config
+      const { [instance_id]: _removed, ...remainingInstances } = freshInstances;
 
-    saveRemoteConfig(config);
+      // Clean up empty maps
+      if (Object.keys(remainingInstances).length === 0) {
+        if (freshCaller.listenerInstances) {
+          const { [connection]: _removedConn, ...remainingConns } = freshCaller.listenerInstances;
+          if (Object.keys(remainingConns).length === 0) {
+            delete freshCaller.listenerInstances;
+          } else {
+            freshCaller.listenerInstances = remainingConns;
+          }
+        }
+      } else {
+        freshCaller.listenerInstances![connection] = remainingInstances;
+      }
+
+      saveRemoteConfig(fresh);
+    }
+    // Already removed meanwhile: nothing to save.
 
     return { success: true, connection, instance_id };
   },
@@ -2108,13 +2127,7 @@ export const toolHandlers: Record<string, ToolHandler> = {
     }
     if (enabled) assertAgentMayEnable(config, connection, context);
 
-    const connectionSet = new Set(caller.connections);
-
-    if (enabled) {
-      connectionSet.add(connection);
-    } else {
-      connectionSet.delete(connection);
-
+    if (!enabled) {
       // Stop any running ingestors for this connection
       const ingestorManager = context.ingestorManager;
       try {
@@ -2124,8 +2137,19 @@ export const toolHandlers: Record<string, ToolHandler> = {
       }
     }
 
-    caller.connections = [...connectionSet];
-    saveRemoteConfig(config);
+    // Re-load after the await: another writer (the dashboard's Google
+    // selection, say) may have saved meanwhile, and saving the copy loaded
+    // above would undo it. The checks above don't depend on what can change.
+    const fresh = loadRemoteConfig();
+    const freshCaller = Object.hasOwn(fresh.callers, context.callerAlias)
+      ? fresh.callers[context.callerAlias]
+      : undefined;
+    if (!freshCaller) throw new Error(`Unknown caller: ${context.callerAlias}`);
+    const connectionSet = new Set(freshCaller.connections);
+    if (enabled) connectionSet.add(connection);
+    else connectionSet.delete(connection);
+    freshCaller.connections = [...connectionSet];
+    saveRemoteConfig(fresh);
 
     // Invalidate cached resolved routes so connection changes take effect immediately
     context.refreshRoutes();
