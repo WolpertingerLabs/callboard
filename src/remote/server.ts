@@ -173,15 +173,60 @@ function resolvePort(envValue: string | undefined, fallback: number): number {
   return parsed;
 }
 
-/** Loopback guard — used by /events/stream, /admin.
- *  Hoisted to module scope so the admin router and its tests can reuse it. */
+/**
+ * Headers that mean "something forwarded this request to me". Their presence
+ * is the signal; their values are never read or trusted. Callboard's
+ * `FORWARDING_HEADERS` (backend/src/utils/client-ip.ts) plus `via`, which a
+ * proxy such as Squid or Apache with `ProxyVia` adds without any X-Forwarded-*.
+ */
+const FORWARDING_HEADERS = [
+  'x-forwarded-for',
+  'x-forwarded-host',
+  'x-forwarded-proto',
+  'x-real-ip',
+  'forwarded',
+  'via',
+  'cf-connecting-ip',
+  'x-client-ip',
+  'true-client-ip',
+  'fastly-client-ip',
+  'fly-client-ip',
+] as const;
+
+/**
+ * True only for a direct connection from this machine: the socket's peer is
+ * loopback AND the request carries no forwarding header. Anything that forwards
+ * from the same host connects from loopback, so the socket address alone would
+ * admit every client behind it.
+ *
+ * Detected (refused): Caddy's `reverse_proxy` and Cloudflare (including the
+ * built-in cloudflared tunnel, see tunnel.ts) add X-Forwarded-* /
+ * CF-Connecting-IP by default.
+ * NOT detected: a default nginx `proxy_pass` (no X-Forwarded-* unless
+ * `proxy_set_header` adds them), `ssh -R` and socat add nothing and are
+ * indistinguishable from a local client at this layer. Don't put such a
+ * forwarder in front of loopback-only routes.
+ */
+export function isDirectLoopbackClient(req: express.Request): boolean {
+  // Typed as always present, but hand-built requests (tests, adapters) may omit it.
+  const headers = (req.headers as express.Request['headers'] | undefined) ?? {};
+  for (const name of FORWARDING_HEADERS) {
+    // An empty value still means a hop announced itself.
+    if (headers[name] !== undefined) return false;
+  }
+  const addr = req.socket.remoteAddress;
+  return addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1';
+}
+
+/** Loopback guard — used by /events/stream. Refuses proxied requests even from
+ *  a loopback socket (see {@link isDirectLoopbackClient}).
+ *  Hoisted to module scope so tests can reuse it. */
 export function requireLoopback(
   req: express.Request,
   res: express.Response,
   next: express.NextFunction,
 ): void {
-  const addr = req.socket.remoteAddress;
-  if (addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1') {
+  if (isDirectLoopbackClient(req)) {
     next();
   } else {
     res.status(403).json({ error: 'Forbidden: local access only' });
@@ -305,7 +350,7 @@ setInterval(() => {
  * Project the active sessions into a sanitized snapshot for read-only use.
  *
  * Drops `channel` (holds AES keys) and `resolvedRoutes` (carry decrypted
- * secrets). Used by the loopback /admin API; never call res.json(session).
+ * secrets). Used by the password-gated /api/admin API; never call res.json(session).
  */
 export function getSessionsSnapshot(): SessionSnapshot[] {
   const out: SessionSnapshot[] = [];

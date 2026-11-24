@@ -96,6 +96,85 @@ describe('requireLoopback', () => {
       expect(r.state.status, `no status set for ${addr}`).toBe(null);
     }
   });
+
+  // A local reverse proxy (Caddy, nginx, tailscale serve, ssh -R) connects
+  // from loopback, so the socket address alone can't tell a LAN client from a
+  // local one. Any forwarding header means a hop announced itself: refuse.
+  const FORWARDING_HEADERS = [
+    'x-forwarded-for',
+    'x-forwarded-host',
+    'x-forwarded-proto',
+    'x-real-ip',
+    'forwarded',
+    'via',
+    'cf-connecting-ip',
+    'x-client-ip',
+    'true-client-ip',
+    'fastly-client-ip',
+    'fly-client-ip',
+  ];
+
+  function fakeReqWithHeaders(
+    remoteAddress: string | undefined,
+    headers: Record<string, string | string[]>,
+  ): express.Request {
+    return { socket: { remoteAddress }, headers } as unknown as express.Request;
+  }
+
+  for (const header of FORWARDING_HEADERS) {
+    it(`rejects loopback + ${header} with the same 403`, () => {
+      for (const addr of ['127.0.0.1', '::1', '::ffff:127.0.0.1']) {
+        const r = fakeRes();
+        let calledNext = false;
+        // A value that *claims* loopback: the guard must not trust it.
+        requireLoopback(fakeReqWithHeaders(addr, { [header]: '127.0.0.1' }), r.res, () => {
+          calledNext = true;
+        });
+        expect(calledNext, `${header} from ${addr}`).toBe(false);
+        expect(r.state.status).toBe(403);
+        expect(r.state.body).toEqual({ error: 'Forbidden: local access only' });
+      }
+    });
+  }
+
+  it('rejects a forwarding header even when its value is empty', () => {
+    const r = fakeRes();
+    let calledNext = false;
+    requireLoopback(fakeReqWithHeaders('127.0.0.1', { 'x-forwarded-for': '' }), r.res, () => {
+      calledNext = true;
+    });
+    expect(calledNext).toBe(false);
+    expect(r.state.status).toBe(403);
+  });
+
+  it('rejects non-loopback with a forwarding header that claims loopback', () => {
+    const r = fakeRes();
+    let calledNext = false;
+    requireLoopback(
+      fakeReqWithHeaders('192.168.1.20', { 'x-forwarded-for': '127.0.0.1' }),
+      r.res,
+      () => {
+        calledNext = true;
+      },
+    );
+    expect(calledNext).toBe(false);
+    expect(r.state.status).toBe(403);
+    expect(r.state.body).toEqual({ error: 'Forbidden: local access only' });
+  });
+
+  it('still accepts loopback carrying only ordinary headers', () => {
+    const r = fakeRes();
+    let calledNext = false;
+    requireLoopback(
+      fakeReqWithHeaders('127.0.0.1', { host: 'localhost:9999', 'user-agent': 'node' }),
+      r.res,
+      () => {
+        calledNext = true;
+      },
+    );
+    expect(calledNext).toBe(true);
+    expect(r.state.status).toBe(null);
+  });
 });
 
 // ── End-to-end (admin router only) tests ─────────────────────────────────
