@@ -107,7 +107,7 @@ Some GitHub endpoints answer with a 302 to another host: release-asset downloads
 
 ### Google
 
-The `google` connection gives an agent Gmail, Calendar, Drive, Sheets, Docs, and Slides through one credential. The operator picks, per caller, how it authenticates and one level for each service it may use. Drawlatch then mints short-lived access tokens for exactly the scopes of those levels, through [OAuth2 token minting](README.md#oauth2-token-minting). The agent never sees the client secret, the refresh token, the service-account key, or the access token. It can't choose its services or ask for more scope: the selection is admin config that no tool reads or writes. Each level's allowlist covers only that service's REST paths. None allows `oauth2.googleapis.com`, `tokeninfo`, `userinfo`, or a `/batch` endpoint (a batch request carries sub-requests that path rules can't see).
+The `google` connection gives an agent Gmail, Calendar, Drive, Sheets, Docs, and Slides through one credential. The operator picks, per caller, how it authenticates and one level for each service it may use. Drawlatch then mints short-lived access tokens for exactly the scopes of those levels, through [OAuth2 token minting](README.md#oauth2-token-minting). The agent never sees the client secret, the refresh token, the service-account key, or the access token. It can't choose its services or ask for more scope: the selection is admin config that no tool reads or writes. Set it in `remote.config.json` as below, or on the dashboard: **Connections → Google → Configure** opens the [Google services editor](README.md#admin-dashboard), which writes the same block. Each level's allowlist covers only that service's REST paths. None allows `oauth2.googleapis.com`, `tokeninfo`, `userinfo`, or a `/batch` endpoint (a batch request carries sub-requests that path rules can't see).
 
 ```json
 {
@@ -175,7 +175,7 @@ With a `subject` it acts as that user instead and reaches what that user can. No
 2. **Publish the app.** Under **Audience**, move an External app from *Testing* to **In production**. In Testing, refresh tokens for these scopes expire after 7 days.
    - An unverified External app that requests sensitive or restricted scopes (`spreadsheets`, `spreadsheets.readonly`, `documents`, and `presentations` are sensitive; `gmail.*` and `drive.readonly` restricted) shows a "Google hasn't verified this app" warning and is limited to 100 users. That's fine for your own account: choose **Advanced → Go to … (unsafe)**.
    - An Internal app needs neither verification nor publishing.
-3. **Consent for exactly the selection's scopes.** Set `SCOPES` to the caller's consent scopes: one scope per selected level (the table above lists them), and nothing else. `test_connection` on `google` returns them as `consentScopes`. The example is the `household` selection above (`sheets: edit`, `docs: edit`, `slides: edit`, `drive: read`). In a shell (bash), set the client ID, the scopes, and a [PKCE](https://www.rfc-editor.org/rfc/rfc7636) verifier and challenge. `read -rs` keeps the client secret out of your shell history:
+3. **Consent for exactly the selection's scopes.** Set `SCOPES` to the caller's consent scopes: one scope per selected level (the table above lists them), and nothing else. `test_connection` on `google` returns them as `consentScopes`, and the dashboard's Google services editor shows this `SCOPES="…"` line, with a copy button, as you choose services. The example is the `household` selection above (`sheets: edit`, `docs: edit`, `slides: edit`, `drive: read`). In a shell (bash), set the client ID, the scopes, and a [PKCE](https://www.rfc-editor.org/rfc/rfc7636) verifier and challenge. `read -rs` keeps the client secret out of your shell history:
 
    ```bash
    CLIENT_ID=1234-abc.apps.googleusercontent.com
@@ -233,7 +233,7 @@ One token serves every selected service, so a dead token, or any other terminal 
 
 #### Changing the selection
 
-Every token request asks for exactly the selection's scopes, and the token is refused if Google grants anything else. So after changing a caller's `google` block:
+Every token request asks for exactly the selection's scopes, and the token is refused if Google grants anything else. So after changing a caller's `google` block (by hand, or in the dashboard editor, which asks for confirmation before a change that adds scopes and lists the scopes to re-consent):
 
 - **Adding a service** needs a refresh token consented for the new scopes too: redo step 3 with the new `consentScopes`. Until then Google either refuses the request (`invalid_scope`, which stops every service) or grants the old scopes only, in which case `test_connection` marks the new service `notConsented` and Google answers its requests with `403`.
 - **Removing a service** works with the old token only if Google narrows a token to the requested scopes on refresh, which Google doesn't document and drawlatch hasn't confirmed. If Google returns the whole grant, every request fails closed with *"the token endpoint granted scopes broader than this connection allows (…)"*, and `test_connection`'s `hint` names the levels those scopes belong to. Plan to re-consent with exactly the new `consentScopes` instead. (The live e2e suite has an informational check of this, `google-scope-probe`.)
@@ -273,7 +273,7 @@ Changing the selection never reuses a token minted for the old one: the token ca
    }
    ```
 
-   `subject` is admin-only config, like the rest of the block: no tool writes it, and the dashboard shows it but has no control that edits it yet. `list_routes` tells the agent only that the connection is `delegated`, not who the user is, and `test_connection` never reports it. A selection with `gmail: "read"` and no subject is invalid, so `google` is dropped for that caller with a boot-log message. With a subject, `users/me` in the Gmail URLs means that user.
+   `subject` is admin-only config, like the rest of the block: no tool writes it. The dashboard's Google services editor can set it (a **Subject** field in service-account mode, required when Gmail is selected), and it shows the comma-separated scope list for the Admin console's delegation entry. The audit line for a dashboard change records only whether a subject is set. `list_routes` tells the agent only that the connection is `delegated`, not who the user is, and `test_connection` never reports it. A selection with `gmail: "read"` and no subject is invalid, so `google` is dropped for that caller with a boot-log message. With a subject, `users/me` in the Gmail URLs means that user.
 
 Errors carry service-account hints:
 
