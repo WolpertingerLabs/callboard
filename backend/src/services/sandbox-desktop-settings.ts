@@ -27,6 +27,9 @@ export interface ResolvedSandboxSettings {
   cpus: number;
   memoryMb: number;
   maxConcurrent: number;
+  keepHours: number;
+  maxKept: number;
+  deliverablesGb: number;
 }
 
 export class SandboxSettingsError extends Error {
@@ -54,7 +57,7 @@ export function normalizeSandboxSettings(input: unknown, strict: boolean): Sandb
     log.warn(`Ignoring sandbox-desktop.json ${field}: not ${rule}`);
   };
   if (strict) {
-    const known = new Set(["mode", "network", "cpus", "memoryMb", "maxConcurrent"]);
+    const known = new Set(["mode", "network", "cpus", "memoryMb", "maxConcurrent", "keepHours", "maxKept", "deliverablesGb"]);
     const unknown = Object.keys(value).filter((key) => !known.has(key));
     if (unknown.length) throw new SandboxSettingsError(`Unknown sandbox desktop setting ${JSON.stringify(unknown[0])}`);
   }
@@ -67,7 +70,7 @@ export function normalizeSandboxSettings(input: unknown, strict: boolean): Sandb
     if (NETWORKS.includes(value.network as SandboxDesktopNetwork)) out.network = value.network as SandboxDesktopNetwork;
     else bad("network", `one of ${NETWORKS.join(", ")}`);
   }
-  const { cpus, memoryMb, maxConcurrent } = SANDBOX_DESKTOP_BOUNDS;
+  const { cpus, memoryMb, maxConcurrent, keepHours, maxKept, deliverablesGb } = SANDBOX_DESKTOP_BOUNDS;
   if (value.cpus !== undefined && value.cpus !== null) {
     // Docker takes CPUs in hundredths at most; anything finer is noise.
     if (inBounds(value.cpus, cpus, false) && Math.round(value.cpus * 100) === value.cpus * 100) out.cpus = value.cpus;
@@ -81,6 +84,18 @@ export function normalizeSandboxSettings(input: unknown, strict: boolean): Sandb
     if (inBounds(value.maxConcurrent, maxConcurrent, true)) out.maxConcurrent = value.maxConcurrent;
     else bad("maxConcurrent", `a whole number from ${maxConcurrent.min} to ${maxConcurrent.max}`);
   }
+  if (value.keepHours !== undefined && value.keepHours !== null) {
+    if (inBounds(value.keepHours, keepHours, true)) out.keepHours = value.keepHours;
+    else bad("keepHours", `a whole number of hours from ${keepHours.min} to ${keepHours.max}`);
+  }
+  if (value.maxKept !== undefined && value.maxKept !== null) {
+    if (inBounds(value.maxKept, maxKept, true)) out.maxKept = value.maxKept;
+    else bad("maxKept", `a whole number from ${maxKept.min} to ${maxKept.max}`);
+  }
+  if (value.deliverablesGb !== undefined && value.deliverablesGb !== null) {
+    if (inBounds(value.deliverablesGb, deliverablesGb, true)) out.deliverablesGb = value.deliverablesGb;
+    else bad("deliverablesGb", `a whole number of GiB from ${deliverablesGb.min} to ${deliverablesGb.max}`);
+  }
   return out;
 }
 
@@ -91,6 +106,9 @@ export function resolveSandboxSettings(settings: SandboxDesktopSettings): Resolv
     cpus: settings.cpus ?? SANDBOX_DESKTOP_BOUNDS.cpus.default,
     memoryMb: settings.memoryMb ?? SANDBOX_DESKTOP_BOUNDS.memoryMb.default,
     maxConcurrent: settings.maxConcurrent ?? SANDBOX_DESKTOP_BOUNDS.maxConcurrent.default,
+    keepHours: settings.keepHours ?? SANDBOX_DESKTOP_BOUNDS.keepHours.default,
+    maxKept: settings.maxKept ?? SANDBOX_DESKTOP_BOUNDS.maxKept.default,
+    deliverablesGb: settings.deliverablesGb ?? SANDBOX_DESKTOP_BOUNDS.deliverablesGb.default,
   };
 }
 

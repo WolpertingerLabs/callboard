@@ -4,7 +4,10 @@
  * container on the sandbox network, the agent acts on it, Stop removes it and
  * its token, a crashed daemon's leftovers are reaped by the next one, and a
  * container with another owner's label survives every reap. Also: the `none`
- * network (an `--internal` network, no published port, no internet). Needs
+ * network (an `--internal` network, no published port, no internet), and the
+ * outbox sync: a file written to ~/outbox reaches the host (by digest) while
+ * the session runs, Stop copies and then removes, and a failing final copy
+ * keeps the container paused until Retry export completes it. Needs
  * Docker and a built packages/computer-use/dist:
  *
  *   CALLBOARD_DOCKER_TESTS=1 npx vitest run backend/src/services/computer-use.sandbox-managed-docker.test.ts
@@ -18,8 +21,8 @@
  */
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { chmod, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -27,7 +30,17 @@ import { setTimeout as delay } from "node:timers/promises";
 import { ComputerUseService, sandboxRunArgs, type Driver } from "@wolpertingerlabs/computer-use";
 import { ComputerUseHost, controlPrincipal, sandboxTargetDriver, type HostPolicy } from "./computer-use.js";
 import { readComputerUsePolicy } from "./computer-use-policy.js";
-import { MANAGED_LABEL, OWNER_LABEL, SESSION_LABEL, CHAT_LABEL, SandboxContainerManager, managedSandboxDriver } from "./sandbox-containers.js";
+import {
+  MANAGED_LABEL,
+  OWNER_LABEL,
+  SESSION_LABEL,
+  CHAT_LABEL,
+  SandboxContainerManager,
+  managedSandboxDriver,
+  type DrainableSandbox,
+} from "./sandbox-containers.js";
+import { SandboxDeliveries, type DeliveryContext, type OutboxSource } from "./sandbox-deliverables.js";
+import { SandboxRecovery } from "./sandbox-recovery.js";
 import { resolveSandboxSettings, type ResolvedSandboxSettings } from "./sandbox-desktop-settings.js";
 import {
   SANDBOX_CONTENT_LABEL,
@@ -61,8 +74,8 @@ const managers: SandboxContainerManager[] = [];
 const hosts: ComputerUseHost[] = [];
 const owners = new Set<string>();
 
-function wire() {
-  const manager = new SandboxContainerManager({ docker: execDocker(), dataDir, settings: () => settings, image, networks });
+function wire(hooks: Partial<ConstructorParameters<typeof SandboxContainerManager>[0]> = {}) {
+  const manager = new SandboxContainerManager({ docker: execDocker(), dataDir, settings: () => settings, image, networks, ...hooks });
   managers.push(manager);
   owners.add(manager.owner);
   const none: Driver = {
@@ -325,4 +338,158 @@ it.skipIf(!enabled)(
     settings = { ...settings, network: "internet" };
   },
   300_000,
+);
+
+it.skipIf(!enabled)(
+  "outbox sync: a file written in the sandbox reaches the host with its digest before Stop; Stop drains, then removes; a failing drain keeps it paused until Retry export",
+  async () => {
+    const chatId = `chat-outbox-${suffix}`;
+    const deliveries = new SandboxDeliveries({ dataDir, pollMs: { min: 500, max: 2_000 }, settleMs: 3_000 });
+    // Fault injection for step 4: downloads fail while this is set.
+    let failDownloads = false;
+    const faulty = (source: OutboxSource): OutboxSource => ({
+      listOutbox: (signal) => source.listOutbox(signal),
+      downloadOutboxFile: (name, signal, options) =>
+        failDownloads
+          ? Promise.reject(Object.assign(new Error("injected failure"), { code: "driver_error" }))
+          : source.downloadOutboxFile(name, signal, options),
+    });
+    const toCtx = (sandbox: Pick<DrainableSandbox, "sessionId" | "chatId" | "folder" | "driver">): DeliveryContext => ({
+      sessionId: sandbox.sessionId,
+      chatId: sandbox.chatId,
+      ...(sandbox.folder ? { folder: sandbox.folder } : {}),
+      mode: "managed",
+      source: faulty(sandbox.driver),
+    });
+    // The production policy (SandboxRecovery's drain hook), with the fault injected into what it copies from.
+    const faultyDeliveries = {
+      drain: (ctx: DeliveryContext, signal: AbortSignal) => deliveries.drain({ ...ctx, source: faulty(ctx.source) }, signal),
+      markLost: (...args: Parameters<typeof deliveries.markLost>) => deliveries.markLost(...args),
+      forgetSession: (id: string) => deliveries.forgetSession(id),
+      forChat: (...args: Parameters<typeof deliveries.forChat>) => deliveries.forChat(...args),
+    };
+    let current!: SandboxRecovery;
+    const hooks = {
+      chatContext: () => ({ folder: "/work/outbox-test" }),
+      onReady: (sandbox: Parameters<typeof toCtx>[0]) => void deliveries.start(toCtx(sandbox)),
+      adoptPaused: (sandbox: Parameters<SandboxRecovery["adoptPaused"]>[0]) => current.adoptPaused(sandbox),
+    };
+    const wireWithRecovery = () => {
+      const wired = wire(hooks);
+      const recovery = new SandboxRecovery({
+        manager: wired.manager,
+        deliveries: faultyDeliveries,
+        docker: execDocker(),
+        settings: () => settings,
+        chatExists: () => true,
+      });
+      wired.manager.drainBeforeDestroy = recovery.drainHook;
+      current = recovery;
+      return { ...wired, recovery };
+    };
+    const { manager, host, recovery } = wireWithRecovery();
+    const ofSession = async (sessionId: string) =>
+      (
+        await docker([
+          "ps",
+          "--all",
+          "--quiet",
+          "--no-trunc",
+          "--filter",
+          `label=${OWNER_LABEL}=${manager.owner}`,
+          "--filter",
+          `label=${SESSION_LABEL}=${sessionId}`,
+        ])
+      )
+        .split("\n")
+        .filter(Boolean);
+    const write = (id: string, name: string, body: string) =>
+      docker([
+        "exec",
+        "-u",
+        "desktop",
+        id,
+        "sh",
+        "-c",
+        `printf '%s' '${body}' > /home/desktop/outbox/.${name}.part && mv /home/desktop/outbox/.${name}.part /home/desktop/outbox/${name}`,
+      ]);
+    const inContainerSha = async (id: string, name: string) => (await docker(["exec", id, "sha256sum", `/home/desktop/outbox/${name}`])).split(" ")[0];
+    const delivered = async () => (await deliveries.forChat(chatId, { folder: "/work/outbox-test" })).flatMap((s) => s.files);
+
+    // 1. A live session; a file written the .part → rename way arrives on the host while it runs.
+    const first = (await host.open(chatId, "sandbox")) as { id: string; state: string };
+    expect(first.state).toBe("ready");
+    const [id1] = await ofSession(first.id);
+    await write(id1, "report.txt", "made in the sandbox");
+    const expectedSha = await inContainerSha(id1, "report.txt");
+    let started = Date.now();
+    await until(async () => (await delivered()).some((f) => f.name === "report.txt"), "the live sync", 20_000);
+    const [file] = await delivered();
+    log(`live sync delivered report.txt in ${Date.now() - started}ms to ${file.path}`);
+    expect(file.sha256).toBe(expectedSha);
+    expect(readFileSync(file.path, "utf8")).toBe("made in the sandbox");
+    expect(createHash("sha256").update(readFileSync(file.path)).digest("hex")).toBe(expectedSha);
+    expect(statSync(file.path).mode & 0o777).toBe(0o600);
+    expect(await ofSession(first.id)).toHaveLength(1);
+
+    // 2. Stop: one more file just before; the drain copies it, then the container is removed.
+    await write(id1, "late.csv", "a,b");
+    started = Date.now();
+    await host.stop(chatId, first.id);
+    await until(async () => (await ofSession(first.id)).length === 0, "removal after the drain");
+    const firstSession = (await deliveries.forChat(chatId, {})).find((s) => s.sessionId === first.id)!;
+    log(`stop drained and removed in ${Date.now() - started}ms: ${firstSession.files.map((f) => f.name).join(", ")} (${firstSession.state})`);
+    expect(firstSession.state).toBe("complete");
+    expect(firstSession.files.map((f) => f.name).sort()).toEqual(["late.csv", "report.txt"]);
+    expect(await recovery.keptFor(chatId)).toEqual([]);
+
+    // 3. A failing drain: the container is kept, paused, with its token.
+    const second = (await host.open(chatId, "sandbox")) as { id: string; state: string };
+    const [id2] = await ofSession(second.id);
+    failDownloads = true;
+    await write(id2, "keep-me.txt", "do not lose me");
+    await delay(1_500);
+    await host.stop(chatId, second.id);
+    await until(async () => (await recovery.keptFor(chatId)).length === 1, "the container to be kept", 60_000);
+    const status = (await docker(["inspect", "--format", "{{.State.Status}}", id2])).trim();
+    log(`failing drain: container ${id2.slice(0, 12)} ${status}; kept: ${JSON.stringify(await recovery.keptFor(chatId))}`);
+    expect(status).toBe("paused");
+    expect(existsSync(join(manager.sessionsDir, second.id, "token"))).toBe(true);
+    // The reaper leaves it alone — this daemon's, and the next one's after a
+    // restart on the same data directory, which finds it kept (session.json),
+    // not an orphan to drain and remove.
+    expect(await manager.reap()).toEqual([]);
+    const restarted = wireWithRecovery();
+    expect(await restarted.manager.reap()).toEqual([]);
+    expect(await ofSession(second.id)).toHaveLength(1);
+    expect((await docker(["inspect", "--format", "{{.State.Status}}", id2])).trim()).toBe("paused");
+    expect(await restarted.recovery.keptFor(chatId)).toHaveLength(1);
+    log("the kept container survived a reap by this daemon and by a restarted one");
+
+    // 4. Retry export, from the restarted daemon: unpause, copy, remove.
+    failDownloads = false;
+    started = Date.now();
+    expect(await restarted.recovery.retry(chatId, second.id)).toEqual({ outcome: "removed" });
+    log(`retry export completed and removed it in ${Date.now() - started}ms`);
+    expect(await ofSession(second.id)).toHaveLength(0);
+    const secondSession = (await deliveries.forChat(chatId, {})).find((s) => s.sessionId === second.id)!;
+    expect(secondSession.state).toBe("complete");
+    expect(readFileSync(secondSession.files[0].path, "utf8")).toBe("do not lose me");
+
+    // 5. Discard: a third kept container is removed on request.
+    const third = (await host.open(chatId, "sandbox")) as { id: string };
+    const [id3] = await ofSession(third.id);
+    failDownloads = true;
+    await write(id3, "gone.txt", "x");
+    await delay(1_500);
+    await host.stop(chatId, third.id);
+    await until(async () => (await recovery.keptFor(chatId)).some((k) => k.sessionId === third.id), "the third container to be kept", 60_000);
+    await recovery.discard(chatId, third.id);
+    expect(await ofSession(third.id)).toHaveLength(0);
+    await until(async () => (await deliveries.forChat(chatId, {})).some((s) => s.sessionId === third.id && s.lost === "discarded"), "the loss to be recorded");
+    log("discard removed the kept container and recorded the loss");
+    failDownloads = false;
+    deliveries.dispose();
+  },
+  600_000,
 );

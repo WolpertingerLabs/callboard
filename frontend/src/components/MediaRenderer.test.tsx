@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import MediaRenderer, { type RenderFileData } from "./MediaRenderer";
+import { ServeChatContext } from "../contexts/ServeChatContext";
 
 afterEach(cleanup);
 
@@ -29,6 +30,21 @@ describe("MediaRenderer: file card", () => {
     expect(link.getAttribute("download")).toBe("report final.zip");
     expect(container.querySelector("img, video, audio, iframe")).toBeNull();
     expect(screen.queryByTitle("Fullscreen")).toBeNull();
+  });
+
+  it("inside a chat, local URLs name the chat (the server serves Sandbox desktop deliverables to their own chat only)", () => {
+    const { container } = render(
+      <ServeChatContext.Provider value="chat 1">
+        <MediaRenderer data={fileData()} />
+        <MediaRenderer data={fileData({ file_path: "/tmp/a.png", media_type: "image", mime_type: "image/png" })} />
+        <MediaRenderer data={{ ...fileData({ media_type: "image", mime_type: "image/png" }), file_path: undefined, url: "https://example.com/a.png" }} />
+      </ServeChatContext.Provider>,
+    );
+    expect(screen.getByRole("link", { name: "Download" }).getAttribute("href")).toBe(`${DOWNLOAD_HREF}&chat=chat%201`);
+    const srcs = [...container.querySelectorAll("img")].map((img) => img.getAttribute("src"));
+    expect(srcs).toContain(`/api/files/serve?path=${encodeURIComponent("/tmp/a.png")}&chat=chat%201`);
+    // A proxied URL is not a local path: no chat.
+    expect(srcs).toContain(`/api/files/serve?url=${encodeURIComponent("https://example.com/a.png")}`);
   });
 
   it("display_mode fullscreen still draws only the card", () => {

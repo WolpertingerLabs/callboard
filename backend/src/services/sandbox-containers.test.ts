@@ -11,7 +11,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { SANDBOX_INTERNAL_NETWORK, SANDBOX_NETWORK } from "@wolpertingerlabs/computer-use";
-import { CHAT_LABEL, MANAGED_LABEL, OWNER_LABEL, SESSION_LABEL, SandboxContainerManager, managedSandboxDriver, sandboxOwnerId } from "./sandbox-containers.js";
+import {
+  CHAT_LABEL,
+  MANAGED_LABEL,
+  OWNER_LABEL,
+  SESSION_LABEL,
+  SandboxContainerManager,
+  SandboxInstanceChangedError,
+  managedSandboxDriver,
+  sandboxOwnerId,
+} from "./sandbox-containers.js";
 import { resolveSandboxSettings, type ResolvedSandboxSettings } from "./sandbox-desktop-settings.js";
 import { fakeDocker, fakeRemote, type FakeRemoteBehaviour } from "./__fixtures__/sandbox-docker.js";
 
@@ -41,6 +50,8 @@ async function setup(
     dataDir?: string;
     helloTimeoutMs?: number;
     drainTimeoutMs?: number;
+    onReady?: ConstructorParameters<typeof SandboxContainerManager>[0]["onReady"];
+    adoptPaused?: ConstructorParameters<typeof SandboxContainerManager>[0]["adoptPaused"];
   } = {},
 ) {
   const dataDir = options.dataDir ?? (await mkdtemp(join(tmpdir(), "cb-sandbox-mgr-")));
@@ -57,6 +68,8 @@ async function setup(
     helloIntervalMs: 5,
     preflightCacheMs: 0,
     drainTimeoutMs: options.drainTimeoutMs,
+    onReady: options.onReady,
+    adoptPaused: options.adoptPaused,
     ...(options.expectedContent ? { expectedContent: () => options.expectedContent! } : {}),
     chatContext: (chatId) =>
       chatId === "chat-ws" ? { workspaceId: "ws-opaque-1", folder: "/work/repo" } : chatId === "chat-folder" ? { folder: "/work/plain" } : undefined,
@@ -796,5 +809,81 @@ describe("review round 2", () => {
     logged.warn.length = 0;
     expect(await next.reap()).toHaveLength(1);
     expect(logged.warn.filter((message) => /no drain hook is installed/.test(message))).toHaveLength(1);
+  });
+});
+
+describe("hooks for the outbox sync and keep-for-recovery (PR 4)", () => {
+  const readMeta = async (dir: string) => JSON.parse(await readFile(join(dir, "session.json"), "utf8"));
+
+  it("onReady fires once, when a sandbox is ready, with what a live sync needs", async () => {
+    const seen: unknown[] = [];
+    const { manager } = await setup({ onReady: (sandbox) => seen.push({ ...sandbox, driver: typeof sandbox.driver.listOutbox }) });
+    const box = await manager.start({ sessionId: sid(), chatId: "chat-ws", signal: new AbortController().signal });
+    expect(seen).toEqual([]);
+    manager.ready(box.sessionId);
+    manager.ready(box.sessionId);
+    expect(seen).toEqual([
+      { sessionId: box.sessionId, chatId: "chat-ws", workspaceId: "ws-opaque-1", folder: "/work/repo", driver: "function", instanceId: box.instanceId },
+    ]);
+    expect(manager.nameOf(box.sessionId)).toBe(box.name);
+  });
+
+  it("settled resolves once a removal, or a keep, has finished", async () => {
+    const { manager } = await setup();
+    let release!: () => void;
+    manager.drainBeforeDestroy = () => new Promise((resolve) => (release = () => resolve({ keep: true })));
+    const box = await manager.start({ sessionId: sid(), signal: new AbortController().signal });
+    manager.ready(box.sessionId);
+    const destroying = manager.destroy(box.sessionId);
+    let settled = false;
+    void manager.settled(box.sessionId).then(() => (settled = true));
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    expect(settled).toBe(false);
+    release();
+    await destroying;
+    await vi.waitFor(() => expect(settled).toBe(true));
+    await expect(manager.settled(randomUUID())).resolves.toBeUndefined();
+  });
+
+  it("connectKept reaches a kept sandbox at Docker's address with its token, proves the instance, and refuses another one", async () => {
+    const docker = fakeDocker();
+    const remote = fakeRemote();
+    const { manager } = await setup({ docker, remoteFake: remote });
+    manager.drainBeforeDestroy = async () => ({ keep: true });
+    const box = await manager.start({ sessionId: sid(), chatId: "chat-ws", signal: new AbortController().signal });
+    manager.ready(box.sessionId);
+    await manager.destroy(box.sessionId);
+    const connected = await manager.connectKept(box.sessionId);
+    expect(connected).toMatchObject({ sessionId: box.sessionId, chatId: "chat-ws", workspaceId: "ws-opaque-1", instanceId: box.instanceId });
+    expect(remote.created.at(-1)).toMatchObject({ tokenFile: box.tokenFile, url: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+$/) });
+    // The address came from `docker port`, not from session.json.
+    expect(docker.state.calls.filter((args) => args[0] === "port").length).toBeGreaterThanOrEqual(2);
+    remote.instances.set(remote.created.at(-1)!.url, randomUUID());
+    await expect(manager.connectKept(box.sessionId)).rejects.toBeInstanceOf(SandboxInstanceChangedError);
+    await expect(manager.connectKept(randomUUID())).rejects.toMatchObject({ code: "not_found" });
+  });
+
+  it("adoptPaused: a paused orphan with complete metadata is recorded kept when the policy says so, and removed otherwise", async () => {
+    const docker = fakeDocker();
+    const remote = fakeRemote();
+    const first = await setup({ docker, remoteFake: remote });
+    const yes = await first.manager.start({ sessionId: sid(), chatId: "adopt", signal: new AbortController().signal });
+    const no = await first.manager.start({ sessionId: sid(), chatId: "refuse", signal: new AbortController().signal });
+    for (const box of [yes, no]) {
+      first.manager.ready(box.sessionId);
+      docker.state.containers.get(box.name)!.paused = true;
+    }
+    const asked: string[] = [];
+    const second = await setup({ docker, remoteFake: remote, dataDir: first.dataDir, adoptPaused: ({ chatId }) => (asked.push(chatId), chatId === "adopt") });
+    second.manager.drainBeforeDestroy = vi.fn(async () => {});
+    expect(await second.manager.reap()).toHaveLength(1);
+    expect(asked.sort()).toEqual(["adopt", "refuse"]);
+    expect(second.manager.drainBeforeDestroy).not.toHaveBeenCalled();
+    expect(docker.state.containers.has(yes.name)).toBe(true);
+    expect(docker.state.containers.has(no.name)).toBe(false);
+    expect(await readMeta(yes.dir)).toMatchObject({ keptAt: expect.any(Number), keptCause: "orphan" });
+    // Without the option, a paused orphan is removed like any orphan that is not running.
+    const third = await setup({ docker, remoteFake: remote, dataDir: first.dataDir });
+    expect(await third.manager.reap()).toEqual([]);
   });
 });

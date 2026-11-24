@@ -41,7 +41,8 @@ import { enqueueChatNotice } from "./chat-notices.js";
 import { openHumanApproval, type ApprovalCompletion, type OpenHumanApproval } from "./pending-requests.js";
 import type { ComputerUseContainerState, ComputerUseSandboxInfo, SandboxDesktopMode, SandboxDesktopVariant } from "shared/types/index.js";
 import { managedSandboxDriver } from "./sandbox-containers.js";
-import { currentSandboxMode, getSandboxManager, sandboxInfo } from "./sandbox-desktop.js";
+import { chatDeliveryOwner, currentSandboxMode, getSandboxDeliveries, getSandboxManager, sandboxInfo } from "./sandbox-desktop.js";
+import type { DeliveryContext, DeliveryOwner, OutboxSource } from "./sandbox-deliverables.js";
 
 const log = createLogger("computer-use");
 
@@ -2053,6 +2054,60 @@ export function sandboxDesktopDriver(
   }
 }
 
+/**
+ * Endpoint mode's outbox sync: a session opened on an operator-run driver
+ * host is synced like a managed one while it runs, and copied once more when
+ * it closes — but nothing is ever removed, paused or kept: the container is
+ * the operator's. Its outbox is shared by every chat, so only files new or
+ * changed since this session opened are delivered to it. A driver without an
+ * outbox (not remote, or not configured) is returned unchanged.
+ */
+export function withOutboxSync(
+  driver: Driver,
+  sync: { start(context: DeliveryContext, signal?: AbortSignal): Promise<void>; drain(context: DeliveryContext, signal: AbortSignal): Promise<unknown> },
+  owner: (chatId: string) => DeliveryOwner | undefined,
+  drainTimeoutMs = 30_000,
+): Driver {
+  const source = driver as Partial<OutboxSource>;
+  if (typeof source.listOutbox !== "function" || typeof source.downloadOutboxFile !== "function") return driver;
+  return {
+    ...driver,
+    async open(context) {
+      const session = await driver.open(context);
+      let where: DeliveryOwner | undefined;
+      try {
+        where = context.ownerId ? owner(context.ownerId) : undefined;
+      } catch {
+        where = undefined;
+      }
+      const delivery: DeliveryContext = {
+        sessionId: context.sessionId,
+        chatId: context.ownerId ?? "unknown",
+        ...(where?.workspaceId ? { workspaceId: where.workspaceId } : {}),
+        ...(where?.folder ? { folder: where.folder } : {}),
+        mode: "endpoint",
+        source: source as OutboxSource,
+      };
+      // The baseline (what the shared outbox already holds) is taken before the agent can act.
+      await sync
+        .start(delivery, AbortSignal.any([context.signal, AbortSignal.timeout(5_000)]))
+        .catch((error) => log.warn(`Endpoint outbox sync did not start: ${error instanceof Error ? error.message : "unknown"}`));
+      return {
+        ...session,
+        async close() {
+          try {
+            await session.close();
+          } finally {
+            await sync.drain(delivery, AbortSignal.timeout(drainTimeoutMs)).catch(() => {
+              /* Recorded in the session's manifest; the files stay in the endpoint's outbox. */
+            });
+          }
+        },
+      };
+    },
+  } as Driver;
+}
+
 let hostPromise: Promise<ComputerUseHost> | undefined;
 export function getComputerUseHost(): Promise<ComputerUseHost> {
   return (hostPromise ??= (async () => {
@@ -2064,7 +2119,7 @@ export function getComputerUseHost(): Promise<ComputerUseHost> {
       sandbox: sandboxTargetDriver({
         mode: () => currentSandboxMode().mode,
         managed: managedSandboxDriver(manager),
-        endpoint: sandboxDesktopDriver(pkg),
+        endpoint: withOutboxSync(sandboxDesktopDriver(pkg), getSandboxDeliveries(), chatDeliveryOwner),
         info: () => sandboxInfo(),
         containerState: (sessionId) => manager.containerState(sessionId),
       }),

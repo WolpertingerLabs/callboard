@@ -1,4 +1,5 @@
 import { collectContentMatches } from "../services/chat-content-search.js";
+import { deleteSandboxChatData } from "../services/sandbox-desktop.js";
 import { listChatsSnapshot } from "../services/chats-snapshot.js";
 import { createCardMembership, isNativeRecord } from "../services/card-membership.js";
 import { bindChatView, ChatViewError, chatViews } from "../services/chat-view.js";
@@ -3216,6 +3217,10 @@ function deleteOneChat(id: string, storedRecord?: SharedChat | null): string {
   // Held messages are owned by the chat; nothing could ever deliver them now.
   heldMessageService.deleteAll(id);
   if (fileChat && fileChat.id !== id) heldMessageService.deleteAll(fileChat.id);
+  // So are its Sandbox desktop deliverables, and any sandbox kept to recover them.
+  // Its lineage links come from the record already in hand: no further lookup per id.
+  deleteSandboxChatData(fileChat?.id ?? id, fileChat ? (parseChatMetadata(fileChat.metadata) as Record<string, unknown>) : {});
+  if (fileChat && fileChat.id !== id) deleteSandboxChatData(id);
   return fileChat?.id ?? id;
 }
 

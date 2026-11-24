@@ -149,6 +149,17 @@ export interface SandboxManagerOptions {
   expectedContent?: () => string;
   /** Network names, for tests; default `callboard-sandbox` and `callboard-sandbox-internal`. */
   networks?: { internet: string; none: string };
+  /** A sandbox became ready: e.g. start syncing its outbox. Never throws into the open. */
+  onReady?: (sandbox: Omit<DrainableSandbox, "cause">) => void;
+  /**
+   * The reaper found a container of ours *paused*, with complete metadata
+   * and not kept. Nothing in the manager pauses a container, so only a drain
+   * hook's keep policy can have (a daemon killed between its pause and the
+   * keep being recorded). Return true to record it kept (`keptCause:
+   * "orphan"`) instead of removing it. Default: removed, as any orphan that
+   * is not running.
+   */
+  adoptPaused?: (sandbox: { sessionId: string; chatId: string; workspaceId?: string; folder?: string; name: string }) => boolean | Promise<boolean>;
 }
 
 /** `session.json` beside the token: everything the reaper needs to drain a sandbox whose daemon died. */
@@ -210,6 +221,15 @@ interface Problem {
 }
 
 const problemError = (code: ErrorCode, { problem, hint }: Problem) => Object.assign(new ComputerUseError(code, hint), { problem });
+
+/** A kept sandbox answered as another driver-host instance: the container restarted, so what it held is gone. */
+export class SandboxInstanceChangedError extends Error {
+  readonly code = "instance_changed";
+  constructor() {
+    super("The kept sandbox answers as another instance: it restarted, so what it held is gone");
+    this.name = "SandboxInstanceChangedError";
+  }
+}
 
 export class SandboxContainerManager {
   readonly owner: string;
@@ -399,7 +419,7 @@ export class SandboxContainerManager {
     const box: Box = {
       sessionId,
       chatId: context.chatId && LABEL_VALUE.test(context.chatId) ? context.chatId : "unknown",
-      name: `callboard-sandbox-${this.owner.slice(0, 8)}-${sessionId}`,
+      name: this.nameOf(sessionId),
       dir,
       tokenFile: join(dir, "token"),
       phase: "starting",
@@ -478,7 +498,30 @@ export class SandboxContainerManager {
     if (box && box.phase === "starting") {
       box.phase = "ready";
       box.step = undefined;
+      if (box.driver && box.instanceId && this.options.onReady)
+        try {
+          this.options.onReady({
+            sessionId,
+            chatId: box.chatId,
+            ...(box.workspaceId ? { workspaceId: box.workspaceId } : {}),
+            ...(box.folder ? { folder: box.folder } : {}),
+            driver: box.driver,
+            instanceId: box.instanceId,
+          });
+        } catch (error) {
+          log.warn(`Sandbox ${box.name}: onReady failed (${error instanceof Error ? error.message : "unknown"})`);
+        }
     }
+  }
+
+  /** The container name a session's sandbox runs under. */
+  nameOf(sessionId: string): string {
+    return `callboard-sandbox-${this.owner.slice(0, 8)}-${sessionId}`;
+  }
+
+  /** Resolves once a session's removal (or keep) has finished; at once if none is under way. */
+  settled(sessionId: string): Promise<void> {
+    return this.boxes.get(sessionId)?.destroyed ?? Promise.resolve();
   }
 
   private async writeToken(box: Box) {
@@ -693,6 +736,34 @@ export class SandboxContainerManager {
     await rename(temp, file);
   }
 
+  /**
+   * Reconnect to a kept sandbox's driver host (it must be running: a caller
+   * that paused it unpauses it first), the way the reaper reaches an orphan:
+   * the endpoint from Docker, never from the file, then the instance proof.
+   * Rejects with {@link SandboxInstanceChangedError} if another instance
+   * answers (the container restarted, and what it held is gone), `not_found`
+   * if it is not kept.
+   */
+  async connectKept(sessionId: string, signal?: AbortSignal): Promise<Omit<DrainableSandbox, "cause">> {
+    const meta = SESSION_ID.test(sessionId) && !this.boxes.has(sessionId) ? await this.readMeta(sessionId) : undefined;
+    if (!meta?.keptAt || !meta.instanceId || typeof meta.internal !== "boolean") throw new ComputerUseError("not_found", "No kept sandbox for that session");
+    const names = this.options.networks ?? { internet: SANDBOX_NETWORK, none: SANDBOX_INTERNAL_NETWORK };
+    const network = meta.internal ? names.none : names.internet;
+    if (meta.network !== network) throw new ComputerUseError("not_found", "The kept sandbox's metadata names a network that is not ours");
+    const url = await this.addressOf(meta.name, network, meta.internal, signal);
+    const driver = this.createRemote({ url, tokenFile: join(this.sessionsDir, sessionId, "token"), ...(meta.internal ? { localDockerBridge: true } : {}) });
+    const { instanceId } = await driver.identity(AbortSignal.any([AbortSignal.timeout(10_000), ...(signal ? [signal] : [])]));
+    if (instanceId !== meta.instanceId) throw new SandboxInstanceChangedError();
+    return {
+      sessionId,
+      chatId: meta.chatId,
+      ...(meta.workspaceId ? { workspaceId: meta.workspaceId } : {}),
+      ...(meta.folder ? { folder: meta.folder } : {}),
+      driver,
+      instanceId,
+    };
+  }
+
   /** Sandboxes a drain hook kept ({@link DrainResult}), from disk: they survive a restart. */
   async keptSandboxes(): Promise<KeptSandbox[]> {
     const out: KeptSandbox[] = [];
@@ -749,6 +820,30 @@ export class SandboxContainerManager {
     meta: SessionMeta | undefined,
     signal?: AbortSignal,
   ): Promise<DrainOutcome | "none"> {
+    if (state === "paused" && meta?.url && meta.instanceId && !meta.keptAt && this.options.adoptPaused) {
+      let adopt = false;
+      try {
+        adopt = await this.options.adoptPaused({
+          sessionId,
+          chatId: meta.chatId,
+          ...(meta.workspaceId ? { workspaceId: meta.workspaceId } : {}),
+          ...(meta.folder ? { folder: meta.folder } : {}),
+          name: meta.name,
+        });
+      } catch {
+        adopt = false;
+      }
+      if (adopt) {
+        try {
+          await this.patchMeta(sessionId, { keptAt: Date.now(), keptCause: "orphan" });
+          log.info(`Reaper: sandbox ${sessionId} was left paused by an earlier run; recorded it as kept`);
+          return "kept";
+        } catch (error) {
+          log.warn(`Reaper: could not record paused sandbox ${sessionId} as kept (${error instanceof Error ? error.message : "unknown"}); removing it`);
+        }
+      }
+      return "none";
+    }
     if (state !== "running") return "none";
     if (!meta || meta.drainedAt || !meta.url || !meta.instanceId) {
       if (!meta?.drainedAt) log.info(`Reaper: sandbox ${sessionId} has no drainable metadata (it never finished starting); removing it without a drain`);

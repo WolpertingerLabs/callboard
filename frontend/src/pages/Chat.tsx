@@ -121,6 +121,8 @@ import MessageBubble, { AttachedFileChips, TEAM_COLORS } from "../components/Mes
 import ProviderBadge from "../components/ProviderBadge";
 import ToolCallBubble from "../components/ToolCallBubble";
 import { ChatGalleryProvider } from "../components/gallery/ChatGallery";
+import SandboxDeliveries from "../components/SandboxDeliveries";
+import { ServeChatContext } from "../contexts/ServeChatContext";
 import PromptInput, { parseLeadingCommand, type ComposerValueUpdate } from "../components/PromptInput";
 import FeedbackPanel, { type PendingAction } from "../components/FeedbackPanel";
 import ConfirmModal from "../components/ConfirmModal";
@@ -5025,129 +5027,138 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
             ) : (
               /* EXISTING CHAT MODE: Message list. One image gallery spans the
                  whole transcript, so the viewer swipes across messages. */
-              <ChatGalleryProvider resetKey={id}>
-                {messages.length === 0 && !streaming && (
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      height: "100%",
-                      color: "var(--text-muted)",
-                      fontSize: 14,
-                    }}
-                  >
-                    No messages in this conversation
-                  </div>
-                )}
-                {displayItems.map((item) => {
-                  if (item.kind === "tool_group") {
+              <ServeChatContext.Provider value={id}>
+                <ChatGalleryProvider resetKey={id}>
+                  {messages.length === 0 && !streaming && (
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        height: "100%",
+                        color: "var(--text-muted)",
+                        fontSize: 14,
+                      }}
+                    >
+                      No messages in this conversation
+                    </div>
+                  )}
+                  {displayItems.map((item) => {
+                    if (item.kind === "tool_group") {
+                      return (
+                        <div key={`tool-${item.originalIndices[0]}`} data-message-index={item.originalIndices[0]}>
+                          <ToolCallBubble
+                            toolUse={item.toolUse}
+                            toolResult={item.toolResult}
+                            isRunning={item.toolResult === null && streaming}
+                            backgroundPending={!!item.toolResult?.backgroundTaskId && !!pendingBackgroundIds?.has(item.toolResult.backgroundTaskId)}
+                          />
+                        </div>
+                      );
+                    }
+                    // Forkable: persisted conversational text messages on the
+                    // main timeline. Subagent messages are excluded — they
+                    // aren't a point in the main thread to branch from. Every
+                    // harness can be forked now: same-harness forks copy the
+                    // native session log where the provider supports it, and a
+                    // cross-harness fork seeds the target from the parsed
+                    // history.
+                    // `handleFork` is stable and takes the message's timestamp, so
+                    // the memoized bubble isn't handed a fresh closure per render.
+                    const canFork = item.message.type === "text" && !item.message.teamName && !!item.message.timestamp && !!id && forkSourceProvider !== null;
+                    const starKey = id ? starKeys.get(item.originalIndex) : undefined;
                     return (
-                      <div key={`tool-${item.originalIndices[0]}`} data-message-index={item.originalIndices[0]}>
-                        <ToolCallBubble
-                          toolUse={item.toolUse}
-                          toolResult={item.toolResult}
-                          isRunning={item.toolResult === null && streaming}
-                          backgroundPending={!!item.toolResult?.backgroundTaskId && !!pendingBackgroundIds?.has(item.toolResult.backgroundTaskId)}
+                      <div key={item.originalIndex} data-message-index={item.originalIndex}>
+                        <MessageBubble
+                          message={item.message}
+                          teamColorMap={teamColorMap}
+                          onFork={canFork ? handleFork : undefined}
+                          forkCurrentProvider={forkSourceProvider ?? undefined}
+                          // Not while a run is in flight: the backend refuses a
+                          // chat that is streaming, and the transcript is still
+                          // growing under the message the user would pick.
+                          onRewrite={canFork && !streaming ? handleRewrite : undefined}
+                          // Where a rerun can start from: a user message that can be sent
+                          // again (not a slash command or a compaction summary), or a
+                          // reply whose prompt is one.
+                          onRerun={
+                            canFork && !streaming && (item.message.role === "assistant" ? replyRerunnable[item.originalIndex] : isRerunPrompt(item.message))
+                              ? handleRerun
+                              : undefined
+                          }
+                          forks={forkMarkers.get(item.originalIndex)}
+                          starKey={starKey}
+                          starred={!!starKey && starredKeys.has(starKey)}
+                          onToggleStar={starKey ? toggleStar : undefined}
+                          onInsertIntoMain={
+                            embedded?.insertIntoMain && item.message.role === "assistant" && hasMarkerSlot(item.message) ? handleInsertIntoMain : undefined
+                          }
+                          readAloud={readAloud}
                         />
                       </div>
                     );
-                  }
-                  // Forkable: persisted conversational text messages on the
-                  // main timeline. Subagent messages are excluded — they
-                  // aren't a point in the main thread to branch from. Every
-                  // harness can be forked now: same-harness forks copy the
-                  // native session log where the provider supports it, and a
-                  // cross-harness fork seeds the target from the parsed
-                  // history.
-                  // `handleFork` is stable and takes the message's timestamp, so
-                  // the memoized bubble isn't handed a fresh closure per render.
-                  const canFork = item.message.type === "text" && !item.message.teamName && !!item.message.timestamp && !!id && forkSourceProvider !== null;
-                  const starKey = id ? starKeys.get(item.originalIndex) : undefined;
-                  return (
-                    <div key={item.originalIndex} data-message-index={item.originalIndex}>
-                      <MessageBubble
-                        message={item.message}
-                        teamColorMap={teamColorMap}
-                        onFork={canFork ? handleFork : undefined}
-                        forkCurrentProvider={forkSourceProvider ?? undefined}
-                        // Not while a run is in flight: the backend refuses a
-                        // chat that is streaming, and the transcript is still
-                        // growing under the message the user would pick.
-                        onRewrite={canFork && !streaming ? handleRewrite : undefined}
-                        // Where a rerun can start from: a user message that can be sent
-                        // again (not a slash command or a compaction summary), or a
-                        // reply whose prompt is one.
-                        onRerun={
-                          canFork && !streaming && (item.message.role === "assistant" ? replyRerunnable[item.originalIndex] : isRerunPrompt(item.message))
-                            ? handleRerun
-                            : undefined
-                        }
-                        forks={forkMarkers.get(item.originalIndex)}
-                        starKey={starKey}
-                        starred={!!starKey && starredKeys.has(starKey)}
-                        onToggleStar={starKey ? toggleStar : undefined}
-                        onInsertIntoMain={
-                          embedded?.insertIntoMain && item.message.role === "assistant" && hasMarkerSlot(item.message) ? handleInsertIntoMain : undefined
-                        }
-                        readAloud={readAloud}
-                      />
-                    </div>
-                  );
-                })}
-                <InFlightBubbles messages={visibleInFlightMessages} />
-                {(networkError || streamUnavailable) && (
-                  <div
-                    style={{
-                      color: "var(--danger)",
-                      fontSize: 13,
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 8,
-                      background: "var(--danger-bg)",
-                      borderRadius: 6,
-                      padding: "12px 16px",
-                      margin: "8px 0",
-                    }}
-                  >
-                    {/* A refusal is only shown once the page has stopped retrying it. */}
-                    <div>{networkError ? "Network error occurred" : `Can't follow this run (${streamUnavailable}). Stopped retrying.`}</div>
-                    <button
-                      onClick={handleReconnect}
+                  })}
+                  <InFlightBubbles messages={visibleInFlightMessages} />
+                  {(networkError || streamUnavailable) && (
+                    <div
                       style={{
-                        background: "var(--accent)",
-                        color: "var(--text-on-accent)",
-                        padding: "4px 8px",
-                        borderRadius: 4,
-                        fontSize: 11,
-                        marginLeft: "auto",
+                        color: "var(--danger)",
+                        fontSize: 13,
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        background: "var(--danger-bg)",
+                        borderRadius: 6,
+                        padding: "12px 16px",
+                        margin: "8px 0",
                       }}
                     >
-                      <RotateCw size={12} style={{ marginRight: 4 }} />
-                      Reconnect
-                    </button>
-                  </div>
-                )}
-                {streaming && (
-                  <ThinkingIndicator>
-                    <span>{compacting ? "Compacting conversation..." : `${providerDisplayName} is thinking...`}</span>
-                    <span style={{ fontSize: 11, opacity: 0.7 }}>
-                      {compacting ? "(Summarizing context to free up space)" : "(You can send another message anytime)"}
-                    </span>
-                  </ThinkingIndicator>
-                )}
-                {/* After the turn they wait on: what goes next. */}
-                <HeldMessageList
-                  items={heldMessages}
-                  busyIds={heldBusy}
-                  resuming={heldResuming}
-                  onSendNow={handleHeldSendNow}
-                  onEdit={handleHeldEdit}
-                  onRemove={handleHeldRemove}
-                  onResume={handleHeldResume}
-                />
-                <div ref={bottomRef} />
-              </ChatGalleryProvider>
+                      {/* A refusal is only shown once the page has stopped retrying it. */}
+                      <div>{networkError ? "Network error occurred" : `Can't follow this run (${streamUnavailable}). Stopped retrying.`}</div>
+                      <button
+                        onClick={handleReconnect}
+                        style={{
+                          background: "var(--accent)",
+                          color: "var(--text-on-accent)",
+                          padding: "4px 8px",
+                          borderRadius: 4,
+                          fontSize: 11,
+                          marginLeft: "auto",
+                        }}
+                      >
+                        <RotateCw size={12} style={{ marginRight: 4 }} />
+                        Reconnect
+                      </button>
+                    </div>
+                  )}
+                  {/* Files copied out of this chat's Sandbox desktop sessions (~/outbox). */}
+                  {id && (
+                    <SandboxDeliveries
+                      chatId={id}
+                      sandboxLive={computerChatId === id && !!computerController.status?.sessions.some((session) => session.kind === "sandbox")}
+                    />
+                  )}
+                  {streaming && (
+                    <ThinkingIndicator>
+                      <span>{compacting ? "Compacting conversation..." : `${providerDisplayName} is thinking...`}</span>
+                      <span style={{ fontSize: 11, opacity: 0.7 }}>
+                        {compacting ? "(Summarizing context to free up space)" : "(You can send another message anytime)"}
+                      </span>
+                    </ThinkingIndicator>
+                  )}
+                  {/* After the turn they wait on: what goes next. */}
+                  <HeldMessageList
+                    items={heldMessages}
+                    busyIds={heldBusy}
+                    resuming={heldResuming}
+                    onSendNow={handleHeldSendNow}
+                    onEdit={handleHeldEdit}
+                    onRemove={handleHeldRemove}
+                    onResume={handleHeldResume}
+                  />
+                  <div ref={bottomRef} />
+                </ChatGalleryProvider>
+              </ServeChatContext.Provider>
             )}
           </div>
         )}

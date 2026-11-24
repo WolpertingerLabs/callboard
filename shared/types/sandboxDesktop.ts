@@ -29,6 +29,19 @@ export interface SandboxDesktopSettings {
   memoryMb?: number;
   /** Managed sandboxes running at once, across all chats. */
   maxConcurrent?: number;
+  /** How long a container whose final outbox copy failed is kept (paused) for recovery, in hours. */
+  keepHours?: number;
+  /**
+   * Containers kept for recovery at once, across all chats (0: never keep;
+   * remove on a failed copy). Separate from `maxConcurrent`: a kept one is
+   * paused (no CPU) but still holds its memory.
+   */
+  maxKept?: number;
+  /**
+   * Disk all chats' deliverables may use together, in GiB. Past it new files
+   * are refused (and reported); nothing delivered is deleted to make room.
+   */
+  deliverablesGb?: number;
 }
 
 /** Bounds and defaults, shared so the form and the server agree. */
@@ -36,6 +49,9 @@ export const SANDBOX_DESKTOP_BOUNDS = {
   cpus: { min: 0.5, max: 8, default: 1 },
   memoryMb: { min: 512, max: 16384, default: 1024 },
   maxConcurrent: { min: 1, max: 8, default: 2 },
+  keepHours: { min: 1, max: 168, default: 24 },
+  maxKept: { min: 0, max: 8, default: 2 },
+  deliverablesGb: { min: 1, max: 1024, default: 5 },
 } as const;
 
 /** The one-time image build, for docs and messages. */
@@ -139,4 +155,95 @@ export interface ComputerUseContainerState {
   phase: "starting" | "ready" | "stopping" | "removed" | "kept";
   /** While starting: which step, in words ("Starting the container", "Waiting for the desktop"). */
   step?: string;
+}
+
+/**
+ * Deliverables: files an agent (or the human) saved to `~/outbox` inside a
+ * Sandbox desktop, copied to this machine while the session runs and once
+ * more before a managed container is removed. `GET
+ * /api/computer-use/:chatId/deliverables`; REST only, never on the stream.
+ */
+export const SANDBOX_OUTBOX_LIMITS = {
+  /** Largest single file (the driver host and client enforce the same). */
+  fileBytes: 64 * 1024 * 1024,
+  /** All files delivered from one session, every version counted. */
+  sessionBytes: 256 * 1024 * 1024,
+  /** Files delivered from one session, every version counted. */
+  sessionFiles: 100,
+} as const;
+
+/** One delivered file. `path` is its absolute path on the Callboard host. */
+export interface SandboxDeliveredFile {
+  sessionId: string;
+  /** The name in the outbox. */
+  name: string;
+  /** The name it was stored under: `name`, or `name (2).ext` for a later version. */
+  storedName: string;
+  path: string;
+  size: number;
+  sha256: string;
+  deliveredAt: number;
+  /** How the chat renders it (the render_file media types). */
+  mediaType: "image" | "audio" | "video" | "pdf" | "file";
+  mimeType: string;
+}
+
+/** A file that was not copied because it is over a limit. */
+export interface SandboxDeliveryRefusal {
+  name: string;
+  size: number;
+  /** The first reason it was refused for; it does not change while the same file stays refused. */
+  reason: "too-large" | "session-total" | "file-count" | "storage-full";
+}
+
+export interface SandboxSessionDeliveries {
+  sessionId: string;
+  mode: "managed" | "endpoint";
+  /**
+   * `live`: the session is running and being synced. `complete`: its final
+   * copy matched every listed file. `incomplete`: it did not (see `problem`).
+   */
+  state: "live" | "complete" | "incomplete";
+  startedAt: number;
+  endedAt?: number;
+  files: SandboxDeliveredFile[];
+  refused: SandboxDeliveryRefusal[];
+  /** Why the final copy is incomplete, in words. */
+  problem?: string;
+  /**
+   * The container was removed before every file was copied: discarded by the
+   * human, its retention ended, it vanished (Docker or the machine
+   * restarted), or it was never kept because the Settings limit of kept
+   * containers was reached. A new field of this PR; a value an older bundle
+   * does not know shows its generic "not every file was copied" line.
+   */
+  lost?: "discarded" | "expired" | "gone" | "not-kept";
+  /**
+   * Present when this session is another chat's, shown here because this
+   * chat's history was copied from it (Continue from, Rerun, Compress, a
+   * fork or an aside): only its files delivered by the copy point.
+   */
+  fromChatId?: string;
+}
+
+/** A managed container whose final copy failed: paused, not removed, until `expiresAt`. */
+export interface SandboxKeptContainer {
+  sessionId: string;
+  keptAt: number;
+  expiresAt: number;
+  reason: string;
+  /** A retry is running now. */
+  retrying?: boolean;
+}
+
+export interface SandboxDeliveriesResponse {
+  sessions: SandboxSessionDeliveries[];
+  kept: SandboxKeptContainer[];
+}
+
+/** `POST /api/computer-use/:chatId/kept/:sessionId/retry`. */
+export interface SandboxKeptRetryResult {
+  /** `removed`: everything was copied and the container is gone. `kept`: still incomplete, still kept. `gone`: the container no longer exists. */
+  outcome: "removed" | "kept" | "gone";
+  reason?: string;
 }
