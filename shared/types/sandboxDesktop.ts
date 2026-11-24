@@ -52,6 +52,16 @@ export interface SandboxDesktopSettings {
   profileMaxMemoryMb?: number;
   profileMaxHomeMb?: number;
   profileMaxSessionMinutes?: number;
+  /**
+   * Caps on agent-built profiles (an agent proposes a recipe with
+   * `sandbox_profile_propose`; a human approves every build). Profiles one
+   * workspace or folder scope may hold (0: agents may not propose any);
+   * versions kept per profile (the oldest unapproved ones are dropped first);
+   * agent-requested builds queued or running at once, across all chats.
+   */
+  agentMaxProfilesPerScope?: number;
+  agentMaxVersions?: number;
+  agentMaxQueuedBuilds?: number;
 }
 
 /** Bounds and defaults, shared so the form and the server agree. */
@@ -66,6 +76,9 @@ export const SANDBOX_DESKTOP_BOUNDS = {
   profileMaxMemoryMb: { min: 512, max: 65536, default: 8192 },
   profileMaxHomeMb: { min: 256, max: 65536, default: 4096 },
   profileMaxSessionMinutes: { min: 5, max: 480, default: 120 },
+  agentMaxProfilesPerScope: { min: 0, max: 50, default: 5 },
+  agentMaxVersions: { min: 2, max: 50, default: 10 },
+  agentMaxQueuedBuilds: { min: 1, max: 10, default: 2 },
 } as const;
 
 /** The base sandbox's home size and session length, which a profile that does not ask for its own gets. */
@@ -109,8 +122,15 @@ export interface SandboxProfileStatus {
   scope: string;
   name: string;
   description: string;
-  /** Where the recipe comes from. Today only `builtin` (shipped with Callboard). */
-  source: "builtin";
+  /**
+   * Where the recipe comes from: `builtin` (shipped with Callboard) or
+   * `agent` (proposed by an agent and approved by a human; see `agent`).
+   * REST only, and no bundle branches on it (an older Settings page never
+   * read it), so the new value needs no capability.
+   */
+  source: "builtin" | "agent";
+  /** Agent-built profiles: which version is in force, and where it came from. Absent for built-ins. */
+  agent?: SandboxProfileAgentInfo;
   gl: "none" | "software";
   /** What the recipe asks for (absent: the base sandbox's value). */
   requested: Partial<SandboxProfileLimits>;
@@ -203,8 +223,14 @@ export interface SandboxDesktopBuild {
   kind?: "base" | "profile";
   /** The precise state. `interrupted`: Callboard stopped before it finished. `cancelled`: a human cancelled it. */
   phase?: "queued" | "running" | "succeeded" | "failed" | "interrupted" | "cancelled";
-  /** Who asked for it. Today always a human; a later change adds an agent's approved request. */
-  requestedBy?: { kind: "human" };
+  /**
+   * Who asked for it: a signed-in human (Settings, or the operator's shell),
+   * or an agent whose proposal a human approved (`approvalId` is the
+   * proposal's request id). An older Settings page never read this field.
+   */
+  requestedBy?: SandboxBuildRequester;
+  /** An agent-requested profile build: the recipe version it builds. */
+  version?: number;
   /** The profile being (or last) built: its name; absent: the base image. */
   profile?: string;
   /** The profile's entry id (`global/blender`) and scope. */
@@ -242,6 +268,110 @@ export interface SandboxDesktopStatus {
   profiles?: SandboxProfileStatus[];
   /** Recent builds, newest first (no output; fetch a build by id for its log). */
   builds?: SandboxDesktopBuild[];
+  /**
+   * Every agent-built profile this Callboard stores, in every scope,
+   * including those with no approved version yet (which `profiles` does not
+   * list: there is nothing to build). Absent from an older daemon.
+   */
+  agentProfiles?: SandboxAgentProfileSummary[];
+}
+
+/** Who asked for a build. */
+export type SandboxBuildRequester = { kind: "human" } | { kind: "agent"; chatId: string; approvalId: string };
+
+/**
+ * A version of an agent-built profile:
+ * - `proposed`: an agent proposed it; the human has not approved it (its card
+ *   may still be open — `pending` — or was closed without an answer).
+ * - `approved`: the version in force (at most one per profile).
+ * - `superseded`: approved once, replaced by a later approval.
+ * - `refused`: the human refused it.
+ * - `withdrawn`: its card was withdrawn before the human answered (Stop, a
+ *   permission change, the chat archived or rewound).
+ */
+export type SandboxAgentProfileVersionState = "proposed" | "approved" | "superseded" | "refused" | "withdrawn";
+
+export interface SandboxAgentProfileVersion {
+  version: number;
+  /** `profileRecipeDigest` of its canonical recipe. */
+  digest: string;
+  state: SandboxAgentProfileVersionState;
+  proposedAt: number;
+  /** The chat whose agent proposed it. */
+  proposedBy: string;
+  /** Its card is open now. */
+  pending?: boolean;
+  approvedAt?: number;
+  /** The build its approval queued. */
+  buildId?: string;
+  /** The agent's own words about it: untrusted, plain text, at most 1000 characters. */
+  note?: string;
+  /** The canonical recipe (`GET …/agent-profiles/:name/versions` only). */
+  recipe?: string;
+}
+
+export interface SandboxProfileAgentInfo {
+  /** The approved version in force. */
+  version: number;
+  /** Versions kept. */
+  versions: number;
+  /** The chat whose proposal created the profile. */
+  createdBy: string;
+  /** Set once a human promoted it to the global scope. */
+  promoted?: { at: number; fromScope: string; fromVersion: number };
+  /** Where it lives, for a human: "workspace …" / "folder /path". Absent for global. */
+  ownerLabel?: string;
+}
+
+/** One stored agent-built profile, approved or not, for Settings. */
+export interface SandboxAgentProfileSummary {
+  /** `<scope>/<name>`. */
+  id: string;
+  scope: string;
+  name: string;
+  description: string;
+  ownerLabel?: string;
+  /** The approved version in force; absent: none approved yet. */
+  current?: number;
+  createdAt: number;
+  createdBy: string;
+  promoted?: { at: number; fromScope: string; fromVersion: number };
+  versions: SandboxAgentProfileVersion[];
+}
+
+/**
+ * What the human reviews on a profile proposal card (`input` of the
+ * `SANDBOX_PROFILE_PROPOSE_TOOL_NAME` prompt). Everything but `note` is
+ * Callboard's: the validated, canonical recipe and what the host computed
+ * from it. `note` is the agent's own text, escaped and capped.
+ */
+export interface SandboxProfileProposalCardInput {
+  name: string;
+  version: number;
+  digest: string;
+  /** Where it will live: this chat's workspace's scope, or its folder's. */
+  scope: { kind: "workspace" | "folder"; key: string; label: string };
+  /** The canonical recipe (JSON). */
+  recipe: string;
+  /** The version it replaces (the approved one, else the latest), for the diff; absent: a new profile. */
+  previous?: { version: number; digest: string; state: SandboxAgentProfileVersionState; recipe: string };
+  note?: string;
+  review: {
+    description: string;
+    setup: string;
+    setupLines: number;
+    downloads: { host: string; url: string; sha256: string; dest: string; unpack: string }[];
+    hosts: string[];
+    packages: string[];
+    gl: "none" | "software";
+    architectures: string[];
+    requested: Partial<SandboxProfileLimits>;
+    limits: SandboxProfileLimits;
+    clamped?: (keyof SandboxProfileLimits)[];
+    caps: SandboxProfileLimits;
+    path: string[];
+    env: Record<string, string>;
+  };
 }
 
 /** The sandbox part of the Computer view's sandbox capability. */

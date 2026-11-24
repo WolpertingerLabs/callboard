@@ -41,6 +41,8 @@ export interface ResolvedSandboxSettings {
   deliverablesGb: number;
   /** Caps on a sandbox profile's requested limits. */
   profileCaps: { cpus: number; memoryMb: number; homeMb: number; sessionMinutes: number };
+  /** Caps on agent-built profiles (sandbox-profile-proposals.ts). */
+  agentCaps: { profilesPerScope: number; versions: number; queuedBuilds: number };
 }
 
 export class SandboxSettingsError extends Error {
@@ -81,6 +83,9 @@ export function normalizeSandboxSettings(input: unknown, strict: boolean): Sandb
       "profileMaxMemoryMb",
       "profileMaxHomeMb",
       "profileMaxSessionMinutes",
+      "agentMaxProfilesPerScope",
+      "agentMaxVersions",
+      "agentMaxQueuedBuilds",
     ]);
     const unknown = Object.keys(value).filter((key) => !known.has(key));
     if (unknown.length) throw new SandboxSettingsError(`Unknown sandbox desktop setting ${JSON.stringify(unknown[0])}`);
@@ -138,6 +143,13 @@ export function normalizeSandboxSettings(input: unknown, strict: boolean): Sandb
     if (inBounds(value.profileMaxSessionMinutes, profileMaxSessionMinutes, true)) out.profileMaxSessionMinutes = value.profileMaxSessionMinutes;
     else bad("profileMaxSessionMinutes", `a whole number of minutes from ${profileMaxSessionMinutes.min} to ${profileMaxSessionMinutes.max}`);
   }
+  for (const key of ["agentMaxProfilesPerScope", "agentMaxVersions", "agentMaxQueuedBuilds"] as const) {
+    const bound = SANDBOX_DESKTOP_BOUNDS[key];
+    if (value[key] !== undefined && value[key] !== null) {
+      if (inBounds(value[key], bound, true)) out[key] = value[key];
+      else bad(key, `a whole number from ${bound.min} to ${bound.max}`);
+    }
+  }
   return out;
 }
 
@@ -156,6 +168,11 @@ export function resolveSandboxSettings(settings: SandboxDesktopSettings): Resolv
       memoryMb: settings.profileMaxMemoryMb ?? SANDBOX_DESKTOP_BOUNDS.profileMaxMemoryMb.default,
       homeMb: settings.profileMaxHomeMb ?? SANDBOX_DESKTOP_BOUNDS.profileMaxHomeMb.default,
       sessionMinutes: settings.profileMaxSessionMinutes ?? SANDBOX_DESKTOP_BOUNDS.profileMaxSessionMinutes.default,
+    },
+    agentCaps: {
+      profilesPerScope: settings.agentMaxProfilesPerScope ?? SANDBOX_DESKTOP_BOUNDS.agentMaxProfilesPerScope.default,
+      versions: settings.agentMaxVersions ?? SANDBOX_DESKTOP_BOUNDS.agentMaxVersions.default,
+      queuedBuilds: settings.agentMaxQueuedBuilds ?? SANDBOX_DESKTOP_BOUNDS.agentMaxQueuedBuilds.default,
     },
   };
 }

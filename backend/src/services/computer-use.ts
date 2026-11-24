@@ -11,12 +11,15 @@ import type { Action, AuthorizationRequest, ComputerUseService, Driver, Lease, P
 import {
   CU_ACTION_TOOL_NAME,
   CU_REQUEST_CONTROL_TOOL_NAME,
+  SANDBOX_PROFILE_PROPOSE_TOOL_NAME,
   GUI_ACTION_TYPES,
   RIDE_ALONG_TARGETS,
   RIDE_ALONG_WITHDRAW_TEXT,
   actionWithdrawnNotice,
   callboardNoticeHeader,
   controlWithdrawnNotice,
+  CLIENT_CAPS,
+  type ClientCapability,
   type StreamEvent,
 } from "shared/types/index.js";
 import { assertNativeAgentControllable } from "./codex-native-agents.js";
@@ -49,16 +52,23 @@ import {
   type SandboxDesktopVariant,
 } from "shared/types/index.js";
 import { managedSandboxDriver } from "./sandbox-containers.js";
-import { parseProfileVariant } from "./sandbox-profiles.js";
+import { listProfiles, parseProfileVariant } from "./sandbox-profiles.js";
 import {
   chatDeliveryOwner,
   currentSandboxMode,
+  getSandboxBuilds,
   getSandboxDeliveries,
   getSandboxManager,
+  onSandboxBuildFinished,
+  profileScope,
   sandboxInfo,
   sandboxProfileForConsent,
+  setPendingProposalView,
   type ConsentProfile,
 } from "./sandbox-desktop.js";
+import { readSandboxSettings, resolveSandboxSettings } from "./sandbox-desktop-settings.js";
+import { getProfileStore } from "./sandbox-profile-store.js";
+import { SandboxProfileProposals } from "./sandbox-profile-proposals.js";
 import type { DeliveryContext, DeliveryOwner, OutboxSource } from "./sandbox-deliverables.js";
 
 const log = createLogger("computer-use");
@@ -288,7 +298,13 @@ function logUnattendedFailure(chatId: string, sessionId: string, error: unknown,
 }
 
 /** A `controlRequestResult` event as the host emits it, with the target it is about. See {@link ComputerUseHost.emitControlResult}. */
-export type ControlResultEvent = StreamEvent & { controlTarget?: ComputerTargetKind };
+/**
+ * `controlTarget` and `requiredCap` are for the stream handler only and never
+ * reach the wire (utils/sse.ts): a card's outcome is withheld from a tab that
+ * was never sent the card — a sandbox one from a bundle without
+ * `sandbox_target`, a profile proposal's from one without `requiredCap`.
+ */
+export type ControlResultEvent = StreamEvent & { controlTarget?: ComputerTargetKind; requiredCap?: ClientCapability };
 
 export interface HostPolicy {
   policy: ComputerUsePolicy;
@@ -1945,6 +1961,8 @@ export class ComputerUseHost {
    * chat that carries the conversation on — and none starts a turn.
    */
   withdrawChatRequests(chatId: string, reason: WithdrawReason, noticeTo = chatId) {
+    // The chat's open Sandbox profile proposals go the same way (Stop and supersede only).
+    if (reason === WITHDRAWN.stopped || reason === WITHDRAWN.superseded) proposals?.withdrawChat(chatId, reason, noticeTo);
     for (const [id, request] of [...this.controlRequests])
       if (request.chatId === chatId && !request.sessionId) this.cancelControlRequest(id, request, reason, noticeTo);
     const action = this.actionRequests.get(chatId);
@@ -2197,6 +2215,46 @@ export function withOutboxSync(
   } as Driver;
 }
 
+let proposals: SandboxProfileProposals | undefined;
+/**
+ * Agent-built Sandbox desktop profiles' proposals (sandbox-profile-proposals.ts),
+ * wired as the daemon runs them: this chat's policy, human-only open
+ * approvals, chat notices, the profile store and the build queue.
+ */
+export function getSandboxProfileProposals(): SandboxProfileProposals {
+  if (proposals) return proposals;
+  const created = new SandboxProfileProposals({
+    readPolicy: loadComputerUsePolicy,
+    raiseApproval: openHumanApproval,
+    notify: (chatId, text, options) => void enqueueChatNotice(chatId, text, options),
+    store: getProfileStore,
+    settings: () => resolveSandboxSettings(readSandboxSettings()),
+    mode: () => currentSandboxMode().mode,
+    chatScope: profileScope,
+    ownerLabel: (chatId, kind) => {
+      const chat = chatFileService.getChat(chatId);
+      const folder = chat?.displayFolder || chat?.folder || "";
+      return kind === "workspace" ? `this chat's workspace${folder ? ` (${folder})` : ""}` : `the folder ${folder}`;
+    },
+    visibleProfiles: (chatId) => listProfiles(profileScope(chatId)),
+    globalNames: () => new Set(listProfiles({}).map((entry) => entry.recipe.name)),
+    builds: getSandboxBuilds,
+    emitResult: (chatId, requestId, message) => {
+      const event: ControlResultEvent = {
+        type: "tool_result",
+        content: "",
+        controlRequestResult: { requestId, message },
+        toolName: SANDBOX_PROFILE_PROPOSE_TOOL_NAME,
+        requiredCap: CLIENT_CAPS.sandboxProfileProposal,
+      };
+      sessionRegistry.get(chatId)?.emitter?.emit("event", event);
+    },
+  });
+  onSandboxBuildFinished((record) => created.onBuildFinished(record));
+  setPendingProposalView(created);
+  return (proposals = created);
+}
+
 let hostPromise: Promise<ComputerUseHost> | undefined;
 export function getComputerUseHost(): Promise<ComputerUseHost> {
   return (hostPromise ??= (async () => {
@@ -2233,6 +2291,7 @@ export function peekComputerUseHost(): Promise<ComputerUseHost> | undefined {
   return hostPromise;
 }
 export async function shutdownComputerUse(): Promise<void> {
+  proposals?.dispose();
   const pending = hostPromise;
   hostPromise = undefined;
   if (pending) await (await pending).dispose();

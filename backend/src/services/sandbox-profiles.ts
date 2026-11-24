@@ -21,10 +21,12 @@
  * workspace's, then its folder's — both owner scopes, as the deliverables
  * read both, so a chat that gains a workspace record keeps seeing what its
  * folder had. A name an earlier scope has is never shadowed by a later one.
- * **Where a chat's new profile goes** ({@link workspaceScopeKey}, for the
- * later change that lets agents propose them): its workspace's scope when it
- * has one, else its folder's. The seam for those is {@link ProfileSource}: a
- * source per scope, stored under `<data dir>/sandbox-desktop/profiles/<scope>/`.
+ * **Where a chat's new profile goes** ({@link workspaceScopeKey}): an agent's
+ * proposal is stored in its workspace's scope when it has one, else its
+ * folder's (sandbox-profile-proposals.ts). Each stored scope is one
+ * {@link ProfileSource} ({@link storeSource}), read from
+ * `<data dir>/sandbox-desktop/profiles/<scope>/` (sandbox-profile-store.ts);
+ * a profile a human promoted lives under `global/` there.
  *
  * **Builds are explicit** — `callboard sandbox build --profile <name>` or
  * Settings → Sandbox desktop — never implicit, and only a signed-in human may
@@ -75,11 +77,16 @@ import {
   sandboxContentDigest,
   type DockerRunner,
 } from "./sandbox-image.js";
+import { ProfileStore, currentRecipe, getProfileStore } from "./sandbox-profile-store.js";
 
 export type { ProfileScopeKey };
 
-/** Where a profile's recipe comes from. `builtin`: shipped with Callboard. */
-export type ProfileSourceKind = "builtin";
+/**
+ * Where a profile's recipe comes from. `builtin`: shipped with Callboard.
+ * `agent`: proposed by an agent and approved by a human
+ * (sandbox-profile-store.ts); only the approved version is an entry.
+ */
+export type ProfileSourceKind = "builtin" | "agent";
 
 /** A recipe the registry knows, validated, with its identity and the image it builds. */
 export interface ProfileEntry {
@@ -92,6 +99,8 @@ export interface ProfileEntry {
   source: ProfileSourceKind;
   /** `<repository>:<name>` (global) or `<repository>:<scope>-<name>`. */
   image: string;
+  /** Agent-built profiles: the approved version this entry is. */
+  version?: number;
 }
 
 /** Which chat is asking: where its work lives. */
@@ -115,8 +124,8 @@ export function folderScopeKey(folder: string | undefined): ProfileScopeKey | un
   return folder && isAbsolute(folder) ? scopeHash(`folder\0${resolve(folder)}`) : undefined;
 }
 /**
- * The scope a profile proposed in this chat is stored under (a later change):
- * its workspace's when it has a `workspaceId`, else its folder's. Undefined
+ * The scope a profile proposed in this chat is stored under: its
+ * workspace's when it has a `workspaceId`, else its folder's. Undefined
  * with neither. One-way: never parsed back.
  */
 export function workspaceScopeKey(chat: ProfileChatScope): ProfileScopeKey | undefined {
@@ -192,8 +201,31 @@ export function makeEntry(recipe: ProfileRecipe, scope: ProfileScopeKey, source:
 }
 
 export const builtinSource = (dir?: string): ProfileSource => ({ kind: "builtin", scope: "global", list: () => loadBuiltinProfiles(dir).entries });
-/** Every source this Callboard has. Today: the built-ins. */
-export const defaultSources = (): ProfileSource[] => [builtinSource()];
+/**
+ * One scope's agent-built profiles: each one's approved version, if it has
+ * one. A stored draft is never an entry, so it can be neither built nor
+ * started until a human approves it.
+ */
+export function storeSource(scope: ProfileScopeKey, store: ProfileStore = getProfileStore(), repository = profileRepository()): ProfileSource {
+  return {
+    kind: "agent",
+    scope,
+    list: () =>
+      store.list(scope).flatMap((profile) => {
+        const current = currentRecipe(profile);
+        return current ? [{ ...makeEntry(current.recipe, scope, "agent", repository), version: current.version.version }] : [];
+      }),
+  };
+}
+/**
+ * Every source this Callboard has: the built-ins, then each stored scope's
+ * agent-built profiles. The built-ins come first, so a built-in name is
+ * never shadowed by a promoted profile (promotion refuses one anyway).
+ */
+export const defaultSources = (store: ProfileStore = getProfileStore()): ProfileSource[] => [
+  builtinSource(),
+  ...[...new Set<ProfileScopeKey>(["global", ...store.scopes()])].map((scope) => storeSource(scope, store)),
+];
 
 /**
  * Every profile a chat may use: the global scope's, then its own workspace's,

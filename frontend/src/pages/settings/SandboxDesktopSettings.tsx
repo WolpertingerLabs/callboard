@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, Box, Check, Hammer, Layers, Loader2, RefreshCw, Trash2, X } from "lucide-react";
+import { AlertTriangle, ArrowUpCircle, Bot, Box, Check, Hammer, History, Layers, Loader2, RefreshCw, Trash2, X } from "lucide-react";
 import {
   SANDBOX_DESKTOP_BOUNDS,
   SANDBOX_PROFILE_BUILD_COMMAND,
+  type SandboxAgentProfileSummary,
   type SandboxDesktopBuild,
   type SandboxDesktopMode,
   type SandboxDesktopNetwork,
@@ -14,10 +15,13 @@ import {
   cancelSandboxBuild,
   getSandboxBuild,
   getSandboxDesktopStatus,
+  promoteAgentSandboxProfile,
+  removeAgentSandboxProfile,
   removeSandboxProfile,
   updateSandboxDesktopSettings,
 } from "../../api";
 import { errorMessage } from "../../utils/errorMessage";
+import SandboxAgentProfileHistory from "./SandboxAgentProfileHistory";
 import { headerStyle, helpStyle, inputStyle, labelStyle, sectionStyle, subtitleStyle } from "./styles";
 
 const primaryButton: React.CSSProperties = {
@@ -86,6 +90,9 @@ interface Draft {
   profileMaxMemoryMb: string;
   profileMaxHomeMb: string;
   profileMaxSessionMinutes: string;
+  agentMaxProfilesPerScope: string;
+  agentMaxVersions: string;
+  agentMaxQueuedBuilds: string;
 }
 
 function draftFrom(status: SandboxDesktopStatus): Draft {
@@ -103,6 +110,9 @@ function draftFrom(status: SandboxDesktopStatus): Draft {
     profileMaxMemoryMb: String(s.profileMaxMemoryMb ?? SANDBOX_DESKTOP_BOUNDS.profileMaxMemoryMb.default),
     profileMaxHomeMb: String(s.profileMaxHomeMb ?? SANDBOX_DESKTOP_BOUNDS.profileMaxHomeMb.default),
     profileMaxSessionMinutes: String(s.profileMaxSessionMinutes ?? SANDBOX_DESKTOP_BOUNDS.profileMaxSessionMinutes.default),
+    agentMaxProfilesPerScope: String(s.agentMaxProfilesPerScope ?? SANDBOX_DESKTOP_BOUNDS.agentMaxProfilesPerScope.default),
+    agentMaxVersions: String(s.agentMaxVersions ?? SANDBOX_DESKTOP_BOUNDS.agentMaxVersions.default),
+    agentMaxQueuedBuilds: String(s.agentMaxQueuedBuilds ?? SANDBOX_DESKTOP_BOUNDS.agentMaxQueuedBuilds.default),
   };
 }
 
@@ -218,6 +228,12 @@ function BuildList({ builds, editable, onChanged }: { builds: SandboxDesktopBuil
         >
           <span style={{ minWidth: 0, flex: "1 1 180px", wordBreak: "break-word" }}>
             {buildLabel(build)}
+            {build.requestedBy?.kind === "agent" ? (
+              <span style={{ color: "var(--text-muted)" }}>
+                {" "}
+                · requested by an agent, approved by a human{build.version !== undefined ? ` (v${build.version})` : ""}
+              </span>
+            ) : null}
             {build.requestedAt ? <span style={{ color: "var(--text-muted)" }}> · {new Date(build.requestedAt).toLocaleString()}</span> : null}
           </span>
           <span role="status" style={{ color: isActive(build) ? "var(--accent)" : build.phase === "succeeded" ? "var(--success)" : "var(--text-muted)" }}>
@@ -245,6 +261,93 @@ function BuildList({ builds, editable, onChanged }: { builds: SandboxDesktopBuil
   );
 }
 
+const badgeStyle: React.CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 4,
+  fontSize: 12,
+  color: "var(--accent)",
+  border: "1px solid currentColor",
+  borderRadius: 10,
+  padding: "1px 8px",
+};
+
+/** Where an agent-built profile came from. Its description, setup and note are the agent's text, shown as plain text only. */
+function AgentProvenance({ ownerLabel, promoted }: { ownerLabel?: string; promoted?: SandboxAgentProfileSummary["promoted"] }) {
+  return (
+    <p style={{ ...helpStyle, margin: "6px 0 0 0", wordBreak: "break-word" }}>
+      Proposed by an agent and approved by a human
+      {ownerLabel ? ` · ${ownerLabel}` : ""}
+      {promoted ? ` · promoted to global ${new Date(promoted.at).toLocaleString()} from ${promoted.fromScope} v${promoted.fromVersion}` : ""}. Its description
+      and setup are the agent&apos;s own text.
+    </p>
+  );
+}
+
+/** History, Promote to global (non-global only) and Remove, for a signed-in human. */
+function AgentActions({
+  name,
+  scope,
+  busy,
+  history,
+  onHistory,
+  onPromote,
+  onRemove,
+}: {
+  name: string;
+  scope: string;
+  busy: boolean;
+  history: boolean;
+  onHistory: () => void;
+  onPromote: () => void;
+  onRemove: () => void;
+}) {
+  return (
+    <>
+      <button style={secondaryButton} aria-expanded={history} onClick={onHistory} aria-label={`History of profile ${name}`}>
+        <History size={14} /> {history ? "Hide history" : "History"}
+      </button>
+      {scope !== "global" && (
+        <button style={{ ...secondaryButton, opacity: busy ? 0.5 : 1 }} disabled={busy} onClick={onPromote} aria-label={`Promote profile ${name} to global`}>
+          <ArrowUpCircle size={14} /> Promote to global
+        </button>
+      )}
+      <button style={{ ...secondaryButton, opacity: busy ? 0.5 : 1 }} disabled={busy} onClick={onRemove} aria-label={`Remove agent profile ${name}`}>
+        <Trash2 size={14} /> Remove
+      </button>
+    </>
+  );
+}
+
+/** An agent-built profile with no approved version: nothing to build, but its history and removal. */
+function AgentProposalRow({ profile, editable, onRemove }: { profile: SandboxAgentProfileSummary; editable: boolean; onRemove: () => void }) {
+  const [history, setHistory] = useState(false);
+  const latest = profile.versions.reduce<number | undefined>((max, v) => (max === undefined || v.version > max ? v.version : max), undefined);
+  return (
+    <div data-testid={`sandbox-agent-proposal-${profile.id}`} style={{ borderTop: "1px solid var(--border)", padding: "8px 0", minWidth: 0 }}>
+      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
+        <strong style={{ fontSize: 13, wordBreak: "break-word" }}>{profile.name}</strong>
+        <span style={badgeStyle}>
+          <Bot size={12} /> agent-built{latest !== undefined ? ` · latest v${latest}` : ""}
+        </span>
+        {profile.ownerLabel ? <span style={{ ...helpStyle, margin: 0, wordBreak: "break-word" }}>{profile.ownerLabel}</span> : null}
+      </div>
+      {profile.description ? <p style={{ ...helpStyle, margin: "4px 0", wordBreak: "break-word" }}>{profile.description}</p> : null}
+      {editable && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 6 }}>
+          <button style={secondaryButton} aria-expanded={history} onClick={() => setHistory((open) => !open)} aria-label={`History of profile ${profile.name}`}>
+            <History size={14} /> {history ? "Hide history" : "History"}
+          </button>
+          <button style={secondaryButton} onClick={onRemove} aria-label={`Remove agent profile ${profile.name}`}>
+            <Trash2 size={14} /> Remove
+          </button>
+        </div>
+      )}
+      {editable && history && <SandboxAgentProfileHistory name={profile.name} scope={profile.scope} id={profile.id} />}
+    </div>
+  );
+}
+
 /** One profile: what it is, what a session gets, its image, and (for a signed-in human) build and remove. */
 function ProfileCard({
   profile,
@@ -252,17 +355,23 @@ function ProfileCard({
   busy,
   onBuild,
   onRemove,
+  onPromote,
 }: {
   profile: SandboxProfileStatus;
   editable: boolean;
   busy: boolean;
   onBuild: () => void;
+  /** The image's removal; for an agent-built profile, forgetting the whole profile. */
   onRemove: () => void;
+  onPromote: () => void;
 }) {
+  const [history, setHistory] = useState(false);
   const { image, limits } = profile;
   const built = image.state !== "missing";
   const unsupported = profile.architectureSupported === false;
   const clamped = new Set(profile.clamped ?? []);
+  const agent = profile.source === "agent" ? profile.agent : undefined;
+  const isAgent = profile.source === "agent";
   const limit = (key: keyof typeof limits, text: string) => (
     <span>
       {text}
@@ -280,10 +389,18 @@ function ProfileCard({
       style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 12, marginTop: 12, minWidth: 0 }}
     >
       <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, justifyContent: "space-between" }}>
-        <strong style={{ fontSize: 14 }}>
-          {profile.name}
-          {profile.scope && profile.scope !== "global" ? <span style={{ color: "var(--text-muted)", fontWeight: 400 }}> ({profile.scope})</span> : null}
-        </strong>
+        <span style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6, minWidth: 0 }}>
+          <strong style={{ fontSize: 14, wordBreak: "break-word" }}>
+            {profile.name}
+            {profile.scope && profile.scope !== "global" ? <span style={{ color: "var(--text-muted)", fontWeight: 400 }}> ({profile.scope})</span> : null}
+          </strong>
+          {isAgent && (
+            <span data-testid={`sandbox-profile-badge-${profile.name}`} style={badgeStyle}>
+              <Bot size={12} /> {agent?.promoted ? "promoted from agent" : "agent-built"}
+              {agent ? ` · v${agent.version}` : ""}
+            </span>
+          )}
+        </span>
         <span
           role="status"
           style={{ fontSize: 12, color: profileStateColor(image.state), border: "1px solid currentColor", borderRadius: 10, padding: "1px 8px" }}
@@ -291,7 +408,8 @@ function ProfileCard({
           {PROFILE_STATE_LABELS[image.state] ?? image.state}
         </span>
       </div>
-      <p style={{ ...helpStyle, margin: "6px 0" }}>{profile.description}</p>
+      {isAgent && <AgentProvenance ownerLabel={agent?.ownerLabel} promoted={agent?.promoted} />}
+      <p style={{ ...helpStyle, margin: "6px 0", wordBreak: "break-word" }}>{profile.description}</p>
       <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 16px", fontSize: 13 }}>
         {limit("cpus", `${limits.cpus} CPU${limits.cpus === 1 ? "" : "s"}`)}
         {limit("memoryMb", `${formatMb(limits.memoryMb)} memory`)}
@@ -348,7 +466,7 @@ function ProfileCard({
           <Hammer size={14} />
           {!built ? "Build" : image.state === "current" ? "Rebuild" : "Rebuild (needed)"}
         </button>
-        {built && (
+        {built && !isAgent && (
           <button
             style={{ ...secondaryButton, opacity: editable && !busy ? 1 : 0.5 }}
             disabled={!editable || busy}
@@ -358,7 +476,19 @@ function ProfileCard({
             <Trash2 size={14} /> Remove image
           </button>
         )}
+        {isAgent && editable && (
+          <AgentActions
+            name={profile.name}
+            scope={profile.scope}
+            busy={busy}
+            history={history}
+            onHistory={() => setHistory((open) => !open)}
+            onPromote={onPromote}
+            onRemove={onRemove}
+          />
+        )}
       </div>
+      {isAgent && editable && history && <SandboxAgentProfileHistory name={profile.name} scope={profile.scope} id={profile.id} />}
     </div>
   );
 }
@@ -448,6 +578,9 @@ export default function SandboxDesktopSettings() {
         profileMaxMemoryMb: Number(draft.profileMaxMemoryMb),
         profileMaxHomeMb: Number(draft.profileMaxHomeMb),
         profileMaxSessionMinutes: Number(draft.profileMaxSessionMinutes),
+        agentMaxProfilesPerScope: Number(draft.agentMaxProfilesPerScope),
+        agentMaxVersions: Number(draft.agentMaxVersions),
+        agentMaxQueuedBuilds: Number(draft.agentMaxQueuedBuilds),
       });
       setStatus(next);
       setDraft(draftFrom(next));
@@ -481,6 +614,33 @@ export default function SandboxDesktopSettings() {
     }
   };
 
+  const promote = async (profile: string, scope: string) => {
+    if (
+      !window.confirm(
+        `Promote profile ${profile} to global? It becomes usable by every chat, not just this workspace or folder, and is rebuilt under the global name. Its scoped image is removed.`,
+      )
+    )
+      return;
+    setError(null);
+    try {
+      const { status: next } = await promoteAgentSandboxProfile(profile, scope);
+      setStatus(next);
+    } catch (e) {
+      setError(errorMessage(e, `Failed to promote profile ${profile}`));
+    }
+  };
+
+  const removeAgent = async (profile: string, scope: string) => {
+    if (!window.confirm(`Remove agent-built profile ${profile}? This forgets every version of its recipe and removes its image. It cannot be undone.`)) return;
+    setError(null);
+    try {
+      const { status: next } = await removeAgentSandboxProfile(profile, scope);
+      setStatus(next);
+    } catch (e) {
+      setError(errorMessage(e, `Failed to remove profile ${profile}`));
+    }
+  };
+
   if (loading)
     return (
       <div style={{ display: "flex", alignItems: "center", gap: 8, color: "var(--text-muted)" }}>
@@ -491,9 +651,23 @@ export default function SandboxDesktopSettings() {
 
   const { diagnostics: d } = status;
   const editable = status.canEdit;
-  const { cpus, memoryMb, maxConcurrent, keepHours, maxKept, deliverablesGb, profileMaxCpus, profileMaxMemoryMb, profileMaxHomeMb, profileMaxSessionMinutes } =
-    SANDBOX_DESKTOP_BOUNDS;
+  const {
+    cpus,
+    memoryMb,
+    maxConcurrent,
+    keepHours,
+    maxKept,
+    deliverablesGb,
+    profileMaxCpus,
+    profileMaxMemoryMb,
+    profileMaxHomeMb,
+    profileMaxSessionMinutes,
+    agentMaxProfilesPerScope,
+    agentMaxVersions,
+    agentMaxQueuedBuilds,
+  } = SANDBOX_DESKTOP_BOUNDS;
   const profiles = status.profiles ?? [];
+  const unapproved = (status.agentProfiles ?? []).filter((p) => p.current === undefined);
   const capField = (id: string, key: keyof Draft, label: string, bound: { min: number; max: number }, step: number) => (
     <div>
       <label style={labelStyle} htmlFor={id}>
@@ -717,6 +891,23 @@ export default function SandboxDesktopSettings() {
           {capField("sandbox-profile-max-minutes", "profileMaxSessionMinutes", "Max session (minutes)", profileMaxSessionMinutes, 5)}
         </div>
 
+        <h3 style={{ fontSize: 13, fontWeight: 600, margin: "16px 0 4px 0" }}>Agent-built profiles</h3>
+        <p style={helpStyle}>
+          An agent may propose a profile recipe for its workspace or folder; you approve every build in the chat, and manage the results below. The caps above
+          still apply to what an agent&apos;s recipe asks for.
+        </p>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, marginTop: 8 }}>
+          {capField(
+            "sandbox-agent-max-profiles",
+            "agentMaxProfilesPerScope",
+            "Agent profiles per workspace/folder (0: agents may not propose)",
+            agentMaxProfilesPerScope,
+            1,
+          )}
+          {capField("sandbox-agent-max-versions", "agentMaxVersions", "Versions kept per agent profile", agentMaxVersions, 1)}
+          {capField("sandbox-agent-max-queued", "agentMaxQueuedBuilds", "Agent builds queued at once", agentMaxQueuedBuilds, 1)}
+        </div>
+
         <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 16 }}>
           <button style={{ ...primaryButton, opacity: editable && !saving ? 1 : 0.5 }} disabled={!editable || saving} onClick={() => void save()}>
             {saving ? <Loader2 size={14} className="spin" /> : saved ? <Check size={14} /> : null}
@@ -819,16 +1010,29 @@ export default function SandboxDesktopSettings() {
           </p>
           {profiles.map((profile) => (
             <ProfileCard
-              key={profile.name}
+              key={profile.id}
               profile={profile}
               editable={editable}
               busy={activeBuilds.some((b) => b.profileId === profile.id || (!b.profileId && b.profile === profile.name))}
               onBuild={() => void build(profile.name, profile.scope)}
-              onRemove={() => void remove(profile.name, profile.scope)}
+              onRemove={() => void (profile.source === "agent" ? removeAgent(profile.name, profile.scope) : remove(profile.name, profile.scope))}
+              onPromote={() => void promote(profile.name, profile.scope)}
             />
           ))}
           {status.build.state !== "idle" && status.build.profile && <BuildLog build={status.build} label={`profile ${status.build.profile}`} />}
           <BuildList builds={status.builds ?? []} editable={editable} onChanged={() => void refresh(false)} />
+        </section>
+      )}
+
+      {unapproved.length > 0 && (
+        <section style={sectionStyle} aria-labelledby="sandbox-agent-proposals-heading" data-testid="sandbox-agent-proposals">
+          <h3 id="sandbox-agent-proposals-heading" style={{ fontSize: 14, fontWeight: 600, margin: "0 0 6px 0" }}>
+            Agent proposals with no approved version
+          </h3>
+          <p style={subtitleStyle}>Recipes an agent proposed that no human has approved yet: nothing has been built from them.</p>
+          {unapproved.map((profile) => (
+            <AgentProposalRow key={profile.id} profile={profile} editable={editable} onRemove={() => void removeAgent(profile.name, profile.scope)} />
+          ))}
         </section>
       )}
     </div>

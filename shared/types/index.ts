@@ -116,6 +116,17 @@ export {
   splitRideAlongBlock,
   splitRideAlongMessages,
   withoutRideAlongBlock,
+  PROFILE_BUILD_OUTCOME_TEXT,
+  PROFILE_PROPOSAL_FAILURE_TEXT,
+  PROFILE_PROPOSAL_WITHDRAW_TEXT,
+  type ProfileBuildOutcome,
+  type ProfileProposalFailure,
+  type ProfileProposalWithdrawReason,
+  profileBuildFinishedNotice,
+  profileProposalApprovedNotice,
+  profileProposalFailedNotice,
+  profileProposalRefusedNotice,
+  profileProposalWithdrawnNotice,
 } from "./rideAlong.js";
 export {
   COMPRESSION_SUMMARY_HEADINGS,
@@ -331,7 +342,14 @@ export type {
 } from "./jobs.js";
 
 export * from "./reasoning.js";
-export { CU_ACTION_TOOL_NAME, CU_REQUEST_CONTROL_TOOL_NAME, SANDBOX_DESKTOP_TEXT, SANDBOX_DESKTOP_TEXT_ANY_MODE, sandboxDesktopText } from "./computerUse.js";
+export {
+  CU_ACTION_TOOL_NAME,
+  CU_REQUEST_CONTROL_TOOL_NAME,
+  SANDBOX_PROFILE_PROPOSE_TOOL_NAME,
+  SANDBOX_DESKTOP_TEXT,
+  SANDBOX_DESKTOP_TEXT_ANY_MODE,
+  sandboxDesktopText,
+} from "./computerUse.js";
 export type { SandboxDesktopText, SandboxDesktopVariant } from "./computerUse.js";
 export type {
   ComputerUseKind,
@@ -344,5 +362,6 @@ export type {
   ComputerUseActionRequest,
 } from "./computerUse.js";
 export * from "./sandboxDesktop.js";
+export * from "./sandboxProfileDiff.js";
 export * from "./storage.js";
 export * from "./artifact.js";

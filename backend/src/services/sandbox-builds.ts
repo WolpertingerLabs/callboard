@@ -25,11 +25,12 @@ import type { ProfileScopeKey } from "./sandbox-profiles.js";
 
 export type BuildPhase = "queued" | "running" | "succeeded" | "failed" | "interrupted" | "cancelled";
 /**
- * Who asked for a build. Today only a signed-in human (Settings) or the
- * operator's shell; an agent's request, approved by a human, is a later
- * change (`{ kind: "agent", chatId, approvalId }`).
+ * Who asked for a build: a signed-in human (Settings) or the operator's
+ * shell, or an agent whose proposal a human approved (`approvalId`: the
+ * proposal's request id; sandbox-profile-proposals.ts). An agent never
+ * enqueues a build itself: only a human's approval does, for it.
  */
-export type BuildRequester = { kind: "human" };
+export type BuildRequester = { kind: "human" } | { kind: "agent"; chatId: string; approvalId: string };
 export interface BuildRecord {
   id: string;
   kind: "base" | "profile";
@@ -44,8 +45,17 @@ export interface BuildRecord {
   /** The first line of the failure. */
   error?: string;
   requestedBy: BuildRequester;
+  /** A pinned profile build: the recipe digest it must build, and (agent-built profiles) its version. */
+  digest?: string;
+  version?: number;
 }
-export type BuildTarget = { kind: "base" } | { kind: "profile"; id: string; scope: ProfileScopeKey; name: string };
+/**
+ * What to build. A profile target with a `digest` is pinned: the build fails,
+ * before anything is downloaded or built, unless the profile's recipe in
+ * force still has exactly that digest. An approved agent proposal is always
+ * pinned to the recipe the human approved.
+ */
+export type BuildTarget = { kind: "base" } | { kind: "profile"; id: string; scope: ProfileScopeKey; name: string; digest?: string; version?: number };
 
 /** Each build's log is capped at this; past it the oldest half is dropped (the end of a build log is what explains it). */
 export const BUILD_LOG_LIMIT = 2 * 1024 * 1024;
@@ -86,7 +96,9 @@ export class SandboxBuilds {
       try {
         const record = JSON.parse(readFileSync(join(this.options.dir, file), "utf8")) as BuildRecord;
         if (!ID.test(record.id) || `${record.id}.json` !== file) continue;
-        record.requestedBy ??= { kind: "human" };
+        // Records from before `requestedBy` were all a human's; a malformed agent requester reads as a human's too (no chat may cancel it).
+        const by = record.requestedBy as { kind?: unknown; chatId?: unknown; approvalId?: unknown } | undefined;
+        if (!(by?.kind === "agent" && typeof by.chatId === "string" && typeof by.approvalId === "string")) record.requestedBy = { kind: "human" };
         if (record.phase === "queued" || record.phase === "running") {
           record.phase = "interrupted";
           record.finishedAt ??= Date.now();
@@ -121,19 +133,33 @@ export class SandboxBuilds {
     }
   }
 
+  /** The same target: kind, profile, and for a pinned build the same digest (an unpinned one matches only an unpinned one). */
   private same(a: BuildTarget, b: BuildRecord): boolean {
-    return a.kind === b.kind && (a.kind === "base" || a.id === b.profile);
+    return a.kind === b.kind && (a.kind === "base" || (a.id === b.profile && a.digest === b.digest));
   }
 
   /** Queue a build (or return the one already queued or running for the same target). */
   enqueue(target: BuildTarget, requestedBy: BuildRequester = { kind: "human" }): BuildRecord {
     if (this.disposed) throw new Error("Callboard is shutting down");
-    const pending = [...this.records.values()].find((r) => (r.phase === "queued" || r.phase === "running") && this.same(target, r));
+    // An agent's request is never merged into another's build: its record is
+    // what its notices and its cancel right are tied to.
+    const pending =
+      requestedBy.kind === "human"
+        ? [...this.records.values()].find((r) => (r.phase === "queued" || r.phase === "running") && r.requestedBy.kind === "human" && this.same(target, r))
+        : undefined;
     if (pending) return pending;
     const record: BuildRecord = {
       id: randomUUID(),
       kind: target.kind,
-      ...(target.kind === "profile" ? { profile: target.id, scope: target.scope, name: target.name } : {}),
+      ...(target.kind === "profile"
+        ? {
+            profile: target.id,
+            scope: target.scope,
+            name: target.name,
+            ...(target.digest ? { digest: target.digest } : {}),
+            ...(target.version !== undefined ? { version: target.version } : {}),
+          }
+        : {}),
       phase: "queued",
       requestedAt: Date.now(),
       requestedBy,
@@ -224,6 +250,10 @@ export class SandboxBuilds {
       }
     } else if (record.phase === "running" && this.current?.id === id) this.current.abort.abort();
     return record;
+  }
+  /** Builds an agent asked for (through a human's approval) still queued or running, across all chats: what the Settings cap counts. */
+  activeAgentBuilds(): BuildRecord[] {
+    return [...this.records.values()].filter((r) => r.requestedBy.kind === "agent" && (r.phase === "queued" || r.phase === "running"));
   }
   /** The build running now, if any. */
   runningBuild(): BuildRecord | undefined {

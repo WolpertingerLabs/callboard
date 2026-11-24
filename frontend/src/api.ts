@@ -1,5 +1,12 @@
 import { ASIDE_ROLE, asideForkPoint, handshakeHeaders, type AsideQuote } from "shared/types/index.js";
-import type { PermissionReviewSettings, ReasoningCapability, SandboxDesktopBuild, SandboxDesktopSettings, SandboxDesktopStatus } from "shared/types/index.js";
+import type {
+  PermissionReviewSettings,
+  ReasoningCapability,
+  SandboxAgentProfileSummary,
+  SandboxDesktopBuild,
+  SandboxDesktopSettings,
+  SandboxDesktopStatus,
+} from "shared/types/index.js";
 import { DEFAULT_VOICE_MODEL, type TranscribeResponse, type VoiceModelsResponse } from "shared/types/voice.js";
 import {
   DEFAULT_READ_ALOUD_MODEL,
@@ -1737,6 +1744,27 @@ export async function cancelSandboxBuild(id: string): Promise<SandboxDesktopBuil
 export async function removeSandboxProfile(name: string, scope = "global"): Promise<{ removed: boolean; status: SandboxDesktopStatus }> {
   const query = scope === "global" ? "" : `?scope=${encodeURIComponent(scope)}`;
   return request(`/sandbox-desktop/profiles/${encodeURIComponent(name)}${query}`, { method: "DELETE", error: `Failed to remove profile ${name}` });
+}
+
+const agentProfilePath = (name: string, scope: string, suffix = "") =>
+  `/sandbox-desktop/agent-profiles/${encodeURIComponent(name)}${suffix}?scope=${encodeURIComponent(scope)}`;
+
+/** One agent-built profile with every kept version's recipe (its history). */
+export async function getAgentSandboxProfile(name: string, scope: string): Promise<SandboxAgentProfileSummary> {
+  return requestField(agentProfilePath(name, scope), "profile", { error: `Failed to read the history of profile ${name}` });
+}
+
+/** Make an agent-built profile global (a signed-in session only); queues its build under the global name. */
+export async function promoteAgentSandboxProfile(
+  name: string,
+  scope: string,
+): Promise<{ profile: SandboxAgentProfileSummary; build: SandboxDesktopBuild; status: SandboxDesktopStatus }> {
+  return request(agentProfilePath(name, scope, "/promote"), { method: "POST", json: {}, error: `Failed to promote profile ${name}` });
+}
+
+/** Forget an agent-built profile: every version and its image. Refused while it is being built or a container uses it. */
+export async function removeAgentSandboxProfile(name: string, scope: string): Promise<{ removedImage: boolean; status: SandboxDesktopStatus }> {
+  return request(agentProfilePath(name, scope), { method: "DELETE", error: `Failed to remove profile ${name}` });
 }
 
 // Agent settings API functions

@@ -9,6 +9,15 @@
  *   GET  /api/sandbox-desktop/builds/:id/log — its whole (capped) log, as text
  *   POST /api/sandbox-desktop/builds/:id/cancel — cancel a queued or running build
  *   DELETE /api/sandbox-desktop/profiles/:name?scope= — remove a profile's image (scope default `global`)
+ *   GET  /api/sandbox-desktop/agent-profiles — every stored agent-built profile, with its versions (no recipes)
+ *   GET  /api/sandbox-desktop/agent-profiles/:name?scope= — one, with every version's recipe (the history)
+ *   POST /api/sandbox-desktop/agent-profiles/:name/promote?scope= — make it global (and queue its global build)
+ *   DELETE /api/sandbox-desktop/agent-profiles/:name?scope= — forget it: its versions and its image
+ *
+ * Agent-built profiles are proposed by agents (`sandbox_profile_propose`)
+ * and approved build by build in the chat; everything a human does to one
+ * afterwards — promote, remove, rebuild (`POST /build`) — is here, behind a
+ * signed-in session and a same-origin request. No agent tool reaches these.
  *
  * Reading is open to any authenticated caller, API keys included. Changing
  * settings, building and removing need a signed-in session, as for every other host
@@ -21,9 +30,14 @@ import { Router, type Request, type Response } from "express";
 import { requireSessionAuth } from "../auth.js";
 import { requireControlOrigin } from "./computer-use.js";
 import { peekComputerUseHost } from "../services/computer-use.js";
+import { getSandboxProfileProposals } from "../services/computer-use.js";
 import {
+  agentProfileDetail,
+  agentProfileSummaries,
   buildDto,
   cancelSandboxBuild,
+  promoteAgentProfile,
+  removeAgentProfile,
   currentSandboxMode,
   getSandboxBuilds,
   removeSandboxProfile,
@@ -140,5 +154,61 @@ sandboxDesktopRouter.delete("/profiles/:name", requireSessionAuth, requireContro
       if (code !== "conflict") log.warn(`Removing sandbox profile ${id} failed: ${message}`);
       res.status(409).json({ error: message });
     }
+  }
+});
+
+/** A route's agent-profile id from `:name` and `?scope=` (default `global`), or a 400. */
+function agentProfileId(req: Request, res: Response): string | undefined {
+  const id = entryIdOf(String(req.params.name), req.query.scope ?? "global");
+  if (!id) res.status(400).json({ error: "Invalid profile name or scope" });
+  return id;
+}
+function sendProfileError(res: Response, error: unknown, what: string): void {
+  const code = (error as { code?: string }).code;
+  const message = error instanceof Error ? error.message : `Could not ${what}`;
+  if (code === "not_found") res.status(404).json({ error: message });
+  else if (code === "conflict" || code === "invalid_request") res.status(code === "conflict" ? 409 : 400).json({ error: message });
+  else {
+    log.warn(`Could not ${what}: ${message}`);
+    res.status(409).json({ error: message });
+  }
+}
+
+sandboxDesktopRouter.get("/agent-profiles", (_req: Request, res: Response) => {
+  res.json({ profiles: agentProfileSummaries() });
+});
+
+sandboxDesktopRouter.get("/agent-profiles/:name", (req: Request, res: Response) => {
+  const id = agentProfileId(req, res);
+  if (!id) return;
+  try {
+    res.json({ profile: agentProfileDetail(id) });
+  } catch (error) {
+    sendProfileError(res, error, "read that profile");
+  }
+});
+
+sandboxDesktopRouter.post("/agent-profiles/:name/promote", requireSessionAuth, requireControlOrigin, async (req: Request, res: Response) => {
+  const id = agentProfileId(req, res);
+  if (!id) return;
+  try {
+    // Its open cards are visible to the promotion check only once the manager exists.
+    getSandboxProfileProposals();
+    const { profile, build } = await promoteAgentProfile(id);
+    res.json({ profile, build, status: await sandboxDesktopStatus(true) });
+  } catch (error) {
+    sendProfileError(res, error, `promote ${id}`);
+  }
+});
+
+sandboxDesktopRouter.delete("/agent-profiles/:name", requireSessionAuth, requireControlOrigin, async (req: Request, res: Response) => {
+  const id = agentProfileId(req, res);
+  if (!id) return;
+  try {
+    getSandboxProfileProposals();
+    const result = await removeAgentProfile(id);
+    res.json({ ...result, status: await sandboxDesktopStatus(true) });
+  } catch (error) {
+    sendProfileError(res, error, `remove ${id}`);
   }
 });
