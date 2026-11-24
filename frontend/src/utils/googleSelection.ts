@@ -1,6 +1,6 @@
 /**
  * Pure helpers for the Google services editor (GoogleSelectionEditor and
- * ConfigureConnectionModal): no React, so src/shared/google-dashboard.test.ts
+ * ConfigureConnectionModal): no React, so src/remote/google-dashboard-helpers.test.ts
  * can test them from the root suite. Everything is derived from the catalog
  * payload (GET /api/admin/google/catalog).
  */
