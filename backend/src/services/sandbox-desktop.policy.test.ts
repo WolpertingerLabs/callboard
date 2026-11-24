@@ -76,7 +76,9 @@ describe("deleting a chat", () => {
 
 describe("kept-for-recovery settings", () => {
   it("keepHours (1–168, default 24) and maxKept (0–8, default 2) are bounded whole numbers", () => {
-    expect(resolveSandboxSettings({})).toMatchObject({ keepHours: 24, maxKept: 2 });
+    expect(resolveSandboxSettings({})).toMatchObject({ keepHours: 24, maxKept: 2, deliverablesGb: 5 });
+    expect(normalizeSandboxSettings({ deliverablesGb: 100 }, true)).toEqual({ deliverablesGb: 100 });
+    expect(() => normalizeSandboxSettings({ deliverablesGb: 0 }, true)).toThrow(/deliverablesGb/);
     expect(SANDBOX_DESKTOP_BOUNDS.keepHours).toEqual({ min: 1, max: 168, default: 24 });
     expect(normalizeSandboxSettings({ keepHours: 72, maxKept: 0 }, true)).toEqual({ keepHours: 72, maxKept: 0 });
     for (const bad of [{ keepHours: 0 }, { keepHours: 169 }, { keepHours: 1.5 }, { maxKept: 9 }, { maxKept: -1 }])

@@ -244,6 +244,18 @@ describe("the deleted-chat policy", () => {
 });
 
 describe("Retry export, Discard and the sweep", () => {
+  it("from the successor of a Continue from (replaced), the original's kept sandbox is listed and can be retried; from a fork it cannot", async () => {
+    const { recovery, outbox, box, docker } = await keptOne();
+    // chat-k was replaced by chat-n: chat-n passes it as replaced.
+    expect(await recovery.keptFor("chat-n")).toEqual([]);
+    expect((await recovery.keptFor("chat-n", ["chat-k"])).map((k) => k.sessionId)).toEqual([box.sessionId]);
+    await expect(recovery.retry("chat-fork", box.sessionId, [])).rejects.toMatchObject({ code: "not_found" });
+    await expect(recovery.discard("chat-fork", box.sessionId)).rejects.toMatchObject({ code: "not_found" });
+    outbox.set("draft.md", "done");
+    expect(await recovery.retry("chat-n", box.sessionId, ["chat-k"])).toEqual({ outcome: "removed" });
+    expect(docker.state.containers.has(box.name)).toBe(false);
+  });
+
   it("Retry export: unpause, reconnect (endpoint from Docker, instance proved), copy, release", async () => {
     const { recovery, docker, box, outbox, deliveries, commands, manager } = await keptOne();
     outbox.set("draft.md", "# final");

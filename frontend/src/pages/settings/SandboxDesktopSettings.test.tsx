@@ -65,6 +65,9 @@ describe("Settings → Sandbox desktop", () => {
     expect(hours.min).toBe("1");
     expect(hours.max).toBe("168");
     fireEvent.change(hours, { target: { value: "72" } });
+    expect(screen.getByText(/kept this long, then removed/)).toBeTruthy();
+    expect(screen.getByText(/across all chats; each holds its memory while paused/)).toBeTruthy();
+    expect((screen.getByLabelText("Deliverables storage (GiB)") as HTMLInputElement).value).toBe("5");
     fireEvent.change(screen.getByLabelText("Kept at once"), { target: { value: "0" } });
     fireEvent.click(screen.getByRole("button", { name: /^Save/ }));
     await waitFor(() => expect(updateSandboxDesktopSettings).toHaveBeenCalledWith(expect.objectContaining({ keepHours: 72, maxKept: 0 })));
@@ -89,6 +92,7 @@ describe("Settings → Sandbox desktop", () => {
         maxConcurrent: 3,
         keepHours: 24,
         maxKept: 2,
+        deliverablesGb: 5,
       }),
     );
   });

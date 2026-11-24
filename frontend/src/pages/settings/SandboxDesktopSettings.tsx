@@ -66,6 +66,7 @@ interface Draft {
   maxConcurrent: string;
   keepHours: string;
   maxKept: string;
+  deliverablesGb: string;
 }
 
 function draftFrom(status: SandboxDesktopStatus): Draft {
@@ -78,6 +79,7 @@ function draftFrom(status: SandboxDesktopStatus): Draft {
     maxConcurrent: String(s.maxConcurrent ?? SANDBOX_DESKTOP_BOUNDS.maxConcurrent.default),
     keepHours: String(s.keepHours ?? SANDBOX_DESKTOP_BOUNDS.keepHours.default),
     maxKept: String(s.maxKept ?? SANDBOX_DESKTOP_BOUNDS.maxKept.default),
+    deliverablesGb: String(s.deliverablesGb ?? SANDBOX_DESKTOP_BOUNDS.deliverablesGb.default),
   };
 }
 
@@ -158,6 +160,7 @@ export default function SandboxDesktopSettings() {
         maxConcurrent: Number(draft.maxConcurrent),
         keepHours: Number(draft.keepHours),
         maxKept: Number(draft.maxKept),
+        deliverablesGb: Number(draft.deliverablesGb),
       });
       setStatus(next);
       setDraft(draftFrom(next));
@@ -190,7 +193,7 @@ export default function SandboxDesktopSettings() {
 
   const { diagnostics: d } = status;
   const editable = status.canEdit;
-  const { cpus, memoryMb, maxConcurrent, keepHours, maxKept } = SANDBOX_DESKTOP_BOUNDS;
+  const { cpus, memoryMb, maxConcurrent, keepHours, maxKept, deliverablesGb } = SANDBOX_DESKTOP_BOUNDS;
   const field = (key: keyof Draft) => (event: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
     setDraft((current) => (current ? { ...current, [key]: event.target.value } : current));
 
@@ -335,7 +338,7 @@ export default function SandboxDesktopSettings() {
               onChange={field("keepHours")}
             />
             <p style={helpStyle}>
-              {keepHours.min}–{keepHours.max}. A sandbox whose files could not all be copied out is paused and kept this long
+              {keepHours.min}–{keepHours.max}. A sandbox whose files could not all be copied out is paused and kept this long, then removed
             </p>
           </div>
           <div>
@@ -354,7 +357,27 @@ export default function SandboxDesktopSettings() {
               onChange={field("maxKept")}
             />
             <p style={helpStyle}>
-              {maxKept.min}–{maxKept.max}; each holds its memory while paused. 0 never keeps one
+              {maxKept.min}–{maxKept.max}, across all chats; each holds its memory while paused. 0 never keeps one
+            </p>
+          </div>
+          <div>
+            <label style={labelStyle} htmlFor="sandbox-deliverables-gb">
+              Deliverables storage (GiB)
+            </label>
+            <input
+              id="sandbox-deliverables-gb"
+              style={inputStyle}
+              type="number"
+              min={deliverablesGb.min}
+              max={deliverablesGb.max}
+              step={1}
+              value={draft.deliverablesGb}
+              disabled={!editable}
+              onChange={field("deliverablesGb")}
+            />
+            <p style={helpStyle}>
+              {deliverablesGb.min}–{deliverablesGb.max}, across all chats. Past it new files are refused, never old ones deleted; deleting a chat frees its
+              files
             </p>
           </div>
         </div>

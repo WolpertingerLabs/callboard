@@ -24,6 +24,8 @@ import {
 import { SandboxContainerManager, type DrainBeforeDestroy } from "./sandbox-containers.js";
 import { SandboxDeliveries } from "./sandbox-deliverables.js";
 import { SandboxRecovery, managedDelivery } from "./sandbox-recovery.js";
+import { deliverySources, sourcesKeptAlive, type DeliverySource } from "./sandbox-lineage.js";
+import { parseChatMetadataRecord } from "../utils/chat-metadata.js";
 import { readSandboxSettings, resolveSandboxSettings } from "./sandbox-desktop-settings.js";
 import { buildSandboxImage, execDocker } from "./sandbox-image.js";
 import { DATA_DIR } from "../utils/paths.js";
@@ -53,7 +55,10 @@ export function chatDeliveryOwner(chatId: string): { workspaceId?: string; folde
 let deliveries: SandboxDeliveries | undefined;
 /** The outbox sync: managed sandboxes (from the manager's hooks) and endpoint sessions (`withOutboxSync`). */
 export function getSandboxDeliveries(): SandboxDeliveries {
-  return (deliveries ??= new SandboxDeliveries({ dataDir: DATA_DIR }));
+  return (deliveries ??= new SandboxDeliveries({
+    dataDir: DATA_DIR,
+    quotaBytes: () => resolveSandboxSettings(readSandboxSettings()).deliverablesGb * 1024 ** 3,
+  }));
 }
 
 let manager: SandboxContainerManager | undefined;
@@ -88,18 +93,56 @@ export const sandboxDrainHook: DrainBeforeDestroy = (sandbox, signal) => getSand
 /** After each reaper pass: retention and vanished containers of kept sandboxes. */
 export const sweepKeptSandboxes = () => getSandboxRecovery().sweep();
 
+/** The chats whose deliverables `chatId` shows: itself and those its history was copied from (sandbox-lineage.ts). */
+export function chatDeliverySources(chatId: string): DeliverySource[] {
+  return deliverySources(chatId);
+}
+/** Of those, the chats it replaced (supersede only): their kept sandboxes show, and can be acted on, here too. */
+export function replacedChats(sources: readonly DeliverySource[]): string[] {
+  return sources
+    .slice(1)
+    .filter((s) => s.replaced)
+    .map((s) => s.chatId);
+}
+
+const pendingDeletes: { chatId: string; sources: DeliverySource[] }[] = [];
+let deleteFlush: ReturnType<typeof setTimeout> | undefined;
 /**
- * A chat was deleted: its deliverables are deleted with it (as the rest of
- * what a chat owns is), and any sandbox kept to recover them is discarded.
- * Fire-and-forget; failures are logged.
+ * A chat was deleted. Its kept sandboxes are discarded now (a kept sandbox
+ * is its session's unfinished copy, and there is no chat left to copy
+ * into), and nothing more is ever written for it. Its deliverables — and
+ * those of earlier deleted chats only it still showed — are deleted once no
+ * surviving chat shows them (sandbox-lineage.ts `sourcesKeptAlive`): a
+ * Continue-from successor or a fork keeps them until it, too, is deleted.
+ *
+ * `sources` must be taken before the chat's record is deleted. Batched per
+ * tick, so a bulk delete scans the chat records once.
  */
-export function deleteSandboxChatData(chatId: string): void {
-  void getSandboxDeliveries()
-    .deleteForChat(chatId)
-    .catch((error) => log.warn(`Could not delete the Sandbox desktop deliverables of a deleted chat: ${error instanceof Error ? error.message : "unknown"}`));
+export function deleteSandboxChatData(chatId: string, sources: DeliverySource[] = [{ chatId }]): void {
   void getSandboxRecovery()
     .discardForChat(chatId)
     .catch((error) => log.warn(`Could not discard the kept sandboxes of a deleted chat: ${error instanceof Error ? error.message : "unknown"}`));
+  pendingDeletes.push({ chatId, sources });
+  deleteFlush ??= setTimeout(() => void flushSandboxDeletes(), 0);
+}
+/** Apply queued chat deletions (exported for tests). */
+export async function flushSandboxDeletes(): Promise<void> {
+  deleteFlush = undefined;
+  const batch = pendingDeletes.splice(0);
+  if (!batch.length) return;
+  const exists = (id: string) => !!chatFileService.getChat(id);
+  const all = chatFileService.getAllChats().map((chat) => ({ id: chat.id, meta: parseChatMetadataRecord(chat.metadata) }));
+  const deliveries = getSandboxDeliveries();
+  for (const { chatId, sources } of batch) {
+    const { remove, keep } = sourcesKeptAlive(chatId, sources, exists, () => all);
+    try {
+      await deliveries.deleteForChat(chatId, { keepFiles: keep.includes(chatId) });
+      for (const id of remove) if (id !== chatId) await deliveries.deleteFiles(id);
+      if (keep.length) log.info(`Kept the Sandbox desktop deliverables of ${keep.length} deleted chat(s) that a surviving chat still shows`);
+    } catch (error) {
+      log.warn(`Could not delete the Sandbox desktop deliverables of a deleted chat: ${error instanceof Error ? error.message : "unknown"}`);
+    }
+  }
 }
 
 /** How the sandbox is run now, for wording (`sandboxDesktopText`): the mode, and for managed containers the network. */

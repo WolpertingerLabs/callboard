@@ -6,7 +6,15 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { defineTool, type ToolCallResult, type ToolServerSpec } from "../agents/ports/tools.js";
 import { sandboxDesktopText, type SandboxDesktopVariant } from "shared/types/index.js";
-import { chatDeliveryOwner, currentSandboxVariant, getSandboxDeliveries, getSandboxManager, getSandboxRecovery } from "./sandbox-desktop.js";
+import {
+  chatDeliveryOwner,
+  chatDeliverySources,
+  currentSandboxVariant,
+  getSandboxDeliveries,
+  getSandboxManager,
+  getSandboxRecovery,
+  replacedChats,
+} from "./sandbox-desktop.js";
 import type { DeliveryReport } from "./sandbox-deliverables.js";
 import { TARGET_IDS, controlError, controlPrincipal, getComputerUseHost, logComputerUseFailure, type FailureContext } from "./computer-use.js";
 
@@ -162,7 +170,9 @@ const agentRefusal = (refusal: DeliveryReport["refused"][number]) => ({
       ? "larger than the 64 MiB per-file limit"
       : refusal.reason === "file-count"
         ? "over the per-session file-count limit"
-        : "over the per-session total-size limit",
+        : refusal.reason === "storage-full"
+          ? "over the disk limit for all deliverables (Settings → Sandbox desktop)"
+          : "over the per-session total-size limit",
 });
 const DELIVERY_NOTE =
   "Files saved to ~/outbox in the Sandbox desktop, copied to the Callboard service host. Read them at `path` if you have file-read permission; render_file on a path shows it in this chat. The human already sees them in the chat.";
@@ -173,10 +183,11 @@ const DELIVERY_NOTE =
  * refused, and any container kept for recovery. Undefined when there is none.
  */
 async function chatDeliveries(chatId: string): Promise<Record<string, unknown> | undefined> {
+  const sources = chatDeliverySources(chatId);
   const [sessions, kept] = await Promise.all([
-    getSandboxDeliveries().forChat(chatId, chatDeliveryOwner(chatId) ?? {}),
+    getSandboxDeliveries().forSources(sources, chatDeliveryOwner(chatId) ?? {}),
     getSandboxRecovery()
-      .keptFor(chatId)
+      .keptFor(chatId, replacedChats(sources))
       .catch(() => []),
   ]);
   const files = sessions.flatMap((session) => session.files.map((file) => ({ ...agentFile(file), sessionId: session.sessionId }))).slice(0, 50);
@@ -458,7 +469,7 @@ export function buildComputerUseToolsSpec(getChatId: () => string, sandboxVarian
       ),
       defineTool(
         "cu_stop",
-        "Stop this chat's control session; queued/future input is fenced and native apps remain open. The session ends: using the target again needs fresh human consent through cu_request_control. A GUI action of yours waiting for approval on it is withdrawn, and the result names it as withdrawnRequestId. For a Sandbox desktop session it waits for the final copy of ~/outbox and lists what was delivered (sandboxDeliveries: each file's path on the service host).",
+        "Stop this chat's control session; queued/future input is fenced and native apps remain open. The session ends: using the target again needs fresh human consent through cu_request_control. A GUI action of yours waiting for approval on it is withdrawn, and the result names it as withdrawnRequestId. For a Sandbox desktop session it waits up to 40 s for the final copy of ~/outbox and lists what was delivered (sandboxDeliveries: each file's path on the service host).",
         { sessionId: z.string().uuid() },
         async (input, context?: Context) => {
           const result = await call("computer_stop", input, context);

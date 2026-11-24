@@ -13,6 +13,7 @@ const REFUSAL_TEXT: Record<SandboxSessionDeliveries["refused"][number]["reason"]
   "too-large": "over the 64 MiB per-file limit",
   "session-total": "over the session's total-size limit",
   "file-count": "over the session's file-count limit",
+  "storage-full": "over the disk limit for all deliverables (Settings → Sandbox desktop)",
 };
 
 /** "in 23 hours", "in 12 minutes". */
@@ -31,26 +32,42 @@ const buttonStyle = {
   cursor: "pointer",
 } as const;
 
-function KeptNotice({ kept, chatId, onChanged }: { kept: SandboxKeptContainer; chatId: string; onChanged: () => void }) {
+/**
+ * A kept container, with its two actions. The outcome is reported to the
+ * group (`onOutcome`), not shown here: a successful retry or a discard
+ * removes the container, and with it this notice.
+ */
+function KeptNotice({
+  kept,
+  chatId,
+  onChanged,
+  onOutcome,
+}: {
+  kept: SandboxKeptContainer;
+  chatId: string;
+  onChanged: () => void;
+  onOutcome: (text: string) => void;
+}) {
   const [busy, setBusy] = useState<"retry" | "discard" | null>(kept.retrying ? "retry" : null);
-  const [message, setMessage] = useState("");
   const run = async (what: "retry" | "discard") => {
     if (what === "discard" && !window.confirm("Discard this sandbox desktop? Files it still holds that were not copied out are lost.")) return;
     setBusy(what);
-    setMessage("");
     try {
       if (what === "retry") {
         const result = await sandboxDeliveriesClient.retryKept(chatId, kept.sessionId);
-        setMessage(
+        onOutcome(
           result.outcome === "removed"
-            ? "Every file was copied; the container is removed."
+            ? "Retry export: every remaining file was copied, and the sandbox desktop was removed."
             : result.outcome === "gone"
-              ? (result.reason ?? "The container no longer exists.")
-              : `Still not complete: ${result.reason ?? "the copy failed"}. It is kept.`,
+              ? `Retry export: ${result.reason ?? "the container no longer exists."}`
+              : `Retry export: still not complete (${result.reason ?? "the copy failed"}). It is still kept.`,
         );
-      } else await sandboxDeliveriesClient.discardKept(chatId, kept.sessionId);
+      } else {
+        await sandboxDeliveriesClient.discardKept(chatId, kept.sessionId);
+        onOutcome("The kept sandbox desktop was discarded.");
+      }
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "That did not work; try again.");
+      onOutcome(error instanceof Error ? error.message : "That did not work; try again.");
     } finally {
       setBusy(null);
       onChanged();
@@ -72,8 +89,9 @@ function KeptNotice({ kept, chatId, onChanged }: { kept: SandboxKeptContainer; c
       }}
     >
       <span>
-        <strong style={{ color: "var(--warning)" }}>Kept for recovery.</strong> Not every file could be copied out of a Sandbox desktop before it was removed (
-        {kept.reason}), so it is paused and kept instead. It is removed {untilText(kept.expiresAt)}.
+        <strong style={{ color: "var(--warning)" }}>Kept for recovery.</strong> Some files could not be copied out of this Sandbox desktop when its session
+        ended ({kept.reason}), so instead of removing it, Callboard paused it; it still holds its memory. It is removed {untilText(kept.expiresAt)}.{" "}
+        <strong>Retry export</strong> copies the remaining files and then removes the container; <strong>Discard</strong> removes it now.
       </span>
       <span style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
         <button type="button" style={buttonStyle} disabled={busy !== null} onClick={() => void run("retry")}>
@@ -82,15 +100,19 @@ function KeptNotice({ kept, chatId, onChanged }: { kept: SandboxKeptContainer; c
         <button type="button" style={buttonStyle} disabled={busy !== null} onClick={() => void run("discard")}>
           {busy === "discard" ? "Discarding…" : "Discard"}
         </button>
-        {message && <span style={{ color: "var(--text-muted)" }}>{message}</span>}
       </span>
     </div>
   );
 }
 
 /** A delivered file as a #588 file card (images, audio, video and PDFs render inline, behind the untrusted gate). */
-function DeliveredCard({ file }: { file: SandboxDeliveredFile }) {
+function DeliveredCard({ file, copied }: { file: SandboxDeliveredFile; copied: boolean }) {
   const inline = file.mediaType !== "file";
+  const notes = [
+    ...(file.storedName !== file.name ? [`A later version of ${file.name}`] : []),
+    // Read-through: delivered in the chat this one's history was copied from (Continue from, Rerun, Compress, a fork or an aside).
+    ...(copied ? ["From the chat this one's history was copied from"] : []),
+  ];
   return (
     <MediaRenderer
       data={{
@@ -100,7 +122,7 @@ function DeliveredCard({ file }: { file: SandboxDeliveredFile }) {
         mime_type: file.mimeType,
         display_mode: "inline",
         file_size: file.size,
-        ...(file.storedName !== file.name ? { caption: `A later version of ${file.name}` } : {}),
+        ...(notes.length ? { caption: notes.join(" · ") } : {}),
         ...(inline ? { untrusted: true, untrusted_reason: "Made inside the Sandbox desktop." } : {}),
       }}
     />
@@ -129,6 +151,9 @@ export default function SandboxDeliveries({ chatId, sandboxLive }: { chatId: str
     );
   }, [chatId]);
   const data = loaded?.chatId === chatId ? loaded.data : null;
+  // The last Retry export / Discard outcome, kept here: the notice that ran it is gone once it succeeds.
+  const [outcome, setOutcome] = useState<{ chatId: string; text: string } | null>(null);
+  const outcomeText = outcome?.chatId === chatId ? outcome.text : "";
 
   // Re-read when a sandbox session starts or ends, and on a schedule while there is something to watch.
   useEffect(load, [load, sandboxLive]);
@@ -141,11 +166,12 @@ export default function SandboxDeliveries({ chatId, sandboxLive }: { chatId: str
   }, [live, kept, load]);
 
   if (!data) return null;
-  const files = data.sessions.flatMap((session) => session.files);
+  const files = data.sessions.flatMap((session) => session.files.map((file) => ({ file, copied: !!session.fromChatId })));
   const refused = data.sessions.flatMap((session) => session.refused.map((refusal) => ({ ...refusal, sessionId: session.sessionId })));
   const keptIds = new Set(data.kept.map((k) => k.sessionId));
-  const incomplete = data.sessions.filter((session) => session.state === "incomplete" && !keptIds.has(session.sessionId));
-  if (!files.length && !refused.length && !data.kept.length && !incomplete.length) return null;
+  // Another chat's problems are its own: only this chat's sessions report them here.
+  const incomplete = data.sessions.filter((session) => session.state === "incomplete" && !session.fromChatId && !keptIds.has(session.sessionId));
+  if (!files.length && !refused.length && !data.kept.length && !incomplete.length && !outcomeText) return null;
 
   return (
     <section aria-label="Delivered from Sandbox desktop" style={{ margin: "8px 0 12px", maxWidth: "92%" }}>
@@ -160,8 +186,13 @@ export default function SandboxDeliveries({ chatId, sandboxLive }: { chatId: str
         </summary>
         <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 6 }}>
           {data.kept.map((k) => (
-            <KeptNotice key={k.sessionId} kept={k} chatId={chatId} onChanged={load} />
+            <KeptNotice key={k.sessionId} kept={k} chatId={chatId} onChanged={load} onOutcome={(text) => setOutcome({ chatId, text })} />
           ))}
+          {outcomeText && (
+            <div role="status" style={{ fontSize: 12, color: "var(--text-muted)" }}>
+              {outcomeText}
+            </div>
+          )}
           {incomplete.map((session) => (
             <div key={session.sessionId} role="status" style={{ fontSize: 12, color: "var(--text-muted)" }}>
               {session.lost === "discarded"
@@ -177,8 +208,8 @@ export default function SandboxDeliveries({ chatId, sandboxLive }: { chatId: str
                         : `Not every file was copied (${session.problem ?? "the copy failed"}).`}
             </div>
           ))}
-          {files.map((file) => (
-            <DeliveredCard key={file.path} file={file} />
+          {files.map(({ file, copied }) => (
+            <DeliveredCard key={file.path} file={file} copied={copied} />
           ))}
           {refused.length > 0 && (
             <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: "var(--text-muted)" }} aria-label="Not delivered">

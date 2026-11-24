@@ -36,6 +36,7 @@
  * the project tree.
  */
 import { createHash, randomUUID } from "node:crypto";
+import { OUTBOX_NAME } from "@wolpertingerlabs/computer-use";
 import { constants, existsSync, realpathSync } from "node:fs";
 import { chmod, link, lstat, mkdir, open, readdir, readFile, rename, rm, unlink } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -44,11 +45,12 @@ import type { SandboxDeliveredFile, SandboxDeliveryRefusal, SandboxSessionDelive
 import { SANDBOX_OUTBOX_LIMITS } from "shared/types/index.js";
 import { descriptiveMimeForPath, mediaTypeForPath } from "../utils/media-types.js";
 import { createLogger } from "../utils/logger.js";
+import type { DeliverySource } from "./sandbox-lineage.js";
 
 const log = createLogger("sandbox-deliverables");
 
-/** The outbox's plain-name rule (the driver host's `OUTBOX_NAME`), re-checked on our side. */
-export const OUTBOX_NAME = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/;
+/** The outbox's plain-name rule, the driver host's own (re-checked on our side). */
+export { OUTBOX_NAME };
 /** A stored name: an outbox name, or one with ` (n)` before its extension. */
 const STORED_NAME = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}( \([1-9][0-9]{0,4}\)[A-Za-z0-9._-]{0,127})?$/;
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -79,12 +81,21 @@ export function chatSegment(chatId: string): string {
 export const deliverablesRoot = (dataDir: string) => join(dataDir, "sandbox-deliverables");
 
 /**
- * Whether `realPath` (already symlink-resolved) is a delivered file of
- * `chatId`: `<root>/<owner key>/<chat>/<session>/files/<stored name>`. For
- * `/api/files/serve`, which serves the deliverables root only with the
- * owning chat named. Returns `"outside"` for a path not under the root at all.
+ * Whether `realPath` (already symlink-resolved) is a delivered file of one
+ * of `chatIds` — the chat a card is shown in and the chats its history was
+ * copied from (sandbox-lineage.ts):
+ * `<root>/<owner key>/<chat>/<session>/files/<stored name>`. For
+ * `/api/files/serve`, which serves the deliverables root only with `chat=`
+ * naming such a chat: a card shows a chat's own deliverables, never
+ * another's. Not access control — `chat=` is the caller's, and a signed-in
+ * caller can fetch any path. Returns `"outside"` for a path not under the
+ * root at all.
  */
-export function deliverablePathForChat(dataDir: string, realPath: string, chatId: string | undefined): "outside" | "allowed" | "refused" {
+export function deliverablePathForChat(
+  dataDir: string,
+  realPath: string,
+  chatIds: string | readonly string[] | undefined | (() => readonly string[]),
+): "outside" | "allowed" | "refused" {
   const root = deliverablesRoot(dataDir);
   let rootReal: string;
   try {
@@ -98,11 +109,14 @@ export function deliverablePathForChat(dataDir: string, realPath: string, chatId
   };
   const rel = inside(rootReal) ?? inside(resolve(root));
   if (rel === undefined) return "outside";
-  if (!chatId || typeof chatId !== "string") return "refused";
+  // Resolved only for a path under the root: every other path never pays for the lineage walk.
+  const ids = typeof chatIds === "function" ? chatIds() : typeof chatIds === "string" ? [chatIds] : (chatIds ?? []);
+  const allowed = new Set(ids.filter((id) => typeof id === "string" && id).map(chatSegment));
+  if (!allowed.size) return "refused";
   const parts = rel.split(sep);
   if (parts.length !== 5) return "refused";
   const [key, chat, session, files, name] = parts;
-  if (!OWNER_KEY.test(key) || chat !== chatSegment(chatId) || !SESSION_ID.test(session) || files !== "files" || !STORED_NAME.test(name)) return "refused";
+  if (!OWNER_KEY.test(key) || !allowed.has(chat) || !SESSION_ID.test(session) || files !== "files" || !STORED_NAME.test(name)) return "refused";
   return "allowed";
 }
 
@@ -144,7 +158,15 @@ export interface SandboxDeliveriesOptions {
   settleMs?: number;
   /** How often the outbox is re-listed while settling (default 500ms). */
   settleIntervalMs?: number;
+  /**
+   * Every chat's deliverables together may use at most this much disk
+   * (Settings → Sandbox desktop; default {@link DEFAULT_QUOTA_BYTES}). Past
+   * it, new files are refused (`storage-full`) and reported; nothing already
+   * delivered is ever deleted to make room. Deleting chats frees it.
+   */
+  quotaBytes?: () => number;
 }
+export const DEFAULT_QUOTA_BYTES = 5 * 1024 * 1024 * 1024;
 
 interface StoredFile {
   name: string;
@@ -222,6 +244,10 @@ export class SandboxDeliveries {
   private readonly waiters = new Map<string, Set<() => void>>();
   /** Chats deleted while this process runs: nothing more is ever written for them. */
   private readonly deletedChats = new Set<string>();
+  /** Their directory names, for the disk guards (a path names the chat by segment). */
+  private readonly deletedSegments = new Set<string>();
+  /** Bytes every manifest under the root accounts for; computed once, then kept up to date. */
+  private usage?: Promise<number>;
 
   constructor(private readonly options: SandboxDeliveriesOptions) {
     this.root = deliverablesRoot(options.dataDir);
@@ -328,8 +354,9 @@ export class SandboxDeliveries {
     const missing = new Map<string, string>();
     let changed = false;
     const refuse = (entry: OutboxListing, reason: SandboxDeliveryRefusal["reason"]) => {
+      // Stable: the same file stays refused for the reason it was first refused for.
       const previous = manifest.refused.find((r) => r.name === entry.name);
-      if (previous?.reason === reason && previous.size === entry.size) return;
+      if (previous && previous.size === entry.size) return;
       manifest.refused = manifest.refused.filter((r) => r.name !== entry.name);
       manifest.refused.push({ name: entry.name, size: entry.size, reason });
       changed = true;
@@ -359,6 +386,10 @@ export class SandboxDeliveries {
         refuse(entry, "session-total");
         continue;
       }
+      if ((await this.usageBytes()) + entry.size > this.quota()) {
+        refuse(entry, "storage-full");
+        continue;
+      }
       let file;
       try {
         file = await live.context.source.downloadOutboxFile(entry.name, signal, { expectedSha256: entry.sha256 });
@@ -380,12 +411,19 @@ export class SandboxDeliveries {
       }
       if (this.deletedChats.has(live.context.chatId)) throw new ChatDeletedError();
       const storedName = await this.store(live.dir, entry.name, file.data);
+      // Deleted while it was being written: take back what was just published.
+      if (this.deletedChats.has(live.context.chatId)) {
+        await unlink(join(live.dir, "files", storedName)).catch(() => {});
+        throw new ChatDeletedError();
+      }
+      this.addUsage(file.data.length);
       manifest.files.push({ name: entry.name, storedName, size: file.data.length, sha256: digest, mtimeMs: entry.mtimeMs, deliveredAt: Date.now() });
       manifest.refused = manifest.refused.filter((r) => r.name !== entry.name);
       changed = true;
       log.info(`Session ${manifest.sessionId}: delivered ${JSON.stringify(entry.name)} (${file.data.length} bytes) as ${JSON.stringify(storedName)}`);
     }
     if (changed) {
+      if (this.deletedChats.has(live.context.chatId)) throw new ChatDeletedError();
       await this.writeManifest(live.dir, manifest);
       live.persisted = true;
     }
@@ -456,7 +494,8 @@ export class SandboxDeliveries {
     else delete manifest.problem;
     try {
       // A session that never used its outbox leaves nothing on disk.
-      if (failure || live.persisted || manifest.files.length || manifest.refused.length) await this.writeManifest(live.dir, manifest);
+      if (!this.deletedChats.has(context.chatId) && (failure || live.persisted || manifest.files.length || manifest.refused.length))
+        await this.writeManifest(live.dir, manifest);
     } catch (error) {
       log.warn(`Session ${manifest.sessionId}: could not record the final copy (${message(error)})`);
     }
@@ -472,10 +511,13 @@ export class SandboxDeliveries {
   }
 
   /** A kept container went away without a complete copy: record that in its manifest. */
-  async markLost(context: Pick<DeliveryContext, "sessionId" | "chatId" | "workspaceId" | "folder">, lost: "discarded" | "expired" | "gone" | "not-kept"): Promise<void> {
+  async markLost(
+    context: Pick<DeliveryContext, "sessionId" | "chatId" | "workspaceId" | "folder">,
+    lost: "discarded" | "expired" | "gone" | "not-kept",
+  ): Promise<void> {
     const dir = this.sessionDir(context);
     const manifest = await this.readManifest(dir, context);
-    if (!manifest || manifest.state === "complete") return;
+    if (!manifest || manifest.state === "complete" || this.deletedChats.has(context.chatId)) return;
     manifest.lost = lost;
     manifest.state = "incomplete";
     await this.writeManifest(dir, manifest).catch((error) => log.warn(`Session ${context.sessionId}: could not record the loss (${message(error)})`));
@@ -532,16 +574,60 @@ export class SandboxDeliveries {
   }
 
   /**
-   * A chat was deleted: its deliverables go with it, as everything else the
-   * chat owns does (chats.ts `deleteOneChat`). Stops its live syncs, refuses
-   * any later write for it, and removes its directory under every owner key.
+   * A chat was deleted. From now on nothing is written for it: its live
+   * syncs stop, and any pass already running is waited for (a pass checks
+   * after every write and takes back a file published after the deletion).
+   * Then, unless `keepFiles` (a surviving chat still shows them:
+   * sandbox-lineage.ts `sourcesKeptAlive`), its directory is removed under
+   * every owner key.
    */
-  async deleteForChat(chatId: string): Promise<void> {
+  async deleteForChat(chatId: string, options: { keepFiles?: boolean } = {}): Promise<void> {
     this.deletedChats.add(chatId);
-    for (const [sessionId, live] of this.live) if (live.context.chatId === chatId) this.forgetSession(sessionId);
+    this.deletedSegments.add(chatSegment(chatId));
+    const running: Promise<unknown>[] = [];
+    for (const [sessionId, live] of this.live)
+      if (live.context.chatId === chatId) {
+        if (live.running) running.push(live.running.catch(() => {}));
+        if (live.ended) running.push(live.ended.catch(() => {}));
+        this.forgetSession(sessionId);
+      }
+    await Promise.all(running);
+    if (!options.keepFiles) await this.deleteFiles(chatId);
+  }
+
+  /** Remove a chat's deliverables directory under every owner key. */
+  async deleteFiles(chatId: string): Promise<void> {
     const chat = chatSegment(chatId);
     for (const key of await readdir(this.root).catch(() => [] as string[]))
       if (OWNER_KEY.test(key)) await rm(join(this.root, key, chat), { recursive: true, force: true }).catch(() => {});
+    this.usage = undefined;
+  }
+
+  private quota(): number {
+    return this.options.quotaBytes?.() ?? DEFAULT_QUOTA_BYTES;
+  }
+  private addUsage(bytes: number) {
+    if (this.usage) this.usage = this.usage.then((n) => n + bytes);
+  }
+  /** Bytes all deliverables use, from their manifests (every version counts). */
+  usageBytes(): Promise<number> {
+    return (this.usage ??= (async () => {
+      let total = 0;
+      for (const key of await readdir(this.root).catch(() => [] as string[])) {
+        if (!OWNER_KEY.test(key)) continue;
+        for (const chat of await readdir(join(this.root, key)).catch(() => [] as string[]))
+          for (const session of await readdir(join(this.root, key, chat)).catch(() => [] as string[])) {
+            if (!SESSION_ID.test(session)) continue;
+            try {
+              const value = JSON.parse(await readFile(join(this.root, key, chat, session, "manifest.json"), "utf8")) as { files?: { size?: unknown }[] };
+              for (const file of Array.isArray(value.files) ? value.files : []) if (Number.isSafeInteger(file?.size)) total += Number(file.size);
+            } catch {
+              /* No manifest: nothing accounted. */
+            }
+          }
+      }
+      return total;
+    })());
   }
 
   /** Whether this process is syncing a session now. */
@@ -570,10 +656,13 @@ export class SandboxDeliveries {
         if (!manifest) continue;
         seen.add(session);
         const report = this.reportOf(dir, manifest);
+        // "live" on disk but not syncing here: the daemon that synced it stopped before its final copy.
+        const stale = report.state === "live" && !(live && live.dir === dir);
         sessions.push({
           sessionId: session,
           mode: manifest.mode,
-          state: report.state,
+          state: stale ? "incomplete" : report.state,
+          ...(stale && !manifest.problem ? { problem: "Callboard stopped before the final copy" } : {}),
           startedAt: manifest.startedAt,
           ...(manifest.endedAt ? { endedAt: manifest.endedAt } : {}),
           files: report.files,
@@ -583,6 +672,33 @@ export class SandboxDeliveries {
         });
       }
     }
+    return sessions.sort((a, b) => b.startedAt - a.startedAt);
+  }
+
+  /**
+   * What a chat shows: its own sessions, and the files of the chats its
+   * history was copied from (`sources`, sandbox-lineage.ts) delivered by
+   * the time it was copied. Another chat's refusals and problems are its
+   * own, and stay there.
+   */
+  async forSources(sources: readonly DeliverySource[], owner: DeliveryOwner): Promise<SandboxSessionDeliveries[]> {
+    const [self, ...others] = sources;
+    const sessions = self ? await this.forChat(self.chatId, owner) : [];
+    const seen = new Set(sessions.map((s) => s.sessionId));
+    for (const source of others)
+      for (const session of await this.forChat(source.chatId, owner)) {
+        if (seen.has(session.sessionId)) continue;
+        const files = session.files.filter((file) => source.until === undefined || file.deliveredAt <= source.until);
+        if (!files.length) continue;
+        seen.add(session.sessionId);
+        sessions.push({
+          ...session,
+          state: session.state === "live" ? "incomplete" : session.state,
+          files,
+          refused: [],
+          fromChatId: source.chatId,
+        } as SandboxSessionDeliveries);
+      }
     return sessions.sort((a, b) => b.startedAt - a.startedAt);
   }
 
@@ -624,6 +740,7 @@ export class SandboxDeliveries {
   private async ensureDir(dir: string): Promise<void> {
     const rel = relative(this.root, dir);
     if (rel.startsWith("..") || isAbsolute(rel)) throw new Error("Refusing a directory outside the deliverables root");
+    this.refuseDeleted(rel);
     let current = this.root;
     await mkdir(this.options.dataDir, { recursive: true, mode: 0o700 });
     for (const part of ["", ...(rel ? rel.split(sep) : [])]) {
@@ -682,7 +799,14 @@ export class SandboxDeliveries {
     }
   }
 
+  /** A path under the root (relative) whose chat was deleted: never (re)created or written. */
+  private refuseDeleted(rel: string) {
+    const chat = rel.split(sep)[1];
+    if (chat && this.deletedSegments.has(chat)) throw new ChatDeletedError();
+  }
+
   private async writeManifest(dir: string, manifest: Manifest): Promise<void> {
+    if (this.deletedChats.has(manifest.chatId)) throw new ChatDeletedError();
     await this.ensureDir(dir);
     const temp = join(dir, `.manifest-${randomUUID()}`);
     const handle = await open(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
@@ -740,7 +864,7 @@ function parseManifest(raw: string, expected: { sessionId: string; chatId: strin
       typeof r.name === "string" &&
       OUTBOX_NAME.test(r.name) &&
       Number.isSafeInteger(r.size) &&
-      ["too-large", "session-total", "file-count"].includes(r.reason),
+      ["too-large", "session-total", "file-count", "storage-full"].includes(r.reason),
   );
   return {
     version: 1,

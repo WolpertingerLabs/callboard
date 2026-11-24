@@ -222,6 +222,15 @@ interface Problem {
 
 const problemError = (code: ErrorCode, { problem, hint }: Problem) => Object.assign(new ComputerUseError(code, hint), { problem });
 
+/** A kept sandbox answered as another driver-host instance: the container restarted, so what it held is gone. */
+export class SandboxInstanceChangedError extends Error {
+  readonly code = "instance_changed";
+  constructor() {
+    super("The kept sandbox answers as another instance: it restarted, so what it held is gone");
+    this.name = "SandboxInstanceChangedError";
+  }
+}
+
 export class SandboxContainerManager {
   readonly owner: string;
   readonly image: string;
@@ -731,8 +740,9 @@ export class SandboxContainerManager {
    * Reconnect to a kept sandbox's driver host (it must be running: a caller
    * that paused it unpauses it first), the way the reaper reaches an orphan:
    * the endpoint from Docker, never from the file, then the instance proof.
-   * Rejects with `stale_frame` if another instance answers (the container
-   * restarted, and what it held is gone), `not_found` if it is not kept.
+   * Rejects with {@link SandboxInstanceChangedError} if another instance
+   * answers (the container restarted, and what it held is gone), `not_found`
+   * if it is not kept.
    */
   async connectKept(sessionId: string, signal?: AbortSignal): Promise<Omit<DrainableSandbox, "cause">> {
     const meta = SESSION_ID.test(sessionId) && !this.boxes.has(sessionId) ? await this.readMeta(sessionId) : undefined;
@@ -743,7 +753,7 @@ export class SandboxContainerManager {
     const url = await this.addressOf(meta.name, network, meta.internal, signal);
     const driver = this.createRemote({ url, tokenFile: join(this.sessionsDir, sessionId, "token"), ...(meta.internal ? { localDockerBridge: true } : {}) });
     const { instanceId } = await driver.identity(AbortSignal.any([AbortSignal.timeout(10_000), ...(signal ? [signal] : [])]));
-    if (instanceId !== meta.instanceId) throw new ComputerUseError("stale_frame", "The kept sandbox answers as another instance: it restarted, so what it held is gone");
+    if (instanceId !== meta.instanceId) throw new SandboxInstanceChangedError();
     return {
       sessionId,
       chatId: meta.chatId,

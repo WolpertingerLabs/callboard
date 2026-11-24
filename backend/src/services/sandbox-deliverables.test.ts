@@ -78,11 +78,12 @@ function fakeOutbox(initial: Record<string, string | Buffer | "writing"> = {}) {
   };
 }
 
-async function setup(options: { limits?: ConstructorParameters<typeof SandboxDeliveries>[0]["limits"]; settleMs?: number } = {}) {
+async function setup(options: { limits?: ConstructorParameters<typeof SandboxDeliveries>[0]["limits"]; settleMs?: number; quotaBytes?: number } = {}) {
   const dataDir = await tempDir();
   const deliveries = new SandboxDeliveries({
     dataDir,
     limits: options.limits,
+    ...(options.quotaBytes !== undefined ? { quotaBytes: () => options.quotaBytes! } : {}),
     pollMs: { min: 10, max: 40 },
     settleMs: options.settleMs ?? 200,
     settleIntervalMs: 10,
@@ -224,6 +225,33 @@ describe("live sync", () => {
 });
 
 describe("limits", () => {
+  it("a refusal keeps the reason it was first refused for (session-total does not flip to file-count as the count fills)", async () => {
+    const { deliveries } = await setup({ limits: { sessionBytes: 10, sessionFiles: 2 } });
+    const outbox = fakeOutbox({ "a.txt": "1234567890", "big.txt": "12" });
+    const ctx = context(outbox.source);
+    await deliveries.start(ctx);
+    await vi.waitFor(async () =>
+      expect((await deliveries.forChat("chat-a", ctx))[0]?.refused).toEqual([{ name: "big.txt", size: 2, reason: "session-total" }]),
+    );
+    outbox.set("b.txt", "x".repeat(0)); // fills the count to 2
+    const report = await deliveries.drain(ctx, AbortSignal.timeout(5_000));
+    expect(report.files.map((f) => f.name).sort()).toEqual(["a.txt", "b.txt"]);
+    expect(report.refused).toEqual([{ name: "big.txt", size: 2, reason: "session-total" }]);
+  });
+
+  it("a global quota across every chat refuses new files (storage-full) and never deletes delivered ones", async () => {
+    const { deliveries } = await setup({ quotaBytes: 10 });
+    const first = await deliveries.drain(context(fakeOutbox({ "a.txt": "12345678" }).source, { chatId: "chat-1" }), AbortSignal.timeout(5_000));
+    const second = await deliveries.drain(context(fakeOutbox({ "b.txt": "12345" }).source, { chatId: "chat-2" }), AbortSignal.timeout(5_000));
+    expect(second.refused).toEqual([{ name: "b.txt", size: 5, reason: "storage-full" }]);
+    expect(existsSync(first.files[0].path)).toBe(true);
+    expect(await deliveries.usageBytes()).toBe(8);
+    // Deleting a chat frees its space.
+    await deliveries.deleteForChat("chat-1");
+    const third = await deliveries.drain(context(fakeOutbox({ "c.txt": "12345" }).source, { chatId: "chat-3" }), AbortSignal.timeout(5_000));
+    expect(third.files.map((f) => f.name)).toEqual(["c.txt"]);
+  });
+
   it("refuses, and reports, a file over the per-file limit, past the per-session total, or past the file count", async () => {
     const { deliveries } = await setup({ limits: { fileBytes: 10, sessionBytes: 12, sessionFiles: 3 } });
     const outbox = fakeOutbox({ "big.iso": "x".repeat(11), "a.txt": "12345", "b.txt": "1234567", "c.txt": "1" });
@@ -411,5 +439,58 @@ describe("chat scoping", () => {
     expect(deliverablePathForChat(dataDir, "/etc/hostname", undefined)).toBe("outside");
     expect(deliverablePathForChat(dataDir, join(dataDir, "elsewhere.txt"), undefined)).toBe("outside");
     expect(deliverablePathForChat(dataDir, `${deliverablesRoot(dataDir)}-sibling${sep}x`, undefined)).toBe("outside");
+  });
+});
+
+describe("deleting a chat while a copy is in flight (review round 1)", () => {
+  /** An outbox whose one download waits for `release()`, as a 40 MB file over a slow link does. */
+  function slowOutbox(size = 40 * 1024 * 1024) {
+    const data = Buffer.alloc(size, 7);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let markStarted!: () => void;
+    const started = new Promise<void>((r) => (markStarted = r));
+    const source: OutboxSource = {
+      listOutbox: async () => [{ name: "big.bin", size: data.length, sha256: sha(data), mtimeMs: 0 }],
+      downloadOutboxFile: async (name) => {
+        markStarted();
+        await gate;
+        return { name, size: data.length, sha256: sha(data), data };
+      },
+    };
+    return { source, started, release: () => release() };
+  }
+
+  it("deleteForChat waits for the pass, and nothing of the chat is (re)created — 20 runs, live sync and final copy alike", async () => {
+    for (let run = 0; run < 20; run++) {
+      const { dataDir, deliveries } = await setup();
+      const slow = slowOutbox();
+      const ctx = context(slow.source, { chatId: `doomed-${run}` });
+      const copying = run % 2 ? deliveries.drain(ctx, AbortSignal.timeout(10_000)).catch(() => {}) : deliveries.start(ctx);
+      await slow.started;
+      // The reviewer's window: the download has finished and passed the
+      // deleted-chat check, and the 40 MB file is being written, when the
+      // chat is deleted.
+      slow.release();
+      await new Promise((r) => setImmediate(r));
+      await deliveries.deleteForChat(ctx.chatId);
+      await copying;
+      await new Promise((r) => setTimeout(r, 20));
+      const chatDir = join(deliverablesRoot(dataDir), ownerKey(ctx), chatSegment(ctx.chatId));
+      expect(existsSync(chatDir), `run ${run}`).toBe(false);
+      expect(await deliveries.forChat(ctx.chatId, ctx)).toEqual([]);
+      // And nothing writes there later either.
+      await deliveries.markLost(ctx, "gone");
+      expect(existsSync(chatDir)).toBe(false);
+    }
+  }, 60_000);
+
+  it("keepFiles: the chat stops being written, its files stay (a surviving chat still shows them)", async () => {
+    const { deliveries } = await setup();
+    const report = await deliveries.drain(context(fakeOutbox({ "keep.txt": "k" }).source, { chatId: "orig" }), AbortSignal.timeout(5_000));
+    await deliveries.deleteForChat("orig", { keepFiles: true });
+    expect(existsSync(report.files[0].path)).toBe(true);
+    const late = await deliveries.drain(context(fakeOutbox({ "new.txt": "n" }).source, { chatId: "orig" }), AbortSignal.timeout(5_000));
+    expect(late.files).toEqual([]);
   });
 });

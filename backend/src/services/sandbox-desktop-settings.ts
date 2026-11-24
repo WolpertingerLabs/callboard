@@ -29,6 +29,7 @@ export interface ResolvedSandboxSettings {
   maxConcurrent: number;
   keepHours: number;
   maxKept: number;
+  deliverablesGb: number;
 }
 
 export class SandboxSettingsError extends Error {
@@ -56,7 +57,7 @@ export function normalizeSandboxSettings(input: unknown, strict: boolean): Sandb
     log.warn(`Ignoring sandbox-desktop.json ${field}: not ${rule}`);
   };
   if (strict) {
-    const known = new Set(["mode", "network", "cpus", "memoryMb", "maxConcurrent", "keepHours", "maxKept"]);
+    const known = new Set(["mode", "network", "cpus", "memoryMb", "maxConcurrent", "keepHours", "maxKept", "deliverablesGb"]);
     const unknown = Object.keys(value).filter((key) => !known.has(key));
     if (unknown.length) throw new SandboxSettingsError(`Unknown sandbox desktop setting ${JSON.stringify(unknown[0])}`);
   }
@@ -69,7 +70,7 @@ export function normalizeSandboxSettings(input: unknown, strict: boolean): Sandb
     if (NETWORKS.includes(value.network as SandboxDesktopNetwork)) out.network = value.network as SandboxDesktopNetwork;
     else bad("network", `one of ${NETWORKS.join(", ")}`);
   }
-  const { cpus, memoryMb, maxConcurrent, keepHours, maxKept } = SANDBOX_DESKTOP_BOUNDS;
+  const { cpus, memoryMb, maxConcurrent, keepHours, maxKept, deliverablesGb } = SANDBOX_DESKTOP_BOUNDS;
   if (value.cpus !== undefined && value.cpus !== null) {
     // Docker takes CPUs in hundredths at most; anything finer is noise.
     if (inBounds(value.cpus, cpus, false) && Math.round(value.cpus * 100) === value.cpus * 100) out.cpus = value.cpus;
@@ -91,6 +92,10 @@ export function normalizeSandboxSettings(input: unknown, strict: boolean): Sandb
     if (inBounds(value.maxKept, maxKept, true)) out.maxKept = value.maxKept;
     else bad("maxKept", `a whole number from ${maxKept.min} to ${maxKept.max}`);
   }
+  if (value.deliverablesGb !== undefined && value.deliverablesGb !== null) {
+    if (inBounds(value.deliverablesGb, deliverablesGb, true)) out.deliverablesGb = value.deliverablesGb;
+    else bad("deliverablesGb", `a whole number of GiB from ${deliverablesGb.min} to ${deliverablesGb.max}`);
+  }
   return out;
 }
 
@@ -103,6 +108,7 @@ export function resolveSandboxSettings(settings: SandboxDesktopSettings): Resolv
     maxConcurrent: settings.maxConcurrent ?? SANDBOX_DESKTOP_BOUNDS.maxConcurrent.default,
     keepHours: settings.keepHours ?? SANDBOX_DESKTOP_BOUNDS.keepHours.default,
     maxKept: settings.maxKept ?? SANDBOX_DESKTOP_BOUNDS.maxKept.default,
+    deliverablesGb: settings.deliverablesGb ?? SANDBOX_DESKTOP_BOUNDS.deliverablesGb.default,
   };
 }
 

@@ -68,26 +68,55 @@ describe("SandboxDeliveries", () => {
     expect(screen.getByText(/Not delivered: huge\.iso .*over the 64 MiB per-file limit/)).toBeTruthy();
   });
 
-  it("a kept container says so clearly, and offers Retry export and Discard", async () => {
+  const keptResponse = (sessionId: string) =>
+    response({
+      sessions: [{ ...response().sessions[0], state: "incomplete", problem: "1 file still being written", refused: [] }],
+      kept: [{ sessionId, keptAt: Date.now(), expiresAt: Date.now() + 24 * 3_600_000, reason: "1 file still being written" }],
+    });
+  const completeResponse = () => response({ sessions: [{ ...response().sessions[0], refused: [] }], kept: [] });
+
+  it("a kept container says what happened and what each button does", async () => {
+    vi.mocked(sandboxDeliveriesClient.list).mockResolvedValue(keptResponse("aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa"));
+    render(<SandboxDeliveries chatId="chat-1" sandboxLive={false} />);
+    const notice = (await screen.findByText(/Kept for recovery\./)).closest("[role=status]")!;
+    expect(notice.textContent).toContain("Some files could not be copied out of this Sandbox desktop when its session ended (1 file still being written)");
+    expect(notice.textContent).toContain("instead of removing it, Callboard paused it");
+    expect(notice.textContent).not.toMatch(/before it was removed/);
+    expect(notice.textContent).toContain("removed in 24 hours");
+    expect(notice.textContent).toContain("Retry export copies the remaining files and then removes the container; Discard removes it now.");
+  });
+
+  it("Retry export that succeeds: the notice goes (the container is gone), and the outcome stays at the group", async () => {
     const sessionId = "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa";
-    vi.mocked(sandboxDeliveriesClient.list).mockResolvedValue(
-      response({
-        sessions: [{ ...response().sessions[0], state: "incomplete", problem: "1 file still being written", refused: [] }],
-        kept: [{ sessionId, keptAt: Date.now(), expiresAt: Date.now() + 24 * 3_600_000, reason: "1 file still being written" }],
-      }),
-    );
+    vi.mocked(sandboxDeliveriesClient.list).mockResolvedValueOnce(keptResponse(sessionId)).mockResolvedValue(completeResponse());
     vi.mocked(sandboxDeliveriesClient.retryKept).mockResolvedValue({ outcome: "removed" });
     render(<SandboxDeliveries chatId="chat-1" sandboxLive={false} />);
-    expect(await screen.findByText(/Kept for recovery\./)).toBeTruthy();
-    expect(screen.getByText(/1 file still being written/)).toBeTruthy();
-    expect(screen.getByText(/removed in 24 hours/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Retry export" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Retry export" }));
     await waitFor(() => expect(sandboxDeliveriesClient.retryKept).toHaveBeenCalledWith("chat-1", sessionId));
-    expect(await screen.findByText("Every file was copied; the container is removed.")).toBeTruthy();
+    await waitFor(() => expect(screen.queryByText(/Kept for recovery\./)).toBeNull());
+    expect(screen.getByText("Retry export: every remaining file was copied, and the sandbox desktop was removed.")).toBeTruthy();
+    expect(screen.getByText("results.zip")).toBeTruthy();
+  });
 
+  it("Discard: confirmed, then the notice goes and the outcome stays", async () => {
+    const sessionId = "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa";
+    vi.mocked(sandboxDeliveriesClient.list).mockResolvedValueOnce(keptResponse(sessionId)).mockResolvedValue(completeResponse());
+    vi.mocked(sandboxDeliveriesClient.discardKept).mockResolvedValue(undefined);
     vi.spyOn(window, "confirm").mockReturnValue(true);
-    fireEvent.click(screen.getByRole("button", { name: "Discard" }));
+    render(<SandboxDeliveries chatId="chat-1" sandboxLive={false} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Discard" }));
     await waitFor(() => expect(sandboxDeliveriesClient.discardKept).toHaveBeenCalledWith("chat-1", sessionId));
+    await waitFor(() => expect(screen.queryByText(/Kept for recovery\./)).toBeNull());
+    expect(screen.getByText("The kept sandbox desktop was discarded.")).toBeTruthy();
+  });
+
+  it("files read through from the chat this one was copied from are labelled, and that chat's problems are not repeated here", async () => {
+    vi.mocked(sandboxDeliveriesClient.list).mockResolvedValue(
+      response({ sessions: [{ ...response().sessions[0], fromChatId: "original", state: "incomplete", problem: "theirs", refused: [] }] }),
+    );
+    render(<SandboxDeliveries chatId="chat-1" sandboxLive={false} />);
+    expect(await screen.findByText("From the chat this one's history was copied from")).toBeTruthy();
+    expect(screen.queryByText(/theirs/)).toBeNull();
   });
 
   it("says what was lost when a kept container was discarded", async () => {

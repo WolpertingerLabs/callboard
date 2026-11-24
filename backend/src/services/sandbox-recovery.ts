@@ -31,7 +31,13 @@
  */
 import { ComputerUseError } from "@wolpertingerlabs/computer-use";
 import type { SandboxKeptContainer, SandboxKeptRetryResult } from "shared/types/index.js";
-import type { DrainBeforeDestroy, DrainableSandbox, KeptSandbox, SandboxContainerManager } from "./sandbox-containers.js";
+import {
+  SandboxInstanceChangedError,
+  type DrainBeforeDestroy,
+  type DrainableSandbox,
+  type KeptSandbox,
+  type SandboxContainerManager,
+} from "./sandbox-containers.js";
 import { DeliveryIncompleteError, type DeliveryContext, type SandboxDeliveries } from "./sandbox-deliverables.js";
 import type { ResolvedSandboxSettings } from "./sandbox-desktop-settings.js";
 import { DockerError, type DockerRunner } from "./sandbox-image.js";
@@ -158,11 +164,19 @@ export class SandboxRecovery {
     return kept.keptAt + this.options.settings().keepHours * 3_600_000;
   }
 
-  /** A chat's kept sandboxes, for its deliverables view and cu_status. */
-  async keptFor(chatId: string): Promise<SandboxKeptContainer[]> {
-    const kept = (await this.options.manager.keptSandboxes()).filter((k) => k.chatId === chatId);
+  /**
+   * A chat's kept sandboxes, for its deliverables view and cu_status: its
+   * own, and those of the chats it replaced (`replaced`: Continue from,
+   * Rerun, Compress — the hidden original's recovery is otherwise
+   * unreachable). Never a fork's parent's: that chat is still there to act.
+   */
+  async keptFor(chatId: string, replaced: readonly string[] = []): Promise<SandboxKeptContainer[]> {
+    const chats = new Set([chatId, ...replaced]);
+    const kept = (await this.options.manager.keptSandboxes()).filter((k) => chats.has(k.chatId));
     if (!kept.length) return [];
-    const problems = new Map((await this.options.deliveries.forChat(chatId, owner(kept[0]))).map((s) => [s.sessionId, s.problem]));
+    const problems = new Map<string, string | undefined>();
+    for (const id of new Set(kept.map((k) => k.chatId)))
+      for (const s of await this.options.deliveries.forChat(id, owner(kept.find((k) => k.chatId === id)!))) problems.set(s.sessionId, s.problem);
     return kept.map((k) => ({
       sessionId: k.sessionId,
       keptAt: k.keptAt,
@@ -172,9 +186,10 @@ export class SandboxRecovery {
     }));
   }
 
-  private async keptOf(chatId: string, sessionId: string): Promise<KeptSandbox> {
+  private async keptOf(chatId: string, sessionId: string, replaced: readonly string[]): Promise<KeptSandbox> {
     const kept = (await this.options.manager.keptSandboxes()).find((k) => k.sessionId === sessionId);
-    if (!kept || kept.chatId !== chatId) throw new ComputerUseError("not_found", "No sandbox desktop is kept for that session in this chat");
+    if (!kept || (kept.chatId !== chatId && !replaced.includes(kept.chatId)))
+      throw new ComputerUseError("not_found", "No sandbox desktop is kept for that session in this chat");
     if (this.busy.has(sessionId)) throw new ComputerUseError("lease_conflict", "That kept sandbox desktop is already being retried or discarded");
     return kept;
   }
@@ -203,11 +218,12 @@ export class SandboxRecovery {
    * container restarted) or a vanished container means what it held is
    * gone: it is released and reported so.
    */
-  async retry(chatId: string, sessionId: string): Promise<SandboxKeptRetryResult> {
-    const kept = await this.keptOf(chatId, sessionId);
+  async retry(chatId: string, sessionId: string, replaced: readonly string[] = []): Promise<SandboxKeptRetryResult> {
+    const kept = await this.keptOf(chatId, sessionId, replaced);
     this.busy.add(sessionId);
     try {
-      if (!this.options.chatExists(chatId)) {
+      // The chat that owns the session (it may be a replaced original).
+      if (!this.options.chatExists(kept.chatId)) {
         await this.end(kept, "discarded");
         return { outcome: "gone", reason: "The chat no longer exists, so the kept sandbox was discarded." };
       }
@@ -222,7 +238,7 @@ export class SandboxRecovery {
         const sandbox = await this.options.manager.connectKept(sessionId);
         await this.options.deliveries.drain(managedDelivery(sandbox), AbortSignal.timeout(this.options.copyBudgetMs ?? 25_000));
       } catch (error) {
-        if ((error as { code?: string }).code === "stale_frame") {
+        if (error instanceof SandboxInstanceChangedError) {
           await this.end(kept, "gone");
           return { outcome: "gone", reason: "The kept container restarted, so what it held is gone; it was removed." };
         }
@@ -247,8 +263,8 @@ export class SandboxRecovery {
   }
 
   /** Discard: release it, and what it held, now. */
-  async discard(chatId: string, sessionId: string): Promise<void> {
-    const kept = await this.keptOf(chatId, sessionId);
+  async discard(chatId: string, sessionId: string, replaced: readonly string[] = []): Promise<void> {
+    const kept = await this.keptOf(chatId, sessionId, replaced);
     this.busy.add(sessionId);
     try {
       await this.end(kept, "discarded");

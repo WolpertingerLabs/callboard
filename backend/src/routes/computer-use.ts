@@ -4,7 +4,7 @@ import { controlOriginError, requireSessionAuth } from "../auth.js";
 import { CLIENT_CAPS } from "shared/types/index.js";
 import { getComputerUseHost, logComputerUseFailure } from "../services/computer-use.js";
 import { createStreamSession } from "../services/stream-session.js";
-import { chatDeliveryOwner, getSandboxDeliveries, getSandboxRecovery } from "../services/sandbox-desktop.js";
+import { chatDeliveryOwner, chatDeliverySources, getSandboxDeliveries, getSandboxRecovery, replacedChats } from "../services/sandbox-desktop.js";
 import type { SandboxDeliveriesResponse, SandboxKeptRetryResult } from "shared/types/index.js";
 
 /** This control plane is for the signed-in human, never an agent API key.
@@ -86,7 +86,12 @@ computerUseRouter.get(
   "/:chatId/deliverables",
   handle("deliverables", async (req): Promise<SandboxDeliveriesResponse> => {
     const { chatId } = ids(req);
-    const [sessions, kept] = await Promise.all([getSandboxDeliveries().forChat(chatId, chatDeliveryOwner(chatId) ?? {}), getSandboxRecovery().keptFor(chatId)]);
+    // Its own, and read-through those of the chats its history was copied from (sandbox-lineage.ts).
+    const sources = chatDeliverySources(chatId);
+    const [sessions, kept] = await Promise.all([
+      getSandboxDeliveries().forSources(sources, chatDeliveryOwner(chatId) ?? {}),
+      getSandboxRecovery().keptFor(chatId, replacedChats(sources)),
+    ]);
     return { sessions, kept };
   }),
 );
@@ -95,14 +100,14 @@ computerUseRouter.post(
   "/:chatId/kept/:sessionId/retry",
   handle("kept-retry", async (req): Promise<SandboxKeptRetryResult> => {
     const { chatId, sessionId } = ids(req);
-    return getSandboxRecovery().retry(chatId, sessionId);
+    return getSandboxRecovery().retry(chatId, sessionId, replacedChats(chatDeliverySources(chatId)));
   }),
 );
 computerUseRouter.post(
   "/:chatId/kept/:sessionId/discard",
   handle("kept-discard", async (req) => {
     const { chatId, sessionId } = ids(req);
-    await getSandboxRecovery().discard(chatId, sessionId);
+    await getSandboxRecovery().discard(chatId, sessionId, replacedChats(chatDeliverySources(chatId)));
     return { outcome: "discarded" };
   }),
 );

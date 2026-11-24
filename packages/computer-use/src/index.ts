@@ -17,7 +17,7 @@ export { createMcpServer, getToolDefinitions, type ToolDefinition } from "./mcp.
 export { actionSchema } from "./validation.js";
 export { createDriverHost, readTokenFile, type DriverHost, type DriverHostOptions } from "./remote/host.js";
 export { createRemoteDriver, type RemoteDriver, type RemoteDriverOptions, type RemoteDriverSession } from "./remote/client.js";
-export { PROTOCOL, HOST_CAPABILITIES, type HostIdentity, type HostCapability, type OutboxEntry, type OutboxFile } from "./remote/protocol.js";
+export { PROTOCOL, HOST_CAPABILITIES, OUTBOX_NAME, type HostIdentity, type HostCapability, type OutboxEntry, type OutboxFile } from "./remote/protocol.js";
 export {
   ensureSandboxNetwork,
   sandboxContentDigest,

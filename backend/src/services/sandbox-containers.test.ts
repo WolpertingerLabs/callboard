@@ -11,7 +11,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { SANDBOX_INTERNAL_NETWORK, SANDBOX_NETWORK } from "@wolpertingerlabs/computer-use";
-import { CHAT_LABEL, MANAGED_LABEL, OWNER_LABEL, SESSION_LABEL, SandboxContainerManager, managedSandboxDriver, sandboxOwnerId } from "./sandbox-containers.js";
+import {
+  CHAT_LABEL,
+  MANAGED_LABEL,
+  OWNER_LABEL,
+  SESSION_LABEL,
+  SandboxContainerManager,
+  SandboxInstanceChangedError,
+  managedSandboxDriver,
+  sandboxOwnerId,
+} from "./sandbox-containers.js";
 import { resolveSandboxSettings, type ResolvedSandboxSettings } from "./sandbox-desktop-settings.js";
 import { fakeDocker, fakeRemote, type FakeRemoteBehaviour } from "./__fixtures__/sandbox-docker.js";
 
@@ -850,7 +859,7 @@ describe("hooks for the outbox sync and keep-for-recovery (PR 4)", () => {
     // The address came from `docker port`, not from session.json.
     expect(docker.state.calls.filter((args) => args[0] === "port").length).toBeGreaterThanOrEqual(2);
     remote.instances.set(remote.created.at(-1)!.url, randomUUID());
-    await expect(manager.connectKept(box.sessionId)).rejects.toMatchObject({ code: "stale_frame" });
+    await expect(manager.connectKept(box.sessionId)).rejects.toBeInstanceOf(SandboxInstanceChangedError);
     await expect(manager.connectKept(randomUUID())).rejects.toMatchObject({ code: "not_found" });
   });
 

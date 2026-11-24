@@ -37,6 +37,11 @@ export interface SandboxDesktopSettings {
    * paused (no CPU) but still holds its memory.
    */
   maxKept?: number;
+  /**
+   * Disk all chats' deliverables may use together, in GiB. Past it new files
+   * are refused (and reported); nothing delivered is deleted to make room.
+   */
+  deliverablesGb?: number;
 }
 
 /** Bounds and defaults, shared so the form and the server agree. */
@@ -46,6 +51,7 @@ export const SANDBOX_DESKTOP_BOUNDS = {
   maxConcurrent: { min: 1, max: 8, default: 2 },
   keepHours: { min: 1, max: 168, default: 24 },
   maxKept: { min: 0, max: 8, default: 2 },
+  deliverablesGb: { min: 1, max: 1024, default: 5 },
 } as const;
 
 /** The one-time image build, for docs and messages. */
@@ -186,7 +192,8 @@ export interface SandboxDeliveredFile {
 export interface SandboxDeliveryRefusal {
   name: string;
   size: number;
-  reason: "too-large" | "session-total" | "file-count";
+  /** The first reason it was refused for; it does not change while the same file stays refused. */
+  reason: "too-large" | "session-total" | "file-count" | "storage-full";
 }
 
 export interface SandboxSessionDeliveries {
@@ -211,6 +218,12 @@ export interface SandboxSessionDeliveries {
    * does not know shows its generic "not every file was copied" line.
    */
   lost?: "discarded" | "expired" | "gone" | "not-kept";
+  /**
+   * Present when this session is another chat's, shown here because this
+   * chat's history was copied from it (Continue from, Rerun, Compress, a
+   * fork or an aside): only its files delivered by the copy point.
+   */
+  fromChatId?: string;
 }
 
 /** A managed container whose final copy failed: paused, not removed, until `expiresAt`. */
