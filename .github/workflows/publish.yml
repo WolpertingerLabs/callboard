@@ -8,6 +8,14 @@ name: Publish to npm
 # steps below only carry that plan out. A re-run after a partial failure is
 # safe: whatever is already published is skipped, and a missing tag is created
 # on the commit that was published.
+#
+# Two jobs, so that no third-party code runs where a credential can be reached:
+# - build: read-only token, not persisted. Installs, runs the gate (every
+#   dependency's install scripts, the whole test suite) and packs both
+#   tarballs.
+# - publish: the `npm` environment (deployment restricted to main), OIDC
+#   id-token and a contents: write token for the tags. It installs nothing and
+#   builds nothing; it publishes the exact tarballs build packed.
 
 on:
   workflow_dispatch:
@@ -21,22 +29,38 @@ on:
         type: string
         default: latest
 
-permissions:
-  contents: write # push the release tags
-  id-token: write # OIDC trusted publishing + provenance
+permissions: {}
 
 # One release at a time; never cancel one halfway through.
 concurrency:
   group: publish
   cancel-in-progress: false
 
+env:
+  DRY_RUN: ${{ inputs.dry_run }}
+  DIST_TAG: ${{ inputs.dist_tag }}
+
 jobs:
-  publish:
+  build:
+    name: Plan, gate and pack
     runs-on: ubuntu-latest
-    env:
-      DRY_RUN: ${{ inputs.dry_run }}
-      DIST_TAG: ${{ inputs.dist_tag }}
+    permissions:
+      contents: read
+    outputs:
+      head: ${{ steps.plan.outputs.head }}
+      drawlatch_version: ${{ steps.plan.outputs.drawlatch_version }}
+      drawlatch_action: ${{ steps.plan.outputs.drawlatch_action }}
+      drawlatch_tag: ${{ steps.plan.outputs.drawlatch_tag }}
+      drawlatch_tag_commit: ${{ steps.plan.outputs.drawlatch_tag_commit }}
+      drawlatch_tarball: ${{ steps.pack.outputs.drawlatch_tarball }}
+      callboard_version: ${{ steps.plan.outputs.callboard_version }}
+      callboard_action: ${{ steps.plan.outputs.callboard_action }}
+      callboard_tag: ${{ steps.plan.outputs.callboard_tag }}
+      callboard_tag_commit: ${{ steps.plan.outputs.callboard_tag_commit }}
+      callboard_tarball: ${{ steps.pack.outputs.callboard_tarball }}
     steps:
+      # The npm environment's branch restriction is what enforces this; the
+      # guard just fails early with a clear message.
       - name: Guard — dispatch from main only
         if: github.ref != 'refs/heads/main'
         run: |
@@ -48,15 +72,16 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-          registry-url: https://registry.npmjs.org
 
-      # Trusted publishing (OIDC) needs npm >= 11.5.1; Node 22 ships 10.x.
-      - name: Upgrade npm for trusted publishing
+      # Same npm as the publish job, so the tarballs are packed by the npm that
+      # publishes them.
+      - name: Upgrade npm
         run: |
           npm install -g npm@^11.5.1
           npm --version
@@ -71,75 +96,157 @@ jobs:
       - name: Install
         run: NODE_ENV=development npm ci --include=dev
 
-      # Callboard's prepublishOnly, run once, before anything is published:
-      # lint (callboard and drawlatch), clean, build (drawlatch included), every
-      # test suite (drawlatch's included) and deps:check (lockstep pin). That is
-      # a superset of drawlatch's own prepublishOnly (lint + test) and prepare
-      # (build), so both publishes below use --ignore-scripts rather than run
-      # all of it two more times. Running it first also means a failing test
-      # can't leave drawlatch published and callboard not. If drawlatch's
-      # prepublishOnly ever grows a check callboard's doesn't run, add it here.
+      # Callboard's prepublishOnly, run once: lint (callboard and drawlatch),
+      # clean, build (drawlatch included), every test suite (drawlatch's
+      # included) and deps:check (lockstep pin). That is a superset of
+      # drawlatch's own prepublishOnly (lint + test) and prepare (build). If
+      # drawlatch's prepublishOnly ever grows a check callboard's doesn't run,
+      # add it here.
+      #
+      # CALLBOARD_SKIP_REGISTRY_CHECK: prepublishOnly normally refuses to
+      # publish callboard unless its drawlatch pin is already on npm. In this
+      # workflow drawlatch is published later, by the publish job, which checks
+      # the registry itself before it publishes callboard.
       - name: Gate (lint, build, test, deps:check)
+        env:
+          CALLBOARD_SKIP_REGISTRY_CHECK: "1"
         run: npm run prepublishOnly
 
+      # A packed tarball carries no gitHead, and npm records gitHead from the
+      # package.json inside it, so write the commit in first. release-plan.mjs
+      # relies on it to find the commit a version was published from. Packing
+      # here also lists both tarballs' contents in the log, dry run or not.
+      - name: Pack
+        id: pack
+        env:
+          HEAD_SHA: ${{ steps.plan.outputs.head }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/tarballs"
+          npm pkg set "gitHead=$HEAD_SHA"
+          npm pkg set "gitHead=$HEAD_SHA" -w @wolpertingerlabs/drawlatch
+          dl=$(npm pack -w @wolpertingerlabs/drawlatch --ignore-scripts --pack-destination "$RUNNER_TEMP/tarballs" | tail -n 1)
+          cb=$(npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP/tarballs" | tail -n 1)
+          ls -l "$RUNNER_TEMP/tarballs"
+          test -f "$RUNNER_TEMP/tarballs/$dl" && test -f "$RUNNER_TEMP/tarballs/$cb"
+          echo "drawlatch_tarball=$dl" >> "$GITHUB_OUTPUT"
+          echo "callboard_tarball=$cb" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tarballs
+          path: ${{ runner.temp }}/tarballs/*.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish and tag
+    needs: build
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: write # push the release tags
+      id-token: write # OIDC trusted publishing + provenance
+    env:
+      DL_ACTION: ${{ needs.build.outputs.drawlatch_action }}
+      DL_TARBALL: ${{ needs.build.outputs.drawlatch_tarball }}
+      CB_ACTION: ${{ needs.build.outputs.callboard_action }}
+      CB_TARBALL: ${{ needs.build.outputs.callboard_tarball }}
+    steps:
+      # Only for the tags (full history: a recovered tag can point at an older
+      # commit) and the registry check script. Nothing from it is installed or
+      # built.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      # Trusted publishing (OIDC) needs npm >= 11.5.1; Node 22 ships 10.x.
+      - name: Upgrade npm for trusted publishing
+        run: |
+          npm install -g npm@^11.5.1
+          npm --version
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: tarballs
+          path: ${{ runner.temp }}/tarballs
+
       # No NODE_AUTH_TOKEN anywhere: npm swaps the job's OIDC token for a
-      # short-lived publish token (trusted publishing, see README). It does that
-      # exchange in a dry run too, so --loglevel verbose lets a dry run check
-      # that the package's trusted publisher is configured: npm logs "oidc
-      # Successfully retrieved and set token" only if the exchange worked.
+      # short-lived publish token (trusted publishing, see README). Provenance
+      # comes from this run's GitHub context, so it names this repo, workflow
+      # and commit even though the tarball was packed by the build job.
+      #
+      # npm does the token exchange in a dry run too, so --loglevel verbose
+      # lets a dry run check that the package's trusted publisher is
+      # configured: npm logs "oidc Successfully retrieved and set token" only
+      # if the exchange worked.
       - name: Publish drawlatch
-        if: steps.plan.outputs.drawlatch_action == 'publish'
+        if: needs.build.outputs.drawlatch_action == 'publish'
         shell: bash # -o pipefail, so tee doesn't hide npm's exit status
         run: |
           args=(--ignore-scripts --provenance --access public --tag "$DIST_TAG" --loglevel verbose)
           if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
-          # -w publishes the workspace's own package.json and files, not the root's.
-          npm publish -w @wolpertingerlabs/drawlatch "${args[@]}" 2>&1 | tee "$RUNNER_TEMP/publish-drawlatch.log"
+          npm publish "$RUNNER_TEMP/tarballs/$DL_TARBALL" "${args[@]}" 2>&1 | tee "$RUNNER_TEMP/publish-drawlatch.log"
           if [ "$DRY_RUN" = "true" ] && ! grep -q "oidc Successfully retrieved and set token" "$RUNNER_TEMP/publish-drawlatch.log"; then
             echo "::error::npm could not exchange this job's OIDC token for @wolpertingerlabs/drawlatch. Configure its trusted publisher on npmjs.com (README → Releasing); a real run would fail to publish."
             exit 1
           fi
 
+      # Callboard must not reach npm before the drawlatch it pins can be
+      # installed from there. A fresh publish can 404 for a little while, so
+      # retry for about two minutes. A dry run that is also publishing drawlatch
+      # can't pass this (drawlatch isn't on npm yet), so it skips the check.
+      - name: Verify drawlatch is on npm
+        if: ${{ !inputs.dry_run || needs.build.outputs.drawlatch_action == 'skip' }}
+        run: |
+          for i in $(seq 1 12); do
+            if npm run --silent deps:check:registry; then exit 0; fi
+            echo "Attempt $i/12 failed; retrying in 10s"
+            sleep 10
+          done
+          echo "::error::the drawlatch version callboard pins is still not installable from npm. Not publishing callboard."
+          exit 1
+
+      # "pack" (a dry run of an already-published callboard version) needs
+      # nothing here: npm publish --dry-run would refuse it, and the build
+      # job's Pack step already listed the tarball.
+      - name: Publish callboard
+        if: needs.build.outputs.callboard_action == 'publish'
+        shell: bash
+        run: |
+          args=(--ignore-scripts --provenance --access public --tag "$DIST_TAG" --loglevel verbose)
+          if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
+          npm publish "$RUNNER_TEMP/tarballs/$CB_TARBALL" "${args[@]}" 2>&1 | tee "$RUNNER_TEMP/publish-callboard.log"
+          if [ "$DRY_RUN" = "true" ] && ! grep -q "oidc Successfully retrieved and set token" "$RUNNER_TEMP/publish-callboard.log"; then
+            echo "::error::npm could not exchange this job's OIDC token for @wolpertingerlabs/callboard. Configure its trusted publisher on npmjs.com (README → Releasing); a real run would fail to publish."
+            exit 1
+          fi
+
+      # Tags go last, after both publishes. If anything above failed, a re-run
+      # sees the published version(s) without tags and tags the commit npm
+      # recorded (gitHead) for each.
       - name: Tag drawlatch
-        if: ${{ !inputs.dry_run && steps.plan.outputs.drawlatch_tag_commit != '' }}
+        if: ${{ !inputs.dry_run && needs.build.outputs.drawlatch_tag_commit != '' }}
         env:
-          TAG: ${{ steps.plan.outputs.drawlatch_tag }}
-          COMMIT: ${{ steps.plan.outputs.drawlatch_tag_commit }}
-          MESSAGE: drawlatch v${{ steps.plan.outputs.drawlatch_version }}
+          TAG: ${{ needs.build.outputs.drawlatch_tag }}
+          COMMIT: ${{ needs.build.outputs.drawlatch_tag_commit }}
+          MESSAGE: drawlatch v${{ needs.build.outputs.drawlatch_version }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "$TAG" -m "$MESSAGE" "$COMMIT"
           git push origin "refs/tags/$TAG"
 
-      # "pack" only happens in a dry run when this callboard version is already
-      # on npm: npm publish --dry-run refuses a published version, so the
-      # rehearsal shows the tarball with npm pack instead (and can't check
-      # callboard's trusted publisher).
-      - name: Publish callboard
-        if: steps.plan.outputs.callboard_action != 'skip'
-        env:
-          ACTION: ${{ steps.plan.outputs.callboard_action }}
-        shell: bash
-        run: |
-          if [ "$ACTION" = "pack" ]; then
-            npm pack --ignore-scripts --dry-run
-            exit 0
-          fi
-          args=(--ignore-scripts --provenance --access public --tag "$DIST_TAG" --loglevel verbose)
-          if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
-          npm publish "${args[@]}" 2>&1 | tee "$RUNNER_TEMP/publish-callboard.log"
-          if [ "$DRY_RUN" = "true" ] && ! grep -q "oidc Successfully retrieved and set token" "$RUNNER_TEMP/publish-callboard.log"; then
-            echo "::error::npm could not exchange this job's OIDC token for @wolpertingerlabs/callboard. Configure its trusted publisher on npmjs.com (README → Releasing); a real run would fail to publish."
-            exit 1
-          fi
-
       - name: Tag callboard
-        if: ${{ !inputs.dry_run && steps.plan.outputs.callboard_tag_commit != '' }}
+        if: ${{ !inputs.dry_run && needs.build.outputs.callboard_tag_commit != '' }}
         env:
-          TAG: ${{ steps.plan.outputs.callboard_tag }}
-          COMMIT: ${{ steps.plan.outputs.callboard_tag_commit }}
-          MESSAGE: Release v${{ steps.plan.outputs.callboard_version }}
+          TAG: ${{ needs.build.outputs.callboard_tag }}
+          COMMIT: ${{ needs.build.outputs.callboard_tag_commit }}
+          MESSAGE: Release v${{ needs.build.outputs.callboard_version }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
