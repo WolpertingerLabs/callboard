@@ -127,6 +127,11 @@ export const EXPECTED_CODEX_CLI_VERSION = "0.153.4";
  * old rollouts; by rust-v0.139.0 only an unused const remained. Kept for the
  * same reason as the rest — a rollout written by one of those CLIs is still
  * parseable, and still on someone's disk.
+ *
+ * `<turn_aborted` is what 0.153.4 writes on the user channel when a turn is
+ * interrupted with SIGINT, right before the `event_msg`/`turn_aborted` record:
+ * the model's notice of the interruption, not anything the user typed. The
+ * event itself becomes the transcript's `interrupted` marker.
  */
 const SYNTHETIC_MESSAGE_PREFIXES = [
   "<recommended_plugins", // 0.146.x — displaced `<environment_context` in the first user message
@@ -134,6 +139,7 @@ const SYNTHETIC_MESSAGE_PREFIXES = [
   "<skills_instructions", // 0.153.4 — displaced `<permissions` as the first developer blob
   "<permissions", // ≤0.146.x — the lead of every rollout already on disk
   "<user_instructions", // ≤ rust-v0.5x — retired upstream; kept for rollouts of that vintage
+  "<turn_aborted", // 0.153.4 — "The user interrupted the previous turn on purpose…", written just before event_msg/turn_aborted
 ];
 
 /**
@@ -623,6 +629,26 @@ export function parseCodexRollout(filePath: string): ParsedMessage[] {
       }
       genCounter++;
       pendingAssistant = [];
+      continue;
+    }
+
+    // A turn interrupted with SIGINT (the CLI's own Ctrl-C). The same boundary
+    // marker the Claude Code parser makes of "[Request interrupted by user]",
+    // so the transcript shows where the work stopped. Callboard's Stop is a
+    // SIGTERM, which writes no record — Chat.stoppedByUserAt covers that one.
+    // Only an interrupt: a turn `replaced` by a newer prompt is followed by
+    // that prompt, which says everything the marker would.
+    if (line.type === "event_msg" && line.payload?.type === "turn_aborted") {
+      const reason = line.payload.reason;
+      if (reason === undefined || reason === "interrupted") {
+        messages.push({
+          role: "system",
+          type: "system",
+          content: "Interrupted by user",
+          subtype: "interrupted",
+          ...(typeof line.timestamp === "string" && { timestamp: line.timestamp }),
+        });
+      }
       continue;
     }
 

@@ -18,6 +18,17 @@ export interface Chat {
    * the workspace wins when present and the path fields are the fallback.
    */
   workspaceId?: string;
+  /**
+   * When a human last pressed Stop on this chat's run (ISO time). Set only by
+   * the Stop route (`POST /api/chats/:id/stop`) when it cancelled a live run —
+   * never by a run superseded by a newer message, a held message's "Send
+   * now", a job or teardown stop, or a permission denial — and cleared as the
+   * next run for the chat starts. It is what the transcript's Continue button
+   * keys on, since no harness reliably records Callboard's own Stop in its
+   * session log. Absent ⇒ the last run was not stopped by a human (or ended
+   * before this field existed).
+   */
+  stoppedByUserAt?: string;
   session_id: string;
   session_log_path: string | null;
   metadata: string;

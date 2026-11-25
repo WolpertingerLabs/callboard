@@ -317,6 +317,23 @@ class ChatFileService {
     return true;
   }
 
+  /**
+   * Record that a human stopped this chat's run — see `Chat.stoppedByUserAt`.
+   * False when there is no record (a chat still being created, a CLI session
+   * never used from the UI).
+   */
+  markStoppedByUser(id: string): boolean {
+    return this.updateChat(id, { stoppedByUserAt: new Date().toISOString() });
+  }
+
+  /** Forget a human stop as the chat's next run starts. A no-op (no write) when none is recorded. */
+  clearStoppedByUser(id: string): void {
+    const chat = this.getChat(id);
+    if (!chat?.stoppedByUserAt) return;
+    const { stoppedByUserAt: _cleared, ...rest } = chat;
+    this.saveChat({ ...rest, updated_at: new Date().toISOString() });
+  }
+
   // Create or update a chat - useful when chat might only exist in filesystem
   //
   // CAUTION: `updates.metadata` replaces the ENTIRE metadata blob (last write

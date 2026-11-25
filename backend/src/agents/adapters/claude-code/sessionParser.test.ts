@@ -188,6 +188,62 @@ describe("parseMessages — CLI plumbing is not conversation", () => {
     expect(msg).toMatchObject({ role: "user", type: "text" });
   });
 
+  it("drops the CLI's synthetic canned reply that follows an interruption marker", () => {
+    // What the CLI writes after an interrupt, just before the next prompt —
+    // no isMeta nudge in front of it. The stray bubble users saw.
+    const synthetic = {
+      ...assistantLine([{ type: "text", text: "No response requested." }]),
+      message: { role: "assistant", model: "<synthetic>", content: [{ type: "text", text: "No response requested." }] },
+    };
+    const parsed = parseMessages([
+      userLine("go"),
+      assistantLine([{ type: "text", text: "partial" }]),
+      userLine("[Request interrupted by user]"),
+      synthetic,
+      userLine("next"),
+    ]);
+    expect(parsed.map((m) => [m.role, m.content])).toEqual([
+      ["user", "go"],
+      ["assistant", "partial"],
+      ["system", "Interrupted by user"],
+      ["user", "next"],
+    ]);
+  });
+
+  it("drops the synthetic ack after Callboard's own Stop: aborted tool_result, queue bookkeeping, ack, queued prompt", () => {
+    // The usual shape on disk — no interrupt marker at all. The CLI was
+    // killed mid-tool, and resolving the queued prompt drew the ack.
+    const synthetic = {
+      ...assistantLine([{ type: "text", text: "No response requested." }]),
+      message: { role: "assistant", model: "<synthetic>", content: [{ type: "text", text: "No response requested." }] },
+    };
+    const parsed = parseMessages([
+      userLine("run the build"),
+      assistantLine([{ type: "tool_use", id: "tu-1", name: "Bash", input: { command: "npm run build" } }]),
+      toolResultLine("[Tool call interrupted: the session ended before a result was received]"),
+      { type: "queue-operation", operation: "enqueue", content: "please continue", timestamp: "2026-01-01T10:00:02.000Z" },
+      { type: "queue-operation", operation: "dequeue", timestamp: "2026-01-01T10:00:02.100Z" },
+      synthetic,
+      userLine("please continue"),
+    ]);
+    expect(parsed.filter((m) => m.type === "text").map((m) => [m.role, m.content])).toEqual([
+      ["user", "run the build"],
+      ["user", "please continue"],
+    ]);
+    expect(parsed.some((m) => m.content === "No response requested.")).toBe(false);
+  });
+
+  it("keeps the same text when the model really said it, and other synthetic lines", () => {
+    const real = assistantLine([{ type: "text", text: "No response requested." }]);
+    expect(parseMessages([userLine("hi"), real]).map((m) => m.content)).toEqual(["hi", "No response requested."]);
+    expect(parseMessages([userLine("[Request interrupted by user]"), real]).map((m) => m.content)).toEqual(["Interrupted by user", "No response requested."]);
+    const authError = {
+      ...real,
+      message: { role: "assistant", model: "<synthetic>", content: [{ type: "text", text: "Invalid API key · Please run /login" }] },
+    };
+    expect(parseMessages([userLine("hi"), authError]).map((m) => m.content)).toEqual(["hi", "Invalid API key · Please run /login"]);
+  });
+
   it("leaves an interrupted turn readable end to end", () => {
     // The shape a follow-up-mid-run actually produces.
     const parsed = parseMessages([

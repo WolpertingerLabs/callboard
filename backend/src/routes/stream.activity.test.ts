@@ -30,6 +30,7 @@ vi.mock("../services/session-callbacks.js", () => ({ listPendingForParent: (id: 
 const { streamRouter } = await import("./stream.js");
 const { startActivity, __resetActivityState, openOrContinueWatch, listActivities } = await import("../services/chat-activity.js");
 const { heldMessageService } = await import("../services/held-message-service.js");
+const { chatFileService } = await import("../services/chat-file-service.js");
 
 function handlerFor(path: string, method: "get" | "post") {
   const layer = (streamRouter as any).stack.find((l: any) => l.route?.path === path && l.route.methods[method]);
@@ -170,5 +171,29 @@ describe("POST /:id/stop", () => {
 
     expect(cancelHeldDelivery).toHaveBeenCalledWith("chat-delivering");
     expect(state.body).toEqual({ stopped: true });
+  });
+
+  it("records a human stop only when it cancelled a live run", () => {
+    const mark = vi.spyOn(chatFileService, "markStoppedByUser").mockReturnValue(true);
+    try {
+      stopSession.mockImplementationOnce(() => true);
+      call(stopHandler, { id: "chat-live" });
+      expect(mark).toHaveBeenCalledWith("chat-live");
+
+      // A held message cancelled as it started was never a run: it stays
+      // paused, and there is nothing to Continue.
+      mark.mockClear();
+      cancelHeldDelivery.mockImplementationOnce(() => true);
+      stopSession.mockImplementationOnce(() => false);
+      call(stopHandler, { id: "chat-delivering-2" });
+      expect(mark).not.toHaveBeenCalled();
+
+      // Nothing was running.
+      stopSession.mockImplementationOnce(() => false);
+      call(stopHandler, { id: "chat-idle" });
+      expect(mark).not.toHaveBeenCalled();
+    } finally {
+      mark.mockRestore();
+    }
   });
 });
