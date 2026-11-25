@@ -4,10 +4,14 @@
  * bubble's markdown renderer, so nothing reflows when the transcript catches
  * up and replaces them — and stay out of selection-to-quote.
  */
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render } from "@testing-library/react";
+import type { ParsedMessage } from "../api";
 import InFlightBubbles from "./InFlightBubbles";
+import MessageBubble from "./MessageBubble";
 import type { InFlightMessage } from "../utils/inFlightMessages";
+
+vi.mock("../api", () => ({}));
 
 afterEach(cleanup);
 
@@ -22,6 +26,17 @@ describe("InFlightBubbles", () => {
     expect(markdown!.querySelector("pre code")?.textContent).toContain("const x = 1;");
     expect(container.textContent).not.toContain("**");
     expect(container.textContent).toContain("Sent");
+  });
+
+  it("renders text exactly as the persisted user bubble that replaces it", () => {
+    const text = "line one\nline two\n\n- item\n\n**bold** `code`";
+    const inFlight = render(<InFlightBubbles messages={[message(text)]} />).container.querySelector(".message-markdown");
+    const persisted = render(
+      <MessageBubble message={{ role: "user", type: "text", content: text, timestamp: "2026-01-01T00:00:00.000Z" } as ParsedMessage} />,
+    ).container.querySelector(".message-markdown");
+    expect(inFlight).not.toBeNull();
+    expect(persisted).not.toBeNull();
+    expect(inFlight!.innerHTML).toBe(persisted!.innerHTML);
   });
 
   it("renders no markdown body for an attachment-only message", () => {

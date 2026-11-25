@@ -1,4 +1,4 @@
-import { AttachedFileChips } from "./MessageBubble";
+import { AttachedFileChips, BUBBLE_BASE_STYLE } from "./MessageBubble";
 import MarkdownRenderer from "./MarkdownRenderer";
 import type { InFlightMessage } from "../utils/inFlightMessages";
 
@@ -26,14 +26,9 @@ export default function InFlightBubbles({ messages }: { messages: InFlightMessag
         <div key={message.key} style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", margin: "6px 0" }}>
           <div
             style={{
-              maxWidth: "92%",
-              padding: "10px 14px",
-              borderRadius: "var(--radius)",
+              ...BUBBLE_BASE_STYLE,
               background: "var(--user-bg)",
               border: "1px solid transparent",
-              fontSize: 14,
-              lineHeight: 1.5,
-              wordBreak: "break-word",
               opacity: 0.9,
             }}
           >
