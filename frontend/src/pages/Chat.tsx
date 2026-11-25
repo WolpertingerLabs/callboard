@@ -97,7 +97,9 @@ import AskAsideControls, { type AskAsideOptions, type AskAsideResult } from "../
 import type { ComposerSnapshot, SendVariant, SendVariants } from "../components/PromptInput";
 import { providerKindOf, useChatMeta } from "../hooks/useChatMeta";
 import { isRetiredProviderId } from "../utils/retiredProviders";
-import { INTERRUPTED_MESSAGE, useStopController } from "../hooks/useStopController";
+import { INTERRUPTED_MESSAGE, INTERRUPTED_NOTICE, useStopController } from "../hooks/useStopController";
+import { ContinueButton, ContinuedDivider } from "../components/ContinueAfterInterrupt";
+import { CONTINUE_PROMPT, endsWithInterruption, isContinuePrompt } from "../utils/continueAfterInterrupt";
 import { useMessageNavigation } from "../hooks/useMessageNavigation";
 import { useStableStarred, useStarredMessages, useStarredNavigation } from "../hooks/useStarredMessages";
 import { resolveStarred, starKeysByIndex } from "../utils/starredMessages";
@@ -1603,7 +1605,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
                   const trailing: ParsedMessage[] = [];
                   const killed = abandonedTaskMarker(Array.isArray(event.abandonedBackgroundTaskIds) ? event.abandonedBackgroundTaskIds : [], msgArray);
                   if (killed) trailing.push(killed);
-                  if (reasonMsg && !redundant) trailing.push({ role: "system", type: "system", content: reasonMsg });
+                  if (reasonMsg && !redundant) trailing.push(reasonMsg === INTERRUPTED_MESSAGE ? INTERRUPTED_NOTICE : { role: "system", type: "system", content: reasonMsg });
                   setMessages(trailing.length > 0 ? [...msgArray, ...trailing] : msgArray);
                   // Retire optimistic bubbles only once the transcript shows
                   // them — a message sent while this run was finishing has to
@@ -4017,6 +4019,23 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
     refreshActivity,
   });
 
+  // The Continue button: offered when the last turn was stopped and nothing
+  // has happened since, and only where the composer could send the prompt
+  // itself — no run live here or elsewhere, nothing on its way, no block on
+  // sending, and a harness that still takes messages.
+  const continueOffered =
+    !!id &&
+    !streaming &&
+    !stopping &&
+    !globalSessionActive &&
+    !nativeAgent &&
+    !isRetiredHarness &&
+    !composerBlockedReason &&
+    visibleInFlightMessages.length === 0 &&
+    endsWithInterruption(messages);
+  // Not the composer's contents (see handleSend): an open draft stays put.
+  const handleContinue = useCallback(() => handleSend(CONTINUE_PROMPT, undefined, { notFromComposer: true }), [handleSend]);
+
   const handleReconnect = useCallback(async () => {
     setNetworkError(null);
     // The user asked: connect now, whatever the backoff was waiting out or had
@@ -5020,6 +5039,16 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
                         </div>
                       );
                     }
+                    // The Continue button's prompt: a divider, like the
+                    // interruption it answers, rather than a bubble of
+                    // boilerplate the user never typed.
+                    if (isContinuePrompt(item.message)) {
+                      return (
+                        <div key={item.originalIndex} data-message-index={item.originalIndex}>
+                          <ContinuedDivider />
+                        </div>
+                      );
+                    }
                     // Forkable: persisted conversational text messages on the
                     // main timeline. Subagent messages are excluded — they
                     // aren't a point in the main thread to branch from. Every
@@ -5110,6 +5139,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
                       </span>
                     </ThinkingIndicator>
                   )}
+                  {continueOffered && <ContinueButton onContinue={handleContinue} />}
                   {/* After the turn they wait on: what goes next. */}
                   <HeldMessageList
                     items={heldMessages}
