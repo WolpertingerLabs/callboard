@@ -213,6 +213,52 @@ describe("parsePiSession", () => {
     expect(parsePiSession(path)[0]).toMatchObject({ subtype: "error", content: "denied" });
   });
 
+  it("marks a stopped turn with the interrupted boundary, even when the aborted entry is empty", () => {
+    // A Stop that lands mid-tool: pi records the tool's "Operation aborted"
+    // result, then an aborted assistant entry with nothing in it. That entry
+    // renders no row, so without the marker the stop vanished.
+    const path = writeSession("s1", [
+      { type: "message", id: "e1", parentId: null, timestamp: TS, message: userMessage("run the build") },
+      {
+        type: "message",
+        id: "e2",
+        parentId: "e1",
+        timestamp: TS,
+        message: { ...assistantMessage([{ type: "toolCall", id: "call-1", name: "bash", arguments: { command: "npm run build" } }]), stopReason: "toolUse" },
+      },
+      {
+        type: "message",
+        id: "e3",
+        parentId: "e2",
+        timestamp: TS,
+        message: { role: "toolResult", toolCallId: "call-1", toolName: "bash", content: [{ type: "text", text: "Operation aborted" }], isError: true },
+      },
+      { type: "message", id: "e4", parentId: "e3", timestamp: TS, message: { ...assistantMessage([]), stopReason: "aborted" } },
+    ]);
+    expect(parsePiSession(path).map((m) => [m.role, m.type, m.subtype])).toEqual([
+      ["user", "text", undefined],
+      ["assistant", "tool_use", undefined],
+      ["user", "tool_result", "error"],
+      ["system", "system", "interrupted"],
+    ]);
+  });
+
+  it("puts the interrupted boundary after the partial output of a turn stopped mid-reply", () => {
+    const path = writeSession("s1", [
+      { type: "message", id: "e1", parentId: null, timestamp: TS, message: userMessage("explain") },
+      { type: "message", id: "e2", parentId: "e1", timestamp: TS, message: { ...assistantMessage([{ type: "text", text: "Well, first" }]), stopReason: "aborted" } },
+    ]);
+    const messages = parsePiSession(path);
+    expect(messages.map((m) => [m.role, m.content])).toEqual([
+      ["user", "explain"],
+      ["assistant", "Well, first"],
+      ["system", "Interrupted by user"],
+    ]);
+    // The measurements stay on the reply, not on the marker.
+    expect(messages[1].stopReason).toBe("aborted");
+    expect(messages[2].stopReason).toBeUndefined();
+  });
+
   it("carries the model name onto assistant messages", () => {
     const text = parsePiSession(writeSession("s1", conversationEntries())).find((m) => m.type === "text" && m.role === "assistant");
     expect(text?.model).toBe("google/gemini-3.6-flash");

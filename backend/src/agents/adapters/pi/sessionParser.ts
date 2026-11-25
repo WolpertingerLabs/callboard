@@ -489,6 +489,12 @@ function projectMessage(message: PiAgentMessage, timestamp: string, generationKe
       // has nowhere to put them and produces no row — unchanged, and correct:
       // an empty bubble minted to carry a number would be worse than the gap.
       if (out.length > 0) Object.assign(out[out.length - 1], metrics);
+      // A stopped turn. Its `stopReason` rides on the last block, and a stop
+      // that lands mid-tool or before any output leaves an entry with no
+      // block at all, so the stop would vanish from the transcript. The same
+      // boundary marker the Claude Code and Codex parsers emit, for every
+      // aborted entry, empty or not.
+      if (message.stopReason === "aborted") out.push({ role: "system", type: "system", content: "Interrupted by user", subtype: "interrupted", timestamp });
       return out;
     }
 
