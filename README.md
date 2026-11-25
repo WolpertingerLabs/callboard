@@ -418,7 +418,7 @@ plans/               Design records
 
 Contributor conventions (the wire-compatibility rules for `shared/types/stream.ts`, `cwd` vs `workspaceId` keying, theming) are in [`.claude/CLAUDE.md`](.claude/CLAUDE.md).
 
-Stack: React 18, React Router 6, Express 4, TypeScript 5, Vite 5, Zod 4, Winston, Vitest. Engines come from `@anthropic-ai/claude-agent-sdk`, `@openai/codex-sdk` and `@earendil-works/pi-coding-agent`. Connections come from `@wolpertingerlabs/drawlatch` (`packages/drawlatch`).
+Stack: React 18, React Router 6, Express 5, TypeScript 5, Vite 5, Zod 4, Winston, Vitest. Engines come from `@anthropic-ai/claude-agent-sdk`, `@openai/codex-sdk` and `@earendil-works/pi-coding-agent`. Connections come from `@wolpertingerlabs/drawlatch` (`packages/drawlatch`).
 
 ### Releasing
 

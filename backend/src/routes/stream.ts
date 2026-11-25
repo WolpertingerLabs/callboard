@@ -219,11 +219,11 @@ streamRouter.post("/new/message", async (req, res) => {
 
     // Every step below shells out to git, and every one of them can throw: a
     // ref git refuses, a locked index, a worktree directory that cannot be
-    // written. None of that used to reach the client. The route's own `try`
-    // opened *after* this block, and Express 4 does not catch a rejected
-    // handler promise — so a throw here was logged as an unhandled rejection
-    // by process-guards and nothing was ever written to the response. No 409,
-    // no 500, no `message_error` frame; the client's POST just hung.
+    // written. The route's own `try` opens *after* this block, so without this
+    // one a throw would reach Express 5's default handler: an HTML 500, with
+    // no 409 and no `message_error` frame for the client to read.
+    // (Under Express 4, which did not catch a rejected handler promise, the
+    // client's POST just hung.)
     //
     // (`start_chat_session` calls `resolveBranch` too, and has always been
     // inside its own try/catch — services/callboard-tools.ts. Only this caller
@@ -424,7 +424,10 @@ streamRouter.post("/new/message", async (req, res) => {
     });
   } catch (err: any) {
     log.error(`POST /new/message failed: ${err.message}`);
-    res.status(500).json({ error: err.message });
+    // After beginSSE the stream is open: end it rather than try to send a
+    // status, which would throw ERR_HTTP_HEADERS_SENT.
+    if (res.headersSent) res.end();
+    else res.status(500).json({ error: err.message });
   } finally {
     // Every way out — a refusal, an error, the chat starting — ends the
     // creation, so a late stop finds nothing rather than a stale entry.
@@ -501,6 +504,13 @@ streamRouter.post("/:id/message", async (req, res) => {
       emitter.removeListener("event", onEvent);
     });
   } catch (err: any) {
+    // After beginSSE the stream is open: end it rather than try to send a
+    // status, which would throw ERR_HTTP_HEADERS_SENT.
+    if (res.headersSent) {
+      log.error(`POST /${req.params.id}/message failed after the stream opened: ${err.message}`);
+      res.end();
+      return;
+    }
     if (err instanceof ChatContextChangedError) return res.status(409).json({ error: err.message, code: "chat_context_changed" });
     // A chat pinned to a removed harness is a client-state condition, not a
     // server fault — see sendRetiredProviderError. Logged at warn for the same

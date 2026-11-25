@@ -160,17 +160,26 @@ describe("migrateDrawlatchKeyLayouts (startup)", () => {
  * the call out of the source — as an AST, not text, so a commented-out call, a
  * mention in a string, or a call tucked inside a branch or callback does not
  * count. It must be an unconditional top-level statement, ahead of
- * `app.listen(...)`, calling the function imported from agent-settings.
+ * `app.listen(...)` (a bare statement or `const server = app.listen(...)`),
+ * calling the function imported from agent-settings.
  */
 describe("index.ts startup", () => {
   const indexPath = join(dirname(fileURLToPath(import.meta.url)), "..", "index.ts");
   const source = ts.createSourceFile(indexPath, readFileSync(indexPath, "utf-8"), ts.ScriptTarget.Latest, true);
 
-  /** Index of the top-level `<callee>(...)` / `<obj>.<callee>(...)` expression statement, or -1. */
+  /**
+   * Index of the top-level `<callee>(...)` / `<obj>.<callee>(...)` statement,
+   * bare or as the initializer of a `const x = ...` declaration, or -1.
+   */
   function topLevelCallIndex(callee: string): number {
     return source.statements.findIndex((st) => {
-      if (!ts.isExpressionStatement(st) || !ts.isCallExpression(st.expression)) return false;
-      const fn = st.expression.expression;
+      const call = ts.isExpressionStatement(st)
+        ? st.expression
+        : ts.isVariableStatement(st) && st.declarationList.declarations.length === 1
+          ? st.declarationList.declarations[0].initializer
+          : undefined;
+      if (!call || !ts.isCallExpression(call)) return false;
+      const fn = call.expression;
       const name = ts.isIdentifier(fn) ? fn.text : ts.isPropertyAccessExpression(fn) ? fn.name.text : undefined;
       return name === callee;
     });
@@ -193,7 +202,7 @@ describe("index.ts startup", () => {
     const migrate = topLevelCallIndex("migrateDrawlatchKeyLayouts");
     const listen = topLevelCallIndex("listen");
     expect(migrate, "no top-level migrateDrawlatchKeyLayouts() statement in index.ts").toBeGreaterThan(-1);
-    expect(listen, "no top-level app.listen(...) statement in index.ts — update this guard").toBeGreaterThan(-1);
+    expect(listen, "no top-level app.listen(...) statement or `const server = app.listen(...)` in index.ts — update this guard").toBeGreaterThan(-1);
     expect(migrate).toBeLessThan(listen);
   });
 });

@@ -58,10 +58,16 @@ export function sendStorageError(res: Response, err: unknown, what: string): voi
   res.status(500).json({ error: `${what} failed` });
 }
 
-type Handler = (req: Request, res: Response) => unknown;
+/**
+ * `P` names the route's params: inference cannot see the path through the
+ * wrapper, so each `wrap<{ ... }>` call site asserts them. TypeScript takes `P`
+ * from that type argument, never from the route string, so it must match the
+ * path by hand: a typo would still compile.
+ */
+type Handler<P> = (req: Request<P>, res: Response) => unknown;
 const wrap =
-  (what: string, fn: Handler) =>
-  async (req: Request, res: Response): Promise<void> => {
+  <P>(what: string, fn: Handler<P>) =>
+  async (req: Request<P>, res: Response): Promise<void> => {
     try {
       await fn(req, res);
     } catch (err) {
@@ -99,7 +105,7 @@ storageRouter.post(
  */
 storageRouter.get(
   "/:key",
-  wrap("Get storage key", (req, res) => {
+  wrap<{ key: string }>("Get storage key", (req, res) => {
     // #swagger.tags = ['Storage']
     // #swagger.summary = 'Get a storage key and its items'
     res.json({ key: getStorageKey(req.params.key) });
@@ -111,7 +117,7 @@ storageRouter.get(
  */
 storageRouter.patch(
   "/:key",
-  wrap("Update storage key", async (req, res) => {
+  wrap<{ key: string }>("Update storage key", async (req, res) => {
     // #swagger.tags = ['Storage']
     // #swagger.summary = 'Update a storage key description'
     const { description } = (req.body ?? {}) as { description?: unknown };
@@ -125,7 +131,7 @@ storageRouter.patch(
  */
 storageRouter.delete(
   "/:key",
-  wrap("Delete storage key", async (req, res) => {
+  wrap<{ key: string }>("Delete storage key", async (req, res) => {
     // #swagger.tags = ['Storage']
     // #swagger.summary = 'Delete a storage key and all its items'
     await deleteStorageKey(req.params.key);
@@ -142,7 +148,7 @@ storageRouter.delete(
  */
 storageRouter.get(
   "/:key/items/:name",
-  wrap("Read storage item", (req, res) => {
+  wrap<{ key: string; name: string }>("Read storage item", (req, res) => {
     // #swagger.tags = ['Storage']
     // #swagger.summary = 'Download a storage item'
     const { item, fd, size } = openStorageItem(req.params.key, req.params.name);
@@ -193,7 +199,7 @@ function maybeMultipart(req: Request, res: Response, next: NextFunction): void {
 storageRouter.put(
   "/:key/items/:name",
   maybeMultipart,
-  wrap("Save storage item", async (req, res) => {
+  wrap<{ key: string; name: string }>("Save storage item", async (req, res) => {
     // #swagger.tags = ['Storage']
     // #swagger.summary = 'Create or overwrite a storage item'
     const body = (req.body ?? {}) as { content?: unknown; content_base64?: unknown; mimeType?: unknown };
@@ -221,7 +227,7 @@ storageRouter.put(
  */
 storageRouter.delete(
   "/:key/items/:name",
-  wrap("Delete storage item", async (req, res) => {
+  wrap<{ key: string; name: string }>("Delete storage item", async (req, res) => {
     // #swagger.tags = ['Storage']
     // #swagger.summary = 'Delete a storage item'
     await deleteStorageItem(req.params.key, req.params.name);

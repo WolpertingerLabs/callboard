@@ -41,8 +41,10 @@ ensureInstanceName();
 
 import cookieParser from "cookie-parser";
 import rateLimit from "express-rate-limit";
-import { getClientKey } from "./utils/client-ip.js";
+import { CLIENT_KEY_LIMITER_VALIDATE, getClientKey } from "./utils/client-ip.js";
 import { applyHttpHardening } from "./utils/security-headers.js";
+import { jsonBody } from "./utils/json-body.js";
+import { serveSpa } from "./utils/spa.js";
 import { chatsRouter } from "./routes/chats.js";
 import { streamRouter } from "./routes/stream.js";
 import { imagesRouter } from "./routes/images.js";
@@ -110,7 +112,7 @@ const PORT = (!isProduction && process.env.DEV_PORT_SERVER) || process.env.PORT 
 applyHttpHardening(app);
 app.use(cookieParser());
 
-app.use(express.json({ limit: "50mb" }));
+app.use(jsonBody({ limit: "50mb" }));
 
 // ── Rate limiting ──────────────────────────────────────────────────
 // Strict limiter for public/unauthenticated endpoints
@@ -124,10 +126,9 @@ const publicLimiter = rateLimit({
   // serve`) every request arrives from loopback, so without this all remote
   // clients would share one bucket — letting a single caller lock everyone out
   // of login. We resolve forwarding headers only for loopback traffic; see
-  // utils/client-ip.ts. Disable the XFF validation because we handle (and
-  // deliberately distrust non-loopback) forwarding headers ourselves.
+  // utils/client-ip.ts, which also explains the validation checks turned off.
   keyGenerator: getClientKey,
-  validate: { xForwardedForHeader: false },
+  validate: CLIENT_KEY_LIMITER_VALIDATE,
 });
 
 // General limiter for authenticated API endpoints
@@ -138,7 +139,7 @@ const apiLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: "Too many requests, please try again later." },
   keyGenerator: getClientKey,
-  validate: { xForwardedForHeader: false },
+  validate: CLIENT_KEY_LIMITER_VALIDATE,
   skip: (req) => {
     // Skip rate limiting for SSE/stream endpoints and high-frequency polling
     return req.path.endsWith("/stream") || req.path.endsWith("/poll");
@@ -341,9 +342,9 @@ app.get("/api/user-contact/availability", async (req, res) => {
   try {
     res.json(await getUserContactAvailability({ refresh }));
   } catch (err: any) {
-    // Every dependency catches internally, so this is defensive — but an
-    // unhandled rejection in an inline async handler hangs the request rather
-    // than answering, and the settings page waits on this to render.
+    // Every dependency catches internally, so this is defensive — but a
+    // rejection would reach Express 5's default handler as an HTML 500, and the
+    // settings page waits on this JSON to render.
     log.warn(`Contact channel availability check failed: ${err?.message || err}`);
     res.status(502).json({ error: "Failed to check contact channel availability" });
   }
@@ -454,10 +455,7 @@ app.post(
 
 // Serve frontend static files in production
 const frontendDist = path.join(__pkgRoot, "frontend/dist");
-app.use(express.static(frontendDist));
-app.get("*", (_req, res) => {
-  res.sendFile(path.join(frontendDist, "index.html"));
-});
+serveSpa(app, frontendDist);
 
 // One-time cards-as-entity → cards-as-metadata migration. Must run before the
 // server accepts requests and before initJobRunner resumes runs — both would
@@ -496,7 +494,17 @@ try {
 // claude.ts, so it is handed in here.
 setChatArchivedCheck(isChatArchived);
 
-app.listen(PORT, () => {
+// No listen callback: Express 5's `app.listen(port, cb)` attaches `cb` with
+// `once("error")` as well as for "listening", and leaves it attached after a
+// successful listen, so a later server error (EMFILE on accept) would be
+// swallowed. Any server error, at bind time or later, is rethrown instead, so
+// the process guard logs it and exits as under Express 4: `callboard start`
+// reads EADDRINUSE from the log.
+const server = app.listen(PORT);
+server.on("error", (err) => {
+  throw err;
+});
+server.once("listening", () => {
   log.info(`Backend running on http://localhost:${PORT}`);
   // Managed Sandbox desktop containers a previous run left behind (a crash,
   // a kill -9) are removed now and every few minutes. Only this data

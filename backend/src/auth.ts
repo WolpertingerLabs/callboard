@@ -161,13 +161,19 @@ export async function loginHandler(req: Request, res: Response) {
   }
 
   const { password } = req.body;
+  // A missing or non-string password is a wrong one. Handed to scrypt it
+  // would reject, and Express 5 would answer an HTML 500 (Express 4 never
+  // answered at all).
+  if (typeof password !== "string") {
+    return res.status(401).json({ error: "Invalid password" });
+  }
   const valid = await verifyConfiguredPassword(password);
   if (!valid) {
     return res.status(401).json({ error: "Invalid password" });
   }
 
-  // An async handler on Express 4: a throw here would be an unhandled
-  // rejection and a request that never gets an answer.
+  // A throw here would reach Express 5's default handler as an HTML 500;
+  // answer the 503 the client knows how to show instead.
   let token: string;
   try {
     token = createSession(Date.now() + SESSION_TTL_MS, ip);
@@ -228,7 +234,7 @@ export async function changePasswordHandler(req: Request, res: Response) {
 
   const { currentPassword, newPassword } = req.body;
 
-  if (!currentPassword || !newPassword) {
+  if (typeof currentPassword !== "string" || typeof newPassword !== "string" || !currentPassword || !newPassword) {
     return res.status(400).json({ error: "Both currentPassword and newPassword are required." });
   }
 

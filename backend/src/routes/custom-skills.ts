@@ -11,7 +11,7 @@ customSkillsRouter.get("/", (_req: Request, res: Response): void => {
 });
 
 // Get a single custom skill (full content)
-customSkillsRouter.get("/:name", (req: Request, res: Response): void => {
+customSkillsRouter.get("/:name", (req, res): void => {
   const skill = customSkillsService.getSkill(req.params.name);
   if (!skill) {
     res.status(404).json({ error: "Skill not found" });
@@ -52,7 +52,7 @@ customSkillsRouter.post("/", (req: Request, res: Response): void => {
 });
 
 // Update an existing custom skill (partial — only provided fields change)
-customSkillsRouter.put("/:name", (req: Request, res: Response): void => {
+customSkillsRouter.put("/:name", (req, res): void => {
   const { name, description, content } = req.body;
 
   if (name !== undefined && (typeof name !== "string" || name.trim().length === 0)) {
@@ -89,7 +89,7 @@ customSkillsRouter.put("/:name", (req: Request, res: Response): void => {
 });
 
 // Delete a custom skill
-customSkillsRouter.delete("/:name", (req: Request, res: Response): void => {
+customSkillsRouter.delete("/:name", (req, res): void => {
   try {
     customSkillsService.deleteSkill(req.params.name);
     res.json({ ok: true });

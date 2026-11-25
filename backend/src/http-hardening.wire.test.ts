@@ -24,6 +24,8 @@ import { networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
 import express, { type Express } from "express";
 import cookieParser from "cookie-parser";
+import { jsonBody } from "./utils/json-body.js";
+import { serveSpa } from "./utils/spa.js";
 
 const tmpRoot = mkdtempSync(join(tmpdir(), "callboard-http-hardening-"));
 process.env.CALLBOARD_DATA_DIR = tmpRoot;
@@ -34,8 +36,9 @@ vi.mock("./services/agent-settings.js", () => ({
 }));
 
 const { applyHttpHardening, DEFAULT_CSP } = await import("./utils/security-headers.js");
-const { loginHandler, logoutHandler, checkAuthHandler, requireAuth } = await import("./auth.js");
+const { loginHandler, logoutHandler, checkAuthHandler, requireAuth, changePasswordHandler } = await import("./auth.js");
 const { artifactsRouter } = await import("./routes/artifacts.js");
+const { keywordsRouter } = await import("./routes/keywords.js");
 const { imagesRouter } = await import("./routes/images.js");
 const { filesRouter } = await import("./routes/files.js");
 const { SANDBOXED_CONTENT_CSP } = await import("./utils/served-content.js");
@@ -43,6 +46,7 @@ const { ImageStorageService } = await import("./services/image-storage.js");
 const { generateSalt, hashPassword } = await import("./utils/password.js");
 const { createSession } = await import("./services/sessions.js");
 
+const SPA_DIR = join(tmpRoot, ".install", "spa");
 const PASSWORD = "correct horse battery staple";
 const DAY = 24 * 60 * 60 * 1000;
 const sessionsFile = join(tmpRoot, "sessions.json");
@@ -64,20 +68,24 @@ function buildApp(): Express {
   const app = express();
   applyHttpHardening(app);
   app.use(cookieParser());
-  app.use(express.json());
+  app.use(jsonBody());
   app.post("/api/auth/login", loginHandler);
   app.post("/api/auth/logout", logoutHandler);
   app.get("/api/auth/check", checkAuthHandler);
   app.use("/api", requireAuth);
+  app.post("/api/auth/change-password", changePasswordHandler);
   app.use("/api/images", imagesRouter);
   app.use("/api/artifacts", artifactsRouter);
+  app.use("/api/keywords", keywordsRouter);
   app.use("/api/files", filesRouter);
   // The SPA fallback, as index.ts serves frontend/dist/index.html.
-  const spa = join(tmpRoot, "spa");
+  // Under a dot-directory, as a real install often is (`~/.nvm/...`): send 1.x
+  // refuses a dotfile segment anywhere in an absolute path, so the SPA must
+  // send index.html relative to its root.
+  const spa = SPA_DIR;
   mkdirSync(spa, { recursive: true });
   writeFileSync(join(spa, "index.html"), "<!doctype html><title>callboard</title>");
-  app.use(express.static(spa));
-  app.get("*", (_req, res) => res.sendFile(join(spa, "index.html")));
+  serveSpa(app, spa);
   return app;
 }
 
@@ -446,5 +454,81 @@ describe("/api/images/:id", () => {
     expect(cacheControl).toMatch(/max-age=\d+/);
     expect(res.headers["content-security-policy"]).toBe(SANDBOXED_CONTENT_CSP);
     expect(res.headers["x-content-type-options"]).toBe("nosniff");
+  });
+});
+
+describe("SPA catch-all (/{*splat})", () => {
+  it.each(["/", "/chat/abc", "/a/b/c"])("GET %s serves index.html", async (path) => {
+    const res = await request(server, "GET", path);
+    expect(res.status).toBe(200);
+    expect(res.body).toContain("<title>callboard</title>");
+  });
+
+  it("an authenticated GET of an unknown /api path still gets index.html, as under Express 4", async () => {
+    const res = await request(server, "GET", "/api/does-not-exist", withSession(token));
+    expect(res.status).toBe(200);
+    expect(res.body).toContain("<title>callboard</title>");
+  });
+
+  it("an unauthenticated GET of an unknown /api path is refused", async () => {
+    const res = await request(server, "GET", "/api/does-not-exist");
+    expect(res.status).toBe(401);
+  });
+
+  it("a POST to an unknown path is a 404", async () => {
+    const res = await request(server, "POST", "/nope");
+    expect(res.status).toBe(404);
+  });
+
+  it("HEAD falls back to the GET route", async () => {
+    const res = await request(server, "HEAD", "/settings");
+    expect(res.status).toBe(200);
+  });
+
+  it("deep links still load when the install path has a dot-directory in it", async () => {
+    expect(SPA_DIR.split(/[\\/]/).some((segment) => segment.startsWith("."))).toBe(true);
+    const deep = await request(server, "GET", "/chat/abc");
+    expect(deep.status).toBe(200);
+    expect(deep.body).toContain("<title>callboard</title>");
+    expect((await request(server, "HEAD", "/settings")).status).toBe(200);
+  });
+});
+
+// Express 5 leaves req.body undefined for a request without a JSON body; the
+// client sends such requests, and handlers destructure req.body. jsonBody
+// restores Express 4's `{}`, so these get their normal answer instead of 500.
+describe("body-less requests", () => {
+  it("login with no body is a wrong password (401)", async () => {
+    const res = await request(server, "POST", "/api/auth/login", { headers: { "x-forwarded-for": `198.51.100.${++loginSeq}` } });
+    expect(res.status).toBe(401);
+    expect(JSON.parse(res.body)).toEqual({ error: "Invalid password" });
+  });
+
+  it("login with a non-string password is a wrong password (401)", async () => {
+    const res = await request(server, "POST", "/api/auth/login", {
+      headers: { "x-forwarded-for": `198.51.100.${++loginSeq}` },
+      body: JSON.stringify({ password: 12345 }),
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it("change-password with no body is a 400", async () => {
+    const res = await request(server, "POST", "/api/auth/change-password", withSession(token));
+    expect(res.status).toBe(400);
+  });
+
+  it("change-password with a non-string password is a 400", async () => {
+    const res = await request(server, "POST", "/api/auth/change-password", {
+      ...withSession(token),
+      body: JSON.stringify({ currentPassword: 12345, newPassword: "another long passphrase" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("a body-less PUT to a route that destructures req.body is its normal 404", async () => {
+    // keywords' PUT reads `const { name, description, body } = req.body` with
+    // no fallback, so this is a 500 if req.body is ever undefined again.
+    const res = await request(server, "PUT", "/api/keywords/does-not-exist", withSession(token));
+    expect(res.status).toBe(404);
   });
 });

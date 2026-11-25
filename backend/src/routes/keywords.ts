@@ -69,7 +69,7 @@ keywordsRouter.post("/", (req: Request, res: Response): void => {
 });
 
 // Update an existing keyword (partial — only provided fields change)
-keywordsRouter.put("/:name", (req: Request, res: Response): void => {
+keywordsRouter.put("/:name", (req, res): void => {
   const { name, description, body } = req.body;
 
   if (name !== undefined && (typeof name !== "string" || name.trim().length === 0)) {
@@ -107,7 +107,7 @@ keywordsRouter.put("/:name", (req: Request, res: Response): void => {
 });
 
 // Delete a keyword
-keywordsRouter.delete("/:name", (req: Request, res: Response): void => {
+keywordsRouter.delete("/:name", (req, res): void => {
   try {
     keywordsService.deleteKeyword(req.params.name);
     res.json({ ok: true });

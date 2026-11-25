@@ -11,9 +11,10 @@
  * ## Nothing here throws
  *
  * Every field degrades to a stated fallback. The caller is a **polled** endpoint
- * that several pages read on mount, and Express 4 does not catch an async
- * handler's rejection: a throw does not become a 500, it becomes a request that
- * never answers at all. So "could not tell" is spelled as a value — `"unknown"`,
+ * that several pages read on mount, and a rejection would cost the whole
+ * response: Express 5 answers it with an HTML 500 (Express 4 never answered at
+ * all), and every page reading this would lose every field to one failed
+ * probe. So "could not tell" is spelled as a value — `"unknown"`,
  * `"not installed"`, an empty vendor list — and never as a rejection.
  *
  * ## The response shape is a published interface
@@ -82,9 +83,8 @@ export async function buildSystemInfo({ pkgRoot }: BuildSystemInfoOptions) {
   //
   // Each probe carries its own guard rather than relying on a wrapper, because
   // `Promise.all` rejects on the *first* rejection: a shared handler would
-  // discard three good answers to report one failure, and — since Express 4
-  // does not catch an async handler's rejection — would hang the request rather
-  // than failing it.
+  // discard three good answers to report one failure, and the request would
+  // end in Express 5's HTML 500 rather than a usable answer.
 
   // Same resolver as chats and the login check. `"not installed"` rather than
   // `"unknown"` when nothing resolved: this used to run the bare name

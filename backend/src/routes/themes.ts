@@ -33,7 +33,7 @@ themesRouter.get("/", (_req: Request, res: Response): void => {
 });
 
 // Get a single theme
-themesRouter.get("/:name", (req: Request, res: Response): void => {
+themesRouter.get("/:name", (req, res): void => {
   const theme = themeFileService.getTheme(req.params.name);
   if (!theme) {
     res.status(404).json({ error: "Theme not found" });
@@ -47,9 +47,9 @@ themesRouter.get("/:name", (req: Request, res: Response): void => {
 // The gate is awaited rather than called: correction yields to the event loop
 // while it searches, so that a theme write does not stall every open SSE stream
 // for the length of the search — see theme-contrast.ts. That makes the handler
-// async, and an async handler's rejections are not Express 4's to catch, so the
-// body is wrapped and handed to `next` to land where a synchronous throw
-// used to.
+// async. Express 5 forwards an async handler's rejection to `next` itself; the
+// body is still wrapped so the error is handed to `next` explicitly, landing
+// where a synchronous throw does whatever the Express version.
 themesRouter.post("/", async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const { name, dark, light, allowBelowAA } = req.body;
@@ -143,7 +143,7 @@ themesRouter.post("/generate", async (req: Request, res: Response): Promise<void
 });
 
 // Update an existing theme (merges provided variables with existing ones)
-themesRouter.put("/:name", async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+themesRouter.put("/:name", async (req, res, next): Promise<void> => {
   try {
     const { name, dark, light, allowBelowAA } = req.body;
     const originalName = req.params.name;
@@ -189,7 +189,7 @@ themesRouter.put("/:name", async (req: Request, res: Response, next: NextFunctio
 });
 
 // Delete a theme
-themesRouter.delete("/:name", (req: Request, res: Response): void => {
+themesRouter.delete("/:name", (req, res): void => {
   try {
     themeFileService.deleteTheme(req.params.name);
     res.json({ ok: true });
