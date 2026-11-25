@@ -388,7 +388,7 @@ The frontend runs at `http://localhost:3000` and the backend at `:3002`. Watch f
 | `npm start`                                 | Run the production build from `backend/dist`                                                               |
 | `npm test` / `test:watch` / `test:coverage` | Vitest (`npm test` and `test:coverage` also run the computer-use and drawlatch tests)                      |
 | `npm run test:drawlatch`                    | Drawlatch's unit tests. `test:drawlatch:e2e` runs its live-API tests (needs `packages/drawlatch/.env.e2e`) |
-| `npm run lint` / `lint:fix`                 | ESLint on **staged** files only. On a clean index this lints nothing                                       |
+| `npm run lint` / `lint:fix`                 | ESLint on **staged** files only (drawlatch's `src/` with its own config). A clean index lints nothing      |
 | `npm run lint:all` / `lint:all:fix`         | ESLint on the whole tree, except `packages/drawlatch`                                                      |
 | `npm run lint:drawlatch`                    | ESLint on drawlatch, with its own typed config                                                             |
 | `npm run prettier`                          | Format changed and staged files                                                                            |
@@ -421,7 +421,7 @@ Stack: React 18, React Router 6, Express 4, TypeScript 5, Vite 5, Zod 4, Winston
 
 ### Releasing
 
-Callboard and drawlatch are published to npm separately and keep their own version numbers. Callboard pins drawlatch **exactly** (`"@wolpertingerlabs/drawlatch": "<version>"`, no `^`) in both `package.json` and `backend/package.json`, and that pin must equal `packages/drawlatch/package.json`'s `version`; `npm run deps:check` (in CI and `prepublishOnly`) fails otherwise. The exact pin is also what makes npm link the workspace instead of fetching drawlatch from the registry. To bump drawlatch:
+Callboard and drawlatch are published to npm separately and keep their own version numbers. Callboard pins drawlatch **exactly** (`"@wolpertingerlabs/drawlatch": "<version>"`, no `^`) in both `package.json` and `backend/package.json`, and that pin must equal `packages/drawlatch/package.json`'s `version`; `npm run deps:check` (in CI and `prepublishOnly`) fails otherwise. That way each callboard release names the exact drawlatch it was built and tested against. (npm links the workspace for any range the workspace version satisfies; the exact pin is about lockstep, not linking.) To bump drawlatch:
 
 ```bash
 npm version <version> -w @wolpertingerlabs/drawlatch --no-git-tag-version
