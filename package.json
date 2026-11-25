@@ -83,6 +83,7 @@
     "lint:all": "eslint . --ext .js,.jsx,.ts,.tsx",
     "lint:all:fix": "eslint . --ext .js,.jsx,.ts,.tsx --fix",
     "lint:drawlatch": "npm -w @wolpertingerlabs/drawlatch run lint",
+    "format:drawlatch:check": "npm -w @wolpertingerlabs/drawlatch run format:check",
     "prettier": "git diff --name-only HEAD | xargs -r npx prettier --write --ignore-unknown && git diff --name-only --cached HEAD | xargs -r npx prettier --write --ignore-unknown",
     "test": "npm run test:computer-use && npm run test:drawlatch && vitest run",
     "test:coverage": "npm run test:computer-use && npm run test:drawlatch && vitest run --coverage",

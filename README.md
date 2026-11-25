@@ -391,6 +391,7 @@ The frontend runs at `http://localhost:3000` and the backend at `:3002`. Watch f
 | `npm run lint` / `lint:fix`                 | ESLint on **staged** files only (drawlatch's `src/` with its own config). A clean index lints nothing      |
 | `npm run lint:all` / `lint:all:fix`         | ESLint on the whole tree, except `packages/drawlatch`                                                      |
 | `npm run lint:drawlatch`                    | ESLint on drawlatch, with its own typed config                                                             |
+| `npm run format:drawlatch:check`            | Prettier check of drawlatch's `src/**/*.ts` and top-level config, with its own `.prettierrc`               |
 | `npm run prettier`                          | Format changed and staged files                                                                            |
 | `npm run swagger`                           | Regenerate `backend/swagger.json`, which is served at `GET /api/docs`                                      |
 | `npm run reload` / `reload:local`           | Build, pack and global-install callboard with the workspace drawlatch, then `callboard restart`            |
