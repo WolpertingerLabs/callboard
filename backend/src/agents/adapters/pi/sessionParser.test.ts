@@ -258,7 +258,7 @@ describe("parsePiSession", () => {
     expect(messages.map((m) => [m.role, m.content])).toEqual([
       ["user", "explain"],
       ["assistant", "Well, first"],
-      ["system", "Interrupted by user"],
+      ["system", "Interrupted"],
     ]);
     // The measurements stay on the reply, not on the marker.
     expect(messages[1].stopReason).toBe("aborted");

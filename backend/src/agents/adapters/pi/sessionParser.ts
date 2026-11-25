@@ -492,9 +492,11 @@ function projectMessage(message: PiAgentMessage, timestamp: string, generationKe
       // A stopped turn. Its `stopReason` rides on the last block, and a stop
       // that lands mid-tool or before any output leaves an entry with no
       // block at all, so the stop would vanish from the transcript. The same
-      // boundary marker the Claude Code and Codex parsers emit, for every
-      // aborted entry, empty or not.
-      if (message.stopReason === "aborted") out.push({ role: "system", type: "system", content: "Interrupted by user", subtype: "interrupted", timestamp });
+      // `interrupted` boundary the Claude Code and Codex parsers emit, for
+      // every aborted entry, empty or not — labelled neutrally, because pi
+      // records the same abort for a job cancel, a teardown or a run replaced
+      // by a newer message as for a user's Stop.
+      if (message.stopReason === "aborted") out.push({ role: "system", type: "system", content: "Interrupted", subtype: "interrupted", timestamp });
       return out;
     }
 
