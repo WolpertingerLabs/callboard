@@ -1,0 +1,67 @@
+{
+  "name": "Bluesky API (AT Protocol)",
+  "stability": "beta",
+  "category": "social-media",
+  "description": "Bluesky API via the AT Protocol — posts, feeds, profiles, notifications, social graph, and more. Auth is handled automatically via the BLUESKY_ACCESS_TOKEN environment variable (JWT Bearer token). Obtain a token by POSTing to com.atproto.server.createSession with your handle and an App Password. Tokens expire after ~2 hours — rotate externally using the refresh token. Both bsky.social (authenticated PDS) and public.api.bsky.app (public read-only API) are allowlisted. For self-hosted PDS instances, override with a custom connector. Includes a poll ingestor that fetches notifications — use poll_events to retrieve them.",
+  "docsUrl": "https://docs.bsky.app/",
+  "headers": {
+    "Authorization": "Bearer ${BLUESKY_ACCESS_TOKEN}"
+  },
+  "secrets": {
+    "BLUESKY_ACCESS_TOKEN": "${BLUESKY_ACCESS_TOKEN}"
+  },
+  "allowedEndpoints": [
+    "https://bsky.social/xrpc/**",
+    "https://public.api.bsky.app/xrpc/**"
+  ],
+  "ingestor": {
+    "type": "poll",
+    "poll": {
+      "url": "https://bsky.social/xrpc/app.bsky.notification.listNotifications?limit=25",
+      "intervalMs": 60000,
+      "method": "GET",
+      "responsePath": "notifications",
+      "deduplicateBy": "uri",
+      "eventType": "notification"
+    }
+  },
+  "testIngestor": {
+    "description": "Fetches notifications to verify Bluesky access token",
+    "strategy": "poll_once",
+    "request": {
+      "url": "https://bsky.social/xrpc/app.bsky.notification.listNotifications?limit=1",
+      "expectedStatus": [200]
+    }
+  },
+  "listenerConfig": {
+    "name": "Bluesky Poll Listener",
+    "description": "Polls Bluesky notifications at a configurable interval.",
+    "fields": [
+      {
+        "key": "intervalMs",
+        "label": "Poll Interval (ms)",
+        "description": "How often to check for new notifications, in milliseconds.",
+        "type": "number",
+        "default": 60000,
+        "min": 10000,
+        "max": 3600000,
+        "group": "Connection"
+      },
+      {
+        "key": "bufferSize",
+        "label": "Buffer Size",
+        "description": "Maximum number of events to keep in memory.",
+        "type": "number",
+        "default": 200,
+        "min": 10,
+        "max": 1000,
+        "group": "Advanced"
+      }
+    ]
+  },
+  "testConnection": {
+    "url": "https://bsky.social/xrpc/app.bsky.actor.getProfile?actor=did:self",
+    "description": "Fetches the authenticated user's profile",
+    "expectedStatus": [200, 400]
+  }
+}

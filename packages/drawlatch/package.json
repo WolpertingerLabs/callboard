@@ -1,0 +1,127 @@
+{
+  "name": "@wolpertingerlabs/drawlatch",
+  "version": "1.0.0-alpha.69",
+  "description": "Encrypted MCP proxy with mutual authentication. Local MCP server forwards requests through an encrypted channel to a remote secrets-holding server.",
+  "type": "module",
+  "workspaces": [
+    "frontend"
+  ],
+  "main": "./dist/mcp/server.js",
+  "types": "./dist/mcp/server.d.ts",
+  "bin": {
+    "drawlatch": "bin/drawlatch.js"
+  },
+  "files": [
+    "dist",
+    "!dist/**/*.test.*",
+    "!dist/**/*.js.map",
+    "!dist/**/*.d.ts.map",
+    "frontend/dist",
+    "!frontend/dist/**/*.map",
+    "bin",
+    "README.md",
+    "CONNECTIONS.md",
+    "INGESTORS.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/mcp/server.d.ts",
+      "import": "./dist/mcp/server.js",
+      "default": "./dist/mcp/server.js"
+    },
+    "./shared/crypto": {
+      "types": "./dist/shared/crypto/index.d.ts",
+      "import": "./dist/shared/crypto/index.js",
+      "default": "./dist/shared/crypto/index.js"
+    },
+    "./shared/protocol": {
+      "types": "./dist/shared/protocol/index.d.ts",
+      "import": "./dist/shared/protocol/index.js",
+      "default": "./dist/shared/protocol/index.js"
+    },
+    "./remote/server": {
+      "types": "./dist/remote/server.d.ts",
+      "import": "./dist/remote/server.js",
+      "default": "./dist/remote/server.js"
+    },
+    "./remote/caller-bootstrap": {
+      "types": "./dist/remote/caller-bootstrap.d.ts",
+      "import": "./dist/remote/caller-bootstrap.js",
+      "default": "./dist/remote/caller-bootstrap.js"
+    },
+    "./remote/admin-types": {
+      "types": "./dist/remote/admin-types.d.ts",
+      "import": "./dist/remote/admin-types.js",
+      "default": "./dist/remote/admin-types.js"
+    },
+    "./shared/migrations": {
+      "types": "./dist/shared/migrations.d.ts",
+      "import": "./dist/shared/migrations.js",
+      "default": "./dist/shared/migrations.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc && rm -rf dist/connections && cp -r src/connections dist/connections && npm run build:frontend",
+    "build:frontend": "npm -w frontend run build",
+    "prepare": "npm run build",
+    "dev:remote": "MCP_CONFIG_DIR=~/.drawlatch-dev tsx src/remote/server.ts",
+    "dev:mcp": "MCP_CONFIG_DIR=~/.drawlatch-dev tsx src/mcp/server.ts",
+    "generate-keys": "tsx src/cli/generate-keys.ts",
+    "start:remote": "NODE_ENV=production node dist/remote/server.js",
+    "start:mcp": "node dist/mcp/server.js",
+    "test": "vitest run",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "lint": "eslint src/",
+    "lint:fix": "eslint src/ --fix",
+    "format": "prettier --write 'src/**/*.ts' '*.{json,ts,js}'",
+    "format:check": "prettier --check 'src/**/*.ts' '*.{json,ts,js}'",
+    "prepublishOnly": "npm run lint && npm test",
+    "publish:dry-run": "npm publish --dry-run",
+    "release:gh": "node scripts/release-gh.mjs",
+    "reload": "npm install --include=dev && npm run build && VERSION=$(node -p \"require('./package.json').version\") && npm pack --pack-destination /tmp && npm install -g \"/tmp/wolpertingerlabs-drawlatch-$VERSION.tgz\" && rm \"/tmp/wolpertingerlabs-drawlatch-$VERSION.tgz\" && drawlatch restart && drawlatch status"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/WolpertingerLabs/drawlatch.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "mcp",
+    "security",
+    "proxy",
+    "encryption",
+    "secrets"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "cookie-parser": "^1.4.7",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.5.2",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.2",
+    "@types/cookie-parser": "^1.4.10",
+    "@types/express": "^5.0.6",
+    "@types/node": "^25.3.3",
+    "@vitest/coverage-v8": "^4.0.18",
+    "eslint": "^9.39.2",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-prettier": "^5.5.5",
+    "prettier": "^3.8.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.54.0",
+    "vitest": "^4.0.18"
+  }
+}

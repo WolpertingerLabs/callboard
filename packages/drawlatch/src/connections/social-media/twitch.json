@@ -1,0 +1,68 @@
+{
+  "name": "Twitch API",
+  "stability": "beta",
+  "category": "social-media",
+  "description": "Twitch Helix API — streams, users, channels, clips, videos, chat, and more. Auth requires both a Bearer token and Client-Id header, handled automatically via TWITCH_ACCESS_TOKEN and TWITCH_CLIENT_ID environment variables. Register an application at https://dev.twitch.tv/console/apps to obtain credentials. Includes a poll ingestor that fetches followed live streams — set TWITCH_USER_ID and use poll_events to retrieve them.",
+  "docsUrl": "https://dev.twitch.tv/docs/api/reference/",
+  "headers": {
+    "Authorization": "Bearer ${TWITCH_ACCESS_TOKEN}",
+    "Client-Id": "${TWITCH_CLIENT_ID}"
+  },
+  "secrets": {
+    "TWITCH_ACCESS_TOKEN": "${TWITCH_ACCESS_TOKEN}",
+    "TWITCH_CLIENT_ID": "${TWITCH_CLIENT_ID}",
+    "TWITCH_USER_ID": "${TWITCH_USER_ID}"
+  },
+  "allowedEndpoints": [
+    "https://api.twitch.tv/helix/**"
+  ],
+  "ingestor": {
+    "type": "poll",
+    "poll": {
+      "url": "https://api.twitch.tv/helix/streams/followed?user_id=${TWITCH_USER_ID}&first=20",
+      "intervalMs": 60000,
+      "method": "GET",
+      "responsePath": "data",
+      "deduplicateBy": "id",
+      "eventType": "stream_online"
+    }
+  },
+  "testIngestor": {
+    "description": "Fetches the authenticated Twitch user to verify API access",
+    "strategy": "poll_once",
+    "request": {
+      "url": "https://api.twitch.tv/helix/users",
+      "expectedStatus": [200]
+    }
+  },
+  "listenerConfig": {
+    "name": "Twitch Poll Listener",
+    "description": "Polls Twitch for followed live streams at a configurable interval.",
+    "fields": [
+      {
+        "key": "intervalMs",
+        "label": "Poll Interval (ms)",
+        "description": "How often to check for live streams, in milliseconds.",
+        "type": "number",
+        "default": 60000,
+        "min": 10000,
+        "max": 3600000,
+        "group": "Connection"
+      },
+      {
+        "key": "bufferSize",
+        "label": "Buffer Size",
+        "description": "Maximum number of events to keep in memory.",
+        "type": "number",
+        "default": 200,
+        "min": 10,
+        "max": 1000,
+        "group": "Advanced"
+      }
+    ]
+  },
+  "testConnection": {
+    "url": "https://api.twitch.tv/helix/users",
+    "description": "Fetches the authenticated Twitch user"
+  }
+}

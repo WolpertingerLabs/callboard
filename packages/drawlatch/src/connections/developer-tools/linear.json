@@ -1,0 +1,75 @@
+{
+  "name": "Linear API",
+  "stability": "beta",
+  "category": "developer-tools",
+  "description": "Linear GraphQL API — issues, projects, teams, cycles, and more. Auth is handled automatically via the LINEAR_API_KEY environment variable. All requests are GraphQL queries sent as POST to https://api.linear.app/graphql. Includes a poll ingestor that periodically fetches recently updated issues — use poll_events to retrieve them.",
+  "docsUrl": "https://developers.linear.app/docs/graphql/working-with-the-graphql-api",
+  "headers": {
+    "Authorization": "${LINEAR_API_KEY}",
+    "Content-Type": "application/json"
+  },
+  "secrets": {
+    "LINEAR_API_KEY": "${LINEAR_API_KEY}"
+  },
+  "allowedEndpoints": [
+    "https://api.linear.app/**"
+  ],
+  "ingestor": {
+    "type": "poll",
+    "poll": {
+      "url": "https://api.linear.app/graphql",
+      "intervalMs": 60000,
+      "method": "POST",
+      "body": {
+        "query": "{ issues(orderBy: updatedAt, first: 50) { nodes { id identifier title state { name } priority updatedAt createdAt assignee { name } } } }"
+      },
+      "responsePath": "data.issues.nodes",
+      "deduplicateBy": "id",
+      "eventType": "issue_updated"
+    }
+  },
+  "testIngestor": {
+    "description": "Executes a minimal GraphQL query to verify Linear API access",
+    "strategy": "poll_once",
+    "request": {
+      "method": "POST",
+      "url": "https://api.linear.app/graphql",
+      "body": {"query": "{ viewer { id } }"},
+      "expectedStatus": [200]
+    }
+  },
+  "listenerConfig": {
+    "name": "Linear Poll Listener",
+    "description": "Polls Linear for recently updated issues at a configurable interval.",
+    "fields": [
+      {
+        "key": "intervalMs",
+        "label": "Poll Interval (ms)",
+        "description": "How often to check for new events, in milliseconds.",
+        "type": "number",
+        "default": 60000,
+        "min": 10000,
+        "max": 3600000,
+        "group": "Connection"
+      },
+      {
+        "key": "bufferSize",
+        "label": "Buffer Size",
+        "description": "Maximum number of events to keep in memory.",
+        "type": "number",
+        "default": 200,
+        "min": 10,
+        "max": 1000,
+        "group": "Advanced"
+      }
+    ]
+  },
+  "testConnection": {
+    "method": "POST",
+    "url": "https://api.linear.app/graphql",
+    "body": {
+      "query": "{ viewer { id name } }"
+    },
+    "description": "Fetches the authenticated user via GraphQL"
+  }
+}

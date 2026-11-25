@@ -1,0 +1,463 @@
+import type {
+  AdminCaller,
+  AdminCallerConnection,
+  AdminConnectionStatus,
+  AdminConnectionTemplate,
+  AdminEvent,
+  AdminGoogleCatalog,
+  AdminGoogleSelection,
+  AdminGoogleSelectionConfig,
+  AdminHealth,
+  AdminIngestor,
+  AdminMeta,
+  AdminSecret,
+  AdminSession,
+  AdminVaultDecision,
+  AdminVaultExposure,
+  AdminVaultGrant,
+  AdminVaultItemChange,
+  AdminVaultItems,
+  AdminVaultRequest,
+  AdminVaultReveal,
+  AdminVaultRevoke,
+  AdminVaultStatus,
+  CallerBundleV1,
+  DaemonOfflineEnvelope,
+} from "drawlatch-admin-types";
+import { notifyAuthRequired } from "./auth";
+
+export type DaemonResponse<T> = T | DaemonOfflineEnvelope;
+
+/** Result of a mutating call — never an "offline" envelope; errors are explicit. */
+export type MutationResult<T> =
+  | { ok: true; data: T }
+  | { ok: false; error: string; status?: number };
+
+export function isDaemonDown<T>(
+  body: DaemonResponse<T>,
+): body is DaemonOfflineEnvelope {
+  return (
+    typeof body === "object" &&
+    body !== null &&
+    (body as DaemonOfflineEnvelope).daemon === "down"
+  );
+}
+
+async function getJson<T>(path: string): Promise<DaemonResponse<T>> {
+  const res = await fetch(path, {
+    credentials: "include",
+    headers: { accept: "application/json" },
+  });
+  if (res.status === 401) {
+    // Session expired (or missing) — boot the user back to Login.
+    notifyAuthRequired();
+    return { daemon: "down", error: "Not authenticated" };
+  }
+  if (!res.ok) {
+    // Show the daemon's own message when it sent one. Admin error messages
+    // name fields, limits and items, never secret or vault values.
+    let message: string | undefined;
+    try {
+      message = ((await res.json()) as { error?: unknown }).error as
+        | string
+        | undefined;
+    } catch {
+      // empty / non-JSON body
+    }
+    return {
+      daemon: "down",
+      error:
+        typeof message === "string" && message !== ""
+          ? `${message} (HTTP ${res.status})`
+          : `HTTP ${res.status}`,
+    };
+  }
+  return (await res.json()) as DaemonResponse<T>;
+}
+
+async function mutate<T>(
+  method: "POST" | "PUT" | "PATCH" | "DELETE",
+  path: string,
+  body?: unknown,
+  extraHeaders: Record<string, string> = {},
+): Promise<MutationResult<T>> {
+  let res: Response;
+  try {
+    res = await fetch(path, {
+      method,
+      credentials: "include",
+      // Vault responses are no-store on the daemon; don't let the browser
+      // reuse anything either.
+      cache: "no-store",
+      headers: {
+        accept: "application/json",
+        ...(body !== undefined ? { "content-type": "application/json" } : {}),
+        ...extraHeaders,
+      },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+  if (res.status === 401) {
+    notifyAuthRequired();
+    return { ok: false, error: "Not authenticated" };
+  }
+  let parsed: unknown = null;
+  try {
+    parsed = await res.json();
+  } catch {
+    // empty / non-JSON body
+  }
+  if (!res.ok) {
+    const error =
+      (parsed as { error?: string } | null)?.error ?? `HTTP ${res.status}`;
+    return { ok: false, error, status: res.status };
+  }
+  return { ok: true, data: parsed as T };
+}
+
+const enc = encodeURIComponent;
+
+/** Fired after a grant, deny or revoke, so the nav badge refreshes at once. */
+export const VAULT_REQUESTS_CHANGED = "drawlatch:vault-requests-changed";
+export function notifyVaultRequestsChanged(): void {
+  window.dispatchEvent(new Event(VAULT_REQUESTS_CHANGED));
+}
+
+export const api = {
+  // ── Reads ────────────────────────────────────────────────────────────
+  meta: () => getJson<AdminMeta>("/api/admin/meta"),
+  health: () => getJson<AdminHealth>("/api/admin/health"),
+  secrets: () => getJson<AdminSecret[]>("/api/admin/secrets"),
+  connections: () =>
+    getJson<AdminConnectionTemplate[]>("/api/admin/connections"),
+  callers: () => getJson<AdminCaller[]>("/api/admin/callers"),
+  callerConnections: (alias: string) =>
+    getJson<AdminCallerConnection[]>(
+      `/api/admin/callers/${enc(alias)}/connections`,
+    ),
+  connectionStatus: (alias: string) =>
+    getJson<AdminConnectionStatus[]>(
+      `/api/admin/callers/${enc(alias)}/connection-status`,
+    ),
+  ingestors: () => getJson<AdminIngestor[]>("/api/admin/ingestors"),
+  callerIngestors: (alias: string) =>
+    getJson<AdminIngestor[]>(`/api/admin/callers/${enc(alias)}/ingestors`),
+  callerEvents: (alias: string, afterId = -1) =>
+    getJson<AdminEvent[]>(
+      `/api/admin/callers/${enc(alias)}/events?after_id=${afterId}`,
+    ),
+  sessions: () => getJson<AdminSession[]>("/api/admin/sessions"),
+
+  // ── Vault (items) ─────────────────────────────────────────────────────
+  // Only vaultReveal ever returns values. Its result belongs in the calling
+  // component's state and nowhere else (no shared cache, no context).
+  vaultStatus: () => getJson<AdminVaultStatus>("/api/admin/vault/status"),
+  vaultItems: (alias: string) =>
+    getJson<AdminVaultItems>(`/api/admin/callers/${enc(alias)}/vault/items`),
+  vaultCreate: (alias: string, body: VaultItemInput) =>
+    mutate<AdminVaultItemChange>(
+      "POST",
+      `/api/admin/callers/${enc(alias)}/vault/items`,
+      body,
+    ),
+  /** `revision` is sent as If-Match: a stale edit fails with 409. */
+  vaultUpdate: (
+    alias: string,
+    name: string,
+    body: VaultItemPatch,
+    revision?: number,
+  ) =>
+    mutate<AdminVaultItemChange>(
+      "PATCH",
+      `/api/admin/callers/${enc(alias)}/vault/items/${enc(name)}`,
+      body,
+      revision !== undefined ? { "if-match": String(revision) } : {},
+    ),
+  vaultDelete: (alias: string, name: string, revision?: number) =>
+    mutate<{ deleted: string; revokedGrants: number; withdrawnRequests: number }>(
+      "DELETE",
+      `/api/admin/callers/${enc(alias)}/vault/items/${enc(name)}`,
+      undefined,
+      revision !== undefined ? { "if-match": String(revision) } : {},
+    ),
+  vaultReveal: (alias: string, name: string) =>
+    mutate<AdminVaultReveal>(
+      "POST",
+      `/api/admin/callers/${enc(alias)}/vault/items/${enc(name)}/reveal`,
+      {},
+    ),
+
+  // ── Vault (access requests and grants) ────────────────────────────────
+  // Grant, deny and revoke exist only on the admin API: no agent tool can.
+  vaultRequests: () => getJson<AdminVaultRequest[]>("/api/admin/vault/requests"),
+  vaultGrant: (id: string, mode: AdminVaultExposure) =>
+    mutate<AdminVaultDecision>(
+      "POST",
+      `/api/admin/vault/requests/${enc(id)}/grant`,
+      { mode },
+    ),
+  vaultDeny: (id: string, note?: string) =>
+    mutate<AdminVaultDecision>(
+      "POST",
+      `/api/admin/vault/requests/${enc(id)}/deny`,
+      note ? { note } : {},
+    ),
+  vaultGrants: () => getJson<AdminVaultGrant[]>("/api/admin/vault/grants"),
+  vaultRevoke: (id: string) =>
+    mutate<AdminVaultRevoke>("DELETE", `/api/admin/vault/grants/${enc(id)}`),
+
+  // ── Caller create / delete (item E) ───────────────────────────────────
+  createCaller: (alias: string, name?: string) =>
+    mutate<{ alias: string; name: string; fingerprint: string }>(
+      "POST",
+      "/api/admin/callers",
+      { alias, ...(name ? { name } : {}) },
+    ),
+  deleteCaller: (alias: string) =>
+    mutate<{ deleted: string }>("DELETE", `/api/admin/callers/${enc(alias)}`),
+
+  // ── Credential issuance (caller credential bundle) ────────────────────
+  // Returns the bundle ONCE (it contains the caller PRIVATE key). Re-issuing
+  // mints a fresh keypair and invalidates the prior credential.
+  issueCaller: (
+    alias: string,
+    body: {
+      connections?: string[];
+      endpointUrl?: string;
+      passphrase?: string;
+      name?: string;
+    },
+  ) =>
+    mutate<CallerBundleV1>(
+      "POST",
+      `/api/admin/callers/${enc(alias)}/issue`,
+      body,
+    ),
+
+  // ── Tunnel (cloudflared) config-only toggle ───────────────────────────
+  // Persists `config.tunnel` to remote.config.json. The daemon reads this at
+  // boot, so a restart is required for the change to take effect.
+  setTunnel: (enabled: boolean) =>
+    mutate<{ tunnel: boolean }>("PUT", "/api/admin/tunnel", { enabled }),
+
+  // Whether the caller's agent may enable connections / set secrets for itself.
+  setCallerSelfManage: (alias: string, enabled: boolean) =>
+    mutate<{ alias: string; selfManage: boolean }>(
+      "PUT",
+      `/api/admin/callers/${enc(alias)}/self-manage`,
+      { enabled },
+    ),
+
+  // ── Google selection (callers.<alias>.google) ─────────────────────────
+  // Admin-only config: these routes write it directly, never through a tool.
+  googleCatalog: () => getJson<AdminGoogleCatalog>("/api/admin/google/catalog"),
+  googleSelection: (alias: string) =>
+    getJson<AdminGoogleSelection>(`/api/admin/callers/${enc(alias)}/google`),
+  setGoogleSelection: (alias: string, selection: AdminGoogleSelectionConfig) =>
+    mutate<AdminGoogleSelection>(
+      "PUT",
+      `/api/admin/callers/${enc(alias)}/google`,
+      selection,
+    ),
+  deleteGoogleSelection: (alias: string) =>
+    mutate<AdminGoogleSelection>(
+      "DELETE",
+      `/api/admin/callers/${enc(alias)}/google`,
+    ),
+
+  // ── Connection enable / secrets / test ────────────────────────────────
+  setConnectionEnabled: (
+    alias: string,
+    connection: string,
+    enabled: boolean,
+  ) =>
+    mutate<{ success: boolean; connection: string; enabled: boolean }>(
+      "POST",
+      `/api/admin/callers/${enc(alias)}/connections/${enc(connection)}`,
+      { enabled },
+    ),
+  setSecrets: (
+    alias: string,
+    connection: string,
+    secrets: Record<string, string>,
+  ) =>
+    mutate<{ success: boolean; secretsSet: Record<string, boolean> }>(
+      "PUT",
+      `/api/admin/callers/${enc(alias)}/connections/${enc(connection)}/secrets`,
+      { secrets },
+    ),
+  testConnection: (alias: string, connection: string) =>
+    mutate<Record<string, unknown>>(
+      "POST",
+      `/api/admin/callers/${enc(alias)}/connections/${enc(connection)}/test`,
+    ),
+  testIngestor: (alias: string, connection: string) =>
+    mutate<Record<string, unknown>>(
+      "POST",
+      `/api/admin/callers/${enc(alias)}/connections/${enc(connection)}/test-ingestor`,
+    ),
+
+  // ── Listener / ingestor control ───────────────────────────────────────
+  controlListener: (
+    alias: string,
+    connection: string,
+    action: "start" | "stop" | "restart",
+    instanceId?: string,
+  ) =>
+    mutate<Record<string, unknown>>(
+      "POST",
+      `/api/admin/callers/${enc(alias)}/connections/${enc(connection)}/listener/control`,
+      { action, ...(instanceId ? { instance_id: instanceId } : {}) },
+    ),
+  listenerConfigs: (alias: string) =>
+    getJson<ListenerConfigEntry[]>(
+      `/api/admin/callers/${enc(alias)}/listener-configs`,
+    ),
+  getListenerParams: (alias: string, connection: string, instanceId?: string) =>
+    getJson<ListenerParamsResult>(
+      `/api/admin/callers/${enc(alias)}/connections/${enc(connection)}/listener/params${
+        instanceId ? `?instance_id=${enc(instanceId)}` : ""
+      }`,
+    ),
+  setListenerParams: (
+    alias: string,
+    connection: string,
+    params: Record<string, unknown>,
+    opts: { instanceId?: string; createInstance?: boolean } = {},
+  ) =>
+    mutate<Record<string, unknown>>(
+      "PUT",
+      `/api/admin/callers/${enc(alias)}/connections/${enc(connection)}/listener/params`,
+      {
+        params,
+        ...(opts.instanceId ? { instance_id: opts.instanceId } : {}),
+        ...(opts.createInstance ? { create_instance: true } : {}),
+      },
+    ),
+  listListenerInstances: (alias: string, connection: string) =>
+    getJson<ListenerInstancesResult>(
+      `/api/admin/callers/${enc(alias)}/connections/${enc(connection)}/listener/instances`,
+    ),
+  createListenerInstance: (
+    alias: string,
+    connection: string,
+    instanceId: string,
+    params: Record<string, unknown>,
+  ) =>
+    mutate<Record<string, unknown>>(
+      "POST",
+      `/api/admin/callers/${enc(alias)}/connections/${enc(connection)}/listener/instances`,
+      { instance_id: instanceId, params },
+    ),
+  deleteListenerInstance: (
+    alias: string,
+    connection: string,
+    instanceId: string,
+  ) =>
+    mutate<{ success: boolean }>(
+      "DELETE",
+      `/api/admin/callers/${enc(alias)}/connections/${enc(connection)}/listener/instances/${enc(instanceId)}`,
+    ),
+  resolveListenerOptions: (
+    alias: string,
+    connection: string,
+    paramKey: string,
+  ) =>
+    mutate<ResolveOptionsResult>(
+      "POST",
+      `/api/admin/callers/${enc(alias)}/connections/${enc(connection)}/listener/resolve-options`,
+      { paramKey },
+    ),
+};
+
+// ── Vault request bodies ────────────────────────────────────────────────
+
+export interface VaultItemInput {
+  name: string;
+  kind: "password" | "token" | "note" | "key-value";
+  values: Record<string, string>;
+  exposure?: "inject" | "reveal";
+  notes?: string;
+  tags?: string[];
+  metadata?: Record<string, string>;
+  connections?: string[];
+}
+
+/** `connections: null` removes the binding; `notes: null` clears notes. */
+export interface VaultItemPatch {
+  values?: Record<string, string>;
+  rename?: string;
+  exposure?: "inject" | "reveal";
+  notes?: string | null;
+  tags?: string[];
+  metadata?: Record<string, string>;
+  connections?: string[] | null;
+}
+
+// ── Listener-config response shapes (mirror tool-dispatch return shapes) ──
+
+/** A single configurable field for a listener (mirrors ListenerConfigField). */
+export interface ListenerField {
+  key: string;
+  label: string;
+  description?: string;
+  required?: boolean;
+  type:
+    | "text"
+    | "number"
+    | "boolean"
+    | "select"
+    | "multiselect"
+    | "secret"
+    | "text[]";
+  default?: string | number | boolean | string[];
+  options?: { value: string | number | boolean; label: string; description?: string }[];
+  placeholder?: string;
+  min?: number;
+  max?: number;
+  pattern?: string;
+  dynamicOptions?: unknown;
+  instanceKey?: boolean;
+  group?: string;
+}
+
+export interface ListenerConfigEntry {
+  connection?: string;
+  name: string;
+  description?: string;
+  fields: ListenerField[];
+  ingestorType?: "websocket" | "webhook" | "poll";
+  supportsMultiInstance: boolean;
+  instanceKeyField?: string;
+}
+
+export interface ListenerParamsResult {
+  success: boolean;
+  connection: string;
+  instance_id?: string;
+  params: Record<string, unknown>;
+  defaults: Record<string, unknown>;
+  instances?: string[];
+  error?: string;
+}
+
+export interface ListenerInstancesResult {
+  success: boolean;
+  connection: string;
+  instances: {
+    instanceId: string;
+    disabled: boolean;
+    params: Record<string, unknown>;
+  }[];
+  error?: string;
+}
+
+export interface ResolveOptionsResult {
+  success: boolean;
+  connection?: string;
+  paramKey?: string;
+  options?: { value: string | number | boolean; label: string }[];
+  error?: string;
+}

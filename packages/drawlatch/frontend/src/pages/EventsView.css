@@ -1,0 +1,389 @@
+/* EventsView — logs / live event feed. Dark developer-dashboard aesthetic. */
+
+/* ── Header controls ──────────────────────────────────────────────────── */
+.dl-events-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.dl-events-caller-select {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.dl-events-caller-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #8b8b94;
+}
+
+/* A <select> sizes itself to its widest <option>, not to its container, so one
+ * caller with a long "name (alias)" made this hundreds of pixels wide at every
+ * viewport and panned the page sideways on a phone. Cap it and let the
+ * selected label ellipsize; the full name is still in the open dropdown.
+ * (The separate overflow at 1024 is the instance id above, not this.) */
+.dl-events-caller-select select {
+  min-width: 0;
+  max-width: 220px;
+  text-overflow: ellipsis;
+  background: #16161a;
+  border: 1px solid #2a2a30;
+  border-radius: 6px;
+  color: #e6e6ea;
+  font-size: 13px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.dl-events-caller-select select:focus {
+  outline: none;
+  border-color: #5b9dff;
+}
+
+.dl-events-caller-select select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.dl-events-refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #16161a;
+  border: 1px solid #2a2a30;
+  border-radius: 6px;
+  color: #e6e6ea;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
+}
+
+.dl-events-refresh:hover:not(:disabled) {
+  border-color: #5b9dff;
+}
+
+.dl-events-refresh:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.dl-events-spin {
+  animation: dl-events-spin 1s linear infinite;
+}
+
+@keyframes dl-events-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ── Ingestor status cards ────────────────────────────────────────────── */
+.dl-events-ingestors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.dl-events-ingestor-card {
+  flex: 1 1 220px;
+  min-width: 200px;
+  background: #16161a;
+  border: 1px solid #2a2a30;
+  border-radius: 10px;
+  padding: 12px 14px;
+  font-size: 12px;
+}
+
+.dl-events-ingestor-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.dl-events-ingestor-conn {
+  font-weight: 700;
+  font-size: 13px;
+  color: #e6e6ea;
+}
+
+.dl-events-ingestor-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  color: #8b8b94;
+  font-size: 11px;
+}
+
+.dl-events-ingestor-error {
+  margin-top: 6px;
+  color: #f85149;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dl-events-muted {
+  color: #8b8b94;
+}
+
+/* State dot colors */
+.dl-events-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.dl-events-dot-connected {
+  background: #3fb950;
+}
+.dl-events-dot-error {
+  background: #f85149;
+}
+.dl-events-dot-warn {
+  background: #d29922;
+}
+.dl-events-dot-stopped {
+  background: #8b8b94;
+}
+
+/* State pill text colors */
+.dl-events-state {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: #1f1f25;
+  font-weight: 600;
+}
+.dl-events-state-connected {
+  color: #3fb950;
+}
+.dl-events-state-error {
+  color: #f85149;
+}
+.dl-events-state-warn {
+  color: #d29922;
+}
+.dl-events-state-stopped {
+  color: #8b8b94;
+}
+
+/* ── Source filter pills ──────────────────────────────────────────────── */
+.dl-events-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.dl-events-pill {
+  padding: 5px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  background: #16161a;
+  border: 1px solid #2a2a30;
+  color: #e6e6ea;
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
+}
+
+.dl-events-pill:hover {
+  border-color: #5b9dff;
+}
+
+.dl-events-pill-active {
+  background: #5b9dff;
+  border-color: #5b9dff;
+  color: #0d0d10;
+}
+
+.dl-events-pill-active:hover {
+  border-color: #5b9dff;
+}
+
+/* ── Event feed ───────────────────────────────────────────────────────── */
+.dl-events-feed {
+  background: #16161a;
+  border: 1px solid #2a2a30;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.dl-events-row-wrap:not(:last-child) {
+  border-bottom: 1px solid #2a2a30;
+}
+
+.dl-events-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 11px 14px;
+  background: transparent;
+  border: none;
+  color: #e6e6ea;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.dl-events-row:hover {
+  background: #1c1c22;
+}
+
+.dl-events-chevron {
+  color: #8b8b94;
+  flex-shrink: 0;
+}
+
+.dl-events-source {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(91, 157, 255, 0.12);
+  color: #5b9dff;
+}
+
+/* A listener instance id is one unbreakable token and there is no length
+ * limit on it, so it has to be able to break rather than set the width of
+ * whatever holds it. `anywhere` (unlike `break-word`) also shrinks the
+ * min-content size, which is the part that was forcing the width. */
+.dl-events-instance {
+  flex-shrink: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: #1f1f25;
+  color: #8b8b94;
+}
+
+/* In the ingestor card head the id is the card's subject, so it must stay
+ * readable in full — let it shrink and wrap inside its own badge instead of
+ * being pinned at max-content. Not scoped to a breakpoint: a 56-character id
+ * measures 346px and overran the card at 320, 360, 768 and 1024 alike. */
+.dl-events-ingestor-head .dl-events-instance {
+  flex-shrink: 1;
+}
+
+.dl-events-type {
+  flex-shrink: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: #e6e6ea;
+}
+
+.dl-events-preview {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: #8b8b94;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dl-events-time {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: #8b8b94;
+}
+
+/* ── Expanded detail ──────────────────────────────────────────────────── */
+.dl-events-detail {
+  padding: 0 16px 14px 38px;
+  font-size: 12px;
+}
+
+.dl-events-detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-bottom: 8px;
+  color: #e6e6ea;
+}
+
+.dl-events-json {
+  background: #0f0f12;
+  border: 1px solid #2a2a30;
+  border-radius: 6px;
+  padding: 12px;
+  font-size: 11px;
+  margin: 0;
+  overflow: auto;
+  max-height: 320px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #c8c8d0;
+}
+
+.dl-events-empty-icon {
+  color: #8b8b94;
+  opacity: 0.5;
+  margin-bottom: 4px;
+}
+
+/* ── Mobile ───────────────────────────────────────────────────────────── */
+@media (max-width: 640px) {
+  .dl-events-preview {
+    display: none;
+  }
+
+  /* Same call as .dl-events-preview above: below 640 a collapsed row has no
+   * room for the instance id without squeezing the event type out. The
+   * expanded detail carries `instanceId:` (added alongside this rule) so the
+   * per-event attribution is one tap away rather than gone — with two
+   * instances of the same connection running, that is the only way to tell
+   * which produced an event. Scoped to the feed row; the same class labels
+   * the ingestor status card, which shows it unconditionally. */
+  .dl-events-row .dl-events-instance {
+    display: none;
+  }
+
+  .dl-events-detail {
+    padding-left: 16px;
+  }
+}
+
+@media (max-width: 768px) {
+  /* The event type was pinned at flex-shrink:0, so a long one set the width of
+   * the whole feed and scrolled the page sideways. Let it give way and
+   * ellipsize. */
+  .dl-events-type {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* Event ids and idempotency keys are unbreakable, and flex items default to
+   * min-width:auto, so one of them widened the detail panel the same way. */
+  .dl-events-detail-meta > span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  /* The other .dl-events-instance: in the ingestor card head it sits beside
+   * the connection name and the three together overrun a 320/360px screen.
+   * Wrap it onto its own line rather than shrink it — this is the one place
+   * the instance id is the card's subject, so it has to stay readable in
+   * full, and .dl-events-ingestor-meta below already wraps the same way. */
+  .dl-events-ingestor-head {
+    flex-wrap: wrap;
+  }
+}

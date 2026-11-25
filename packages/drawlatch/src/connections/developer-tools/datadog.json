@@ -1,0 +1,27 @@
+{
+  "name": "Datadog API",
+  "stability": "beta",
+  "category": "developer-tools",
+  "description": "Datadog monitoring & observability API — metrics, monitors, dashboards, events, logs search, incidents, SLOs, and more. Auth is handled automatically via the DATADOG_API_KEY and DATADOG_APP_KEY environment variables, injected as the DD-API-KEY and DD-APPLICATION-KEY headers. Both v1 and v2 endpoints are available under /api. Targets the US1 site (api.datadoghq.com) by default; other regional sites (us3, us5, eu, ap1) are also allowlisted.",
+  "docsUrl": "https://docs.datadoghq.com/api/latest/",
+  "headers": {
+    "DD-API-KEY": "${DATADOG_API_KEY}",
+    "DD-APPLICATION-KEY": "${DATADOG_APP_KEY}",
+    "Content-Type": "application/json"
+  },
+  "secrets": {
+    "DATADOG_API_KEY": "${DATADOG_API_KEY}",
+    "DATADOG_APP_KEY": "${DATADOG_APP_KEY}"
+  },
+  "allowedEndpoints": [
+    "https://api.datadoghq.com/**",
+    "https://api.us3.datadoghq.com/**",
+    "https://api.us5.datadoghq.com/**",
+    "https://api.datadoghq.eu/**",
+    "https://api.ap1.datadoghq.com/**"
+  ],
+  "testConnection": {
+    "url": "https://api.datadoghq.com/api/v1/validate",
+    "description": "Validates the Datadog API key against the US1 site"
+  }
+}

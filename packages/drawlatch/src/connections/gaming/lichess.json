@@ -1,0 +1,21 @@
+{
+  "name": "Lichess API",
+  "stability": "stable",
+  "category": "gaming",
+  "description": "Lichess Opening Explorer, Cloud Evaluation, and authenticated API — query master and rated game statistics by opening move sequence, get cached Stockfish engine evaluations by FEN position, and access authenticated endpoints (account info, game history, player-specific opening analysis, etc.). Set LICHESS_API_TOKEN to a personal access token for authenticated routes; public endpoints (Opening Explorer, Cloud Eval) work without it.",
+  "docsUrl": "https://lichess.org/api",
+  "headers": {
+    "Authorization": "Bearer ${LICHESS_API_TOKEN}"
+  },
+  "secrets": {
+    "LICHESS_API_TOKEN": "${LICHESS_API_TOKEN}"
+  },
+  "allowedEndpoints": [
+    "https://explorer.lichess.ovh/**",
+    "https://lichess.org/api/**"
+  ],
+  "testConnection": {
+    "url": "https://lichess.org/api/account",
+    "description": "Fetches the authenticated Lichess account"
+  }
+}

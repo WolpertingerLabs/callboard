@@ -1,0 +1,22 @@
+{
+  "name": "Vercel API",
+  "stability": "beta",
+  "category": "developer-tools",
+  "description": "Vercel REST API — projects, deployments, domains, DNS, environment variables, teams, logs, and more. Auth is handled automatically via the VERCEL_TOKEN environment variable. Requests act on your personal account by default; for team-owned resources, add ?teamId=<team id> (or ?slug=<team slug>) to the URL.",
+  "docsUrl": "https://vercel.com/docs/rest-api",
+  "openApiUrl": "https://openapi.vercel.sh/",
+  "headers": {
+    "Authorization": "Bearer ${VERCEL_TOKEN}",
+    "Content-Type": "application/json"
+  },
+  "secrets": {
+    "VERCEL_TOKEN": "${VERCEL_TOKEN}"
+  },
+  "allowedEndpoints": [
+    "https://api.vercel.com/**"
+  ],
+  "testConnection": {
+    "url": "https://api.vercel.com/v2/user",
+    "description": "Fetches the authenticated Vercel user"
+  }
+}

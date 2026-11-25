@@ -1,0 +1,26 @@
+{
+  "name": "Parallel API",
+  "stability": "beta",
+  "category": "web-search",
+  "description": "Parallel Web Systems API — web search and research built for agents. POST /v1/search takes an objective plus keyword queries and returns ranked pages with compressed markdown excerpts. Its `mode` defaults to `advanced` when omitted, which is the slowest and most expensive preset (~3s, ~$5/1k) — pass `turbo` explicitly (~250ms, ~$1/1k) unless you need the extra quality; `fast` and `basic` sit in between. POST /v1/extract (GA, not /v1beta) returns full or targeted page content for a list of URLs. The Task API (POST /v1/tasks/runs, then GET /v1/tasks/runs/{run_id} and /result) runs async research tasks returning structured JSON with citations — note that POST /v1/tasks/runs answers 202 Accepted, not 200, so treat 202 as success. Auth is handled automatically via the PARALLEL_API_KEY environment variable, injected as the x-api-key header. The optional `parallel-beta` header gates specific opt-in features and is never required: it is accepted on some GA paths (e.g. /v1/tasks/runs) as well as on the deprecated /v1beta/findall/* endpoints. Pass it per-request when a feature calls for it — see the Parallel note in CONNECTIONS.md.",
+  "docsUrl": "https://docs.parallel.ai/api-reference/search/search",
+  "headers": {
+    "x-api-key": "${PARALLEL_API_KEY}",
+    "Content-Type": "application/json"
+  },
+  "secrets": {
+    "PARALLEL_API_KEY": "${PARALLEL_API_KEY}"
+  },
+  "allowedEndpoints": ["https://api.parallel.ai/**"],
+  "requestTimeoutMs": 120000,
+  "testConnection": {
+    "method": "POST",
+    "url": "https://api.parallel.ai/v1/search",
+    "body": {
+      "search_queries": ["drawlatch connection test"],
+      "mode": "turbo",
+      "max_chars_total": 1000
+    },
+    "description": "Runs a minimal turbo-mode search to verify the Parallel API key"
+  }
+}

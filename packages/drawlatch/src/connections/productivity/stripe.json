@@ -1,0 +1,74 @@
+{
+  "name": "Stripe API",
+  "stability": "beta",
+  "category": "productivity",
+  "description": "Stripe payments API — customers, charges, payment intents, subscriptions, invoices, and more. Auth is handled automatically via the STRIPE_SECRET_KEY environment variable. Includes a webhook ingestor for real-time events (payment_intent.succeeded, invoice.paid, etc.) — set STRIPE_WEBHOOK_SECRET and use poll_events to retrieve them. Note: Stripe uses application/x-www-form-urlencoded for request bodies, not JSON.",
+  "docsUrl": "https://docs.stripe.com/api",
+  "openApiUrl": "https://raw.githubusercontent.com/stripe/openapi/master/openapi/spec3.json",
+  "headers": {
+    "Authorization": "Bearer ${STRIPE_SECRET_KEY}"
+  },
+  "secrets": {
+    "STRIPE_SECRET_KEY": "${STRIPE_SECRET_KEY}",
+    "STRIPE_WEBHOOK_SECRET": "${STRIPE_WEBHOOK_SECRET}"
+  },
+  "allowedEndpoints": [
+    "https://api.stripe.com/**"
+  ],
+  "ingestor": {
+    "type": "webhook",
+    "webhook": {
+      "path": "stripe",
+      "protocol": "stripe",
+      "signatureHeader": "Stripe-Signature",
+      "signatureSecret": "STRIPE_WEBHOOK_SECRET"
+    }
+  },
+  "testIngestor": {
+    "description": "Verifies that the Stripe webhook secret is configured",
+    "strategy": "webhook_verify",
+    "requireSecrets": ["STRIPE_WEBHOOK_SECRET"]
+  },
+  "listenerConfig": {
+    "name": "Stripe Webhook Listener",
+    "description": "Receives real-time events from Stripe via webhooks.",
+    "fields": [
+      {
+        "key": "eventFilter",
+        "label": "Event Types",
+        "description": "Which Stripe event types to capture. Leave empty for all.",
+        "type": "multiselect",
+        "default": [],
+        "options": [
+          {"value": "payment_intent.succeeded", "label": "Payment Succeeded"},
+          {"value": "payment_intent.payment_failed", "label": "Payment Failed"},
+          {"value": "charge.succeeded", "label": "Charge Succeeded"},
+          {"value": "charge.refunded", "label": "Charge Refunded"},
+          {"value": "invoice.paid", "label": "Invoice Paid"},
+          {"value": "invoice.payment_failed", "label": "Invoice Payment Failed"},
+          {"value": "customer.created", "label": "Customer Created"},
+          {"value": "customer.updated", "label": "Customer Updated"},
+          {"value": "subscription.created", "label": "Subscription Created"},
+          {"value": "subscription.updated", "label": "Subscription Updated"},
+          {"value": "subscription.deleted", "label": "Subscription Deleted"},
+          {"value": "checkout.session.completed", "label": "Checkout Completed"}
+        ],
+        "group": "Filtering"
+      },
+      {
+        "key": "bufferSize",
+        "label": "Buffer Size",
+        "description": "Maximum number of events to keep in memory.",
+        "type": "number",
+        "default": 200,
+        "min": 10,
+        "max": 1000,
+        "group": "Advanced"
+      }
+    ]
+  },
+  "testConnection": {
+    "url": "https://api.stripe.com/v1/balance",
+    "description": "Fetches the account balance (read-only)"
+  }
+}

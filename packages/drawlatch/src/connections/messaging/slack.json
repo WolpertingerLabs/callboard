@@ -1,0 +1,76 @@
+{
+  "name": "Slack API",
+  "stability": "stable",
+  "category": "messaging",
+  "description": "Slack Web API — messages, channels, users, reactions, files, and more. Auth is handled automatically via the SLACK_BOT_TOKEN environment variable. Real-time events via Socket Mode require SLACK_APP_TOKEN.",
+  "docsUrl": "https://docs.slack.dev/apis/web-api",
+  "openApiUrl": "https://raw.githubusercontent.com/slackapi/slack-api-specs/master/web-api/slack_web_openapi_v2.json",
+  "headers": {
+    "Authorization": "Bearer ${SLACK_BOT_TOKEN}"
+  },
+  "secrets": {
+    "SLACK_BOT_TOKEN": "${SLACK_BOT_TOKEN}",
+    "SLACK_APP_TOKEN": "${SLACK_APP_TOKEN}"
+  },
+  "withheldSecrets": ["SLACK_APP_TOKEN"],
+  "allowedEndpoints": [
+    "https://slack.com/api/**"
+  ],
+  "ingestor": {
+    "type": "websocket",
+    "websocket": {
+      "gatewayUrl": "https://slack.com/api/apps.connections.open",
+      "protocol": "slack"
+    }
+  },
+  "testIngestor": {
+    "description": "Verifies the Slack app token for Socket Mode",
+    "strategy": "http_request",
+    "request": {
+      "method": "POST",
+      "url": "https://slack.com/api/apps.connections.open",
+      "headers": {"Authorization": "Bearer ${SLACK_APP_TOKEN}"},
+      "expectedStatus": [200]
+    }
+  },
+  "listenerConfig": {
+    "name": "Slack Socket Mode Listener",
+    "description": "Real-time events from Slack via Socket Mode WebSocket.",
+    "fields": [
+      {
+        "key": "eventFilter",
+        "label": "Event Types",
+        "description": "Which Slack event types to capture. Leave empty for all.",
+        "type": "multiselect",
+        "default": [],
+        "options": [
+          {"value": "message", "label": "Message"},
+          {"value": "reaction_added", "label": "Reaction Added"},
+          {"value": "reaction_removed", "label": "Reaction Removed"},
+          {"value": "channel_created", "label": "Channel Created"},
+          {"value": "channel_archive", "label": "Channel Archived"},
+          {"value": "member_joined_channel", "label": "Member Joined Channel"},
+          {"value": "member_left_channel", "label": "Member Left Channel"},
+          {"value": "app_mention", "label": "App Mention"},
+          {"value": "file_shared", "label": "File Shared"}
+        ],
+        "group": "Filtering"
+      },
+      {
+        "key": "bufferSize",
+        "label": "Buffer Size",
+        "description": "Maximum number of events to keep in memory.",
+        "type": "number",
+        "default": 200,
+        "min": 10,
+        "max": 1000,
+        "group": "Advanced"
+      }
+    ]
+  },
+  "testConnection": {
+    "method": "POST",
+    "url": "https://slack.com/api/auth.test",
+    "description": "Verifies the Slack bot token via auth.test"
+  }
+}

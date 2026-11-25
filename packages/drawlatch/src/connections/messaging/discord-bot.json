@@ -1,0 +1,114 @@
+{
+  "name": "Discord Bot API",
+  "stability": "stable",
+  "category": "messaging",
+  "description": "Discord Bot API (v10) — guilds, channels, messages, users, roles, and more. Auth is handled automatically via the DISCORD_BOT_TOKEN environment variable. Uses the 'Bot' authorization prefix. For OAuth2 user-scoped access, use the 'discord-oauth' connection instead. Includes a Gateway ingestor for real-time events (messages, reactions, etc.) — use poll_events to retrieve them.",
+  "docsUrl": "https://discord.com/developers/docs/intro",
+  "openApiUrl": "https://raw.githubusercontent.com/discord/discord-api-spec/main/specs/openapi.json",
+  "headers": {
+    "Authorization": "Bot ${DISCORD_BOT_TOKEN}",
+    "Content-Type": "application/json"
+  },
+  "secrets": {
+    "DISCORD_BOT_TOKEN": "${DISCORD_BOT_TOKEN}"
+  },
+  "allowedEndpoints": [
+    "https://discord.com/api/v10/**"
+  ],
+  "ingestor": {
+    "type": "websocket",
+    "websocket": {
+      "gatewayUrl": "wss://gateway.discord.gg/?v=10&encoding=json",
+      "protocol": "discord",
+      "intents": 3276799
+    }
+  },
+  "testIngestor": {
+    "description": "Verifies the bot token has Gateway access",
+    "strategy": "websocket_auth",
+    "request": {
+      "url": "https://discord.com/api/v10/gateway/bot",
+      "description": "Checks bot token has gateway access"
+    }
+  },
+  "listenerConfig": {
+    "name": "Discord Gateway Listener",
+    "description": "Real-time events from Discord via the Gateway WebSocket.",
+    "fields": [
+      {
+        "key": "eventFilter",
+        "label": "Event Types",
+        "description": "Which Gateway event types to capture. Leave empty for all.",
+        "type": "multiselect",
+        "default": [],
+        "options": [
+          {"value": "MESSAGE_CREATE", "label": "Message Create"},
+          {"value": "MESSAGE_UPDATE", "label": "Message Update"},
+          {"value": "MESSAGE_DELETE", "label": "Message Delete"},
+          {"value": "MESSAGE_REACTION_ADD", "label": "Reaction Add"},
+          {"value": "MESSAGE_REACTION_REMOVE", "label": "Reaction Remove"},
+          {"value": "GUILD_MEMBER_ADD", "label": "Member Join"},
+          {"value": "GUILD_MEMBER_REMOVE", "label": "Member Leave"},
+          {"value": "CHANNEL_CREATE", "label": "Channel Create"},
+          {"value": "CHANNEL_UPDATE", "label": "Channel Update"},
+          {"value": "CHANNEL_DELETE", "label": "Channel Delete"},
+          {"value": "PRESENCE_UPDATE", "label": "Presence Update"},
+          {"value": "TYPING_START", "label": "Typing Start"},
+          {"value": "VOICE_STATE_UPDATE", "label": "Voice State Update"}
+        ],
+        "group": "Filtering"
+      },
+      {
+        "key": "guildIds",
+        "label": "Server (Guild) IDs",
+        "description": "Only receive events from these Discord servers. Leave empty for all.",
+        "type": "text[]",
+        "placeholder": "e.g., 123456789012345678",
+        "dynamicOptions": {
+          "url": "https://discord.com/api/v10/users/@me/guilds",
+          "labelField": "name",
+          "valueField": "id"
+        },
+        "group": "Filtering"
+      },
+      {
+        "key": "channelIds",
+        "label": "Channel IDs",
+        "description": "Only receive events from these channels. Leave empty for all.",
+        "type": "text[]",
+        "placeholder": "e.g., 123456789012345678",
+        "group": "Filtering"
+      },
+      {
+        "key": "userIds",
+        "label": "User IDs",
+        "description": "Only receive events from these users. Leave empty for all.",
+        "type": "text[]",
+        "placeholder": "e.g., 123456789012345678",
+        "group": "Filtering"
+      },
+      {
+        "key": "intents",
+        "label": "Gateway Intents",
+        "description": "Bitmask controlling which events the bot receives. See Discord docs for values.",
+        "type": "number",
+        "default": 3276799,
+        "group": "Advanced"
+      },
+      {
+        "key": "bufferSize",
+        "label": "Buffer Size",
+        "description": "Maximum number of events to keep in memory.",
+        "type": "number",
+        "default": 200,
+        "min": 10,
+        "max": 1000,
+        "group": "Advanced"
+      }
+    ]
+  },
+  "testConnection": {
+    "url": "https://discord.com/api/v10/users/@me",
+    "description": "Fetches the authenticated bot user"
+  }
+}

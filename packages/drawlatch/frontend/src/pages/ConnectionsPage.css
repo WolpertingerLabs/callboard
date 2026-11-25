@@ -1,0 +1,571 @@
+/* ── Connections page ─────────────────────────────────────────────────── */
+
+.dl-conn-controls {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+
+.dl-conn-muted-icon {
+  color: #8b8b94;
+  flex-shrink: 0;
+}
+
+/* ── Caller selector ── */
+.dl-conn-caller {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.dl-conn-caller-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 12px;
+  min-width: 150px;
+  border-radius: 8px;
+  border: 1px solid #2a2a30;
+  background: #16161a;
+  color: #e6e6ea;
+  font-size: 14px;
+  cursor: pointer;
+}
+.dl-conn-caller-btn:hover {
+  border-color: #3a3a42;
+}
+
+.dl-conn-caller-name {
+  flex: 1;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dl-conn-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+}
+
+/* An absolutely positioned shrink-to-fit box takes max(min-content, ...), and
+ * the caller alias inside is one unbreakable nowrap token, so a long one made
+ * the menu 404px and pushed it off a 320px screen. min-width:0 down the chain
+ * is not enough — the alias is a block, not a flex item, so its nowrap
+ * min-content still propagates. Cap the box against the viewport instead; the
+ * alias then ellipsizes as .dl-conn-caller-item-alias already asks it to.
+ * 24px is the .main-content-mobile gutter, and the menu's left edge sits on
+ * it. No effect at desktop widths, where the menu is far narrower. */
+.dl-conn-caller-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 240px;
+  max-width: calc(100vw - 24px);
+  z-index: 100;
+  background: #16161a;
+  border: 1px solid #2a2a30;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  overflow: hidden;
+  padding: 4px;
+}
+
+.dl-conn-caller-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.dl-conn-caller-item:hover {
+  background: #1b1b20;
+}
+.dl-conn-caller-item-active {
+  background: #1b1b20;
+}
+
+.dl-conn-caller-item-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+/* .dl-conn-caller-item-alias below already ellipsizes, but this wrapper had no
+ * rule at all, so its default min-width:auto floored it at the alias's
+ * min-content width — one unbreakable token. .dl-conn-caller-item-main can
+ * shrink, but that floor propagated through this element up to the absolutely
+ * positioned menu's shrink-to-fit width and pushed it past the screen. The
+ * ellipsis only gets a chance to apply once this can shrink. */
+.dl-conn-caller-item-text {
+  min-width: 0;
+}
+
+.dl-conn-check {
+  color: #5b9dff;
+  flex-shrink: 0;
+}
+
+.dl-conn-caller-item-text {
+  min-width: 0;
+}
+.dl-conn-caller-item-alias {
+  font-size: 13px;
+  color: #e6e6ea;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dl-conn-caller-item-active .dl-conn-caller-item-alias {
+  font-weight: 600;
+}
+.dl-conn-caller-item-count {
+  font-size: 11px;
+  color: #8b8b94;
+}
+
+.dl-conn-caller-divider {
+  height: 1px;
+  background: #2a2a30;
+  margin: 4px 0;
+}
+
+.dl-conn-caller-manage {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: transparent;
+  color: #5b9dff;
+  font-size: 12.5px;
+  text-decoration: none;
+}
+.dl-conn-caller-manage:hover {
+  background: #1b1b20;
+}
+
+/* ── Search ── */
+.dl-conn-search {
+  position: relative;
+  flex: 1;
+  min-width: 180px;
+}
+.dl-conn-search-icon {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #8b8b94;
+  pointer-events: none;
+}
+.dl-conn-search input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 12px 9px 36px;
+  border-radius: 8px;
+  border: 1px solid #2a2a30;
+  background: #16161a;
+  color: #e6e6ea;
+  font-size: 14px;
+  outline: none;
+}
+.dl-conn-search input:focus {
+  border-color: #5b9dff;
+}
+
+/* ── Stability filter ── */
+.dl-conn-stability {
+  display: flex;
+  flex-shrink: 0;
+  border: 1px solid #2a2a30;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.dl-conn-stability-btn {
+  padding: 8px 12px;
+  border: none;
+  border-right: 1px solid #2a2a30;
+  background: #16161a;
+  color: #8b8b94;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.dl-conn-stability-btn:last-child {
+  border-right: none;
+}
+.dl-conn-stability-btn:hover {
+  color: #e6e6ea;
+}
+.dl-conn-stability-active,
+.dl-conn-stability-active:hover {
+  background: #5b9dff;
+  color: #0f0f12;
+}
+
+/* ── Link button (empty state) ── */
+/* Sits mid-sentence, so it carries .dl-tap-compact: the <768px tap-target rule
+ * would otherwise make it a 44px-tall box and blow the line box of the
+ * paragraph around it apart. position:relative anchors that utility's
+ * pseudo-element. */
+.dl-conn-link-btn {
+  position: relative;
+  border: none;
+  background: none;
+  padding: 0;
+  color: #5b9dff;
+  font-size: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+/* ── Groups + grid ── */
+.dl-conn-group {
+  margin-bottom: 24px;
+}
+.dl-conn-group-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #8b8b94;
+  margin: 0 0 10px;
+}
+.dl-conn-grid {
+  display: grid;
+  /* min(360px, 100%), not a bare 360px: on a phone narrower than 384px the
+   * fixed track floor is wider than the column it sits in, so the cards would
+   * hang off the side and scroll the page sideways. */
+  grid-template-columns: repeat(auto-fill, minmax(min(360px, 100%), 1fr));
+  gap: 12px;
+}
+
+/* ── Card ── */
+.dl-conn-card {
+  background: #1b1b20;
+  border: 1px solid #2a2a30;
+  border-radius: 10px;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  transition: border-color 0.15s;
+}
+.dl-conn-card:hover {
+  border-color: #3a3a42;
+}
+.dl-conn-card-off {
+  opacity: 0.72;
+}
+
+.dl-conn-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.dl-conn-card-id {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+}
+.dl-conn-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  background: #16161a;
+  color: #8b8b94;
+}
+.dl-conn-icon-on {
+  background: rgba(91, 157, 255, 0.12);
+  color: #5b9dff;
+}
+.dl-conn-card-text {
+  min-width: 0;
+  flex: 1;
+}
+.dl-conn-card-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: #e6e6ea;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dl-conn-card-desc {
+  font-size: 11px;
+  color: #8b8b94;
+  margin: 1px 0 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Toggle ── */
+/* Carries .dl-tap-compact (index.css): the <768px tap-target rule would round
+ * this 40×22 pill into a 44×44 circle with the knob stranded in a corner.
+ * position:relative doubles as the anchor for that utility's hit area. */
+.dl-conn-toggle {
+  position: relative;
+  width: 40px;
+  height: 22px;
+  border-radius: 11px;
+  border: none;
+  background: #2a2a30;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.2s;
+}
+.dl-conn-toggle:disabled {
+  cursor: wait;
+}
+.dl-conn-toggle-on {
+  background: #5b9dff;
+}
+.dl-conn-toggle-knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #e6e6ea;
+  transition: left 0.2s;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+.dl-conn-toggle-on .dl-conn-toggle-knob {
+  left: 21px;
+}
+
+/* ── Badges ── */
+.dl-conn-badges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.dl-conn-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  padding: 3px 7px;
+  border-radius: 6px;
+  background: #16161a;
+  color: #8b8b94;
+}
+.dl-conn-badge-ingestor {
+  background: rgba(91, 157, 255, 0.1);
+  color: #5b9dff;
+  border: 1px solid rgba(91, 157, 255, 0.2);
+}
+
+.dl-conn-dot {
+  width: 6px;
+  height: 6px;
+}
+.dl-conn-dot-connected {
+  background: #3fb950;
+  box-shadow: 0 0 4px #3fb950;
+}
+.dl-conn-dot-error {
+  background: #f85149;
+}
+.dl-conn-dot-warn {
+  background: #d29922;
+}
+.dl-conn-dot-stopped {
+  background: #8b8b94;
+}
+.dl-conn-dot-count {
+  font-size: 9px;
+  color: #8b8b94;
+}
+
+/* secret status */
+.dl-conn-secret-none {
+  background: #16161a;
+  color: #8b8b94;
+}
+.dl-conn-secret-ready {
+  background: rgba(63, 185, 80, 0.12);
+  color: #3fb950;
+}
+.dl-conn-secret-partial {
+  background: rgba(210, 153, 34, 0.12);
+  color: #d29922;
+}
+.dl-conn-secret-missing {
+  background: #16161a;
+  color: #8b8b94;
+}
+
+.dl-conn-docs {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  color: #8b8b94;
+  text-decoration: none;
+  margin-left: auto;
+}
+.dl-conn-docs:hover {
+  color: #5b9dff;
+}
+
+/* ── Action buttons ── */
+.dl-conn-actions {
+  display: flex;
+  gap: 6px;
+}
+.dl-conn-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid #2a2a30;
+  background: #16161a;
+  color: #8b8b94;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+.dl-conn-btn:hover:not(:disabled) {
+  background: #22222a;
+  color: #e6e6ea;
+}
+.dl-conn-btn:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+.dl-conn-btn-primary {
+  flex: 1;
+  color: #e6e6ea;
+}
+
+/* ── Listener controls ── */
+.dl-conn-listener-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.dl-conn-mini {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 10px;
+  border-radius: 6px;
+  border: 1px solid #2a2a30;
+  background: #16161a;
+  color: #8b8b94;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.dl-conn-mini:hover:not(:disabled) {
+  background: #22222a;
+}
+.dl-conn-mini:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+.dl-conn-mini-start {
+  color: #3fb950;
+}
+.dl-conn-mini-stop {
+  color: #f85149;
+}
+.dl-conn-mini-accent {
+  color: #5b9dff;
+  border-color: rgba(91, 157, 255, 0.3);
+  background: rgba(91, 157, 255, 0.06);
+}
+.dl-conn-mini-accent:hover:not(:disabled) {
+  background: rgba(91, 157, 255, 0.14);
+}
+.dl-conn-spacer {
+  flex: 1;
+}
+
+/* ── Test result ── */
+.dl-conn-result {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+.dl-conn-result-ok {
+  background: rgba(63, 185, 80, 0.1);
+  color: #3fb950;
+}
+.dl-conn-result-err {
+  background: rgba(248, 81, 73, 0.1);
+  color: #f85149;
+}
+.dl-conn-result-icon {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.dl-conn-result-text {
+  min-width: 0;
+  flex: 1;
+}
+.dl-conn-result-label {
+  font-weight: 600;
+}
+.dl-conn-result-detail {
+  font-size: 11px;
+  opacity: 0.85;
+  margin-top: 2px;
+  word-break: break-word;
+}
+.dl-conn-result-close {
+  flex-shrink: 0;
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.6;
+  padding: 2px;
+}
+.dl-conn-result-close:hover {
+  opacity: 1;
+}
+
+/* ── Spinner ── */
+.dl-conn-spin {
+  animation: dl-conn-spin 1s linear infinite;
+}
+@keyframes dl-conn-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

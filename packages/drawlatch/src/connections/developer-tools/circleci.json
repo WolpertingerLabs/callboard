@@ -1,0 +1,23 @@
+{
+  "name": "CircleCI API",
+  "stability": "beta",
+  "category": "developer-tools",
+  "description": "CircleCI API — pipelines, workflows, jobs, projects, insights, contexts, and more. Auth is handled automatically via the CIRCLECI_TOKEN environment variable, injected as the Circle-Token header. Both v2 and the legacy v1.1 endpoints are available.",
+  "docsUrl": "https://circleci.com/docs/api/v2/",
+  "openApiUrl": "https://circleci.com/api/v2/openapi.json",
+  "headers": {
+    "Circle-Token": "${CIRCLECI_TOKEN}",
+    "Content-Type": "application/json"
+  },
+  "secrets": {
+    "CIRCLECI_TOKEN": "${CIRCLECI_TOKEN}"
+  },
+  "allowedEndpoints": [
+    "https://circleci.com/api/v2/**",
+    "https://circleci.com/api/v1.1/**"
+  ],
+  "testConnection": {
+    "url": "https://circleci.com/api/v2/me",
+    "description": "Fetches the authenticated CircleCI user"
+  }
+}

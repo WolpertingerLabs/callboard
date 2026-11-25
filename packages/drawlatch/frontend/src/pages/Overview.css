@@ -1,0 +1,194 @@
+/* Overview — tunnel toggle card.
+ *
+ * Generic .card / .card-grid / .card-sub styles live in index.css. This file
+ * only adds the bits unique to the tunnel card: the header row that holds
+ * the toggle switch, the switch itself, and the inline status/error rows.
+ */
+
+.dl-tunnel-card {
+  /* Grid items default to min-width:auto, so the long tunnel URL would widen
+   * the whole card grid (and with it the page) instead of wrapping. */
+  min-width: 0;
+}
+
+.dl-tunnel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.dl-tunnel-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* Wraps rather than truncates: the URL is the point of the card, and on a
+ * phone there is no hover/title fallback for an ellipsis. `anywhere` (unlike
+ * `break-word`) also shrinks the min-content size, so this flex item can
+ * actually narrow instead of forcing the card wider than the screen. */
+.dl-tunnel-url {
+  min-width: 0;
+  color: var(--accent, #5b9dff);
+  font-size: 13px;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+/* Inline, so the icon trails the last line of the URL instead of being parked
+ * at the far right of the card. */
+.dl-tunnel-url svg {
+  margin-left: 4px;
+  vertical-align: -2px;
+}
+
+.dl-tunnel-url:hover {
+  text-decoration: underline;
+}
+
+.dl-tunnel-hint {
+  line-height: 1.45;
+}
+
+/* The daemon's message quotes the same unbreakable config path as
+ * .page-subtitle, so it needs the same treatment — reachable whenever a
+ * tunnel toggle write fails. align-items:flex-start so the icon stays level
+ * with the first line once the text wraps. */
+.dl-tunnel-error {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(248, 81, 73, 0.35);
+  background: rgba(248, 81, 73, 0.08);
+  color: #f85149;
+  font-size: 12px;
+}
+
+/* ── Switch ──────────────────────────────────────────────────────────── */
+
+/* Carries .dl-tap-compact (index.css): the <768px tap-target rule would round
+ * this 40×22 pill into a 44×44 circle with the knob stranded in a corner.
+ * position:relative doubles as the anchor for that utility's hit area. */
+.dl-tunnel-switch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  width: 40px;
+  height: 22px;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid #2a2a30;
+  background: #0d0d0f;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.dl-tunnel-switch:hover:not(:disabled) {
+  border-color: #3a3a42;
+}
+
+.dl-tunnel-switch.is-on {
+  background: #5b9dff;
+  border-color: #5b9dff;
+}
+
+.dl-tunnel-switch.is-on:hover:not(:disabled) {
+  background: #74acff;
+  border-color: #74acff;
+}
+
+.dl-tunnel-switch:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.dl-tunnel-switch-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #c5c5cd;
+  transition: left 0.15s, background 0.15s;
+}
+
+.dl-tunnel-switch.is-on .dl-tunnel-switch-knob {
+  left: 20px;
+  background: #0d0d0f;
+}
+
+.dl-tunnel-switch-spin {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  color: #c5c5cd;
+  animation: dl-tunnel-spin 0.9s linear infinite;
+}
+
+@keyframes dl-tunnel-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ── Reuse-fallback styles (added here so we don't have to touch index.css) ── */
+
+.status-dot.warn {
+  background: var(--warning, #d29922);
+}
+
+.status-dot.stopped {
+  background: var(--text-muted, #8b8b94);
+}
+
+.banner.banner-warn {
+  background: rgba(210, 153, 34, 0.1);
+  border: 1px solid rgba(210, 153, 34, 0.35);
+  color: var(--text, #e6e6ea);
+}
+
+.dl-tunnel-restart-banner {
+  grid-column: span 2;
+  margin-bottom: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.dl-tunnel-restart-banner code {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  padding: 1px 5px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 4px;
+}
+
+/* ── Mobile ──────────────────────────────────────────────────────────── */
+
+/* Last in the file so both rules win on order over the ones they override. */
+@media (max-width: 768px) {
+  /* The switch's hit area reaches 22px below its centre but the URL link
+   * underneath starts 6px below the header row, so a strip of the link would
+   * toggle the tunnel instead of opening it. Push the rows apart rather than
+   * clip the target. Qualified with .card because index.css is bundled after
+   * this file and its `.card { gap: 6px }` would otherwise win on order. */
+  .card.dl-tunnel-card {
+    gap: 16px;
+  }
+
+  /* index.css collapses .card.span-2 to one track here; this banner spans the
+   * grid the same way but was missed, so whenever it renders (tunnel enabled
+   * without a URL yet, or the reverse) it held the Overview grid at two
+   * columns of ~116px and ~165px on a phone and broke the cards' text
+   * mid-word. */
+  .dl-tunnel-restart-banner {
+    grid-column: span 1;
+  }
+}

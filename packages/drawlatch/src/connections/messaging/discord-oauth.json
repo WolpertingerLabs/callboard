@@ -1,0 +1,22 @@
+{
+  "name": "Discord OAuth2 API",
+  "stability": "dev",
+  "category": "messaging",
+  "description": "Discord OAuth2 API (v10) — user identity, guilds, connections, and other user-scoped data. Auth is handled automatically via the DISCORD_OAUTH_TOKEN environment variable (OAuth2 Bearer access token). Access is limited to the scopes the user authorized. For full bot access, use the 'discord-bot' connection instead.",
+  "docsUrl": "https://discord.com/developers/docs/topics/oauth2",
+  "openApiUrl": "https://raw.githubusercontent.com/discord/discord-api-spec/main/specs/openapi.json",
+  "headers": {
+    "Authorization": "Bearer ${DISCORD_OAUTH_TOKEN}",
+    "Content-Type": "application/json"
+  },
+  "secrets": {
+    "DISCORD_OAUTH_TOKEN": "${DISCORD_OAUTH_TOKEN}"
+  },
+  "allowedEndpoints": [
+    "https://discord.com/api/v10/**"
+  ],
+  "testConnection": {
+    "url": "https://discord.com/api/v10/users/@me",
+    "description": "Fetches the authenticated OAuth2 user"
+  }
+}

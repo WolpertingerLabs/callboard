@@ -1,0 +1,5 @@
+{
+  "remoteUrl": "http://127.0.0.1:9999",
+  "connectTimeout": 10000,
+  "requestTimeout": 185000
+}

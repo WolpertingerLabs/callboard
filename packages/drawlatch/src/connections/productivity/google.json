@@ -1,0 +1,15 @@
+{
+  "name": "Google",
+  "stability": "beta",
+  "category": "productivity",
+  "description": "Gmail, Calendar, Drive, Sheets, Docs and Slides through one credential. Each caller's services and levels are set by the operator (callers.<alias>.google); drawlatch mints tokens for exactly those scopes. See CONNECTIONS.md \"Google\".",
+  "docsUrl": "https://developers.google.com/workspace",
+  "secrets": {
+    "GOOGLE_OAUTH_CLIENT_ID": "${GOOGLE_OAUTH_CLIENT_ID}",
+    "GOOGLE_OAUTH_CLIENT_SECRET": "${GOOGLE_OAUTH_CLIENT_SECRET}",
+    "GOOGLE_OAUTH_REFRESH_TOKEN": "${GOOGLE_OAUTH_REFRESH_TOKEN}",
+    "GOOGLE_SERVICE_ACCOUNT_KEY": "${GOOGLE_SERVICE_ACCOUNT_KEY}"
+  },
+  "composed": "google",
+  "allowedEndpoints": []
+}

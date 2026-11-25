@@ -1,0 +1,21 @@
+{
+  "name": "Firecrawl API",
+  "stability": "beta",
+  "category": "web-search",
+  "description": "Firecrawl v2 API — turn any URL or search query into clean, LLM-ready markdown. POST /v2/scrape fetches a single page, POST /v2/search runs a web search and returns full page content, POST /v2/map lists a site's URLs, POST /v2/crawl and POST /v2/batch/scrape start async jobs polled via GET /v2/crawl/{id} and GET /v2/batch/scrape/{id}, and POST /v2/extract pulls structured data from pages using a prompt or JSON schema. Also available: POST /v2/agent (autonomous browsing tasks), POST /v2/parse (parse a document such as a PDF into markdown), and /v2/monitor/* (scheduled recurring crawls). Firecrawl's own per-request `timeout` field maxes out at 300000ms, but drawlatch caps this connection at 120000ms — comfortably above Firecrawl's own 30s scrape and 60s search defaults, and enough for realistic synchronous work. Use the async crawl/batch job pattern for anything longer rather than holding a socket open. Screenshots are returned as public Supabase URLs on a different host, which this connection's allowlist deliberately rejects: fetch them out-of-band rather than through the proxy, so the API key is never sent to them. Auth is handled automatically via the FIRECRAWL_API_KEY environment variable as a Bearer token.",
+  "docsUrl": "https://docs.firecrawl.dev/api-reference/introduction",
+  "headers": {
+    "Authorization": "Bearer ${FIRECRAWL_API_KEY}",
+    "Content-Type": "application/json"
+  },
+  "secrets": {
+    "FIRECRAWL_API_KEY": "${FIRECRAWL_API_KEY}"
+  },
+  "allowedEndpoints": ["https://api.firecrawl.dev/**"],
+  "requestTimeoutMs": 120000,
+  "testConnection": {
+    "method": "GET",
+    "url": "https://api.firecrawl.dev/v2/team/credit-usage",
+    "description": "Fetches remaining team credits — an authenticated read-only call that consumes no credits"
+  }
+}

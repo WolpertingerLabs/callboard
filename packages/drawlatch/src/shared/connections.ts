@@ -1,0 +1,649 @@
+/**
+ * Connection template loading.
+ *
+ * Connections are pre-built Route templates (JSON files) that ship with
+ * the package in the connections/ directory, organized into category
+ * subdirectories (ai/, messaging/, social-media/, etc.).
+ *
+ * At runtime, templates are loaded from disk relative to this module's
+ * location, so they work from both src/ (dev via tsx) and dist/ (production).
+ */
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { isEndpointAllowed, isExclusionPattern } from '../remote/url-policy.js';
+import {
+  AWS_SIGV4_REQUIRED_SECRETS,
+  MAX_OAUTH2_REFRESH_SKEW_MS,
+  type CallerConfig,
+  type ConnectionCategory,
+  type GoogleAuthMode,
+  type GoogleServiceId,
+  type OAuth2Config,
+  type OAuth2Grant,
+  type Route,
+} from './config.js';
+import { loadGoogleCatalog } from './google.js';
+
+/** Metadata about a built-in connection template — used by UIs to render
+ *  connection cards, form fields, and badges without parsing raw JSON. */
+export interface ConnectionTemplateInfo {
+  /** Template alias / filename (e.g., "github", "slack"). */
+  alias: string;
+  /** Human-readable name (e.g., "GitHub API"). */
+  name: string;
+  /** Short description of the connection's purpose. */
+  description?: string;
+  /** Link to API documentation. */
+  docsUrl?: string;
+  /** URL to an OpenAPI / Swagger spec. */
+  openApiUrl?: string;
+  /** Stability level: "stable", "beta", or "dev". */
+  stability: 'stable' | 'beta' | 'dev';
+  /** Category grouping (e.g., "ai", "messaging", "social-media"). */
+  category: ConnectionCategory;
+  /** Secret names every request authenticates with — placeholders in route
+   *  headers, plus AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY on an `awsSigV4`
+   *  route and the `secretRefs` of an `oauth2` route — so they must always be
+   *  configured. */
+  requiredSecrets: string[];
+  /** Secret names defined in the template but not required for auth.
+   *  Used by ingestors, URL placeholders, body templates, AWS_SESSION_TOKEN, etc. */
+  optionalSecrets: string[];
+  /** Whether this connection has an ingestor for real-time events. */
+  hasIngestor: boolean;
+  /** Ingestor type, when present. */
+  ingestorType?: 'websocket' | 'webhook' | 'poll';
+  /** Whether this connection has a pre-configured test request. */
+  hasTestConnection: boolean;
+  /** Whether this connection's ingestor has a pre-configured test. */
+  hasTestIngestor: boolean;
+  /** Whether this connection has a listener configuration schema. */
+  hasListenerConfig: boolean;
+  /** Whether this connection's listener supports multiple concurrent instances
+   *  (e.g., watching multiple Trello boards or Reddit subreddits simultaneously). */
+  supportsMultiInstance: boolean;
+  /** Allowlisted URL patterns (glob). */
+  allowedEndpoints: string[];
+  /** How the connection authenticates, when drawlatch mints the credential
+   *  itself. Names only: no secret values. */
+  auth?: { type: 'oauth2'; grant: OAuth2Grant; scopes: string[]; subjectRequired?: boolean };
+  /** Set on a base template whose route is composed per caller (`google`:
+   *  from `callers.<alias>.google`). It has no fixed `auth` or allowlist. */
+  composed?: 'google';
+}
+
+/** Directory containing connection template JSON files. */
+const CONNECTIONS_DIR = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+  'connections',
+);
+
+// ── Lazy-cached alias→filepath index ──────────────────────────────────────
+
+/** Cached alias → absolute filepath index. Built lazily on first access.
+ *  Templates live in category subdirectories (connections/ai/anthropic.json). */
+let connectionIndex: Map<string, string> | null = null;
+
+/** Build the alias→filepath index by scanning CONNECTIONS_DIR.
+ *  Templates live one level deep, in category subdirectories. The alias is
+ *  always the filename without .json. */
+function getConnectionIndex(): Map<string, string> {
+  if (connectionIndex) return connectionIndex;
+
+  connectionIndex = new Map();
+  if (!fs.existsSync(CONNECTIONS_DIR)) return connectionIndex;
+
+  const entries = fs.readdirSync(CONNECTIONS_DIR, { withFileTypes: true });
+
+  for (const entry of entries) {
+    if (entry.isDirectory()) {
+      // Category subdirectory — scan one level deep
+      const subdir = path.join(CONNECTIONS_DIR, entry.name);
+      const subEntries = fs.readdirSync(subdir, 'utf-8');
+      for (const subFile of subEntries) {
+        if (subFile.endsWith('.json')) {
+          const alias = subFile.replace(/\.json$/, '');
+          connectionIndex.set(alias, path.join(subdir, subFile));
+        }
+      }
+    }
+  }
+
+  return connectionIndex;
+}
+
+/** Invalidate the cached index. Exported for testing only. */
+export function _resetConnectionIndex(): void {
+  connectionIndex = null;
+}
+
+// ── Public API ────────────────────────────────────────────────────────────
+
+/**
+ * Load a single connection template by name.
+ *
+ * @param name — Connection name (e.g., "github", "stripe", "trello").
+ *               Must match the filename without the .json extension.
+ * @returns The parsed Route object from the template.
+ * @throws If the template file does not exist or contains invalid JSON.
+ */
+export function loadConnection(name: string): Route {
+  const index = getConnectionIndex();
+  const filePath = index.get(name);
+
+  if (!filePath) {
+    const removed = removedConnectionMessage(name);
+    if (removed) throw new Error(removed);
+    const available = listAvailableConnections();
+    throw new Error(
+      `Unknown connection "${name}". Available connections: ${available.join(', ') || '(none)'}`,
+    );
+  }
+
+  const raw = fs.readFileSync(filePath, 'utf-8');
+  const route = JSON.parse(raw) as Route;
+  // Hand-written JSON: the declared type is not a guarantee.
+  const composed: unknown = route.composed;
+  if (composed !== undefined && (composed !== 'google' || name !== 'google')) {
+    throw new Error(
+      `Connection template "${name}": composed is only used by the "google" template`,
+    );
+  }
+  if (route.oauth2 !== undefined) {
+    try {
+      validateOAuth2Route(route, 'template');
+    } catch (err) {
+      throw new Error(`Connection template "${name}": ${(err as Error).message}`);
+    }
+  }
+  return route;
+}
+
+// ── Removed templates ─────────────────────────────────────────────────────
+
+/** A removed per-scope Google template, and the `google` selection that replaces it. */
+export interface RemovedConnection {
+  service: GoogleServiceId;
+  level: string;
+  auth: GoogleAuthMode;
+}
+
+/**
+ * The per-scope Google templates replaced by the one `google` connection
+ * (plans/google-unified.md). Kept so a stale ID in remote.config.json says
+ * what replaces it instead of "Unknown connection".
+ */
+export const REMOVED_CONNECTIONS: Readonly<Record<string, RemovedConnection>> = Object.freeze({
+  'google-gmail-metadata': { service: 'gmail', level: 'metadata', auth: 'user' },
+  'google-gmail-readonly': { service: 'gmail', level: 'read', auth: 'user' },
+  'google-gmail-readonly-sa': { service: 'gmail', level: 'read', auth: 'service-account' },
+  'google-calendar-freebusy': { service: 'calendar', level: 'freebusy', auth: 'user' },
+  'google-calendar-readonly': { service: 'calendar', level: 'read', auth: 'user' },
+  'google-calendar-readonly-sa': { service: 'calendar', level: 'read', auth: 'service-account' },
+  'google-drive-file': { service: 'drive', level: 'file', auth: 'user' },
+  'google-drive-readonly': { service: 'drive', level: 'read', auth: 'user' },
+  'google-drive-readonly-sa': { service: 'drive', level: 'read', auth: 'service-account' },
+  'google-sheets-readonly': { service: 'sheets', level: 'read', auth: 'user' },
+  'google-sheets-readonly-sa': { service: 'sheets', level: 'read', auth: 'service-account' },
+  'google-sheets': { service: 'sheets', level: 'edit', auth: 'user' },
+  'google-sheets-sa': { service: 'sheets', level: 'edit', auth: 'service-account' },
+  'google-docs': { service: 'docs', level: 'edit', auth: 'user' },
+  'google-docs-sa': { service: 'docs', level: 'edit', auth: 'service-account' },
+  'google-slides': { service: 'slides', level: 'edit', auth: 'user' },
+  'google-slides-sa': { service: 'slides', level: 'edit', auth: 'service-account' },
+});
+
+/** The one-line message for a removed template ID, or undefined for any other name. */
+export function removedConnectionMessage(
+  name: string,
+  callerAlias = '<alias>',
+): string | undefined {
+  if (!Object.hasOwn(REMOVED_CONNECTIONS, name)) return undefined;
+  const { service, level, auth } = REMOVED_CONNECTIONS[name];
+  return (
+    `Connection "${name}" was removed: use "google" with ` +
+    `callers.${callerAlias}.google.services.${service} = "${level}" (auth "${auth}"). ` +
+    'See CONNECTIONS.md → Google.'
+  );
+}
+
+/** A removed template ID that no shipped template file answers to. */
+export function isRemovedConnection(name: string): boolean {
+  return Object.hasOwn(REMOVED_CONNECTIONS, name) && !getConnectionIndex().has(name);
+}
+
+// ── OAuth2 validation ─────────────────────────────────────────────────────
+
+const OAUTH2_FIELDS = new Set([
+  'tokenUrl',
+  'grant',
+  'clientAuth',
+  'secretRefs',
+  'scopes',
+  'verifyGrantedScopes',
+  'subject',
+  'subjectRequired',
+  'refreshSkewMs',
+]);
+const OAUTH2_SECRET_REF_FIELDS = new Set([
+  'clientId',
+  'clientSecret',
+  'refreshToken',
+  'serviceAccountKey',
+]);
+const OAUTH2_GRANTS = new Set(['refresh_token', 'client_credentials', 'jwt_bearer']);
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+/**
+ * Whether `subject` is usable as a `jwt_bearer` `sub` (the delegated user):
+ * an email address, no whitespace or control characters.
+ */
+export function isValidOAuth2Subject(subject: unknown): subject is string {
+  return (
+    typeof subject === 'string' &&
+    subject.length <= 320 &&
+    // eslint-disable-next-line no-control-regex -- refusing control characters is the point
+    /^[^\s@\x00-\x1f\x7f]+@[^\s@\x00-\x1f\x7f]+$/.test(subject)
+  );
+}
+
+/**
+ * Validate an `oauth2` block on its own. Templates and custom connectors are
+ * hand-written JSON, so every field is checked at runtime, and unknown fields
+ * are rejected rather than ignored (a misspelt `scopes` must not silently
+ * mean "no scopes").
+ */
+export function validateOAuth2Config(oauth2: unknown): asserts oauth2 is OAuth2Config {
+  if (oauth2 === null || typeof oauth2 !== 'object' || Array.isArray(oauth2)) {
+    throw new Error('oauth2 must be an object');
+  }
+  const raw = oauth2 as Record<string, unknown>;
+  for (const key of Object.keys(raw)) {
+    if (!OAUTH2_FIELDS.has(key)) throw new Error(`oauth2: unknown field "${key}"`);
+  }
+
+  if (typeof raw.tokenUrl !== 'string' || !raw.tokenUrl) {
+    throw new Error('oauth2: tokenUrl is required');
+  }
+  let tokenUrl: URL;
+  try {
+    tokenUrl = new URL(raw.tokenUrl);
+  } catch {
+    throw new Error('oauth2: tokenUrl is not a valid URL');
+  }
+  const loopbackHttp = tokenUrl.protocol === 'http:' && LOOPBACK_HOSTS.has(tokenUrl.hostname);
+  if (tokenUrl.protocol !== 'https:' && !loopbackHttp) {
+    throw new Error('oauth2: tokenUrl must be https (http only on a loopback host)');
+  }
+  if (tokenUrl.username || tokenUrl.password) {
+    throw new Error('oauth2: tokenUrl may not contain credentials');
+  }
+
+  if (typeof raw.grant !== 'string' || !OAUTH2_GRANTS.has(raw.grant)) {
+    throw new Error(
+      "oauth2: grant must be 'refresh_token', 'client_credentials', or 'jwt_bearer' " +
+        `(got ${JSON.stringify(raw.grant)})`,
+    );
+  }
+  const jwtBearer = raw.grant === 'jwt_bearer';
+  if (jwtBearer) {
+    if (raw.clientAuth !== undefined) {
+      throw new Error(
+        "oauth2: clientAuth is not used by the 'jwt_bearer' grant (the signed assertion authenticates)",
+      );
+    }
+  } else if (raw.clientAuth !== 'basic' && raw.clientAuth !== 'body') {
+    throw new Error(
+      `oauth2: clientAuth must be 'basic' or 'body' (got ${JSON.stringify(raw.clientAuth)})`,
+    );
+  }
+
+  const refs = raw.secretRefs;
+  if (refs === null || typeof refs !== 'object' || Array.isArray(refs)) {
+    throw new Error('oauth2: secretRefs is required');
+  }
+  for (const [key, value] of Object.entries(refs)) {
+    if (!OAUTH2_SECRET_REF_FIELDS.has(key)) {
+      throw new Error(`oauth2: unknown secretRefs field "${key}"`);
+    }
+    if (typeof value !== 'string' || !/^\w+$/.test(value)) {
+      throw new Error(`oauth2: secretRefs.${key} must be a secret name`);
+    }
+  }
+  const { clientId, clientSecret, refreshToken, serviceAccountKey } = refs as Partial<
+    OAuth2Config['secretRefs']
+  >;
+  if (jwtBearer) {
+    if (!serviceAccountKey) {
+      throw new Error(
+        "oauth2: secretRefs.serviceAccountKey is required for the 'jwt_bearer' grant",
+      );
+    }
+    for (const [name, value] of [
+      ['clientId', clientId],
+      ['clientSecret', clientSecret],
+      ['refreshToken', refreshToken],
+    ] as const) {
+      if (value)
+        throw new Error(`oauth2: secretRefs.${name} is not used by the 'jwt_bearer' grant`);
+    }
+  } else {
+    if (!clientId) throw new Error('oauth2: secretRefs.clientId is required');
+    if (!clientSecret) throw new Error('oauth2: secretRefs.clientSecret is required');
+    if (serviceAccountKey) {
+      throw new Error(
+        "oauth2: secretRefs.serviceAccountKey is only used by the 'jwt_bearer' grant",
+      );
+    }
+  }
+  if (raw.grant === 'refresh_token' && !refreshToken) {
+    throw new Error("oauth2: secretRefs.refreshToken is required for the 'refresh_token' grant");
+  }
+  if (raw.grant === 'client_credentials' && refreshToken) {
+    throw new Error(
+      "oauth2: secretRefs.refreshToken is not used by the 'client_credentials' grant",
+    );
+  }
+
+  if (raw.subject !== undefined) {
+    if (!jwtBearer) throw new Error("oauth2: subject is only used by the 'jwt_bearer' grant");
+    if (!isValidOAuth2Subject(raw.subject)) {
+      throw new Error('oauth2: subject must be an email address');
+    }
+  }
+  if (raw.subjectRequired !== undefined) {
+    if (!jwtBearer) {
+      throw new Error("oauth2: subjectRequired is only used by the 'jwt_bearer' grant");
+    }
+    if (typeof raw.subjectRequired !== 'boolean') {
+      throw new Error('oauth2: subjectRequired must be a boolean');
+    }
+  }
+
+  if (raw.scopes !== undefined) {
+    if (
+      !Array.isArray(raw.scopes) ||
+      !raw.scopes.every((s) => typeof s === 'string' && /^[\x21\x23-\x5b\x5d-\x7e]+$/.test(s))
+    ) {
+      // RFC 6749 §3.3 scope-token characters: no spaces, quotes, or backslashes.
+      throw new Error('oauth2: scopes must be an array of scope strings (no spaces)');
+    }
+  }
+  if (jwtBearer && !(raw.scopes as string[] | undefined)?.length) {
+    // The scope claim is required, and is the only thing bounding the token.
+    throw new Error("oauth2: scopes are required for the 'jwt_bearer' grant");
+  }
+  if (raw.verifyGrantedScopes !== undefined) {
+    if (typeof raw.verifyGrantedScopes !== 'boolean') {
+      throw new Error('oauth2: verifyGrantedScopes must be a boolean');
+    }
+    if (raw.verifyGrantedScopes && !(raw.scopes as string[] | undefined)?.length) {
+      throw new Error('oauth2: verifyGrantedScopes needs scopes to verify against');
+    }
+  }
+  if (raw.refreshSkewMs !== undefined) {
+    if (
+      typeof raw.refreshSkewMs !== 'number' ||
+      !Number.isFinite(raw.refreshSkewMs) ||
+      raw.refreshSkewMs < 0 ||
+      raw.refreshSkewMs > MAX_OAUTH2_REFRESH_SKEW_MS
+    ) {
+      throw new Error(
+        `oauth2: refreshSkewMs must be a number from 0 to ${MAX_OAUTH2_REFRESH_SKEW_MS}`,
+      );
+    }
+  }
+}
+
+/**
+ * The URLs an agent could use to reach the token endpoint: the normalized
+ * token URL, with any query, with a trailing slash, and with its host written
+ * with or without a trailing dot (DNS treats `host.` as `host`).
+ */
+function tokenEndpointVariants(tokenUrl: string): string[] {
+  const u = new URL(tokenUrl);
+  const hosts = u.hostname.endsWith('.')
+    ? [u.hostname, u.hostname.slice(0, -1)]
+    : [u.hostname, `${u.hostname}.`];
+  const variants: string[] = [];
+  for (const hostname of hosts) {
+    const v = new URL(u.href);
+    v.hostname = hostname;
+    v.search = '';
+    v.hash = '';
+    const base = v.href;
+    variants.push(base, `${base}?x=1`, base.endsWith('/') ? base : `${base}/`);
+    if (u.search) variants.push(`${base}${u.search}`);
+  }
+  return variants;
+}
+
+/**
+ * Validate an `oauth2` route: the block itself, plus how it combines with the
+ * rest of the route.
+ *
+ *   - Every `secretRefs` name must be a key of `secrets`.
+ *   - No `Authorization` header (the minted token is the authorization), and
+ *     no header may reference an oauth2 credential.
+ *   - Not combined with `awsSigV4` or `resolveSecretsInBody`.
+ *   - No `allowedEndpoints` pattern may match the token endpoint URL: the
+ *     agent could otherwise call it directly. Other paths on the same host
+ *     are fine (Dropbox, Box, and X serve their APIs and token endpoints from
+ *     one host). A pattern without `scheme://host` can match any host and is
+ *     refused.
+ *   - Only a `poll` listener, which gets managed tokens. Webhook and
+ *     websocket listeners would make their requests (webhook
+ *     auto-registration, gateway connects) with the static headers only, so
+ *     unauthenticated, and are refused until supported.
+ *   - A template may not set `subject` (who a service account acts as is
+ *     per-deployment admin config).
+ */
+export function validateOAuth2Route(
+  route: Route,
+  source: 'template' | 'connector' = 'connector',
+): void {
+  validateOAuth2Config(route.oauth2);
+  const oauth2 = route.oauth2;
+  if (source === 'template' && oauth2.subject !== undefined) {
+    // Who a service account acts as is per-deployment policy: admin config only.
+    throw new Error('oauth2: a template may not set subject; set it per caller in oauth2Overrides');
+  }
+  const secrets = route.secrets ?? {};
+  const refNames = Object.values(oauth2.secretRefs).filter((n): n is string => !!n);
+  for (const name of refNames) {
+    if (!(name in secrets)) {
+      throw new Error(`oauth2: secretRefs names "${name}", which is not in the route's secrets`);
+    }
+  }
+  for (const [key, value] of Object.entries(route.headers ?? {})) {
+    if (key.toLowerCase() === 'authorization') {
+      throw new Error(
+        'oauth2: the route may not set an Authorization header; the minted token is injected',
+      );
+    }
+    for (const name of extractPlaceholderNames(value)) {
+      if (refNames.includes(name)) {
+        throw new Error(`oauth2: header "${key}" references the oauth2 credential \${${name}}`);
+      }
+    }
+  }
+  if (route.awsSigV4 !== undefined) {
+    throw new Error('oauth2 cannot be combined with awsSigV4');
+  }
+  if (route.resolveSecretsInBody) {
+    throw new Error('oauth2 cannot be combined with resolveSecretsInBody');
+  }
+  const tokenUrls = tokenEndpointVariants(oauth2.tokenUrl);
+  for (const pattern of route.allowedEndpoints) {
+    // Exclusions only subtract from what the route reaches.
+    if (isExclusionPattern(pattern)) continue;
+    // A pattern without a scheme://host prefix can match any host.
+    const scoped = /^[a-z][a-z0-9+.-]*:\/\/[^/?#]+/i.test(pattern);
+    if (!scoped || tokenUrls.some((url) => isEndpointAllowed(url, [pattern]))) {
+      throw new Error(
+        `oauth2: allowedEndpoints pattern "${pattern}" can reach the token endpoint ${oauth2.tokenUrl}`,
+      );
+    }
+  }
+  if (route.ingestor !== undefined && route.ingestor.type !== 'poll') {
+    throw new Error(
+      `oauth2: a ${route.ingestor.type} listener is not supported on an oauth2 route (only poll ` +
+        'listeners get managed tokens)',
+    );
+  }
+}
+
+/**
+ * List all available connection template names.
+ *
+ * Scans the connections directory (including category subdirectories) for
+ * .json files and returns their basenames (without extension), sorted
+ * alphabetically.
+ */
+export function listAvailableConnections(): string[] {
+  const index = getConnectionIndex();
+  return [...index.keys()].sort();
+}
+
+// ── Template introspection ────────────────────────────────────────────────
+
+/** Extract ${VAR} placeholder names from a string. */
+function extractPlaceholderNames(str: string): Set<string> {
+  const names = new Set<string>();
+  for (const match of str.matchAll(/\$\{(\w+)\}/g)) {
+    names.add(match[1]);
+  }
+  return names;
+}
+
+/**
+ * List all available connection templates with structured metadata.
+ *
+ * For each built-in template, returns its name, description, docs links,
+ * secrets (categorized as required vs. optional), ingestor info, and
+ * allowed endpoints.
+ *
+ * Secret categorization:
+ *   - **required** — referenced in route `headers` values, the signing
+ *     keys of an `awsSigV4` route, or the `secretRefs` of an `oauth2` route
+ *     (used on every outgoing request, so they must always be configured).
+ *   - **optional** — every other entry in the template's `secrets` map (used
+ *     by ingestors, URL placeholders, an AWS session token, etc.).
+ *
+ * Used by:
+ *   - the remote server's tool dispatch and boot-time health table
+ *   - the admin dashboard API (src/remote/admin.ts)
+ *   - the drawlatch CLI (bin/drawlatch.js)
+ */
+export function listConnectionTemplates(): ConnectionTemplateInfo[] {
+  return listAvailableConnections().map((alias) =>
+    describeConnectionTemplate(alias, loadConnection(alias)),
+  );
+}
+
+/** The ConnectionTemplateInfo for one template. Exported for tests. */
+export function describeConnectionTemplate(alias: string, route: Route): ConnectionTemplateInfo {
+  // Collect secret names every request authenticates with: placeholders in
+  // header values, plus the signing keys of an awsSigV4 route
+  const authSecretNames = new Set<string>();
+  for (const value of Object.values(route.headers ?? {})) {
+    for (const name of extractPlaceholderNames(value)) {
+      authSecretNames.add(name);
+    }
+  }
+  if (route.awsSigV4) {
+    for (const name of AWS_SIGV4_REQUIRED_SECRETS) authSecretNames.add(name);
+  }
+  if (route.oauth2) {
+    for (const name of Object.values(route.oauth2.secretRefs)) {
+      if (name) authSecretNames.add(name);
+    }
+  }
+
+  // A composed base (`google`) has no fixed auth: its default mode's
+  // credentials (user OAuth) are the required ones, the rest optional.
+  if (route.composed === 'google') {
+    const { clientId, clientSecret, refreshToken } = loadGoogleCatalog().auth.user.secretRefs;
+    for (const name of [clientId, clientSecret, refreshToken]) {
+      if (name) authSecretNames.add(name);
+    }
+  }
+
+  // Partition secrets into required (used for auth) vs optional (elsewhere)
+  const allSecretNames = Object.keys(route.secrets ?? {});
+  const requiredSecrets = allSecretNames.filter((s) => authSecretNames.has(s));
+  const optionalSecrets = allSecretNames.filter((s) => !authSecretNames.has(s));
+
+  return {
+    alias,
+    name: route.name ?? alias,
+    ...(route.description !== undefined && { description: route.description }),
+    ...(route.docsUrl !== undefined && { docsUrl: route.docsUrl }),
+    ...(route.openApiUrl !== undefined && { openApiUrl: route.openApiUrl }),
+    stability: route.stability ?? 'dev',
+    category: route.category!,
+    requiredSecrets,
+    optionalSecrets,
+    hasIngestor: route.ingestor !== undefined,
+    ...(route.ingestor !== undefined && { ingestorType: route.ingestor.type }),
+    // A composed route's tests come from its selection.
+    hasTestConnection:
+      route.testConnection !== undefined ||
+      route.testConnections !== undefined ||
+      route.composed !== undefined,
+    hasTestIngestor: route.testIngestor !== undefined && route.testIngestor !== null,
+    hasListenerConfig: route.listenerConfig !== undefined,
+    supportsMultiInstance: route.listenerConfig?.supportsMultiInstance ?? false,
+    allowedEndpoints: route.allowedEndpoints,
+    ...(route.composed !== undefined && { composed: route.composed }),
+    ...(route.oauth2 !== undefined && {
+      auth: {
+        type: 'oauth2' as const,
+        grant: route.oauth2.grant,
+        scopes: [...new Set(route.oauth2.scopes ?? [])].sort(),
+        ...(route.oauth2.subjectRequired === true && { subjectRequired: true }),
+      },
+    }),
+  };
+}
+
+/** The auth mode a caller's `google` block selects; user OAuth when absent or unreadable. */
+function googleAuthModeOf(caller: CallerConfig | undefined): GoogleAuthMode {
+  const google: unknown = caller && Object.hasOwn(caller, 'google') ? caller.google : undefined;
+  return google !== null &&
+    typeof google === 'object' &&
+    Object.hasOwn(google, 'auth') &&
+    (google as { auth: unknown }).auth === 'service-account'
+    ? 'service-account'
+    : 'user';
+}
+
+/**
+ * A template's required secrets for one caller. Same as `tpl.requiredSecrets`,
+ * except for the composed `google` base: there they are the credentials of the
+ * auth mode the caller selects (user OAuth when it has no selection yet).
+ * Used by the boot table, the admin API and the CLI.
+ */
+export function callerRequiredSecrets(
+  tpl: ConnectionTemplateInfo,
+  caller: CallerConfig | undefined,
+): string[] {
+  if (tpl.composed !== 'google') return tpl.requiredSecrets;
+  const { clientId, clientSecret, refreshToken, serviceAccountKey } =
+    loadGoogleCatalog().auth[googleAuthModeOf(caller)].secretRefs;
+  const names = new Set([clientId, clientSecret, refreshToken, serviceAccountKey]);
+  return [...tpl.requiredSecrets, ...tpl.optionalSecrets].filter((n) => names.has(n));
+}
+
+/** The rest of a template's secrets for one caller (see callerRequiredSecrets). */
+export function callerOptionalSecrets(
+  tpl: ConnectionTemplateInfo,
+  caller: CallerConfig | undefined,
+): string[] {
+  if (tpl.composed !== 'google') return tpl.optionalSecrets;
+  const required = new Set(callerRequiredSecrets(tpl, caller));
+  return [...tpl.requiredSecrets, ...tpl.optionalSecrets].filter((n) => !required.has(n));
+}
