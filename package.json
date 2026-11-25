@@ -82,9 +82,10 @@
     "lint:fix": "git diff --name-only --cached HEAD | grep -E '\\.(js|jsx|ts|tsx)$' | xargs -r eslint --fix",
     "lint:all": "eslint . --ext .js,.jsx,.ts,.tsx",
     "lint:all:fix": "eslint . --ext .js,.jsx,.ts,.tsx --fix",
+    "lint:drawlatch": "npm -w @wolpertingerlabs/drawlatch run lint",
     "prettier": "git diff --name-only HEAD | xargs -r npx prettier --write --ignore-unknown && git diff --name-only --cached HEAD | xargs -r npx prettier --write --ignore-unknown",
-    "test": "npm run test:computer-use && vitest run",
-    "test:coverage": "npm run test:computer-use && vitest run --coverage",
+    "test": "npm run test:computer-use && npm run test:drawlatch && vitest run",
+    "test:coverage": "npm run test:computer-use && npm run test:drawlatch && vitest run --coverage",
     "test:watch": "vitest",
     "prepare": "npm run build",
     "prepublishOnly": "npm run drawlatch:check && npm run lint:all && npm run clean && npm run build && npm test && npm run deps:check",
@@ -100,7 +101,9 @@
     "drawlatch:check": "node scripts/drawlatch-switch.cjs check",
     "build:computer-use": "npm -w @wolpertingerlabs/computer-use run build",
     "build:drawlatch": "npm -w @wolpertingerlabs/drawlatch run build",
-    "test:computer-use": "npm -w @wolpertingerlabs/computer-use test"
+    "test:computer-use": "npm -w @wolpertingerlabs/computer-use test",
+    "test:drawlatch": "npm -w @wolpertingerlabs/drawlatch test",
+    "test:drawlatch:e2e": "npm -w @wolpertingerlabs/drawlatch run test:e2e"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.261",

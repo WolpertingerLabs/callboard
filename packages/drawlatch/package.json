@@ -79,7 +79,6 @@
     "format:check": "prettier --check 'src/**/*.ts' '*.{json,ts,js}'",
     "prepublishOnly": "npm run lint && npm test",
     "publish:dry-run": "npm publish --dry-run",
-    "release:gh": "node scripts/release-gh.mjs",
     "reload": "npm install --include=dev && npm run build && VERSION=$(node -p \"require('./package.json').version\") && npm pack --pack-destination /tmp && npm install -g \"/tmp/wolpertingerlabs-drawlatch-$VERSION.tgz\" && rm \"/tmp/wolpertingerlabs-drawlatch-$VERSION.tgz\" && drawlatch restart && drawlatch status"
   },
   "engines": {
@@ -87,7 +86,8 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/WolpertingerLabs/drawlatch.git"
+    "url": "git+https://github.com/WolpertingerLabs/callboard.git",
+    "directory": "packages/drawlatch"
   },
   "publishConfig": {
     "access": "public"
