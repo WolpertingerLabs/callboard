@@ -117,7 +117,8 @@ import {
   visibleInFlight,
   type InFlightMessage,
 } from "../utils/inFlightMessages";
-import MessageBubble, { AttachedFileChips, TEAM_COLORS } from "../components/MessageBubble";
+import MessageBubble, { TEAM_COLORS } from "../components/MessageBubble";
+import InFlightBubbles from "../components/InFlightBubbles";
 import ProviderBadge from "../components/ProviderBadge";
 import ToolCallBubble from "../components/ToolCallBubble";
 import { ChatGalleryProvider } from "../components/gallery/ChatGallery";
@@ -307,60 +308,6 @@ const STREAM_REFUSALS_BEFORE_GIVING_UP = 4;
 function reconnectDelayMs(attempt: number): number {
   const ceiling = Math.min(RECONNECT_BACKOFF_CAP_MS, RECONNECT_BACKOFF_BASE_MS * 2 ** (attempt - 1));
   return Math.round(ceiling * (1 - RECONNECT_BACKOFF_JITTER * Math.random()));
-}
-
-/**
- * Optimistic user bubbles, styled like a sent message but dimmed and without
- * the copy/fork affordances a persisted message gets. Rendered in both the
- * empty-chat and populated-transcript branches.
- */
-function InFlightBubbles({ messages }: { messages: InFlightMessage[] }) {
-  return (
-    <>
-      {messages.map((message) => (
-        <div key={message.key} style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", margin: "6px 0" }}>
-          <div
-            style={{
-              maxWidth: "92%",
-              padding: "10px 14px",
-              borderRadius: "var(--radius)",
-              background: "var(--user-bg)",
-              border: "1px solid transparent",
-              fontSize: 14,
-              lineHeight: 1.5,
-              wordBreak: "break-word",
-              opacity: 0.9,
-            }}
-          >
-            {message.text}
-            {message.fileNames && message.fileNames.length > 0 && <AttachedFileChips files={message.fileNames.map((name) => ({ name }))} />}
-            {/* Carried across the new-chat redirect: the count came, the previews could not. */}
-            {message.imageUrls.length === 0 && !!message.imageCount && (
-              <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-muted)" }}>
-                {message.imageCount} image{message.imageCount === 1 ? "" : "s"}
-              </div>
-            )}
-            {/* Deliberately not in the chat image gallery: these are local
-                previews of a message still being sent, and they are replaced
-                by gallery-registered ImageThumbnails once it is persisted. */}
-            {message.imageUrls.length > 0 && (
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
-                {message.imageUrls.map((url) => (
-                  <img
-                    key={url}
-                    src={url}
-                    alt="Attached image"
-                    style={{ maxHeight: 200, maxWidth: 300, borderRadius: 8, objectFit: "cover", border: "1px solid var(--border)" }}
-                  />
-                ))}
-              </div>
-            )}
-          </div>
-          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4, textAlign: "right" }}>Sent</div>
-        </div>
-      ))}
-    </>
-  );
 }
 
 /**

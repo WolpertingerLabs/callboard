@@ -30,6 +30,20 @@ export function parseTodoItems(message: Pick<ParsedMessage, "type" | "toolName" 
   return parseTaskList(message.toolName, message.content);
 }
 
+/**
+ * Box and type of a message bubble, before its background and border. Shared
+ * with the optimistic in-flight bubble (InFlightBubbles) so the two stay the
+ * same shape and the swap to the persisted message does not reflow.
+ */
+export const BUBBLE_BASE_STYLE: CSSProperties = {
+  maxWidth: "92%",
+  padding: "10px 14px",
+  borderRadius: "var(--radius)",
+  fontSize: 14,
+  lineHeight: 1.5,
+  wordBreak: "break-word",
+};
+
 // 16 distinct team colors that work well in dark mode
 export const TEAM_COLORS = [
   "#ef4444", // Red
@@ -1296,15 +1310,10 @@ function MessageBubble({
       <div
         className="msg-bubble"
         style={{
-          maxWidth: "92%",
+          ...BUBBLE_BASE_STYLE,
           ...(actionsMinWidth && { minWidth: actionsMinWidth }),
-          padding: "10px 14px",
-          borderRadius: "var(--radius)",
           background: getBackgroundColor(),
           border: `1px solid ${getBorderColor()}`,
-          fontSize: 14,
-          lineHeight: 1.5,
-          wordBreak: "break-word",
           ...(message.isBuiltInCommand && {
             fontFamily: 'monaco, "Courier New", monospace',
             color: "var(--builtin-text)",
