@@ -29,6 +29,14 @@ export interface InFlightMessage {
    * carried across the new-chat redirect). Otherwise `imageUrls.length`.
    */
   imageCount?: number;
+  /**
+   * How many user entries ({@link userEntryCount}) the transcript on screen
+   * had when this was sent. Only entries after that can be this message's
+   * persisted copy, so an identical earlier prompt — a second Continue, a
+   * resend of the same words — cannot hide it. Absent when unknown (a message
+   * carried across the new-chat redirect): the trailing-entries rule applies.
+   */
+  afterUserEntries?: number;
 }
 
 /** How many images an optimistic message carries, previews or not. */
@@ -157,18 +165,41 @@ function sameAttachments(message: InFlightMessage, entry: UserEntry): boolean {
   );
 }
 
-/** True when `entries` already account for an optimistic message. */
-function accountedFor(message: InFlightMessage, entries: UserEntry[]): boolean {
+/** True when `entry` is the persisted copy of an optimistic message. */
+function isCopyOf(message: InFlightMessage, entry: UserEntry): boolean {
   const trimmed = message.text.trim();
   // Every attachment-only message has the same (empty) text, so text alone
   // would let an earlier one hide the next.
-  if (!trimmed) return entries.some((e) => e.text === "" && sameAttachments(message, e));
-  if (entries.some((e) => e.text === trimmed)) return true;
+  if (!trimmed) return entry.text === "" && sameAttachments(message, entry);
+  if (entry.text === trimmed) return true;
   // Only a command can come back re-spelled, and only against a transcript
   // entry that is itself a command.
-  if (!trimmed.startsWith("/")) return false;
-  const key = collapsed(trimmed);
-  return entries.some((e) => e.command === key);
+  return trimmed.startsWith("/") && entry.command === collapsed(trimmed);
+}
+
+/** How many user entries a transcript has — the baseline an optimistic message records at send. */
+export function userEntryCount(messages: ParsedMessage[]): number {
+  return messages.reduce((n, m) => (m.role === "user" && m.type === "text" ? n + 1 : n), 0);
+}
+
+/**
+ * The optimistic messages `entries` account for, each entry accounting for
+ * at most one. A message with a send-time baseline is matched only against
+ * entries after it; one without (or a baseline the transcript has since
+ * shrunk below) against `fallback` indices.
+ */
+function accountedSet(pending: InFlightMessage[], entries: UserEntry[], fallback: number[]): Set<InFlightMessage> {
+  const used = new Set<number>();
+  const accounted = new Set<InFlightMessage>();
+  for (const message of pending) {
+    const base = message.afterUserEntries;
+    const candidates = base !== undefined && base <= entries.length ? entries.map((_, i) => i).slice(base) : fallback;
+    const hit = candidates.find((i) => !used.has(i) && isCopyOf(message, entries[i]));
+    if (hit === undefined) continue;
+    used.add(hit);
+    accounted.add(message);
+  }
+  return accounted;
 }
 
 /**
@@ -183,8 +214,10 @@ function accountedFor(message: InFlightMessage, entries: UserEntry[]): boolean {
  */
 export function visibleInFlight(pending: InFlightMessage[], messages: ParsedMessage[]): InFlightMessage[] {
   if (pending.length === 0) return pending;
-  const tail = userEntries(messages).slice(-pending.length);
-  return pending.filter((m) => !accountedFor(m, tail));
+  const entries = userEntries(messages);
+  const tail = entries.map((_, i) => i).slice(-pending.length);
+  const accounted = accountedSet(pending, entries, tail);
+  return pending.filter((m) => !accounted.has(m));
 }
 
 /**
@@ -200,7 +233,12 @@ export function settleInFlight(pending: InFlightMessage[], fetched: ParsedMessag
   if (pending.length === 0) return pending;
   const persisted = userEntries(fetched);
   if (persisted.length === 0) return pending;
-  const keep = pending.filter((m) => !accountedFor(m, persisted));
+  const accounted = accountedSet(
+    pending,
+    persisted,
+    persisted.map((_, i) => i),
+  );
+  const keep = pending.filter((m) => !accounted.has(m));
   return keep.length === pending.length ? pending : keep;
 }
 
