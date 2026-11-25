@@ -1,4 +1,4 @@
-import { Router, type RequestHandler } from "express";
+import { Router, type Request, type RequestHandler } from "express";
 import multer from "multer";
 import { MULTIPART_FIELD_LIMITS, withUploadErrors } from "../utils/multipart-limits.js";
 import { ImageStorageService, type StoredImage } from "../services/image-storage.js";
@@ -50,7 +50,10 @@ const uploadImages: RequestHandler = (req, res, next) =>
  * Upload images for a chat
  * POST /api/chats/:chatId/images
  */
-imagesRouter.post("/:chatId/images", uploadImages, async (req, res) => {
+// The params type is asserted, not inferred: TypeScript takes `P` from this
+// annotation before it looks at the path, so it must match the route string by
+// hand (a typo would still compile).
+imagesRouter.post("/:chatId/images", uploadImages, async (req: Request<{ chatId: string }>, res) => {
   // #swagger.tags = ['Images']
   // #swagger.summary = 'Upload images for a chat'
   // #swagger.description = 'Upload up to 10 files for a chat: PNG, JPEG, GIF and WebP images (max 10MB each, sent to the model as images) or any other file (max 25MB each, inlined into the prompt when small text, otherwise referenced by its stored path). Uses multipart/form-data with field name "images".'

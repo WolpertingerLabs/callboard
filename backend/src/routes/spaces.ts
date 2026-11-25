@@ -99,7 +99,7 @@ spacesRouter.post("/", (req: Request, res: Response) => {
   }
 });
 
-spacesRouter.get("/of/:chatId", (req: Request, res: Response) => {
+spacesRouter.get("/of/:chatId", (req, res) => {
   // #swagger.tags = ['Spaces']
   // #swagger.summary = "The space a chat's tree belongs to"
   // #swagger.description = 'What the client asks when a chat is opened by URL, so it can switch to that chat's space. A lineage walk over direct session-id reads; a chat id that is not its own session id costs one snapshot pass the first time and is memoised after. archived is true when the space exists but is archived.'
@@ -126,7 +126,7 @@ spacesRouter.post("/order", (req: Request, res: Response) => {
   }
 });
 
-spacesRouter.get("/:id", (req: Request, res: Response) => {
+spacesRouter.get("/:id", (req, res) => {
   // #swagger.tags = ['Spaces']
   // #swagger.summary = 'Get a space'
   /* #swagger.parameters['includeCounts'] = { in: 'query', type: 'string', description: 'Compute chatCount/jobCount (a corpus pass); otherwise chatCount is 0' } */
@@ -135,7 +135,7 @@ spacesRouter.get("/:id", (req: Request, res: Response) => {
   res.json({ space: spaceRow(space, req) });
 });
 
-spacesRouter.patch("/:id", (req: Request, res: Response) => {
+spacesRouter.patch("/:id", (req, res) => {
   // #swagger.tags = ['Spaces']
   // #swagger.summary = 'Update a space (delta)'
   // #swagger.description = 'Only the keys present are changed; null clears an optional field. defaults and agentScope merge key by key.'
@@ -192,7 +192,7 @@ spacesRouter.delete("/:id", (req: Request, res: Response) => {
   }
 });
 
-spacesRouter.post("/:id/move", (req: Request, res: Response) => {
+spacesRouter.post("/:id/move", (req, res) => {
   // #swagger.tags = ['Spaces']
   // #swagger.summary = 'Move chats (whole trees) into this space'
   // #swagger.description = 'Body: { chatIds?: string[], folder?: string, fromSpace?: string }. Any member id moves its whole tree. folder moves every tree in fromSpace (default: default) whose root ran in that folder, under it, or in a worktree of it. Partial success is a 200 with failed[].'

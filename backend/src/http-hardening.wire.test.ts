@@ -24,6 +24,7 @@ import { networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
 import express, { type Express } from "express";
 import cookieParser from "cookie-parser";
+import { serveSpa } from "./utils/spa.js";
 
 const tmpRoot = mkdtempSync(join(tmpdir(), "callboard-http-hardening-"));
 process.env.CALLBOARD_DATA_DIR = tmpRoot;
@@ -76,8 +77,7 @@ function buildApp(): Express {
   const spa = join(tmpRoot, "spa");
   mkdirSync(spa, { recursive: true });
   writeFileSync(join(spa, "index.html"), "<!doctype html><title>callboard</title>");
-  app.use(express.static(spa));
-  app.get("*", (_req, res) => res.sendFile(join(spa, "index.html")));
+  serveSpa(app, spa);
   return app;
 }
 

@@ -49,10 +49,16 @@ export const ARTIFACT_ERROR_CSP = "default-src 'none'; style-src 'unsafe-inline'
 /** Raw source and markdown are text; nothing in them may ever execute. */
 export const ARTIFACT_TEXT_CSP = SANDBOXED_CONTENT_CSP;
 
-type Handler = (req: Request, res: Response) => unknown;
+/**
+ * `P` names the route's params: inference cannot see the path through the
+ * wrapper, so each `wrap<{ ... }>` call site asserts them. TypeScript takes `P`
+ * from that type argument, never from the route string, so it must match the
+ * path by hand: a typo would still compile.
+ */
+type Handler<P> = (req: Request<P>, res: Response) => unknown;
 const wrap =
-  (what: string, fn: Handler) =>
-  async (req: Request, res: Response): Promise<void> => {
+  <P>(what: string, fn: Handler<P>) =>
+  async (req: Request<P>, res: Response): Promise<void> => {
     try {
       await fn(req, res);
     } catch (err) {
@@ -202,7 +208,7 @@ artifactsRouter.post(
  */
 artifactsRouter.get(
   "/:id",
-  wrap("Get artifact", (req, res) => {
+  wrap<{ id: string }>("Get artifact", (req, res) => {
     // #swagger.tags = ['Artifacts']
     // #swagger.summary = 'Get an artifact with its versions'
     res.json({ artifact: getArtifact(req.params.id) });
@@ -214,7 +220,7 @@ artifactsRouter.get(
  */
 artifactsRouter.patch(
   "/:id",
-  wrap("Update artifact", async (req, res) => {
+  wrap<{ id: string }>("Update artifact", async (req, res) => {
     // #swagger.tags = ['Artifacts']
     // #swagger.summary = 'Update artifact metadata'
     const b = (req.body ?? {}) as Record<string, unknown>;
@@ -229,7 +235,7 @@ artifactsRouter.patch(
  */
 artifactsRouter.delete(
   "/:id",
-  wrap("Delete artifact", async (req, res) => {
+  wrap<{ id: string }>("Delete artifact", async (req, res) => {
     // #swagger.tags = ['Artifacts']
     // #swagger.summary = 'Delete an artifact and all its versions'
     await deleteArtifact(req.params.id);
@@ -242,7 +248,7 @@ artifactsRouter.delete(
  */
 artifactsRouter.post(
   "/:id/versions",
-  wrap("Save artifact version", async (req, res) => {
+  wrap<{ id: string }>("Save artifact version", async (req, res) => {
     // #swagger.tags = ['Artifacts']
     // #swagger.summary = 'Save a new artifact version'
     const b = (req.body ?? {}) as Record<string, unknown>;
@@ -258,7 +264,7 @@ artifactsRouter.post(
  */
 artifactsRouter.get(
   "/:id/versions/:n",
-  wrap("Read artifact source", (req, res) => {
+  wrap<{ id: string; n: string }>("Read artifact source", (req, res) => {
     // #swagger.tags = ['Artifacts']
     // #swagger.summary = 'Raw source of one artifact version (text/plain)'
     const version = parseVersion(req.params.n);

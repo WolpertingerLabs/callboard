@@ -43,6 +43,7 @@ import cookieParser from "cookie-parser";
 import rateLimit from "express-rate-limit";
 import { getClientKey } from "./utils/client-ip.js";
 import { applyHttpHardening } from "./utils/security-headers.js";
+import { serveSpa } from "./utils/spa.js";
 import { chatsRouter } from "./routes/chats.js";
 import { streamRouter } from "./routes/stream.js";
 import { imagesRouter } from "./routes/images.js";
@@ -454,10 +455,7 @@ app.post(
 
 // Serve frontend static files in production
 const frontendDist = path.join(__pkgRoot, "frontend/dist");
-app.use(express.static(frontendDist));
-app.get("*", (_req, res) => {
-  res.sendFile(path.join(frontendDist, "index.html"));
-});
+serveSpa(app, frontendDist);
 
 // One-time cards-as-entity → cards-as-metadata migration. Must run before the
 // server accepts requests and before initJobRunner resumes runs — both would

@@ -54,7 +54,7 @@ jobsRouter.get("/runs", (req: Request, res: Response): void => {
 });
 
 // Get a single run (full state, including frozen definition and history)
-jobsRouter.get("/runs/:runId", (req: Request, res: Response): void => {
+jobsRouter.get("/runs/:runId", (req, res): void => {
   // #swagger.tags = ['Jobs']
   // #swagger.summary = 'Get a job run'
   const run = getRun(req.params.runId);
@@ -65,7 +65,7 @@ jobsRouter.get("/runs/:runId", (req: Request, res: Response): void => {
   res.json({ run });
 });
 
-jobsRouter.post("/runs/:runId/approval", (req: Request, res: Response): void => {
+jobsRouter.post("/runs/:runId/approval", (req, res): void => {
   // #swagger.tags = ['Jobs']
   // #swagger.summary = 'Approve or reject a run waiting at an approval step'
   const { decision, comment } = req.body ?? {};
@@ -80,7 +80,7 @@ jobsRouter.post("/runs/:runId/approval", (req: Request, res: Response): void => 
   }
 });
 
-jobsRouter.post("/runs/:runId/cancel", (req: Request, res: Response): void => {
+jobsRouter.post("/runs/:runId/cancel", (req, res): void => {
   // #swagger.tags = ['Jobs']
   // #swagger.summary = 'Cancel a job run'
   try {
@@ -90,7 +90,7 @@ jobsRouter.post("/runs/:runId/cancel", (req: Request, res: Response): void => {
   }
 });
 
-jobsRouter.post("/runs/:runId/pause", (req: Request, res: Response): void => {
+jobsRouter.post("/runs/:runId/pause", (req, res): void => {
   // #swagger.tags = ['Jobs']
   // #swagger.summary = 'Pause a waiting/sleeping job run'
   try {
@@ -100,7 +100,7 @@ jobsRouter.post("/runs/:runId/pause", (req: Request, res: Response): void => {
   }
 });
 
-jobsRouter.post("/runs/:runId/resume", (req: Request, res: Response): void => {
+jobsRouter.post("/runs/:runId/resume", (req, res): void => {
   // #swagger.tags = ['Jobs']
   // #swagger.summary = 'Resume a paused job run'
   try {
@@ -110,7 +110,7 @@ jobsRouter.post("/runs/:runId/resume", (req: Request, res: Response): void => {
   }
 });
 
-jobsRouter.post("/runs/:runId/retry-step", (req: Request, res: Response): void => {
+jobsRouter.post("/runs/:runId/retry-step", (req, res): void => {
   // #swagger.tags = ['Jobs']
   // #swagger.summary = 'Retry the current step of a failed run'
   try {
@@ -128,7 +128,7 @@ jobsRouter.get("/", (_req: Request, res: Response): void => {
   res.json({ jobs: listJobs() });
 });
 
-jobsRouter.get("/:id", (req: Request, res: Response): void => {
+jobsRouter.get("/:id", (req, res): void => {
   // #swagger.tags = ['Jobs']
   // #swagger.summary = 'Get a job definition'
   const job = getJob(req.params.id);
@@ -141,7 +141,7 @@ jobsRouter.get("/:id", (req: Request, res: Response): void => {
 
 // Export a job definition as a downloadable envelope. The two-segment
 // "/:id/export" is more specific than "GET /:id" so it is not shadowed.
-jobsRouter.get("/:id/export", (req: Request, res: Response): void => {
+jobsRouter.get("/:id/export", (req, res): void => {
   // #swagger.tags = ['Jobs']
   // #swagger.summary = 'Export a job definition as a downloadable envelope'
   const envelope = exportJobEnvelope(req.params.id);
@@ -188,7 +188,7 @@ jobsRouter.post("/import", async (req: Request, res: Response): Promise<void> =>
   }
 });
 
-jobsRouter.put("/:id", async (req: Request, res: Response): Promise<void> => {
+jobsRouter.put("/:id", async (req, res): Promise<void> => {
   // #swagger.tags = ['Jobs']
   // #swagger.summary = 'Update a job definition (full replacement, bumps version)'
   try {
@@ -199,7 +199,7 @@ jobsRouter.put("/:id", async (req: Request, res: Response): Promise<void> => {
   }
 });
 
-jobsRouter.delete("/:id", (req: Request, res: Response): void => {
+jobsRouter.delete("/:id", (req, res): void => {
   // #swagger.tags = ['Jobs']
   // #swagger.summary = 'Delete a job definition'
   if (!deleteJob(req.params.id)) {
@@ -209,7 +209,7 @@ jobsRouter.delete("/:id", (req: Request, res: Response): void => {
   res.json({ ok: true });
 });
 
-jobsRouter.post("/:id/spawn", (req: Request, res: Response): void => {
+jobsRouter.post("/:id/spawn", (req, res): void => {
   // #swagger.tags = ['Jobs']
   // #swagger.summary = 'Spawn a run of a job'
   try {

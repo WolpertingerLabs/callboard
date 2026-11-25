@@ -846,7 +846,10 @@ agentSettingsRouter.get("/callers", (req: Request, res: Response): void => {
  * gated on zero associated agents. On success the caller's key dir is removed
  * and its cached proxy client is dropped. Mode defaults to the active one.
  */
-agentSettingsRouter.delete("/callers/:alias", requireSessionAuth, (req: Request, res: Response): void => {
+// The params type is asserted, not inferred: TypeScript takes `P` from this
+// annotation before it looks at the path, so it must match the route string by
+// hand (a typo would still compile).
+agentSettingsRouter.delete("/callers/:alias", requireSessionAuth, (req: Request<{ alias: string }>, res: Response): void => {
   const { alias } = req.params;
   if (!CALLER_ALIAS_REGEX.test(alias)) {
     res.status(400).json({ error: "Invalid caller alias" });

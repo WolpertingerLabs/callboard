@@ -21,8 +21,8 @@ Root and backend pin `@wolpertingerlabs/drawlatch` exactly to `packages/drawlatc
 
 ## Dependency conflicts
 
-- Express 4 (callboard) vs 5 (drawlatch), and `express-rate-limit` 7 vs 8: separate copies, no problem.
-- `@types/cookie-parser` has a `@types/express: "*"` peer. Deduped to the root, it resolves to callboard's `@types/express@4` and drawlatch's `tsc` fails. `overrides` do not help. Fix: root and backend devDependencies pin `@types/cookie-parser@1.4.9`, so drawlatch's `^1.4.10` nests under `packages/drawlatch/node_modules` beside `@types/express@5`. Removed by the Express 5 migration (follow-up).
+- Express 4 (callboard) vs 5 (drawlatch), and `express-rate-limit` 7 vs 8: separate copies at import time. Resolved by the Express 5 migration; one hoisted copy of each now.
+- `@types/cookie-parser` has a `@types/express: "*"` peer. Deduped to the root, it resolved to callboard's `@types/express@4` and drawlatch's `tsc` failed. `overrides` did not help. Fix at import time: root and backend devDependencies pinned `@types/cookie-parser@1.4.9`, so drawlatch's `^1.4.10` nested under `packages/drawlatch/node_modules` beside `@types/express@5`. Removed by the Express 5 migration; no pin is needed now that every `@types/express` is v5.
 - The root `zod` override forces drawlatch's zod to 4.5.2 in the workspace; drawlatch's tests pass and the published package is unaffected.
 - The hoisted `typescript-eslint` 8.61 flagged 22 `no-unnecessary-type-assertion` errors in drawlatch. They were fixed in their own commit; emitted JS is unchanged apart from comments.
 
@@ -55,4 +55,4 @@ Root and backend pin `@wolpertingerlabs/drawlatch` exactly to `packages/drawlatc
 
 - Publish workflow (`.github/workflows/publish.yml`) with tags `v<ver>` (callboard) and `drawlatch-v<ver>` (drawlatch), plus npm trusted-publisher setup for both packages.
 - Freeze and archive the standalone drawlatch repo; migrate its open branches and PRs (`git merge -X subtree=packages/drawlatch`), and transfer its issues.
-- Migrate callboard to Express 5 and drop the `@types/cookie-parser` placement pin.
+- ~~Migrate callboard to Express 5 and drop the `@types/cookie-parser` placement pin.~~ Done.

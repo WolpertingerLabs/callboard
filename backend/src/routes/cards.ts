@@ -241,7 +241,7 @@ cardsRouter.post("/bulk-lifecycle", (req: Request, res: Response) => {
   }
 });
 
-cardsRouter.get("/:id", (req: Request, res: Response) => {
+cardsRouter.get("/:id", (req, res) => {
   // #swagger.tags = ['Cards']
   // #swagger.summary = 'Get a card with live rollup'
   // #swagger.description = 'id is the card\'s root chat id; any member chat id of the tree resolves to the same card.'
@@ -263,7 +263,7 @@ cardsRouter.get("/:id", (req: Request, res: Response) => {
 
 const PATCHABLE_FIELDS = ["title", "description", "emoji", "pinned", "status", "statusEmoji", "category", "lifecycle", "metadata", "hidden"] as const;
 
-cardsRouter.patch("/:id", (req: Request, res: Response) => {
+cardsRouter.patch("/:id", (req, res) => {
   // #swagger.tags = ['Cards']
   // #swagger.summary = 'Update a card (title, description, pin, narrative status, lifecycle, hidden, metadata)'
   // #swagger.description = 'id is the card\'s root chat id (any member chat id resolves to the same card). The patch merges into the root chat\'s metadata.card as a view-only write (no updated_at bump). Archiving the card — lifecycle "closed" or hidden true — also clears metadata.pinned on the chats in its tree unless agent settings set unpinChatsOnArchive to false; unarchiving never restores a pin.'
