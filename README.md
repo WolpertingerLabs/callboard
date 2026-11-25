@@ -429,7 +429,24 @@ npm version <version> -w @wolpertingerlabs/drawlatch --no-git-tag-version
 npm install
 ```
 
-Publish from CI rather than from a checkout; the publish workflow for both packages lands separately.
+Both packages are published by the **Publish to npm** workflow (`.github/workflows/publish.yml`), never with `npm publish` from a checkout. Bump the version(s), merge to `main`, then in GitHub → Actions → **Publish to npm** → **Run workflow** on `main`:
+
+- **`dry_run`** (on by default) runs everything except the publish and the tags: the release plan, the full `prepublishOnly` gate, and `npm publish --dry-run` for each package, so the log lists both tarballs. Run it first. npm still exchanges the job's OIDC token in a dry run, and the dry run fails if that exchange doesn't work, so it also checks the trusted-publisher setup below.
+- **`dist_tag`** (default `latest`) is passed as `--tag`; npm requires one for prerelease versions.
+
+What a run does, decided by `scripts/release-plan.mjs` and printed in the run summary:
+
+1. **Plan.** Fails if callboard's drawlatch pin isn't the workspace version. Then, for drawlatch, if its version isn't on npm, it will be published. If it is, nothing that ships may have changed under `packages/drawlatch` since the commit it was published from (its `drawlatch-v<version>` tag); otherwise the run fails with "bump drawlatch". Tests, fixtures, lint/test config, `CLAUDE.md`, `plans/` and example configs don't count. Callboard's version must not be on npm yet, or the run fails with "bump callboard" (a dry run only warns).
+2. **Gate.** `npm run prepublishOnly`: lint, clean build, every test suite and `deps:check`, once, before anything is published. The publishes then use `--ignore-scripts` instead of running it all again.
+3. **Publish drawlatch** (if needed), tag `drawlatch-v<version>`. **Publish callboard**, tag `v<version>`. Both use `--provenance --access public`; tags are annotated and pushed by `github-actions[bot]`.
+
+Re-running after a partial failure is safe. A package already on npm isn't published again. A missing tag is created on the commit npm recorded for that version. A tag already on the right commit is left alone. A tag on a different commit for a version that isn't on npm fails the run.
+
+Releasing only callboard is the common case: leave drawlatch's version alone and the run skips it, as long as drawlatch hasn't changed. Releasing a drawlatch change means bumping drawlatch (above) and callboard together, since callboard's pin moves.
+
+**One-time setup on npmjs.com.** Publishing uses [trusted publishing](https://docs.npmjs.com/trusted-publishers) (OIDC), so there is no npm token in the repo. For **each** of `@wolpertingerlabs/drawlatch` and `@wolpertingerlabs/callboard`: package → Settings → Trusted Publisher → GitHub Actions, with organization `WolpertingerLabs`, repository `callboard`, workflow filename `publish.yml` and no environment. For drawlatch, this replaces the publisher that pointed at the old standalone `drawlatch` repo. Once each package has published once this way, you can set Publishing access to "Require two-factor authentication and disallow tokens".
+
+After a release, `npm view @wolpertingerlabs/<package>@<version> dist.attestations` should show the provenance attestation.
 
 ## License
 
