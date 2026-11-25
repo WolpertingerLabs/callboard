@@ -16,6 +16,8 @@
 // ─────────────────────────────────────────────────────────────────────
 
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -39,15 +41,41 @@ export function partitionStaged(paths) {
   return { root, drawlatch };
 }
 
+/**
+ * Paths from `git diff --name-only -z`. Without -z, git C-quotes any path with
+ * non-ASCII bytes (`"src/caf\303\251.ts"`), which then matches no extension
+ * and is silently dropped.
+ */
+export function splitNulPaths(out) {
+  return out.split("\0").filter(Boolean);
+}
+
 function stagedPaths() {
-  const out = execFileSync("git", ["diff", "--name-only", "--cached", "--diff-filter=d", "HEAD"], { cwd: ROOT, encoding: "utf8" });
-  return out.split("\n").filter(Boolean);
+  const out = execFileSync("git", ["diff", "--name-only", "-z", "--cached", "--diff-filter=d", "HEAD"], { cwd: ROOT, encoding: "utf8" });
+  return splitNulPaths(out);
+}
+
+/**
+ * The repo's own eslint (hoisted to the root node_modules), never whatever
+ * `npx` would download when it is missing.
+ */
+function eslintBin() {
+  const require = createRequire(join(ROOT, "package.json"));
+  let pkgPath;
+  try {
+    pkgPath = require.resolve("eslint/package.json");
+  } catch {
+    console.error("eslint is not installed — run `npm install` at the repo root.");
+    process.exit(1);
+  }
+  const { bin } = JSON.parse(readFileSync(pkgPath, "utf8"));
+  return join(dirname(pkgPath), typeof bin === "string" ? bin : bin.eslint);
 }
 
 function eslint(cwd, files, fix) {
-  const args = ["eslint", "--no-warn-ignored", ...(fix ? ["--fix"] : []), "--", ...files];
+  const args = [eslintBin(), "--no-warn-ignored", ...(fix ? ["--fix"] : []), "--", ...files];
   try {
-    execFileSync("npx", args, { cwd, stdio: "inherit" });
+    execFileSync(process.execPath, args, { cwd, stdio: "inherit" });
     return true;
   } catch {
     return false;
