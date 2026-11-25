@@ -43,7 +43,7 @@ function setup() {
       refreshActivity: vi.fn(),
     }),
   );
-  return { hook, setMessages, clearInFlightMessages };
+  return { hook, setMessages, clearInFlightMessages, abortRef };
 }
 
 /** Let the stop's awaited request and any resolved fetches settle. */
@@ -113,6 +113,40 @@ describe("useStopController — a new send supersedes the stop", () => {
     expect(api.getMessages).not.toHaveBeenCalled();
     expect(setMessages).not.toHaveBeenCalled();
     expect(clearInFlightMessages).not.toHaveBeenCalled();
+  });
+
+  it("a send during the stop request itself arms neither the resync nor the deadline", async () => {
+    // Continue clicked while POST /stop is still out: cancelPendingStop runs
+    // before the timers exist. They must not be armed once the stop answers.
+    let answerStop!: (r: { stopped: boolean }) => void;
+    api.stopChat.mockImplementationOnce(() => new Promise((resolve) => (answerStop = resolve)));
+    const { hook, setMessages, clearInFlightMessages, abortRef } = setup();
+    abortRef.current = new AbortController(); // the stopped run's live stream
+    let stopping!: Promise<void>;
+    act(() => {
+      stopping = hook.result.current.handleStop();
+    });
+    await flush();
+
+    // The send: it supersedes the stop and owns the stream from here.
+    act(() => hook.result.current.cancelPendingStop());
+    const newRun = new AbortController();
+    abortRef.current = newRun;
+
+    await act(async () => {
+      answerStop({ stopped: true });
+      await stopping;
+    });
+    await act(async () => vi.advanceTimersByTime(11_000));
+    await flush();
+
+    expect(api.getMessages).not.toHaveBeenCalled();
+    expect(setMessages).not.toHaveBeenCalled();
+    expect(setMessages).not.toHaveBeenCalledWith(expect.arrayContaining([INTERRUPTED_NOTICE]));
+    expect(clearInFlightMessages).not.toHaveBeenCalled();
+    // The 10s deadline's local settle would have aborted the new run's stream.
+    expect(newRun.signal.aborted).toBe(false);
+    expect(abortRef.current).toBe(newRun);
   });
 
   it("cancelPendingStop also drops a resync already in flight", async () => {

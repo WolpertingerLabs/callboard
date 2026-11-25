@@ -165,6 +165,12 @@ export function useStopController({
       return;
     }
 
+    // A send during the stop request's round trip (Continue, say) runs
+    // cancelPendingStop before there is anything to cancel. Checked after the
+    // await: this stop has been superseded, and arming its resync or deadline
+    // then would write the stopped transcript over the new run, or abort the
+    // new run's stream.
+    const generation = stopGenerationRef.current;
     setStopping(true);
     // Hold off auto-reconnect until the registry admits the run is gone —
     // otherwise the poll's stale "active" (or a CLI-watcher session spawned
@@ -182,6 +188,11 @@ export function useStopController({
       setNetworkError("Failed to stop the session — it may still be running.");
       return;
     }
+
+    // Superseded while the request was out (see `generation` above): the new
+    // run owns the page now. This includes the `!stopped` settle below, whose
+    // finishStopLocally would abort the new run's stream too.
+    if (stopGenerationRef.current !== generation) return;
 
     // Nothing was running server-side: our view was stale, so just resync.
     if (!stopped) {
