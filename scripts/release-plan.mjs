@@ -25,10 +25,20 @@
  * - On npm from another commit: fail ("bump callboard"). A dry run warns
  *   instead and only packs, so a rehearsal still works before the bump.
  *
+ * Both
+ * - A package about to be published must not move the requested dist-tag
+ *   backwards. `--tag latest`, which the workflow always passes, turns off
+ *   npm's own check for that, so this one replaces it.
+ *
  * These make a re-run after any partial failure safe: whatever was published
  * is skipped, whatever was not is published, and a missing tag is created on
  * the commit that was actually published. A tag that already points at the
- * right commit is left alone; one that points anywhere else fails the run.
+ * right commit is left alone. A tag that points anywhere else fails the run, and
+ * so does a tag that disagrees with the commit npm recorded.
+ *
+ * `gitHead` is the commit npm records for a published version. The workflow
+ * publishes packed tarballs, which carry no gitHead of their own, so it writes
+ * one into each package.json before packing (`npm pkg set gitHead=<sha>`).
  */
 import { execFileSync } from "node:child_process";
 import { appendFileSync, readFileSync } from "node:fs";
@@ -58,6 +68,15 @@ export const callboardTag = (version) => `v${version}`;
  * from the workspace it was tested with.
  *
  * Patterns use git's `glob` pathspec magic, relative to packages/drawlatch.
+ *
+ * Not seen at all: shipping changes that start outside packages/drawlatch.
+ * The root package-lock.json decides which versions of drawlatch's frontend
+ * dependencies (react, react-router-dom, lucide-react) and build toolchain
+ * (vite, typescript) the build uses. A lockfile change can therefore change
+ * drawlatch's `frontend/dist` or `dist` without touching this directory. The
+ * lockfile also changes for callboard-only reasons, so counting it would flag
+ * nearly every release. When a lockfile change affects drawlatch's frontend or
+ * build toolchain, bump drawlatch's version by hand.
  */
 export const DRAWLATCH_NON_SHIPPING = [
   // Tests: tsconfig.json excludes them from dist, and Vite only bundles what
@@ -65,8 +84,9 @@ export const DRAWLATCH_NON_SHIPPING = [
   // is not a test file, so tsc emits it into dist and it ships.
   "**/*.test.ts",
   "**/*.test.tsx",
-  // Test fixtures; only tests import them.
-  "**/__fixtures__/**",
+  // JSON test fixtures, which only tests import. Only JSON: a .ts file here
+  // would still be emitted into dist.
+  "**/__fixtures__/**/*.json",
   // Test, lint and format config.
   "vitest.config.ts",
   "vitest.e2e.config.ts",
@@ -74,6 +94,9 @@ export const DRAWLATCH_NON_SHIPPING = [
   "tsconfig.eslint.json",
   ".prettierrc",
   ".prettierignore",
+  // With a `files` list, npm packs only what that list names; .gitignore
+  // can't add files to the tarball.
+  ".gitignore",
   // Contributor docs, design records and editor/agent config. .claude-plugin
   // is read from the GitHub repo by the Claude plugin marketplace, not npm.
   "CLAUDE.md",
@@ -88,17 +111,61 @@ export const DRAWLATCH_NON_SHIPPING = [
   "*.example.json",
 ];
 
-/** `git diff` pathspecs for "everything under packages/drawlatch that ships". */
-export function drawlatchDriftPathspec() {
-  return [DRAWLATCH_DIR, ...DRAWLATCH_NON_SHIPPING.map((p) => `:(glob,exclude)${DRAWLATCH_DIR}/${p}`)];
+/**
+ * Directories whose every file ships, whatever DRAWLATCH_NON_SHIPPING says.
+ * `build` copies src/connections into dist with `cp -r`, so a test or fixture
+ * there ships too.
+ */
+export const DRAWLATCH_ALWAYS_SHIPS = ["src/connections"];
+
+/**
+ * The `git diff` pathspec lists whose union is "everything under
+ * packages/drawlatch that ships". It takes two lists because git can't
+ * re-include a path once an exclude pattern has removed it.
+ */
+export function drawlatchDriftPathspecs() {
+  return [
+    [DRAWLATCH_DIR, ...DRAWLATCH_NON_SHIPPING.map((p) => `:(glob,exclude)${DRAWLATCH_DIR}/${p}`)],
+    DRAWLATCH_ALWAYS_SHIPS.map((p) => `${DRAWLATCH_DIR}/${p}`),
+  ];
+}
+
+/**
+ * Semver precedence, without a dependency: the plan runs before `npm ci`.
+ * Returns <0, 0 or >0. Build metadata is ignored, as the spec says.
+ */
+export function compareSemver(a, b) {
+  const parse = (v) => {
+    const m = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(String(v).trim());
+    if (!m) throw new Error(`not a semver version: ${v}`);
+    return { core: m.slice(1, 4).map(Number), pre: m[4] ? m[4].split(".") : [] };
+  };
+  const x = parse(a);
+  const y = parse(b);
+  for (let i = 0; i < 3; i++) if (x.core[i] !== y.core[i]) return x.core[i] - y.core[i];
+  if (!x.pre.length || !y.pre.length) return y.pre.length - x.pre.length; // a release outranks its prereleases
+  for (let i = 0; i < Math.max(x.pre.length, y.pre.length); i++) {
+    const p = x.pre[i];
+    const q = y.pre[i];
+    if (p === undefined) return -1;
+    if (q === undefined) return 1;
+    if (p === q) continue;
+    const pn = /^\d+$/.test(p);
+    const qn = /^\d+$/.test(q);
+    if (pn && qn) return Number(p) - Number(q);
+    if (pn !== qn) return pn ? -1 : 1; // numeric identifiers sort before alphanumeric ones
+    return p < q ? -1 : 1;
+  }
+  return 0;
 }
 
 /**
  * The pure decision. `drawlatch` and `callboard` are
- * `{ version, published, tagCommit, gitHead }`: `published` is whether that
- * version is on npm, `tagCommit` the commit its tag points at (null if there is
- * no tag) and `gitHead` the commit npm recorded for the published version (null
- * if unpublished or not recorded).
+ * `{ version, published, tagCommit, gitHead, distTags }`: `published` is
+ * whether that version is on npm, `tagCommit` the commit its tag points at
+ * (null if there is no tag), `gitHead` the commit npm recorded for the
+ * published version (null if unpublished or not recorded) and `distTags` the
+ * package's current dist-tags (`{ latest: "1.0.0" }`).
  *
  * `git` supplies the two repository questions: `isPublishBase(sha)` (sha is
  * HEAD or an ancestor of it and has packages/drawlatch in it, so it is a
@@ -113,7 +180,7 @@ export function drawlatchDriftPathspec() {
  * `tagCommit` of null means there is nothing to tag. When `errors` is non-empty
  * the run must stop before publishing anything.
  */
-export function planRelease({ dryRun, head, pins, drawlatch, callboard, git }) {
+export function planRelease({ dryRun, head, distTag, pins, drawlatch, callboard, git }) {
   const errors = [];
   const warnings = [];
 
@@ -137,14 +204,18 @@ export function planRelease({ dryRun, head, pins, drawlatch, callboard, git }) {
     else if (drawlatch.tagCommit !== head) errors.push(strayTag(dlTag, drawlatch.tagCommit, DRAWLATCH, drawlatch.version, "drawlatch"));
   } else {
     let base = null;
+    const gitHeadIsBase = Boolean(drawlatch.gitHead) && git.isPublishBase(drawlatch.gitHead);
     if (drawlatch.tagCommit) {
-      base = drawlatch.tagCommit;
-      if (drawlatch.gitHead && drawlatch.gitHead !== base) {
-        warnings.push(
-          `npm records ${DRAWLATCH}@${drawlatch.version} as published from ${drawlatch.gitHead}, but ${dlTag} points at ${base}. Checking drift against the tag.`,
+      if (gitHeadIsBase && drawlatch.gitHead !== drawlatch.tagCommit) {
+        // This workflow tags the commit it published from, so it never leaves
+        // this state behind: someone moved the tag, or published by hand.
+        errors.push(
+          `npm records ${DRAWLATCH}@${drawlatch.version} as published from ${drawlatch.gitHead}, but ${dlTag} points at ${drawlatch.tagCommit}. Move the tag to the published commit, or bump drawlatch.`,
         );
+      } else {
+        base = drawlatch.tagCommit;
       }
-    } else if (drawlatch.gitHead && git.isPublishBase(drawlatch.gitHead)) {
+    } else if (gitHeadIsBase) {
       base = drawlatch.gitHead;
       dl.tagCommit = base;
       warnings.push(`${DRAWLATCH}@${drawlatch.version} is on npm but ${dlTag} is missing. Tagging ${base}, the commit npm recorded for it.`);
@@ -185,6 +256,21 @@ export function planRelease({ dryRun, head, pins, drawlatch, callboard, git }) {
     errors.push(`${CALLBOARD}@${callboard.version} is already on npm. Bump callboard.`);
   }
 
+  // Never move a dist-tag backwards (e.g. a hotfix for an older line under
+  // `latest`). npm would refuse that for an implicit `latest`, but the
+  // workflow always passes --tag, which turns npm's check off.
+  for (const [name, pkg, action] of [
+    [DRAWLATCH, drawlatch, dl.action],
+    [CALLBOARD, callboard, cb.action],
+  ]) {
+    const current = pkg.distTags?.[distTag];
+    if (action === "publish" && current && compareSemver(pkg.version, current) < 0) {
+      errors.push(
+        `${name}@${pkg.version} is lower than ${current}, which the "${distTag}" dist-tag already points at. Publishing would move "${distTag}" backwards; run with another dist_tag (e.g. a hotfix tag).`,
+      );
+    }
+  }
+
   return { errors, warnings, drawlatch: dl, callboard: cb };
 }
 
@@ -194,57 +280,91 @@ function strayTag(tag, commit, name, version, bump) {
 
 // ── I/O ─────────────────────────────────────────────────────────────────────
 
-const run = (cmd, args) => execFileSync(cmd, args, { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+/** Runs a command and returns trimmed stdout; throws (with `.stderr`) on a non-zero exit. */
+export function runIn(cwd) {
+  return (cmd, args) => execFileSync(cmd, args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+}
+
+const isE404 = (err) => /\bE404\b/.test(`${err?.stderr ?? ""}\n${err?.stdout ?? ""}`);
 
 /** Every published version of `name`; [] if the package doesn't exist. Throws on any other registry error. */
-function publishedVersions(name) {
+export function publishedVersions(name, run) {
   try {
     const out = run("npm", ["view", name, "versions", "--json"]);
     return out ? [].concat(JSON.parse(out)) : [];
   } catch (err) {
-    if (/\bE404\b/.test(String(err.stderr ?? "")) || /\bE404\b/.test(String(err.stdout ?? ""))) return [];
-    throw new Error(`npm view ${name} failed:\n${err.stderr || err.message}`);
+    if (isE404(err)) return [];
+    throw new Error(`npm view ${name} versions failed:\n${err.stderr || err.message}`);
   }
 }
 
-function gitHeadOf(name, version) {
+/** The package's dist-tags; {} if the package doesn't exist. Throws on any other registry error. */
+export function distTagsOf(name, run) {
+  try {
+    const out = run("npm", ["view", name, "dist-tags", "--json"]);
+    return out ? JSON.parse(out) : {};
+  } catch (err) {
+    if (isE404(err)) return {};
+    throw new Error(`npm view ${name} dist-tags failed:\n${err.stderr || err.message}`);
+  }
+}
+
+function gitHeadOf(name, version, run) {
   const out = run("npm", ["view", `${name}@${version}`, "gitHead"]);
   return /^[0-9a-f]{40}$/.test(out) ? out : null;
 }
 
-function tagCommit(tag) {
-  try {
-    return run("git", ["rev-parse", "-q", "--verify", `refs/tags/${tag}^{commit}`]);
-  } catch {
-    return null;
-  }
-}
-
-function packageState(name, version, tag) {
-  const published = publishedVersions(name).includes(version);
-  return { version, published, tagCommit: tagCommit(tag), gitHead: published ? gitHeadOf(name, version) : null };
-}
-
-const repoGit = {
-  isPublishBase(sha) {
+/** The repository questions planRelease asks, answered by git in `cwd`. */
+export function repoGit(cwd) {
+  const run = runIn(cwd);
+  const ok = (args) => {
     try {
-      run("git", ["merge-base", "--is-ancestor", sha, "HEAD"]);
-      run("git", ["cat-file", "-e", `${sha}:${DRAWLATCH_DIR}/package.json`]);
+      run("git", args);
       return true;
     } catch {
       return false;
     }
-  },
-  driftFiles(sha) {
-    const out = run("git", ["diff", "--name-only", sha, "HEAD", "--", ...drawlatchDriftPathspec()]);
-    return out ? out.split("\n") : [];
-  },
-};
+  };
+  return {
+    tagCommit(tag) {
+      try {
+        return run("git", ["rev-parse", "-q", "--verify", `refs/tags/${tag}^{commit}`]);
+      } catch {
+        return null;
+      }
+    },
+    isPublishBase(sha) {
+      return ok(["merge-base", "--is-ancestor", sha, "HEAD"]) && ok(["cat-file", "-e", `${sha}:${DRAWLATCH_DIR}/package.json`]);
+    },
+    driftFiles(sha) {
+      const files = new Set();
+      for (const pathspec of drawlatchDriftPathspecs()) {
+        const out = run("git", ["diff", "--name-only", sha, "HEAD", "--", ...pathspec]);
+        if (out) for (const f of out.split("\n")) files.add(f);
+      }
+      return [...files].sort();
+    },
+  };
+}
+
+function packageState(name, version, tag, run, git) {
+  const published = publishedVersions(name, run).includes(version);
+  return {
+    version,
+    published,
+    tagCommit: git.tagCommit(tag),
+    gitHead: published ? gitHeadOf(name, version, run) : null,
+    distTags: distTagsOf(name, run),
+  };
+}
 
 const readJson = (rel) => JSON.parse(readFileSync(join(ROOT, rel), "utf8"));
 
 function main() {
   const dryRun = process.env.DRY_RUN !== "false";
+  const distTag = process.env.DIST_TAG || "latest";
+  const run = runIn(ROOT);
+  const git = repoGit(ROOT);
   const rootPkg = readJson("package.json");
   const backendPkg = readJson("backend/package.json");
   const dlPkg = readJson(`${DRAWLATCH_DIR}/package.json`);
@@ -253,19 +373,21 @@ function main() {
   const plan = planRelease({
     dryRun,
     head,
+    distTag,
     pins: {
       "package.json": rootPkg.dependencies?.[DRAWLATCH],
       "backend/package.json": backendPkg.dependencies?.[DRAWLATCH],
     },
-    drawlatch: packageState(DRAWLATCH, dlPkg.version, drawlatchTag(dlPkg.version)),
-    callboard: packageState(CALLBOARD, rootPkg.version, callboardTag(rootPkg.version)),
-    git: repoGit,
+    drawlatch: packageState(DRAWLATCH, dlPkg.version, drawlatchTag(dlPkg.version), run, git),
+    callboard: packageState(CALLBOARD, rootPkg.version, callboardTag(rootPkg.version), run, git),
+    git,
   });
 
   for (const w of plan.warnings) console.log(`::warning::${w}`);
   for (const e of plan.errors) console.log(`::error::${e}`);
 
   const outputs = {
+    head,
     drawlatch_version: dlPkg.version,
     drawlatch_action: plan.drawlatch.action,
     drawlatch_tag: drawlatchTag(dlPkg.version),
@@ -282,7 +404,7 @@ function main() {
   if (process.env.GITHUB_STEP_SUMMARY) {
     const tagCell = (tag, commit) => (commit ? `\`${tag}\` → \`${commit.slice(0, 12)}\`` : "—");
     const md = [
-      `## Release plan${dryRun ? " (dry run)" : ""}`,
+      `## Release plan${dryRun ? " (dry run)" : ""}, dist-tag \`${distTag}\``,
       "",
       "| Package | Version | Action | Tag |",
       "| --- | --- | --- | --- |",
