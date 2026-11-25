@@ -9,7 +9,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { compareSemver, distTagsOf, planRelease, publishedVersions, repoGit } from "./release-plan.mjs";
+import { compareSemver, distTagError, distTagsOf, isSemverRange, planRelease, publishedVersions, repoGit } from "./release-plan.mjs";
 
 const HEAD = "a".repeat(40);
 const OLD = "b".repeat(40);
@@ -171,6 +171,15 @@ describe("planRelease", () => {
       expect(p.callboard).toEqual({ action: "skip", tagCommit: null });
     });
 
+    it("fails when v<version> and the commit npm recorded disagree, in a dry run too", () => {
+      for (const dryRun of [false, true]) {
+        const p = plan({ dryRun, callboard: { published: true, tagCommit: OLD, gitHead: OTHER } });
+        expect(p.errors).toHaveLength(1);
+        expect(p.errors[0]).toMatch(/published from c{40}, but v1\.0\.0-alpha\.67 points at b{40}/);
+        expect(p.callboard).toEqual({ action: "skip", tagCommit: null });
+      }
+    });
+
     it("published from this commit but tagged elsewhere is a conflict", () => {
       const p = plan({ callboard: { published: true, tagCommit: OTHER, gitHead: HEAD } });
       expect(p.errors).toHaveLength(1);
@@ -185,6 +194,16 @@ describe("planRelease", () => {
   });
 
   describe("dist-tag", () => {
+    it.each(["", "  ", "1.2.3", "^1.0.0", "v1", "1.x", "*", ">=1 <2", "1 || 2", "next tag"])("rejects dist_tag %j", (distTag) => {
+      const p = plan({ distTag });
+      expect(p.errors).toHaveLength(1);
+      expect(p.errors[0]).toMatch(/^dist_tag /);
+    });
+
+    it.each(["latest", "next", "beta", "hotfix-1", "alpha.1"])("accepts dist_tag %j", (distTag) => {
+      expect(plan({ distTag }).errors).toEqual([]);
+    });
+
     it("refuses to move the dist-tag backwards", () => {
       const p = plan({ drawlatch: { distTags: { latest: "1.0.0-alpha.70" } }, callboard: { distTags: { latest: "1.0.0" } } });
       expect(p.errors).toHaveLength(2);
@@ -374,5 +393,40 @@ describe("compareSemver", () => {
   it("ignores build metadata and rejects garbage", () => {
     expect(compareSemver("1.0.0+abc", "1.0.0")).toBe(0);
     expect(() => compareSemver("latest", "1.0.0")).toThrow(/not a semver/);
+  });
+});
+
+describe("isSemverRange / distTagError", () => {
+  // Cross-checked against npm's bundled node-semver (validRange !== null).
+  it.each([
+    "1.2.3",
+    "^1.0.0",
+    "~1.2",
+    "v1",
+    "x",
+    "*",
+    "1.x",
+    "1.2.x",
+    "1 - 2",
+    ">=1 <2",
+    "1 || 2",
+    ">= 1.2.3",
+    "=1.0.0",
+    "1.0.0-alpha.1",
+    "",
+    "0",
+    "1.0.0-rc.1+build",
+  ])("%j is a range", (r) => expect(isSemverRange(r)).toBe(true));
+
+  it.each(["latest", "next", "beta", "hotfix", "hotfix-1", "alpha.1", "v-next", "1.2.3.4", "latest2", "x1"])("%j is not a range", (r) => {
+    expect(isSemverRange(r)).toBe(false);
+  });
+
+  it("explains each rejection", () => {
+    expect(distTagError("latest")).toBe(null);
+    expect(distTagError("")).toMatch(/empty/);
+    expect(distTagError(undefined)).toMatch(/empty/);
+    expect(distTagError(" next")).toMatch(/whitespace/);
+    expect(distTagError("1.x")).toMatch(/valid semver range/);
   });
 });

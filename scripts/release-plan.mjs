@@ -112,9 +112,11 @@ export const DRAWLATCH_NON_SHIPPING = [
 ];
 
 /**
- * Directories whose every file ships, whatever DRAWLATCH_NON_SHIPPING says.
- * `build` copies src/connections into dist with `cp -r`, so a test or fixture
- * there ships too.
+ * Directories where every change counts, whatever DRAWLATCH_NON_SHIPPING says.
+ * `build` copies src/connections into dist with `cp -r`, so a fixture or any
+ * other file there ships. Test files there don't (`files` has
+ * `!dist/**\/*.test.*`), but counting them too is deliberate: it can only cause
+ * an unneeded bump, never a missed one.
  */
 export const DRAWLATCH_ALWAYS_SHIPS = ["src/connections"];
 
@@ -160,6 +162,40 @@ export function compareSemver(a, b) {
 }
 
 /**
+ * True if `range` is a valid semver range, as far as npm's dist-tag rule is
+ * concerned: `npm publish --tag` rejects any tag that is one ("1.2.3", "^1",
+ * "v1", "1.x", "*", "1 - 2", ">=1 <2", "1 || 2"), because `npm install
+ * pkg@<tag>` couldn't tell them apart. Mirrors node-semver's grammar closely
+ * enough for that; no dependency, since the plan runs before `npm ci`.
+ */
+export function isSemverRange(range) {
+  const part = "(?:x|X|\\*|0|[1-9]\\d*)";
+  const comparator = new RegExp(`^(?:<=|>=|<|>|=|~>?|\\^)?\\s*v?${part}(?:\\.${part}(?:\\.${part}(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?)?)?$`);
+  const trimmed = String(range).trim();
+  if (trimmed === "") return true; // node-semver reads "" as "*"
+  return trimmed.split("||").every((set) => {
+    const s = set.trim();
+    if (s === "") return true;
+    const hyphen = /^(\S+)\s+-\s+(\S+)$/.exec(s);
+    if (hyphen) return comparator.test(hyphen[1]) && comparator.test(hyphen[2]);
+    // node-semver allows a space between an operator and its version (">= 1").
+    return s
+      .replace(/(<=|>=|<|>|=|~>?|\^)\s+/g, "$1")
+      .split(/\s+/)
+      .every((c) => comparator.test(c));
+  });
+}
+
+/** Why `distTag` can't be used with `npm publish --tag`, or null if it can. */
+export function distTagError(distTag) {
+  if (typeof distTag !== "string" || distTag.trim() === "") return "dist_tag is empty. Use latest, or another dist-tag name such as next or hotfix.";
+  if (distTag !== distTag.trim() || /\s/.test(distTag)) return `dist_tag ${JSON.stringify(distTag)} contains whitespace.`;
+  if (isSemverRange(distTag))
+    return `dist_tag ${JSON.stringify(distTag)} is a valid semver range, which npm refuses as a dist-tag. Use a name such as next or hotfix.`;
+  return null;
+}
+
+/**
  * The pure decision. `drawlatch` and `callboard` are
  * `{ version, published, tagCommit, gitHead, distTags }`: `published` is
  * whether that version is on npm, `tagCommit` the commit its tag points at
@@ -183,6 +219,9 @@ export function compareSemver(a, b) {
 export function planRelease({ dryRun, head, distTag, pins, drawlatch, callboard, git }) {
   const errors = [];
   const warnings = [];
+
+  const tagProblem = distTagError(distTag);
+  if (tagProblem) errors.push(tagProblem);
 
   // Lockstep: callboard's published dependency must be the workspace version.
   // deps:check enforces this too, but it runs later, inside the gate.
@@ -239,7 +278,12 @@ export function planRelease({ dryRun, head, distTag, pins, drawlatch, callboard,
   const cb = { action: "skip", tagCommit: null };
   const cbTag = callboardTag(callboard.version);
   const tagElsewhere = callboard.tagCommit !== null && callboard.tagCommit !== head;
-  if (!callboard.published) {
+  if (callboard.published && callboard.tagCommit && callboard.gitHead && callboard.gitHead !== callboard.tagCommit) {
+    // As for drawlatch: this workflow tags the commit it published from.
+    errors.push(
+      `npm records ${CALLBOARD}@${callboard.version} as published from ${callboard.gitHead}, but ${cbTag} points at ${callboard.tagCommit}. Move the tag to the published commit, or bump callboard.`,
+    );
+  } else if (!callboard.published) {
     cb.action = "publish";
     if (!callboard.tagCommit) cb.tagCommit = head;
     else if (tagElsewhere) errors.push(strayTag(cbTag, callboard.tagCommit, CALLBOARD, callboard.version, "callboard"));
@@ -264,7 +308,7 @@ export function planRelease({ dryRun, head, distTag, pins, drawlatch, callboard,
     [CALLBOARD, callboard, cb.action],
   ]) {
     const current = pkg.distTags?.[distTag];
-    if (action === "publish" && current && compareSemver(pkg.version, current) < 0) {
+    if (!tagProblem && action === "publish" && current && compareSemver(pkg.version, current) < 0) {
       errors.push(
         `${name}@${pkg.version} is lower than ${current}, which the "${distTag}" dist-tag already points at. Publishing would move "${distTag}" backwards; run with another dist_tag (e.g. a hotfix tag).`,
       );
@@ -362,7 +406,7 @@ const readJson = (rel) => JSON.parse(readFileSync(join(ROOT, rel), "utf8"));
 
 function main() {
   const dryRun = process.env.DRY_RUN !== "false";
-  const distTag = process.env.DIST_TAG || "latest";
+  const distTag = process.env.DIST_TAG ?? "latest"; // not ||: an emptied input must fail, not become latest
   const run = runIn(ROOT);
   const git = repoGit(ROOT);
   const rootPkg = readJson("package.json");
