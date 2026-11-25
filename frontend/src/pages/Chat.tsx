@@ -5,7 +5,7 @@ import ComputerUseHeader from "../components/ComputerUseHeader";
 import { usePendingFeedback } from "../hooks/usePendingFeedback";
 import { useComputerUseController } from "../hooks/useComputerUseController";
 import ComputerUsePanel from "../components/ComputerUsePanel";
-import { memo, useId, useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, type ReactNode } from "react";
+import { memo, useId, useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import { useParams, useNavigate, useSearchParams, useLocation, useNavigationType } from "react-router-dom";
 import {
   RotateCw,
@@ -99,7 +99,7 @@ import { providerKindOf, useChatMeta } from "../hooks/useChatMeta";
 import { isRetiredProviderId } from "../utils/retiredProviders";
 import { INTERRUPTED_MESSAGE, INTERRUPTED_NOTICE, useStopController } from "../hooks/useStopController";
 import { ContinueButton, ContinuedDivider } from "../components/ContinueAfterInterrupt";
-import { CONTINUE_PROMPT, endsWithInterruption, isContinuePrompt } from "../utils/continueAfterInterrupt";
+import { CONTINUE_PROMPT, endsWithUserStop, isContinuePrompt } from "../utils/continueAfterInterrupt";
 import { useMessageNavigation } from "../hooks/useMessageNavigation";
 import { useStableStarred, useStarredMessages, useStarredNavigation } from "../hooks/useStarredMessages";
 import { resolveStarred, starKeysByIndex } from "../utils/starredMessages";
@@ -453,7 +453,20 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
   // from this.
   const chatMeta = useChatMeta(chat?.metadata);
   const [info, setInfo] = useState<NewChatInfo | null>(null);
-  const [messages, setMessages] = useState<ParsedMessage[]>([]);
+  const [messages, setMessagesState] = useState<ParsedMessage[]>([]);
+  // The chat the transcript on screen was loaded for. Switching chats does not
+  // clear `messages` (the component is not keyed by id), so for a moment the
+  // previous chat's transcript sits under the new id — and anything that acts
+  // on the transcript (the Continue button) must not act on it there. Every
+  // write is made under the page's `currentIdRef` staleness guard, so that is
+  // whose transcript it is.
+  // Track the current chat ID for staleness detection in closures.
+  const currentIdRef = useRef<string | undefined>(id);
+  const [messagesFor, setMessagesFor] = useState<string | undefined>(undefined);
+  const setMessages = useCallback<Dispatch<SetStateAction<ParsedMessage[]>>>((value) => {
+    setMessagesFor(currentIdRef.current);
+    setMessagesState(value);
+  }, []);
   const [streaming, setStreaming] = useState(transitionInFlightMessages.length > 0);
   const [responseError, setResponseError] = useState("");
   const [controlNotice, setControlNotice] = useState("");
@@ -622,7 +635,6 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
   const bottomRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const hasReceivedFirstResponseRef = useRef<boolean>(false);
-  const currentIdRef = useRef<string | undefined>(id);
   /**
    * Re-read `/pending` and show what the daemon is waiting on now. For the
    * moments a card goes without this tab answering it — taken down by
@@ -1766,7 +1778,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
         }
       }
     },
-    [id, resetStreamingTimeout, refreshActivityAfterStreamEnd],
+    [id, resetStreamingTimeout, refreshActivityAfterStreamEnd, setMessages],
   );
 
   // Connect to an existing SSE stream (e.g. after page refresh)
@@ -1879,7 +1891,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
       // nulling that one lets the next registry tick open a second stream.
       if (abortRef.current === controller) abortRef.current = null;
     }
-  }, [id, readSSE, refreshActivityAfterStreamEnd, resetReconnectBackoff, scheduleReconnectWake]);
+  }, [id, readSSE, refreshActivityAfterStreamEnd, resetReconnectBackoff, scheduleReconnectWake, setMessages]);
 
   // Reset run state when the chat changes. Must be declared before the
   // auto-connect effect below: effects run in declaration order, and switching
@@ -1968,7 +1980,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
     setNetworkError(null);
     setStreaming(true);
     connectToStream();
-  }, [id, globalSessionActive, streaming, connectToStream, reconnectWake, resetReconnectBackoff, scheduleReconnectWake]);
+  }, [id, globalSessionActive, streaming, connectToStream, reconnectWake, resetReconnectBackoff, scheduleReconnectWake, setMessages]);
 
   // Safety net: if the session registry reports the session *transitioned* from
   // active → inactive, always clean up streaming state.
@@ -2049,7 +2061,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
 
     document.addEventListener("visibilitychange", handleVisibilityResume);
     return () => document.removeEventListener("visibilitychange", handleVisibilityResume);
-  }, [id]);
+  }, [id, setMessages]);
 
   // Keep the dock honest while a run is live.
   //
@@ -2162,7 +2174,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
     return () => {
       current = false;
     };
-  }, [folder, id, newChatSpaceId]);
+  }, [folder, id, newChatSpaceId, setMessages]);
 
   // Load existing chat data (only when id is available)
   useEffect(() => {
@@ -2261,7 +2273,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
         abortRef.current = null;
       }
     };
-  }, [id, loadSlashCommands, latchNow]);
+  }, [id, loadSlashCommands, latchNow, setMessages]);
 
   // ── Smart auto-scroll ──
   //
@@ -2726,6 +2738,10 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
     onChatListRefreshRef.current?.();
   }, [activeDraftId, draftRestore]);
 
+  // useStopController's cancelPendingStop, for handleSend, which is defined
+  // before the hook is called.
+  const cancelPendingStopRef = useRef<() => void>(() => {});
+
   const handleSend = useCallback(
     /**
      * `notFromComposer` marks a send that isn't the composer's contents — the
@@ -2767,6 +2783,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
       setNetworkError(null); // Clear any previous network errors
       streamCompletedRef.current = false; // Reset so new message can stream
       suppressReconnectAfterStopRef.current = false; // A new run supersedes any stop we're still settling
+      cancelPendingStopRef.current(); // ...including its delayed resync, which would write the stopped run's transcript over this one
       resetReconnectBackoff(); // ...and any failures to attach to the old one
       shownStreamErrorRef.current = null; // ...and the old run's error
 
@@ -4002,7 +4019,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
   // timeout fired — the server-side session is still running and can be aborted
   // via the /stop API regardless of frontend connection state.
   // CLI sessions are excluded because the server doesn't control their execution.
-  const { stopping, canStop, handleStop } = useStopController({
+  const { stopping, canStop, handleStop, cancelPendingStop } = useStopController({
     id,
     streaming,
     stoppable: !nativeAgent && (streaming || globalSessionActive?.type === "web"),
@@ -4019,12 +4036,21 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
     refreshActivity,
   });
 
-  // The Continue button: offered when the last turn was stopped and nothing
-  // has happened since, and only where the composer could send the prompt
-  // itself — no run live here or elsewhere, nothing on its way, no block on
-  // sending, and a harness that still takes messages.
+  useEffect(() => {
+    cancelPendingStopRef.current = cancelPendingStop;
+  }, [cancelPendingStop]);
+
+  // The Continue button: offered when the user stopped the last run and
+  // nothing has happened since (see endsWithUserStop), and only where the
+  // composer could send the prompt itself — no run live here or elsewhere,
+  // nothing on its way or held for later, no block on sending, and a harness
+  // that still takes messages. Both the chat record and the transcript must
+  // be this route's: right after a switch they can still be the previous
+  // chat's, and Continue would post that chat's resume to this one.
   const continueOffered =
     !!id &&
+    chatIsForRoute &&
+    messagesFor === id &&
     !streaming &&
     !stopping &&
     !globalSessionActive &&
@@ -4032,7 +4058,8 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
     !isRetiredHarness &&
     !composerBlockedReason &&
     visibleInFlightMessages.length === 0 &&
-    endsWithInterruption(messages);
+    heldMessages.length === 0 &&
+    endsWithUserStop(messages, chat?.stoppedByUserAt);
   // Not the composer's contents (see handleSend): an open draft stays put.
   const handleContinue = useCallback(() => handleSend(CONTINUE_PROMPT, undefined, { notFromComposer: true }), [handleSend]);
 
@@ -4070,7 +4097,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
       setStreaming(true);
       connectToStream();
     }
-  }, [globalSessionActive, streaming, connectToStream, id, resetReconnectBackoff]);
+  }, [globalSessionActive, streaming, connectToStream, id, resetReconnectBackoff, setMessages]);
 
   const {
     userMessageIndices,

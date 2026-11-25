@@ -1,51 +1,77 @@
 import { describe, expect, it } from "vitest";
 import type { ParsedMessage } from "../api";
 import { actionWithdrawnNotice, formatRideAlongBlock } from "shared/types/rideAlong.js";
-import { INTERRUPTED_NOTICE } from "../hooks/useStopController";
-import { CONTINUE_PROMPT, endsWithInterruption, isContinuePrompt } from "./continueAfterInterrupt";
+import { CONTINUE_PROMPT, INTERRUPTED_NOTICE, endsWithUserStop, isContinuePrompt } from "./continueAfterInterrupt";
 import { endsWithInterruptMarker } from "./inFlightMessages";
 
-const user = (content: string): ParsedMessage => ({ role: "user", type: "text", content });
-const assistant = (content: string, extra: Partial<ParsedMessage> = {}): ParsedMessage => ({ role: "assistant", type: "text", content, ...extra });
+const T0 = "2026-11-25T10:00:00.000Z";
+const STOPPED = "2026-11-25T10:05:00.000Z";
+const LATER = "2026-11-25T10:06:00.000Z";
+
+const user = (content: string, timestamp = T0): ParsedMessage => ({ role: "user", type: "text", content, timestamp });
+const assistant = (content: string, extra: Partial<ParsedMessage> = {}): ParsedMessage => ({ role: "assistant", type: "text", content, timestamp: T0, ...extra });
 const system = (content: string, subtype?: string): ParsedMessage => ({ role: "system", type: "system", content, ...(subtype && { subtype }) });
+/** What the parsers persist for a harness-recorded interruption — including a permission denial. */
 const harnessMarker = system("Interrupted by user", "interrupted");
 
-describe("endsWithInterruption", () => {
-  it("is true for the harness's persisted marker at the end", () => {
-    expect(endsWithInterruption([user("go"), assistant("partial"), harnessMarker])).toBe(true);
+describe("endsWithUserStop — the persisted flag", () => {
+  it("offers Continue after a reload when the chat record says the user stopped it", () => {
+    // What a reload sees for Claude Code and Codex: Callboard's Stop leaves
+    // nothing in the session log, so the transcript just ends mid-work.
+    expect(endsWithUserStop([user("go"), assistant("partial")], STOPPED)).toBe(true);
+    expect(endsWithUserStop([user("go"), assistant("partial"), harnessMarker], STOPPED)).toBe(true);
   });
 
-  it("is true for the page's local notice when the harness wrote none", () => {
-    expect(endsWithInterruption([user("go"), assistant("partial"), INTERRUPTED_NOTICE])).toBe(true);
+  it("is withdrawn by a user prompt sent after the stop, before the cleared flag is seen", () => {
+    expect(endsWithUserStop([user("go"), assistant("partial"), user("next", LATER)], STOPPED)).toBe(false);
+    expect(endsWithUserStop([user("go"), assistant("partial"), user(CONTINUE_PROMPT, LATER), assistant("resumed")], STOPPED)).toBe(false);
+  });
+
+  it("ignores a malformed flag", () => {
+    expect(endsWithUserStop([user("go"), assistant("partial")], "not a time")).toBe(false);
+  });
+
+  it("is false with no flag and no local notice", () => {
+    expect(endsWithUserStop([], undefined)).toBe(false);
+    expect(endsWithUserStop([user("hi"), assistant("done")], undefined)).toBe(false);
+  });
+});
+
+describe("endsWithUserStop — the live notice", () => {
+  it("offers Continue right after a Stop in this tab", () => {
+    expect(endsWithUserStop([user("go"), assistant("partial"), INTERRUPTED_NOTICE], undefined)).toBe(true);
   });
 
   it("looks past other trailing system rows (an abandoned-task marker, a compaction)", () => {
-    const messages = [assistant("partial"), INTERRUPTED_NOTICE, system("1 background task was stopped", "background_task"), system("Compacted", "compact_boundary")];
-    expect(endsWithInterruption(messages)).toBe(true);
+    const messages = [assistant("partial"), system("1 background task was stopped", "background_task"), INTERRUPTED_NOTICE, system("Compacted", "compact_boundary")];
+    expect(endsWithUserStop(messages, undefined)).toBe(true);
   });
 
-  it("is true for a last message pi recorded as aborted", () => {
-    expect(endsWithInterruption([user("go"), assistant("partial", { stopReason: "aborted" })])).toBe(true);
-    expect(endsWithInterruption([user("go"), assistant("partial", { stopReason: "aborted" }), system("Compacted", "compact_boundary")])).toBe(true);
+  it("does not count a notice from an earlier turn", () => {
+    expect(endsWithUserStop([assistant("partial"), INTERRUPTED_NOTICE, user("next"), assistant("answer")], undefined)).toBe(false);
+  });
+});
+
+describe("endsWithUserStop — what never offers Continue", () => {
+  it("is false for the harness's marker alone — a permission denial writes the same one", () => {
+    // "[Request interrupted by user for tool use]" after a Deny or a policy
+    // auto-deny: "run it again" would undo the denial.
+    expect(endsWithUserStop([user("go"), assistant("rm -rf", { type: "tool_use" }), harnessMarker], undefined)).toBe(false);
   });
 
-  it("is false once anything real follows the interruption", () => {
-    expect(endsWithInterruption([harnessMarker, user("next")])).toBe(false);
-    expect(endsWithInterruption([harnessMarker, user(CONTINUE_PROMPT), assistant("resumed")])).toBe(false);
-    expect(endsWithInterruption([assistant("partial", { stopReason: "aborted" }), user("next")])).toBe(false);
+  it("is false for a pi turn recorded as aborted, without the flag", () => {
+    expect(endsWithUserStop([user("go"), assistant("partial", { stopReason: "aborted" }), harnessMarker], undefined)).toBe(false);
   });
 
-  it("is false for an uninterrupted or empty transcript", () => {
-    expect(endsWithInterruption([])).toBe(false);
-    expect(endsWithInterruption([user("hi"), assistant("done", { stopReason: "end_turn" })])).toBe(false);
-    expect(endsWithInterruption([user("hi"), assistant("done"), system("Agent reached the maximum turn limit (50).")])).toBe(false);
+  it("is false for other end-of-run notices", () => {
+    expect(endsWithUserStop([user("hi"), assistant("done"), system("Agent reached the maximum turn limit (50).")], undefined)).toBe(false);
   });
 });
 
 describe("INTERRUPTED_NOTICE", () => {
   it("is what endsWithInterruptMarker already treats as a marker", () => {
-    // The local notice now carries the subtype; the dedupe callers only ever
-    // test a freshly fetched transcript, so this does not hide a needed notice.
+    // The dedupe callers only ever test a freshly fetched transcript, so the
+    // subtype on the local notice does not hide a notice that is needed.
     expect(endsWithInterruptMarker([assistant("partial"), INTERRUPTED_NOTICE])).toBe(true);
   });
 });

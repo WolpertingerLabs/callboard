@@ -1,0 +1,105 @@
+/**
+ * The stop's delayed transcript resync must not outlive a new send.
+ *
+ * handleStop arms a resync ~2.5s out, to pick up the partial output the
+ * harness flushes as it dies. Continue (or any send) inside that window starts
+ * a new run; if the resync still lands it writes the stopped run's transcript,
+ * with a "Session was interrupted." notice, over the new run's, and clears the
+ * new run's in-flight bubble. cancelPendingStop is what every send calls.
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, renderHook } from "@testing-library/react";
+import type { ParsedMessage } from "../api";
+
+const api = vi.hoisted(() => ({
+  stopChat: vi.fn(async () => ({ stopped: true })),
+  getChat: vi.fn(async () => ({ id: "chat-1" })),
+  getMessages: vi.fn(async (): Promise<ParsedMessage[]> => [{ role: "assistant", type: "text", content: "partial" }]),
+}));
+vi.mock("../api", () => api);
+
+const { useStopController, INTERRUPTED_NOTICE } = await import("./useStopController");
+
+function setup() {
+  const setMessages = vi.fn();
+  const clearInFlightMessages = vi.fn();
+  const abortRef = { current: null as AbortController | null };
+  const hook = renderHook(() =>
+    useStopController({
+      id: "chat-1",
+      streaming: false,
+      stoppable: true,
+      abortRef,
+      tempChatIdRef: { current: null },
+      currentIdRef: { current: "chat-1" },
+      suppressReconnectAfterStopRef: { current: false },
+      setStreaming: vi.fn(),
+      setPendingAction: vi.fn(),
+      setNetworkError: vi.fn(),
+      setChat: vi.fn(),
+      setMessages,
+      clearInFlightMessages,
+      refreshActivity: vi.fn(),
+    }),
+  );
+  return { hook, setMessages, clearInFlightMessages };
+}
+
+/** Let the stop's awaited request and any resolved fetches settle. */
+async function flush() {
+  await act(async () => {
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+  });
+}
+
+beforeEach(() => {
+  vi.useFakeTimers();
+  vi.clearAllMocks();
+});
+afterEach(() => vi.useRealTimers());
+
+describe("useStopController — a new send supersedes the stop", () => {
+  it("without a send, the delayed resync appends the local notice", async () => {
+    const { hook, setMessages } = setup();
+    await act(() => hook.result.current.handleStop());
+    await flush();
+    setMessages.mockClear();
+
+    await act(async () => vi.advanceTimersByTime(3_000));
+    await flush();
+    expect(setMessages).toHaveBeenCalledWith([{ role: "assistant", type: "text", content: "partial" }, INTERRUPTED_NOTICE]);
+  });
+
+  it("cancelPendingStop drops the delayed resync, so it cannot overwrite the new run", async () => {
+    const { hook, setMessages, clearInFlightMessages } = setup();
+    await act(() => hook.result.current.handleStop());
+    await flush();
+    setMessages.mockClear();
+    clearInFlightMessages.mockClear();
+    api.getMessages.mockClear();
+
+    act(() => hook.result.current.cancelPendingStop());
+    await act(async () => vi.advanceTimersByTime(3_000));
+    await flush();
+    expect(api.getMessages).not.toHaveBeenCalled();
+    expect(setMessages).not.toHaveBeenCalled();
+    expect(clearInFlightMessages).not.toHaveBeenCalled();
+  });
+
+  it("cancelPendingStop also drops a resync already in flight", async () => {
+    let answer: (m: ParsedMessage[]) => void = () => {};
+    const { hook, setMessages, clearInFlightMessages } = setup();
+    await act(() => hook.result.current.handleStop());
+    await flush();
+    setMessages.mockClear();
+    clearInFlightMessages.mockClear();
+
+    api.getMessages.mockImplementationOnce(() => new Promise<ParsedMessage[]>((resolve) => (answer = resolve)));
+    await act(async () => vi.advanceTimersByTime(3_000));
+    act(() => hook.result.current.cancelPendingStop());
+    answer([{ role: "assistant", type: "text", content: "stale" }]);
+    await flush();
+    expect(setMessages).not.toHaveBeenCalled();
+    expect(clearInFlightMessages).not.toHaveBeenCalled();
+  });
+});
