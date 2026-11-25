@@ -430,7 +430,7 @@ npm version <version> -w @wolpertingerlabs/drawlatch --no-git-tag-version
 npm install
 ```
 
-Publish from CI rather than from a checkout; the publish workflow for both packages lands separately. drawlatch must be on npm before callboard: callboard's `prepublishOnly` runs `npm run deps:check:registry`, which fails unless the pinned drawlatch version is published (it needs the network, so CI doesn't run it).
+Publish from CI rather than from a checkout; the publish workflow for both packages lands separately. drawlatch must be on npm before callboard. `npm run deps:check:registry` fails unless the pinned drawlatch version is published; it needs only Node and `npm` (no install or build) and the network, so CI doesn't run it. Callboard's `prepublishOnly` runs the same check, but skips it when `CALLBOARD_SKIP_REGISTRY_CHECK=1`: the publish workflow sets that, because it runs `prepublishOnly` before publishing drawlatch, and runs `deps:check:registry` itself before publishing callboard. A manual publish checks by default.
 
 ## License
 
