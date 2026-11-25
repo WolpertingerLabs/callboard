@@ -7,6 +7,14 @@ import { endsWithInterruptMarker } from "../utils/inFlightMessages";
 // terminal event reports the abort and when we settle the stop locally.
 export const INTERRUPTED_MESSAGE = "Session was interrupted.";
 
+/**
+ * The local notice row for a stopped run. Carries the same `interrupted`
+ * subtype as the parsers' persisted marker, so everything that asks "did this
+ * transcript end in an interruption" (the Continue button) sees one rule for
+ * both; it renders as the same plain divider either way.
+ */
+export const INTERRUPTED_NOTICE: ParsedMessage = { role: "system", type: "system", subtype: "interrupted", content: INTERRUPTED_MESSAGE };
+
 // How long to wait for the stopped run's terminal event before settling the UI
 // anyway. Generous: the server has already aborted the run and killed the
 // provider process, and a run parked in a slow tool call can take a moment to
@@ -120,7 +128,7 @@ export function useStopController({
           // Skipped when the harness already wrote its own marker — see
           // endsWithInterruptMarker.
           const needsNotice = options?.interrupted && !endsWithInterruptMarker(msgArray);
-          setMessages(needsNotice ? [...msgArray, { role: "system", type: "system", content: INTERRUPTED_MESSAGE }] : msgArray);
+          setMessages(needsNotice ? [...msgArray, INTERRUPTED_NOTICE] : msgArray);
         })
         .catch(() => {})
         .finally(() => clearInFlightMessages());
