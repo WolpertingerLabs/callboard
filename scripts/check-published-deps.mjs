@@ -15,11 +15,22 @@
 //      to exactly packages/drawlatch's version, so a callboard release names
 //      the drawlatch it was built and tested against.
 //
-// `--registry` runs a separate, network-dependent check instead (only from
-// `prepublishOnly`, never in CI): the pinned drawlatch must already be on npm.
-// The workspace links drawlatch locally whether or not it is published, so
-// nothing else notices; publishing callboard ahead of it would make every
+// `--registry` runs a separate, network-dependent check instead (never in
+// CI): the pinned drawlatch must already be on npm. The workspace links
+// drawlatch locally whether or not it is published, so nothing else notices;
+// publishing callboard ahead of it would make every
 // `npm install -g @wolpertingerlabs/callboard` fail with ETARGET.
+//
+//   npm run deps:check:registry   always checks (exit 0 iff the pin is on npm).
+//   prepublishOnly                adds `--prepublish`, which honours
+//                                 CALLBOARD_SKIP_REGISTRY_CHECK=1: the publish
+//                                 workflow runs prepublishOnly before it has
+//                                 published drawlatch, then runs
+//                                 deps:check:registry itself before publishing
+//                                 callboard. Manual publishes check by default.
+//
+// `--registry` needs only Node built-ins and `npm` on PATH: no node_modules,
+// no build output. It never reaches the offline checks below.
 // ─────────────────────────────────────────────────────────────────────
 
 import { execFileSync } from "node:child_process";
@@ -258,7 +269,22 @@ function npmViewStdout(pin) {
   }
 }
 
+const SKIP_ENV = "CALLBOARD_SKIP_REGISTRY_CHECK";
+
+/**
+ * Whether this run skips the registry check: only in `--prepublish` mode (what
+ * prepublishOnly passes) and only when CALLBOARD_SKIP_REGISTRY_CHECK is "1".
+ * `deps:check:registry` itself never skips, whatever the environment.
+ */
+export function registryCheckSkipped(argv, env) {
+  return argv.includes("--prepublish") && env[SKIP_ENV] === "1";
+}
+
 function registryMain() {
+  if (registryCheckSkipped(process.argv.slice(2), process.env)) {
+    console.log(`Registry check skipped (${SKIP_ENV}=1) — the publish workflow runs deps:check:registry after publishing drawlatch.`);
+    return;
+  }
   const rootPkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf-8"));
   const pin = rootPkg.dependencies?.[DRAWLATCH];
   let published = "";

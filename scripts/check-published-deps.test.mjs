@@ -16,7 +16,14 @@
  *   fails silently and green.
  */
 import { describe, it, expect } from "vitest";
-import { blankComments, drawlatchLockstepErrors, drawlatchRegistryErrors, importedPackages, publishedVersionFromNpmView } from "./check-published-deps.mjs";
+import {
+  blankComments,
+  drawlatchLockstepErrors,
+  drawlatchRegistryErrors,
+  importedPackages,
+  publishedVersionFromNpmView,
+  registryCheckSkipped,
+} from "./check-published-deps.mjs";
 
 describe("blankComments", () => {
   it("keeps offsets and line breaks so statement anchors still match", () => {
@@ -157,5 +164,23 @@ describe("publishedVersionFromNpmView", () => {
     const out = JSON.stringify({ error: { code: "ECONNREFUSED", summary: "connect ECONNREFUSED" } });
     expect(() => publishedVersionFromNpmView(out)).toThrow(/ECONNREFUSED/);
     expect(() => publishedVersionFromNpmView("")).toThrow(/unexpected npm view output/);
+  });
+});
+
+describe("registryCheckSkipped", () => {
+  const SKIP = { CALLBOARD_SKIP_REGISTRY_CHECK: "1" };
+
+  it("skips only in --prepublish mode with the variable set to 1", () => {
+    expect(registryCheckSkipped(["--registry", "--prepublish"], SKIP)).toBe(true);
+  });
+
+  it("never skips plain deps:check:registry, even with the variable set", () => {
+    expect(registryCheckSkipped(["--registry"], SKIP)).toBe(false);
+  });
+
+  it("checks by default in --prepublish mode", () => {
+    expect(registryCheckSkipped(["--registry", "--prepublish"], {})).toBe(false);
+    expect(registryCheckSkipped(["--registry", "--prepublish"], { CALLBOARD_SKIP_REGISTRY_CHECK: "0" })).toBe(false);
+    expect(registryCheckSkipped(["--registry", "--prepublish"], { CALLBOARD_SKIP_REGISTRY_CHECK: "true" })).toBe(false);
   });
 });

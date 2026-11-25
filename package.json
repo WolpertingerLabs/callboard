@@ -89,7 +89,7 @@
     "test:coverage": "npm run test:computer-use && npm run test:drawlatch && vitest run --coverage",
     "test:watch": "vitest",
     "prepare": "npm run build",
-    "prepublishOnly": "npm run deps:check:registry && npm run lint:all && npm run lint:drawlatch && npm run clean && npm run build && npm test && npm run deps:check",
+    "prepublishOnly": "node scripts/check-published-deps.mjs --registry --prepublish && npm run lint:all && npm run lint:drawlatch && npm run clean && npm run build && npm test && npm run deps:check",
     "deps:check": "node scripts/check-published-deps.mjs",
     "deps:check:registry": "node scripts/check-published-deps.mjs --registry",
     "install:check": "node scripts/check-install-tree.cjs",
