@@ -31,12 +31,17 @@ Root and backend pin `@wolpertingerlabs/drawlatch` exactly to `packages/drawlatc
 - drawlatch keeps its own eslint config (run from its directory via `lint:drawlatch`) and its own `.prettierrc`. The root eslint and vitest configs ignore `packages/drawlatch/**`.
 - Prettier run from the root resolves `packages/drawlatch/.prettierrc` for every drawlatch file, but drawlatch's `format` script only ever covered `src/**/*.ts` and its top-level `*.{json,ts,js}`. Its frontend (double-quoted), connection templates, fixtures, `bin/` and editor config were never formatted, and the root `prettier` script, lint-staged and format-on-save would have rewritten them. The root `.prettierignore` excludes those paths, so callboard tooling formats exactly what drawlatch's `format` does.
 - `test:drawlatch` runs in `npm test` / `test:coverage`; e2e (`test:drawlatch:e2e`) stays manual, as before.
+- The staged-file `lint` / `lint:fix` (`scripts/lint-staged.mjs`) sends staged `packages/drawlatch/src` files to drawlatch's config, run from its directory, and everything else to the root config.
+- CI runs `format:drawlatch:check`, because `prettier/prettier` is only a warning in drawlatch's eslint config.
+- drawlatch's typed lint resolves the root-hoisted `typescript-eslint`, so root lint-tooling bumps can break `lint:drawlatch`.
 - drawlatch's `.github/workflows` were removed (they don't run from a subdirectory). CI gains `lint:drawlatch` and `deps:check` steps.
 
 ## Scripts
 
 - `drawlatch-switch.cjs` and `drawlatch:*` scripts are gone; the workspace link replaces them.
-- `scripts/reload.cjs` (`reload`, `reload:local`, `reload:prod`): `local` packs the workspace drawlatch and packs callboard against it through a `file:` dependency that exists only for that one `npm pack`; `prod` fails if the pinned version isn't on npm. `--prefix` installs into a scratch prefix without restarting.
+- `scripts/reload.cjs` (`reload`, `reload:local`, `reload:prod`): `local` packs the workspace drawlatch and packs callboard against it through a `file:` dependency that exists only for that one `npm pack`; `prod` fails if the pinned version isn't on npm. `--prefix` installs into a scratch prefix without restarting. SIGINT/SIGTERM during the rewritten-manifest pack restore `package.json` before exiting.
+- `prepublishOnly` starts with `deps:check:registry` (`check-published-deps.mjs --registry`), which fails unless the pinned drawlatch is on npm. The workspace links drawlatch whether or not it is published, so without this a callboard publish could pin an unpublished drawlatch and every global install would fail with ETARGET. It needs the network, so CI doesn't run it.
+- `packages/drawlatch/.claude/commands/gsr.md` was removed: it was a standalone-repo pipeline (`git add -A`, then a global install and restart).
 - drawlatch's `release:gh` script (`scripts/release-gh.mjs`) was removed. Inside callboard, `gh release create v<drawlatch-version>` would create releases and tags in the callboard repo under callboard's bare `v<ver>` tag scheme. The publish workflow replaces it.
 
 ## Published package
