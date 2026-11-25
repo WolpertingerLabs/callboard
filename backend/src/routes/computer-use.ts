@@ -1,5 +1,6 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import rateLimit from "express-rate-limit";
+import { CLIENT_KEY_LIMITER_VALIDATE, getClientKey } from "../utils/client-ip.js";
 import { controlOriginError, requireSessionAuth } from "../auth.js";
 import { CLIENT_CAPS } from "shared/types/index.js";
 import { getComputerUseHost, logComputerUseFailure } from "../services/computer-use.js";
@@ -28,7 +29,18 @@ export function requireControlOrigin(req: Request, res: Response, next: NextFunc
 
 export const computerUseRouter = Router();
 computerUseRouter.use(requireSessionAuth, requireControlOrigin);
-computerUseRouter.use(rateLimit({ windowMs: 60_000, max: 300, standardHeaders: true, legacyHeaders: false }));
+// Keyed like the global limiters: per address, and the real client behind a
+// loopback proxy. The default keyGenerator would group IPv6 clients by /56 and
+// put every proxied client in the proxy's one bucket.
+export const computerUseLimiter = rateLimit({
+  windowMs: 60_000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: getClientKey,
+  validate: CLIENT_KEY_LIMITER_VALIDATE,
+});
+computerUseRouter.use(computerUseLimiter);
 
 const idPattern = /^[a-zA-Z0-9_-]{1,160}$/;
 function ids(req: Request): { chatId: string; sessionId: string } {

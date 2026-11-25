@@ -177,9 +177,9 @@ heldRouter.post("/:id/held/resume", async (req, res) => {
   /* #swagger.responses[200] = { description: "{ resumed, started, heldMessages } — how many items were re-queued, whether a turn was started now, and the list after" } */
   /* #swagger.responses[500] = { description: "The chat's held messages could not be read" } */
   const chatId = req.params.id;
-  // Express 4 does not catch a rejected async handler: without this, a throw
-  // (an unreadable held file — resume refuses to overwrite it) would leave the
-  // request unanswered until the client gave up.
+  // A throw here (an unreadable held file — resume refuses to overwrite it)
+  // would otherwise reach Express 5's default handler as an HTML 500; this
+  // answers with the JSON error the client reads, and logs it.
   try {
     const resumed = heldMessageService.resume(chatId);
     // Through the completion handler, not the dispatcher directly: under its

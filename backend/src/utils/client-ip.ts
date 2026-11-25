@@ -66,6 +66,19 @@ export function getClientKey(req: Request): string {
 }
 
 /**
+ * express-rate-limit `validate` options for a limiter keyed by
+ * {@link getClientKey}. Both checks it turns off are ones this module answers
+ * itself:
+ *  - `xForwardedForHeader`: forwarding headers are resolved here, and only for
+ *    loopback traffic; a non-loopback one is deliberately distrusted.
+ *  - `keyGeneratorIpFallback`: `getClientKey` reads `req.ip` as a fallback,
+ *    which trips v8's source-text check for an unmasked IPv6 key. Keying is
+ *    per-address either way: v8 masks IPv6 to /56 only in its built-in default
+ *    keyGenerator, never in a custom one.
+ */
+export const CLIENT_KEY_LIMITER_VALIDATE = { xForwardedForHeader: false, keyGeneratorIpFallback: false } as const;
+
+/**
  * Headers that mean "something forwarded this request to me".
  *
  * Not an exhaustive census of proxy headers, and it does not need to be: the
