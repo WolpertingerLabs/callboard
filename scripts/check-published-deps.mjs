@@ -12,10 +12,17 @@
 //   1. Every bare import in shipped runtime code is in root dependencies.
 //   2. Ranges shared with backend/package.json don't drift apart.
 //   3. drawlatch lockstep: root and backend pin @wolpertingerlabs/drawlatch
-//      to exactly packages/drawlatch's version (an exact pin is also what
-//      makes npm link the workspace instead of fetching the registry).
+//      to exactly packages/drawlatch's version, so a callboard release names
+//      the drawlatch it was built and tested against.
+//
+// `--registry` runs a separate, network-dependent check instead (only from
+// `prepublishOnly`, never in CI): the pinned drawlatch must already be on npm.
+// The workspace links drawlatch locally whether or not it is published, so
+// nothing else notices; publishing callboard ahead of it would make every
+// `npm install -g @wolpertingerlabs/callboard` fail with ETARGET.
 // ─────────────────────────────────────────────────────────────────────
 
+import { execFileSync } from "node:child_process";
 import { readdirSync, statSync, readFileSync } from "node:fs";
 import { join, relative, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -210,6 +217,67 @@ export function drawlatchLockstepErrors(rootPkg, backendPkg, drawlatchPkg) {
   return errors;
 }
 
+/**
+ * Errors for a callboard publish whose drawlatch pin is not on npm. `published`
+ * is what `npm view <pkg>@<pin> version` printed: empty when nothing matches,
+ * and for a range possibly several versions, so it must equal the pin exactly.
+ */
+export function drawlatchRegistryErrors(pin, published) {
+  if (!pin) return [`package.json does not depend on ${DRAWLATCH}`];
+  if (String(published ?? "").trim() === pin) return [];
+  return [`drawlatch ${pin} is not on npm — publish it first via the publish workflow`];
+}
+
+/**
+ * The version `npm view <pkg>@<pin> version --json` reported: "" for E404 (no
+ * such version), and a thrown Error for anything else (offline, auth, a
+ * registry fault), so a publish never goes ahead blind. `--json` because npm
+ * reports errors there on stdout even when the log level silences stderr
+ * (as `npm run -s` does).
+ */
+export function publishedVersionFromNpmView(stdout) {
+  let parsed;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    throw new Error(`unexpected npm view output: ${String(stdout).trim() || "(empty)"}`);
+  }
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && parsed.error) {
+    if (parsed.error.code === "E404") return "";
+    throw new Error(`${parsed.error.code}: ${parsed.error.summary}`);
+  }
+  // A range matching several versions prints an array; an exact pin prints one string.
+  return Array.isArray(parsed) ? parsed.join("\n") : String(parsed);
+}
+
+function npmViewStdout(pin) {
+  try {
+    return execFileSync("npm", ["view", `${DRAWLATCH}@${pin}`, "version", "--json"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+  } catch (err) {
+    return String(err.stdout ?? ""); // non-zero exit still carries the JSON error
+  }
+}
+
+function registryMain() {
+  const rootPkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf-8"));
+  const pin = rootPkg.dependencies?.[DRAWLATCH];
+  let published = "";
+  if (pin) {
+    try {
+      published = publishedVersionFromNpmView(npmViewStdout(pin));
+    } catch (err) {
+      console.error(`Could not query the npm registry for ${DRAWLATCH}@${pin}: ${err.message}`);
+      process.exit(1);
+    }
+  }
+  const errors = drawlatchRegistryErrors(pin, published);
+  if (errors.length > 0) {
+    for (const error of errors) console.error(error);
+    process.exit(1);
+  }
+  console.log(`Registry check passed — ${DRAWLATCH}@${pin} is on npm.`);
+}
+
 function main() {
   const rootPkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf-8"));
   const backendPkg = JSON.parse(readFileSync(join(ROOT, "backend/package.json"), "utf-8"));
@@ -256,4 +324,7 @@ function main() {
 
 // Importing this file must not run the check or exit the process — the scanner
 // above is unit-tested, and `backend/dist` need not even exist for that.
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  if (process.argv.includes("--registry")) registryMain();
+  else main();
+}
