@@ -29,9 +29,13 @@ const META_PROMPT_ACK = "No response requested.";
 
 /**
  * The model name the CLI stamps on assistant lines it writes itself rather
- * than receives from the API. After an interruption it writes
- * {@link META_PROMPT_ACK} under this name just before the next prompt — no
- * hidden nudge in front of it — and that bubble is plumbing too.
+ * than receives from the API. It writes {@link META_PROMPT_ACK} under this
+ * name when a queued prompt follows a turn that was cut short — after an
+ * interrupt marker, but far more often after Callboard's own Stop, where what
+ * precedes it is an aborted tool_result and some queue-operation lines. Text
+ * the CLI wrote under its own name is never something the model said, so the
+ * ack is dropped whatever precedes it. Other `<synthetic>` lines (auth and API
+ * errors) say something else and are kept.
  */
 const SYNTHETIC_MODEL = "<synthetic>";
 
@@ -428,10 +432,6 @@ export function parseMessages(rawMessages: any[]): ParsedMessage[] {
   // entries (attachment / last-prompt / queue-operation) that sit between
   // them, and is cleared by the first real message either way.
   let afterMetaPrompt = false;
-  // Set by an interruption marker, so the CLI's own synthetic
-  // {@link META_PROMPT_ACK} right after it can be dropped. Cleared by the
-  // first real message either way.
-  let afterInterrupt = false;
   // A single background-task notice can be recorded as both an attachment and
   // a user message; keyed on the payload so it is rendered exactly once.
   const seenTaskNotifications = new Set<string>();
@@ -539,10 +539,9 @@ export function parseMessages(rawMessages: any[]): ParsedMessage[] {
       afterMetaPrompt = false;
       if (role === "assistant" && isTextOnlySaying(content, META_PROMPT_ACK)) continue;
     }
-    if (afterInterrupt) {
-      afterInterrupt = false;
-      if (role === "assistant" && msg.message?.model === SYNTHETIC_MODEL && isTextOnlySaying(content, META_PROMPT_ACK)) continue;
-    }
+    // The CLI's own canned ack, written under its own model name — see
+    // SYNTHETIC_MODEL. Dropped wherever it lands.
+    if (role === "assistant" && msg.message?.model === SYNTHETIC_MODEL && isTextOnlySaying(content, META_PROMPT_ACK)) continue;
 
     // An interruption is a fact about the run, not something the user said.
     // Rendered as a boundary marker (same treatment as compact/clear) instead
@@ -555,7 +554,6 @@ export function parseMessages(rawMessages: any[]): ParsedMessage[] {
         subtype: "interrupted",
         timestamp,
       });
-      afterInterrupt = true;
       continue;
     }
 
