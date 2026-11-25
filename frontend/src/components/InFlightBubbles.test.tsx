@@ -10,6 +10,7 @@ import type { ParsedMessage } from "../api";
 import InFlightBubbles from "./InFlightBubbles";
 import MessageBubble from "./MessageBubble";
 import type { InFlightMessage } from "../utils/inFlightMessages";
+import { CONTINUE_PROMPT } from "../utils/continueAfterInterrupt";
 
 vi.mock("../api", () => ({}));
 
@@ -43,6 +44,22 @@ describe("InFlightBubbles", () => {
     const { container, getByText } = render(<InFlightBubbles messages={[message("", { fileNames: ["notes.txt"] })]} />);
     expect(container.querySelector(".message-markdown")).toBeNull();
     expect(getByText("notes.txt")).toBeTruthy();
+  });
+
+  it("renders the Continue button's prompt as the compact divider, not a markdown bubble", () => {
+    const { container, getByTestId } = render(<InFlightBubbles messages={[message(CONTINUE_PROMPT), message("an ordinary prompt")]} />);
+    expect(getByTestId("continued-divider").textContent).toBe("Continued");
+    expect(container.textContent).not.toContain(CONTINUE_PROMPT);
+    // The ordinary prompt beside it still gets #596's markdown bubble.
+    const bubbles = container.querySelectorAll(".message-markdown");
+    expect(bubbles).toHaveLength(1);
+    expect(bubbles[0].textContent).toContain("an ordinary prompt");
+  });
+
+  it("renders the Continue text as a normal bubble when it carries attachments", () => {
+    const { container, queryByTestId } = render(<InFlightBubbles messages={[message(CONTINUE_PROMPT, { fileNames: ["notes.txt"] })]} />);
+    expect(queryByTestId("continued-divider")).toBeNull();
+    expect(container.querySelector(".message-markdown")?.textContent).toContain(CONTINUE_PROMPT);
   });
 
   it("is not quotable while it is still being sent", () => {

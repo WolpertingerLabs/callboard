@@ -3,9 +3,7 @@ import { getChat, getMessages, stopChat, type Chat, type ParsedMessage } from ".
 import type { PendingAction } from "../components/FeedbackPanel";
 import { endsWithInterruptMarker } from "../utils/inFlightMessages";
 
-// Transcript marker for a run the user stopped. Shown both when the run's own
-// terminal event reports the abort and when we settle the stop locally.
-export const INTERRUPTED_MESSAGE = "Session was interrupted.";
+import { INTERRUPTED_NOTICE } from "../utils/continueAfterInterrupt";
 
 // How long to wait for the stopped run's terminal event before settling the UI
 // anyway. Generous: the server has already aborted the run and killed the
@@ -90,6 +88,10 @@ export function useStopController({
     },
     [clearStopConfirmTimeout, clearStopResyncTimeout],
   );
+  // Bumped when a new run supersedes the stop (see cancelPendingStop), so a
+  // resync already in flight for the stopped run drops its answer instead of
+  // writing a stale transcript and notice over the new run's.
+  const stopGenerationRef = useRef(0);
 
   /**
    * Refetch the persisted transcript (and the dock) for a stopped run, without
@@ -104,26 +106,32 @@ export function useStopController({
         clearInFlightMessages();
         return;
       }
+      const generation = stopGenerationRef.current;
+      const current = () => currentIdRef.current === chatId && stopGenerationRef.current === generation;
       // Refetch rather than keep the partially-streamed view: the server
       // persisted whatever the run produced before it died, including the
       // synthetic "interrupted" tool results.
       getChat(chatId)
         .then((chatData) => {
-          if (currentIdRef.current !== chatId) return;
+          if (!current()) return;
           setChat(chatData);
         })
         .catch(() => {});
       getMessages(chatId)
         .then((msgs) => {
-          if (currentIdRef.current !== chatId) return;
+          if (!current()) return;
           const msgArray = Array.isArray(msgs) ? msgs : [];
           // Skipped when the harness already wrote its own marker — see
           // endsWithInterruptMarker.
           const needsNotice = options?.interrupted && !endsWithInterruptMarker(msgArray);
-          setMessages(needsNotice ? [...msgArray, { role: "system", type: "system", content: INTERRUPTED_MESSAGE }] : msgArray);
+          setMessages(needsNotice ? [...msgArray, INTERRUPTED_NOTICE] : msgArray);
         })
         .catch(() => {})
-        .finally(() => clearInFlightMessages());
+        // A superseding send's in-flight bubble (the Continue divider, say) is
+        // the new run's, not this stop's to clear.
+        .finally(() => {
+          if (current()) clearInFlightMessages();
+        });
       refreshActivity(chatId);
     },
     [id, tempChatIdRef, currentIdRef, setChat, setMessages, clearInFlightMessages, refreshActivity],
@@ -157,6 +165,12 @@ export function useStopController({
       return;
     }
 
+    // A send during the stop request's round trip (Continue, say) runs
+    // cancelPendingStop before there is anything to cancel. Checked after the
+    // await: this stop has been superseded, and arming its resync or deadline
+    // then would write the stopped transcript over the new run, or abort the
+    // new run's stream.
+    const generation = stopGenerationRef.current;
     setStopping(true);
     // Hold off auto-reconnect until the registry admits the run is gone —
     // otherwise the poll's stale "active" (or a CLI-watcher session spawned
@@ -174,6 +188,11 @@ export function useStopController({
       setNetworkError("Failed to stop the session — it may still be running.");
       return;
     }
+
+    // Superseded while the request was out (see `generation` above): the new
+    // run owns the page now. This includes the `!stopped` settle below, whose
+    // finishStopLocally would abort the new run's stream too.
+    if (stopGenerationRef.current !== generation) return;
 
     // Nothing was running server-side: our view was stale, so just resync.
     if (!stopped) {
@@ -221,5 +240,18 @@ export function useStopController({
     }
   }, [streaming, clearStopConfirmTimeout]);
 
-  return { stopping, canStop: stoppable && !stopping, handleStop };
+  /**
+   * A new run is starting for this chat: drop everything still pending for
+   * the stop — the delayed resync, the confirmation deadline (whose local
+   * settle would abort the new run's stream), and any resync already in
+   * flight. Called by every send.
+   */
+  const cancelPendingStop = useCallback(() => {
+    stopGenerationRef.current++;
+    clearStopResyncTimeout();
+    clearStopConfirmTimeout();
+    setStopping(false);
+  }, [clearStopResyncTimeout, clearStopConfirmTimeout]);
+
+  return { stopping, canStop: stoppable && !stopping, handleStop, cancelPendingStop };
 }

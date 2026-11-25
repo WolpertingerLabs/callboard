@@ -33,6 +33,7 @@ import { heldMessageService, PAUSE_REASON_STOPPED } from "../services/held-messa
 import { cancelHeldDelivery } from "../services/held-message-dispatcher.js";
 import { listPendingForParent } from "../services/session-callbacks.js";
 import type { ChatActivityResponse } from "shared/types/index.js";
+import { chatFileService } from "../services/chat-file-service.js";
 
 const log = createLogger("stream");
 
@@ -903,7 +904,12 @@ streamRouter.post("/:id/stop", (req, res) => {
     // A held file that cannot be read must not stand between the user and Stop.
     log.error(`POST /${chatId}/stop — could not pause held messages: ${err instanceof Error ? err.message : String(err)}`);
   }
-  const stopped = stopSession(chatId) || cancelledDelivery;
+  const stoppedRun = stopSession(chatId);
+  // Only a live run this Stop cancelled: the chat now ends in a human stop,
+  // which is what offers Continue (see Chat.stoppedByUserAt). A held message
+  // cancelled as it started was never a run, and stays paused instead.
+  if (stoppedRun) chatFileService.markStoppedByUser(chatId);
+  const stopped = stoppedRun || cancelledDelivery;
   // Stop also withdraws the chat's open computer-control requests — they
   // outlive the turn that raised them, so stopping the run does not reach
   // them on its own. Only this explicit Stop: a message sent while the run is

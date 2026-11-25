@@ -184,6 +184,42 @@ describe("parseCodexRollout", () => {
     expect(finalText.generationKey).toBe("t1/1");
   });
 
+  it("projects an interrupted turn_aborted into the interrupted marker, hides its notice message, and ignores a replaced turn", () => {
+    // The SIGINT shape codex-cli 0.153.4 writes: a user-channel `<turn_aborted>`
+    // notice for the model, then the event. (Callboard's own Stop is SIGTERM,
+    // which writes neither — Chat.stoppedByUserAt covers that.)
+    const notice =
+      "<turn_aborted>\nThe user interrupted the previous turn on purpose. Any running unified exec processes may still be running in the background. If any tools/commands were aborted, they may have partially executed.\n</turn_aborted>";
+    const aborted = (reason: string, at: string) => ({
+      type: "event_msg",
+      timestamp: at,
+      payload: {
+        type: "turn_aborted",
+        turn_id: "019ec7f2-0000-7000-8000-000000000001",
+        reason,
+        started_at: 1764064800,
+        completed_at: 1764064805,
+        duration_ms: 5000,
+      },
+    });
+    const lines = [
+      { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "do it" }] } },
+      { type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "working" }] } },
+      aborted("replaced", "2026-11-25T10:00:00.000Z"),
+      { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "actually this" }] } },
+      { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: notice }] } },
+      aborted("interrupted", "2026-11-25T10:00:05.000Z"),
+    ];
+    const p = join(dir, `rollout-2026-11-25T10-00-00-${THREAD_ID}.jsonl`);
+    writeFileSync(p, lines.map((l) => JSON.stringify(l)).join("\n"), "utf-8");
+    expect(parseCodexRollout(p).map((m) => [m.role, m.type, m.content, m.subtype])).toEqual([
+      ["user", "text", "do it", undefined],
+      ["assistant", "text", "working", undefined],
+      ["user", "text", "actually this", undefined],
+      ["system", "system", "Interrupted by user", "interrupted"],
+    ]);
+  });
+
   it("returns [] for a missing file and skips torn lines", () => {
     expect(parseCodexRollout(join(dir, "missing.jsonl"))).toEqual([]);
     const p = join(dir, `rollout-2026-06-14T19-00-00-${THREAD_ID}.jsonl`);
