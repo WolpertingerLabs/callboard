@@ -626,6 +626,25 @@ export function parseCodexRollout(filePath: string): ParsedMessage[] {
       continue;
     }
 
+    // A turn the user stopped. The same boundary marker the Claude Code parser
+    // makes of its CLI's "[Request interrupted by user]", so the transcript
+    // shows where the work stopped and the Continue button survives a reload.
+    // Only an interrupt: a turn `replaced` by a newer prompt is followed by
+    // that prompt, which says everything the marker would.
+    if (line.type === "event_msg" && line.payload?.type === "turn_aborted") {
+      const reason = line.payload.reason;
+      if (reason === undefined || reason === "interrupted") {
+        messages.push({
+          role: "system",
+          type: "system",
+          content: "Interrupted by user",
+          subtype: "interrupted",
+          ...(typeof line.timestamp === "string" && { timestamp: line.timestamp }),
+        });
+      }
+      continue;
+    }
+
     if (line.type !== "response_item") continue;
     const parsed = translateResponseItem(line.payload, line.timestamp);
     if (parsed?.toolUseId) {

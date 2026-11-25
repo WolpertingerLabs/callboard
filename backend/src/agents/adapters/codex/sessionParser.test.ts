@@ -184,6 +184,24 @@ describe("parseCodexRollout", () => {
     expect(finalText.generationKey).toBe("t1/1");
   });
 
+  it("projects an interrupted turn_aborted into the interrupted boundary marker, and ignores a replaced turn", () => {
+    const lines = [
+      { type: "response_item", payload: { type: "message", role: "user", content: "do it" } },
+      { type: "response_item", payload: { type: "message", role: "assistant", content: "working" } },
+      { type: "event_msg", timestamp: "2026-11-25T10:00:00.000Z", payload: { type: "turn_aborted", reason: "replaced" } },
+      { type: "response_item", payload: { type: "message", role: "user", content: "actually this" } },
+      { type: "event_msg", timestamp: "2026-11-25T10:00:05.000Z", payload: { type: "turn_aborted", reason: "interrupted" } },
+    ];
+    const p = join(dir, `rollout-2026-11-25T10-00-00-${THREAD_ID}.jsonl`);
+    writeFileSync(p, lines.map((l) => JSON.stringify(l)).join("\n"), "utf-8");
+    expect(parseCodexRollout(p)).toEqual([
+      { role: "user", type: "text", content: "do it" },
+      { role: "assistant", type: "text", content: "working" },
+      { role: "user", type: "text", content: "actually this" },
+      { role: "system", type: "system", content: "Interrupted by user", subtype: "interrupted", timestamp: "2026-11-25T10:00:05.000Z" },
+    ]);
+  });
+
   it("returns [] for a missing file and skips torn lines", () => {
     expect(parseCodexRollout(join(dir, "missing.jsonl"))).toEqual([]);
     const p = join(dir, `rollout-2026-06-14T19-00-00-${THREAD_ID}.jsonl`);
