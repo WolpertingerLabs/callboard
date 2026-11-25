@@ -1597,13 +1597,16 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
                   clearInFlightMessages();
                   return;
                 }
-                // Refetch complete chat data and messages
+                // Refetch complete chat data and messages — unless a send has
+                // started a newer run by the time they land (sendGenerationRef).
+                const completeGeneration = sendGenerationRef.current;
+                const completeCurrent = () => currentIdRef.current === streamChatId && sendGenerationRef.current === completeGeneration;
                 getChat(streamChatId!).then((chatData) => {
-                  if (currentIdRef.current !== streamChatId) return;
+                  if (!completeCurrent()) return;
                   setChat(chatData);
                 });
                 getMessages(streamChatId!).then((msgs) => {
-                  if (currentIdRef.current !== streamChatId) return;
+                  if (!completeCurrent()) return;
                   const msgArray = Array.isArray(msgs) ? msgs : [];
                   // The abort notice is redundant once the harness's own
                   // marker is in the transcript; other reasons have no
@@ -1652,8 +1655,9 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
                 const shown = shownStreamErrorRef.current;
                 const errorContent = refusal && shown && shown.chatId === streamChatId ? shown.content : event.content;
                 shownStreamErrorRef.current = { chatId: streamChatId!, content: errorContent };
+                const errorGeneration = sendGenerationRef.current;
                 getMessages(streamChatId!).then((msgs) => {
-                  if (currentIdRef.current !== streamChatId) return;
+                  if (currentIdRef.current !== streamChatId || sendGenerationRef.current !== errorGeneration) return;
                   const msgArray = Array.isArray(msgs) ? msgs : [];
                   const alreadyPersisted = msgArray.slice(-3).some((m) => m.subtype === "session_error" && m.content === errorContent);
                   // Same trailer the clean ending builds, for the same reason —
@@ -2739,6 +2743,12 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
     onChatListRefreshRef.current?.();
   }, [activeDraftId, draftRestore]);
 
+  // Bumped by every send. A run's terminal refetch (message_complete /
+  // message_error) captures it when the event arrives and drops its answer if
+  // a send has happened since: that answer is the finished run's transcript,
+  // and written after a Continue it would put the "Session was interrupted."
+  // notice back under the new run and take over the transcript it streams.
+  const sendGenerationRef = useRef(0);
   // useStopController's cancelPendingStop, for handleSend, which is defined
   // before the hook is called.
   const cancelPendingStopRef = useRef<() => void>(() => {});
@@ -2785,6 +2795,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
       streamCompletedRef.current = false; // Reset so new message can stream
       suppressReconnectAfterStopRef.current = false; // A new run supersedes any stop we're still settling
       cancelPendingStopRef.current(); // ...including its delayed resync, which would write the stopped run's transcript over this one
+      sendGenerationRef.current++; // ...and the terminal refetch of the run it follows (see sendGenerationRef)
       resetReconnectBackoff(); // ...and any failures to attach to the old one
       shownStreamErrorRef.current = null; // ...and the old run's error
 
