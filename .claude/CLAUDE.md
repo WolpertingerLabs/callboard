@@ -13,6 +13,18 @@ User-facing setup, CLI, configuration and scripts are in `README.md`. This file 
 - `npm run lint` / `lint:fix` lint only **staged** files (used in workflows). `npm run lint:all` / `lint:all:fix` lint the whole project.
 - Run vitest from the repo root. Backend tests import `shared` from `shared/dist`, so run `npm run build:shared` after editing `shared/types`.
 
+## drawlatch (`packages/drawlatch`)
+
+Drawlatch's source lives here as an npm workspace, imported with full history from the standalone repo (`git subtree`, merge `911f37ab`). Unlike computer-use, it is not bundled: it is a real dependency, published to npm on its own as `@wolpertingerlabs/drawlatch`, and callboard's tarball installs it from the registry.
+
+- **Its own style.** Drawlatch keeps its own eslint and prettier config (single quotes, width 100). Don't restyle it to callboard's. The root `eslint.config.js` and `vitest.config.ts` ignore `packages/drawlatch/**`; lint and test it with `npm run lint:drawlatch` / `npm run test:drawlatch` (both in CI, and `npm test` includes the latter).
+- **Build before you look.** Backend and dev resolve drawlatch through `node_modules/@wolpertingerlabs/drawlatch` → `packages/drawlatch` and run its built `dist/`. After editing drawlatch source, `npm run build:drawlatch`; `tsx watch` won't do it.
+- **Lockstep pin.** Root and `backend/package.json` pin drawlatch exactly to `packages/drawlatch/package.json`'s `version` (no `^`; an exact match is also what makes npm link the workspace). `deps:check` enforces it. To bump: `npm version <v> -w @wolpertingerlabs/drawlatch --no-git-tag-version`, set both pins, `npm install`.
+- **`@types/cookie-parser@1.4.9` placement pin** (root and backend devDependencies). It claims the hoisted slot so drawlatch's `^1.4.10` copy nests under `packages/drawlatch/node_modules` beside its `@types/express@5`; hoisted, its `@types/express` peer resolves to callboard's v4 and drawlatch's `tsc` fails at `app.use('/api', cookieParser())`. It goes away when callboard moves to Express 5.
+- **Releases** go through CI only (the publish workflow), never `npm publish` from a checkout. `reload:local` / `reload:prod` are for installing locally.
+- **Never rebase across the import merge**, and never squash- or rebase-merge a branch that contains it: that replays drawlatch's commits at the repo root. Bring `main` into a branch with `git merge`.
+- **History.** `git log -- packages/drawlatch/<file>` stops at the import merge. For older history: `git log 911f37ab^2 -- <path without the packages/drawlatch/ prefix>`. `git blame` follows through on its own.
+
 ## Wire compatibility
 
 `shared/types/stream.ts` is a published interface, not an internal type — a browser tab can be running a bundle older than the daemon it is talking to. The authoritative rules and their reasoning are the doc-comment block at the top of that file. The short version:
