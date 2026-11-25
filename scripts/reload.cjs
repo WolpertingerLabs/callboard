@@ -1,29 +1,33 @@
 #!/usr/bin/env node
 
 /**
- * Rebuild callboard and global-install it, with drawlatch taken either from the
- * packages/drawlatch workspace or from the npm registry.
+ * Rebuild callboard and global-install it together with the packages/drawlatch
+ * workspace, then restart the daemon.
  *
  * Usage:
- *   node scripts/reload.cjs [local|prod] [--prefix <dir>] [--no-restart]
+ *   node scripts/reload.cjs [--prefix <dir>] [--no-restart]
  *
- *   local         (default) Install the workspace's drawlatch. Works when the
- *                 pinned drawlatch version is not on npm yet.
- *   prod          Install drawlatch from the registry at callboard's exact pin.
- *                 Fails if that version has not been published.
  *   --prefix DIR  Passed to `npm install -g`, so the install lands in DIR
  *                 instead of the global prefix (no sudo fallback). Implies
  *                 --no-restart: the running daemon is not the one installed.
  *   --no-restart  Skip `callboard restart` / `callboard status`.
  *
- * ── local ─────────────────────────────────────────────────────────────
- * Packs the workspace drawlatch, then packs callboard with its drawlatch
- * dependency pointed at that tarball by absolute `file:` path. `npm install -g`
- * reads the tarball straight off disk and installs drawlatch's own dependencies
- * normally, so the local build lands in the global install without being
- * bundled. The root package.json is rewritten only for the duration of that one
- * `npm pack` and restored immediately; `npm install` is never run against the
- * rewritten manifest (it would unlink the workspace and rewrite the lockfile).
+ * drawlatch always comes from the workspace, never the npm registry, so a
+ * reload works whether or not the pinned drawlatch version has been published.
+ *
+ * Before building, the script refuses to run if node_modules does not match
+ * package-lock.json (typically after a `git pull` that changed the lockfile):
+ * the build would otherwise fail confusingly, or succeed against stale
+ * dependencies. Run `npm install` and reload again.
+ *
+ * How the install works: the workspace drawlatch is packed, then callboard is
+ * packed with its drawlatch dependency pointed at that tarball by absolute
+ * `file:` path. `npm install -g` reads the tarball straight off disk and
+ * installs drawlatch's own dependencies normally, so the local build lands in
+ * the global install without being bundled. The root package.json is rewritten
+ * only for the duration of that one `npm pack` and restored immediately;
+ * `npm install` is never run against the rewritten manifest (it would unlink
+ * the workspace and rewrite the lockfile).
  *
  * Do NOT reach for `bundleDependencies` here, however tempting. A tarball with
  * bundleDependencies makes npm mis-handle any *other* dependency that ships an
@@ -33,10 +37,6 @@
  * The install reports success; pi then dies at spawn time with
  * ERR_MODULE_NOT_FOUND for chalk. The tree check at the end of this script exists
  * to catch that class of failure at reload time instead.
- *
- * ── prod ──────────────────────────────────────────────────────────────
- * Packs callboard unchanged, so the global install pulls drawlatch from the
- * registry at the exact pinned version.
  *
  * The global install (`npm install -g`) transparently falls back to sudo when
  * the npm global modules dir is not writable by the current user (e.g. a
@@ -53,13 +53,12 @@ const PKG = "@wolpertingerlabs/drawlatch";
 const PKG_SELF = "@wolpertingerlabs/callboard";
 
 function usage(message) {
-  console.error(`Usage: node scripts/reload.cjs [local|prod] [--prefix <dir>] [--no-restart]${message ? `\n  ${message}` : ""}`);
+  console.error(`Usage: node scripts/reload.cjs [--prefix <dir>] [--no-restart]${message ? `\n  ${message}` : ""}`);
   process.exit(1);
 }
 
 function parseArgs(argv) {
-  const opts = { mode: "local", prefix: null, restart: true };
-  let modeSeen = false;
+  const opts = { prefix: null, restart: true };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--prefix") {
@@ -70,9 +69,8 @@ function parseArgs(argv) {
       opts.prefix = path.resolve(arg.slice("--prefix=".length));
     } else if (arg === "--no-restart") {
       opts.restart = false;
-    } else if ((arg === "local" || arg === "prod") && !modeSeen) {
-      opts.mode = arg;
-      modeSeen = true;
+    } else if (arg === "local" || arg === "prod") {
+      usage(`"${arg}" mode was removed: reload always installs the workspace drawlatch. Run it without a mode.`);
     } else {
       usage(`Unknown argument: ${arg}`);
     }
@@ -81,7 +79,45 @@ function parseArgs(argv) {
   return opts;
 }
 
-const { mode, prefix, restart } = parseArgs(process.argv.slice(2));
+/**
+ * Describe how node_modules differs from package-lock.json, or return null if
+ * it matches. Compares the lockfile against npm's hidden lockfile
+ * (node_modules/.package-lock.json), which npm rewrites on every install:
+ * every lockfile entry must be installed at the same version (or as the same
+ * workspace link). Optional entries may be absent — platform-specific binaries
+ * are never installed on other platforms.
+ */
+function installDrift(lock, hidden) {
+  if (!hidden) return "node_modules is missing or was not installed by npm";
+  const installed = hidden.packages ?? {};
+  const problems = [];
+  for (const [key, want] of Object.entries(lock.packages ?? {})) {
+    if (key === "" || !key.includes("node_modules/")) continue; // root and workspace sources
+    const have = installed[key];
+    if (!have) {
+      if (!want.optional && !want.devOptional) problems.push(`${key} is not installed`);
+      continue;
+    }
+    if (Boolean(want.link) !== Boolean(have.link)) {
+      problems.push(`${key} should be ${want.link ? `a link to ${want.resolved}` : "an installed package"}`);
+    } else if (!want.link && want.version !== have.version) {
+      problems.push(`${key} is ${have.version}, lockfile wants ${want.version}`);
+    }
+  }
+  if (problems.length === 0) return null;
+  const shown = problems.slice(0, 5).map((p) => `    ${p}`);
+  if (problems.length > shown.length) shown.push(`    … and ${problems.length - shown.length} more`);
+  return shown.join("\n");
+}
+
+function readJsonIfExists(file) {
+  try {
+    return JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch (err) {
+    if (err.code === "ENOENT") return null;
+    throw err;
+  }
+}
 
 function readPkg(relPath) {
   return JSON.parse(fs.readFileSync(path.resolve(ROOT, relPath), "utf8"));
@@ -122,6 +158,9 @@ function packAsync(args, dest, onChild) {
   });
 }
 
+// SIGHUP: the terminal was closed. Each exits 128 + signo (130 / 143 / 129).
+const WINDOW_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"];
+
 /**
  * Pack callboard with its drawlatch dependency rewritten to `file:<dlTgz>`,
  * restoring package.json afterwards — including on SIGINT/SIGTERM/SIGHUP, which would
@@ -129,9 +168,6 @@ function packAsync(args, dest, onChild) {
  * package.json pointing at a temp tarball. The handlers exist only for this
  * window; on a signal they restore, remove the temp dir and exit 128 + signo.
  */
-// SIGHUP: the terminal was closed. Each exits 128 + signo (130 / 143 / 129).
-const WINDOW_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"];
-
 async function packAgainstDrawlatchTarball(dlTgz, tmp) {
   const pkgPath = path.join(ROOT, "package.json");
   const original = fs.readFileSync(pkgPath, "utf8");
@@ -195,50 +231,44 @@ function canWriteGlobalModules() {
   return true; // nothing exists yet — assume creatable, let npm decide
 }
 
-/** Global-install a tarball; into --prefix if given, else with a sudo fallback if the global dir isn't writable. */
-function globalInstall(tgz) {
-  if (prefix) {
-    run(`npm install -g --prefix "${prefix}" "${tgz}"`);
-    return;
-  }
-  if (canWriteGlobalModules()) {
-    run(`npm install -g "${tgz}"`);
-    return;
-  }
-  console.log("  Global node_modules is not writable by the current user — using sudo for the global install.");
-  try {
-    execSync("sudo -n true", { stdio: "ignore" });
-  } catch {
-    console.log("  (sudo may prompt for your password)");
-  }
-  run(`sudo npm install -g "${tgz}"`);
-}
-
-/** Directory the callboard package was installed into. */
-function installedDir() {
-  if (prefix) return path.join(prefix, "lib", "node_modules", ...PKG_SELF.split("/"));
-  const root = execSync("npm root -g", { encoding: "utf8" }).trim();
-  return path.join(root, ...PKG_SELF.split("/"));
-}
-
 async function main() {
+  const { prefix, restart } = parseArgs(process.argv.slice(2));
+
+  /** Global-install a tarball; into --prefix if given, else with a sudo fallback if the global dir isn't writable. */
+  function globalInstall(tgz) {
+    if (prefix) {
+      run(`npm install -g --prefix "${prefix}" "${tgz}"`);
+      return;
+    }
+    if (canWriteGlobalModules()) {
+      run(`npm install -g "${tgz}"`);
+      return;
+    }
+    console.log("  Global node_modules is not writable by the current user — using sudo for the global install.");
+    try {
+      execSync("sudo -n true", { stdio: "ignore" });
+    } catch {
+      console.log("  (sudo may prompt for your password)");
+    }
+    run(`sudo npm install -g "${tgz}"`);
+  }
+
+  /** Directory the callboard package was installed into. */
+  function installedDir() {
+    if (prefix) return path.join(prefix, "lib", "node_modules", ...PKG_SELF.split("/"));
+    const root = execSync("npm root -g", { encoding: "utf8" }).trim();
+    return path.join(root, ...PKG_SELF.split("/"));
+  }
+
   const statusBefore = gitStatus();
   const dlVersion = readPkg("packages/drawlatch/package.json").version;
-  const pin = readPkg("package.json").dependencies[PKG];
 
-  console.log(`=== callboard reload (mode: ${mode}${prefix ? `, prefix: ${prefix}` : ""}) ===`);
+  console.log(`=== callboard reload${prefix ? ` (prefix: ${prefix})` : ""} ===`);
 
-  if (mode === "prod") {
-    let published = "";
-    try {
-      published = execSync(`npm view "${PKG}@${pin}" version`, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-    } catch {
-      // E404 → not published
-    }
-    if (!published) {
-      console.error(`\ndrawlatch ${pin} is not on npm yet — publish it (publish workflow) or use reload:local`);
-      process.exit(1);
-    }
+  const drift = installDrift(readPkg("package-lock.json"), readJsonIfExists(path.join(ROOT, "node_modules", ".package-lock.json")));
+  if (drift) {
+    console.error(`\nnode_modules does not match package-lock.json:\n${drift}\n\nRun \`npm install\`, then reload again.`);
+    process.exit(1);
   }
 
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "callboard-reload-"));
@@ -249,23 +279,16 @@ async function main() {
     console.log("\n=== Building callboard ===");
     run("npm run build");
 
-    let cbTgz;
-    if (mode === "local") {
-      console.log("\n=== Packing workspace drawlatch ===");
-      const dlTgz = pack(`-w ${PKG}`, tmp);
-      console.log(`  Packed drawlatch ${dlVersion} -> ${dlTgz}`);
+    console.log("\n=== Packing workspace drawlatch ===");
+    const dlTgz = pack(`-w ${PKG}`, tmp);
+    console.log(`  Packed drawlatch ${dlVersion} -> ${dlTgz}`);
 
-      console.log("\n=== Packing callboard against the drawlatch tarball ===");
-      cbTgz = await packAgainstDrawlatchTarball(dlTgz, tmp);
-    } else {
-      console.log("\n=== Packing callboard (drawlatch from the registry) ===");
-      cbTgz = pack("", tmp);
-    }
+    console.log("\n=== Packing callboard against the drawlatch tarball ===");
+    const cbTgz = await packAgainstDrawlatchTarball(dlTgz, tmp);
 
-    // In local mode the installed callboard's manifest keeps the
-    // `file:<tmp>/…drawlatch….tgz` spec after the temp dir is deleted below, so
-    // `npm ls -g` reports drawlatch as "invalid". Harmless — drawlatch is
-    // installed and resolves normally — and the same as before the workspace.
+    // The installed callboard's manifest keeps the `file:<tmp>/…drawlatch….tgz`
+    // spec after the temp dir is deleted below, so `npm ls -g` reports drawlatch
+    // as "invalid". Harmless — drawlatch is installed and resolves normally.
     globalInstall(cbTgz);
 
     // Verify what npm actually reified. `npm install` exits 0 on trees with
@@ -279,10 +302,9 @@ async function main() {
       treeCheckFailed = true;
     }
 
-    const expected = mode === "local" ? dlVersion : pin;
     try {
       const installed = JSON.parse(fs.readFileSync(path.join(dir, "node_modules", ...PKG.split("/"), "package.json"), "utf8")).version;
-      if (installed !== expected) versionMismatch = `installed drawlatch is ${installed}, expected ${expected}`;
+      if (installed !== dlVersion) versionMismatch = `installed drawlatch is ${installed}, expected ${dlVersion}`;
       else console.log(`  Installed drawlatch ${installed}`);
     } catch (err) {
       versionMismatch = `could not read the installed drawlatch: ${err.message}`;
@@ -309,12 +331,16 @@ async function main() {
   // Surface a broken install as a failed reload.
   if (treeCheckFailed || versionMismatch) {
     const recover = prefix ? `rm -rf "${prefix}"` : `npm uninstall -g ${PKG_SELF}`;
-    console.error(`\nReload finished with a broken global install.\nRecover with:  ${recover} && npm run reload:${mode}`);
+    console.error(`\nReload finished with a broken global install.\nRecover with:  ${recover} && npm run reload`);
     process.exit(1);
   }
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}
+
+module.exports = { installDrift, parseArgs };
