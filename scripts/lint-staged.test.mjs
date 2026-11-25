@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { partitionStaged } from "./lint-staged.mjs";
+import { partitionStaged, splitNulPaths } from "./lint-staged.mjs";
 
 describe("partitionStaged", () => {
   it("sends drawlatch src to drawlatch's config, relative to its directory", () => {
@@ -21,5 +21,17 @@ describe("partitionStaged", () => {
 
   it("is empty for nothing staged", () => {
     expect(partitionStaged([])).toEqual({ root: [], drawlatch: [] });
+  });
+});
+
+describe("splitNulPaths", () => {
+  it("keeps non-ASCII and space-bearing paths intact (git -z output is unquoted)", () => {
+    const out = "backend/src/café.ts\0packages/drawlatch/src/naïve file.ts\0";
+    expect(splitNulPaths(out)).toEqual(["backend/src/café.ts", "packages/drawlatch/src/naïve file.ts"]);
+    expect(partitionStaged(splitNulPaths(out))).toEqual({ root: ["backend/src/café.ts"], drawlatch: ["src/naïve file.ts"] });
+  });
+
+  it("is empty for no output", () => {
+    expect(splitNulPaths("")).toEqual([]);
   });
 });

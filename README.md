@@ -490,7 +490,7 @@ Releasing only callboard is the common case: leave drawlatch's version alone and
 
 After a release, `npm view @wolpertingerlabs/<package>@<version> dist.attestations` should show the provenance attestation.
 
-`npm run deps:check:registry` checks that the pinned drawlatch version is on npm. It needs only Node, `npm` and the network (no install or build), so CI's `ci.yml` doesn't run it. Callboard's `prepublishOnly` runs the same check and only skips it when `CALLBOARD_SKIP_REGISTRY_CHECK=1`, so a manual publish checks by default.
+`npm run deps:check:registry` checks that the pinned drawlatch version is on npm. It needs only Node, `npm` and the network (no install or build), so CI's `ci.yml` doesn't run it. Callboard's `prepublishOnly` runs the same check and only skips it when `CALLBOARD_SKIP_REGISTRY_CHECK=1`, so a manual publish checks by default. That includes a local rehearsal: `npm publish --dry-run` (or `npm run publish:dry-run`) runs `prepublishOnly`, so before the pinned drawlatch is on npm it needs `CALLBOARD_SKIP_REGISTRY_CHECK=1`. The workflow's dry run sets the variable for you.
 
 ## License
 

@@ -124,11 +124,14 @@ function packAsync(args, dest, onChild) {
 
 /**
  * Pack callboard with its drawlatch dependency rewritten to `file:<dlTgz>`,
- * restoring package.json afterwards — including on SIGINT/SIGTERM, which would
+ * restoring package.json afterwards — including on SIGINT/SIGTERM/SIGHUP, which would
  * otherwise kill the process mid-pack and skip every `finally`, leaving
  * package.json pointing at a temp tarball. The handlers exist only for this
  * window; on a signal they restore, remove the temp dir and exit 128 + signo.
  */
+// SIGHUP: the terminal was closed. Each exits 128 + signo (130 / 143 / 129).
+const WINDOW_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"];
+
 async function packAgainstDrawlatchTarball(dlTgz, tmp) {
   const pkgPath = path.join(ROOT, "package.json");
   const original = fs.readFileSync(pkgPath, "utf8");
@@ -146,8 +149,7 @@ async function packAgainstDrawlatchTarball(dlTgz, tmp) {
     fs.rmSync(tmp, { recursive: true, force: true });
     process.exit(128 + os.constants.signals[signal]);
   };
-  process.on("SIGINT", onSignal);
-  process.on("SIGTERM", onSignal);
+  for (const signal of WINDOW_SIGNALS) process.on(signal, onSignal);
   try {
     const rootPkg = JSON.parse(original);
     rootPkg.dependencies[PKG] = `file:${dlTgz}`;
@@ -155,8 +157,7 @@ async function packAgainstDrawlatchTarball(dlTgz, tmp) {
     return await packAsync([], tmp, (c) => (child = c));
   } finally {
     restore();
-    process.off("SIGINT", onSignal);
-    process.off("SIGTERM", onSignal);
+    for (const signal of WINDOW_SIGNALS) process.off(signal, onSignal);
   }
 }
 
