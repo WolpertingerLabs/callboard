@@ -5,17 +5,26 @@ name: Publish to npm
 # callboard pins it exactly. Run it from the Actions tab; see README → Releasing.
 #
 # scripts/release-plan.mjs decides what to do (and documents the rules); the
-# steps below only carry that plan out. A re-run after a partial failure is
-# safe: whatever is already published is skipped, and a missing tag is created
-# on the commit that was published.
+# steps below only carry that plan out.
+#
+# Re-running after a partial failure (README → Releasing):
+# - A new dispatch, or "Re-run all jobs": re-plans from the registry and tags.
+#   Whatever is already published is skipped, and a missing tag is created on
+#   the commit npm recorded for it. Always safe.
+# - "Re-run failed jobs" after the publish job failed: reuses the build job's
+#   plan and tarballs. scripts/publish-tarball.sh skips a version an earlier
+#   attempt already published from this commit, and scripts/push-release-tag.sh
+#   skips a tag already on the right commit, so this finishes the release too.
 #
 # Two jobs, so that no third-party code runs where a credential can be reached:
 # - build: read-only token, not persisted. Installs, runs the gate (every
 #   dependency's install scripts, the whole test suite) and packs both
 #   tarballs.
-# - publish: the `npm` environment (deployment restricted to main), OIDC
-#   id-token and a contents: write token for the tags. It installs nothing and
-#   builds nothing; it publishes the exact tarballs build packed.
+# - publish: the `npm` environment, OIDC id-token and a contents: write token
+#   for the tags. It installs nothing and builds nothing; it publishes the exact
+#   tarballs build packed. Restricting the environment's deployments to main is
+#   a repository setting (README → Releasing), not something this file can
+#   enforce.
 
 on:
   workflow_dispatch:
@@ -39,6 +48,9 @@ concurrency:
 env:
   DRY_RUN: ${{ inputs.dry_run }}
   DIST_TAG: ${{ inputs.dist_tag }}
+  # One exact npm for both jobs: trusted publishing (OIDC) needs >= 11.5.1, and
+  # the dry run's OIDC check matches this version's log wording.
+  NPM_VERSION: 11.19.1
 
 jobs:
   build:
@@ -59,8 +71,8 @@ jobs:
       callboard_tag_commit: ${{ steps.plan.outputs.callboard_tag_commit }}
       callboard_tarball: ${{ steps.pack.outputs.callboard_tarball }}
     steps:
-      # The npm environment's branch restriction is what enforces this; the
-      # guard just fails early with a clear message.
+      # The npm environment's deployment-branch rule (a repository setting) is
+      # what enforces this; the guard just fails early with a clear message.
       - name: Guard — dispatch from main only
         if: github.ref != 'refs/heads/main'
         run: |
@@ -81,9 +93,9 @@ jobs:
 
       # Same npm as the publish job, so the tarballs are packed by the npm that
       # publishes them.
-      - name: Upgrade npm
+      - name: Install npm ${{ env.NPM_VERSION }}
         run: |
-          npm install -g npm@^11.5.1
+          npm install -g "npm@$NPM_VERSION"
           npm --version
 
       # Before the install so a version that needs bumping fails in seconds.
@@ -137,6 +149,8 @@ jobs:
           path: ${{ runner.temp }}/tarballs/*.tgz
           if-no-files-found: error
           retention-days: 7
+          # "Re-run all jobs" uploads again under the same name.
+          overwrite: true
 
   publish:
     name: Publish and tag
@@ -147,14 +161,14 @@ jobs:
       contents: write # push the release tags
       id-token: write # OIDC trusted publishing + provenance
     env:
-      DL_ACTION: ${{ needs.build.outputs.drawlatch_action }}
+      HEAD_SHA: ${{ needs.build.outputs.head }}
       DL_TARBALL: ${{ needs.build.outputs.drawlatch_tarball }}
-      CB_ACTION: ${{ needs.build.outputs.callboard_action }}
       CB_TARBALL: ${{ needs.build.outputs.callboard_tarball }}
     steps:
-      # Only for the tags (full history: a recovered tag can point at an older
-      # commit) and the registry check script. Nothing from it is installed or
-      # built.
+      # For the tags (full history: a recovered tag can point at an older
+      # commit) and three first-party scripts: deps:check:registry,
+      # publish-tarball.sh and push-release-tag.sh, which need only Node, npm
+      # and git. Nothing is installed or built.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -165,9 +179,9 @@ jobs:
           registry-url: https://registry.npmjs.org
 
       # Trusted publishing (OIDC) needs npm >= 11.5.1; Node 22 ships 10.x.
-      - name: Upgrade npm for trusted publishing
+      - name: Install npm ${{ env.NPM_VERSION }}
         run: |
-          npm install -g npm@^11.5.1
+          npm install -g "npm@$NPM_VERSION"
           npm --version
 
       - uses: actions/download-artifact@v4
@@ -175,31 +189,20 @@ jobs:
           name: tarballs
           path: ${{ runner.temp }}/tarballs
 
-      # No NODE_AUTH_TOKEN anywhere: npm swaps the job's OIDC token for a
-      # short-lived publish token (trusted publishing, see README). Provenance
-      # comes from this run's GitHub context, so it names this repo, workflow
-      # and commit even though the tarball was packed by the build job.
-      #
-      # npm does the token exchange in a dry run too, so --loglevel verbose
-      # lets a dry run check that the package's trusted publisher is
-      # configured: npm logs "oidc Successfully retrieved and set token" only
-      # if the exchange worked.
+      # scripts/publish-tarball.sh: skips a version this commit already
+      # published (so "Re-run failed jobs" works), fails on one published from
+      # anywhere else, and in a dry run checks the OIDC token exchange. No
+      # NODE_AUTH_TOKEN anywhere: auth is trusted publishing (README).
       - name: Publish drawlatch
         if: needs.build.outputs.drawlatch_action == 'publish'
-        shell: bash # -o pipefail, so tee doesn't hide npm's exit status
-        run: |
-          args=(--ignore-scripts --provenance --access public --tag "$DIST_TAG" --loglevel verbose)
-          if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
-          npm publish "$RUNNER_TEMP/tarballs/$DL_TARBALL" "${args[@]}" 2>&1 | tee "$RUNNER_TEMP/publish-drawlatch.log"
-          if [ "$DRY_RUN" = "true" ] && ! grep -q "oidc Successfully retrieved and set token" "$RUNNER_TEMP/publish-drawlatch.log"; then
-            echo "::error::npm could not exchange this job's OIDC token for @wolpertingerlabs/drawlatch. Configure its trusted publisher on npmjs.com (README → Releasing); a real run would fail to publish."
-            exit 1
-          fi
+        run: scripts/publish-tarball.sh "$RUNNER_TEMP/tarballs/$DL_TARBALL" "$HEAD_SHA"
 
       # Callboard must not reach npm before the drawlatch it pins can be
-      # installed from there. A fresh publish can 404 for a little while, so
-      # retry for about two minutes. A dry run that is also publishing drawlatch
-      # can't pass this (drawlatch isn't on npm yet), so it skips the check.
+      # installed from there. Always runs in a real run, including a re-run
+      # whose Publish drawlatch step skipped; CALLBOARD_SKIP_REGISTRY_CHECK has
+      # no effect on deps:check:registry. A fresh publish can 404 for a little
+      # while, so retry for about two minutes. A dry run that would publish
+      # drawlatch skips it, since drawlatch isn't on npm yet.
       - name: Verify drawlatch is on npm
         if: ${{ !inputs.dry_run || needs.build.outputs.drawlatch_action == 'skip' }}
         run: |
@@ -216,39 +219,25 @@ jobs:
       # job's Pack step already listed the tarball.
       - name: Publish callboard
         if: needs.build.outputs.callboard_action == 'publish'
-        shell: bash
-        run: |
-          args=(--ignore-scripts --provenance --access public --tag "$DIST_TAG" --loglevel verbose)
-          if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
-          npm publish "$RUNNER_TEMP/tarballs/$CB_TARBALL" "${args[@]}" 2>&1 | tee "$RUNNER_TEMP/publish-callboard.log"
-          if [ "$DRY_RUN" = "true" ] && ! grep -q "oidc Successfully retrieved and set token" "$RUNNER_TEMP/publish-callboard.log"; then
-            echo "::error::npm could not exchange this job's OIDC token for @wolpertingerlabs/callboard. Configure its trusted publisher on npmjs.com (README → Releasing); a real run would fail to publish."
-            exit 1
-          fi
+        run: scripts/publish-tarball.sh "$RUNNER_TEMP/tarballs/$CB_TARBALL" "$HEAD_SHA"
 
-      # Tags go last, after both publishes. If anything above failed, a re-run
-      # sees the published version(s) without tags and tags the commit npm
-      # recorded (gitHead) for each.
+      # Tags go last, after both publishes. If anything above failed, a new
+      # dispatch sees the published version(s) without tags and tags the commit
+      # npm recorded (gitHead) for each. scripts/push-release-tag.sh leaves a
+      # tag already on origin at the right commit alone, so re-runs that reach
+      # here again pass.
       - name: Tag drawlatch
         if: ${{ !inputs.dry_run && needs.build.outputs.drawlatch_tag_commit != '' }}
+        run: scripts/push-release-tag.sh "$TAG" "$COMMIT" "$MESSAGE"
         env:
           TAG: ${{ needs.build.outputs.drawlatch_tag }}
           COMMIT: ${{ needs.build.outputs.drawlatch_tag_commit }}
           MESSAGE: drawlatch v${{ needs.build.outputs.drawlatch_version }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "$TAG" -m "$MESSAGE" "$COMMIT"
-          git push origin "refs/tags/$TAG"
 
       - name: Tag callboard
         if: ${{ !inputs.dry_run && needs.build.outputs.callboard_tag_commit != '' }}
+        run: scripts/push-release-tag.sh "$TAG" "$COMMIT" "$MESSAGE"
         env:
           TAG: ${{ needs.build.outputs.callboard_tag }}
           COMMIT: ${{ needs.build.outputs.callboard_tag_commit }}
           MESSAGE: Release v${{ needs.build.outputs.callboard_version }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "$TAG" -m "$MESSAGE" "$COMMIT"
-          git push origin "refs/tags/$TAG"
