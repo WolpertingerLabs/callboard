@@ -1143,6 +1143,9 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
       opts.requireExplicitCompletion = true;
     }
     stopSession(opts.chatId);
+    // A new run supersedes whatever the human stopped: the chat no longer
+    // ends in a Stop, so the transcript stops offering Continue.
+    chatFileService.clearStoppedByUser(opts.chatId);
   } else if (opts.folder) {
     // New chat flow — store the actual working directory (may be a worktree).
     // The SDK creates logs keyed by this path, so we must preserve it exactly.
