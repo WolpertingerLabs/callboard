@@ -945,10 +945,7 @@ export function createApp(options: CreateAppOptions = {}) {
     const results: { connection: string; accepted: boolean; reason?: string }[] = [];
 
     for (const ingestor of ingestors) {
-      const result = ingestor.handleWebhook(
-        req.headers as Record<string, string | string[] | undefined>,
-        rawBody,
-      );
+      const result = ingestor.handleWebhook(req.headers, rawBody);
       results.push({ connection: ingestor.webhookPath, ...result });
       if (result.accepted) anyAccepted = true;
     }

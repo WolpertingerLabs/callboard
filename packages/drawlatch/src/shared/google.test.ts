@@ -730,7 +730,7 @@ describe('removed connection IDs', () => {
         rateLimitPerMinute: 60,
         connectors: [custom],
         callers: { a: { connections: ['google-sheets'] } },
-      } as RemoteServerConfig,
+      },
       'a',
     );
     expect(dropped).toEqual({});

@@ -57,11 +57,7 @@ function createFakeChild(): ChildProcess & {
     child.emit('close', code);
   };
 
-  return child as ChildProcess & {
-    _stderr: EventEmitter;
-    _stdout: EventEmitter;
-    _simulateExit: (code: number) => void;
-  };
+  return child;
 }
 
 beforeEach(() => {

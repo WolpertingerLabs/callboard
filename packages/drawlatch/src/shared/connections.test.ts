@@ -159,8 +159,7 @@ describe('listAvailableConnections', () => {
       if (dir.endsWith('ai')) return ['anthropic.json', 'openai.json'] as any;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       if (dir.endsWith('messaging')) return ['slack.json'] as any;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return [] as any;
+      return [];
     });
 
     const available = listAvailableConnections();

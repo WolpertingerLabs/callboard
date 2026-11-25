@@ -156,13 +156,12 @@ describe('jwt_bearer routes', () => {
   const routes = (overrides: Partial<Route> = {}, oauth2: Partial<Route['oauth2']> = {}) =>
     resolveRoutes([routeDef(overrides, oauth2)], {}, 'alice');
 
-  const context = (callerAlias = 'alice'): ToolContext =>
-    ({
-      callerAlias,
-      origin: 'agent',
-      ingestorManager: {} as ToolContext['ingestorManager'],
-      refreshRoutes: () => undefined,
-    }) as ToolContext;
+  const context = (callerAlias = 'alice'): ToolContext => ({
+    callerAlias,
+    origin: 'agent',
+    ingestorManager: {} as ToolContext['ingestorManager'],
+    refreshRoutes: () => undefined,
+  });
 
   const get = (r: ResolvedRoute[], path = '/api/files', caller = 'alice') =>
     executeProxyRequest({ method: 'GET', url: `${apiBase}${path}` }, r, undefined, { caller });

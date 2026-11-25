@@ -64,7 +64,7 @@ export function buildE2EConfig(
       'e2e-client': {
         connections,
         env: opts?.env,
-        ingestorOverrides: opts?.ingestorOverrides as any,
+        ingestorOverrides: opts?.ingestorOverrides,
       },
     },
     rateLimitPerMinute: 600,

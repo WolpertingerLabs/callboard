@@ -498,11 +498,7 @@ describe('Trello webhook factory registration', () => {
   });
 
   it('should return null when webhook config is missing', () => {
-    const ingestor = createIngestor(
-      'trello',
-      { type: 'webhook' } as { type: 'webhook'; webhook: undefined },
-      {},
-    );
+    const ingestor = createIngestor('trello', { type: 'webhook' }, {});
 
     // With protocol undefined, key becomes 'webhook:generic' (GitHub factory)
     // which also checks for !config.webhook and returns null

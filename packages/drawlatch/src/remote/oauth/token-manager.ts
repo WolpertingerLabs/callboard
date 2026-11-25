@@ -514,6 +514,9 @@ export class TokenManager {
         },
         (e: unknown) => {
           clearTimeout(timer);
+          // The cast is what satisfies prefer-promise-reject-errors; typescript-eslint >= 8.61
+          // calls it unnecessary because reject() takes `any`.
+          // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
           reject(e as Error);
         },
       );
@@ -621,7 +624,7 @@ export class TokenManager {
       if (error.terminal) {
         this.terminal.set(p.cacheKey, {
           until: this.now() + OAUTH2_TERMINAL_BACKOFF_MS,
-          error: error as OAuth2TerminalError,
+          error: error,
         });
       }
       throw error;

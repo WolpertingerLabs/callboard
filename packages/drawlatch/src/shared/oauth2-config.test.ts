@@ -587,7 +587,7 @@ describe('jwt_bearer subject (oauth2Overrides)', () => {
       callers: {
         alice: { connections: ['gsa'], ...(override && { oauth2Overrides: { gsa: override } }) },
       },
-    } as RemoteServerConfig;
+    };
   }
 
   it('merges the override subject (and scopes) into the route', () => {
@@ -657,7 +657,7 @@ describe('jwt_bearer subject (oauth2Overrides)', () => {
       connectors: [connector],
     };
     const without = resolveCallerRoutesChecked(
-      { ...base, callers: { a: { connections: ['mailbox'] } } } as RemoteServerConfig,
+      { ...base, callers: { a: { connections: ['mailbox'] } } },
       'a',
     );
     expect(without.routes).toEqual([]);
@@ -670,7 +670,7 @@ describe('jwt_bearer subject (oauth2Overrides)', () => {
             oauth2Overrides: { mailbox: { subject: 'me@example.com' } },
           },
         },
-      } as RemoteServerConfig,
+      },
       'a',
     );
     expect(withSubject.routes.map((r) => r.alias)).toEqual(['mailbox']);

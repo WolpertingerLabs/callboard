@@ -134,7 +134,7 @@ beforeEach(() => {
   seen = [];
   tokenRequests = [];
   vi.stubGlobal('fetch', vi.fn(fakeFetch));
-  setSharedTokenManager(new TokenManager({ fetchImpl: fakeFetch as typeof fetch }));
+  setSharedTokenManager(new TokenManager({ fetchImpl: fakeFetch }));
 });
 
 afterEach(() => {
@@ -280,7 +280,7 @@ describe('test_connection on google', () => {
 
     // Nor on the failure paths, nor in list_routes.
     resetSharedTokenManager();
-    setSharedTokenManager(new TokenManager({ fetchImpl: fakeFetch as typeof fetch }));
+    setSharedTokenManager(new TokenManager({ fetchImpl: fakeFetch }));
     grant = (r) => [...r, S + 'drive.readonly'];
     const refused = await testConnection(routes);
     expect(refused.success).toBe(false);
@@ -290,7 +290,7 @@ describe('test_connection on google', () => {
 
     // A scope the service account wasn't granted: the delegation must include it.
     resetSharedTokenManager();
-    setSharedTokenManager(new TokenManager({ fetchImpl: fakeFetch as typeof fetch }));
+    setSharedTokenManager(new TokenManager({ fetchImpl: fakeFetch }));
     grant = () => [S + 'calendar.readonly'];
     const missing = await testConnection(routes);
     expect(missing.hint).toBe(

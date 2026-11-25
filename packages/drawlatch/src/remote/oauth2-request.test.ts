@@ -190,13 +190,12 @@ describe('oauth2 routes on the request path', () => {
     return resolveRoutes([routeDef(overrides)], {}, 'alice');
   }
 
-  const context = (callerAlias = 'alice'): ToolContext =>
-    ({
-      callerAlias,
-      origin: 'agent',
-      ingestorManager: {} as ToolContext['ingestorManager'],
-      refreshRoutes: () => undefined,
-    }) as ToolContext;
+  const context = (callerAlias = 'alice'): ToolContext => ({
+    callerAlias,
+    origin: 'agent',
+    ingestorManager: {} as ToolContext['ingestorManager'],
+    refreshRoutes: () => undefined,
+  });
 
   const GET = (path: string, extra: Record<string, unknown> = {}) => ({
     method: 'GET',

@@ -750,7 +750,7 @@ describe('PollIngestor', () => {
         ok: true,
         status: 200,
         json: () => Promise.reject(new SyntaxError('Unexpected token')),
-      } as unknown as Response);
+      });
 
       const ingestor = new PollIngestor(
         'test',

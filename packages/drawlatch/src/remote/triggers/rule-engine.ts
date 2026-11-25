@@ -122,8 +122,7 @@ export class TriggerRuleEngine {
       for (const [path, acceptedValues] of Object.entries(rule.filter)) {
         const actualValue = getByPath(event.data, path);
         if (!Array.isArray(acceptedValues)) continue;
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        if (!acceptedValues.includes(actualValue as any)) return false;
+        if (!acceptedValues.includes(actualValue)) return false;
       }
     }
 

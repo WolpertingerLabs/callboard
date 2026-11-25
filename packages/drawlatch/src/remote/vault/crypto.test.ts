@@ -11,7 +11,6 @@ import {
   openEnvelope,
   readKeyFile,
   sealDocument,
-  type VaultEnvelope,
 } from './crypto.js';
 
 const LABEL = 'keys/vault.key';
@@ -121,7 +120,7 @@ describe('envelope', () => {
     expect(() => openEnvelope(k, { ...env, format: 'other' })).toThrow(/not a drawlatch vault/);
     expect(() => openEnvelope(k, { ...env, alg: 'aes-128-gcm' })).toThrow(/algorithm/);
     expect(() => openEnvelope(k, null)).toThrow(/not a drawlatch vault/);
-    expect(() => openEnvelope(k, { ...env, iv: 'AAAA' } as VaultEnvelope)).toThrow(/iv/);
+    expect(() => openEnvelope(k, { ...env, iv: 'AAAA' })).toThrow(/iv/);
   });
 });
 

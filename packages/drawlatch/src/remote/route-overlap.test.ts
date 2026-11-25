@@ -65,14 +65,13 @@ describe('connectionOverlapWarnings', () => {
     connections: string[],
     google?: GoogleCallerConfig,
     connectors?: Route[],
-  ): RemoteServerConfig =>
-    ({
-      host: '127.0.0.1',
-      port: 0,
-      rateLimitPerMinute: 60,
-      ...(connectors && { connectors }),
-      callers: { alice: { connections, ...(google && { google }) } },
-    }) as RemoteServerConfig;
+  ): RemoteServerConfig => ({
+    host: '127.0.0.1',
+    port: 0,
+    rateLimitPerMinute: 60,
+    ...(connectors && { connectors }),
+    callers: { alice: { connections, ...(google && { google }) } },
+  });
 
   it('is quiet for google alone, every service selected (Calendar and Drive share a host)', () => {
     expect(connectionOverlapWarnings(config(['google'], ALL))).toEqual([]);

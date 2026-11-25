@@ -477,11 +477,7 @@ describe('Stripe webhook factory registration', () => {
   });
 
   it('should return null when webhook block is entirely absent', () => {
-    const ingestor = createIngestor(
-      'stripe',
-      { type: 'webhook' } as { type: 'webhook'; webhook: undefined },
-      {},
-    );
+    const ingestor = createIngestor('stripe', { type: 'webhook' }, {});
 
     // The factory checks for !config.webhook
     // But with protocol: undefined, key becomes 'webhook:generic' which goes to GitHub factory

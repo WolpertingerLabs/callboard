@@ -1060,7 +1060,7 @@ describe('error codes are matched as own properties only', () => {
     'treats error "%s" as unrecognised (transient), with no native source in the message',
     async (code) => {
       const tm = new TokenManager({
-        fetchImpl: alwaysRespond({ error: code, error_description: 'x' }, 400) as typeof fetch,
+        fetchImpl: alwaysRespond({ error: code, error_description: 'x' }, 400),
       });
       for (const config of [
         refreshConfig(),
