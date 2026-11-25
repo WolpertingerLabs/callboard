@@ -8,9 +8,12 @@
 // dies at import time with ERR_MODULE_NOT_FOUND — which is exactly how
 // @agentclientprotocol/sdk shipped broken in 1.0.0-alpha.43.
 //
-// Two checks:
+// Three checks:
 //   1. Every bare import in shipped runtime code is in root dependencies.
 //   2. Ranges shared with backend/package.json don't drift apart.
+//   3. drawlatch lockstep: root and backend pin @wolpertingerlabs/drawlatch
+//      to exactly packages/drawlatch's version (an exact pin is also what
+//      makes npm link the workspace instead of fetching the registry).
 // ─────────────────────────────────────────────────────────────────────
 
 import { readdirSync, statSync, readFileSync } from "node:fs";
@@ -185,6 +188,28 @@ function collectImports() {
   return found;
 }
 
+const DRAWLATCH = "@wolpertingerlabs/drawlatch";
+
+/**
+ * Lockstep errors for the drawlatch pin: callboard ships against the drawlatch
+ * in packages/drawlatch, so both manifests must pin exactly that version — no
+ * range, no stale number. Pure, so it is unit-tested without touching disk.
+ */
+export function drawlatchLockstepErrors(rootPkg, backendPkg, drawlatchPkg) {
+  const version = drawlatchPkg?.version;
+  if (!version) return [`packages/drawlatch/package.json has no "version"`];
+  const errors = [];
+  for (const [label, pkg] of [
+    ["package.json", rootPkg],
+    ["backend/package.json", backendPkg],
+  ]) {
+    const pin = pkg?.dependencies?.[DRAWLATCH];
+    if (pin === undefined) errors.push(`drawlatch lockstep: ${label} does not depend on ${DRAWLATCH} (expected "${version}")`);
+    else if (pin !== version) errors.push(`drawlatch lockstep: ${label} pins ${DRAWLATCH} "${pin}" but packages/drawlatch is "${version}" — pin it exactly`);
+  }
+  return errors;
+}
+
 function main() {
   const rootPkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf-8"));
   const backendPkg = JSON.parse(readFileSync(join(ROOT, "backend/package.json"), "utf-8"));
@@ -214,6 +239,10 @@ function main() {
       errors.push(`version drift: ${name} is "${declared[name]}" at root but "${range}" in backend/package.json`);
     }
   }
+
+  // ── 3. drawlatch lockstep ────────────────────────────────────────────
+  const drawlatchPkg = JSON.parse(readFileSync(join(ROOT, "packages/drawlatch/package.json"), "utf-8"));
+  errors.push(...drawlatchLockstepErrors(rootPkg, backendPkg, drawlatchPkg));
 
   if (errors.length > 0) {
     console.error(`\nPublished dependency check failed (${errors.length} problem${errors.length === 1 ? "" : "s"}):\n`);

@@ -16,7 +16,7 @@
  *   fails silently and green.
  */
 import { describe, it, expect } from "vitest";
-import { blankComments, importedPackages } from "./check-published-deps.mjs";
+import { blankComments, drawlatchLockstepErrors, importedPackages } from "./check-published-deps.mjs";
 
 describe("blankComments", () => {
   it("keeps offsets and line breaks so statement anchors still match", () => {
@@ -96,4 +96,31 @@ describe("importedPackages", () => {
 
 it("does not exempt an unrewritten computer-use workspace import from publication checks", () => {
   expect([...importedPackages('const service = await import("@wolpertingerlabs/computer-use");')]).toEqual(["@wolpertingerlabs/computer-use"]);
+});
+
+describe("drawlatchLockstepErrors", () => {
+  const DL = "@wolpertingerlabs/drawlatch";
+  const pkg = (pin) => ({ dependencies: pin === undefined ? {} : { [DL]: pin } });
+  const drawlatch = { version: "1.0.0-alpha.69" };
+
+  it("passes when both pins equal the workspace version", () => {
+    expect(drawlatchLockstepErrors(pkg("1.0.0-alpha.69"), pkg("1.0.0-alpha.69"), drawlatch)).toEqual([]);
+  });
+
+  it("fails a caret range even when it would match", () => {
+    const errors = drawlatchLockstepErrors(pkg("^1.0.0-alpha.69"), pkg("1.0.0-alpha.69"), drawlatch);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatch(/^drawlatch lockstep: package.json pins .* "\^1.0.0-alpha.69"/);
+  });
+
+  it("fails a version that differs from the workspace", () => {
+    const errors = drawlatchLockstepErrors(pkg("1.0.0-alpha.68"), pkg("1.0.0-alpha.68"), drawlatch);
+    expect(errors).toHaveLength(2);
+    expect(errors[1]).toMatch(/backend\/package.json pins .* "1.0.0-alpha.68" but packages\/drawlatch is "1.0.0-alpha.69"/);
+  });
+
+  it("fails when backend has no pin", () => {
+    const errors = drawlatchLockstepErrors(pkg("1.0.0-alpha.69"), pkg(undefined), drawlatch);
+    expect(errors).toEqual([expect.stringMatching(/backend\/package.json does not depend on/)]);
+  });
 });
