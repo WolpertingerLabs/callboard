@@ -394,10 +394,9 @@ The frontend runs at `http://localhost:3000` and the backend at `:3002`. Watch f
 | `npm run format:drawlatch:check`            | Prettier check of drawlatch's `src/**/*.ts` and top-level config, with its own `.prettierrc`               |
 | `npm run prettier`                          | Format changed and staged files                                                                            |
 | `npm run swagger`                           | Regenerate `backend/swagger.json`, which is served at `GET /api/docs`                                      |
-| `npm run reload` / `reload:local`           | Build, pack and global-install callboard with the workspace drawlatch, then `callboard restart`            |
-| `npm run reload:prod`                       | The same, with drawlatch from npm at the pinned version. Fails if that version isn't published yet         |
+| `npm run reload`                            | Build, pack and global-install callboard with the workspace drawlatch, then `callboard restart`            |
 
-`reload` takes `--prefix <dir>` (install there instead, no restart) and `--no-restart`, e.g. `node scripts/reload.cjs local --prefix /tmp/cb`.
+`reload` takes `--prefix <dir>` (install there instead, no restart) and `--no-restart`, e.g. `node scripts/reload.cjs --prefix /tmp/cb`. It always installs the workspace drawlatch, never the one on npm, and stops before building if `node_modules` doesn't match `package-lock.json` (run `npm install` after a pull that changes the lockfile).
 
 ### Layout
 

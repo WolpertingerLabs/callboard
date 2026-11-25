@@ -217,7 +217,7 @@ Each `agent` step's standard contract (state once in the job `defaults`, not per
 | 11 | `frontend` | agent | ProviderConfigPicker 3rd button; ApiSettings Codex tab with **auth-mode toggle** (subscription status + api-key fields); `CodexModelSelector`; ProviderBadge "CX"; Chat composer label arms; `codexConfigured` on system-info. `npm run build:frontend` + lint green. | `branch`, `build_status`, `summary` |
 | 12 | `integration` | agent | Full manual+automated verify via the `/verify` flow: launch app, create a Codex (subscription) chat in the UI, run a small coding task, confirm streaming/tools/cost/resume/badge, and a regression pass that Claude + OpenRouter chats still work. Report verdict + screenshots. | `verdict` ("pass"/"fail"), `report`, `branch` |
 | 13 | `deploy-gate` | approval | "Integration verdict = {{steps.integration.outputs.verdict}}. Approve deploy to your local callboard?" onReject→fail. | — |
-| 14 | `deploy` | agent | Merge the chain to `main`; `npm run build`; reload the running instance (`npm run reload:local` / pm2 reload); smoke-test that callboard restarts and a Codex chat works. | `deploy_status`, `commit`, `summary` |
+| 14 | `deploy` | agent | Merge the chain to `main`; `npm run build`; reload the running instance (`npm run reload` / pm2 reload); smoke-test that callboard restarts and a Codex chat works. | `deploy_status`, `commit`, `summary` |
 | 15 | `done` | notify | "Codex provider live as the third option (subscription auth). PR(s): …" | — |
 
 Notes for the job author (when you build it later):
