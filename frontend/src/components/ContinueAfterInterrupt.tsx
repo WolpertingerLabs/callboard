@@ -17,9 +17,11 @@ export function ContinueButton({ onContinue }: { onContinue: () => void }) {
           display: "inline-flex",
           alignItems: "center",
           gap: 4,
+          // At least the WCAG 2.5.8 24px target, with room to spare on touch.
+          minHeight: 28,
           background: "var(--accent)",
           color: "var(--text-on-accent)",
-          padding: "4px 10px",
+          padding: "4px 12px",
           borderRadius: 4,
           fontSize: 12,
           border: "none",

@@ -3,9 +3,7 @@ import { getChat, getMessages, stopChat, type Chat, type ParsedMessage } from ".
 import type { PendingAction } from "../components/FeedbackPanel";
 import { endsWithInterruptMarker } from "../utils/inFlightMessages";
 
-import { INTERRUPTED_MESSAGE, INTERRUPTED_NOTICE } from "../utils/continueAfterInterrupt";
-
-export { INTERRUPTED_MESSAGE, INTERRUPTED_NOTICE };
+import { INTERRUPTED_NOTICE } from "../utils/continueAfterInterrupt";
 
 // How long to wait for the stopped run's terminal event before settling the UI
 // anyway. Generous: the server has already aborted the run and killed the
