@@ -5,7 +5,7 @@ import ComputerUseHeader from "../components/ComputerUseHeader";
 import { usePendingFeedback } from "../hooks/usePendingFeedback";
 import { useComputerUseController } from "../hooks/useComputerUseController";
 import ComputerUsePanel from "../components/ComputerUsePanel";
-import { memo, useId, useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, type ReactNode } from "react";
+import { memo, useId, useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import { useParams, useNavigate, useSearchParams, useLocation, useNavigationType } from "react-router-dom";
 import {
   RotateCw,
@@ -97,7 +97,9 @@ import AskAsideControls, { type AskAsideOptions, type AskAsideResult } from "../
 import type { ComposerSnapshot, SendVariant, SendVariants } from "../components/PromptInput";
 import { providerKindOf, useChatMeta } from "../hooks/useChatMeta";
 import { isRetiredProviderId } from "../utils/retiredProviders";
-import { INTERRUPTED_MESSAGE, useStopController } from "../hooks/useStopController";
+import { useStopController } from "../hooks/useStopController";
+import { ContinueButton, ContinuedDivider } from "../components/ContinueAfterInterrupt";
+import { CONTINUE_PROMPT, INTERRUPTED_MESSAGE, INTERRUPTED_NOTICE, endsWithUserStop, isContinuePrompt } from "../utils/continueAfterInterrupt";
 import { useMessageNavigation } from "../hooks/useMessageNavigation";
 import { useStableStarred, useStarredMessages, useStarredNavigation } from "../hooks/useStarredMessages";
 import { resolveStarred, starKeysByIndex } from "../utils/starredMessages";
@@ -112,6 +114,7 @@ import {
   endsWithInterruptMarker,
   nextInFlightKey,
   settleInFlight,
+  userEntryCount,
   toInFlightHandoff,
   toInFlightList,
   visibleInFlight,
@@ -451,7 +454,26 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
   // from this.
   const chatMeta = useChatMeta(chat?.metadata);
   const [info, setInfo] = useState<NewChatInfo | null>(null);
-  const [messages, setMessages] = useState<ParsedMessage[]>([]);
+  const [messages, setMessagesState] = useState<ParsedMessage[]>([]);
+  // The chat the transcript on screen was loaded for. Switching chats does not
+  // clear `messages` (the component is not keyed by id), so for a moment the
+  // previous chat's transcript sits under the new id — and anything that acts
+  // on the transcript (the Continue button) must not act on it there. Every
+  // write is made under the page's `currentIdRef` staleness guard, so that is
+  // whose transcript it is.
+  // Track the current chat ID for staleness detection in closures.
+  const currentIdRef = useRef<string | undefined>(id);
+  const [messagesFor, setMessagesFor] = useState<string | undefined>(undefined);
+  // The transcript and whose it is, for handlers that need them at call time
+  // without re-creating on every message (handleSend's in-flight baseline).
+  const messagesRef = useRef({ messages, for: messagesFor });
+  useEffect(() => {
+    messagesRef.current = { messages, for: messagesFor };
+  }, [messages, messagesFor]);
+  const setMessages = useCallback<Dispatch<SetStateAction<ParsedMessage[]>>>((value) => {
+    setMessagesFor(currentIdRef.current);
+    setMessagesState(value);
+  }, []);
   const [streaming, setStreaming] = useState(transitionInFlightMessages.length > 0);
   const [responseError, setResponseError] = useState("");
   const [controlNotice, setControlNotice] = useState("");
@@ -620,7 +642,6 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
   const bottomRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const hasReceivedFirstResponseRef = useRef<boolean>(false);
-  const currentIdRef = useRef<string | undefined>(id);
   /**
    * Re-read `/pending` and show what the daemon is waiting on now. For the
    * moments a card goes without this tab answering it — taken down by
@@ -1583,13 +1604,16 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
                   clearInFlightMessages();
                   return;
                 }
-                // Refetch complete chat data and messages
+                // Refetch complete chat data and messages — unless a send has
+                // started a newer run by the time they land (sendGenerationRef).
+                const completeGeneration = sendGenerationRef.current;
+                const completeCurrent = () => currentIdRef.current === streamChatId && sendGenerationRef.current === completeGeneration;
                 getChat(streamChatId!).then((chatData) => {
-                  if (currentIdRef.current !== streamChatId) return;
+                  if (!completeCurrent()) return;
                   setChat(chatData);
                 });
                 getMessages(streamChatId!).then((msgs) => {
-                  if (currentIdRef.current !== streamChatId) return;
+                  if (!completeCurrent()) return;
                   const msgArray = Array.isArray(msgs) ? msgs : [];
                   // The abort notice is redundant once the harness's own
                   // marker is in the transcript; other reasons have no
@@ -1603,7 +1627,8 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
                   const trailing: ParsedMessage[] = [];
                   const killed = abandonedTaskMarker(Array.isArray(event.abandonedBackgroundTaskIds) ? event.abandonedBackgroundTaskIds : [], msgArray);
                   if (killed) trailing.push(killed);
-                  if (reasonMsg && !redundant) trailing.push({ role: "system", type: "system", content: reasonMsg });
+                  if (reasonMsg && !redundant)
+                    trailing.push(reasonMsg === INTERRUPTED_MESSAGE ? INTERRUPTED_NOTICE : { role: "system", type: "system", content: reasonMsg });
                   setMessages(trailing.length > 0 ? [...msgArray, ...trailing] : msgArray);
                   // Retire optimistic bubbles only once the transcript shows
                   // them — a message sent while this run was finishing has to
@@ -1637,8 +1662,9 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
                 const shown = shownStreamErrorRef.current;
                 const errorContent = refusal && shown && shown.chatId === streamChatId ? shown.content : event.content;
                 shownStreamErrorRef.current = { chatId: streamChatId!, content: errorContent };
+                const errorGeneration = sendGenerationRef.current;
                 getMessages(streamChatId!).then((msgs) => {
-                  if (currentIdRef.current !== streamChatId) return;
+                  if (currentIdRef.current !== streamChatId || sendGenerationRef.current !== errorGeneration) return;
                   const msgArray = Array.isArray(msgs) ? msgs : [];
                   const alreadyPersisted = msgArray.slice(-3).some((m) => m.subtype === "session_error" && m.content === errorContent);
                   // Same trailer the clean ending builds, for the same reason —
@@ -1764,7 +1790,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
         }
       }
     },
-    [id, resetStreamingTimeout, refreshActivityAfterStreamEnd],
+    [id, resetStreamingTimeout, refreshActivityAfterStreamEnd, setMessages],
   );
 
   // Connect to an existing SSE stream (e.g. after page refresh)
@@ -1877,7 +1903,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
       // nulling that one lets the next registry tick open a second stream.
       if (abortRef.current === controller) abortRef.current = null;
     }
-  }, [id, readSSE, refreshActivityAfterStreamEnd, resetReconnectBackoff, scheduleReconnectWake]);
+  }, [id, readSSE, refreshActivityAfterStreamEnd, resetReconnectBackoff, scheduleReconnectWake, setMessages]);
 
   // Reset run state when the chat changes. Must be declared before the
   // auto-connect effect below: effects run in declaration order, and switching
@@ -1966,7 +1992,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
     setNetworkError(null);
     setStreaming(true);
     connectToStream();
-  }, [id, globalSessionActive, streaming, connectToStream, reconnectWake, resetReconnectBackoff, scheduleReconnectWake]);
+  }, [id, globalSessionActive, streaming, connectToStream, reconnectWake, resetReconnectBackoff, scheduleReconnectWake, setMessages]);
 
   // Safety net: if the session registry reports the session *transitioned* from
   // active → inactive, always clean up streaming state.
@@ -2047,7 +2073,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
 
     document.addEventListener("visibilitychange", handleVisibilityResume);
     return () => document.removeEventListener("visibilitychange", handleVisibilityResume);
-  }, [id]);
+  }, [id, setMessages]);
 
   // Keep the dock honest while a run is live.
   //
@@ -2160,7 +2186,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
     return () => {
       current = false;
     };
-  }, [folder, id, newChatSpaceId]);
+  }, [folder, id, newChatSpaceId, setMessages]);
 
   // Load existing chat data (only when id is available)
   useEffect(() => {
@@ -2259,7 +2285,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
         abortRef.current = null;
       }
     };
-  }, [id, loadSlashCommands, latchNow]);
+  }, [id, loadSlashCommands, latchNow, setMessages]);
 
   // ── Smart auto-scroll ──
   //
@@ -2724,6 +2750,16 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
     onChatListRefreshRef.current?.();
   }, [activeDraftId, draftRestore]);
 
+  // Bumped by every send. A run's terminal refetch (message_complete /
+  // message_error) captures it when the event arrives and drops its answer if
+  // a send has happened since: that answer is the finished run's transcript,
+  // and written after a Continue it would put the "Session was interrupted."
+  // notice back under the new run and take over the transcript it streams.
+  const sendGenerationRef = useRef(0);
+  // useStopController's cancelPendingStop, for handleSend, which is defined
+  // before the hook is called.
+  const cancelPendingStopRef = useRef<() => void>(() => {});
+
   const handleSend = useCallback(
     /**
      * `notFromComposer` marks a send that isn't the composer's contents — the
@@ -2760,11 +2796,37 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
           text: prompt,
           imageUrls: (images ?? []).filter((f) => isImageAttachmentType(f.type)).map((f) => URL.createObjectURL(f)),
           fileNames: (images ?? []).filter((f) => !isImageAttachmentType(f.type)).map((f) => f.name),
+          // Only user entries after this many can be its persisted copy (see
+          // visibleInFlight). Known only when the transcript on screen is this
+          // chat's; a new chat has none yet.
+          ...(!id ? { afterUserEntries: 0 } : messagesRef.current.for === id && { afterUserEntries: userEntryCount(messagesRef.current.messages) }),
         },
       ]);
       setNetworkError(null); // Clear any previous network errors
       streamCompletedRef.current = false; // Reset so new message can stream
       suppressReconnectAfterStopRef.current = false; // A new run supersedes any stop we're still settling
+      cancelPendingStopRef.current(); // ...including its delayed resync, which would write the stopped run's transcript over this one
+      sendGenerationRef.current++; // ...and the terminal refetch of the run it follows (see sendGenerationRef)
+      // This send just cancelled the previous run's pending resyncs. If the
+      // route then refuses it, nothing else will refetch: without this the
+      // transcript would sit at the stopped run's partial streamed state (and
+      // the chat record without its Stop) until a reload. Under the generation
+      // current at the refusal, so a newer send still wins.
+      const resyncAfterRefusal = () => {
+        if (!id) return;
+        const generation = sendGenerationRef.current;
+        const current = () => currentIdRef.current === id && sendGenerationRef.current === generation;
+        getChat(id)
+          .then((chatData) => {
+            if (current()) setChat(chatData);
+          })
+          .catch(() => {});
+        getMessages(id)
+          .then((msgs) => {
+            if (current()) setMessages(Array.isArray(msgs) ? msgs : []);
+          })
+          .catch(() => {});
+      };
       resetReconnectBackoff(); // ...and any failures to attach to the old one
       shownStreamErrorRef.current = null; // ...and the old run's error
 
@@ -2975,6 +3037,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
             });
             setStreaming(false);
             clearInFlightMessages();
+            resyncAfterRefusal();
             return;
           }
 
@@ -2990,6 +3053,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
             });
             setStreaming(false);
             clearInFlightMessages();
+            resyncAfterRefusal();
             return;
           }
 
@@ -3000,6 +3064,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
           setNetworkError(errorData.error || "Failed to send message");
           setStreaming(false);
           clearInFlightMessages();
+          resyncAfterRefusal();
           return;
         }
 
@@ -3013,6 +3078,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
           setNetworkError("network error");
           setStreaming(false);
           clearInFlightMessages(); // Drop optimistic bubbles on error
+          resyncAfterRefusal();
         } else if (cancelledSendRef.current?.controller === controller && !answered) {
           // The indicator's Cancel, before the route answered. The prompt goes
           // back only once the daemon confirms it cancelled the creation — a
@@ -3064,6 +3130,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
       sendBlockedReason,
       retireOpenDraft,
       restoreNewChatComposer,
+      setMessages,
     ],
   );
 
@@ -4000,7 +4067,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
   // timeout fired — the server-side session is still running and can be aborted
   // via the /stop API regardless of frontend connection state.
   // CLI sessions are excluded because the server doesn't control their execution.
-  const { stopping, canStop, handleStop } = useStopController({
+  const { stopping, canStop, handleStop, cancelPendingStop } = useStopController({
     id,
     streaming,
     stoppable: !nativeAgent && (streaming || globalSessionActive?.type === "web"),
@@ -4016,6 +4083,42 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
     clearInFlightMessages,
     refreshActivity,
   });
+
+  useEffect(() => {
+    cancelPendingStopRef.current = cancelPendingStop;
+  }, [cancelPendingStop]);
+
+  // The Continue button: offered when the user stopped the last run and
+  // nothing has happened since (see endsWithUserStop), and only where the
+  // composer could send the prompt itself — no run live here or elsewhere,
+  // nothing on its way or held for later, no block on sending, and a harness
+  // that still takes messages, with no blocking request (plan review,
+  // permission) in front of the composer. Both the chat record and the transcript must
+  // be this route's: right after a switch they can still be the previous
+  // chat's, and Continue would post that chat's resume to this one.
+  const continueOffered =
+    !!id &&
+    chatIsForRoute &&
+    messagesFor === id &&
+    !streaming &&
+    !stopping &&
+    !globalSessionActive &&
+    !nativeAgent &&
+    !isRetiredHarness &&
+    !composerBlockedReason &&
+    // A blocking request (a restored plan review, a permission card) has the
+    // composer's place; Continue would answer it by talking past it.
+    (!pendingAction || pendingAction.nonBlocking) &&
+    visibleInFlightMessages.length === 0 &&
+    heldMessages.length === 0 &&
+    endsWithUserStop(messages, chat?.stoppedByUserAt);
+  // Not the composer's contents (see handleSend): an open draft stays put.
+  // The button unmounts as the send starts, which would drop focus to
+  // <body>; the composer is where the user's next move is.
+  const handleContinue = useCallback(() => {
+    focusComposer?.();
+    void handleSend(CONTINUE_PROMPT, undefined, { notFromComposer: true });
+  }, [handleSend, focusComposer]);
 
   const handleReconnect = useCallback(async () => {
     setNetworkError(null);
@@ -4051,7 +4154,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
       setStreaming(true);
       connectToStream();
     }
-  }, [globalSessionActive, streaming, connectToStream, id, resetReconnectBackoff]);
+  }, [globalSessionActive, streaming, connectToStream, id, resetReconnectBackoff, setMessages]);
 
   const {
     userMessageIndices,
@@ -5020,6 +5123,16 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
                         </div>
                       );
                     }
+                    // The Continue button's prompt: a divider, like the
+                    // interruption it answers, rather than a bubble of
+                    // boilerplate the user never typed.
+                    if (isContinuePrompt(item.message)) {
+                      return (
+                        <div key={item.originalIndex} data-message-index={item.originalIndex}>
+                          <ContinuedDivider />
+                        </div>
+                      );
+                    }
                     // Forkable: persisted conversational text messages on the
                     // main timeline. Subagent messages are excluded — they
                     // aren't a point in the main thread to branch from. Every
@@ -5110,6 +5223,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
                       </span>
                     </ThinkingIndicator>
                   )}
+                  {continueOffered && <ContinueButton onContinue={handleContinue} />}
                   {/* After the turn they wait on: what goes next. */}
                   <HeldMessageList
                     items={heldMessages}

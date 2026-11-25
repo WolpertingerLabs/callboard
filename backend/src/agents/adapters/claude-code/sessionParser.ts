@@ -28,6 +28,18 @@ import { scanJsonlLines } from "../../../utils/jsonl-scan.js";
 const META_PROMPT_ACK = "No response requested.";
 
 /**
+ * The model name the CLI stamps on assistant lines it writes itself rather
+ * than receives from the API. It writes {@link META_PROMPT_ACK} under this
+ * name when a queued prompt follows a turn that was cut short — after an
+ * interrupt marker, but far more often after Callboard's own Stop, where what
+ * precedes it is an aborted tool_result and some queue-operation lines. Text
+ * the CLI wrote under its own name is never something the model said, so the
+ * ack is dropped whatever precedes it. Other `<synthetic>` lines (auth and API
+ * errors) say something else and are kept.
+ */
+const SYNTHETIC_MODEL = "<synthetic>";
+
+/**
  * The CLI's interruption records, written as `user` messages. Matched exactly
  * — assistant prose about something being "interrupted" must stay untouched.
  */
@@ -527,6 +539,9 @@ export function parseMessages(rawMessages: any[]): ParsedMessage[] {
       afterMetaPrompt = false;
       if (role === "assistant" && isTextOnlySaying(content, META_PROMPT_ACK)) continue;
     }
+    // The CLI's own canned ack, written under its own model name — see
+    // SYNTHETIC_MODEL. Dropped wherever it lands.
+    if (role === "assistant" && msg.message?.model === SYNTHETIC_MODEL && isTextOnlySaying(content, META_PROMPT_ACK)) continue;
 
     // An interruption is a fact about the run, not something the user said.
     // Rendered as a boundary marker (same treatment as compact/clear) instead
