@@ -28,7 +28,8 @@ Root and backend pin `@wolpertingerlabs/drawlatch` exactly to `packages/drawlatc
 
 ## Lint, format, tests
 
-- drawlatch keeps its own eslint config (run from its directory via `lint:drawlatch`) and its own `.prettierrc`, which prettier resolves per file. The root eslint and vitest configs ignore `packages/drawlatch/**`.
+- drawlatch keeps its own eslint config (run from its directory via `lint:drawlatch`) and its own `.prettierrc`. The root eslint and vitest configs ignore `packages/drawlatch/**`.
+- Prettier run from the root resolves `packages/drawlatch/.prettierrc` for every drawlatch file, but drawlatch's `format` script only ever covered `src/**/*.ts` and its top-level `*.{json,ts,js}`. Its frontend (double-quoted), connection templates, fixtures, `bin/` and editor config were never formatted, and the root `prettier` script, lint-staged and format-on-save would have rewritten them. The root `.prettierignore` excludes those paths, so callboard tooling formats exactly what drawlatch's `format` does.
 - `test:drawlatch` runs in `npm test` / `test:coverage`; e2e (`test:drawlatch:e2e`) stays manual, as before.
 - drawlatch's `.github/workflows` were removed (they don't run from a subdirectory). CI gains `lint:drawlatch` and `deps:check` steps.
 
