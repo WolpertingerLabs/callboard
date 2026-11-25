@@ -165,7 +165,12 @@ describe("send-time baseline (afterUserEntries)", () => {
     const transcript = [user("build it"), assistant("partial"), INTERRUPTED_NOTICE, user(CONTINUE_PROMPT), assistant("more"), INTERRUPTED_NOTICE];
     const second = sentOver(CONTINUE_PROMPT, transcript);
     expect(visibleInFlight([second], transcript)).toEqual([second]);
-    expect(settleInFlight([second], transcript)).toEqual([second]);
+    // The settle widens on a miss, as before baselines (see the "baseline
+    // came out too high" case). It runs on the new run's own refetches — the
+    // send aborts the old stream, and the old run's terminal refetch is
+    // dropped by sendGenerationRef — by when the harness has written the
+    // prompt; at worst this is main's old early retire of an identical bubble.
+    expect(settleInFlight([second], transcript)).toEqual([]);
     // ...and is retired by its own copy once that lands.
     const persisted = [...transcript, user(CONTINUE_PROMPT)];
     expect(visibleInFlight([second], persisted)).toEqual([]);
@@ -176,7 +181,7 @@ describe("send-time baseline (afterUserEntries)", () => {
     const transcript = [user("run the tests"), assistant("they pass")];
     const again = sentOver("run the tests", transcript);
     expect(visibleInFlight([again], transcript)).toEqual([again]);
-    expect(settleInFlight([again], transcript)).toEqual([again]);
+    expect(settleInFlight([again], transcript)).toEqual([]); // widened on a miss, as above
     expect(visibleInFlight([again], [...transcript, user("run the tests")])).toEqual([]);
   });
 
@@ -186,6 +191,18 @@ describe("send-time baseline (afterUserEntries)", () => {
     const b = sentOver("again", transcript);
     expect(visibleInFlight([a, b], [...transcript, user("again")])).toEqual([b]);
     expect(visibleInFlight([a, b], [...transcript, user("again"), user("again")])).toEqual([]);
+  });
+
+  it("the terminal settle still retires a message whose baseline came out too high; hiding stays strict", () => {
+    // Baseline 2, but the copy landed as entry 1 (the transcript reparsed with
+    // one fewer user entry ahead of it). Hiding must not reach back that far —
+    // the settle must, or the bubble would sit under its own copy for good.
+    const m: InFlightMessage = { key: nextInFlightKey(), text: "ship it", imageUrls: [], afterUserEntries: 2 };
+    const fetched = [user("first"), user("ship it"), user("later")];
+    expect(visibleInFlight([m], fetched)).toEqual([m]);
+    expect(settleInFlight([m], fetched)).toEqual([]);
+    // A settle with no copy anywhere still keeps it.
+    expect(settleInFlight([m], [user("first"), user("other"), user("later")])).toEqual([m]);
   });
 
   it("falls back to the trailing-entries rule when the transcript shrank below the baseline", () => {

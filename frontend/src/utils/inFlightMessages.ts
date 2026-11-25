@@ -187,17 +187,29 @@ export function userEntryCount(messages: ParsedMessage[]): number {
  * at most one. A message with a send-time baseline is matched only against
  * entries after it; one without (or a baseline the transcript has since
  * shrunk below) against `fallback` indices.
+ *
+ * `widenOnMiss` is for retiring, not for hiding: a baselined message the
+ * strict search misses is then matched against the whole transcript, as
+ * before baselines existed. A baseline that came out too high (a count taken
+ * over a transcript that later reparsed with fewer user entries ahead of the
+ * copy) then cannot keep a bubble on screen under its own persisted copy for
+ * good. Hiding stays strict — that is where a too-low match would swallow a
+ * genuine resend.
  */
-function accountedSet(pending: InFlightMessage[], entries: UserEntry[], fallback: number[]): Set<InFlightMessage> {
+function accountedSet(pending: InFlightMessage[], entries: UserEntry[], fallback: number[], { widenOnMiss = false } = {}): Set<InFlightMessage> {
   const used = new Set<number>();
   const accounted = new Set<InFlightMessage>();
   for (const message of pending) {
     const base = message.afterUserEntries;
-    const candidates = base !== undefined && base <= entries.length ? entries.map((_, i) => i).slice(base) : fallback;
+    const baselined = base !== undefined && base <= entries.length;
+    const candidates = baselined ? entries.map((_, i) => i).slice(base) : fallback;
     const hit = candidates.find((i) => !used.has(i) && isCopyOf(message, entries[i]));
-    if (hit === undefined) continue;
-    used.add(hit);
-    accounted.add(message);
+    if (hit !== undefined) {
+      used.add(hit);
+      accounted.add(message);
+    } else if (baselined && widenOnMiss && entries.some((e) => isCopyOf(message, e))) {
+      accounted.add(message);
+    }
   }
   return accounted;
 }
@@ -237,6 +249,7 @@ export function settleInFlight(pending: InFlightMessage[], fetched: ParsedMessag
     pending,
     persisted,
     persisted.map((_, i) => i),
+    { widenOnMiss: true },
   );
   const keep = pending.filter((m) => !accounted.has(m));
   return keep.length === pending.length ? pending : keep;
