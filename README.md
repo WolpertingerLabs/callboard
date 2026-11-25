@@ -388,9 +388,10 @@ The frontend runs at `http://localhost:3000` and the backend at `:3002`. Watch f
 | `npm start`                                 | Run the production build from `backend/dist`                                                               |
 | `npm test` / `test:watch` / `test:coverage` | Vitest (`npm test` and `test:coverage` also run the computer-use and drawlatch tests)                      |
 | `npm run test:drawlatch`                    | Drawlatch's unit tests. `test:drawlatch:e2e` runs its live-API tests (needs `packages/drawlatch/.env.e2e`) |
-| `npm run lint` / `lint:fix`                 | ESLint on **staged** files only. On a clean index this lints nothing                                       |
+| `npm run lint` / `lint:fix`                 | ESLint on **staged** files only (drawlatch's `src/` with its own config). A clean index lints nothing      |
 | `npm run lint:all` / `lint:all:fix`         | ESLint on the whole tree, except `packages/drawlatch`                                                      |
 | `npm run lint:drawlatch`                    | ESLint on drawlatch, with its own typed config                                                             |
+| `npm run format:drawlatch:check`            | Prettier check of drawlatch's `src/**/*.ts` and top-level config, with its own `.prettierrc`               |
 | `npm run prettier`                          | Format changed and staged files                                                                            |
 | `npm run swagger`                           | Regenerate `backend/swagger.json`, which is served at `GET /api/docs`                                      |
 | `npm run reload` / `reload:local`           | Build, pack and global-install callboard with the workspace drawlatch, then `callboard restart`            |
@@ -421,7 +422,7 @@ Stack: React 18, React Router 6, Express 4, TypeScript 5, Vite 5, Zod 4, Winston
 
 ### Releasing
 
-Callboard and drawlatch are published to npm separately and keep their own version numbers. Callboard pins drawlatch **exactly** (`"@wolpertingerlabs/drawlatch": "<version>"`, no `^`) in both `package.json` and `backend/package.json`, and that pin must equal `packages/drawlatch/package.json`'s `version`; `npm run deps:check` (in CI and `prepublishOnly`) fails otherwise. The exact pin is also what makes npm link the workspace instead of fetching drawlatch from the registry. To bump drawlatch:
+Callboard and drawlatch are published to npm separately and keep their own version numbers. Callboard pins drawlatch **exactly** (`"@wolpertingerlabs/drawlatch": "<version>"`, no `^`) in both `package.json` and `backend/package.json`, and that pin must equal `packages/drawlatch/package.json`'s `version`; `npm run deps:check` (in CI and `prepublishOnly`) fails otherwise. That way each callboard release names the exact drawlatch it was built and tested against. (npm links the workspace for any range the workspace version satisfies; the exact pin is about lockstep, not linking.) To bump drawlatch:
 
 ```bash
 npm version <version> -w @wolpertingerlabs/drawlatch --no-git-tag-version
@@ -429,7 +430,7 @@ npm version <version> -w @wolpertingerlabs/drawlatch --no-git-tag-version
 npm install
 ```
 
-Both packages are published by the **Publish to npm** workflow (`.github/workflows/publish.yml`), never with `npm publish` from a checkout. Bump the version(s), merge to `main`, then in GitHub → Actions → **Publish to npm** → **Run workflow** on `main`:
+Both packages are published by the **Publish to npm** workflow (`.github/workflows/publish.yml`), never with `npm publish` from a checkout. drawlatch must be on npm before callboard, and the workflow publishes them in that order. Bump the version(s), merge to `main`, then in GitHub → Actions → **Publish to npm** → **Run workflow** on `main`:
 
 - **`dry_run`** (on by default) runs everything except the publish and the tags: the release plan, the full `prepublishOnly` gate, packing both tarballs (their contents are listed in the log), and `npm publish --dry-run` of each tarball. Run it first. npm still exchanges the job's OIDC token in a dry run, and the dry run fails if that exchange doesn't work, so it also checks the trusted-publisher setup below.
 - **`dist_tag`** (default `latest`) is passed as `--tag`; npm requires one for prerelease versions. The run refuses to move a dist-tag backwards, so a hotfix for an older version needs another dist-tag.
@@ -445,9 +446,9 @@ What a run does, decided by `scripts/release-plan.mjs` and printed in the run su
    - Fails if callboard's drawlatch pin isn't the workspace version.
    - **drawlatch:** if its version isn't on npm, it will be published. If it is, nothing that ships may have changed under `packages/drawlatch` since the commit it was published from (its `drawlatch-v<version>` tag); otherwise the run fails with "bump drawlatch". Tests, JSON fixtures, lint/test config, `.gitignore`, `CLAUDE.md`, `plans/` and example configs don't count.
    - **callboard:** its version must not be on npm yet, or the run fails with "bump callboard" (a dry run only warns).
-2. **Gate.** `npm run prepublishOnly`, with `CALLBOARD_SKIP_REGISTRY_CHECK=1` because drawlatch isn't published until the publish job. That is lint, a clean build, every test suite and `deps:check`, run once, before anything is published.
+2. **Gate.** `npm run prepublishOnly`: lint, a clean build, every test suite and `deps:check`, run once, before anything is published. It runs with `CALLBOARD_SKIP_REGISTRY_CHECK=1`, which makes `prepublishOnly` skip its registry check (that the pinned drawlatch is already on npm), because drawlatch isn't published until the publish job.
 3. **Pack.** Writes the commit into each `package.json` as `gitHead` (npm records it, and re-runs use it), then runs `npm pack` for both.
-4. **Publish drawlatch** (if needed), then **check that callboard's drawlatch pin is installable from npm** (`deps:check:registry`, retried for about two minutes), then **publish callboard**. Both publishes use `--provenance --access public`.
+4. **Publish drawlatch** (if needed), then **check that callboard's drawlatch pin is installable from npm** (`npm run deps:check:registry`, retried for about two minutes; this one never skips), then **publish callboard**. Both publishes use `--provenance --access public`.
 5. **Tag** `drawlatch-v<version>` and `v<version>`, annotated and pushed by `github-actions[bot]`, after both publishes.
 
 Re-running after a partial failure is safe:
@@ -473,6 +474,8 @@ Releasing only callboard is the common case: leave drawlatch's version alone and
 4. **Optional:** once each package has published once this way, set its Publishing access to "Require two-factor authentication and disallow tokens".
 
 After a release, `npm view @wolpertingerlabs/<package>@<version> dist.attestations` should show the provenance attestation.
+
+`npm run deps:check:registry` checks that the pinned drawlatch version is on npm. It needs only Node, `npm` and the network (no install or build), so CI's `ci.yml` doesn't run it. Callboard's `prepublishOnly` runs the same check and only skips it when `CALLBOARD_SKIP_REGISTRY_CHECK=1`, so a manual publish checks by default.
 
 ## License
 

@@ -37,6 +37,11 @@ jobs:
       - name: Lint drawlatch
         run: npm run lint:drawlatch
 
+      # prettier/prettier is only a warning in drawlatch's eslint config, so
+      # formatting drift would never fail the lint step above.
+      - name: Format check drawlatch
+        run: npm run format:drawlatch:check
+
       # Published-dependency checks, including the drawlatch lockstep pin
       # (callboard's exact pin must equal packages/drawlatch's version).
       - name: Published deps + lockstep

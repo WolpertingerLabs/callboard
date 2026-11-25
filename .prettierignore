@@ -25,3 +25,15 @@ shared/types/wire-surface.snapshot.json
 **/.hg
 **/keys
 **/node_modules
+# drawlatch formats only `src/**/*.ts` and its top-level `*.{json,ts,js}` (its
+# own `format` script, with packages/drawlatch/.prettierrc). Prettier run from
+# here resolves that .prettierrc for every drawlatch file, so without these the
+# root `prettier` script, lint-staged and format-on-save would rewrite files
+# drawlatch never formatted: its frontend (written double-quoted), the
+# hand-formatted connection templates, fixtures, bin and editor config.
+packages/drawlatch/frontend/
+packages/drawlatch/bin/
+packages/drawlatch/src/connections/
+packages/drawlatch/src/**/__fixtures__/
+packages/drawlatch/.vscode/
+packages/drawlatch/.claude-plugin/

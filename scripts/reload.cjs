@@ -43,7 +43,7 @@
  * root-owned /usr prefix) and no --prefix was given.
  */
 
-const { execSync, execFileSync } = require("child_process");
+const { execSync, execFileSync, spawn } = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -99,6 +99,65 @@ function pack(args, dest) {
   const out = execSync(cmd, { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
   const [info] = JSON.parse(out);
   return path.join(dest, info.filename);
+}
+
+/** Async `npm pack --json`, so signal handlers can run while it does (execSync blocks the event loop). */
+function packAsync(args, dest, onChild) {
+  const argv = ["pack", ...args, "--ignore-scripts", "--json", "--pack-destination", dest];
+  console.log(`\n> npm ${argv.join(" ")}`);
+  return new Promise((resolve, reject) => {
+    const child = spawn("npm", argv, { cwd: ROOT, stdio: ["ignore", "pipe", "inherit"] });
+    onChild(child);
+    let out = "";
+    child.stdout.on("data", (chunk) => (out += chunk));
+    child.on("error", reject);
+    child.on("close", (code, signal) => {
+      if (code !== 0) return reject(new Error(`npm pack failed (${signal ?? `exit ${code}`})`));
+      try {
+        resolve(path.join(dest, JSON.parse(out)[0].filename));
+      } catch (err) {
+        reject(err);
+      }
+    });
+  });
+}
+
+/**
+ * Pack callboard with its drawlatch dependency rewritten to `file:<dlTgz>`,
+ * restoring package.json afterwards — including on SIGINT/SIGTERM, which would
+ * otherwise kill the process mid-pack and skip every `finally`, leaving
+ * package.json pointing at a temp tarball. The handlers exist only for this
+ * window; on a signal they restore, remove the temp dir and exit 128 + signo.
+ */
+async function packAgainstDrawlatchTarball(dlTgz, tmp) {
+  const pkgPath = path.join(ROOT, "package.json");
+  const original = fs.readFileSync(pkgPath, "utf8");
+  let restored = false;
+  const restore = () => {
+    if (restored) return;
+    fs.writeFileSync(pkgPath, original);
+    restored = true;
+  };
+  let child = null;
+  const onSignal = (signal) => {
+    restore();
+    console.error(`\n${signal}: restored package.json`);
+    if (child && child.exitCode === null) child.kill(signal);
+    fs.rmSync(tmp, { recursive: true, force: true });
+    process.exit(128 + os.constants.signals[signal]);
+  };
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
+  try {
+    const rootPkg = JSON.parse(original);
+    rootPkg.dependencies[PKG] = `file:${dlTgz}`;
+    fs.writeFileSync(pkgPath, JSON.stringify(rootPkg, null, 2) + "\n");
+    return await packAsync([], tmp, (c) => (child = c));
+  } finally {
+    restore();
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
+  }
 }
 
 function gitStatus() {
@@ -161,98 +220,100 @@ function installedDir() {
   return path.join(root, ...PKG_SELF.split("/"));
 }
 
-const statusBefore = gitStatus();
-const dlVersion = readPkg("packages/drawlatch/package.json").version;
-const pin = readPkg("package.json").dependencies[PKG];
+async function main() {
+  const statusBefore = gitStatus();
+  const dlVersion = readPkg("packages/drawlatch/package.json").version;
+  const pin = readPkg("package.json").dependencies[PKG];
 
-console.log(`=== callboard reload (mode: ${mode}${prefix ? `, prefix: ${prefix}` : ""}) ===`);
+  console.log(`=== callboard reload (mode: ${mode}${prefix ? `, prefix: ${prefix}` : ""}) ===`);
 
-if (mode === "prod") {
-  let published = "";
-  try {
-    published = execSync(`npm view "${PKG}@${pin}" version`, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-  } catch {
-    // E404 → not published
+  if (mode === "prod") {
+    let published = "";
+    try {
+      published = execSync(`npm view "${PKG}@${pin}" version`, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    } catch {
+      // E404 → not published
+    }
+    if (!published) {
+      console.error(`\ndrawlatch ${pin} is not on npm yet — publish it (publish workflow) or use reload:local`);
+      process.exit(1);
+    }
   }
-  if (!published) {
-    console.error(`\ndrawlatch ${pin} is not on npm yet — publish it (publish workflow) or use reload:local`);
+
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "callboard-reload-"));
+  let treeCheckFailed = false;
+  let versionMismatch = null;
+
+  try {
+    console.log("\n=== Building callboard ===");
+    run("npm run build");
+
+    let cbTgz;
+    if (mode === "local") {
+      console.log("\n=== Packing workspace drawlatch ===");
+      const dlTgz = pack(`-w ${PKG}`, tmp);
+      console.log(`  Packed drawlatch ${dlVersion} -> ${dlTgz}`);
+
+      console.log("\n=== Packing callboard against the drawlatch tarball ===");
+      cbTgz = await packAgainstDrawlatchTarball(dlTgz, tmp);
+    } else {
+      console.log("\n=== Packing callboard (drawlatch from the registry) ===");
+      cbTgz = pack("", tmp);
+    }
+
+    // In local mode the installed callboard's manifest keeps the
+    // `file:<tmp>/…drawlatch….tgz` spec after the temp dir is deleted below, so
+    // `npm ls -g` reports drawlatch as "invalid". Harmless — drawlatch is
+    // installed and resolves normally — and the same as before the workspace.
+    globalInstall(cbTgz);
+
+    // Verify what npm actually reified. `npm install` exits 0 on trees with
+    // holes in them (see the check's header), and the daemon only discovers the
+    // hole when it spawns the agent whose dependency went missing.
+    const dir = installedDir();
+    console.log("\n=== Verifying the global install tree ===");
+    try {
+      run(`node "${path.join(__dirname, "check-install-tree.cjs")}" "${dir}"`);
+    } catch {
+      treeCheckFailed = true;
+    }
+
+    const expected = mode === "local" ? dlVersion : pin;
+    try {
+      const installed = JSON.parse(fs.readFileSync(path.join(dir, "node_modules", ...PKG.split("/"), "package.json"), "utf8")).version;
+      if (installed !== expected) versionMismatch = `installed drawlatch is ${installed}, expected ${expected}`;
+      else console.log(`  Installed drawlatch ${installed}`);
+    } catch (err) {
+      versionMismatch = `could not read the installed drawlatch: ${err.message}`;
+    }
+    if (versionMismatch) console.error(`\n${versionMismatch}`);
+
+    // Restart — but never onto a tree we know is broken
+    if (treeCheckFailed || versionMismatch) {
+      console.error("\nGlobal install is broken (see above) — leaving the running daemon alone.");
+    } else if (restart) {
+      run("callboard restart");
+      run("callboard status");
+    } else {
+      console.log("\nSkipping restart (--no-restart / --prefix).");
+    }
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+    const statusAfter = gitStatus();
+    if (statusBefore !== null && statusAfter !== statusBefore) {
+      console.warn(`\nWarning: \`git status --porcelain\` changed during the reload:\n${statusAfter}`);
+    }
+  }
+
+  // Surface a broken install as a failed reload.
+  if (treeCheckFailed || versionMismatch) {
+    const recover = prefix ? `rm -rf "${prefix}"` : `npm uninstall -g ${PKG_SELF}`;
+    console.error(`\nReload finished with a broken global install.\nRecover with:  ${recover} && npm run reload:${mode}`);
     process.exit(1);
   }
 }
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "callboard-reload-"));
-let treeCheckFailed = false;
-let versionMismatch = null;
-
-try {
-  console.log("\n=== Building callboard ===");
-  run("npm run build");
-
-  let cbTgz;
-  if (mode === "local") {
-    console.log("\n=== Packing workspace drawlatch ===");
-    const dlTgz = pack(`-w ${PKG}`, tmp);
-    console.log(`  Packed drawlatch ${dlVersion} -> ${dlTgz}`);
-
-    console.log("\n=== Packing callboard against the drawlatch tarball ===");
-    const pkgPath = path.join(ROOT, "package.json");
-    const original = fs.readFileSync(pkgPath, "utf8");
-    try {
-      const rootPkg = JSON.parse(original);
-      rootPkg.dependencies[PKG] = `file:${dlTgz}`;
-      fs.writeFileSync(pkgPath, JSON.stringify(rootPkg, null, 2) + "\n");
-      cbTgz = pack("", tmp);
-    } finally {
-      fs.writeFileSync(pkgPath, original);
-    }
-  } else {
-    console.log("\n=== Packing callboard (drawlatch from the registry) ===");
-    cbTgz = pack("", tmp);
-  }
-
-  globalInstall(cbTgz);
-
-  // Verify what npm actually reified. `npm install` exits 0 on trees with
-  // holes in them (see the check's header), and the daemon only discovers the
-  // hole when it spawns the agent whose dependency went missing.
-  const dir = installedDir();
-  console.log("\n=== Verifying the global install tree ===");
-  try {
-    run(`node "${path.join(__dirname, "check-install-tree.cjs")}" "${dir}"`);
-  } catch {
-    treeCheckFailed = true;
-  }
-
-  const expected = mode === "local" ? dlVersion : pin;
-  try {
-    const installed = JSON.parse(fs.readFileSync(path.join(dir, "node_modules", ...PKG.split("/"), "package.json"), "utf8")).version;
-    if (installed !== expected) versionMismatch = `installed drawlatch is ${installed}, expected ${expected}`;
-    else console.log(`  Installed drawlatch ${installed}`);
-  } catch (err) {
-    versionMismatch = `could not read the installed drawlatch: ${err.message}`;
-  }
-  if (versionMismatch) console.error(`\n${versionMismatch}`);
-
-  // Restart — but never onto a tree we know is broken
-  if (treeCheckFailed || versionMismatch) {
-    console.error("\nGlobal install is broken (see above) — leaving the running daemon alone.");
-  } else if (restart) {
-    run("callboard restart");
-    run("callboard status");
-  } else {
-    console.log("\nSkipping restart (--no-restart / --prefix).");
-  }
-} finally {
-  fs.rmSync(tmp, { recursive: true, force: true });
-  const statusAfter = gitStatus();
-  if (statusBefore !== null && statusAfter !== statusBefore) {
-    console.warn(`\nWarning: \`git status --porcelain\` changed during the reload:\n${statusAfter}`);
-  }
-}
-
-// Surface a broken install as a failed reload.
-if (treeCheckFailed || versionMismatch) {
-  const recover = prefix ? `rm -rf "${prefix}"` : `npm uninstall -g ${PKG_SELF}`;
-  console.error(`\nReload finished with a broken global install.\nRecover with:  ${recover} && npm run reload:${mode}`);
+main().catch((err) => {
+  console.error(err);
   process.exit(1);
-}
+});
