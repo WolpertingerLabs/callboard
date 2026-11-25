@@ -6,7 +6,7 @@
  * else on that route does). Here: the stopped run's own unwind must not wipe
  * it, and the chat's next run — whoever starts it — must clear it.
  */
-import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -18,6 +18,23 @@ import type { StreamEvent } from "shared/types/index.js";
 const dataDir = mkdtempSync(join(tmpdir(), "callboard-stopped-by-user-data-"));
 process.env.CALLBOARD_DATA_DIR = dataDir;
 const workDir = mkdtempSync(join(tmpdir(), "callboard-stopped-by-user-work-"));
+
+// Lets a test fail one run's start after the supersede stop but before the
+// run registers — the window the clear used to sit in front of.
+const failNextProvider = vi.hoisted(() => ({ value: false }));
+vi.mock("../agents/factory.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../agents/factory.js")>();
+  return {
+    ...actual,
+    getAgentProvider: (...args: Parameters<typeof actual.getAgentProvider>) => {
+      if (failNextProvider.value) {
+        failNextProvider.value = false;
+        throw new Error("provider setup failed");
+      }
+      return actual.getAgentProvider(...args);
+    },
+  };
+});
 
 const { sendMessage, stopSession } = await import("./claude.js");
 const { setAgentProviderForTesting } = await import("../agents/factory.js");
@@ -88,6 +105,15 @@ describe("chatFileService stoppedByUser", () => {
 });
 
 describe("sendMessage and stoppedByUserAt", () => {
+  it("keeps the stop when the next run fails to start", async () => {
+    const chat = chatFileService.createChat(workDir, "sbu-run-fail", "{}");
+    chatFileService.markStoppedByUser(chat.id);
+    failNextProvider.value = true;
+    await expect(sendMessage({ prompt: "continue", chatId: chat.id })).rejects.toThrow("provider setup failed");
+    // Nothing ran, so the chat still ends in the human's Stop: Continue stays.
+    expect(chatFileService.getChat(chat.id)?.stoppedByUserAt).toBeDefined();
+  });
+
   it("survives the stopped run's unwind, and is cleared when the next run starts", async () => {
     const chat = chatFileService.createChat(workDir, "sbu-run-1", "{}");
 
@@ -114,7 +140,8 @@ describe("sendMessage and stoppedByUserAt", () => {
       }),
     );
     const next = await sendMessage({ prompt: "continue", chatId: chat.id });
-    // Cleared as the run starts, not when it ends.
+    // Cleared once the run registers — before sendMessage hands the emitter
+    // back, so a client refetching right after its send sees it gone.
     expect(chatFileService.getChat(chat.id)?.stoppedByUserAt).toBeUndefined();
     await nextEvent(next, ["done", "error"]);
     expect(chatFileService.getChat(chat.id)?.stoppedByUserAt).toBeUndefined();

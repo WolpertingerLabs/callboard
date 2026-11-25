@@ -1143,9 +1143,6 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
       opts.requireExplicitCompletion = true;
     }
     stopSession(opts.chatId);
-    // A new run supersedes whatever the human stopped: the chat no longer
-    // ends in a Stop, so the transcript stops offering Continue.
-    chatFileService.clearStoppedByUser(opts.chatId);
   } else if (opts.folder) {
     // New chat flow — store the actual working directory (may be a worktree).
     // The SDK creates logs keyed by this path, so we must preserve it exactly.
@@ -1475,6 +1472,13 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
   // Registered: the chat now reads as busy through the registry itself. Same
   // tick as `register`, so there is no moment it reads as neither.
   if (startToken && opts.chatId) sessionRegistry.clearStarting(opts.chatId, startToken);
+  // A new run supersedes whatever the human stopped: the chat no longer ends
+  // in a Stop, so the transcript stops offering Continue. Only once the run is
+  // registered — every await before this (provider, tool and option setup)
+  // can throw, and a start that fails must leave the Stop, and Continue, in
+  // place. Still before the emitter goes back to the route, so a client that
+  // refetches the chat as soon as its send is answered already sees it gone.
+  if (opts.chatId) chatFileService.clearStoppedByUser(opts.chatId);
 
   const formattedPrompt = buildFormattedPrompt(prompt, imageMetadata, providerKind);
 
