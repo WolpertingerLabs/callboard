@@ -12,7 +12,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@openai/codex-sdk": "^0.153.4",
     "@wolpertingerlabs/computer-use": "*",
-    "@wolpertingerlabs/drawlatch": "^1.0.0-alpha.68",
+    "@wolpertingerlabs/drawlatch": "1.0.0-alpha.69",
     "adm-zip": "^0.5.16",
     "archiver": "^7.0.1",
     "cookie-parser": "^1.4.7",
@@ -30,7 +30,7 @@
   "devDependencies": {
     "@types/adm-zip": "^0.5.7",
     "@types/archiver": "^7.0.0",
-    "@types/cookie-parser": "^1.4.10",
+    "@types/cookie-parser": "1.4.9",
     "@types/express": "^4.17.0",
     "@types/multer": "^2.0.0",
     "@types/node-cron": "^3.0.11",

@@ -61,7 +61,9 @@
     "shared",
     "backend",
     "frontend",
-    "packages/computer-use"
+    "packages/computer-use",
+    "packages/drawlatch",
+    "packages/drawlatch/frontend"
   ],
   "scripts": {
     "dev": "CALLBOARD_DATA_DIR=$HOME/.callboard-dev concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
@@ -69,8 +71,8 @@
     "dev:frontend": "CALLBOARD_DATA_DIR=$HOME/.callboard-dev npm -w callboard-frontend run dev",
     "swagger": "node --import tsx backend/src/swagger.ts",
     "prebuild": "npm run swagger",
-    "clean": "rm -rf shared/dist backend/dist frontend/dist packages/computer-use/dist shared/tsconfig.tsbuildinfo backend/tsconfig.tsbuildinfo frontend/tsconfig.tsbuildinfo",
-    "build": "npm run build:shared && npm run build:computer-use && node scripts/builtin-profile-digests.mjs --check && npm run build:backend && npm run build:frontend && node scripts/rewrite-shared-imports.mjs",
+    "clean": "rm -rf shared/dist backend/dist frontend/dist packages/computer-use/dist packages/drawlatch/dist packages/drawlatch/frontend/dist shared/tsconfig.tsbuildinfo backend/tsconfig.tsbuildinfo frontend/tsconfig.tsbuildinfo",
+    "build": "npm run build:shared && npm run build:computer-use && npm run build:drawlatch && node scripts/builtin-profile-digests.mjs --check && npm run build:backend && npm run build:frontend && node scripts/rewrite-shared-imports.mjs",
     "build:shared": "npm -w shared run build",
     "build:backend": "npm -w callboard-backend run build",
     "build:frontend": "npm -w callboard-frontend run build",
@@ -97,6 +99,7 @@
     "drawlatch:which": "node scripts/drawlatch-switch.cjs which",
     "drawlatch:check": "node scripts/drawlatch-switch.cjs check",
     "build:computer-use": "npm -w @wolpertingerlabs/computer-use run build",
+    "build:drawlatch": "npm -w @wolpertingerlabs/drawlatch run build",
     "test:computer-use": "npm -w @wolpertingerlabs/computer-use test"
   },
   "dependencies": {
@@ -105,7 +108,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@openai/codex-sdk": "^0.153.4",
     "@sap-cloud-sdk/connectivity": "4.8.0",
-    "@wolpertingerlabs/drawlatch": "^1.0.0-alpha.68",
+    "@wolpertingerlabs/drawlatch": "1.0.0-alpha.69",
     "adm-zip": "^0.5.16",
     "archiver": "^7.0.1",
     "cookie-parser": "^1.4.7",
@@ -121,6 +124,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.2",
+    "@types/cookie-parser": "1.4.9",
     "@types/node": "~22.19.0",
     "@vitest/coverage-v8": "^4.1.11",
     "concurrently": "^9.0.0",
