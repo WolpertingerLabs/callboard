@@ -1,6 +1,6 @@
 {
   "name": "@wolpertingerlabs/drawlatch",
-  "version": "1.0.0-alpha.68",
+  "version": "1.0.0-alpha.69",
   "description": "Encrypted MCP proxy with mutual authentication. Local MCP server forwards requests through an encrypted channel to a remote secrets-holding server.",
   "type": "module",
   "workspaces": [
