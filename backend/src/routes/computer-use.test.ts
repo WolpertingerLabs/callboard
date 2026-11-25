@@ -13,7 +13,7 @@ vi.mock("../services/computer-use.js", async (original) => ({
 }));
 import express from "express";
 import { getComputerUseHost } from "../services/computer-use.js";
-import { requireControlOrigin, computerUseRouter } from "./computer-use.js";
+import { requireControlOrigin, computerUseRouter, computerUseLimiter } from "./computer-use.js";
 
 describe("computer control origin boundary", () => {
   function run(method: string, headers: Record<string, string | undefined>) {
@@ -114,6 +114,34 @@ it.skipIf(process.env.CODEX_SANDBOX_NETWORK_DISABLED === "1")(
       expect(open).toHaveBeenCalledWith("chat", "sandbox");
     } finally {
       server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  },
+);
+
+it.skipIf(process.env.CODEX_SANDBOX_NETWORK_DISABLED === "1")(
+  "the limiter keys per client like the global ones: the forwarded client behind loopback, the full IPv6 address",
+  async () => {
+    const app = express();
+    app.use(computerUseLimiter);
+    app.get("/ping", (_req, res) => res.json({ ok: true }));
+    const server = app.listen(0, "127.0.0.1");
+    await new Promise<void>((resolve) => server.once("listening", resolve));
+    const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    // From loopback, getClientKey keys on the last X-Forwarded-For entry.
+    const remaining = async (client: string) => {
+      const res = await fetch(`${origin}/ping`, { headers: { "x-forwarded-for": client } });
+      return Number(res.headers.get("ratelimit-remaining"));
+    };
+    try {
+      expect(await remaining("198.51.100.7")).toBe(299);
+      expect(await remaining("198.51.100.7")).toBe(298);
+      // A different client behind the same proxy has its own bucket.
+      expect(await remaining("198.51.100.8")).toBe(299);
+      // Two IPv6 clients in one /56: the default keyGenerator would share a bucket.
+      expect(await remaining("2001:db8::1")).toBe(299);
+      expect(await remaining("2001:db8::2")).toBe(299);
+    } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   },
