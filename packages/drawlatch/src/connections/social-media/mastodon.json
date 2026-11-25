@@ -1,0 +1,65 @@
+{
+  "name": "Mastodon API",
+  "stability": "beta",
+  "category": "social-media",
+  "description": "Mastodon API — statuses (toots), timelines, notifications, accounts, search, and more. Auth is handled automatically via the MASTODON_ACCESS_TOKEN environment variable (OAuth2 Bearer token from your instance's Development settings). This template targets mastodon.social — for other instances, override with a custom connector using the same auth pattern but different allowedEndpoints. Includes a poll ingestor that fetches the home timeline — use poll_events to retrieve them.",
+  "docsUrl": "https://docs.joinmastodon.org/api/",
+  "headers": {
+    "Authorization": "Bearer ${MASTODON_ACCESS_TOKEN}"
+  },
+  "secrets": {
+    "MASTODON_ACCESS_TOKEN": "${MASTODON_ACCESS_TOKEN}"
+  },
+  "allowedEndpoints": [
+    "https://mastodon.social/api/v1/**",
+    "https://mastodon.social/api/v2/**"
+  ],
+  "ingestor": {
+    "type": "poll",
+    "poll": {
+      "url": "https://mastodon.social/api/v1/timelines/home?limit=20",
+      "intervalMs": 60000,
+      "method": "GET",
+      "deduplicateBy": "id",
+      "eventType": "status"
+    }
+  },
+  "testIngestor": {
+    "description": "Verifies Mastodon credentials by checking account",
+    "strategy": "poll_once",
+    "request": {
+      "url": "https://mastodon.social/api/v1/accounts/verify_credentials",
+      "expectedStatus": [200]
+    }
+  },
+  "listenerConfig": {
+    "name": "Mastodon Poll Listener",
+    "description": "Polls the Mastodon home timeline at a configurable interval.",
+    "fields": [
+      {
+        "key": "intervalMs",
+        "label": "Poll Interval (ms)",
+        "description": "How often to check for new statuses, in milliseconds.",
+        "type": "number",
+        "default": 60000,
+        "min": 10000,
+        "max": 3600000,
+        "group": "Connection"
+      },
+      {
+        "key": "bufferSize",
+        "label": "Buffer Size",
+        "description": "Maximum number of events to keep in memory.",
+        "type": "number",
+        "default": 200,
+        "min": 10,
+        "max": 1000,
+        "group": "Advanced"
+      }
+    ]
+  },
+  "testConnection": {
+    "url": "https://mastodon.social/api/v1/accounts/verify_credentials",
+    "description": "Verifies Mastodon account credentials"
+  }
+}

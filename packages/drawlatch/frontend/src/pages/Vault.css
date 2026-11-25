@@ -1,0 +1,244 @@
+/* ── Vault page ──────────────────────────────────────────────────────── */
+
+.dl-vault-caller-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dl-vault-caller-label {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+
+.dl-vault-caller-select select {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.dl-vault-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 16px;
+}
+
+.dl-vault-tab {
+  padding: 8px 14px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.dl-vault-tab:hover {
+  color: var(--text);
+}
+
+.dl-vault-tab.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+.dl-vault-toolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.dl-vault-toolbar .detail-note {
+  margin: 0;
+  max-width: 720px;
+}
+
+.dl-vault-toolbar .dl-cred-btn {
+  flex-shrink: 0;
+}
+
+.dl-vault-exposure {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.dl-vault-exposure-inject {
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+
+.dl-vault-exposure-reveal {
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+
+.dl-vault-actions {
+  display: flex;
+  gap: 4px;
+  justify-content: flex-end;
+}
+
+.dl-vault-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.dl-vault-icon-btn:hover {
+  color: var(--text);
+  border-color: var(--text-muted);
+}
+
+.dl-vault-icon-btn.is-danger:hover {
+  color: var(--danger);
+  border-color: var(--danger-border);
+  background: var(--danger-bg);
+}
+
+/* ── Requests and grants ─────────────────────────────────────────────── */
+
+.dl-vault-count {
+  display: inline-block;
+  margin-left: 6px;
+  min-width: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--warning-bg);
+  color: var(--warning);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+}
+
+.dl-vault-missing {
+  color: var(--danger);
+  font-weight: 500;
+}
+
+.dl-vault-reason {
+  max-width: 420px;
+}
+
+.dl-vault-reason-label {
+  color: var(--text-muted);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  margin-bottom: 2px;
+}
+
+.dl-vault-unbound {
+  color: var(--warning);
+}
+
+.dl-vault-over {
+  color: var(--danger);
+}
+
+.dl-vault-reason-who {
+  text-transform: none;
+}
+
+.dl-vault-deny-only {
+  align-self: center;
+  font-size: 12px;
+  font-style: italic;
+}
+
+.dl-vault-reason-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.dl-vault-history {
+  margin-top: 20px;
+}
+
+.dl-vault-history summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 500;
+  margin-bottom: 10px;
+}
+
+/* ── Vault modals (on top of ConfigureConnectionModal.css) ───────────── */
+
+.dl-vault-radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12.5px;
+}
+
+.dl-vault-radio {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.dl-vault-radio input {
+  margin-top: 2px;
+}
+
+.dl-vault-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  padding-left: 22px;
+  font-size: 12.5px;
+}
+
+.dl-vault-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.dl-vault-kv-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dl-secrets-input.dl-vault-kv-name {
+  padding-right: 12px;
+}
+
+.dl-secrets-input.dl-vault-textarea {
+  padding-right: 12px;
+  resize: vertical;
+  font-family: inherit;
+}
+
+.dl-secrets-eye.dl-vault-copy {
+  right: 36px;
+}
+
+.dl-secrets-input-wrap:has(.dl-vault-copy) .dl-secrets-input {
+  padding-right: 68px;
+}

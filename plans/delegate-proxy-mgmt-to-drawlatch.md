@@ -90,6 +90,8 @@ the management UI moves to (and is deleted in favor of) drawlatch's dashboard.
   admin mutations + auto-enroll.
 - **During development**, use the dev switch (`scripts/drawlatch-switch.cjs` →
   `file:../drawlatch.feat-self-managed-admin-ui`) to build against the sibling worktree.
+  _(Superseded: drawlatch now lives in `packages/drawlatch` and the switch script is gone; see
+  [`drawlatch-monorepo.md`](drawlatch-monorepo.md).)_
 - **Before opening the PR**, restore a clean version spec — do **not** leak the `file:` pin
   into the PR (see MEMORY "dev pins leak into merged PRs"; `prepublishOnly` guard already
   refuses `file:`). The published drawlatch alpha won't exist until its PR lands, so the

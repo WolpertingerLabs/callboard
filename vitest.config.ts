@@ -44,7 +44,7 @@ export default defineConfig({
           environment: "node",
           // Nested agent worktrees are separate checkouts; running their tests
           // would mix another branch's source into this checkout's result.
-          exclude: ["**/node_modules/**", "**/dist/**", "**/.claude/worktrees/**", "frontend/**", "packages/computer-use/test/**"],
+          exclude: ["**/node_modules/**", "**/dist/**", "**/.claude/worktrees/**", "frontend/**", "packages/computer-use/test/**", "packages/drawlatch/**"],
           // Runs before each test file is imported, so module-level constants
           // like paths.ts's DATA_DIR resolve to the scratch dir. See the file.
           setupFiles: ["./vitest.setup.git.ts", "./vitest.setup.node.ts"],

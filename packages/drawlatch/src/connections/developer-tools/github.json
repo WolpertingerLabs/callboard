@@ -1,0 +1,138 @@
+{
+  "name": "GitHub API",
+  "stability": "stable",
+  "category": "developer-tools",
+  "description": "GitHub REST API — repositories, issues, pull requests, users, organizations, and more. Auth is handled automatically via the GITHUB_TOKEN environment variable. Includes a webhook ingestor for real-time events (push, pull_request, issues, etc.) — set GITHUB_WEBHOOK_SECRET and use poll_events to retrieve them.",
+  "docsUrl": "https://docs.github.com/en/rest",
+  "openApiUrl": "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json",
+  "headers": {
+    "Authorization": "Bearer ${GITHUB_TOKEN}",
+    "Accept": "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+    "User-Agent": "drawlatch"
+  },
+  "secrets": {
+    "GITHUB_TOKEN": "${GITHUB_TOKEN}",
+    "GITHUB_WEBHOOK_SECRET": "${GITHUB_WEBHOOK_SECRET}",
+    "GITHUB_WEBHOOK_URL": "${GITHUB_WEBHOOK_URL}"
+  },
+  "allowedEndpoints": ["https://api.github.com/**"],
+  "ingestor": {
+    "type": "webhook",
+    "webhook": {
+      "path": "github",
+      "signatureHeader": "X-Hub-Signature-256",
+      "signatureSecret": "GITHUB_WEBHOOK_SECRET",
+      "callbackUrl": "${GITHUB_WEBHOOK_URL}",
+      "lifecycle": {
+        "list": {
+          "method": "GET",
+          "url": "https://api.github.com/repos/${repoFilter}/hooks",
+          "headers": {
+            "Authorization": "Bearer ${GITHUB_TOKEN}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28"
+          },
+          "callbackUrlField": "config.url",
+          "idField": "id"
+        },
+        "register": {
+          "method": "POST",
+          "url": "https://api.github.com/repos/${repoFilter}/hooks",
+          "headers": {
+            "Authorization": "Bearer ${GITHUB_TOKEN}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28"
+          },
+          "body": {
+            "name": "web",
+            "active": true,
+            "events": ["push", "pull_request", "issues", "issue_comment", "create", "delete", "release", "workflow_run", "check_run"],
+            "config": {
+              "url": "${GITHUB_WEBHOOK_URL}",
+              "content_type": "json",
+              "secret": "${GITHUB_WEBHOOK_SECRET}",
+              "insecure_ssl": "0"
+            }
+          },
+          "idField": "id"
+        },
+        "unregister": {
+          "method": "DELETE",
+          "url": "https://api.github.com/repos/${repoFilter}/hooks/${_webhookId}",
+          "headers": {
+            "Authorization": "Bearer ${GITHUB_TOKEN}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28"
+          }
+        }
+      }
+    }
+  },
+  "testIngestor": {
+    "description": "Verifies that the GitHub webhook secret is configured",
+    "strategy": "webhook_verify",
+    "requireSecrets": ["GITHUB_WEBHOOK_SECRET"]
+  },
+  "listenerConfig": {
+    "name": "GitHub Webhook Listener",
+    "description": "Receives real-time events from GitHub via webhooks. Supports multiple concurrent instances to filter events from different repositories.",
+    "supportsMultiInstance": true,
+    "fields": [
+      {
+        "key": "repoFilter",
+        "label": "Repository Filter",
+        "description": "Register a repo-level webhook and only capture events from this repository (owner/repo format). Mutually exclusive with Organization for registration.",
+        "type": "text[]",
+        "instanceKey": true,
+        "placeholder": "e.g., octocat/Hello-World",
+        "group": "Filtering"
+      },
+      {
+        "key": "orgFilter",
+        "label": "Organization",
+        "description": "Register an org-level webhook that receives events from all repos in the organization. Mutually exclusive with Repository Filter for registration.",
+        "type": "text",
+        "instanceKey": true,
+        "placeholder": "e.g., my-org",
+        "group": "Filtering"
+      },
+      {
+        "key": "eventFilter",
+        "label": "Event Types",
+        "description": "Which GitHub event types to capture. Leave empty for all.",
+        "type": "multiselect",
+        "default": [],
+        "options": [
+          {"value": "push", "label": "Push"},
+          {"value": "pull_request", "label": "Pull Request"},
+          {"value": "issues", "label": "Issues"},
+          {"value": "issue_comment", "label": "Issue Comment"},
+          {"value": "create", "label": "Branch/Tag Created"},
+          {"value": "delete", "label": "Branch/Tag Deleted"},
+          {"value": "release", "label": "Release"},
+          {"value": "workflow_run", "label": "Workflow Run"},
+          {"value": "check_run", "label": "Check Run"},
+          {"value": "star", "label": "Star"},
+          {"value": "fork", "label": "Fork"},
+          {"value": "deployment", "label": "Deployment"}
+        ],
+        "group": "Filtering"
+      },
+      {
+        "key": "bufferSize",
+        "label": "Buffer Size",
+        "description": "Maximum number of events to keep in memory.",
+        "type": "number",
+        "default": 200,
+        "min": 10,
+        "max": 1000,
+        "group": "Advanced"
+      }
+    ]
+  },
+  "testConnection": {
+    "url": "https://api.github.com/user",
+    "description": "Fetches the authenticated user profile"
+  }
+}

@@ -1,0 +1,66 @@
+{
+  "name": "Telegram Bot API",
+  "stability": "beta",
+  "category": "messaging",
+  "description": "Telegram Bot API — messages, chats, users, inline queries, payments, and more. Auth uses a bot token embedded in the URL path — include /bot${TELEGRAM_BOT_TOKEN}/ in your request URLs. The placeholder is resolved automatically from the route's secrets. Create a bot via @BotFather on Telegram to obtain a token. Includes a poll ingestor that fetches new updates via getUpdates — use poll_events to retrieve them.",
+  "docsUrl": "https://core.telegram.org/bots/api",
+  "headers": {
+    "Content-Type": "application/json"
+  },
+  "secrets": {
+    "TELEGRAM_BOT_TOKEN": "${TELEGRAM_BOT_TOKEN}"
+  },
+  "resolveSecretsInBody": true,
+  "allowedEndpoints": [
+    "https://api.telegram.org/**"
+  ],
+  "ingestor": {
+    "type": "poll",
+    "poll": {
+      "url": "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates?limit=25&timeout=0",
+      "intervalMs": 30000,
+      "method": "GET",
+      "responsePath": "result",
+      "deduplicateBy": "update_id",
+      "eventType": "update"
+    }
+  },
+  "testIngestor": {
+    "description": "Calls getMe to verify the Telegram bot token",
+    "strategy": "poll_once",
+    "request": {
+      "url": "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe",
+      "expectedStatus": [200]
+    }
+  },
+  "listenerConfig": {
+    "name": "Telegram Poll Listener",
+    "description": "Polls Telegram for new updates at a configurable interval.",
+    "fields": [
+      {
+        "key": "intervalMs",
+        "label": "Poll Interval (ms)",
+        "description": "How often to check for new updates, in milliseconds.",
+        "type": "number",
+        "default": 30000,
+        "min": 5000,
+        "max": 3600000,
+        "group": "Connection"
+      },
+      {
+        "key": "bufferSize",
+        "label": "Buffer Size",
+        "description": "Maximum number of events to keep in memory.",
+        "type": "number",
+        "default": 200,
+        "min": 10,
+        "max": 1000,
+        "group": "Advanced"
+      }
+    ]
+  },
+  "testConnection": {
+    "url": "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe",
+    "description": "Fetches the bot's own user info"
+  }
+}

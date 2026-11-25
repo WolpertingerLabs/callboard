@@ -1,0 +1,25 @@
+{
+  "name": "AWS API",
+  "stability": "beta",
+  "category": "developer-tools",
+  "description": "Amazon Web Services APIs on *.amazonaws.com — STS, S3, EC2, Lambda, DynamoDB, CloudWatch, and more. Every request is signed with AWS Signature Version 4 from the AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY secrets (plus AWS_SESSION_TOKEN for temporary credentials); don't send Authorization or X-Amz-Date yourself. The signing service and region come from the hostname, so pick a region by calling its endpoint, e.g. https://dynamodb.eu-west-1.amazonaws.com/. Global endpoints such as https://sts.amazonaws.com/ and https://iam.amazonaws.com/ sign for us-east-1.",
+  "docsUrl": "https://docs.aws.amazon.com/general/latest/gr/aws-service-information.html",
+  "awsSigV4": {},
+  "secrets": {
+    "AWS_ACCESS_KEY_ID": "${AWS_ACCESS_KEY_ID}",
+    "AWS_SECRET_ACCESS_KEY": "${AWS_SECRET_ACCESS_KEY}",
+    "AWS_SESSION_TOKEN": "${AWS_SESSION_TOKEN}"
+  },
+  "allowedEndpoints": [
+    "https://*.amazonaws.com/**"
+  ],
+  "testConnection": {
+    "method": "POST",
+    "url": "https://sts.amazonaws.com/",
+    "headers": {
+      "Content-Type": "application/x-www-form-urlencoded; charset=utf-8"
+    },
+    "body": "Action=GetCallerIdentity&Version=2011-06-15",
+    "description": "Calls STS GetCallerIdentity, which needs no IAM permissions"
+  }
+}

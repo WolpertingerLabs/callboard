@@ -1,0 +1,19 @@
+{
+  "name": "drawlatch",
+  "owner": {
+    "name": "Wolpertinger Labs"
+  },
+  "metadata": {
+    "description": "Encrypted MCP proxy for secure API access — zero secrets on the client"
+  },
+  "plugins": [
+    {
+      "name": "drawlatch",
+      "source": ".",
+      "description": "Encrypted MCP proxy with mutual authentication. Makes authenticated HTTP requests through a secure, end-to-end encrypted channel to a remote server that holds API secrets.",
+      "version": "1.0.0",
+      "keywords": ["mcp", "security", "proxy", "encryption", "secrets", "api"],
+      "category": "security"
+    }
+  ]
+}

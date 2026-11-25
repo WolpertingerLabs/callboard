@@ -1,0 +1,43 @@
+{
+  "host": "0.0.0.0",
+  "port": 9999,
+  "rateLimitPerMinute": 240,
+  "connectors": [
+    {
+      "alias": "internal-api",
+      "name": "Internal Admin API",
+      "description": "Custom connector example — scopes secrets and headers to endpoint patterns",
+      "allowedEndpoints": ["https://admin.internal.com/**"],
+      "headers": { "Authorization": "Bearer ${ADMIN_KEY}" },
+      "secrets": { "ADMIN_KEY": "${INTERNAL_ADMIN_KEY}" }
+    }
+  ],
+  "callers": {
+    "my-laptop": {
+      "name": "Personal Laptop",
+      "connections": ["github", "stripe", "internal-api"]
+    },
+    "ci-server": {
+      "name": "GitHub Actions CI",
+      "connections": ["github"]
+    },
+    "alice": {
+      "name": "Alice (literal per-caller secret example; or set ALICE_GITHUB_TOKEN in .env)",
+      "connections": ["github"],
+      "env": {
+        "GITHUB_TOKEN": "ghp_replace_with_alices_token"
+      }
+    },
+    "team-member": {
+      "name": "Team Member (ingestor override example)",
+      "connections": ["discord-bot"],
+      "ingestorOverrides": {
+        "discord-bot": {
+          "guildIds": ["1234567890"],
+          "channelIds": ["9876543210"],
+          "eventFilter": ["MESSAGE_CREATE", "MESSAGE_UPDATE", "MESSAGE_DELETE"]
+        }
+      }
+    }
+  }
+}

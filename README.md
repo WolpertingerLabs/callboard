@@ -290,7 +290,7 @@ Beyond their engine's normal tools, agents can:
 
 ## Connections and events
 
-[Drawlatch](https://www.npmjs.com/package/@wolpertingerlabs/drawlatch) gives agents authenticated access to external APIs such as Discord, GitHub, Slack, Google and Trello. A connection is a route template: allowed URL patterns, required secrets and auth headers. An agent calls `secure_request` with a URL, and Drawlatch checks it against the patterns, injects credentials and proxies the call. The agent never sees the keys.
+[Drawlatch](https://www.npmjs.com/package/@wolpertingerlabs/drawlatch) (source in [`packages/drawlatch`](packages/drawlatch)) gives agents authenticated access to external APIs such as Discord, GitHub, Slack, Google and Trello. A connection is a route template: allowed URL patterns, required secrets and auth headers. An agent calls `secure_request` with a URL, and Drawlatch checks it against the patterns, injects credentials and proxies the call. The agent never sees the keys.
 
 You configure connections, secrets, event listeners and the webhook tunnel in **Drawlatch's own dashboard**, which Settings → Proxy links to. Callboard stores only the wiring: the proxy mode, each agent's caller identity, and which caller regular chats use.
 
@@ -382,14 +382,22 @@ The frontend runs at `http://localhost:3000` and the backend at `:3002`. Watch f
 | Command                                     | What it does                                                                                               |
 | ------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
 | `npm run dev`                               | Frontend and backend dev servers against `~/.callboard-dev`                                                |
-| `npm run build`                             | Build shared, computer-use, backend and frontend                                                           |
+| `npm run build`                             | Build shared, computer-use, drawlatch, backend and frontend                                                |
+| `npm run build:drawlatch`                   | Rebuild only drawlatch. The dev backend runs the built `dist/`, so run this after editing its source       |
 | `npm run clean`                             | Delete build output. Run it before `build` if you removed a `dist/` by hand, because `tsc -b` won't notice |
 | `npm start`                                 | Run the production build from `backend/dist`                                                               |
-| `npm test` / `test:watch` / `test:coverage` | Vitest (`npm test` also runs the computer-use package's tests)                                             |
-| `npm run lint` / `lint:fix`                 | ESLint on **staged** files only. On a clean index this lints nothing                                       |
-| `npm run lint:all` / `lint:all:fix`         | ESLint on the whole tree                                                                                   |
+| `npm test` / `test:watch` / `test:coverage` | Vitest (`npm test` and `test:coverage` also run the computer-use and drawlatch tests)                      |
+| `npm run test:drawlatch`                    | Drawlatch's unit tests. `test:drawlatch:e2e` runs its live-API tests (needs `packages/drawlatch/.env.e2e`) |
+| `npm run lint` / `lint:fix`                 | ESLint on **staged** files only (drawlatch's `src/` with its own config). A clean index lints nothing      |
+| `npm run lint:all` / `lint:all:fix`         | ESLint on the whole tree, except `packages/drawlatch`                                                      |
+| `npm run lint:drawlatch`                    | ESLint on drawlatch, with its own typed config                                                             |
+| `npm run format:drawlatch:check`            | Prettier check of drawlatch's `src/**/*.ts` and top-level config, with its own `.prettierrc`               |
 | `npm run prettier`                          | Format changed and staged files                                                                            |
 | `npm run swagger`                           | Regenerate `backend/swagger.json`, which is served at `GET /api/docs`                                      |
+| `npm run reload` / `reload:local`           | Build, pack and global-install callboard with the workspace drawlatch, then `callboard restart`            |
+| `npm run reload:prod`                       | The same, with drawlatch from npm at the pinned version. Fails if that version isn't published yet         |
+
+`reload` takes `--prefix <dir>` (install there instead, no restart) and `--no-restart`, e.g. `node scripts/reload.cjs local --prefix /tmp/cb`.
 
 ### Layout
 
@@ -402,6 +410,7 @@ backend/src/
   scaffold/          Files copied into new agent workspaces
 shared/              Types used by both ends
 packages/computer-use/  Browser/desktop control library and MCP server
+packages/drawlatch/  Drawlatch, the credential proxy (published separately as @wolpertingerlabs/drawlatch)
 bin/                 The `callboard` CLI
 scripts/             Build and release helpers
 plans/               Design records
@@ -409,7 +418,19 @@ plans/               Design records
 
 Contributor conventions (the wire-compatibility rules for `shared/types/stream.ts`, `cwd` vs `workspaceId` keying, theming) are in [`.claude/CLAUDE.md`](.claude/CLAUDE.md).
 
-Stack: React 18, React Router 6, Express 4, TypeScript 5, Vite 5, Zod 4, Winston, Vitest. Engines come from `@anthropic-ai/claude-agent-sdk`, `@openai/codex-sdk` and `@earendil-works/pi-coding-agent`. Connections come from `@wolpertingerlabs/drawlatch`.
+Stack: React 18, React Router 6, Express 4, TypeScript 5, Vite 5, Zod 4, Winston, Vitest. Engines come from `@anthropic-ai/claude-agent-sdk`, `@openai/codex-sdk` and `@earendil-works/pi-coding-agent`. Connections come from `@wolpertingerlabs/drawlatch` (`packages/drawlatch`).
+
+### Releasing
+
+Callboard and drawlatch are published to npm separately and keep their own version numbers. Callboard pins drawlatch **exactly** (`"@wolpertingerlabs/drawlatch": "<version>"`, no `^`) in both `package.json` and `backend/package.json`, and that pin must equal `packages/drawlatch/package.json`'s `version`; `npm run deps:check` (in CI and `prepublishOnly`) fails otherwise. That way each callboard release names the exact drawlatch it was built and tested against. (npm links the workspace for any range the workspace version satisfies; the exact pin is about lockstep, not linking.) To bump drawlatch:
+
+```bash
+npm version <version> -w @wolpertingerlabs/drawlatch --no-git-tag-version
+# set both pins to <version>
+npm install
+```
+
+Publish from CI rather than from a checkout; the publish workflow for both packages lands separately. drawlatch must be on npm before callboard. `npm run deps:check:registry` fails unless the pinned drawlatch version is published; it needs only Node and `npm` (no install or build) and the network, so CI doesn't run it. Callboard's `prepublishOnly` runs the same check, but skips it when `CALLBOARD_SKIP_REGISTRY_CHECK=1`: the publish workflow sets that, because it runs `prepublishOnly` before publishing drawlatch, and runs `deps:check:registry` itself before publishing callboard. A manual publish checks by default. Until that workflow lands, a publish rehearsal (`npm publish --dry-run`, or the current workflow's dry run) needs the pinned drawlatch on npm, or `CALLBOARD_SKIP_REGISTRY_CHECK=1`.
 
 ## License
 

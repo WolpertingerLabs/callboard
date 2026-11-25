@@ -1,0 +1,15 @@
+node_modules/
+*.tsbuildinfo
+coverage/
+dist/
+
+# Never commit keys or config with secrets
+.mcp-secure-proxy/
+.drawlatch/
+*.key.pem
+
+# Environment files with secrets
+.env*
+.env
+!.env.example
+!.env.e2e.example

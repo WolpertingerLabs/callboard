@@ -1,0 +1,188 @@
+/* ConfirmDialog — drawlatch destructive-action modal.
+ * Mirrors the dl-secrets-* overlay/panel shape (ConfigureConnectionModal.css)
+ * but lives under its own class namespace so the two components stay decoupled.
+ */
+
+.dl-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(13, 13, 15, 0.72);
+  backdrop-filter: blur(2px);
+}
+
+.dl-confirm-panel {
+  width: 100%;
+  max-width: 440px;
+  display: flex;
+  flex-direction: column;
+  background: #16161a;
+  border: 1px solid #2a2a30;
+  border-radius: 12px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+  color: #e6e6ea;
+}
+
+/* ── Header ───────────────────────────────────────────────────────────── */
+
+.dl-confirm-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 20px 12px;
+  border-bottom: 1px solid #2a2a30;
+}
+
+.dl-confirm-header-text {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.dl-confirm-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: rgba(248, 81, 73, 0.12);
+  color: #f85149;
+}
+
+.dl-confirm-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: #e6e6ea;
+  word-break: break-word;
+}
+
+.dl-confirm-close {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #8b8b94;
+  cursor: pointer;
+}
+
+.dl-confirm-close:hover:not(:disabled) {
+  background: #2a2a30;
+  color: #e6e6ea;
+}
+
+.dl-confirm-close:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* ── Body ─────────────────────────────────────────────────────────────── */
+
+.dl-confirm-body {
+  padding: 16px 20px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: #c5c5cd;
+}
+
+.dl-confirm-body code {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  padding: 1px 6px;
+  border: 1px solid #2a2a30;
+  background: #0d0d0f;
+  border-radius: 5px;
+  color: #e6e6ea;
+}
+
+.dl-confirm-body strong {
+  color: #e6e6ea;
+  font-weight: 600;
+}
+
+/* ── Error banner ─────────────────────────────────────────────────────── */
+
+.dl-confirm-error {
+  margin: 0 20px 12px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(248, 81, 73, 0.35);
+  background: rgba(248, 81, 73, 0.08);
+  color: #f85149;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+/* ── Footer ───────────────────────────────────────────────────────────── */
+
+.dl-confirm-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 14px 20px;
+  border-top: 1px solid #2a2a30;
+}
+
+.dl-confirm-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.dl-confirm-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.dl-confirm-btn-secondary {
+  background: #0d0d0f;
+  border-color: #2a2a30;
+  color: #c5c5cd;
+}
+
+.dl-confirm-btn-secondary:hover:not(:disabled) {
+  border-color: #3a3a42;
+  color: #e6e6ea;
+}
+
+.dl-confirm-btn-danger {
+  background: #f85149;
+  border-color: #f85149;
+  color: #0d0d0f;
+}
+
+.dl-confirm-btn-danger:hover:not(:disabled) {
+  background: #ff6259;
+  border-color: #ff6259;
+}
+
+.dl-confirm-spin {
+  animation: dl-confirm-spin 0.9s linear infinite;
+}
+
+@keyframes dl-confirm-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "Hex API",
+  "stability": "dev",
+  "category": "developer-tools",
+  "description": "Hex API — projects, runs, users, groups, collections, and data connections. Auth is handled automatically via the HEX_TOKEN environment variable.",
+  "docsUrl": "https://learn.hex.tech/docs/api/api-overview",
+  "headers": {
+    "Authorization": "Bearer ${HEX_TOKEN}"
+  },
+  "secrets": {
+    "HEX_TOKEN": "${HEX_TOKEN}"
+  },
+  "allowedEndpoints": [
+    "https://app.hex.tech/api/**"
+  ],
+  "testConnection": {
+    "url": "https://app.hex.tech/api/v1/user/me",
+    "description": "Fetches the authenticated Hex user"
+  }
+}

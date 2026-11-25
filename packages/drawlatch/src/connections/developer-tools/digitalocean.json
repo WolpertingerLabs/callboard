@@ -1,0 +1,22 @@
+{
+  "name": "DigitalOcean API",
+  "stability": "beta",
+  "category": "developer-tools",
+  "description": "DigitalOcean API v2 — droplets, apps, Kubernetes, databases, domains, volumes, load balancers, and more. Auth is handled automatically via the DIGITALOCEAN_TOKEN environment variable.",
+  "docsUrl": "https://docs.digitalocean.com/reference/api/",
+  "openApiUrl": "https://api-engineering.nyc3.digitaloceanspaces.com/spec-ci/DigitalOcean-public.v2.yaml",
+  "headers": {
+    "Authorization": "Bearer ${DIGITALOCEAN_TOKEN}",
+    "Content-Type": "application/json"
+  },
+  "secrets": {
+    "DIGITALOCEAN_TOKEN": "${DIGITALOCEAN_TOKEN}"
+  },
+  "allowedEndpoints": [
+    "https://api.digitalocean.com/v2/**"
+  ],
+  "testConnection": {
+    "url": "https://api.digitalocean.com/v2/account",
+    "description": "Fetches the authenticated DigitalOcean account"
+  }
+}

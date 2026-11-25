@@ -1,0 +1,113 @@
+{
+  "name": "Trello API",
+  "stability": "stable",
+  "category": "productivity",
+  "description": "Trello boards, lists, and cards API. Authentication uses query parameters — include ?key=${TRELLO_API_KEY}&token=${TRELLO_TOKEN} in your request URLs. The placeholders are resolved automatically from the route's secrets. Includes a webhook ingestor for real-time events (card updates, list changes, board activity, etc.) — set TRELLO_API_SECRET and TRELLO_CALLBACK_URL, then use poll_events to retrieve them.",
+  "docsUrl": "https://developer.atlassian.com/cloud/trello/rest/",
+  "headers": {},
+  "secrets": {
+    "TRELLO_API_KEY": "${TRELLO_API_KEY}",
+    "TRELLO_TOKEN": "${TRELLO_TOKEN}",
+    "TRELLO_API_SECRET": "${TRELLO_API_SECRET}",
+    "TRELLO_CALLBACK_URL": "${TRELLO_CALLBACK_URL}"
+  },
+  "allowedEndpoints": [
+    "https://api.trello.com/**"
+  ],
+  "ingestor": {
+    "type": "webhook",
+    "webhook": {
+      "path": "trello",
+      "protocol": "trello",
+      "signatureHeader": "X-Trello-Webhook",
+      "signatureSecret": "TRELLO_API_SECRET",
+      "callbackUrl": "${TRELLO_CALLBACK_URL}",
+      "lifecycle": {
+        "list": {
+          "method": "GET",
+          "url": "https://api.trello.com/1/tokens/${TRELLO_TOKEN}/webhooks?key=${TRELLO_API_KEY}",
+          "callbackUrlField": "callbackURL",
+          "idField": "id",
+          "modelIdField": "idModel"
+        },
+        "register": {
+          "method": "POST",
+          "url": "https://api.trello.com/1/tokens/${TRELLO_TOKEN}/webhooks?key=${TRELLO_API_KEY}",
+          "headers": { "Content-Type": "application/json" },
+          "body": {
+            "callbackURL": "${TRELLO_CALLBACK_URL}",
+            "idModel": "${boardId}",
+            "description": "Drawlatch webhook"
+          },
+          "idField": "id"
+        },
+        "unregister": {
+          "method": "DELETE",
+          "url": "https://api.trello.com/1/tokens/${TRELLO_TOKEN}/webhooks/${_webhookId}?key=${TRELLO_API_KEY}"
+        }
+      }
+    }
+  },
+  "testIngestor": {
+    "description": "Lists existing Trello webhooks to verify credentials",
+    "strategy": "http_request",
+    "request": {
+      "url": "https://api.trello.com/1/tokens/${TRELLO_TOKEN}/webhooks?key=${TRELLO_API_KEY}",
+      "expectedStatus": [200]
+    }
+  },
+  "listenerConfig": {
+    "name": "Trello Webhook Listener",
+    "description": "Receives real-time events from Trello boards via webhooks. Supports multiple concurrent instances to watch different boards simultaneously.",
+    "supportsMultiInstance": true,
+    "fields": [
+      {
+        "key": "boardId",
+        "label": "Board ID",
+        "description": "The Trello board to watch. Required for webhook registration.",
+        "type": "text",
+        "required": true,
+        "instanceKey": true,
+        "placeholder": "e.g., 5a1b2c3d4e5f6g7h8i9j0k",
+        "dynamicOptions": {
+          "url": "https://api.trello.com/1/members/me/boards?fields=name,id&key=${TRELLO_API_KEY}&token=${TRELLO_TOKEN}",
+          "labelField": "name",
+          "valueField": "id"
+        },
+        "group": "Connection"
+      },
+      {
+        "key": "eventFilter",
+        "label": "Event Types",
+        "description": "Which Trello action types to capture. Leave empty for all.",
+        "type": "multiselect",
+        "default": [],
+        "options": [
+          {"value": "createCard", "label": "Card Created"},
+          {"value": "updateCard", "label": "Card Updated"},
+          {"value": "deleteCard", "label": "Card Deleted"},
+          {"value": "addMemberToCard", "label": "Member Added to Card"},
+          {"value": "commentCard", "label": "Comment on Card"},
+          {"value": "createList", "label": "List Created"},
+          {"value": "updateList", "label": "List Updated"},
+          {"value": "moveCardToBoard", "label": "Card Moved to Board"}
+        ],
+        "group": "Filtering"
+      },
+      {
+        "key": "bufferSize",
+        "label": "Buffer Size",
+        "description": "Maximum number of events to keep in memory.",
+        "type": "number",
+        "default": 200,
+        "min": 10,
+        "max": 1000,
+        "group": "Advanced"
+      }
+    ]
+  },
+  "testConnection": {
+    "url": "https://api.trello.com/1/members/me?key=${TRELLO_API_KEY}&token=${TRELLO_TOKEN}",
+    "description": "Fetches the authenticated Trello member"
+  }
+}

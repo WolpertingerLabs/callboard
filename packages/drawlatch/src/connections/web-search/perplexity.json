@@ -1,0 +1,21 @@
+{
+  "name": "Perplexity API",
+  "stability": "beta",
+  "category": "web-search",
+  "description": "Perplexity API — web search and search-grounded answers. The Agent API (POST /v1/agent) is Perplexity's default surface for web-grounded, multi-provider applications and runs multi-step research with tools. POST /search runs a plain web search and returns ranked results with page contents. For Sonar chat completions the canonical path is POST /v1/sonar; POST /chat/completions is an alias kept for OpenAI SDK compatibility. POST/GET /v1/async/sonar covers long-running Sonar research jobs. Text embeddings are at POST /v1/embeddings — the /v1/ prefix is required, POST /embeddings returns 404. Auth is handled automatically via the PERPLEXITY_API_KEY environment variable as a Bearer token. REVISIT BEFORE 2026-09-27: Perplexity has announced that Sonar is supported only until September 27, 2026, which removes both POST /chat/completions and the /v1/async/sonar endpoint this connection's test uses. Both are correct today; migrate the test and this description to an Agent API surface before that date.",
+  "docsUrl": "https://docs.perplexity.ai/api-reference",
+  "headers": {
+    "Authorization": "Bearer ${PERPLEXITY_API_KEY}",
+    "Content-Type": "application/json"
+  },
+  "secrets": {
+    "PERPLEXITY_API_KEY": "${PERPLEXITY_API_KEY}"
+  },
+  "allowedEndpoints": ["https://api.perplexity.ai/**"],
+  "requestTimeoutMs": 180000,
+  "testConnection": {
+    "method": "GET",
+    "url": "https://api.perplexity.ai/v1/async/sonar",
+    "description": "Lists async Sonar requests — an authenticated read-only call that consumes no credits. Sunsets 2026-09-27 with the rest of Sonar; needs replacing before then."
+  }
+}

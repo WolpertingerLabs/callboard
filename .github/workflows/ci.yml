@@ -32,9 +32,25 @@ jobs:
       - name: Lint
         run: npm run lint:all
 
-      # test:coverage runs the full vitest suite (so a failing test gates CI)
-      # AND produces the coverage report. Coverage has no thresholds configured,
-      # so low numbers never fail the build — coverage is reported, not enforced.
+      # drawlatch keeps its own typed eslint config (packages/drawlatch is
+      # ignored by the root config), so it is linted from its own directory.
+      - name: Lint drawlatch
+        run: npm run lint:drawlatch
+
+      # prettier/prettier is only a warning in drawlatch's eslint config, so
+      # formatting drift would never fail the lint step above.
+      - name: Format check drawlatch
+        run: npm run format:drawlatch:check
+
+      # Published-dependency checks, including the drawlatch lockstep pin
+      # (callboard's exact pin must equal packages/drawlatch's version).
+      - name: Published deps + lockstep
+        run: npm run deps:check
+
+      # test:coverage runs the computer-use and drawlatch suites, then the full
+      # vitest suite (so a failing test gates CI) AND produces the coverage
+      # report. Coverage has no thresholds configured, so low numbers never fail
+      # the build — coverage is reported, not enforced.
       - name: Test + coverage
         run: npm run test:coverage
 

@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "secure-proxy": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/dist/mcp/server.js"],
+      "env": {
+        "MCP_CONFIG_DIR": "${MCP_CONFIG_DIR}",
+        "MCP_KEY_ALIAS": "${MCP_KEY_ALIAS}"
+      }
+    }
+  }
+}

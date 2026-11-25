@@ -1,0 +1,21 @@
+{
+  "name": "Google AI (Gemini) API",
+  "stability": "stable",
+  "category": "ai",
+  "description": "Google AI Gemini API — chat completions, embeddings, image generation, token counting, and more. Auth is handled automatically via the GOOGLE_AI_API_KEY environment variable. Uses x-goog-api-key header (not Bearer token). This is separate from the 'google' connection which covers Google Workspace APIs (Sheets, Drive, etc.).",
+  "docsUrl": "https://ai.google.dev/api",
+  "headers": {
+    "x-goog-api-key": "${GOOGLE_AI_API_KEY}",
+    "Content-Type": "application/json"
+  },
+  "secrets": {
+    "GOOGLE_AI_API_KEY": "${GOOGLE_AI_API_KEY}"
+  },
+  "allowedEndpoints": [
+    "https://generativelanguage.googleapis.com/**"
+  ],
+  "testConnection": {
+    "url": "https://generativelanguage.googleapis.com/v1beta/models",
+    "description": "Lists available Gemini models"
+  }
+}

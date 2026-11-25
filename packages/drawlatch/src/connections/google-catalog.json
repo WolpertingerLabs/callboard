@@ -1,0 +1,460 @@
+{
+  "tokenUrl": "https://oauth2.googleapis.com/token",
+  "auth": {
+    "user": {
+      "grant": "refresh_token",
+      "clientAuth": "body",
+      "secretRefs": {
+        "clientId": "GOOGLE_OAUTH_CLIENT_ID",
+        "clientSecret": "GOOGLE_OAUTH_CLIENT_SECRET",
+        "refreshToken": "GOOGLE_OAUTH_REFRESH_TOKEN"
+      }
+    },
+    "service-account": {
+      "grant": "jwt_bearer",
+      "secretRefs": {
+        "serviceAccountKey": "GOOGLE_SERVICE_ACCOUNT_KEY"
+      }
+    }
+  },
+  "services": {
+    "gmail": {
+      "name": "Gmail",
+      "docsUrl": "https://developers.google.com/workspace/gmail/api/reference/rest",
+      "enableApi": "Gmail API",
+      "levels": {
+        "metadata": {
+          "summary": "labels, message and thread IDs, headers (From, To, Subject, Date) and history; no bodies, attachments or search (q=)",
+          "readOnly": true,
+          "scopes": [
+            "https://www.googleapis.com/auth/gmail.metadata"
+          ],
+          "auth": [
+            "user"
+          ],
+          "allowedEndpoints": [
+            "https://gmail.googleapis.com/gmail/v1/users/me/profile",
+            "https://gmail.googleapis.com/gmail/v1/users/me/profile?**",
+            "https://gmail.googleapis.com/gmail/v1/users/me/labels",
+            "https://gmail.googleapis.com/gmail/v1/users/me/labels?**",
+            "https://gmail.googleapis.com/gmail/v1/users/me/labels/*",
+            "https://gmail.googleapis.com/gmail/v1/users/me/labels/*?**",
+            "https://gmail.googleapis.com/gmail/v1/users/me/messages",
+            "https://gmail.googleapis.com/gmail/v1/users/me/messages?**",
+            "https://gmail.googleapis.com/gmail/v1/users/me/messages/*",
+            "https://gmail.googleapis.com/gmail/v1/users/me/messages/*?**",
+            "https://gmail.googleapis.com/gmail/v1/users/me/threads",
+            "https://gmail.googleapis.com/gmail/v1/users/me/threads?**",
+            "https://gmail.googleapis.com/gmail/v1/users/me/threads/*",
+            "https://gmail.googleapis.com/gmail/v1/users/me/threads/*?**",
+            "https://gmail.googleapis.com/gmail/v1/users/me/history",
+            "https://gmail.googleapis.com/gmail/v1/users/me/history?**"
+          ],
+          "testConnection": {
+            "url": "https://gmail.googleapis.com/gmail/v1/users/me/profile",
+            "description": "Fetches the mailbox profile (email address, message count)"
+          }
+        },
+        "read": {
+          "summary": "messages and threads with bodies, attachments, labels, drafts, history and search; cannot send, modify or delete",
+          "readOnly": true,
+          "scopes": [
+            "https://www.googleapis.com/auth/gmail.readonly"
+          ],
+          "auth": [
+            "user",
+            "service-account"
+          ],
+          "subjectRequired": true,
+          "allowedEndpoints": [
+            "https://gmail.googleapis.com/gmail/v1/users/me/profile",
+            "https://gmail.googleapis.com/gmail/v1/users/me/profile?**",
+            "https://gmail.googleapis.com/gmail/v1/users/me/labels",
+            "https://gmail.googleapis.com/gmail/v1/users/me/labels?**",
+            "https://gmail.googleapis.com/gmail/v1/users/me/labels/*",
+            "https://gmail.googleapis.com/gmail/v1/users/me/labels/*?**",
+            "https://gmail.googleapis.com/gmail/v1/users/me/messages",
+            "https://gmail.googleapis.com/gmail/v1/users/me/messages?**",
+            "https://gmail.googleapis.com/gmail/v1/users/me/messages/*",
+            "https://gmail.googleapis.com/gmail/v1/users/me/messages/*?**",
+            "https://gmail.googleapis.com/gmail/v1/users/me/threads",
+            "https://gmail.googleapis.com/gmail/v1/users/me/threads?**",
+            "https://gmail.googleapis.com/gmail/v1/users/me/threads/*",
+            "https://gmail.googleapis.com/gmail/v1/users/me/threads/*?**",
+            "https://gmail.googleapis.com/gmail/v1/users/me/history",
+            "https://gmail.googleapis.com/gmail/v1/users/me/history?**",
+            "https://gmail.googleapis.com/gmail/v1/users/me/messages/*/attachments/*",
+            "https://gmail.googleapis.com/gmail/v1/users/me/messages/*/attachments/*?**",
+            "https://gmail.googleapis.com/gmail/v1/users/me/drafts",
+            "https://gmail.googleapis.com/gmail/v1/users/me/drafts?**",
+            "https://gmail.googleapis.com/gmail/v1/users/me/drafts/*",
+            "https://gmail.googleapis.com/gmail/v1/users/me/drafts/*?**"
+          ],
+          "testConnection": {
+            "url": "https://gmail.googleapis.com/gmail/v1/users/me/profile",
+            "description": "Fetches the mailbox profile (email address, message count)"
+          }
+        }
+      }
+    },
+    "calendar": {
+      "name": "Google Calendar",
+      "docsUrl": "https://developers.google.com/workspace/calendar/api/v3/reference",
+      "enableApi": "Google Calendar API",
+      "levels": {
+        "freebusy": {
+          "summary": "POST /freeBusy only: busy intervals for calendars, never event details",
+          "readOnly": true,
+          "scopes": [
+            "https://www.googleapis.com/auth/calendar.freebusy"
+          ],
+          "auth": [
+            "user"
+          ],
+          "allowedEndpoints": [
+            "https://www.googleapis.com/calendar/v3/freeBusy",
+            "https://www.googleapis.com/calendar/v3/freeBusy?**"
+          ],
+          "testConnection": {
+            "method": "POST",
+            "url": "https://www.googleapis.com/calendar/v3/freeBusy",
+            "body": {
+              "timeMin": "2026-01-01T00:00:00Z",
+              "timeMax": "2026-01-01T01:00:00Z",
+              "items": [
+                {
+                  "id": "primary"
+                }
+              ]
+            },
+            "description": "Queries free/busy for the primary calendar over a fixed one-hour window (read-only)"
+          }
+        },
+        "read": {
+          "summary": "calendar list, calendars, events, event instances, free/busy, colors and settings; cannot create, change or delete events",
+          "readOnly": true,
+          "scopes": [
+            "https://www.googleapis.com/auth/calendar.readonly"
+          ],
+          "auth": [
+            "user",
+            "service-account"
+          ],
+          "allowedEndpoints": [
+            "https://www.googleapis.com/calendar/v3/users/me/calendarList",
+            "https://www.googleapis.com/calendar/v3/users/me/calendarList?**",
+            "https://www.googleapis.com/calendar/v3/users/me/calendarList/*",
+            "https://www.googleapis.com/calendar/v3/users/me/calendarList/*?**",
+            "!https://www.googleapis.com/calendar/v3/users/me/calendarList/watch",
+            "!https://www.googleapis.com/calendar/v3/users/me/calendarList/watch?**",
+            "https://www.googleapis.com/calendar/v3/users/me/settings",
+            "https://www.googleapis.com/calendar/v3/users/me/settings?**",
+            "https://www.googleapis.com/calendar/v3/users/me/settings/*",
+            "https://www.googleapis.com/calendar/v3/users/me/settings/*?**",
+            "!https://www.googleapis.com/calendar/v3/users/me/settings/watch",
+            "!https://www.googleapis.com/calendar/v3/users/me/settings/watch?**",
+            "https://www.googleapis.com/calendar/v3/calendars/*",
+            "https://www.googleapis.com/calendar/v3/calendars/*?**",
+            "https://www.googleapis.com/calendar/v3/calendars/*/events",
+            "https://www.googleapis.com/calendar/v3/calendars/*/events?**",
+            "https://www.googleapis.com/calendar/v3/calendars/*/events/*",
+            "https://www.googleapis.com/calendar/v3/calendars/*/events/*?**",
+            "https://www.googleapis.com/calendar/v3/calendars/*/events/*/instances",
+            "https://www.googleapis.com/calendar/v3/calendars/*/events/*/instances?**",
+            "!https://www.googleapis.com/calendar/v3/calendars/*/events/watch",
+            "!https://www.googleapis.com/calendar/v3/calendars/*/events/watch?**",
+            "https://www.googleapis.com/calendar/v3/freeBusy",
+            "https://www.googleapis.com/calendar/v3/freeBusy?**",
+            "https://www.googleapis.com/calendar/v3/colors",
+            "https://www.googleapis.com/calendar/v3/colors?**"
+          ],
+          "testConnection": {
+            "url": "https://www.googleapis.com/calendar/v3/users/me/calendarList?maxResults=1",
+            "description": "Lists one entry of the user's calendar list"
+          }
+        }
+      }
+    },
+    "drive": {
+      "name": "Google Drive",
+      "docsUrl": "https://developers.google.com/workspace/drive/api/reference/rest/v3",
+      "enableApi": "Google Drive API",
+      "levels": {
+        "file": {
+          "summary": "only files this OAuth client created or the user opened with it: create, upload, update, copy, export and delete them; cannot share them",
+          "readOnly": false,
+          "scopes": [
+            "https://www.googleapis.com/auth/drive.file"
+          ],
+          "auth": [
+            "user"
+          ],
+          "allowedEndpoints": [
+            "https://www.googleapis.com/drive/v3/files",
+            "https://www.googleapis.com/drive/v3/files?**",
+            "https://www.googleapis.com/drive/v3/files/*",
+            "https://www.googleapis.com/drive/v3/files/*?**",
+            "https://www.googleapis.com/drive/v3/files/*/export",
+            "https://www.googleapis.com/drive/v3/files/*/export?**",
+            "https://www.googleapis.com/drive/v3/files/*/copy",
+            "https://www.googleapis.com/drive/v3/files/*/copy?**",
+            "https://www.googleapis.com/upload/drive/v3/files",
+            "https://www.googleapis.com/upload/drive/v3/files?**",
+            "https://www.googleapis.com/upload/drive/v3/files/*",
+            "https://www.googleapis.com/upload/drive/v3/files/*?**",
+            "https://www.googleapis.com/drive/v3/about",
+            "https://www.googleapis.com/drive/v3/about?**"
+          ],
+          "testConnection": {
+            "url": "https://www.googleapis.com/drive/v3/about?fields=user",
+            "description": "Fetches the Drive user (about.get)"
+          }
+        },
+        "read": {
+          "summary": "list, search, read metadata, download and export every file the account can see, plus shared drives, revisions and the changes feed; cannot upload, change, share or delete",
+          "readOnly": true,
+          "scopes": [
+            "https://www.googleapis.com/auth/drive.readonly"
+          ],
+          "auth": [
+            "user",
+            "service-account"
+          ],
+          "allowedEndpoints": [
+            "https://www.googleapis.com/drive/v3/files",
+            "https://www.googleapis.com/drive/v3/files?**",
+            "https://www.googleapis.com/drive/v3/files/*",
+            "https://www.googleapis.com/drive/v3/files/*?**",
+            "https://www.googleapis.com/drive/v3/files/*/export",
+            "https://www.googleapis.com/drive/v3/files/*/export?**",
+            "https://www.googleapis.com/drive/v3/files/*/revisions",
+            "https://www.googleapis.com/drive/v3/files/*/revisions?**",
+            "https://www.googleapis.com/drive/v3/files/*/revisions/*",
+            "https://www.googleapis.com/drive/v3/files/*/revisions/*?**",
+            "https://www.googleapis.com/drive/v3/about",
+            "https://www.googleapis.com/drive/v3/about?**",
+            "https://www.googleapis.com/drive/v3/drives",
+            "https://www.googleapis.com/drive/v3/drives?**",
+            "https://www.googleapis.com/drive/v3/drives/*",
+            "https://www.googleapis.com/drive/v3/drives/*?**",
+            "https://www.googleapis.com/drive/v3/changes",
+            "https://www.googleapis.com/drive/v3/changes?**",
+            "https://www.googleapis.com/drive/v3/changes/startPageToken",
+            "https://www.googleapis.com/drive/v3/changes/startPageToken?**"
+          ],
+          "testConnection": {
+            "url": "https://www.googleapis.com/drive/v3/about?fields=user",
+            "description": "Fetches the Drive user (about.get)"
+          }
+        }
+      }
+    },
+    "sheets": {
+      "name": "Google Sheets",
+      "docsUrl": "https://developers.google.com/workspace/sheets/api/reference/rest",
+      "enableApi": "Google Sheets API",
+      "levels": {
+        "read": {
+          "summary": "spreadsheets.get and values get / batchGet by spreadsheet ID; its scope (spreadsheets.readonly) grants no edits",
+          "readOnly": true,
+          "scopes": [
+            "https://www.googleapis.com/auth/spreadsheets.readonly"
+          ],
+          "auth": [
+            "user",
+            "service-account"
+          ],
+          "allowedEndpoints": [
+            "https://sheets.googleapis.com/v4/spreadsheets/**"
+          ],
+          "testConnection": {
+            "url": "https://sheets.googleapis.com/v4/spreadsheets/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms?fields=spreadsheetId",
+            "description": "Reads the ID of Google's public sample spreadsheet (needs the Sheets API enabled)"
+          }
+        },
+        "edit": {
+          "summary": "spreadsheets create, get, batchUpdate and getByDataFilter, values get/update/append/clear and their batch and DataFilter forms, sheets.copyTo, developerMetadata; no Drive endpoints, so it cannot share, move or delete files",
+          "readOnly": false,
+          "scopes": [
+            "https://www.googleapis.com/auth/spreadsheets"
+          ],
+          "auth": [
+            "user",
+            "service-account"
+          ],
+          "allowedEndpoints": [
+            "https://sheets.googleapis.com/v4/spreadsheets",
+            "https://sheets.googleapis.com/v4/spreadsheets?**",
+            "https://sheets.googleapis.com/v4/spreadsheets/*",
+            "https://sheets.googleapis.com/v4/spreadsheets/*?**",
+            "https://sheets.googleapis.com/v4/spreadsheets/*/values/*",
+            "https://sheets.googleapis.com/v4/spreadsheets/*/values/*?**",
+            "https://sheets.googleapis.com/v4/spreadsheets/*/values:batchGet",
+            "https://sheets.googleapis.com/v4/spreadsheets/*/values:batchGet?**",
+            "https://sheets.googleapis.com/v4/spreadsheets/*/values:batchUpdate",
+            "https://sheets.googleapis.com/v4/spreadsheets/*/values:batchUpdate?**",
+            "https://sheets.googleapis.com/v4/spreadsheets/*/values:batchClear",
+            "https://sheets.googleapis.com/v4/spreadsheets/*/values:batchClear?**",
+            "https://sheets.googleapis.com/v4/spreadsheets/*/values:batchGetByDataFilter",
+            "https://sheets.googleapis.com/v4/spreadsheets/*/values:batchGetByDataFilter?**",
+            "https://sheets.googleapis.com/v4/spreadsheets/*/values:batchUpdateByDataFilter",
+            "https://sheets.googleapis.com/v4/spreadsheets/*/values:batchUpdateByDataFilter?**",
+            "https://sheets.googleapis.com/v4/spreadsheets/*/values:batchClearByDataFilter",
+            "https://sheets.googleapis.com/v4/spreadsheets/*/values:batchClearByDataFilter?**",
+            "https://sheets.googleapis.com/v4/spreadsheets/*/sheets/*:copyTo",
+            "https://sheets.googleapis.com/v4/spreadsheets/*/sheets/*:copyTo?**",
+            "https://sheets.googleapis.com/v4/spreadsheets/*/developerMetadata/*",
+            "https://sheets.googleapis.com/v4/spreadsheets/*/developerMetadata/*?**",
+            "https://sheets.googleapis.com/v4/spreadsheets/*/developerMetadata:search",
+            "https://sheets.googleapis.com/v4/spreadsheets/*/developerMetadata:search?**"
+          ],
+          "testConnection": {
+            "url": "https://sheets.googleapis.com/v4/spreadsheets/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms?fields=spreadsheetId",
+            "description": "Reads the ID of Google's public sample spreadsheet (needs the Sheets API enabled)"
+          }
+        }
+      }
+    },
+    "docs": {
+      "name": "Google Docs",
+      "docsUrl": "https://developers.google.com/workspace/docs/api/reference/rest",
+      "enableApi": "Google Docs API",
+      "levels": {
+        "edit": {
+          "summary": "documents create, get (tabs, suggestions and comments view modes) and batchUpdate; no Drive endpoints, so it cannot share, move, export or delete files",
+          "readOnly": false,
+          "scopes": [
+            "https://www.googleapis.com/auth/documents"
+          ],
+          "auth": [
+            "user",
+            "service-account"
+          ],
+          "allowedEndpoints": [
+            "https://docs.googleapis.com/v1/documents",
+            "https://docs.googleapis.com/v1/documents?**",
+            "https://docs.googleapis.com/v1/documents/*",
+            "https://docs.googleapis.com/v1/documents/*?**"
+          ],
+          "testConnection": {
+            "url": "https://docs.googleapis.com/v1/documents/195j9eDD3ccgjQRttHhJPymLJUCOUjs-jmwTrekvdjFE?fields=documentId",
+            "description": "Reads the ID of the public sample document from Google's Docs API quickstart (needs the Docs API enabled)"
+          }
+        }
+      }
+    },
+    "slides": {
+      "name": "Google Slides",
+      "docsUrl": "https://developers.google.com/workspace/slides/api/reference/rest",
+      "enableApi": "Google Slides API",
+      "levels": {
+        "edit": {
+          "summary": "presentations create, get and batchUpdate, pages get and getThumbnail (the thumbnail contentUrl is not fetched, and anyone holding it can open the image for about 30 minutes); no Drive endpoints, so it cannot share, move, export or delete files",
+          "readOnly": false,
+          "scopes": [
+            "https://www.googleapis.com/auth/presentations"
+          ],
+          "auth": [
+            "user",
+            "service-account"
+          ],
+          "allowedEndpoints": [
+            "https://slides.googleapis.com/v1/presentations",
+            "https://slides.googleapis.com/v1/presentations?**",
+            "https://slides.googleapis.com/v1/presentations/*",
+            "https://slides.googleapis.com/v1/presentations/*?**",
+            "https://slides.googleapis.com/v1/presentations/*/pages/*",
+            "https://slides.googleapis.com/v1/presentations/*/pages/*?**",
+            "https://slides.googleapis.com/v1/presentations/*/pages/*/thumbnail",
+            "https://slides.googleapis.com/v1/presentations/*/pages/*/thumbnail?**"
+          ],
+          "testConnection": {
+            "url": "https://slides.googleapis.com/v1/presentations/1EAYk18WDjIG-zp_0vLm3CsfQh_i8eXc67Jo2O9C6Vuc?fields=presentationId",
+            "description": "Reads the ID of the public sample presentation from Google's Slides API quickstart (needs the Slides API enabled)"
+          }
+        }
+      }
+    }
+  },
+  "apiAccepts": {
+    "gmail": {
+      "revision": "20261116",
+      "read": [
+        "https://www.googleapis.com/auth/gmail.metadata",
+        "https://www.googleapis.com/auth/gmail.readonly"
+      ],
+      "write": [],
+      "note": "users.watch and users.stop accept gmail.metadata and gmail.readonly, but no level allowlists them"
+    },
+    "calendar": {
+      "revision": "20261118",
+      "read": [
+        "https://www.googleapis.com/auth/calendar.freebusy",
+        "https://www.googleapis.com/auth/calendar.readonly"
+      ],
+      "write": [],
+      "note": "events.watch, calendarList.watch, settings.watch and channels.stop accept calendar.readonly (acl.watch does not: it takes only calendar and calendar.acls*); calendar.read excludes the watch paths and no level allowlists channels/stop"
+    },
+    "drive": {
+      "revision": "20261117",
+      "read": [
+        "https://www.googleapis.com/auth/drive.file",
+        "https://www.googleapis.com/auth/drive.readonly"
+      ],
+      "write": [
+        "https://www.googleapis.com/auth/drive.file"
+      ],
+      "note": "files.watch, changes.watch, channels.stop and the POST files.download also accept drive.readonly; they are not data writes, and no level allowlists them"
+    },
+    "sheets": {
+      "revision": "20261118",
+      "read": [
+        "https://www.googleapis.com/auth/drive.file",
+        "https://www.googleapis.com/auth/drive.readonly",
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/spreadsheets.readonly"
+      ],
+      "write": [
+        "https://www.googleapis.com/auth/drive.file",
+        "https://www.googleapis.com/auth/spreadsheets"
+      ]
+    },
+    "docs": {
+      "revision": "20261118",
+      "read": [
+        "https://www.googleapis.com/auth/documents",
+        "https://www.googleapis.com/auth/drive.file",
+        "https://www.googleapis.com/auth/drive.readonly"
+      ],
+      "write": [
+        "https://www.googleapis.com/auth/documents",
+        "https://www.googleapis.com/auth/drive.file"
+      ]
+    },
+    "slides": {
+      "revision": "20261118",
+      "read": [
+        "https://www.googleapis.com/auth/drive.file",
+        "https://www.googleapis.com/auth/drive.readonly",
+        "https://www.googleapis.com/auth/presentations"
+      ],
+      "write": [
+        "https://www.googleapis.com/auth/drive.file",
+        "https://www.googleapis.com/auth/drive.readonly",
+        "https://www.googleapis.com/auth/presentations",
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/spreadsheets.readonly"
+      ],
+      "note": "presentations.batchUpdate also accepts drive.readonly, spreadsheets and spreadsheets.readonly (linked charts and Drive videos); presentations.create accepts only presentations and drive.file"
+    }
+  },
+  "crossScopeNotes": [
+    {
+      "when": {
+        "sheets": "read",
+        "drive": "file"
+      },
+      "text": "The Sheets API accepts drive.file for writes, so sheets=read can edit (not create) spreadsheets that drive.file covers: the ones this OAuth client created or the user picked. drive=file can already overwrite or delete those files through Drive."
+    }
+  ]
+}

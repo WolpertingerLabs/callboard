@@ -1,0 +1,67 @@
+{
+  "name": "X (Twitter) API",
+  "stability": "beta",
+  "category": "social-media",
+  "description": "X (formerly Twitter) API v2 — tweets, users, spaces, lists, and more. Auth is handled automatically via the X_BEARER_TOKEN environment variable (App-only Bearer token from the X Developer Portal). Both api.x.com and api.twitter.com domains are allowlisted. Includes a poll ingestor that searches recent tweets matching a configurable query — set X_SEARCH_QUERY and use poll_events to retrieve them.",
+  "docsUrl": "https://developer.x.com/en/docs/x-api",
+  "headers": {
+    "Authorization": "Bearer ${X_BEARER_TOKEN}"
+  },
+  "secrets": {
+    "X_BEARER_TOKEN": "${X_BEARER_TOKEN}",
+    "X_SEARCH_QUERY": "${X_SEARCH_QUERY}"
+  },
+  "allowedEndpoints": [
+    "https://api.x.com/**",
+    "https://api.twitter.com/**"
+  ],
+  "ingestor": {
+    "type": "poll",
+    "poll": {
+      "url": "https://api.x.com/2/tweets/search/recent?query=${X_SEARCH_QUERY}&max_results=25&tweet.fields=created_at,author_id,public_metrics",
+      "intervalMs": 60000,
+      "method": "GET",
+      "responsePath": "data",
+      "deduplicateBy": "id",
+      "eventType": "tweet"
+    }
+  },
+  "testIngestor": {
+    "description": "Fetches the authenticated user to verify X API access",
+    "strategy": "poll_once",
+    "request": {
+      "url": "https://api.x.com/2/users/me",
+      "expectedStatus": [200]
+    }
+  },
+  "listenerConfig": {
+    "name": "X (Twitter) Poll Listener",
+    "description": "Polls X for recent tweets matching a search query at a configurable interval.",
+    "fields": [
+      {
+        "key": "intervalMs",
+        "label": "Poll Interval (ms)",
+        "description": "How often to check for new tweets, in milliseconds.",
+        "type": "number",
+        "default": 60000,
+        "min": 10000,
+        "max": 3600000,
+        "group": "Connection"
+      },
+      {
+        "key": "bufferSize",
+        "label": "Buffer Size",
+        "description": "Maximum number of events to keep in memory.",
+        "type": "number",
+        "default": 200,
+        "min": 10,
+        "max": 1000,
+        "group": "Advanced"
+      }
+    ]
+  },
+  "testConnection": {
+    "url": "https://api.x.com/2/users/me",
+    "description": "Fetches the authenticated X/Twitter user"
+  }
+}

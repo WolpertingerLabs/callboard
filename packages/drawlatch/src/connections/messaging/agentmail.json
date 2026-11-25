@@ -1,0 +1,21 @@
+{
+  "name": "AgentMail API",
+  "stability": "beta",
+  "category": "messaging",
+  "description": "AgentMail API — email infrastructure for AI agents. Create and manage inboxes, send and reply to messages, browse threads, and manage drafts and attachments. Auth is handled automatically via the AGENTMAIL_API_KEY environment variable using a Bearer token. All endpoints are under the /v0 path. Create an API key in the AgentMail Console (https://console.agentmail.to).",
+  "docsUrl": "https://docs.agentmail.to/api-reference",
+  "headers": {
+    "Authorization": "Bearer ${AGENTMAIL_API_KEY}",
+    "Content-Type": "application/json"
+  },
+  "secrets": {
+    "AGENTMAIL_API_KEY": "${AGENTMAIL_API_KEY}"
+  },
+  "allowedEndpoints": [
+    "https://api.agentmail.to/**"
+  ],
+  "testConnection": {
+    "url": "https://api.agentmail.to/v0/inboxes",
+    "description": "Lists inboxes to verify the API key"
+  }
+}

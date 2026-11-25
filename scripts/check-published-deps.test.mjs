@@ -16,7 +16,14 @@
  *   fails silently and green.
  */
 import { describe, it, expect } from "vitest";
-import { blankComments, importedPackages } from "./check-published-deps.mjs";
+import {
+  blankComments,
+  drawlatchLockstepErrors,
+  drawlatchRegistryErrors,
+  importedPackages,
+  publishedVersionFromNpmView,
+  registryCheckSkipped,
+} from "./check-published-deps.mjs";
 
 describe("blankComments", () => {
   it("keeps offsets and line breaks so statement anchors still match", () => {
@@ -96,4 +103,84 @@ describe("importedPackages", () => {
 
 it("does not exempt an unrewritten computer-use workspace import from publication checks", () => {
   expect([...importedPackages('const service = await import("@wolpertingerlabs/computer-use");')]).toEqual(["@wolpertingerlabs/computer-use"]);
+});
+
+describe("drawlatchLockstepErrors", () => {
+  const DL = "@wolpertingerlabs/drawlatch";
+  const pkg = (pin) => ({ dependencies: pin === undefined ? {} : { [DL]: pin } });
+  const drawlatch = { version: "1.0.0-alpha.69" };
+
+  it("passes when both pins equal the workspace version", () => {
+    expect(drawlatchLockstepErrors(pkg("1.0.0-alpha.69"), pkg("1.0.0-alpha.69"), drawlatch)).toEqual([]);
+  });
+
+  it("fails a caret range even when it would match", () => {
+    const errors = drawlatchLockstepErrors(pkg("^1.0.0-alpha.69"), pkg("1.0.0-alpha.69"), drawlatch);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatch(/^drawlatch lockstep: package.json pins .* "\^1.0.0-alpha.69"/);
+  });
+
+  it("fails a version that differs from the workspace", () => {
+    const errors = drawlatchLockstepErrors(pkg("1.0.0-alpha.68"), pkg("1.0.0-alpha.68"), drawlatch);
+    expect(errors).toHaveLength(2);
+    expect(errors[1]).toMatch(/backend\/package.json pins .* "1.0.0-alpha.68" but packages\/drawlatch is "1.0.0-alpha.69"/);
+  });
+
+  it("fails when backend has no pin", () => {
+    const errors = drawlatchLockstepErrors(pkg("1.0.0-alpha.69"), pkg(undefined), drawlatch);
+    expect(errors).toEqual([expect.stringMatching(/backend\/package.json does not depend on/)]);
+  });
+});
+
+describe("drawlatchRegistryErrors", () => {
+  it("passes when npm view prints the pin", () => {
+    expect(drawlatchRegistryErrors("1.0.0-alpha.69", "1.0.0-alpha.69\n")).toEqual([]);
+  });
+
+  it("fails when the pin is not published", () => {
+    expect(drawlatchRegistryErrors("1.0.0-alpha.69", "")).toEqual(["drawlatch 1.0.0-alpha.69 is not on npm — publish it first via the publish workflow"]);
+  });
+
+  it("fails when npm view prints some other version", () => {
+    expect(drawlatchRegistryErrors("1.0.0-alpha.69", "1.0.0-alpha.68")).toHaveLength(1);
+  });
+
+  it("fails when there is no pin", () => {
+    expect(drawlatchRegistryErrors(undefined, "")).toEqual([expect.stringMatching(/does not depend on/)]);
+  });
+});
+
+describe("publishedVersionFromNpmView", () => {
+  it("reads the version npm view --json prints", () => {
+    expect(publishedVersionFromNpmView('"1.0.0-alpha.68"\n')).toBe("1.0.0-alpha.68");
+  });
+
+  it("treats E404 as not published", () => {
+    const out = JSON.stringify({ error: { code: "E404", summary: "No match found for version 1.0.0-alpha.69" } });
+    expect(publishedVersionFromNpmView(out)).toBe("");
+  });
+
+  it("throws on any other registry error rather than publishing blind", () => {
+    const out = JSON.stringify({ error: { code: "ECONNREFUSED", summary: "connect ECONNREFUSED" } });
+    expect(() => publishedVersionFromNpmView(out)).toThrow(/ECONNREFUSED/);
+    expect(() => publishedVersionFromNpmView("")).toThrow(/unexpected npm view output/);
+  });
+});
+
+describe("registryCheckSkipped", () => {
+  const SKIP = { CALLBOARD_SKIP_REGISTRY_CHECK: "1" };
+
+  it("skips only in --prepublish mode with the variable set to 1", () => {
+    expect(registryCheckSkipped(["--registry", "--prepublish"], SKIP)).toBe(true);
+  });
+
+  it("never skips plain deps:check:registry, even with the variable set", () => {
+    expect(registryCheckSkipped(["--registry"], SKIP)).toBe(false);
+  });
+
+  it("checks by default in --prepublish mode", () => {
+    expect(registryCheckSkipped(["--registry", "--prepublish"], {})).toBe(false);
+    expect(registryCheckSkipped(["--registry", "--prepublish"], { CALLBOARD_SKIP_REGISTRY_CHECK: "0" })).toBe(false);
+    expect(registryCheckSkipped(["--registry", "--prepublish"], { CALLBOARD_SKIP_REGISTRY_CHECK: "true" })).toBe(false);
+  });
 });

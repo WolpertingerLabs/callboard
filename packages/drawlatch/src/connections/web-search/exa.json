@@ -1,0 +1,25 @@
+{
+  "name": "Exa Search API",
+  "stability": "beta",
+  "category": "web-search",
+  "description": "Exa AI search API — neural and keyword web search, page content retrieval, similarity search, and LLM-grounded answers. Core endpoints: POST /search (find pages by meaning or keyword), POST /contents (cleaned page text, highlights, summaries), POST /findSimilar (semantically similar pages), POST /answer (a sourced answer to a question), POST /context (code snippets from open-source repos), and POST /responses and POST /chat/completions (OpenAI-compatible surfaces). The Agent API — POST /agent/runs then GET /agent/runs/{id} — runs long multi-step research and is the replacement for the retired Research API. Monitors (/monitors) schedule recurring searches, and Websets (/websets/v0/*) build verified, enriched result sets. On /search the `type` parameter is the primary quality/latency/cost dial: instant, fast, auto, deep-lite, deep, deep-reasoning (deep-reasoning takes 12-40s and replaces the old research runs). Note that not everything is POST — Websets, Monitors, and Agent runs use GET/PATCH/DELETE as well. Auth is handled automatically via the EXA_API_KEY environment variable, injected as the x-api-key header.",
+  "docsUrl": "https://exa.ai/docs/reference/getting-started",
+  "headers": {
+    "x-api-key": "${EXA_API_KEY}",
+    "Content-Type": "application/json"
+  },
+  "secrets": {
+    "EXA_API_KEY": "${EXA_API_KEY}"
+  },
+  "allowedEndpoints": ["https://api.exa.ai/**"],
+  "requestTimeoutMs": 120000,
+  "testConnection": {
+    "method": "POST",
+    "url": "https://api.exa.ai/search",
+    "body": {
+      "query": "drawlatch connection test",
+      "numResults": 1
+    },
+    "description": "Runs a minimal search query to verify the Exa API key"
+  }
+}

@@ -1,0 +1,203 @@
+/* CallerList — create + delete affordances on /callers. */
+
+.dl-callers-header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.dl-callers-new-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 7px;
+  border: 1px solid #2a2a30;
+  background: #16161a;
+  color: #c5c5cd;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.dl-callers-new-btn:hover {
+  border-color: #5b9dff;
+  color: #5b9dff;
+}
+
+/* ── Inline create form ───────────────────────────────────────────────── */
+
+.dl-callers-newcaller {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid #2a2a30;
+  background: #16161a;
+}
+
+.dl-callers-newcaller-input {
+  flex: 1 1 160px;
+  min-width: 140px;
+  box-sizing: border-box;
+  padding: 7px 9px;
+  border-radius: 6px;
+  border: 1px solid #2a2a30;
+  background: #0f0f12;
+  color: #e6e6ea;
+  font-size: 12.5px;
+  outline: none;
+}
+
+.dl-callers-newcaller-input:focus {
+  border-color: #5b9dff;
+}
+
+.dl-callers-newcaller-add {
+  padding: 7px 12px;
+  border: none;
+  border-radius: 6px;
+  background: #5b9dff;
+  color: #0f0f12;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.dl-callers-newcaller-add:hover:not(:disabled) {
+  background: #74acff;
+}
+
+.dl-callers-newcaller-add:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.dl-callers-newcaller-cancel {
+  padding: 7px 10px;
+  border: 1px solid #2a2a30;
+  border-radius: 6px;
+  background: transparent;
+  color: #8b8b94;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.dl-callers-newcaller-cancel:hover:not(:disabled) {
+  border-color: #3a3a42;
+  color: #c5c5cd;
+}
+
+.dl-callers-newcaller-error {
+  flex-basis: 100%;
+  font-size: 11.5px;
+  color: #f85149;
+}
+
+/* ── Per-row delete button ────────────────────────────────────────────── */
+
+.dl-callers-action-cell {
+  width: 36px;
+  text-align: right;
+}
+
+.dl-callers-del-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #8b8b94;
+  cursor: pointer;
+}
+
+.dl-callers-del-btn:hover {
+  background: rgba(248, 81, 73, 0.12);
+  color: #f85149;
+}
+
+/* ── Source badge (local-auto / bundle-issued) ────────────────────────── */
+
+.dl-source-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.dl-source-bundle-issued {
+  background: rgba(88, 166, 255, 0.12);
+  border-color: rgba(88, 166, 255, 0.35);
+  color: #58a6ff;
+}
+
+.dl-source-local-auto {
+  background: rgba(63, 185, 80, 0.12);
+  border-color: rgba(63, 185, 80, 0.35);
+  color: #3fb950;
+}
+
+/* ── Credential lifecycle (caller detail) ─────────────────────────────── */
+
+.dl-cred-lifecycle {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.dl-cred-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.dl-cred-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: 1px solid #2a2a30;
+  background: #0d0d0f;
+  color: #c5c5cd;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.dl-cred-btn:hover {
+  border-color: #3a3a42;
+  color: #e6e6ea;
+}
+
+.dl-cred-btn-primary {
+  background: #58a6ff;
+  border-color: #58a6ff;
+  color: #0d0d0f;
+}
+
+.dl-cred-btn-primary:hover {
+  background: #6cb2ff;
+  border-color: #6cb2ff;
+  color: #0d0d0f;
+}
+
+.dl-cred-btn-danger {
+  color: #f85149;
+}
+
+.dl-cred-btn-danger:hover {
+  border-color: rgba(248, 81, 73, 0.5);
+  background: rgba(248, 81, 73, 0.1);
+  color: #f85149;
+}

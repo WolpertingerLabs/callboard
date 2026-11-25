@@ -1,0 +1,22 @@
+{
+  "name": "OpenAI API",
+  "stability": "beta",
+  "category": "ai",
+  "description": "OpenAI API — chat completions, embeddings, images, audio, files, fine-tuning, and more. Auth is handled automatically via the OPENAI_API_KEY environment variable.",
+  "docsUrl": "https://platform.openai.com/docs/api-reference",
+  "openApiUrl": "https://raw.githubusercontent.com/openai/openai-openapi/master/openapi.yaml",
+  "headers": {
+    "Authorization": "Bearer ${OPENAI_API_KEY}",
+    "Content-Type": "application/json"
+  },
+  "secrets": {
+    "OPENAI_API_KEY": "${OPENAI_API_KEY}"
+  },
+  "allowedEndpoints": [
+    "https://api.openai.com/**"
+  ],
+  "testConnection": {
+    "url": "https://api.openai.com/v1/models",
+    "description": "Lists available models"
+  }
+}

@@ -1,0 +1,80 @@
+{
+  "name": "Reddit API",
+  "stability": "beta",
+  "category": "social-media",
+  "description": "Reddit API — subreddits, posts, comments, users, search, and more. Auth is handled automatically via the REDDIT_ACCESS_TOKEN environment variable (OAuth2 Bearer token). A User-Agent header is required by Reddit and set via REDDIT_USER_AGENT. Obtain an OAuth2 token by registering a 'script' app at https://www.reddit.com/prefs/apps and using the client credentials grant. Tokens expire after 1 hour — rotate externally. Includes a poll ingestor that fetches new posts from a configurable subreddit — set REDDIT_SUBREDDIT and use poll_events to retrieve them.",
+  "docsUrl": "https://www.reddit.com/dev/api/",
+  "headers": {
+    "Authorization": "Bearer ${REDDIT_ACCESS_TOKEN}",
+    "User-Agent": "${REDDIT_USER_AGENT}"
+  },
+  "secrets": {
+    "REDDIT_ACCESS_TOKEN": "${REDDIT_ACCESS_TOKEN}",
+    "REDDIT_USER_AGENT": "${REDDIT_USER_AGENT}",
+    "REDDIT_SUBREDDIT": "${REDDIT_SUBREDDIT}"
+  },
+  "allowedEndpoints": [
+    "https://oauth.reddit.com/**"
+  ],
+  "ingestor": {
+    "type": "poll",
+    "poll": {
+      "url": "https://oauth.reddit.com/r/${REDDIT_SUBREDDIT}/new?limit=25",
+      "intervalMs": 60000,
+      "method": "GET",
+      "responsePath": "data.children",
+      "deduplicateBy": "data.name",
+      "eventType": "new_post"
+    }
+  },
+  "testIngestor": {
+    "description": "Fetches the authenticated user to verify Reddit API access",
+    "strategy": "poll_once",
+    "request": {
+      "url": "https://oauth.reddit.com/api/v1/me",
+      "expectedStatus": [200]
+    }
+  },
+  "listenerConfig": {
+    "name": "Reddit Poll Listener",
+    "description": "Polls a subreddit for new posts at a configurable interval. Supports multiple concurrent instances to watch different subreddits simultaneously.",
+    "supportsMultiInstance": true,
+    "fields": [
+      {
+        "key": "subreddit",
+        "label": "Subreddit",
+        "description": "The subreddit to watch for new posts (without the r/ prefix).",
+        "type": "text",
+        "required": true,
+        "instanceKey": true,
+        "overrideKey": "REDDIT_SUBREDDIT",
+        "placeholder": "e.g., rust",
+        "group": "Connection"
+      },
+      {
+        "key": "intervalMs",
+        "label": "Poll Interval (ms)",
+        "description": "How often to check for new posts, in milliseconds.",
+        "type": "number",
+        "default": 60000,
+        "min": 10000,
+        "max": 3600000,
+        "group": "Connection"
+      },
+      {
+        "key": "bufferSize",
+        "label": "Buffer Size",
+        "description": "Maximum number of events to keep in memory.",
+        "type": "number",
+        "default": 200,
+        "min": 10,
+        "max": 1000,
+        "group": "Advanced"
+      }
+    ]
+  },
+  "testConnection": {
+    "url": "https://oauth.reddit.com/api/v1/me",
+    "description": "Fetches the authenticated Reddit user"
+  }
+}
