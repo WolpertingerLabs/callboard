@@ -191,8 +191,17 @@ describe("parseMessages — CLI plumbing is not conversation", () => {
   it("drops the CLI's synthetic canned reply that follows an interruption marker", () => {
     // What the CLI writes after an interrupt, just before the next prompt —
     // no isMeta nudge in front of it. The stray bubble users saw.
-    const synthetic = { ...assistantLine([{ type: "text", text: "No response requested." }]), message: { role: "assistant", model: "<synthetic>", content: [{ type: "text", text: "No response requested." }] } };
-    const parsed = parseMessages([userLine("go"), assistantLine([{ type: "text", text: "partial" }]), userLine("[Request interrupted by user]"), synthetic, userLine("next")]);
+    const synthetic = {
+      ...assistantLine([{ type: "text", text: "No response requested." }]),
+      message: { role: "assistant", model: "<synthetic>", content: [{ type: "text", text: "No response requested." }] },
+    };
+    const parsed = parseMessages([
+      userLine("go"),
+      assistantLine([{ type: "text", text: "partial" }]),
+      userLine("[Request interrupted by user]"),
+      synthetic,
+      userLine("next"),
+    ]);
     expect(parsed.map((m) => [m.role, m.content])).toEqual([
       ["user", "go"],
       ["assistant", "partial"],

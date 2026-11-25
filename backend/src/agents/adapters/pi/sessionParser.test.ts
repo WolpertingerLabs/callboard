@@ -246,7 +246,13 @@ describe("parsePiSession", () => {
   it("puts the interrupted boundary after the partial output of a turn stopped mid-reply", () => {
     const path = writeSession("s1", [
       { type: "message", id: "e1", parentId: null, timestamp: TS, message: userMessage("explain") },
-      { type: "message", id: "e2", parentId: "e1", timestamp: TS, message: { ...assistantMessage([{ type: "text", text: "Well, first" }]), stopReason: "aborted" } },
+      {
+        type: "message",
+        id: "e2",
+        parentId: "e1",
+        timestamp: TS,
+        message: { ...assistantMessage([{ type: "text", text: "Well, first" }]), stopReason: "aborted" },
+      },
     ]);
     const messages = parsePiSession(path);
     expect(messages.map((m) => [m.role, m.content])).toEqual([

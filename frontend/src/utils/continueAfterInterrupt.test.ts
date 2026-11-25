@@ -9,7 +9,13 @@ const STOPPED = "2026-11-25T10:05:00.000Z";
 const LATER = "2026-11-25T10:06:00.000Z";
 
 const user = (content: string, timestamp = T0): ParsedMessage => ({ role: "user", type: "text", content, timestamp });
-const assistant = (content: string, extra: Partial<ParsedMessage> = {}): ParsedMessage => ({ role: "assistant", type: "text", content, timestamp: T0, ...extra });
+const assistant = (content: string, extra: Partial<ParsedMessage> = {}): ParsedMessage => ({
+  role: "assistant",
+  type: "text",
+  content,
+  timestamp: T0,
+  ...extra,
+});
 const system = (content: string, subtype?: string): ParsedMessage => ({ role: "system", type: "system", content, ...(subtype && { subtype }) });
 /** What the parsers persist for a harness-recorded interruption — including a permission denial. */
 const harnessMarker = system("Interrupted by user", "interrupted");
@@ -43,7 +49,12 @@ describe("endsWithUserStop — the live notice", () => {
   });
 
   it("looks past other trailing system rows (an abandoned-task marker, a compaction)", () => {
-    const messages = [assistant("partial"), system("1 background task was stopped", "background_task"), INTERRUPTED_NOTICE, system("Compacted", "compact_boundary")];
+    const messages = [
+      assistant("partial"),
+      system("1 background task was stopped", "background_task"),
+      INTERRUPTED_NOTICE,
+      system("Compacted", "compact_boundary"),
+    ];
     expect(endsWithUserStop(messages, undefined)).toBe(true);
   });
 

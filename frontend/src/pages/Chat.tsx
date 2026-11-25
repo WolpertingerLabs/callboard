@@ -1617,7 +1617,8 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
                   const trailing: ParsedMessage[] = [];
                   const killed = abandonedTaskMarker(Array.isArray(event.abandonedBackgroundTaskIds) ? event.abandonedBackgroundTaskIds : [], msgArray);
                   if (killed) trailing.push(killed);
-                  if (reasonMsg && !redundant) trailing.push(reasonMsg === INTERRUPTED_MESSAGE ? INTERRUPTED_NOTICE : { role: "system", type: "system", content: reasonMsg });
+                  if (reasonMsg && !redundant)
+                    trailing.push(reasonMsg === INTERRUPTED_MESSAGE ? INTERRUPTED_NOTICE : { role: "system", type: "system", content: reasonMsg });
                   setMessages(trailing.length > 0 ? [...msgArray, ...trailing] : msgArray);
                   // Retire optimistic bubbles only once the transcript shows
                   // them — a message sent while this run was finishing has to

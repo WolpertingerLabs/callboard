@@ -32,41 +32,41 @@ export default function InFlightBubbles({ messages }: { messages: InFlightMessag
         message.text === CONTINUE_PROMPT && !message.fileNames?.length && inFlightImageCount(message) === 0 ? (
           <ContinuedDivider key={message.key} />
         ) : (
-        <div key={message.key} style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", margin: "6px 0" }}>
-          <div
-            style={{
-              ...BUBBLE_BASE_STYLE,
-              background: "var(--user-bg)",
-              border: "1px solid transparent",
-              opacity: 0.9,
-            }}
-          >
-            {message.text && <MarkdownRenderer content={message.text} className="message-markdown" />}
-            {message.fileNames && message.fileNames.length > 0 && <AttachedFileChips files={message.fileNames.map((name) => ({ name }))} />}
-            {/* Carried across the new-chat redirect: the count came, the previews could not. */}
-            {message.imageUrls.length === 0 && !!message.imageCount && (
-              <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-muted)" }}>
-                {message.imageCount} image{message.imageCount === 1 ? "" : "s"}
-              </div>
-            )}
-            {/* Deliberately not in the chat image gallery: these are local
+          <div key={message.key} style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", margin: "6px 0" }}>
+            <div
+              style={{
+                ...BUBBLE_BASE_STYLE,
+                background: "var(--user-bg)",
+                border: "1px solid transparent",
+                opacity: 0.9,
+              }}
+            >
+              {message.text && <MarkdownRenderer content={message.text} className="message-markdown" />}
+              {message.fileNames && message.fileNames.length > 0 && <AttachedFileChips files={message.fileNames.map((name) => ({ name }))} />}
+              {/* Carried across the new-chat redirect: the count came, the previews could not. */}
+              {message.imageUrls.length === 0 && !!message.imageCount && (
+                <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-muted)" }}>
+                  {message.imageCount} image{message.imageCount === 1 ? "" : "s"}
+                </div>
+              )}
+              {/* Deliberately not in the chat image gallery: these are local
                 previews of a message still being sent, and they are replaced
                 by gallery-registered ImageThumbnails once it is persisted. */}
-            {message.imageUrls.length > 0 && (
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
-                {message.imageUrls.map((url) => (
-                  <img
-                    key={url}
-                    src={url}
-                    alt="Attached image"
-                    style={{ maxHeight: 200, maxWidth: 300, borderRadius: 8, objectFit: "cover", border: "1px solid var(--border)" }}
-                  />
-                ))}
-              </div>
-            )}
+              {message.imageUrls.length > 0 && (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+                  {message.imageUrls.map((url) => (
+                    <img
+                      key={url}
+                      src={url}
+                      alt="Attached image"
+                      style={{ maxHeight: 200, maxWidth: 300, borderRadius: 8, objectFit: "cover", border: "1px solid var(--border)" }}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+            <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4, textAlign: "right" }}>Sent</div>
           </div>
-          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4, textAlign: "right" }}>Sent</div>
-        </div>
         ),
       )}
     </>
