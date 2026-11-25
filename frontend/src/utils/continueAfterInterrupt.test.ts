@@ -43,23 +43,16 @@ describe("endsWithUserStop — the persisted flag", () => {
   });
 });
 
-describe("endsWithUserStop — the live notice", () => {
-  it("offers Continue right after a Stop in this tab", () => {
-    expect(endsWithUserStop([user("go"), assistant("partial"), INTERRUPTED_NOTICE], undefined)).toBe(true);
+describe("endsWithUserStop — the page's local notice", () => {
+  it("does not offer Continue on its own: every abort appends it, not only a user's Stop", () => {
+    // A job cancel, a superseded job attempt, a teardown, Send now, a newer
+    // message from another tab: all end aborted, all get the notice.
+    expect(endsWithUserStop([user("go"), assistant("partial"), INTERRUPTED_NOTICE], undefined)).toBe(false);
+    expect(endsWithUserStop([assistant("partial"), system("1 background task was stopped", "background_task"), INTERRUPTED_NOTICE], undefined)).toBe(false);
   });
 
-  it("looks past other trailing system rows (an abandoned-task marker, a compaction)", () => {
-    const messages = [
-      assistant("partial"),
-      system("1 background task was stopped", "background_task"),
-      INTERRUPTED_NOTICE,
-      system("Compacted", "compact_boundary"),
-    ];
-    expect(endsWithUserStop(messages, undefined)).toBe(true);
-  });
-
-  it("does not count a notice from an earlier turn", () => {
-    expect(endsWithUserStop([assistant("partial"), INTERRUPTED_NOTICE, user("next"), assistant("answer")], undefined)).toBe(false);
+  it("does not get in the way when the user did stop it", () => {
+    expect(endsWithUserStop([user("go"), assistant("partial"), INTERRUPTED_NOTICE], STOPPED)).toBe(true);
   });
 });
 

@@ -18,7 +18,8 @@ const api = vi.hoisted(() => ({
 }));
 vi.mock("../api", () => api);
 
-const { useStopController, INTERRUPTED_NOTICE } = await import("./useStopController");
+const { useStopController } = await import("./useStopController");
+const { INTERRUPTED_NOTICE } = await import("../utils/continueAfterInterrupt");
 
 function setup() {
   const setMessages = vi.fn();
@@ -57,6 +58,34 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 afterEach(() => vi.useRealTimers());
+
+describe("useStopController — the chat record it settles with carries the Stop", () => {
+  it("refetches the chat only after the Stop route has answered, on both the settle and the delayed resync", async () => {
+    // Continue keys on stoppedByUserAt, which the route writes before it
+    // answers; a chat fetched before that answer could not carry it.
+    let answerStop!: (r: { stopped: boolean }) => void;
+    api.stopChat.mockImplementationOnce(() => new Promise((resolve) => (answerStop = resolve)));
+    const { hook } = setup();
+    let stopping!: Promise<void>;
+    act(() => {
+      stopping = hook.result.current.handleStop();
+    });
+    await flush();
+    expect(api.getChat).not.toHaveBeenCalled();
+
+    await act(async () => {
+      answerStop({ stopped: true });
+      await stopping;
+    });
+    await flush();
+    // No live stream in this setup, so the stop settles locally — right away.
+    expect(api.getChat).toHaveBeenCalledTimes(1);
+
+    await act(async () => vi.advanceTimersByTime(3_000));
+    await flush();
+    expect(api.getChat).toHaveBeenCalledTimes(2);
+  });
+});
 
 describe("useStopController — a new send supersedes the stop", () => {
   it("without a send, the delayed resync appends the local notice", async () => {

@@ -33,45 +33,45 @@ export function isContinuePrompt(message: Pick<ParsedMessage, "role" | "type" | 
   return CONTINUE_PROMPTS.has(withoutRideAlongBlock(message.content ?? "").trim());
 }
 
-// Transcript marker for a run the user stopped. Shown both when the run's own
-// terminal event reports the abort and when the page settles the stop locally.
+// The page's notice for a run that ended aborted. Appended whenever the run's
+// terminal event reports `aborted`, or the page settles a stop locally.
 export const INTERRUPTED_MESSAGE = "Session was interrupted.";
 
 /**
- * The page's local notice row for a run the user stopped. Never persisted —
- * the page appends it after the refetched transcript — so it only ever stands
- * for a Stop pressed in this tab. Carries the parsers' `interrupted` subtype
- * and renders as the same plain divider.
+ * The page's local notice row for a run that ended aborted. Never persisted:
+ * every tab watching the chat appends it after the refetched transcript, for
+ * any abort — a user's Stop, but also a job cancel, a superseded job attempt,
+ * a workspace teardown, a held message's Send now, or a newer message from
+ * another tab or MCP. So it says nothing about who stopped the run, and the
+ * Continue button does not read it (see {@link endsWithUserStop}). It carries
+ * the parsers' `interrupted` subtype and renders as the same plain divider.
  */
 export const INTERRUPTED_NOTICE: ParsedMessage = { role: "system", type: "system", subtype: "interrupted", content: INTERRUPTED_MESSAGE };
 
-function isLocalStopNotice(message: ParsedMessage): boolean {
-  return message.role === "system" && message.subtype === "interrupted" && message.content === INTERRUPTED_MESSAGE;
-}
-
 /**
- * Whether the transcript's last run was stopped by the user, so there is work
- * to Continue. Only a user's Stop counts, from one of two sources:
+ * Whether the user stopped the chat's last run, so there is work to Continue.
  *
- * - `stoppedByUserAt` on the chat record, which the daemon's Stop route sets
- *   and the chat's next run clears. It is the one that survives a reload: no
- *   harness reliably records Callboard's own Stop in its session log. A user
- *   prompt timestamped after it means a later turn happened whose clearing
- *   this page has not seen yet.
- * - the page's own {@link INTERRUPTED_NOTICE} at the end of the transcript,
- *   for the live case (and a daemon older than the field).
+ * Driven by `stoppedByUserAt` on the chat record alone. The daemon's Stop
+ * route sets it — only when a human's Stop cancelled a live run — and the
+ * chat's next run clears it, so it survives a reload, which no harness's
+ * session log does for Callboard's own Stop. A user prompt timestamped after
+ * it means a later turn happened whose clearing this page has not seen yet.
  *
- * The parsers' persisted `interrupted` markers deliberately do not count. The
- * Claude Code CLI writes "[Request interrupted by user for tool use]" when a
- * permission is denied — by the user or by policy — and offering "that was
- * not a request to stop… run it again" there would undo the denial.
+ * The live case needs nothing else: the Stop route writes the flag in the
+ * same tick as it aborts the run, before the run's terminal event can be
+ * emitted, and every path that ends a run on the page (the terminal event's
+ * refetch, the stop controller's settle and delayed resync) refetches the
+ * chat record after that.
+ *
+ * What deliberately does not count:
+ * - the page's {@link INTERRUPTED_NOTICE}, which every abort appends — a
+ *   job cancel would otherwise offer to resume the cancelled step;
+ * - the parsers' persisted `interrupted` markers: the Claude Code CLI writes
+ *   "[Request interrupted by user for tool use]" when a permission is
+ *   denied, and "that was not a request to stop… run it again" would undo
+ *   the denial.
  */
 export function endsWithUserStop(messages: readonly ParsedMessage[], stoppedByUserAt: string | undefined): boolean {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
-    if (m.role !== "system") break;
-    if (isLocalStopNotice(m)) return true;
-  }
   if (!stoppedByUserAt) return false;
   const stoppedAt = Date.parse(stoppedByUserAt);
   if (Number.isNaN(stoppedAt)) return false;

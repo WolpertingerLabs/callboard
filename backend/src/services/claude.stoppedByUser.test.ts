@@ -40,6 +40,25 @@ const { sendMessage, stopSession } = await import("./claude.js");
 const { setAgentProviderForTesting } = await import("../agents/factory.js");
 const { MockAgentProvider } = await import("../agents/adapters/mock/MockAgentProvider.js");
 const { chatFileService } = await import("./chat-file-service.js");
+const { streamRouter } = await import("../routes/stream.js");
+
+/** The real `POST /:id/stop` handler, driven with a fake req/res as the route tests do. */
+function stopRoute(chatId: string): { stopped?: boolean } {
+  type Layer = { route?: { path: string; methods: Record<string, boolean>; stack: { handle: (req: unknown, res: unknown) => void }[] } };
+  const layer = (streamRouter as unknown as { stack: Layer[] }).stack.find((l) => l.route?.path === "/:id/stop" && l.route.methods.post)!;
+  let body: { stopped?: boolean } = {};
+  const res = {
+    status() {
+      return this;
+    },
+    json(payload: { stopped?: boolean }) {
+      body = payload;
+      return this;
+    },
+  };
+  layer.route!.stack[0].handle({ params: { id: chatId } }, res);
+  return body;
+}
 
 /** A run that works until it is closed, then throws AbortError like the Claude adapter. */
 function parkedProvider(): AgentProvider {
@@ -105,6 +124,28 @@ describe("chatFileService stoppedByUser", () => {
 });
 
 describe("sendMessage and stoppedByUserAt", () => {
+  it("is on the record before the stopped run's terminal event, so the page's refetch on that event sees it", async () => {
+    // The live path: the page refetches the chat when `done` (aborted)
+    // arrives. The route writes the flag in the same tick as it aborts, and
+    // the run can only emit after that tick.
+    const chat = chatFileService.createChat(workDir, "sbu-order-1", "{}");
+    setAgentProviderForTesting(parkedProvider());
+    const running = await sendMessage({ prompt: "long task", chatId: chat.id });
+    let flagAtDone: string | undefined | null = null;
+    const ended = new Promise<void>((resolve) =>
+      running.on("event", (e: StreamEvent) => {
+        if (e.type !== "done" && e.type !== "error") return;
+        flagAtDone = chatFileService.getChat(chat.id)?.stoppedByUserAt;
+        resolve();
+      }),
+    );
+    await nextEvent(running, ["text"]);
+
+    expect(stopRoute(chat.id)).toEqual({ stopped: true });
+    await ended;
+    expect(flagAtDone).toEqual(expect.stringMatching(/^\d{4}-/));
+  });
+
   it("keeps the stop when the next run fails to start", async () => {
     const chat = chatFileService.createChat(workDir, "sbu-run-fail", "{}");
     chatFileService.markStoppedByUser(chat.id);
