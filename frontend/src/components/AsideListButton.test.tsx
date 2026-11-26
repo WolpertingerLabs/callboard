@@ -4,7 +4,10 @@ import { SessionContext } from "../contexts/SessionContext";
 import AsideListButton from "./AsideListButton";
 import type { AsideEntry } from "../utils/asideHighlights";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 const aside = (chatId: string, extra: Partial<AsideEntry> = {}): AsideEntry => ({
   chatId,
@@ -159,5 +162,4 @@ it("holds its position across scroll and resize events when the button has not m
     fireEvent(window, new Event("resize"));
   }
   expect({ top: menu.style.top, right: menu.style.right }).toEqual(placed);
-  vi.restoreAllMocks();
 });
