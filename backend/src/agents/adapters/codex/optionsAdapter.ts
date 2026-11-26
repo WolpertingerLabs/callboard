@@ -44,6 +44,16 @@ import { createLogger } from "../../../utils/logger.js";
 const log = createLogger("codex-adapter");
 
 /**
+ * Provider id for "subscription via OpenRouter". Deliberately NOT
+ * `"openrouter"`: the CLI merges inline-table overrides recursively (see the
+ * `configOverrides` note below), so a user whose own config.toml defines
+ * `[model_providers.openrouter]` with an `env_key` would have that key merged
+ * into our block — and it would replace the ChatGPT bearer with the OpenRouter
+ * key, silently turning this into the other OpenRouter mode.
+ */
+export const CODEX_OPENROUTER_SUBSCRIPTION_PROVIDER = "openrouter_subscription";
+
+/**
  * Sub-object on the options Record carrying Codex-specific configuration. Set
  * by claude.ts when routing a call to the Codex adapter (the wiring that
  * populates it lands in the wire-e2e slice — read defensively here). Mirrors the
@@ -96,6 +106,18 @@ export interface CodexOptionsExtras {
    * applies in api-key mode.
    */
   openRouterBaseUrl?: string;
+  /**
+   * Keep the ChatGPT login but send it via OpenRouter. Injects the
+   * {@link CODEX_OPENROUTER_SUBSCRIPTION_PROVIDER} block: `requires_openai_auth`
+   * (the login's bearer), `x-api-key` from OPENROUTER_API_KEY via
+   * `env_http_headers`, and deliberately no `env_key`. Ignored when
+   * {@link useOpenRouter} is set. Model names and reasoning stay native.
+   *
+   * Side effect worth knowing: a routed run refreshes Codex's own
+   * `$CODEX_HOME/models_cache.json` from OpenRouter's model list, which the
+   * native catalog then reads until its next refresh.
+   */
+  subscriptionViaOpenRouter?: boolean;
   /** Default model, e.g. "gpt-5.5". Overrides a top-level `options.model`. */
   model?: string;
   /**
@@ -498,6 +520,25 @@ export function translateCodexOptions(options: Record<string, unknown>): CodexTr
         },
       },
     };
+  } else if (extras.subscriptionViaOpenRouter) {
+    // Subscription via OpenRouter: OpenRouter forwards the ChatGPT login's
+    // request (`requires_openai_auth` keeps auth.json's bearer) and bills/links
+    // the account from the `x-api-key` header. No `env_key` — that would
+    // replace the bearer. Websockets off: the passthrough is plain HTTP.
+    codexOpts.config = {
+      ...codexOpts.config,
+      model_provider: CODEX_OPENROUTER_SUBSCRIPTION_PROVIDER,
+      model_providers: {
+        [CODEX_OPENROUTER_SUBSCRIPTION_PROVIDER]: {
+          name: "OpenRouter (subscription)",
+          base_url: OPENROUTER_CODEX_BASE_URL,
+          wire_api: "responses",
+          requires_openai_auth: true,
+          supports_websockets: false,
+          env_http_headers: { "x-api-key": "OPENROUTER_API_KEY" },
+        },
+      },
+    };
   } else if (authMode === "api-key") {
     if (extras.apiKey) codexOpts.apiKey = extras.apiKey;
     if (extras.baseUrl) codexOpts.baseUrl = extras.baseUrl;
@@ -517,6 +558,9 @@ export function translateCodexOptions(options: Record<string, unknown>): CodexTr
     extras.uiAliasPresence?.[CALLBOARD_UI_SERVER] === false &&
     extras.uiAliasPresence.callboard_ui === false &&
     !extras.useOpenRouter &&
+    // The route already withholds the direct-UI fields in this mode; this is
+    // the second guard, so a caller that passes them anyway still gets no split.
+    !extras.subscriptionViaOpenRouter &&
     extras.reasoningRoute !== "openrouter";
   const { config: mcpServersConfig, handles: toolServerHandles } = collectCodexMcpServers(opts.mcpServers, directUi);
   if (mcpServersConfig) {
