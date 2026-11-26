@@ -1,8 +1,8 @@
 /**
  * The publish gate is only as good as vitest's exit code.
  *
- * `prepublishOnly` ends with `npm test`, and CI's `build-test-coverage` job
- * gates on `test:coverage`; both reduce to `vitest run`. A run that prints red
+ * `prepublishOnly` ends with `npm test`, and CI's `build-test` matrix jobs
+ * gate on `npm test` or `test:coverage`; all reduce to `vitest run`. A run that prints red
  * and exits 0 would publish a broken tarball silently.
  *
  * The dangerous shape is not a failed assertion — that is obviously red — it is
@@ -340,7 +340,7 @@ describe("this repo's npm scripts", () => {
     const offenders = vitestScripts.filter(([, command]) => command.includes(flag)).map(([name, command]) => `${name}: ${command}`);
     expect(
       offenders,
-      `${flag} ${why}. \`prepublishOnly\` ends with \`npm test\` and CI's build-test-coverage job runs \`test:coverage\`, so this flag turns the publish gate into a no-op. Remove it and fix the underlying flake instead.`,
+      `${flag} ${why}. \`prepublishOnly\` ends with \`npm test\` and CI's build-test matrix jobs run \`npm test\` or \`test:coverage\`, so this flag turns the publish gate into a no-op. Remove it and fix the underlying flake instead.`,
     ).toEqual([]);
   });
 });

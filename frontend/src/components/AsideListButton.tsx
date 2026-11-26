@@ -9,7 +9,8 @@
  * Rendered only when the chat has asides. Keyboard: the menu
  * takes focus on open, arrows move, Escape returns focus here.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { MessageSquareQuote } from "lucide-react";
 import ProviderBadge from "./ProviderBadge";
 import { STATUS_DOT } from "./ChatTreeList";
@@ -43,6 +44,30 @@ function RowAttention({ signals }: { signals: AsideSignals }) {
   );
 }
 
+type MenuPos = { top: number; right: number };
+
+/** Gap kept between the menu and the viewport's edge. */
+const EDGE = 8;
+/** The menu's minWidth. */
+const MENU_MIN_WIDTH = 260;
+
+/**
+ * Where the menu goes, in viewport coordinates: under the button and
+ * right-aligned with it, but pulled back on screen when the button sits near
+ * the left edge. Clamped by the constant minWidth, never the menu's rendered
+ * width: placed by `right` with `left: auto`, the menu shrinks to fit the
+ * room left of it, so a measured width feeds back into `right` and the menu
+ * creeps wider on every scroll. Shrink-to-fit already keeps its left edge on
+ * screen when it grows toward its maxWidth.
+ */
+function measureMenu(trigger: HTMLElement | null): MenuPos | null {
+  const rect = trigger?.getBoundingClientRect();
+  if (!rect) return null;
+  const viewport = window.innerWidth;
+  const right = Math.max(EDGE, Math.min(viewport - rect.right, viewport - MENU_MIN_WIDTH - EDGE));
+  return { top: rect.bottom + 4, right };
+}
+
 export default function AsideListButton({
   asides,
   openId,
@@ -60,6 +85,7 @@ export default function AsideListButton({
   const menuRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
+  const [menuPos, setMenuPos] = useState<MenuPos | null>(null);
   const [running, setRunning] = useState<ReadonlySet<string>>(() => new Set());
   const onRunningChange = useCallback((chatId: string, on: boolean) => {
     setRunning((prev) => {
@@ -77,19 +103,51 @@ export default function AsideListButton({
 
   const close = (refocus = false) => {
     setOpen(false);
+    setMenuPos(null);
     onEmphasize(null);
     if (refocus) triggerRef.current?.focus();
   };
 
+  // Placed before opening, so the menu's first render is already visible and
+  // the focus effect below can focus its first row (a hidden element takes
+  // no focus, and on a click that effect runs before any layout re-render).
+  const openMenu = () => {
+    setMenuPos(measureMenu(triggerRef.current));
+    setOpen(true);
+  };
+
+  // The menu is portalled and fixed-positioned under the button: the mobile
+  // action bar scrolls sideways (overflow-x: auto), which would clip a menu
+  // positioned inside it. It follows the button when anything scrolls, and
+  // re-renders only when that actually moved it — the transcript scrolls on
+  // every streamed frame.
+  useLayoutEffect(() => {
+    if (!open) return;
+    const place = () => {
+      const next = measureMenu(triggerRef.current);
+      if (!next) return;
+      setMenuPos((prev) => (prev && prev.top === next.top && prev.right === next.right ? prev : next));
+    };
+    place();
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  }, [open]);
+
   // Not PopupMenu: that one closes on any scroll, and the transcript under
-  // this header scrolls on every streamed frame. In place, like the
-  // fork-point marker's menu, closed by a press outside.
+  // this header scrolls on every streamed frame. Like the fork-point
+  // marker's menu, closed by a press outside.
   useEffect(() => {
     if (!open) return;
     menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
     const onDown = (e: MouseEvent) => {
-      if (!wrapRef.current?.contains(e.target as Node)) {
+      const target = e.target as Node;
+      if (!wrapRef.current?.contains(target) && !menuRef.current?.contains(target)) {
         setOpen(false);
+        setMenuPos(null);
         onEmphasize(null);
       }
     };
@@ -120,7 +178,13 @@ export default function AsideListButton({
       <button
         ref={triggerRef}
         type="button"
-        onClick={() => (open ? close() : setOpen(true))}
+        onClick={() => (open ? close() : openMenu())}
+        onKeyDown={(e) => {
+          if (open && e.key === "Escape") {
+            e.preventDefault();
+            close(true);
+          }
+        }}
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label={`${label} in this chat${attentionLabel}`}
@@ -145,76 +209,79 @@ export default function AsideListButton({
       {asides.map((aside) => (
         <RunningProbe key={aside.chatId} chatId={aside.chatId} onChange={onRunningChange} />
       ))}
-      {open && (
-        <div
-          ref={menuRef}
-          role="menu"
-          aria-label="Asides of this chat"
-          onKeyDown={onMenuKeyDown}
-          style={{
-            position: "absolute",
-            top: "calc(100% + 4px)",
-            right: 0,
-            zIndex: 50,
-            minWidth: 260,
-            maxWidth: "min(360px, 90vw)",
-            maxHeight: 320,
-            overflowY: "auto",
-            background: "var(--surface)",
-            border: "1px solid var(--border)",
-            borderRadius: 8,
-            boxShadow: "var(--shadow-md)",
-            padding: "4px 0",
-          }}
-        >
-          {asides.map((aside) => (
-            <button
-              key={aside.chatId}
-              type="button"
-              role="menuitem"
-              tabIndex={-1}
-              className="fork-point-menu-item"
-              aria-current={aside.chatId === openId ? "true" : undefined}
-              onClick={() => {
-                close();
-                onOpen(aside.chatId, triggerRef.current);
-              }}
-              onMouseEnter={() => onEmphasize([aside.chatId])}
-              onMouseLeave={() => onEmphasize(null)}
-              onFocus={() => onEmphasize([aside.chatId])}
-              title={aside.title}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-                width: "100%",
-                padding: "6px 12px",
-                border: "none",
-                textAlign: "left",
-                cursor: "pointer",
-                minWidth: 0,
-                fontWeight: aside.chatId === openId ? 600 : undefined,
-              }}
-            >
-              <span
-                title={`Status: ${running.has(aside.chatId) ? "running" : aside.status}`}
-                style={{
-                  width: 7,
-                  height: 7,
-                  borderRadius: "50%",
-                  flexShrink: 0,
-                  background: running.has(aside.chatId) ? "var(--status-active)" : STATUS_DOT[aside.status] || "var(--text-muted)",
+      {open &&
+        createPortal(
+          <div
+            ref={menuRef}
+            role="menu"
+            aria-label="Asides of this chat"
+            onKeyDown={onMenuKeyDown}
+            style={{
+              position: "fixed",
+              top: menuPos?.top ?? 0,
+              right: menuPos?.right ?? 0,
+              visibility: menuPos ? undefined : "hidden",
+              zIndex: 50,
+              minWidth: MENU_MIN_WIDTH,
+              maxWidth: "min(360px, 90vw)",
+              maxHeight: 320,
+              overflowY: "auto",
+              background: "var(--surface)",
+              border: "1px solid var(--border)",
+              borderRadius: 8,
+              boxShadow: "var(--shadow-md)",
+              padding: "4px 0",
+            }}
+          >
+            {asides.map((aside) => (
+              <button
+                key={aside.chatId}
+                type="button"
+                role="menuitem"
+                tabIndex={-1}
+                className="fork-point-menu-item"
+                aria-current={aside.chatId === openId ? "true" : undefined}
+                onClick={() => {
+                  close();
+                  onOpen(aside.chatId, triggerRef.current);
                 }}
-              />
-              <RowAttention signals={{ ...signalsOf(aside), running: false }} />
-              <ProviderBadge provider={aside.provider === "claude-code" ? undefined : aside.provider} compact />
-              <span style={{ fontSize: 12, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
-                {aside.title}
-              </span>
-            </button>
-          ))}
-        </div>
-      )}
+                onMouseEnter={() => onEmphasize([aside.chatId])}
+                onMouseLeave={() => onEmphasize(null)}
+                onFocus={() => onEmphasize([aside.chatId])}
+                title={aside.title}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  width: "100%",
+                  padding: "6px 12px",
+                  border: "none",
+                  textAlign: "left",
+                  cursor: "pointer",
+                  minWidth: 0,
+                  fontWeight: aside.chatId === openId ? 600 : undefined,
+                }}
+              >
+                <span
+                  title={`Status: ${running.has(aside.chatId) ? "running" : aside.status}`}
+                  style={{
+                    width: 7,
+                    height: 7,
+                    borderRadius: "50%",
+                    flexShrink: 0,
+                    background: running.has(aside.chatId) ? "var(--status-active)" : STATUS_DOT[aside.status] || "var(--text-muted)",
+                  }}
+                />
+                <RowAttention signals={{ ...signalsOf(aside), running: false }} />
+                <ProviderBadge provider={aside.provider === "claude-code" ? undefined : aside.provider} compact />
+                <span style={{ fontSize: 12, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
+                  {aside.title}
+                </span>
+              </button>
+            ))}
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }

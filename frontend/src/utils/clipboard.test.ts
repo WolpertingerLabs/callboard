@@ -7,15 +7,6 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-/** jsdom's Blob has no `.text()`. */
-function readBlob(blob: Blob): Promise<string> {
-  return new Promise((resolve) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.readAsText(blob);
-  });
-}
-
 describe("copyRichToClipboard", () => {
   it("writes html and plain text as one ClipboardItem", async () => {
     const write = vi.fn(async () => {});
@@ -29,8 +20,8 @@ describe("copyRichToClipboard", () => {
     const item = (write.mock.calls[0] as unknown as [FakeItem[]])[0][0];
     expect(Object.keys(item.items).sort()).toEqual(["text/html", "text/plain"]);
     expect(item.items["text/html"].type).toBe("text/html");
-    expect(await readBlob(item.items["text/html"])).toBe("<b>hi</b>");
-    expect(await readBlob(item.items["text/plain"])).toBe("**hi**");
+    expect(await item.items["text/html"].text()).toBe("<b>hi</b>");
+    expect(await item.items["text/plain"].text()).toBe("**hi**");
   });
 
   it("falls back to a copy event that sets both types when the Clipboard API is missing", async () => {

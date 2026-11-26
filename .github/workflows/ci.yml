@@ -9,7 +9,9 @@ permissions:
   contents: read
 
 jobs:
-  build-test-coverage:
+  # Lint, format and dependency checks don't depend on the Node version, so
+  # they run once, on the engines floor's major.
+  lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,6 +26,7 @@ jobs:
       - name: Install
         run: NODE_ENV=development npm ci --include=dev
 
+      # The typed lint resolves workspace packages through their built dist/.
       - name: Build
         run: npm run build
 
@@ -47,17 +50,54 @@ jobs:
       - name: Published deps + lockstep
         run: npm run deps:check
 
+  # Install, build and the full test suite on every supported Node: the exact
+  # engines.node floor (package.json) and the two newest LTS majors.
+  # Each bundled npm does the install, so lockfile drift between npm majors
+  # shows up here too. Coverage is reported from one leg only.
+  build-test:
+    name: build-test (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["22.19.0", "24", "26"]
+        include:
+          - node: "24"
+            coverage: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Versions
+        run: node --version && npm --version
+
+      - name: Install
+        run: NODE_ENV=development npm ci --include=dev
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        if: ${{ !matrix.coverage }}
+        run: npm test
+
       # test:coverage runs the computer-use and drawlatch suites, then the full
       # vitest suite (so a failing test gates CI) AND produces the coverage
       # report. Coverage has no thresholds configured, so low numbers never fail
-      # the build — coverage is reported, not enforced.
+      # the build — coverage is reported, not enforced. That is why this leg
+      # has no separate `npm test`.
       - name: Test + coverage
+        if: ${{ matrix.coverage }}
         run: npm run test:coverage
 
       # Surface the coverage totals in the run summary. Non-gating: it runs even
       # if earlier steps failed and never fails the job itself.
       - name: Coverage summary
-        if: always()
+        if: ${{ always() && matrix.coverage }}
         continue-on-error: true
         run: |
           node -e '
@@ -84,7 +124,7 @@ jobs:
 
       # Keep the full HTML/lcov report as a downloadable artifact. Non-gating.
       - name: Upload coverage report
-        if: always()
+        if: ${{ always() && matrix.coverage }}
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:

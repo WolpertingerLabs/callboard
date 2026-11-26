@@ -161,7 +161,7 @@ import {
 } from "../utils/localStorage";
 import ProviderConfigPicker from "../components/ProviderConfigPicker";
 import { groupToolMessages, type DisplayItem } from "../utils/toolGrouping";
-import { abandonedTaskMarker, pendingBackgroundTaskIds } from "../utils/backgroundTasks";
+import { abandonedTaskMarker, backgroundTailChatId, pendingBackgroundTaskIds } from "../utils/backgroundTasks";
 import { sameActivityPayload } from "../utils/activitySnapshot";
 import { errorMessage } from "../utils/errorMessage";
 import { useSpaces } from "../contexts/SpaceContext";
@@ -671,6 +671,58 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
   useLayoutEffect(() => {
     rereadPendingRef.current = rereadPending;
   }, [rereadPending]);
+  /**
+   * A run ended (`message_complete`, including a Stop's `aborted`, or
+   * `message_error`): a prompt the agent was suspended on died with it — the
+   * daemon drops it on teardown — so take it down here rather than leave an
+   * Allow/Deny that answers nothing. Kept: a non-blocking computer-control
+   * approval, which outlives runs, and a plan review rebuilt from the
+   * transcript (`stale`), which never belonged to a run. Then re-read
+   * `/pending`: it restores whatever the daemon still holds (an open approval,
+   * or a newer run's prompt this frame raced), and clears a non-blocking card
+   * the stop withdrew.
+   */
+  const clearRunEndedPrompt = useCallback(
+    (chatId: string | undefined) => {
+      let shown: PendingAction | null = null;
+      setPendingAction((value) => {
+        shown = value;
+        return value && !value.nonBlocking && !value.stale ? null : value;
+      });
+      const was = shown as PendingAction | null;
+      if (chatId && was && !was.stale) rereadPending(chatId, { clearIfNone: !!was.nonBlocking });
+    },
+    [setPendingAction, rereadPending],
+  );
+  const clearRunEndedPromptRef = useRef(clearRunEndedPrompt);
+  useLayoutEffect(() => {
+    clearRunEndedPromptRef.current = clearRunEndedPrompt;
+  }, [clearRunEndedPrompt]);
+  /**
+   * Apply a refetched `/pending` (tab shown again, remount / dropped stream,
+   * Reconnect). What the daemon holds wins. When it holds nothing, a prompt
+   * that came from the daemon (it has a `requestId`) is stale — the run was
+   * stopped or ended while this tab wasn't listening — and goes; with
+   * `messages`, an unresolved ExitPlanMode is rebuilt from the transcript
+   * instead. Callers check `isUnchangedPending` first.
+   */
+  const applyPendingSnapshot = useCallback(
+    (pending: PendingAction | null, messages?: ParsedMessage[]) => {
+      if (pending) {
+        setPendingAction(pending);
+        // An open computer-control approval waits with nothing running.
+        if (!pending.nonBlocking) setStreaming(true);
+        return;
+      }
+      // Detect stale ExitPlanMode: if the last assistant turn has an unresolved
+      // ExitPlanMode tool_use, reconstruct the plan review panel from message
+      // history. Don't set streaming — no active backend session.
+      const stalePlan = messages ? detectStaleExitPlanMode(messages) : null;
+      if (stalePlan) setPendingAction(stalePlan);
+      else setPendingAction((value) => (value?.requestId ? null : value));
+    },
+    [setPendingAction],
+  );
   /** A chat whose run another request started (an aside): read its transcript once when the stream attaches. */
   const refetchOnAttachRef = useRef<string | null>(embedded?.refetchOnAttach && id ? id : null);
   /** Bumped when a stream-driven refetch applies, so an older one-off read (on attach) knows to stand down. */
@@ -950,6 +1002,9 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
   // one control that names the harness rather than driving it, so it is the one
   // that must not round a retired harness off to a live one.
   const rawChatProvider = id ? chatMeta.provider : null;
+  // The background-output tail reads Claude Code transcripts only; anything
+  // else (Codex, a retired harness) would only ever get a 404, so no row.
+  const tailChatId = backgroundTailChatId(id, chatMeta.provider);
 
   // Harnesses this build removed — see RETIRED_PROVIDER_KINDS on the backend.
   // Such a chat still opens (its record and transcript exist), but nothing can
@@ -1539,6 +1594,9 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
                 if (currentIdRef.current !== streamChatId) return;
                 runEnded = true;
                 setCompacting(false);
+                // Before the plan-approval branch, which returns: by then the
+                // plan review was answered, so there is nothing of it to keep.
+                clearRunEndedPromptRef.current(streamChatId);
                 // The server clears activities on teardown; re-read so the dock
                 // empties with the run rather than on the next poll.
                 refreshActivity(streamChatId!);
@@ -1647,6 +1705,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
                 setCompacting(false);
                 setStreaming(false);
                 clearInFlightMessages();
+                clearRunEndedPromptRef.current(streamChatId);
                 // Same teardown as message_complete: the run is over. Throttled
                 // because, unlike message_complete, this frame doesn't stop the
                 // auto-connect loop from coming straight back here.
@@ -2061,12 +2120,9 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
       const pendingSnapshot = capturePending();
       Promise.all([getMessages(id), getPending(id)]).then(([msgs, pending]) => {
         if (currentIdRef.current !== id) return;
-        setMessages(Array.isArray(msgs) ? msgs : []);
-        if (pending && isUnchangedPending(pendingSnapshot)) {
-          setPendingAction(pending);
-          // An open computer-control approval waits with nothing running.
-          if (!pending.nonBlocking) setStreaming(true);
-        }
+        const messageArray = Array.isArray(msgs) ? msgs : [];
+        setMessages(messageArray);
+        if (isUnchangedPending(pendingSnapshot)) applyPendingSnapshot(pending, messageArray);
       });
       refreshActivity(id);
     };
@@ -2260,20 +2316,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
         onChatListRefreshRef.current?.();
       }
 
-      if (!isUnchangedPending(pendingSnapshot)) return;
-      if (pending) {
-        setPendingAction(pending);
-        // An open computer-control approval waits with nothing running.
-        if (!pending.nonBlocking) setStreaming(true);
-      } else {
-        // Detect stale ExitPlanMode: if the last assistant turn has an unresolved
-        // ExitPlanMode tool_use, reconstruct the plan review panel from message history
-        const stalePlan = detectStaleExitPlanMode(messageArray);
-        if (stalePlan) {
-          setPendingAction(stalePlan);
-          // Don't set streaming=true — no active backend session
-        }
-      }
+      if (isUnchangedPending(pendingSnapshot)) applyPendingSnapshot(pending, messageArray);
     });
 
     // Auto-connect is now handled reactively by the globalSessionActive useEffect above
@@ -4137,17 +4180,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
       if (currentIdRef.current !== id) return;
       const messageArray = Array.isArray(msgs) ? msgs : [];
       setMessages(messageArray);
-      if (!isUnchangedPending(pendingSnapshot)) return;
-      if (pending) {
-        setPendingAction(pending);
-        // An open computer-control approval waits with nothing running.
-        if (!pending.nonBlocking) setStreaming(true);
-      } else {
-        const stalePlan = detectStaleExitPlanMode(messageArray);
-        if (stalePlan) {
-          setPendingAction(stalePlan);
-        }
-      }
+      if (isUnchangedPending(pendingSnapshot)) applyPendingSnapshot(pending, messageArray);
     });
     // Auto-connect is handled reactively by the globalSessionActive useEffect
     if (globalSessionActive && !streaming && !abortRef.current && !streamCompletedRef.current) {
@@ -4756,13 +4789,10 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
       {/* Mobile: secondary action bar */}
       {!embedded && isMobile && showMobileActions && (
         <div
+          className="chat-mobile-action-bar"
           style={{
             padding: "6px 16px",
             borderBottom: "1px solid var(--border)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "flex-end",
-            gap: 8,
             flexShrink: 0,
           }}
         >
@@ -5119,6 +5149,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
                             toolResult={item.toolResult}
                             isRunning={item.toolResult === null && streaming}
                             backgroundPending={!!item.toolResult?.backgroundTaskId && !!pendingBackgroundIds?.has(item.toolResult.backgroundTaskId)}
+                            chatId={tailChatId}
                           />
                         </div>
                       );

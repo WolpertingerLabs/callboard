@@ -848,6 +848,29 @@ pre {
 .chat-header-mobile .chat-header-identity {
   flex-basis: 100px;
 }
+/* Mobile secondary action bar: one row that scrolls sideways when it is wider
+   than the phone. Right-aligned through the first child's auto margin, not
+   justify-content: flex-end, which overflows to the left and leaves the
+   leading buttons out of reach. Swiped by touch; no scrollbar drawn. */
+.chat-mobile-action-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.chat-mobile-action-bar::-webkit-scrollbar {
+  display: none;
+}
+.chat-mobile-action-bar > * {
+  flex-shrink: 0;
+}
+.chat-mobile-action-bar > :first-child {
+  margin-left: auto;
+}
 /* These are CHAT widths, not viewport breakpoints. A desktop split pane must
    get the compact layout even when the surrounding window is very wide. */
 @container chat-layout (max-width: 900px) {

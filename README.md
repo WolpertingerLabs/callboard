@@ -16,7 +16,7 @@ callboard start
 
 Then open **http://localhost:8000** and log in.
 
-- Requires **Node.js 22.19+**.
+- Requires **Node.js 22.19+**. CI builds and tests on 22.19.0, 24 and 26.
 - The password is required. Until one is set, login and every authenticated API route return 503, so the UI can't be used. The minimum length is eight characters. Callboard stores only an scrypt hash.
 - To use Claude Code, the default engine, either sign in with the `claude` CLI or add an Anthropic API key under **Settings → API**. See [Engines](#engines).
 

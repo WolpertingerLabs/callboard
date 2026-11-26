@@ -74,3 +74,28 @@ it("reserves the identity-row stop and moves actions to a second row at narrow c
   expect(declarations(0, " .chat-header-actions").getPropertyValue("grid-column")).toBe("1 / -1");
   expect(declarations(1, " .chat-header-actions").getPropertyValue("width")).toBe("100%");
 });
+
+it("lets the mobile action bar scroll sideways while staying right-aligned when it fits", () => {
+  const { container } = render(
+    <>
+      <style>{css}</style>
+      <div className="chat-mobile-action-bar">
+        <div role="radiogroup">View</div>
+        <button>Top</button>
+        <button>Tools</button>
+      </div>
+    </>,
+  );
+  const bar = getComputedStyle(container.querySelector(".chat-mobile-action-bar")!);
+  expect(bar.display).toBe("flex");
+  expect(bar.overflowX).toBe("auto");
+  expect(bar.overflowY).toBe("hidden");
+  // Right alignment comes from the first child's auto margin over start
+  // packing. Packing to the end instead would overflow to the left, where a
+  // scroll container cannot reach, and clip the view-mode switcher.
+  expect(["", "normal", "flex-start", "start"]).toContain(bar.justifyContent);
+  const [first, ...rest] = [...container.querySelector(".chat-mobile-action-bar")!.children].map((el) => getComputedStyle(el));
+  expect(first.marginLeft).toBe("auto");
+  for (const style of [first, ...rest]) expect(style.flexShrink).toBe("0");
+  for (const style of rest) expect(style.marginLeft).not.toBe("auto");
+});
