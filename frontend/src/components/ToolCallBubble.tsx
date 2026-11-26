@@ -117,11 +117,16 @@ function ToolCallBubble({ toolUse, toolResult, isRunning, backgroundPending = fa
 
   // A call whose work outlives it: an engine background task, or a command that
   // detaches itself and writes to files. The server decides what it can tail.
-  const detached = useMemo(() => toolUse.toolName === "Bash" && looksDetachedWithRedirect(bashCommandOf(toolUse)), [toolUse]);
-  const hasTail = !!chatId && toolUse.toolName === "Bash" && !!toolUse.toolUseId && (!!toolResult?.backgroundTaskId || detached);
+  const engineTask = !!toolResult?.backgroundTaskId;
+  // Parsed only when it can matter: a chat with a tail, and no engine task to go by.
+  const detached = useMemo(
+    () => !!chatId && !engineTask && toolUse.toolName === "Bash" && looksDetachedWithRedirect(bashCommandOf(toolUse)),
+    [chatId, engineTask, toolUse],
+  );
+  const hasTail = !!chatId && toolUse.toolName === "Bash" && !!toolUse.toolUseId && (engineTask || detached);
   // An engine task says when it is done. A self-detached command has no such
   // signal, so it is polled for as long as the panel stays open.
-  const tailLive = toolResult?.backgroundTaskId ? backgroundPending : detached;
+  const tailLive = engineTask ? backgroundPending : detached;
   const canvasData = uiData?.type === "render_canvas" ? uiData : null;
   const artifactData = uiData?.type === "render_artifact" ? uiData : null;
 
@@ -254,7 +259,7 @@ function ToolCallBubble({ toolUse, toolResult, isRunning, backgroundPending = fa
               <span style={{ flexShrink: 0, display: "flex", alignItems: "center" }}>
                 {tailExpanded ? <ChevronDown size={11} style={{ opacity: 0.5 }} /> : <ChevronRight size={11} style={{ opacity: 0.5 }} />}
               </span>
-              <span style={{ fontStyle: "italic" }}>{backgroundPending ? "Live output" : "Output"}</span>
+              <span style={{ fontStyle: "italic" }}>{tailLive ? "Live output" : "Output"}</span>
             </div>
             {tailExpanded && <BackgroundTailPanel chatId={chatId} toolUseId={toolUse.toolUseId} live={tailLive} />}
           </div>

@@ -9,6 +9,17 @@ vi.mock("../api", async (orig) => {
   const real = await orig<typeof import("../api")>();
   return { ...real, getBackgroundTail };
 });
+const parses = vi.hoisted(() => ({ count: 0 }));
+vi.mock("../utils/backgroundTasks", async (orig) => {
+  const real = await orig<typeof import("../utils/backgroundTasks")>();
+  return {
+    ...real,
+    looksDetachedWithRedirect: (cmd: string | null | undefined) => {
+      parses.count++;
+      return real.looksDetachedWithRedirect(cmd);
+    },
+  };
+});
 const { default: ToolCallBubble } = await import("./ToolCallBubble");
 
 function bash(command: string): ParsedMessage {
@@ -51,9 +62,18 @@ describe("ToolCallBubble background output row", () => {
     expect(screen.getByText("Output")).toBeTruthy();
   });
 
-  it("shows the row for a detached command that redirects", () => {
+  it("labels a detached command that redirects Live output, since it is polled live", () => {
     render(<ToolCallBubble toolUse={bash("nohup rsync -a a/ b/ > r.log 2> r.err &")} toolResult={result()} isRunning={false} chatId="c1" />);
-    expect(screen.getByText("Output")).toBeTruthy();
+    expect(screen.getByText("Live output")).toBeTruthy();
+  });
+
+  it("does not parse the command without a chat id or when the call has an engine task", () => {
+    parses.count = 0;
+    render(<ToolCallBubble toolUse={bash("nohup rsync > r.log &")} toolResult={result()} isRunning={false} />);
+    render(<ToolCallBubble toolUse={bash("nohup rsync > r.log &")} toolResult={result("b1")} isRunning={false} chatId="c1" />);
+    expect(parses.count).toBe(0);
+    render(<ToolCallBubble toolUse={bash("nohup rsync > r.log &")} toolResult={result()} isRunning={false} chatId="c1" />);
+    expect(parses.count).toBe(1);
   });
 
   it("hides the row for a detached command that only writes to /dev/null", () => {
@@ -65,7 +85,7 @@ describe("ToolCallBubble background output row", () => {
     vi.useFakeTimers();
     try {
       render(<ToolCallBubble toolUse={bash("nohup rsync -a a/ b/ > r.log &")} toolResult={result()} isRunning={false} chatId="c1" />);
-      fireEvent.click(screen.getByText("Output"));
+      fireEvent.click(screen.getByText("Live output"));
       await act(async () => {
         await Promise.resolve();
       });

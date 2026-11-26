@@ -221,6 +221,42 @@ describe("useBackgroundTail", () => {
     expect(getBackgroundTail.mock.calls.length).toBe(fastFrom + 1);
   });
 
+  it("slows down when replies carry no tail and nothing about the streams changes", async () => {
+    // A detached job that has written nothing yet: size-0 file, no default stream, tail null every time.
+    const empty = (): BackgroundTailResponse => ({
+      toolUseId: "t1",
+      streams: [{ id: "r0", kind: "redirect", label: "stdout → s.log", displayPath: "/s.log", exists: true, size: 0, mtimeMs: 7 }],
+      defaultStream: null,
+      tail: null,
+    });
+    getBackgroundTail.mockImplementation(async () => empty());
+    renderHook(() => useBackgroundTail({ chatId: "c1", toolUseId: "t1", live: true }));
+    await flush();
+    await tick(2 * 60_000);
+    const slowFrom = getBackgroundTail.mock.calls.length;
+    await tick(BACKGROUND_TAIL_QUIET_POLL_MS - 1000);
+    expect(getBackgroundTail.mock.calls.length).toBe(slowFrom);
+    await tick(1000);
+    expect(getBackgroundTail.mock.calls.length).toBe(slowFrom + 1);
+
+    // The file grows: back to the normal pace.
+    getBackgroundTail.mockImplementation(async () => ({ ...empty(), streams: [{ ...empty().streams[0], size: 5, mtimeMs: 8 }] }));
+    await tick(BACKGROUND_TAIL_QUIET_POLL_MS);
+    const fastFrom = getBackgroundTail.mock.calls.length;
+    await tick();
+    expect(getBackgroundTail.mock.calls.length).toBe(fastFrom + 1);
+  });
+
+  it("starts the quiet clock at the first answer", async () => {
+    renderHook(() => useBackgroundTail({ chatId: "c1", toolUseId: "t1", live: true }));
+    await flush();
+    getBackgroundTail.mockImplementation(async () => ({ ...response([]), tail: { stream: "output", size: 1, mtimeMs: 1001, unchanged: true } }));
+    await tick(2 * 60_000); // the reply at exactly two minutes switches to the slow pace
+    const n = getBackgroundTail.mock.calls.length;
+    await tick();
+    expect(getBackgroundTail.mock.calls.length).toBe(n);
+  });
+
   it("sends since for a binary stream and keeps the binary notice when unchanged", async () => {
     getBackgroundTail.mockImplementation(async () => ({ ...response([]), tail: { stream: "output", size: 9, mtimeMs: 5, lines: [], binary: true } }));
     const { result } = renderHook(() => useBackgroundTail({ chatId: "c1", toolUseId: "t1", live: true }));

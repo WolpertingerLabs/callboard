@@ -16,6 +16,14 @@ const BACKOFF_MS = [5_000, 10_000, 30_000];
  */
 const EARLY_404_MS = 5_000;
 
+/** Every stream reports the same state as before. */
+function sameStreams(a: BackgroundTailResponse["streams"], b: BackgroundTailResponse["streams"]): boolean {
+  return (
+    a.length === b.length &&
+    a.every((s, i) => s.id === b[i].id && s.exists === b[i].exists && s.size === b[i].size && s.mtimeMs === b[i].mtimeMs && s.error === b[i].error)
+  );
+}
+
 interface Options {
   chatId: string;
   toolUseId: string;
@@ -96,12 +104,18 @@ export function useBackgroundTail({ chatId, toolUseId, live, stream, intervalMs 
         });
         if (mine !== seq.current) return;
         const now = Date.now();
+        const prev = dataRef.current;
+        // Nothing new: the tail is `unchanged`, or there is no tail at all (nothing
+        // written yet, file gone, unreadable) and no stream looks any different.
+        const same = res.tail?.unchanged || (res.tail === null && prev !== null && prev.tail === null && sameStreams(prev.streams, res.streams));
         if (res.tail?.unchanged) {
           // Same bytes as last time: keep what is on screen (lines, or the binary notice).
           res = keep && keep.stream === res.tail.stream ? { ...res, tail: keep } : { ...res, tail: null };
-          if (lastChange.current === 0) lastChange.current = now;
+        }
+        if (same && lastChange.current !== 0) {
           if (now - lastChange.current >= QUIET_AFTER_MS) setQuiet(true);
         } else {
+          // A change, or the first answer: the quiet clock starts here.
           lastChange.current = now;
           setQuiet(false);
         }
