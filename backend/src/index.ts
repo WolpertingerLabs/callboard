@@ -50,6 +50,7 @@ import { streamRouter } from "./routes/stream.js";
 import { imagesRouter } from "./routes/images.js";
 import { queueRouter } from "./routes/queue.js";
 import { heldRouter } from "./routes/held.js";
+import { backgroundTasksRouter } from "./routes/background-tasks.js";
 import { initHeldMessageDispatcher } from "./services/held-message-dispatcher.js";
 import { isChatArchived } from "./services/chat-archived.js";
 import { foldersRouter } from "./routes/folders.js";
@@ -223,6 +224,7 @@ app.get("/api/docs", (_req, res) => {
 app.use("/api/chats", chatsRouter);
 app.use("/api/chats", streamRouter);
 app.use("/api/chats", heldRouter);
+app.use("/api/chats", backgroundTasksRouter);
 app.use("/api/computer-use", computerUseRouter);
 app.use("/api/sandbox-desktop", sandboxDesktopRouter);
 app.use("/api/images", imagesRouter);

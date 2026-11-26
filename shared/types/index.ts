@@ -183,6 +183,16 @@ export {
 
 export type { QueueItem, QueueItemImage } from "./queue.js";
 export type { HeldMessage } from "./held.js";
+export type { RedirectFd, RedirectTarget, RedirectContext, ShellCommandAnalysis } from "./shellCommand.js";
+export {
+  analyzeShellCommand,
+  extractRedirectTargets,
+  looksDetached,
+  looksDetachedWithRedirect,
+  MAX_REDIRECT_TARGETS,
+  MAX_COMMAND_LENGTH,
+} from "./shellCommand.js";
+export type { BackgroundTailStream, BackgroundTailStreamError, BackgroundTailChunk, BackgroundTailResponse } from "./background-tail.js";
 
 export type { FolderItem, BrowseResult, ValidateResult, FolderSuggestion } from "./folders.js";
 
