@@ -329,6 +329,17 @@ export interface SessionPollResponse {
   metadataVersion: number;
   build?: string;
   sessions?: Record<string, ActiveSessionInfo>;
+  /**
+   * Chats blocked on the human (a prompt, question or open approval), sent
+   * with `sessions`. Absent from older daemons — read as "nobody waiting".
+   */
+  awaitingInput?: string[];
+  /**
+   * Every ancestor of those chats, walked on the server — so a row turns
+   * yellow for a waiting descendant the list never loads (a triggered job or
+   * agent chat). Sent with `sessions`; absent from older daemons.
+   */
+  awaitingBelow?: string[];
   activeSummons?: Record<string, SummonInfo>;
 }
 

@@ -58,7 +58,7 @@ class SessionRegistry extends EventEmitter {
     this.setMaxListeners(50);
   }
 
-  /** Session version counter — incremented on register/unregister/migrate */
+  /** Session version counter — incremented on register/unregister/migrate, and by {@link bumpVersion} */
   get version(): number {
     return this._version;
   }
@@ -71,6 +71,17 @@ class SessionRegistry extends EventEmitter {
   /** Current active summons (chatId → summon data) */
   get activeSummons(): Map<string, SummonInfo> {
     return this._activeSummons;
+  }
+
+  /**
+   * Bump the session version with no session starting or stopping — for state
+   * that rides the same poll payload (`awaitingInput`: who is blocked on the
+   * human). Deliberately emits nothing: `"change"` listeners act on
+   * `session_started` / `session_stopped` specifically, and the poll reads the
+   * counter on its next tick anyway.
+   */
+  bumpVersion(): void {
+    this._version++;
   }
 
   /** Bump metadata version and emit a change event */

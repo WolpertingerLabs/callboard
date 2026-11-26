@@ -21,7 +21,7 @@ const notifyMetadata = vi.fn();
 vi.mock("../services/list-caches.js", () => ({ clearListCaches: () => clearListCaches() }));
 vi.mock("../services/claude.js", () => ({ getActiveSession: () => null, hasPendingRequest: () => false, getPendingRequest: () => null }));
 vi.mock("../services/session-registry.js", () => ({
-  sessionRegistry: { has: () => false, notifyMetadata: (...args: unknown[]) => notifyMetadata(...args) },
+  sessionRegistry: { has: () => false, notifyMetadata: (...args: unknown[]) => notifyMetadata(...args), bumpVersion: () => {} },
 }));
 vi.mock("../services/agent-settings.js", async (original) => ({
   ...(await original<typeof import("../services/agent-settings.js")>()),

@@ -82,6 +82,8 @@ vi.mock("../api", async (importOriginal) => ({
 const created = vi.hoisted(() => new Set<string>());
 const composerState = vi.hoisted(() => ({ files: [] as File[], active: new Set<string>() }));
 vi.mock("../contexts/SessionContext", () => ({
+  // AsideListButton reads the poll's awaiting set.
+  useSessionContext: () => ({ awaitingChatIds: new Set<string>() }),
   useIsSessionActive: (id?: string) => (id && composerState.active.has(id) ? { startedAt: 1 } : null),
   useMetadataVersion: () => 0,
 }));

@@ -14,7 +14,7 @@ import { chatMeta } from "./chatMeta";
 
 export interface AsideAttention {
   running: number;
-  /** Blocked on a permission prompt or question with no live run (tree status `waiting`). */
+  /** Blocked on the user — a permission prompt, question or open approval (tree status `waiting`, or the live poll's `awaitingInput`). */
   waiting: number;
   unread: number;
   summoned: number;
@@ -32,20 +32,24 @@ export interface AsideSignals {
   summoned: boolean;
 }
 
-/** From a tree node (the chat page's aside list, an expanded sidebar tree). `running` from the live registry where the caller has it. */
-export function nodeSignals(node: Pick<ChatTreeNode, "status" | "updatedAt" | "lastReadAt" | "summon">, running?: boolean): AsideSignals {
+/**
+ * From a tree node (the chat page's aside list, an expanded sidebar tree).
+ * `running` from the live registry where the caller has it; `waiting` from the
+ * live poll, OR'd with the snapshot's status (either one saying so is enough).
+ */
+export function nodeSignals(node: Pick<ChatTreeNode, "status" | "updatedAt" | "lastReadAt" | "summon">, running?: boolean, waiting?: boolean): AsideSignals {
   return {
     running: running ?? node.status === "ongoing",
-    waiting: node.status === "waiting",
+    waiting: !!waiting || node.status === "waiting",
     unread: after(node.updatedAt, node.lastReadAt),
     summoned: !!node.summon,
   };
 }
 
-/** From a chat-list record (a sidebar row's folded asides). The list has no waiting state. */
-export function chatSignals(chat: Chat, running: boolean): AsideSignals {
+/** From a chat-list record (a sidebar row's folded asides). `waiting` from the live poll's `awaitingInput`. */
+export function chatSignals(chat: Chat, running: boolean, waiting = false): AsideSignals {
   const meta = chatMeta(chat);
-  return { running, waiting: false, unread: after(chat.updated_at, meta.lastReadAt), summoned: !!meta.summon };
+  return { running, waiting, unread: after(chat.updated_at, meta.lastReadAt), summoned: !!meta.summon };
 }
 
 export function sumAttention(signals: readonly AsideSignals[]): AsideAttention {

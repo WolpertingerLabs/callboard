@@ -79,12 +79,18 @@ export function nodeIsRunning(node: ChatTreeNode, isRunning?: (chatId: string) =
  * Archived subtrees the list is not showing are not counted, as they are not
  * drawn.
  */
-export function hiddenBelow(node: ChatTreeNode, underArchived: boolean, opts: TreeVisibility, isRunning?: (chatId: string) => boolean): AsideSignals[] {
+export function hiddenBelow(
+  node: ChatTreeNode,
+  underArchived: boolean,
+  opts: TreeVisibility,
+  isRunning?: (chatId: string) => boolean,
+  isAwaiting?: (chatId: string) => boolean,
+): AsideSignals[] {
   const out: AsideSignals[] = [];
   const walk = (parent: ChatTreeNode, parentUnderArchived: boolean) => {
     for (const child of visibleChildren(parent, parentUnderArchived, opts)) {
-      out.push(nodeSignals(child, nodeIsRunning(child, isRunning)));
-      for (const aside of foldedAsideChildren(child, opts)) out.push(nodeSignals(aside, nodeIsRunning(aside, isRunning)));
+      out.push(nodeSignals(child, nodeIsRunning(child, isRunning), isAwaiting?.(child.chatId)));
+      for (const aside of foldedAsideChildren(child, opts)) out.push(nodeSignals(aside, nodeIsRunning(aside, isRunning), isAwaiting?.(aside.chatId)));
       walk(child, parentUnderArchived || child.childArchived === true);
     }
   };
@@ -93,8 +99,14 @@ export function hiddenBelow(node: ChatTreeNode, underArchived: boolean, opts: Tr
 }
 
 /** What a collapsed `node` hides that needs the user — see {@link hiddenBelow}. */
-export function attentionBelow(node: ChatTreeNode, underArchived: boolean, opts: TreeVisibility, isRunning?: (chatId: string) => boolean): AsideAttention {
-  return sumAttention(hiddenBelow(node, underArchived, opts, isRunning));
+export function attentionBelow(
+  node: ChatTreeNode,
+  underArchived: boolean,
+  opts: TreeVisibility,
+  isRunning?: (chatId: string) => boolean,
+  isAwaiting?: (chatId: string) => boolean,
+): AsideAttention {
+  return sumAttention(hiddenBelow(node, underArchived, opts, isRunning, isAwaiting));
 }
 
 /** Working chats among what collapsing `node` hides. */
@@ -111,4 +123,33 @@ export function countRowsBelow(node: ChatTreeNode, underArchived: boolean, opts:
   let n = 0;
   for (const child of visibleChildren(node, underArchived, opts)) n += 1 + countRowsBelow(child, underArchived || child.childArchived === true, opts);
   return n;
+}
+
+/**
+ * Whether `node`'s own chat is blocked on the user: the fetched snapshot says
+ * `waiting`, or the live poll (`awaitingInput`) does — either, as with
+ * {@link nodeIsRunning}, since the poll moves before the tree is refetched.
+ */
+export function nodeIsWaiting(node: ChatTreeNode, isAwaiting?: (chatId: string) => boolean): boolean {
+  return !!isAwaiting?.(node.chatId) || node.status === "waiting";
+}
+
+/**
+ * Whether anything BELOW `node`, at any depth, is blocked on the user — what
+ * turns an ancestor's dot yellow, so a question deep in a tree shows all the
+ * way up to its root. Every descendant counts: folded asides, and archived
+ * children the list is not showing too — a hidden question is still a
+ * question, and its ancestor is the only place left to say so.
+ */
+export function subtreeWaiting(node: ChatTreeNode, isAwaiting?: (chatId: string) => boolean): boolean {
+  const seen = new Set<string>([node.chatId]);
+  const walk = (parent: ChatTreeNode): boolean => {
+    for (const child of parent.children) {
+      if (seen.has(child.chatId)) continue;
+      seen.add(child.chatId);
+      if (nodeIsWaiting(child, isAwaiting) || walk(child)) return true;
+    }
+    return false;
+  };
+  return walk(node);
 }

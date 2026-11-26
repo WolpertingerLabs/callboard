@@ -69,7 +69,12 @@ vi.mock("../api", async (importOriginal) => ({
   getNewChatInfo: vi.fn(async () => ({ folder: "/tmp", slash_commands: [], plugins: [] })),
   stopChat: vi.fn(async () => ({ stopped: true })),
 }));
-vi.mock("../contexts/SessionContext", () => ({ useIsSessionActive: () => null, useMetadataVersion: () => 0 }));
+vi.mock("../contexts/SessionContext", () => ({
+  // AsideListButton reads the poll's awaiting set.
+  useSessionContext: () => ({ awaitingChatIds: new Set<string>() }),
+  useIsSessionActive: () => null,
+  useMetadataVersion: () => 0,
+}));
 vi.mock("../components/GitDiffView", () => ({ default: () => <div /> }));
 vi.mock("../components/ChatDebugPanel", () => ({ default: () => <div /> }));
 

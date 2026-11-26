@@ -138,6 +138,12 @@ export interface ChatTreeNode {
   asideQuotes?: AsideQuote[];
   /** "claude-code" | "codex" | "pi" — or a retired kind ("openrouter", "cline", "acp") on old records */
   provider: string;
+  /**
+   * `waiting`: the human is being asked something in this chat — a permission
+   * prompt, a question, a plan review or an open approval — whether or not a
+   * run is still registered behind it (it outranks `ongoing`). `ongoing`: a
+   * live session with nothing pending. `stopped`: neither.
+   */
   status: "ongoing" | "waiting" | "stopped";
   chatStatus?: string;
   chatStatusEmoji?: string;

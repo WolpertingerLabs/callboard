@@ -20,8 +20,17 @@ import { useIsMobile } from "../hooks/useIsMobile";
 import { closeChatTreeCard, useChatTreeCardExpansion, useChatTreeCollapse, type ChatTreeCollapse } from "../hooks/useChatTreeCollapse";
 import { treeContains, withNodeChildArchived } from "../utils/childArchive";
 import { ASIDE_ROLE } from "../utils/chatRewrite";
-import { attentionBelow, countRowsBelow, foldedAsideChildren, nodeIsRunning, visibleChildren, type TreeVisibility } from "../utils/chatTreeNodes";
-import RunningDot, { RunningCount } from "./RunningDot";
+import {
+  attentionBelow,
+  countRowsBelow,
+  foldedAsideChildren,
+  nodeIsRunning,
+  nodeIsWaiting,
+  subtreeWaiting,
+  visibleChildren,
+  type TreeVisibility,
+} from "../utils/chatTreeNodes";
+import RunningDot, { RunningCount, WAITING_LABEL } from "./RunningDot";
 import { attentionSuffix, chatSignals, NO_ATTENTION, nodeSignals, sumAttention } from "../utils/asideAttention";
 
 /**
@@ -85,6 +94,20 @@ interface Props {
   /** Card (ticket) actions for a row's kebab menu. */
   cardMenuFor: (chat: Chat) => ChatCardMenu;
   sessionStatusFor: (chatId: string) => { active: boolean; type: string } | undefined;
+  /**
+   * Whether a chat is blocked on the user (the poll's `awaitingInput`). Its
+   * row's dot turns yellow, and so does every row and tree node above it.
+   * Absent, only the fetched trees' own `waiting` status says so.
+   */
+  isAwaiting?: (chatId: string) => boolean;
+  /**
+   * Whether a chat has one waiting on the user somewhere below it (the poll's
+   * `awaitingBelow`, walked on the server). This is what reaches a waiting
+   * chat the list never loads — a triggered job or agent chat — so its
+   * ancestors' rows and nodes turn yellow even when the card is collapsed and
+   * no tree has been fetched.
+   */
+  isAwaitingBelow?: (chatId: string) => boolean;
   /** Whether this row's card is archived — closed or hidden. A row on no card
    * is not archived; see `utils/chatDimming`. */
   isDimmed?: (chat: Chat) => boolean;
@@ -731,6 +754,8 @@ function TreeNodeRow({
   underArchived = false,
   trunk,
   isRunning,
+  isAwaiting,
+  isAwaitingBelow,
   foldAsides = true,
   treeCollapse,
   isMobile = false,
@@ -745,6 +770,10 @@ function TreeNodeRow({
   underArchived?: boolean;
   /** Whether a chat has a live session — the folded asides' running dot. Falls back to the tree's own status. */
   isRunning?: (chatId: string) => boolean;
+  /** See `Props.isAwaiting`. */
+  isAwaiting?: (chatId: string) => boolean;
+  /** See `Props.isAwaitingBelow`. */
+  isAwaitingBelow?: (chatId: string) => boolean;
   /** See `Props.foldAsides`: off while a search is up. */
   foldAsides?: boolean;
   /** Which nodes are folded; absent, nothing is collapsible. */
@@ -844,7 +873,7 @@ function TreeNodeRow({
   const faded = (archivedChild || underArchived) && !isActive;
   // Asides are folded into this row (see `Row.asideCount`) — `foldedAsideChildren`.
   const asideNodes = foldedAsideChildren(node, visibility);
-  const asideAttention = sumAttention(asideNodes.map((child) => nodeSignals(child, nodeIsRunning(child, isRunning))));
+  const asideAttention = sumAttention(asideNodes.map((child) => nodeSignals(child, nodeIsRunning(child, isRunning), isAwaiting?.(child.chatId))));
   const children = visibleChildren(node, childrenUnderArchived, visibility);
   // Any node with rows to hide gets a toggle — the root's own row included.
   // The group card above folds the WHOLE tree, root row and all; the root's
@@ -861,9 +890,15 @@ function TreeNodeRow({
   const storedCollapsed = collapsible && treeCollapse.isCollapsed(node.chatId);
   const collapsed = storedCollapsed && !holdsOpen;
   const running = nodeIsRunning(node, isRunning);
+  // Yellow if this chat, or anything at any depth below it (hidden, archived
+  // and folded-aside children included), is blocked on the user: a question
+  // deep in a tree shows on every ancestor up to the root. Outranks working.
+  const waitingHere = nodeIsWaiting(node, isAwaiting);
+  const waitingBelow = !waitingHere && (!!isAwaitingBelow?.(node.chatId) || subtreeWaiting(node, isAwaiting));
+  const waiting = waitingHere || waitingBelow;
   // Only while collapsed: expanded, the children's own dots are on screen,
   // and a summary beside them would say the same thing twice.
-  const hidden = collapsed ? attentionBelow(node, childrenUnderArchived, visibility, isRunning) : NO_ATTENTION;
+  const hidden = collapsed ? attentionBelow(node, childrenUnderArchived, visibility, isRunning, isAwaiting) : NO_ATTENTION;
   // The running count shows as a number; the rest (summoned, waiting, unread)
   // as the one most pressing dot, as on an aside count.
   const hiddenAttention = { ...hidden, running: 0 };
@@ -873,7 +908,7 @@ function TreeNodeRow({
   // names it expanded too ("Hide the 10 chats under …").
   const rowsBelow = collapsible && (collapsed || depth === 0) ? countRowsBelow(node, childrenUnderArchived, visibility) : 0;
   const hiddenRows = collapsed ? rowsBelow : 0;
-  const nodeName = `${node.role ? `${label} (${node.role})` : label}${archivedChild ? " — archived" : ""}${running ? " — working" : ""}${
+  const nodeName = `${node.role ? `${label} (${node.role})` : label}${archivedChild ? " — archived" : ""}${waitingHere ? " — waiting for your answer" : running ? " — working" : ""}${waitingBelow ? " — a chat below is waiting for your answer" : ""}${
     hiddenRows > 0 ? `, ${hiddenRows} hidden` : ""
   }${hidden.running > 0 ? `, ${hidden.running} working below` : ""}${hiddenAttentionText ? `, ${hiddenAttentionText} below` : ""}`;
   // The root's toggle says what it does to the rows below, so it does not
@@ -1062,7 +1097,16 @@ function TreeNodeRow({
             WebkitTouchCallout: hasMenu ? "none" : undefined,
           }}
         >
-          {running ? (
+          {waiting ? (
+            // Yellow: this chat, or one under it, has a question for the user.
+            <span
+              data-testid="tree-node-waiting"
+              title={waitingHere ? `Status: ${WAITING_LABEL.toLowerCase()}` : "Status: a chat below is waiting for your answer"}
+              style={{ display: "flex", flexShrink: 0 }}
+            >
+              <RunningDot tone="waiting" />
+            </span>
+          ) : running ? (
             // The live, glowing dot every other sidebar row uses for a working
             // chat — so a working child reads as working, not as the plain
             // status dot's snapshot of it.
@@ -1184,6 +1228,8 @@ function TreeNodeRow({
             childArchive={childArchive}
             underArchived={childrenUnderArchived}
             isRunning={isRunning}
+            isAwaiting={isAwaiting}
+            isAwaitingBelow={isAwaitingBelow}
             foldAsides={foldAsides}
             treeCollapse={treeCollapse}
             isMobile={isMobile}
@@ -1204,6 +1250,8 @@ export default function ChatTreeList({
   onEditTitle,
   cardMenuFor,
   sessionStatusFor,
+  isAwaiting,
+  isAwaitingBelow,
   isDimmed,
   selectionFor,
   spaceChipFor,
@@ -1276,7 +1324,10 @@ export default function ChatTreeList({
       if (!row.isGroup || !cardExpansion.isExpanded(row.rootKey)) continue;
       const tree = trees[row.rootKey];
       const sig = [...row.members, ...row.foldedAsides]
-        .map((c) => `${c.id}\u0001${c.updated_at}\u0001${c.metadata ?? ""}\u0001${sessionStatusFor(c.id)?.active ? 1 : 0}`)
+        .map(
+          (c) =>
+            `${c.id}\u0001${c.updated_at}\u0001${c.metadata ?? ""}\u0001${sessionStatusFor(c.id)?.active ? 1 : 0}\u0001${isAwaiting?.(c.id) ? 1 : 0}${isAwaitingBelow?.(c.id) ? 1 : 0}`,
+        )
         .sort()
         .join("\u0002");
       wanted.push({ rootKey: row.rootKey, chatId: row.chat.id, sig, live: !!tree && treeShowsLiveWork(tree.tree) });
@@ -1501,6 +1552,8 @@ export default function ChatTreeList({
   );
   const handleNavigate = useCallback((chatId: string) => navigate(`/chat/${chatId}`), [navigate]);
   const isRunning = (chatId: string) => !!sessionStatusFor(chatId)?.active;
+  const awaiting = (chatId: string) => !!isAwaiting?.(chatId);
+  const awaitingBelow = (chatId: string) => !!isAwaitingBelow?.(chatId);
 
   // Selection mode is list-wide, so any row's props answer it.
   const selectionActive = rows.length > 0 && !!selectionFor?.(rows[0].chat).selectionMode;
@@ -1551,7 +1604,7 @@ export default function ChatTreeList({
   const renderRow = ({ chat, rootKey, isGroup, members, activity, pinnedMembers, canFile, sidebarFolder, asideCount, asideIds, foldedAsides }: Row) => {
     // What the front chat's asides need shows on their count; the row's own
     // status stays the parent's.
-    const asideAttention = sumAttention(foldedAsides.filter((a) => asideIds.includes(a.id)).map((a) => chatSignals(a, isRunning(a.id))));
+    const asideAttention = sumAttention(foldedAsides.filter((a) => asideIds.includes(a.id)).map((a) => chatSignals(a, isRunning(a.id), awaiting(a.id))));
     /**
      * Pin the chat this row is labelled with; unpin every member holding a pin.
      *
@@ -1591,6 +1644,9 @@ export default function ChatTreeList({
           spaceChip={spaceChipFor?.(chat)}
           onMoveToSpace={onMoveToSpace && (() => onMoveToSpace(chat))}
           sessionStatus={sessionStatusFor(chat.id)}
+          // Its own prompt, one in an aside folded into it, or one in a child
+          // the list does not show (a triggered job/agent chat) — `awaitingBelow`.
+          waiting={awaiting(chat.id) || awaitingBelow(chat.id) || foldedAsides.some((a) => awaiting(a.id))}
           dimmed={isDimmed?.(chat)}
           activity={foldedAsides.length > 0 ? activity : undefined}
           asideCount={asideCount}
@@ -1629,6 +1685,17 @@ export default function ChatTreeList({
      * (from the tree snapshot) inside an expanded tree is not in this count.
      */
     const groupRunningCount = groupLive.filter((member) => sessionStatusFor(member.id)?.active).length;
+    /**
+     * Yellow if any chat in the tree is blocked on the user: this one row
+     * stands for the whole tree, so a question three levels down must show
+     * here. The fetched tree is read too, when there is one, for members the
+     * list has not loaded (and for its snapshot `waiting` status), and the
+     * server's `awaitingBelow` for a waiting chat the list never loads at all
+     * (a triggered job/agent chat) — the only signal while the card is folded.
+     */
+    const groupWaiting =
+      groupLive.some((member) => awaiting(member.id) || awaitingBelow(member.id)) ||
+      (!!tree && (nodeIsWaiting(tree.tree, awaiting) || subtreeWaiting(tree.tree, awaiting)));
 
     return (
       <div key={rootKey} style={{ background: isExpanded ? "var(--chatlist-tree-group-bg)" : undefined }}>
@@ -1695,6 +1762,7 @@ export default function ChatTreeList({
               detaching={!!detachingIds?.has(chat.id)}
               sessionStatus={groupSessionStatus}
               runningCount={groupRunningCount}
+              waiting={groupWaiting}
               // Identity above is the root's; the live-work signals are the
               // whole group's. See `RowActivity`.
               activity={activity}
@@ -1715,6 +1783,8 @@ export default function ChatTreeList({
               splitOff={splitOff}
               childArchive={childArchive}
               isRunning={isRunning}
+              isAwaiting={awaiting}
+              isAwaitingBelow={awaitingBelow}
               foldAsides={foldAsides}
               treeCollapse={treeCollapse}
               isMobile={isMobile}

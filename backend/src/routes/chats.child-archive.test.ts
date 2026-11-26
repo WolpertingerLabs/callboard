@@ -17,7 +17,7 @@ const notifyMetadata = vi.fn();
 vi.mock("../services/list-caches.js", () => ({ clearListCaches: () => clearListCaches() }));
 vi.mock("../services/claude.js", () => ({ getActiveSession: () => null, hasPendingRequest: () => false, getPendingRequest: () => null }));
 vi.mock("../services/session-registry.js", () => ({
-  sessionRegistry: { has: () => false, notifyMetadata: (...args: unknown[]) => notifyMetadata(...args) },
+  sessionRegistry: { has: () => false, notifyMetadata: (...args: unknown[]) => notifyMetadata(...args), bumpVersion: () => {} },
 }));
 
 const { chatsRouter } = await import("./chats.js");
@@ -143,7 +143,11 @@ describe("PATCH /api/chats/:id/child-archive", () => {
 
   it("refuses a native Codex subagent", async () => {
     const root = makeChat({ provider: "codex" });
-    const native = makeChat({ provider: "codex", parentChatId: root.id, nativeAgent: { parentThreadId: "t", lifecycle: "unknown", management: "read-only", controlNote: "" } });
+    const native = makeChat({
+      provider: "codex",
+      parentChatId: root.id,
+      nativeAgent: { parentThreadId: "t", lifecycle: "unknown", management: "read-only", controlNote: "" },
+    });
     expect((await patch(native.id, { archived: true })).status).toBe(409);
     expect(metaOf(native.id)).not.toHaveProperty("childArchived");
   });
@@ -208,7 +212,13 @@ describe("reopenArchivedChildChain — a message brings an archived child back",
  * subtree, so the board must show that card as archived too.
  */
 describe("an archived child whose parent is deleted", () => {
-  const IDLE = { isSessionActive: () => false, pendingKindOf: () => undefined, activityOf: () => undefined, awaitingChildrenOf: () => 0, previewOf: () => null };
+  const IDLE = {
+    isSessionActive: () => false,
+    pendingKindOf: () => undefined,
+    activityOf: () => undefined,
+    awaitingChildrenOf: () => 0,
+    previewOf: () => null,
+  };
   const boardOf = () => buildCardBoard(chatFileService.getAllChats(), [], IDLE);
 
   it("becomes a closed card on the board, and reopening it clears the flag", async () => {

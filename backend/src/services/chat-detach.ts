@@ -5,6 +5,7 @@ import { buildLineageIndex, getParentChatId, walkToRootId } from "./chat-lineage
 import { isNativeRecord } from "./card-membership.js";
 import { withdrawParentOffer } from "./pending-requests.js";
 import { removeCallbacksForChild } from "./session-callbacks.js";
+import { sessionRegistry } from "./session-registry.js";
 import { spaceOfChat } from "./space-service.js";
 import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { createLogger } from "../utils/logger.js";
@@ -159,6 +160,10 @@ export function detachChatFromParent(chat: { id: string; session_id?: string; me
     if (chatFileService.updateChatMetadataForRecord(child, { rootChatId: chat.id }, { touch: false })) restampedDescendants++;
     else log.warn(`detach ${chat.id}: could not re-stamp rootChatId on descendant ${child.id}`);
   }
+  // The poll's `awaitingBelow` (ancestors of waiting chats) is cached per
+  // session version. Lineage just changed, so bump it: otherwise the old
+  // parent and root stay yellow until some unrelated prompt or session change.
+  sessionRegistry.bumpVersion();
 
   log.info(
     `Detached chat ${chat.id} from parent ${parentId} (${restampedDescendants} descendant(s) re-stamped, ${callbacks.length} callback(s) removed` +

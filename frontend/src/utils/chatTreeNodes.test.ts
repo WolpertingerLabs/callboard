@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from "vitest";
 import type { ChatTreeNode } from "../api";
-import { attentionBelow, countRunningBelow, nodeIsRunning, visibleChildren, type TreeVisibility } from "./chatTreeNodes";
+import { attentionBelow, countRunningBelow, nodeIsRunning, nodeIsWaiting, subtreeWaiting, visibleChildren, type TreeVisibility } from "./chatTreeNodes";
 
 function makeNode(chatId: string, overrides: Partial<ChatTreeNode> = {}): ChatTreeNode {
   return { chatId, title: chatId, provider: "claude-code", status: "stopped", folder: "/f", createdAt: "", updatedAt: "", children: [], ...overrides };
@@ -83,5 +83,42 @@ describe("visibleChildren", () => {
     const node = makeNode("n", { children: [makeNode("arch", { childArchived: true, children: [makeNode("open")] })] });
     expect(visibleChildren(node, false, OPTS)).toHaveLength(0);
     expect(visibleChildren(node, false, { ...OPTS, activeChatId: "open" }).map((c) => c.chatId)).toEqual(["arch"]);
+  });
+});
+
+describe("nodeIsWaiting / subtreeWaiting", () => {
+  const tree = makeNode("root", {
+    children: [
+      makeNode("a", { children: [makeNode("a1", { children: [makeNode("a1x")] }), makeNode("a2")] }),
+      makeNode("b", { children: [makeNode("bAside", { role: "aside" })] }),
+      makeNode("arch", { childArchived: true, children: [makeNode("underArch")] }),
+    ],
+  });
+  const find = (id: string, n: ChatTreeNode = tree): ChatTreeNode | undefined => (n.chatId === id ? n : n.children.map((c) => find(id, c)).find(Boolean));
+
+  it("reads the live poll or the snapshot for the node itself", () => {
+    expect(nodeIsWaiting(makeNode("x"), live("x"))).toBe(true);
+    expect(nodeIsWaiting(makeNode("x", { status: "waiting" }))).toBe(true);
+    expect(nodeIsWaiting(makeNode("x", { status: "ongoing" }))).toBe(false);
+  });
+
+  it("is true on every ancestor of a waiting chat, several levels up, and on none of its siblings", () => {
+    const waiting = live("a1x");
+    for (const id of ["root", "a", "a1"]) expect(subtreeWaiting(find(id)!, waiting)).toBe(true);
+    for (const id of ["a2", "b", "a1x"]) expect(subtreeWaiting(find(id)!, waiting)).toBe(false);
+  });
+
+  it("does not count the node itself — only what is below it", () => {
+    expect(subtreeWaiting(find("a1x")!, live("a1x"))).toBe(false);
+  });
+
+  it("counts folded asides and archived children, hidden or not", () => {
+    expect(subtreeWaiting(find("b")!, live("bAside"))).toBe(true);
+    expect(subtreeWaiting(tree, live("underArch"))).toBe(true);
+  });
+
+  it("reads the snapshot's waiting status deep in the tree without a live poll", () => {
+    const t = makeNode("r", { children: [makeNode("c", { children: [makeNode("g", { status: "waiting" })] })] });
+    expect(subtreeWaiting(t)).toBe(true);
   });
 });

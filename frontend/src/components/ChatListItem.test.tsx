@@ -473,6 +473,30 @@ describe("ChatListItem running dot", () => {
     expect(screen.getByTestId("running-dot")).toBeTruthy();
   });
 
+  it("turns the dot yellow and says so while the chat waits on the user", () => {
+    render(<ChatListItem chat={makeChat()} onClick={() => {}} onDelete={() => {}} sessionStatus={{ active: true, type: "web" }} waiting />);
+    const indicator = screen.getByTestId("chat-running");
+    expect(indicator.getAttribute("data-tone")).toBe("waiting");
+    expect(indicator.getAttribute("title")).toBe("Waiting for your answer");
+    expect(indicator.textContent).toBe("Waiting for your answer");
+    const dot = screen.getByTestId("running-dot");
+    expect(dot.style.background).toBe("var(--warning)");
+    expect(dot.style.boxShadow).toBe("0 0 5px var(--warning)");
+  });
+
+  it("shows the yellow dot even with no live session (an open approval)", () => {
+    render(<ChatListItem chat={makeChat()} onClick={() => {}} onDelete={() => {}} waiting />);
+    expect(screen.getByTestId("chat-running").getAttribute("data-tone")).toBe("waiting");
+    expect(screen.getByTestId("running-dot").style.background).toBe("var(--warning)");
+  });
+
+  it("counts a waiting tree's working chats in yellow", () => {
+    render(<ChatListItem chat={makeChat()} onClick={() => {}} onDelete={() => {}} sessionStatus={{ active: true, type: "web" }} runningCount={2} waiting />);
+    const indicator = screen.getByTestId("chat-running");
+    expect(indicator.getAttribute("title")).toBe("Waiting for your answer, 2 working in this tree");
+    expect(indicator.style.color).toBe("var(--warning)");
+  });
+
   it("keeps the bare dot when no count is passed", () => {
     render(<ChatListItem chat={makeChat()} onClick={() => {}} onDelete={() => {}} sessionStatus={{ active: true, type: "web" }} />);
     expect(screen.getByTestId("chat-running").textContent).toBe("Active in web");

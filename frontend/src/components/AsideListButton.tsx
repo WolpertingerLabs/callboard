@@ -15,7 +15,7 @@ import { MessageSquareQuote } from "lucide-react";
 import ProviderBadge from "./ProviderBadge";
 import { STATUS_DOT } from "./ChatTreeList";
 import { AsideAttentionDot, asideCountLabel } from "./ChatRoleBadge";
-import { useIsSessionActive } from "../contexts/SessionContext";
+import { useIsSessionActive, useSessionContext } from "../contexts/SessionContext";
 import type { AsideEntry } from "../utils/asideHighlights";
 import { attentionSuffix, nodeSignals, sumAttention, type AsideSignals } from "../utils/asideAttention";
 
@@ -96,8 +96,11 @@ export default function AsideListButton({
       return next;
     });
   }, []);
+  // Live "blocked on the user" from the poll, as the sidebar reads it — the
+  // aside's snapshot status only catches up on the next tree fetch.
+  const { awaitingChatIds } = useSessionContext();
   const label = asideCountLabel(asides.length);
-  const signalsOf = (aside: AsideEntry) => nodeSignals(aside, running.has(aside.chatId));
+  const signalsOf = (aside: AsideEntry) => nodeSignals(aside, running.has(aside.chatId), awaitingChatIds.has(aside.chatId));
   const attention = sumAttention(asides.map(signalsOf));
   const attentionLabel = attentionSuffix(attention);
 
@@ -233,52 +236,62 @@ export default function AsideListButton({
               padding: "4px 0",
             }}
           >
-            {asides.map((aside) => (
-              <button
-                key={aside.chatId}
-                type="button"
-                role="menuitem"
-                tabIndex={-1}
-                className="fork-point-menu-item"
-                aria-current={aside.chatId === openId ? "true" : undefined}
-                onClick={() => {
-                  close();
-                  onOpen(aside.chatId, triggerRef.current);
-                }}
-                onMouseEnter={() => onEmphasize([aside.chatId])}
-                onMouseLeave={() => onEmphasize(null)}
-                onFocus={() => onEmphasize([aside.chatId])}
-                title={aside.title}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                  width: "100%",
-                  padding: "6px 12px",
-                  border: "none",
-                  textAlign: "left",
-                  cursor: "pointer",
-                  minWidth: 0,
-                  fontWeight: aside.chatId === openId ? 600 : undefined,
-                }}
-              >
-                <span
-                  title={`Status: ${running.has(aside.chatId) ? "running" : aside.status}`}
-                  style={{
-                    width: 7,
-                    height: 7,
-                    borderRadius: "50%",
-                    flexShrink: 0,
-                    background: running.has(aside.chatId) ? "var(--status-active)" : STATUS_DOT[aside.status] || "var(--text-muted)",
+            {asides.map((aside) => {
+              const signals = signalsOf(aside);
+              // Waiting outranks running, as in the sidebar: yellow, not green.
+              const dotStatus = signals.waiting ? "waiting" : running.has(aside.chatId) ? "running" : aside.status;
+              return (
+                <button
+                  key={aside.chatId}
+                  type="button"
+                  role="menuitem"
+                  tabIndex={-1}
+                  className="fork-point-menu-item"
+                  aria-current={aside.chatId === openId ? "true" : undefined}
+                  onClick={() => {
+                    close();
+                    onOpen(aside.chatId, triggerRef.current);
                   }}
-                />
-                <RowAttention signals={{ ...signalsOf(aside), running: false }} />
-                <ProviderBadge provider={aside.provider === "claude-code" ? undefined : aside.provider} compact />
-                <span style={{ fontSize: 12, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
-                  {aside.title}
-                </span>
-              </button>
-            ))}
+                  onMouseEnter={() => onEmphasize([aside.chatId])}
+                  onMouseLeave={() => onEmphasize(null)}
+                  onFocus={() => onEmphasize([aside.chatId])}
+                  title={aside.title}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    width: "100%",
+                    padding: "6px 12px",
+                    border: "none",
+                    textAlign: "left",
+                    cursor: "pointer",
+                    minWidth: 0,
+                    fontWeight: aside.chatId === openId ? 600 : undefined,
+                  }}
+                >
+                  <span
+                    data-testid="aside-status-dot"
+                    title={`Status: ${dotStatus === "waiting" ? "waiting for your answer" : dotStatus}`}
+                    style={{
+                      width: 7,
+                      height: 7,
+                      borderRadius: "50%",
+                      flexShrink: 0,
+                      background: signals.waiting
+                        ? STATUS_DOT.waiting
+                        : running.has(aside.chatId)
+                          ? "var(--status-active)"
+                          : STATUS_DOT[aside.status] || "var(--text-muted)",
+                    }}
+                  />
+                  <RowAttention signals={{ ...signals, running: false }} />
+                  <ProviderBadge provider={aside.provider === "claude-code" ? undefined : aside.provider} compact />
+                  <span style={{ fontSize: 12, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
+                    {aside.title}
+                  </span>
+                </button>
+              );
+            })}
           </div>,
           document.body,
         )}

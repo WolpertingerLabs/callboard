@@ -34,7 +34,7 @@ import MenuRow from "./MenuRow";
 import PopupMenu, { placePopupMenu, type PopupMenuPosition } from "./PopupMenu";
 import { splitOffLabelFor, SPLIT_OFF_PENDING_LABEL, SPLIT_OFF_TITLE } from "../utils/splitOffChat";
 import SpaceChip from "./SpaceChip";
-import RunningDot, { activeSessionLabel, RunningCount } from "./RunningDot";
+import RunningDot, { activeSessionLabel, RunningCount, WAITING_LABEL } from "./RunningDot";
 import { visuallyHidden } from "../utils/visuallyHidden";
 import type { SpaceListItem } from "shared/types/space.js";
 
@@ -184,6 +184,13 @@ interface Props {
    * Absent on lone rows, which are one chat and keep the bare dot.
    */
   runningCount?: number;
+  /**
+   * Something this row stands for is blocked on the user — a permission
+   * prompt, question or open approval, in the chat itself or (on a group row
+   * or a row with folded asides) anywhere in what it stands for. The dot turns
+   * yellow, and shows even with no live session (an open approval has none).
+   */
+  waiting?: boolean;
 }
 
 /**
@@ -266,6 +273,7 @@ export default function ChatListItem({
   asideCount = 0,
   asideAttention,
   runningCount,
+  waiting = false,
 }: Props) {
   const [hovered, setHovered] = useState(false);
   // The kebab popup escapes the sidebar's overflow:auto scroll container via
@@ -387,9 +395,8 @@ export default function ChatListItem({
    * and only `isActive` is a prop either way. Convergence, not parsing, is the
    * reason now.
    *
-   * Those four are the whole list: `Props` carries no permission-prompt state
-   * (`sessionStatus` distinguishes only web from cli), so a row holding one is
-   * not something this component can currently see.
+   * A row with a prompt waiting on the user (`waiting`) is exempt too, for
+   * the same reason.
    *
    * All four read the ROLLED-UP values where the list supplied them, and must:
    * the exemption is about the row, and a group row's row-worth of live work
@@ -406,7 +413,11 @@ export default function ChatListItem({
    * is not a visible dim. That is a property of fading with opacity, not of
    * these two values.
    */
-  const faded = !!dimmed && !isActive && !summon && !hasUnread && !jobAwaitingApproval;
+  const faded = !!dimmed && !isActive && !summon && !hasUnread && !jobAwaitingApproval && !waiting;
+  // The status dot: green while working, yellow while something waits on the
+  // user — which outranks working, as the tree's `waiting` status does.
+  const dotTone = waiting ? "waiting" : "running";
+  const dotLabel = waiting ? WAITING_LABEL : sessionStatus ? activeSessionLabel(sessionStatus.type) : "";
 
   // The same hook the board's two faces run on, so a click, a long press and a
   // modified click mean here what they mean there. `displayName` is the label
@@ -636,24 +647,26 @@ export default function ChatListItem({
           >
             {displayName}
           </div>
-          {sessionStatus?.active &&
+          {(sessionStatus?.active || waiting) &&
             (runningCount !== undefined && runningCount > 0 ? (
               // A tree: how many of its chats are working, in the dot's colour.
               <RunningCount
                 count={runningCount}
-                label={`${activeSessionLabel(sessionStatus.type)}, ${runningCount} working in this tree`}
+                label={`${dotLabel}, ${runningCount} working in this tree`}
                 testId="chat-running"
+                tone={dotTone}
                 style={{ padding: "0 2px", fontSize: 11, fontWeight: 600 }}
               />
             ) : (
               <span
                 data-testid="chat-running"
-                title={activeSessionLabel(sessionStatus.type)}
+                data-tone={dotTone}
+                title={dotLabel}
                 style={{ display: "flex", alignItems: "center", flexShrink: 0, padding: "0 2px" }}
               >
-                <RunningDot />
+                <RunningDot tone={dotTone} />
                 {/* The dot is colour alone, so the name spells it out. */}
-                <span style={visuallyHidden}>{activeSessionLabel(sessionStatus.type)}</span>
+                <span style={visuallyHidden}>{dotLabel}</span>
               </span>
             ))}
         </div>
