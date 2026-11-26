@@ -68,12 +68,10 @@ function readBlob<T>(blob: Blob, read: (r: FileReader) => void, result: (r: File
 if (typeof Blob !== "undefined" && typeof FileReader !== "undefined") {
   const proto = Blob.prototype as Partial<Blob>;
   if (typeof proto.text !== "function") {
+    // Not FileReader.readAsText: that sniffs a UTF-16 BOM, but Blob.text()
+    // always decodes UTF-8 (TextDecoder strips a UTF-8 BOM, as the spec does).
     proto.text = function (this: Blob) {
-      return readBlob(
-        this,
-        (r) => r.readAsText(this),
-        (r) => r.result as string,
-      );
+      return this.arrayBuffer().then((buf) => new TextDecoder().decode(buf));
     };
   }
   if (typeof proto.arrayBuffer !== "function") {
