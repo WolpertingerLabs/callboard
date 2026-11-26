@@ -58,6 +58,11 @@ export default defineConfig({
           env: { NODE_ENV: "development" },
           include: ["frontend/**/*.{test,spec}.{ts,tsx}"],
           exclude: ["**/node_modules/**", "**/dist/**"],
+          // Node 25+ defines its own global localStorage/sessionStorage, which
+          // without --localstorage-file is an unusable stub that shadows
+          // jsdom's. Turn Node's off so tests see jsdom's Storage. Node 22.19+
+          // accepts the flag (a no-op there).
+          execArgv: ["--no-experimental-webstorage"],
           // jsdom 25 has no PointerEvent, and its absence is silent rather
           // than loud — see the file for why that turns pointer tests green
           // for the wrong reason.
