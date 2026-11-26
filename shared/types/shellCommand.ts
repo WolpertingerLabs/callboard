@@ -88,21 +88,36 @@ type Word = Seg[];
 /** `arith`: an arithmetic command `(( … ))`, with the expression's raw text. */
 type Tok = { t: "word"; w: Word } | { t: "op"; op: string } | { t: "redir"; fd: number | null; op: string } | { t: "arith"; text: string };
 
-/** Index of the `))` closing a `((` whose expression starts at `i`, or -1 when it is nested subshells instead. */
-function arithEnd(s: string, i: number): number {
-  let depth = 0;
-  for (; i < s.length; i++) {
-    const c = s[i];
-    if (c === "(") depth++;
-    else if (c === ")") {
-      if (depth === 0) return s[i + 1] === ")" ? i : -1;
-      depth--;
-    } else if (c === "\n" || c === ";") {
-      // Arithmetic never holds a command separator: this is `( (…); … )`.
-      return -1;
+/**
+ * Finds the `))` closing an arithmetic `((`, in linear time overall: paren
+ * pairs are matched once for the whole command (quotes are not special here,
+ * as before), and separators counted by prefix sums. Built lazily, only for
+ * commands that contain `((` at all.
+ */
+class ArithIndex {
+  private close: Int32Array;
+  private seps: Int32Array;
+  constructor(private s: string) {
+    this.close = new Int32Array(s.length).fill(-1);
+    this.seps = new Int32Array(s.length + 1);
+    const open: number[] = [];
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i];
+      this.seps[i + 1] = this.seps[i] + (c === ";" || c === "\n" ? 1 : 0);
+      if (c === "(") open.push(i);
+      else if (c === ")" && open.length) this.close[open.pop() as number] = i;
     }
   }
-  return -1;
+  /**
+   * For `((` at `i`: the index of the first `)` of its closing `))`, or -1
+   * when it is nested subshells instead — arithmetic never holds a command
+   * separator, and the inner `(` must close directly before the outer one.
+   */
+  end(i: number): number {
+    const k = this.close[i + 1];
+    if (k < 0 || this.s[k + 1] !== ")") return -1;
+    return this.seps[k] - this.seps[i + 2] === 0 ? k : -1;
+  }
 }
 
 /** Index just past the `)` that closes the `$(` / `(` opened before `i`. */
@@ -155,6 +170,7 @@ function tokenize(s: string): Tok[] {
   /** Heredocs opened on the current line: their bodies start after the next newline. */
   const heredocs: { delim: string; stripTabs: boolean }[] = [];
   let wantDelim: { stripTabs: boolean } | null = null;
+  let arith: ArithIndex | undefined;
 
   const push = (text: string, q: Seg["q"], bad = false) => {
     started = true;
@@ -249,9 +265,9 @@ function tokenize(s: string): Tok[] {
         toks.push({ t: "op", op: "|" });
         i++;
       }
-    } else if (c === "(" && n === "(" && !started && arithEnd(s, i + 2) >= 0) {
+    } else if (c === "(" && n === "(" && !started && (arith ??= new ArithIndex(s)).end(i) >= 0) {
       // `(( expr ))`: arithmetic, not two subshells.
-      const end = arithEnd(s, i + 2);
+      const end = arith.end(i);
       toks.push({ t: "arith", text: s.slice(i + 2, end) });
       i = end + 2;
     } else if (c === "(" || c === ")") {
