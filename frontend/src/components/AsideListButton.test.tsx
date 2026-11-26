@@ -98,3 +98,36 @@ it("portals the menu out of its row so a scrolling action bar cannot clip it, an
   expect(screen.queryByRole("menu")).toBeNull();
   expect(onEmphasize).toHaveBeenLastCalledWith(null);
 });
+
+it("shows the menu and focuses its first row on the very first open", () => {
+  // A browser will not focus an element under visibility: hidden, and jsdom
+  // does not model that, so record what the menu looked like when its row
+  // was focused rather than after every re-render has settled.
+  const original = HTMLElement.prototype.focus;
+  const visibilityAtFocus: string[] = [];
+  const spy = vi.spyOn(HTMLElement.prototype, "focus").mockImplementation(function (this: HTMLElement, options?: FocusOptions) {
+    const menu = this.closest<HTMLElement>('[role="menu"]');
+    if (menu) visibilityAtFocus.push(menu.style.visibility);
+    original.call(this, options);
+  });
+  try {
+    renderButton([]);
+    fireEvent.click(screen.getByRole("button", { name: "2 asides in this chat" }));
+    const menu = screen.getByRole("menu");
+    expect(visibilityAtFocus).toEqual([""]);
+    expect(menu.style.visibility).not.toBe("hidden");
+    expect(document.activeElement).toBe(within(menu).getAllByRole("menuitem")[0]);
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+it("closes on Escape while focus is still on the button, and keeps focus there", () => {
+  renderButton([]);
+  const button = screen.getByRole("button", { name: "2 asides in this chat" });
+  fireEvent.click(button);
+  button.focus();
+  fireEvent.keyDown(button, { key: "Escape" });
+  expect(screen.queryByRole("menu")).toBeNull();
+  expect(document.activeElement).toBe(button);
+});

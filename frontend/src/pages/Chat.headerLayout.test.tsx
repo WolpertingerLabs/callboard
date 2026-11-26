@@ -82,6 +82,7 @@ it("lets the mobile action bar scroll sideways while staying right-aligned when 
       <div className="chat-mobile-action-bar">
         <div role="radiogroup">View</div>
         <button>Top</button>
+        <button>Tools</button>
       </div>
     </>,
   );
@@ -89,10 +90,12 @@ it("lets the mobile action bar scroll sideways while staying right-aligned when 
   expect(bar.display).toBe("flex");
   expect(bar.overflowX).toBe("auto");
   expect(bar.overflowY).toBe("hidden");
-  // flex-end would overflow to the left, out of scroll reach.
-  expect(bar.justifyContent).not.toBe("flex-end");
-  const first = getComputedStyle(container.querySelector(".chat-mobile-action-bar > :first-child")!);
+  // Right alignment comes from the first child's auto margin over start
+  // packing. Packing to the end instead would overflow to the left, where a
+  // scroll container cannot reach, and clip the view-mode switcher.
+  expect(["", "normal", "flex-start", "start"]).toContain(bar.justifyContent);
+  const [first, ...rest] = [...container.querySelector(".chat-mobile-action-bar")!.children].map((el) => getComputedStyle(el));
   expect(first.marginLeft).toBe("auto");
-  expect(first.flexShrink).toBe("0");
-  expect(getComputedStyle(container.querySelector(".chat-mobile-action-bar > button")!).flexShrink).toBe("0");
+  for (const style of [first, ...rest]) expect(style.flexShrink).toBe("0");
+  for (const style of rest) expect(style.marginLeft).not.toBe("auto");
 });

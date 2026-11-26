@@ -44,6 +44,28 @@ function RowAttention({ signals }: { signals: AsideSignals }) {
   );
 }
 
+type MenuPos = { top: number; right: number };
+
+/** Gap kept between the menu and the viewport's edge. */
+const EDGE = 8;
+/** The menu's minWidth, used until it has rendered and can be measured. */
+const MENU_MIN_WIDTH = 260;
+
+/**
+ * Where the menu goes, in viewport coordinates: under the button and
+ * right-aligned with it, but pulled back on screen when the button sits near
+ * the left edge. Uses the menu's rendered width once there is one (it can
+ * grow past its minWidth to its maxWidth).
+ */
+function measureMenu(trigger: HTMLElement | null, menu: HTMLElement | null): MenuPos | null {
+  const rect = trigger?.getBoundingClientRect();
+  if (!rect) return null;
+  const viewport = window.innerWidth;
+  const width = menu?.offsetWidth || MENU_MIN_WIDTH;
+  const right = Math.max(EDGE, Math.min(viewport - rect.right, viewport - width - EDGE));
+  return { top: rect.bottom + 4, right };
+}
+
 export default function AsideListButton({
   asides,
   openId,
@@ -61,7 +83,7 @@ export default function AsideListButton({
   const menuRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
-  const [menuPos, setMenuPos] = useState<{ top: number; right: number } | null>(null);
+  const [menuPos, setMenuPos] = useState<MenuPos | null>(null);
   const [running, setRunning] = useState<ReadonlySet<string>>(() => new Set());
   const onRunningChange = useCallback((chatId: string, on: boolean) => {
     setRunning((prev) => {
@@ -79,23 +101,30 @@ export default function AsideListButton({
 
   const close = (refocus = false) => {
     setOpen(false);
+    setMenuPos(null);
     onEmphasize(null);
     if (refocus) triggerRef.current?.focus();
   };
 
+  // Placed before opening, so the menu's first render is already visible and
+  // the focus effect below can focus its first row (a hidden element takes
+  // no focus, and on a click that effect runs before any layout re-render).
+  const openMenu = () => {
+    setMenuPos(measureMenu(triggerRef.current, null));
+    setOpen(true);
+  };
+
   // The menu is portalled and fixed-positioned under the button: the mobile
   // action bar scrolls sideways (overflow-x: auto), which would clip a menu
-  // positioned inside it. It follows the button when anything scrolls.
+  // positioned inside it. It follows the button when anything scrolls, and
+  // re-renders only when that actually moved it — the transcript scrolls on
+  // every streamed frame.
   useLayoutEffect(() => {
     if (!open) return;
     const place = () => {
-      const rect = triggerRef.current?.getBoundingClientRect();
-      if (!rect) return;
-      const viewport = window.innerWidth;
-      // Right-aligned with the button, but kept on screen when the button
-      // sits near the left edge (260 is the menu's minWidth).
-      const right = Math.max(8, Math.min(viewport - rect.right, viewport - 260 - 8));
-      setMenuPos({ top: rect.bottom + 4, right });
+      const next = measureMenu(triggerRef.current, menuRef.current);
+      if (!next) return;
+      setMenuPos((prev) => (prev && prev.top === next.top && prev.right === next.right ? prev : next));
     };
     place();
     window.addEventListener("resize", place);
@@ -116,6 +145,7 @@ export default function AsideListButton({
       const target = e.target as Node;
       if (!wrapRef.current?.contains(target) && !menuRef.current?.contains(target)) {
         setOpen(false);
+        setMenuPos(null);
         onEmphasize(null);
       }
     };
@@ -146,7 +176,13 @@ export default function AsideListButton({
       <button
         ref={triggerRef}
         type="button"
-        onClick={() => (open ? close() : setOpen(true))}
+        onClick={() => (open ? close() : openMenu())}
+        onKeyDown={(e) => {
+          if (open && e.key === "Escape") {
+            e.preventDefault();
+            close(true);
+          }
+        }}
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label={`${label} in this chat${attentionLabel}`}
@@ -184,7 +220,7 @@ export default function AsideListButton({
               right: menuPos?.right ?? 0,
               visibility: menuPos ? undefined : "hidden",
               zIndex: 50,
-              minWidth: 260,
+              minWidth: MENU_MIN_WIDTH,
               maxWidth: "min(360px, 90vw)",
               maxHeight: 320,
               overflowY: "auto",
