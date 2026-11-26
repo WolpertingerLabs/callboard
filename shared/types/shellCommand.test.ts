@@ -264,6 +264,11 @@ describe("pathological input", () => {
     ["63 vars then background cds", fill(vars63, "cd /x & ")],
     ["63 vars then unset and reassign", fill(vars63, "unset V1; V1=1; ")],
     ["exponential function calls", Array.from({ length: 30 }, (_, i) => `f${i}() { f${i + 1}; f${i + 1}; }`).join("; ") + "; f0"],
+    // Paren floods: `((` detection must not rescan the rest of the command each time.
+    ["64 KB of unclosed (", "(".repeat(MAX_COMMAND_LENGTH)],
+    ["64 KB of ((", "((".repeat(MAX_COMMAND_LENGTH / 2)],
+    ["(( ( repeated", fill("", "(( (")],
+    ["64 KB of )", ")".repeat(MAX_COMMAND_LENGTH)],
   ])("%s: bounded cost", (_name, cmd) => {
     expect(cmd.length).toBeLessThanOrEqual(MAX_COMMAND_LENGTH);
     const t0 = performance.now();
