@@ -33,7 +33,13 @@ import { DATA_DIR } from "../utils/paths.js";
 import { binaryVersionLine } from "../utils/binary-version.js";
 import { resolveClaudeBinary } from "./claude-binary.js";
 import { getSdkInfoAsync } from "./sdk-info.js";
-import { getCodexAuthSource, detectCodexOpenRouterEnv, isCodexRoutedThroughOpenRouter, type CodexAuthSource } from "../agents/adapters/codex/codexAuth.js";
+import {
+  getCodexAuthSource,
+  detectCodexOpenRouterEnv,
+  isCodexRoutedThroughOpenRouter,
+  isCodexSubscriptionRoutedThroughOpenRouter,
+  type CodexAuthSource,
+} from "../agents/adapters/codex/codexAuth.js";
 import { getAgentSettings, detectClaudeCodeOpenRouterEnv, isClaudeCodeRoutedThroughOpenRouter } from "./agent-settings.js";
 
 export interface BuildSystemInfoOptions {
@@ -184,6 +190,10 @@ export async function buildSystemInfo({ pkgRoot }: BuildSystemInfoOptions) {
   // catalog/ordering to OpenRouter, so they must agree with what the session
   // actually does; the predicates are the same ones getApiEnvOverrides and the
   // Codex options adapter resolve from. Keys themselves are never exposed.
+  //
+  // "Route subscription through OpenRouter" is deliberately NOT folded in: in
+  // that mode the harness keeps its native model namespace, and these flags
+  // switch the pickers to the OpenRouter catalog.
   let claudeCodeUseOpenRouter = false;
   let codexUseOpenRouter = false;
   // Whether composer voice input can run: it bills the account-wide OpenRouter
@@ -194,10 +204,12 @@ export async function buildSystemInfo({ pkgRoot }: BuildSystemInfoOptions) {
   // same way today, but its own field: the two features may diverge (a
   // per-feature toggle), and an existing field's meaning never changes.
   let readAloudAvailable = false;
+  let codexSubscriptionViaOpenRouter = false;
   try {
     const s = getAgentSettings();
     claudeCodeUseOpenRouter = isClaudeCodeRoutedThroughOpenRouter(s);
     codexUseOpenRouter = isCodexRoutedThroughOpenRouter(s);
+    codexSubscriptionViaOpenRouter = isCodexSubscriptionRoutedThroughOpenRouter(s);
     voiceInputAvailable = Boolean(s.openRouterApiKey?.trim());
     readAloudAvailable = Boolean(s.openRouterApiKey?.trim());
   } catch {
@@ -242,6 +254,12 @@ export async function buildSystemInfo({ pkgRoot }: BuildSystemInfoOptions) {
     codexConfigured = true;
     codexAuthNote =
       "Routed through OpenRouter — authenticated with the OpenRouter key on this tab, or with the OpenRouter credentials already in your environment when none is stored here.";
+  } else if (codexSubscriptionViaOpenRouter) {
+    // The ChatGPT login is forwarded (`requires_openai_auth`), so only an
+    // auth.json counts — a config.toml provider is not used in this mode. Same
+    // answer as `codexCredentials` in engine-status.ts.
+    codexConfigured = codexAuthSource === "auth.json";
+    codexAuthNote = "Signed in with ChatGPT; routed through OpenRouter (experimental).";
   }
 
   // Detect whether the ambient environment already routes each harness through

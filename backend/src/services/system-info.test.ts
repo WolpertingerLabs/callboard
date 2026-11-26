@@ -209,6 +209,29 @@ describe("buildSystemInfo", () => {
     expect(info.codexAuthNote).toMatch(/OpenRouter/);
   });
 
+  it("keeps the OpenRouter picker flags off when a subscription is routed through OpenRouter", async () => {
+    // That mode keeps the native model namespace; the *UseOpenRouter flags
+    // switch the pickers to OpenRouter's catalog.
+    mocks.settings = { claudeCodeSubscriptionViaOpenRouter: true, codexSubscriptionViaOpenRouter: true, openRouterApiKey: "sk-or" };
+    mocks.codexAuthSource = "auth.json";
+
+    const info = await buildSystemInfo({ pkgRoot: PKG_ROOT });
+
+    expect(info.claudeCodeUseOpenRouter).toBe(false);
+    expect(info.codexUseOpenRouter).toBe(false);
+    expect(info.codexConfigured).toBe(true);
+    expect(info.codexAuthNote).toMatch(/experimental/);
+  });
+
+  it("needs a ChatGPT login for a routed Codex subscription — config.toml does not count", async () => {
+    mocks.settings = { codexSubscriptionViaOpenRouter: true, openRouterApiKey: "sk-or" };
+    mocks.codexAuthSource = "config.toml";
+
+    const info = await buildSystemInfo({ pkgRoot: PKG_ROOT });
+
+    expect(info.codexConfigured).toBe(false);
+  });
+
   it("says nothing about routing when nothing is routed", async () => {
     mocks.codexAuthSource = "auth.json";
 

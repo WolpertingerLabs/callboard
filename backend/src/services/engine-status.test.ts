@@ -26,6 +26,8 @@ const mocks = vi.hoisted(() => ({
   sdkInfo: vi.fn(),
   codexAuthSource: vi.fn(),
   codexRoutedThroughOpenRouter: vi.fn(),
+  claudeSubscriptionViaOpenRouter: vi.fn(),
+  codexSubscriptionViaOpenRouter: vi.fn(),
   /** `resolveBinaryPath` from utils/binary-path.ts — the cached `which` behind Codex login detection. */
   binaryPath: vi.fn(),
 }));
@@ -41,6 +43,7 @@ vi.mock("./agent-settings.js", () => ({
   getAgentSettings: mocks.agentSettings,
   getCodexExecutableOverride: mocks.codexOverride,
   isClaudeCodeRoutedThroughOpenRouter: mocks.claudeRoutedThroughOpenRouter,
+  isClaudeCodeSubscriptionRoutedThroughOpenRouter: mocks.claudeSubscriptionViaOpenRouter,
 }));
 
 // One resolver, so one mock. There used to be two — `getClaudeCodeExecutablePath`
@@ -56,6 +59,7 @@ vi.mock("./sdk-info.js", () => ({ getSdkInfoAsync: mocks.sdkInfo, refreshSdkInfo
 vi.mock("../agents/adapters/codex/codexAuth.js", () => ({
   getCodexAuthSource: mocks.codexAuthSource,
   isCodexRoutedThroughOpenRouter: mocks.codexRoutedThroughOpenRouter,
+  isCodexSubscriptionRoutedThroughOpenRouter: mocks.codexSubscriptionViaOpenRouter,
 }));
 
 vi.mock("../utils/binary-path.js", async (importOriginal) => ({
@@ -84,6 +88,8 @@ beforeEach(() => {
   mocks.sdkInfo.mockResolvedValue({ account: null, models: [], fetchedAt: 0 });
   mocks.codexAuthSource.mockReturnValue(null);
   mocks.codexRoutedThroughOpenRouter.mockReturnValue(false);
+  mocks.claudeSubscriptionViaOpenRouter.mockReturnValue(false);
+  mocks.codexSubscriptionViaOpenRouter.mockReturnValue(false);
   mocks.binaryPath.mockReturnValue(null);
 });
 
@@ -307,6 +313,38 @@ describe("credentials", () => {
     mocks.codexRoutedThroughOpenRouter.mockReturnValue(true);
     const engine = await getEngineStatuses().then((e) => byId(e, "codex"));
     expect(engine.credentials.configured).toBe(true);
+  });
+
+  it("decorates a subscription routed through OpenRouter, keeping the SDK's source", async () => {
+    mocks.claudeSubscriptionViaOpenRouter.mockReturnValue(true);
+    mocks.sdkInfo.mockResolvedValue({ account: { email: "a@b.c", subscriptionType: "Claude Max" }, models: [], fetchedAt: 0 });
+    const engine = await getEngineStatuses().then((e) => byId(e, "claude-code"));
+    expect(engine.credentials).toMatchObject({ configured: true, source: "Claude Max subscription via OpenRouter" });
+    expect(engine.credentials.note).toContain("through OpenRouter");
+  });
+
+  it("keeps a routed subscription with no login unconfigured, and says the login is still needed", async () => {
+    mocks.claudeSubscriptionViaOpenRouter.mockReturnValue(true);
+    const engine = await getEngineStatuses().then((e) => byId(e, "claude-code"));
+    expect(engine.credentials.configured).toBe(false);
+    expect(engine.credentials.note).toContain("claude auth login");
+    expect(engine.credentials.note).toContain("still needs this login");
+  });
+
+  it("reports a Codex ChatGPT login routed through OpenRouter as experimental", async () => {
+    mocks.codexSubscriptionViaOpenRouter.mockReturnValue(true);
+    mocks.codexAuthSource.mockReturnValue("auth.json");
+    const engine = await getEngineStatuses().then((e) => byId(e, "codex"));
+    expect(engine.credentials).toMatchObject({ configured: true, source: "auth.json via OpenRouter" });
+    expect(engine.credentials.note).toContain("Experimental");
+  });
+
+  it("needs auth.json for a routed Codex subscription — config.toml is not a login", async () => {
+    mocks.codexSubscriptionViaOpenRouter.mockReturnValue(true);
+    mocks.codexAuthSource.mockReturnValue("config.toml");
+    const engine = await getEngineStatuses().then((e) => byId(e, "codex"));
+    expect(engine.credentials.configured).toBe(false);
+    expect(engine.credentials.note).toContain("codex login");
   });
 
   it("names the provider an embedded runtime's key belongs to", async () => {

@@ -1,5 +1,5 @@
-import { findModelAlias, getAgentSettings, isClaudeCodeRoutedThroughOpenRouter } from "./agent-settings.js";
-import { isCodexRoutedThroughOpenRouter } from "../agents/adapters/codex/codexAuth.js";
+import { findModelAlias, getAgentSettings, isClaudeCodeRoutedThroughOpenRouter, isClaudeCodeSubscriptionRoutedThroughOpenRouter } from "./agent-settings.js";
+import { isCodexRoutedThroughOpenRouter, isCodexSubscriptionRoutedThroughOpenRouter } from "../agents/adapters/codex/codexAuth.js";
 import type { AgentSettings } from "shared";
 
 interface SessionModel {
@@ -20,7 +20,10 @@ interface SessionModel {
  * OpenRouter form the removed harness documented this field as — cannot be a
  * native Claude Code or Codex model. Definitions written for that harness still
  * carry such defaults; letting one reach a native step would fail the session
- * on a model the author never meant for it.
+ * on a model the author never meant for it. Unless the harness's traffic goes
+ * through OpenRouter at all — either OpenRouter mode — where OpenRouter itself
+ * resolves the slug (a subscription routed through OpenRouter accepts
+ * `anthropic/…` and other vendors' slugs as well as native names).
  */
 export function resolveJobSessionModel(step: SessionModel, defaults: SessionModel, settings: AgentSettings = getAgentSettings()): string | undefined {
   if (step.model) return step.model;
@@ -30,8 +33,9 @@ export function resolveJobSessionModel(step: SessionModel, defaults: SessionMode
   const provider = step.provider ?? defaults.provider ?? "claude-code";
   if (provider !== (defaults.provider ?? "claude-code")) return undefined;
   if (model.includes("/")) {
-    if (provider === "claude-code" && !isClaudeCodeRoutedThroughOpenRouter(settings)) return undefined;
-    if (provider === "codex" && !isCodexRoutedThroughOpenRouter(settings)) return undefined;
+    if (provider === "claude-code" && !isClaudeCodeRoutedThroughOpenRouter(settings) && !isClaudeCodeSubscriptionRoutedThroughOpenRouter(settings))
+      return undefined;
+    if (provider === "codex" && !isCodexRoutedThroughOpenRouter(settings) && !isCodexSubscriptionRoutedThroughOpenRouter(settings)) return undefined;
   }
   return model;
 }
