@@ -183,6 +183,7 @@ export {
 
 export type { QueueItem, QueueItemImage } from "./queue.js";
 export type { HeldMessage } from "./held.js";
+export type { BackgroundTailStream, BackgroundTailStreamError, BackgroundTailChunk, BackgroundTailResponse } from "./background-tail.js";
 
 export type { FolderItem, BrowseResult, ValidateResult, FolderSuggestion } from "./folders.js";
 
