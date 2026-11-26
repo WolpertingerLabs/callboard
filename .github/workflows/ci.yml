@@ -51,7 +51,7 @@ jobs:
         run: npm run deps:check
 
   # Install, build and the full test suite on every supported Node: the exact
-  # engines.node floor (package.json), the active LTS, and the newest LTS.
+  # engines.node floor (package.json) and the two newest LTS majors.
   # Each bundled npm does the install, so lockfile drift between npm majors
   # shows up here too. Coverage is reported from one leg only.
   build-test:
@@ -85,6 +85,11 @@ jobs:
         if: ${{ !matrix.coverage }}
         run: npm test
 
+      # test:coverage runs the computer-use and drawlatch suites, then the full
+      # vitest suite (so a failing test gates CI) AND produces the coverage
+      # report. Coverage has no thresholds configured, so low numbers never fail
+      # the build — coverage is reported, not enforced. That is why this leg
+      # has no separate `npm test`.
       - name: Test + coverage
         if: ${{ matrix.coverage }}
         run: npm run test:coverage
