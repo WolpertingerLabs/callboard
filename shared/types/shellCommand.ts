@@ -963,6 +963,8 @@ class Walker {
 
     if (words.length === 0) {
       if (assigns.length === 0) return both(st);
+      // Past the variable cap, new names are not tracked: nothing changes, nothing to copy.
+      if (st.vars.size >= MAX_VARS && assigns.every((a) => !st.vars.has(a!.name))) return { ok: st, fail: null };
       const next = this.clone(st);
       for (const a of assigns) assign(next, a!);
       return { ok: next, fail: null };

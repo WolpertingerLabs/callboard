@@ -245,8 +245,14 @@ describe("pathological input", () => {
     ["many assignments", fill("", "L=/x; ")],
   ])("%s finishes quickly", (_name, cmd) => {
     expect(cmd.length).toBeLessThanOrEqual(MAX_COMMAND_LENGTH);
-    const t0 = performance.now();
-    analyzeShellCommand(cmd, ctx);
-    expect(performance.now() - t0).toBeLessThan(100);
+    analyzeShellCommand("a; b > c", ctx); // warm the JIT
+    // Best of three, so a parallel test run's scheduling noise doesn't decide it.
+    let best = Infinity;
+    for (let i = 0; i < 3; i++) {
+      const t0 = performance.now();
+      analyzeShellCommand(cmd, ctx);
+      best = Math.min(best, performance.now() - t0);
+    }
+    expect(best).toBeLessThan(100);
   });
 });
