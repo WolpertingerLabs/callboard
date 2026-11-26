@@ -804,7 +804,8 @@ function SubscriptionViaOpenRouterCheckbox({
       {harness === "Codex" && (
         <div style={{ ...helpStyle, color: "var(--warning)" }}>
           Experimental: OpenRouter currently rejects Codex requests made with a ChatGPT plan (403 Forbidden), so routed chats fail. Routed runs may also replace
-          Codex&apos;s cached model list (<code>$CODEX_HOME/models_cache.json</code>) with OpenRouter&apos;s until the next native run.
+          Codex&apos;s cached model list (<code>$CODEX_HOME/models_cache.json</code>) with OpenRouter&apos;s until Codex next refreshes it, which can outlast
+          unticking this box for a while.
         </div>
       )}
       {checked && notInEffect && <div style={{ ...helpStyle, color: "var(--warning)" }}>{notInEffect}</div>}
@@ -1386,6 +1387,13 @@ export default function ApiSettings() {
   const claudeSubRoutingInEffect = claudeCredentialMode === "anthropic" && claudeCodeSubscriptionViaOpenRouter && claudeSubViaOrReady;
   const showClaudeSubViaOr = claudeCredentialMode === "anthropic" && (claudeSubViaOrReady || claudeCodeSubscriptionViaOpenRouter);
   const showCodexSubViaOr = codexCredentialMode === "subscription" && (codexSubViaOrReady || codexSubscriptionViaOpenRouter);
+  // Hidden only because a manual key/token replaces the login: say so, like a
+  // disabled segment does, rather than leaving the option to vanish unexplained.
+  const claudeSubViaOrBlockedByManualAuth =
+    claudeCredentialMode === "anthropic" &&
+    !showClaudeSubViaOr &&
+    Boolean(settings?.openRouterApiKey?.trim()) &&
+    Boolean(settings?.apiKey?.trim() || settings?.authToken?.trim());
   const subViaOrNoKey = "Not in effect — add an OpenRouter key on the OpenRouter tab and Save.";
   const claudeSubViaOrNotInEffect = claudeSubRoutingInEffect
     ? undefined
@@ -1525,6 +1533,12 @@ export default function ApiSettings() {
               { mode: "openrouter", label: "OpenRouter", disabledReason: claudeOpenRouterUnready },
             ]}
           >
+            {claudeSubViaOrBlockedByManualAuth && (
+              <div style={helpStyle}>
+                <strong style={{ fontWeight: 500 }}>Route subscription through OpenRouter:</strong> unavailable while an API key or auth token is set under
+                Authentication below.
+              </div>
+            )}
             {showClaudeSubViaOr && (
               <SubscriptionViaOpenRouterCheckbox
                 harness="Claude Code"
