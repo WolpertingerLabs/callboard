@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { ArrowDown } from "lucide-react";
 import type { BackgroundTailStream } from "../api";
 import { useBackgroundTail } from "../hooks/useBackgroundTail";
@@ -10,6 +10,8 @@ interface Props {
   toolUseId: string;
   /** The task is still running: poll. When it turns false the panel fetches once more and stops. */
   live: boolean;
+  /** Told the newest modification time across the streams (null when none exists) whenever it changes. */
+  onLatestWrite?: (mtimeMs: number | null) => void;
 }
 
 /** Within this many pixels of the bottom counts as "following" the output. */
@@ -38,11 +40,17 @@ function streamProblem(s: BackgroundTailStream, live: boolean): string | null {
  * Follows new output while scrolled to the bottom; scrolling up stops
  * following and offers a "Latest" button instead.
  */
-export default function BackgroundTailPanel({ chatId, toolUseId, live }: Props) {
+export default function BackgroundTailPanel({ chatId, toolUseId, live, onLatestWrite }: Props) {
   const [picked, setPicked] = useState<string | undefined>(undefined);
   const { data, stream: fetching, error, loading, gone, refresh } = useBackgroundTail({ chatId, toolUseId, live, stream: picked });
 
   const streams = data?.streams ?? [];
+  const latestWrite = data
+    ? streams.reduce<number | null>((m, s) => (s.exists && s.mtimeMs !== undefined && (m === null || s.mtimeMs > m) ? s.mtimeMs : m), null)
+    : undefined;
+  useEffect(() => {
+    if (latestWrite !== undefined) onLatestWrite?.(latestWrite);
+  }, [latestWrite, onLatestWrite]);
   // The stream the hook is actually fetching wins over the server's current
   // default, so the highlighted tab and the content always agree.
   const selectedId = picked ?? fetching ?? data?.defaultStream ?? streams[0]?.id;

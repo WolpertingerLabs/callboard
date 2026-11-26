@@ -62,9 +62,48 @@ describe("ToolCallBubble background output row", () => {
     expect(screen.getByText("Output")).toBeTruthy();
   });
 
-  it("labels a detached command that redirects Live output, since it is polled live", () => {
-    render(<ToolCallBubble toolUse={bash("nohup rsync -a a/ b/ > r.log 2> r.err &")} toolResult={result()} isRunning={false} chatId="c1" />);
-    expect(screen.getByText("Live output")).toBeTruthy();
+  it("labels a detached launch Live output only while its files are being written", async () => {
+    vi.useFakeTimers();
+    try {
+      const now = Date.now();
+      getBackgroundTail.mockImplementation(async () => ({
+        toolUseId: "toolu_1",
+        streams: [{ id: "r0", kind: "redirect", label: "stdout → r.log", displayPath: "/r.log", exists: true, size: 3, mtimeMs: now - 1000 }],
+        defaultStream: "r0",
+        tail: { stream: "r0", size: 3, mtimeMs: now - 1000, lines: ["x"] },
+      }));
+      render(<ToolCallBubble toolUse={bash("nohup rsync -a a/ b/ > r.log 2> r.err &")} toolResult={result()} isRunning={false} chatId="c1" />);
+      // Nothing known yet (collapsed): no claim that it is live.
+      expect(screen.getByText("Output")).toBeTruthy();
+      fireEvent.click(screen.getByText("Output"));
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(screen.getByText("Live output")).toBeTruthy();
+      // Two minutes without a new write: back to "Output", though it is still polled.
+      await act(async () => vi.advanceTimersByTime(2 * 60_000));
+      expect(screen.getByText("Output")).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("labels a detached launch whose files are old Output", async () => {
+    getBackgroundTail.mockImplementation(async () => ({
+      toolUseId: "toolu_1",
+      streams: [{ id: "r0", kind: "redirect", label: "stdout → r.log", displayPath: "/r.log", exists: true, size: 3, mtimeMs: Date.now() - 7 * 86_400_000 }],
+      defaultStream: "r0",
+      tail: { stream: "r0", size: 3, mtimeMs: 1, lines: ["x"] },
+    }));
+    render(<ToolCallBubble toolUse={bash("nohup rsync -a a/ b/ > r.log &")} toolResult={result()} isRunning={false} chatId="c1" />);
+    fireEvent.click(screen.getByText("Output"));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByText("Output")).toBeTruthy();
+    expect(screen.queryByText("Live output")).toBeNull();
   });
 
   it("does not parse the command without a chat id or when the call has an engine task", () => {
@@ -85,7 +124,7 @@ describe("ToolCallBubble background output row", () => {
     vi.useFakeTimers();
     try {
       render(<ToolCallBubble toolUse={bash("nohup rsync -a a/ b/ > r.log &")} toolResult={result()} isRunning={false} chatId="c1" />);
-      fireEvent.click(screen.getByText("Live output"));
+      fireEvent.click(screen.getByText("Output"));
       await act(async () => {
         await Promise.resolve();
       });

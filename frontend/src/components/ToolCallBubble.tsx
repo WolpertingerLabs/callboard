@@ -1,5 +1,5 @@
 import { parseUiToolResult } from "./uiToolResult";
-import { memo, useEffect, useState, useMemo } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RotateCw, ChevronRight, ChevronDown } from "lucide-react";
 import type { ParsedMessage } from "../api";
 import { parseTodoItems, TodoList, MessageMetadata, ToolSourceBadge, ImageThumbnails } from "./MessageBubble";
@@ -32,6 +32,9 @@ interface ToolCallBubbleProps {
    */
   chatId?: string;
 }
+
+/** A detached launch reads "Live output" while its newest stream was written this recently. */
+const RECENT_WRITE_MS = 2 * 60_000;
 
 /** Below this, a running tool is just a fast tool and a timer is noise. */
 const ELAPSED_VISIBLE_AFTER_MS = 5_000;
@@ -127,6 +130,25 @@ function ToolCallBubble({ toolUse, toolResult, isRunning, backgroundPending = fa
   // An engine task says when it is done. A self-detached command has no such
   // signal, so it is polled for as long as the panel stays open.
   const tailLive = engineTask ? backgroundPending : detached;
+  // A detached launch has no "finished" signal, so it is only called live
+  // while something is still being written: the newest stream the panel has
+  // seen changed within the last couple of minutes.
+  const [recentWrite, setRecentWrite] = useState(false);
+  const recentTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onLatestWrite = useCallback((mtimeMs: number | null) => {
+    if (recentTimer.current) clearTimeout(recentTimer.current);
+    recentTimer.current = null;
+    const left = mtimeMs === null ? 0 : mtimeMs + RECENT_WRITE_MS - Date.now();
+    setRecentWrite(left > 0);
+    if (left > 0) recentTimer.current = setTimeout(() => setRecentWrite(false), left + 50);
+  }, []);
+  useEffect(
+    () => () => {
+      if (recentTimer.current) clearTimeout(recentTimer.current);
+    },
+    [],
+  );
+  const showsLive = engineTask ? backgroundPending : recentWrite;
   const canvasData = uiData?.type === "render_canvas" ? uiData : null;
   const artifactData = uiData?.type === "render_artifact" ? uiData : null;
 
@@ -259,9 +281,9 @@ function ToolCallBubble({ toolUse, toolResult, isRunning, backgroundPending = fa
               <span style={{ flexShrink: 0, display: "flex", alignItems: "center" }}>
                 {tailExpanded ? <ChevronDown size={11} style={{ opacity: 0.5 }} /> : <ChevronRight size={11} style={{ opacity: 0.5 }} />}
               </span>
-              <span style={{ fontStyle: "italic" }}>{tailLive ? "Live output" : "Output"}</span>
+              <span style={{ fontStyle: "italic" }}>{showsLive ? "Live output" : "Output"}</span>
             </div>
-            {tailExpanded && <BackgroundTailPanel chatId={chatId} toolUseId={toolUse.toolUseId} live={tailLive} />}
+            {tailExpanded && <BackgroundTailPanel chatId={chatId} toolUseId={toolUse.toolUseId} live={tailLive} onLatestWrite={onLatestWrite} />}
           </div>
         )}
 
