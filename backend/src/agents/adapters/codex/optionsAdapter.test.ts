@@ -16,6 +16,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { DefaultPermissions } from "shared/types/index.js";
 import {
   buildCodexEnv,
+  CODEX_OPENROUTER_SUBSCRIPTION_PROVIDER,
   collectCodexMcpServers,
   resolveCodexInstructions,
   resolveSandboxAndApproval,
@@ -148,6 +149,44 @@ describe("translateCodexOptions — OpenRouter endpoint routing", () => {
     const { codexOpts } = translateCodexOptions({ codex: { openRouterBaseUrl: "https://eu.openrouter.ai/api/v1" } });
     expect(codexOpts.config?.model_provider).toBeUndefined();
     expect(codexOpts.config?.model_providers).toBeUndefined();
+  });
+});
+
+describe("translateCodexOptions — subscription via OpenRouter", () => {
+  const provider = (config: unknown) =>
+    (config as { model_providers?: Record<string, Record<string, unknown>> } | undefined)?.model_providers?.[CODEX_OPENROUTER_SUBSCRIPTION_PROVIDER];
+
+  it("injects a distinct provider that keeps the ChatGPT login and sends the key as a header", () => {
+    const { codexOpts } = translateCodexOptions({ codex: { subscriptionViaOpenRouter: true } });
+    expect(CODEX_OPENROUTER_SUBSCRIPTION_PROVIDER).not.toBe("openrouter");
+    expect(codexOpts.config?.model_provider).toBe(CODEX_OPENROUTER_SUBSCRIPTION_PROVIDER);
+    expect(provider(codexOpts.config)).toEqual({
+      name: "OpenRouter (subscription)",
+      base_url: "https://openrouter.ai/api/v1",
+      wire_api: "responses",
+      requires_openai_auth: true,
+      supports_websockets: false,
+      env_http_headers: { "x-api-key": "OPENROUTER_API_KEY" },
+    });
+    // No env_key: it would replace the ChatGPT bearer with the OpenRouter key.
+    expect(provider(codexOpts.config)).not.toHaveProperty("env_key");
+    expect(codexOpts.apiKey).toBeUndefined();
+    expect(codexOpts.baseUrl).toBeUndefined();
+  });
+
+  it("keeps native reasoning semantics: none hides summaries and sends no effort", () => {
+    const { codexOpts, threadOptions } = translateCodexOptions({
+      codex: { subscriptionViaOpenRouter: true, reasoningRoute: "native", reasoningEffort: "none" },
+    });
+    expect(codexOpts.config?.model_reasoning_summary).toBe("none");
+    expect(codexOpts.config).not.toHaveProperty("model_reasoning_effort");
+    expect(threadOptions.modelReasoningEffort).toBeUndefined();
+  });
+
+  it("the full OpenRouter mode wins when both are set", () => {
+    const { codexOpts } = translateCodexOptions({ codex: { useOpenRouter: true, subscriptionViaOpenRouter: true } });
+    expect(codexOpts.config?.model_provider).toBe("openrouter");
+    expect(provider(codexOpts.config)).toBeUndefined();
   });
 });
 

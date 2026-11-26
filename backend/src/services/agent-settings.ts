@@ -532,6 +532,72 @@ export function isClaudeCodeRoutedThroughOpenRouter(settings?: AgentSettings): b
 }
 
 /**
+ * The account-wide OpenRouter key as the "route subscription through
+ * OpenRouter" modes send it, or `undefined` when it cannot be sent.
+ *
+ * It rides in an HTTP header (ANTHROPIC_CUSTOM_HEADERS for Claude Code,
+ * `env_http_headers` for Codex), so a key containing CR or LF is refused rather
+ * than trusted: a pasted newline would inject a header line of its own.
+ */
+export function subscriptionRoutingKey(s: AgentSettings): string | undefined {
+  const key = s.openRouterApiKey?.trim();
+  if (!key || /[\r\n]/.test(key)) return undefined;
+  return key;
+}
+
+/**
+ * Whether Claude Code keeps its claude.ai login but sends requests via
+ * OpenRouter ({@link AgentSettings.claudeCodeSubscriptionViaOpenRouter}).
+ *
+ * Precedence, in order: the full OpenRouter credential mode
+ * ({@link isClaudeCodeRoutedThroughOpenRouter}'s flag) wins; a manual
+ * `apiKey` or `authToken` makes this inert, because then the login is not what
+ * authenticates; and it needs the account-wide `openRouterApiKey`. There is no
+ * environment door: OpenRouter needs our key in a header, and only a stored key
+ * can be put there.
+ *
+ * The flag is checked rather than {@link isClaudeCodeRoutedThroughOpenRouter}:
+ * a stored `claudeCodeUseOpenRouter` whose key was later removed routes
+ * nothing, but it is still the user's choice of credential, and quietly falling
+ * through to a different OpenRouter mode would be a third behaviour the page
+ * never offered.
+ */
+export function isClaudeCodeSubscriptionRoutedThroughOpenRouter(settings?: AgentSettings): boolean {
+  const s = settings ?? loadSettings();
+  if (!s.claudeCodeSubscriptionViaOpenRouter || s.claudeCodeUseOpenRouter) return false;
+  if (s.apiKey?.trim() || s.authToken?.trim()) return false;
+  return subscriptionRoutingKey(s) !== undefined;
+}
+
+/**
+ * Codex twin of {@link isClaudeCodeSubscriptionRoutedThroughOpenRouter}: keep
+ * the ChatGPT login and send it via OpenRouter. Only in subscription auth mode,
+ * never while {@link AgentSettings.codexUseOpenRouter} is set, and only with
+ * the account-wide key.
+ *
+ * Lives here rather than beside its sibling in `codexAuth.ts` (which re-exports
+ * it) because {@link getApiEnvOverrides} needs it, and `codexAuth.ts` already
+ * imports this module.
+ */
+export function isCodexSubscriptionRoutedThroughOpenRouter(settings?: AgentSettings): boolean {
+  const s = settings ?? loadSettings();
+  if (!s.codexSubscriptionViaOpenRouter || s.codexUseOpenRouter) return false;
+  if ((s.codexAuthMode ?? "subscription") !== "subscription") return false;
+  return subscriptionRoutingKey(s) !== undefined;
+}
+
+/**
+ * Set `name: value` in an ANTHROPIC_CUSTOM_HEADERS string (newline-separated
+ * `Name: value` lines), keeping every other line the environment already had
+ * and replacing any existing line for the same header (case-insensitively).
+ */
+export function mergeCustomHeader(existing: string | undefined, name: string, value: string): string {
+  const lower = name.toLowerCase();
+  const kept = (existing ?? "").split(/\r?\n/).filter((line) => line.trim() && line.split(":")[0].trim().toLowerCase() !== lower);
+  return [...kept, `${name}: ${value}`].join("\n");
+}
+
+/**
  * Find the cross-harness model alias registered under `value`, if there is
  * one. Lookup is case-insensitive; an alias shadows a real model id of the
  * same name (custom overrides the provider namespace).
@@ -669,9 +735,22 @@ export function getApiEnvOverrides(settings?: AgentSettings): Record<string, str
     if (!s.claudeCodeOpenRouterHaikuModel && roleDefaults.haiku) env.ANTHROPIC_DEFAULT_HAIKU_MODEL = roleDefaults.haiku;
     if (!s.claudeCodeOpenRouterSubagentModel && roleDefaults.sonnet) env.CLAUDE_CODE_SUBAGENT_MODEL = roleDefaults.sonnet;
   } else {
-    if (s.apiBaseUrl) env.ANTHROPIC_BASE_URL = s.apiBaseUrl;
-    if (s.apiKey) env.ANTHROPIC_API_KEY = s.apiKey;
-    if (s.authToken) env.ANTHROPIC_AUTH_TOKEN = s.authToken;
+    if (isClaudeCodeSubscriptionRoutedThroughOpenRouter(s)) {
+      // Subscription via OpenRouter: the claude.ai OAuth login still
+      // authenticates (so AUTH_TOKEN / API_KEY are forced empty — an inherited
+      // one would replace the login), and OpenRouter identifies the account by
+      // the key in a custom header. The model fields stay native: OpenRouter
+      // accepts Claude Code's own model names in this mode, so the catalog
+      // role defaults of the branch above are not wanted.
+      env.ANTHROPIC_BASE_URL = OPENROUTER_ANTHROPIC_BASE_URL;
+      env.ANTHROPIC_AUTH_TOKEN = "";
+      env.ANTHROPIC_API_KEY = "";
+      env.ANTHROPIC_CUSTOM_HEADERS = mergeCustomHeader(process.env.ANTHROPIC_CUSTOM_HEADERS, "x-api-key", subscriptionRoutingKey(s)!);
+    } else {
+      if (s.apiBaseUrl) env.ANTHROPIC_BASE_URL = s.apiBaseUrl;
+      if (s.apiKey) env.ANTHROPIC_API_KEY = s.apiKey;
+      if (s.authToken) env.ANTHROPIC_AUTH_TOKEN = s.authToken;
+    }
     if (s.model) env.ANTHROPIC_MODEL = s.model;
     if (s.defaultOpusModel) env.ANTHROPIC_DEFAULT_OPUS_MODEL = s.defaultOpusModel;
     if (s.defaultSonnetModel) env.ANTHROPIC_DEFAULT_SONNET_MODEL = s.defaultSonnetModel;
@@ -690,6 +769,11 @@ export function getApiEnvOverrides(settings?: AgentSettings): Record<string, str
     // `[model_providers.openrouter]` block (injected via the Codex SDK config in
     // the options adapter) reads the key from OPENROUTER_API_KEY via its env_key.
     env.OPENROUTER_API_KEY = s.codexOpenRouterApiKey.trim();
+  } else if (isCodexSubscriptionRoutedThroughOpenRouter(s)) {
+    // Subscription via OpenRouter: the injected provider block sends this as
+    // an `x-api-key` header (`env_http_headers`), while `requires_openai_auth`
+    // keeps the ChatGPT login as the bearer. No `env_key` reads it.
+    env.OPENROUTER_API_KEY = subscriptionRoutingKey(s)!;
   } else if (s.codexAuthMode === "api-key") {
     if (s.codexApiKey) env.OPENAI_API_KEY = s.codexApiKey;
     if (s.codexBaseUrl) env.OPENAI_BASE_URL = s.codexBaseUrl;

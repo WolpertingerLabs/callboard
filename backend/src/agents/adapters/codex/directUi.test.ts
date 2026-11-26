@@ -97,6 +97,10 @@ describe("direct UI config", () => {
     expect(legacy.codexOpts.config).not.toHaveProperty("features.code_mode.direct_only_tool_namespaces");
     expect(legacy.codexOpts.configOverrides).toContain("mcp_servers.callboard-ui.enabled=false");
     expect(collectCodexMcpServers(options.mcpServers).config).not.toHaveProperty("callboard-ui");
+    // Subscription via OpenRouter: even with native direct-UI fields handed in, no split.
+    const subViaOr = translateCodexOptions({ ...options, codex: { ...options.codex, subscriptionViaOpenRouter: true } });
+    expect(subViaOr.codexOpts.config).not.toHaveProperty("features.code_mode.direct_only_tool_namespaces");
+    expect(subViaOr.codexOpts.configOverrides).toContain("mcp_servers.callboard-ui.enabled=false");
   });
   it("does not promote a third-party handle/command or let an external entry overwrite the reserved alias", () => {
     const handle = buildCodexToolServer({ name: "other", version: "1", tools: [] });

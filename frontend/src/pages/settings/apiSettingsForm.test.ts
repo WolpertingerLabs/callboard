@@ -22,6 +22,7 @@ const FULL: AgentSettings = {
   claudeCodeOpenRouterSonnetModel: "anthropic/claude-sonnet-x",
   claudeCodeOpenRouterHaikuModel: "anthropic/claude-haiku-x",
   claudeCodeOpenRouterSubagentModel: "anthropic/claude-sub-x",
+  claudeCodeSubscriptionViaOpenRouter: true,
   openRouterApiKey: "sk-or-svc",
   openRouterBaseUrl: "https://or.example/v1",
   openRouterUtilityCompletions: true,
@@ -45,6 +46,7 @@ const FULL: AgentSettings = {
   codexOpenRouterApiKey: "sk-or-codex",
   codexOpenRouterBaseUrl: "https://or.example/codex",
   codexOpenRouterModel: "openai/gpt-x",
+  codexSubscriptionViaOpenRouter: true,
 };
 
 describe("formFromSettings / settingsFromForm", () => {
@@ -68,10 +70,13 @@ describe("formFromSettings / settingsFromForm", () => {
 
   it("sends every field on Save — a snapshot, with blanks as empty strings", () => {
     const body = settingsFromForm(EMPTY_API_SETTINGS_FORM);
-    expect(Object.keys(body)).toHaveLength(41);
+    expect(Object.keys(body)).toHaveLength(43);
     expect(body.apiKey).toBe("");
     expect(body.codexAuthMode).toBe("subscription");
     expect(body.openRouterUtilityCompletions).toBe(false);
+    // Sent as false, never omitted, so Save cannot resurrect a stale flag.
+    expect(body.claudeCodeSubscriptionViaOpenRouter).toBe(false);
+    expect(body.codexSubscriptionViaOpenRouter).toBe(false);
     // Blank ⇒ the server's default voice model.
     expect(body.openRouterVoiceModel).toBe("");
     // Blank ⇒ the server's default read-aloud model, and that model's default voice.

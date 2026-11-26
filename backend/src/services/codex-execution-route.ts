@@ -5,13 +5,21 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import type { AgentSettings } from "shared";
 import { getApiEnvOverrides, getCodexExecutablePath, OPENROUTER_CODEX_BASE_URL } from "./agent-settings.js";
-import { isCodexRoutedThroughOpenRouter } from "../agents/adapters/codex/codexAuth.js";
+import { isCodexRoutedThroughOpenRouter, isCodexSubscriptionRoutedThroughOpenRouter } from "../agents/adapters/codex/codexAuth.js";
 const require = createRequire(import.meta.url);
 
 /** Presence only, never transport details, environment, or credentials. */
 export type CodexUiAliasPresence = { "callboard-ui": boolean; callboard_ui: boolean };
 
 export interface CodexExecutionRoute {
+  /**
+   * The model and reasoning semantics the run speaks. `"codex"` is native
+   * OpenAI semantics. A subscription routed through OpenRouter
+   * ({@link subscriptionViaOpenRouter}) keeps the probe's route, because
+   * OpenRouter forwards its Responses requests unchanged — `"codex"` for a
+   * native config, `"unknown"` when the probe could not tell; {@link endpoint}
+   * is what says the traffic goes via OpenRouter.
+   */
   route: "codex" | "openrouter" | "unknown";
   endpoint?: string;
   /** Model pinned by the effective CLI config, when the user set one. */
@@ -23,6 +31,12 @@ export interface CodexExecutionRoute {
    */
   defaultModel?: string;
   injectedOpenRouter: boolean;
+  /**
+   * The ChatGPT subscription is sent via OpenRouter (see
+   * `isCodexSubscriptionRoutedThroughOpenRouter`): native route and models,
+   * OpenRouter endpoint, no direct-UI. Absent otherwise.
+   */
+  subscriptionViaOpenRouter?: boolean;
   /** Native direct-UI support, with the effective user list preserved. */
   directUiNamespaces?: string[];
   directUiCodeModeEnabled?: boolean;
@@ -83,6 +97,9 @@ export function routeFromCodexConfig(config: RouteConfig, env: NodeJS.ProcessEnv
 const inFlight = new Map<string, Promise<Omit<CodexExecutionRoute, "injectedOpenRouter">>>();
 export async function resolveCodexExecutionRoute(settings: AgentSettings, cwd?: string): Promise<CodexExecutionRoute> {
   const injectedOpenRouter = isCodexRoutedThroughOpenRouter(settings);
+  // The probe below reads the user's NATIVE config (our provider block is not
+  // injected into it), so config/read and model/list never reach OpenRouter.
+  const subscriptionViaOpenRouter = !injectedOpenRouter && isCodexSubscriptionRoutedThroughOpenRouter(settings);
   const env = { ...sanitizeInheritedAgentEnv(process.env), ...getApiEnvOverrides(settings) };
   const override = getCodexExecutablePath(settings);
   let command = override;
@@ -99,7 +116,7 @@ export async function resolveCodexExecutionRoute(settings: AgentSettings, cwd?: 
   // Match SDK 0.153.4's baseUrl translation exactly (a CLI config override,
   // not merely an environment variable). No API key is needed for config/read.
   const args = [...prefix, "app-server", ...(baseUrlOverride ? ["--config", `openai_base_url=${JSON.stringify(baseUrlOverride)}`] : [])];
-  const key = JSON.stringify([command, env.CODEX_HOME, cwd, baseUrlOverride, env.OPENAI_BASE_URL, injectedOpenRouter]);
+  const key = JSON.stringify([command, env.CODEX_HOME, cwd, baseUrlOverride, env.OPENAI_BASE_URL, injectedOpenRouter, subscriptionViaOpenRouter]);
   let pending = inFlight.get(key);
   if (!pending) {
     pending = new Promise((resolve) => {
@@ -190,6 +207,28 @@ export async function resolveCodexExecutionRoute(settings: AgentSettings, cwd?: 
       // The user's developer_instructions apply on any provider route.
       ...(resolved.developerInstructions !== undefined && { developerInstructions: resolved.developerInstructions }),
     };
+  }
+  if (subscriptionViaOpenRouter) {
+    // OpenRouter passes the subscription's Responses requests through
+    // unchanged, so the reasoning semantics are whatever the user's own config
+    // already implies: a native probe ("codex") stays native, and its
+    // model/default stay valid. The probe's route is kept as-is otherwise — an
+    // "unknown" probe (timeout, no CLI, a config naming a non-OpenAI provider and
+    // model like `llama3`) must not be promoted to "codex" and checked against
+    // the native catalog. Only the endpoint is ours.
+    //
+    // Profiles cannot move our provider: verified on codex-cli 0.153.4 that a
+    // legacy `profile = "…"` / `[profiles.*]` in config.toml is a hard config
+    // error (no run at all), that `<name>.config.toml` profiles load only with
+    // `--profile` (Callboard never passes it), and that even with `--profile`
+    // the CLI's `-c model_provider=…` override still wins. Same for the full
+    // OpenRouter mode's `openrouter` provider.
+    //
+    // The direct-UI split is withheld: namespace tools are unverified through
+    // OpenRouter, and the endpoint is no longer OpenAI's.
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { directUiNamespaces, directUiCodeModeEnabled, directUiPolicy, ...rest } = resolved;
+    return { ...rest, endpoint: safeApiRoot(OPENROUTER_CODEX_BASE_URL), injectedOpenRouter: false, subscriptionViaOpenRouter: true };
   }
   return { ...resolved, injectedOpenRouter };
 }

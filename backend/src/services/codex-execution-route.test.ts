@@ -75,6 +75,43 @@ describe("installed Codex effective config/read", () => {
     expect(configured).toMatchObject({ route: "codex", model: "gpt-5.5" });
     expect(configured.defaultModel).toBeUndefined();
   });
+  it("subscription via OpenRouter keeps native models, points at OpenRouter, and withholds direct-UI", async () => {
+    await config(`model_provider='openai'\nmodel='gpt-5.5'\n`);
+    const native = await resolveCodexExecutionRoute({ codexHome: home }, home);
+    const routed = await resolveCodexExecutionRoute({ codexHome: home, codexSubscriptionViaOpenRouter: true, openRouterApiKey: "sk-or-test" }, home);
+    expect(routed).toMatchObject({
+      route: "codex",
+      model: "gpt-5.5",
+      endpoint: "https://openrouter.ai/api/v1",
+      injectedOpenRouter: false,
+      subscriptionViaOpenRouter: true,
+    });
+    expect(routed).not.toHaveProperty("directUiNamespaces");
+    expect(routed).not.toHaveProperty("directUiPolicy");
+    expect(routed).not.toHaveProperty("directUiCodeModeEnabled");
+    expect(routed.uiAliasPresence).toEqual(native.uiAliasPresence);
+    expect(native.subscriptionViaOpenRouter).toBeUndefined();
+    // Inert in api-key mode, and the full OpenRouter mode wins.
+    expect(
+      (await resolveCodexExecutionRoute({ codexHome: home, codexAuthMode: "api-key", codexSubscriptionViaOpenRouter: true, openRouterApiKey: "k" }, home))
+        .subscriptionViaOpenRouter,
+    ).toBeUndefined();
+    const full = await resolveCodexExecutionRoute(
+      { codexHome: home, codexUseOpenRouter: true, codexOpenRouterApiKey: "k2", codexSubscriptionViaOpenRouter: true, openRouterApiKey: "k" },
+      home,
+    );
+    expect(full).toMatchObject({ route: "openrouter", injectedOpenRouter: true });
+    expect(full.subscriptionViaOpenRouter).toBeUndefined();
+  });
+  it("subscription via OpenRouter keeps an unknown probe unknown, never promoting it to native", async () => {
+    // A config naming a non-OpenAI provider/model: forcing "codex" here would
+    // check `llama3` against the native catalog.
+    await config(
+      `model_provider='private'\nmodel='llama3'\n[model_providers.private]\nname='Private'\nbase_url='https://private.example/v1'\nwire_api='responses'\n`,
+    );
+    const routed = await resolveCodexExecutionRoute({ codexHome: home, codexSubscriptionViaOpenRouter: true, openRouterApiKey: "sk-or-test" }, home);
+    expect(routed).toMatchObject({ route: "unknown", model: "llama3", endpoint: "https://openrouter.ai/api/v1", subscriptionViaOpenRouter: true });
+  });
   it("private custom endpoints and malformed config are unknown, not assumed native", async () => {
     await config(`model_provider='private'\n[model_providers.private]\nname='Private'\nbase_url='https://private.example/v1'\nwire_api='responses'\n`);
     expect((await resolveCodexExecutionRoute({ codexHome: home }, home)).route).toBe("unknown");

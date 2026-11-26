@@ -103,3 +103,32 @@ export function codexOpenRouterCredentialReady(settings: CodexOpenRouterCredenti
   if (settings.codexOpenRouterApiKey?.trim()) return true;
   return Boolean(settings.codexOpenRouterBaseUrl?.trim()) && detectedEnv;
 }
+
+/**
+ * "Route subscription through OpenRouter" — the checkbox under each harness's
+ * subscription credential. Same convention as the pair above: each mirrors its
+ * backend predicate minus the flag and the credential mode, against the last
+ * settings the server returned (so masked `••••` secrets count as set, which
+ * they are).
+ */
+export type ClaudeSubscriptionViaOpenRouterFields = Pick<AgentSettings, "openRouterApiKey" | "apiKey" | "authToken">;
+export type CodexSubscriptionViaOpenRouterFields = Pick<AgentSettings, "openRouterApiKey">;
+
+/**
+ * Mirrors `isClaudeCodeSubscriptionRoutedThroughOpenRouter`
+ * (`backend/src/services/agent-settings.ts`) minus the flag and the
+ * `claudeCodeUseOpenRouter` check: the account-wide OpenRouter key is set, and
+ * no manual API key or auth token is — with either of those, the claude.ai
+ * login is not what authenticates, so there is no subscription to route.
+ */
+export function claudeSubscriptionViaOpenRouterReady(settings: ClaudeSubscriptionViaOpenRouterFields): boolean {
+  return Boolean(settings.openRouterApiKey?.trim()) && !settings.apiKey?.trim() && !settings.authToken?.trim();
+}
+
+/**
+ * Mirrors `isCodexSubscriptionRoutedThroughOpenRouter` minus the flag and the
+ * credential-mode checks: the account-wide OpenRouter key is set.
+ */
+export function codexSubscriptionViaOpenRouterReady(settings: CodexSubscriptionViaOpenRouterFields): boolean {
+  return Boolean(settings.openRouterApiKey?.trim());
+}

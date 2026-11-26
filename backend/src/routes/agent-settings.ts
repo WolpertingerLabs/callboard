@@ -205,6 +205,19 @@ agentSettingsRouter.put("/", requireSessionAuth, async (req: Request, res: Respo
     return;
   }
 
+  // OpenRouter keys end up in HTTP headers (`x-api-key` for the subscription
+  // routing modes, the Authorization bearer for the credential modes), so a
+  // CR or LF inside one — after the trim `normalize` applies anyway — can only
+  // be a paste accident, and storing it would leave a mode that the UI shows as
+  // in effect but the backend refuses to send. Say so instead.
+  for (const field of ["openRouterApiKey", "claudeCodeOpenRouterApiKey", "codexOpenRouterApiKey"] as const) {
+    const value = body[field];
+    if (typeof value === "string" && /[\r\n]/.test(value.trim())) {
+      res.status(400).json({ error: `${field} contains a line break. Paste the key again as a single line.` });
+      return;
+    }
+  }
+
   const {
     proxyMode,
     remoteServerUrl,
@@ -228,6 +241,7 @@ agentSettingsRouter.put("/", requireSessionAuth, async (req: Request, res: Respo
     claudeCodeOpenRouterSonnetModel,
     claudeCodeOpenRouterHaikuModel,
     claudeCodeOpenRouterSubagentModel,
+    claudeCodeSubscriptionViaOpenRouter,
     openRouterApiKey,
     openRouterBaseUrl,
     openRouterUtilityCompletions,
@@ -250,6 +264,7 @@ agentSettingsRouter.put("/", requireSessionAuth, async (req: Request, res: Respo
     codexOpenRouterApiKey,
     codexOpenRouterBaseUrl,
     codexOpenRouterModel,
+    codexSubscriptionViaOpenRouter,
     piProviderId,
     piModel,
     piApiKey,
@@ -368,7 +383,8 @@ agentSettingsRouter.put("/", requireSessionAuth, async (req: Request, res: Respo
     claudeCodeOpenRouterOpusModel !== undefined ||
     claudeCodeOpenRouterSonnetModel !== undefined ||
     claudeCodeOpenRouterHaikuModel !== undefined ||
-    claudeCodeOpenRouterSubagentModel !== undefined;
+    claudeCodeOpenRouterSubagentModel !== undefined ||
+    claudeCodeSubscriptionViaOpenRouter !== undefined;
 
   /**
    * Did this save change *which binary* an engine spawns?
@@ -440,7 +456,8 @@ agentSettingsRouter.put("/", requireSessionAuth, async (req: Request, res: Respo
     codexUseOpenRouter !== undefined ||
     codexOpenRouterApiKey !== undefined ||
     codexOpenRouterBaseUrl !== undefined ||
-    codexOpenRouterModel !== undefined;
+    codexOpenRouterModel !== undefined ||
+    codexSubscriptionViaOpenRouter !== undefined;
 
   // Validate the alias map up front so bad input 400s before anything is written.
   let normalizedAliases: Record<string, string> | undefined;
@@ -534,6 +551,7 @@ agentSettingsRouter.put("/", requireSessionAuth, async (req: Request, res: Respo
       ...(claudeCodeOpenRouterSonnetModel !== undefined && { claudeCodeOpenRouterSonnetModel: normalize(claudeCodeOpenRouterSonnetModel) }),
       ...(claudeCodeOpenRouterHaikuModel !== undefined && { claudeCodeOpenRouterHaikuModel: normalize(claudeCodeOpenRouterHaikuModel) }),
       ...(claudeCodeOpenRouterSubagentModel !== undefined && { claudeCodeOpenRouterSubagentModel: normalize(claudeCodeOpenRouterSubagentModel) }),
+      ...(claudeCodeSubscriptionViaOpenRouter !== undefined && { claudeCodeSubscriptionViaOpenRouter: normalizeBool(claudeCodeSubscriptionViaOpenRouter) }),
       ...(openRouterApiKey !== undefined && { openRouterApiKey: normalize(openRouterApiKey) }),
       ...(openRouterBaseUrl !== undefined && { openRouterBaseUrl: normalize(openRouterBaseUrl) }),
       ...(openRouterUtilityCompletions !== undefined && { openRouterUtilityCompletions: normalizeBool(openRouterUtilityCompletions) }),
@@ -562,6 +580,7 @@ agentSettingsRouter.put("/", requireSessionAuth, async (req: Request, res: Respo
       ...(codexOpenRouterApiKey !== undefined && { codexOpenRouterApiKey: normalize(codexOpenRouterApiKey) }),
       ...(codexOpenRouterBaseUrl !== undefined && { codexOpenRouterBaseUrl: normalize(codexOpenRouterBaseUrl) }),
       ...(codexOpenRouterModel !== undefined && { codexOpenRouterModel: normalize(codexOpenRouterModel) }),
+      ...(codexSubscriptionViaOpenRouter !== undefined && { codexSubscriptionViaOpenRouter: normalizeBool(codexSubscriptionViaOpenRouter) }),
       // pi's credentials live here and nowhere else. Omitting these silently
       // drops the key the Settings form sent, and the pi block in claude.ts
       // then starts a session with no `apiKey` — pi falls through to its own
@@ -592,6 +611,14 @@ agentSettingsRouter.put("/", requireSessionAuth, async (req: Request, res: Respo
       await switchProxyMode(updated.proxyMode);
     }
 
+    // The account-wide OpenRouter key is also the "route subscription through
+    // OpenRouter" credential, so moving it changes the Claude SDK env (and its
+    // account probe) and the Codex env — but only while that mode is on, and
+    // only when the value actually moved: the page's Save sends every field.
+    const openRouterKeyMoved = openRouterApiKey !== undefined && updated.openRouterApiKey !== before.openRouterApiKey;
+    const claudeEnvTouched = apiFieldsTouched || (openRouterKeyMoved && Boolean(updated.claudeCodeSubscriptionViaOpenRouter));
+    const codexEnvTouched = codexFieldsTouched || (openRouterKeyMoved && Boolean(updated.codexSubscriptionViaOpenRouter));
+
     if (binaryOverrideFieldsTouched) {
       // A different binary is now in effect, so every cached answer about which
       // one resolved — and the account info the *old* one reported — is stale.
@@ -606,13 +633,13 @@ agentSettingsRouter.put("/", requireSessionAuth, async (req: Request, res: Respo
       // on the old path against one on the new.
       log.info("Binary override changed — dropping engine probe caches so the next chat and the status card both see it.");
       resetEngineProbeCaches();
-    } else if (apiFieldsTouched) {
+    } else if (claudeEnvTouched) {
       // Kick off a refresh so the About tab and any subsequent sessions see
       // the updated account / models. Don't await — the client gets back
       // quickly and the next poll of /api/system-info will pick it up.
       refreshSdkInfoCache().catch((err) => log.warn(`SDK info refresh failed: ${err.message}`));
     }
-    if (codexFieldsTouched) {
+    if (codexEnvTouched) {
       // Codex's live catalog is tied to the configured auth/home env. Refresh
       // after settings writes so subsequent pickers/tool calls see the new view.
       refreshCodexModelsCache().catch((err) => log.warn(`Codex model refresh failed: ${err.message}`));

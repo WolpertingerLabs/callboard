@@ -19,6 +19,13 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getAgentSettings } from "../../../services/agent-settings.js";
+
+/**
+ * "Route the ChatGPT subscription through OpenRouter". Defined in
+ * `agent-settings.ts` (whose `getApiEnvOverrides` needs it, and which this
+ * module imports) and re-exported here beside {@link isCodexRoutedThroughOpenRouter}.
+ */
+export { isCodexSubscriptionRoutedThroughOpenRouter } from "../../../services/agent-settings.js";
 import { resolveCodexHome } from "./sessionParser.js";
 import type { AgentSettings } from "shared";
 

@@ -46,6 +46,8 @@ describe("Settings → API Save payload", () => {
       codexAuthMode: "api-key",
       codexUseOpenRouter: true,
       openRouterUtilityCompletions: true,
+      // Preserved by Save even while its box is hidden (OpenRouter mode wins).
+      codexSubscriptionViaOpenRouter: true,
       // Not form fields: must not be echoed back by Save. Retired Cline and
       // ACP settings are among these now.
       acpProviderModels: { opencode: "dropped" },
@@ -77,6 +79,7 @@ describe("Settings → API Save payload", () => {
       claudeCodeOpenRouterSonnetModel: "",
       claudeCodeOpenRouterHaikuModel: "",
       claudeCodeOpenRouterSubagentModel: "",
+      claudeCodeSubscriptionViaOpenRouter: false,
       openRouterApiKey: "",
       openRouterBaseUrl: "",
       openRouterUtilityCompletions: true,
@@ -101,6 +104,7 @@ describe("Settings → API Save payload", () => {
       codexOpenRouterApiKey: "",
       codexOpenRouterBaseUrl: "",
       codexOpenRouterModel: "",
+      codexSubscriptionViaOpenRouter: true,
     });
   });
 

@@ -63,6 +63,10 @@ export async function buildCodexExtras(ctx: ProviderOptionsContext & { codexRout
   codexRoute ??= await resolveCodexExecutionRoute(agentSettings, folder);
   const reasoningTarget = await resolveReasoningTarget({ provider: "codex", model: chatModel, cwd: folder, codexRoute }, agentSettings);
   const useOpenRouter = reasoningTarget.injectedOpenRouter;
+  // The ChatGPT login sent via OpenRouter: native model + reasoning (the route
+  // says "codex"), only the provider block differs. Never alongside the full
+  // OpenRouter mode above, which wins.
+  const subscriptionViaOpenRouter = !useOpenRouter && codexRoute.subscriptionViaOpenRouter === true;
   // Routing requested with no credentials anywhere — no stored key and no
   // ambient OpenRouter setup — is a misconfiguration rather than a silent
   // fallback onto codexAuthMode.
@@ -108,6 +112,7 @@ export async function buildCodexExtras(ctx: ProviderOptionsContext & { codexRout
     ...(codexBinary && { pathOverride: codexBinary }),
     ...(useOpenRouter && { useOpenRouter: true }),
     ...(useOpenRouter && agentSettings.codexOpenRouterBaseUrl?.trim() && { openRouterBaseUrl: agentSettings.codexOpenRouterBaseUrl.trim() }),
+    ...(subscriptionViaOpenRouter && { subscriptionViaOpenRouter: true }),
     ...(!useOpenRouter && authMode === "api-key" && agentSettings.codexApiKey?.trim() && { apiKey: agentSettings.codexApiKey.trim() }),
     ...(!useOpenRouter && authMode === "api-key" && agentSettings.codexBaseUrl?.trim() && { baseUrl: agentSettings.codexBaseUrl.trim() }),
     ...(requestedModel && { model: requestedModel }),
@@ -124,13 +129,14 @@ export async function buildCodexExtras(ctx: ProviderOptionsContext & { codexRout
     ...(ctx.additionalInstructions && codexDeveloperInstructionsFor(codexRoute, ctx.additionalInstructions, trackingId)),
   };
   log.info(
-    `Codex chat config — trackingId=${trackingId}, authMode=${useOpenRouter ? "openrouter" : authMode}, ` +
+    `Codex chat config — trackingId=${trackingId}, authMode=${useOpenRouter ? "openrouter" : subscriptionViaOpenRouter ? "subscription+openrouter" : authMode}, ` +
       `model=${requestedModel ?? "(default)"}, effort=${chatEffort ?? "(default)"}, ` +
       `binary=${codexBinary ?? "(bundled)"}, ` +
       `sandbox=${agentSettings.codexSandboxMode ?? "(permission-derived)"}, ` +
       `codexHome=${agentSettings.codexHome?.trim() || "~/.codex"}` +
       `${useOpenRouter ? `, orBaseUrl=${agentSettings.codexOpenRouterBaseUrl?.trim() || "(default)"}` : ""}` +
       `${useOpenRouter && agentSettings.codexOpenRouterApiKey ? `, orKeyTail=…${agentSettings.codexOpenRouterApiKey.trim().slice(-4)}` : ""}` +
+      `${subscriptionViaOpenRouter && agentSettings.openRouterApiKey ? `, orKeyTail=…${agentSettings.openRouterApiKey.trim().slice(-4)}` : ""}` +
       `${!useOpenRouter && authMode === "api-key" && agentSettings.codexApiKey ? `, apiKeyTail=…${agentSettings.codexApiKey.trim().slice(-4)}` : ""}`,
   );
   return codex;

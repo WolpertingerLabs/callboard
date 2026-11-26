@@ -194,6 +194,25 @@ export interface AgentSettings {
   /** CLAUDE_CODE_SUBAGENT_MODEL while routing through OpenRouter. */
   claudeCodeOpenRouterSubagentModel?: string;
 
+  /**
+   * "Route subscription through OpenRouter" — keep the claude.ai login and send
+   * its requests via OpenRouter's Anthropic-compatible gateway. Distinct from
+   * {@link claudeCodeUseOpenRouter}, which replaces the login with an
+   * OpenRouter key: here OpenRouter only forwards the subscription.
+   *
+   * When in effect, ANTHROPIC_BASE_URL is set to `https://openrouter.ai/api`,
+   * the account-wide {@link openRouterApiKey} rides as an `x-api-key` header
+   * (ANTHROPIC_CUSTOM_HEADERS), and ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY are
+   * forced empty so the OAuth login authenticates. The NATIVE model fields
+   * (`model`, `defaultOpusModel`, …) apply, not the OpenRouter ones. Anthropic
+   * models bill the plan; other providers' slugs bill OpenRouter credits.
+   *
+   * Inert (no effect) when {@link claudeCodeUseOpenRouter} is on, when
+   * {@link apiKey} or {@link authToken} is set (the login is not in use then),
+   * or when {@link openRouterApiKey} is blank. Overrides {@link apiBaseUrl}.
+   */
+  claudeCodeSubscriptionViaOpenRouter?: boolean;
+
   // ── OpenRouter (a service, not a harness) ─────────────────────────
   // OpenRouter stopped being a selectable agent harness; the credential below
   // stayed, because the utility completions (chat titles, branch names, themes)
@@ -208,9 +227,12 @@ export interface AgentSettings {
    * services/openrouter-completion.ts). (The retired ACP harness also used it
    * as a fallback key.)
    *
-   * Note this is NOT the key used to route a native harness through OpenRouter
-   * — those modes each carry their own (`claudeCodeOpenRouterApiKey`,
-   * `codexOpenRouterApiKey`), so a user can scope keys per use.
+   * Note this is NOT the key used to run a native harness on OpenRouter
+   * credentials — those modes each carry their own (`claudeCodeOpenRouterApiKey`,
+   * `codexOpenRouterApiKey`), so a user can scope keys per use. It IS the key
+   * the "route subscription through OpenRouter" modes send
+   * ({@link claudeCodeSubscriptionViaOpenRouter},
+   * {@link codexSubscriptionViaOpenRouter}), along with voice input and read aloud.
    */
   openRouterApiKey?: string;
 
@@ -406,6 +428,20 @@ export interface AgentSettings {
    * toggling lossy. Blank ⇒ the harness's own default.
    */
   codexOpenRouterModel?: string;
+
+  /**
+   * "Route subscription through OpenRouter" for Codex — keep the ChatGPT login
+   * (`$CODEX_HOME/auth.json`, so `requires_openai_auth`) and send its requests
+   * via OpenRouter, authenticated with the account-wide {@link openRouterApiKey}
+   * as an `x-api-key` header. Native model fields ({@link codexModel}) apply.
+   *
+   * Only in effect in subscription auth mode, with {@link codexUseOpenRouter}
+   * off and {@link openRouterApiKey} set.
+   *
+   * **Experimental:** as of 2026-11 OpenRouter forwards these requests but
+   * OpenAI answers 403, so routed Codex chats fail.
+   */
+  codexSubscriptionViaOpenRouter?: boolean;
 
   // ── pi ─────────────────────────────────────────────────────────────
   // Settings → API. pi embeds its agent runtime **in the backend

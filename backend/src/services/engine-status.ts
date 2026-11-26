@@ -10,8 +10,8 @@
  * | Fact | Source |
  * |---|---|
  * | Claude Code runtime | `getClaudeCodeExecutablePath()` — the same call `services/claude.ts` passes to the SDK |
- * | Claude Code credentials | `getSdkInfoAsync()`'s account info |
- * | Codex credentials | `getCodexAuthSource()` + `isCodexRoutedThroughOpenRouter()` |
+ * | Claude Code credentials | `getSdkInfoAsync()`'s account info, + `isClaudeCodeSubscriptionRoutedThroughOpenRouter()` |
+ * | Codex credentials | `getCodexAuthSource()` + `isCodexRoutedThroughOpenRouter()` / `isCodexSubscriptionRoutedThroughOpenRouter()` |
  * | Codex login CLI on PATH | `resolveBinaryPath()` (`utils/binary-path.ts`) |
  * | Bundled versions | the package's own `package.json` on disk — see {@link bundledPackageVersion} |
  * | Pinned vs ranged | callboard's own manifest — see {@link callboardDependencyRange} |
@@ -31,10 +31,15 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { EngineBinaryOverride, EngineCredentials, EngineInstallCapability, EngineStatus, EngineVersionDrift } from "shared/types/index.js";
-import { getCodexAuthSource, isCodexRoutedThroughOpenRouter } from "../agents/adapters/codex/codexAuth.js";
+import { getCodexAuthSource, isCodexRoutedThroughOpenRouter, isCodexSubscriptionRoutedThroughOpenRouter } from "../agents/adapters/codex/codexAuth.js";
 import { DEFAULT_PI_PROVIDER_ID } from "../agents/adapters/pi/optionsAdapter.js";
 import { createLogger } from "../utils/logger.js";
-import { getAgentSettings, getCodexExecutableOverride, isClaudeCodeRoutedThroughOpenRouter } from "./agent-settings.js";
+import {
+  getAgentSettings,
+  getCodexExecutableOverride,
+  isClaudeCodeRoutedThroughOpenRouter,
+  isClaudeCodeSubscriptionRoutedThroughOpenRouter,
+} from "./agent-settings.js";
 import { resetClaudeBinaryCache, resolveClaudeBinary, type ClaudeBinaryResolution } from "./claude-binary.js";
 import { EXPECTED_CODEX_CLI_VERSION } from "../agents/adapters/codex/sessionParser.js";
 import { bundledPackageVersion as readPackageVersion } from "../utils/package-version.js";
@@ -486,6 +491,17 @@ const OPENROUTER_ROUTED_NOTE =
   "Routed through OpenRouter — authenticated with the OpenRouter key on this tab, or with the OpenRouter credentials already in your environment when none is stored here.";
 
 /**
+ * The note on a row whose subscription login is sent via OpenRouter ("Route
+ * subscription through OpenRouter"). Shared with `codexAuthNote` in
+ * `services/system-info.ts` through {@link CODEX_SUBSCRIPTION_VIA_OPENROUTER_NOTE}.
+ */
+export const SUBSCRIPTION_VIA_OPENROUTER_NOTE =
+  "Signed in with your subscription; requests go through OpenRouter using the key on the OpenRouter tab. Models from the subscription's provider bill your plan; other providers' models bill OpenRouter credits.";
+
+/** The Codex row's version: the same, plus the known upstream failure. */
+export const CODEX_SUBSCRIPTION_VIA_OPENROUTER_NOTE = `${SUBSCRIPTION_VIA_OPENROUTER_NOTE} Experimental: OpenRouter currently rejects Codex ChatGPT-plan traffic (403).`;
+
+/**
  * Claude Code's credentials, walked out of the SDK's account info — the block
  * above this one is the reasoning for every branch.
  *
@@ -512,6 +528,22 @@ export async function claudeCodeCredentials(): Promise<EngineCredentials> {
     // Settings unreadable — fall through to the SDK's answer.
   }
 
+  let subscriptionViaOpenRouter = false;
+  try {
+    subscriptionViaOpenRouter = isClaudeCodeSubscriptionRoutedThroughOpenRouter();
+  } catch {
+    // Settings unreadable — report the SDK's answer undecorated.
+  }
+  const answer = await sdkClaudeCodeCredentials();
+  if (!subscriptionViaOpenRouter || answer.configured === "unknown") return answer;
+  // The SDK probe ran with the routed env, so its account is the one routed
+  // chats use. Decorate rather than replace: the login is still the credential.
+  if (answer.configured) return { ...answer, source: `${answer.source} via OpenRouter`, note: SUBSCRIPTION_VIA_OPENROUTER_NOTE };
+  return { ...answer, note: [answer.note, '"Route subscription through OpenRouter" still needs this login.'].filter(Boolean).join(" ") };
+}
+
+/** The SDK's own answer, before any OpenRouter decoration. */
+async function sdkClaudeCodeCredentials(): Promise<EngineCredentials> {
   try {
     const { account } = await getSdkInfoAsync();
     const tokenSource = namedSource(account?.tokenSource);
@@ -563,6 +595,20 @@ function codexCredentials(): EngineCredentials {
     }
   } catch {
     // Settings unreadable — the auth-source answer above still stands.
+  }
+
+  try {
+    if (isCodexSubscriptionRoutedThroughOpenRouter()) {
+      // `requires_openai_auth` uses auth.json's bearer — a config.toml-only
+      // setup has no ChatGPT login to forward.
+      if (source === "auth.json") return { configured: true, source: "auth.json via OpenRouter", note: CODEX_SUBSCRIPTION_VIA_OPENROUTER_NOTE };
+      return {
+        configured: false,
+        note: '"Route subscription through OpenRouter" sends your ChatGPT login, and there is no stored one ($CODEX_HOME/auth.json). Run `codex login` — it needs the Codex CLI installed globally.',
+      };
+    }
+  } catch {
+    // Settings unreadable — fall through.
   }
 
   if (source) return { configured: true, source };

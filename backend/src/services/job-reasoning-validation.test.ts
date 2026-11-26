@@ -77,3 +77,12 @@ it("validates known injected OR routing without a project, even for templated fo
   await assertJobReasoningEfforts(definition);
   expect(validate).toHaveBeenCalledWith({ provider: "codex", model: undefined, effort: "high" });
 });
+it("treats a subscription routed through OpenRouter as native: native efforts pass, validation waits for the folder", async () => {
+  // Not the injected-OpenRouter path above: the run keeps native reasoning
+  // semantics, so "ultra" is a native effort, not an unsupported OpenRouter one.
+  settings.value = { codexSubscriptionViaOpenRouter: true, openRouterApiKey: "fake", codexModel: "gpt-5.5" };
+  await expect(
+    assertJobReasoningEfforts({ steps: [{ id: "one", type: "agent", provider: "codex", folder: "{{inputs.repo}}", effort: "ultra" }] }),
+  ).resolves.toBeUndefined();
+  expect(validate).not.toHaveBeenCalled();
+});

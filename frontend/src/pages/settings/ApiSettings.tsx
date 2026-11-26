@@ -39,6 +39,8 @@ import {
   writeCodexCredentialMode,
   claudeOpenRouterCredentialReady,
   codexOpenRouterCredentialReady,
+  claudeSubscriptionViaOpenRouterReady,
+  codexSubscriptionViaOpenRouterReady,
   type ClaudeCredentialMode,
   type CodexCredentialMode,
 } from "./credentialMode";
@@ -689,6 +691,7 @@ function CredentialModeSection<M extends string>({
   busy,
   error,
   notInEffect,
+  children,
 }: {
   harness: "Claude Code" | "Codex";
   value: M;
@@ -702,6 +705,8 @@ function CredentialModeSection<M extends string>({
   error: string;
   /** Why the stored selection is not what the daemon is doing, when the two disagree. */
   notInEffect?: string;
+  /** Options of the selected credential, rendered under the segments (today: route-subscription-through-OpenRouter). */
+  children?: React.ReactNode;
 }) {
   const hints = options.filter((o) => o.disabledReason);
   return (
@@ -718,6 +723,8 @@ function CredentialModeSection<M extends string>({
 
       <SegmentedControl value={value} options={options} onSelect={onSelect} busy={busy} />
 
+      {children}
+
       {notInEffect && <div style={{ ...helpStyle, color: "var(--warning)" }}>{notInEffect}</div>}
 
       {hints.map(({ mode, label, disabledReason }) => (
@@ -732,6 +739,76 @@ function CredentialModeSection<M extends string>({
         Saved as soon as you pick it — the page&rsquo;s Save button below is for everything else. Credentials are read when a session starts, so this applies to
         new chats and to any chat you resume, but not to one that is already running.
       </div>
+    </div>
+  );
+}
+
+/** OpenRouter's guide to sending a coding agent's own subscription through OpenRouter. */
+const SUBSCRIPTION_VIA_OPENROUTER_DOCS = "https://openrouter.ai/docs/cookbook/coding-agents/bring-your-own-subscription";
+
+/**
+ * "Route subscription through OpenRouter": keep the harness's own subscription
+ * login and send its requests via OpenRouter, authenticated with the
+ * account-wide key on the OpenRouter tab.
+ *
+ * A checkbox under the subscription segment rather than a segment of its own,
+ * because it does not change which credential pays — the subscription still
+ * does — only the path the requests take. Written instantly, like the segments.
+ *
+ * Labelled "Route subscription…" rather than the plan's bare "Route through
+ * OpenRouter", which is already the heading of the OpenRouter credential
+ * section further down the same tab.
+ */
+function SubscriptionViaOpenRouterCheckbox({
+  harness,
+  checked,
+  onChange,
+  busy,
+  notInEffect,
+}: {
+  harness: "Claude Code" | "Codex";
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  busy: boolean;
+  /** Why a ticked box is not doing anything, when it is not. */
+  notInEffect?: string;
+}) {
+  const id = `${harness === "Codex" ? "codex" : "claude"}-subscription-via-openrouter`;
+  return (
+    <div style={{ marginTop: 12 }}>
+      <label htmlFor={id} style={{ display: "flex", alignItems: "center", gap: 10, cursor: busy ? "default" : "pointer" }}>
+        <input id={id} type="checkbox" checked={checked} disabled={busy} onChange={(e) => onChange(e.target.checked)} style={{ flexShrink: 0 }} />
+        <span style={{ fontSize: 13, color: "var(--text)" }}>Route subscription through OpenRouter</span>
+      </label>
+      <div style={{ ...helpStyle, lineHeight: 1.5 }}>
+        {harness === "Claude Code" ? (
+          <>
+            Keep your Claude subscription login and send requests via OpenRouter, authenticated with the key on the OpenRouter tab. Claude models bill your
+            plan, not OpenRouter credits; other providers&apos; models (e.g. <code>deepseek/…</code>) bill OpenRouter credits. Sets{" "}
+            <code>ANTHROPIC_BASE_URL</code> to <code>https://openrouter.ai/api</code> and sends the key as an <code>x-api-key</code> header.{" "}
+            <a href={SUBSCRIPTION_VIA_OPENROUTER_DOCS} target="_blank" rel="noopener noreferrer" style={{ color: "var(--accent-text)" }}>
+              OpenRouter&apos;s guide
+            </a>
+          </>
+        ) : (
+          <>
+            Keep your ChatGPT subscription login and send requests via OpenRouter, authenticated with the key on the OpenRouter tab. OpenAI models bill your
+            plan, not OpenRouter credits. Adds a provider block pointing Codex at <code>https://openrouter.ai/api/v1</code> that keeps your ChatGPT login and
+            sends the key as an <code>x-api-key</code> header.{" "}
+            <a href={SUBSCRIPTION_VIA_OPENROUTER_DOCS} target="_blank" rel="noopener noreferrer" style={{ color: "var(--accent-text)" }}>
+              OpenRouter&apos;s guide
+            </a>
+          </>
+        )}
+      </div>
+      {harness === "Codex" && (
+        <div style={{ ...helpStyle, color: "var(--warning)" }}>
+          Experimental: OpenRouter currently rejects Codex requests made with a ChatGPT plan (403 Forbidden), so routed chats fail. Routed runs may also replace
+          Codex&apos;s cached model list (<code>$CODEX_HOME/models_cache.json</code>) with OpenRouter&apos;s until Codex next refreshes it, which can outlast
+          unticking this box for a while.
+        </div>
+      )}
+      {checked && notInEffect && <div style={{ ...helpStyle, color: "var(--warning)" }}>{notInEffect}</div>}
     </div>
   );
 }
@@ -824,6 +901,7 @@ export default function ApiSettings() {
     claudeCodeOpenRouterSonnetModel,
     claudeCodeOpenRouterHaikuModel,
     claudeCodeOpenRouterSubagentModel,
+    claudeCodeSubscriptionViaOpenRouter,
     openRouterApiKey,
     openRouterBaseUrl,
     openRouterUtilityCompletions,
@@ -843,6 +921,7 @@ export default function ApiSettings() {
     codexOpenRouterApiKey,
     codexOpenRouterBaseUrl,
     codexOpenRouterModel,
+    codexSubscriptionViaOpenRouter,
     piProviderId,
     piModel,
     piApiKey,
@@ -1145,6 +1224,18 @@ export default function ApiSettings() {
     );
   };
 
+  /** The route-subscription-through-OpenRouter checkbox, written like the segments it sits under. */
+  const handleSubscriptionViaOpenRouter = (control: "claude" | "codex", checked: boolean) => {
+    const field = control === "claude" ? "claudeCodeSubscriptionViaOpenRouter" : "codexSubscriptionViaOpenRouter";
+    const previous = form[field];
+    void persistCredentialFields(
+      control,
+      { [field]: checked },
+      () => setField(field, checked),
+      () => setField(field, previous),
+    );
+  };
+
   const handleRefresh = async () => {
     try {
       const sys = await getSystemInfo({ refresh: true });
@@ -1285,6 +1376,33 @@ export default function ApiSettings() {
   const codexRoutingInEffect = codexCredentialMode === "openrouter" && codexOpenRouterReady;
 
   /**
+   * "Route subscription through OpenRouter", per harness: whether its
+   * conditions hold (against `settings`, as above), and whether the box is
+   * actually doing something. The checkbox shows under the subscription
+   * segment when it could work, or when it is ticked — so a box whose key was
+   * later removed can still be unticked.
+   */
+  const claudeSubViaOrReady = claudeSubscriptionViaOpenRouterReady(settings ?? {});
+  const codexSubViaOrReady = codexSubscriptionViaOpenRouterReady(settings ?? {});
+  const claudeSubRoutingInEffect = claudeCredentialMode === "anthropic" && claudeCodeSubscriptionViaOpenRouter && claudeSubViaOrReady;
+  const showClaudeSubViaOr = claudeCredentialMode === "anthropic" && (claudeSubViaOrReady || claudeCodeSubscriptionViaOpenRouter);
+  const showCodexSubViaOr = codexCredentialMode === "subscription" && (codexSubViaOrReady || codexSubscriptionViaOpenRouter);
+  // Hidden only because a manual key/token replaces the login: say so, like a
+  // disabled segment does, rather than leaving the option to vanish unexplained.
+  const claudeSubViaOrBlockedByManualAuth =
+    claudeCredentialMode === "anthropic" &&
+    !showClaudeSubViaOr &&
+    Boolean(settings?.openRouterApiKey?.trim()) &&
+    Boolean(settings?.apiKey?.trim() || settings?.authToken?.trim());
+  const subViaOrNoKey = "Not in effect — add an OpenRouter key on the OpenRouter tab and Save.";
+  const claudeSubViaOrNotInEffect = claudeSubRoutingInEffect
+    ? undefined
+    : !settings?.openRouterApiKey?.trim()
+      ? subViaOrNoKey
+      : "Not in effect — an API key or auth token is set under Authentication below, so Claude Code isn't using your claude.ai login. Clear them to route your subscription.";
+  const codexSubViaOrNotInEffect = codexSubViaOrReady ? undefined : subViaOrNoKey;
+
+  /**
    * What is running instead, on the badge of the routing section that is not.
    *
    * "Claude Code is on your Anthropic credentials" is a claim about the process
@@ -1414,7 +1532,23 @@ export default function ApiSettings() {
               { mode: "anthropic", label: "Anthropic" },
               { mode: "openrouter", label: "OpenRouter", disabledReason: claudeOpenRouterUnready },
             ]}
-          />
+          >
+            {claudeSubViaOrBlockedByManualAuth && (
+              <div style={helpStyle}>
+                <strong style={{ fontWeight: 500 }}>Route subscription through OpenRouter:</strong> unavailable while an API key or auth token is set under
+                Authentication below.
+              </div>
+            )}
+            {showClaudeSubViaOr && (
+              <SubscriptionViaOpenRouterCheckbox
+                harness="Claude Code"
+                checked={claudeCodeSubscriptionViaOpenRouter}
+                onChange={(checked) => handleSubscriptionViaOpenRouter("claude", checked)}
+                busy={credentialsBusy}
+                notInEffect={claudeSubViaOrNotInEffect}
+              />
+            )}
+          </CredentialModeSection>
 
           <ReferenceLinksSection provider="claude-code" />
 
@@ -1450,6 +1584,7 @@ export default function ApiSettings() {
               <Globe size={16} style={{ color: "var(--accent-text)" }} />
               <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>API Endpoint</span>
               {claudeRoutingInEffect && <InactiveBadge>Inactive — OpenRouter is handling this</InactiveBadge>}
+              {claudeSubRoutingInEffect && <InactiveBadge>Inactive — routed through OpenRouter</InactiveBadge>}
             </div>
             <div style={subtitleStyle}>
               Override the base URL used by the Claude Agent SDK. Useful for routing through a corporate proxy or LLM gateway. Leave empty to use the default
@@ -1472,6 +1607,9 @@ export default function ApiSettings() {
               <div style={helpStyle}>
                 When set to a non-first-party host, MCP tool search is disabled by default.
                 {claudeRoutingInEffect ? " The OpenRouter endpoint above wins over this one while OpenRouter is the selected credential." : ""}
+                {claudeSubRoutingInEffect
+                  ? " Route subscription through OpenRouter (under Credentials) sends requests to https://openrouter.ai/api instead while it is on."
+                  : ""}
               </div>
             </div>
           </div>
@@ -1757,8 +1895,9 @@ export default function ApiSettings() {
               <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>OpenRouter</span>
             </div>
             <div style={subtitleStyle}>
-              An OpenRouter account key, used by the features below rather than by a harness of its own. To run a coding harness on OpenRouter, turn on
-              &ldquo;Route through OpenRouter&rdquo; on the Claude or Codex tab — each keeps its own key.
+              An OpenRouter account key, used by the features below rather than by a harness of its own. To run a harness entirely on OpenRouter credits, pick
+              OpenRouter under Credentials on the Claude or Codex tab (each keeps its own key). To keep your subscription and send it via OpenRouter, tick
+              &ldquo;Route subscription through OpenRouter&rdquo; under the subscription credential; that uses this key.
             </div>
 
             <div style={fieldWrap}>
@@ -1968,7 +2107,17 @@ export default function ApiSettings() {
                 : undefined
             }
             options={[...CODEX_NATIVE_CREDENTIALS, { mode: "openrouter", label: "OpenRouter", disabledReason: codexOpenRouterUnready }]}
-          />
+          >
+            {showCodexSubViaOr && (
+              <SubscriptionViaOpenRouterCheckbox
+                harness="Codex"
+                checked={codexSubscriptionViaOpenRouter}
+                onChange={(checked) => handleSubscriptionViaOpenRouter("codex", checked)}
+                busy={credentialsBusy}
+                notInEffect={codexSubViaOrNotInEffect}
+              />
+            )}
+          </CredentialModeSection>
 
           <ReferenceLinksSection provider="codex" />
 
