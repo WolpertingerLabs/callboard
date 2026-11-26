@@ -103,6 +103,15 @@ describe("installed Codex effective config/read", () => {
     expect(full).toMatchObject({ route: "openrouter", injectedOpenRouter: true });
     expect(full.subscriptionViaOpenRouter).toBeUndefined();
   });
+  it("subscription via OpenRouter keeps an unknown probe unknown, never promoting it to native", async () => {
+    // A config naming a non-OpenAI provider/model: forcing "codex" here would
+    // check `llama3` against the native catalog.
+    await config(
+      `model_provider='private'\nmodel='llama3'\n[model_providers.private]\nname='Private'\nbase_url='https://private.example/v1'\nwire_api='responses'\n`,
+    );
+    const routed = await resolveCodexExecutionRoute({ codexHome: home, codexSubscriptionViaOpenRouter: true, openRouterApiKey: "sk-or-test" }, home);
+    expect(routed).toMatchObject({ route: "unknown", model: "llama3", endpoint: "https://openrouter.ai/api/v1", subscriptionViaOpenRouter: true });
+  });
   it("private custom endpoints and malformed config are unknown, not assumed native", async () => {
     await config(`model_provider='private'\n[model_providers.private]\nname='Private'\nbase_url='https://private.example/v1'\nwire_api='responses'\n`);
     expect((await resolveCodexExecutionRoute({ codexHome: home }, home)).route).toBe("unknown");

@@ -14,10 +14,11 @@ export type CodexUiAliasPresence = { "callboard-ui": boolean; callboard_ui: bool
 export interface CodexExecutionRoute {
   /**
    * The model and reasoning semantics the run speaks. `"codex"` is native
-   * OpenAI semantics — which is also what a subscription routed through
-   * OpenRouter ({@link subscriptionViaOpenRouter}) gets, because OpenRouter
-   * forwards native Responses requests unchanged there; {@link endpoint} is
-   * what says the traffic goes via OpenRouter.
+   * OpenAI semantics. A subscription routed through OpenRouter
+   * ({@link subscriptionViaOpenRouter}) keeps the probe's route, because
+   * OpenRouter forwards its Responses requests unchanged — `"codex"` for a
+   * native config, `"unknown"` when the probe could not tell; {@link endpoint}
+   * is what says the traffic goes via OpenRouter.
    */
   route: "codex" | "openrouter" | "unknown";
   endpoint?: string;
@@ -208,13 +209,26 @@ export async function resolveCodexExecutionRoute(settings: AgentSettings, cwd?: 
     };
   }
   if (subscriptionViaOpenRouter) {
-    // Native names and reasoning semantics (OpenRouter passes the subscription's
-    // Responses requests through), so the probe's model/default stay valid. The
-    // direct-UI split is withheld: namespace tools are unverified through
+    // OpenRouter passes the subscription's Responses requests through
+    // unchanged, so the reasoning semantics are whatever the user's own config
+    // already implies: a native probe ("codex") stays native, and its
+    // model/default stay valid. The probe's route is kept as-is otherwise — an
+    // "unknown" probe (timeout, no CLI, a config naming a non-OpenAI provider and
+    // model like `llama3`) must not be promoted to "codex" and checked against
+    // the native catalog. Only the endpoint is ours.
+    //
+    // Profiles cannot move our provider: verified on codex-cli 0.153.4 that a
+    // legacy `profile = "…"` / `[profiles.*]` in config.toml is a hard config
+    // error (no run at all), that `<name>.config.toml` profiles load only with
+    // `--profile` (Callboard never passes it), and that even with `--profile`
+    // the CLI's `-c model_provider=…` override still wins. Same for the full
+    // OpenRouter mode's `openrouter` provider.
+    //
+    // The direct-UI split is withheld: namespace tools are unverified through
     // OpenRouter, and the endpoint is no longer OpenAI's.
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { directUiNamespaces, directUiCodeModeEnabled, directUiPolicy, ...rest } = resolved;
-    return { ...rest, route: "codex", endpoint: safeApiRoot(OPENROUTER_CODEX_BASE_URL), injectedOpenRouter: false, subscriptionViaOpenRouter: true };
+    return { ...rest, endpoint: safeApiRoot(OPENROUTER_CODEX_BASE_URL), injectedOpenRouter: false, subscriptionViaOpenRouter: true };
   }
   return { ...resolved, injectedOpenRouter };
 }
