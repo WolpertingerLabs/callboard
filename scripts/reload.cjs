@@ -128,13 +128,20 @@ function run(cmd, opts = {}) {
   execSync(cmd, { stdio: "inherit", cwd: ROOT, ...opts });
 }
 
+/** Tarball filename from `npm pack --json`: an array before npm 12, an object keyed by package name since. */
+function packedFilename(out) {
+  const parsed = JSON.parse(out);
+  const [info] = Array.isArray(parsed) ? parsed : Object.values(parsed);
+  if (!info?.filename) throw new Error(`npm pack --json gave no filename: ${out.slice(0, 200)}`);
+  return info.filename;
+}
+
 /** `npm pack --json` into `dest`; returns the absolute path of the tarball it wrote. */
 function pack(args, dest) {
   const cmd = `npm pack ${args} --ignore-scripts --json --pack-destination "${dest}"`;
   console.log(`\n> ${cmd}`);
   const out = execSync(cmd, { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
-  const [info] = JSON.parse(out);
-  return path.join(dest, info.filename);
+  return path.join(dest, packedFilename(out));
 }
 
 /** Async `npm pack --json`, so signal handlers can run while it does (execSync blocks the event loop). */
@@ -150,7 +157,7 @@ function packAsync(args, dest, onChild) {
     child.on("close", (code, signal) => {
       if (code !== 0) return reject(new Error(`npm pack failed (${signal ?? `exit ${code}`})`));
       try {
-        resolve(path.join(dest, JSON.parse(out)[0].filename));
+        resolve(path.join(dest, packedFilename(out)));
       } catch (err) {
         reject(err);
       }
