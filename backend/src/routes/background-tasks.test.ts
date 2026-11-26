@@ -7,13 +7,28 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Request, Response } from "express";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "fs";
+import { chmodSync, mkdirSync, mkdtempSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
 const chats = vi.hoisted(() => new Map<string, Record<string, unknown>>());
 vi.mock("../utils/chat-lookup.js", () => ({ findChat: (id: string) => chats.get(id) ?? null }));
-vi.mock("../utils/session-log.js", () => ({ findSessionLogPath: () => null }));
+const logPaths = vi.hoisted(() => new Map<string, string>());
+vi.mock("../utils/session-log.js", () => ({ findSessionLogPath: (sid: string) => logPaths.get(sid) ?? null }));
+/** Runs once just before the next readTail — to swap a file out from under the request. */
+const beforeRead = vi.hoisted(() => ({ hook: null as null | (() => void) }));
+vi.mock("../services/background-tail/tail-reader.js", async (orig) => {
+  const real = await orig<typeof import("../services/background-tail/tail-reader.js")>();
+  return {
+    ...real,
+    readTail: (...args: Parameters<typeof real.readTail>) => {
+      const hook = beforeRead.hook;
+      beforeRead.hook = null;
+      hook?.();
+      return real.readTail(...args);
+    },
+  };
+});
 
 const base = mkdtempSync(join(tmpdir(), "bgtail-route-"));
 process.env.CLAUDE_CODE_TMPDIR = base;
@@ -24,6 +39,8 @@ const { claudeTasksRoot } = await import("../services/background-tail/engine-out
 const { folderToProjectDir } = await import("../utils/paths.js");
 
 const SID = "f17cfdb7-ee9f-4481-9b84-e5e037683103";
+const SID2 = "22222222-2222-4222-8222-222222222222";
+const QUOTED = "toolu_quoted";
 const CWD = join(base, "proj");
 const BG = "toolu_bg";
 const DETACHED = "toolu_detached";
@@ -34,8 +51,8 @@ const TASK = "bh0skech1";
 let outputFile: string;
 let logDir: string;
 
-function line(type: "assistant" | "user", content: unknown[], extra: Record<string, unknown> = {}) {
-  return JSON.stringify({ type, cwd: CWD, sessionId: SID, message: { role: type, content }, ...extra });
+function line(type: "assistant" | "user", content: unknown[], extra: Record<string, unknown> = {}, sessionId = SID) {
+  return JSON.stringify({ type, cwd: CWD, sessionId, message: { role: type, content }, ...extra });
 }
 
 beforeAll(() => {
@@ -74,8 +91,33 @@ beforeAll(() => {
       line("user", [{ type: "tool_result", tool_use_id: PLAIN, content: "" }]),
       line("assistant", [{ type: "tool_use", id: READ, name: "Read", input: { file_path: "/etc/hosts" } }]),
       line("user", [{ type: "tool_result", tool_use_id: READ, content: "" }]),
+      // `&` inside quotes is not a background job.
+      line("assistant", [{ type: "tool_use", id: QUOTED, name: "Bash", input: { command: "curl 'http://a/?b=1&c=2' > out.json" } }]),
+      line("user", [{ type: "tool_result", tool_use_id: QUOTED, content: "" }]),
     ].join("\n") + "\n",
   );
+  // A later session that carried the transcript over: same lines, its own session id.
+  const carried = join(base, `${SID2}.jsonl`);
+  writeFileSync(
+    carried,
+    [
+      line("assistant", [{ type: "tool_use", id: BG, name: "Bash", input: { command: `${cmd}\nsleep 60`, run_in_background: true } }], {}, SID2),
+      line(
+        "user",
+        [{ type: "tool_result", tool_use_id: BG, content: `Command running in background with ID: ${TASK}. Output is being written to: ${outputFile}.` }],
+        { toolUseResult: { backgroundTaskId: TASK } },
+        SID2,
+      ),
+    ].join("\n") + "\n",
+  );
+  logPaths.set(SID, transcript);
+  chats.set("chat-carried", {
+    id: "chat-carried",
+    folder: CWD,
+    session_id: SID2,
+    session_log_path: carried,
+    metadata: JSON.stringify({ session_ids: [SID, SID2] }),
+  });
   chats.set("chat-1", { id: "chat-1", folder: CWD, session_id: SID, session_log_path: transcript, metadata: JSON.stringify({ session_ids: [SID] }) });
   chats.set("chat-codex", { id: "chat-codex", folder: CWD, session_id: SID, metadata: JSON.stringify({ provider: "codex" }) });
   chats.set("chat-ambiguous", { id: "chat-ambiguous", folder: CWD, _provider_resolution_error: "ambiguous session owner" });
@@ -165,6 +207,26 @@ describe("GET /:id/background-tasks/:toolUseId/tail", () => {
     expect(r.body.tail).toBeNull();
   });
 
+  it("finds the engine file of a call carried into a later session", async () => {
+    const r = await get("chat-carried", BG, { stream: "output" });
+    expect(r.body.streams[0]).toMatchObject({ id: "output", exists: true });
+    expect(r.body.tail.lines).toEqual(["engine line"]);
+  });
+
+  it("re-reads a log rotated between the stat and the read", async () => {
+    const log = join(logDir, "rsync.log");
+    const before = statSync(log).ino;
+    beforeRead.hook = () => {
+      // Write-then-rename, so the new file cannot reuse the old inode.
+      writeFileSync(log + ".new", "after rotation\n");
+      renameSync(log + ".new", log);
+    };
+    const r = await get("chat-1", BG, { stream: "r0" });
+    expect(r.body.tail.lines).toEqual(["after rotation"]);
+    expect(statSync(log).ino).not.toBe(before);
+    expect(r.body.streams[1].error).toBeUndefined();
+  });
+
   it("ignores a path= query parameter", async () => {
     const r = await get("chat-1", BG, { path: "/etc/passwd", stream: "output" });
     expect(r.body.tail.lines).toEqual(["engine line"]);
@@ -185,7 +247,7 @@ describe("GET /:id/background-tasks/:toolUseId/tail", () => {
   });
 
   it("404 for a non-Bash call, plain Bash, and an unknown call", async () => {
-    for (const tool of [READ, PLAIN, "toolu_missing"]) {
+    for (const tool of [READ, PLAIN, QUOTED, "toolu_missing"]) {
       expect(await get("chat-1", tool)).toMatchObject({ status: 404, body: { error: "tool_call_not_found" } });
     }
   });

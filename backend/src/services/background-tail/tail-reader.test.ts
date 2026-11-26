@@ -96,7 +96,7 @@ describe("readTail", () => {
     const p = write("i.log", "x\n");
     const ino = statSync(p).ino;
     expect(await readTail(p, { expectIno: ino })).toMatchObject({ ok: true });
-    expect(await readTail(p, { expectIno: ino + 1 })).toEqual({ ok: false, error: "refused" });
+    expect(await readTail(p, { expectIno: ino + 1 })).toEqual({ ok: false, error: "changed" });
   });
 
   it("honours the lines limit", async () => {

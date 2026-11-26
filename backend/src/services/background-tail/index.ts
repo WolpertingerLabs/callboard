@@ -23,7 +23,7 @@ import { realpath, stat } from "fs/promises";
 import os from "os";
 import path from "path";
 import type { BackgroundTailChunk, BackgroundTailResponse, BackgroundTailStream, BackgroundTailStreamError } from "shared/types/index.js";
-import { extractRedirectTargets, looksDetached, type RedirectTarget } from "./command-redirects.js";
+import { analyzeShellCommand, type RedirectTarget } from "shared/types/index.js";
 import { resolveEngineOutputPath, SESSION_ID } from "./engine-output.js";
 import { readTail } from "./tail-reader.js";
 import { findToolCall, type ChatForLookup } from "./transcript-lookup.js";
@@ -81,11 +81,17 @@ async function redirectSource(id: string, t: RedirectTarget): Promise<Source> {
 }
 
 async function engineSource(
-  info: { resultText: string | null; sessionId: string; cwd: string | null },
+  info: { resultText: string | null; sessionId: string; sessionIds: string[]; cwd: string | null },
   taskId: string,
   folder: string | undefined,
 ): Promise<Source> {
-  const check = await resolveEngineOutputPath({ resultText: info.resultText, sessionId: info.sessionId, taskId, cwds: [info.cwd, folder] });
+  const check = await resolveEngineOutputPath({
+    resultText: info.resultText,
+    sessionId: info.sessionId,
+    sessionIds: info.sessionIds,
+    taskId,
+    cwds: [info.cwd, folder],
+  });
   const base: BackgroundTailStream = { id: "output", kind: "engine", label: "output", displayPath: displayPath(check.path), exists: false };
   if (!check.ok) return { stream: { ...base, error: check.error } };
   return {
@@ -130,22 +136,26 @@ export async function getBackgroundTail(
   if (!info || info.toolName !== "Bash") return null;
 
   const cwd = info.cwd ?? chat.folder ?? "";
-  const targets = extractRedirectTargets(info.command, { cwd, home: os.homedir() });
+  const { targets, detached } = analyzeShellCommand(info.command, { cwd, home: os.homedir() });
   const taskId = info.taskId && SESSION_ID.test(info.sessionId) ? info.taskId : undefined;
-  if (!info.taskId && !(looksDetached(info.command) && targets.length > 0)) return null;
+  if (!info.taskId && !(detached && targets.length > 0)) return null;
 
-  const sources: Source[] = [];
-  if (taskId) sources.push(await engineSource(info, taskId, chat.folder));
+  // One builder per stream, so a stream can be looked at again if its file
+  // is replaced between the stat and the read (log rotation).
+  const builders: (() => Promise<Source>)[] = [];
+  if (taskId) builders.push(() => engineSource(info, taskId, chat.folder));
   else if (info.taskId) {
-    sources.push({ stream: { id: "output", kind: "engine", label: "output", displayPath: "", exists: false, error: "refused" } });
+    builders.push(async () => ({ stream: { id: "output", kind: "engine", label: "output", displayPath: "", exists: false, error: "refused" } }));
   }
-  sources.push(...(await Promise.all(targets.map((t, i) => redirectSource(`r${i}`, t)))));
+  targets.forEach((t, i) => builders.push(() => redirectSource(`r${i}`, t)));
+  const sources: Source[] = await Promise.all(builders.map((b) => b()));
 
   const streams = sources.map((s) => s.stream);
   const defaultStream = pickDefault(streams);
 
   if (opts.stream !== undefined && !streams.some((s) => s.id === opts.stream)) throw new BadStreamError(`No stream ${opts.stream}`);
-  const selected = sources.find((s) => s.stream.id === (opts.stream ?? defaultStream));
+  const selectedIndex = sources.findIndex((s) => s.stream.id === (opts.stream ?? defaultStream));
+  let selected = selectedIndex >= 0 ? sources[selectedIndex] : undefined;
 
   let tail: BackgroundTailChunk | null = null;
   if (selected?.path && selected.stream.exists) {
@@ -154,7 +164,17 @@ export async function getBackgroundTail(
     if (since && since.size === size && since.mtimeMs === mtimeMs) {
       tail = { stream: selected.stream.id, size: size as number, mtimeMs: mtimeMs as number, unchanged: true };
     } else {
-      const r = await readTail(selected.path, { lines: opts.lines, noFollow: selected.noFollow, expectIno: selected.ino });
+      let r = await readTail(selected.path, { lines: opts.lines, noFollow: selected.noFollow, expectIno: selected.ino });
+      if (!r.ok && r.error === "changed") {
+        // Rotated between our stat and the read: look once more and read what is there now.
+        selected = await builders[selectedIndex]();
+        sources[selectedIndex] = selected;
+        streams[selectedIndex] = selected.stream;
+        r = selected.path
+          ? await readTail(selected.path, { lines: opts.lines, noFollow: selected.noFollow, expectIno: selected.ino })
+          : { ok: false, error: selected.stream.error ?? "missing" };
+        if (!r.ok && r.error === "changed") r = { ok: false, error: "unreadable" };
+      }
       if (r.ok) {
         tail = {
           stream: selected.stream.id,
@@ -168,7 +188,7 @@ export async function getBackgroundTail(
         selected.stream.size = r.size;
         selected.stream.mtimeMs = r.mtimeMs;
       } else {
-        selected.stream.error = r.error;
+        selected.stream.error = r.error === "changed" ? "unreadable" : r.error;
         if (r.error === "missing") selected.stream.exists = false;
       }
     }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractRedirectTargets, looksDetached, MAX_REDIRECT_TARGETS, type RedirectTarget } from "./command-redirects.js";
+import { extractRedirectTargets, looksDetached, looksDetachedWithRedirect, MAX_REDIRECT_TARGETS, type RedirectTarget } from "./shellCommand.js";
 
 const ctx = { cwd: "/work/proj", home: "/home/u" };
 const run = (cmd: string) => extractRedirectTargets(cmd, ctx);
@@ -46,6 +46,19 @@ describe("extractRedirectTargets", () => {
     ["absolute stays absolute", "cd sub; a > /tmp/x.log", ["redirect:stdout:/tmp/x.log"]],
     ["comment ignored", "a > x.log # > y.log", ["redirect:stdout:/work/proj/x.log"]],
     ["fd 3 ignored", "a 3> three.log > one.log", ["redirect:stdout:/work/proj/one.log"]],
+    ["cd || exit keeps the cd", "cd /x || exit 1; y > r.log", ["redirect:stdout:/x/r.log"]],
+    ["cd && list keeps the cd", "cd sub && make; y > r.log", ["redirect:stdout:/work/proj/sub/r.log"]],
+    ["same value on both branches", "if c; then L=/a; else L=/a; fi; y > $L/f", ["redirect:stdout:/a/f"]],
+    ["loop leaves untouched state alone", "L=/a; for i in 1 2; do :; done; y > $L/x", ["redirect:stdout:/a/x"]],
+    ["redirect inside if", "if [ x ]; then nohup y > a.log & fi", ["redirect:stdout:/work/proj/a.log"]],
+    ["redirect on a whole loop", "while read l; do echo $l; done > loop.log", ["redirect:stdout:/work/proj/loop.log"]],
+    ["redirect inside a function body", "f() { y > in.log; }", ["redirect:stdout:/work/proj/in.log"]],
+    ["assignment then redirect", "L=/t; > $L/f", ["redirect:stdout:/t/f"]],
+    // `&` backgrounds the whole and-or list / group, in a subshell.
+    ["& on a && list", "cd /x && nohup y > a.log & echo > b.log", ["redirect:stdout:/x/a.log", "redirect:stdout:/work/proj/b.log"]],
+    ["& on a brace group", "{ cd /x; y > a.log; } & z > b.log", ["redirect:stdout:/x/a.log", "redirect:stdout:/work/proj/b.log"]],
+    ["brace group without & persists", "{ cd /x; y > a.log; }; z > b.log", ["redirect:stdout:/x/a.log", "redirect:stdout:/x/b.log"]],
+    ["redirect on a brace group", "{ a; b; } > g.log 2>&1", ["redirect:stdout+stderr:/work/proj/g.log"]],
   ];
   it.each(cases)("%s", (_name, cmd, want) => {
     expect(brief(run(cmd))).toEqual(want);
@@ -68,6 +81,22 @@ describe("extractRedirectTargets", () => {
     ["~user", "cmd > ~bob/x"],
     ["unquoted expansion with a space", 'L="a b"; cmd > $L'],
     ["positional parameter", "cmd > $1.log"],
+    // State that only one branch sets is unknown afterwards.
+    ["&& / || assignment", "[ -d /a ] && L=/a || L=/b; nohup x > $L/log &"],
+    ["if/else cd", "if [ -d /a ]; then cd /a; else cd /b; fi; nohup x > rel.log &"],
+    ["|| cd", "test -d /x || cd /y; y > r.log"],
+    ["case arm cd", "case $x in a) cd /a;; esac; y > r.log"],
+    ["cd in a loop body", "cd /x; while read l; do cd /z; done < f; y > r.log"],
+    ["then-branch assignment seen from else", "if c; then L=/a; else x > $L/f; fi"],
+    ["&& assignment that may not run", "L=/b; [ -d /a ] && L=/a; x > $L/f"],
+    ["cd /a || cd /b", "cd /a || cd /b; y > r.log"],
+    ["for variable", "for f in a b; do echo > $f.log; done"],
+    ["function call may change anything", "f() { cd /x; }; f; y > r.log"],
+    ["source", "source env.sh; y > r.log"],
+    // Redirects are expanded before the command's own assignments.
+    ["assignment-only command's redirect", "L=/t > $L/f"],
+    ["named fd", "exec {fd}>fd.log"],
+    ["sequence brace expansion", "cmd > log{1..3}"],
   ];
   it.each(skipped)("skips: %s", (_name, cmd) => {
     expect(run(cmd)).toEqual([]);
@@ -77,8 +106,15 @@ describe("extractRedirectTargets", () => {
     expect(brief(run("cd -; cmd > /abs/x.log"))).toEqual(["redirect:stdout:/abs/x.log"]);
   });
 
-  it("stops at a heredoc and keeps what came before", () => {
-    expect(brief(run("a > before.log; cat <<EOF > after.log\n> inside.log\nEOF\nb > later.log"))).toEqual(["redirect:stdout:/work/proj/before.log"]);
+  it("skips heredoc bodies and keeps parsing after them", () => {
+    expect(brief(run("nohup python - <<EOF > py.log\nprint(1) > not.log\nEOF\nz > after.log"))).toEqual([
+      "redirect:stdout:/work/proj/py.log",
+      "redirect:stdout:/work/proj/after.log",
+    ]);
+    expect(brief(run("cat <<-'END' 2> err.log\n\tx > no.log\n\tEND\ny >> after.log"))).toEqual([
+      "redirect:stderr:/work/proj/err.log",
+      "redirect:stdout:/work/proj/after.log (a)",
+    ]);
   });
 
   it("caps the number of targets", () => {
@@ -112,7 +148,34 @@ describe("looksDetached", () => {
     ["a &> x", false],
     ["a |& tee x", false],
     ["echo nohup-ish", false],
+    ["curl 'http://a?b=1&c=2' > out.json", false],
+    ["grep nohup f > out", false],
+    ['echo "a & b"', false],
+    ["( y & )", true],
+    ["sudo nohup y", true],
+    ["y & disown", true],
   ])("%s → %s", (cmd, want) => {
     expect(looksDetached(cmd)).toBe(want);
+  });
+});
+
+// Mirrored in the client: frontend/src/utils/backgroundTasks.ts re-exports this.
+describe("looksDetachedWithRedirect", () => {
+  it.each([
+    ["L=~/backup/logs; nohup rsync -a src/ dst/ > $L/rsync.log 2> $L/rsync.err &", true],
+    ["setsid ./server > server.log 2>&1", true],
+    ["./build.sh > build.log &", true],
+    ["./build.sh 2>&1 | tee build.log &", true],
+    ["nohup ./server &", false],
+    ["nohup ./server > /dev/null 2>&1 &", false],
+    ["npm run dev >/dev/null 2>&1 &", false],
+    ["make > build.log 2>&1", false],
+    ["curl 'http://x/?a=1&b=2' > page.html", false],
+    ["a && b > out.log", false],
+    ["make &> all.log", false],
+    ["", false],
+    [undefined, false],
+  ])("%s → %s", (cmd, want) => {
+    expect(looksDetachedWithRedirect(cmd)).toBe(want);
   });
 });

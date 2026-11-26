@@ -110,25 +110,40 @@ export async function validateEngineOutputPath(candidate: string, ids: { session
  */
 export async function resolveEngineOutputPath(opts: {
   resultText?: string | null;
+  /** Session id on the tool_use line. */
   sessionId: string;
+  /**
+   * Every session id of the chat. A transcript carried into a later session
+   * repeats the launch under that session's id, while the CLI filed the
+   * output under the session that really ran it; any of the chat's own ids
+   * is accepted for the session segment.
+   */
+  sessionIds?: string[];
   taskId: string;
   cwds: (string | null | undefined)[];
 }): Promise<EngineOutputCheck> {
-  const candidates: string[] = [];
+  const allowed = [opts.sessionId, ...(opts.sessionIds ?? []).filter((s) => s !== opts.sessionId)].filter((s) => SESSION_ID.test(s));
+  const candidates: { path: string; sessionId: string }[] = [];
+  const push = (p: string, sessionId: string) => {
+    if (!candidates.some((c) => c.path === p)) candidates.push({ path: p, sessionId });
+  };
   const printed = parseOutputPathFromResult(opts.resultText);
-  if (printed) candidates.push(printed);
+  if (printed) {
+    const printedSession = path.basename(path.dirname(path.dirname(printed)));
+    push(printed, allowed.includes(printedSession) ? printedSession : opts.sessionId);
+  }
   const root = claudeTasksRoot();
-  for (const cwd of opts.cwds) {
-    if (!cwd) continue;
-    const derived = path.join(root, folderToProjectDir(cwd), opts.sessionId, "tasks", `${opts.taskId}.output`);
-    if (!candidates.includes(derived)) candidates.push(derived);
+  for (const sessionId of allowed) {
+    for (const cwd of opts.cwds) {
+      if (cwd) push(path.join(root, folderToProjectDir(cwd), sessionId, "tasks", `${opts.taskId}.output`), sessionId);
+    }
   }
 
   let missing: EngineOutputCheck | null = null;
   for (const c of candidates) {
-    const check = await validateEngineOutputPath(c, opts);
+    const check = await validateEngineOutputPath(c.path, { sessionId: c.sessionId, taskId: opts.taskId });
     if (check.ok) return check;
     if (check.error === "missing" && !missing) missing = check;
   }
-  return missing ?? { ok: false, path: candidates[0] ?? "", error: "refused" };
+  return missing ?? { ok: false, path: candidates[0]?.path ?? "", error: "refused" };
 }
