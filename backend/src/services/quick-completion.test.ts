@@ -204,6 +204,33 @@ describe("quickCompletion — the Claude Code branch, through MockAgentProvider"
     expect(opts.env?.CLAUDECODE).toBeUndefined();
   });
 
+  it("blanks an inherited ANTHROPIC_API_KEY when the subscription is routed through OpenRouter", async () => {
+    // The real env builder, against settings in that mode: an inherited key in
+    // process.env would replace the claude.ai login, so the spawned env must
+    // carry it as "" — the SDK reads a present-but-empty value as unset.
+    const real = await vi.importActual<typeof import("./agent-settings.js")>("./agent-settings.js");
+    mockGetApiEnvOverrides.mockImplementation(() =>
+      real.getApiEnvOverrides({ proxyMode: "local", claudeCodeSubscriptionViaOpenRouter: true, openRouterApiKey: "sk-or-test" }),
+    );
+    vi.stubEnv("ANTHROPIC_API_KEY", "sk-ant-inherited");
+    vi.stubEnv("ANTHROPIC_AUTH_TOKEN", "inherited-token");
+    try {
+      const mock = new MockAgentProvider();
+      setAgentProviderForTesting(mock);
+      const resultPromise = quickCompletion({ prompt: "x", model: "haiku" });
+      await fireReturnResult(mock, "x");
+      await resultPromise;
+
+      const opts = mock.queryRecords[0].request.options as { env?: Record<string, string | undefined> };
+      expect(opts.env?.ANTHROPIC_API_KEY).toBe("");
+      expect(opts.env?.ANTHROPIC_AUTH_TOKEN).toBe("");
+      expect(opts.env?.ANTHROPIC_BASE_URL).toBe("https://openrouter.ai/api");
+      expect(opts.env?.ANTHROPIC_CUSTOM_HEADERS).toContain("x-api-key: sk-or-test");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("forwards a permissive system prompt that allows a plain-text answer", async () => {
     // Pins the softened RETURN_RESULT_INSTRUCTION: the model is asked to use the
     // tool but explicitly PERMITTED to answer as text. The old wording forbade
