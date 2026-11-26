@@ -205,6 +205,19 @@ agentSettingsRouter.put("/", requireSessionAuth, async (req: Request, res: Respo
     return;
   }
 
+  // OpenRouter keys end up in HTTP headers (`x-api-key` for the subscription
+  // routing modes, the Authorization bearer for the credential modes), so a
+  // CR or LF inside one — after the trim `normalize` applies anyway — can only
+  // be a paste accident, and storing it would leave a mode that the UI shows as
+  // in effect but the backend refuses to send. Say so instead.
+  for (const field of ["openRouterApiKey", "claudeCodeOpenRouterApiKey", "codexOpenRouterApiKey"] as const) {
+    const value = body[field];
+    if (typeof value === "string" && /[\r\n]/.test(value.trim())) {
+      res.status(400).json({ error: `${field} contains a line break. Paste the key again as a single line.` });
+      return;
+    }
+  }
+
   const {
     proxyMode,
     remoteServerUrl,

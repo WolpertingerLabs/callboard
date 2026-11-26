@@ -93,4 +93,19 @@ describe("PUT /api/agent-settings — route subscription through OpenRouter", ()
     expect(refreshSdk).toHaveBeenCalledTimes(1);
     expect(refreshCodex).toHaveBeenCalledTimes(1);
   });
+
+  it("rejects an OpenRouter key with a line break inside it, and stores nothing", async () => {
+    for (const field of ["openRouterApiKey", "claudeCodeOpenRouterApiKey", "codexOpenRouterApiKey"]) {
+      const res = await put({ [field]: "sk-or-a\r\nx-evil: 1", claudeCodeSubscriptionViaOpenRouter: true });
+      expect(res.code).toBe(400);
+      expect(res.body.error).toContain(field);
+      expect(res.body.error).toContain("line break");
+    }
+    expect(onDisk()).toEqual({ proxyMode: "local", openRouterApiKey: "sk-or-old" });
+  });
+
+  it("accepts a key whose only line break is a trailing one, trimmed away", async () => {
+    expect((await put({ openRouterApiKey: "sk-or-pasted\n" })).code).toBe(200);
+    expect(onDisk().openRouterApiKey).toBe("sk-or-pasted");
+  });
 });
