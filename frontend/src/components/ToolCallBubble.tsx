@@ -249,7 +249,7 @@ function ToolCallBubble({ toolUse, toolResult, isRunning, backgroundPending = fa
                   setTailExpanded(!tailExpanded);
                 }
               }}
-              style={{ display: "flex", alignItems: "center", gap: 6, minHeight: 28, cursor: "pointer" }}
+              style={{ display: "flex", alignItems: "center", gap: 6, minHeight: 32, cursor: "pointer" }}
             >
               <span style={{ flexShrink: 0, display: "flex", alignItems: "center" }}>
                 {tailExpanded ? <ChevronDown size={11} style={{ opacity: 0.5 }} /> : <ChevronRight size={11} style={{ opacity: 0.5 }} />}

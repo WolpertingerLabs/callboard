@@ -11,7 +11,7 @@
  */
 import { describe, it, expect } from "vitest";
 import type { ParsedMessage } from "../api";
-import { abandonedTaskMarker, bashCommandOf, looksDetachedWithRedirect, pendingBackgroundTaskIds } from "./backgroundTasks";
+import { abandonedTaskMarker, backgroundTailChatId, bashCommandOf, looksDetachedWithRedirect, pendingBackgroundTaskIds } from "./backgroundTasks";
 
 /** The `tool_result` that launched a background task. */
 const launch = (taskId: string): ParsedMessage => ({
@@ -169,6 +169,11 @@ describe("looksDetachedWithRedirect", () => {
     ["./build.sh > build.log &", true],
     ["./build.sh 2>&1 | tee build.log &", true],
     ["nohup ./server &", false], // detached, but nothing to follow
+    // Mirrors shared/types/shellCommand.test.ts (same implementation): targets the daemon drops get no row.
+    ["nohup ./server > /dev/null 2>&1 &", false],
+    ["npm run dev >/dev/null 2>&1 &", false],
+    ["curl 'http://x/?a=1&b=2' > page.html", false], // quoted `&` is not a job
+    ["grep nohup f > out", false],
     ["make > build.log 2>&1", false], // not detached
     ["make 2>&1", false],
     ["a && b > out.log", false],
@@ -187,5 +192,19 @@ describe("bashCommandOf", () => {
   it("is null for other tools and bad input", () => {
     expect(bashCommandOf({ toolName: "Read", content: JSON.stringify({ command: "ls" }) })).toBeNull();
     expect(bashCommandOf({ toolName: "Bash", content: "{not json" })).toBeNull();
+  });
+});
+
+describe("backgroundTailChatId", () => {
+  it.each([
+    ["c1", null, "c1"],
+    ["c1", undefined, "c1"],
+    ["c1", "claude-code", "c1"],
+    ["c1", "codex", undefined],
+    ["c1", "pi", undefined],
+    ["c1", "opencode", undefined], // retired harness
+    [undefined, null, undefined],
+  ])("%s / %s → %s", (id, provider, want) => {
+    expect(backgroundTailChatId(id, provider)).toBe(want);
   });
 });

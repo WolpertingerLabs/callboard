@@ -40,10 +40,12 @@ function streamProblem(s: BackgroundTailStream, live: boolean): string | null {
  */
 export default function BackgroundTailPanel({ chatId, toolUseId, live }: Props) {
   const [picked, setPicked] = useState<string | undefined>(undefined);
-  const { data, error, loading, gone } = useBackgroundTail({ chatId, toolUseId, live, stream: picked });
+  const { data, stream: fetching, error, loading, gone, refresh } = useBackgroundTail({ chatId, toolUseId, live, stream: picked });
 
   const streams = data?.streams ?? [];
-  const selectedId = picked ?? data?.tail?.stream ?? data?.defaultStream ?? streams[0]?.id;
+  // The stream the hook is actually fetching wins over the server's current
+  // default, so the highlighted tab and the content always agree.
+  const selectedId = picked ?? fetching ?? data?.defaultStream ?? streams[0]?.id;
   const selected = streams.find((s) => s.id === selectedId) ?? null;
   const tail = data?.tail && data.tail.stream === selectedId ? data.tail : null;
   const lines = tail?.lines ?? null;
@@ -91,7 +93,8 @@ export default function BackgroundTailPanel({ chatId, toolUseId, live }: Props) 
   else if (!data) empty = error ? `Couldn't load output: ${error}` : loading ? "Loading…" : "No output yet";
   else if (!selected) empty = "No output yet";
   else if (streamProblem(selected, live)) empty = streamProblem(selected, live);
-  else if (!tail) empty = loading ? "Loading…" : "No output yet";
+  // A stream with content whose tail has not arrived yet (just switched to it).
+  else if (!tail) empty = loading || (selected.exists && !!selected.size) ? "Loading…" : "No output yet";
   else if (tail.binary) empty = "Binary output — not shown";
   else if (!lines || lines.length === 0) empty = "No output yet";
 
@@ -99,12 +102,32 @@ export default function BackgroundTailPanel({ chatId, toolUseId, live }: Props) 
   if (selected?.exists && selected.size !== undefined) meta.push(formatBytes(selected.size));
   if (selected?.exists && updated) meta.push(`updated ${updated}`);
   if (tail?.truncated && lines) meta.push(`last ${lines.length} lines`);
+  // Polls failing after a good load: say so rather than leave stale lines looking current.
+  const reconnecting = !!error && !!data && !gone;
+  const retryButton = (
+    <button
+      type="button"
+      onClick={refresh}
+      style={{
+        minHeight: 32,
+        padding: "0 12px",
+        borderRadius: 999,
+        border: "1px solid var(--border)",
+        background: "transparent",
+        color: "var(--text-muted)",
+        fontSize: 12,
+        cursor: "pointer",
+      }}
+    >
+      Retry
+    </button>
+  );
 
   return (
     <div data-testid="background-tail-panel" style={{ display: "flex", flexDirection: "column", gap: 6, padding: "4px 0 8px" }}>
       {streams.length > 1 && (
         <div
-          role="tablist"
+          role="group"
           aria-label="Output streams"
           style={{ display: "flex", gap: 6, overflowX: "auto", WebkitOverflowScrolling: "touch", paddingBottom: 2 }}
         >
@@ -114,8 +137,7 @@ export default function BackgroundTailPanel({ chatId, toolUseId, live }: Props) 
               <button
                 key={s.id}
                 type="button"
-                role="tab"
-                aria-selected={active}
+                aria-pressed={active}
                 title={s.displayPath || s.label}
                 onClick={() => pick(s.id)}
                 style={{
@@ -153,8 +175,29 @@ export default function BackgroundTailPanel({ chatId, toolUseId, live }: Props) 
         </div>
       )}
 
+      {reconnecting && (
+        <div role="status" style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11, color: "var(--text-muted)", fontStyle: "italic" }}>
+          <span>Reconnecting… ({error})</span>
+          {retryButton}
+        </div>
+      )}
+
       {empty ? (
-        <div style={{ ...preStyle, color: "var(--text-muted)", fontStyle: "italic", fontFamily: "inherit" }}>{empty}</div>
+        <div
+          style={{
+            ...preStyle,
+            color: "var(--text-muted)",
+            fontStyle: "italic",
+            fontFamily: "inherit",
+            display: "flex",
+            flexWrap: "wrap",
+            alignItems: "center",
+            gap: 8,
+          }}
+        >
+          <span>{empty}</span>
+          {(gone || (error && !data)) && retryButton}
+        </div>
       ) : (
         <div style={{ position: "relative" }}>
           <pre ref={preRef} onScroll={onScroll} data-testid="background-tail-lines" style={preStyle}>

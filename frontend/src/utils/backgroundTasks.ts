@@ -104,17 +104,13 @@ export function abandonedTaskMarker(abandonedIds: readonly string[], messages: r
 }
 
 /**
- * Whether a Bash command looks like it detaches work that writes to a file —
- * `nohup`/`setsid`/`disown` or a lone trailing-style `&`, together with a
- * `>` redirect or `tee`. Only a hint for showing the output row on a call
- * that has no engine task; the server decides what, if anything, it tails.
+ * Whether a Bash command detaches work that writes to a file the daemon would
+ * tail — a hint for showing the "Output" row on a call with no engine task.
+ * The very same parse the daemon uses to decide (shared/types/shellCommand.ts),
+ * so a row is only offered where the daemon will answer with streams; its
+ * table tests live beside it.
  */
-export function looksDetachedWithRedirect(command: string | undefined | null): boolean {
-  if (typeof command !== "string" || command === "") return false;
-  const detached = /(^|[\s;&|(])(nohup|setsid|disown)(\s|$|;)/.test(command) || /(^|[^&>|<])&(?![&>])/.test(command);
-  if (!detached) return false;
-  return />/.test(command.replace(/[0-9]?>&[0-9-]/g, "")) || /(^|[\s|])tee(\s|$)/.test(command);
-}
+export { looksDetachedWithRedirect } from "shared/types/index.js";
 
 /** The `command` of a Bash tool_use's JSON input, or null. */
 export function bashCommandOf(toolUse: Pick<ParsedMessage, "toolName" | "content">): string | null {
@@ -125,4 +121,14 @@ export function bashCommandOf(toolUse: Pick<ParsedMessage, "toolName" | "content
   } catch {
     return null;
   }
+}
+
+/**
+ * The chat id to give tool bubbles for the background-output tail, or
+ * undefined when the chat's engine has no tail: the daemon reads Claude Code
+ * transcripts only, so Codex (or a retired harness) would only ever get 404.
+ * `provider` is the raw `metadata.provider`; absent means Claude Code.
+ */
+export function backgroundTailChatId(chatId: string | undefined, provider: string | null | undefined): string | undefined {
+  return chatId && (provider ?? "claude-code") === "claude-code" ? chatId : undefined;
 }

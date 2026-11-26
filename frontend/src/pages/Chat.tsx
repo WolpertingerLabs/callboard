@@ -161,7 +161,7 @@ import {
 } from "../utils/localStorage";
 import ProviderConfigPicker from "../components/ProviderConfigPicker";
 import { groupToolMessages, type DisplayItem } from "../utils/toolGrouping";
-import { abandonedTaskMarker, pendingBackgroundTaskIds } from "../utils/backgroundTasks";
+import { abandonedTaskMarker, backgroundTailChatId, pendingBackgroundTaskIds } from "../utils/backgroundTasks";
 import { sameActivityPayload } from "../utils/activitySnapshot";
 import { errorMessage } from "../utils/errorMessage";
 import { useSpaces } from "../contexts/SpaceContext";
@@ -950,6 +950,9 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
   // one control that names the harness rather than driving it, so it is the one
   // that must not round a retired harness off to a live one.
   const rawChatProvider = id ? chatMeta.provider : null;
+  // The background-output tail reads Claude Code transcripts only; anything
+  // else (Codex, a retired harness) would only ever get a 404, so no row.
+  const tailChatId = backgroundTailChatId(id, chatMeta.provider);
 
   // Harnesses this build removed — see RETIRED_PROVIDER_KINDS on the backend.
   // Such a chat still opens (its record and transcript exist), but nothing can
@@ -5119,7 +5122,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
                             toolResult={item.toolResult}
                             isRunning={item.toolResult === null && streaming}
                             backgroundPending={!!item.toolResult?.backgroundTaskId && !!pendingBackgroundIds?.has(item.toolResult.backgroundTaskId)}
-                            chatId={id}
+                            chatId={tailChatId}
                           />
                         </div>
                       );

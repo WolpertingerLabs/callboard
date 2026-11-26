@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import type { BackgroundTailResponse, BackgroundTailStream } from "../api";
 
 const getBackgroundTail = vi.hoisted(() => vi.fn());
@@ -9,6 +9,10 @@ vi.mock("../api", async (orig) => {
   return { ...real, getBackgroundTail };
 });
 const { default: BackgroundTailPanel } = await import("./BackgroundTailPanel");
+const { BackgroundTailError } = await import("../api");
+
+const streamButtons = () => within(screen.getByRole("group", { name: "Output streams" })).getAllByRole("button");
+const streamButton = (name: string) => within(screen.getByRole("group", { name: "Output streams" })).getByRole("button", { name });
 
 // jsdom has no layout: give <pre> a scroll box the test controls.
 const scrollTops = new WeakMap<Element, number>();
@@ -59,15 +63,18 @@ beforeEach(() => {
   getBackgroundTail.mockReset();
   getBackgroundTail.mockImplementation(async (_c: string, _t: string, { stream }: { stream?: string }) => respond(stream, [`${stream ?? "r0"} line`]));
 });
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 
 describe("BackgroundTailPanel", () => {
   it("shows the default stream with its tabs and meta", async () => {
     render(<BackgroundTailPanel chatId="c1" toolUseId="t1" live={false} />);
     await flush();
-    const tabs = screen.getAllByRole("tab");
+    const tabs = streamButtons();
     expect(tabs.map((t) => t.textContent)).toEqual(["output", "stdout → rsync.log", "stderr → rsync.err"]);
-    expect(tabs[1].getAttribute("aria-selected")).toBe("true");
+    expect(tabs.map((t) => t.getAttribute("aria-pressed"))).toEqual(["false", "true", "false"]);
     expect(screen.getByTestId("background-tail-lines").textContent).toBe("r0 line");
     expect(screen.getByText("~/backup/logs/rsync.log")).toBeTruthy();
     expect(screen.getByText(/12\.3 KB · updated/)).toBeTruthy();
@@ -76,17 +83,17 @@ describe("BackgroundTailPanel", () => {
   it("switches stream from the tabs", async () => {
     render(<BackgroundTailPanel chatId="c1" toolUseId="t1" live={false} />);
     await flush();
-    fireEvent.click(screen.getByRole("tab", { name: "output" }));
+    fireEvent.click(streamButton("output"));
     await flush();
     expect(getBackgroundTail.mock.calls.at(-1)?.[2]).toMatchObject({ stream: "output" });
     expect(screen.getByTestId("background-tail-lines").textContent).toBe("output line");
-    expect(screen.getByRole("tab", { name: "output" }).getAttribute("aria-selected")).toBe("true");
+    expect(streamButton("output").getAttribute("aria-pressed")).toBe("true");
   });
 
   it("explains a missing file", async () => {
     render(<BackgroundTailPanel chatId="c1" toolUseId="t1" live={false} />);
     await flush();
-    fireEvent.click(screen.getByRole("tab", { name: "stderr → rsync.err" }));
+    fireEvent.click(streamButton("stderr → rsync.err"));
     await flush();
     expect(screen.getByText("File no longer exists (cleaned up)")).toBeTruthy();
   });
@@ -95,7 +102,7 @@ describe("BackgroundTailPanel", () => {
     getBackgroundTail.mockImplementation(async () => ({ toolUseId: "t1", streams: [{ ...streams[0], size: 0 }], defaultStream: null, tail: null }));
     render(<BackgroundTailPanel chatId="c1" toolUseId="t1" live={false} />);
     await flush();
-    expect(screen.queryByRole("tablist")).toBeNull();
+    expect(screen.queryByRole("group", { name: "Output streams" })).toBeNull();
     expect(screen.getByText("No output yet")).toBeTruthy();
   });
 
@@ -104,6 +111,71 @@ describe("BackgroundTailPanel", () => {
     render(<BackgroundTailPanel chatId="c1" toolUseId="t1" live={false} />);
     await flush();
     expect(screen.getByText("Binary output — not shown")).toBeTruthy();
+  });
+
+  it("shows Loading, not 'No output yet', while a switched-to stream loads", async () => {
+    render(<BackgroundTailPanel chatId="c1" toolUseId="t1" live={false} />);
+    await flush();
+    let resolve!: (v: BackgroundTailResponse) => void;
+    getBackgroundTail.mockImplementation(() => new Promise((r) => (resolve = r)));
+    fireEvent.click(streamButton("output"));
+    await flush();
+    expect(screen.getByText("Loading…")).toBeTruthy();
+    expect(screen.queryByText("No output yet")).toBeNull();
+    await act(async () => resolve(respond("output", ["output line"])));
+    expect(screen.getByTestId("background-tail-lines").textContent).toBe("output line");
+  });
+
+  it("keeps showing the stream it is fetching when that file goes away", async () => {
+    vi.useFakeTimers();
+    render(<BackgroundTailPanel chatId="c1" toolUseId="t1" live={true} />);
+    await flush();
+    // r0 rotated away; the server's default moves to r1, but the panel is still on r0.
+    getBackgroundTail.mockImplementation(async () => ({
+      toolUseId: "t1",
+      streams: [
+        streams[0],
+        { ...streams[1], exists: false, size: undefined, mtimeMs: undefined, error: "missing" },
+        { ...streams[2], exists: true, size: 4, mtimeMs: now },
+      ],
+      defaultStream: "r1",
+      tail: null,
+    }));
+    await act(async () => vi.advanceTimersByTime(2500));
+    await flush();
+    expect(streamButton("stdout → rsync.log").getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByText("File not created yet")).toBeTruthy();
+  });
+
+  it("says it is reconnecting when polls fail after a good load, with a retry", async () => {
+    vi.useFakeTimers();
+    render(<BackgroundTailPanel chatId="c1" toolUseId="t1" live={true} />);
+    await flush();
+    getBackgroundTail.mockImplementation(async () => {
+      throw new BackgroundTailError("Network down", 500);
+    });
+    await act(async () => vi.advanceTimersByTime(2500));
+    await flush();
+    expect(screen.getByText(/Reconnecting… \(Network down\)/)).toBeTruthy();
+    expect(screen.getByTestId("background-tail-lines").textContent).toBe("r0 line");
+    getBackgroundTail.mockImplementation(async () => respond("r0", ["fresh"]));
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await flush();
+    expect(screen.queryByText(/Reconnecting/)).toBeNull();
+    expect(screen.getByTestId("background-tail-lines").textContent).toBe("fresh");
+  });
+
+  it("offers a retry when the first load fails", async () => {
+    getBackgroundTail.mockImplementation(async () => {
+      throw new BackgroundTailError("boom", 500);
+    });
+    render(<BackgroundTailPanel chatId="c1" toolUseId="t1" live={false} />);
+    await flush();
+    expect(screen.getByText("Couldn't load output: boom")).toBeTruthy();
+    getBackgroundTail.mockImplementation(async () => respond("r0", ["ok"]));
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await flush();
+    expect(screen.getByTestId("background-tail-lines").textContent).toBe("ok");
   });
 
   it("follows new output at the bottom, and stops once the user scrolls up", async () => {

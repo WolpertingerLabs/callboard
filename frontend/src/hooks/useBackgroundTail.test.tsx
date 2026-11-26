@@ -10,7 +10,7 @@ vi.mock("../api", async (orig) => {
 });
 
 const { BackgroundTailError } = await import("../api");
-const { useBackgroundTail, BACKGROUND_TAIL_POLL_MS } = await import("./useBackgroundTail");
+const { useBackgroundTail, BACKGROUND_TAIL_POLL_MS, BACKGROUND_TAIL_QUIET_POLL_MS } = await import("./useBackgroundTail");
 
 let visibility: DocumentVisibilityState = "visible";
 function setVisibility(next: DocumentVisibilityState) {
@@ -136,15 +136,99 @@ describe("useBackgroundTail", () => {
     expect(getBackgroundTail).toHaveBeenCalledTimes(3);
   });
 
-  it("stops for good after a 404", async () => {
+  it("retries an early 404 once, then stops for good", async () => {
     getBackgroundTail.mockImplementation(async () => {
       throw new BackgroundTailError("tool_call_not_found", 404);
     });
     const { result } = renderHook(() => useBackgroundTail({ chatId: "c1", toolUseId: "t1", live: true }));
     await flush();
+    expect(result.current.gone).toBe(false);
+    await tick();
+    expect(getBackgroundTail).toHaveBeenCalledTimes(2);
     expect(result.current.gone).toBe(true);
     await tick(BACKGROUND_TAIL_POLL_MS * 10);
-    expect(getBackgroundTail).toHaveBeenCalledTimes(1);
+    expect(getBackgroundTail).toHaveBeenCalledTimes(2);
+  });
+
+  it("an early 404 that turns into a tail is not final", async () => {
+    getBackgroundTail.mockImplementationOnce(async () => {
+      throw new BackgroundTailError("tool_call_not_found", 404);
+    });
+    const { result } = renderHook(() => useBackgroundTail({ chatId: "c1", toolUseId: "t1", live: true }));
+    await flush();
+    await tick();
+    expect(result.current.gone).toBe(false);
+    expect(result.current.data?.tail?.lines).toEqual(["a"]);
+  });
+
+  it("does not retry a 404 when not live", async () => {
+    getBackgroundTail.mockImplementation(async () => {
+      throw new BackgroundTailError("tool_call_not_found", 404);
+    });
+    const { result } = renderHook(() => useBackgroundTail({ chatId: "c1", toolUseId: "t1", live: false }));
+    await flush();
+    expect(result.current.gone).toBe(true);
+  });
+
+  it("refresh clears the backoff and a 404 stop", async () => {
+    getBackgroundTail.mockImplementation(async () => {
+      throw new BackgroundTailError("boom", 500);
+    });
+    const { result } = renderHook(() => useBackgroundTail({ chatId: "c1", toolUseId: "t1", live: true }));
+    await flush();
+    getBackgroundTail.mockImplementation(async () => response(["back"]));
+    await act(async () => result.current.refresh());
+    await flush();
+    expect(getBackgroundTail).toHaveBeenCalledTimes(2);
+    expect(result.current.error).toBeNull();
+    expect(result.current.data?.tail?.lines).toEqual(["back"]);
+    await tick(); // no leftover backoff
+    expect(getBackgroundTail).toHaveBeenCalledTimes(3);
+  });
+
+  it("ignores a late answer for the stream it switched away from", async () => {
+    const pending: ((v: BackgroundTailResponse) => void)[] = [];
+    getBackgroundTail.mockImplementation(() => new Promise((resolve) => pending.push(resolve)));
+    const { result, rerender } = renderHook(({ stream }) => useBackgroundTail({ chatId: "c1", toolUseId: "t1", live: false, stream }), {
+      initialProps: { stream: "output" as string | undefined },
+    });
+    await flush();
+    rerender({ stream: "r0" });
+    await flush();
+    expect(result.current.stream).toBe("r0");
+    const r0 = { ...response(["from r0"]), tail: { stream: "r0", size: 7, mtimeMs: 1, lines: ["from r0"] } };
+    await act(async () => pending[1](r0));
+    await act(async () => pending[0](response(["late output"])));
+    await flush();
+    expect(result.current.data?.tail).toMatchObject({ stream: "r0", lines: ["from r0"] });
+  });
+
+  it("slows down after a stretch of unchanged answers, and speeds up on change", async () => {
+    renderHook(() => useBackgroundTail({ chatId: "c1", toolUseId: "t1", live: true }));
+    await flush();
+    getBackgroundTail.mockImplementation(async () => ({ ...response([]), tail: { stream: "output", size: 1, mtimeMs: 1001, unchanged: true } }));
+    await tick(2 * 60_000 + BACKGROUND_TAIL_POLL_MS);
+    const slowFrom = getBackgroundTail.mock.calls.length;
+    await tick(BACKGROUND_TAIL_QUIET_POLL_MS - 1000);
+    expect(getBackgroundTail.mock.calls.length).toBe(slowFrom);
+    await tick(1000);
+    expect(getBackgroundTail.mock.calls.length).toBe(slowFrom + 1);
+
+    getBackgroundTail.mockImplementation(async () => response(["a", "b"]));
+    await tick(BACKGROUND_TAIL_QUIET_POLL_MS);
+    const fastFrom = getBackgroundTail.mock.calls.length;
+    await tick();
+    expect(getBackgroundTail.mock.calls.length).toBe(fastFrom + 1);
+  });
+
+  it("sends since for a binary stream and keeps the binary notice when unchanged", async () => {
+    getBackgroundTail.mockImplementation(async () => ({ ...response([]), tail: { stream: "output", size: 9, mtimeMs: 5, lines: [], binary: true } }));
+    const { result } = renderHook(() => useBackgroundTail({ chatId: "c1", toolUseId: "t1", live: true }));
+    await flush();
+    getBackgroundTail.mockImplementation(async () => ({ ...response([]), tail: { stream: "output", size: 9, mtimeMs: 5, unchanged: true } }));
+    await tick();
+    expect(getBackgroundTail.mock.calls[1][2]).toMatchObject({ since: "9-5" });
+    expect(result.current.data?.tail?.binary).toBe(true);
   });
 
   it("backs off after failures", async () => {

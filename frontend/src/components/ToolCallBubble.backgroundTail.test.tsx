@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /** The "Output" row on background Bash calls, and that its panel (and polling) exists only while open. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { ParsedMessage } from "../api";
 
 const getBackgroundTail = vi.hoisted(() => vi.fn());
@@ -54,6 +54,39 @@ describe("ToolCallBubble background output row", () => {
   it("shows the row for a detached command that redirects", () => {
     render(<ToolCallBubble toolUse={bash("nohup rsync -a a/ b/ > r.log 2> r.err &")} toolResult={result()} isRunning={false} chatId="c1" />);
     expect(screen.getByText("Output")).toBeTruthy();
+  });
+
+  it("hides the row for a detached command that only writes to /dev/null", () => {
+    render(<ToolCallBubble toolUse={bash("nohup ./server > /dev/null 2>&1 &")} toolResult={result()} isRunning={false} chatId="c1" />);
+    expect(screen.queryByText("Output")).toBeNull();
+  });
+
+  it("keeps polling a detached command while open, though it has no background task", async () => {
+    vi.useFakeTimers();
+    try {
+      render(<ToolCallBubble toolUse={bash("nohup rsync -a a/ b/ > r.log &")} toolResult={result()} isRunning={false} chatId="c1" />);
+      fireEvent.click(screen.getByText("Output"));
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(getBackgroundTail).toHaveBeenCalledTimes(1);
+      await act(async () => vi.advanceTimersByTime(2500));
+      expect(getBackgroundTail).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not poll a finished engine task", async () => {
+    vi.useFakeTimers();
+    try {
+      render(<ToolCallBubble toolUse={bash("sleep 60")} toolResult={result("b1")} isRunning={false} chatId="c1" />);
+      fireEvent.click(screen.getByText("Output"));
+      await act(async () => vi.advanceTimersByTime(10_000));
+      expect(getBackgroundTail).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("hides the row for plain Bash, and without a chat id", () => {

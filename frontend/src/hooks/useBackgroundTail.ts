@@ -3,25 +3,38 @@ import { BackgroundTailError, getBackgroundTail, type BackgroundTailResponse } f
 import { usePolling } from "./usePolling";
 
 export const BACKGROUND_TAIL_POLL_MS = 2500;
+/** Poll interval once the output has sat unchanged for {@link QUIET_AFTER_MS}. */
+export const BACKGROUND_TAIL_QUIET_POLL_MS = 15_000;
+/** How long the output must stay the same before polling slows down. */
+const QUIET_AFTER_MS = 2 * 60_000;
 /** Wait after the 1st, 2nd and 3rd+ consecutive failure before polling again. */
 const BACKOFF_MS = [5_000, 10_000, 30_000];
+/**
+ * A 404 this soon after opening may only mean the transcript line has not
+ * been written yet (the row can appear the instant the launch streams in):
+ * it is retried once on the next tick before being taken as final.
+ */
+const EARLY_404_MS = 5_000;
 
 interface Options {
   chatId: string;
   toolUseId: string;
-  /** Poll while true (the task is still running). Turning false triggers one last fetch. */
+  /** Poll while true. Turning false triggers one last fetch. */
   live: boolean;
-  /** Stream to show; omitted, the first response's `defaultStream` is pinned. */
+  /** Stream to show; omitted, the first response's stream is pinned. */
   stream?: string;
   intervalMs?: number;
 }
 
 export interface BackgroundTailState {
   data: BackgroundTailResponse | null;
+  /** The stream being fetched (the caller's pick, else the pinned default), once known. */
+  stream: string | undefined;
   error: string | null;
   loading: boolean;
   /** The server has no tail for this call (404); polling has stopped. */
   gone: boolean;
+  /** Fetch now, clearing any error backoff (and a 404's stop). */
   refresh: () => void;
 }
 
@@ -31,15 +44,17 @@ export interface BackgroundTailState {
  * unmounting aborts the request in flight and stops the timer.
  *
  * Polling goes through {@link usePolling}, so a hidden tab sends nothing and
- * catches up on return. Ticks never overlap; repeated failures back off; a 404
- * stops for good. Each request sends `since` for the stream on screen, and an
- * `unchanged` answer keeps the lines already shown.
+ * catches up on return. Ticks never overlap; repeated failures back off; a
+ * 404 stops; output that has not changed for a couple of minutes is polled
+ * less often until it changes again. Each request sends `since` for the
+ * stream on screen, and an `unchanged` answer keeps what is already shown.
  */
 export function useBackgroundTail({ chatId, toolUseId, live, stream, intervalMs = BACKGROUND_TAIL_POLL_MS }: Options): BackgroundTailState {
   const [data, setData] = useState<BackgroundTailResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [gone, setGone] = useState(false);
+  const [quiet, setQuiet] = useState(false);
   // The server's first pick, kept so the view doesn't hop between streams as
   // each is written to in turn.
   const [pinned, setPinned] = useState<string | undefined>(undefined);
@@ -52,6 +67,14 @@ export function useBackgroundTail({ chatId, toolUseId, live, stream, intervalMs 
   const retryAt = useRef(0);
   const goneRef = useRef(false);
   const pinnedRef = useRef<string | undefined>(undefined);
+  const mountedAt = useRef(0);
+  const retried404 = useRef(false);
+  const lastChange = useRef(0);
+  const liveRef = useRef(live);
+  useEffect(() => {
+    liveRef.current = live;
+    if (mountedAt.current === 0) mountedAt.current = Date.now();
+  });
 
   const load = useCallback(
     async (force = false) => {
@@ -64,7 +87,7 @@ export function useBackgroundTail({ chatId, toolUseId, live, stream, intervalMs 
       inFlight.current = ctrl;
       const mine = ++seq.current;
       const prevTail = dataRef.current?.tail ?? null;
-      const keep = prevTail && effective !== undefined && prevTail.stream === effective && !prevTail.binary ? prevTail : null;
+      const keep = prevTail && effective !== undefined && prevTail.stream === effective ? prevTail : null;
       try {
         let res = await getBackgroundTail(chatId, toolUseId, {
           ...(effective !== undefined && { stream: effective }),
@@ -72,9 +95,15 @@ export function useBackgroundTail({ chatId, toolUseId, live, stream, intervalMs 
           signal: ctrl.signal,
         });
         if (mine !== seq.current) return;
+        const now = Date.now();
         if (res.tail?.unchanged) {
-          // Same bytes as last time: keep the lines on screen.
+          // Same bytes as last time: keep what is on screen (lines, or the binary notice).
           res = keep && keep.stream === res.tail.stream ? { ...res, tail: keep } : { ...res, tail: null };
+          if (lastChange.current === 0) lastChange.current = now;
+          if (now - lastChange.current >= QUIET_AFTER_MS) setQuiet(true);
+        } else {
+          lastChange.current = now;
+          setQuiet(false);
         }
         dataRef.current = res;
         setData(res);
@@ -88,6 +117,10 @@ export function useBackgroundTail({ chatId, toolUseId, live, stream, intervalMs 
       } catch (err) {
         if (mine !== seq.current || ctrl.signal.aborted) return;
         if (err instanceof BackgroundTailError && err.status === 404) {
+          if (!retried404.current && liveRef.current && Date.now() - mountedAt.current < EARLY_404_MS) {
+            retried404.current = true;
+            return; // the next tick asks again
+          }
           goneRef.current = true;
           setGone(true);
           setError(err.message);
@@ -108,6 +141,8 @@ export function useBackgroundTail({ chatId, toolUseId, live, stream, intervalMs 
   // already on screen is for that stream (the default being pinned).
   useEffect(() => {
     if (effective !== undefined && dataRef.current?.tail?.stream === effective) return;
+    lastChange.current = 0;
+    setQuiet(false);
     void load(true);
   }, [load, effective]);
 
@@ -132,14 +167,17 @@ export function useBackgroundTail({ chatId, toolUseId, live, stream, intervalMs 
       if (Date.now() < retryAt.current) return;
       void load();
     },
-    intervalMs,
+    quiet ? Math.max(intervalMs, BACKGROUND_TAIL_QUIET_POLL_MS) : intervalMs,
     { enabled: live && !gone },
   );
 
   const refresh = useCallback(() => {
     retryAt.current = 0;
+    failures.current = 0;
+    goneRef.current = false;
+    setGone(false);
     void load(true);
   }, [load]);
 
-  return { data, error, loading, gone, refresh };
+  return { data, stream: effective, error, loading, gone, refresh };
 }
