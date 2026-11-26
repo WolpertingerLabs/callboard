@@ -102,3 +102,33 @@ export function abandonedTaskMarker(abandonedIds: readonly string[], messages: r
       ` — ${plural ? "they" : "it"} never reported a result.`,
   };
 }
+
+/**
+ * Whether a Bash command detaches work that writes to a file the daemon would
+ * tail — a hint for showing the "Output" row on a call with no engine task.
+ * The very same parse the daemon uses to decide (shared/types/shellCommand.ts),
+ * so a row is only offered where the daemon will answer with streams; its
+ * table tests live beside it.
+ */
+export { looksDetachedWithRedirect } from "shared/types/index.js";
+
+/** The `command` of a Bash tool_use's JSON input, or null. */
+export function bashCommandOf(toolUse: Pick<ParsedMessage, "toolName" | "content">): string | null {
+  if (toolUse.toolName !== "Bash" || typeof toolUse.content !== "string") return null;
+  try {
+    const input = JSON.parse(toolUse.content) as { command?: unknown };
+    return typeof input?.command === "string" ? input.command : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The chat id to give tool bubbles for the background-output tail, or
+ * undefined when the chat's engine has no tail: the daemon reads Claude Code
+ * transcripts only, so Codex (or a retired harness) would only ever get 404.
+ * `provider` is the raw `metadata.provider`; absent means Claude Code.
+ */
+export function backgroundTailChatId(chatId: string | undefined, provider: string | null | undefined): string | undefined {
+  return chatId && (provider ?? "claude-code") === "claude-code" ? chatId : undefined;
+}

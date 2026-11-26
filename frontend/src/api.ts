@@ -23,6 +23,7 @@ import type {
   UserContactAvailability,
   ChatActivityResponse,
   HeldMessage,
+  BackgroundTailResponse,
   SlashCommand,
   Plugin,
   Chat,
@@ -83,6 +84,9 @@ import type {
 } from "shared/types/index.js";
 
 export type {
+  BackgroundTailChunk,
+  BackgroundTailResponse,
+  BackgroundTailStream,
   NotifiableChannel,
   ContactChannelAvailability,
   UserContactAvailability,
@@ -2970,4 +2974,51 @@ export async function getArtifactVersionSource(id: string, version: number, sha2
   const pin = sha256 === undefined ? "" : `?sha256=${encodeURIComponent(sha256)}`;
   const res = await send(`/artifacts/${seg(id)}/versions/${seg(version)}${pin}`, { error: "Failed to read artifact version" });
   return res.text();
+}
+
+// ── Background Bash output ──────────────────────────────────────────
+
+/** A refused tail request, with its status — 404 means the call has no tail and polling should stop. */
+export class BackgroundTailError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = "BackgroundTailError";
+  }
+}
+
+export interface BackgroundTailQuery {
+  /** `"output"` or `"r0"`…; omitted, the server picks the most recently written stream. */
+  stream?: string;
+  lines?: number;
+  /** `<size>-<mtimeMs>` of the last chunk seen for `stream`. */
+  since?: string;
+  signal?: AbortSignal;
+}
+
+/**
+ * The end of a background Bash call's output (`GET /chats/:id/background-tasks/:toolUseId/tail`):
+ * the engine's output file and any files the command redirects to. Throws
+ * {@link BackgroundTailError} for any non-2xx answer.
+ */
+export async function getBackgroundTail(
+  chatId: string,
+  toolUseId: string,
+  { stream, lines, since, signal }: BackgroundTailQuery = {},
+): Promise<BackgroundTailResponse> {
+  const params = new URLSearchParams();
+  if (stream) params.set("stream", stream);
+  if (lines !== undefined) params.set("lines", String(lines));
+  if (since) params.set("since", since);
+  const res = await fetch(`${BASE}/chats/${seg(chatId)}/background-tasks/${seg(toolUseId)}/tail${query(params)}`, {
+    credentials: "include",
+    ...(signal && { signal }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new BackgroundTailError(errorBodyMessage(body, "Failed to load background output"), res.status);
+  }
+  return res.json() as Promise<BackgroundTailResponse>;
 }
