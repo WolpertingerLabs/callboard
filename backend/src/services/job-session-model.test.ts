@@ -29,13 +29,14 @@ describe("job-level default model", () => {
     expect(
       resolveJobSessionModel({ provider: "codex" }, { provider: "codex", model: "openai/gpt-5.5" }, settings({ codexUseOpenRouter: true, codexOpenRouterApiKey: "k" })),
     ).toBe("openai/gpt-5.5");
-    // ...and when the subscription is routed through OpenRouter, which resolves slugs too.
+    // ...and when the Claude subscription is routed through OpenRouter, which resolves slugs too.
     expect(
       resolveJobSessionModel({}, { model: "anthropic/claude-haiku-5.5" }, settings({ claudeCodeSubscriptionViaOpenRouter: true, openRouterApiKey: "k" })),
     ).toBe("anthropic/claude-haiku-5.5");
+    // Codex keeps its native reasoning route in that mode, so a slug stays out.
     expect(
       resolveJobSessionModel({ provider: "codex" }, { provider: "codex", model: "openai/gpt-5.5" }, settings({ codexSubscriptionViaOpenRouter: true, openRouterApiKey: "k" })),
-    ).toBe("openai/gpt-5.5");
+    ).toBeUndefined();
     // Not while that mode is inert (a manual key replaces the login), nor with the flag off.
     expect(
       resolveJobSessionModel({}, { model: "anthropic/claude-haiku-5.5" }, settings({ claudeCodeSubscriptionViaOpenRouter: true, openRouterApiKey: "k", apiKey: "sk-ant" })),
