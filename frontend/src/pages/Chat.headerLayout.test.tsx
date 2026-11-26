@@ -74,3 +74,25 @@ it("reserves the identity-row stop and moves actions to a second row at narrow c
   expect(declarations(0, " .chat-header-actions").getPropertyValue("grid-column")).toBe("1 / -1");
   expect(declarations(1, " .chat-header-actions").getPropertyValue("width")).toBe("100%");
 });
+
+it("lets the mobile action bar scroll sideways while staying right-aligned when it fits", () => {
+  const { container } = render(
+    <>
+      <style>{css}</style>
+      <div className="chat-mobile-action-bar">
+        <div role="radiogroup">View</div>
+        <button>Top</button>
+      </div>
+    </>,
+  );
+  const bar = getComputedStyle(container.querySelector(".chat-mobile-action-bar")!);
+  expect(bar.display).toBe("flex");
+  expect(bar.overflowX).toBe("auto");
+  expect(bar.overflowY).toBe("hidden");
+  // flex-end would overflow to the left, out of scroll reach.
+  expect(bar.justifyContent).not.toBe("flex-end");
+  const first = getComputedStyle(container.querySelector(".chat-mobile-action-bar > :first-child")!);
+  expect(first.marginLeft).toBe("auto");
+  expect(first.flexShrink).toBe("0");
+  expect(getComputedStyle(container.querySelector(".chat-mobile-action-bar > button")!).flexShrink).toBe("0");
+});

@@ -4756,13 +4756,10 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
       {/* Mobile: secondary action bar */}
       {!embedded && isMobile && showMobileActions && (
         <div
+          className="chat-mobile-action-bar"
           style={{
             padding: "6px 16px",
             borderBottom: "1px solid var(--border)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "flex-end",
-            gap: 8,
             flexShrink: 0,
           }}
         >

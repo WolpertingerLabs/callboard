@@ -84,3 +84,17 @@ it("says when an aside is calling, waiting for an answer, or has an unread reply
   expect(within(within(menu).getByRole("menuitem", { name: /Aside a3/ })).getByRole("img", { name: "unread" })).toBeTruthy();
   expect(within(within(menu).getByRole("menuitem", { name: /Aside a4/ })).queryByRole("img")).toBeNull();
 });
+
+it("portals the menu out of its row so a scrolling action bar cannot clip it, and closes on a press outside", () => {
+  const { container, onEmphasize } = renderButton([]);
+  fireEvent.click(screen.getByRole("button", { name: "2 asides in this chat" }));
+  const menu = screen.getByRole("menu");
+  expect(container.contains(menu)).toBe(false);
+  expect(menu.style.position).toBe("fixed");
+  // A press inside the portalled menu is not "outside".
+  fireEvent.mouseDown(within(menu).getByRole("menuitem", { name: /Aside a2/ }));
+  expect(screen.getByRole("menu")).toBeTruthy();
+  fireEvent.mouseDown(document.body);
+  expect(screen.queryByRole("menu")).toBeNull();
+  expect(onEmphasize).toHaveBeenLastCalledWith(null);
+});
