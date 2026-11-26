@@ -46,6 +46,16 @@ export interface ShellCommandAnalysis {
 export const MAX_REDIRECT_TARGETS = 8;
 /** Commands longer than this are not parsed at all. */
 export const MAX_COMMAND_LENGTH = 64 * 1024;
+/** Deepest nesting of compound commands (subshells, groups, if, loops, function calls) followed. */
+export const MAX_NESTING = 64;
+/** Variables tracked at once; assignments beyond this are treated as unknown. Real commands use a handful. */
+const MAX_VARS = 64;
+/** Commands walked (function bodies count once per call), and state entries copied, before giving up. */
+const MAX_STEPS = 40_000;
+const MAX_WORK = 2_000_000;
+
+/** Thrown when a command is too deep or too costly to follow; the analysis then reports nothing. */
+class TooComplex extends Error {}
 
 // ── Paths (POSIX, without Node's `path`) ────────────────────────────
 
@@ -337,6 +347,7 @@ function plain(word: Word | undefined): string | null {
 
 class Parser {
   i = 0;
+  private depth = 0;
   constructor(private toks: Tok[]) {}
 
   peek(): Tok | undefined {
@@ -429,6 +440,15 @@ class Parser {
   }
 
   command(): Cmd {
+    if (++this.depth > MAX_NESTING) throw new TooComplex("nesting");
+    try {
+      return this.commandAt();
+    } finally {
+      this.depth--;
+    }
+  }
+
+  private commandAt(): Cmd {
     if (this.isOp("(")) {
       this.i++;
       const body = this.list();
@@ -556,21 +576,11 @@ interface ShellState {
   /** null once it cannot be known. */
   cwd: string | null;
   vars: Map<string, string>;
-  funcs: Set<string>;
+  /** Functions defined so far, with their bodies; null when it differs between branches. */
+  funcs: Map<string, Cmd | null>;
 }
 /** null: this path cannot be reached (after `exit`, or the failure side of an assignment). */
 type MaybeState = ShellState | null;
-
-const clone = (s: ShellState): ShellState => ({ cwd: s.cwd, vars: new Map(s.vars), funcs: new Set(s.funcs) });
-
-/** What is still known whichever of `a` or `b` actually happened. */
-function join(a: MaybeState, b: MaybeState): MaybeState {
-  if (!a) return b && clone(b);
-  if (!b) return clone(a);
-  const vars = new Map<string, string>();
-  for (const [k, v] of a.vars) if (b.vars.get(k) === v) vars.set(k, v);
-  return { cwd: a.cwd === b.cwd ? a.cwd : null, vars, funcs: new Set([...a.funcs, ...b.funcs]) };
-}
 
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
@@ -665,7 +675,8 @@ function splitAssignment(word: Word): { name: string; value: Word; append: boole
 
 function assign(st: ShellState, a: { name: string; value: Word; append: boolean }): void {
   const v = a.append ? null : expandWord(a.value, st, true);
-  if (v === null) st.vars.delete(a.name);
+  // Past the cap a new variable is simply not tracked (unknown), which bounds every copy.
+  if (v === null || (!st.vars.has(a.name) && st.vars.size >= MAX_VARS)) st.vars.delete(a.name);
   else st.vars.set(a.name, v);
 }
 
@@ -674,6 +685,11 @@ function forgetAll(st: ShellState): ShellState {
   const home = st.vars.get("HOME");
   return { cwd: null, vars: new Map(home === undefined ? [] : [["HOME", home]]), funcs: st.funcs };
 }
+
+/** Builtins that set the variables named in their arguments. */
+const SETS_NAMED_VARS = new Set(["read", "mapfile", "readarray", "getopts", "unset"]);
+/** Variables these set when given no name. */
+const DEFAULT_VAR: Record<string, string> = { read: "REPLY", mapfile: "MAPFILE", readarray: "MAPFILE" };
 
 // ── Walking the tree ────────────────────────────────────────────────
 
@@ -698,6 +714,34 @@ interface Found {
 class Walker {
   found = new Map<string, Found>();
   detached = false;
+  private depth = 0;
+  private steps = 0;
+  private work = 0;
+  /** Functions being walked right now — a recursive call is not followed again. */
+  private calling = new Set<string>();
+
+  private charge(entries: number): void {
+    this.work += entries;
+    if (this.work > MAX_WORK) throw new TooComplex("work");
+  }
+
+  clone(s: ShellState): ShellState {
+    this.charge(s.vars.size + s.funcs.size);
+    return { cwd: s.cwd, vars: new Map(s.vars), funcs: new Map(s.funcs) };
+  }
+
+  /** What is still known whichever of `a` or `b` actually happened. */
+  join(a: MaybeState, b: MaybeState): MaybeState {
+    if (!a) return b;
+    if (!b || a === b) return a;
+    this.charge(a.vars.size + a.funcs.size + b.funcs.size);
+    const vars = new Map<string, string>();
+    for (const [k, v] of a.vars) if (b.vars.get(k) === v) vars.set(k, v);
+    const funcs = new Map<string, Cmd | null>();
+    for (const [k, v] of a.funcs) funcs.set(k, b.funcs.has(k) && b.funcs.get(k) === v ? v : null);
+    for (const k of b.funcs.keys()) if (!a.funcs.has(k)) funcs.set(k, null);
+    return { cwd: a.cwd === b.cwd ? a.cwd : null, vars, funcs };
+  }
 
   add(path: string, fds: RedirectFd[], via: RedirectTarget["via"], append: boolean): void {
     if (DROPPED.test(path)) return;
@@ -712,6 +756,7 @@ class Walker {
 
   /** Apply a command's redirections, evaluated in `st`, left to right. */
   redirects(redirs: Redir[], st: ShellState): void {
+    if (redirs.length === 0) return;
     type Open = { path: string | null; append: boolean; seq: number } | null;
     const fd: { 1: Open; 2: Open } = { 1: null, 2: null };
     let seq = 0;
@@ -756,6 +801,10 @@ class Walker {
     for (const { o, fds } of opened) this.add(o.path as string, fds, "redirect", o.append);
   }
 
+  // None of the walking methods mutate the state they are given: a change
+  // always produces a new state. So states are shared freely, and unchanged
+  // paths cost nothing to join.
+
   list(list: List, st: MaybeState): MaybeState {
     for (const { ao, background } of list) {
       if (!st) return null;
@@ -763,7 +812,7 @@ class Walker {
         // `&` applies to the whole and-or list, which runs in a subshell:
         // nothing it does reaches the commands after it.
         this.detached = true;
-        this.andOr(ao, clone(st));
+        this.andOr(ao, st);
       } else {
         st = this.andOr(ao, st);
       }
@@ -771,22 +820,41 @@ class Walker {
     return st;
   }
 
+  /**
+   * An and-or list. Failures are tracked in two parts: those that skipped the
+   * most recent pipeline (`skipped`), and that pipeline's own (`own`). Nothing
+   * tests the last pipeline's own failure, so — as for any plain command — it
+   * is assumed to succeed; failures that were tested and fell through (`cd x
+   * || true`, `cd x && y`) still count.
+   */
   andOr(ao: AndOr, st: ShellState): MaybeState {
-    let { ok, fail } = this.pipeline(ao.first, st);
+    const first = this.pipeline(ao.first, st);
+    let ok = first.ok;
+    let own = first.fail;
+    let skipped: MaybeState = null;
     for (const { op, p } of ao.rest) {
       if (op === "&&") {
-        if (!ok) continue;
+        skipped = this.join(skipped, own);
+        if (!ok) {
+          own = null;
+          continue;
+        }
         const r = this.pipeline(p, ok);
         ok = r.ok;
-        fail = join(fail, r.fail);
+        own = r.fail;
       } else {
-        if (!fail) continue;
-        const r = this.pipeline(p, fail);
-        ok = join(ok, r.ok);
-        fail = r.fail;
+        const failed = this.join(skipped, own);
+        skipped = null;
+        if (!failed) {
+          own = null;
+          continue;
+        }
+        const r = this.pipeline(p, failed);
+        ok = this.join(ok, r.ok);
+        own = r.fail;
       }
     }
-    return join(ok, fail);
+    return this.join(ok ?? own, skipped);
   }
 
   pipeline(p: Pipeline, st: ShellState): Outcome {
@@ -795,62 +863,88 @@ class Walker {
       out = this.command(p.cmds[0], st, false);
     } else {
       // Every part of a multi-command pipeline runs in its own subshell.
-      p.cmds.forEach((c, k) => this.command(c, clone(st), p.stderrIn[k]));
+      p.cmds.forEach((c, k) => this.command(c, st, p.stderrIn[k]));
       out = both(st);
     }
     return p.bang ? { ok: out.fail, fail: out.ok } : out;
   }
 
   command(cmd: Cmd, st: ShellState, stderrIn: boolean): Outcome {
+    if (++this.steps > MAX_STEPS) throw new TooComplex("steps");
+    if (++this.depth > MAX_NESTING) throw new TooComplex("nesting");
+    try {
+      return this.commandAt(cmd, st, stderrIn);
+    } finally {
+      this.depth--;
+    }
+  }
+
+  private commandAt(cmd: Cmd, st: ShellState, stderrIn: boolean): Outcome {
     switch (cmd.t) {
       case "simple":
         return this.simple(cmd, st, stderrIn);
       case "subshell":
         this.redirects(cmd.redirs, st);
-        this.list(cmd.body, clone(st));
+        this.list(cmd.body, st);
         return both(st);
-      case "group": {
+      case "group":
         this.redirects(cmd.redirs, st);
-        return both(this.list(cmd.body, clone(st)));
-      }
+        return both(this.list(cmd.body, st));
       case "if": {
         this.redirects(cmd.redirs, st);
-        let cur: MaybeState = clone(st);
+        let cur: MaybeState = st;
         let result: MaybeState = null;
         for (const { cond, body } of cmd.clauses) {
           if (!cur) break;
           cur = this.list(cond, cur);
           if (!cur) break;
-          result = join(result, this.list(body, clone(cur)));
+          result = this.join(result, this.list(body, cur));
         }
-        result = join(result, cur && cmd.orElse ? this.list(cmd.orElse, clone(cur)) : cur);
+        result = this.join(result, cur && cmd.orElse ? this.list(cmd.orElse, cur) : cur);
         return both(result);
       }
       case "loop": {
         this.redirects(cmd.redirs, st);
-        let entry: MaybeState = clone(st);
-        if (cmd.forVar) entry.vars.delete(cmd.forVar);
+        let entry: MaybeState = st;
+        if (cmd.forVar && st.vars.has(cmd.forVar)) {
+          entry = this.clone(st);
+          entry.vars.delete(cmd.forVar);
+        }
         if (cmd.cond) entry = this.list(cmd.cond, entry);
         if (!entry) return both(null);
         // Zero or more iterations: whatever the body changes is unknown afterwards.
-        const after = this.list(cmd.body, clone(entry));
-        const again = after && cmd.cond ? this.list(cmd.cond, clone(after)) : after;
-        return both(join(entry, again));
+        const after = this.list(cmd.body, entry);
+        const again = after && cmd.cond ? this.list(cmd.cond, after) : after;
+        return both(this.join(entry, again));
       }
       case "case": {
         this.redirects(cmd.redirs, st);
-        let result: MaybeState = clone(st); // no arm may match
-        for (const arm of cmd.arms) result = join(result, this.list(arm, clone(st)));
+        let result: MaybeState = st; // no arm may match
+        for (const arm of cmd.arms) result = this.join(result, this.list(arm, st));
         return both(result);
       }
       case "func": {
-        // The body runs only when called; its redirections are still files it writes.
-        this.command(cmd.body, clone(st), false);
-        const next = clone(st);
-        if (cmd.name) next.funcs.add(cmd.name);
+        // Defining a function runs nothing. Its body is walked where it is
+        // called, with the state there.
+        const next = this.clone(st);
+        if (cmd.name) next.funcs.set(cmd.name, cmd.body);
         return both(next);
       }
     }
+  }
+
+  /** A call to a defined function: walk its body with the caller's state, then assume anything changed. */
+  call(name: string, st: ShellState, stderrIn: boolean): Outcome {
+    const body = st.funcs.get(name);
+    if (body && !this.calling.has(name)) {
+      this.calling.add(name);
+      try {
+        this.command(body, st, stderrIn);
+      } finally {
+        this.calling.delete(name);
+      }
+    }
+    return both(forgetAll(st));
   }
 
   simple(cmd: Extract<Cmd, { t: "simple" }>, st: ShellState, stderrIn: boolean): Outcome {
@@ -868,7 +962,8 @@ class Walker {
     this.redirects(cmd.redirs, st);
 
     if (words.length === 0) {
-      const next = clone(st);
+      if (assigns.length === 0) return both(st);
+      const next = this.clone(st);
       for (const a of assigns) assign(next, a!);
       return { ok: next, fail: null };
     }
@@ -885,6 +980,8 @@ class Walker {
     const name = plain(words[0]);
     const args = words.slice(1);
 
+    if (name !== null && st.funcs.has(name)) return this.call(name, st, stderrIn);
+
     switch (name) {
       case "exit":
       case "return":
@@ -899,7 +996,7 @@ class Walker {
         return both(st);
       case "cd":
       case "pushd": {
-        const next = clone(st);
+        const next = this.clone(st);
         const operands = args.filter((w) => {
           const p = plain(w);
           return !(p && p.startsWith("-") && p !== "-");
@@ -909,14 +1006,20 @@ class Walker {
           const target = plain(operands[0]) === "-" ? null : expandWord(operands[0], st);
           next.cwd = target === null ? null : resolvePath(target, st.cwd);
         }
-        return both(next);
+        // A failed cd leaves the directory where it was.
+        return { ok: next, fail: st };
       }
       case "popd":
-        return both({ ...clone(st), cwd: null });
+        return { ok: { ...this.clone(st), cwd: null }, fail: st };
       case "source":
       case ".":
       case "eval":
         return both(forgetAll(st));
+      case "printf": {
+        const v = args.findIndex((w) => plain(w) === "-v");
+        if (v < 0) return both(st);
+        return both(this.forget(st, args.slice(v + 1, v + 2)));
+      }
       case "tee": {
         let append = false;
         let options = true;
@@ -938,22 +1041,64 @@ class Walker {
         return both(st);
       }
     }
+    if (name !== null && SETS_NAMED_VARS.has(name)) {
+      const named = args.filter((w) => !(plain(w) ?? "").startsWith("-"));
+      const next = this.forget(st, named, name === "unset");
+      if (DEFAULT_VAR[name]) next.vars.delete(DEFAULT_VAR[name]);
+      return both(next);
+    }
     if (name !== null && DECLARE_WORDS.has(name)) {
-      const next = clone(st);
+      // With options (`-n` namerefs, `-i` arithmetic, `-a` arrays…) values
+      // are not plain strings: forget every name instead of assigning it.
+      const optioned = args.some((w) => /^[-+]/.test(plain(w) ?? ""));
+      const next = this.clone(st);
       for (const w of args) {
+        if (/^[-+]/.test(plain(w) ?? "")) continue;
         const a = splitAssignment(w);
-        if (a) assign(next, a);
+        if (a && !optioned) assign(next, a);
+        else if (a) next.vars.delete(a.name);
+        else if (name !== "export" && name !== "readonly") {
+          const p = plain(w);
+          if (p === null) return both(forgetAll(st));
+          next.vars.delete(p);
+        }
       }
       return both(next);
     }
-    if (name !== null && st.funcs.has(name)) return both(forgetAll(st));
     return both(st);
+  }
+
+  /**
+   * Forget the variables named by `words` (and, for `unset`, functions). A
+   * name that is not literal could be any variable, so everything goes.
+   */
+  forget(st: ShellState, words: Word[], functionsToo = false): ShellState {
+    const next = this.clone(st);
+    for (const w of words) {
+      const p = plain(w);
+      if (p === null) return forgetAll(st);
+      next.vars.delete(p);
+      if (functionsToo) next.funcs.delete(p);
+    }
+    return next;
   }
 }
 
 /** Parse `command` once: its redirect targets and whether it detaches. */
 export function analyzeShellCommand(command: string, ctx: RedirectContext): ShellCommandAnalysis {
-  if (typeof command !== "string" || command.length > MAX_COMMAND_LENGTH) return { targets: [], detached: false };
+  const nothing: ShellCommandAnalysis = { targets: [], detached: false };
+  if (typeof command !== "string" || command.length > MAX_COMMAND_LENGTH) return nothing;
+  // Runs inside render in the browser and on every poll in the daemon: a
+  // command too deep or too costly to follow (or a bug here) means "nothing
+  // to tail", never an exception.
+  try {
+    return analyze(command, ctx);
+  } catch {
+    return nothing;
+  }
+}
+
+function analyze(command: string, ctx: RedirectContext): ShellCommandAnalysis {
   const parser = new Parser(tokenize(command));
   const tree: List = [];
   // A stray closer (`)`, `fi`, `;;`) ends a list early: step over it and carry on.
@@ -963,7 +1108,7 @@ export function analyzeShellCommand(command: string, ctx: RedirectContext): Shel
   }
   const walker = new Walker();
   const cwd = ctx.cwd.startsWith("/") ? normalizeAbs(ctx.cwd) : null;
-  walker.list(tree, { cwd, vars: new Map([["HOME", ctx.home]]), funcs: new Set() });
+  walker.list(tree, { cwd, vars: new Map([["HOME", ctx.home]]), funcs: new Map() });
   const targets = [...walker.found.values()].slice(0, MAX_REDIRECT_TARGETS).map((f) => ({
     path: f.path,
     fds: (["stdout", "stderr"] as const).filter((x) => f.fds.has(x)),

@@ -23,12 +23,37 @@ import { realpath, stat } from "fs/promises";
 import os from "os";
 import path from "path";
 import type { BackgroundTailChunk, BackgroundTailResponse, BackgroundTailStream, BackgroundTailStreamError } from "shared/types/index.js";
-import { analyzeShellCommand, type RedirectTarget } from "shared/types/index.js";
+import { analyzeShellCommand, type RedirectTarget, type ShellCommandAnalysis } from "shared/types/index.js";
 import { resolveEngineOutputPath, SESSION_ID } from "./engine-output.js";
 import { readTail } from "./tail-reader.js";
 import { findToolCall, type ChatForLookup } from "./transcript-lookup.js";
 
 export const STREAM_ID = /^(output|r[0-7])$/;
+
+/**
+ * The command's analysis, per tool call. The command never changes, so a
+ * panel polling every few seconds parses it once rather than on each poll.
+ */
+const ANALYSIS_MAX = 256;
+const analyses = new Map<string, { command: string; analysis: ShellCommandAnalysis }>();
+
+function analysisFor(key: string, command: string, cwd: string, home: string): ShellCommandAnalysis {
+  const hit = analyses.get(key);
+  if (hit && hit.command === command) {
+    analyses.delete(key);
+    analyses.set(key, hit);
+    return hit.analysis;
+  }
+  const analysis = analyzeShellCommand(command, { cwd, home });
+  analyses.set(key, { command, analysis });
+  while (analyses.size > ANALYSIS_MAX) analyses.delete(analyses.keys().next().value as string);
+  return analysis;
+}
+
+/** Test hook. */
+export function clearAnalysisCache(): void {
+  analyses.clear();
+}
 
 export class BadStreamError extends Error {}
 
@@ -136,7 +161,8 @@ export async function getBackgroundTail(
   if (!info || info.toolName !== "Bash") return null;
 
   const cwd = info.cwd ?? chat.folder ?? "";
-  const { targets, detached } = analyzeShellCommand(info.command, { cwd, home: os.homedir() });
+  const home = os.homedir();
+  const { targets, detached } = analysisFor(`${chat.id}\0${toolUseId}\0${cwd}\0${home}`, info.command, cwd, home);
   const taskId = info.taskId && SESSION_ID.test(info.sessionId) ? info.taskId : undefined;
   if (!info.taskId && !(detached && targets.length > 0)) return null;
 

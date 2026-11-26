@@ -30,6 +30,18 @@ vi.mock("../services/background-tail/tail-reader.js", async (orig) => {
   };
 });
 
+const analyze = vi.hoisted(() => ({ calls: 0 }));
+vi.mock("shared/types/index.js", async (orig) => {
+  const real = await orig<typeof import("shared/types/index.js")>();
+  return {
+    ...real,
+    analyzeShellCommand: (...args: Parameters<typeof real.analyzeShellCommand>) => {
+      analyze.calls++;
+      return real.analyzeShellCommand(...args);
+    },
+  };
+});
+
 const base = mkdtempSync(join(tmpdir(), "bgtail-route-"));
 process.env.CLAUDE_CODE_TMPDIR = base;
 
@@ -225,6 +237,15 @@ describe("GET /:id/background-tasks/:toolUseId/tail", () => {
     expect(r.body.tail.lines).toEqual(["after rotation"]);
     expect(statSync(log).ino).not.toBe(before);
     expect(r.body.streams[1].error).toBeUndefined();
+  });
+
+  it("parses the command once, not on every poll", async () => {
+    await get("chat-1", BG);
+    const n = analyze.calls;
+    expect(n).toBeGreaterThan(0); // the spy is in the path
+    await get("chat-1", BG);
+    await get("chat-1", BG, { stream: "r1" });
+    expect(analyze.calls).toBe(n);
   });
 
   it("ignores a path= query parameter", async () => {
