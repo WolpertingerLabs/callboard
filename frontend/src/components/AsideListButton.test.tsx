@@ -23,6 +23,7 @@ function renderButton(active: string[], onOpen = vi.fn(), onEmphasize = vi.fn(),
     connected: true,
     metadataVersion: 0,
     summonedChatIds: new Set<string>(),
+    awaitingChatIds: new Set<string>(),
     staleBuildId: null,
   };
   const ui = (
@@ -56,7 +57,14 @@ it("carries the running dot while an aside has a live session, and drops it when
   const { rerender, onOpen, onEmphasize } = renderButton(["a2"]);
   const button = await screen.findByRole("button", { name: "2 asides in this chat, 1 running" });
   expect(within(button).getByTestId("running-dot")).toBeTruthy();
-  const idle = { activeSessions: new Map(), connected: true, metadataVersion: 0, summonedChatIds: new Set<string>(), staleBuildId: null };
+  const idle = {
+    activeSessions: new Map(),
+    connected: true,
+    metadataVersion: 0,
+    summonedChatIds: new Set<string>(),
+    awaitingChatIds: new Set<string>(),
+    staleBuildId: null,
+  };
   await act(async () => {
     rerender(
       <SessionContext.Provider value={idle as never}>

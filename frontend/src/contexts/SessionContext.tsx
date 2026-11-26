@@ -7,6 +7,12 @@ export type { SessionType, ActiveSessionInfo, SummonInfo } from "../api";
 interface SessionContextValue {
   /** Map of chatId → session info for all currently active sessions */
   activeSessions: Map<string, ActiveSessionInfo>;
+  /**
+   * Chat ids blocked on the human — a permission prompt, question, plan review
+   * or open approval (`awaitingInput` on the poll). Empty against a daemon
+   * that does not send it.
+   */
+  awaitingChatIds: Set<string>;
   /** Whether the connection to the server is healthy */
   connected: boolean;
   /** Incremented on chat_metadata_updated / user_summoned events — use as a dependency to trigger refetch */
@@ -24,6 +30,7 @@ interface SessionContextValue {
 /** Exported for tests, which supply a value directly rather than standing up the poll. */
 export const SessionContext = createContext<SessionContextValue>({
   activeSessions: new Map(),
+  awaitingChatIds: new Set(),
   connected: false,
   metadataVersion: 0,
   summonedChatIds: new Set(),
@@ -92,6 +99,7 @@ const QUIET_POLL_INTERVAL_MS = 60_000;
  */
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [sessions, setSessions] = useState<Map<string, ActiveSessionInfo>>(new Map());
+  const [awaitingChatIds, setAwaitingChatIds] = useState<Set<string>>(new Set());
   const [connected, setConnected] = useState(false);
   const [metadataVersion, setMetadataVersion] = useState(0);
   const [summonedChatIds, setSummonedChatIds] = useState<Set<string>>(new Set());
@@ -142,6 +150,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         // Sessions changed — rebuild the map
         if (data.sessions !== undefined && data.version !== lastVersionRef.current) {
           setSessions(new Map<string, ActiveSessionInfo>(Object.entries(data.sessions)));
+          // Same version, same payload: replaced together so the two never disagree.
+          setAwaitingChatIds(new Set(Array.isArray(data.awaitingInput) ? data.awaitingInput : []));
         }
         lastVersionRef.current = data.version;
 
@@ -227,7 +237,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <SessionContext.Provider value={{ activeSessions: sessions, connected, metadataVersion, summonedChatIds, staleBuildId }}>
+    <SessionContext.Provider value={{ activeSessions: sessions, awaitingChatIds, connected, metadataVersion, summonedChatIds, staleBuildId }}>
       {children}
     </SessionContext.Provider>
   );

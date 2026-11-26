@@ -112,8 +112,13 @@ export function walkToRootId(chatId: string, read: (id: string) => Chat | null =
 function chatStatus(chat: Chat): "ongoing" | "waiting" | "stopped" {
   // The session registry keys by chat id (tracking id migrates to the real
   // chat UUID), while some legacy paths key by session id — check both.
-  if (sessionRegistry.has(chat.id) || sessionRegistry.has(chat.session_id)) return "ongoing";
+  //
+  // A pending request outranks "ongoing", as on the board (card-rollup.ts):
+  // a run blocked on a permission prompt or question is still registered, and
+  // blocked-on-you is the state the tree must surface. Open (non-blocking)
+  // approvals count too — the human still has something to answer.
   if (hasPendingRequest(chat.id) || hasPendingRequest(chat.session_id)) return "waiting";
+  if (sessionRegistry.has(chat.id) || sessionRegistry.has(chat.session_id)) return "ongoing";
   return "stopped";
 }
 

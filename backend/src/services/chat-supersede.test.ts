@@ -14,7 +14,9 @@ process.env.CALLBOARD_DATA_DIR = tmpRoot;
 
 const running = vi.hoisted(() => new Set<string>());
 vi.mock("./claude.js", () => ({ getActiveSession: () => null, hasPendingRequest: () => false, getPendingRequest: () => null }));
-vi.mock("./session-registry.js", () => ({ sessionRegistry: { has: (id: string) => running.has(id), get: () => undefined, notifyMetadata: () => {} } }));
+vi.mock("./session-registry.js", () => ({
+  sessionRegistry: { has: (id: string) => running.has(id), get: () => undefined, notifyMetadata: () => {}, bumpVersion: () => {} },
+}));
 
 const cuHost = vi.hoisted(() => ({ withdrawChatRequests: vi.fn() }));
 const proposals = vi.hoisted(() => ({ withdrawChat: vi.fn() }));

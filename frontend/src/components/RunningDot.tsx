@@ -2,25 +2,43 @@ import type { CSSProperties } from "react";
 import { visuallyHidden } from "../utils/visuallyHidden";
 
 /**
+ * `running`: green, something is working. `waiting`: yellow, something is
+ * blocked on the user — a permission prompt, a question, an open approval.
+ */
+export type RunningTone = "running" | "waiting";
+
+const TONE_COLOR: Record<RunningTone, string> = {
+  running: "var(--status-active)",
+  waiting: "var(--warning)",
+};
+
+/** What a waiting dot means, for the label every caller pairs it with. */
+export const WAITING_LABEL = "Waiting for your answer";
+
+/**
  * The green "something is running" dot — the sidebar's folder headers, chat
- * rows and the chat page header all paint the same one.
+ * rows and the chat page header all paint the same one. With `tone="waiting"`
+ * it is yellow instead: the chat (or something under it) has a question for
+ * the user.
  *
  * Purely decorative: it is colour alone, so every caller pairs it with text
  * that names what it means (a visually hidden label, or a visible one).
  */
-export default function RunningDot({ style }: { style?: CSSProperties }) {
+export default function RunningDot({ style, tone = "running" }: { style?: CSSProperties; tone?: RunningTone }) {
+  const color = TONE_COLOR[tone];
   return (
     <span
       aria-hidden
       data-testid="running-dot"
+      data-tone={tone}
       style={{
         display: "inline-block",
         width: 7,
         height: 7,
         flexShrink: 0,
         borderRadius: "50%",
-        background: "var(--status-active)",
-        boxShadow: "0 0 5px var(--status-active)",
+        background: color,
+        boxShadow: `0 0 5px ${color}`,
         ...style,
       }}
     />
@@ -49,8 +67,11 @@ export function RunningCount({
   testId,
   title,
   style,
+  tone = "running",
 }: {
   count: number;
+  /** See {@link RunningTone}: a tree with someone waiting counts in yellow. */
+  tone?: RunningTone;
   label: string;
   testId?: string;
   /** The tooltip; defaults to `label`. */
@@ -60,10 +81,11 @@ export function RunningCount({
   return (
     <span
       data-testid={testId}
+      data-tone={tone}
       title={title ?? label}
-      style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0, color: "var(--status-active)", ...style }}
+      style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0, color: TONE_COLOR[tone], ...style }}
     >
-      <RunningDot />
+      <RunningDot tone={tone} />
       <span aria-hidden>{count}</span>
       <span style={visuallyHidden}>{label}</span>
     </span>

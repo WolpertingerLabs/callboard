@@ -146,15 +146,8 @@ function frontsGroup(row: { isGroup: boolean; asideCount: number }): boolean {
   return row.isGroup || row.asideCount > 0;
 }
 
-export default function ChatList({
-  activeChatId,
-  onRefresh,
-  sidebarCollapsed,
-  onToggleSidebar,
-  claudeLoggedIn,
-  onShowClaudeModal,
-}: ChatListProps) {
-  const { activeSessions, metadataVersion } = useSessionContext();
+export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, onToggleSidebar, claudeLoggedIn, onShowClaudeModal }: ChatListProps) {
+  const { activeSessions, awaitingChatIds, metadataVersion } = useSessionContext();
   const { enabled: spacesEnabled, activeSpaceId, spaces, archivedSpaces, spaceById } = useSpaces();
   /** Search across every space, not just the active one. Session-only. */
   const [searchAllSpaces, setSearchAllSpaces] = useState(false);
@@ -1631,7 +1624,15 @@ export default function ChatList({
   // hidden (archived children, a directory/date filter) renders as a lone row,
   // but deleting it still leaves those children behind to regroup.
   // A chat with folded asides counts too: they stay behind, as rows of their own.
-  const groupFrontIds = useMemo(() => new Set(buildRows(chats, activeChatId).filter(frontsGroup).map((row) => row.chat.id)), [chats, activeChatId]);
+  const groupFrontIds = useMemo(
+    () =>
+      new Set(
+        buildRows(chats, activeChatId)
+          .filter(frontsGroup)
+          .map((row) => row.chat.id),
+      ),
+    [chats, activeChatId],
+  );
   const selectionFrontsAGroup = rows.some((row) => (frontsGroup(row) || groupFrontIds.has(row.chat.id)) && selectedIds.has(row.chat.id));
   const bulkDeleteMessage = [
     `Are you sure you want to delete ${selectedIds.size === 1 ? "this chat" : `these ${selectedIds.size} chats`}?`,
@@ -1952,6 +1953,7 @@ export default function ChatList({
           foldAsides={foldAsides}
           cardMenuFor={cardMenuFor}
           sessionStatusFor={(chatId) => (activeSessions.has(chatId) ? { active: true, type: activeSessions.get(chatId)!.type } : undefined)}
+          isAwaiting={(chatId) => awaitingChatIds.has(chatId)}
           isDimmed={isDimmed}
           // Withheld until the cards are in: a row's selection scope reads its
           // card's state when it has one, and there is no honest scope to put a row in

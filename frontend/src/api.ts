@@ -325,6 +325,11 @@ export interface SessionPollResponse {
   metadataVersion: number;
   build?: string;
   sessions?: Record<string, ActiveSessionInfo>;
+  /**
+   * Chats blocked on the human (a prompt, question or open approval), sent
+   * with `sessions`. Absent from older daemons — read as "nobody waiting".
+   */
+  awaitingInput?: string[];
   activeSummons?: Record<string, SummonInfo>;
 }
 

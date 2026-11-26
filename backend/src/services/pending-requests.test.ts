@@ -12,6 +12,7 @@ import {
   clearOpenApprovalsForTest,
   getPendingRequest,
   hasPendingRequest,
+  listAwaitingChatIds,
   openHumanApproval,
   pendingRequestRequiresHuman,
   pendingRequests,
@@ -224,4 +225,38 @@ it("bumps the polled metadata version whenever an open approval opens or closes"
   } finally {
     notify.mockRestore();
   }
+});
+
+// ── The session version: what makes `/sessions/poll` resend `awaitingInput` ──
+
+const blocking = () => ({ toolName: "Bash", input: {}, eventType: "permission_request" as const, eventData: {}, resolve: () => {} });
+
+it("bumps the session version when a blocking prompt is parked and when it is really removed", () => {
+  const v0 = sessionRegistry.version;
+  pendingRequests.set(CHAT, blocking());
+  const v1 = sessionRegistry.version;
+  expect(v1).toBeGreaterThan(v0);
+  expect(pendingRequests.delete("no-such-chat")).toBe(false);
+  expect(sessionRegistry.version).toBe(v1);
+  expect(pendingRequests.delete(CHAT)).toBe(true);
+  expect(sessionRegistry.version).toBeGreaterThan(v1);
+});
+
+it("bumps the session version when an open approval opens and when it is withdrawn", () => {
+  const v0 = sessionRegistry.version;
+  const approval = openHumanApproval(CHAT, request, () => {});
+  const v1 = sessionRegistry.version;
+  expect(v1).toBeGreaterThan(v0);
+  approval.cancel();
+  expect(sessionRegistry.version).toBeGreaterThan(v1);
+});
+
+it("lists every chat with a blocking prompt or an open approval, once each", () => {
+  pendingRequests.set(CHAT, blocking());
+  openHumanApproval(CHAT, request, () => {});
+  openHumanApproval("other-chat", request, () => {});
+  expect(listAwaitingChatIds().sort()).toEqual([CHAT, "other-chat"].sort());
+  pendingRequests.delete(CHAT);
+  clearOpenApprovalsForTest();
+  expect(listAwaitingChatIds()).toEqual([]);
 });

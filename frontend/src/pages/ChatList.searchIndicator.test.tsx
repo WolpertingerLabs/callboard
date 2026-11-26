@@ -21,7 +21,13 @@ vi.mock("../api", async (importOriginal) => ({
   searchChatContents: vi.fn(),
 }));
 vi.mock("../contexts/SessionContext", () => ({
-  useSessionContext: () => ({ activeSessions: new Map(), connected: true, metadataVersion: 0, summonedChatIds: new Set<string>() }),
+  useSessionContext: () => ({
+    activeSessions: new Map(),
+    connected: true,
+    metadataVersion: 0,
+    summonedChatIds: new Set<string>(),
+    awaitingChatIds: new Set<string>(),
+  }),
 }));
 vi.mock("../components/SidebarHeader", () => ({ default: () => <div /> }));
 vi.mock("../components/NewChatPanel", () => ({ default: () => <div /> }));

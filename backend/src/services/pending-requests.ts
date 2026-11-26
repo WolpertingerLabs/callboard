@@ -81,7 +81,39 @@ export interface PendingRequest {
  * temp-id → session-id rekey. Everything else should go through the functions
  * below.
  */
-export const pendingRequests = new Map<string, PendingRequest>();
+export const pendingRequests = new (class PendingRequestMap extends Map<string, PendingRequest> {
+  // Every change to who is blocked on the human bumps the session version, so
+  // the `/sessions/poll` payload (and its `awaitingInput`) is resent. Done here
+  // rather than at each caller because `claude.ts` and `parent-answers.ts`
+  // write this map directly in several places.
+  override set(key: string, value: PendingRequest): this {
+    super.set(key, value);
+    sessionRegistry.bumpVersion();
+    return this;
+  }
+  override delete(key: string): boolean {
+    const removed = super.delete(key);
+    if (removed) sessionRegistry.bumpVersion();
+    return removed;
+  }
+  override clear(): void {
+    const had = this.size > 0;
+    super.clear();
+    if (had) sessionRegistry.bumpVersion();
+  }
+})();
+
+/**
+ * Every chat (tracking id) the human is being asked something in — a blocking
+ * prompt or an open approval. Rides `/sessions/poll` as `awaitingInput`, which
+ * paints the sidebar's yellow "waiting on you" dot. Open approvals count even
+ * though nothing is suspended on them: the human still has a question to answer.
+ */
+export function listAwaitingChatIds(): string[] {
+  const ids = new Set<string>(pendingRequests.keys());
+  for (const entry of openApprovals.values()) ids.add(entry.chatId);
+  return [...ids];
+}
 
 /** Is the human being asked anything in this chat — the blocking slot, or an open approval. */
 export function hasPendingRequest(chatId: string): boolean {
@@ -293,6 +325,8 @@ export function recentResolution(chatId: string, requestId: unknown): string | u
  */
 function signalOpenApprovalsChanged(chatId: string) {
   sessionRegistry.notifyMetadata(chatId, { openApprovals: true });
+  // …and the session version, which carries `awaitingInput` (see listAwaitingChatIds).
+  sessionRegistry.bumpVersion();
 }
 
 function firstOpenApproval(chatId: string): [string, OpenApprovalEntry] | undefined {

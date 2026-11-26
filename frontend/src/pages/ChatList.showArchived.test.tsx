@@ -42,6 +42,7 @@ vi.mock("../contexts/SessionContext", () => ({
     connected: true,
     metadataVersion: 0,
     summonedChatIds: new Set<string>(),
+    awaitingChatIds: new Set<string>(),
   }),
 }));
 

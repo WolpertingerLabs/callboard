@@ -41,6 +41,7 @@ vi.mock("../contexts/SessionContext", () => ({
     connected: true,
     metadataVersion: 0,
     summonedChatIds: new Set<string>(),
+    awaitingChatIds: new Set<string>(),
   }),
 }));
 
@@ -177,7 +178,12 @@ function row(preview: string) {
 /** The count the bar SHOWS — its visually-hidden " selected" is for screen readers; see `announced`. */
 function count() {
   const live = screen.queryByText(/^\d+ chats?$/);
-  return live ? [...live.childNodes].filter((n) => n.nodeType === Node.TEXT_NODE).map((n) => n.textContent).join("") : null;
+  return live
+    ? [...live.childNodes]
+        .filter((n) => n.nodeType === Node.TEXT_NODE)
+        .map((n) => n.textContent)
+        .join("")
+    : null;
 }
 
 /** What the bar's live region announces. */
@@ -1026,7 +1032,13 @@ describe("bulk delete", () => {
     await mount();
     selectAndPressDelete("chat one", "chat two", "chat three");
 
-    mockBulkDelete.mockResolvedValue({ deleted: ["one"], failed: [{ id: "two", error: "native_child_read_only" }, { id: "three", error: "gone" }] });
+    mockBulkDelete.mockResolvedValue({
+      deleted: ["one"],
+      failed: [
+        { id: "two", error: "native_child_read_only" },
+        { id: "three", error: "gone" },
+      ],
+    });
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Delete" }));
     });

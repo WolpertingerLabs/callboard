@@ -3,7 +3,7 @@
  * creation, forkedFrom aliasing, ancestor walks, tree assembly, orphaned
  * parents, and the visited-set guard against corrupt (cyclic) data.
  */
-import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,10 +15,12 @@ process.env.CALLBOARD_DATA_DIR = tmpRoot;
 
 // chat-lineage imports hasPendingRequest from the (heavy) claude.js module —
 // stub it so the tests don't pull in the agent SDK stack.
+const pendingIds = new Set<string>();
 vi.mock("./claude.js", () => ({
-  hasPendingRequest: () => false,
+  hasPendingRequest: (id: string) => pendingIds.has(id),
 }));
 
+const { sessionRegistry } = await import("./session-registry.js");
 const { resolveParentage, buildChatTree, getParentChatId, paginateTreeRows, buildLineageIndex } = await import("./chat-lineage.js");
 type ChatTreeNode = import("shared/types/index.js").ChatTreeNode;
 
@@ -222,6 +224,32 @@ describe("buildChatTree", () => {
     writeChat("root");
     const result = buildChatTree("root");
     expect(result!.tree.status).toBe("stopped");
+  });
+
+  describe("status ranking", () => {
+    afterEach(() => {
+      pendingIds.clear();
+      sessionRegistry.unregister("root");
+    });
+
+    it("reads waiting, not ongoing, for a registered run blocked on a prompt", () => {
+      writeChat("root");
+      sessionRegistry.register("root", { type: "web" });
+      pendingIds.add("root");
+      expect(buildChatTree("root")!.tree.status).toBe("waiting");
+    });
+
+    it("reads ongoing for a registered run with nothing pending", () => {
+      writeChat("root");
+      sessionRegistry.register("root", { type: "web" });
+      expect(buildChatTree("root")!.tree.status).toBe("ongoing");
+    });
+
+    it("reads waiting for an open approval with no run behind it", () => {
+      writeChat("root");
+      pendingIds.add("session-root");
+      expect(buildChatTree("root")!.tree.status).toBe("waiting");
+    });
   });
 });
 

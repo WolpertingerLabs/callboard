@@ -27,6 +27,7 @@ vi.mock("../contexts/SessionContext", () => ({
     connected: true,
     metadataVersion: 0,
     summonedChatIds: new Set<string>(),
+    awaitingChatIds: new Set<string>(),
   }),
 }));
 
@@ -132,8 +133,18 @@ describe("collapsed sidebar rail", () => {
  */
 describe("segmented nav seams survive navigation", () => {
   const cases = [
-    { name: "open header (row)", mount: () => renderHeader({ path: "/board" }), boardSeam: "borderRightWidth", agentsSeams: ["borderLeftWidth", "borderRightWidth"] },
-    { name: "collapsed rail (stack)", mount: () => renderRail({ path: "/board" }), boardSeam: "borderBottomWidth", agentsSeams: ["borderTopWidth", "borderBottomWidth"] },
+    {
+      name: "open header (row)",
+      mount: () => renderHeader({ path: "/board" }),
+      boardSeam: "borderRightWidth",
+      agentsSeams: ["borderLeftWidth", "borderRightWidth"],
+    },
+    {
+      name: "collapsed rail (stack)",
+      mount: () => renderRail({ path: "/board" }),
+      boardSeam: "borderBottomWidth",
+      agentsSeams: ["borderTopWidth", "borderBottomWidth"],
+    },
   ] as const;
 
   for (const { name, mount, boardSeam, agentsSeams } of cases) {

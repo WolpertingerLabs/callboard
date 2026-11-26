@@ -34,6 +34,7 @@ vi.mock("../contexts/SessionContext", () => ({
     connected: true,
     metadataVersion: 0,
     summonedChatIds: new Set<string>(),
+    awaitingChatIds: new Set<string>(),
   }),
 }));
 
@@ -43,23 +44,31 @@ vi.mock("../components/SidebarHeader", () => ({ default: () => <div /> }));
  * modal behind the real one is not what these tests are about.
  */
 vi.mock("../components/ChatFilterBar", () => ({
-  default: ({ filters, viewOptions, onApply }: { filters: unknown; viewOptions: { showArchived: boolean }; onApply: (filters: unknown, view: unknown) => void }) => (
+  default: ({
+    filters,
+    viewOptions,
+    onApply,
+  }: {
+    filters: unknown;
+    viewOptions: { showArchived: boolean };
+    onApply: (filters: unknown, view: unknown) => void;
+  }) => (
     <>
       <button onClick={() => onApply(filters, { ...viewOptions, showArchived: !viewOptions.showArchived })}>toggle show archived</button>
       <button
-      onClick={() =>
-        onApply(
-          {
-            directoryInclude: { value: "", active: false },
-            directoryExclude: { value: "", active: false },
-            dateMin: { value: "2026-08-20T10:00:00.000Z", active: true },
-            dateMax: { value: "", active: false },
-          },
-          viewOptions,
-        )
-      }
-    >
-      apply date filter
+        onClick={() =>
+          onApply(
+            {
+              directoryInclude: { value: "", active: false },
+              directoryExclude: { value: "", active: false },
+              dateMin: { value: "2026-08-20T10:00:00.000Z", active: true },
+              dateMax: { value: "", active: false },
+            },
+            viewOptions,
+          )
+        }
+      >
+        apply date filter
       </button>
     </>
   ),
@@ -349,8 +358,14 @@ describe("ChatList child archive — optimistic rows and filters", () => {
   it("hides the chats under an archived child even when a date filter removes the archived child itself", async () => {
     // The archived middle chat is older than the filter's floor; its child is
     // newer. Filtering first would cut the chain and let the grandchild through.
-    const oldArchived = { ...makeChat("child", { title: "Helper", parentChatId: "root", rootChatId: "root", childArchived: true }), updated_at: "2026-08-20T09:00:00.000Z" };
-    const grandchild = { ...makeChat("grandchild", { title: "Grandchild", parentChatId: "child", rootChatId: "root" }), updated_at: "2026-08-20T12:00:00.000Z" };
+    const oldArchived = {
+      ...makeChat("child", { title: "Helper", parentChatId: "root", rootChatId: "root", childArchived: true }),
+      updated_at: "2026-08-20T09:00:00.000Z",
+    };
+    const grandchild = {
+      ...makeChat("grandchild", { title: "Grandchild", parentChatId: "child", rootChatId: "root" }),
+      updated_at: "2026-08-20T12:00:00.000Z",
+    };
     mockListChats.mockResolvedValue(listResponse([grandchild, ROOT, oldArchived]));
     render(
       <MemoryRouter>
