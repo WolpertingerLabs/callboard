@@ -123,15 +123,8 @@ function fakeBuffer(channels: Float32Array[], sampleRate = VOICE_SAMPLE_RATE) {
   };
 }
 
-/** What the recorder hands over. jsdom's Blob has no `arrayBuffer()`; browsers' does. */
-const recording = { arrayBuffer: async () => new ArrayBuffer(8) } as unknown as Blob;
-
-const readBlob = (b: Blob) =>
-  new Promise<ArrayBuffer>((resolve) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as ArrayBuffer);
-    reader.readAsArrayBuffer(b);
-  });
+/** What the recorder hands over. (jsdom 25's Blob gains `arrayBuffer()` from vitest.setup.frontend.ts.) */
+const recording = new Blob([new ArrayBuffer(8)]);
 
 describe("toWav16kMono", () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -176,7 +169,7 @@ describe("toWav16kMono", () => {
   it("downmixes every channel to their average", async () => {
     stubOffline(fakeBuffer([new Float32Array([1, 0.5, -1]), new Float32Array([0, -0.5, -1])]));
     const out = await toWav16kMono(recording);
-    const view = new DataView(await readBlob(out.wav));
+    const view = new DataView(await out.wav.arrayBuffer());
     expect([0, 1, 2].map((i) => view.getInt16(44 + i * 2, true))).toEqual([Math.round(0.5 * 0x7fff), 0, -32768]);
     expect(out.peak).toBeCloseTo(1);
   });

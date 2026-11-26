@@ -42,6 +42,55 @@ if (typeof globalThis.PointerEvent === "undefined") {
 }
 
 /**
+ * jsdom 25's `Blob` has `size`, `type` and `slice()` but none of the read
+ * methods (`text()`, `arrayBuffer()`, `bytes()`) that every browser has.
+ *
+ * Up to Node 24 nobody noticed: the global `Response` is undici's, and undici 6
+ * built `res.blob()` from Node's own `Blob`, which has them. Node 26 bundles
+ * undici 8, which builds it from whatever `globalThis.Blob` is at call time —
+ * under jsdom, jsdom's Blob. So `(await res.blob()).text()` throws
+ * "text is not a function" on Node 26 only, and code that is correct in every
+ * browser fails its tests (StorageSettings' text preview did exactly this).
+ *
+ * Fill the gap the way a browser would read a Blob: through jsdom's own
+ * `FileReader`, which reads jsdom Blobs. Guarded, so it steps aside once jsdom
+ * ships the methods itself.
+ */
+function readBlob<T>(blob: Blob, read: (r: FileReader) => void, result: (r: FileReader) => T): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(result(reader));
+    reader.onerror = () => reject(reader.error);
+    read(reader);
+  });
+}
+
+if (typeof Blob !== "undefined" && typeof FileReader !== "undefined") {
+  const proto = Blob.prototype as Partial<Blob>;
+  if (typeof proto.text !== "function") {
+    // Not FileReader.readAsText: that sniffs a UTF-16 BOM, but Blob.text()
+    // always decodes UTF-8 (TextDecoder strips a UTF-8 BOM, as the spec does).
+    proto.text = function (this: Blob) {
+      return this.arrayBuffer().then((buf) => new TextDecoder().decode(buf));
+    };
+  }
+  if (typeof proto.arrayBuffer !== "function") {
+    proto.arrayBuffer = function (this: Blob) {
+      return readBlob(
+        this,
+        (r) => r.readAsArrayBuffer(this),
+        (r) => r.result as ArrayBuffer,
+      );
+    };
+  }
+  if (typeof proto.bytes !== "function") {
+    proto.bytes = function (this: Blob) {
+      return this.arrayBuffer().then((buf) => new Uint8Array(buf));
+    };
+  }
+}
+
+/**
  * The composer keeps unsent text in localStorage per chat, and flushes it when
  * it unmounts — so a test that types and then unmounts leaves its text for the
  * next test's composer to restore. Every test starts with no composer drafts.
