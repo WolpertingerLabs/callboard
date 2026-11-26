@@ -147,7 +147,7 @@ function frontsGroup(row: { isGroup: boolean; asideCount: number }): boolean {
 }
 
 export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, onToggleSidebar, claudeLoggedIn, onShowClaudeModal }: ChatListProps) {
-  const { activeSessions, awaitingChatIds, metadataVersion } = useSessionContext();
+  const { activeSessions, awaitingChatIds, awaitingBelowChatIds, metadataVersion } = useSessionContext();
   const { enabled: spacesEnabled, activeSpaceId, spaces, archivedSpaces, spaceById } = useSpaces();
   /** Search across every space, not just the active one. Session-only. */
   const [searchAllSpaces, setSearchAllSpaces] = useState(false);
@@ -1954,6 +1954,7 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
           cardMenuFor={cardMenuFor}
           sessionStatusFor={(chatId) => (activeSessions.has(chatId) ? { active: true, type: activeSessions.get(chatId)!.type } : undefined)}
           isAwaiting={(chatId) => awaitingChatIds.has(chatId)}
+          isAwaitingBelow={(chatId) => awaitingBelowChatIds.has(chatId)}
           isDimmed={isDimmed}
           // Withheld until the cards are in: a row's selection scope reads its
           // card's state when it has one, and there is no honest scope to put a row in

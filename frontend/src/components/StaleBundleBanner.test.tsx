@@ -41,7 +41,15 @@ afterEach(() => {
 function renderBanner(staleBuildId: string | null) {
   return render(
     <SessionContext.Provider
-      value={{ activeSessions: new Map(), connected: true, metadataVersion: 0, summonedChatIds: new Set(), awaitingChatIds: new Set<string>(), staleBuildId }}
+      value={{
+        activeSessions: new Map(),
+        connected: true,
+        metadataVersion: 0,
+        summonedChatIds: new Set(),
+        awaitingChatIds: new Set<string>(),
+        awaitingBelowChatIds: new Set<string>(),
+        staleBuildId,
+      }}
     >
       <StaleBundleBanner />
     </SessionContext.Provider>,

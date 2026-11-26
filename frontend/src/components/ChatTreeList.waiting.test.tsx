@@ -7,7 +7,7 @@
  * root. Siblings stay as they were.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import type { Chat, ChatTreeNode } from "../api";
 import { getChatTree } from "../api";
@@ -95,12 +95,21 @@ function mockTree(tree: ChatTreeNode = TREE) {
   vi.mocked(getChatTree).mockResolvedValue({ targetChatId: "root", rootChatId: "root", ancestors: [], tree });
 }
 
-function renderList(running: string[] = [], chats: Chat[] = CHATS, activeChatId?: string, awaiting: string[] = []) {
-  return render(
+interface ListState {
+  running?: string[];
+  chats?: Chat[];
+  activeChatId?: string;
+  awaiting?: string[];
+  awaitingBelow?: string[];
+  refreshToken?: number;
+}
+
+function listUi({ running = [], chats = CHATS, activeChatId, awaiting = [], awaitingBelow = [], refreshToken = 0 }: ListState = {}) {
+  return (
     <MemoryRouter>
       <ChatTreeList
         chats={chats}
-        refreshToken={0}
+        refreshToken={refreshToken}
         activeChatId={activeChatId}
         onChatClick={() => {}}
         onDelete={() => {}}
@@ -109,11 +118,16 @@ function renderList(running: string[] = [], chats: Chat[] = CHATS, activeChatId?
         cardMenuFor={() => ({})}
         sessionStatusFor={(id) => (running.includes(id) ? { active: true, type: "web" } : undefined)}
         isAwaiting={(id) => awaiting.includes(id)}
+        isAwaitingBelow={(id) => awaitingBelow.includes(id)}
         onDetach={() => {}}
         onSetChildArchived={async () => true}
       />
-    </MemoryRouter>,
+    </MemoryRouter>
   );
+}
+
+function renderList(running: string[] = [], chats: Chat[] = CHATS, activeChatId?: string, awaiting: string[] = [], awaitingBelow: string[] = []) {
+  return render(listUi({ running, chats, activeChatId, awaiting, awaitingBelow }));
 }
 
 /**
@@ -197,5 +211,59 @@ describe("waiting on the user", () => {
     await expand();
     expect(waitingIn("archParent")).toBe(true);
     expect(waitingIn("root")).toBe(true);
+  });
+
+  it("turns a collapsed card yellow for a waiting child the list never loads, from the server's awaitingBelow", async () => {
+    mockTree();
+    // "hidden-job" is a triggered chat: not a row, no tree fetched (the card is
+    // folded). Only the server's ancestor walk names root as waiting below.
+    renderList([], CHATS, undefined, ["hidden-job"], ["root"]);
+    const dot = await screen.findByTestId("chat-running");
+    expect(dot.getAttribute("data-tone")).toBe("waiting");
+    expect(getChatTree).not.toHaveBeenCalled();
+  });
+
+  it("turns a lone row yellow for a hidden waiting child, from awaitingBelow", () => {
+    render(listUi({ chats: [makeChat("solo")], awaiting: ["solo-job"], awaitingBelow: ["solo"] }));
+    expect(screen.getByTestId("chat-running").getAttribute("data-tone")).toBe("waiting");
+  });
+
+  it("marks tree nodes yellow from awaitingBelow too, for a waiting child the fetched tree lacks", async () => {
+    mockTree();
+    renderList([], CHATS, undefined, [], ["mid", "root"]);
+    await expand();
+    expect(waitingIn("mid")).toBe(true);
+    expect(waitingIn("root")).toBe(true);
+    expect(waitingIn("lonely")).toBe(false);
+    expect(node("mid")!.getAttribute("aria-label")).toBe("Mid — a chat below is waiting for your answer");
+  });
+
+  it("clears the yellow on an expanded tree once the prompt is answered", async () => {
+    const waitingTree = makeNode("root", "Root", {
+      children: [makeNode("mid", "Mid", { children: [makeNode("leaf", "Leaf")] }), makeNode("lonely", "Lonely", { status: "waiting" })],
+    });
+    mockTree(waitingTree);
+    const { rerender } = render(listUi({ running: ["lonely"], awaiting: ["lonely"], awaitingBelow: ["root"] }));
+    await expand();
+    expect(waitingIn("lonely")).toBe(true);
+    expect(waitingIn("root")).toBe(true);
+    expect(groupDot().getAttribute("data-tone")).toBe("waiting");
+
+    // Answered: the poll drops it from awaitingInput/awaitingBelow, the list
+    // reloads (refreshToken), and the refetched tree no longer says waiting.
+    const fetches = vi.mocked(getChatTree).mock.calls.length;
+    mockTree(
+      makeNode("root", "Root", {
+        children: [makeNode("mid", "Mid", { children: [makeNode("leaf", "Leaf")] }), makeNode("lonely", "Lonely", { status: "ongoing" })],
+      }),
+    );
+    rerender(listUi({ running: ["lonely"], refreshToken: 1 }));
+    await waitFor(() => expect(vi.mocked(getChatTree).mock.calls.length).toBeGreaterThan(fetches));
+    await waitFor(() => expect(waitingIn("lonely")).toBe(false));
+    expect(waitingIn("root")).toBe(false);
+    expect(screen.queryAllByTestId("tree-node-waiting")).toHaveLength(0);
+    // Still working, so green again.
+    expect(within(node("lonely")!).getByTestId("running-dot").getAttribute("data-tone")).toBe("running");
+    expect(groupDot().getAttribute("data-tone")).toBe("running");
   });
 });

@@ -68,7 +68,12 @@ vi.mock("../api", async (importOriginal) => ({
   deleteDraft: vi.fn(async () => ({})),
 }));
 const session = vi.hoisted(() => ({ metadataVersion: 0, treeFails: false }));
-vi.mock("../contexts/SessionContext", () => ({ useIsSessionActive: () => null, useMetadataVersion: () => session.metadataVersion }));
+vi.mock("../contexts/SessionContext", () => ({
+  // AsideListButton reads the poll's awaiting set.
+  useSessionContext: () => ({ awaitingChatIds: new Set<string>() }),
+  useIsSessionActive: () => null,
+  useMetadataVersion: () => session.metadataVersion,
+}));
 vi.mock("../components/PromptInput", async (importOriginal) => {
   const { useState } = await import("react");
   const { useEffect, useRef } = await import("react");

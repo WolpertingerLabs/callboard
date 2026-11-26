@@ -109,6 +109,38 @@ export function walkToRootId(chatId: string, read: (id: string) => Chat | null =
   return currentId;
 }
 
+/**
+ * Every ancestor of `chatId`, nearest first, by the same walk as
+ * {@link walkToRootId} — parent pointers, then the terminal node's stamped
+ * `rootChatId` when that root still exists. Excludes `chatId` itself; empty
+ * for a root, or for an id with no chat record (a tracking id not yet
+ * migrated).
+ *
+ * For `/sessions/poll`'s `awaitingBelow`: the sidebar turns every ancestor of
+ * a chat waiting on the user yellow, including ancestors of a chat the list
+ * never shows (a triggered job/agent chat), which only the server can name.
+ */
+export function ancestorChatIds(chatId: string, read: (id: string) => Chat | null = (id) => chatFileService.getChat(id)): string[] {
+  const out: string[] = [];
+  const visited = new Set<string>([chatId]);
+  let current = read(chatId);
+  for (let depth = 0; current && depth < MAX_LINEAGE_DEPTH; depth++) {
+    visited.add(current.id);
+    const meta = parseMeta(current);
+    const parentId = getParentChatId(meta);
+    const parent = parentId && !visited.has(parentId) ? read(parentId) : null;
+    if (parent) {
+      out.push(parent.id);
+      current = parent;
+      continue;
+    }
+    const stampedRoot = typeof meta.rootChatId === "string" && meta.rootChatId ? meta.rootChatId : undefined;
+    if (stampedRoot && !visited.has(stampedRoot) && read(stampedRoot)) out.push(stampedRoot);
+    break;
+  }
+  return out;
+}
+
 function chatStatus(chat: Chat): "ongoing" | "waiting" | "stopped" {
   // The session registry keys by chat id (tracking id migrates to the real
   // chat UUID), while some legacy paths key by session id — check both.

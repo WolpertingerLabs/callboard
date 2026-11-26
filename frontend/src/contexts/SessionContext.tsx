@@ -13,6 +13,12 @@ interface SessionContextValue {
    * that does not send it.
    */
   awaitingChatIds: Set<string>;
+  /**
+   * Chat ids with a chat waiting on the user somewhere below them in their
+   * tree (`awaitingBelow` on the poll), whether or not the list shows that
+   * chat. Empty against a daemon that does not send it.
+   */
+  awaitingBelowChatIds: Set<string>;
   /** Whether the connection to the server is healthy */
   connected: boolean;
   /** Incremented on chat_metadata_updated / user_summoned events — use as a dependency to trigger refetch */
@@ -31,6 +37,7 @@ interface SessionContextValue {
 export const SessionContext = createContext<SessionContextValue>({
   activeSessions: new Map(),
   awaitingChatIds: new Set(),
+  awaitingBelowChatIds: new Set(),
   connected: false,
   metadataVersion: 0,
   summonedChatIds: new Set(),
@@ -100,6 +107,7 @@ const QUIET_POLL_INTERVAL_MS = 60_000;
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [sessions, setSessions] = useState<Map<string, ActiveSessionInfo>>(new Map());
   const [awaitingChatIds, setAwaitingChatIds] = useState<Set<string>>(new Set());
+  const [awaitingBelowChatIds, setAwaitingBelowChatIds] = useState<Set<string>>(new Set());
   const [connected, setConnected] = useState(false);
   const [metadataVersion, setMetadataVersion] = useState(0);
   const [summonedChatIds, setSummonedChatIds] = useState<Set<string>>(new Set());
@@ -152,6 +160,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           setSessions(new Map<string, ActiveSessionInfo>(Object.entries(data.sessions)));
           // Same version, same payload: replaced together so the two never disagree.
           setAwaitingChatIds(new Set(Array.isArray(data.awaitingInput) ? data.awaitingInput : []));
+          setAwaitingBelowChatIds(new Set(Array.isArray(data.awaitingBelow) ? data.awaitingBelow : []));
         }
         lastVersionRef.current = data.version;
 
@@ -237,7 +246,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <SessionContext.Provider value={{ activeSessions: sessions, awaitingChatIds, connected, metadataVersion, summonedChatIds, staleBuildId }}>
+    <SessionContext.Provider
+      value={{ activeSessions: sessions, awaitingChatIds, awaitingBelowChatIds, connected, metadataVersion, summonedChatIds, staleBuildId }}
+    >
       {children}
     </SessionContext.Provider>
   );

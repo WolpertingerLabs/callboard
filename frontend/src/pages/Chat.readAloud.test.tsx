@@ -61,6 +61,8 @@ vi.mock("../api", async (importOriginal) => ({
   getNewChatInfo: vi.fn(async () => ({ folder: "/tmp", slash_commands: [], plugins: [] })),
 }));
 vi.mock("../contexts/SessionContext", () => ({
+  // AsideListButton reads the poll's awaiting set.
+  useSessionContext: () => ({ awaitingChatIds: new Set<string>() }),
   useIsSessionActive: () => null,
   useMetadataVersion: () => 0,
 }));

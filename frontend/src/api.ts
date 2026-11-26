@@ -334,6 +334,12 @@ export interface SessionPollResponse {
    * with `sessions`. Absent from older daemons — read as "nobody waiting".
    */
   awaitingInput?: string[];
+  /**
+   * Every ancestor of those chats, walked on the server — so a row turns
+   * yellow for a waiting descendant the list never loads (a triggered job or
+   * agent chat). Sent with `sessions`; absent from older daemons.
+   */
+  awaitingBelow?: string[];
   activeSummons?: Record<string, SummonInfo>;
 }
 

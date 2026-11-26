@@ -20,13 +20,14 @@ const aside = (chatId: string, extra: Partial<AsideEntry> = {}): AsideEntry => (
   ...extra,
 });
 
-function renderButton(active: string[], onOpen = vi.fn(), onEmphasize = vi.fn(), asides = [aside("a1"), aside("a2")]) {
+function renderButton(active: string[], onOpen = vi.fn(), onEmphasize = vi.fn(), asides = [aside("a1"), aside("a2")], awaiting: string[] = []) {
   const value = {
     activeSessions: new Map(active.map((id) => [id, { type: "web" as const, startedAt: 1 }])),
     connected: true,
     metadataVersion: 0,
     summonedChatIds: new Set<string>(),
-    awaitingChatIds: new Set<string>(),
+    awaitingChatIds: new Set<string>(awaiting),
+    awaitingBelowChatIds: new Set<string>(),
     staleBuildId: null,
   };
   const ui = (
@@ -66,6 +67,7 @@ it("carries the running dot while an aside has a live session, and drops it when
     metadataVersion: 0,
     summonedChatIds: new Set<string>(),
     awaitingChatIds: new Set<string>(),
+    awaitingBelowChatIds: new Set<string>(),
     staleBuildId: null,
   };
   await act(async () => {
@@ -170,4 +172,17 @@ it("holds its position across scroll and resize events when the button has not m
     fireEvent(window, new Event("resize"));
   }
   expect({ top: menu.style.top, right: menu.style.right }).toEqual(placed);
+});
+
+it("paints a running aside that is waiting on the user yellow, as the sidebar does", async () => {
+  renderButton(["a2"], vi.fn(), vi.fn(), [aside("a1"), aside("a2")], ["a2"]);
+  const button = await screen.findByRole("button", { name: "2 asides in this chat, 1 waiting for an answer, 1 running" });
+  fireEvent.click(button);
+  const row = within(screen.getByRole("menu")).getByRole("menuitem", { name: /Aside a2/ });
+  const dot = within(row).getByTestId("aside-status-dot");
+  expect(dot.style.background).toBe("var(--warning)");
+  expect(dot.getAttribute("title")).toBe("Status: waiting for your answer");
+  // The other aside is untouched.
+  const other = within(screen.getByRole("menu")).getByRole("menuitem", { name: /Aside a1/ });
+  expect(within(other).getByTestId("aside-status-dot").style.background).toBe("var(--text-muted)");
 });

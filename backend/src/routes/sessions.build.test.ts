@@ -27,6 +27,10 @@ vi.mock("../services/session-registry.js", () => ({
   sessionRegistry: { version: 7, metadataVersion: 3, getAll: () => ({}), activeSummons: new Map() },
 }));
 
+// The route walks lineage through chat-lineage, which imports the (heavy)
+// claude.js only for hasPendingRequest.
+vi.mock("../services/claude.js", () => ({ hasPendingRequest: () => false }));
+
 // The route reads through this; stubbing the service keeps the test off
 // whatever `frontend/dist` happens to hold on the machine running it.
 let serverBuildId = "1.0.0-alpha.49+gaaaaaaaaaaaa";

@@ -2,6 +2,7 @@ import { Router } from "express";
 import { sessionRegistry } from "../services/session-registry.js";
 import { getServerBuildId } from "../services/build-identity.js";
 import { listAwaitingChatIds } from "../services/pending-requests.js";
+import { ancestorChatIds } from "../services/chat-lineage.js";
 export const sessionsRouter = Router();
 
 /**
@@ -16,7 +17,8 @@ export const sessionsRouter = Router();
  *   - version / metadataVersion always (so client can track)
  *   - sessions included only when version differs from client's `v`
  *   - awaitingInput (chat ids with a prompt or open approval waiting on the
- *     human) alongside sessions, under the same version check
+ *     human) and awaitingBelow (their ancestors) alongside sessions, under
+ *     the same version check
  *   - activeSummons included only when metadataVersion differs from client's `mv`
  *   - build included only when the daemon's build id differs from client's `b`
  *
@@ -54,7 +56,32 @@ export const sessionsRouter = Router();
  * as "nobody is waiting". It is sent with `sessions` because the session
  * version is bumped whenever the pending-request set changes
  * (`pending-requests.ts`), so the two never disagree about freshness.
+ *
+ * `awaitingBelow` is every ancestor of those chats (`ancestorChatIds`), so an
+ * ancestor row turns yellow even when the waiting chat is one the list never
+ * loads — a `triggered` job or agent chat is filtered out of the sidebar, and
+ * a collapsed card has no fetched tree to read. Only the server can walk that
+ * lineage. Optional for the same reasons; computed once per session version
+ * (the walk reads chat files), not once per poll.
  */
+let awaitingCache: { version: number; awaitingInput: string[]; awaitingBelow: string[] } | undefined;
+
+function awaitingSnapshot(version: number) {
+  if (awaitingCache?.version === version) return awaitingCache;
+  const awaitingInput = listAwaitingChatIds();
+  const below = new Set<string>();
+  for (const id of awaitingInput) {
+    try {
+      for (const ancestor of ancestorChatIds(id)) below.add(ancestor);
+    } catch {
+      // A chat record that cannot be read has no lineage to report; the chat's
+      // own id is still in awaitingInput.
+    }
+  }
+  awaitingCache = { version, awaitingInput, awaitingBelow: [...below] };
+  return awaitingCache;
+}
+
 sessionsRouter.get("/poll", (_req, res) => {
   // #swagger.tags = ['Sessions']
   // #swagger.summary = 'Poll for session activity changes'
@@ -81,7 +108,9 @@ sessionsRouter.get("/poll", (_req, res) => {
   // Include sessions only when version changed (or first poll)
   if (clientVersion === undefined || clientVersion !== sessionRegistry.version) {
     result.sessions = sessionRegistry.getAll();
-    result.awaitingInput = listAwaitingChatIds();
+    const awaiting = awaitingSnapshot(sessionRegistry.version);
+    result.awaitingInput = awaiting.awaitingInput;
+    result.awaitingBelow = awaiting.awaitingBelow;
   }
 
   // Include active summons only when metadata version changed (or first poll)

@@ -10,11 +10,13 @@ import { SessionProvider, useSessionContext } from "./SessionContext";
 
 let version = 1;
 let awaitingInput: string[] | undefined;
+let awaitingBelow: string[] | undefined;
 
 beforeEach(() => {
   vi.useFakeTimers();
   version = 1;
   awaitingInput = undefined;
+  awaitingBelow = undefined;
   vi.stubGlobal(
     "fetch",
     vi.fn(async (url: string) => {
@@ -23,6 +25,7 @@ beforeEach(() => {
       if (params.get("v") !== String(version)) {
         body.sessions = { a: { type: "web", startedAt: 1 } };
         if (awaitingInput !== undefined) body.awaitingInput = awaitingInput;
+        if (awaitingBelow !== undefined) body.awaitingBelow = awaitingBelow;
       }
       return { ok: true, json: async () => body } as unknown as Response;
     }),
@@ -79,4 +82,26 @@ it("is empty when the daemon does not send the field", async () => {
   await settle();
   await nextPoll();
   expect(seen.at(-1)!.size).toBe(0);
+});
+
+it("reads awaitingBelow into its own set, empty when absent", async () => {
+  awaitingInput = ["child"];
+  awaitingBelow = ["parent", "root"];
+  const below: Set<string>[] = [];
+  function Probe() {
+    below.push(useSessionContext().awaitingBelowChatIds);
+    return null;
+  }
+  render(
+    <SessionProvider>
+      <Probe />
+    </SessionProvider>,
+  );
+  await settle();
+  expect([...below.at(-1)!].sort()).toEqual(["parent", "root"]);
+
+  awaitingBelow = undefined;
+  version = 2;
+  await nextPoll();
+  expect(below.at(-1)!.size).toBe(0);
 });
