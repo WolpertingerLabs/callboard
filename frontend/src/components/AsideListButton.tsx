@@ -48,21 +48,23 @@ type MenuPos = { top: number; right: number };
 
 /** Gap kept between the menu and the viewport's edge. */
 const EDGE = 8;
-/** The menu's minWidth, used until it has rendered and can be measured. */
+/** The menu's minWidth. */
 const MENU_MIN_WIDTH = 260;
 
 /**
  * Where the menu goes, in viewport coordinates: under the button and
  * right-aligned with it, but pulled back on screen when the button sits near
- * the left edge. Uses the menu's rendered width once there is one (it can
- * grow past its minWidth to its maxWidth).
+ * the left edge. Clamped by the constant minWidth, never the menu's rendered
+ * width: placed by `right` with `left: auto`, the menu shrinks to fit the
+ * room left of it, so a measured width feeds back into `right` and the menu
+ * creeps wider on every scroll. Shrink-to-fit already keeps its left edge on
+ * screen when it grows toward its maxWidth.
  */
-function measureMenu(trigger: HTMLElement | null, menu: HTMLElement | null): MenuPos | null {
+function measureMenu(trigger: HTMLElement | null): MenuPos | null {
   const rect = trigger?.getBoundingClientRect();
   if (!rect) return null;
   const viewport = window.innerWidth;
-  const width = menu?.offsetWidth || MENU_MIN_WIDTH;
-  const right = Math.max(EDGE, Math.min(viewport - rect.right, viewport - width - EDGE));
+  const right = Math.max(EDGE, Math.min(viewport - rect.right, viewport - MENU_MIN_WIDTH - EDGE));
   return { top: rect.bottom + 4, right };
 }
 
@@ -110,7 +112,7 @@ export default function AsideListButton({
   // the focus effect below can focus its first row (a hidden element takes
   // no focus, and on a click that effect runs before any layout re-render).
   const openMenu = () => {
-    setMenuPos(measureMenu(triggerRef.current, null));
+    setMenuPos(measureMenu(triggerRef.current));
     setOpen(true);
   };
 
@@ -122,7 +124,7 @@ export default function AsideListButton({
   useLayoutEffect(() => {
     if (!open) return;
     const place = () => {
-      const next = measureMenu(triggerRef.current, menuRef.current);
+      const next = measureMenu(triggerRef.current);
       if (!next) return;
       setMenuPos((prev) => (prev && prev.top === next.top && prev.right === next.right ? prev : next));
     };

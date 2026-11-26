@@ -131,3 +131,33 @@ it("closes on Escape while focus is still on the button, and keeps focus there",
   expect(screen.queryByRole("menu")).toBeNull();
   expect(document.activeElement).toBe(button);
 });
+
+it("holds its position across scroll and resize events when the button has not moved", () => {
+  renderButton([]);
+  const button = screen.getByRole("button", { name: "2 asides in this chat" });
+  // Near the left edge of a phone: the clamp, not the button, sets `right`.
+  vi.spyOn(window, "innerWidth", "get").mockReturnValue(390);
+  vi.spyOn(button, "getBoundingClientRect").mockReturnValue({
+    top: 40,
+    bottom: 72,
+    left: 16,
+    right: 100,
+    width: 84,
+    height: 32,
+    x: 16,
+    y: 40,
+    toJSON: () => ({}),
+  });
+  fireEvent.click(button);
+  const menu = screen.getByRole("menu");
+  // A rendered width past minWidth must not feed back into the placement.
+  Object.defineProperty(menu, "offsetWidth", { configurable: true, value: 300 });
+  const placed = { top: menu.style.top, right: menu.style.right };
+  expect(placed).toEqual({ top: "76px", right: `${390 - 260 - 8}px` });
+  for (let i = 0; i < 5; i++) {
+    fireEvent.scroll(window);
+    fireEvent(window, new Event("resize"));
+  }
+  expect({ top: menu.style.top, right: menu.style.right }).toEqual(placed);
+  vi.restoreAllMocks();
+});
