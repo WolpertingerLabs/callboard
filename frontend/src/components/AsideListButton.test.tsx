@@ -4,7 +4,10 @@ import { SessionContext } from "../contexts/SessionContext";
 import AsideListButton from "./AsideListButton";
 import type { AsideEntry } from "../utils/asideHighlights";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 const aside = (chatId: string, extra: Partial<AsideEntry> = {}): AsideEntry => ({
   chatId,
@@ -83,4 +86,80 @@ it("says when an aside is calling, waiting for an answer, or has an unread reply
   expect(within(within(menu).getByRole("menuitem", { name: /Aside a2/ })).getByRole("img", { name: "waiting for an answer" })).toBeTruthy();
   expect(within(within(menu).getByRole("menuitem", { name: /Aside a3/ })).getByRole("img", { name: "unread" })).toBeTruthy();
   expect(within(within(menu).getByRole("menuitem", { name: /Aside a4/ })).queryByRole("img")).toBeNull();
+});
+
+it("portals the menu out of its row so a scrolling action bar cannot clip it, and closes on a press outside", () => {
+  const { container, onEmphasize } = renderButton([]);
+  fireEvent.click(screen.getByRole("button", { name: "2 asides in this chat" }));
+  const menu = screen.getByRole("menu");
+  expect(container.contains(menu)).toBe(false);
+  expect(menu.style.position).toBe("fixed");
+  // A press inside the portalled menu is not "outside".
+  fireEvent.mouseDown(within(menu).getByRole("menuitem", { name: /Aside a2/ }));
+  expect(screen.getByRole("menu")).toBeTruthy();
+  fireEvent.mouseDown(document.body);
+  expect(screen.queryByRole("menu")).toBeNull();
+  expect(onEmphasize).toHaveBeenLastCalledWith(null);
+});
+
+it("shows the menu and focuses its first row on the very first open", () => {
+  // A browser will not focus an element under visibility: hidden, and jsdom
+  // does not model that, so record what the menu looked like when its row
+  // was focused rather than after every re-render has settled.
+  const original = HTMLElement.prototype.focus;
+  const visibilityAtFocus: string[] = [];
+  const spy = vi.spyOn(HTMLElement.prototype, "focus").mockImplementation(function (this: HTMLElement, options?: FocusOptions) {
+    const menu = this.closest<HTMLElement>('[role="menu"]');
+    if (menu) visibilityAtFocus.push(menu.style.visibility);
+    original.call(this, options);
+  });
+  try {
+    renderButton([]);
+    fireEvent.click(screen.getByRole("button", { name: "2 asides in this chat" }));
+    const menu = screen.getByRole("menu");
+    expect(visibilityAtFocus).toEqual([""]);
+    expect(menu.style.visibility).not.toBe("hidden");
+    expect(document.activeElement).toBe(within(menu).getAllByRole("menuitem")[0]);
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+it("closes on Escape while focus is still on the button, and keeps focus there", () => {
+  renderButton([]);
+  const button = screen.getByRole("button", { name: "2 asides in this chat" });
+  fireEvent.click(button);
+  button.focus();
+  fireEvent.keyDown(button, { key: "Escape" });
+  expect(screen.queryByRole("menu")).toBeNull();
+  expect(document.activeElement).toBe(button);
+});
+
+it("holds its position across scroll and resize events when the button has not moved", () => {
+  renderButton([]);
+  const button = screen.getByRole("button", { name: "2 asides in this chat" });
+  // Near the left edge of a phone: the clamp, not the button, sets `right`.
+  vi.spyOn(window, "innerWidth", "get").mockReturnValue(390);
+  vi.spyOn(button, "getBoundingClientRect").mockReturnValue({
+    top: 40,
+    bottom: 72,
+    left: 16,
+    right: 100,
+    width: 84,
+    height: 32,
+    x: 16,
+    y: 40,
+    toJSON: () => ({}),
+  });
+  fireEvent.click(button);
+  const menu = screen.getByRole("menu");
+  // A rendered width past minWidth must not feed back into the placement.
+  Object.defineProperty(menu, "offsetWidth", { configurable: true, value: 300 });
+  const placed = { top: menu.style.top, right: menu.style.right };
+  expect(placed).toEqual({ top: "76px", right: `${390 - 260 - 8}px` });
+  for (let i = 0; i < 5; i++) {
+    fireEvent.scroll(window);
+    fireEvent(window, new Event("resize"));
+  }
+  expect({ top: menu.style.top, right: menu.style.right }).toEqual(placed);
 });
