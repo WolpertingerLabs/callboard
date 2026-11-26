@@ -85,7 +85,25 @@ interface Seg {
   bad?: boolean;
 }
 type Word = Seg[];
-type Tok = { t: "word"; w: Word } | { t: "op"; op: string } | { t: "redir"; fd: number | null; op: string };
+/** `arith`: an arithmetic command `(( … ))`, with the expression's raw text. */
+type Tok = { t: "word"; w: Word } | { t: "op"; op: string } | { t: "redir"; fd: number | null; op: string } | { t: "arith"; text: string };
+
+/** Index of the `))` closing a `((` whose expression starts at `i`, or -1 when it is nested subshells instead. */
+function arithEnd(s: string, i: number): number {
+  let depth = 0;
+  for (; i < s.length; i++) {
+    const c = s[i];
+    if (c === "(") depth++;
+    else if (c === ")") {
+      if (depth === 0) return s[i + 1] === ")" ? i : -1;
+      depth--;
+    } else if (c === "\n" || c === ";") {
+      // Arithmetic never holds a command separator: this is `( (…); … )`.
+      return -1;
+    }
+  }
+  return -1;
+}
 
 /** Index just past the `)` that closes the `$(` / `(` opened before `i`. */
 function skipParens(s: string, i: number): number {
@@ -231,6 +249,11 @@ function tokenize(s: string): Tok[] {
         toks.push({ t: "op", op: "|" });
         i++;
       }
+    } else if (c === "(" && n === "(" && !started && arithEnd(s, i + 2) >= 0) {
+      // `(( expr ))`: arithmetic, not two subshells.
+      const end = arithEnd(s, i + 2);
+      toks.push({ t: "arith", text: s.slice(i + 2, end) });
+      i = end + 2;
     } else if (c === "(" || c === ")") {
       finish();
       toks.push({ t: "op", op: c });
@@ -325,7 +348,8 @@ type Cmd =
   | { t: "if"; clauses: { cond: List; body: List }[]; orElse: List | null; redirs: Redir[] }
   | { t: "loop"; cond: List | null; forVar: string | null; body: List; redirs: Redir[] }
   | { t: "case"; arms: List[]; redirs: Redir[] }
-  | { t: "func"; name: string; body: Cmd };
+  | { t: "func"; name: string; body: Cmd }
+  | { t: "arith"; text: string; redirs: Redir[] };
 interface Pipeline {
   cmds: Cmd[];
   /** Per command: fed by `|&`, so the pipe carries stderr too. */
@@ -449,6 +473,11 @@ class Parser {
   }
 
   private commandAt(): Cmd {
+    const t = this.peek();
+    if (t?.t === "arith") {
+      this.i++;
+      return { t: "arith", text: t.text, redirs: this.trailingRedirs() };
+    }
     if (this.isOp("(")) {
       this.i++;
       const body = this.list();
@@ -552,7 +581,7 @@ class Parser {
     const redirs: Redir[] = [];
     for (;;) {
       const t = this.peek();
-      if (!t || t.t === "op") break;
+      if (!t || t.t === "op" || t.t === "arith") break;
       this.i++;
       if (t.t === "redir") {
         const r: Redir = { fd: t.fd, op: t.op };
@@ -686,6 +715,59 @@ function forgetAll(st: ShellState): ShellState {
   return { cwd: null, vars: new Map(home === undefined ? [] : [["HOME", home]]), funcs: st.funcs };
 }
 
+/** An arithmetic expression that assigns (`=`, `+=`, `<<=`, `++`, `--`), as opposed to comparing (`==`, `<=`…). */
+const ARITH_ASSIGN = /(^|[^=!<>])=(?!=)|<<=|>>=|\+\+|--/;
+
+/** Variables an arithmetic expression may assign: every name in it, if it assigns at all. */
+function arithAssigned(expr: string): string[] {
+  return ARITH_ASSIGN.test(expr) ? (expr.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []) : [];
+}
+
+/** Arithmetic expansions `$(( … ))` inside a command's words. */
+function arithInWords(words: Word[]): string[] {
+  const out: string[] = [];
+  for (const w of words) for (const seg of w) if (seg.bad && seg.text.startsWith("$((")) out.push(seg.text);
+  return out;
+}
+
+/**
+ * The word an option names, given as `-v NAME` or `-vNAME`; undefined when
+ * the option is absent.
+ */
+function optionValue(args: Word[], flag: string): Word | null | undefined {
+  for (let i = 0; i < args.length; i++) {
+    const p = plain(args[i]);
+    if (p === flag) return args[i + 1] ?? null;
+    if (p !== null && p.startsWith(flag) && p.length > flag.length) return [{ text: p.slice(flag.length), q: "none" }];
+  }
+  return undefined;
+}
+
+/** Options that take a value, per builtin: their value is not a variable name. */
+const OPTION_VALUES: Record<string, string> = { read: "dinNptu", mapfile: "dnOsuCc", readarray: "dnOsuCc", unset: "" };
+
+/** The variable-name arguments of `read`/`mapfile`/`readarray`/`getopts`/`unset`. */
+function namedArgs(name: string, args: Word[]): Word[] {
+  if (name === "getopts") return args.slice(1, 2);
+  const valued = OPTION_VALUES[name] ?? "";
+  const out: Word[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const p = plain(args[i]);
+    if (p === "--") {
+      out.push(...args.slice(i + 1));
+      break;
+    }
+    if (p !== null && /^-[A-Za-z]+$/.test(p)) {
+      const last = p[p.length - 1];
+      if (last === "a") continue; // `read -a NAME`: the array is the next word, a name
+      if (valued.includes(last)) i++; // skip the option's value
+      continue;
+    }
+    out.push(args[i]);
+  }
+  return out;
+}
+
 /** Builtins that set the variables named in their arguments. */
 const SETS_NAMED_VARS = new Set(["read", "mapfile", "readarray", "getopts", "unset"]);
 /** Variables these set when given no name. */
@@ -715,8 +797,9 @@ class Walker {
   found = new Map<string, Found>();
   detached = false;
   private depth = 0;
-  private steps = 0;
-  private work = 0;
+  /** Commands walked and state entries copied so far — the costs the budgets bound. */
+  steps = 0;
+  work = 0;
   /** Functions being walked right now — a recursive call is not followed again. */
   private calling = new Set<string>();
 
@@ -923,6 +1006,9 @@ class Walker {
         for (const arm of cmd.arms) result = this.join(result, this.list(arm, st));
         return both(result);
       }
+      case "arith":
+        this.redirects(cmd.redirs, st);
+        return both(this.forgetNames(st, arithAssigned(cmd.text)));
       case "func": {
         // Defining a function runs nothing. Its body is walked where it is
         // called, with the state there.
@@ -948,6 +1034,10 @@ class Walker {
   }
 
   simple(cmd: Extract<Cmd, { t: "simple" }>, st: ShellState, stderrIn: boolean): Outcome {
+    // `$(( L = … ))` assigns while the words are expanded, before anything else.
+    for (const expr of arithInWords([...cmd.words, ...cmd.redirs.flatMap((r) => (r.target ? [r.target] : []))])) {
+      st = this.forgetNames(st, arithAssigned(expr.slice(3)));
+    }
     let words = cmd.words;
     const assigns: ReturnType<typeof splitAssignment>[] = [];
     while (words.length) {
@@ -1017,11 +1107,19 @@ class Walker {
       case ".":
       case "eval":
         return both(forgetAll(st));
-      case "printf": {
-        const v = args.findIndex((w) => plain(w) === "-v");
-        if (v < 0) return both(st);
-        return both(this.forget(st, args.slice(v + 1, v + 2)));
+      case "printf":
+      case "wait": {
+        const v = optionValue(args, name === "printf" ? "-v" : "-p");
+        if (v === undefined) return both(st);
+        return both(v === null ? forgetAll(st) : this.forget(st, [v]));
       }
+      case "let":
+        return both(
+          this.forgetNames(
+            st,
+            args.flatMap((w) => arithAssigned(wordText(w))),
+          ),
+        );
       case "tee": {
         let append = false;
         let options = true;
@@ -1044,8 +1142,7 @@ class Walker {
       }
     }
     if (name !== null && SETS_NAMED_VARS.has(name)) {
-      const named = args.filter((w) => !(plain(w) ?? "").startsWith("-"));
-      const next = this.forget(st, named, name === "unset");
+      const next = this.forget(st, namedArgs(name, args), name === "unset");
       if (DEFAULT_VAR[name]) next.vars.delete(DEFAULT_VAR[name]);
       return both(next);
     }
@@ -1061,7 +1158,7 @@ class Walker {
         else if (a) next.vars.delete(a.name);
         else if (name !== "export" && name !== "readonly") {
           const p = plain(w);
-          if (p === null) return both(forgetAll(st));
+          if (p === null || !NAME.test(p)) return both(forgetAll(st));
           next.vars.delete(p);
         }
       }
@@ -1078,10 +1175,18 @@ class Walker {
     const next = this.clone(st);
     for (const w of words) {
       const p = plain(w);
-      if (p === null) return forgetAll(st);
+      if (p === null || !NAME.test(p)) return forgetAll(st);
       next.vars.delete(p);
       if (functionsToo) next.funcs.delete(p);
     }
+    return next;
+  }
+
+  /** Forget the given variable names (no-op, and no copy, when none is known). */
+  forgetNames(st: ShellState, names: string[]): ShellState {
+    if (!names.some((n) => st.vars.has(n))) return st;
+    const next = this.clone(st);
+    for (const n of names) next.vars.delete(n);
     return next;
   }
 }
@@ -1100,8 +1205,15 @@ export function analyzeShellCommand(command: string, ctx: RedirectContext): Shel
   }
 }
 
-function analyze(command: string, ctx: RedirectContext): ShellCommandAnalysis {
-  const parser = new Parser(tokenize(command));
+interface AnalysisProbe {
+  tokens?: number;
+  walker?: Walker;
+}
+
+function analyze(command: string, ctx: RedirectContext, probe: AnalysisProbe = {}): ShellCommandAnalysis {
+  const toks = tokenize(command);
+  probe.tokens = toks.length;
+  const parser = new Parser(toks);
   const tree: List = [];
   // A stray closer (`)`, `fi`, `;;`) ends a list early: step over it and carry on.
   while (parser.peek()) {
@@ -1109,6 +1221,7 @@ function analyze(command: string, ctx: RedirectContext): ShellCommandAnalysis {
     if (parser.peek()) parser.i++;
   }
   const walker = new Walker();
+  probe.walker = walker;
   const cwd = ctx.cwd.startsWith("/") ? normalizeAbs(ctx.cwd) : null;
   walker.list(tree, { cwd, vars: new Map([["HOME", ctx.home]]), funcs: new Map() });
   const targets = [...walker.found.values()].slice(0, MAX_REDIRECT_TARGETS).map((f) => ({
@@ -1118,6 +1231,35 @@ function analyze(command: string, ctx: RedirectContext): ShellCommandAnalysis {
     append: f.append,
   }));
   return { targets, detached: walker.detached };
+}
+
+/** What one analysis cost, for tests: deterministic counts in place of wall-clock time. */
+export interface AnalysisCost {
+  tokens: number;
+  steps: number;
+  work: number;
+  /** A limit (nesting, steps, work) stopped it; it reported nothing. */
+  bailed: boolean;
+  result: ShellCommandAnalysis;
+}
+export const ANALYSIS_LIMITS = { MAX_NESTING, MAX_STEPS, MAX_WORK, MAX_VARS } as const;
+
+/** Test-only: run the analysis and report its cost. */
+export function analysisCostForTest(command: string, ctx: RedirectContext): AnalysisCost {
+  const probe: AnalysisProbe = {};
+  try {
+    const result = analyze(command, ctx, probe);
+    return { tokens: probe.tokens ?? 0, steps: probe.walker?.steps ?? 0, work: probe.walker?.work ?? 0, bailed: false, result };
+  } catch (err) {
+    if (!(err instanceof TooComplex)) throw err;
+    return {
+      tokens: probe.tokens ?? 0,
+      steps: probe.walker?.steps ?? 0,
+      work: probe.walker?.work ?? 0,
+      bailed: true,
+      result: { targets: [], detached: false },
+    };
+  }
 }
 
 export function extractRedirectTargets(command: string, ctx: RedirectContext): RedirectTarget[] {
