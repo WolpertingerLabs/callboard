@@ -67,12 +67,19 @@ const APPROVAL: PendingAction = {
   nonBlocking: true,
 };
 const PROMPT = "Permission requested";
+const UNRESOLVED_PLAN = [
+  { role: "user", type: "text", content: "hello" },
+  { role: "assistant", type: "tool_use", toolName: "ExitPlanMode", toolUseId: "t1", content: "The plan" },
+];
 const flush = () => act(async () => {});
 
 beforeEach(() => {
   fixture.active = { type: "web", startedAt: 1 };
   connects = [];
   vi.mocked(getPending).mockReset().mockResolvedValue(null);
+  vi.mocked(getMessages)
+    .mockReset()
+    .mockResolvedValue([{ role: "user", type: "text", content: "hello" }] as never);
   Object.defineProperty(window, "innerWidth", { value: 1200, configurable: true });
   Element.prototype.scrollTo = vi.fn();
   Element.prototype.scrollIntoView = vi.fn();
@@ -106,7 +113,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-async function mountRunning() {
+function mountIdle() {
   render(
     <MemoryRouter initialEntries={["/chat/a"]}>
       <Routes>
@@ -114,6 +121,10 @@ async function mountRunning() {
       </Routes>
     </MemoryRouter>,
   );
+}
+
+async function mountRunning() {
+  mountIdle();
   await screen.findByText("hello");
   await waitFor(() => expect(connects).toHaveLength(1));
   return openStream(0);
@@ -145,12 +156,17 @@ it("re-reads /pending after the run ends, so a prompt the daemon still holds com
   const stream = await mountRunning();
   await stream.send(PERMISSION);
   expect(await screen.findByText(PROMPT)).toBeTruthy();
+  expect(screen.getByText(/rm -rf build/)).toBeTruthy();
   // A newer run's prompt the old run's last frame raced.
   vi.mocked(getPending).mockResolvedValue({ type: "permission_request", requestId: "r2", toolName: "Write", input: {} });
   const reads = vi.mocked(getPending).mock.calls.length;
   await stream.send({ type: "message_complete" });
   await waitFor(() => expect(vi.mocked(getPending).mock.calls.length).toBeGreaterThan(reads));
-  expect(await screen.findByText(PROMPT)).toBeTruthy();
+  // r2's card, not r1's left standing.
+  expect(await screen.findByText("Write")).toBeTruthy();
+  expect(screen.getByText(PROMPT)).toBeTruthy();
+  expect(screen.queryByText(/rm -rf build/)).toBeNull();
+  expect(screen.queryByText("Bash")).toBeNull();
 });
 
 it("message_error clears the card too", async () => {
@@ -194,20 +210,24 @@ it("a tab that missed the stop drops the server's card when /pending comes back 
 
 it("keeps a plan review rebuilt from the transcript when /pending is empty", async () => {
   fixture.active = null;
-  vi.mocked(getMessages).mockResolvedValue([
-    { role: "user", type: "text", content: "hello" },
-    { role: "assistant", type: "tool_use", toolName: "ExitPlanMode", toolUseId: "t1", content: "The plan" },
-  ] as never);
-  render(
-    <MemoryRouter initialEntries={["/chat/a"]}>
-      <Routes>
-        <Route path="/chat/:id" element={<Chat />} />
-      </Routes>
-    </MemoryRouter>,
-  );
+  vi.mocked(getMessages).mockResolvedValue(UNRESOLVED_PLAN as never);
+  mountIdle();
   expect(await screen.findByText("Plan review")).toBeTruthy();
   // The tab comes back: /pending is empty, and this card has no requestId.
   await act(async () => document.dispatchEvent(new Event("visibilitychange")));
   await flush();
   expect(screen.getByText("Plan review")).toBeTruthy();
+});
+
+it("a tab coming back rebuilds a plan review the transcript now shows unresolved", async () => {
+  fixture.active = null;
+  mountIdle();
+  await screen.findByText("hello");
+  await flush();
+  expect(screen.queryByText("Plan review")).toBeNull();
+
+  // While hidden, the run asked for a plan review and then ended.
+  vi.mocked(getMessages).mockResolvedValue(UNRESOLVED_PLAN as never);
+  await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+  expect(await screen.findByText("Plan review")).toBeTruthy();
 });

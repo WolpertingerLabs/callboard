@@ -2117,8 +2117,9 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
       const pendingSnapshot = capturePending();
       Promise.all([getMessages(id), getPending(id)]).then(([msgs, pending]) => {
         if (currentIdRef.current !== id) return;
-        setMessages(Array.isArray(msgs) ? msgs : []);
-        if (isUnchangedPending(pendingSnapshot)) applyPendingSnapshot(pending);
+        const messageArray = Array.isArray(msgs) ? msgs : [];
+        setMessages(messageArray);
+        if (isUnchangedPending(pendingSnapshot)) applyPendingSnapshot(pending, messageArray);
       });
       refreshActivity(id);
     };
