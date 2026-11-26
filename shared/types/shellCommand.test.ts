@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { extractRedirectTargets, looksDetached, looksDetachedWithRedirect, MAX_REDIRECT_TARGETS, type RedirectTarget } from "./shellCommand.js";
+import {
+  analyzeShellCommand,
+  extractRedirectTargets,
+  looksDetached,
+  looksDetachedWithRedirect,
+  MAX_COMMAND_LENGTH,
+  MAX_REDIRECT_TARGETS,
+  type RedirectTarget,
+} from "./shellCommand.js";
 
 const ctx = { cwd: "/work/proj", home: "/home/u" };
 const run = (cmd: string) => extractRedirectTargets(cmd, ctx);
@@ -47,12 +55,17 @@ describe("extractRedirectTargets", () => {
     ["comment ignored", "a > x.log # > y.log", ["redirect:stdout:/work/proj/x.log"]],
     ["fd 3 ignored", "a 3> three.log > one.log", ["redirect:stdout:/work/proj/one.log"]],
     ["cd || exit keeps the cd", "cd /x || exit 1; y > r.log", ["redirect:stdout:/x/r.log"]],
-    ["cd && list keeps the cd", "cd sub && make; y > r.log", ["redirect:stdout:/work/proj/sub/r.log"]],
     ["same value on both branches", "if c; then L=/a; else L=/a; fi; y > $L/f", ["redirect:stdout:/a/f"]],
     ["loop leaves untouched state alone", "L=/a; for i in 1 2; do :; done; y > $L/x", ["redirect:stdout:/a/x"]],
     ["redirect inside if", "if [ x ]; then nohup y > a.log & fi", ["redirect:stdout:/work/proj/a.log"]],
     ["redirect on a whole loop", "while read l; do echo $l; done > loop.log", ["redirect:stdout:/work/proj/loop.log"]],
-    ["redirect inside a function body", "f() { y > in.log; }", ["redirect:stdout:/work/proj/in.log"]],
+    // Function bodies run where they are called, with the caller's state.
+    ["function called after a cd", "f() { y > rel.log; }; cd /x; f", ["redirect:stdout:/x/rel.log"]],
+    ["function sees the variable at the call", "L=/a; f() { y > $L/o; }; L=/b; f", ["redirect:stdout:/b/o"]],
+    ["function keyword form", "function f { y > in.log; }; f", ["redirect:stdout:/work/proj/in.log"]],
+    ["recursive function is walked once", "f() { f; y > /t/o.log; }; f", ["redirect:stdout:/t/o.log"]],
+    ["export without a value keeps the variable", "L=/a; export L; y > $L/o", ["redirect:stdout:/a/o"]],
+    ["plain cd still holds", "cd /x; y > r.log", ["redirect:stdout:/x/r.log"]],
     ["assignment then redirect", "L=/t; > $L/f", ["redirect:stdout:/t/f"]],
     // `&` backgrounds the whole and-or list / group, in a subshell.
     ["& on a && list", "cd /x && nohup y > a.log & echo > b.log", ["redirect:stdout:/x/a.log", "redirect:stdout:/work/proj/b.log"]],
@@ -97,6 +110,26 @@ describe("extractRedirectTargets", () => {
     ["assignment-only command's redirect", "L=/t > $L/f"],
     ["named fd", "exec {fd}>fd.log"],
     ["sequence brace expansion", "cmd > log{1..3}"],
+    // A cd whose failure is tested and falls through leaves the directory unknown.
+    ["cd || true", "cd /x || true; y > r.log"],
+    ["cd || echo", 'cd "$d" || echo no; make > build.log'],
+    ["cd && …; later", "cd sub && make; y > r.log"],
+    // Uncalled functions contribute nothing; calls forget everything after.
+    ["uncalled function", "f() { y > in.log; }"],
+    ["state after a call", "f() { :; }; f; y > r.log"],
+    ["function redefined on one branch", "f() { :; }; [ c ] && f() { cd /x; }; f; y > r.log"],
+    // Builtins that set the variables they name.
+    ["unset", "L=/a; unset L; y > $L/o"],
+    ["read", "L=/a; read L < f; y > $L/o"],
+    ["read -r with options", "L=/a; read -r -p prompt L; y > $L/o"],
+    ["read into REPLY", "REPLY=/a; read; y > $REPLY/o"],
+    ["mapfile", "L=/a; mapfile -t L < f; y > $L/o"],
+    ["readarray", "L=/a; readarray L < f; y > $L/o"],
+    ["printf -v", "L=/a; printf -v L '%s' /b; y > $L/o"],
+    ["getopts", "L=/a; getopts ab: L; y > $L/o"],
+    ["declare -n", "L=/a; declare -n L=OTHER; y > $L/o"],
+    ["local", "L=/a; local L; y > $L/o"],
+    ["read into a computed name", 'L=/a; read "$n"; y > $L/o'],
   ];
   it.each(skipped)("skips: %s", (_name, cmd) => {
     expect(run(cmd)).toEqual([]);
@@ -154,6 +187,8 @@ describe("looksDetached", () => {
     ["( y & )", true],
     ["sudo nohup y", true],
     ["y & disown", true],
+    ["f() { y & }", false], // never called
+    ["f() { y & }; f", true],
   ])("%s → %s", (cmd, want) => {
     expect(looksDetached(cmd)).toBe(want);
   });
@@ -177,5 +212,41 @@ describe("looksDetachedWithRedirect", () => {
     [undefined, false],
   ])("%s → %s", (cmd, want) => {
     expect(looksDetachedWithRedirect(cmd)).toBe(want);
+  });
+});
+
+describe("pathological input", () => {
+  const nothing = { targets: [], detached: false };
+  it.each([
+    ["2000 nested subshells", "(".repeat(2000) + "y > o &" + ")".repeat(2000)],
+    ["10000 nested groups", "{ ".repeat(10_000) + "y > o & " + "; }".repeat(10_000)],
+    ["3000 nested ifs", "if a; then ".repeat(3000) + "y > o &" + "; fi".repeat(3000)],
+    ["3000 nested whiles", "while a; do ".repeat(3000) + "y > o &" + "; done".repeat(3000)],
+    ["unclosed nesting", "(".repeat(30_000)],
+    ["deep function calls", Array.from({ length: 200 }, (_, i) => `f${i}() { f${i + 1}; }`).join("; ") + "; f0 > o &"],
+  ])("%s: reports nothing instead of throwing", (_name, cmd) => {
+    expect(analyzeShellCommand(cmd, ctx)).toEqual(nothing);
+  });
+
+  it("still follows moderate nesting", () => {
+    expect(brief(run("(".repeat(20) + "cd /x; y > o" + ")".repeat(20)))).toEqual(["redirect:stdout:/x/o"]);
+  });
+
+  const fill = (head: string, unit: string) => (head + unit.repeat(Math.ceil((MAX_COMMAND_LENGTH - head.length) / unit.length))).slice(0, MAX_COMMAND_LENGTH);
+  const vars = (n: number) => Array.from({ length: n }, (_, i) => `V${i}=1;`).join("");
+  it.each([
+    ["2000 vars then a 64 KB pipeline", fill(vars(2000), "a|")],
+    ["4000 vars then a 64 KB pipeline", fill(vars(4000), "a|")],
+    ["vars then background jobs", fill(vars(2000), "a & ")],
+    ["vars then an || chain", fill(vars(2000), "a || ")],
+    ["vars then an && chain", fill(vars(2000), "a && ")],
+    ["vars then if/else", fill(vars(1000), "if a; then L=$RANDOM; else b; fi; ")],
+    ["many calls of a big function", fill(`f() { ${"a; ".repeat(3000)} }; `, "f; ")],
+    ["many assignments", fill("", "L=/x; ")],
+  ])("%s finishes quickly", (_name, cmd) => {
+    expect(cmd.length).toBeLessThanOrEqual(MAX_COMMAND_LENGTH);
+    const t0 = performance.now();
+    analyzeShellCommand(cmd, ctx);
+    expect(performance.now() - t0).toBeLessThan(100);
   });
 });

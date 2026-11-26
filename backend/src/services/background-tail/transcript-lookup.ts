@@ -140,7 +140,19 @@ function scanLines(text: string, toolUseId: string, path: string, entry: Entry):
   }
 }
 
-/** Scan whatever `path` gained since the last visit, up to its last complete line. */
+/** Bytes read per chunk: keeps every string well under V8's limit however large the log. */
+let chunkBytes = 4 * 1024 * 1024;
+
+/** Test hook: shrink the chunk size to exercise lines split across chunks. */
+export function setScanChunkBytesForTest(n: number): void {
+  chunkBytes = n;
+}
+
+/**
+ * Scan whatever `path` gained since the last visit, a chunk at a time, up to
+ * its last complete line. A line longer than a chunk is carried over until
+ * its newline arrives.
+ */
 async function scanNew(path: string, toolUseId: string, entry: Entry): Promise<void> {
   let fh;
   try {
@@ -159,18 +171,26 @@ async function scanNew(path: string, toolUseId: string, entry: Entry): Promise<v
         entry.result = undefined;
       }
     }
-    if (size === offset) return;
-    const buf = Buffer.alloc(size - offset);
-    let got = 0;
-    while (got < buf.length) {
-      const { bytesRead } = await fh.read(buf, got, buf.length - got, offset + got);
+    let carry: Buffer = Buffer.alloc(0);
+    let pos = offset;
+    while (pos < size && !(entry.use && entry.result)) {
+      const buf = Buffer.alloc(Math.min(chunkBytes, size - pos));
+      const { bytesRead } = await fh.read(buf, 0, buf.length, pos);
       if (bytesRead === 0) break;
-      got += bytesRead;
+      pos += bytesRead;
+      const data = carry.length ? Buffer.concat([carry, buf.subarray(0, bytesRead)]) : buf.subarray(0, bytesRead);
+      const end = data.lastIndexOf(0x0a);
+      if (end < 0) {
+        // No line ends in here yet. Keep it, unless a single line has grown absurd.
+        carry = data.length > 64 * chunkBytes ? Buffer.alloc(0) : data;
+        if (carry.length === 0) offset = pos;
+        continue;
+      }
+      scanLines(data.subarray(0, end + 1).toString("utf8"), toolUseId, path, entry);
+      offset = pos - (data.length - end - 1);
+      carry = data.subarray(end + 1);
     }
-    const end = buf.lastIndexOf(0x0a, got - 1);
-    if (end < 0) return; // no complete line yet
-    scanLines(buf.subarray(0, end + 1).toString("utf8"), toolUseId, path, entry);
-    entry.offsets.set(path, offset + end + 1);
+    entry.offsets.set(path, offset);
   } catch {
     // Unreadable this time; try again on the next poll.
   } finally {
@@ -184,22 +204,17 @@ export async function findToolCall(chat: ChatForLookup, toolUseId: string): Prom
   const sessionIds = sessionIdsOf(chat);
 
   if (!(entry.use && entry.result)) {
-    if (entry.use) {
-      // Found the launch; only its own log can still gain the result.
-      await scanNew(entry.use.path, toolUseId, entry);
-    } else {
-      const paths: string[] = [];
-      for (const sid of sessionIds) {
-        const p = (sid === chat.session_id && chat.session_log_path) || findSessionLogPath(sid, chat.metadata);
-        if (p && !paths.includes(p)) paths.push(p);
-      }
-      for (const p of paths) {
-        await scanNew(p, toolUseId, entry);
-        if (entry.use) {
-          // The result may follow in a part of this log written later.
-          break;
-        }
-      }
+    const paths: string[] = [];
+    for (const sid of sessionIds) {
+      const p = (sid === chat.session_id && chat.session_log_path) || findSessionLogPath(sid, chat.metadata);
+      if (p && !paths.includes(p)) paths.push(p);
+    }
+    // Once the launch is known, only its log and later ones can hold the
+    // result (a session interrupted before writing it, then resumed).
+    const from = entry.use ? Math.max(0, paths.indexOf(entry.use.path)) : 0;
+    for (const p of paths.slice(from)) {
+      await scanNew(p, toolUseId, entry);
+      if (entry.use && entry.result) break;
     }
     cacheSet(key, entry);
   }

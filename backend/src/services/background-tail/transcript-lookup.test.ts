@@ -24,7 +24,7 @@ vi.mock("fs/promises", async (orig) => {
 const logPaths = vi.hoisted(() => new Map<string, string>());
 vi.mock("../../utils/session-log.js", () => ({ findSessionLogPath: (sid: string) => logPaths.get(sid) ?? null }));
 
-const { findToolCall, clearToolCallCache } = await import("./transcript-lookup.js");
+const { findToolCall, clearToolCallCache, setScanChunkBytesForTest } = await import("./transcript-lookup.js");
 
 const SID = "f17cfdb7-ee9f-4481-9b84-e5e037683103";
 const SID2 = "22222222-2222-4222-8222-222222222222";
@@ -60,7 +60,10 @@ beforeEach(() => {
   reads.length = 0;
   logPaths.clear();
 });
-afterEach(() => rmSync(dir, { recursive: true, force: true }));
+afterEach(() => {
+  rmSync(dir, { recursive: true, force: true });
+  setScanChunkBytesForTest(4 * 1024 * 1024);
+});
 
 describe("findToolCall", () => {
   it("finds the tool_use and its result by id", async () => {
@@ -133,5 +136,33 @@ describe("findToolCall", () => {
     logPaths.set(SID, older);
     const c = { id: "chat-2", session_id: SID2, session_log_path: newer, metadata: JSON.stringify({ session_ids: [SID, SID2] }) };
     expect(await findToolCall(c, TOOL)).toMatchObject({ sessionId: SID, sessionIds: [SID, SID2], taskId: "b1" });
+  });
+
+  it("finds a result written only to a later session's log", async () => {
+    const older = join(dir, `${SID}.jsonl`);
+    const newer = join(dir, `${SID2}.jsonl`);
+    writeFileSync(older, useLine(SID) + "\n"); // interrupted before the result
+    writeFileSync(newer, "{}\n");
+    logPaths.set(SID, older);
+    const c = { id: "chat-3", session_id: SID2, session_log_path: newer, metadata: JSON.stringify({ session_ids: [SID, SID2] }) };
+    expect(await findToolCall(c, TOOL)).toMatchObject({ sessionId: SID, resultText: null });
+    appendFileSync(newer, resultLine(SID2) + "\n");
+    expect(await findToolCall(c, TOOL)).toMatchObject({ sessionId: SID, taskId: "b1" });
+  });
+
+  it("scans in chunks, carrying lines split across them", async () => {
+    setScanChunkBytesForTest(64);
+    writeFileSync(log, ["x".repeat(300), useLine(), "y".repeat(10), resultLine()].join("\n") + "\n");
+    expect(await findToolCall(chat(), TOOL)).toMatchObject({ command: "sleep 30", taskId: "b1" });
+    expect(Math.max(...reads.map((r) => r[2]))).toBeLessThanOrEqual(64);
+  });
+
+  it("picks up a line that was half-written at the last scan's offset", async () => {
+    setScanChunkBytesForTest(64);
+    const r = resultLine();
+    writeFileSync(log, useLine() + "\n" + r.slice(0, 100));
+    expect(await findToolCall(chat(), TOOL)).toMatchObject({ resultText: null });
+    appendFileSync(log, r.slice(100) + "\n");
+    expect(await findToolCall(chat(), TOOL)).toMatchObject({ taskId: "b1" });
   });
 });
