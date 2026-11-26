@@ -102,3 +102,27 @@ export function abandonedTaskMarker(abandonedIds: readonly string[], messages: r
       ` — ${plural ? "they" : "it"} never reported a result.`,
   };
 }
+
+/**
+ * Whether a Bash command looks like it detaches work that writes to a file —
+ * `nohup`/`setsid`/`disown` or a lone trailing-style `&`, together with a
+ * `>` redirect or `tee`. Only a hint for showing the output row on a call
+ * that has no engine task; the server decides what, if anything, it tails.
+ */
+export function looksDetachedWithRedirect(command: string | undefined | null): boolean {
+  if (typeof command !== "string" || command === "") return false;
+  const detached = /(^|[\s;&|(])(nohup|setsid|disown)(\s|$|;)/.test(command) || /(^|[^&>|<])&(?![&>])/.test(command);
+  if (!detached) return false;
+  return />/.test(command.replace(/[0-9]?>&[0-9-]/g, "")) || /(^|[\s|])tee(\s|$)/.test(command);
+}
+
+/** The `command` of a Bash tool_use's JSON input, or null. */
+export function bashCommandOf(toolUse: Pick<ParsedMessage, "toolName" | "content">): string | null {
+  if (toolUse.toolName !== "Bash" || typeof toolUse.content !== "string") return null;
+  try {
+    const input = JSON.parse(toolUse.content) as { command?: unknown };
+    return typeof input?.command === "string" ? input.command : null;
+  } catch {
+    return null;
+  }
+}

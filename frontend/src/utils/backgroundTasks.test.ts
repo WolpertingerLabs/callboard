@@ -11,7 +11,7 @@
  */
 import { describe, it, expect } from "vitest";
 import type { ParsedMessage } from "../api";
-import { abandonedTaskMarker, pendingBackgroundTaskIds } from "./backgroundTasks";
+import { abandonedTaskMarker, bashCommandOf, looksDetachedWithRedirect, pendingBackgroundTaskIds } from "./backgroundTasks";
 
 /** The `tool_result` that launched a background task. */
 const launch = (taskId: string): ParsedMessage => ({
@@ -159,5 +159,33 @@ describe("abandonedTaskMarker", () => {
 
   it("is null when the run ended owing nothing", () => {
     expect(abandonedTaskMarker([], [launch("a"), report("a")])).toBeNull();
+  });
+});
+
+describe("looksDetachedWithRedirect", () => {
+  it.each([
+    ["L=~/backup/logs; nohup rsync -a src/ dst/ > $L/rsync.log 2> $L/rsync.err &", true],
+    ["setsid ./server > server.log 2>&1", true],
+    ["./build.sh > build.log &", true],
+    ["./build.sh 2>&1 | tee build.log &", true],
+    ["nohup ./server &", false], // detached, but nothing to follow
+    ["make > build.log 2>&1", false], // not detached
+    ["make 2>&1", false],
+    ["a && b > out.log", false],
+    ["make &> all.log", false],
+    ["", false],
+    [undefined, false],
+  ])("%s → %s", (cmd, want) => {
+    expect(looksDetachedWithRedirect(cmd)).toBe(want);
+  });
+});
+
+describe("bashCommandOf", () => {
+  it("reads the command of a Bash call", () => {
+    expect(bashCommandOf({ toolName: "Bash", content: JSON.stringify({ command: "ls" }) })).toBe("ls");
+  });
+  it("is null for other tools and bad input", () => {
+    expect(bashCommandOf({ toolName: "Read", content: JSON.stringify({ command: "ls" }) })).toBeNull();
+    expect(bashCommandOf({ toolName: "Bash", content: "{not json" })).toBeNull();
   });
 });

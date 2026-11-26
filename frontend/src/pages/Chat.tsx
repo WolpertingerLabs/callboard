@@ -5119,6 +5119,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
                             toolResult={item.toolResult}
                             isRunning={item.toolResult === null && streaming}
                             backgroundPending={!!item.toolResult?.backgroundTaskId && !!pendingBackgroundIds?.has(item.toolResult.backgroundTaskId)}
+                            chatId={id}
                           />
                         </div>
                       );

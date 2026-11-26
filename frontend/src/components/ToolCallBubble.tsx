@@ -9,6 +9,8 @@ import CanvasRenderer from "./CanvasRenderer";
 import ArtifactRenderer from "./ArtifactRenderer";
 import JsonContentView from "./JsonContentView";
 import QuestionsCard from "./QuestionsCard";
+import BackgroundTailPanel from "./BackgroundTailPanel";
+import { bashCommandOf, looksDetachedWithRedirect } from "../utils/backgroundTasks";
 import { parseAskedQuestions } from "./askUserQuestions";
 
 interface ToolCallBubbleProps {
@@ -23,6 +25,12 @@ interface ToolCallBubbleProps {
    * component otherwise uses it is finished. Only the work it started is not.
    */
   backgroundPending?: boolean;
+  /**
+   * The chat this call belongs to. With it, a background Bash call (or a
+   * detached one that redirects to files) gets an "Output" row that tails what
+   * it writes. A primitive, so memoisation still holds.
+   */
+  chatId?: string;
 }
 
 /** Below this, a running tool is just a fast tool and a timer is noise. */
@@ -80,9 +88,10 @@ export function formatElapsed(ms: number): string {
   return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
 }
 
-function ToolCallBubble({ toolUse, toolResult, isRunning, backgroundPending = false }: ToolCallBubbleProps) {
+function ToolCallBubble({ toolUse, toolResult, isRunning, backgroundPending = false, chatId }: ToolCallBubbleProps) {
   const [inputExpanded, setInputExpanded] = useState(false);
   const [resultExpanded, setResultExpanded] = useState(false);
+  const [tailExpanded, setTailExpanded] = useState(false);
   // Both kinds of "still going" get the clock and the spinner. For a background
   // task the age is measured from the launching call, which is the honest
   // number: that is when the work started, whatever the turn did afterwards.
@@ -105,6 +114,14 @@ function ToolCallBubble({ toolUse, toolResult, isRunning, backgroundPending = fa
   // Codex: callboard-tools__render_file, pi: render_file).
   const uiData = useMemo(() => parseUiToolResult(toolUse, toolResult), [toolUse, toolResult]);
   const renderFileData = uiData?.type === "render_file" ? uiData : null;
+
+  // A call whose work outlives it: an engine background task, or a command that
+  // detaches itself and writes to files. The server decides what it can tail.
+  const detached = useMemo(() => toolUse.toolName === "Bash" && looksDetachedWithRedirect(bashCommandOf(toolUse)), [toolUse]);
+  const hasTail = !!chatId && toolUse.toolName === "Bash" && !!toolUse.toolUseId && (!!toolResult?.backgroundTaskId || detached);
+  // An engine task says when it is done. A self-detached command has no such
+  // signal, so it is polled for as long as the panel stays open.
+  const tailLive = toolResult?.backgroundTaskId ? backgroundPending : detached;
   const canvasData = uiData?.type === "render_canvas" ? uiData : null;
   const artifactData = uiData?.type === "render_artifact" ? uiData : null;
 
@@ -213,6 +230,34 @@ function ToolCallBubble({ toolUse, toolResult, isRunning, backgroundPending = fa
               background: "transparent",
             }}
           />
+        )}
+
+        {/* Live output of a background task — polled only while open */}
+        {hasTail && chatId && toolUse.toolUseId && (
+          <div style={{ padding: "0 12px", fontSize: 12, color: "var(--text-muted)", borderTop: "1px dashed var(--border)" }}>
+            <div
+              role="button"
+              tabIndex={0}
+              aria-expanded={tailExpanded}
+              onClick={(e) => {
+                e.stopPropagation();
+                setTailExpanded(!tailExpanded);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  setTailExpanded(!tailExpanded);
+                }
+              }}
+              style={{ display: "flex", alignItems: "center", gap: 6, minHeight: 28, cursor: "pointer" }}
+            >
+              <span style={{ flexShrink: 0, display: "flex", alignItems: "center" }}>
+                {tailExpanded ? <ChevronDown size={11} style={{ opacity: 0.5 }} /> : <ChevronRight size={11} style={{ opacity: 0.5 }} />}
+              </span>
+              <span style={{ fontStyle: "italic" }}>{backgroundPending ? "Live output" : "Output"}</span>
+            </div>
+            {tailExpanded && <BackgroundTailPanel chatId={chatId} toolUseId={toolUse.toolUseId} live={tailLive} />}
+          </div>
         )}
 
         {/* Tool result section */}
