@@ -15,7 +15,8 @@ export const MAX_TAIL_LINES = 500;
 
 export type TailResult =
   | { ok: true; size: number; mtimeMs: number; ino: number; lines: string[]; truncated: boolean; binary: boolean }
-  | { ok: false; error: "missing" | "not_regular" | "unreadable" | "refused" };
+  /** `changed`: the file at this path is no longer the one the caller checked (rotated in between). */
+  | { ok: false; error: "missing" | "not_regular" | "unreadable" | "refused" | "changed" };
 
 export function clampLines(n: unknown): number {
   const v = typeof n === "number" ? n : typeof n === "string" && n.trim() !== "" ? Number(n) : NaN;
@@ -65,7 +66,7 @@ export async function readTail(absPath: string, opts: { maxBytes?: number; lines
   try {
     const st = await fh.stat();
     if (!st.isFile()) return { ok: false, error: "not_regular" };
-    if (opts.expectIno !== undefined && st.ino !== opts.expectIno) return { ok: false, error: "refused" };
+    if (opts.expectIno !== undefined && st.ino !== opts.expectIno) return { ok: false, error: "changed" };
 
     const start = Math.max(0, st.size - maxBytes);
     const buf = Buffer.alloc(st.size - start);

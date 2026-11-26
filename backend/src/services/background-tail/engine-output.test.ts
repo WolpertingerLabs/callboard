@@ -121,6 +121,20 @@ describe("resolveEngineOutputPath", () => {
     expect(r).toMatchObject({ ok: true, path: file });
   });
 
+  it("accepts any of the chat's sessions when the transcript was carried into a newer one", async () => {
+    // The launch line was copied into session NEWER; the CLI filed the output under SID.
+    const NEWER = "22222222-2222-4222-8222-222222222222";
+    const r = await resolveEngineOutputPath({ resultText: launchText(file), sessionId: NEWER, sessionIds: [SID, NEWER], taskId: TASK, cwds: [CWD] });
+    expect(r).toMatchObject({ ok: true, path: file });
+    const derived = await resolveEngineOutputPath({ resultText: "", sessionId: NEWER, sessionIds: [SID, NEWER], taskId: TASK, cwds: [CWD] });
+    expect(derived).toMatchObject({ ok: true, path: file });
+  });
+
+  it("does not accept a session that is not the chat's", async () => {
+    const r = await resolveEngineOutputPath({ resultText: launchText(file), sessionId: "33333333-3333-4333-8333-333333333333", taskId: TASK, cwds: [] });
+    expect(r).toMatchObject({ ok: false, error: "refused" });
+  });
+
   it("reports missing once the CLI has cleaned up", async () => {
     rmSync(file);
     const r = await resolveEngineOutputPath({ resultText: launchText(file), sessionId: SID, taskId: TASK, cwds: [CWD] });
