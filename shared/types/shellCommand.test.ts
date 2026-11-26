@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  ANALYSIS_LIMITS,
+  analysisCostForTest,
   analyzeShellCommand,
   extractRedirectTargets,
   looksDetached,
@@ -66,6 +68,12 @@ describe("extractRedirectTargets", () => {
     ["recursive function is walked once", "f() { f; y > /t/o.log; }; f", ["redirect:stdout:/t/o.log"]],
     ["export without a value keeps the variable", "L=/a; export L; y > $L/o", ["redirect:stdout:/a/o"]],
     ["plain cd still holds", "cd /x; y > r.log", ["redirect:stdout:/x/r.log"]],
+    // Setters that name other variables leave this one alone.
+    ["arithmetic comparison assigns nothing", "L=/a; ((x == 1)) && y > $L/o", ["redirect:stdout:/a/o"]],
+    ["let of another name", "L=/a; let x=1; y > $L/o", ["redirect:stdout:/a/o"]],
+    ["read option values are not names", "L=/a; read -r -p L x; y > $L/o", ["redirect:stdout:/a/o"]],
+    ["getopts optstring is not a name", "L=/a; getopts ab: opt; y > $L/o", ["redirect:stdout:/a/o"]],
+    ["nested subshells are not arithmetic", "((cd /x; y > o); z > p)", ["redirect:stdout:/x/o", "redirect:stdout:/work/proj/p"]],
     ["assignment then redirect", "L=/t; > $L/f", ["redirect:stdout:/t/f"]],
     // `&` backgrounds the whole and-or list / group, in a subshell.
     ["& on a && list", "cd /x && nohup y > a.log & echo > b.log", ["redirect:stdout:/x/a.log", "redirect:stdout:/work/proj/b.log"]],
@@ -130,6 +138,15 @@ describe("extractRedirectTargets", () => {
     ["declare -n", "L=/a; declare -n L=OTHER; y > $L/o"],
     ["local", "L=/a; local L; y > $L/o"],
     ["read into a computed name", 'L=/a; read "$n"; y > $L/o'],
+    ["unset of a computed name", "L=/a; n=L; unset $n; y > $L/o"],
+    ["declare of a computed name", "L=/a; n=L; declare $n; y > $L/o"],
+    ["printf -v joined to the name", "L=/a; printf -vL '%s' /b; y > $L/o"],
+    ["wait -p", "L=/a; wait -p L; y > $L/o"],
+    ["let", "L=/a; let L=2; y > $L/o"],
+    ["arithmetic command", "L=/a; ((L=2)); y > $L/o"],
+    ["arithmetic increment", "L=/a; ((L++)); y > $L/o"],
+    ["arithmetic expansion", "L=/a; : $((L=2)); y > $L/o"],
+    ["arithmetic expansion in an assignment", "L=/a; x=$((L+=1)); y > $L/o"],
   ];
   it.each(skipped)("skips: %s", (_name, cmd) => {
     expect(run(cmd)).toEqual([]);
@@ -234,6 +251,7 @@ describe("pathological input", () => {
 
   const fill = (head: string, unit: string) => (head + unit.repeat(Math.ceil((MAX_COMMAND_LENGTH - head.length) / unit.length))).slice(0, MAX_COMMAND_LENGTH);
   const vars = (n: number) => Array.from({ length: n }, (_, i) => `V${i}=1;`).join("");
+  const vars63 = vars(63);
   it.each([
     ["2000 vars then a 64 KB pipeline", fill(vars(2000), "a|")],
     ["4000 vars then a 64 KB pipeline", fill(vars(4000), "a|")],
@@ -243,16 +261,32 @@ describe("pathological input", () => {
     ["vars then if/else", fill(vars(1000), "if a; then L=$RANDOM; else b; fi; ")],
     ["many calls of a big function", fill(`f() { ${"a; ".repeat(3000)} }; `, "f; ")],
     ["many assignments", fill("", "L=/x; ")],
-  ])("%s finishes quickly", (_name, cmd) => {
+    ["63 vars then background cds", fill(vars63, "cd /x & ")],
+    ["63 vars then unset and reassign", fill(vars63, "unset V1; V1=1; ")],
+    ["exponential function calls", Array.from({ length: 30 }, (_, i) => `f${i}() { f${i + 1}; f${i + 1}; }`).join("; ") + "; f0"],
+  ])("%s: bounded cost", (_name, cmd) => {
     expect(cmd.length).toBeLessThanOrEqual(MAX_COMMAND_LENGTH);
-    analyzeShellCommand("a; b > c", ctx); // warm the JIT
-    // Best of three, so a parallel test run's scheduling noise doesn't decide it.
-    let best = Infinity;
-    for (let i = 0; i < 3; i++) {
-      const t0 = performance.now();
-      analyzeShellCommand(cmd, ctx);
-      best = Math.min(best, performance.now() - t0);
+    const t0 = performance.now();
+    const cost = analysisCostForTest(cmd, ctx);
+    const ms = performance.now() - t0;
+    // Deterministic: the parse is linear in the input, and the walk either
+    // stays linear in the commands it visits or is stopped by its budget —
+    // in which case it reports nothing.
+    expect(cost.tokens).toBeLessThanOrEqual(MAX_COMMAND_LENGTH);
+    if (cost.bailed) {
+      expect(cost.result).toEqual({ targets: [], detached: false });
+    } else {
+      expect(cost.steps).toBeLessThanOrEqual(cost.tokens);
+      expect(cost.work).toBeLessThanOrEqual(2 * (ANALYSIS_LIMITS.MAX_VARS + 1) * cost.steps);
     }
-    expect(best).toBeLessThan(100);
+    expect(cost.steps).toBeLessThanOrEqual(ANALYSIS_LIMITS.MAX_STEPS + 1);
+    expect(cost.work).toBeLessThanOrEqual(ANALYSIS_LIMITS.MAX_WORK + 2 * (ANALYSIS_LIMITS.MAX_VARS + 1));
+    // Loose guard only: the old blow-up took seconds; a loaded runner must not flake this.
+    expect(ms).toBeLessThan(1000);
+  });
+
+  it("the budget really stops a runaway walk", () => {
+    const cost = analysisCostForTest(Array.from({ length: 30 }, (_, i) => `f${i}() { f${i + 1}; f${i + 1}; }`).join("; ") + "; f0", ctx);
+    expect(cost.bailed).toBe(true);
   });
 });
