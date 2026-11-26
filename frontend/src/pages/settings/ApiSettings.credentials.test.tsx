@@ -344,3 +344,68 @@ describe("Settings → API credentials control", () => {
     await waitFor(() => expect(document.getElementById("piBaseUrl")).toHaveProperty("value", "https://pi.unsaved"));
   });
 });
+
+describe("Settings → API route subscription through OpenRouter", () => {
+  afterEach(cleanup);
+  beforeEach(() => {
+    h.getSystemInfo.mockReset();
+    h.updateAgentSettings.mockReset();
+    h.updateAgentSettings.mockImplementation(async (patch: Record<string, unknown>) => ({ ...h.settings, ...patch }));
+  });
+
+  const checkbox = () => screen.queryByLabelText("Route subscription through OpenRouter") as HTMLInputElement | null;
+
+  it("is hidden with no account-wide key, and in the OpenRouter credential mode", async () => {
+    await renderSettings({});
+    expect(checkbox()).toBeNull();
+    cleanup();
+    await renderSettings({ openRouterApiKey: "••••abcd", claudeCodeUseOpenRouter: true, claudeCodeOpenRouterApiKey: "k" });
+    expect(checkbox()).toBeNull();
+  });
+
+  it("shows under the subscription with a saved key, and writes only its flag at once", async () => {
+    await renderSettings({ openRouterApiKey: "••••abcd" });
+    expect(checkbox()!.checked).toBe(false);
+    fireEvent.click(checkbox()!);
+    await waitFor(() => expect(h.updateAgentSettings).toHaveBeenCalledWith({ claudeCodeSubscriptionViaOpenRouter: true }));
+    // In effect now, so the manual endpoint says it is overridden.
+    await waitFor(() => expect(screen.getByText(/Inactive — routed through OpenRouter/)).toBeTruthy());
+  });
+
+  it("reverts the box when the write fails", async () => {
+    h.updateAgentSettings.mockRejectedValueOnce(new Error("nope"));
+    await renderSettings({ openRouterApiKey: "••••abcd" });
+    fireEvent.click(checkbox()!);
+    await waitFor(() => expect(screen.getByText("nope")).toBeTruthy());
+    expect(checkbox()!.checked).toBe(false);
+  });
+
+  it("stays visible to untick when ticked and the key is gone, and says why it does nothing", async () => {
+    await renderSettings({ claudeCodeSubscriptionViaOpenRouter: true });
+    expect(checkbox()!.checked).toBe(true);
+    expect(screen.getByText(/add an OpenRouter key on the OpenRouter tab/)).toBeTruthy();
+    expect(screen.queryByText(/Inactive — routed through OpenRouter/)).toBeNull();
+  });
+
+  it("says a manual API key makes it inert", async () => {
+    await renderSettings({ claudeCodeSubscriptionViaOpenRouter: true, openRouterApiKey: "••••abcd", apiKey: "••••wxyz" });
+    expect(screen.getByText(/an API key or auth token is set under Authentication/)).toBeTruthy();
+    expect(screen.queryByText(/Inactive — routed through OpenRouter/)).toBeNull();
+  });
+
+  it("offers Codex the same box under the ChatGPT subscription, with the experimental note", async () => {
+    await renderSettings({ openRouterApiKey: "••••abcd" });
+    fireEvent.click(tab("Codex"));
+    await waitFor(() => expect(checkbox()).toBeTruthy());
+    expect(screen.getByText(/Experimental: OpenRouter currently rejects Codex requests/)).toBeTruthy();
+    fireEvent.click(checkbox()!);
+    await waitFor(() => expect(h.updateAgentSettings).toHaveBeenCalledWith({ codexSubscriptionViaOpenRouter: true }));
+  });
+
+  it("hides the Codex box in api-key mode", async () => {
+    await renderSettings({ openRouterApiKey: "••••abcd", codexAuthMode: "api-key" });
+    fireEvent.click(tab("Codex"));
+    await waitFor(() => expect(segment("Credentials", "OpenAI API key")).toBeTruthy());
+    expect(checkbox()).toBeNull();
+  });
+});

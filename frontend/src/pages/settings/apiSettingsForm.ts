@@ -33,6 +33,10 @@ export interface ApiSettingsForm {
   claudeCodeOpenRouterSonnetModel: string;
   claudeCodeOpenRouterHaikuModel: string;
   claudeCodeOpenRouterSubagentModel: string;
+  // Keep the claude.ai login, send it via OpenRouter with openRouterApiKey.
+  // Written instantly by its checkbox, but carried here too so the page's Save
+  // (a full snapshot) never sends back a stale value.
+  claudeCodeSubscriptionViaOpenRouter: boolean;
   // OpenRouter as a service: the account key, plus the utility completions it
   // can pay for (chat titles, branch names, themes). Not a harness — see the
   // SettingsTab doc-comment in ApiSettings.tsx.
@@ -64,6 +68,8 @@ export interface ApiSettingsForm {
   codexOpenRouterApiKey: string;
   codexOpenRouterBaseUrl: string;
   codexOpenRouterModel: string;
+  // Keep the ChatGPT login, send it via OpenRouter (experimental).
+  codexSubscriptionViaOpenRouter: boolean;
 }
 
 /** The form before settings have loaded — what every field read as at mount. */
@@ -103,6 +109,7 @@ export function formFromSettings(s: AgentSettings): ApiSettingsForm {
     claudeCodeOpenRouterSonnetModel: s.claudeCodeOpenRouterSonnetModel ?? "",
     claudeCodeOpenRouterHaikuModel: s.claudeCodeOpenRouterHaikuModel ?? "",
     claudeCodeOpenRouterSubagentModel: s.claudeCodeOpenRouterSubagentModel ?? "",
+    claudeCodeSubscriptionViaOpenRouter: Boolean(s.claudeCodeSubscriptionViaOpenRouter),
     openRouterApiKey: s.openRouterApiKey ?? "",
     openRouterBaseUrl: s.openRouterBaseUrl ?? "",
     openRouterUtilityCompletions: Boolean(s.openRouterUtilityCompletions),
@@ -128,6 +135,7 @@ export function formFromSettings(s: AgentSettings): ApiSettingsForm {
     codexOpenRouterApiKey: s.codexOpenRouterApiKey ?? "",
     codexOpenRouterBaseUrl: s.codexOpenRouterBaseUrl ?? "",
     codexOpenRouterModel: s.codexOpenRouterModel ?? "",
+    codexSubscriptionViaOpenRouter: Boolean(s.codexSubscriptionViaOpenRouter),
   };
 }
 
@@ -157,6 +165,7 @@ export function settingsFromForm(form: ApiSettingsForm): Partial<AgentSettings> 
     claudeCodeOpenRouterSonnetModel: form.claudeCodeOpenRouterSonnetModel,
     claudeCodeOpenRouterHaikuModel: form.claudeCodeOpenRouterHaikuModel,
     claudeCodeOpenRouterSubagentModel: form.claudeCodeOpenRouterSubagentModel,
+    claudeCodeSubscriptionViaOpenRouter: form.claudeCodeSubscriptionViaOpenRouter,
     openRouterApiKey: form.openRouterApiKey,
     openRouterBaseUrl: form.openRouterBaseUrl,
     openRouterUtilityCompletions: form.openRouterUtilityCompletions,
@@ -184,5 +193,6 @@ export function settingsFromForm(form: ApiSettingsForm): Partial<AgentSettings> 
     codexOpenRouterApiKey: form.codexOpenRouterApiKey,
     codexOpenRouterBaseUrl: form.codexOpenRouterBaseUrl,
     codexOpenRouterModel: form.codexOpenRouterModel,
+    codexSubscriptionViaOpenRouter: form.codexSubscriptionViaOpenRouter,
   };
 }

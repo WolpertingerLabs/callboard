@@ -6,6 +6,8 @@ import {
   writeCodexCredentialMode,
   claudeOpenRouterCredentialReady,
   codexOpenRouterCredentialReady,
+  claudeSubscriptionViaOpenRouterReady,
+  codexSubscriptionViaOpenRouterReady,
   type ClaudeCredentialFields,
   type ClaudeCredentialMode,
   type CodexCredentialFields,
@@ -151,5 +153,19 @@ describe("codexOpenRouterCredentialReady", () => {
 
   it("is not ready with neither", () => {
     expect(codexOpenRouterCredentialReady({}, false)).toBe(false);
+  });
+});
+
+describe("subscription via OpenRouter readiness", () => {
+  it("Claude needs the account-wide key and no manual key or token", () => {
+    expect(claudeSubscriptionViaOpenRouterReady({ openRouterApiKey: "••••abcd" })).toBe(true);
+    expect(claudeSubscriptionViaOpenRouterReady({})).toBe(false);
+    expect(claudeSubscriptionViaOpenRouterReady({ openRouterApiKey: "  " })).toBe(false);
+    expect(claudeSubscriptionViaOpenRouterReady({ openRouterApiKey: "k", apiKey: "sk-ant" })).toBe(false);
+    expect(claudeSubscriptionViaOpenRouterReady({ openRouterApiKey: "k", authToken: "t" })).toBe(false);
+  });
+  it("Codex needs only the account-wide key", () => {
+    expect(codexSubscriptionViaOpenRouterReady({ openRouterApiKey: "k" })).toBe(true);
+    expect(codexSubscriptionViaOpenRouterReady({})).toBe(false);
   });
 });
