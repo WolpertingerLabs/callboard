@@ -1,4 +1,4 @@
-import { assertPiModelReasoningEffort } from "./modelCatalog.js";
+import { assertPiModelReasoningEffort, assertPiModelResolved } from "./modelCatalog.js";
 /**
  * Options adapter: callboard run options → pi's session construction inputs.
  *
@@ -149,7 +149,7 @@ export const PI_CACHE_WARMING_MODE = "off" satisfies PiCacheWarmingMode;
  * so `"off"` is exact behaviour parity with the version this replaced.
  *
  * `applyOverrides({ cacheWarming: "off" })` looks like the tool for this and
- * **does not work**, measured against 1.5.2: `getCacheWarmingMode()` reads the
+ * **does not work**, measured against 1.5.2 and unchanged in 1.6.1: `getCacheWarmingMode()` reads the
  * *global* settings only ("because warming costs money"), never the merged
  * view overrides write to, and `reload()` rebuilds that merged view from disk
  * regardless. A `"cacheWarming": "idle"` in `<agentDir>/settings.json` — a
@@ -342,13 +342,17 @@ export interface BuildPiSessionInput {
  */
 export function buildPiSessionOptions(input: BuildPiSessionInput): Omit<CreateAgentSessionFromServicesOptions, "services" | "sessionManager"> {
   const { pi, model, customTools, filters } = input;
+  // Before the effort check, which would otherwise report an unknown model as
+  // "no model resolved" for the effort rather than say what is wrong.
+  assertPiModelResolved(pi.providerId?.trim() || DEFAULT_PI_PROVIDER_ID, pi.model, model);
   assertPiModelReasoningEffort(model, pi.effort);
 
   if (!model) {
-    // Not thrown: pi resolves its own default when no model is given, and a hard
-    // failure here would make "start a chat before picking a model" impossible.
-    // Worth a line so a chat on an unexpected model is explicable.
-    log.debug(`no resolved model for provider "${pi.providerId ?? DEFAULT_PI_PROVIDER_ID}" — deferring to pi's default`);
+    // Only reached when no model is named (a named one that did not resolve threw
+    // above). Not thrown: pi resolves its own default when no model is given, and
+    // a hard failure here would make "start a chat before picking a model"
+    // impossible. Worth a line so a chat on pi's default is explicable.
+    log.debug(`no model named for provider "${pi.providerId ?? DEFAULT_PI_PROVIDER_ID}" — deferring to pi's default`);
   }
 
   return {

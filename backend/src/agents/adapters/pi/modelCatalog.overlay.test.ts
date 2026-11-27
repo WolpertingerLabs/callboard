@@ -255,7 +255,8 @@ describe("OpenRouter overlay", () => {
  * The other half of the overlay. Offering a model in the picker is only honest
  * if picking it runs *that* model: pi's OpenRouter list is static, so every
  * overlaid slug misses `ModelRegistry.find()`, and an unresolved model makes
- * `buildPiSessionOptions` drop the field and run the turn on pi's own default.
+ * `buildPiSessionOptions` refuse the turn (before pi 1.6's bump it dropped the
+ * field and ran the turn on pi's own default).
  */
 describe("findPiModel", () => {
   const maverick: OpenRouterModelInfo = {
@@ -388,7 +389,7 @@ describe("findPiModel", () => {
     });
   });
 
-  it("still defers to pi's default for a non-OpenRouter provider", () => {
+  it("resolves nothing for an unknown slug on a non-OpenRouter provider (buildPiSessionOptions then refuses the turn)", () => {
     getOpenRouterModelsSnapshot.mockReturnValue([maverick]);
 
     // Nothing to template against: unlike OpenRouter's one-URL-routes-
@@ -397,7 +398,7 @@ describe("findPiModel", () => {
     expect(findPiModel(runtime(), "anthropic", "claude-opus-4.8")).toBeUndefined();
   });
 
-  it("defers to pi's default when the runtime has no OpenRouter model to template from", () => {
+  it("resolves nothing when the runtime has no OpenRouter model to template from (the turn is then refused)", () => {
     getModels.mockImplementation(() => []);
     getOpenRouterModelsSnapshot.mockReturnValue([maverick]);
 

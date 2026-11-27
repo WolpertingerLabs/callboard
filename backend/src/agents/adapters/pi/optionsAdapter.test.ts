@@ -101,6 +101,44 @@ describe("buildPiSessionOptions", () => {
   });
 });
 
+/**
+ * A chat that names a model pi's catalog does not know must not run on pi's
+ * default instead (#614 fixed the same silent wrong-model failure for Codex).
+ * `pi.model` arrives alias-resolved (`buildPiExtras`), so anything still here
+ * is a real id; `model` is what `resolvePiModelForRun` found for it.
+ */
+describe("a named model pi's catalog does not know", () => {
+  const base = { pi: {}, customTools: [], filters: {} };
+
+  it("refuses the turn, naming the model and provider and what to do", () => {
+    const run = () => buildPiSessionOptions({ ...base, pi: { providerId: "openai", model: "o4-mini" } });
+    expect(run).toThrow(/"o4-mini"/);
+    expect(run).toThrow(/provider "openai"/);
+    expect(run).toThrow(/not in pi's model catalog/);
+    expect(run).toThrow(/misspelled, belong to a different provider, or have been retired by pi\./);
+    expect(run).not.toThrow(/pi \d/);
+    expect(run).toThrow(/list_model_aliases/);
+  });
+
+  it("names the default provider when none is configured", () => {
+    expect(() => buildPiSessionOptions({ ...base, pi: { model: "vendor/gone" } })).toThrow(/provider "openrouter"/);
+  });
+
+  it("reports the unknown model rather than an effort it could not check", () => {
+    expect(() => buildPiSessionOptions({ ...base, pi: { providerId: "openai", model: "o4-mini", effort: "high" } })).toThrow(/not in pi's model catalog/);
+  });
+
+  it("still lets pi pick its default when no model is named", () => {
+    expect(buildPiSessionOptions(base)).toEqual({});
+    expect(buildPiSessionOptions({ ...base, pi: { providerId: "openai", model: "   " } })).toEqual({});
+  });
+
+  it("runs a named model that resolved", () => {
+    const model = { id: "gpt-6.2-sol" } as never;
+    expect(buildPiSessionOptions({ ...base, model, pi: { providerId: "openai", model: "gpt-6.2-sol" } }).model).toBe(model);
+  });
+});
+
 describe("DEFAULT_PI_PROVIDER_ID", () => {
   it("is openrouter — the provider pi is native to", () => {
     expect(DEFAULT_PI_PROVIDER_ID).toBe("openrouter");

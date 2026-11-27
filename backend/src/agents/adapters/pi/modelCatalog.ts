@@ -11,9 +11,9 @@ import type { OpenRouterModelInfo } from "shared";
  *
  * pi needs neither workaround. `ModelRuntime.create({ allowModelNetwork: false })`
  * answers from a catalog shipped in the package — over a thousand models across
- * all providers and several hundred of them OpenRouter's (pi 1.5.2: 1,643 and
- * 403; 0.85.1: 1,354 and 366; the spike, on an older pi, counted 1,157 and
- * 307), with the network
+ * all providers and several hundred of them OpenRouter's (pi 1.6.1: 1,696 and
+ * 412; 1.5.2: 1,643 and 403; 0.85.1: 1,354 and 366; the spike, on an older pi,
+ * counted 1,157 and 307), with the network
  * explicitly disabled. A user who has never run a pi chat still gets a fully
  * populated picker, and no model lookup can hang on a provider being down.
  * (One lookup may *wait*, boundedly: a turn on an OpenRouter model newer than
@@ -486,7 +486,7 @@ function clampRates<T extends PiCostRates>(rates: T): T {
  * picks the model), so it is unknown, billed at 0 and warned about — the same
  * answer {@link isUsablePrice} gives a synthesized model.
  *
- * pi 1.5 ships both routers at 0 and bundles no negative price at all, so this
+ * pi 1.5 and 1.6 ship both routers at 0 and bundle no negative price at all, so this
  * is now a guard rather than a live fix. It stays: a found model's price can
  * also come from `models.json`, pi.dev's catalog or a key's `/models/user`
  * prices, none of which is checked, and a regression in pi's generator would
@@ -518,8 +518,8 @@ function withUsableCost<M extends PiModel>(model: M): M {
  * variants. Index 0 sorted to `anthropic/claude-3-haiku`, so every synthesized
  * Gemini, Llama or DeepSeek slug was being sent through OpenRouter's
  * Anthropic-compatible endpoint. pi 1.5.2 keeps the split (20 / 383, the 20
- * now including `~anthropic/…-latest` aliases) and index 0 is still an
- * `anthropic-messages` model.
+ * now including `~anthropic/…-latest` aliases), as does 1.6.1 (20 / 392), and
+ * index 0 is still an `anthropic-messages` model.
  *
  * pi ships no rule for this, only the generated per-model data, so the choice
  * is read off that data rather than hardcoded: the majority transport among
@@ -643,10 +643,10 @@ function synthesizeOpenRouterModel(runtime: ModelRuntime, modelId: string, metad
  *
  * For OpenRouter, an id the catalog doesn't carry is synthesized rather than
  * refused — see {@link synthesizeOpenRouterModel}. For every other provider a
- * slug pi does not know still returns `undefined`, and the caller lets pi pick
- * its own default rather than failing the turn: there is no equivalent of
+ * slug pi does not know still returns `undefined`: there is no equivalent of
  * OpenRouter's one-URL-routes-everything to synthesize against, so guessing a
- * transport would trade a wrong model for a broken one.
+ * transport would trade a wrong model for a broken one. The caller refuses the
+ * turn ({@link assertPiModelResolved}) rather than let pi pick its own default.
  */
 export function findPiModel(
   runtime: ModelRuntime,
@@ -668,7 +668,7 @@ export function findPiModel(
     }
   }
 
-  log.debug(`pi model "${provider}/${model}" is not in the catalog — deferring to pi's default`);
+  log.debug(`pi model "${provider}/${model}" is not in the catalog`);
   return undefined;
 }
 
@@ -855,6 +855,30 @@ export async function getPiModelReasoningEfforts(
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Refuse a turn whose chat names a model that did not resolve, rather than let
+ * pi run it on its own default.
+ *
+ * {@link findPiModel} returns `undefined` for a slug pi does not know on any
+ * provider but OpenRouter (where an unknown slug is synthesized, so this fires
+ * only if synthesis itself finds no template). With no model, pi picks its
+ * default, so the chat would quietly run, and bill, a model nobody chose. pi 1.6
+ * made that reachable for saved chats by removing retired models (OpenAI's
+ * `o1`/`o3-mini`/`o4-mini`/`gpt-4`, Mistral's Devstral, Groq's Llama 3.x); #614
+ * fixed the same silent wrong-model failure for Codex.
+ *
+ * `modelId` is alias-resolved already (`buildPiExtras`), and a blank one means
+ * "no model named", which keeps pi's default on purpose.
+ */
+export function assertPiModelResolved(provider: string, modelId: string | undefined, model: unknown): void {
+  const id = modelId?.trim();
+  if (!id || model) return;
+  throw new Error(
+    `pi model "${id}" is not in pi's model catalog for provider "${provider}"; it may be misspelled, belong to a different provider, or have been retired by pi. ` +
+      `Pick a model from the pi model list (the model picker, or GET /api/pi/models) or a model alias with a pi target (list_model_aliases), then try again.`,
+  );
 }
 
 /** Reject before pi can clamp an explicit effort to a different SDK tier. */

@@ -18,9 +18,18 @@ function packageJsonNear(entryUrl: string): Record<string, unknown> {
   return JSON.parse(readFileSync(join(dirname(fileURLToPath(entryUrl)), "..", "package.json"), "utf-8")) as Record<string, unknown>;
 }
 
-export function piAiVersions(): { resolved: string; expected: string } {
-  const resolved = packageJsonNear(import.meta.resolve("@earendil-works/pi-ai/models")).version as string;
+function pinnedSiblingVersions(sibling: string, entry: string): { resolved: string; expected: string } {
+  const resolved = packageJsonNear(import.meta.resolve(entry)).version as string;
   const codingAgent = packageJsonNear(import.meta.resolve("@earendil-works/pi-coding-agent"));
-  const expected = (codingAgent.dependencies as Record<string, string>)["@earendil-works/pi-ai"];
+  const expected = (codingAgent.dependencies as Record<string, string>)[sibling];
   return { resolved, expected };
+}
+
+export function piAiVersions(): { resolved: string; expected: string } {
+  return pinnedSiblingVersions("@earendil-works/pi-ai", "@earendil-works/pi-ai/models");
+}
+
+/** The same check for `@earendil-works/pi-agent-core`, the loop that runs a session's tool calls. */
+export function piAgentCoreVersions(): { resolved: string; expected: string } {
+  return pinnedSiblingVersions("@earendil-works/pi-agent-core", "@earendil-works/pi-agent-core");
 }
