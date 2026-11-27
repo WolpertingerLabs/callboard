@@ -1,10 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, GitBranch, GitPullRequest, RefreshCw } from "lucide-react";
 import type { ChatPr, ChatPrsResponse, FolderPrs } from "../../api";
 import { getChatPrs } from "../../api";
-import { usePolling } from "../../hooks/usePolling";
-import { startTimedRequest, type TimedRequest } from "./timedRequest";
-import { errorMessage } from "../../utils/errorMessage";
+import { useGitRequest } from "./useGitRequest";
 import { formatShortAgo } from "../../utils/dateFormat";
 import PrBadge from "./PrBadge";
 
@@ -49,83 +46,20 @@ const panel: React.CSSProperties = {
  * The PRs half of a chat's git view: one list of every PR the chat and its
  * card's other chats have worked on, as the daemon orders it (open first, then
  * most recently updated), with the chat's own live branch's status above it
- * when that branch has no PR of its own. Fetched when shown, polled slowly
- * while it stays shown; read-only.
+ * when that branch has no PR of its own. Fetched when shown (what it showed
+ * last is painted meanwhile), polled slowly while it stays shown; read-only.
  */
 export default function ChatPrsView({ folder, chatId }: ChatPrsViewProps) {
-  const [data, setData] = useState<ChatPrsResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  // The mount request is a forced refresh, so the button starts disabled.
-  const [refreshing, setRefreshing] = useState(true);
-  const [now, setNow] = useState(() => Date.now());
-  // Only the newest request may land: a slow poll must not overwrite a refresh,
-  // nor a previous chat's answer a new one's.
-  const seq = useRef(0);
-  // The seq of the newest forced refresh still in flight; 0 when none is.
-  const refreshInFlight = useRef(0);
-  // Requests not yet settled, so an unmount can abort them.
-  const pending = useRef(new Set<TimedRequest>());
-
-  const load = useCallback(
-    async (refresh = false) => {
-      const mine = ++seq.current;
-      if (refresh) {
-        refreshInFlight.current = mine;
-        setRefreshing(true);
-      }
-      // Every request times out, so `finally` always runs: a request left
-      // pending forever would keep the button disabled and polls paused.
-      const timed = startTimedRequest();
-      pending.current.add(timed);
-      try {
-        const res = await getChatPrs(folder, chatId, refresh, timed.signal);
-        if (mine !== seq.current) return;
-        setData(res);
-        setError(null);
-      } catch (err) {
-        if (mine !== seq.current) return;
-        setError(timed.timedOut() ? "Timed out loading PRs — try refreshing." : errorMessage(err, "Failed to load PRs"));
-      } finally {
-        timed.done();
-        pending.current.delete(timed);
-        // Only the newest forced request re-enables the button — a poll never
-        // does (polls do not even start while a refresh is in flight).
-        if (refresh && refreshInFlight.current === mine) {
-          refreshInFlight.current = 0;
-          setRefreshing(false);
-        }
-        setNow(Date.now());
-      }
-    },
-    [folder, chatId],
-  );
-
-  // A different chat or folder remounts this view (ChatGitView keys it), so
-  // there is no previous answer to clear here. The one request a mount makes
-  // is forced — the same request as the refresh button, which the daemon
-  // bounds (a fresh-enough cache is reused; a slow GitHub is waited on briefly).
-  useEffect(() => {
-    void load(true);
-  }, [load]);
-
-  // Going away (or a different chat remounting this view): abort what is in
-  // flight, and let nothing that settles land.
-  useEffect(() => {
-    const requests = pending.current;
-    const sequence = seq;
-    return () => {
-      sequence.current++;
-      for (const request of requests) request.abort();
-    };
-  }, []);
-
-  // PRs move slowly; the refresh button covers the impatient. usePolling skips
-  // ticks while the document is hidden, and this component is only mounted
-  // while the PRs tab is the one showing.
-  usePolling(() => {
-    if (refreshInFlight.current === 0) void load();
-  }, 60_000);
-  usePolling(() => setNow(Date.now()), 10_000, { catchUp: false });
+  // A different chat or folder remounts this view (ChatGitView keys it), so the
+  // key below is fixed for a mount, and what it remembers is that chat's alone.
+  // Keyed on the folder and the chat both: the folder decides the live branch's
+  // status, the chat which other PRs are listed.
+  const { data, error, refreshing, now, refresh } = useGitRequest<ChatPrsResponse>({
+    cacheKey: `prs\0${folder}\0${chatId ?? ""}`,
+    fetch: (forced, signal) => getChatPrs(folder, chatId, forced, signal),
+    timeoutMessage: "Timed out loading PRs — try refreshing.",
+    failureMessage: "Failed to load PRs",
+  });
 
   const prCard = (pr: ChatPr) => {
     const opened = ago(pr.createdAt, now);
@@ -182,7 +116,7 @@ export default function ChatPrsView({ folder, chatId }: ChatPrsViewProps) {
           title="Refresh PRs"
           disabled={refreshing}
           aria-busy={refreshing}
-          onClick={() => void load(true)}
+          onClick={refresh}
           style={{
             display: "flex",
             alignItems: "center",

@@ -11,20 +11,35 @@ import { usePolling } from "../hooks/usePolling";
 import { errorMessage } from "../utils/errorMessage";
 
 /**
+ * The cards each space's Git page showed last, so reopening the page paints
+ * its rows at once instead of waiting on the card list again. Keyed by space
+ * ("" when spaces are off); a handful of spaces at most, but bounded anyway.
+ */
+const CARD_CACHE_LIMIT = 16;
+const lastCards = new Map<string, CardSummary[]>();
+
+/** Forget every remembered card list (tests). */
+export function clearGitPageCache(): void {
+  lastCards.clear();
+}
+
+/**
  * The Git page: every worktree that unarchived conversations are working in,
  * grouped by repository, with the conversations attached as chips.
  *
  * The page itself only holds the open cards (one per top-level conversation)
  * for the active space — `BranchesView` fetches the git overview and joins
- * its rows to these by id. A chip opens the conversation's root chat.
+ * its rows to these by id. The two requests go out together; neither waits
+ * for the other. A chip opens the conversation's root chat.
  */
 export default function Git() {
   const navigate = useNavigate();
   const isMobile = useIsMobile();
   const metadataVersion = useMetadataVersion();
   const { enabled: spacesEnabled, activeSpaceId } = useSpaces();
-  const [cards, setCards] = useState<CardSummary[]>([]);
-  const [loaded, setLoaded] = useState(false);
+  const spaceKey = spacesEnabled && activeSpaceId ? activeSpaceId : "";
+  const [cards, setCards] = useState<CardSummary[]>(() => lastCards.get(spaceKey) ?? []);
+  const [loaded, setLoaded] = useState(() => lastCards.has(spaceKey));
   const [error, setError] = useState<string | null>(null);
   // Polls and metadata refetches can overlap; only the newest may land.
   const requestSeq = useRef(0);
@@ -40,6 +55,9 @@ export default function Git() {
       // A daemon older than the `lifecycle` parameter returns archived cards
       // too; BranchesView only chips open ones, so that is harmless.
       setCards(res.cards);
+      lastCards.delete(spaceKey);
+      lastCards.set(spaceKey, res.cards);
+      while (lastCards.size > CARD_CACHE_LIMIT) lastCards.delete(lastCards.keys().next().value as string);
       setError(null);
     } catch (err) {
       if (seq !== requestSeq.current) return;
@@ -47,7 +65,7 @@ export default function Git() {
     } finally {
       if (seq === requestSeq.current) setLoaded(true);
     }
-  }, [spacesEnabled, activeSpaceId]);
+  }, [spacesEnabled, activeSpaceId, spaceKey]);
 
   useEffect(() => {
     loadCards();
@@ -109,11 +127,9 @@ export default function Git() {
           </div>
         )}
 
-        {!loaded ? (
-          <div style={{ color: "var(--text-muted)", fontSize: 14 }}>Loading…</div>
-        ) : (
-          <BranchesView cards={cards} onOpenChat={(chatId) => navigate(`/chat/${chatId}`)} />
-        )}
+        {/* Mounted at once, so the overview is asked for alongside the cards
+            rather than after them. */}
+        <BranchesView cards={cards} cardsLoaded={loaded} reloadToken={metadataVersion} onOpenChat={(chatId) => navigate(`/chat/${chatId}`)} />
       </div>
     </div>
   );

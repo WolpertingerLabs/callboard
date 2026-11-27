@@ -1,11 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, RefreshCw } from "lucide-react";
 import type { BranchRepo, BranchRow, CardSummary, GitOverviewResponse } from "../../api";
 import { getGitOverview } from "../../api";
 import { useIsMobile } from "../../hooks/useIsMobile";
-import { usePolling } from "../../hooks/usePolling";
-import { startTimedRequest, type TimedRequest } from "./timedRequest";
-import { errorMessage } from "../../utils/errorMessage";
+import { useDebouncedCallback } from "../../hooks/useDebouncedCallback";
+import { useGitRequest } from "./useGitRequest";
 import { formatShortAgo } from "../../utils/dateFormat";
 import { ROLLUP_COLORS } from "./rollupColors";
 import CardPathLabel from "./CardPathLabel";
@@ -19,9 +18,26 @@ interface BranchesViewProps {
    * not shown as a chip either.
    */
   cards: CardSummary[];
+  /**
+   * False while the page's first card request is still out. The overview is
+   * fetched regardless; until the cards arrive there is nothing to join its
+   * rows to, which is not the same as there being nothing to show. Default true.
+   */
+  cardsLoaded?: boolean;
+  /**
+   * Bumped by the page when chat or card metadata changes (its
+   * `metadataVersion`): the overview is asked again shortly after.
+   */
+  reloadToken?: number;
   /** Called with the card id, which is the conversation's root chat id. */
   onOpenChat: (chatId: string) => void;
 }
+
+/** The overview is one request for the whole daemon: nothing keys it. */
+const OVERVIEW_CACHE_KEY = "overview";
+
+/** How long after the cards or metadata change the overview is asked again. */
+export const RELOAD_DEBOUNCE_MS = 500;
 
 /** Chips shown on a row before the rest fold behind "+N more". */
 const CHIP_LIMIT = 4;
@@ -45,76 +61,38 @@ function parentPrefix(repoPath: string): string {
  * conversations attached as chips. Read-only — a chip opens its root chat,
  * and archiving lives in the sidebar.
  */
-export default function BranchesView({ cards, onOpenChat }: BranchesViewProps) {
+export default function BranchesView({ cards, cardsLoaded = true, reloadToken = 0, onOpenChat }: BranchesViewProps) {
   const isMobile = useIsMobile();
-  const [data, setData] = useState<GitOverviewResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  // The mount request is a forced refresh, so the button starts disabled.
-  const [refreshing, setRefreshing] = useState(true);
-  const [now, setNow] = useState(() => Date.now());
+  const { data, error, refreshing, now, refresh, reload } = useGitRequest<GitOverviewResponse>({
+    cacheKey: OVERVIEW_CACHE_KEY,
+    fetch: getGitOverview,
+    timeoutMessage: "Timed out loading branches — try refreshing.",
+    failureMessage: "Failed to load branches",
+  });
   const [expandedRows, setExpandedRows] = useState<Set<string>>(() => new Set());
-  // Only the newest request may land: a slow poll must not overwrite a refresh.
-  const seq = useRef(0);
-  // The seq of the newest forced refresh still in flight; 0 when none is.
-  const refreshInFlight = useRef(0);
-  // Requests not yet settled, so an unmount can abort them.
-  const pending = useRef(new Set<TimedRequest>());
 
-  const load = useCallback(async (refresh = false) => {
-    const mine = ++seq.current;
-    if (refresh) {
-      refreshInFlight.current = mine;
-      setRefreshing(true);
-    }
-    // Every request times out, so `finally` always runs: a request left
-    // pending forever would keep the button disabled and polls paused.
-    const timed = startTimedRequest();
-    pending.current.add(timed);
-    try {
-      const res = await getGitOverview(refresh, timed.signal);
-      if (mine !== seq.current) return;
-      setData(res);
-      setError(null);
-    } catch (err) {
-      if (mine !== seq.current) return;
-      setError(timed.timedOut() ? "Timed out loading branches — try refreshing." : errorMessage(err, "Failed to load branches"));
-    } finally {
-      timed.done();
-      pending.current.delete(timed);
-      // Only the newest forced request re-enables the button — a poll never
-      // does (polls do not even start while a refresh is in flight).
-      if (refresh && refreshInFlight.current === mine) {
-        refreshInFlight.current = 0;
-        setRefreshing(false);
-      }
-      setNow(Date.now());
-    }
-  }, []);
-
-  // The one request a mount makes is forced — the same request as the refresh
-  // button, which the daemon bounds (a fresh-enough cache is reused; a slow
-  // GitHub is waited on briefly). Switching to this tab remounts it.
+  // The overview's rows are the worktrees open cards work in, so a change in
+  // which cards are open (a chat started in a new worktree, one archived) or
+  // in any chat's metadata means the rows may have changed too. Ask again,
+  // unforced — the daemon answers that from its PR cache. Debounced a little
+  // longer than the page debounces its cards, so the metadata bump and the
+  // card list it produces make one request, not two.
+  const openIds = cards
+    .filter((c) => c.lifecycle === "open")
+    .map((c) => c.id)
+    .sort()
+    .join("\n");
+  const debouncedReload = useDebouncedCallback(reload, RELOAD_DEBOUNCE_MS);
+  // What the overview on screen (or on its way) was asked against. Null until
+  // the cards have loaded: their first arrival is not a change, and the
+  // mount's own requests cover it.
+  const askedFor = useRef<{ openIds: string; reloadToken: number } | null>(null);
   useEffect(() => {
-    void load(true);
-  }, [load]);
-
-  // Going away: abort what is in flight, and let nothing that settles land.
-  useEffect(() => {
-    const requests = pending.current;
-    const sequence = seq;
-    return () => {
-      sequence.current++;
-      for (const request of requests) request.abort();
-    };
-  }, []);
-
-  // Branches and PRs move slowly: background polls are not forced, and do not
-  // start while a refresh is in flight.
-  usePolling(() => {
-    if (refreshInFlight.current === 0) void load();
-  }, 60_000);
-  // Keeps "updated Xs ago" honest between polls.
-  usePolling(() => setNow(Date.now()), 10_000, { catchUp: false });
+    if (!cardsLoaded) return;
+    const previous = askedFor.current;
+    askedFor.current = { openIds, reloadToken };
+    if (previous && (previous.openIds !== openIds || previous.reloadToken !== reloadToken)) debouncedReload();
+  }, [cardsLoaded, openIds, reloadToken, debouncedReload]);
 
   const openCards = new Map(cards.filter((c) => c.lifecycle === "open").map((c) => [c.id, c]));
   const chipsOf = (row: BranchRow) => row.cardIds.map((id) => openCards.get(id)).filter((c): c is CardSummary => c !== undefined);
@@ -294,7 +272,7 @@ export default function BranchesView({ cards, onOpenChat }: BranchesViewProps) {
           title="Refresh branches and PRs"
           disabled={refreshing}
           aria-busy={refreshing}
-          onClick={() => void load(true)}
+          onClick={refresh}
           style={{
             display: "flex",
             alignItems: "center",
@@ -316,7 +294,9 @@ export default function BranchesView({ cards, onOpenChat }: BranchesViewProps) {
         </div>
       )}
 
-      {data === null && !error ? (
+      {/* Without the cards no row can be shown yet, whatever the overview
+          holds: that is still loading, not an empty page. */}
+      {(data === null && !error) || (data !== null && !cardsLoaded) ? (
         <div style={{ color: "var(--text-muted)", fontSize: 14 }}>Loading branches…</div>
       ) : (
         data !== null && repos.length === 0 && <div style={{ color: "var(--text-muted)", fontSize: 14 }}>No active conversation is working in a git repository.</div>
