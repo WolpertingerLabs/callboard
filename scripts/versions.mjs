@@ -50,22 +50,45 @@ export const DRAWLATCH_PINS = [
 export const DOCKER_LOCK = "packages/computer-use/docker/package-lock.json";
 export const DEP_BLOCKS = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"];
 
-/** A semver version (not a range). The groups are major, minor, patch and the prerelease. */
-export const SEMVER_RE = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/;
+/**
+ * A semver version (not a range), as npm writes it: no leading `v`. npm
+ * normalizes `v1.2.3` away when it publishes, so a `v` left in the pins would
+ * never match the published drawlatch. The groups are major, minor, patch and
+ * the prerelease.
+ */
+export const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/;
 
 const FIX = "Run `npm run version:sync`.";
-const readJson = (path) => JSON.parse(readFileSync(path, "utf8"));
-const writeJson = (value) => `${JSON.stringify(value, null, 2)}\n`;
+/** A file in `root`, parsed. A missing or unparsable file throws an error naming its path, not a bare ENOENT. */
+function readJson(root, path) {
+  let text;
+  try {
+    text = readFileSync(join(root, path), "utf8");
+  } catch (err) {
+    throw new Error(err.code === "ENOENT" ? `${path} is missing` : `${path} can't be read: ${err.message}`);
+  }
+  try {
+    return JSON.parse(text);
+  } catch (err) {
+    throw new Error(`${path} isn't valid JSON: ${err.message}`);
+  }
+}
+/** `value` as npm writes JSON (two-space indent), keeping `original`'s line endings and whether it ended with one. */
+function writeJson(value, original) {
+  const eol = original.includes("\r\n") ? "\r\n" : "\n";
+  const text = JSON.stringify(value, null, 2).replace(/\n/g, eol); // JSON.stringify escapes newlines inside strings
+  return /\n$/.test(original) ? text + eol : text;
+}
 
 /** Everything the check needs, read from disk. Pure data out; the tests build it from fixtures instead. */
 export function readVersionState(root = ROOT) {
-  const rootPkg = readJson(join(root, "package.json"));
+  const rootPkg = readJson(root, "package.json");
   const manifests = { "package.json": rootPkg };
   const workspaces = [];
   for (const dir of rootPkg.workspaces ?? []) {
     if (/[*?{[]/.test(dir)) throw new Error(`package.json workspaces: "${dir}" is a glob; scripts/versions.mjs only knows explicit directories`);
     const path = `${dir}/package.json`;
-    const pkg = readJson(join(root, path));
+    const pkg = readJson(root, path);
     manifests[path] = pkg;
     workspaces.push({ dir, name: pkg.name, private: pkg.private === true, version: pkg.version });
   }
@@ -73,8 +96,8 @@ export function readVersionState(root = ROOT) {
     version: rootPkg.version,
     workspaces,
     manifests,
-    lock: existsSync(join(root, "package-lock.json")) ? readJson(join(root, "package-lock.json")) : undefined,
-    dockerLock: existsSync(join(root, DOCKER_LOCK)) ? readJson(join(root, DOCKER_LOCK)) : undefined,
+    lock: existsSync(join(root, "package-lock.json")) ? readJson(root, "package-lock.json") : undefined,
+    dockerLock: existsSync(join(root, DOCKER_LOCK)) ? readJson(root, DOCKER_LOCK) : undefined,
   };
 }
 
@@ -150,8 +173,8 @@ export function syncVersions(root = ROOT, { lockfile = "install", log = () => {}
     throw new Error(`package.json "version" is ${JSON.stringify(version)}, which isn't a semver version`);
   const versioned = new Set(state.workspaces.filter((ws) => ws.version !== undefined || !ws.private).map((ws) => ws.name));
   const changed = [];
-  const save = (path, text) => {
-    writeFileSync(join(root, path), text);
+  const save = (path, value) => {
+    writeFileSync(join(root, path), writeJson(value, readFileSync(join(root, path), "utf8")));
     changed.push(path);
   };
 
@@ -166,7 +189,7 @@ export function syncVersions(root = ROOT, { lockfile = "install", log = () => {}
     // npm already wrote the root version; only the root's dependencies can need it.
     if (path !== "package.json" && pkg.version !== undefined) set(pkg, "version");
     for (const block of DEP_BLOCKS) for (const [name, spec] of Object.entries(pkg[block] ?? {})) if (versioned.has(name) && spec !== "*") set(pkg[block], name);
-    if (dirty) save(path, writeJson(pkg));
+    if (dirty) save(path, pkg);
   }
 
   if (state.dockerLock) {
@@ -174,7 +197,7 @@ export function syncVersions(root = ROOT, { lockfile = "install", log = () => {}
     if (lock.version !== version || (lock.packages?.[""] && lock.packages[""].version !== version)) {
       lock.version = version;
       if (lock.packages?.[""]) lock.packages[""].version = version;
-      save(DOCKER_LOCK, writeJson(lock));
+      save(DOCKER_LOCK, lock);
     }
   }
 
@@ -189,6 +212,16 @@ export function syncVersions(root = ROOT, { lockfile = "install", log = () => {}
 }
 
 function main(argv) {
+  try {
+    run(argv);
+  } catch (err) {
+    // A missing or broken file: the message names it, and a stack trace wouldn't help.
+    console.error(`scripts/versions.mjs: ${err.message}`);
+    process.exit(1);
+  }
+}
+
+function run(argv) {
   const at = argv.indexOf("--root");
   const root = at === -1 ? ROOT : resolve(argv[at + 1]);
   if (argv.includes("--check")) {

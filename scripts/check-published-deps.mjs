@@ -218,6 +218,17 @@ export function lockstepErrors(state) {
   return versionDriftErrors(state).map((error) => `version lockstep: ${error}`);
 }
 
+/** {@link lockstepErrors} for the repo at `root`; a file it can't read (a missing workspace manifest) is reported, not thrown. */
+export function repoLockstepErrors(root) {
+  let state;
+  try {
+    state = readVersionState(root);
+  } catch (err) {
+    return [`version lockstep: ${err.message}`];
+  }
+  return lockstepErrors(state);
+}
+
 /**
  * Errors for a callboard publish whose drawlatch pin is not on npm. `published`
  * is what `npm view <pkg>@<pin> version` printed: empty when nothing matches,
@@ -326,7 +337,7 @@ function main() {
 
   // ── 3. Version lockstep ──────────────────────────────────────────────
   const dependencyErrors = errors.length;
-  errors.push(...lockstepErrors(readVersionState(ROOT)));
+  errors.push(...repoLockstepErrors(ROOT));
 
   if (errors.length > 0) {
     console.error(`\nPublished dependency check failed (${errors.length} problem${errors.length === 1 ? "" : "s"}):\n`);

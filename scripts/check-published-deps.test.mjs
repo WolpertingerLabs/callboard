@@ -16,11 +16,15 @@
  *   fails silently and green.
  */
 import { describe, it, expect } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   blankComments,
   drawlatchRegistryErrors,
   importedPackages,
   lockstepErrors,
+  repoLockstepErrors,
   publishedVersionFromNpmView,
   registryCheckSkipped,
 } from "./check-published-deps.mjs";
@@ -122,6 +126,16 @@ describe("lockstepErrors", () => {
 
   it("passes a consistent repo", () => {
     expect(lockstepErrors(state())).toEqual([]);
+  });
+
+  it("reports a manifest it can't read as a lockstep error, not a crash", () => {
+    const root = mkdtempSync(join(tmpdir(), "cb-deps-lockstep-"));
+    try {
+      writeFileSync(join(root, "package.json"), JSON.stringify({ version: V, workspaces: ["packages/gone"] }));
+      expect(repoLockstepErrors(root)).toEqual(["version lockstep: packages/gone/package.json is missing"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("reports versionDriftErrors, labelled", () => {

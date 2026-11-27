@@ -52,6 +52,11 @@ describe("versionDriftErrors", () => {
     expect(versionDriftErrors(state())).toEqual([]);
   });
 
+  it.each(["v1.0.0-alpha.72", "1.0", "next", ""])("rejects the root version %j, a leading v included (npm publishes without it)", (version) => {
+    const s = state(version);
+    expect(versionDriftErrors(s)).toEqual([expect.stringMatching(/isn't a semver version/)]);
+  });
+
   it("requires a semver root version", () => {
     const s = state();
     s.version = undefined;
@@ -202,6 +207,43 @@ describe("syncVersions", () => {
     const root = fixtureRepo();
     writeFileSync(join(root, "package.json"), JSON.stringify({ ...read(root, "package.json"), version: "next" }));
     expect(() => syncVersions(root, { lockfile: "none" })).toThrow(/isn't a semver version/);
+  });
+
+  it("refuses a hand-edited root version with a leading v, and writes nothing", () => {
+    const root = fixtureRepo();
+    writeFileSync(join(root, "package.json"), `${JSON.stringify({ ...read(root, "package.json"), version: "v1.0.0-alpha.72" }, null, 2)}\n`);
+    expect(() => syncVersions(root, { lockfile: "none" })).toThrow(/"v1\.0\.0-alpha\.72", which isn't a semver version/);
+    expect(read(root, "packages/drawlatch/package.json").version).toBe("1.0.0");
+    expect(read(root, "backend/package.json").dependencies[DRAWLATCH]).toBe("1.0.0");
+  });
+
+  it("names a workspace whose package.json is missing or broken, in the sync, the check and the CLI", () => {
+    const root = fixtureRepo();
+    rmSync(join(root, "packages/computer-use/package.json"));
+    expect(() => readVersionState(root)).toThrow(/^packages\/computer-use\/package\.json is missing$/);
+    expect(() => syncVersions(root, { lockfile: "none" })).toThrow(/^packages\/computer-use\/package\.json is missing$/);
+    let cli;
+    try {
+      execFileSync("node", [SCRIPT, "--root", root, "--check"], { encoding: "utf8", stdio: "pipe" });
+    } catch (err) {
+      cli = err;
+    }
+    expect(cli?.status).toBe(1);
+    expect(cli.stderr.trim()).toBe("scripts/versions.mjs: packages/computer-use/package.json is missing");
+    writeFileSync(join(root, "packages/computer-use/package.json"), "{ not json");
+    expect(() => readVersionState(root)).toThrow(/^packages\/computer-use\/package\.json isn't valid JSON/);
+  });
+
+  it("keeps a rewritten file's line endings and final-newline state", () => {
+    const root = fixtureRepo();
+    const crlf = `${JSON.stringify({ name: DRAWLATCH, version: "1.0.0" }, null, 2).replace(/\n/g, "\r\n")}\r\n`;
+    writeFileSync(join(root, "packages/drawlatch/package.json"), crlf);
+    writeFileSync(join(root, "packages/computer-use/package.json"), JSON.stringify({ name: CU, version: "1.0.0" }, null, 2)); // no final newline
+    writeFileSync(join(root, "package.json"), `${JSON.stringify({ ...read(root, "package.json"), version: "2.0.0" }, null, 2)}\n`);
+    syncVersions(root, { lockfile: "none" });
+    expect(readFileSync(join(root, "packages/drawlatch/package.json"), "utf8")).toBe(crlf.replace("1.0.0", "2.0.0"));
+    expect(readFileSync(join(root, "packages/computer-use/package.json"), "utf8")).toBe(JSON.stringify({ name: CU, version: "2.0.0" }, null, 2));
+    expect(readFileSync(join(root, "backend/package.json"), "utf8")).toMatch(/"2\.0\.0",\n[^\r]*\n}\n$/);
   });
 
   it("is what `npm version <v>` runs: everything moves, nothing is committed or tagged", () => {
