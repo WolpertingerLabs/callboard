@@ -18,7 +18,9 @@ export function categorizeClaudeTool(toolName: string): PermissionCategory | nul
   if (["Write", "Edit", "MultiEdit"].includes(toolName)) return "fileWrite";
 
   // Code execution (shell, notebooks, shell management)
-  if (["Bash", "NotebookEdit", "KillShell"].includes(toolName)) return "codeExecution";
+  // Monitor runs a shell command (or opens a WebSocket) and streams each line
+  // back as an event, so it is a shell under another name.
+  if (["Bash", "NotebookEdit", "KillShell", "Monitor"].includes(toolName)) return "codeExecution";
 
   // Web access
   if (["WebFetch", "WebSearch"].includes(toolName)) return "webAccess";
@@ -64,8 +66,9 @@ export function categorizeClaudeTool(toolName: string): PermissionCategory | nul
   // allowedTools pattern before `canUseTool` fires), and the only real
   // occupants across two months of production logs are third-party plugin MCP
   // servers (26 calls) plus `Skill` and `Monitor` (24) — two Claude Code tools
-  // that post-date this map and should simply be added to it when someone
-  // confirms their semantics.
+  // that post-date this map. `Monitor` has since been filed under
+  // codeExecution above; `Skill` should be added when someone confirms its
+  // semantics.
   //
   // The bypass this default caused lived on the OpenRouter path, where EVERY
   // tool name missed the map above; that is fixed by giving OR its own

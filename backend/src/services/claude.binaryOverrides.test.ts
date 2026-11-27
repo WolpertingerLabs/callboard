@@ -162,6 +162,21 @@ describe("Claude Code — pathToClaudeCodeExecutable reaches the chat", () => {
     expect(options.pathToClaudeCodeExecutable).toBe(bin);
   });
 
+  it("pins mcpServersDelivery to 'argv' with an external binary", async () => {
+    // Agent SDK ≥ 0.3.332 warns (CLAUDE_SDK_MCP_SERVERS_ARGV_DEPRECATED) when
+    // an app spawns its own Claude Code without this option, and a later SDK
+    // flips the default to 'initialize', which a Claude Code older than the
+    // bundled one cannot read: those sessions would fail to start. The PATH
+    // `claude` is routinely older than the bundled CLI, so stay on argv.
+    const bin = fakeBinary("my-claude");
+    updateAgentSettings({ pathToClaudeCodeExecutable: bin });
+    resetClaudeBinaryCache();
+
+    const ctrl = recordingProvider();
+    const options = await optionsForOneTurn(ctrl.provider, ctrl.requests, {});
+    expect(options.mcpServersDelivery).toBe("argv");
+  });
+
   it("omits the key when a configured path is rejected, rather than passing something unspawnable", async () => {
     // The fallback has to be observable at this seam too: the resolver refusing
     // a bad path is only useful if the refusal is what the SDK actually gets.

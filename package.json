@@ -105,7 +105,7 @@
     "test:drawlatch:e2e": "npm -w @wolpertingerlabs/drawlatch run test:e2e"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.261",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.332",
     "@earendil-works/pi-coding-agent": "1.6.1",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@openai/codex-sdk": "^0.172.0",

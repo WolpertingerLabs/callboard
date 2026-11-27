@@ -373,3 +373,32 @@ describe("translateSdkMessages — background tasks", () => {
     expect(events.map((e) => e.type === "background_task" && e.phase)).toEqual(["started", "ended"]);
   });
 });
+
+describe("translateSdkMessages — session_writes_lost (Agent SDK ≥ 0.3.332)", () => {
+  // The CLI could not save part of the transcript (disk full / quota). The
+  // chat view and a later resume both read that transcript, so this must not
+  // vanish at the adapter the way unknown system subtypes do.
+  const lost = {
+    type: "system",
+    subtype: "session_writes_lost",
+    error_code: "ENOSPC",
+    lost: ["transcript"],
+    transcript_session_ids: ["s-1"],
+    uuid: "u-1",
+    session_id: "s-1",
+  };
+
+  it("surfaces as an adapter_specific event", async () => {
+    const events = await collect([lost]);
+    expect(events).toContainEqual({
+      type: "adapter_specific",
+      adapter: "claude-code",
+      payload: { kind: "session_writes_lost", errorCode: "ENOSPC", lost: ["transcript"], sessionIds: ["s-1"] },
+    });
+  });
+
+  it("tolerates missing optional fields", async () => {
+    const events = await collect([{ type: "system", subtype: "session_writes_lost", lost: ["global_config"] }]);
+    expect(events).toContainEqual({ type: "adapter_specific", adapter: "claude-code", payload: { kind: "session_writes_lost", lost: ["global_config"] } });
+  });
+});

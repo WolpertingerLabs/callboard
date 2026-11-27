@@ -61,6 +61,7 @@ import type { InternalProviderKind } from "../agents/ports/AgentProvider.js";
 import { sanitizeInheritedAgentEnv } from "../agents/agentEnvPolicy.js";
 import { getAgentSettings, getApiEnvOverrides, resolveModelAlias } from "./agent-settings.js";
 import { getClaudeCodeExecutablePath } from "./claude-binary.js";
+import { claudeExecutableOptions } from "./claude-executable-options.js";
 import { buildCodexExtras, buildPiExtras, type ProviderOptionsContext } from "./provider-session-options.js";
 import { resolveCodexExecutionRoute } from "./codex-execution-route.js";
 import { createLogger } from "../utils/logger.js";
@@ -165,7 +166,7 @@ async function addHarnessOptions(
     const claudeExecutable = await getClaudeCodeExecutablePath();
     Object.assign(options, {
       ...(model && { model }),
-      ...(claudeExecutable && { pathToClaudeCodeExecutable: claudeExecutable }),
+      ...claudeExecutableOptions(claudeExecutable),
       tools: [],
       allowedTools: [],
       settingSources: [],
