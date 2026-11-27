@@ -3,27 +3,38 @@
  * Replace value. Values are write-only: nothing here ever shows a stored
  * value, and typed values live only in the modal's own state.
  */
-import { useEffect, useId, useMemo, useState } from "react";
-import { Loader2, X } from "lucide-react";
+import { useId, useMemo, useState } from "react";
+import { Loader2 } from "lucide-react";
 import type {
   AdminVaultExposure,
   AdminVaultItem,
   AdminVaultKind,
 } from "drawlatch-admin-types";
 import { api, type VaultItemPatch } from "../../api";
+import { useDaemon } from "../../contexts/DaemonContext";
+import Modal from "../Modal";
+import ConfirmDialog from "../ConfirmDialog";
+import { useToast } from "../Toast";
 import { conflictMessage } from "./conflict";
-import ValuesEditor, { rowsForKind, rowsToValues, type ValueRow } from "./ValuesEditor";
-import "../ConfigureConnectionModal.css";
+import { KIND_LABEL } from "./labels";
+import ValuesEditor, {
+  convertRows,
+  newRow,
+  rowsDirty,
+  rowsForKind,
+  rowsToValues,
+  type ValueRow,
+} from "./ValuesEditor";
+import "./VaultForms.css";
 
-const KINDS: { kind: AdminVaultKind; label: string }[] = [
-  { kind: "token", label: "Token" },
-  { kind: "password", label: "Password" },
-  { kind: "note", label: "Note" },
-  { kind: "key-value", label: "Key/value set" },
-];
+const KINDS: AdminVaultKind[] = ["token", "password", "note", "key-value"];
 
 // ── Shell ──────────────────────────────────────────────────────────────────
 
+/**
+ * A vault form dialog on the shared Modal. While `dirty`, a backdrop click
+ * does nothing and Escape, × or Cancel ask "Discard changes?" first.
+ */
 export function ModalShell({
   title,
   subtitle,
@@ -31,6 +42,8 @@ export function ModalShell({
   error,
   saveLabel,
   canSave,
+  dirty = false,
+  size = "md",
   onSave,
   onClose,
   children,
@@ -41,96 +54,114 @@ export function ModalShell({
   error: string | null;
   saveLabel: string;
   canSave: boolean;
+  /** Something typed would be lost by closing. */
+  dirty?: boolean;
+  /** "sm" for a short form (a bottom sheet on phones). */
+  size?: "sm" | "md";
   onSave: () => void;
   onClose: () => void;
   children: React.ReactNode;
 }) {
   const formId = useId();
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !busy) onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose, busy]);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const offline = useDaemon().daemon === "down";
+  const requestClose = () => {
+    if (busy) return;
+    if (dirty) setConfirmDiscard(true);
+    else onClose();
+  };
 
   return (
-    <div
-      className="dl-secrets-overlay"
-      role="presentation"
-      onClick={() => {
-        if (!busy) onClose();
-      }}
-    >
-      <div
-        className="dl-secrets-panel"
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="dl-secrets-header">
-          <div style={{ minWidth: 0 }}>
-            <h2 className="dl-secrets-title">{title}</h2>
-            <div className="dl-secrets-alias">{subtitle}</div>
-          </div>
+    <Modal
+      open
+      title={title}
+      subtitle={subtitle}
+      onClose={requestClose}
+      dismissible={!dirty}
+      size={size}
+      busy={busy}
+      footer={
+        <>
+          {offline ? (
+            <div className="modal-error dl-vf-footer-error" role="status">
+              The Drawlatch daemon isn&apos;t reachable. What you typed is kept; save once it&apos;s
+              back.
+            </div>
+          ) : (
+            error && (
+              <div className="modal-error dl-vf-footer-error" role="alert">
+                {error}
+              </div>
+            )
+          )}
           <button
             type="button"
-            className="dl-secrets-close"
-            onClick={onClose}
+            className="btn btn-secondary"
+            onClick={requestClose}
             disabled={busy}
-            aria-label="Close"
-            title="Close"
           >
-            <X size={18} />
+            Cancel
           </button>
-        </div>
-        <form
-          className="dl-secrets-body"
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (canSave && !busy) onSave();
+          <button
+            type="submit"
+            form={formId}
+            className="btn btn-primary"
+            disabled={!canSave || busy || offline}
+          >
+            {busy && <Loader2 size={14} className="spinner" aria-hidden="true" />}
+            {saveLabel}
+          </button>
+        </>
+      }
+    >
+      <form
+        id={formId}
+        className="dl-vf-form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (canSave && !busy && !offline) onSave();
+        }}
+      >
+        {children}
+      </form>
+      {confirmDiscard && (
+        <ConfirmDialog
+          title="Discard changes?"
+          description="What you typed in this dialog will be lost."
+          confirmLabel="Discard"
+          cancelLabel="Keep editing"
+          onConfirm={() => {
+            setConfirmDiscard(false);
+            onClose();
           }}
-          id={formId}
-        >
-          {children}
-        </form>
-        <div className="dl-secrets-footer">
-          <div className={"dl-secrets-status" + (error ? " is-error" : "")}>
-            {error}
-          </div>
-          <div className="dl-secrets-actions">
-            <button
-              type="button"
-              className="dl-secrets-btn dl-secrets-btn-secondary"
-              onClick={onClose}
-              disabled={busy}
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              form={formId}
-              className="dl-secrets-btn dl-secrets-btn-primary"
-              disabled={!canSave || busy}
-            >
-              {busy && <Loader2 size={14} className="dl-secrets-spin" />}
-              {saveLabel}
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
+          onCancel={() => setConfirmDiscard(false)}
+        />
+      )}
+    </Modal>
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({
+  title,
+  help,
+  children,
+}: {
+  title: string;
+  help?: React.ReactNode;
+  children: React.ReactNode;
+}) {
   return (
-    <div className="dl-secrets-section">
-      <h3 className="dl-secrets-section-title">{title}</h3>
+    <section className="dl-vf-section">
+      <h3 className="dl-vf-section-title">{title}</h3>
+      {help && <p className="dl-vf-help">{help}</p>}
       {children}
-    </div>
+    </section>
   );
+}
+
+/** The caller alias as a small pill, for dialog subtitles. */
+export function CallerPill({ alias }: { alias: string }) {
+  return <span className="dl-vf-pill">{alias}</span>;
 }
 
 // ── Shared metadata fields ─────────────────────────────────────────────────
@@ -200,8 +231,8 @@ function MetaFields({
   return (
     <>
       <Section title="Exposure">
-        <div className="dl-vault-radio-group">
-          <label className="dl-vault-radio">
+        <div className="dl-vf-radios" role="radiogroup" aria-label="Exposure">
+          <label className="dl-vf-radio">
             <input
               type="radio"
               name={`${idPrefix}-exposure`}
@@ -213,7 +244,7 @@ function MetaFields({
               <code>{"${vault:name}"}</code> in requests but never read it.
             </span>
           </label>
-          <label className="dl-vault-radio">
+          <label className="dl-vf-radio">
             <input
               type="radio"
               name={`${idPrefix}-exposure`}
@@ -229,8 +260,8 @@ function MetaFields({
       </Section>
 
       <Section title="Connections">
-        <div className="dl-vault-radio-group">
-          <label className="dl-vault-radio">
+        <div className="dl-vf-radios" role="radiogroup" aria-label="Connections">
+          <label className="dl-vf-radio">
             <input
               type="radio"
               name={`${idPrefix}-binding`}
@@ -245,14 +276,12 @@ function MetaFields({
             <span>Only on these connections (recommended)</span>
           </label>
           {bound && (
-            <div className="dl-vault-checks">
+            <div className="dl-vf-checks">
               {options.length === 0 && (
-                <span className="cell-muted">
-                  This caller has no connections enabled.
-                </span>
+                <span className="cell-muted">This caller has no connections enabled.</span>
               )}
               {options.map((c) => (
-                <label key={c} className="dl-vault-check mono">
+                <label key={c} className="dl-vf-check">
                   <input
                     type="checkbox"
                     checked={meta.connections?.includes(c) ?? false}
@@ -266,7 +295,7 @@ function MetaFields({
               ))}
             </div>
           )}
-          <label className="dl-vault-radio">
+          <label className="dl-vf-radio">
             <input
               type="radio"
               name={`${idPrefix}-binding`}
@@ -278,38 +307,45 @@ function MetaFields({
         </div>
       </Section>
 
-      <Section title="Details (not secret: the agent can read these)">
-        <div className="dl-secrets-fields">
-          <div className="dl-secrets-field">
-            <label className="dl-secrets-label" htmlFor={`${idPrefix}-tags`}>
+      <Section
+        title="Details"
+        help={
+          <>
+            Not secret: the agent can read these with <code>vault_list</code>.
+          </>
+        }
+      >
+        <div className="dl-vf-fields">
+          <div className="dl-vf-field">
+            <label className="field-label" htmlFor={`${idPrefix}-tags`}>
               Tags (comma-separated)
             </label>
             <input
               id={`${idPrefix}-tags`}
-              className="dl-secrets-input"
+              className="input"
               value={meta.tags}
               onChange={(e) => setMeta({ ...meta, tags: e.target.value })}
             />
           </div>
-          <div className="dl-secrets-field">
-            <label className="dl-secrets-label" htmlFor={`${idPrefix}-notes`}>
+          <div className="dl-vf-field">
+            <label className="field-label" htmlFor={`${idPrefix}-notes`}>
               Notes
             </label>
             <textarea
               id={`${idPrefix}-notes`}
-              className="dl-secrets-input dl-vault-textarea"
+              className="input dl-vf-textarea"
               rows={2}
               value={meta.notes}
               onChange={(e) => setMeta({ ...meta, notes: e.target.value })}
             />
           </div>
-          <div className="dl-secrets-field">
-            <label className="dl-secrets-label" htmlFor={`${idPrefix}-meta`}>
+          <div className="dl-vf-field">
+            <label className="field-label" htmlFor={`${idPrefix}-meta`}>
               Metadata (one key=value per line)
             </label>
             <textarea
               id={`${idPrefix}-meta`}
-              className="dl-secrets-input dl-vault-textarea mono"
+              className="input dl-vf-textarea mono"
               rows={2}
               value={meta.metadata}
               onChange={(e) => setMeta({ ...meta, metadata: e.target.value })}
@@ -319,6 +355,10 @@ function MetaFields({
       </Section>
     </>
   );
+}
+
+function sameMeta(a: MetaState, b: MetaState): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
 }
 
 // ── New item ───────────────────────────────────────────────────────────────
@@ -334,22 +374,44 @@ export function NewItemModal({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const toast = useToast();
   const [name, setName] = useState("");
   const [kind, setKind] = useState<AdminVaultKind>("token");
-  const [rows, setRows] = useState<ValueRow[]>(rowsForKind("token"));
+  const [rows, setRows] = useState<ValueRow[]>(() => rowsForKind("token"));
   // Defaults: inject, bound to one of the caller's enabled connections.
-  const [meta, setMeta] = useState<MetaState>({
-    exposure: "inject",
-    connections: callerConnections.length > 0 ? [callerConnections[0]] : null,
-    tags: "",
-    notes: "",
-    metadata: "",
-  });
+  const initialMeta = useMemo<MetaState>(
+    () => ({
+      exposure: "inject",
+      connections: callerConnections.length > 0 ? [callerConnections[0]] : null,
+      tags: "",
+      notes: "",
+      metadata: "",
+    }),
+    [callerConnections],
+  );
+  const [meta, setMeta] = useState<MetaState>(initialMeta);
+  // A kind change that would drop typed values waits for a confirmation.
+  const [pendingKind, setPendingKind] = useState<{
+    kind: AdminVaultKind;
+    rows: ValueRow[];
+    dropped: string[];
+  } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const values = rowsToValues(kind, rows);
   const canSave = name.trim() !== "" && Object.values(values).some((v) => v !== "");
+  const dirty = name !== "" || rowsDirty(rows) || !sameMeta(meta, initialMeta);
+
+  const changeKind = (k: AdminVaultKind) => {
+    const next = convertRows(rows, k);
+    if (next.dropped.length > 0) {
+      setPendingKind({ kind: k, ...next });
+      return;
+    }
+    setKind(k);
+    setRows(next.rows);
+  };
 
   const save = async () => {
     const metadata = parseMetadata(meta.metadata);
@@ -374,6 +436,7 @@ export function NewItemModal({
       setError(res.error);
       return;
     }
+    toast.show(`Created ${name.trim()}`);
     onSaved();
     onClose();
   };
@@ -383,58 +446,53 @@ export function NewItemModal({
       title="New vault item"
       subtitle={
         <>
-          for <span className="mono dl-secrets-pill">{caller}</span>, created by
-          the admin
+          For <CallerPill alias={caller} />, created by you
         </>
       }
       busy={busy}
       error={error}
       saveLabel="Create"
       canSave={canSave}
+      dirty={dirty}
       onSave={() => void save()}
       onClose={onClose}
     >
       <Section title="Item">
-        <div className="dl-secrets-fields">
-          <div className="dl-secrets-field">
-            <label className="dl-secrets-label" htmlFor="dl-vault-new-name">
+        <div className="dl-vf-fields">
+          <div className="dl-vf-field">
+            <label className="field-label" htmlFor="dl-vault-new-name">
               Name
             </label>
             <input
               id="dl-vault-new-name"
-              className="dl-secrets-input mono"
+              className="input mono"
               placeholder="forgejo-token"
               autoComplete="off"
               spellCheck={false}
               value={name}
               onChange={(e) => setName(e.target.value)}
-              autoFocus
             />
           </div>
-          <div className="dl-secrets-field">
-            <label className="dl-secrets-label" htmlFor="dl-vault-new-kind">
+          <div className="dl-vf-field">
+            <label className="field-label" htmlFor="dl-vault-new-kind">
               Kind
             </label>
             <select
               id="dl-vault-new-kind"
-              className="dl-secrets-input"
+              className="input"
               value={kind}
-              onChange={(e) => {
-                const k = e.target.value as AdminVaultKind;
-                setKind(k);
-                setRows(rowsForKind(k));
-              }}
+              onChange={(e) => changeKind(e.target.value as AdminVaultKind)}
             >
               {KINDS.map((k) => (
-                <option key={k.kind} value={k.kind}>
-                  {k.label}
+                <option key={k} value={k}>
+                  {KIND_LABEL[k]}
                 </option>
               ))}
             </select>
           </div>
         </div>
       </Section>
-      <Section title="Secret values (write-only)">
+      <Section title="Secret values" help="Write-only: nobody can read them back here without a Reveal.">
         <ValuesEditor kind={kind} rows={rows} onChange={setRows} idPrefix="dl-vault-new-v" />
       </Section>
       <MetaFields
@@ -443,6 +501,31 @@ export function NewItemModal({
         callerConnections={callerConnections}
         idPrefix="dl-vault-new"
       />
+      {pendingKind && (
+        <ConfirmDialog
+          variant="neutral"
+          title={`Change the kind to ${KIND_LABEL[pendingKind.kind]}?`}
+          description={
+            <>
+              A {KIND_LABEL[pendingKind.kind].toLowerCase()} has no{" "}
+              {pendingKind.dropped.map((f, i) => (
+                <span key={f}>
+                  {i > 0 && ", "}
+                  <code>{f}</code>
+                </span>
+              ))}{" "}
+              field, so what you typed there will be cleared.
+            </>
+          }
+          confirmLabel="Change kind"
+          onConfirm={() => {
+            setKind(pendingKind.kind);
+            setRows(pendingKind.rows);
+            setPendingKind(null);
+          }}
+          onCancel={() => setPendingKind(null)}
+        />
+      )}
     </ModalShell>
   );
 }
@@ -467,11 +550,13 @@ export function EditItemModal({
   /** The save got 409: the parent reloads the list and revision. */
   onConflict: () => void;
 }) {
+  const toast = useToast();
   const initial = useMemo(() => metaFromItem(item), [item]);
   const [name, setName] = useState(item.name);
   const [meta, setMeta] = useState<MetaState>(initial);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const dirty = name !== item.name || !sameMeta(meta, initial);
 
   const save = async () => {
     const metadata = parseMetadata(meta.metadata);
@@ -504,6 +589,7 @@ export function EditItemModal({
       if (res.status === 409) onConflict();
       return;
     }
+    toast.show(`Saved ${patch.rename ?? item.name}`);
     onSaved();
     onClose();
   };
@@ -513,20 +599,21 @@ export function EditItemModal({
       title={`Edit ${item.name}`}
       subtitle={
         <>
-          <span className="mono dl-secrets-pill">{caller}</span> · {item.kind} ·
-          fields: <span className="mono">{item.fields.join(", ")}</span>
+          <CallerPill alias={caller} /> · {KIND_LABEL[item.kind]} · fields:{" "}
+          <span className="mono">{item.fields.join(", ")}</span>
         </>
       }
       busy={busy}
       error={error}
       saveLabel="Save"
       canSave={name.trim() !== ""}
+      dirty={dirty}
       onSave={() => void save()}
       onClose={onClose}
     >
       <Section title="Name">
         <input
-          className="dl-secrets-input mono"
+          className="input mono"
           aria-label="Name"
           autoComplete="off"
           spellCheck={false}
@@ -534,7 +621,7 @@ export function EditItemModal({
           onChange={(e) => setName(e.target.value)}
         />
         {name.trim() !== item.name && (
-          <p className="dl-secrets-help">
+          <p className="dl-vf-help dl-vf-warn">
             Renaming keeps the item&apos;s id, but <code>{"${vault:" + item.name + "}"}</code>{" "}
             placeholders stop resolving.
           </p>
@@ -567,10 +654,9 @@ export function ReplaceValueModal({
   onSaved: () => void;
   onConflict: () => void;
 }) {
+  const toast = useToast();
   const [rows, setRows] = useState<ValueRow[]>(() =>
-    item.kind === "key-value"
-      ? item.fields.map((f) => ({ field: f, value: "" }))
-      : rowsForKind(item.kind),
+    item.kind === "key-value" ? item.fields.map((f) => newRow(f)) : rowsForKind(item.kind),
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -587,6 +673,7 @@ export function ReplaceValueModal({
       if (res.status === 409) onConflict();
       return;
     }
+    toast.show(`Replaced the value of ${item.name}`);
     onSaved();
     onClose();
   };
@@ -596,18 +683,18 @@ export function ReplaceValueModal({
       title={`Replace value of ${item.name}`}
       subtitle={
         <>
-          <span className="mono dl-secrets-pill">{caller}</span> · replaces every
-          field; the current value is never shown
+          <CallerPill alias={caller} /> · replaces every field; the current value is never shown
         </>
       }
       busy={busy}
       error={error}
       saveLabel="Replace"
       canSave={canSave}
+      dirty={rowsDirty(rows)}
       onSave={() => void save()}
       onClose={onClose}
     >
-      <Section title="New values (write-only)">
+      <Section title="New values" help="Write-only. Every field is replaced.">
         <ValuesEditor
           kind={item.kind}
           rows={rows}
