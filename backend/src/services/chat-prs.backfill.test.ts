@@ -52,7 +52,6 @@ describe("buildChatPrs with an unbackfilled chat", () => {
 
     const deps = {
       ...DEFAULT_PLACEMENT_DEPS,
-      notRepos: new Map(),
       pullsFor: async () => ({ github: { owner: "acme", repo: "app" }, defaultBranch: "main", byBranch: new Map([["feat/old", [pull(5, "feat/old")]]]) }),
       cardOf: () => null,
       trailOf: (id: string) => trailOfChat(id, () => []),
@@ -73,7 +72,6 @@ describe("buildChatPrs with an unbackfilled chat", () => {
     const repo = join(tmp, "app");
     const deps = {
       ...DEFAULT_PLACEMENT_DEPS,
-      notRepos: new Map(),
       pullsFor: async () => ({ byBranch: new Map() }),
       cardOf: () => null,
       trailOf: () => [],

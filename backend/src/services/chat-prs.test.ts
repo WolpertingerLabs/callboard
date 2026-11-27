@@ -1,6 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorktreeInfo } from "../utils/git.js";
-import type { PullSummary, RepoPulls } from "./github-prs.js";
+import { clearRepoPullsCache, resolveBranchPulls, type BranchAnswer, type PullSummary, type RepoPulls } from "./github-prs.js";
 import { buildChatPrs, type ChatCard, type ChatPrsDeps } from "./chat-prs.js";
 
 const wt = (path: string, branch: string | null, isMainWorktree = false, head?: string): WorktreeInfo => ({
@@ -56,7 +56,6 @@ function deps(overrides: Partial<ChatPrsDeps> = {}, card: ChatCard | null = null
     normalize: (dir) => dir.replace(/\/+$/, ""),
     exists: () => true,
     gitRootOf: (dir) => GIT_ROOTS.filter((root) => dir === root || dir.startsWith(root + "/")).sort((a, b) => b.length - a.length)[0] ?? null,
-    notRepos: new Map(),
     pullsFor: vi.fn(async (repo: string) => (repo === "/src/app" ? APP_PULLS : repo === "/src/lib" ? LIB_PULLS : { byBranch: new Map() })),
     cardOf: () => card,
     ...overrides,
@@ -231,7 +230,10 @@ describe("buildChatPrs — one list", () => {
         ...TRAIL_PULLS,
         byBranch: new Map([["feat/b", [{ ...pull(11, "feat/b", "merged", "b1"), closedAt: "2026-01-01T00:00:00Z" }]]]),
       };
-      const d = withTrail([{ ...entry("/src/app.feat-b", "feat/b"), firstSeen: "2026-06-01T00:00:00Z" }], { ...moved, pullsFor: vi.fn(async () => closedEarlier) });
+      const d = withTrail([{ ...entry("/src/app.feat-b", "feat/b"), firstSeen: "2026-06-01T00:00:00Z" }], {
+        ...moved,
+        pullsFor: vi.fn(async () => closedEarlier),
+      });
       const result = await buildChatPrs({ folder: "/src/app.feat-b", chatId: "c" }, d);
       expect(result.current.status).toBe("no_pr");
       expect(result.prs).toEqual([]);
@@ -329,7 +331,11 @@ describe("buildChatPrs — one list", () => {
     it("reports a failed link lookup beside any status, an empty-handed one included", async () => {
       const unknown: PullSummary = { ...pull(30, "", "unknown"), title: "acme/app#30" };
       const d = deps({ linksOf: async () => [link(30)], linkedPulls: linkedPulls({ 30: unknown }, "gh is not installed") });
-      expect((await buildChatPrs({ folder: "/tmp/scratch", chatId: "c" }, d)).current).toEqual({ folder: "/tmp/scratch", status: "not_git", prError: "gh is not installed" });
+      expect((await buildChatPrs({ folder: "/tmp/scratch", chatId: "c" }, d)).current).toEqual({
+        folder: "/tmp/scratch",
+        status: "not_git",
+        prError: "gh is not installed",
+      });
       expect((await buildChatPrs({ folder: "/src/app", chatId: "c" }, d)).current).toMatchObject({ status: "default_branch", prError: "gh is not installed" });
     });
 
@@ -420,5 +426,107 @@ describe("buildChatPrs — one list", () => {
       const expected = [result.current.pr?.number, 5, 11, 6, 3].filter((n): n is number => n !== undefined);
       for (const n of expected) expect(numbers(result), folder).toContain(n);
     }
+  });
+});
+
+/**
+ * A Codex or Pi chat has no PR links to fall back on: its branch's PR, merged
+ * before the listing's 100 most recently updated closed ones, is found by
+ * head branch. Through the real resolveBranchPulls, with GitHub's answer faked.
+ */
+describe("buildChatPrs — PRs older than the listing reaches, by head branch", () => {
+  beforeEach(() => clearRepoPullsCache());
+  const entry = (cwd: string, branch: string, firstSeen = "2026-02-01T00:00:00Z") => ({ cwd, repoPath: "/src/app", branch, firstSeen, lastSeen: firstSeen });
+  const old = (number: number, headRef: string, headSha: string): PullSummary => ({
+    ...pull(number, headRef, "merged", headSha, "2026-03-01T00:00:00Z"),
+    closedAt: "2026-03-01T00:00:00Z",
+    mergedAt: "2026-03-01T00:00:00Z",
+  });
+  /** The listing: only feat/a's open #10 is recent enough to be in it. */
+  const LISTED: RepoPulls = {
+    github: GITHUB,
+    defaultBranch: "main",
+    byBranch: new Map([["feat/a", [pull(10, "feat/a")]]]),
+    byNumber: new Map([[10, pull(10, "feat/a")]]),
+  };
+  function byBranch(table: Record<string, PullSummary[]>, overrides: Partial<ChatPrsDeps> = {}, card: ChatCard | null = null) {
+    const fetch = vi.fn(async (_ref: unknown, branches: string[]) => new Map<string, BranchAnswer>(branches.map((b) => [b, table[b] ?? []])));
+    const branchPulls = vi.fn((repoPath: string, pulls: RepoPulls, branches: string[], force: boolean) =>
+      resolveBranchPulls(pulls, branches, { cwd: repoPath, force }, { fetch, now: () => 0 }),
+    );
+    return { fetch, d: deps({ pullsFor: vi.fn(async () => LISTED), branchPulls, ...overrides }, card) };
+  }
+  const numbers = (r: { prs: { number: number }[] }) => r.prs.map((p) => p.number);
+
+  it("finds the live branch's old merged PR when the worktree is still at its head", async () => {
+    // feat/b is checked out at b1.
+    const { fetch, d } = byBranch({ "feat/b": [old(11, "feat/b", "b1")] });
+    const result = await buildChatPrs({ folder: "/src/app.feat-b" }, d);
+    expect(result.current).toMatchObject({ status: "found", pr: expect.objectContaining({ number: 11, state: "merged" }) });
+    expect(numbers(result)).toEqual([11]);
+    expect(fetch.mock.calls.map(([, branches]) => branches)).toEqual([["feat/b"]]);
+  });
+
+  it("does not take an old PR on a reused branch name for the live branch's: no_pr, as before", async () => {
+    const { d } = byBranch({ "feat/b": [old(11, "feat/b", "an-earlier-tip")] });
+    const result = await buildChatPrs({ folder: "/src/app.feat-b" }, d);
+    expect(result.current).toMatchObject({ status: "no_pr" });
+    expect(result.current.prError).toBeUndefined();
+    expect(result.prs).toEqual([]);
+  });
+
+  it("finds it through the chat's trail once the branch has moved on, and a deleted worktree's too — by the time rule", async () => {
+    const { fetch, d } = byBranch(
+      {
+        "feat/b": [old(11, "feat/b", "an-earlier-tip")],
+        "feat/gone": [old(6, "feat/gone", "g1")],
+        // Closed before the chat ever saw the branch.
+        "feat/reused": [{ ...old(7, "feat/reused", "r1"), closedAt: "2026-01-01T00:00:00Z" }],
+      },
+      {
+        trailOf: () => [
+          entry("/src/app.feat-b", "feat/b"),
+          entry("/src/app.gone", "feat/gone"),
+          entry("/src/app.feat-b", "feat/reused"),
+          entry("/src/app.feat-b", "main"),
+        ],
+      },
+    );
+    const result = await buildChatPrs({ folder: "/src/app.feat-b", chatId: "c" }, d);
+    expect(result.current).toMatchObject({ status: "found", pr: expect.objectContaining({ number: 11 }) });
+    expect(numbers(result).sort((a, b) => a - b)).toEqual([6, 11]);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect([...fetch.mock.calls[0][1]].sort()).toEqual(["feat/b", "feat/gone", "feat/reused"]);
+  });
+
+  it("asks about the card's other chats' branches in the same call, and never about one the listing has", async () => {
+    const card: ChatCard = {
+      members: [
+        { chatId: "c", folder: "/src/app.feat-b" },
+        { chatId: "other", folder: "/src/app.feat-a", trail: [entry("/src/app.feat-a", "feat/theirs")] },
+      ],
+    };
+    const { fetch, d } = byBranch({ "feat/theirs": [old(9, "feat/theirs", "t1")] }, {}, card);
+    const result = await buildChatPrs({ folder: "/src/app.feat-b", chatId: "c", force: true }, d);
+    expect(numbers(result)).toEqual([10, 9]);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect([...fetch.mock.calls[0][1]].sort()).toEqual(["feat/b", "feat/theirs"]);
+    expect((d.branchPulls as ReturnType<typeof vi.fn>).mock.calls[0][3]).toBe(true);
+  });
+
+  it("reports a failed branch lookup beside the status, never instead of it", async () => {
+    const branchPulls = async (_repoPath: string, pulls: RepoPulls) => ({ ...pulls, branchError: "gh: HTTP 502" });
+    const none = await buildChatPrs({ folder: "/src/app.feat-b" }, deps({ pullsFor: vi.fn(async () => LISTED), branchPulls }));
+    expect(none.current).toMatchObject({ status: "no_pr", prError: "gh: HTTP 502" });
+    const found = await buildChatPrs({ folder: "/src/app.feat-a" }, deps({ pullsFor: vi.fn(async () => LISTED), branchPulls }));
+    expect(found.current).toMatchObject({ status: "found", pr: expect.objectContaining({ number: 10 }), prError: "gh: HTTP 502" });
+  });
+
+  it("is the tab without it when the lookup throws", async () => {
+    const branchPulls = async (): Promise<RepoPulls> => {
+      throw new Error("boom");
+    };
+    const result = await buildChatPrs({ folder: "/src/app.feat-a" }, deps({ pullsFor: vi.fn(async () => LISTED), branchPulls }));
+    expect(result.current).toMatchObject({ status: "found", pr: expect.objectContaining({ number: 10 }) });
   });
 });

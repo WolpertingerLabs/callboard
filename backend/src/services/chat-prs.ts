@@ -24,6 +24,11 @@
  *
  * The live branch's SHA rule ({@link matchPull}) remains for a folder with no
  * chat behind it, and nothing it finds is lost.
+ *
+ * A branch — live or on a trail — whose PR is older than the repository's
+ * listing reaches is looked up by name ({@link resolveBranchPulls}) and
+ * matched by those same rules, so a chat whose transcript carries no PR links
+ * (Codex, Pi) still finds it.
  */
 import { homedir } from "os";
 import { basename } from "path";
@@ -36,11 +41,13 @@ import { DEFAULT_PLACEMENT_DEPS, placeFolders, type FolderPlacement, type Placem
 import { parseGitTrail } from "./git-trail.js";
 import { requestBackfill, type BackfillRequest } from "./git-trail-backfill.js";
 import {
+  byOpenThenUpdated,
   getRepoPulls,
   isLinkOf,
   matchPull,
   pullsForTrailEntry,
   recordedPullForBranch,
+  resolveBranchPulls,
   resolveLinkedPulls,
   toChatPr,
   type LinkedPulls,
@@ -79,9 +86,7 @@ export function cardOfChat(chatId: string, stored: Chat[] = listChatsSnapshot())
   if (!card) return null;
   const byId = new Map(stored.map((chat) => [chat.id, chat]));
   return {
-    members: card.memberChats
-      .filter((m) => m.folder)
-      .map((m) => ({ chatId: m.chatId, folder: m.folder, trail: trailOfRecord(byId.get(m.chatId)?.metadata) })),
+    members: card.memberChats.filter((m) => m.folder).map((m) => ({ chatId: m.chatId, folder: m.folder, trail: trailOfRecord(byId.get(m.chatId)?.metadata) })),
   };
 }
 
@@ -115,6 +120,11 @@ export interface ChatPrsDeps extends PlacementDeps {
   linksOf?: (chatId: string) => Promise<ChatPrLink[]>;
   /** The PR behind each link, in order; see {@link resolveLinkedPulls}. */
   linkedPulls?: (links: ChatPrLink[], known: RepoPulls[], force: boolean) => Promise<LinkedPulls>;
+  /**
+   * `pulls` with the PRs of `branches` its listing is too short to hold; see
+   * {@link resolveBranchPulls}. Defaults to the listing alone.
+   */
+  branchPulls?: (repoPath: string, pulls: RepoPulls, branches: string[], force: boolean) => Promise<RepoPulls>;
 }
 
 /** Production deps: the card and the trail share one chat snapshot per request, taken only if needed. */
@@ -132,6 +142,7 @@ function defaultDeps(): ChatPrsDeps {
       return record ? syncChatPrLinks(record) : [];
     },
     linkedPulls: (links, known, force) => resolveLinkedPulls(links, known, { cwd: homedir(), force }),
+    branchPulls: (repoPath, pulls, branches, force) => resolveBranchPulls(pulls, branches, { cwd: repoPath, force }),
   };
 }
 
@@ -152,10 +163,6 @@ function folderPrs(folder: string, placement: FolderPlacement | undefined, pulls
   if (pulls.error !== undefined) return { ...base, status: "error", ...prError };
   return { ...base, status: "no_pr" };
 }
-
-const isOpen = (pr: ChatPr) => pr.state === "open" || pr.state === "draft";
-/** Open work first, then most recently updated. */
-const byOpenThenUpdated = (a: ChatPr, b: ChatPr) => Number(isOpen(b)) - Number(isOpen(a)) || b.updatedAt.localeCompare(a.updatedAt);
 
 /**
  * Assemble the PRs tab for `folder` (the chat's directory) and, given a
@@ -208,9 +215,33 @@ export async function buildChatPrs(opts: { folder: string; chatId?: string; forc
   const pullsByRepo = new Map<string, RepoPulls>();
   await Promise.all([...repoPaths].map(async (repoPath) => pullsByRepo.set(repoPath, await deps.pullsFor(repoPath, force))));
 
-  // The linked PRs, from those listings where they hold them.
+  // The branches asked about in each repository — the live ones and the
+  // trails' — for the PRs older than its listing reaches; and the linked PRs,
+  // from those listings where they hold them. Both at once: both are GitHub,
+  // and neither needs the other's answer.
+  const branchesByRepo = new Map<string, Set<string>>();
+  const wantBranch = (repoPath: string, branch: string | null) => {
+    if (branch) branchesByRepo.set(repoPath, (branchesByRepo.get(repoPath) ?? new Set<string>()).add(branch));
+  };
+  if (current?.kind === "placed") wantBranch(current.repo.repoPath, current.worktree.branch);
+  for (const { placement } of elsewhere) wantBranch(placement.repo.repoPath, placement.worktree.branch);
+  for (const entry of [...ownEntries, ...memberEntries]) wantBranch(entry.repoPath, entry.branch);
   const links = linkLists.flat();
-  const linked: LinkedPulls = links.length > 0 && deps.linkedPulls ? await deps.linkedPulls(links, [...pullsByRepo.values()], force) : { pulls: [] };
+  const [branchFound, linked] = await Promise.all([
+    Promise.all(
+      [...branchesByRepo].map(async ([repoPath, branches]) => {
+        const listed = pullsByRepo.get(repoPath)!;
+        // Never fatal: a lookup that throws leaves the listing as it was.
+        try {
+          return [repoPath, (await deps.branchPulls?.(repoPath, listed, [...branches], force)) ?? listed] as const;
+        } catch {
+          return [repoPath, listed] as const;
+        }
+      }),
+    ),
+    links.length > 0 && deps.linkedPulls ? deps.linkedPulls(links, [...pullsByRepo.values()], force) : ({ pulls: [] } satisfies LinkedPulls as LinkedPulls),
+  ]);
+  for (const [repoPath, found] of branchFound) pullsByRepo.set(repoPath, found);
   /** Chat `index`'s links with the PR behind each, less those GitHub does not have. */
   const linksOf = (index: number) => {
     const start = linkLists.slice(0, index).reduce((n, list) => n + list.length, 0);
@@ -257,9 +288,11 @@ export async function buildChatPrs(opts: { folder: string; chatId?: string; forc
   });
   for (const pr of trailPulls(memberEntries)) add(pr);
 
-  // A failed lookup by number is reported like a failed listing — beside the
-  // PRs that are known, never instead of them.
-  if (linked.error !== undefined && currentPrs.prError === undefined && currentPrs.status !== "error") currentPrs = { ...currentPrs, prError: linked.error };
+  // A failed lookup by number, or of this directory's repository's branches,
+  // is reported like a failed listing — beside the PRs that are known, never
+  // instead of them.
+  const lookupError = linked.error ?? (current?.kind === "placed" ? pullsByRepo.get(current.repo.repoPath)?.branchError : undefined);
+  if (lookupError !== undefined && currentPrs.prError === undefined && currentPrs.status !== "error") currentPrs = { ...currentPrs, prError: lookupError };
 
   return { current: currentPrs, prs: [...byUrl.values()].sort(byOpenThenUpdated), generatedAt: new Date().toISOString() };
 }
