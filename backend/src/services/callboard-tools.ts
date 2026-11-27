@@ -19,7 +19,7 @@ import { getActiveSession } from "./claude.js";
 import { readChatSessionMessages, findChat } from "../utils/chat-lookup.js";
 import { resolveBranch } from "../utils/git.js";
 import { getOpenRouterModelsAsync, searchOpenRouterModels, formatOpenRouterPrice } from "./openrouter-models.js";
-import { getVisibleCodexModelsAsync, searchCodexModels } from "./codex-models.js";
+import { cachedCodexCatalogWarning, getVisibleCodexModelsAsync, searchCodexModels } from "./codex-models.js";
 import { getSdkInfoAsync } from "./sdk-info.js";
 import { getUserContact } from "./user-contact.js";
 import { customSkillsService, slugifySkillName } from "./custom-skills-service.js";
@@ -977,6 +977,7 @@ export function buildCallboardToolsSpec(
               onComplete = { registered, ...(note && { note }) };
             }
 
+            const catalogWarning = providerModel.provider === "codex" ? cachedCodexCatalogWarning(providerModel.model) : null;
             return jsonResult({
               chatId,
               status: "started",
@@ -989,6 +990,9 @@ export function buildCallboardToolsSpec(
               ...(args.effort && { effort: args.effort as EffortLevel }),
               modelSource: providerModel.modelSource,
               ...(providerModel.inheritanceNote && { inheritanceNote: providerModel.inheritanceNote }),
+              // Advisory only — the session is already running. Speaks only
+              // from a live, already-cached catalog (never fetches here).
+              ...(catalogWarning && { warning: catalogWarning }),
               // Where the child landed in the tree. `independent: true`
               // is reported rather than just omitting parentChatId, so a
               // caller can tell a deliberate detach from the other way

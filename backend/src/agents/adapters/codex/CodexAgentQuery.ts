@@ -34,6 +34,7 @@ import type { AgentEvent } from "../../ports/events.js";
 import { translateCodexEvents } from "./messageAdapter.js";
 import { RolloutTail } from "./rolloutTail.js";
 import type { CodexToolServerHandle } from "./toolAdapter.js";
+import type { CodexModelNotFoundContext } from "./modelNotFound.js";
 import { createLogger } from "../../../utils/logger.js";
 
 const log = createLogger("codex-adapter");
@@ -67,6 +68,12 @@ export interface CodexQueryParams {
    * when the run carries no callboard tools.
    */
   toolServerHandles?: CodexToolServerHandle[];
+  /**
+   * What the run asked for (model, client version, binary override) — used only
+   * to word a model-not-found failure so it says which model, from where, and
+   * what to do about it. See modelNotFound.ts.
+   */
+  errorContext?: CodexModelNotFoundContext;
   /** Cached Codex model catalog surfaced via {@link supportedModels}. */
   models: () => Promise<Array<{ value: string; displayName: string; description: string }>>;
 }
@@ -130,7 +137,7 @@ export class CodexAgentQuery implements AgentQuery {
         return;
       }
 
-      yield* this.withCompactionEvents(translateCodexEvents(events));
+      yield* this.withCompactionEvents(translateCodexEvents(events, this.params.errorContext));
       log.debug("iterate() finished");
     } finally {
       this.cleanupPromptImages();

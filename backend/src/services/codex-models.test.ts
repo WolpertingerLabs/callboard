@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseCodexModelsCatalog } from "./codex-models.js";
+import { codexCatalogWarning, parseCodexModelsCatalog } from "./codex-models.js";
 
 describe("parseCodexModelsCatalog", () => {
   it("maps the Codex CLI model catalog into Callboard's trimmed shape", () => {
@@ -44,5 +44,29 @@ describe("parseCodexModelsCatalog", () => {
 
   it("drops malformed entries", () => {
     expect(parseCodexModelsCatalog({ models: [{ display_name: "No slug" }, null, { slug: "" }] })).toEqual([]);
+  });
+});
+
+describe("codexCatalogWarning", () => {
+  const live = {
+    source: "live" as const,
+    models: [
+      { id: "gpt-5.4", name: "GPT-5.4", visibility: "list" as const },
+      { id: "hidden", name: "H", visibility: "hide" as const },
+    ],
+  };
+
+  it("warns when an explicit model is missing from a live catalog", () => {
+    const warning = codexCatalogWarning("gpt-5.5", live);
+    expect(warning).toContain('"gpt-5.5" is not in the model catalog');
+    expect(warning).toContain("list_codex_models");
+  });
+
+  it("stays quiet for listed and hidden models, no model, a fallback catalog, or no catalog", () => {
+    expect(codexCatalogWarning("gpt-5.4", live)).toBeNull();
+    expect(codexCatalogWarning("hidden", live)).toBeNull();
+    expect(codexCatalogWarning(undefined, live)).toBeNull();
+    expect(codexCatalogWarning("gpt-5.5", { ...live, source: "fallback" })).toBeNull();
+    expect(codexCatalogWarning("gpt-5.5", null)).toBeNull();
   });
 });

@@ -60,3 +60,46 @@ describe("executeAgent with a stored effort", () => {
     expect(mocks.activity).toHaveBeenCalledWith("ops", expect.objectContaining({ message: expect.stringContaining("cron execution failed") }));
   });
 });
+
+/**
+ * A cron session that starts and then dies on a provider error (Forge's nightly
+ * Memory Consolidation on a Codex model outside the client's catalog) used to
+ * leave only "cron session started" in the agent's activity — every night, with
+ * nothing to say it had failed.
+ */
+describe("executeAgent — session that errors after it started", () => {
+  it("records the session's error in the agent's activity", async () => {
+    let emitter!: EventEmitter;
+    mocks.sendMessage.mockImplementation(async () => {
+      emitter = new EventEmitter();
+      setImmediate(() => emitter.emit("event", { type: "chat_created", chatId: "chat-1" }));
+      return emitter;
+    });
+    await executeAgent({ agentAlias: "ops", prompt: "go", triggeredBy: "cron", provider: "codex", metadata: { cronJobId: "j1" } });
+
+    emitter.emit("event", { type: "error", content: "Codex model not available: no model set — …" });
+
+    expect(mocks.activity).toHaveBeenCalledWith(
+      "ops",
+      expect.objectContaining({
+        type: "cron",
+        message: "cron session failed: Codex model not available: no model set — …",
+        metadata: expect.objectContaining({ chatId: "chat-1", cronJobId: "j1", error: "Codex model not available: no model set — …" }),
+      }),
+    );
+  });
+
+  it("records nothing extra for a session that ends cleanly", async () => {
+    let emitter!: EventEmitter;
+    mocks.sendMessage.mockImplementation(async () => {
+      emitter = new EventEmitter();
+      setImmediate(() => emitter.emit("event", { type: "chat_created", chatId: "chat-1" }));
+      return emitter;
+    });
+    await executeAgent({ agentAlias: "ops", prompt: "go", triggeredBy: "cron" });
+    emitter.emit("event", { type: "done", content: "" });
+    emitter.emit("event", { type: "error", content: "late" });
+    expect(mocks.activity).toHaveBeenCalledTimes(1);
+    expect(emitter.listenerCount("event")).toBe(0);
+  });
+});

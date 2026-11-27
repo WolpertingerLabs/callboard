@@ -30,6 +30,7 @@ import { translateCodexOptions } from "./optionsAdapter.js";
 import { buildCodexToolServer } from "./toolAdapter.js";
 import { createLogger } from "../../../utils/logger.js";
 import { getVisibleCodexModelsAsync } from "../../../services/codex-models.js";
+import { bundledPackageVersion } from "../../../utils/package-version.js";
 
 const log = createLogger("codex-adapter");
 
@@ -45,7 +46,7 @@ export class CodexAdapter implements AgentProvider {
     // lives in the optionsAdapter. The temp instructions file (when written)
     // must outlive this synchronous call — CodexAgentQuery deletes it after the
     // run.
-    const { codexOpts, threadOptions, resumeId, instructionsFilePath, toolServerHandles } = translateCodexOptions(options);
+    const { codexOpts, threadOptions, resumeId, instructionsFilePath, toolServerHandles, model } = translateCodexOptions(options);
 
     log.debug(`query() — resume=${resumeId ?? "none"}, instructionsFile=${instructionsFilePath ?? "(none)"}, ` + `toolServers=${toolServerHandles.length}`);
 
@@ -57,6 +58,13 @@ export class CodexAdapter implements AgentProvider {
       ...(externalSignal && { externalSignal }),
       ...(instructionsFilePath && { instructionsFilePath }),
       toolServerHandles,
+      // `model` undefined ⇒ the chat set none and Codex falls back to
+      // config.toml's — the error message has to say so. The bundled CLI is the
+      // `@openai/codex` package the SDK spawns; an override binary has its own.
+      errorContext: {
+        ...(model && { requestedModel: model }),
+        ...(codexOpts.codexPathOverride ? { binaryOverride: codexOpts.codexPathOverride } : { codexVersion: bundledPackageVersion("@openai/codex") }),
+      },
       models: async () =>
         (await getVisibleCodexModelsAsync()).map((m) => ({
           value: m.id,
