@@ -165,7 +165,9 @@ export default function CallerList() {
             )}
           </div>
         </div>
-        {!showNewCaller && callers.length > 0 && (
+        {/* With no callers the empty state has its own button. A failed load
+            still offers one: creating a caller doesn't depend on the list. */}
+        {!showNewCaller && (callers.length > 0 || state.status === "error") && (
           <button ref={newCallerRef} type="button" className="btn btn-primary" onClick={openNew}>
             <Plus size={14} aria-hidden="true" />
             New caller
