@@ -1,4 +1,6 @@
 import { sanitizeInheritedAgentEnv } from "../agents/agentEnvPolicy.js";
+import { isCodexRoutedThroughOpenRouter } from "../agents/adapters/codex/codexAuth.js";
+import type { AgentSettings } from "shared";
 /**
  * Codex Models Service — caches the live Codex model catalog reported by the
  * installed Codex CLI.
@@ -30,7 +32,7 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import type { CodexModelInfo } from "shared/types/index.js";
-import { getApiEnvOverrides, getCodexExecutablePath } from "./agent-settings.js";
+import { getAgentSettings, getApiEnvOverrides, getCodexExecutablePath, resolveModelAlias } from "./agent-settings.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("codex-models");
@@ -352,12 +354,31 @@ export function codexCatalogWarning(model: string | undefined, catalog: Pick<Cod
 }
 
 /**
- * {@link codexCatalogWarning} against the catalog already in memory. Never
- * starts a fetch — a cold cache means "no opinion", not a CLI spawn on the
- * caller's path.
+ * {@link codexCatalogWarning} against the catalog already in memory, for the
+ * model a Codex session will actually run. Never starts a fetch — a cold cache
+ * means "no opinion", not a CLI spawn on the caller's path.
+ *
+ * - `model` may be a cross-harness alias (explicit or inherited from the
+ *   caller); claude.ts resolves it later, so it is resolved here first. An
+ *   alias with no codex target falls back to the provider default — nothing
+ *   explicit left to judge.
+ * - With Codex routed through OpenRouter (`codexUseOpenRouter`), models are
+ *   OpenRouter slugs picked from OpenRouter's list; `codex debug models`
+ *   never lists them, so the native catalog has no say. (Subscription-via-
+ *   OpenRouter keeps native model ids, so it is still checked.)
  */
-export function cachedCodexCatalogWarning(model: string | undefined): string | null {
-  return codexCatalogWarning(model, cache);
+export function cachedCodexCatalogWarning(model: string | undefined, settings: AgentSettings = getAgentSettings()): string | null {
+  if (!model || isCodexRoutedThroughOpenRouter(settings)) return null;
+  const resolved = resolveModelAlias(model, "codex", settings);
+  if (!resolved) return null;
+  return codexCatalogWarning(resolved, cache);
+}
+
+/** Test-only: seed the in-memory catalog. */
+export function setCodexModelsCacheForTesting(seed: CodexModelsCache): void {
+  generation++;
+  fetchPromise = null;
+  cache = seed;
 }
 
 /** Test-only: drop the cached catalog and any in-flight run. */
