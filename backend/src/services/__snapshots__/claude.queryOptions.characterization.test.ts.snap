@@ -87,6 +87,7 @@ exports[`sendMessage queryOpts characterization > claude-code: agent session wit
       },
       "mcpServersDelivery": "argv",
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "permissionMode": "default",
       "plugins": [
         {
           "name": "fake-plugin",
@@ -146,6 +147,7 @@ exports[`sendMessage queryOpts characterization > claude-code: agent session wit
       },
       "mcpServersDelivery": "argv",
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "permissionMode": "default",
       "settingSources": [
         "user",
         "project",
@@ -193,6 +195,7 @@ exports[`sendMessage queryOpts characterization > claude-code: explicit completi
       },
       "mcpServersDelivery": "argv",
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "permissionMode": "default",
       "settingSources": [
         "user",
         "project",
@@ -244,6 +247,7 @@ exports[`sendMessage queryOpts characterization > claude-code: explicit completi
       },
       "mcpServersDelivery": "argv",
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "permissionMode": "default",
       "settingSources": [
         "user",
         "project",
@@ -300,6 +304,7 @@ exports[`sendMessage queryOpts characterization > claude-code: explicit completi
       },
       "mcpServersDelivery": "argv",
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "permissionMode": "default",
       "settingSources": [
         "user",
         "project",
@@ -350,6 +355,7 @@ exports[`sendMessage queryOpts characterization > claude-code: no claude binary 
         "callboard-tools": "[ToolServer callboard-tools: 60 tools]",
         "computer_use": "[ToolServer computer_use: 9 tools]",
       },
+      "permissionMode": "default",
       "settingSources": [
         "user",
         "project",
@@ -397,6 +403,7 @@ exports[`sendMessage queryOpts characterization > claude-code: plain new chat 1`
       },
       "mcpServersDelivery": "argv",
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "permissionMode": "default",
       "settingSources": [
         "user",
         "project",
@@ -492,6 +499,7 @@ exports[`sendMessage queryOpts characterization > claude-code: plugins + MCP + h
       "mcpServersDelivery": "argv",
       "model": "opus",
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "permissionMode": "default",
       "plugins": [
         {
           "name": "fake-plugin",
@@ -562,6 +570,7 @@ exports[`sendMessage queryOpts characterization > claude-code: resume recovers a
       "mcpServersDelivery": "argv",
       "model": "sonnet",
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "permissionMode": "default",
       "resume": "<chat>",
       "settingSources": [
         "user",
@@ -620,6 +629,7 @@ exports[`sendMessage queryOpts characterization > codex: OpenRouter-injected rou
       },
       "mcpServersDelivery": "argv",
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "permissionMode": "default",
       "settingSources": [
         "user",
         "project",
@@ -690,6 +700,7 @@ exports[`sendMessage queryOpts characterization > codex: api-key mode, direct-UI
       },
       "mcpServersDelivery": "argv",
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "permissionMode": "default",
       "settingSources": [
         "user",
         "project",
@@ -755,6 +766,7 @@ exports[`sendMessage queryOpts characterization > codex: subscription, default r
       },
       "mcpServersDelivery": "argv",
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "permissionMode": "default",
       "settingSources": [
         "user",
         "project",
@@ -809,6 +821,7 @@ exports[`sendMessage queryOpts characterization > codex: unknown route and resum
       },
       "mcpServersDelivery": "argv",
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "permissionMode": "default",
       "settingSources": [
         "user",
         "project",
@@ -863,6 +876,7 @@ exports[`sendMessage queryOpts characterization > codex: unknown route and resum
       },
       "mcpServersDelivery": "argv",
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "permissionMode": "default",
       "resume": "<chat>",
       "settingSources": [
         "user",
@@ -912,6 +926,7 @@ exports[`sendMessage queryOpts characterization > pi: configured, new 1`] = `
       },
       "mcpServersDelivery": "argv",
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "permissionMode": "default",
       "pi": {
         "apiKey": "pi-key-7777",
         "baseUrl": "https://pi.example",
@@ -969,6 +984,7 @@ exports[`sendMessage queryOpts characterization > pi: resume whose session file 
       },
       "mcpServersDelivery": "argv",
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "permissionMode": "default",
       "pi": {
         "getPermissions": "[Function]",
       },
@@ -1021,6 +1037,7 @@ exports[`sendMessage queryOpts characterization > pi: resume with a resolvable s
       },
       "mcpServersDelivery": "argv",
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "permissionMode": "default",
       "pi": {
         "getPermissions": "[Function]",
         "resumeSessionPath": "/sessions/<chat>.jsonl",
@@ -1071,6 +1088,7 @@ exports[`sendMessage queryOpts characterization > tool servers that throw or com
       },
       "mcpServersDelivery": "argv",
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "permissionMode": "default",
       "settingSources": [
         "user",
         "project",
@@ -1124,6 +1142,7 @@ exports[`sendMessage queryOpts characterization > tool servers that throw or com
       },
       "mcpServersDelivery": "argv",
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "permissionMode": "default",
       "settingSources": [
         "user",
         "project",
@@ -1174,6 +1193,7 @@ exports[`sendMessage queryOpts characterization > tool servers that throw or com
       },
       "mcpServersDelivery": "argv",
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "permissionMode": "default",
       "settingSources": [
         "user",
         "project",
@@ -1218,6 +1238,7 @@ exports[`sendMessage queryOpts characterization > tool servers that throw or com
       },
       "mcpServersDelivery": "argv",
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "permissionMode": "default",
       "settingSources": [
         "user",
         "project",

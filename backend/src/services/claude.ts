@@ -59,7 +59,7 @@ import { archivedAfter, reopenArchivedRoot } from "./chat-archive.js";
 import { reopenArchivedChildChain } from "./child-archive.js";
 import { clearListCaches } from "./list-caches.js";
 import { sessionRegistry } from "./session-registry.js";
-import { pendingRequests, type PendingRequest } from "./pending-requests.js";
+import { pendingRequests, USER_DENIED_MESSAGE, type PendingRequest } from "./pending-requests.js";
 import { detectHardStop, isReviewableTool, reviewerNotesFor, reviewToolCall, type ReviewOptions, type ReviewRequest, type ReviewVerdict } from "./permission-review.js";
 import { startReviewAudit, type PermissionAuditHooks, type ReviewAuditResult, type ReviewAuditTrace } from "./permission-review-audit.js";
 import { redactToolInputForReview } from "./tool-input-redaction.js";
@@ -534,7 +534,7 @@ export function buildCanUseTool(
     const result = await decide(...args);
     if (result.behavior === "deny" && result.interrupt === true) {
       try {
-        onInterruptingDeny({ toolName: args[0], message: result.message });
+        onInterruptingDeny({ toolName: args[0], message: result.message, byUser: result.message === USER_DENIED_MESSAGE });
       } catch (err) {
         log.warn(`[PERM-DIAG] onInterruptingDeny threw for ${args[0]}: ${err}`);
       }
@@ -1024,6 +1024,7 @@ type SessionQueryOptions = {
   pathToClaudeCodeExecutable?: string;
   model?: string;
   settingSources: string[];
+  permissionMode: "default";
   maxTurns: number;
   resume?: string;
   plugins?: PluginDescriptor[];
@@ -1908,6 +1909,14 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
       ...claudeExecutableOptions(claudeExecutable),
       ...(claudeCodeModel ? { model: claudeCodeModel } : {}),
       settingSources: ["user", "project", "local"],
+      // Always explicit. Agent SDK ≥ 0.3.286 leaves an omitted mode to Claude
+      // Code, which then takes `permissions.defaultMode` from the settings
+      // loaded above: a repo committing `acceptEdits` ran Write/Edit without
+      // consulting canUseTool, `auto` handed decisions to the classifier, and
+      // `plan` started every chat in plan mode. callboard has no mode of its
+      // own — every decision goes through canUseTool — so "default" it is.
+      // See permissionMode.sdk.test.ts.
+      permissionMode: "default",
       maxTurns: opts.maxTurns ?? 200,
       ...(resumeSessionId ? { resume: resumeSessionId } : {}),
       ...(plugins.length > 0 ? { plugins } : {}),
@@ -2195,6 +2204,8 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
 
           switch (event.type) {
             case "result": {
+              // Set when this result is the one a deny ended (see below).
+              let endedByDeny = false;
               // Always the last yielded event: tells us why the conversation ended.
               if (event.status === "max_turns") {
                 endReason = "max_turns";
@@ -2213,6 +2224,7 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
                   // internal diagnostic. Still an error ending, in words.
                   errorDetail = describeDeniedTurnEnd(lastInterruptingDeny);
                   deniedTurnEndDetail = errorDetail;
+                  endedByDeny = true;
                   log.warn(
                     `Session ${trackingId} (provider=${providerKind}) ended by an interrupting deny of ${lastInterruptingDeny.toolName} — ${event.reason}`,
                   );
@@ -2221,7 +2233,10 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
                   log.error(`Session ${trackingId} (provider=${providerKind}) ended: execution error — ${event.reason || "unknown"}`);
                 }
               }
+              // Both describe this result only: a later turn's rethrown
+              // diagnostic must not inherit an earlier deny's text.
               lastInterruptingDeny = undefined;
+              if (!endedByDeny) deniedTurnEndDetail = undefined;
               if (typeof event.usage?.costUsd === "number") {
                 lastCostUsd = event.usage.costUsd;
               }

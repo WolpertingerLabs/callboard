@@ -46,9 +46,13 @@ export function isRethrownTurnEndDiagnostic(message: string | undefined): boolea
 export interface InterruptingDeny {
   toolName: string;
   message: string;
+  /** A person pressed Deny, as opposed to the chat's default policy. */
+  byUser?: boolean;
 }
 
 /** The error text for a turn a permission denial ended. */
 export function describeDeniedTurnEnd(deny: InterruptingDeny): string {
+  // A person chose this, so don't send them to the permission settings.
+  if (deny.byUser) return `Stopped: you denied ${deny.toolName}, which ends the turn. Send a follow-up to tell the agent how to continue.`;
   return `Stopped: ${deny.toolName} was denied (${deny.message}), and a denial ends the turn. Send a follow-up to continue without it, or change this chat's permissions.`;
 }

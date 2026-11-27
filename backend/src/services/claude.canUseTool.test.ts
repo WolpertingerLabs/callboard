@@ -110,7 +110,7 @@ describe("buildCanUseTool — onInterruptingDeny", () => {
   // error_during_execution with only an `[ede_diagnostic]` string in errors[].
   // The run loop needs to know a deny caused it to say so in words.
   it("reports an auto-deny that interrupts the turn", async () => {
-    const seen: Array<{ toolName: string; message: string }> = [];
+    const seen: Array<{ toolName: string; message: string; byUser?: boolean }> = [];
     const fn = buildCanUseTool(
       new EventEmitter(),
       makePolicy(FULL_DENY),
@@ -120,11 +120,11 @@ describe("buildCanUseTool — onInterruptingDeny", () => {
       (d) => seen.push(d),
     );
     await fn("Write", {}, unsignaled());
-    expect(seen).toEqual([{ toolName: "Write", message: "Auto-denied by default fileRead policy" }]);
+    expect(seen).toEqual([{ toolName: "Write", message: "Auto-denied by default fileRead policy", byUser: false }]);
   });
 
   it("reports a human deny (which also interrupts)", async () => {
-    const seen: Array<{ toolName: string; message: string }> = [];
+    const seen: Array<{ toolName: string; message: string; byUser?: boolean }> = [];
     const trackingId = `t-int-2-${Math.random().toString(36).slice(2)}`;
     const fn = buildCanUseTool(
       new EventEmitter(),
@@ -137,7 +137,7 @@ describe("buildCanUseTool — onInterruptingDeny", () => {
     const promise = fn("Write", { path: "/tmp/x" }, unsignaled());
     expect(respondToPermission(trackingId, false).ok).toBe(true);
     await promise;
-    expect(seen).toEqual([{ toolName: "Write", message: "User denied" }]);
+    expect(seen).toEqual([{ toolName: "Write", message: "User denied", byUser: true }]);
   });
 
   it("stays quiet for allows and for denies that let the model carry on", async () => {

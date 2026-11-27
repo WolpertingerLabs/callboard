@@ -28,6 +28,19 @@ describe("describeDeniedTurnEnd", () => {
   });
 });
 
+describe("describeDeniedTurnEnd — a person's Deny", () => {
+  it("says the user denied it, without pointing them at the chat's permissions", () => {
+    const text = describeDeniedTurnEnd({ toolName: "Bash", message: "User denied", byUser: true });
+    expect(text).toContain("Bash");
+    expect(text).toMatch(/you denied/i);
+    expect(text).not.toMatch(/permissions/i);
+  });
+
+  it("keeps the policy wording for an automatic deny", () => {
+    expect(describeDeniedTurnEnd({ toolName: "Write", message: "Auto-denied by default fileWrite policy", byUser: false })).toMatch(/permissions/);
+  });
+});
+
 describe("isRethrownTurnEndDiagnostic", () => {
   it("matches the SDK's rethrow of a diagnostic-only error result", () => {
     expect(isRethrownTurnEndDiagnostic(`Claude Code returned an error result: ${EDE}`)).toBe(true);

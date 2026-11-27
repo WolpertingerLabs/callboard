@@ -39,7 +39,7 @@ const WRITES_DENIED: DefaultPermissions = {
 type CanUseTool = (tool: string, input: Record<string, unknown>, opts: { signal: AbortSignal }) => Promise<{ behavior: string }>;
 
 /** A one-turn provider: optionally asks canUseTool about `tool`, then yields `result`. */
-function provider(steps: { tool?: string; result: AgentEvent; thenThrow?: string }): AgentProvider {
+function provider(steps: { tool?: string; result: AgentEvent; laterResult?: AgentEvent; thenThrow?: string }): AgentProvider {
   return {
     kind: "mock",
     query(req: AgentQueryRequest): AgentQuery {
@@ -52,6 +52,8 @@ function provider(steps: { tool?: string; result: AgentEvent; thenThrow?: string
             await canUseTool!(steps.tool, {}, { signal: new AbortController().signal });
           }
           yield steps.result;
+          // A later turn in the same run (a hold or background-task turn).
+          if (steps.laterResult) yield steps.laterResult;
           // The SDK's own follow-up when the CLI exits after an error result:
           // it rethrows the result text (sdk.mjs `readMessages`).
           if (steps.thenThrow) throw new Error(steps.thenThrow);
@@ -108,6 +110,21 @@ describe("a turn ended by an interrupting deny", () => {
     expect(errors).toHaveLength(1);
     expect(errors[0].content).toContain("Write was denied");
     expect(errors[0].content).not.toContain("ede_diagnostic");
+  });
+
+  it("does not reuse an earlier deny's text for a later turn's rethrown diagnostic", async () => {
+    const rethrow = `Claude Code returned an error result: ${EDE}`;
+    const events = await run(
+      provider({
+        tool: "Write",
+        result: { type: "result", status: "error", reason: EDE },
+        laterResult: { type: "result", status: "error", reason: EDE },
+        thenThrow: rethrow,
+      }),
+    );
+    const errors = events.filter((e) => e.type === "error");
+    expect(errors).toHaveLength(1);
+    expect(errors[0].content).toBe(rethrow);
   });
 
   it("leaves a real provider error alone, even after a deny", async () => {
