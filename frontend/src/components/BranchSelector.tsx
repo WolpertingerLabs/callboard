@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useId, useMemo, type ReactNode } from "react";
+import { useState, useEffect, useCallback, useId, useMemo, useRef, type ReactNode } from "react";
 import { GitBranch, GitFork } from "lucide-react";
 import { getGitBranches, type BranchConfig, type CheckedOutBranch } from "../api";
 import { worktreeDirName } from "shared/types/index.js";
@@ -7,6 +7,7 @@ import { useSpaces } from "../contexts/SpaceContext";
 import { updateSpace } from "../api";
 import { spaceHasOwnDefaults, writesBrowserFallback } from "../utils/spaceDefaults";
 import { useIsMobile } from "../hooks/useIsMobile";
+import { startTimedRequest, type TimedRequest } from "./git/timedRequest";
 
 /**
  * Validate a git branch name according to git-check-ref-format rules.
@@ -54,6 +55,15 @@ function basename(path: string): string {
 function Name({ children }: { children: ReactNode }) {
   return <span style={{ fontFamily: "monospace", color: "var(--text)" }}>{children}</span>;
 }
+
+/**
+ * How long the picker waits for `GET /git/branches` before giving the request
+ * up. The daemon's own worst case is two 5s git timeouts back to back (the
+ * dated listing refused, then its fallback timing out), so anything past this
+ * is a request that will never settle — a socket left dead by a laptop sleep —
+ * and would otherwise leave "Loading..." on screen for good.
+ */
+export const BRANCH_LISTING_TIMEOUT_MS = 20_000;
 
 interface BranchSelectorProps {
   folder: string;
@@ -136,6 +146,13 @@ export default function BranchSelector({ folder, spaceId, currentBranch, isDetac
   const [newBranch, setNewBranch] = useState("");
   const [useWorktree, setUseWorktree] = useState(() => spaceWorktreeDefault ?? getWorktreeByDefault());
 
+  // The current branch as of the latest commit, for the fetch effect to read
+  // without re-running (and so re-clearing the listing) when it changes.
+  const onBranchRef = useRef(onBranch);
+  useEffect(() => {
+    onBranchRef.current = onBranch;
+  }, [onBranch]);
+
   // Fetch branches on mount, and again whenever the folder changes.
   //
   // The clearing is not tidiness. `folder` is a query parameter, not a remount
@@ -144,30 +161,92 @@ export default function BranchSelector({ folder, spaceId, currentBranch, isDetac
   // of the new request, and every sentence below describes them. "feat/y is
   // checked out at callboard.feat-y" is a claim about a repository the user has
   // left.
+  //
+  // Then keep it current. The launchpad stays open while branches and worktrees
+  // are made in a terminal or by another chat, and a listing read once at mount
+  // goes on answering for a repository that has moved: "Will create branch
+  // feat/y" for a branch that now exists, "will switch this checkout" for one a
+  // worktree has since taken. Coming back to the window is the moment those
+  // changes can have happened, so that is when it is read again.
+  //
+  // A refetch is the *same* folder, so nothing is cleared for it: the listing
+  // on screen is the best answer there is until the next one lands, and blanking
+  // it would swap the `<select>` for "Loading..." under the user's cursor every
+  // time they alt-tab back. What they picked and typed is separate state and is
+  // not touched.
   useEffect(() => {
-    let current = true;
+    // One rule orders every request this effect makes: the newest one asked is
+    // the only one that may answer. Each `load` abandons the one before it —
+    // aborting it, and outranking it should its answer arrive anyway — so
+    // nothing is ever skipped because something else is in flight, and a
+    // request that never settles blocks nothing. Cleanup counts as asking:
+    // it retires the last request of the folder the user has left, whose
+    // listing would otherwise land on the repository they are now in.
+    let asked = 0;
+    let pending: TimedRequest | undefined;
+    let haveListing = false;
     setListing(null);
     setError(null);
-    getGitBranches(folder)
-      .then((data) => {
-        // Two folder changes in flight at once land in the order the server
-        // answers, not the order they were asked — and the loser would overwrite
-        // the winner with another repository's listing.
-        if (!current) return;
-        setListing({
-          branches: data.branches,
-          // Absent on a daemon older than this bundle, which reads as "no branch
-          // is known to be checked out elsewhere" — the summary then says the
-          // switch will happen here, which is what it said before this existed.
-          checkedOut: data.checkedOut ?? [],
+
+    const load = () => {
+      const mine = ++asked;
+      pending?.abort();
+      const timed = startTimedRequest(BRANCH_LISTING_TIMEOUT_MS);
+      pending = timed;
+      getGitBranches(folder, timed.signal)
+        .then((data) => {
+          timed.done();
+          if (mine !== asked) return;
+          haveListing = true;
+          setListing({
+            branches: data.branches,
+            // Absent on a daemon older than this bundle, which reads as "no branch
+            // is known to be checked out elsewhere" — the summary then says the
+            // switch will happen here, which is what it said before this existed.
+            checkedOut: data.checkedOut ?? [],
+          });
+          setError(null);
+          // A picked base this repository does not have goes back to where the
+          // picker starts. Two ways to get there: the branch was deleted while
+          // the launchpad stayed open, or the pick was made in the folder the
+          // user has since left and nothing else reset it (a folder change only
+          // resets the base when the current branch differs). Either way the
+          // `<select>` has no option for it and would *show* its first option
+          // while this state went on sending the name.
+          //
+          // The current branch is never taken back, listed or not: an unborn
+          // branch is in no listing, and it is the fallback itself. Nor is the
+          // empty pick, which is a detached HEAD's "no base".
+          setBaseBranch((picked) => (picked === "" || data.branches.includes(picked) ? picked : (onBranchRef.current ?? "")));
+        })
+        .catch((err) => {
+          timed.done();
+          if (mine !== asked) return;
+          // A refetch that fails — an error status, a dropped connection, the
+          // timeout above — leaves a listing that was true a moment ago, which
+          // beats replacing the picker with an error about a blip. With no
+          // listing to keep, the error is the state.
+          if (!haveListing) setError(timed.timedOut() ? "Timed out listing branches" : err.message);
         });
-      })
-      .catch((err) => {
-        if (!current) return;
-        setError(err.message);
-      });
+    };
+    load();
+
+    // Both events, because neither covers the other: switching tabs changes
+    // visibility without necessarily moving focus, and switching windows moves
+    // focus while the tab stays visible. Returning to a background tab fires
+    // both, and both ask: the first request is abandoned for the second, which
+    // costs the daemon two cheap listings and never serves a stale one.
+    const revalidate = () => {
+      if (document.visibilityState === "visible") load();
+    };
+    document.addEventListener("visibilitychange", revalidate);
+    window.addEventListener("focus", revalidate);
+
     return () => {
-      current = false;
+      asked++;
+      pending?.abort();
+      document.removeEventListener("visibilitychange", revalidate);
+      window.removeEventListener("focus", revalidate);
     };
   }, [folder]);
 
@@ -283,8 +362,10 @@ export default function BranchSelector({ folder, spaceId, currentBranch, isDetac
    * directory this branch's worktree would have used. `existsSync` reuses it
    * whatever is in it, so the chat runs on that other branch.
    *
-   * `branches` is `git branch --list`, local refs only — the same question
-   * `localBranchExists` answers before deciding whether to pass `-b`.
+   * `branches` is `git for-each-ref refs/heads`, local refs only — the same
+   * question `localBranchExists` answers before deciding whether to pass `-b`.
+   * Its order (current first, then most recently committed) is for the
+   * `<select>`; nothing here reads it as anything but a set.
    */
   const worktreeAtDerivedDir = (branch: string) => checkedOut.find((wt) => wt.path.replace(/\/+$/, "") === derivedPath(branch)) ?? null;
   const worktreeOn = (branch: string) => checkedOut.find((wt) => wt.branch === branch) ?? null;
