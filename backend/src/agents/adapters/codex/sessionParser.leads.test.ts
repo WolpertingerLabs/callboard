@@ -27,6 +27,7 @@ const REAL_PROMPT = "Reply with exactly the word OK and nothing else.";
 const CAPTURES = [
   { cliVersion: "0.146.0", file: fixture("rollout-cli-0.146.0.jsonl") },
   { cliVersion: "0.153.4", file: fixture("rollout-cli-0.153.4.jsonl") },
+  { cliVersion: "0.172.0", file: fixture("rollout-cli-0.172.0.jsonl") },
 ] as const;
 
 describe.each(CAPTURES)("captured rollout — codex-cli $cliVersion", ({ cliVersion, file }) => {
@@ -83,5 +84,59 @@ describe("captured rollout — resumed thread (codex-cli 0.153.4)", () => {
       "user: Now reply with exactly the word TWO.",
       "assistant: TWO",
     ]);
+  });
+});
+
+/**
+ * 0.172.0 changes the lead run in three ways the parser must survive, none of
+ * them visible in the SDK's `.d.ts`:
+ *
+ * - a new, **untagged** first `developer` message (`You are Codex, an agent
+ *   based on GPT-6…`, the system prompt repeated on the developer channel) — a
+ *   prefix allowlist could never have matched it, which is why `developer` is
+ *   dropped by role;
+ * - a new `response_item` payload type, `additional_tools`, ahead of every
+ *   message — an unknown item type, which must be skipped, not rendered;
+ * - the resume re-injects only `<skills_instructions>` rather than the whole
+ *   lead run, so the per-turn role sequence is shorter than 0.153.4's.
+ */
+describe("captured rollout — resumed thread (codex-cli 0.172.0)", () => {
+  const file = fixture("rollout-cli-0.172.0-resumed.jsonl");
+  const records = (): Array<{ type?: string; payload?: { type?: string; role?: string; content?: Array<{ text?: string }> } }> =>
+    readFileSync(file, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+
+  it("is the capture it claims to be", () => {
+    expect(readCodexSessionMeta(file)?.cliVersion).toBe("0.172.0");
+  });
+
+  it("opens with an untagged developer lead and carries an additional_tools item", () => {
+    const items = records().filter((r) => r.type === "response_item");
+    expect(items[0]?.payload?.type).toBe("additional_tools");
+    const firstMessage = items.find((r) => r.payload?.type === "message");
+    expect(firstMessage?.payload?.role).toBe("developer");
+    expect(firstMessage?.payload?.content?.[0]?.text).toMatch(/^You are Codex, an agent based on/);
+  });
+
+  it("re-injects only part of the lead run on resume", () => {
+    const roles = records()
+      .filter((r) => r.type === "response_item" && r.payload?.type === "message")
+      .map((r) => r.payload?.role ?? "?");
+    expect(roles).toEqual(["developer", "developer", "developer", "developer", "user", "user", "assistant", "developer", "user", "assistant"]);
+  });
+
+  it("keeps both turns and drops both lead runs", () => {
+    expect(parseCodexRollout(file).map((m) => `${m.role}: ${m.content}`)).toEqual([
+      `user: ${REAL_PROMPT}`,
+      "assistant: OK",
+      "user: Now reply with exactly the word TWO.",
+      "assistant: TWO",
+    ]);
+  });
+
+  it("previews the real prompt", () => {
+    expect(readFirstUserPrompt(file)).toBe(REAL_PROMPT);
   });
 });

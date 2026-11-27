@@ -143,6 +143,16 @@ describe("the fallback is not sticky", () => {
     expect((await getCodexModelsAsync()).length).toBeGreaterThan(0);
   });
 
+  it("falls back to models the bundled 0.172 client's catalog actually offers", async () => {
+    // A guess, but not a stale one: 0.153.4-era slugs (gpt-5.5 …) are not in
+    // the catalog OpenAI serves a 0.172 client, so picking one fails with
+    // model_not_found instead of running.
+    runCodex.mockRejectedValue(new Error("ENOENT"));
+    const ids = (await getCodexModelsAsync()).map((m) => m.id);
+    expect(ids[0]).toBe("gpt-6.2-sol");
+    expect(ids).not.toContain("gpt-5.5");
+  });
+
   it("does not reject when the binary cannot be resolved", async () => {
     // resolveCodexBin() reads settings and can throw. That happens outside the
     // CLI call, and a rejection would strand the in-flight promise and stop the

@@ -118,7 +118,7 @@ export interface CodexOptionsExtras {
    * native catalog then reads until its next refresh.
    */
   subscriptionViaOpenRouter?: boolean;
-  /** Default model, e.g. "gpt-5.5". Overrides a top-level `options.model`. */
+  /** Default model, e.g. "gpt-6.2-sol". Overrides a top-level `options.model`. */
   model?: string;
   /**
    * Explicit Codex sandbox tier from the `codexSandboxMode` setting. When set it
@@ -174,6 +174,20 @@ export interface CodexOptionsExtras {
  * (`codex features list`); with these off a probe asking the model to run a
  * shell command got a refusal, without them it ran one. `unified_exec` is
  * listed although 0.153.4 keeps it on regardless — the sandbox is the backstop.
+ * Re-checked on codex-cli 0.172.0: every flag here still exists, and the same
+ * probe (gpt-6.2-sol) found no shell tool — `tools.exec_command` is absent from
+ * code mode. Not covered by any flag here, on 0.153.4 and 0.172.0 alike: the
+ * model-catalog-driven `collaboration.*` tools (`multi_agent` is deprecated and
+ * no longer gates them), `clock.sleep`, and `apply_patch` via code mode, which
+ * the read-only sandbox blocks.
+ *
+ * Also checked on 0.172.0, and deliberately NOT disabled anywhere: the default-on
+ * `daemon_auto_start` and `worktrees` features. With a fresh `$CODEX_HOME`
+ * (both under /tmp and under $HOME), neither `codex exec` (what the SDK spawns)
+ * nor a stdio `codex app-server` session (the config probe in
+ * codex-execution-route.ts) left any process running, wrote
+ * `packages/app-server-daemon`, or created a git worktree. The managed daemon
+ * comes from interactive clients, not from the paths Callboard drives.
  */
 export const LOCKDOWN_FEATURES = [
   "shell_tool",
