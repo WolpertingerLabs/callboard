@@ -3,6 +3,8 @@
 Status: **Shipped** in #261 (2026-07-18). The card entity it extends was later folded into
 chat metadata by #392 — see `cards-as-prompt-metadata.md`. Originally: **Approved for implementation.**
 
+**Later:** the drawer that showed card metadata went with the board UI in #613, and `set_card_metadata` with the other card MCP tools in #616. `PATCH /api/cards/:id { metadata }` still writes it; no UI reads it.
+
 Cards (tickets) need a place to hang arbitrary cross-references: a GitHub PR URL, a Trello card link, a Linear ticket ID, a Slack conversation link, a Devin conversation ID, etc. Today the only free-form field is the markdown `description`, which agents and users end up abusing for structured links. This plan adds a first-class `metadata` map — arbitrary string keys to string values — editable by both the user (frontend CardDrawer) and agents (a new MCP tool), with per-key merge semantics so concurrent writers don't clobber each other.
 
 Example:

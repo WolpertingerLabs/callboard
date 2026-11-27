@@ -2,6 +2,8 @@
 
 Status: **Shipped** in #392 (2026-08-26). Originally: **Draft — proposed.**
 
+**Later:** the board UI was removed in #613, and the card MCP tools (`list_cards`, `get_card`, `update_card`, `set_card_metadata`), `POST /api/cards/bulk-lifecycle` and the `GET /api/cards` archive window in #616. The card model and `GET`/`PATCH /api/cards` remain, for the sidebar's archive and the Git tab.
+
 Today a card is a first-class entity: a JSON file in `~/.callboard/data/cards/`, created and deleted through REST and MCP tools, joined by chats and job runs through a denormalized `metadata.cardId` pointer, and rolled up by scan. In practice the system already collapsed most of the way to a simpler model: **every top-level human-started chat gets its own auto-created card** (`createCard` defaults to true on the stream route), children inherit membership at creation, and the card's title is just the chat's prompt preview. The entity layer is overhead on top of a relationship that already exists — "this conversation and everything spawned from it".
 
 This plan removes the entity. A card becomes **metadata associated with the prompt that created it**: a nested `card` object on the root chat's metadata blob. There is nothing to create and nothing to delete — a card exists because a top-level prompt exists, and it disappears when that chat is deleted. Users and agents edit and amend it (title, description, emoji, category, status, lifecycle, cross-reference metadata) through the existing PATCH surface and the card MCP tools. The board becomes a pure projection over the chat corpus, grouped by the parentage tree that the sidebar already renders.
