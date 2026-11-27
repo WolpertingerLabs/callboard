@@ -344,6 +344,202 @@ describe("a branch listing that has not arrived, or never will", () => {
 });
 
 /**
+ * The listing used to be read once, at mount. The launchpad stays open while
+ * branches and worktrees are made elsewhere, so the sentence went on stating
+ * what had been true: "Will create branch `feat/z`" for a branch that now
+ * exists, "will switch this checkout" for one a worktree has since taken.
+ *
+ * Coming back to the window re-reads it — and must do so without the things a
+ * folder change does on purpose: no "Loading...", no hedged sentence, and
+ * nothing the user picked or typed taken back.
+ */
+describe("a listing that changes while the launchpad stays open", () => {
+  const refocus = () => act(async () => void window.dispatchEvent(new Event("focus")));
+  const setVisibility = (state: "visible" | "hidden") =>
+    act(async () => {
+      Object.defineProperty(document, "visibilityState", { configurable: true, get: () => state });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+  afterEach(() => {
+    delete (document as unknown as Record<string, unknown>).visibilityState;
+  });
+
+  const options = () => Array.from(baseSelect().options).map((o) => o.textContent);
+
+  it("shows the branches in the order the daemon sent them, not re-sorted", async () => {
+    stubBranches({ branches: ["main", "zeta/newest", "feat/y", "alpha/oldest"] });
+    await open();
+
+    expect(options()).toEqual(["main (current)", "zeta/newest", "feat/y", "alpha/oldest"]);
+  });
+
+  it("re-reads the listing when the window regains focus, and the sentence follows", async () => {
+    await open();
+    type("feat/z");
+    expect(summary()).toBe("Will create branch feat/z off main in this checkout.");
+
+    // Meanwhile, in a terminal: `git worktree add ../callboard.feat-z -b feat/z`.
+    stubBranches({
+      branches: ["main", "feat/z", "feat/y", "feat/a"],
+      checkedOut: [
+        { branch: "main", path: REPO, isMainWorktree: true },
+        { branch: "feat/z", path: "/home/cybil/callboard.feat-z", isMainWorktree: false },
+      ],
+    });
+    await refocus();
+
+    expect(getGitBranches).toHaveBeenCalledTimes(2);
+    expect(getGitBranches).toHaveBeenLastCalledWith(REPO);
+    expect(summary()).toBe("feat/z is checked out at callboard.feat-z — the chat will run there. This checkout is untouched.");
+    expect(options()).toEqual(["main (current)", "feat/z", "feat/y", "feat/a"]);
+  });
+
+  it("re-reads when the tab becomes visible, and not when it is hidden", async () => {
+    await open();
+
+    await setVisibility("hidden");
+    expect(getGitBranches).toHaveBeenCalledTimes(1);
+    // Focus events reach a hidden document too (devtools, another window of the
+    // same browser); nobody is looking at the answer.
+    await refocus();
+    expect(getGitBranches).toHaveBeenCalledTimes(1);
+
+    await setVisibility("visible");
+    expect(getGitBranches).toHaveBeenCalledTimes(2);
+  });
+
+  /**
+   * The whole difference from a folder change. While the refetch is in flight
+   * the picker is still a picker, the sentence still answers from the listing
+   * it has, and the base and the typed name are where the user left them —
+   * during the request and after it lands.
+   */
+  it("keeps the picker, the selection and the typed name while the refetch runs and after it lands", async () => {
+    stubBranches({
+      checkedOut: [
+        { branch: "main", path: REPO, isMainWorktree: true },
+        { branch: "feat/y", path: "/home/cybil/callboard.feat-y", isMainWorktree: false },
+      ],
+    });
+    const { onChange } = await open();
+    pickBase("feat/a");
+    type("feat/y");
+    const before = summary();
+    expect(before).toBe("feat/y is checked out at callboard.feat-y — the chat will run there. This checkout is untouched.");
+
+    let answer: (value: { branches: string[]; checkedOut: CheckedOutBranch[] }) => void = () => {};
+    getGitBranches.mockReturnValueOnce(new Promise((resolve) => (answer = resolve)));
+    onChange.mockClear();
+    await refocus();
+
+    expect(screen.queryByText("Loading...")).toBeNull();
+    expect(baseSelect().value).toBe("feat/a");
+    expect(nameField().value).toBe("feat/y");
+    expect(summary()).toBe(before);
+
+    // The worktree on feat/y was removed in the meantime; the branch stays.
+    await act(async () => answer({ branches: ["main", "feat/a", "feat/y"], checkedOut: [{ branch: "main", path: REPO, isMainWorktree: true }] }));
+
+    expect(baseSelect().value).toBe("feat/a");
+    expect(nameField().value).toBe("feat/y");
+    expect(summary()).toBe("feat/y already exists — will switch this checkout to it.");
+    // Nothing the user chose changed, so nothing new was told to the parent.
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  /** Returning to a background tab fires both events; that is one question, not two. */
+  it("asks once when visibility and focus arrive together", async () => {
+    await open();
+    getGitBranches.mockReturnValue(new Promise(() => {}));
+
+    await setVisibility("visible");
+    await refocus();
+
+    expect(getGitBranches).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the listing it has when a refetch fails", async () => {
+    await open();
+    type("feat/y");
+    expect(summary()).toBe("feat/y already exists — will switch this checkout to it.");
+
+    getGitBranches.mockRejectedValueOnce(new Error("Failed to list branches"));
+    await refocus();
+
+    expect(screen.queryByText("Failed to list branches")).toBeNull();
+    expect(baseSelect().value).toBe("main");
+    expect(summary()).toBe("feat/y already exists — will switch this checkout to it.");
+  });
+
+  it("recovers from a failed first load on the next refetch", async () => {
+    getGitBranches.mockRejectedValueOnce(new Error("Failed to list branches"));
+    render(<BranchSelector folder={REPO} currentBranch="main" onChange={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText("Failed to list branches")).toBeTruthy());
+
+    await refocus();
+
+    expect(screen.queryByText("Failed to list branches")).toBeNull();
+    expect(options()).toEqual(["main (current)", "feat/y", "feat/a"]);
+  });
+
+  /**
+   * The one thing a refetch takes back. A `<select>` whose value matches no
+   * option *displays* its first option, so the box would show `main (current)`
+   * while emitting `baseBranch: "feat/y"` for a branch that is gone.
+   */
+  it("returns the base to the current branch when the picked one was deleted", async () => {
+    const { onChange } = await open();
+    pickBase("feat/y");
+    expect(onChange).toHaveBeenLastCalledWith({ baseBranch: "feat/y" });
+
+    stubBranches({ branches: ["main", "feat/a"] });
+    await refocus();
+
+    expect(baseSelect().value).toBe("main");
+    expect(onChange).toHaveBeenLastCalledWith({});
+    expect(summary()).toBe("Runs here on main. No branch or worktree change.");
+  });
+
+  /**
+   * A refetch for the folder the user has left must not land on the one they
+   * are in, and the listeners of the old folder must be gone with it.
+   */
+  it("ignores a refetch that answers after the folder has moved on", async () => {
+    const view = render(<BranchSelector folder={REPO} currentBranch="main" onChange={vi.fn()} />);
+    await screen.findByLabelText("Base branch");
+
+    let answerRefetch: (value: { branches: string[]; checkedOut: CheckedOutBranch[] }) => void = () => {};
+    getGitBranches.mockReturnValueOnce(new Promise((resolve) => (answerRefetch = resolve)));
+    await refocus();
+
+    getGitBranches.mockReturnValue(new Promise(() => {}));
+    view.rerender(<BranchSelector folder="/home/cybil/other-repo" currentBranch="main" onChange={vi.fn()} />);
+    await act(async () => answerRefetch({ branches: ["main", "feat/y"], checkedOut: [] }));
+
+    type("feat/y");
+    expect(summary()).toBe("Still loading this repository's branches — cannot say yet whether feat/y exists, or where the chat will run.");
+
+    // The in-flight request for the new folder stands in for a refocus; no
+    // listener from the old folder asks about it again.
+    const calls = getGitBranches.mock.calls.length;
+    await refocus();
+    expect(getGitBranches.mock.calls.length).toBe(calls);
+    expect(getGitBranches.mock.calls.filter(([folder]) => folder === REPO)).toHaveLength(2);
+  });
+
+  it("stops listening once unmounted", async () => {
+    const view = render(<BranchSelector folder={REPO} currentBranch="main" onChange={vi.fn()} />);
+    await screen.findByLabelText("Base branch");
+    view.unmount();
+
+    await refocus();
+    await setVisibility("visible");
+
+    expect(getGitBranches).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
  * The sentence describes the *target* branch — the typed name when there is
  * one, the base branch otherwise — and follows the same ladder the backend
  * walks: is a worktree already on it, does it exist at all, otherwise create.

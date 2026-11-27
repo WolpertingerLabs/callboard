@@ -1426,6 +1426,10 @@ export interface CheckedOutBranch {
  * the box showed before this field existed, and the request it describes is
  * unchanged either way. A third "we cannot tell" state would spend the user's
  * attention on the daemon's version rather than on their own choice.
+ *
+ * `branches` arrives ordered for a picker: the current branch first, then the
+ * rest most recently committed first. A daemon older than that sends them
+ * alphabetically after the current one; either is shown as it comes.
  */
 export async function getGitBranches(folder: string): Promise<{ branches: string[]; checkedOut?: CheckedOutBranch[] }> {
   return request(`/git/branches?folder=${encodeURIComponent(folder)}`, { error: "Failed to list branches" });

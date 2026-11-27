@@ -46,7 +46,7 @@ vi.mock("child_process", async (importOriginal) => {
 });
 
 const { execFileSync: realExecFileSync } = await vi.importActual<typeof import("node:child_process")>("node:child_process");
-const { getGitInfo, getGitBranches } = await import("./git.js");
+const { getGitInfo, getGitBranches, getGitBranchesAsync } = await import("./git.js");
 
 const tmpRoot = realpathSync(mkdtempSync(join(tmpdir(), "callboard-git-branch-")));
 
@@ -465,8 +465,8 @@ describe("getGitInfo remembers where a nested directory's repository is", () => 
   });
 });
 
-describe("getGitBranches puts the current branch first, read from HEAD", () => {
-  /** The listing itself always spawns; the current branch should not. */
+describe("getGitBranches: current branch first, then most recently committed", () => {
+  /** One spawn answers the names, the dates and the current branch. */
   function branchesCountingSpawns(dir: string): { branches: string[]; spawns: number } {
     gitSpawns = 0;
     spawnPassThrough = true;
@@ -477,61 +477,116 @@ describe("getGitBranches puts the current branch first, read from HEAD", () => {
     }
   }
 
-  it("moves the checked-out branch to the front with one spawn", () => {
-    const repo = initRepo("branches-plain");
-    git(["commit", "-q", "--allow-empty", "-m", "init"], repo);
-    git(["branch", "aaa"], repo);
-    git(["checkout", "-q", "-b", "zzz"], repo);
+  /** An empty commit on the checked-out branch, committed (not authored) at `date`. */
+  function commitAt(dir: string, date: string, authored = date): void {
+    realExecFileSync("git", ["-c", "user.email=test@example.com", "-c", "user.name=test", "commit", "-q", "--allow-empty", "-m", `at ${date}`], {
+      cwd: dir,
+      stdio: "pipe",
+      env: { ...process.env, GIT_COMMITTER_DATE: date, GIT_AUTHOR_DATE: authored },
+    });
+  }
+
+  /** A branch off the current HEAD with one commit of its own at `date`; leaves `main` checked out. */
+  function branchCommittedAt(dir: string, name: string, date: string, authored = date): void {
+    git(["checkout", "-q", "-b", name, "main"], dir);
+    commitAt(dir, date, authored);
+    git(["checkout", "-q", "main"], dir);
+  }
+
+  /**
+   * The fixture every ordering case below shares. Alphabetical order is
+   * `feat/new, main, middle, old/est, tie-a, tie-b` and recency order is not,
+   * so neither a missing sort nor a name sort can pass by accident.
+   */
+  function recencyRepo(name: string): string {
+    const repo = initRepo(name);
+    commitAt(repo, "2020-01-01T00:00:00Z");
+    branchCommittedAt(repo, "old/est", "2021-01-01T00:00:00Z");
+    branchCommittedAt(repo, "tie-b", "2022-06-01T00:00:00Z");
+    branchCommittedAt(repo, "tie-a", "2022-06-01T00:00:00Z");
+    branchCommittedAt(repo, "middle", "2023-01-01T00:00:00Z");
+    branchCommittedAt(repo, "feat/new", "2024-01-01T00:00:00Z");
+    return repo;
+  }
+
+  it("orders by committer date, newest first, behind the current branch", () => {
+    const repo = recencyRepo("branches-recency");
 
     const { branches, spawns } = branchesCountingSpawns(repo);
 
-    expect(branches).toEqual(["zzz", "aaa", "main"]);
+    // `main` holds the oldest commit of all and still leads: it is checked out.
+    expect(branches).toEqual(["main", "feat/new", "middle", "tie-a", "tie-b", "old/est"]);
     expect(spawns).toBe(1);
   });
 
-  it("treats a detached HEAD as no current branch — not as main", () => {
+  it("breaks a tie on the date by name", () => {
+    const repo = initRepo("branches-tie");
+    commitAt(repo, "2020-01-01T00:00:00Z");
+    // Created in reverse, so creation order cannot be what sorts them.
+    for (const name of ["zeta", "Beta", "alpha", "feat/x"]) git(["branch", name], repo);
+
+    // Code-unit order, as the alphabetical listing always was: capitals first.
+    expect(branchesCountingSpawns(repo).branches).toEqual(["main", "Beta", "alpha", "feat/x", "zeta"]);
+  });
+
+  it("reads the committer date, not the author date", () => {
+    // A rebase keeps the author date and refreshes the committer date; the
+    // branch someone just rebased is the recent one.
+    const repo = initRepo("branches-committer");
+    commitAt(repo, "2020-01-01T00:00:00Z");
+    branchCommittedAt(repo, "rebased-today", "2024-01-01T00:00:00Z", "2019-01-01T00:00:00Z");
+    branchCommittedAt(repo, "written-recently", "2023-01-01T00:00:00Z", "2025-01-01T00:00:00Z");
+
+    expect(branchesCountingSpawns(repo).branches).toEqual(["main", "rebased-today", "written-recently"]);
+  });
+
+  it("moves the checked-out branch to the front, whatever its date", () => {
+    const repo = recencyRepo("branches-current");
+    git(["checkout", "-q", "old/est"], repo);
+
+    expect(branchesCountingSpawns(repo).branches).toEqual(["old/est", "feat/new", "middle", "tie-a", "tie-b", "main"]);
+  });
+
+  it("treats a detached HEAD as no current branch — not as main, and not as an entry", () => {
     // getGitInfo reports a detached HEAD as "main" for historical reasons; that
     // fallback must not leak here, where it would hoist a branch that is not
-    // checked out.
-    const repo = initRepo("branches-detached");
-    git(["commit", "-q", "--allow-empty", "-m", "init"], repo);
-    git(["branch", "aaa"], repo);
-    git(["checkout", "-q", git(["rev-parse", "HEAD"], repo).trim()], repo);
+    // checked out. And `git branch --list`, which this used to run, lists the
+    // detachment itself — `(HEAD detached at 1a2b3c4)` — as if it were a branch.
+    const repo = recencyRepo("branches-detached");
+    git(["checkout", "-q", "--detach", "middle"], repo);
 
     const { branches, spawns } = branchesCountingSpawns(repo);
 
-    // `git branch --list` itself lists the detachment as a pseudo-entry (it
-    // always has); it sorts first on its own, and nothing is hoisted over it.
-    expect(branches).toEqual([expect.stringMatching(/^\(HEAD detached at [0-9a-f]+\)$/), "aaa", "main"]);
+    expect(branches).toEqual(["feat/new", "middle", "tie-a", "tie-b", "old/est", "main"]);
     expect(spawns).toBe(1);
   });
 
   it("uses a linked worktree's own branch, not the main checkout's", () => {
-    const repo = initRepo("branches-wt-main");
-    git(["commit", "-q", "--allow-empty", "-m", "init"], repo);
+    const repo = recencyRepo("branches-wt-main");
     const wt = join(tmpRoot, "branches-wt-linked");
-    git(["worktree", "add", "-q", "-b", "side", wt], repo);
+    git(["worktree", "add", "-q", wt, "old/est"], repo);
 
     const linked = branchesCountingSpawns(wt);
     const main = branchesCountingSpawns(repo);
 
-    expect(linked.branches).toEqual(["side", "main"]);
+    // Same repository, same dates: the two differ only in which branch leads.
+    expect(linked.branches).toEqual(["old/est", "feat/new", "middle", "tie-a", "tie-b", "main"]);
     expect(linked.spawns).toBe(1);
-    expect(main.branches).toEqual(["main", "side"]);
+    expect(main.branches).toEqual(["main", "feat/new", "middle", "tie-a", "tie-b", "old/est"]);
     expect(main.spawns).toBe(1);
   });
 
-  it("falls back to git from a subdirectory, which has no HEAD of its own", () => {
-    const repo = initRepo("branches-nested");
-    git(["commit", "-q", "--allow-empty", "-m", "init"], repo);
-    git(["checkout", "-q", "-b", "outer"], repo);
-    const nested = join(repo, "sub");
+  it("answers from a subdirectory as it does from the root, still in one spawn", () => {
+    const repo = recencyRepo("branches-nested");
+    git(["checkout", "-q", "middle"], repo);
+    const nested = join(repo, "sub", "deeper");
     mkdirSync(nested, { recursive: true });
 
     const { branches, spawns } = branchesCountingSpawns(nested);
 
-    expect(branches).toEqual(["outer", "main"]);
-    expect(spawns).toBe(2);
+    expect(branches).toEqual(["middle", "feat/new", "tie-a", "tie-b", "old/est", "main"]);
+    expect(branches).toEqual(getGitBranchesPassingThrough(repo));
+    expect(spawns).toBe(1);
   });
 
   it("lists a branch whose name contains quotes verbatim", () => {
@@ -542,4 +597,56 @@ describe("getGitBranches puts the current branch first, read from HEAD", () => {
 
     expect(branchesCountingSpawns(repo).branches).toEqual(["main", "'quoted'"]);
   });
+
+  it("names a branch that shares its name with a tag as the branch, not as heads/<name>", () => {
+    // `%(refname:short)` disambiguates such a branch to `heads/feat/x`, which is
+    // not its name: nothing the picker or uniqueBranchName compares would match.
+    const repo = initRepo("branches-tag-clash");
+    git(["commit", "-q", "--allow-empty", "-m", "init"], repo);
+    git(["branch", "feat/x"], repo);
+    git(["tag", "feat/x"], repo);
+    git(["tag", "main"], repo);
+
+    expect(branchesCountingSpawns(repo).branches).toEqual(["main", "feat/x"]);
+  });
+
+  it("is empty for an unborn branch, a directory that is not a repository, and one that does not exist", () => {
+    expect(branchesCountingSpawns(initRepo("branches-unborn")).branches).toEqual([]);
+    const plain = join(tmpRoot, "branches-not-a-repo");
+    mkdirSync(plain, { recursive: true });
+    expect(branchesCountingSpawns(plain).branches).toEqual([]);
+    expect(branchesCountingSpawns(join(tmpRoot, "branches-missing")).branches).toEqual([]);
+  });
+
+  /**
+   * The route calls the async variant and `uniqueBranchName` the sync one. They
+   * share the command and the parser; this is what says so.
+   */
+  it("gives the same answer from getGitBranchesAsync, without a synchronous spawn", async () => {
+    const repo = recencyRepo("branches-async");
+    const wt = join(tmpRoot, "branches-async-linked");
+    git(["worktree", "add", "-q", wt, "tie-a"], repo);
+    const nested = join(repo, "sub");
+    mkdirSync(nested, { recursive: true });
+    const plain = join(tmpRoot, "branches-async-not-a-repo");
+    mkdirSync(plain, { recursive: true });
+
+    for (const dir of [repo, wt, nested, plain, join(tmpRoot, "branches-async-missing")]) {
+      gitSpawns = 0;
+      const listed = await getGitBranchesAsync(dir);
+      expect(gitSpawns).toBe(0);
+      expect(listed).toEqual(getGitBranchesPassingThrough(dir));
+    }
+    expect(await getGitBranchesAsync(wt)).toEqual(["tie-a", "feat/new", "middle", "tie-b", "old/est", "main"]);
+  });
 });
+
+/** `getGitBranches` with its spawn allowed to run, for use as the reference answer. */
+function getGitBranchesPassingThrough(dir: string): string[] {
+  spawnPassThrough = true;
+  try {
+    return getGitBranches(dir);
+  } finally {
+    spawnPassThrough = false;
+  }
+}

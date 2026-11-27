@@ -727,8 +727,59 @@ export function resolveWorktreeToMainRepoCached(folder: string): WorktreeResolut
 }
 
 /**
- * List local branch names for a git repository.
- * Returns branches sorted alphabetically with the current branch first.
+ * One line per local branch: `<* or space> <committer date, unix> <full refname>`.
+ *
+ * `for-each-ref refs/heads` rather than `git branch --list`, for three reasons:
+ *
+ *  - it lists refs and nothing else. `git branch --list` adds a pseudo-entry on
+ *    a detached HEAD (`(HEAD detached at 1a2b3c4)`), which is not a branch and
+ *    was nonetheless offered as one;
+ *  - the full refname is unambiguous. `%(refname:short)` spells a branch that
+ *    shares its name with a tag as `heads/<name>`, which is not the branch's
+ *    name and matches nothing a caller compares it against;
+ *  - `%(HEAD)` marks the branch checked out *in the directory git was run in* —
+ *    a linked worktree's own branch, and a subdirectory's — so the current
+ *    branch costs no second spawn and no reading of HEAD.
+ *
+ * A space is a safe separator: git allows none in a ref name. None of the atoms
+ * is recent — all three were in git by 2.13, long before the `%(worktreepath)`
+ * (2.23) that would be needed to fold the worktree listing into this command.
+ */
+const BRANCH_LIST_ARGS = ["for-each-ref", "--format=%(HEAD) %(committerdate:unix) %(refname)", "refs/heads"];
+
+/**
+ * {@link BRANCH_LIST_ARGS}' output as branch names: the current branch first,
+ * then the rest by most recent commit (committer date, newest first), names in
+ * code-unit order breaking ties. Sorted here rather than with `--sort` so the
+ * order does not depend on which git version breaks a tie how.
+ *
+ * Committer date, not author date: it is when the commit landed on the branch
+ * — a rebase or an amend refreshes it — which is what "recently worked on"
+ * means to someone choosing a base.
+ */
+function parseBranchListing(output: string): string[] {
+  let current: string | undefined;
+  const rows: { name: string; committed: number }[] = [];
+  for (const line of output.split("\n")) {
+    const match = /^(.) (\d*) refs\/heads\/(.+)$/.exec(line);
+    if (!match) continue;
+    const [, head, date, name] = match;
+    if (head === "*") current = name;
+    else rows.push({ name, committed: Number(date) });
+  }
+  rows.sort((a, b) => b.committed - a.committed || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  const names = rows.map((row) => row.name);
+  return current === undefined ? names : [current, ...names];
+}
+
+/**
+ * Local branch names for a git repository: the current branch first, then the
+ * rest most recently committed first (see {@link parseBranchListing}). On a
+ * detached HEAD there is no current branch and nothing is hoisted. `[]` for
+ * anything that is not a repository, and when git fails.
+ *
+ * Synchronous, for {@link uniqueBranchName}; a request handler wants
+ * {@link getGitBranchesAsync}.
  */
 export function getGitBranches(directory: string): string[] {
   if (!directory || !existsSync(directory)) {
@@ -736,37 +787,20 @@ export function getGitBranches(directory: string): string[] {
   }
 
   try {
-    // argv, not a shell string: the format reaches git verbatim, so no quote
-    // characters come back to strip. (The shell-string form needed a strip of
-    // surrounding `'` — for shells that pass them through — which also mangled
-    // a branch legitimately named with quotes; git allows `'` in ref names.)
-    const output = git(directory, ["branch", "--list", "--format=%(refname:short)"], { timeout: 5000 }).trim();
+    return parseBranchListing(git(directory, BRANCH_LIST_ARGS, { timeout: 5000 }));
+  } catch {
+    return [];
+  }
+}
 
-    if (!output) return [];
+/** {@link getGitBranches} without blocking the event loop: same command, same parser, same answer. */
+export async function getGitBranchesAsync(directory: string): Promise<string[]> {
+  if (!directory || !existsSync(directory)) {
+    return [];
+  }
 
-    const branches = output
-      .split("\n")
-      .map((b) => b.trim())
-      .filter(Boolean)
-      .sort();
-
-    // Move current branch to front. Read from HEAD where possible (see
-    // getGitInfo); `null` is a detached HEAD — no current branch, so nothing
-    // moves. Only an undecodable HEAD (or a subdirectory, with no .git of its
-    // own) spawns.
-    const headHome = resolveHeadHome(directory);
-    const fromHead = headHome ? branchFromHead(headHome) : undefined;
-    const currentBranch = fromHead !== undefined ? (fromHead ?? "") : git(directory, ["branch", "--show-current"], { timeout: 5000 }).trim();
-
-    if (currentBranch) {
-      const idx = branches.indexOf(currentBranch);
-      if (idx > 0) {
-        branches.splice(idx, 1);
-        branches.unshift(currentBranch);
-      }
-    }
-
-    return branches;
+  try {
+    return parseBranchListing(await gitAsync(directory, BRANCH_LIST_ARGS, { timeout: 5000 }));
   } catch {
     return [];
   }

@@ -1,10 +1,10 @@
 import { isAbsolute } from "path";
 import { Router, type Response } from "express";
 import {
-  getGitBranches,
+  getGitBranchesAsync,
   getGitDiffStructured,
   getGitFileDiff,
-  getGitWorktrees,
+  tryGetGitWorktreesAsync,
   readRepoFile,
   validateFilename,
   validateFolderPath,
@@ -38,8 +38,12 @@ function validFilename(filename: string, res: Response): boolean {
 }
 
 /**
- * List local branches for a git repository.
- * Returns branches sorted alphabetically with the current branch first.
+ * List local branches for a git repository: the current branch first, then
+ * the rest by most recent commit (committer date, newest first), names breaking
+ * ties. The order is the whole payload of that promise — `branches` is still a
+ * plain array of names, so a bundle that predates the ordering shows it without
+ * knowing, and a bundle newer than its daemon gets the alphabetical list it
+ * always did.
  *
  * `checkedOut` is an additive sibling of `branches`: which of them are occupied
  * by a worktree, and where. Picking such a branch runs the chat in *that*
@@ -47,10 +51,10 @@ function validFilename(filename: string, res: Response): boolean {
  * which is behaviour the UI could not describe without knowing the paths.
  * Optional on purpose — a bundle predating it just ignores the key.
  */
-gitRouter.get("/branches", (req, res) => {
+gitRouter.get("/branches", async (req, res) => {
   // #swagger.tags = ['Git']
   // #swagger.summary = 'List git branches'
-  // #swagger.description = 'Returns local branches for a git repository, sorted alphabetically with the current branch first, plus which of them are checked out in a worktree and where.'
+  // #swagger.description = 'Returns local branches for a git repository, the current branch first and the rest most recently committed first, plus which of them are checked out in a worktree and where.'
   /* #swagger.parameters['folder'] = { in: 'query', required: true, type: 'string', description: 'Absolute path to the git repository' } */
   /* #swagger.responses[200] = { description: "Branch names, plus an optional checkedOut array of { branch, path, isMainWorktree } for the branches occupied by a worktree" } */
   /* #swagger.responses[400] = { description: "Missing or invalid folder" } */
@@ -61,10 +65,15 @@ gitRouter.get("/branches", (req, res) => {
   if (folder === null) return;
 
   try {
-    const branches = getGitBranches(folder);
+    // Two spawns, off the event loop and side by side. One `for-each-ref` with
+    // `%(worktreepath)` could answer both, but not identically: it cannot say
+    // which worktree is the main one, and it needs git 2.23. `worktree list`
+    // stays the single source for `checkedOut`.
+    const [branches, worktrees] = await Promise.all([getGitBranchesAsync(folder), tryGetGitWorktreesAsync(folder)]);
     // Detached-HEAD worktrees hold no branch, so there is nothing for a caller
     // to match a branch name against — drop them rather than emit a null.
-    const checkedOut = getGitWorktrees(folder)
+    // No verdict from git (`null`: a timeout) reads as none, as it always has.
+    const checkedOut = (worktrees ?? [])
       .filter((wt): wt is typeof wt & { branch: string } => wt.branch !== null)
       .map((wt) => ({ branch: wt.branch, path: wt.path, isMainWorktree: wt.isMainWorktree }));
     res.json({ branches, checkedOut });

@@ -16,14 +16,29 @@
  * Same no-supertest style as workspaces.unmanaged.test.ts: the handler comes off
  * the router stack and is driven with a fake req/res against a real repo.
  */
-import { afterAll, describe, expect, it } from "vitest";
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { afterAll, describe, expect, it, vi } from "vitest";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Request, Response } from "express";
 
-import { gitRouter } from "./git.js";
+/** Synchronous git spawns made by the code under test — the handler must make none. */
+let syncSpawns = 0;
+
+vi.mock("child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("child_process")>();
+  return {
+    ...actual,
+    execFileSync: (...args: Parameters<typeof actual.execFileSync>) => {
+      syncSpawns++;
+      return actual.execFileSync(...args);
+    },
+  };
+});
+
+const { execFileSync } = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+const { gitRouter } = await import("./git.js");
+const { getGitWorktrees } = await import("../utils/git.js");
 
 const gitRoot = realpathSync(mkdtempSync(join(tmpdir(), "callboard-git-branches-")));
 const repoDir = join(gitRoot, "repo");
@@ -33,7 +48,16 @@ function git(args: string[], cwd: string): string {
 }
 
 execFileSync("git", ["init", "-q", "-b", "main", repoDir], { stdio: "pipe" });
-git(["commit", "-q", "--allow-empty", "-m", "init"], repoDir);
+/** An empty commit on the checked-out branch at a fixed committer date. */
+function commitAt(date: string, cwd: string): void {
+  execFileSync("git", ["-c", "user.email=t@e.com", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", date], {
+    cwd,
+    stdio: "pipe",
+    env: { ...process.env, GIT_COMMITTER_DATE: date, GIT_AUTHOR_DATE: date },
+  });
+}
+
+commitAt("2020-01-01T00:00:00Z", repoDir);
 git(["branch", "feat/idle"], repoDir);
 
 const linkedDir = join(gitRoot, "repo.feat-a");
@@ -41,6 +65,16 @@ git(["worktree", "add", "-q", "-b", "feat/a", linkedDir, "main"], repoDir);
 
 const detachedDir = join(gitRoot, "repo.detached");
 git(["worktree", "add", "-q", "--detach", detachedDir, "main"], repoDir);
+
+// Dates that run against the alphabet: `feat/a` is the newest, `feat/idle` and
+// `main` share the oldest commit, and `aaa/stale` sits between.
+git(["checkout", "-q", "-b", "aaa/stale"], repoDir);
+commitAt("2021-01-01T00:00:00Z", repoDir);
+git(["checkout", "-q", "main"], repoDir);
+commitAt("2024-01-01T00:00:00Z", linkedDir);
+
+const subDir = join(repoDir, "packages", "inner");
+mkdirSync(subDir, { recursive: true });
 
 afterAll(() => rmSync(gitRoot, { recursive: true, force: true }));
 
@@ -117,5 +151,48 @@ describe("GET /api/git/branches", () => {
     const fromMain = await listBranches(repoDir);
     const key = (c: CheckedOut) => `${c.branch} ${c.path} ${c.isMainWorktree}`;
     expect(new Set(fromLinked.body.checkedOut.map(key))).toEqual(new Set(fromMain.body.checkedOut.map(key)));
+  });
+
+  /**
+   * The order is part of the answer: the picker shows `branches` as it comes.
+   * Current first, then by last commit — `feat/a` (2024) ahead of `aaa/stale`
+   * (2021), which alphabetical order would have led with — and the two that
+   * share the 2020 commit by name.
+   */
+  it("lists the current branch first and the rest most recently committed first", async () => {
+    expect((await listBranches(repoDir)).body.branches).toEqual(["main", "feat/a", "aaa/stale", "feat/idle"]);
+    // From the linked worktree the same repository leads with *its* branch.
+    expect((await listBranches(linkedDir)).body.branches).toEqual(["feat/a", "aaa/stale", "feat/idle", "main"]);
+    // No branch leads from a detached HEAD, and the detachment is not listed as one.
+    expect((await listBranches(detachedDir)).body.branches).toEqual(["feat/a", "aaa/stale", "feat/idle", "main"]);
+  });
+
+  it("answers from a subdirectory of the repository as it does from its root", async () => {
+    expect((await listBranches(subDir)).body).toEqual((await listBranches(repoDir)).body);
+  });
+
+  /**
+   * `checkedOut` is `git worktree list`, entry for entry and in its order —
+   * paths as git spells them, the main worktree flagged — whichever directory
+   * asks. The synchronous lister is the reference the route used to call.
+   */
+  it("reports exactly what git worktree list does, without a synchronous spawn", async () => {
+    for (const dir of [repoDir, linkedDir, detachedDir, subDir]) {
+      const expected = getGitWorktrees(dir)
+        .filter((wt) => wt.branch !== null)
+        .map((wt) => ({ branch: wt.branch, path: wt.path, isMainWorktree: wt.isMainWorktree }));
+      expect(expected.length).toBe(2);
+
+      syncSpawns = 0;
+      const res = await listBranches(dir);
+      expect(syncSpawns).toBe(0);
+      expect(res.body.checkedOut).toEqual(expected);
+    }
+  });
+
+  it("answers with empty lists for a directory that is not a repository", async () => {
+    const plain = join(gitRoot, "plain");
+    mkdirSync(plain);
+    expect(await listBranches(plain)).toEqual({ code: 200, body: { branches: [], checkedOut: [] } });
   });
 });

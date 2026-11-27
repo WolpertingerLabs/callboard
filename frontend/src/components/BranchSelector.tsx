@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useId, useMemo, type ReactNode } from "react";
+import { useState, useEffect, useCallback, useId, useMemo, useRef, type ReactNode } from "react";
 import { GitBranch, GitFork } from "lucide-react";
 import { getGitBranches, type BranchConfig, type CheckedOutBranch } from "../api";
 import { worktreeDirName } from "shared/types/index.js";
@@ -136,6 +136,13 @@ export default function BranchSelector({ folder, spaceId, currentBranch, isDetac
   const [newBranch, setNewBranch] = useState("");
   const [useWorktree, setUseWorktree] = useState(() => spaceWorktreeDefault ?? getWorktreeByDefault());
 
+  // The current branch as of the latest commit, for the fetch effect to read
+  // without re-running (and so re-clearing the listing) when it changes.
+  const onBranchRef = useRef(onBranch);
+  useEffect(() => {
+    onBranchRef.current = onBranch;
+  }, [onBranch]);
+
   // Fetch branches on mount, and again whenever the folder changes.
   //
   // The clearing is not tidiness. `folder` is a query parameter, not a remount
@@ -144,30 +151,84 @@ export default function BranchSelector({ folder, spaceId, currentBranch, isDetac
   // of the new request, and every sentence below describes them. "feat/y is
   // checked out at callboard.feat-y" is a claim about a repository the user has
   // left.
+  //
+  // Then keep it current. The launchpad stays open while branches and worktrees
+  // are made in a terminal or by another chat, and a listing read once at mount
+  // goes on answering for a repository that has moved: "Will create branch
+  // feat/y" for a branch that now exists, "will switch this checkout" for one a
+  // worktree has since taken. Coming back to the window is the moment those
+  // changes can have happened, so that is when it is read again.
+  //
+  // A refetch is the *same* folder, so nothing is cleared for it: the listing
+  // on screen is the best answer there is until the next one lands, and blanking
+  // it would swap the `<select>` for "Loading..." under the user's cursor every
+  // time they alt-tab back. What they picked and typed is separate state and is
+  // not touched.
   useEffect(() => {
     let current = true;
+    // Requests are numbered so that only the newest one asked may answer: two
+    // in flight land in the order the server answers, not the order they were
+    // asked.
+    let asked = 0;
+    let inFlight = false;
+    let haveListing = false;
     setListing(null);
     setError(null);
-    getGitBranches(folder)
-      .then((data) => {
-        // Two folder changes in flight at once land in the order the server
-        // answers, not the order they were asked — and the loser would overwrite
-        // the winner with another repository's listing.
-        if (!current) return;
-        setListing({
-          branches: data.branches,
-          // Absent on a daemon older than this bundle, which reads as "no branch
-          // is known to be checked out elsewhere" — the summary then says the
-          // switch will happen here, which is what it said before this existed.
-          checkedOut: data.checkedOut ?? [],
+
+    const load = (revalidating: boolean) => {
+      const mine = ++asked;
+      inFlight = true;
+      getGitBranches(folder)
+        .then((data) => {
+          // The folder-change half of the guard: the loser of two folder
+          // changes would overwrite the winner with another repository's
+          // listing.
+          if (!current || mine !== asked) return;
+          inFlight = false;
+          haveListing = true;
+          setListing({
+            branches: data.branches,
+            // Absent on a daemon older than this bundle, which reads as "no branch
+            // is known to be checked out elsewhere" — the summary then says the
+            // switch will happen here, which is what it said before this existed.
+            checkedOut: data.checkedOut ?? [],
+          });
+          setError(null);
+          // The one thing a refetch may take back: a picked base that has since
+          // been deleted. The `<select>` has no option for it any more and would
+          // *show* its first option while this state went on sending the dead
+          // name, so the pick returns to where it started. Only for a refetch:
+          // a first answer normally finds the pick on the checkout's own
+          // branch, which the backend resolves whether or not the listing
+          // carries it.
+          if (revalidating) setBaseBranch((picked) => (picked === "" || data.branches.includes(picked) ? picked : (onBranchRef.current ?? "")));
+        })
+        .catch((err) => {
+          if (!current || mine !== asked) return;
+          inFlight = false;
+          // A refetch that fails leaves a listing that was true a moment ago,
+          // which beats replacing the picker with an error about a blip. With
+          // no listing to keep, the error is the state.
+          if (!haveListing) setError(err.message);
         });
-      })
-      .catch((err) => {
-        if (!current) return;
-        setError(err.message);
-      });
+    };
+    load(false);
+
+    // Both events, because neither covers the other: switching tabs changes
+    // visibility without necessarily moving focus, and switching windows moves
+    // focus while the tab stays visible. Returning to a background tab fires
+    // both, so a request already in flight stands in for the second.
+    const revalidate = () => {
+      if (document.visibilityState !== "visible" || inFlight) return;
+      load(true);
+    };
+    document.addEventListener("visibilitychange", revalidate);
+    window.addEventListener("focus", revalidate);
+
     return () => {
       current = false;
+      document.removeEventListener("visibilitychange", revalidate);
+      window.removeEventListener("focus", revalidate);
     };
   }, [folder]);
 
@@ -283,8 +344,10 @@ export default function BranchSelector({ folder, spaceId, currentBranch, isDetac
    * directory this branch's worktree would have used. `existsSync` reuses it
    * whatever is in it, so the chat runs on that other branch.
    *
-   * `branches` is `git branch --list`, local refs only — the same question
-   * `localBranchExists` answers before deciding whether to pass `-b`.
+   * `branches` is `git for-each-ref refs/heads`, local refs only — the same
+   * question `localBranchExists` answers before deciding whether to pass `-b`.
+   * Its order (current first, then most recently committed) is for the
+   * `<select>`; nothing here reads it as anything but a set.
    */
   const worktreeAtDerivedDir = (branch: string) => checkedOut.find((wt) => wt.path.replace(/\/+$/, "") === derivedPath(branch)) ?? null;
   const worktreeOn = (branch: string) => checkedOut.find((wt) => wt.branch === branch) ?? null;
