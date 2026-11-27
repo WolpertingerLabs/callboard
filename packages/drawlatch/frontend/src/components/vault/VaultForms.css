@@ -1,0 +1,220 @@
+/* Vault dialogs (VaultModals, RequestModals, RevealFlow, ValuesEditor).
+ * The shell is the shared Modal; this file only lays out what's inside. */
+
+.dl-vf-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.dl-vf-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  border: none;
+  min-width: 0;
+}
+
+.dl-vf-section-title {
+  margin: 0;
+  padding: 0;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.dl-vf-help {
+  margin: 0;
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.dl-vf-help.is-error {
+  color: var(--danger-text);
+}
+
+.dl-vf-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.dl-vf-field {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.dl-vf-field > .dl-vf-help {
+  margin-top: 6px;
+}
+
+.dl-vf-pill {
+  display: inline-block;
+  padding: 0 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--code-bg);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
+
+.dl-vf-textarea {
+  resize: vertical;
+  line-height: 1.45;
+}
+
+/* ── Masked value: the field plus its show / copy buttons beside it ──── */
+
+.dl-vf-masked {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.dl-vf-masked > .input {
+  flex: 1 1 auto;
+  min-height: 34px;
+  font-family: var(--font-mono);
+}
+
+/* A hidden multi-line note being typed: textareas have no type="password",
+ * so this masks the paint only (ValuesEditor says so to screen readers). */
+.dl-vf-masked > textarea.is-hidden {
+  -webkit-text-security: disc;
+}
+
+@supports not (-webkit-text-security: disc) {
+  .dl-vf-masked > textarea.is-hidden {
+    color: transparent;
+    text-shadow: 0 0 7px var(--text);
+    /* A transparent color takes the caret with it. */
+    caret-color: var(--text);
+  }
+}
+
+/* A hidden revealed note: dots only, the value isn't in the DOM. */
+.dl-vf-hidden-note {
+  display: flex;
+  flex-direction: column;
+  min-height: 34px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  letter-spacing: 1px;
+  cursor: default;
+}
+
+.dl-vf-dots {
+  display: block;
+}
+
+.dl-vf-masked > .btn {
+  flex-shrink: 0;
+}
+
+.dl-vf-copy-failed {
+  color: var(--danger-text);
+}
+
+/* ── Key/value field name row ───────────────────────────────────────── */
+
+.dl-vf-kv-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.dl-vf-kv-head > .input {
+  flex: 1 1 auto;
+  font-family: var(--font-mono);
+}
+
+.dl-vf-add {
+  align-self: flex-start;
+}
+
+/* ── Radio and checkbox groups ──────────────────────────────────────── */
+
+.dl-vf-radios {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: var(--fs-md);
+  color: var(--text-secondary);
+}
+
+.dl-vf-radio {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.dl-vf-radio input {
+  margin-top: 3px;
+  accent-color: var(--accent);
+  flex-shrink: 0;
+}
+
+.dl-vf-radio.is-disabled {
+  cursor: not-allowed;
+  color: var(--text-muted);
+}
+
+.dl-vf-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  padding-left: 22px;
+  font-size: var(--fs-md);
+}
+
+.dl-vf-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+}
+
+.dl-vf-check input {
+  accent-color: var(--accent);
+}
+
+.dl-vf-warn {
+  color: var(--warning-text);
+}
+
+/* The footer error sits on its own line above the buttons. */
+.dl-vf-footer-error {
+  flex: 1 1 100%;
+}
+
+/* Reveal: seconds left before the values are cleared. */
+.dl-vf-countdown {
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 768px) {
+  /* The icon buttons beside a value are 44px on phones (index.css); the
+   * field matches. */
+  .dl-vf-masked > input.input,
+  .dl-vf-kv-head > .input {
+    min-height: 44px;
+  }
+
+  .dl-vf-radio,
+  .dl-vf-check {
+    min-height: 32px;
+  }
+}

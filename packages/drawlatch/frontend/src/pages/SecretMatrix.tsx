@@ -1,365 +1,366 @@
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { AlertTriangle, CheckCircle2, KeyRound } from "lucide-react";
 import type { AdminSecret } from "drawlatch-admin-types";
 import { api, isDaemonDown } from "../api";
 import { useDaemon } from "../contexts/DaemonContext";
-
-type FetchState =
-  | { status: "loading" }
-  | { status: "ok"; secrets: AdminSecret[] }
-  | { status: "error"; message: string };
+import { useNow, usePolling } from "../hooks/usePolling";
+import DaemonOffline from "../components/DaemonOffline";
+import EmptyState, { LoadingState } from "../components/EmptyState";
+import { timeAgo } from "../utils/format";
+import "./SecretMatrix.css";
 
 const POLL_INTERVAL_MS = 10_000;
 
+/**
+ * Required secrets, counted per caller and connection: "present of total".
+ * The one definition, shared by this page and the Overview card.
+ */
+export function countRequiredSecrets(secrets: readonly AdminSecret[]): {
+  total: number;
+  present: number;
+} {
+  let total = 0;
+  let present = 0;
+  for (const s of secrets) {
+    if (!s.required) continue;
+    total += 1;
+    if (s.present) present += 1;
+  }
+  return { total, present };
+}
+
 export default function SecretMatrix() {
   const { daemon } = useDaemon();
-  const [state, setState] = useState<FetchState>({ status: "loading" });
+  const now = useNow(5_000);
+  // The last matrix that loaded stays on screen when a poll fails.
+  const [secrets, setSecrets] = useState<AdminSecret[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loadedAt, setLoadedAt] = useState<number | null>(null);
   const [onlyMissing, setOnlyMissing] = useState(false);
 
-  useEffect(() => {
-    if (daemon !== "up") return;
-
-    let cancelled = false;
-    let interval: ReturnType<typeof setInterval> | null = null;
-
-    const poll = async () => {
+  usePolling(
+    async (ctx) => {
       const res = await api.secrets();
-      if (cancelled) return;
+      if (!ctx.active()) return;
       if (isDaemonDown(res)) {
-        setState({ status: "error", message: res.error });
+        setError(res.error);
         return;
       }
-      setState({ status: "ok", secrets: res });
-    };
+      setSecrets(res);
+      setError(null);
+      setLoadedAt(Date.now());
+    },
+    POLL_INTERVAL_MS,
+    { enabled: daemon === "up" },
+  );
 
-    const start = () => {
-      if (interval !== null) return;
-      interval = setInterval(poll, POLL_INTERVAL_MS);
-    };
-    const stop = () => {
-      if (interval === null) return;
-      clearInterval(interval);
-      interval = null;
-    };
+  const matrix = useMemo(() => (secrets ? buildMatrix(secrets) : null), [secrets]);
+  const summary = useMemo(() => (secrets ? countRequiredSecrets(secrets) : null), [secrets]);
 
-    poll();
-    if (document.visibilityState === "visible") start();
-
-    const onVisibility = () => {
-      if (document.visibilityState === "visible") {
-        poll();
-        start();
-      } else {
-        stop();
-      }
-    };
-    document.addEventListener("visibilitychange", onVisibility);
-
-    return () => {
-      cancelled = true;
-      stop();
-      document.removeEventListener("visibilitychange", onVisibility);
-    };
-  }, [daemon]);
-
-  const pivot = useMemo(() => {
-    if (state.status !== "ok") return null;
-    return pivotByConnection(state.secrets);
-  }, [state]);
-
-  const summary = useMemo(() => {
-    if (state.status !== "ok") return null;
-    let total = 0;
-    let present = 0;
-    for (const s of state.secrets) {
-      if (!s.required) continue;
-      total += 1;
-      if (s.present) present += 1;
-    }
-    return { total, present };
-  }, [state]);
+  const header = (
+    <header className="page-header">
+      <div>
+        <h1 className="page-title">Secrets</h1>
+        <div className="subtitle-meta">
+          <span>Which secrets each caller has set, by connection</span>
+          <span className="dot-sep">·</span>
+          <span>polling every 10s</span>
+        </div>
+      </div>
+      {/* Hidden while offline: a stale count beside "not reachable". */}
+      {summary && summary.total > 0 && daemon !== "down" && (
+        <span className="page-subtitle">
+          {summary.present} of {summary.total} required secrets configured
+        </span>
+      )}
+    </header>
+  );
 
   if (daemon === "down") {
     return (
       <>
-        <header className="page-header">
-          <h1 className="page-title">Secrets</h1>
-        </header>
-        <div className="banner banner-offline">
-          <span className="status-dot down" aria-hidden="true" />
-          <span>
-            Drawlatch daemon is not reachable. Start it with{" "}
-            <code>drawlatch start</code> to load the secrets matrix.
-          </span>
-        </div>
+        {header}
+        <DaemonOffline action="load the secrets matrix" />
       </>
     );
   }
 
-  const isLoading = state.status === "loading";
-  const isError = state.status === "error";
-
   return (
     <>
-      <header className="page-header">
-        <div>
-          <h1 className="page-title">Secrets</h1>
-          <div className="subtitle-meta">
-            <span>Presence of required and optional secrets per caller</span>
-            <span className="dot-sep">·</span>
-            <span>polling every 10s</span>
-          </div>
-        </div>
-        {summary && (
-          <span className="page-subtitle">
-            {summary.present} of {summary.total} required secrets configured
-          </span>
-        )}
-      </header>
+      {header}
 
-      {state.status === "ok" && state.secrets.length > 0 && (
-        <div className="secret-matrix-controls">
-          <label className="secret-matrix-toggle">
-            <input
-              type="checkbox"
-              checked={onlyMissing}
-              onChange={(e) => setOnlyMissing(e.target.checked)}
-            />
-            <span>Only show callers with missing required secrets</span>
-          </label>
-        </div>
-      )}
+      {!secrets && !error && <LoadingState label="Loading secrets…" />}
 
-      {isLoading && (
-        <div className="banner banner-loading">Loading secrets…</div>
-      )}
-
-      {isError && (
-        <div className="banner banner-offline">
-          <span className="status-dot down" aria-hidden="true" />
-          <span>Failed to load secrets: {state.message}</span>
-        </div>
-      )}
-
-      {state.status === "ok" && state.secrets.length === 0 && (
-        <div className="placeholder">
-          <span className="placeholder-title">No secrets declared</span>
+      {error && (
+        <div className={`banner ${secrets ? "banner-warn" : "banner-offline"}`} role="status">
+          <AlertTriangle size={14} aria-hidden="true" />
           <span>
-            No callers have connections that declare required or optional
-            secrets.
+            {secrets
+              ? `Couldn't refresh: ${error}. Last updated ${timeAgo(loadedAt, now)}.`
+              : `Couldn't load secrets: ${error}`}
           </span>
         </div>
       )}
 
-      {state.status === "ok" && pivot && pivot.length > 0 && (
-        <SecretMatrixView pivot={pivot} onlyMissing={onlyMissing} />
+      {matrix && matrix.groups.length === 0 && (
+        <EmptyState
+          icon={<KeyRound size={20} />}
+          title="No secrets declared"
+          body="None of your callers' connections declare required or optional secrets."
+        />
+      )}
+
+      {matrix && matrix.groups.length > 0 && (
+        <>
+          <div className="dl-matrix-toolbar">
+            <label className="dl-matrix-toggle">
+              <input
+                type="checkbox"
+                checked={onlyMissing}
+                onChange={(e) => setOnlyMissing(e.target.checked)}
+              />
+              <span>Only show missing required secrets</span>
+            </label>
+            <Legend />
+          </div>
+          <MatrixTable matrix={matrix} onlyMissing={onlyMissing} />
+        </>
       )}
     </>
   );
 }
 
-interface RowData {
-  callerAlias: string;
-  cells: Map<string, { required: boolean; present: boolean }>;
-  hasMissingRequired: boolean;
+// ── Model ────────────────────────────────────────────────────────────────
+
+type Cell = { required: boolean; present: boolean } | undefined;
+
+interface SecretRow {
+  name: string;
+  required: boolean;
+  /** caller alias → cell; absent when that caller doesn't use the secret. */
+  cells: Map<string, Cell>;
+  missingRequired: boolean;
 }
 
 interface ConnectionGroup {
   connection: string;
-  columns: { name: string; required: boolean }[];
-  rows: RowData[];
+  rows: SecretRow[];
+  required: { total: number; present: number };
 }
 
-function pivotByConnection(secrets: AdminSecret[]): ConnectionGroup[] {
-  // Group secrets by connection alias.
-  const byConnection = new Map<string, AdminSecret[]>();
+interface Matrix {
+  callers: string[];
+  groups: ConnectionGroup[];
+}
+
+/** One row per (connection, secret name), one column per caller. */
+function buildMatrix(secrets: readonly AdminSecret[]): Matrix {
+  const callers = new Set<string>();
+  const byConnection = new Map<string, Map<string, SecretRow>>();
+  const requiredByConnection = new Map<string, AdminSecret[]>();
+
   for (const s of secrets) {
-    const list = byConnection.get(s.connection);
-    if (list) list.push(s);
-    else byConnection.set(s.connection, [s]);
+    callers.add(s.callerAlias);
+    let rows = byConnection.get(s.connection);
+    if (!rows) byConnection.set(s.connection, (rows = new Map()));
+    let row = rows.get(s.name);
+    if (!row) {
+      row = { name: s.name, required: false, cells: new Map(), missingRequired: false };
+      rows.set(s.name, row);
+    }
+    // If a name is required for any caller, the row is a required one.
+    row.required ||= s.required;
+    row.cells.set(s.callerAlias, { required: s.required, present: s.present });
+    if (s.required && !s.present) row.missingRequired = true;
+    if (s.required) {
+      const list = requiredByConnection.get(s.connection) ?? [];
+      list.push(s);
+      requiredByConnection.set(s.connection, list);
+    }
   }
 
-  const groups: ConnectionGroup[] = [];
-  for (const [connection, items] of byConnection) {
-    // Build column set (unique secret names for this connection).
-    const colMap = new Map<string, boolean>();
-    for (const s of items) {
-      const prev = colMap.get(s.name);
-      // If a name appears as both required and optional across callers (it
-      // shouldn't, but be defensive), treat it as required.
-      colMap.set(s.name, (prev ?? false) || s.required);
-    }
-    const columns = [...colMap.entries()]
-      .map(([name, required]) => ({ name, required }))
-      .sort((a, b) => {
-        if (a.required !== b.required) return a.required ? -1 : 1;
-        return a.name.localeCompare(b.name);
-      });
+  const groups: ConnectionGroup[] = [...byConnection.entries()]
+    .map(([connection, rows]) => ({
+      connection,
+      rows: [...rows.values()].sort((a, b) =>
+        a.required !== b.required ? (a.required ? -1 : 1) : a.name.localeCompare(b.name),
+      ),
+      required: countRequiredSecrets(requiredByConnection.get(connection) ?? []),
+    }))
+    .sort((a, b) => a.connection.localeCompare(b.connection));
 
-    // Build rows by caller alias.
-    const byCaller = new Map<string, AdminSecret[]>();
-    for (const s of items) {
-      const list = byCaller.get(s.callerAlias);
-      if (list) list.push(s);
-      else byCaller.set(s.callerAlias, [s]);
-    }
-
-    const rows: RowData[] = [];
-    for (const [callerAlias, callerSecrets] of byCaller) {
-      const cells = new Map<
-        string,
-        { required: boolean; present: boolean }
-      >();
-      for (const s of callerSecrets) {
-        cells.set(s.name, { required: s.required, present: s.present });
-      }
-      let hasMissingRequired = false;
-      for (const col of columns) {
-        const cell = cells.get(col.name);
-        if (col.required && (!cell || !cell.present)) {
-          hasMissingRequired = true;
-          break;
-        }
-      }
-      rows.push({ callerAlias, cells, hasMissingRequired });
-    }
-    rows.sort((a, b) => a.callerAlias.localeCompare(b.callerAlias));
-
-    groups.push({ connection, columns, rows });
-  }
-
-  groups.sort((a, b) => a.connection.localeCompare(b.connection));
-  return groups;
+  return { callers: [...callers].sort((a, b) => a.localeCompare(b)), groups };
 }
 
-function SecretMatrixView({
-  pivot,
-  onlyMissing,
-}: {
-  pivot: ConnectionGroup[];
-  onlyMissing: boolean;
-}) {
-  const filtered = onlyMissing
-    ? pivot
-        .map((g) => ({
-          ...g,
-          rows: g.rows.filter((r) => r.hasMissingRequired),
-        }))
-        .filter((g) => g.rows.length > 0)
-    : pivot;
+// ── View ─────────────────────────────────────────────────────────────────
 
-  if (filtered.length === 0) {
+function Legend() {
+  return (
+    <ul className="dl-matrix-legend" aria-label="Legend">
+      <li>
+        <Mark kind="set" /> Set
+      </li>
+      <li>
+        <Mark kind="missing" /> Required, missing
+      </li>
+      <li>
+        <Mark kind="unset" /> Optional, not set
+      </li>
+      <li>
+        <Mark kind="unused" /> Caller doesn't use it
+      </li>
+    </ul>
+  );
+}
+
+function MatrixTable({ matrix, onlyMissing }: { matrix: Matrix; onlyMissing: boolean }) {
+  const groups = onlyMissing
+    ? matrix.groups
+        .map((g) => ({ ...g, rows: g.rows.filter((r) => r.missingRequired) }))
+        .filter((g) => g.rows.length > 0)
+    : matrix.groups;
+
+  if (groups.length === 0) {
     return (
-      <div className="placeholder">
-        <span className="placeholder-title">All required secrets present</span>
-        <span>Every caller has every required secret configured.</span>
-      </div>
+      <EmptyState
+        icon={<CheckCircle2 size={20} />}
+        title="All required secrets are set"
+        body="Every caller has every required secret configured."
+      />
     );
   }
 
+  const span = matrix.callers.length + 1;
   return (
-    <div className="secret-matrix">
-      {filtered.map((group) => (
-        <ConnectionMatrix key={group.connection} group={group} />
-      ))}
+    <div className="data-table-wrap dl-matrix-wrap">
+      <table className="data-table dl-matrix-table">
+        <thead>
+          <tr>
+            <th scope="col" className="dl-matrix-name">
+              Secret
+            </th>
+            {matrix.callers.map((alias) => (
+              <CallerHeader key={alias} alias={alias} />
+            ))}
+          </tr>
+        </thead>
+        {groups.map((group) => (
+          <tbody key={group.connection}>
+            <tr className="dl-matrix-group">
+              <th colSpan={span} scope="colgroup">
+                <div className="dl-matrix-group-inner">
+                  <span className="mono dl-matrix-group-name">{group.connection}</span>
+                  <span className="dl-matrix-group-meta">
+                    {group.required.total === 0
+                      ? "optional only"
+                      : `${group.required.present} of ${group.required.total} required set`}
+                  </span>
+                </div>
+              </th>
+            </tr>
+            {group.rows.map((row) => (
+              <tr key={row.name}>
+                <th scope="row" className="dl-matrix-name">
+                  <span className={`mono ${row.required ? "" : "dl-matrix-optional-name"}`}>
+                    {breakAfterUnderscores(row.name)}
+                  </span>
+                  {!row.required && <span className="dl-matrix-optional-tag">optional</span>}
+                </th>
+                {matrix.callers.map((alias) => (
+                  <td key={alias} className="dl-matrix-cell">
+                    <CellMark cell={row.cells.get(alias)} />
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        ))}
+      </table>
     </div>
   );
 }
 
-function ConnectionMatrix({ group }: { group: ConnectionGroup }) {
+/** A caller column's header. The alias is clamped to a few lines so one long
+ *  alias can't make the header band tall. A clamped one becomes a button that
+ *  shows it in full: the title tooltip alone can't be reached on touch. */
+function CallerHeader({ alias }: { alias: string }) {
+  const thRef = useRef<HTMLTableCellElement>(null);
+  const [clamped, setClamped] = useState(false);
+  const [open, setOpen] = useState(false);
+
+  useLayoutEffect(() => {
+    const th = thRef.current;
+    if (!th || open) return;
+    // The name span is re-created when it moves into the button, so look it
+    // up at each measure; the cell itself is stable.
+    const measure = () => {
+      const el = th.querySelector<HTMLElement>(".dl-matrix-caller-name");
+      if (el) setClamped(el.scrollHeight > el.clientHeight + 1);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(th);
+    return () => ro.disconnect();
+  }, [alias, open]);
+
+  const name = (
+    <span className={`mono dl-matrix-caller-name${open ? " is-open" : ""}`}>{alias}</span>
+  );
   return (
-    <section className="secret-matrix-section">
-      <header className="secret-matrix-section-header">
-        <span className="secret-matrix-section-label">connection</span>
-        <span className="mono">{group.connection}</span>
-        <span className="secret-matrix-section-meta">
-          {group.rows.length} caller{group.rows.length === 1 ? "" : "s"}
-          {" · "}
-          {group.columns.length} secret
-          {group.columns.length === 1 ? "" : "s"}
-        </span>
-      </header>
-      <div className="secret-matrix-scroll">
-        <div className="data-table-wrap secret-matrix-wrap">
-          <table className="data-table secret-matrix-table">
-            <thead>
-              <tr>
-                <th className="secret-matrix-caller-col">Caller</th>
-                {group.columns.map((col) => (
-                  <th
-                    key={col.name}
-                    className={`secret-matrix-col ${col.required ? "secret-matrix-col-required" : "secret-matrix-col-optional"}`}
-                    title={
-                      col.required ? "required secret" : "optional secret"
-                    }
-                  >
-                    <span className="mono">{col.name}</span>
-                    {col.required && (
-                      <span
-                        className="secret-matrix-required-mark"
-                        aria-label="required"
-                      >
-                        *
-                      </span>
-                    )}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {group.rows.map((row) => (
-                <tr key={row.callerAlias}>
-                  <td className="secret-matrix-caller-col">
-                    <span className="mono">{row.callerAlias}</span>
-                  </td>
-                  {group.columns.map((col) => {
-                    const cell = row.cells.get(col.name);
-                    return (
-                      <td
-                        key={col.name}
-                        className="secret-matrix-cell"
-                      >
-                        <SecretCell required={col.required} cell={cell} />
-                      </td>
-                    );
-                  })}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </section>
+    <th ref={thRef} scope="col" className="dl-matrix-caller" title={alias}>
+      {clamped || open ? (
+        <button
+          type="button"
+          className="dl-matrix-caller-toggle"
+          aria-expanded={open}
+          onClick={() => setOpen((x) => !x)}
+        >
+          {name}
+        </button>
+      ) : (
+        name
+      )}
+    </th>
   );
 }
 
-function SecretCell({
-  required,
-  cell,
-}: {
-  required: boolean;
-  cell: { required: boolean; present: boolean } | undefined;
-}) {
-  // No declaration of this secret for this caller (e.g. only some callers
-  // include this connection's optional secret in their environment).
-  if (!cell) {
-    return <span className="cell-muted" aria-label="not declared">—</span>;
-  }
-  if (cell.present) {
-    return (
-      <span
-        className={`secret-matrix-mark ${required ? "secret-matrix-mark-required-present" : "secret-matrix-mark-optional-present"}`}
-        aria-label="present"
-      >
-        ✓
-      </span>
-    );
-  }
+function CellMark({ cell }: { cell: Cell }) {
+  if (!cell) return <Mark kind="unused" label="not used" />;
+  if (cell.present) return <Mark kind="set" label="set" />;
+  return cell.required ? (
+    <Mark kind="missing" label="missing" />
+  ) : (
+    <Mark kind="unset" label="not set" />
+  );
+}
+
+/** SLACK_BOT_TOKEN → SLACK_<wbr>BOT_<wbr>TOKEN: a narrow column wraps it
+ *  between words instead of mid-word. */
+function breakAfterUnderscores(name: string) {
+  const parts = name.split("_");
+  return parts.map((part, i) => (
+    <Fragment key={i}>
+      {part}
+      {i < parts.length - 1 && (
+        <>
+          _<wbr />
+        </>
+      )}
+    </Fragment>
+  ));
+}
+
+const MARK_GLYPH = { set: "✓", missing: "✗", unset: "○", unused: "—" } as const;
+
+/** The glyph is decorative; the label is screen-reader text (a span's
+ *  aria-label is ignored). */
+function Mark({ kind, label }: { kind: keyof typeof MARK_GLYPH; label?: string }) {
   return (
-    <span
-      className={`secret-matrix-mark ${required ? "secret-matrix-mark-required-missing" : "secret-matrix-mark-optional-missing"}`}
-      aria-label="missing"
-    >
-      ✗
-    </span>
+    <>
+      <span className={`dl-matrix-mark is-${kind}`} aria-hidden="true">
+        {MARK_GLYPH[kind]}
+      </span>
+      {label && <span className="sr-only">{label}</span>}
+    </>
   );
 }

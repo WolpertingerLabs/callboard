@@ -21,7 +21,6 @@ export interface GoogleDraft {
 
 export type Level = AdminGoogleCatalog["services"][number]["levels"][number];
 
-
 export function draftFrom(sel: AdminGoogleSelectionConfig | null): GoogleDraft {
   return {
     auth: sel?.auth ?? "user",
@@ -54,6 +53,24 @@ export function sameSelection(
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
+/**
+ * Whether `next` differs from the stored selection. A caller with no stored
+ * selection opens the editor on the default draft (user OAuth, no services,
+ * no subject); that draft means the same as "none", so it isn't a change.
+ * Switching to a service account or typing a subject is.
+ */
+export function selectionChanged(
+  saved: AdminGoogleSelectionConfig | null,
+  next: AdminGoogleSelectionConfig,
+): boolean {
+  if (saved === null) {
+    return (
+      next.auth !== "user" || Object.keys(next.services).length > 0 || next.subject !== undefined
+    );
+  }
+  return !sameSelection(saved, next);
+}
+
 /** Each selected level, in catalog order. */
 export function pickedLevels(
   catalog: AdminGoogleCatalog,
@@ -73,16 +90,11 @@ export function consentScopesOf(
   catalog: AdminGoogleCatalog,
   sel: AdminGoogleSelectionConfig,
 ): string[] {
-  return [
-    ...new Set(pickedLevels(catalog, sel).flatMap((p) => p.level.scopes)),
-  ].sort();
+  return [...new Set(pickedLevels(catalog, sel).flatMap((p) => p.level.scopes))].sort();
 }
 
 /** What would stop the daemon accepting the draft, or null. */
-export function draftProblem(
-  catalog: AdminGoogleCatalog,
-  d: GoogleDraft,
-): string | null {
+export function draftProblem(catalog: AdminGoogleCatalog, d: GoogleDraft): string | null {
   const sel = selectionFrom(catalog, d);
   if (Object.keys(sel.services).length === 0) {
     return "Choose a level for at least one service.";
@@ -148,10 +160,7 @@ export function addedScopes(
 }
 
 /** The catalog notes whose `when` the selection contains. */
-export function notesFor(
-  catalog: AdminGoogleCatalog,
-  sel: AdminGoogleSelectionConfig,
-): string[] {
+export function notesFor(catalog: AdminGoogleCatalog, sel: AdminGoogleSelectionConfig): string[] {
   return catalog.crossScopeNotes
     .filter((n) =>
       Object.entries(n.when).every(

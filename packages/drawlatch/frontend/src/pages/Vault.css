@@ -1,42 +1,50 @@
 /* ── Vault page ──────────────────────────────────────────────────────── */
 
+.dl-vault-heading {
+  min-width: 0;
+}
+
 .dl-vault-caller-select {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
+  min-width: 0;
+  flex-shrink: 1;
 }
 
+/* Same label as the Events page's caller picker. */
 .dl-vault-caller-label {
-  color: var(--text-muted);
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.6px;
+  flex-shrink: 0;
+  margin-bottom: 0;
 }
 
+/* A long "Name (alias) · N" must not stretch the header (or the phone). */
 .dl-vault-caller-select select {
-  padding: 6px 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg);
-  color: var(--text);
-  font-size: 13px;
+  width: 280px;
+  max-width: 100%;
+  min-width: 0;
+  text-overflow: ellipsis;
 }
+
+/* ── Tabs ────────────────────────────────────────────────────────────── */
 
 .dl-vault-tabs {
   display: flex;
-  gap: 4px;
+  gap: var(--space-1);
   border-bottom: 1px solid var(--border);
-  margin-bottom: 16px;
+  margin-bottom: var(--space-4);
 }
 
 .dl-vault-tab {
+  display: inline-flex;
+  align-items: center;
   padding: 8px 14px;
   border: none;
   border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
   background: transparent;
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-weight: 500;
   cursor: pointer;
 }
@@ -50,95 +58,132 @@
   border-bottom-color: var(--accent);
 }
 
-.dl-vault-toolbar {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 16px;
+.dl-vault-tab:focus-visible {
+  outline-offset: -2px;
 }
-
-.dl-vault-toolbar .detail-note {
-  margin: 0;
-  max-width: 720px;
-}
-
-.dl-vault-toolbar .dl-cred-btn {
-  flex-shrink: 0;
-}
-
-.dl-vault-exposure {
-  display: inline-block;
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
-}
-
-.dl-vault-exposure-inject {
-  background: var(--accent-bg);
-  color: var(--accent);
-}
-
-.dl-vault-exposure-reveal {
-  background: var(--warning-bg);
-  color: var(--warning);
-}
-
-.dl-vault-actions {
-  display: flex;
-  gap: 4px;
-  justify-content: flex-end;
-}
-
-.dl-vault-icon-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-}
-
-.dl-vault-icon-btn:hover {
-  color: var(--text);
-  border-color: var(--text-muted);
-}
-
-.dl-vault-icon-btn.is-danger:hover {
-  color: var(--danger);
-  border-color: var(--danger-border);
-  background: var(--danger-bg);
-}
-
-/* ── Requests and grants ─────────────────────────────────────────────── */
 
 .dl-vault-count {
   display: inline-block;
   margin-left: 6px;
   min-width: 18px;
   padding: 0 6px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--warning-bg);
-  color: var(--warning);
-  font-size: 11px;
+  color: var(--warning-text);
+  font-size: var(--fs-xs);
   font-weight: 600;
   line-height: 16px;
+  text-align: center;
+}
+
+/* ── Toolbar and intro copy ──────────────────────────────────────────── */
+
+.dl-vault-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3) var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
+.dl-vault-toolbar .detail-note,
+.dl-vault-intro {
+  margin: 0;
+  max-width: 720px;
+}
+
+.dl-vault-toolbar .detail-note {
+  flex: 1 1 320px;
+}
+
+.dl-vault-intro {
+  margin-bottom: var(--space-4);
+}
+
+/* ── Tables ──────────────────────────────────────────────────────────── */
+
+.dl-vault-actions {
+  display: flex;
+  gap: var(--space-1);
+  justify-content: flex-end;
+  align-items: center;
+}
+
+/* The actions column stays in view when the table is wider than its box
+ * (tablets: the sidebar leaves ~790px). */
+.dl-vault-table.has-actions th:last-child,
+.dl-vault-table.has-actions td:last-child {
+  position: sticky;
+  right: 0;
+  z-index: var(--z-sticky);
+  box-shadow: -1px 0 0 var(--border-light);
+}
+
+.dl-vault-table.has-actions td:last-child {
+  background: var(--surface);
+}
+
+.dl-vault-table.has-actions th:last-child {
+  background: var(--bg-secondary);
+}
+
+@media (max-width: 1024px) {
+  /* The value-changed time is in the cell's title; the date column is the
+   * cheapest to drop for room. */
+  .dl-vault-col-optional {
+    display: none;
+  }
+}
+
+.dl-vault-icon-danger:hover:not(:disabled) {
+  background: var(--danger-bg);
+  color: var(--danger-text);
+}
+
+.dl-vault-nowrap {
+  white-space: nowrap;
+}
+
+.dl-vault-break {
+  overflow-wrap: anywhere;
+}
+
+.dl-vault-name-cell {
+  min-width: 180px;
+  overflow-wrap: anywhere;
+}
+
+.dl-vault-item-cell {
+  min-width: 200px;
+}
+
+.dl-vault-tag {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .dl-vault-missing {
-  color: var(--danger);
+  color: var(--danger-text);
   font-weight: 500;
 }
 
+/* ── Agent-written reasons ───────────────────────────────────────────── */
+
 .dl-vault-reason {
   max-width: 420px;
+  min-width: 200px;
+}
+
+/* With the sidebar beside it the table has ~790px at 900px wide. A 200px
+ * floor on the reason pushed it ~30px past that, and the pinned actions
+ * column then sat over the reason's last words. */
+@media (max-width: 1024px) {
+  .dl-vault-reason {
+    min-width: 140px;
+  }
 }
 
 .dl-vault-reason-label {
@@ -149,22 +194,8 @@
   margin-bottom: 2px;
 }
 
-.dl-vault-unbound {
-  color: var(--warning);
-}
-
-.dl-vault-over {
-  color: var(--danger);
-}
-
 .dl-vault-reason-who {
   text-transform: none;
-}
-
-.dl-vault-deny-only {
-  align-self: center;
-  font-size: 12px;
-  font-style: italic;
 }
 
 .dl-vault-reason-text {
@@ -172,73 +203,102 @@
   overflow-wrap: anywhere;
 }
 
+.dl-vault-reason-text.is-clamped {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+}
+
+.dl-vault-more {
+  position: relative;
+  margin-top: 2px;
+  padding: 0;
+  color: var(--accent-hover);
+  font-size: var(--fs-sm);
+}
+
+.dl-vault-more:hover {
+  text-decoration: underline;
+}
+
+/* ── History (decided requests, revoked grants) ──────────────────────── */
+
 .dl-vault-history {
-  margin-top: 20px;
+  margin-top: var(--space-5);
 }
 
 .dl-vault-history summary {
   cursor: pointer;
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-weight: 500;
   margin-bottom: 10px;
 }
 
-/* ── Vault modals (on top of ConfigureConnectionModal.css) ───────────── */
-
-.dl-vault-radio-group {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  font-size: 12.5px;
+.dl-vault-history summary:hover {
+  color: var(--text);
 }
 
-.dl-vault-radio {
+/* ── Phone cards ─────────────────────────────────────────────────────── */
+
+.dl-vault-card-actions {
   display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.dl-vault-card-actions > .btn:not(.btn-icon) {
+  flex: 1 1 0;
+}
+
+.mobile-card-kv dd.dl-vault-kv-tags .badge-row {
+  justify-content: flex-end;
+}
+
+ul.dl-vault-cards {
+  list-style: none;
+}
+
+/* Title left, badge right, even when a long alias or name wraps. */
+.dl-vault-cards .mobile-card-header {
+  flex-wrap: nowrap;
   align-items: flex-start;
-  gap: 8px;
-  cursor: pointer;
 }
 
-.dl-vault-radio input {
+.dl-vault-cards .mobile-card-header > .badge {
+  flex-shrink: 0;
   margin-top: 2px;
 }
 
-.dl-vault-checks {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px 14px;
-  padding-left: 22px;
-  font-size: 12.5px;
+.dl-vault-table th {
+  white-space: nowrap;
 }
 
-.dl-vault-check {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  cursor: pointer;
-}
+@media (max-width: 768px) {
+  /* The header stacks; the selector takes the full width under the title. */
+  .dl-vault-caller-select {
+    align-self: stretch;
+  }
 
-.dl-vault-kv-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
+  .dl-vault-caller-select select {
+    width: auto;
+    flex: 1 1 auto;
+  }
 
-.dl-secrets-input.dl-vault-kv-name {
-  padding-right: 12px;
-}
+  .dl-vault-toolbar > .btn {
+    width: 100%;
+  }
 
-.dl-secrets-input.dl-vault-textarea {
-  padding-right: 12px;
-  resize: vertical;
-  font-family: inherit;
-}
+  .dl-vault-tab {
+    flex: 1 1 0;
+    justify-content: center;
+    padding: 8px;
+  }
 
-.dl-secrets-eye.dl-vault-copy {
-  right: 36px;
-}
-
-.dl-secrets-input-wrap:has(.dl-vault-copy) .dl-secrets-input {
-  padding-right: 68px;
+  .dl-vault-reason {
+    max-width: none;
+    min-width: 0;
+  }
 }

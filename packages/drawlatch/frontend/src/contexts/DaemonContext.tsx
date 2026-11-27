@@ -1,27 +1,33 @@
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
 } from "react";
 import type { AdminMeta } from "drawlatch-admin-types";
-import { api, isDaemonDown } from "../api";
+import { api, DAEMON_UNREACHABLE, isDaemonDown, isUnreachable } from "../api";
 
 type DaemonStatus = "up" | "down" | "unknown";
 
 interface DaemonContextValue {
   daemon: DaemonStatus;
+  /** Null until the first successful poll, and while the daemon is down. */
   meta: AdminMeta | null;
-  /** Increments on every successful poll — use as a refetch dependency. */
+  /** Increments on every completed poll — use as a refetch dependency. */
   tick: number;
+  /** Poll now (the offline banner's "Retry now"). Resolves when done. */
+  recheck: () => Promise<void>;
 }
 
 const DaemonContext = createContext<DaemonContextValue>({
   daemon: "unknown",
   meta: null,
   tick: 0,
+  recheck: () => Promise.resolve(),
 });
 
 const POLL_INTERVAL_MS = 5_000;
@@ -35,47 +41,73 @@ export function DaemonProvider({ children }: { children: ReactNode }) {
   const [meta, setMeta] = useState<AdminMeta | null>(null);
   const [tick, setTick] = useState(0);
   const mountedRef = useRef(true);
-  const pollRef = useRef<() => Promise<void>>(() => Promise.resolve());
+  // One poll at a time: a slow or hanging request must not pile up more.
+  const inFlightRef = useRef<Promise<void> | null>(null);
+  const lastPollAtRef = useRef(0);
 
-  useEffect(() => {
-    mountedRef.current = true;
+  const markDown = useCallback(() => {
+    setDaemon("down");
+    // Stale pid/uptime next to "offline" is wrong information; drop it.
+    setMeta(null);
+  }, []);
 
-    const poll = async () => {
-      // Health is the heartbeat. When it succeeds, also refresh meta if we
-      // don't have it yet (or if the daemon was previously down — pid/version
-      // could have changed across a restart).
+  const pollOnce = useCallback(async () => {
+    try {
+      // Health is the heartbeat; meta carries version/pid for the sidebar
+      // and Overview, and may change across a restart, so refresh it too.
       const health = await api.health();
       if (!mountedRef.current) return;
-
       if (isDaemonDown(health)) {
-        setDaemon("down");
-        setMeta(null);
-        setTick((t) => t + 1);
-        return;
+        // 401: the auth handler is already switching to Login.
+        if (health.kind === "auth") return;
+        if (isUnreachable(health)) {
+          markDown();
+          return;
+        }
+        // Any other error means the daemon answered: fall through to meta.
       }
 
       const metaRes = await api.meta();
       if (!mountedRef.current) return;
       if (isDaemonDown(metaRes)) {
-        setDaemon("down");
-        setMeta(null);
-      } else {
+        if (metaRes.kind === "auth") return;
+        if (isUnreachable(metaRes)) {
+          markDown();
+          return;
+        }
+        // Reachable but meta failed: up, keeping the last meta we had.
         setDaemon("up");
-        setMeta(metaRes);
+        return;
       }
-      setTick((t) => t + 1);
-    };
+      setDaemon("up");
+      setMeta(metaRes);
+    } catch {
+      // getJson doesn't throw, but nothing here may leave the status stuck.
+      if (mountedRef.current) markDown();
+    } finally {
+      if (mountedRef.current) setTick((t) => t + 1);
+    }
+  }, [markDown]);
 
-    pollRef.current = poll;
-    poll();
+  const poll = useCallback((): Promise<void> => {
+    if (inFlightRef.current) return inFlightRef.current;
+    lastPollAtRef.current = Date.now();
+    const p = pollOnce().finally(() => {
+      inFlightRef.current = null;
+    });
+    inFlightRef.current = p;
+    return p;
+  }, [pollOnce]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    void poll();
 
     let interval: ReturnType<typeof setInterval> | null = null;
 
     const start = () => {
       if (interval !== null) return;
-      interval = setInterval(() => {
-        pollRef.current();
-      }, POLL_INTERVAL_MS);
+      interval = setInterval(() => void poll(), POLL_INTERVAL_MS);
     };
 
     const stop = () => {
@@ -90,25 +122,35 @@ export function DaemonProvider({ children }: { children: ReactNode }) {
       if (document.visibilityState === "visible") {
         // Resume immediately so the UI reflects current state without waiting
         // a full poll interval.
-        pollRef.current();
+        void poll();
         start();
       } else {
         stop();
       }
     };
 
+    // Any request that got no response: check now rather than in 5s (but
+    // not once per failed request while every page poll is failing).
+    const onUnreachable = () => {
+      if (Date.now() - lastPollAtRef.current < 1_500) return;
+      void poll();
+    };
+
     document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener(DAEMON_UNREACHABLE, onUnreachable);
 
     return () => {
       mountedRef.current = false;
       stop();
       document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener(DAEMON_UNREACHABLE, onUnreachable);
     };
-  }, []);
+  }, [poll]);
 
-  return (
-    <DaemonContext.Provider value={{ daemon, meta, tick }}>
-      {children}
-    </DaemonContext.Provider>
+  const value = useMemo(
+    () => ({ daemon, meta, tick, recheck: poll }),
+    [daemon, meta, tick, poll],
   );
+
+  return <DaemonContext.Provider value={value}>{children}</DaemonContext.Provider>;
 }

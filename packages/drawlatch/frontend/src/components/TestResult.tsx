@@ -4,8 +4,10 @@
  * result's own `success`. A connection with several tests (`google`) reports
  * `services`, rendered one line per service.
  */
-import { AlertTriangle, Check, Copy } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { AlertTriangle, Check, Copy, X } from "lucide-react";
 import { shortScope } from "./AuthSummary";
+import { copyText } from "../utils/clipboard";
 
 export interface TestOutcome {
   ok: boolean;
@@ -109,6 +111,7 @@ export function TestResultView({
                 <span className="dl-test-svc-mark" aria-hidden="true">
                   {s.ok ? "✓" : "✗"}
                 </span>
+                <span className="sr-only">{s.ok ? "Passed:" : "Failed:"}</span>
                 <span className="mono dl-test-svc-name">
                   {s.name}
                   {s.level && <> · {s.level}</>}
@@ -132,18 +135,11 @@ export function TestResultView({
         {result.hint && <div className="dl-conn-result-detail">{result.hint}</div>}
         {result.consentScopes && (
           <div className="dl-conn-result-detail">
-            consent scopes:{" "}
+            Consent scopes:{" "}
             <span className="mono">
               {result.consentScopes.split(" ").map(shortScope).join(" ")}
             </span>{" "}
-            <button
-              type="button"
-              className="dl-test-copy dl-tap-compact"
-              title="Copy the full scope URLs, space-separated"
-              onClick={() => void navigator.clipboard?.writeText(result.consentScopes ?? "")}
-            >
-              <Copy size={10} /> copy
-            </button>
+            <CopyScopesButton text={result.consentScopes} />
           </div>
         )}
       </div>
@@ -153,10 +149,43 @@ export function TestResultView({
           className="dl-conn-result-close"
           onClick={onDismiss}
           title="Dismiss"
+          aria-label="Dismiss result"
         >
-          ×
+          <X size={14} aria-hidden="true" />
         </button>
       )}
     </div>
+  );
+}
+
+function CopyScopesButton({ text }: { text: string }) {
+  const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
+  const timer = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (timer.current !== null) window.clearTimeout(timer.current);
+    },
+    [],
+  );
+
+  async function copy(): Promise<void> {
+    const ok = await copyText(text);
+    setState(ok ? "copied" : "failed");
+    if (timer.current !== null) window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => setState("idle"), 2000);
+  }
+
+  return (
+    <button
+      type="button"
+      className={`dl-test-copy dl-tap-compact${state === "failed" ? " is-failed" : ""}`}
+      title="Copy the full scope URLs, space-separated"
+      onClick={() => void copy()}
+    >
+      {state === "copied" ? <Check size={10} aria-hidden="true" /> : <Copy size={10} aria-hidden="true" />}
+      <span aria-live="polite">
+        {state === "copied" ? "Copied" : state === "failed" ? "Copy failed" : "Copy"}
+      </span>
+    </button>
   );
 }

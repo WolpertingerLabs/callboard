@@ -12,8 +12,9 @@ import type {
   AdminVaultRequest,
 } from "drawlatch-admin-types";
 import { api, notifyVaultRequestsChanged } from "../../api";
-import { ModalShell } from "./VaultModals";
-import "../ConfigureConnectionModal.css";
+import { useToast } from "../Toast";
+import { CallerPill, ModalShell } from "./VaultModals";
+import "./VaultForms.css";
 
 /** The deny-note limit, in UTF-8 bytes, as the daemon counts it. */
 export const MAX_NOTE_BYTES = 1024;
@@ -27,7 +28,7 @@ export function utf8Bytes(text: string): number {
 export function Binding({ item, grantee }: { item: AdminVaultItemRef; grantee: string }) {
   if (item.connections === undefined) {
     return (
-      <span className="dl-vault-unbound">
+      <span className="dl-vf-warn">
         not bound: usable on any of <span className="mono">{grantee}</span>&apos;s connections
       </span>
     );
@@ -43,7 +44,7 @@ export function Binding({ item, grantee }: { item: AdminVaultItemRef; grantee: s
 function Subject({ request }: { request: AdminVaultRequest }) {
   return (
     <>
-      <span className="mono dl-secrets-pill">{request.requester}</span> →{" "}
+      <CallerPill alias={request.requester} /> →{" "}
       <span className="mono">
         {request.owner}/{request.item?.name ?? request.itemName}
       </span>
@@ -62,6 +63,7 @@ export function GrantRequestModal({
 }) {
   const revealAllowed = request.item?.exposure === "reveal";
   const unbound = request.item?.connections === undefined;
+  const toast = useToast();
   const [mode, setMode] = useState<AdminVaultExposure>("inject");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -76,6 +78,9 @@ export function GrantRequestModal({
       return;
     }
     notifyVaultRequestsChanged();
+    toast.show(
+      `Granted ${request.requester} ${mode} access to ${request.owner}/${request.item?.name ?? request.itemName}`,
+    );
     onDone();
     onClose();
   };
@@ -92,21 +97,21 @@ export function GrantRequestModal({
       onClose={onClose}
     >
       {request.item && (
-        <div className="dl-secrets-section">
-          <h3 className="dl-secrets-section-title">Where it can be used</h3>
-          <p className="dl-secrets-help">
+        <section className="dl-vf-section">
+          <h3 className="dl-vf-section-title">Where it can be used</h3>
+          <p className="dl-vf-help">
             <Binding item={request.item} grantee={request.requester} />. Change the binding on
             the Items tab before granting if it should be narrower.
           </p>
-        </div>
+        </section>
       )}
-      <div className="dl-secrets-section">
-        <h3 className="dl-secrets-section-title">Mode</h3>
-        <p className="dl-secrets-help">
+      <section className="dl-vf-section">
+        <h3 className="dl-vf-section-title">Mode</h3>
+        <p className="dl-vf-help">
           The agent asked for <strong>{request.mode}</strong>.
         </p>
-        <div className="dl-vault-radio-group">
-          <label className="dl-vault-radio">
+        <div className="dl-vf-radios" role="radiogroup" aria-label="Mode">
+          <label className="dl-vf-radio">
             <input
               type="radio"
               name="dl-vault-grant-mode"
@@ -134,7 +139,7 @@ export function GrantRequestModal({
               )}
             </span>
           </label>
-          <label className="dl-vault-radio">
+          <label className={`dl-vf-radio${revealAllowed ? "" : " is-disabled"}`}>
             <input
               type="radio"
               name="dl-vault-grant-mode"
@@ -142,13 +147,13 @@ export function GrantRequestModal({
               disabled={!revealAllowed}
               onChange={() => setMode("reveal")}
             />
-            <span className={revealAllowed ? undefined : "cell-muted"}>
+            <span>
               <strong>Reveal</strong>: it can also read the value with <code>vault_get</code>.
               {!revealAllowed && " Only available when the item's exposure is reveal."}
             </span>
           </label>
         </div>
-      </div>
+      </section>
     </ModalShell>
   );
 }
@@ -162,6 +167,7 @@ export function DenyRequestModal({
   onClose: () => void;
   onDone: () => void;
 }) {
+  const toast = useToast();
   const [note, setNote] = useState("");
   const noteBytes = utf8Bytes(note.trim());
   const tooLong = noteBytes > MAX_NOTE_BYTES;
@@ -178,6 +184,9 @@ export function DenyRequestModal({
       return;
     }
     notifyVaultRequestsChanged();
+    toast.show(
+      `Denied ${request.requester}'s request for ${request.owner}/${request.item?.name ?? request.itemName}`,
+    );
     onDone();
     onClose();
   };
@@ -190,22 +199,25 @@ export function DenyRequestModal({
       error={error}
       saveLabel="Deny"
       canSave={!busy && !tooLong}
+      dirty={note.trim() !== ""}
+      size="sm"
       onSave={() => void save()}
       onClose={onClose}
     >
-      <div className="dl-secrets-fields">
-        <div className="dl-secrets-field">
-          <label className="dl-secrets-label" htmlFor="dl-vault-deny-note">
+      <div className="dl-vf-fields">
+        <div className="dl-vf-field">
+          <label className="field-label" htmlFor="dl-vault-deny-note">
             Note (optional)
           </label>
           <textarea
             id="dl-vault-deny-note"
-            className="dl-secrets-input dl-vault-textarea"
+            className="input dl-vf-textarea"
             rows={3}
             value={note}
+            aria-describedby="dl-vault-deny-note-help"
             onChange={(e) => setNote(e.target.value)}
           />
-          <p className={"dl-secrets-help" + (tooLong ? " dl-vault-over" : "")}>
+          <p id="dl-vault-deny-note-help" className={"dl-vf-help" + (tooLong ? " is-error" : "")}>
             {noteBytes} / {MAX_NOTE_BYTES} bytes (UTF-8, as the daemon counts them). The
             requesting agent sees this note in <code>vault_list_requests</code>.
           </p>

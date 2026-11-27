@@ -41,7 +41,7 @@ export default function Login({ onLogin, serverError }: Props) {
       <form onSubmit={handleSubmit} className="auth-card" noValidate>
         <div className="auth-brand">
           <span className="sidebar-brand-mark" aria-hidden="true" />
-          <span>drawlatch</span>
+          <span>Drawlatch</span>
         </div>
         <h1 className="auth-title">Sign in</h1>
 
@@ -73,7 +73,7 @@ export default function Login({ onLogin, serverError }: Props) {
 
         <button
           type="submit"
-          className="auth-submit"
+          className="btn btn-primary btn-block"
           disabled={disabled || loading || !password}
         >
           {loading ? "Signing in…" : "Sign in"}

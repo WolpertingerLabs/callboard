@@ -7,50 +7,105 @@
 }
 
 :root {
+  color-scheme: dark;
+
   /* Core palette */
   --bg: #0d1117;
   --surface: #161b22;
   --border: #30363d;
+  --border-strong: #3a3a42;
   --text: #e6edf3;
   --text-muted: #8b949e;
+  /* Meta text, placeholders, disabled labels. AA (4.5:1) on --bg and
+   * --surface; slightly under on --bg-secondary, so not for body text there. */
+  --text-faint: #85858f;
+  /* Body copy that sits between --text and --text-muted (dialog bodies,
+   * secondary buttons). Unused before the token contract, so repurposed. */
+  --text-secondary: #c5c5cd;
+  /* The one accent: brand, nav, tabs and every primary action. */
   --accent: #7c6aef;
   --accent-hover: #9484f0;
-  --user-bg: #1a2332;
-  --assistant-bg: #161b22;
+  /* Fills behind white text (primary buttons): --accent itself is 4.07:1
+   * with white, under AA for 13px text. Hover goes darker, not lighter.
+   * --accent / --accent-hover stay for text, links, rings and tints. */
+  --accent-solid: #6a58e0;
+  --accent-solid-hover: #5b49cf;
+  /* Informational chips only (listener type badges and the like), never a
+   * button. */
+  --info: #5b9dff;
+  --info-bg: rgba(91, 157, 255, 0.12);
   --code-bg: #0d1117;
   --danger: #f85149;
-  --error: #f85149;
+  /* Same for destructive buttons: white on --danger is 3.35:1. */
+  --danger-solid: #da3633;
+  --danger-solid-hover: #c9302c;
+  /* Kept for compatibility; it is the solid fill's hover now. Fills only:
+   * as a text colour on the dark surfaces it fails AA. */
+  --danger-hover: var(--danger-solid-hover);
   --success: #3fb950;
   --warning: #d29922;
   --bg-secondary: #1c2128;
-  --text-secondary: #8b949e;
   --border-light: #21262d;
   --font-mono: "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas, "Courier New", monospace;
-  --radius: 12px;
+  --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
 
   /* Text on colored backgrounds */
   --text-on-accent: #ffffff;
   --text-on-danger: #ffffff;
 
+  /* Status colours for text on a tint (badges, inline messages) */
+  --warning-text: #e3b341;
+  --success-text: #3fb950;
+  --danger-text: #f85149;
+
   /* Semantic tint backgrounds */
   --accent-bg: rgba(124, 106, 239, 0.1);
-  --accent-light: rgba(124, 106, 239, 0.1);
+  --accent-border: rgba(124, 106, 239, 0.3);
+  /* Focus ring on text fields. */
+  --focus-ring: 0 0 0 3px rgba(124, 106, 239, 0.28);
   --danger-bg: rgba(248, 81, 73, 0.1);
   --danger-border: rgba(220, 53, 69, 0.4);
   --warning-bg: rgba(210, 153, 34, 0.15);
+  --warning-border: rgba(210, 153, 34, 0.35);
   --success-bg: rgba(63, 185, 80, 0.1);
+  --success-border: rgba(63, 185, 80, 0.35);
 
   /* Overlays & shadows */
-  --overlay-bg: rgba(0, 0, 0, 0.5);
-  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.2);
-  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.15);
-  --shadow-lg: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+  --overlay-bg: rgba(1, 4, 9, 0.72);
+  --shadow-modal: 0 24px 64px rgba(0, 0, 0, 0.55);
+  --shadow-popover: 0 8px 24px rgba(0, 0, 0, 0.45);
 
   /* Status dots */
   --status-up: #3fb950;
   --status-down: #f85149;
   --status-unknown: #8b949e;
+
+  /* Scale */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius: 12px;
+  --radius-pill: 999px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13px;
+  --fs-base: 14px;
+  --fs-lg: 16px;
+
+  /* Stacking. Everything that floats picks one of these. */
+  --z-sticky: 5;
+  --z-topbar: 20;
+  --z-dropdown: 40;
+  --z-drawer: 50;
+  --z-modal: 1000;
+  --z-modal-nested: 1100;
+  --z-toast: 1200;
 
   /* Layout */
   --sidebar-width: 240px;
@@ -95,6 +150,26 @@ button {
   background: none;
   border: none;
   cursor: pointer;
+}
+
+/* One keyboard focus ring for everything. Controls that draw their own focus
+ * state (inputs with a border ring) override it at their own rule. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Text for screen readers only. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 /* ── Layout ─────────────────────────────────────────────────────────── */
@@ -145,6 +220,25 @@ button {
   color: var(--text-muted);
 }
 
+.sidebar-status-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.35;
+}
+
+.sidebar-status-label {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.sidebar-status-version {
+  font-size: var(--fs-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .status-dot {
   width: 8px;
   height: 8px;
@@ -160,6 +254,14 @@ button {
 
 .status-dot.down {
   background: var(--status-down);
+}
+
+.status-dot.warn {
+  background: var(--warning);
+}
+
+.status-dot.stopped {
+  background: var(--text-muted);
 }
 
 .sidebar-nav {
@@ -201,6 +303,10 @@ button {
   text-decoration: none;
 }
 
+.sidebar-nav-link:focus-visible {
+  outline-offset: -2px;
+}
+
 .sidebar-nav-link.active {
   background: var(--accent-bg);
   color: var(--accent);
@@ -231,12 +337,6 @@ button {
 }
 
 /* ── Cards ──────────────────────────────────────────────────────────── */
-
-.card-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 16px;
-}
 
 .card {
   background: var(--surface);
@@ -273,10 +373,6 @@ button {
   font-size: 12px;
 }
 
-.card.span-2 {
-  grid-column: span 2;
-}
-
 /* ── Banners ────────────────────────────────────────────────────────── */
 
 .banner {
@@ -301,70 +397,30 @@ button {
   color: var(--text-muted);
 }
 
-/* ── Ingestor breakdown ─────────────────────────────────────────────── */
-
-.ingestor-breakdown {
-  display: flex;
-  gap: 16px;
-  flex-wrap: wrap;
-  margin-top: 4px;
-}
-
-.ingestor-stat {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 13px;
+.banner.banner-warn {
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-border);
   color: var(--text);
 }
 
-.ingestor-stat .status-dot {
-  width: 6px;
-  height: 6px;
+.banner-offline-text {
+  flex: 1;
+  min-width: 0;
 }
 
-.ingestor-stat-connected .status-dot {
-  background: var(--status-up);
-}
-
-.ingestor-stat-error .status-dot {
-  background: var(--status-down);
-}
-
-.ingestor-stat-starting .status-dot {
-  background: var(--warning);
-}
-
-.ingestor-stat-stopped .status-dot {
-  background: var(--text-muted);
-}
-
-/* ── Placeholder ────────────────────────────────────────────────────── */
-
-.placeholder {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 80px 20px;
-  color: var(--text-muted);
-  text-align: center;
-  gap: 12px;
-}
-
-.placeholder-title {
-  font-size: 18px;
-  color: var(--text);
-  font-weight: 500;
+.banner-action {
+  flex-shrink: 0;
 }
 
 /* ── Data tables ────────────────────────────────────────────────────── */
 
+/* Scrolls sideways at every width: a table wider than its column is cut off
+ * otherwise (769–1024px has the sidebar and no room to spare). */
 .data-table-wrap {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  overflow: hidden;
+  overflow-x: auto;
 }
 
 .data-table {
@@ -445,32 +501,54 @@ button {
   color: var(--text-muted);
   font-size: 11px;
   font-weight: 500;
-  text-transform: lowercase;
 }
 
-.stability-badge {
-  display: inline-block;
-  padding: 2px 8px;
+/* One badge: .badge + a tone modifier. */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  border: 1px solid transparent;
   border-radius: 4px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
+  line-height: 16px;
   text-transform: uppercase;
   letter-spacing: 0.4px;
+  white-space: nowrap;
+  vertical-align: middle;
 }
 
-.stability-stable {
+.badge-success {
   background: var(--success-bg);
-  color: var(--success);
+  color: var(--success-text);
 }
 
-.stability-beta {
+.badge-warning {
   background: var(--warning-bg);
-  color: var(--warning);
+  color: var(--warning-text);
 }
 
-.stability-dev {
+.badge-danger {
+  background: var(--danger-bg);
+  color: var(--danger-text);
+}
+
+.badge-info {
+  background: var(--info-bg);
+  color: var(--info);
+}
+
+.badge-accent {
   background: var(--accent-bg);
-  color: var(--accent);
+  color: var(--accent-hover);
+}
+
+.badge-muted {
+  background: var(--bg-secondary);
+  color: var(--text-muted);
+  border-color: var(--border);
 }
 
 /* ── Detail page ────────────────────────────────────────────────────── */
@@ -490,7 +568,14 @@ button {
 .title-row {
   display: flex;
   align-items: center;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  min-width: 0;
+}
+
+.title-row > .page-title {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .subtitle-meta {
@@ -601,56 +686,6 @@ button {
 
 /* ── Caller-specific badges & pills ─────────────────────────────────── */
 
-.keys-dir-badge {
-  display: inline-block;
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
-}
-
-.keys-dir-ok {
-  background: var(--success-bg);
-  color: var(--success);
-}
-
-.keys-dir-missing {
-  background: var(--danger-bg);
-  color: var(--danger);
-}
-
-.enabled-badge {
-  display: inline-block;
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
-}
-
-.enabled-yes {
-  background: var(--success-bg);
-  color: var(--success);
-}
-
-.enabled-no {
-  background: var(--bg-secondary);
-  color: var(--text-muted);
-  border: 1px solid var(--border);
-}
-
-.tag-custom {
-  background: var(--accent-bg);
-  color: var(--accent);
-  border-color: transparent;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
-  font-weight: 600;
-}
-
 .badge-row {
   display: flex;
   flex-wrap: wrap;
@@ -696,51 +731,27 @@ button {
 
 /* ── Ingestor table ─────────────────────────────────────────────────── */
 
-.ingestor-state {
-  display: inline-block;
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
-}
-
-.ingestor-state-connected {
-  background: var(--success-bg);
-  color: var(--success);
-}
-
-.ingestor-state-starting,
-.ingestor-state-reconnecting {
-  background: var(--warning-bg);
-  color: var(--warning);
-}
-
-.ingestor-state-stopped {
-  background: var(--bg-secondary);
-  color: var(--text-muted);
-  border: 1px solid var(--border);
-}
-
-.ingestor-state-error {
-  background: var(--danger-bg);
-  color: var(--danger);
-}
-
+/* The header cell stays a table cell so its colSpan holds; the flex row is
+ * the .ingestor-group-header-inner div inside it. (A flex <th> drops out of
+ * the table layout and collapses into the first column.) */
 .ingestor-table .ingestor-group-header > th {
   background: var(--bg-secondary);
   border-top: 1px solid var(--border);
   border-bottom: 1px solid var(--border-light);
   padding: 8px 16px;
+  text-align: left;
   text-transform: none;
   letter-spacing: 0;
   font-weight: 500;
   font-size: 12px;
   color: var(--text);
+}
+
+.ingestor-group-header-inner {
   display: flex;
   align-items: center;
   gap: 10px;
+  min-width: 0;
 }
 
 .ingestor-table tbody tr:first-child .ingestor-group-header > th,
@@ -769,133 +780,26 @@ button {
   word-break: break-word;
 }
 
-/* ── Secret matrix ──────────────────────────────────────────────────── */
-
-.secret-matrix-controls {
-  display: flex;
-  align-items: center;
-  margin-bottom: 16px;
-}
-
-.secret-matrix-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  color: var(--text-muted);
-  cursor: pointer;
-  user-select: none;
-}
-
-.secret-matrix-toggle input[type="checkbox"] {
-  cursor: pointer;
-  accent-color: var(--accent);
-}
-
-.secret-matrix {
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
-}
-
-.secret-matrix-section {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.secret-matrix-section-header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 0 4px;
-}
-
-.secret-matrix-section-label {
-  color: var(--text-muted);
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.6px;
-  font-weight: 600;
-}
-
-.secret-matrix-section-meta {
-  color: var(--text-muted);
-  font-size: 11px;
-  margin-left: auto;
-}
-
-.secret-matrix-table {
-  table-layout: auto;
-}
-
-.secret-matrix-table thead th.secret-matrix-col {
-  text-align: center;
-  text-transform: none;
-  letter-spacing: normal;
-  font-size: 12px;
-  color: var(--text);
-  font-weight: 500;
-  padding: 10px 12px;
-  white-space: nowrap;
-}
-
-.secret-matrix-table thead th.secret-matrix-col-optional .mono {
-  color: var(--text-muted);
-}
-
-.secret-matrix-required-mark {
-  color: var(--accent);
-  font-weight: 700;
-  margin-left: 4px;
-}
-
-.secret-matrix-table tbody td.secret-matrix-cell {
-  text-align: center;
-  padding: 10px 12px;
-}
-
-.secret-matrix-mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 22px;
-  height: 22px;
-  border-radius: 4px;
-  font-family: var(--font-mono);
-  font-weight: 700;
-  font-size: 14px;
-  line-height: 1;
-}
-
-.secret-matrix-mark-required-present {
-  background: var(--success-bg);
-  color: var(--success);
-}
-
-.secret-matrix-mark-required-missing {
-  background: var(--danger-bg);
-  color: var(--danger);
-  border: 1px solid var(--danger-border);
-}
-
-.secret-matrix-mark-optional-present {
-  color: var(--success);
-}
-
-.secret-matrix-mark-optional-missing {
-  color: var(--text-muted);
-}
-
 /* ── Auth screens (Login + Change password) ─────────────────────────── */
 
 .auth-splash {
   display: flex;
   align-items: center;
   justify-content: center;
+  gap: 10px;
   height: 100%;
+  padding: 20px;
   color: var(--text-muted);
   font-size: 13px;
+  text-align: center;
+}
+
+.auth-splash-pending {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  max-width: 360px;
 }
 
 .auth-screen {
@@ -984,17 +888,6 @@ button {
   margin-bottom: 12px;
 }
 
-.auth-success {
-  color: var(--success);
-  background: var(--success-bg);
-  border: 1px solid color-mix(in srgb, var(--success) 35%, transparent);
-  border-radius: 8px;
-  padding: 8px 12px;
-  font-size: 13px;
-  line-height: 1.4;
-  margin-bottom: 12px;
-}
-
 .auth-banner {
   border-radius: 8px;
   padding: 10px 12px;
@@ -1009,28 +902,6 @@ button {
   border: 1px solid var(--danger-border);
 }
 
-.auth-submit {
-  width: 100%;
-  min-height: 40px;
-  background: var(--accent);
-  color: var(--text-on-accent);
-  border-radius: 8px;
-  padding: 10px 14px;
-  font-size: 14px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: background 0.15s ease, opacity 0.15s ease;
-}
-
-.auth-submit:hover:not(:disabled) {
-  background: var(--accent-hover);
-}
-
-.auth-submit:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
 .auth-form-card {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -1039,10 +910,6 @@ button {
   max-width: 480px;
   display: flex;
   flex-direction: column;
-}
-
-.auth-page-subtitle {
-  margin-bottom: 20px;
 }
 
 .auth-actions {
@@ -1076,6 +943,9 @@ button {
 
 /* ── Mobile top bar & drawer ────────────────────────────────────────── */
 
+/* One layout tree at every width: the sidebar turns into the drawer in CSS,
+ * so crossing 768px never remounts the page (and the modal or form on it). */
+
 .mobile-topbar {
   display: none;
   align-items: center;
@@ -1086,7 +956,8 @@ button {
   border-bottom: 1px solid var(--border);
   position: sticky;
   top: 0;
-  z-index: 20;
+  z-index: var(--z-topbar);
+  flex-shrink: 0;
 }
 
 .mobile-topbar-button {
@@ -1095,7 +966,7 @@ button {
   justify-content: center;
   min-width: 44px;
   min-height: 44px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   color: var(--text);
 }
 
@@ -1112,32 +983,20 @@ button {
   letter-spacing: 0.2px;
 }
 
-.mobile-drawer-overlay {
-  position: fixed;
-  inset: 0;
-  background: var(--overlay-bg);
-  z-index: 30;
-  display: flex;
-}
-
-.mobile-drawer {
-  width: min(280px, 80vw);
-  height: 100%;
-  max-width: 100%;
-  position: relative;
-  border-right: 1px solid var(--border);
+.drawer-backdrop {
+  display: none;
 }
 
 .mobile-drawer-close {
+  display: none;
   position: absolute;
   top: 8px;
   right: 8px;
-  display: inline-flex;
   align-items: center;
   justify-content: center;
   min-width: 44px;
   min-height: 44px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   color: var(--text-muted);
 }
 
@@ -1149,48 +1008,55 @@ button {
 /* ── Tablet: icon-only sidebar (769–1024px) ─────────────────────────── */
 
 @media (min-width: 769px) and (max-width: 1024px) {
-  .app-shell:not(.app-shell-mobile) .sidebar {
+  .sidebar {
     width: 56px;
     padding: 16px 0;
   }
 
-  .app-shell:not(.app-shell-mobile) .sidebar-brand {
+  .sidebar-brand {
     padding: 4px 0 20px;
     justify-content: center;
   }
 
-  .app-shell:not(.app-shell-mobile) .sidebar-brand-text {
+  .sidebar-brand-text {
     display: none;
   }
 
-  .app-shell:not(.app-shell-mobile) .sidebar-status {
+  .sidebar-status {
     margin: 0 8px 16px;
     padding: 8px;
     justify-content: center;
   }
 
-  .app-shell:not(.app-shell-mobile) .sidebar-status-text {
-    display: none;
+  /* Visually hidden, not display:none: the pill is a live region and its
+   * text must still be announced when the daemon goes down or comes back. */
+  .sidebar-status-text {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
   }
 
-  .app-shell:not(.app-shell-mobile) .sidebar-nav {
+  .sidebar-nav {
     padding: 0 6px;
   }
 
-  .app-shell:not(.app-shell-mobile) .sidebar-nav-link {
+  .sidebar-nav-link {
+    position: relative;
     justify-content: center;
     padding: 10px 8px;
   }
 
-  .app-shell:not(.app-shell-mobile) .sidebar-nav-label {
+  .sidebar-nav-label {
     display: none;
   }
 
-  .app-shell:not(.app-shell-mobile) .sidebar-nav-link {
-    position: relative;
-  }
-
-  .app-shell:not(.app-shell-mobile) .sidebar-nav-badge {
+  .sidebar-nav-badge {
     position: absolute;
     top: 2px;
     right: 2px;
@@ -1208,9 +1074,8 @@ button {
 /* ── Mobile: full-page replacement (<768px) ─────────────────────────── */
 
 @media (max-width: 768px) {
-  .app-shell-mobile {
+  .app-shell {
     flex-direction: column;
-    height: 100%;
     width: 100%;
   }
 
@@ -1218,8 +1083,43 @@ button {
     display: flex;
   }
 
-  .main-content-mobile {
+  .sidebar {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: var(--z-drawer);
+    width: min(280px, 80vw);
+    max-width: 100%;
+    overflow-y: auto;
+    transform: translateX(-100%);
+    visibility: hidden;
+    transition:
+      transform 0.2s ease,
+      visibility 0s linear 0.2s;
+  }
+
+  .app-shell.drawer-open .sidebar {
+    transform: none;
+    visibility: visible;
+    transition: transform 0.2s ease;
+  }
+
+  .app-shell.drawer-open .drawer-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: calc(var(--z-drawer) - 1);
+    background: var(--overlay-bg);
+  }
+
+  .mobile-drawer-close {
+    display: inline-flex;
+  }
+
+  .main-content {
     flex: 1;
+    min-height: 0;
     padding: 16px 12px;
     padding-bottom: calc(16px + var(--safe-bottom));
   }
@@ -1232,14 +1132,6 @@ button {
 
   .page-title {
     font-size: 20px;
-  }
-
-  .card-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .card.span-2 {
-    grid-column: span 1;
   }
 
   .detail-section {
@@ -1272,6 +1164,16 @@ button {
   .subtitle-meta > * {
     min-width: 0;
     overflow-wrap: anywhere;
+  }
+
+  /* A wrapped row would leave the "·" alone at the end or start of a line,
+   * so on a phone the gap does the separating. */
+  .subtitle-meta {
+    gap: 2px 12px;
+  }
+
+  .subtitle-meta > .dot-sep {
+    display: none;
   }
 
   /* Overview puts the daemon's config path here — one unbreakable 308px chunk
@@ -1309,7 +1211,7 @@ button {
    *
    * Only safe where nothing else interactive sits within 44px: the hit area is
    * painted over its surroundings and would steal a neighbour's taps. Rows of
-   * icon buttons deliberately do NOT use this — see .dl-lcp-icon-btn. */
+   * icon buttons deliberately do NOT use this. */
   .dl-tap-compact {
     min-width: 0;
     min-height: 0;
@@ -1442,70 +1344,6 @@ button {
   padding-top: 8px;
 }
 
-/* ── Secret matrix mobile: sticky-left col + right-edge fade ────────── */
-
-.secret-matrix-scroll {
-  position: relative;
-}
-
-@media (max-width: 768px) {
-  .secret-matrix-wrap {
-    overflow-x: auto;
-    overflow-y: auto;
-    max-height: 70vh;
-    -webkit-overflow-scrolling: touch;
-  }
-
-  .secret-matrix-table thead th,
-  .secret-matrix-table tbody td {
-    background: var(--surface);
-  }
-
-  .secret-matrix-table thead th {
-    background: var(--bg-secondary);
-    position: sticky;
-    top: 0;
-    z-index: 1;
-  }
-
-  .secret-matrix-table th.secret-matrix-caller-col,
-  .secret-matrix-table td.secret-matrix-caller-col {
-    position: sticky;
-    left: 0;
-    z-index: 2;
-    box-shadow: 1px 0 0 var(--border-light);
-  }
-
-  .secret-matrix-table thead th.secret-matrix-caller-col {
-    z-index: 3;
-    background: var(--bg-secondary);
-  }
-
-  .secret-matrix-table tbody td.secret-matrix-cell {
-    min-width: 44px;
-    height: 44px;
-    padding: 6px 10px;
-  }
-
-  /* Right-edge fade: subtle cue that more columns are off-screen. */
-  .secret-matrix-scroll::after {
-    content: "";
-    position: absolute;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    width: 24px;
-    background: linear-gradient(
-      to right,
-      transparent,
-      var(--bg) 80%
-    );
-    pointer-events: none;
-    border-top-right-radius: var(--radius);
-    border-bottom-right-radius: var(--radius);
-  }
-}
-
 /* ── Hover-only: keep interactions tappable on touch devices ────────── */
 
 @media (hover: none) {
@@ -1550,7 +1388,7 @@ button {
 
 .auth-summary-problem {
   font-size: 11.5px;
-  color: #e5484d;
+  color: var(--danger-text);
 }
 
 /* ── Google connection: mode badge and service chips ───────────────────── */
@@ -1570,7 +1408,7 @@ button {
   font-size: 11px;
   background: var(--accent-bg);
   color: var(--accent-hover);
-  border: 1px solid rgba(124, 106, 239, 0.3);
+  border: 1px solid var(--accent-border);
 }
 
 .dl-google-chip {
@@ -1589,7 +1427,7 @@ button {
   gap: 6px;
   align-items: flex-start;
   font-size: 11.5px;
-  color: #e5484d;
+  color: var(--danger-text);
   margin: 0 0 8px;
   word-break: break-word;
 }
@@ -1653,7 +1491,10 @@ button {
   word-break: break-word;
 }
 
+/* position: relative so the mobile .dl-tap-compact hit area is sized to this
+ * button, not to the nearest positioned ancestor (a whole modal overlay). */
 .dl-test-copy {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 3px;
@@ -1664,4 +1505,691 @@ button {
   font-size: 10.5px;
   padding: 0 5px;
   cursor: pointer;
+}
+
+.dl-test-copy.is-failed {
+  color: var(--danger-text);
+}
+
+/* ── Test result box (TestResult.tsx; rendered on Connections cards and in
+ * the configure dialog) ─────────────────────────────────────────────── */
+
+.dl-conn-result {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+}
+
+.dl-conn-result-ok {
+  background: var(--success-bg);
+  color: var(--success-text);
+}
+
+.dl-conn-result-err {
+  background: var(--danger-bg);
+  color: var(--danger-text);
+}
+
+.dl-conn-result-icon {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.dl-conn-result-text {
+  min-width: 0;
+  flex: 1;
+}
+
+.dl-conn-result-label {
+  font-weight: 600;
+}
+
+.dl-conn-result-detail {
+  font-size: var(--fs-xs);
+  opacity: 0.85;
+  margin-top: 2px;
+  word-break: break-word;
+}
+
+.dl-conn-result-close {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: auto;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.7;
+  padding: 2px;
+}
+
+.dl-conn-result-close:hover {
+  opacity: 1;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+ * Shared primitives. Pages build on these instead of their own copies:
+ *   .btn + .btn-primary | -secondary | -danger | -danger-outline | -ghost,
+ *     sizes .btn-sm, .btn-icon, .btn-block
+ *   .badge + .badge-success | -warning | -danger | -info | -accent | -muted
+ *   .spinner, .input, .field-label
+ *   .modal-* (components/Modal.tsx), .empty-state (EmptyState.tsx),
+ *   .toast-* (Toast.tsx)
+ * ══════════════════════════════════════════════════════════════════════ */
+
+/* ── Buttons ────────────────────────────────────────────────────────── */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 7px 14px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  font-size: var(--fs-md);
+  font-weight: 500;
+  line-height: 1.2;
+  white-space: nowrap;
+  text-decoration: none;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
+}
+
+a.btn:hover {
+  text-decoration: none;
+}
+
+.btn:disabled,
+.btn[aria-disabled="true"] {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: var(--accent-solid);
+  color: var(--text-on-accent);
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-solid-hover);
+  color: var(--text-on-accent);
+}
+
+.btn-secondary {
+  background: var(--bg-secondary);
+  border-color: var(--border);
+  color: var(--text-secondary);
+}
+
+.btn-secondary:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.btn-danger {
+  background: var(--danger-solid);
+  color: var(--text-on-danger);
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: var(--danger-solid-hover);
+  color: var(--text-on-danger);
+}
+
+/* Destructive but not the main action on the screen (Delete caller next to
+ * Issue credentials). */
+.btn-danger-outline {
+  background: transparent;
+  border-color: var(--danger-border);
+  color: var(--danger-text);
+}
+
+.btn-danger-outline:hover:not(:disabled) {
+  background: var(--danger-bg);
+  color: var(--danger-text);
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.btn-ghost:hover:not(:disabled) {
+  background: var(--bg-secondary);
+  color: var(--text);
+}
+
+.btn-sm {
+  min-height: 28px;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+  gap: 5px;
+}
+
+.btn-icon {
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  min-height: 32px;
+  padding: 0;
+}
+
+.btn-icon.btn-sm {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  min-height: 28px;
+}
+
+/* Full width, a touch taller: the one action of a form card (sign in,
+ * change password). */
+.btn-block {
+  width: 100%;
+  min-height: 40px;
+  font-size: var(--fs-base);
+}
+
+/* Phones: .btn and the sizes above are class selectors, so they beat the
+ * 44px `button` rule in the mobile block. Put the touch target back. */
+@media (max-width: 768px) {
+  .btn:not(.dl-tap-compact) {
+    min-height: 44px;
+  }
+
+  .btn-icon:not(.dl-tap-compact),
+  .btn-icon.btn-sm:not(.dl-tap-compact) {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+  }
+}
+
+/* ── Spinner ────────────────────────────────────────────────────────── */
+
+/* On an icon (<Loader2 className="spinner"/>) it only spins; on an empty
+ * element it also draws the ring. */
+.spinner {
+  flex-shrink: 0;
+  animation: dl-spin 0.9s linear infinite;
+}
+
+span.spinner:empty,
+div.spinner:empty {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  vertical-align: -2px;
+}
+
+@keyframes dl-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ── Form fields ────────────────────────────────────────────────────── */
+
+.field-label {
+  display: block;
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+
+.input {
+  width: 100%;
+  min-width: 0;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 8px 10px;
+  font-size: var(--fs-md);
+  font-family: inherit;
+  color: var(--text);
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.input:focus,
+.auth-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+.input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* ── Modal (components/Modal.tsx) ───────────────────────────────────── */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: var(--overlay-bg);
+  backdrop-filter: blur(2px);
+}
+
+.modal-overlay.is-nested {
+  z-index: var(--z-modal-nested);
+}
+
+.modal-panel {
+  width: 100%;
+  max-width: 560px;
+  max-height: 90vh;
+  max-height: 90dvh;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-modal);
+  color: var(--text);
+}
+
+.modal-panel:focus {
+  outline: none;
+}
+
+.modal-sm {
+  max-width: 440px;
+}
+
+.modal-lg {
+  max-width: 760px;
+}
+
+.modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.modal-header-text {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.modal-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-md);
+  background: var(--accent-bg);
+  color: var(--accent-hover);
+}
+
+.modal-icon-danger {
+  background: var(--danger-bg);
+  color: var(--danger-text);
+}
+
+.modal-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.modal-subtitle {
+  margin-top: 2px;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.modal-close {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+}
+
+.modal-close:hover:not(:disabled) {
+  background: var(--bg-secondary);
+  color: var(--text);
+}
+
+.modal-close:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 16px 20px;
+  font-size: var(--fs-md);
+  line-height: 1.55;
+  color: var(--text-secondary);
+}
+
+.modal-body code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  background: var(--code-bg);
+  border-radius: 5px;
+  color: var(--text);
+}
+
+.modal-body strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+/* An error inside a modal (or anywhere): render it with role="alert". */
+.modal-error {
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--danger-border);
+  background: var(--danger-bg);
+  color: var(--danger-text);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+@media (max-width: 768px) {
+  /* Medium and large dialogs become full-screen sheets; small ones (confirms)
+   * sit at the bottom like an action sheet. */
+  .modal-overlay {
+    padding: 0;
+    align-items: stretch;
+  }
+
+  .modal-panel {
+    max-width: none;
+    max-height: none;
+    height: 100%;
+    border: none;
+    border-radius: 0;
+  }
+
+  .modal-overlay.is-sheet-sm {
+    align-items: flex-end;
+  }
+
+  .modal-panel.modal-sm {
+    height: auto;
+    max-height: 90vh;
+    max-height: 90dvh;
+    border-top: 1px solid var(--border);
+    border-radius: var(--radius) var(--radius) 0 0;
+  }
+
+  .modal-header {
+    padding: 10px 12px 10px 16px;
+    align-items: center;
+  }
+
+  .modal-body {
+    padding: 16px;
+  }
+
+  .modal-footer {
+    padding: 12px 16px calc(12px + var(--safe-bottom));
+  }
+
+  /* Without a footer the body is the bottom edge of the sheet. */
+  .modal-panel.no-footer .modal-body {
+    padding-bottom: calc(16px + var(--safe-bottom));
+  }
+
+  .modal-close {
+    width: 44px;
+    height: 44px;
+  }
+}
+
+/* ── Empty and loading states (components/EmptyState.tsx) ──────────── */
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 56px 20px;
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.empty-state.is-compact {
+  padding: 24px 16px;
+}
+
+.empty-state-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  margin-bottom: 6px;
+  border-radius: 50%;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+
+.empty-state-title {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.empty-state-body {
+  max-width: 440px;
+  font-size: var(--fs-md);
+  line-height: 1.55;
+}
+
+.empty-state-action {
+  margin-top: 10px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.banner-loading .spinner {
+  color: var(--text-muted);
+}
+
+/* ── Toasts (components/Toast.tsx) ──────────────────────────────────── */
+
+.toast-region {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: var(--z-toast);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  width: min(380px, calc(100vw - 24px));
+  pointer-events: none;
+}
+
+.toast-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  width: 100%;
+}
+
+.toast-stack:empty {
+  display: none;
+}
+
+.toast {
+  pointer-events: auto;
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 8px 10px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  box-shadow: var(--shadow-popover);
+  font-size: var(--fs-md);
+  line-height: 1.45;
+  color: var(--text);
+  animation: dl-toast-in 0.18s ease-out;
+}
+
+.toast-icon {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.toast-success .toast-icon {
+  color: var(--success-text);
+}
+
+.toast-error {
+  border-color: var(--danger-border);
+}
+
+.toast-error .toast-icon {
+  color: var(--danger-text);
+}
+
+.toast-info .toast-icon {
+  color: var(--accent-hover);
+}
+
+.toast-message {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.toast-close {
+  position: relative;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  color: var(--text-muted);
+}
+
+.toast-close:hover {
+  background: var(--surface);
+  color: var(--text);
+}
+
+@keyframes dl-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+/* Phones: the stack sits at the top. At the bottom it covered the footer
+ * buttons of full-screen and bottom-sheet modals for as long as it showed.
+ * Toast.tsx sets --dl-toast-top to just below the top bar, or below the
+ * header of a modal that reaches up there, so it never covers a control;
+ * the fallback is the top bar's height. */
+@media (max-width: 768px) {
+  .toast-region {
+    top: var(--dl-toast-top, calc(var(--safe-top) + 64px));
+    left: 12px;
+    right: 12px;
+    bottom: auto;
+    width: auto;
+  }
+
+  .toast {
+    animation-name: dl-toast-in-top;
+  }
+}
+
+@keyframes dl-toast-in-top {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
+
+/* ── Not found page ─────────────────────────────────────────────────── */
+
+.not-found-path {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation-duration: 2.4s;
+  }
+
+  .toast {
+    animation: none;
+  }
+
+  .sidebar,
+  .app-shell.drawer-open .sidebar {
+    transition: none;
+  }
 }

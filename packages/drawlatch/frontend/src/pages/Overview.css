@@ -1,15 +1,134 @@
-/* Overview — tunnel toggle card.
- *
- * Generic .card / .card-grid / .card-sub styles live in index.css. This file
- * only adds the bits unique to the tunnel card: the header row that holds
- * the toggle switch, the switch itself, and the inline status/error rows.
- */
+/* Overview: the card grid, the link cards, the listener breakdown and the
+ * tunnel toggle. Generic .card / .card-sub styles live in index.css. */
 
-.dl-tunnel-card {
-  /* Grid items default to min-width:auto, so the long tunnel URL would widen
-   * the whole card grid (and with it the page) instead of wrapping. */
+/* ── Grid ───────────────────────────────────────────────────────────── */
+
+/* Fixed tracks rather than auto-fill, so every row is full:
+ *   4 columns: Status Port Uptime Version / Tunnel(2) Sessions Secrets /
+ *              Listeners(4)
+ *   2 columns: two cards a row, Tunnel and Listeners full width
+ *   1 column on phones. */
+.dl-ov-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4);
+}
+
+@media (min-width: 1200px) {
+  .dl-ov-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+.dl-ov-span-2 {
+  grid-column: span 2;
+}
+
+.dl-ov-span-all {
+  grid-column: 1 / -1;
+}
+
+/* Grid items default to min-width:auto, so a long value (the tunnel URL, a
+ * config path in an error) would widen the whole grid instead of wrapping. */
+.dl-ov-grid > * {
   min-width: 0;
 }
+
+.dl-ov-running {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--success-text);
+}
+
+/* ── Link cards (Sessions, Secrets) ─────────────────────────────────── */
+
+.dl-ov-link-card {
+  color: inherit;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease;
+}
+
+.dl-ov-link-card:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-secondary);
+  text-decoration: none;
+}
+
+.dl-ov-more {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-muted);
+}
+
+.dl-ov-link-card:hover .dl-ov-more {
+  color: var(--accent-hover);
+  text-decoration: none;
+}
+
+.dl-ov-warn {
+  color: var(--warning-text);
+}
+
+.dl-ov-error {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 6px;
+  color: var(--danger-text);
+  overflow-wrap: anywhere;
+}
+
+.dl-ov-error svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+/* ── Listener breakdown ─────────────────────────────────────────────── */
+
+.dl-ov-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.dl-ov-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+}
+
+.dl-ov-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: var(--fs-md);
+}
+
+.dl-ov-stat-count {
+  color: var(--text);
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.dl-ov-stat.is-zero {
+  opacity: 0.55;
+}
+
+.dl-ov-stat .status-dot.up {
+  box-shadow: none;
+}
+
+/* ── Tunnel card ────────────────────────────────────────────────────── */
 
 .dl-tunnel-head {
   display: flex;
@@ -31,8 +150,8 @@
  * actually narrow instead of forcing the card wider than the screen. */
 .dl-tunnel-url {
   min-width: 0;
-  color: var(--accent, #5b9dff);
-  font-size: 13px;
+  color: var(--accent-hover);
+  font-size: var(--fs-md);
   text-decoration: none;
   overflow-wrap: anywhere;
 }
@@ -52,22 +171,9 @@
   line-height: 1.45;
 }
 
-/* The daemon's message quotes the same unbreakable config path as
- * .page-subtitle, so it needs the same treatment — reachable whenever a
- * tunnel toggle write fails. align-items:flex-start so the icon stays level
- * with the first line once the text wraps. */
+/* The daemon's message can quote the unbreakable config path. */
 .dl-tunnel-error {
-  display: inline-flex;
-  align-items: flex-start;
-  gap: 6px;
-  min-width: 0;
   overflow-wrap: anywhere;
-  padding: 6px 10px;
-  border-radius: 6px;
-  border: 1px solid rgba(248, 81, 73, 0.35);
-  background: rgba(248, 81, 73, 0.08);
-  color: #f85149;
-  font-size: 12px;
 }
 
 /* ── Switch ──────────────────────────────────────────────────────────── */
@@ -83,30 +189,33 @@
   width: 40px;
   height: 22px;
   padding: 0;
-  border-radius: 999px;
-  border: 1px solid #2a2a30;
-  background: #0d0d0f;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  background: var(--code-bg);
   cursor: pointer;
-  transition: background 0.15s, border-color 0.15s;
+  transition:
+    background 0.15s,
+    border-color 0.15s;
 }
 
 .dl-tunnel-switch:hover:not(:disabled) {
-  border-color: #3a3a42;
+  border-color: var(--border-strong);
 }
 
+/* A fill under a white knob: the solid accent, like .btn-primary. */
 .dl-tunnel-switch.is-on {
-  background: #5b9dff;
-  border-color: #5b9dff;
+  background: var(--accent-solid);
+  border-color: var(--accent-solid);
 }
 
 .dl-tunnel-switch.is-on:hover:not(:disabled) {
-  background: #74acff;
-  border-color: #74acff;
+  background: var(--accent-solid-hover);
+  border-color: var(--accent-solid-hover);
 }
 
 .dl-tunnel-switch:disabled {
   cursor: not-allowed;
-  opacity: 0.6;
+  opacity: 0.55;
 }
 
 .dl-tunnel-switch-knob {
@@ -116,64 +225,50 @@
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: #c5c5cd;
-  transition: left 0.15s, background 0.15s;
+  background: var(--text-secondary);
+  transition:
+    left 0.15s,
+    background 0.15s;
 }
 
 .dl-tunnel-switch.is-on .dl-tunnel-switch-knob {
   left: 20px;
-  background: #0d0d0f;
+  background: var(--text-on-accent);
 }
 
 .dl-tunnel-switch-spin {
   position: absolute;
   top: 4px;
   right: 4px;
-  color: #c5c5cd;
-  animation: dl-tunnel-spin 0.9s linear infinite;
-}
-
-@keyframes dl-tunnel-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-/* ── Reuse-fallback styles (added here so we don't have to touch index.css) ── */
-
-.status-dot.warn {
-  background: var(--warning, #d29922);
-}
-
-.status-dot.stopped {
-  background: var(--text-muted, #8b8b94);
-}
-
-.banner.banner-warn {
-  background: rgba(210, 153, 34, 0.1);
-  border: 1px solid rgba(210, 153, 34, 0.35);
-  color: var(--text, #e6e6ea);
+  color: var(--text-secondary);
 }
 
 .dl-tunnel-restart-banner {
-  grid-column: span 2;
   margin-bottom: 0;
   font-size: 12.5px;
   line-height: 1.5;
 }
 
 .dl-tunnel-restart-banner code {
-  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-  font-size: 12px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
   padding: 1px 5px;
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--bg-secondary);
   border-radius: 4px;
 }
 
 /* ── Mobile ──────────────────────────────────────────────────────────── */
 
-/* Last in the file so both rules win on order over the ones they override. */
 @media (max-width: 768px) {
+  .dl-ov-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-3);
+  }
+
+  .dl-ov-span-2 {
+    grid-column: auto;
+  }
+
   /* The switch's hit area reaches 22px below its centre but the URL link
    * underneath starts 6px below the header row, so a strip of the link would
    * toggle the tunnel instead of opening it. Push the rows apart rather than
@@ -181,14 +276,5 @@
    * this file and its `.card { gap: 6px }` would otherwise win on order. */
   .card.dl-tunnel-card {
     gap: 16px;
-  }
-
-  /* index.css collapses .card.span-2 to one track here; this banner spans the
-   * grid the same way but was missed, so whenever it renders (tunnel enabled
-   * without a URL yet, or the reverse) it held the Overview grid at two
-   * columns of ~116px and ~165px on a phone and broke the cards' text
-   * mid-word. */
-  .dl-tunnel-restart-banner {
-    grid-column: span 1;
   }
 }

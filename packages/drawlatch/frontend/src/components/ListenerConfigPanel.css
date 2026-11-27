@@ -1,100 +1,6 @@
-/* ListenerConfigPanel — drawlatch listener configuration modal.
- * All classes prefixed `dl-lcp-`. Dark developer-dashboard aesthetic. */
-
-/* ── Overlay + panel ─────────────────────────────────────────────────── */
-
-.dl-lcp-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 1000;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
-  background: rgba(13, 13, 15, 0.72);
-  backdrop-filter: blur(2px);
-}
-
-.dl-lcp-panel {
-  width: 100%;
-  max-width: 580px;
-  max-height: 86vh;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  background: #16161a;
-  border: 1px solid #2a2a30;
-  border-radius: 12px;
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
-  color: #e6e6ea;
-}
-
-/* ── Header ──────────────────────────────────────────────────────────── */
-
-.dl-lcp-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 20px 22px 16px;
-  border-bottom: 1px solid #2a2a30;
-  flex-shrink: 0;
-}
-
-.dl-lcp-header-text {
-  min-width: 0;
-  flex: 1;
-}
-
-.dl-lcp-title {
-  margin: 0;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 17px;
-  font-weight: 600;
-  line-height: 1.3;
-  color: #e6e6ea;
-}
-
-.dl-lcp-title-icon {
-  color: #5b9dff;
-  flex-shrink: 0;
-}
-
-.dl-lcp-subtitle {
-  margin: 6px 0 0;
-  font-size: 12.5px;
-  line-height: 1.5;
-  color: #8b8b94;
-}
-
-.dl-lcp-close {
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
-  border: none;
-  border-radius: 7px;
-  background: transparent;
-  color: #8b8b94;
-  cursor: pointer;
-}
-
-.dl-lcp-close:hover {
-  background: #2a2a30;
-  color: #e6e6ea;
-}
-
-/* ── Body ────────────────────────────────────────────────────────────── */
-
-.dl-lcp-body {
-  flex: 1;
-  overflow-y: auto;
-  padding: 18px 22px;
-}
+/* ListenerConfigPanel: what sits inside the listener dialog. The dialog
+ * shell is components/Modal.tsx; buttons are .btn (index.css). All classes
+ * here are prefixed `dl-lcp-`. */
 
 .dl-lcp-banner {
   margin-bottom: 16px;
@@ -108,17 +14,18 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 12px;
 }
 
 .dl-lcp-section-title {
   margin: 0 0 12px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   letter-spacing: 0.6px;
   text-transform: uppercase;
-  color: #8b8b94;
+  color: var(--text-muted);
 }
 
 .dl-lcp-section-head .dl-lcp-section-title {
@@ -133,108 +40,97 @@
   justify-content: center;
   gap: 8px;
   padding: 28px 12px;
-  font-size: 13px;
-  color: #8b8b94;
+  font-size: var(--fs-md);
+  color: var(--text-muted);
 }
 
 .dl-lcp-state-sm {
   padding: 14px 0;
 }
 
-.dl-lcp-empty {
-  padding: 18px 12px;
-  text-align: center;
-  font-size: 12.5px;
-  color: #8b8b94;
-  background: #0d0d0f;
-  border: 1px solid #2a2a30;
-  border-radius: 8px;
+.dl-lcp-load-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 
-.dl-lcp-empty-hint {
-  display: block;
-  margin-top: 4px;
-  font-size: 11px;
-  opacity: 0.8;
+.dl-lcp-note {
+  margin: 0;
+  padding: 16px 0 4px;
+  font-size: var(--fs-md);
+  color: var(--text-muted);
 }
 
-/* ── Status / instance cards ─────────────────────────────────────────── */
+.empty-state.dl-lcp-empty {
+  background: var(--code-bg);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md);
+}
+
+/* ── Status card ─────────────────────────────────────────────────────── */
 
 .dl-lcp-card {
-  background: #0d0d0f;
-  border: 1px solid #2a2a30;
-  border-radius: 8px;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
   padding: 14px;
 }
 
 .dl-lcp-status-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 8px;
   margin-bottom: 10px;
 }
 
-.dl-lcp-status-state {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
 .dl-lcp-state-label {
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-weight: 500;
-  text-transform: capitalize;
+  color: var(--text);
 }
 
 .dl-lcp-type-tag,
-.dl-lcp-disabled-badge,
 .dl-lcp-field-type,
 .dl-lcp-instance-key {
-  font-size: 10.5px;
   padding: 1px 6px;
+  border: 1px solid var(--border);
   border-radius: 4px;
-  background: #1f1f25;
-  color: #8b8b94;
+  background: var(--bg-secondary);
+  color: var(--text-muted);
+  font-size: 10.5px;
+  line-height: 16px;
+  white-space: nowrap;
 }
 
 .dl-lcp-instance-key {
-  background: rgba(91, 157, 255, 0.14);
-  color: #5b9dff;
+  border-color: transparent;
+  background: var(--info-bg);
+  color: var(--info);
 }
-
-/* ── State dots ──────────────────────────────────────────────────────── */
-
-.dl-lcp-dot {
-  width: 8px;
-  height: 8px;
-}
-
-.dl-lcp-dot-connected {
-  background: #3fb950;
-  box-shadow: 0 0 6px #3fb950;
-}
-
-.dl-lcp-dot-error {
-  background: #f85149;
-}
-
-.dl-lcp-dot-starting {
-  background: #d29922;
-}
-
-.dl-lcp-dot-stopped {
-  background: #8b8b94;
-}
-
-/* ── Stats ───────────────────────────────────────────────────────────── */
 
 .dl-lcp-stats {
   display: flex;
   flex-wrap: wrap;
-  gap: 16px;
-  margin-bottom: 12px;
-  font-size: 12px;
-  color: #8b8b94;
+  gap: 4px 20px;
+  margin: 0 0 12px;
+  font-size: var(--fs-sm);
+}
+
+.dl-lcp-stats div {
+  display: flex;
+  gap: 6px;
+}
+
+.dl-lcp-stats dt {
+  color: var(--text-muted);
+}
+
+.dl-lcp-stats dd {
+  margin: 0;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
 }
 
 .dl-lcp-error-box {
@@ -242,109 +138,35 @@
   align-items: flex-start;
   gap: 6px;
   margin-bottom: 12px;
-  padding: 6px 10px;
-  border-radius: 6px;
-  font-size: 12px;
-  color: #f85149;
-  background: rgba(248, 81, 73, 0.08);
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+  color: var(--danger-text);
+  background: var(--danger-bg);
+  overflow-wrap: anywhere;
 }
 
-/* ── Control buttons ─────────────────────────────────────────────────── */
+.dl-lcp-error-box svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
 
 .dl-lcp-controls {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
 }
 
-.dl-lcp-ctrl {
-  flex: 1;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  padding: 7px 0;
-  border-radius: 6px;
-  border: 1px solid #2a2a30;
-  background: #16161a;
-  color: #e6e6ea;
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-}
-
-.dl-lcp-ctrl:hover:not(:disabled) {
-  border-color: #3a3a42;
-}
-
-.dl-lcp-ctrl:disabled {
-  cursor: not-allowed;
-  opacity: 0.5;
-}
-
-.dl-lcp-ctrl-start {
-  color: #3fb950;
-  background: rgba(63, 185, 80, 0.08);
-}
-
-.dl-lcp-ctrl-stop {
-  color: #f85149;
-  background: rgba(248, 81, 73, 0.08);
-}
-
-.dl-lcp-ctrl-sm {
-  flex: 0 0 auto;
-  padding: 4px 10px;
-  font-size: 11px;
-}
-
-.dl-lcp-inline-result {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 8px;
-  padding: 6px 10px;
-  border-radius: 6px;
-  font-size: 12px;
-}
-
-.dl-lcp-inline-result.is-ok {
-  color: #3fb950;
-  background: rgba(63, 185, 80, 0.1);
-}
-
-.dl-lcp-inline-result.is-err {
-  color: #f85149;
-  background: rgba(248, 81, 73, 0.1);
+.dl-lcp-inline-error {
+  margin-top: 10px;
 }
 
 /* ── Bulk controls ───────────────────────────────────────────────────── */
 
 .dl-lcp-bulk {
   display: flex;
-  gap: 4px;
-}
-
-/* Carries .dl-tap-compact (index.css): these are 11px captions tucked beside
- * the section heading, and the <768px tap-target rule doubles their height,
- * turning the three of them into a row of squares that dwarfs the heading. */
-.dl-lcp-bulk-btn {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  padding: 3px 8px;
-  border-radius: 5px;
-  border: 1px solid #2a2a30;
-  background: #16161a;
-  color: #8b8b94;
-  font-size: 11px;
-  font-weight: 500;
-  cursor: pointer;
-}
-
-.dl-lcp-bulk-btn:disabled {
-  cursor: not-allowed;
-  opacity: 0.5;
+  flex-wrap: wrap;
+  gap: 2px;
 }
 
 /* ── Instance list ───────────────────────────────────────────────────── */
@@ -353,13 +175,20 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
 .dl-lcp-instance {
-  background: #0d0d0f;
-  border: 1px solid #2a2a30;
-  border-radius: 8px;
-  padding: 10px 14px;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 8px 10px 8px 14px;
+}
+
+.dl-lcp-instance.is-editing {
+  border-color: var(--accent);
 }
 
 .dl-lcp-instance.is-disabled {
@@ -371,7 +200,6 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  margin-bottom: 8px;
 }
 
 .dl-lcp-instance-id-wrap {
@@ -383,67 +211,57 @@
 }
 
 .dl-lcp-instance-id {
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-weight: 500;
+  color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.dl-lcp-instance-state {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
 .dl-lcp-instance-actions {
   display: flex;
-  gap: 4px;
+  gap: 2px;
   flex-shrink: 0;
 }
 
-.dl-lcp-icon-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 4px;
-  border: none;
-  border-radius: 4px;
-  background: transparent;
-  color: #8b8b94;
-  cursor: pointer;
+.btn.dl-lcp-danger-icon:hover:not(:disabled) {
+  color: var(--danger-text);
+  background: var(--danger-bg);
 }
 
-.dl-lcp-icon-btn:hover {
-  color: #e6e6ea;
-  background: #1f1f25;
-}
-
-.dl-lcp-icon-btn.is-active {
-  color: #5b9dff;
-}
-
-.dl-lcp-icon-btn-danger:hover {
-  color: #f85149;
-}
-
-.dl-lcp-icon-btn:disabled {
-  cursor: wait;
-  opacity: 0.6;
+.dl-lcp-instance-actions .btn[aria-pressed="true"] {
+  color: var(--accent-hover);
+  background: var(--accent-bg);
 }
 
 .dl-lcp-chips {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  margin-bottom: 8px;
+  margin-top: 6px;
 }
 
 .dl-lcp-chip {
   padding: 2px 6px;
   border-radius: 4px;
-  background: #1f1f25;
-  color: #8b8b94;
-  font-size: 11px;
+  background: var(--bg-secondary);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  overflow-wrap: anywhere;
 }
 
 .dl-lcp-instance-ctrls {
   display: flex;
-  gap: 4px;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin: 6px 0 0 -8px;
 }
 
 /* ── Create instance ─────────────────────────────────────────────────── */
@@ -453,29 +271,31 @@
 }
 
 .dl-lcp-create-form {
-  background: #0d0d0f;
-  border: 1px solid #2a2a30;
-  border-radius: 8px;
-  padding: 10px 14px;
-}
-
-.dl-lcp-create-label {
-  display: block;
-  margin-bottom: 6px;
-  font-size: 12px;
-  font-weight: 500;
-  color: #8b8b94;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
 }
 
 .dl-lcp-create-row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
-.dl-lcp-create-row .dl-lcp-input {
-  flex: 1;
-  min-width: 0;
+.input.dl-lcp-create-input {
+  flex: 1 1 200px;
+}
+
+.input.is-err {
+  border-color: var(--danger);
+}
+
+.dl-lcp-create-btns {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
 }
 
 .dl-lcp-add-btn {
@@ -484,23 +304,23 @@
   justify-content: center;
   gap: 6px;
   width: 100%;
+  min-height: 36px;
   padding: 8px 12px;
-  border-radius: 8px;
-  border: 1px dashed #2a2a30;
-  background: transparent;
-  color: #5b9dff;
-  font-size: 12px;
+  border-radius: var(--radius-md);
+  border: 1px dashed var(--border-strong);
+  color: var(--accent-hover);
+  font-size: var(--fs-sm);
   font-weight: 500;
-  cursor: pointer;
 }
 
 .dl-lcp-add-btn:hover:not(:disabled) {
-  background: rgba(91, 157, 255, 0.06);
+  background: var(--accent-bg);
+  border-color: var(--accent);
 }
 
 .dl-lcp-add-btn:disabled {
   cursor: not-allowed;
-  opacity: 0.5;
+  opacity: 0.55;
 }
 
 /* ── Editing banner ──────────────────────────────────────────────────── */
@@ -508,31 +328,22 @@
 .dl-lcp-editing-banner {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
-  margin-bottom: 12px;
-  padding: 6px 10px;
-  border-radius: 6px;
-  font-size: 12px;
-  color: #5b9dff;
-  background: rgba(91, 157, 255, 0.1);
+  margin-bottom: 14px;
+  padding: 4px 4px 4px 10px;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+  color: var(--accent-hover);
+  background: var(--accent-bg);
 }
 
-/* Carries .dl-tap-compact (index.css): an 11px caption inside a 32px-tall
- * banner, which the <768px tap-target rule would stretch to 56px. */
-.dl-lcp-editing-cancel {
-  position: relative;
+.dl-lcp-editing-banner code {
+  color: var(--text);
+}
+
+.btn.dl-lcp-editing-cancel {
   margin-left: auto;
-  padding: 2px 6px;
-  border: none;
-  border-radius: 4px;
-  background: transparent;
-  color: #8b8b94;
-  font-size: 11px;
-  cursor: pointer;
-}
-
-.dl-lcp-editing-cancel:hover {
-  color: #e6e6ea;
 }
 
 /* ── Field groups + fields ───────────────────────────────────────────── */
@@ -547,12 +358,9 @@
   gap: 6px;
   margin-bottom: 8px;
   padding: 4px 0;
-  border: none;
-  background: transparent;
-  color: #e6e6ea;
-  font-size: 13px;
+  color: var(--text);
+  font-size: var(--fs-md);
   font-weight: 500;
-  cursor: pointer;
 }
 
 .dl-lcp-fields {
@@ -562,9 +370,9 @@
 }
 
 .dl-lcp-field {
-  background: #0d0d0f;
-  border: 1px solid #2a2a30;
-  border-radius: 8px;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
   padding: 12px 14px;
 }
 
@@ -573,43 +381,44 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
 }
 
 .dl-lcp-field-labels {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
   min-width: 0;
 }
 
 .dl-lcp-field-label {
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-weight: 500;
-  color: #e6e6ea;
-  word-break: break-all;
+  color: var(--text);
+  overflow-wrap: anywhere;
 }
 
 .dl-lcp-required {
-  font-size: 10px;
+  font-size: 10.5px;
   font-weight: 600;
-  color: #f85149;
+  color: var(--warning-text);
 }
 
 .dl-lcp-field-desc {
   display: flex;
   align-items: flex-start;
-  gap: 4px;
+  gap: 5px;
   margin: 0 0 8px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.5;
-  color: #8b8b94;
+  color: var(--text-muted);
 }
 
 .dl-lcp-field-desc-icon {
   flex-shrink: 0;
-  margin-top: 2px;
-  opacity: 0.6;
+  margin-top: 3px;
+  opacity: 0.7;
 }
 
 .dl-lcp-field-control {
@@ -619,43 +428,24 @@
 .dl-lcp-field-hints {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 4px 10px;
   margin-top: 6px;
-  font-size: 11px;
-  color: #8b8b94;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
 }
 
-/* ── Inputs ──────────────────────────────────────────────────────────── */
-
-.dl-lcp-input {
-  width: 100%;
-  box-sizing: border-box;
-  padding: 7px 10px;
-  border: 1px solid #2a2a30;
-  border-radius: 6px;
-  background: #16161a;
-  color: #e6e6ea;
-  font-size: 12px;
-  outline: none;
+.dl-lcp-options-error {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  margin-top: 8px;
+  font-size: var(--fs-sm);
+  color: var(--danger-text);
 }
 
-.dl-lcp-input::placeholder {
-  color: #5f5f68;
-}
-
-.dl-lcp-input:focus {
-  border-color: #5b9dff;
-}
-
-.dl-lcp-input.is-err {
-  border-color: #f85149;
-}
-
-select.dl-lcp-input {
-  cursor: pointer;
-}
-
-/* ── Toggle ──────────────────────────────────────────────────────────── */
+/* ── Toggle (role="switch") ──────────────────────────────────────────── */
 
 /* Carries .dl-tap-compact (index.css): the <768px tap-target rule would round
  * this 40×22 pill into a 44×44 circle with the knob stranded in a corner.
@@ -664,15 +454,13 @@ select.dl-lcp-input {
   position: relative;
   width: 40px;
   height: 22px;
-  border: none;
-  border-radius: 11px;
-  background: #2a2a30;
-  cursor: pointer;
+  border-radius: var(--radius-pill);
+  background: var(--border-strong);
   transition: background 0.2s;
 }
 
 .dl-lcp-toggle.is-on {
-  background: #5b9dff;
+  background: var(--accent);
 }
 
 .dl-lcp-toggle-knob {
@@ -682,7 +470,7 @@ select.dl-lcp-input {
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: #e6e6ea;
+  background: var(--text);
   transition: left 0.2s;
 }
 
@@ -693,21 +481,29 @@ select.dl-lcp-input {
 /* ── Checklist (multiselect) ─────────────────────────────────────────── */
 
 .dl-lcp-checklist {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 6px 12px;
 }
 
 .dl-lcp-check {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 12px;
+  gap: 8px;
+  font-size: var(--fs-md);
+  color: var(--text-secondary);
   cursor: pointer;
 }
 
 .dl-lcp-check input {
-  accent-color: #5b9dff;
+  accent-color: var(--accent);
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+}
+
+.btn.dl-lcp-load-opts {
+  justify-self: start;
 }
 
 /* ── Editable text[] list ────────────────────────────────────────────── */
@@ -715,6 +511,7 @@ select.dl-lcp-input {
 .dl-lcp-textlist {
   display: flex;
   flex-direction: column;
+  align-items: flex-start;
   gap: 6px;
 }
 
@@ -722,34 +519,19 @@ select.dl-lcp-input {
   display: flex;
   align-items: center;
   gap: 6px;
+  width: 100%;
 }
 
-.dl-lcp-textlist-row .dl-lcp-input {
+.dl-lcp-textlist-row .input {
   flex: 1;
 }
 
-/* ── Shared link / hint / error ──────────────────────────────────────── */
-
-.dl-lcp-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 0;
-  border: none;
-  background: transparent;
-  color: #5b9dff;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.dl-lcp-link:hover {
-  text-decoration: underline;
-}
+/* ── Hint / error ────────────────────────────────────────────────────── */
 
 .dl-lcp-hint {
   margin-top: 6px;
-  font-size: 11px;
-  color: #5f5f68;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
 }
 
 .dl-lcp-field-error {
@@ -757,8 +539,8 @@ select.dl-lcp-input {
   align-items: center;
   gap: 4px;
   margin-top: 6px;
-  font-size: 11px;
-  color: #f85149;
+  font-size: var(--fs-sm);
+  color: var(--danger-text);
 }
 
 /* ── Metadata ────────────────────────────────────────────────────────── */
@@ -766,108 +548,37 @@ select.dl-lcp-input {
 .dl-lcp-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
-  margin-top: 16px;
+  gap: 4px 14px;
+  margin-top: 18px;
   padding: 10px 12px;
-  border-radius: 6px;
-  background: #1f1f25;
-  font-size: 12px;
-  color: #8b8b94;
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
 }
 
-/* ── Footer ──────────────────────────────────────────────────────────── */
-
-.dl-lcp-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 14px 22px;
-  border-top: 1px solid #2a2a30;
-  flex-shrink: 0;
-}
+/* ── Footer status (Modal's footer holds it and the buttons) ────────── */
 
 .dl-lcp-footer-status {
-  flex: 1;
+  flex: 1 1 180px;
   min-width: 0;
   display: flex;
   align-items: center;
   gap: 12px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 
-.dl-lcp-dirty {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  color: #d29922;
-}
-
-.dl-lcp-save-ok {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  color: #3fb950;
-}
-
+.dl-lcp-dirty,
 .dl-lcp-save-err {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  color: #f85149;
+  gap: 5px;
 }
 
-.dl-lcp-footer-actions {
-  display: flex;
-  gap: 10px;
-  flex-shrink: 0;
+.dl-lcp-dirty {
+  color: var(--warning-text);
 }
 
-.dl-lcp-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 16px;
-  border-radius: 8px;
-  border: 1px solid transparent;
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-}
-
-.dl-lcp-btn:disabled {
-  cursor: not-allowed;
-  opacity: 0.5;
-}
-
-.dl-lcp-btn-secondary {
-  background: #0d0d0f;
-  border-color: #2a2a30;
-  color: #c5c5cd;
-}
-
-.dl-lcp-btn-secondary:hover:not(:disabled) {
-  border-color: #3a3a42;
-  color: #e6e6ea;
-}
-
-.dl-lcp-btn-primary {
-  background: #5b9dff;
-  color: #0d0d0f;
-}
-
-.dl-lcp-btn-primary:hover:not(:disabled) {
-  background: #74acff;
-}
-
-/* ── Spinner ─────────────────────────────────────────────────────────── */
-
-.dl-lcp-spin {
-  animation: dl-lcp-spin 0.9s linear infinite;
-}
-
-@keyframes dl-lcp-spin {
-  to {
-    transform: rotate(360deg);
-  }
+.dl-lcp-save-err {
+  color: var(--danger-text);
 }

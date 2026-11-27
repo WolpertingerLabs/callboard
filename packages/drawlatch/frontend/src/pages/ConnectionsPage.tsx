@@ -1,9 +1,11 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
+  type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import { Link } from "react-router-dom";
 import {
@@ -13,11 +15,13 @@ import {
   ChevronDown,
   ExternalLink,
   Globe,
+  KeyRound,
   Loader2,
   Play,
   Radio,
   RotateCw,
   Search,
+  SlidersHorizontal,
   Square,
   Users,
   Wifi,
@@ -28,29 +32,30 @@ import type {
   AdminIngestor,
   IngestorState,
 } from "drawlatch-admin-types";
-import { api, isDaemonDown } from "../api";
+import { api, isDaemonDown, isUnreachable } from "../api";
 import { useDaemon } from "../contexts/DaemonContext";
 import StabilityBadge from "../components/StabilityBadge";
 import ConfigureConnectionModal from "../components/ConfigureConnectionModal";
 import ListenerConfigPanel from "../components/ListenerConfigPanel";
-import {
-  TestResultView,
-  toOutcome,
-  type TestOutcome,
-} from "../components/TestResult";
+import DaemonOffline from "../components/DaemonOffline";
+import EmptyState, { LoadingState } from "../components/EmptyState";
+import { useToast } from "../components/Toast";
+import { usePolling } from "../hooks/usePolling";
+import { TestResultView, toOutcome, type TestOutcome } from "../components/TestResult";
 import { GoogleBadges } from "../components/AuthSummary";
+import { toolResult } from "../utils/toolResult";
 import "./ConnectionsPage.css";
 
 const INGESTOR_POLL_MS = 5_000;
 
 const CATEGORY_LABELS: Record<string, string> = {
   ai: "AI",
-  "developer-tools": "Developer Tools",
+  "developer-tools": "Developer tools",
   gaming: "Gaming",
   messaging: "Messaging",
   productivity: "Productivity",
-  "social-media": "Social Media",
-  "web-search": "Web Search & Fetch",
+  "social-media": "Social media",
+  "web-search": "Web search and fetch",
 };
 const CATEGORY_ORDER = [
   "ai",
@@ -65,20 +70,40 @@ const CATEGORY_ORDER = [
 
 type StabilityFilter = "stable" | "beta" | "dev";
 
-/** State-dot color class suffix for an ingestor state. */
-function stateClass(state: IngestorState): string {
+const STABILITY_OPTIONS: { key: StabilityFilter; label: string }[] = [
+  { key: "stable", label: "Stable" },
+  { key: "beta", label: "+ Beta" },
+  { key: "dev", label: "All (dev)" },
+];
+
+const STATE_LABELS: Record<IngestorState, string> = {
+  connected: "Connected",
+  starting: "Starting",
+  reconnecting: "Reconnecting",
+  stopped: "Stopped",
+  error: "Error",
+};
+
+/** State-dot colour for an ingestor state (index.css `.status-dot.*`). */
+function dotClass(state: IngestorState): string {
   switch (state) {
     case "connected":
-      return "connected";
+      return "up";
     case "starting":
     case "reconnecting":
       return "warn";
     case "error":
-      return "error";
+      return "down";
     case "stopped":
     default:
       return "stopped";
   }
+}
+
+/** Is the listener running, or trying to? Then the card offers Stop;
+ *  otherwise (stopped, error) it offers Start. */
+function isListenerActive(state: IngestorState | undefined): boolean {
+  return state === "connected" || state === "starting" || state === "reconnecting";
 }
 
 /** Cumulative set of stabilities visible at a given filter level. */
@@ -88,10 +113,21 @@ function stabilitiesFor(filter: StabilityFilter): Set<string> {
   return new Set(["stable", "beta", "dev"]);
 }
 
+function requiredCounts(c: AdminConnectionStatus): { set: number; total: number } {
+  return {
+    set: c.requiredSecrets.filter((s) => c.requiredSecretsSet[s]).length,
+    total: c.requiredSecrets.length,
+  };
+}
+
+/** Enabled, but a required secret is missing: it can't work yet. */
+function needsSecrets(c: AdminConnectionStatus): boolean {
+  const { set, total } = requiredCounts(c);
+  return c.enabled && set < total;
+}
+
 /** Group ingestors by connection alias (collecting multi-instance entries). */
-function groupIngestors(
-  ingestors: AdminIngestor[],
-): Map<string, AdminIngestor[]> {
+function groupIngestors(ingestors: AdminIngestor[]): Map<string, AdminIngestor[]> {
   const map = new Map<string, AdminIngestor[]>();
   for (const ing of ingestors) {
     const list = map.get(ing.connection);
@@ -103,48 +139,44 @@ function groupIngestors(
 
 export default function ConnectionsPage() {
   const { daemon } = useDaemon();
+  const toast = useToast();
 
   const [callers, setCallers] = useState<AdminCaller[]>([]);
   const [selectedCaller, setSelectedCaller] = useState("default");
   const [connections, setConnections] = useState<AdminConnectionStatus[]>([]);
   const [ingestors, setIngestors] = useState<AdminIngestor[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const [searchQuery, setSearchQuery] = useState("");
-  const [stabilityFilter, setStabilityFilter] =
-    useState<StabilityFilter>("stable");
+  const [stabilityFilter, setStabilityFilter] = useState<StabilityFilter>("stable");
+  const [onlyNeedsSecrets, setOnlyNeedsSecrets] = useState(false);
 
   const [togglingAlias, setTogglingAlias] = useState<string | null>(null);
-  const [configuring, setConfiguring] =
-    useState<AdminConnectionStatus | null>(null);
-  const [listenerFor, setListenerFor] =
-    useState<AdminConnectionStatus | null>(null);
-
-  // Caller dropdown UI. Mutation (create/delete) lives on /callers.
-  const [showCallerMenu, setShowCallerMenu] = useState(false);
+  const [configuring, setConfiguring] = useState<AdminConnectionStatus | null>(null);
+  const [listenerFor, setListenerFor] = useState<AdminConnectionStatus | null>(null);
 
   const selectedCallerRef = useRef(selectedCaller);
   selectedCallerRef.current = selectedCaller;
 
   // ── Fetch primary data (callers + connection-status) ────────────────────
-  const refetch = useCallback(
-    async (caller: string) => {
-      const [callersRes, statusRes] = await Promise.all([
-        api.callers(),
-        api.connectionStatus(caller),
-      ]);
-      if (selectedCallerRef.current !== caller) return;
-      if (!isDaemonDown(callersRes)) setCallers(callersRes);
-      if (!isDaemonDown(statusRes)) setConnections(statusRes);
-      setLoading(false);
-    },
-    [],
-  );
-
-  const fetchIngestors = useCallback(async (caller: string) => {
-    const res = await api.callerIngestors(caller);
+  const refetch = useCallback(async (caller: string) => {
+    const [callersRes, statusRes] = await Promise.all([
+      api.callers(),
+      api.connectionStatus(caller),
+    ]);
     if (selectedCallerRef.current !== caller) return;
-    if (!isDaemonDown(res)) setIngestors(res);
+    if (!isDaemonDown(callersRes)) setCallers(callersRes);
+    if (isDaemonDown(statusRes)) {
+      // Unreachable: the page switches to the offline banner by itself.
+      // Anything else (a 404 for a caller deleted meanwhile, a 500) is shown,
+      // never passed off as "no connections".
+      if (!isUnreachable(statusRes)) setLoadError(statusRes.error);
+    } else {
+      setConnections(statusRes);
+      setLoadError(null);
+    }
+    setLoading(false);
   }, []);
 
   // ── Load on mount + whenever caller changes ─────────────────────────────
@@ -152,49 +184,27 @@ export default function ConnectionsPage() {
     if (daemon !== "up") return;
     const caller = selectedCaller;
     setLoading(true);
+    setLoadError(null);
     setConnections([]);
     setIngestors([]);
+    // A toggle still in flight belongs to the previous caller's list.
+    setTogglingAlias(null);
     void refetch(caller);
-    void fetchIngestors(caller);
-  }, [daemon, selectedCaller, refetch, fetchIngestors]);
+  }, [daemon, selectedCaller, refetch]);
 
-  // ── Poll ingestor statuses every ~5s ────────────────────────────────────
-  useEffect(() => {
-    if (daemon !== "up") return;
-    const caller = selectedCaller;
-    let interval: ReturnType<typeof setInterval> | null = null;
-
-    const start = () => {
-      if (interval !== null) return;
-      interval = setInterval(() => void fetchIngestors(caller), INGESTOR_POLL_MS);
-    };
-    const stop = () => {
-      if (interval === null) return;
-      clearInterval(interval);
-      interval = null;
-    };
-
-    if (document.visibilityState === "visible") start();
-    const onVisibility = () => {
-      if (document.visibilityState === "visible") {
-        void fetchIngestors(caller);
-        start();
-      } else {
-        stop();
-      }
-    };
-    document.addEventListener("visibilitychange", onVisibility);
-    return () => {
-      stop();
-      document.removeEventListener("visibilitychange", onVisibility);
-    };
-  }, [daemon, selectedCaller, fetchIngestors]);
-
-  // ── Caller actions ──────────────────────────────────────────────────────
-  const handleSelectCaller = (alias: string) => {
-    setShowCallerMenu(false);
-    if (alias !== selectedCaller) setSelectedCaller(alias);
-  };
+  // ── Ingestor statuses: now, then every ~5s while the tab is visible ─────
+  // Restarts for a newly selected caller. After an action, refresh()
+  // supersedes a poll in flight, so a pre-action status can't land after it.
+  const { refresh: refreshIngestors } = usePolling(
+    async (ctx) => {
+      const caller = selectedCallerRef.current;
+      const res = await api.callerIngestors(caller);
+      if (!ctx.active() || selectedCallerRef.current !== caller) return;
+      if (!isDaemonDown(res)) setIngestors(res);
+    },
+    INGESTOR_POLL_MS,
+    { enabled: daemon === "up", key: selectedCaller },
+  );
 
   // If the selected caller is deleted on the /callers page, fall back to default.
   useEffect(() => {
@@ -205,68 +215,81 @@ export default function ConnectionsPage() {
   }, [callers, selectedCaller]);
 
   // ── Toggle (optimistic) ─────────────────────────────────────────────────
-  const handleToggle = async (alias: string, enabled: boolean) => {
+  const handleToggle = async (c: AdminConnectionStatus, enabled: boolean) => {
+    const alias = c.alias;
+    // The request is for this caller; the user may pick another before it
+    // settles, and then this caller's revert must not touch that list.
+    const caller = selectedCallerRef.current;
     setTogglingAlias(alias);
-    setConnections((prev) =>
-      prev.map((c) => (c.alias === alias ? { ...c, enabled } : c)),
-    );
-    const res = await api.setConnectionEnabled(
-      selectedCallerRef.current,
-      alias,
-      enabled,
-    );
+    setConnections((prev) => prev.map((x) => (x.alias === alias ? { ...x, enabled } : x)));
+    const res = toolResult(await api.setConnectionEnabled(caller, alias, enabled));
+    const stillHere = selectedCallerRef.current === caller;
+    if (stillHere) setTogglingAlias(null);
     if (!res.ok) {
-      // Revert on failure.
-      setConnections((prev) =>
-        prev.map((c) => (c.alias === alias ? { ...c, enabled: !enabled } : c)),
+      if (stillHere) {
+        setConnections((prev) =>
+          prev.map((x) => (x.alias === alias ? { ...x, enabled: !enabled } : x)),
+        );
+      }
+      toast.show(
+        `Couldn't ${enabled ? "enable" : "disable"} ${c.name} for ${caller}: ${res.error}`,
+        { kind: "error" },
       );
-      setTogglingAlias(null);
       return;
     }
-    setTogglingAlias(null);
-    void refetch(selectedCallerRef.current);
+    toast.show(`${c.name} ${enabled ? "enabled" : "disabled"} for ${caller}`);
+    if (stillHere) {
+      void refetch(caller);
+      // Enabling can start a listener; disabling stops one.
+      void refreshIngestors();
+    }
   };
 
   const triggerRefetch = useCallback(() => {
     void refetch(selectedCallerRef.current);
-    void fetchIngestors(selectedCallerRef.current);
-  }, [refetch, fetchIngestors]);
+    void refreshIngestors();
+  }, [refetch, refreshIngestors]);
 
   // ── Derived: filter, sort, group ────────────────────────────────────────
-  const ingestorsByConn = useMemo(
-    () => groupIngestors(ingestors),
-    [ingestors],
-  );
+  const ingestorsByConn = useMemo(() => groupIngestors(ingestors), [ingestors]);
 
-  const grouped = useMemo(() => {
+  const needsSecretsCount = useMemo(() => connections.filter(needsSecrets).length, [connections]);
+
+  // Turn the filter off by itself once nothing needs secrets any more.
+  useEffect(() => {
+    if (onlyNeedsSecrets && needsSecretsCount === 0 && !loading) setOnlyNeedsSecrets(false);
+  }, [onlyNeedsSecrets, needsSecretsCount, loading]);
+
+  const { grouped, keptByEnabled } = useMemo(() => {
     const allow = stabilitiesFor(stabilityFilter);
     const q = searchQuery.trim().toLowerCase();
+    let kept = 0;
 
     const filtered = connections.filter((c) => {
-      const stabilityOk = c.enabled || allow.has(c.stability);
-      if (!stabilityOk) return false;
-      if (!q) return true;
-      return (
+      if (onlyNeedsSecrets && !needsSecrets(c)) return false;
+      // An enabled connection always shows, whatever the filter: hiding one
+      // that is live for this caller would be misleading.
+      if (!allow.has(c.stability)) {
+        if (!c.enabled) return false;
+      }
+      const matches =
+        !q ||
         c.name.toLowerCase().includes(q) ||
         c.alias.toLowerCase().includes(q) ||
-        (c.description?.toLowerCase().includes(q) ?? false)
-      );
+        (c.description?.toLowerCase().includes(q) ?? false);
+      if (matches && !allow.has(c.stability)) kept++;
+      return matches;
     });
 
     const byCategory = new Map<string, AdminConnectionStatus[]>();
     for (const c of filtered) {
-      const key =
-        c.category && c.category in CATEGORY_LABELS ? c.category : "other";
+      const key = c.category && c.category in CATEGORY_LABELS ? c.category : "other";
       const list = byCategory.get(key);
       if (list) list.push(c);
       else byCategory.set(key, [c]);
     }
 
-    const result: {
-      key: string;
-      label: string;
-      connections: AdminConnectionStatus[];
-    }[] = [];
+    const result: { key: string; label: string; connections: AdminConnectionStatus[] }[] = [];
     for (const key of CATEGORY_ORDER) {
       const list = byCategory.get(key);
       if (!list?.length) continue;
@@ -274,176 +297,165 @@ export default function ConnectionsPage() {
         if (a.enabled !== b.enabled) return a.enabled ? -1 : 1;
         return a.name.localeCompare(b.name);
       });
-      result.push({
-        key,
-        label: CATEGORY_LABELS[key] ?? "Other",
-        connections: list,
-      });
+      result.push({ key, label: CATEGORY_LABELS[key] ?? "Other", connections: list });
     }
-    return result;
-  }, [connections, searchQuery, stabilityFilter]);
+    return { grouped: result, keptByEnabled: kept };
+  }, [connections, searchQuery, stabilityFilter, onlyNeedsSecrets]);
 
   const totalShown = grouped.reduce((n, g) => n + g.connections.length, 0);
+
+  const header = (
+    <header className="page-header">
+      <div>
+        <h1 className="page-title">Connections</h1>
+        <div className="page-subtitle">Manage per-caller connections, secrets and listeners</div>
+      </div>
+    </header>
+  );
 
   // ── Daemon down ─────────────────────────────────────────────────────────
   if (daemon === "down") {
     return (
       <>
-        <header className="page-header">
-          <div>
-            <h1 className="page-title">Connections</h1>
-            <div className="page-subtitle">
-              Manage per-caller connections, secrets and listeners
-            </div>
-          </div>
-        </header>
-        <div className="banner banner-offline">
-          <span className="status-dot down" aria-hidden="true" />
-          <span>
-            Drawlatch daemon is not reachable. Start it with{" "}
-            <code>drawlatch start</code> to manage connections.
-          </span>
-        </div>
+        {header}
+        <DaemonOffline action="manage connections" />
       </>
     );
   }
 
+  const clearFilters = () => {
+    setSearchQuery("");
+    setOnlyNeedsSecrets(false);
+  };
+
   return (
     <>
-      <header className="page-header">
-        <div>
-          <h1 className="page-title">Connections</h1>
-          <div className="page-subtitle">
-            Manage per-caller connections, secrets and listeners
-          </div>
-        </div>
-      </header>
+      {header}
 
-      {/* Controls: caller selector + search + stability filter */}
+      {/* Controls: caller selector + search + filters */}
       <div className="dl-conn-controls">
-        {/* Caller selector */}
-        <div className="dl-conn-caller">
-          <button
-            type="button"
-            className="dl-conn-caller-btn"
-            onClick={() => setShowCallerMenu((v) => !v)}
-          >
-            <Users size={14} className="dl-conn-muted-icon" />
-            <span className="dl-conn-caller-name">{selectedCaller}</span>
-            <ChevronDown size={14} className="dl-conn-muted-icon" />
-          </button>
+        <CallerPicker
+          callers={callers}
+          selected={selectedCaller}
+          onSelect={(alias) => {
+            if (alias !== selectedCaller) setSelectedCaller(alias);
+          }}
+        />
 
-          {showCallerMenu && (
-            <>
-              <div
-                className="dl-conn-overlay"
-                onClick={() => setShowCallerMenu(false)}
-              />
-              <div className="dl-conn-caller-menu">
-                {callers.map((caller) => (
-                  <div
-                    key={caller.alias}
-                    className={`dl-conn-caller-item ${
-                      caller.alias === selectedCaller
-                        ? "dl-conn-caller-item-active"
-                        : ""
-                    }`}
-                    onClick={() => handleSelectCaller(caller.alias)}
-                  >
-                    <div className="dl-conn-caller-item-main">
-                      {caller.alias === selectedCaller && (
-                        <Check size={12} className="dl-conn-check" />
-                      )}
-                      <div className="dl-conn-caller-item-text">
-                        <div className="dl-conn-caller-item-alias">
-                          {caller.alias}
-                        </div>
-                        <div className="dl-conn-caller-item-count">
-                          {caller.connections.length} connection
-                          {caller.connections.length === 1 ? "" : "s"}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-
-                <div className="dl-conn-caller-divider" />
-
-                <Link
-                  to="/callers"
-                  className="dl-conn-caller-manage"
-                  onClick={() => setShowCallerMenu(false)}
-                >
-                  <span>Manage callers</span>
-                  <ArrowRight size={12} />
-                </Link>
-              </div>
-            </>
-          )}
-        </div>
-
-        {/* Search */}
         <div className="dl-conn-search">
-          <Search size={16} className="dl-conn-search-icon" />
+          <Search size={16} className="dl-conn-search-icon" aria-hidden="true" />
           <input
-            type="text"
+            type="search"
+            className="input dl-conn-search-input"
+            aria-label="Search connections"
             placeholder="Search connections…"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
           />
         </div>
 
-        {/* Stability filter */}
-        <div className="dl-conn-stability">
-          {(
-            [
-              { key: "stable", label: "Stable" },
-              { key: "beta", label: "+ Beta" },
-              { key: "dev", label: "All (dev)" },
-            ] as const
-          ).map(({ key, label }) => (
+        <div className="dl-conn-filters">
+          {needsSecretsCount > 0 && (
             <button
-              key={key}
               type="button"
-              className={`dl-conn-stability-btn ${
-                stabilityFilter === key ? "dl-conn-stability-active" : ""
-              }`}
-              onClick={() => setStabilityFilter(key)}
+              className={`dl-conn-needs-btn${onlyNeedsSecrets ? " is-on" : ""}`}
+              aria-pressed={onlyNeedsSecrets}
+              onClick={() => setOnlyNeedsSecrets((v) => !v)}
+              title="Show only enabled connections that are missing a required secret"
             >
-              {label}
+              <KeyRound size={13} aria-hidden="true" />
+              Needs secrets
+              <span className="dl-conn-needs-count">{needsSecretsCount}</span>
             </button>
-          ))}
+          )}
+          <div className="dl-conn-stability" role="group" aria-label="Stability">
+            {STABILITY_OPTIONS.map(({ key, label }) => (
+              <button
+                key={key}
+                type="button"
+                className={`dl-conn-stability-btn${stabilityFilter === key ? " is-active" : ""}`}
+                aria-pressed={stabilityFilter === key}
+                onClick={() => setStabilityFilter(key)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
+      {keptByEnabled > 0 && !loading && (
+        <p className="dl-conn-filter-note">
+          {keptByEnabled === 1
+            ? "Also showing 1 enabled connection outside this filter: enabled connections always show."
+            : `Also showing ${keptByEnabled} enabled connections outside this filter: enabled connections always show.`}
+        </p>
+      )}
+
       {/* Body */}
       {loading ? (
-        <div className="banner banner-loading">Loading connections…</div>
-      ) : totalShown === 0 ? (
-        <div className="placeholder">
-          <span className="placeholder-title">
-            {searchQuery
-              ? `No connections match "${searchQuery}"`
-              : "No connections to show"}
+        <LoadingState label="Loading connections…" />
+      ) : loadError ? (
+        <div className="modal-error dl-conn-load-error" role="alert">
+          <span>
+            Couldn&apos;t load connections for <strong>{selectedCaller}</strong>: {loadError}
           </span>
-          {stabilityFilter !== "dev" && (
-            <span>
-              Try{" "}
-              <button
-                type="button"
-                className="dl-conn-link-btn dl-tap-compact"
-                onClick={() => setStabilityFilter("dev")}
-              >
-                All (dev)
-              </button>{" "}
-              to see more connections.
-            </span>
-          )}
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            onClick={() => {
+              setLoading(true);
+              void refetch(selectedCaller);
+            }}
+          >
+            <RotateCw size={13} aria-hidden="true" />
+            Retry
+          </button>
         </div>
+      ) : totalShown === 0 ? (
+        <EmptyState
+          icon={<Search size={20} />}
+          title={
+            searchQuery
+              ? `No connections match "${searchQuery}"`
+              : onlyNeedsSecrets
+                ? "Nothing needs secrets"
+                : "No connections to show"
+          }
+          body={
+            stabilityFilter !== "dev"
+              ? "Some connections are hidden by the stability filter."
+              : undefined
+          }
+          action={
+            <>
+              {(searchQuery || onlyNeedsSecrets) && (
+                <button type="button" className="btn btn-secondary btn-sm" onClick={clearFilters}>
+                  Clear search
+                </button>
+              )}
+              {stabilityFilter !== "dev" && (
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => setStabilityFilter("dev")}
+                >
+                  Show all (dev)
+                </button>
+              )}
+            </>
+          }
+        />
       ) : (
         grouped.map((group) => (
-          <section key={group.key} className="dl-conn-group">
-            <h2 className="dl-conn-group-title">{group.label}</h2>
+          <section
+            key={group.key}
+            className="dl-conn-group"
+            aria-labelledby={`dl-conn-g-${group.key}`}
+          >
+            <h2 className="dl-conn-group-title" id={`dl-conn-g-${group.key}`}>
+              {group.label}
+            </h2>
             <div className="dl-conn-grid">
               {group.connections.map((c) => (
                 <ConnectionCard
@@ -452,7 +464,7 @@ export default function ConnectionsPage() {
                   connection={c}
                   toggling={togglingAlias === c.alias}
                   ingestors={ingestorsByConn.get(c.alias) ?? []}
-                  onToggle={(enabled) => void handleToggle(c.alias, enabled)}
+                  onToggle={(enabled) => void handleToggle(c, enabled)}
                   onConfigure={() => setConfiguring(c)}
                   onOpenListener={() => setListenerFor(c)}
                   onChanged={triggerRefetch}
@@ -487,6 +499,159 @@ export default function ConnectionsPage() {
   );
 }
 
+// ── Caller picker ────────────────────────────────────────────────────────
+
+/**
+ * A button that opens a listbox of callers. Keyboard: Enter/Space/↓ open it
+ * with focus on the current caller, ↑/↓/Home/End move, Enter picks, Escape
+ * or Tab closes. Focus goes back to the button on close.
+ */
+function CallerPicker({
+  callers,
+  selected,
+  onSelect,
+}: {
+  callers: AdminCaller[];
+  selected: string;
+  onSelect: (alias: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const listId = useId();
+
+  const items = (): HTMLElement[] =>
+    Array.from(menuRef.current?.querySelectorAll<HTMLElement>("[data-picker-item]") ?? []);
+
+  const close = useCallback((refocus: boolean) => {
+    setOpen(false);
+    if (refocus) triggerRef.current?.focus();
+  }, []);
+
+  // Focus the current caller when the menu opens.
+  useEffect(() => {
+    if (!open) return;
+    const list = items();
+    const current = list.find((el) => el.getAttribute("aria-selected") === "true") ?? list[0];
+    current?.focus();
+  }, [open]);
+
+  // Click outside or Escape anywhere closes it.
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!rootRef.current?.contains(e.target as Node)) close(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      e.preventDefault();
+      close(true);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open, close]);
+
+  const onMenuKey = (e: ReactKeyboardEvent) => {
+    const list = items();
+    const i = list.indexOf(document.activeElement as HTMLElement);
+    let next: number | null = null;
+    if (e.key === "ArrowDown") next = i < 0 ? 0 : Math.min(i + 1, list.length - 1);
+    else if (e.key === "ArrowUp") next = i <= 0 ? 0 : i - 1;
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = list.length - 1;
+    else if (e.key === "Tab") close(false);
+    if (next !== null) {
+      e.preventDefault();
+      list[next]?.focus();
+    }
+  };
+
+  const current = callers.find((c) => c.alias === selected);
+
+  return (
+    <div className="dl-conn-caller" ref={rootRef}>
+      <button
+        ref={triggerRef}
+        type="button"
+        className="dl-conn-caller-btn"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={open ? listId : undefined}
+        aria-label={`Caller: ${selected}`}
+        title={current?.name && current.name !== selected ? current.name : undefined}
+        onClick={() => setOpen((v) => !v)}
+        onKeyDown={(e) => {
+          if (!open && e.key === "ArrowDown") {
+            e.preventDefault();
+            setOpen(true);
+          }
+        }}
+      >
+        <Users size={14} className="dl-conn-muted-icon" aria-hidden="true" />
+        <span className="dl-conn-caller-name">{selected}</span>
+        <ChevronDown
+          size={14}
+          className="dl-conn-muted-icon dl-conn-caller-chevron"
+          aria-hidden="true"
+        />
+      </button>
+
+      {open && (
+        <div className="dl-conn-caller-menu" ref={menuRef} onKeyDown={onMenuKey}>
+          <div role="listbox" id={listId} aria-label="Callers">
+            {callers.map((caller) => {
+              const isCurrent = caller.alias === selected;
+              const n = caller.connections.length;
+              return (
+                <button
+                  key={caller.alias}
+                  type="button"
+                  role="option"
+                  aria-selected={isCurrent}
+                  data-picker-item
+                  tabIndex={-1}
+                  className={`dl-conn-caller-item${isCurrent ? " is-active" : ""}`}
+                  title={caller.alias}
+                  onClick={() => {
+                    onSelect(caller.alias);
+                    close(true);
+                  }}
+                >
+                  <span className="dl-conn-check" aria-hidden="true">
+                    {isCurrent && <Check size={13} />}
+                  </span>
+                  <span className="dl-conn-caller-item-text">
+                    <span className="dl-conn-caller-item-alias">{caller.alias}</span>
+                    <span className="dl-conn-caller-item-count">
+                      {n} connection{n === 1 ? "" : "s"}
+                    </span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+          <div className="dl-conn-caller-divider" role="separator" />
+          <Link
+            to="/callers"
+            className="dl-conn-caller-manage"
+            data-picker-item
+            tabIndex={-1}
+            onClick={() => setOpen(false)}
+          >
+            <span>Manage callers</span>
+            <ArrowRight size={13} aria-hidden="true" />
+          </Link>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Connection card ─────────────────────────────────────────────────────
 
 function ConnectionCard({
@@ -509,41 +674,38 @@ function ConnectionCard({
   onChanged: () => void;
 }) {
   const c = connection;
-  const [testing, setTesting] = useState<"connection" | "ingestor" | null>(
-    null,
-  );
+  const toast = useToast();
+  const [testing, setTesting] = useState<"connection" | "ingestor" | null>(null);
   const [testResult, setTestResult] = useState<TestOutcome | null>(null);
-  const [controlAction, setControlAction] = useState<
-    "start" | "stop" | "restart" | null
-  >(null);
+  const [controlAction, setControlAction] = useState<"start" | "stop" | "restart" | null>(null);
+  const nameId = useId();
 
   // ── Secret status ──
-  const requiredTotal = c.requiredSecrets.length;
-  const requiredSet = c.requiredSecrets.filter(
-    (s) => c.requiredSecretsSet[s],
-  ).length;
+  const { set: requiredSet, total: requiredTotal } = requiredCounts(c);
   let secretText: string;
-  let secretClass: string;
+  let secretTone: "muted" | "success" | "warning";
   if (requiredTotal === 0) {
     secretText = "No secrets needed";
-    secretClass = "dl-conn-secret-none";
+    secretTone = "muted";
   } else if (requiredSet === requiredTotal) {
     secretText = "Ready";
-    secretClass = "dl-conn-secret-ready";
-  } else if (requiredSet > 0) {
-    secretText = `${requiredSet}/${requiredTotal} secrets`;
-    secretClass = "dl-conn-secret-partial";
+    secretTone = "success";
   } else {
-    secretText = `${requiredTotal} secret${requiredTotal === 1 ? "" : "s"} needed`;
-    secretClass = "dl-conn-secret-missing";
+    secretText =
+      requiredSet > 0
+        ? `${requiredSet}/${requiredTotal} secrets`
+        : `${requiredTotal} secret${requiredTotal === 1 ? "" : "s"} needed`;
+    // Only urgent when the connection is on: a disabled one needs nothing yet.
+    secretTone = c.enabled ? "warning" : "muted";
   }
 
-  // ── Ingestor live state ──
+  // ── Listener live state ──
   const primary = ingestors[0];
   const total = ingestors.length;
-  const connectedCount = ingestors.filter(
-    (i) => i.state === "connected",
-  ).length;
+  const connectedCount = ingestors.filter((i) => i.state === "connected").length;
+  const state: IngestorState = primary?.state ?? "stopped";
+  const active =
+    total > 1 ? ingestors.some((i) => isListenerActive(i.state)) : isListenerActive(state);
 
   const handleTestConnection = async () => {
     setTesting("connection");
@@ -556,48 +718,71 @@ function ConnectionCard({
   const handleTestIngestor = async () => {
     setTesting("ingestor");
     setTestResult(null);
-    setTestResult(
-      toOutcome("Listener test", await api.testIngestor(caller, c.alias)),
-    );
+    setTestResult(toOutcome("Listener test", await api.testIngestor(caller, c.alias)));
     setTesting(null);
   };
 
   const handleControl = async (action: "start" | "stop" | "restart") => {
     setControlAction(action);
-    await api.controlListener(caller, c.alias, action);
+    // Tool failures come back as HTTP 200 with success: false.
+    const res = toolResult(await api.controlListener(caller, c.alias, action));
     setControlAction(null);
+    if (res.ok) {
+      const done = action === "start" ? "started" : action === "stop" ? "stopped" : "restarted";
+      toast.show(`${c.name} listener ${done}`);
+    } else {
+      toast.show(`Couldn't ${action} the ${c.name} listener: ${res.error}`, { kind: "error" });
+    }
     onChanged();
   };
 
-  const running = primary?.state === "connected";
+  const stateText = total > 1 ? `${connectedCount}/${total} connected` : STATE_LABELS[state];
+  const stateDot = total > 1 && connectedCount === total ? "up" : dotClass(state);
 
   return (
-    <article className={`dl-conn-card ${c.enabled ? "" : "dl-conn-card-off"}`}>
-      {/* Header: icon + name + toggle */}
+    <article className={`dl-conn-card${c.enabled ? "" : " is-off"}`} aria-labelledby={nameId}>
+      {/* Header: icon + name + docs + toggle */}
       <div className="dl-conn-card-head">
-        <div className="dl-conn-card-id">
-          <span
-            className={`dl-conn-icon ${c.enabled ? "dl-conn-icon-on" : ""}`}
-          >
-            <Wifi size={18} />
-          </span>
-          <div className="dl-conn-card-text">
-            <h3 className="dl-conn-card-name">{c.name}</h3>
-            {c.description && (
-              <p className="dl-conn-card-desc">{c.description}</p>
-            )}
-          </div>
+        <span className={`dl-conn-icon${c.enabled ? " is-on" : ""}`} aria-hidden="true">
+          <Wifi size={18} />
+        </span>
+        <div className="dl-conn-card-text">
+          <h3 className="dl-conn-card-name" id={nameId} title={c.name}>
+            {c.name}
+          </h3>
+          {c.description && (
+            <p className="dl-conn-card-desc" title={c.description}>
+              {c.description}
+            </p>
+          )}
         </div>
-        <button
-          type="button"
-          className={`dl-conn-toggle dl-tap-compact ${c.enabled ? "dl-conn-toggle-on" : ""}`}
-          disabled={toggling}
-          onClick={() => onToggle(!c.enabled)}
-          title={c.enabled ? "Disable connection" : "Enable connection"}
-          aria-pressed={c.enabled}
-        >
-          <span className="dl-conn-toggle-knob" />
-        </button>
+        <div className="dl-conn-card-tools">
+          {c.docsUrl && (
+            <a
+              className="btn btn-ghost btn-icon btn-sm dl-conn-docs"
+              href={c.docsUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label={`${c.name} docs (opens in a new tab)`}
+              title="API docs"
+            >
+              <ExternalLink size={14} aria-hidden="true" />
+            </a>
+          )}
+          <button
+            type="button"
+            role="switch"
+            aria-checked={c.enabled}
+            aria-label={`Enable ${c.name}`}
+            className={`dl-conn-toggle dl-tap-compact${c.enabled ? " is-on" : ""}`}
+            disabled={toggling}
+            aria-busy={toggling || undefined}
+            onClick={() => onToggle(!c.enabled)}
+            title={c.enabled ? "Disable connection" : "Enable connection"}
+          >
+            <span className="dl-conn-toggle-knob" aria-hidden="true" />
+          </button>
+        </div>
       </div>
 
       {/* Badges */}
@@ -609,152 +794,135 @@ function ConnectionCard({
           // caller's selection. Show that instead.
           c.enabled && <GoogleBadges callerAuth={c.callerAuth} />
         ) : (
-          <span className="dl-conn-badge mono">
-            <Globe size={10} />
-            {c.allowedEndpoints.length} endpoint
-            {c.allowedEndpoints.length === 1 ? "" : "s"}
+          <span className="dl-conn-chip mono">
+            <Globe size={11} aria-hidden="true" />
+            {c.allowedEndpoints.length} endpoint{c.allowedEndpoints.length === 1 ? "" : "s"}
           </span>
         )}
 
         {c.hasIngestor && c.ingestorType && (
-          <span className="dl-conn-badge dl-conn-badge-ingestor">
-            <Radio size={10} />
+          <span className="dl-conn-chip is-info" title={primary?.error}>
+            <Radio size={11} aria-hidden="true" />
             {c.ingestorType}
-            {primary && (
-              <span
-                className={`status-dot dl-conn-dot dl-conn-dot-${stateClass(primary.state)}`}
-                title={`Listener: ${primary.state}`}
-                aria-hidden="true"
-              />
-            )}
-            {total > 1 && (
-              <span className="dl-conn-dot-count">
-                {connectedCount}/{total}
-              </span>
-            )}
+            <span className="dl-conn-chip-sep" aria-hidden="true">
+              ·
+            </span>
+            <span className="sr-only">listener </span>
+            <span className={`status-dot dl-conn-dot ${stateDot}`} aria-hidden="true" />
+            <span className="dl-conn-chip-state">{stateText}</span>
           </span>
         )}
 
-        <span className={`dl-conn-badge dl-conn-secret ${secretClass}`}>
-          {requiredTotal > 0 && requiredSet === requiredTotal ? (
-            <Check size={10} />
-          ) : requiredTotal > 0 ? (
-            <AlertTriangle size={10} />
-          ) : null}
+        <span className={`dl-conn-chip is-${secretTone}`}>
+          {requiredTotal > 0 &&
+            (requiredSet === requiredTotal ? (
+              <Check size={11} aria-hidden="true" />
+            ) : (
+              <AlertTriangle size={11} aria-hidden="true" />
+            ))}
           {secretText}
         </span>
-
-        {c.docsUrl && (
-          <a
-            className="dl-conn-docs"
-            href={c.docsUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <ExternalLink size={10} />
-            Docs
-          </a>
-        )}
       </div>
 
       {c.enabled && c.problem && (
         <div className="dl-conn-problem" role="status">
-          <AlertTriangle size={12} />
-          <span>not loaded: {c.problem}</span>
+          <AlertTriangle size={12} aria-hidden="true" />
+          <span>Not loaded: {c.problem}</span>
         </div>
       )}
 
-      {/* Primary actions */}
-      <div className="dl-conn-actions">
-        <button
-          type="button"
-          className="dl-conn-btn dl-conn-btn-primary"
-          onClick={onConfigure}
-        >
-          Configure
-        </button>
-        <button
-          type="button"
-          className="dl-conn-btn"
-          disabled={testing !== null}
-          onClick={() => void handleTestConnection()}
-          title="Test API credentials"
-        >
-          {testing === "connection" ? (
-            <Loader2 size={12} className="dl-conn-spin" />
-          ) : (
-            <Wifi size={12} />
-          )}
-          Test
-        </button>
-        {c.hasIngestor && (
+      <div className="dl-conn-card-foot">
+        {/* Primary actions */}
+        <div className="dl-conn-actions">
           <button
             type="button"
-            className="dl-conn-btn"
-            disabled={testing !== null}
-            onClick={() => void handleTestIngestor()}
-            title="Test event listener"
+            className="btn btn-secondary dl-conn-configure"
+            onClick={onConfigure}
           >
-            {testing === "ingestor" ? (
-              <Loader2 size={12} className="dl-conn-spin" />
-            ) : (
-              <Radio size={12} />
-            )}
-            Test Listener
+            Configure
           </button>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            disabled={testing !== null}
+            onClick={() => void handleTestConnection()}
+            title="Test API credentials"
+          >
+            {testing === "connection" ? (
+              <Loader2 size={13} className="spinner" aria-hidden="true" />
+            ) : (
+              <Wifi size={13} aria-hidden="true" />
+            )}
+            Test
+          </button>
+          {c.hasIngestor && (
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={testing !== null}
+              onClick={() => void handleTestIngestor()}
+              title="Test the event listener"
+            >
+              {testing === "ingestor" ? (
+                <Loader2 size={13} className="spinner" aria-hidden="true" />
+              ) : (
+                <Radio size={13} aria-hidden="true" />
+              )}
+              Test listener
+            </button>
+          )}
+        </div>
+
+        {/* Listener controls */}
+        {c.hasIngestor && (
+          <div className="dl-conn-listener-row" role="group" aria-label={`${c.name} listener`}>
+            <div className="dl-conn-listener-btns">
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                disabled={controlAction !== null}
+                onClick={() => void handleControl(active ? "stop" : "start")}
+                aria-label={`${active ? "Stop" : "Start"} the ${c.name} listener`}
+              >
+                {controlAction === "start" || controlAction === "stop" ? (
+                  <Loader2 size={12} className="spinner" aria-hidden="true" />
+                ) : active ? (
+                  <Square size={12} aria-hidden="true" />
+                ) : (
+                  <Play size={12} aria-hidden="true" />
+                )}
+                {active ? "Stop" : "Start"}
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                disabled={controlAction !== null}
+                onClick={() => void handleControl("restart")}
+                aria-label={`Restart the ${c.name} listener`}
+              >
+                {controlAction === "restart" ? (
+                  <Loader2 size={12} className="spinner" aria-hidden="true" />
+                ) : (
+                  <RotateCw size={12} aria-hidden="true" />
+                )}
+                Restart
+              </button>
+            </div>
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm dl-conn-listener-open"
+              onClick={onOpenListener}
+              aria-label={`Listener settings for ${c.name}`}
+            >
+              <SlidersHorizontal size={12} aria-hidden="true" />
+              Listener
+            </button>
+          </div>
         )}
       </div>
 
-      {/* Listener controls */}
-      {c.hasIngestor && (
-        <div className="dl-conn-listener-row">
-          <button
-            type="button"
-            className={`dl-conn-mini ${running ? "dl-conn-mini-stop" : "dl-conn-mini-start"}`}
-            disabled={controlAction !== null}
-            onClick={() => void handleControl(running ? "stop" : "start")}
-            title={running ? "Stop listener" : "Start listener"}
-          >
-            {controlAction === "start" || controlAction === "stop" ? (
-              <Loader2 size={10} className="dl-conn-spin" />
-            ) : running ? (
-              <Square size={10} />
-            ) : (
-              <Play size={10} />
-            )}
-            {running ? "Stop" : "Start"}
-          </button>
-          <button
-            type="button"
-            className="dl-conn-mini"
-            disabled={controlAction !== null}
-            onClick={() => void handleControl("restart")}
-            title="Restart listener"
-          >
-            {controlAction === "restart" ? (
-              <Loader2 size={10} className="dl-conn-spin" />
-            ) : (
-              <RotateCw size={10} />
-            )}
-            Restart
-          </button>
-          <div className="dl-conn-spacer" />
-          <button
-            type="button"
-            className="dl-conn-mini dl-conn-mini-accent"
-            onClick={onOpenListener}
-            title="Configure listener"
-          >
-            <Radio size={10} />
-            Listener
-          </button>
-        </div>
-      )}
-
       {/* Transient test result */}
-      {testResult && (
-        <TestResultView result={testResult} onDismiss={() => setTestResult(null)} />
-      )}
+      {testResult && <TestResultView result={testResult} onDismiss={() => setTestResult(null)} />}
     </article>
   );
 }

@@ -1,16 +1,20 @@
 /**
- * ConfirmDialog — reusable destructive-action confirm modal.
+ * ConfirmDialog: confirm an action before running it. Built on Modal, so it
+ * traps focus, closes only itself on Escape, and stacks above whatever
+ * opened it.
  *
- * Mounted by parents conditionally (no `isOpen` prop). Used for any UI action
- * that can lose data: deleting a caller, deleting a listener instance, etc.
- *
- * - Closes on Escape and overlay click (Cancel).
- * - Primary button is danger-styled; runs `onConfirm` (may be async).
- * - Parent owns the busy/error state so the dialog stays open during the
- *   underlying mutation and can surface mutation errors inline.
+ * Mounted by parents conditionally (or pass `open`).
+ * - `variant="danger"` (default): red button, warning icon, `alertdialog`.
+ *   For anything that loses data.
+ * - `variant="neutral"`: accent button, no warning styling. For a
+ *   confirmation that isn't destructive (revealing a vault value).
+ * - Focus starts on Cancel, so Enter alone never confirms a deletion.
+ * - Parent owns `busy` / `error`: the dialog stays open during the mutation
+ *   (nothing can close it while busy) and shows a failure inline.
  */
-import { useEffect } from "react";
-import { AlertTriangle, Loader2, X } from "lucide-react";
+import { useId, useRef } from "react";
+import { AlertTriangle, Loader2 } from "lucide-react";
+import Modal from "./Modal";
 import "./ConfirmDialog.css";
 
 interface ConfirmDialogProps {
@@ -18,14 +22,21 @@ interface ConfirmDialogProps {
   title: string;
   /** Body copy. Can include inline elements (`<code>`, `<strong>`, etc.). */
   description: React.ReactNode;
-  /** Primary (danger) button label. Defaults to "Delete". */
+  /** Confirm button label. Defaults to "Delete". */
   confirmLabel?: string;
   /** Cancel button label. Defaults to "Cancel". */
   cancelLabel?: string;
-  /** Disables both buttons and shows a spinner on confirm. */
+  /** "danger" (default) or "neutral". */
+  variant?: "danger" | "neutral";
+  /** Disables both buttons, shows a spinner on confirm, and blocks closing. */
   busy?: boolean;
   /** Surface a mutation error inline; the dialog stays open. */
   error?: string | null;
+  /** Defaults to true, for parents that mount the dialog conditionally. */
+  open?: boolean;
+  /** Where focus goes on close (see Modal). Useful when confirming removes
+   *  the button that opened the dialog. */
+  returnFocusRef?: React.RefObject<HTMLElement>;
   onConfirm: () => void | Promise<void>;
   onCancel: () => void;
 }
@@ -35,62 +46,39 @@ export default function ConfirmDialog({
   description,
   confirmLabel = "Delete",
   cancelLabel = "Cancel",
+  variant = "danger",
   busy = false,
   error = null,
+  open = true,
+  returnFocusRef,
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
-  // Close on Escape (only when not busy — don't strand a mid-flight mutation).
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !busy) onCancel();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onCancel, busy]);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const descId = useId();
+  const danger = variant === "danger";
 
   return (
-    <div
-      className="dl-confirm-overlay"
-      onClick={() => {
-        if (!busy) onCancel();
-      }}
-    >
-      <div
-        className="dl-confirm-panel"
-        role="alertdialog"
-        aria-modal="true"
-        aria-labelledby="dl-confirm-title"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="dl-confirm-header">
-          <div className="dl-confirm-header-text">
-            <span className="dl-confirm-icon" aria-hidden="true">
-              <AlertTriangle size={18} />
-            </span>
-            <h2 id="dl-confirm-title" className="dl-confirm-title">
-              {title}
-            </h2>
-          </div>
+    <Modal
+      open={open}
+      title={title}
+      onClose={onCancel}
+      size="sm"
+      nested
+      busy={busy}
+      role={danger ? "alertdialog" : "dialog"}
+      icon={danger ? <AlertTriangle size={18} /> : undefined}
+      iconTone="danger"
+      describedBy={descId}
+      initialFocusRef={cancelRef}
+      returnFocusRef={returnFocusRef}
+      className="dl-confirm-panel"
+      footer={
+        <>
           <button
+            ref={cancelRef}
             type="button"
-            className="dl-confirm-close"
-            aria-label="Close"
-            disabled={busy}
-            onClick={onCancel}
-          >
-            <X size={16} />
-          </button>
-        </div>
-
-        <div className="dl-confirm-body">{description}</div>
-
-        {error && <div className="dl-confirm-error">{error}</div>}
-
-        <div className="dl-confirm-footer">
-          <button
-            type="button"
-            className="dl-confirm-btn dl-confirm-btn-secondary"
+            className="btn btn-secondary"
             disabled={busy}
             onClick={onCancel}
           >
@@ -98,16 +86,24 @@ export default function ConfirmDialog({
           </button>
           <button
             type="button"
-            className="dl-confirm-btn dl-confirm-btn-danger"
+            className={`btn ${danger ? "btn-danger" : "btn-primary"}`}
             disabled={busy}
             onClick={() => void onConfirm()}
-            autoFocus
           >
-            {busy && <Loader2 size={14} className="dl-confirm-spin" />}
+            {busy && <Loader2 size={14} className="spinner" aria-hidden="true" />}
             {confirmLabel}
           </button>
-        </div>
+        </>
+      }
+    >
+      <div id={descId} className="dl-confirm-body">
+        {description}
       </div>
-    </div>
+      {error && (
+        <div className="modal-error dl-confirm-error" role="alert">
+          {error}
+        </div>
+      )}
+    </Modal>
   );
 }

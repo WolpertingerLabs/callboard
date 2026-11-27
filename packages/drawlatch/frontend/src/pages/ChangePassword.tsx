@@ -1,6 +1,9 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { changePassword, type AuthError } from "../auth";
+import DaemonOffline from "../components/DaemonOffline";
+import { useToast } from "../components/Toast";
+import { useDaemon } from "../contexts/DaemonContext";
 
 const MIN_LENGTH = 8;
 
@@ -10,8 +13,9 @@ export default function ChangePassword() {
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
-  const [success, setSuccess] = useState(false);
   const [loading, setLoading] = useState(false);
+  const toast = useToast();
+  const { daemon } = useDaemon();
 
   function clientValidate(): string | null {
     if (!currentPassword) return "Enter your current password.";
@@ -31,7 +35,6 @@ export default function ChangePassword() {
     e.preventDefault();
     if (loading) return;
     setError("");
-    setSuccess(false);
 
     const validationError = clientValidate();
     if (validationError) {
@@ -42,17 +45,10 @@ export default function ChangePassword() {
     setLoading(true);
     try {
       await changePassword(currentPassword, newPassword);
-      setCurrentPassword("");
-      setNewPassword("");
-      setConfirmPassword("");
-      setSuccess(true);
-      setLoading(false);
-      // Per spec: do not force re-login; existing cookie remains valid.
-      // Bounce back to Overview after a brief moment so the success
-      // confirmation is visible.
-      setTimeout(() => {
-        navigate("/");
-      }, 1500);
+      // This session stays signed in; the toast outlives the page, so go
+      // straight back to Overview.
+      toast.show("Password updated. Other browsers were signed out.");
+      navigate("/");
     } catch (err) {
       const authErr = err as AuthError;
       setError(authErr.message || "Could not change password");
@@ -63,12 +59,16 @@ export default function ChangePassword() {
   return (
     <>
       <header className="page-header">
-        <h1 className="page-title">Change password</h1>
+        <div>
+          <h1 className="page-title">Change password</h1>
+          <p className="page-subtitle">
+            Update the password for this Drawlatch daemon. Other browsers will be
+            signed out.
+          </p>
+        </div>
       </header>
-      <div className="subtitle-meta auth-page-subtitle">
-        Update the password for this drawlatch daemon. Other browsers will be
-        signed out.
-      </div>
+
+      {daemon === "down" && <DaemonOffline action="change the password" />}
 
       <form onSubmit={handleSubmit} className="auth-form-card" noValidate>
         <label className="auth-label" htmlFor="current-password">
@@ -119,16 +119,11 @@ export default function ChangePassword() {
             {error}
           </div>
         )}
-        {success && (
-          <div className="auth-success" role="status">
-            Password updated.
-          </div>
-        )}
 
         <div className="auth-actions">
           <button
             type="submit"
-            className="auth-submit"
+            className="btn btn-primary btn-block"
             disabled={
               loading ||
               !currentPassword ||
