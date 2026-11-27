@@ -1,4 +1,4 @@
-/* EventsView — logs / live event feed. Dark developer-dashboard aesthetic. */
+/* EventsView: the live event feed for one caller. */
 
 /* ── Header controls ──────────────────────────────────────────────────── */
 .dl-events-controls {
@@ -6,100 +6,97 @@
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+  min-width: 0;
 }
 
 .dl-events-caller-select {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   min-width: 0;
 }
 
 .dl-events-caller-label {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: #8b8b94;
+  margin-bottom: 0;
 }
 
 /* A <select> sizes itself to its widest <option>, not to its container, so one
  * caller with a long "name (alias)" made this hundreds of pixels wide at every
  * viewport and panned the page sideways on a phone. Cap it and let the
- * selected label ellipsize; the full name is still in the open dropdown.
- * (The separate overflow at 1024 is the instance id above, not this.) */
-.dl-events-caller-select select {
-  min-width: 0;
-  max-width: 220px;
+ * selected label ellipsize; the full name is still in the open dropdown. */
+.dl-events-caller-select select.input {
+  width: auto;
+  max-width: 240px;
+  padding: 5px 10px;
   text-overflow: ellipsis;
-  background: #16161a;
-  border: 1px solid #2a2a30;
-  border-radius: 6px;
-  color: #e6e6ea;
-  font-size: 13px;
-  padding: 6px 10px;
   cursor: pointer;
 }
 
-.dl-events-caller-select select:focus {
-  outline: none;
-  border-color: #5b9dff;
-}
-
-.dl-events-caller-select select:disabled {
-  opacity: 0.5;
+.dl-events-caller-select select.input:disabled {
+  opacity: 0.55;
   cursor: not-allowed;
 }
 
-.dl-events-refresh {
+/* ── Listener summary + status cards ──────────────────────────────────── */
+.dl-events-listeners {
+  margin-bottom: var(--space-4);
+}
+
+.dl-events-listeners-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+  padding: 4px 0;
+  list-style: none;
+  cursor: pointer;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  user-select: none;
+}
+
+.dl-events-listeners-summary::-webkit-details-marker {
+  display: none;
+}
+
+.dl-events-listeners[open] > .dl-events-listeners-summary .dl-events-chevron {
+  transform: rotate(90deg);
+}
+
+.dl-events-listeners-summary:hover .dl-events-listeners-title {
+  color: var(--text);
+}
+
+.dl-events-listeners-title {
+  margin-left: -8px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.dl-events-listeners-count {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  background: #16161a;
-  border: 1px solid #2a2a30;
-  border-radius: 6px;
-  color: #e6e6ea;
-  font-size: 13px;
-  font-weight: 500;
-  padding: 6px 12px;
-  cursor: pointer;
-  transition: border-color 0.12s, background 0.12s;
 }
 
-.dl-events-refresh:hover:not(:disabled) {
-  border-color: #5b9dff;
+.dl-events-listeners-count .status-dot.up {
+  box-shadow: none;
 }
 
-.dl-events-refresh:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.dl-events-spin {
-  animation: dl-events-spin 1s linear infinite;
-}
-
-@keyframes dl-events-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-/* ── Ingestor status cards ────────────────────────────────────────────── */
 .dl-events-ingestors {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
   gap: 10px;
-  margin-bottom: 16px;
+  margin-top: var(--space-2);
 }
 
 .dl-events-ingestor-card {
-  flex: 1 1 220px;
-  min-width: 200px;
-  background: #16161a;
-  border: 1px solid #2a2a30;
-  border-radius: 10px;
+  min-width: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
   padding: 12px 14px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 
 .dl-events-ingestor-head {
@@ -110,72 +107,50 @@
 }
 
 .dl-events-ingestor-conn {
-  font-weight: 700;
-  font-size: 13px;
-  color: #e6e6ea;
+  font-weight: 600;
+  font-size: var(--fs-md);
+  color: var(--text);
 }
 
 .dl-events-ingestor-meta {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  color: #8b8b94;
-  font-size: 11px;
+  gap: 6px 8px;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+
+/* One line; "Show all" appears only when it is cut off. */
+.dl-events-ingestor-error-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 8px;
+  min-width: 0;
 }
 
 .dl-events-ingestor-error {
-  margin-top: 6px;
-  color: #f85149;
-  font-size: 11px;
+  flex: 1;
+  min-width: 0;
+  color: var(--danger-text);
+  font-size: var(--fs-xs);
+  line-height: 18px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.dl-events-muted {
-  color: #8b8b94;
+.dl-events-ingestor-error.is-expanded {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
-/* State dot colors */
-.dl-events-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
+.btn.dl-events-ingestor-error-toggle {
   flex-shrink: 0;
-}
-
-.dl-events-dot-connected {
-  background: #3fb950;
-}
-.dl-events-dot-error {
-  background: #f85149;
-}
-.dl-events-dot-warn {
-  background: #d29922;
-}
-.dl-events-dot-stopped {
-  background: #8b8b94;
-}
-
-/* State pill text colors */
-.dl-events-state {
-  padding: 1px 6px;
-  border-radius: 4px;
-  background: #1f1f25;
-  font-weight: 600;
-}
-.dl-events-state-connected {
-  color: #3fb950;
-}
-.dl-events-state-error {
-  color: #f85149;
-}
-.dl-events-state-warn {
-  color: #d29922;
-}
-.dl-events-state-stopped {
-  color: #8b8b94;
+  min-height: 18px;
+  padding: 0 6px;
+  font-size: var(--fs-xs);
 }
 
 /* ── Source filter pills ──────────────────────────────────────────────── */
@@ -187,41 +162,53 @@
 }
 
 .dl-events-pill {
-  padding: 5px 12px;
-  border-radius: 6px;
-  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: var(--radius-pill);
+  font-size: var(--fs-sm);
   font-weight: 500;
-  background: #16161a;
-  border: 1px solid #2a2a30;
-  color: #e6e6ea;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
   cursor: pointer;
-  transition: border-color 0.12s, background 0.12s;
+  transition:
+    border-color 0.12s,
+    background 0.12s,
+    color 0.12s;
 }
 
 .dl-events-pill:hover {
-  border-color: #5b9dff;
+  border-color: var(--border-strong);
+  color: var(--text);
 }
 
-.dl-events-pill-active {
-  background: #5b9dff;
-  border-color: #5b9dff;
-  color: #0d0d10;
+.dl-events-pill.is-active {
+  background: var(--accent-bg);
+  border-color: var(--accent);
+  color: var(--text);
 }
 
-.dl-events-pill-active:hover {
-  border-color: #5b9dff;
+.dl-events-pill-count {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.dl-events-pill.is-active .dl-events-pill-count {
+  color: var(--accent-hover);
 }
 
 /* ── Event feed ───────────────────────────────────────────────────────── */
 .dl-events-feed {
-  background: #16161a;
-  border: 1px solid #2a2a30;
-  border-radius: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
   overflow: hidden;
 }
 
 .dl-events-row-wrap:not(:last-child) {
-  border-bottom: 1px solid #2a2a30;
+  border-bottom: 1px solid var(--border-light);
 }
 
 .dl-events-row {
@@ -232,30 +219,32 @@
   padding: 11px 14px;
   background: transparent;
   border: none;
-  color: #e6e6ea;
+  color: var(--text);
   font: inherit;
   text-align: left;
   cursor: pointer;
   transition: background 0.1s;
 }
 
-.dl-events-row:hover {
-  background: #1c1c22;
+.dl-events-row:hover,
+.dl-events-row[aria-expanded="true"] {
+  background: var(--bg-secondary);
+}
+
+.dl-events-row:focus-visible {
+  outline-offset: -2px;
 }
 
 .dl-events-chevron {
-  color: #8b8b94;
+  color: var(--text-muted);
   flex-shrink: 0;
 }
 
-.dl-events-source {
+/* The source is a .badge-info; keep its case (a connection alias). */
+.badge.dl-events-source {
   flex-shrink: 0;
-  font-size: 11px;
-  font-weight: 600;
-  padding: 2px 6px;
-  border-radius: 4px;
-  background: rgba(91, 157, 255, 0.12);
-  color: #5b9dff;
+  text-transform: none;
+  letter-spacing: 0;
 }
 
 /* A listener instance id is one unbreakable token and there is no length
@@ -269,30 +258,30 @@
   font-size: 10px;
   padding: 1px 5px;
   border-radius: 4px;
-  background: #1f1f25;
-  color: #8b8b94;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
 }
 
-/* In the ingestor card head the id is the card's subject, so it must stay
- * readable in full — let it shrink and wrap inside its own badge instead of
- * being pinned at max-content. Not scoped to a breakpoint: a 56-character id
- * measures 346px and overran the card at 320, 360, 768 and 1024 alike. */
+/* In the listener card head the id is the card's subject, so it must stay
+ * readable in full: let it shrink and wrap inside its own badge instead of
+ * being pinned at max-content. */
 .dl-events-ingestor-head .dl-events-instance {
   flex-shrink: 1;
 }
 
 .dl-events-type {
   flex-shrink: 0;
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-weight: 500;
-  color: #e6e6ea;
+  color: var(--text);
 }
 
 .dl-events-preview {
   flex: 1;
   min-width: 0;
-  font-size: 12px;
-  color: #8b8b94;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -300,42 +289,52 @@
 
 .dl-events-time {
   flex-shrink: 0;
-  font-size: 11px;
-  color: #8b8b94;
+  margin-left: auto;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
 }
 
 /* ── Expanded detail ──────────────────────────────────────────────────── */
 .dl-events-detail {
-  padding: 0 16px 14px 38px;
-  font-size: 12px;
+  padding: 4px 16px 14px 38px;
+  font-size: var(--fs-sm);
+  background: var(--bg-secondary);
 }
 
 .dl-events-detail-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 16px;
-  margin-bottom: 8px;
-  color: #e6e6ea;
+  gap: 8px 24px;
+  margin-bottom: 10px;
+}
+
+.dl-events-detail-meta > div {
+  min-width: 0;
+}
+
+.dl-events-detail-meta dt {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.dl-events-detail-meta dd {
+  color: var(--text);
+  overflow-wrap: anywhere;
 }
 
 .dl-events-json {
-  background: #0f0f12;
-  border: 1px solid #2a2a30;
-  border-radius: 6px;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
   padding: 12px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   margin: 0;
   overflow: auto;
   max-height: 320px;
   white-space: pre-wrap;
   word-break: break-word;
-  color: #c8c8d0;
-}
-
-.dl-events-empty-icon {
-  color: #8b8b94;
-  opacity: 0.5;
-  margin-bottom: 4px;
+  color: var(--text-secondary);
 }
 
 /* ── Mobile ───────────────────────────────────────────────────────────── */
@@ -344,13 +343,10 @@
     display: none;
   }
 
-  /* Same call as .dl-events-preview above: below 640 a collapsed row has no
-   * room for the instance id without squeezing the event type out. The
-   * expanded detail carries `instanceId:` (added alongside this rule) so the
-   * per-event attribution is one tap away rather than gone — with two
-   * instances of the same connection running, that is the only way to tell
-   * which produced an event. Scoped to the feed row; the same class labels
-   * the ingestor status card, which shows it unconditionally. */
+  /* Below 640 a collapsed row has no room for the instance id without
+   * squeezing the event type out. The expanded detail shows "Instance", so
+   * it is one tap away rather than gone. Scoped to the feed row; the listener
+   * card shows it unconditionally. */
   .dl-events-row .dl-events-instance {
     display: none;
   }
@@ -371,19 +367,35 @@
     white-space: nowrap;
   }
 
-  /* Event ids and idempotency keys are unbreakable, and flex items default to
-   * min-width:auto, so one of them widened the detail panel the same way. */
-  .dl-events-detail-meta > span {
-    min-width: 0;
-    overflow-wrap: anywhere;
+  .dl-events-controls {
+    width: 100%;
+    flex-wrap: nowrap;
   }
 
-  /* The other .dl-events-instance: in the ingestor card head it sits beside
-   * the connection name and the three together overrun a 320/360px screen.
-   * Wrap it onto its own line rather than shrink it — this is the one place
-   * the instance id is the card's subject, so it has to stay readable in
-   * full, and .dl-events-ingestor-meta below already wraps the same way. */
+  .dl-events-caller-select {
+    flex: 1;
+  }
+
+  .dl-events-listeners-summary {
+    min-height: 44px;
+  }
+
+  .dl-events-caller-select select.input {
+    flex: 1;
+    max-width: none;
+  }
+
+  .dl-events-ingestors {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* In the listener card head the id sits beside the connection name and the
+   * three together overrun a 320/360px screen. Wrap it onto its own line. */
   .dl-events-ingestor-head {
     flex-wrap: wrap;
+  }
+
+  .btn.dl-events-ingestor-error-toggle {
+    min-height: 32px;
   }
 }
