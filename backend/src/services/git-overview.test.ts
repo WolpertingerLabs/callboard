@@ -1,10 +1,10 @@
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { WorktreeInfo } from "../utils/git.js";
-import type { PullSummary, RepoPulls } from "./github-prs.js";
-import { buildGitOverview, findGitRoot, NOT_A_REPO_TTL_MS, normalizeDir, type OverviewDeps } from "./git-overview.js";
+import { clearRepoPullsCache, resolveBranchPulls, type BranchAnswer, type BranchAsk, type PullSummary, type RepoPulls } from "./github-prs.js";
+import { buildGitOverview, findGitRoot, normalizeDir, type OverviewDeps } from "./git-overview.js";
 
 const wt = (path: string, branch: string | null, isMainWorktree = false, head?: string): WorktreeInfo => ({
   path,
@@ -58,7 +58,6 @@ function deps(folders: Record<string, string[]>, overrides: Partial<OverviewDeps
     normalize: (dir) => dir.replace(/\/+$/, ""),
     exists: () => true,
     gitRootOf: fakeGitRoot,
-    notRepos: new Map(),
     ...overrides,
   } as OverviewDeps & { listWorktrees: ReturnType<typeof vi.fn> };
 }
@@ -126,29 +125,37 @@ describe("buildGitOverview", () => {
     expect(d.listWorktrees).not.toHaveBeenCalled();
   });
 
-  it("remembers a .git that would not list across requests, until the TTL runs out", async () => {
+  it("asks git again on the next request about a .git that would not list — a refusal is not remembered", async () => {
     NON_REPO_GIT_DIRS.add("/src/broken");
     try {
-      let clock = 1000;
-      const notRepos = new Map<string, number>();
-      const d = deps({ "/src/broken/sub": ["c1"] }, { notRepos, now: () => clock });
-      await buildGitOverview({}, d);
-      await buildGitOverview({}, d);
-      expect(d.listWorktrees).toHaveBeenCalledTimes(1);
-      clock += NOT_A_REPO_TTL_MS;
-      await buildGitOverview({}, d);
+      const d = deps({ "/src/broken/sub": ["c1"] });
+      expect((await buildGitOverview({}, d)).repos).toEqual([]);
+      expect((await buildGitOverview({}, d)).repos).toEqual([]);
       expect(d.listWorktrees).toHaveBeenCalledTimes(2);
     } finally {
       NON_REPO_GIT_DIRS.clear();
     }
   });
 
-  it("does not remember a listing that gave no verdict (timeout), and asks again next poll", async () => {
-    const notRepos = new Map<string, number>();
-    const d = deps({ "/src/app": ["c1"] }, { notRepos });
+  /**
+   * The regression: one `git worktree list` that exited non-zero (or listed
+   * nothing usable) was remembered for five minutes, so every row of a real
+   * repository disappeared for that long after a single transient failure.
+   */
+  it("shows a repository again on the very next request after one failed listing", async () => {
+    const d = deps({ "/src/app": ["c1"], "/src/app.feat-x": ["c2"] });
+    d.listWorktrees.mockResolvedValueOnce([]);
+    expect((await buildGitOverview({}, d)).repos).toEqual([]);
+
+    const { repos } = await buildGitOverview({}, d);
+    expect(repos.map((r) => r.rows.map((row) => row.cwd))).toEqual([["/src/app", "/src/app.feat-x"]]);
+    expect(d.listWorktrees).toHaveBeenCalledTimes(2);
+  });
+
+  it("asks again next poll after a listing that gave no verdict (timeout)", async () => {
+    const d = deps({ "/src/app": ["c1"] });
     d.listWorktrees.mockResolvedValueOnce(null);
     expect((await buildGitOverview({}, d)).repos).toEqual([]);
-    expect(notRepos.size).toBe(0);
 
     const { repos } = await buildGitOverview({}, d);
     expect(repos.map((r) => r.repoPath)).toEqual(["/src/app"]);
@@ -350,7 +357,9 @@ describe("buildGitOverview — the git trail", () => {
 
   describe("PR links from the chats' own histories", () => {
     const link = (number: number) => ({ repo: "acme/app", number, url: `https://github.com/acme/app/pull/${number}`, firstSeen: "t0" });
-    const linkedPulls = vi.fn(async (links: ReturnType<typeof link>[], _known?: unknown, _force?: boolean) => ({ pulls: links.map((l) => (l.number === 99 ? undefined : pull(l.number, `b${l.number}`, "merged"))) }));
+    const linkedPulls = vi.fn(async (links: ReturnType<typeof link>[], _known?: unknown, _force?: boolean) => ({
+      pulls: links.map((l) => (l.number === 99 ? undefined : pull(l.number, `b${l.number}`, "merged"))),
+    }));
 
     it("badges the row a chat's folder is in with the PRs its history names, and a removed worktree's row too", async () => {
       const d = deps(
@@ -399,7 +408,10 @@ describe("buildGitOverview — the git trail", () => {
         { pullsFor: bare, linkedPulls: resolving(table), links: () => [...linksIn("/src/app", "c1", 70, 72), ...linksIn("/src/app.feat-x", "c2", 71)] },
       );
       const { repos } = await buildGitOverview({}, d);
-      expect(rowOf(repos, "/src/app")).toMatchObject({ branch: "main", prs: [expect.objectContaining({ number: 70 }), expect.objectContaining({ number: 72 })] });
+      expect(rowOf(repos, "/src/app")).toMatchObject({
+        branch: "main",
+        prs: [expect.objectContaining({ number: 70 }), expect.objectContaining({ number: 72 })],
+      });
       expect(rowOf(repos, "/src/app")!.pr).toBeUndefined();
       expect(rowOf(repos, "/src/app.feat-x")).toMatchObject({ branch: "feat/x", prs: [expect.objectContaining({ number: 71 })] });
       expect(rowOf(repos, "/src/app.feat-x")!.pr).toBeUndefined();
@@ -417,10 +429,16 @@ describe("buildGitOverview — the git trail", () => {
       const other = { repo: "other/lib", number: 12, url: "https://github.com/other/lib/pull/12", firstSeen: "t0" };
       const unseen = { repo: "other/lib", number: 13, url: "https://github.com/other/lib/pull/13", firstSeen: "t0" };
       const linkedPulls = async (links: Array<{ number: number; url: string }>) => ({
-        pulls: links.map((l): PullSummary => (l.number === 13 ? { ...pull(13, "", "unknown"), url: l.url } : { ...pull(l.number, "feat/x", "merged"), url: l.url })),
+        pulls: links.map(
+          (l): PullSummary => (l.number === 13 ? { ...pull(13, "", "unknown"), url: l.url } : { ...pull(l.number, "feat/x", "merged"), url: l.url }),
+        ),
         error: "gh timed out",
       });
-      const links = () => [...linksIn("/src/app.feat-x", "c1", 20), { cardId: "c1", folder: "/src/app.feat-x", link: other }, { cardId: "c1", folder: "/src/app.feat-x", link: unseen }];
+      const links = () => [
+        ...linksIn("/src/app.feat-x", "c1", 20),
+        { cardId: "c1", folder: "/src/app.feat-x", link: other },
+        { cardId: "c1", folder: "/src/app.feat-x", link: unseen },
+      ];
       const { repos } = await buildGitOverview({}, deps({ "/src/app.feat-x": ["c1"] }, { pullsFor, linkedPulls, links }));
       const row = rowOf(repos, "/src/app.feat-x")!;
       // The live #12 is this repository's; other/lib#12 and #13 are not on this row at all.
@@ -437,7 +455,10 @@ describe("buildGitOverview — the git trail", () => {
         { pullsFor, linkedPulls: resolving({ 30: unknown }, "gh is not installed"), links: () => linksIn("/src/app.feat-x", "c1", 30) },
       );
       const { repos } = await buildGitOverview({}, d);
-      expect(rowOf(repos, "/src/app.feat-x")!.prs).toEqual([expect.objectContaining({ number: 12 }), { number: 30, url: unknown.url, state: "unknown", title: "acme/app#30" }]);
+      expect(rowOf(repos, "/src/app.feat-x")!.prs).toEqual([
+        expect.objectContaining({ number: 12 }),
+        { number: 30, url: unknown.url, state: "unknown", title: "acme/app#30" },
+      ]);
       expect(repos.map((r) => [r.name, r.prError, r.prErrorPartial])).toEqual([
         ["app", "gh is not installed", true],
         ["lib", undefined, undefined],
@@ -466,7 +487,11 @@ describe("buildGitOverview — the git trail", () => {
       const renamed = (n: number, headRef: string): PullSummary => ({ ...pull(n, headRef, "merged"), url: `https://github.com/acme/renamed/pull/${n}` });
       const d = deps(
         { "/src/app.feat-x": ["c1"] },
-        { pullsFor: bare, linkedPulls: resolving({ 40: renamed(40, "feat/x"), 41: renamed(41, "feat/earlier") }), links: () => linksIn("/src/app.feat-x", "c1", 40, 41) },
+        {
+          pullsFor: bare,
+          linkedPulls: resolving({ 40: renamed(40, "feat/x"), 41: renamed(41, "feat/earlier") }),
+          links: () => linksIn("/src/app.feat-x", "c1", 40, 41),
+        },
       );
       const row = rowOf((await buildGitOverview({}, d)).repos, "/src/app.feat-x")!;
       expect(row.pr).toMatchObject({ number: 40, url: "https://github.com/acme/renamed/pull/40" });
@@ -522,12 +547,21 @@ describe("buildGitOverview — the git trail", () => {
       expect(elsewhere.repos.flatMap((r) => r.rows).map((r) => r.cwd)).toEqual(["/src/lib"]);
       // …or two checkouts of it are: which one the folder was a worktree of is not known.
       const twice = async (repo: string) => (repo === "/src/app" || repo === "/src/lib" ? APP : { byBranch: new Map() });
-      const ambiguous = await buildGitOverview({}, deps({ "/src/app": ["c1"], "/src/lib": ["c3"], "/src/app.gone2": ["c2"] }, { pullsFor: twice, exists: gone, linkedPulls, links }));
+      const ambiguous = await buildGitOverview(
+        {},
+        deps({ "/src/app": ["c1"], "/src/lib": ["c3"], "/src/app.gone2": ["c2"] }, { pullsFor: twice, exists: gone, linkedPulls, links }),
+      );
       expect(ambiguous.repos.flatMap((r) => r.rows).filter((r) => r.removed)).toEqual([]);
       // …or the folder's chats made PRs in two repositories, both here: one row in each would be a guess twice over.
-      const libLink = { cardId: "c2", folder: "/src/app.gone2", link: { repo: "acme/lib", number: 3, url: "https://github.com/acme/lib/pull/3", firstSeen: "t0" } };
+      const libLink = {
+        cardId: "c2",
+        folder: "/src/app.gone2",
+        link: { repo: "acme/lib", number: 3, url: "https://github.com/acme/lib/pull/3", firstSeen: "t0" },
+      };
       const both = async (repo: string) => (repo === "/src/app" ? APP : { github: { owner: "acme", repo: "lib" }, byBranch: new Map() });
-      const anyPull = async (asked: Array<{ number: number; url: string }>) => ({ pulls: asked.map((l) => ({ ...pull(l.number, "b", "merged"), url: l.url })) });
+      const anyPull = async (asked: Array<{ number: number; url: string }>) => ({
+        pulls: asked.map((l) => ({ ...pull(l.number, "b", "merged"), url: l.url })),
+      });
       const folders = { "/src/app": ["c1"], "/src/lib": ["c3"], "/src/app.gone2": ["c2"] };
       const split = await buildGitOverview({}, deps(folders, { pullsFor: both, exists: gone, linkedPulls: anyPull, links: () => [...links(), libLink] }));
       expect(split.repos.flatMap((r) => r.rows).filter((r) => r.removed)).toEqual([]);
@@ -538,7 +572,10 @@ describe("buildGitOverview — the git trail", () => {
         ["lib", ["/src/app.gone2"]],
       ]);
       // A folder that still exists but is in no worktree is not a removed one.
-      const present = await buildGitOverview({}, deps({ "/src/app": ["c1"], "/src/elsewhere": ["c2"] }, { pullsFor, linkedPulls, links: () => linksIn("/src/elsewhere", "c2", 22) }));
+      const present = await buildGitOverview(
+        {},
+        deps({ "/src/app": ["c1"], "/src/elsewhere": ["c2"] }, { pullsFor, linkedPulls, links: () => linksIn("/src/elsewhere", "c2", 22) }),
+      );
       expect(present.repos.flatMap((r) => r.rows).filter((r) => r.removed)).toEqual([]);
     });
   });
@@ -560,6 +597,167 @@ describe("buildGitOverview — the git trail", () => {
         expect(live).toEqual(row);
       }
     }
+  });
+});
+
+/**
+ * The hole this closes: the listing holds only the 100 most recently updated
+ * closed PRs, so a branch's PR merged before that was found only if a Claude
+ * Code transcript happened to name it. Through the real resolveBranchPulls,
+ * with GitHub's answer faked.
+ */
+describe("buildGitOverview — PRs older than the listing reaches, by head branch", () => {
+  beforeEach(() => clearRepoPullsCache());
+  const entry = (cwd: string, branch: string, firstSeen = "2026-02-01T00:00:00Z", repoPath = "/src/app") => ({
+    cwd,
+    repoPath,
+    branch,
+    firstSeen,
+    lastSeen: firstSeen,
+  });
+  const old = (number: number, headRef: string, headSha: string): PullSummary => ({
+    ...pull(number, headRef, "merged", headSha),
+    updatedAt: "2026-03-01T00:00:00Z",
+    closedAt: "2026-03-01T00:00:00Z",
+    mergedAt: "2026-03-01T00:00:00Z",
+  });
+  /** The listing: only `feat/listed` has a PR in it. */
+  const LISTED: RepoPulls = {
+    github: { owner: "acme", repo: "app" },
+    defaultBranch: "main",
+    byBranch: new Map([["feat/listed", [pull(40, "feat/listed", "open")]]]),
+    byNumber: new Map([[40, pull(40, "feat/listed", "open")]]),
+  };
+  const pullsFor = async (repo: string): Promise<RepoPulls> => (repo === "/src/app" ? LISTED : { byBranch: new Map() });
+  const gone = (dir: string) => !dir.startsWith("/src/app.gone");
+  const rowOf = (repos: Awaited<ReturnType<typeof buildGitOverview>>["repos"], cwd: string) => repos.flatMap((r) => r.rows).find((row) => row.cwd === cwd);
+  /** `branchPulls` over what GitHub has for each head branch. */
+  function byBranch(table: Record<string, PullSummary[]>) {
+    const fetch = vi.fn(async (_ref: unknown, branches: string[]) => new Map<string, BranchAnswer>(branches.map((b) => [b, table[b] ?? []])));
+    const branchPulls = vi.fn((repoPath: string, pulls: RepoPulls, branches: BranchAsk, force: boolean) =>
+      resolveBranchPulls(pulls, branches, { cwd: repoPath, force }, { fetch, now: () => 0 }),
+    );
+    return { fetch, branchPulls };
+  }
+
+  it("gives a live row its branch's old merged PR — by the SHA rule, so only at that commit", async () => {
+    // `feat/x` is checked out at x1; `old` at o1.
+    const { fetch, branchPulls } = byBranch({ "feat/x": [old(3, "feat/x", "x1")], old: [old(4, "old", "an-earlier-tip")] });
+    const { repos } = await buildGitOverview({}, deps({ "/src/app.feat-x": ["c1"], "/src/app.old": ["c2"], "/src/app": ["c3"] }, { pullsFor, branchPulls }));
+    expect(rowOf(repos, "/src/app.feat-x")).toMatchObject({ pr: { number: 3, state: "merged" } });
+    // A reused name: the PR's head is not what is checked out, and no chat recorded it.
+    expect(rowOf(repos, "/src/app.old")).toEqual({ cwd: "/src/app.old", branch: "old", isMain: false, cardIds: ["c2"] });
+    expect(repos[0].prError).toBeUndefined();
+    // One call for the repository; the default branch is never asked about.
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect([...fetch.mock.calls[0][1]].sort()).toEqual(["feat/x", "old"]);
+  });
+
+  it("badges a live row and a removed one with their trails' old PRs — by the time rule", async () => {
+    const { fetch, branchPulls } = byBranch({
+      "feat/earlier": [old(5, "feat/earlier", "e1")],
+      // Closed before the chat ever saw the branch: someone else's use of the name.
+      "feat/reused": [{ ...old(6, "feat/reused", "r1"), closedAt: "2026-01-01T00:00:00Z" }],
+      "feat/gone": [old(7, "feat/gone", "g1")],
+      // A fork's PR that carries the branch's name is not this repository's branch's.
+      "feat/forked": [{ ...old(8, "feat/forked", "f1"), headOwner: "someone-else" }],
+    });
+    const trails = [
+      { cardId: "c1", entry: entry("/src/app.feat-x", "feat/earlier") },
+      { cardId: "c1", entry: entry("/src/app.feat-x", "feat/reused") },
+      { cardId: "c1", entry: entry("/src/app.feat-x", "feat/forked") },
+      { cardId: "c1", entry: entry("/src/app.feat-x", "feat/listed") },
+      { cardId: "c1", entry: entry("/src/app.feat-x", "main") },
+      { cardId: "c2", entry: entry("/src/app.gone", "feat/gone") },
+    ];
+    const { repos } = await buildGitOverview({}, deps({ "/src/app.feat-x": ["c1"] }, { pullsFor, branchPulls, trails: () => trails, exists: gone }));
+    expect(rowOf(repos, "/src/app.feat-x")!.prs?.map((p) => p.number)).toEqual([40, 5]);
+    expect(rowOf(repos, "/src/app.gone")).toMatchObject({ removed: true, prs: [{ number: 7, state: "merged" }], cardIds: ["c2"] });
+    // Asked about: what the listing has no PR for — not `feat/listed`, not `main`.
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect([...fetch.mock.calls[0][1]].sort()).toEqual(["feat/earlier", "feat/forked", "feat/gone", "feat/reused", "feat/x"]);
+  });
+
+  it("asks only about branches of rows that are shown, and passes the refresh flag", async () => {
+    const { branchPulls } = byBranch({});
+    const trails = [{ cardId: "elsewhere", entry: entry("/src/app.feat-x", "feat/not-this-cards") }];
+    await buildGitOverview({ force: true }, deps({ "/src/app.feat-x": ["c1"] }, { pullsFor, branchPulls, trails: () => trails }));
+    expect(branchPulls.mock.calls.map(([repoPath, , branches, force]) => [repoPath, branches, force])).toEqual([
+      ["/src/app", { live: ["feat/x"], trail: [] }, true],
+    ]);
+  });
+
+  it("says so, as a partial failure, when the branches could not be asked about — and keeps the listing's PRs", async () => {
+    const branchPulls = async (_repoPath: string, pulls: RepoPulls) => ({ ...pulls, branchError: "gh: HTTP 502" });
+    const trails = [{ cardId: "c1", entry: entry("/src/app.feat-x", "feat/listed") }];
+    const { repos } = await buildGitOverview({}, deps({ "/src/app.feat-x": ["c1"] }, { pullsFor, branchPulls, trails: () => trails }));
+    expect(repos[0]).toMatchObject({ prError: "gh: HTTP 502", prErrorPartial: true });
+    expect(rowOf(repos, "/src/app.feat-x")!.prs?.map((p) => p.number)).toEqual([40]);
+    // A failed listing is still the repository's error outright.
+    const failing = async () => ({ ...LISTED, error: "gh: rate limited" });
+    const failed = await buildGitOverview({}, deps({ "/src/app.feat-x": ["c1"] }, { pullsFor: failing, branchPulls, trails: () => trails }));
+    expect(failed.repos[0].prError).toBe("gh: rate limited");
+    expect(failed.repos[0].prErrorPartial).toBeUndefined();
+  });
+
+  it("tells live rows' branches from trail branches when it asks", async () => {
+    const { branchPulls } = byBranch({});
+    const trails = [
+      { cardId: "c1", entry: entry("/src/app.feat-x", "feat/earlier") },
+      { cardId: "c2", entry: entry("/src/app.gone", "feat/gone") },
+    ];
+    await buildGitOverview({}, deps({ "/src/app.feat-x": ["c1"], "/src/app.old": ["c3"] }, { pullsFor, branchPulls, trails: () => trails, exists: gone }));
+    expect(branchPulls.mock.calls.map(([, , branches]) => branches)).toEqual([{ live: ["feat/x", "old"], trail: ["feat/earlier", "feat/gone"] }]);
+  });
+
+  /**
+   * What the repository's marker says has to match what its rows show:
+   * "PR data unavailable" only when there is none; "may be incomplete or out
+   * of date" whenever PRs are shown beside a failure.
+   */
+  it("words the failure by what is shown: partial whenever PR data is held, unavailable only when none is", async () => {
+    const trails = [{ cardId: "c1", entry: entry("/src/app.feat-x", "feat/listed") }];
+    const marker = async (pulls: RepoPulls, branchPulls?: OverviewDeps["branchPulls"]) => {
+      const { repos } = await buildGitOverview({}, deps({ "/src/app.feat-x": ["c1"] }, { pullsFor: async () => pulls, branchPulls, trails: () => trails }));
+      return [repos[0].prError, repos[0].prErrorPartial, rowOf(repos, "/src/app.feat-x")!.prs?.map((p) => p.number)];
+    };
+    // Nothing held: the first lookup's open listing failed.
+    expect(await marker({ github: LISTED.github, defaultBranch: "main", byBranch: new Map(), byNumber: new Map(), error: "gh: HTTP 502" })).toEqual([
+      "gh: HTTP 502",
+      undefined,
+      undefined,
+    ]);
+    // Open PRs without the closed listing, or an earlier entry kept through a failed refresh.
+    expect(await marker({ ...LISTED, error: "gh: HTTP 502", errorPartial: true })).toEqual(["gh: HTTP 502", true, [40]]);
+    // A whole listing beside a by-branch lookup that failed.
+    expect(await marker(LISTED, async (_repoPath, pulls) => ({ ...pulls, branchError: "GraphQL refused" }))).toEqual(["GraphQL refused", true, [40]]);
+    // No failure, no marker.
+    expect(await marker(LISTED)).toEqual([undefined, undefined, [40]]);
+  });
+
+  it("is the overview without it when the lookup throws", async () => {
+    const branchPulls = async (): Promise<RepoPulls> => {
+      throw new Error("boom");
+    };
+    const { repos } = await buildGitOverview({}, deps({ "/src/app.feat-x": ["c1"] }, { pullsFor, branchPulls }));
+    expect(repos[0].rows).toEqual([{ cwd: "/src/app.feat-x", branch: "feat/x", isMain: false, cardIds: ["c1"] }]);
+  });
+
+  it("does not hold the linked PRs up: both lookups are in flight together", async () => {
+    let releaseBranches!: () => void;
+    const branchPulls = vi.fn(
+      (_repoPath: string, pulls: RepoPulls) => new Promise<RepoPulls>((resolvePromise) => (releaseBranches = () => resolvePromise(pulls))),
+    );
+    const linkedPulls = vi.fn(async (links: Array<{ number: number }>) => ({ pulls: links.map((l) => pull(l.number, `b${l.number}`, "merged")) }));
+    const links = () => [
+      { cardId: "c1", folder: "/src/app.feat-x", link: { repo: "acme/app", number: 30, url: "https://github.com/acme/app/pull/30", firstSeen: "t0" } },
+    ];
+    const building = buildGitOverview({}, deps({ "/src/app.feat-x": ["c1"] }, { pullsFor, branchPulls, linkedPulls, links }));
+    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+    expect(branchPulls).toHaveBeenCalledTimes(1);
+    expect(linkedPulls).toHaveBeenCalledTimes(1);
+    releaseBranches();
+    expect(rowOf((await building).repos, "/src/app.feat-x")!.prs?.map((p) => p.number)).toEqual([30]);
   });
 });
 

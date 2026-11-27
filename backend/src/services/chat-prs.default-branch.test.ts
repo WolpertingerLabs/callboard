@@ -34,7 +34,6 @@ const deps: ChatPrsDeps = {
   normalize: (dir) => dir,
   exists: () => true,
   gitRootOf: (dir) => (dir.startsWith("/src/app.feat") ? "/src/app.feat" : "/src/app"),
-  notRepos: new Map(),
   // The real fetch (not the cache), so every test sees its own stubs.
   pullsFor: (repoPath) => fetchRepoPulls(repoPath),
   cardOf: () => null,

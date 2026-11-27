@@ -11,7 +11,10 @@
  *
  * What the cards' chats themselves did adds to each row: the PRs of branches
  * their folders were on earlier (the git trail) and the PRs their transcripts
- * name (PR links, see chat-pr-links.ts). A link goes on the row its chat's
+ * name (PR links, see chat-pr-links.ts). A branch — a row's or a trail's —
+ * whose PR is older than the repository's listing reaches is looked up by
+ * name (`resolveBranchPulls` in github-prs.ts), so finding it does not depend
+ * on a transcript naming it. A link goes on the row its chat's
  * folder is in, and only when the PR is that row's repository's — a PR the
  * chat made in another repository is on the chat's PRs tab, not here. When
  * the folder is gone, the link goes on the `removed` row a git trail recorded
@@ -26,9 +29,15 @@
  * full chat scan. Which repository a folder belongs to is answered from the
  * filesystem (the nearest `.git`), so a folder outside any repository spawns
  * nothing; each repository then costs one async `git worktree list` per
- * request, at most {@link LISTING_CONCURRENCY} at a time, plus its PR lookup
- * (two `gh api` calls per {@link PR_CACHE_TTL_MS}, refreshed in the
- * background — see github-prs.ts).
+ * request (~3 ms), at most {@link LISTING_CONCURRENCY} at a time, plus its PR
+ * lookup: two concurrent `gh api` listings per `PR_CACHE_TTL_MS`, and one
+ * batched call for the branches and one for the linked PRs those listings do
+ * not hold. All three are cached and refreshed behind the response. A poll
+ * waits on GitHub — never longer than `PR_FORCE_WAIT_MS` — only for what it
+ * has never been told, for an answer older than `PR_STALE_MAX_MS` (the page
+ * opened for the first time in a while), for a linked PR whose every earlier
+ * ask failed, and when forced. What one request can spawn is bounded per
+ * repository; the count is on `resolveBranchPulls` in github-prs.ts.
  */
 import { existsSync } from "fs";
 import { homedir } from "os";
@@ -46,8 +55,10 @@ import {
   matchPull,
   pullsForTrailEntry,
   recordedPullForBranch,
+  resolveBranchPulls,
   resolveLinkedPulls,
   toBranchPr,
+  type BranchAsk,
   type LinkedPulls,
   type PullSummary,
   type RepoPulls,
@@ -105,11 +116,6 @@ export function activeCardData(): {
   return { folders, trails, links, unbackfilled, members };
 }
 
-/** Card ids by member-chat folder, over every open, visible card. */
-export function activeCardFolders(): Map<string, Set<string>> {
-  return activeCardData().folders;
-}
-
 // Re-exported from their new home beside the other filesystem-only git
 // helpers, so the per-turn git trail can use them without importing this
 // module (and the card context it pulls in).
@@ -120,18 +126,16 @@ function isWithin(dir: string, root: string): boolean {
   return dir === root || dir.startsWith(root.endsWith(sep) ? root : root + sep);
 }
 
-/** Spawning more git processes than this at once measurably stalls the daemon's event loop. */
-export const LISTING_CONCURRENCY = 2;
-
 /**
- * How long a directory whose worktree listing came back empty (git refused it,
- * or a `.git` that is not a repository) is skipped without spawning again.
- * Matches the worktree-resolution cache it sits beside.
+ * `git worktree list` processes alive at once. Starting a process blocks the
+ * event loop, for longer the more memory the daemon holds: measured ~1 ms per
+ * `git` in a 100 MB process, ~11 ms at 400 MB (a running daemon), ~34 ms at
+ * 900 MB. Started back to back the stalls add up — 24 listings at 400 MB:
+ * longest stall 21 ms at 2 at a time, 40 ms at 4, 77–92 ms at 8, for a total
+ * that only fell from 0.36 s to 0.30 s. So this stays small: the listings are
+ * 3 ms each, and nothing is waiting on them the way it waits on GitHub.
  */
-export const NOT_A_REPO_TTL_MS = 300_000;
-
-/** Repository candidates known not to list, by normalised path → expiry (epoch ms). */
-const notRepoCache = new Map<string, number>();
+export const LISTING_CONCURRENCY = 2;
 
 /** `fn` over `items`, at most `limit` in flight, results in input order. */
 async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
@@ -156,16 +160,17 @@ export interface RepoListing {
 
 /** How the overview — and the chat's PRs tab — reach git and the filesystem. */
 export interface PlacementDeps {
-  /** `[]` when git refused the directory, `null` when no verdict came (timeout, spawn failure). */
+  /**
+   * `[]` when git refused the directory, `null` when no verdict came (timeout,
+   * spawn failure). Asked on every request: neither answer is remembered, so
+   * neither can outlive the condition that caused it.
+   */
   listWorktrees: (dir: string) => Promise<WorktreeInfo[] | null>;
   mainRepoOf: (dir: string) => string;
   normalize: (dir: string) => string;
   exists: (dir: string) => boolean;
   /** Defaults to {@link findGitRoot} over `exists`. */
   gitRootOf?: (dir: string) => string | null;
-  /** The negative cache — module-wide by default, so it outlives the request. */
-  notRepos?: Map<string, number>;
-  now?: () => number;
 }
 
 export interface OverviewDeps extends PlacementDeps {
@@ -177,6 +182,11 @@ export interface OverviewDeps extends PlacementDeps {
   pullsFor: (repoPath: string, force: boolean) => Promise<RepoPulls>;
   /** The PR behind each link, in order; see {@link resolveLinkedPulls}. */
   linkedPulls?: (links: ChatPrLink[], known: RepoPulls[], force: boolean) => Promise<LinkedPulls>;
+  /**
+   * `pulls` with the PRs of `branches` its listing is too short to hold; see
+   * {@link resolveBranchPulls}. Absent = the listing alone.
+   */
+  branchPulls?: (repoPath: string, pulls: RepoPulls, branches: BranchAsk, force: boolean) => Promise<RepoPulls>;
 }
 
 export const DEFAULT_PLACEMENT_DEPS: PlacementDeps = {
@@ -208,6 +218,7 @@ function defaultDeps(): OverviewDeps {
     links: () => load().links,
     pullsFor: getRepoPulls,
     linkedPulls: (links, known, force) => resolveLinkedPulls(links, known, { cwd: homedir(), force }),
+    branchPulls: (repoPath, pulls, branches, force) => resolveBranchPulls(pulls, branches, { cwd: repoPath, force }),
   };
 }
 
@@ -223,8 +234,9 @@ function owningWorktree(dir: string, repo: RepoListing): ListedWorktree | undefi
 /**
  * Where one folder sits:
  * - `placed` — in `worktree` of `repo`.
- * - `not_git` — gone, outside every repository, known not to list, or inside a
- *   repository's tree but in none of its worktrees (a pruned one).
+ * - `not_git` — gone, outside every repository, under a `.git` that git
+ *   refused or that lists no checkout, or inside a repository's tree but in
+ *   none of its worktrees (a pruned one).
  * - `no_verdict` — git did not answer for its repository this time.
  */
 export type FolderPlacement = { kind: "placed"; repo: RepoListing; worktree: ListedWorktree } | { kind: "not_git" } | { kind: "no_verdict" };
@@ -235,11 +247,13 @@ export type FolderPlacement = { kind: "placed"; repo: RepoListing; worktree: Lis
  * `git worktree list` per repository, at most {@link LISTING_CONCURRENCY} at
  * a time. A folder in a nested repository or submodule is placed in that
  * repository, not the worktree around it.
+ *
+ * Nothing is remembered between requests. A listing costs ~3 ms, and a
+ * remembered refusal once hid a whole repository for five minutes after a
+ * single failed `git worktree list`; now the next request simply asks again.
  */
 export async function placeFolders(folders: Iterable<string>, deps: PlacementDeps = DEFAULT_PLACEMENT_DEPS): Promise<Map<string, FolderPlacement>> {
   const gitRootOf = deps.gitRootOf ?? ((dir: string) => findGitRoot(dir, deps.exists));
-  const notRepos = deps.notRepos ?? notRepoCache;
-  const now = (deps.now ?? Date.now)();
   const placements = new Map<string, FolderPlacement>();
 
   // 1. Folder → repository candidate, from the filesystem alone. The
@@ -254,8 +268,6 @@ export async function placeFolders(folders: Iterable<string>, deps: PlacementDep
     const root = gitRootOf(norm);
     if (root === null) continue;
     const candidate = deps.normalize(deps.mainRepoOf(root));
-    const expiry = notRepos.get(candidate);
-    if (expiry !== undefined && expiry > now) continue;
     const list = foldersByCandidate.get(candidate) ?? [];
     list.push({ folder, norm });
     foldersByCandidate.set(candidate, list);
@@ -271,17 +283,13 @@ export async function placeFolders(folders: Iterable<string>, deps: PlacementDep
   candidates.forEach((candidate, i) => {
     const worktrees = listed[i];
     // No verdict (a timeout on a slow disk, say): this request goes without
-    // the repo, but it is not remembered as a non-repo — the next asks again.
+    // the repo, and says so — unlike a refusal, which reads as "not git".
     if (worktrees === null) {
       for (const { folder } of foldersByCandidate.get(candidate)!) placements.set(folder, { kind: "no_verdict" });
       return;
     }
     const usable = worktrees.filter((wt) => !wt.isBare);
-    if (usable.length === 0) {
-      notRepos.set(candidate, now + NOT_A_REPO_TTL_MS);
-      return;
-    }
-    notRepos.delete(candidate);
+    if (usable.length === 0) return;
     // The main worktree is git's answer for the repository, whichever
     // directory we asked from. A repository whose main entry is bare has no
     // main checkout to name it, so its first linked worktree stands in.
@@ -359,6 +367,39 @@ export async function buildGitOverview(opts: { force?: boolean } = {}, deps: Ove
   const pulls = new Map<string, RepoPulls>();
   await Promise.all(repoPaths.map(async (repoPath) => pulls.set(repoPath, await deps.pullsFor(repoPath, opts.force === true))));
 
+  // The branches each repository's rows will ask about — live rows' own, and
+  // their and the removed rows' trail entries' — for the PRs older than its
+  // listing reaches. Started here and joined below, beside the linked PRs:
+  // both are GitHub, and neither needs the other's answer.
+  const branchesByRepo = new Map<string, { live: Set<string>; trail: Set<string> }>();
+  const wantBranch = (repoPath: string, kind: "live" | "trail", branch: string | null) => {
+    if (!branch) return;
+    const asked = branchesByRepo.get(repoPath) ?? { live: new Set<string>(), trail: new Set<string>() };
+    asked[kind].add(branch);
+    branchesByRepo.set(repoPath, asked);
+  };
+  for (const repo of listings) {
+    for (const wt of repo.worktrees) {
+      wantBranch(repo.repoPath, "live", wt.branch);
+      for (const entry of trailByCwd.get(wt.normPath) ?? []) wantBranch(repo.repoPath, "trail", entry.branch);
+    }
+  }
+  for (const [repoPath, byCwd] of removedByRepo) {
+    for (const removed of byCwd.values()) for (const entry of removed.entries) wantBranch(repoPath, "trail", entry.branch);
+  }
+  const branchLookups = Promise.all(
+    [...branchesByRepo].map(async ([repoPath, branches]) => {
+      const listed = pulls.get(repoPath)!;
+      // Never fatal: a lookup that throws leaves the listing as it was.
+      try {
+        const asked = { live: [...branches.live], trail: [...branches.trail] };
+        return [repoPath, (await deps.branchPulls?.(repoPath, listed, asked, opts.force === true)) ?? listed] as const;
+      } catch {
+        return [repoPath, listed] as const;
+      }
+    }),
+  );
+
   // 6. The PRs the chats' histories name, onto the row their chat's folder is
   //    in: the worktree it was placed in, else the removed worktree it was.
   //    A folder that is gone with no trail to say which repository it was in
@@ -398,12 +439,17 @@ export async function buildGitOverview(opts: { force?: boolean } = {}, deps: Ove
   });
   const linkedByCwd = new Map<string, Array<{ pr: PullSummary; cardId: string; link: ChatPrLink }>>();
   let linkErrors: Record<string, string> = {};
-  if (rowLinks.length > 0 && deps.linkedPulls) {
-    const resolved = await deps.linkedPulls(
-      rowLinks.map(({ link }) => link),
-      [...pulls.values()],
-      opts.force === true,
-    );
+  const linkLookup =
+    rowLinks.length > 0 && deps.linkedPulls
+      ? deps.linkedPulls(
+          rowLinks.map(({ link }) => link),
+          [...pulls.values()],
+          opts.force === true,
+        )
+      : undefined;
+  const [branchFound, resolved] = await Promise.all([branchLookups, linkLookup]);
+  for (const [repoPath, found] of branchFound) pulls.set(repoPath, found);
+  if (resolved) {
     linkErrors = resolved.errors ?? {};
     rowLinks.forEach(({ cwd, cardId, link }, i) => {
       const pr = resolved.pulls[i];
@@ -467,7 +513,7 @@ export async function buildGitOverview(opts: { force?: boolean } = {}, deps: Ove
       const last = removed.entries.reduce<GitTrailEntry | undefined>((a, b) => (!a || b.lastSeen > a.lastSeen ? b : a), undefined);
       rows.push({ cwd, branch: last?.branch ?? null, isMain: false, removed: true, prs: badges(undefined, found), cardIds: [...cardIds].sort() });
     }
-    const prError = repoPulls.error ?? linkError;
+    const prError = repoPulls.error ?? repoPulls.branchError ?? linkError;
     if (rows.length === 0) continue;
     rows.sort(
       (a, b) =>
@@ -476,7 +522,11 @@ export async function buildGitOverview(opts: { force?: boolean } = {}, deps: Ove
         (a.branch ?? "\uffff").localeCompare(b.branch ?? "\uffff") ||
         a.cwd.localeCompare(b.cwd),
     );
-    out.push({ repoPath, name: basename(repoPath), rows, ...(prError && { prError }), ...(prError && !repoPulls.error && { prErrorPartial: true as const }) });
+    // Partial: PR data is shown all the same — a listing that half arrived
+    // or is kept from before a failed refresh, or a whole one beside a
+    // by-branch or by-number lookup that failed. Not partial: there is none.
+    const partial = repoPulls.error === undefined || repoPulls.errorPartial === true;
+    out.push({ repoPath, name: basename(repoPath), rows, ...(prError && { prError }), ...(prError && partial && { prErrorPartial: true as const }) });
   }
   out.sort((a, b) => a.name.localeCompare(b.name) || a.repoPath.localeCompare(b.repoPath));
 
