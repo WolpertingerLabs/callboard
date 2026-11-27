@@ -207,7 +207,7 @@ describe("THEME_VARIABLE_NAMES", () => {
   });
 
   it("excludes the derived layer, so a theme's primitives still reach it", () => {
-    for (const name of ["chatlist-badge-triggered-bg", "chatlist-summon-bg", "board-tile-bg", "badge-provider-text", "chatlist-item-active-bg"]) {
+    for (const name of ["chatlist-badge-triggered-bg", "chatlist-summon-bg", "board-group-rule", "badge-provider-text", "chatlist-item-active-bg"]) {
       expect(THEME_VARIABLE_NAMES, name).not.toContain(name);
     }
   });

@@ -12,7 +12,7 @@ const PR_STYLES: Record<BranchPrState, { color: string; background: string }> = 
 
 /**
  * `#525 open` in the state's colours, linking to the PR — the one badge the
- * Board's Branches view and the chat's PRs tab both draw.
+ * Git page and the chat's PRs tab both draw.
  *
  * Only ever a link to `https://github.com/`: the URL arrives from GitHub's API
  * by way of the daemon, and a badge is no place for anything else to point.

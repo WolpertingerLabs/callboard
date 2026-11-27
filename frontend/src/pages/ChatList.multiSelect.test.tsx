@@ -2,8 +2,8 @@
 /**
  * Multi-select in the sidebar chat list: the wiring no component can see.
  *
- * The gesture contract is shared with the board and tested where it lives
- * (`hooks/useSelectionActivation` via `board/cardFace.parity.test.tsx` and
+ * The gesture contract is shared code and tested where it lives
+ * (`hooks/useSelectionActivation.test.tsx` and
  * `ChatListItem.selection.test.tsx`). What lives only here, and is worth the
  * cost of mounting the page:
  *
@@ -100,8 +100,7 @@ function card(id: string, lifecycle: "open" | "closed", chatIds: string[], extra
  *   shelved │ no card, its tree ARCHIVED (the server's `archived` field)
  *
  * The archived row sitting in the middle is what makes the range tests worth
- * running: the board can slice its ordered ids unfiltered because it lists
- * every open card before every closed one, and this list cannot — it is
+ * running: this list cannot slice its ordered ids unfiltered — it is
  * ordered by recency and mixes the scopes freely.
  *
  * `three` and `four` share a card with NO parent pointers between them, which
@@ -1102,7 +1101,7 @@ describe("reconciling against a refresh", () => {
     fireEvent.click(row("chat two"));
     expect(count()).toBe("2 chats");
 
-    // Someone archived c-two on the board. The row is still here (Archived is
+    // Someone archived c-two elsewhere. The row is still here (Archived is
     // on) but it is no longer in this selection's scope, and an archived card
     // must not be reachable by a button that reads "Archive".
     vi.mocked(listCards).mockResolvedValue({ cards: [CARDS[0], card("c-two", "closed", ["two"]), CARDS[2], CARDS[3]] });
@@ -1279,8 +1278,7 @@ describe("a selection whose rows all go away", () => {
 
 /**
  * The sidebar is a docked column with a transcript open beside it, so its
- * shortcuts are bound to the list root rather than to the document. The board
- * can bind to the document because the board IS the viewport.
+ * shortcuts are bound to the list root rather than to the document.
  */
 describe("the shortcuts stay inside the list", () => {
   it("leaves a Cmd+A aimed at the rest of the window alone", async () => {

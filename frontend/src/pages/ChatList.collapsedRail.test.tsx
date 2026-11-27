@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /**
  * The collapsed rail and the open header are two renderings of one button set.
- * They were once written out separately and the rail drifted — it lost Board —
+ * They were once written out separately and the rail drifted — it lost a link —
  * so this pins them against each other from the outside: same buttons, same
  * order, with the collapse/expand toggle last and nothing else after it.
  */
@@ -77,9 +77,9 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("collapsed sidebar rail", () => {
-  it("shows Board among its nav buttons", () => {
+  it("shows Git among its nav buttons", () => {
     const { container } = renderRail();
-    expect(within(container).getByTitle("Board")).toBeTruthy();
+    expect(within(container).getByTitle("Git")).toBeTruthy();
   });
 
   for (const claudeLoggedIn of [true, false]) {
@@ -108,13 +108,13 @@ describe("collapsed sidebar rail", () => {
     const agents = within(container).getByTitle("Agents");
     expect(agents.getAttribute("aria-current")).toBe("page");
     expect(agents.style.background).toBe("var(--accent)");
-    expect(within(container).getByTitle("Board").getAttribute("aria-current")).toBeNull();
+    expect(within(container).getByTitle("Git").getAttribute("aria-current")).toBeNull();
   });
 
   it("navigates from its nav buttons", () => {
     const { container } = renderRail();
-    fireEvent.click(within(container).getByTitle("Board"));
-    expect(screen.getByTestId("location").textContent).toBe("/board");
+    fireEvent.click(within(container).getByTitle("Git"));
+    expect(screen.getByTestId("location").textContent).toBe("/git");
   });
 
   it("expands the sidebar when New Chat is clicked", () => {
@@ -129,38 +129,38 @@ describe("collapsed sidebar rail", () => {
  * React only rewrites style properties whose values changed. With a `border`
  * shorthand that flips when the active button moves, the browser resets every
  * edge to 1px while the unchanged zeroed seam longhand is never re-applied, so
- * the seam doubles after client-side navigation. Each case lands on Board,
- * moves to Agents, and checks the seams Board and Agents share are still zero.
+ * the seam doubles after client-side navigation. Each case lands on Git,
+ * moves to Agents, and checks the seams Git and Agents share are still zero.
  */
 describe("segmented nav seams survive navigation", () => {
   const cases = [
     {
       name: "open header (row)",
-      mount: () => renderHeader({ path: "/board" }),
-      boardSeam: "borderRightWidth",
+      mount: () => renderHeader({ path: "/git" }),
+      gitSeam: "borderRightWidth",
       agentsSeams: ["borderLeftWidth", "borderRightWidth"],
     },
     {
       name: "collapsed rail (stack)",
-      mount: () => renderRail({ path: "/board" }),
-      boardSeam: "borderBottomWidth",
+      mount: () => renderRail({ path: "/git" }),
+      gitSeam: "borderBottomWidth",
       agentsSeams: ["borderTopWidth", "borderBottomWidth"],
     },
   ] as const;
 
-  for (const { name, mount, boardSeam, agentsSeams } of cases) {
+  for (const { name, mount, gitSeam, agentsSeams } of cases) {
     it(name, () => {
       const { container } = mount();
       fireEvent.click(within(container).getByTitle("Agents"));
-      const board = within(container).getByTitle("Board");
+      const git = within(container).getByTitle("Git");
       const agents = within(container).getByTitle("Agents");
 
       expect(agents.getAttribute("aria-current")).toBe("page");
-      expect(board.style.borderStyle).toBe("solid");
-      expect(board.style[boardSeam]).toBe("0px");
+      expect(git.style.borderStyle).toBe("solid");
+      expect(git.style[gitSeam]).toBe("0px");
       for (const seam of agentsSeams) expect(agents.style[seam]).toBe("0px");
-      // Board is inactive again, so its outer edges are back.
-      expect(board.style.borderTopWidth || board.style.borderLeftWidth).toBe("1px");
+      // Git is inactive again, so its outer edges are back.
+      expect(git.style.borderTopWidth || git.style.borderLeftWidth).toBe("1px");
     });
   }
 });

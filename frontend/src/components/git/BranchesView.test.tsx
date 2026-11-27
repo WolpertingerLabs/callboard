@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { PR_REQUEST_TIMEOUT_MS } from "../git/timedRequest";
+import { PR_REQUEST_TIMEOUT_MS } from "./timedRequest";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import type { CardSummary, GitOverviewResponse } from "../../api";
 import { getGitOverview } from "../../api";
@@ -45,7 +45,7 @@ const OVERVIEW: GitOverviewResponse = {
       repoPath: "/home/u/callboard",
       name: "callboard",
       // The daemon only sends rows with open cards — but in ANY space, so a
-      // row can still hold nothing the board shows (old-spike). Main is last
+      // row can still hold nothing the page shows (old-spike). Main is last
       // here to prove the view orders it first.
       rows: [
         { cwd: "/home/u/callboard.old-spike", branch: "old-spike", isMain: false, cardIds: ["other-space"] },
@@ -60,7 +60,7 @@ const OVERVIEW: GitOverviewResponse = {
           cwd: "/home/u/callboard.fix-scroll",
           branch: "fix/scroll",
           isMain: false,
-          // `gone` is archived on the board: it must not produce a chip.
+          // `gone` is archived: it must not produce a chip.
           cardIds: ["c2", "gone"],
           pr: { number: 519, url: "https://github.com/acme/callboard/pull/519", state: "merged", title: "Fix scroll" },
         },
@@ -73,17 +73,17 @@ const OVERVIEW: GitOverviewResponse = {
       prError: "gh is not installed",
       rows: [{ cwd: "/home/u/drawlatch", branch: "main", isMain: true, cardIds: ["c3"] }],
     },
-    // Only cards the board does not hold: the whole repo stays off screen.
+    // Only cards the page does not hold: the whole repo stays off screen.
     { repoPath: "/home/u/elsewhere", name: "elsewhere", rows: [{ cwd: "/home/u/elsewhere", branch: "main", isMain: true, cardIds: ["other-space"] }] },
   ],
 };
 
 const mockOverview = vi.mocked(getGitOverview);
 
-async function mount(onOpenCard = vi.fn()) {
-  render(<BranchesView cards={CARDS} onOpenCard={onOpenCard} />);
+async function mount(onOpenChat = vi.fn()) {
+  render(<BranchesView cards={CARDS} onOpenChat={onOpenChat} />);
   await screen.findAllByRole("heading", { level: 2 });
-  return onOpenCard;
+  return onOpenChat;
 }
 
 const row = (cwd: string) => screen.getAllByTestId("branch-row").find((el) => el.querySelector(`[title="${cwd}"]`))!;
@@ -96,7 +96,7 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("BranchesView", () => {
-  it("groups rows under their repository, hiding a repo none of whose cards the board shows", async () => {
+  it("groups rows under their repository, hiding a repo none of whose cards the page shows", async () => {
     await mount();
     expect(screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent)).toEqual(["callboard", "drawlatch"]);
     const callboard = screen.getByRole("region", { name: "callboard" });
@@ -119,7 +119,7 @@ describe("BranchesView", () => {
   });
 
   it("attaches chips for open cards only, and opens the drawer from one", async () => {
-    const onOpenCard = await mount();
+    const onOpenChat = await mount();
     const scroll = row("/home/u/callboard.fix-scroll");
     expect(
       within(scroll)
@@ -128,18 +128,18 @@ describe("BranchesView", () => {
     ).toEqual(["Scroll latch"]);
 
     fireEvent.click(within(row("/home/u/callboard.feat-pr-track")).getByRole("button", { name: "PR tracking" }));
-    expect(onOpenCard).toHaveBeenCalledWith("c1");
+    expect(onOpenChat).toHaveBeenCalledWith("c1");
   });
 
-  it("hides a row none of whose cards the board shows", async () => {
+  it("hides a row none of whose cards the page shows", async () => {
     await mount();
     expect(screen.queryByTitle("/home/u/callboard.old-spike")).toBeNull();
   });
 
   it("copes with a repo that arrives with no rows, and with nothing to show at all", async () => {
     mockOverview.mockResolvedValue({ generatedAt: OVERVIEW.generatedAt, repos: [{ repoPath: "/r", name: "r", rows: [] }] });
-    render(<BranchesView cards={CARDS} onOpenCard={vi.fn()} />);
-    expect(await screen.findByText("No open card is working in a git repository.")).toBeDefined();
+    render(<BranchesView cards={CARDS} onOpenChat={vi.fn()} />);
+    expect(await screen.findByText("No active conversation is working in a git repository.")).toBeDefined();
     expect(screen.queryByRole("heading", { level: 2 })).toBeNull();
   });
 
@@ -257,7 +257,7 @@ describe("BranchesView", () => {
     expect(within(removed).queryByText("(detached)")).toBeNull();
   });
 
-  it("hides a removed row whose cards the board does not show", async () => {
+  it("hides a removed row whose cards the page does not show", async () => {
     mockOverview.mockResolvedValue({
       generatedAt: OVERVIEW.generatedAt,
       repos: [
@@ -308,7 +308,7 @@ describe("BranchesView", () => {
       generatedAt: OVERVIEW.generatedAt,
       repos: [{ repoPath: "/r", name: "r", rows: [{ cwd: "/r", branch: "main", isMain: true, cardIds: many.map((c) => c.id) }] }],
     });
-    render(<BranchesView cards={many} onOpenCard={vi.fn()} />);
+    render(<BranchesView cards={many} onOpenChat={vi.fn()} />);
     await screen.findByRole("heading", { level: 2 });
     expect(screen.getAllByRole("button", { name: /^Card / })).toHaveLength(4);
     fireEvent.click(screen.getByRole("button", { name: "+2 more" }));
@@ -338,7 +338,7 @@ describe("BranchesView", () => {
 
   it("shows the error and no rows when the overview fails", async () => {
     mockOverview.mockRejectedValue(new Error("boom"));
-    render(<BranchesView cards={CARDS} onOpenCard={vi.fn()} />);
+    render(<BranchesView cards={CARDS} onOpenChat={vi.fn()} />);
     expect(await screen.findByText("boom")).toBeDefined();
     expect(screen.queryAllByTestId("branch-row")).toHaveLength(0);
   });
@@ -361,7 +361,7 @@ describe("BranchesView: refresh on load", () => {
   it("makes exactly one request on mount, forced, with the button busy until it settles", async () => {
     const first = deferred<Awaited<ReturnType<typeof mockOverview>>>();
     mockOverview.mockReturnValueOnce(first.promise);
-    render(<BranchesView cards={CARDS} onOpenCard={vi.fn()} />);
+    render(<BranchesView cards={CARDS} onOpenChat={vi.fn()} />);
     expect(mockOverview).toHaveBeenCalledTimes(1);
     expect(mockOverview).toHaveBeenCalledWith(true, expect.any(AbortSignal));
     expect(button().disabled).toBe(true);
@@ -375,7 +375,7 @@ describe("BranchesView: refresh on load", () => {
   it("re-enables the button when the forced request fails", async () => {
     const first = deferred<Awaited<ReturnType<typeof mockOverview>>>();
     mockOverview.mockReturnValueOnce(first.promise);
-    render(<BranchesView cards={CARDS} onOpenCard={vi.fn()} />);
+    render(<BranchesView cards={CARDS} onOpenChat={vi.fn()} />);
     expect(button().disabled).toBe(true);
     await act(async () => first.reject(new Error("offline")));
     expect(screen.getByText("offline")).toBeDefined();
@@ -383,7 +383,7 @@ describe("BranchesView: refresh on load", () => {
   });
 
   it("keeps the button busy through a manual refresh as well", async () => {
-    render(<BranchesView cards={CARDS} onOpenCard={vi.fn()} />);
+    render(<BranchesView cards={CARDS} onOpenChat={vi.fn()} />);
     await settle();
     const manual = deferred<Awaited<ReturnType<typeof mockOverview>>>();
     mockOverview.mockReturnValueOnce(manual.promise);
@@ -400,7 +400,7 @@ describe("BranchesView: refresh on load", () => {
   it("polls unforced, and not while a refresh is in flight", async () => {
     vi.useRealTimers();
     vi.useFakeTimers();
-    render(<BranchesView cards={CARDS} onOpenCard={vi.fn()} />);
+    render(<BranchesView cards={CARDS} onOpenChat={vi.fn()} />);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
@@ -448,7 +448,7 @@ describe("BranchesView: a request that never settles", () => {
     try {
       mockOverview.mockImplementationOnce(hangUntilAborted as never);
       mockOverview.mockResolvedValue(OVERVIEW);
-      render(<BranchesView cards={CARDS} onOpenCard={vi.fn()} />);
+      render(<BranchesView cards={CARDS} onOpenChat={vi.fn()} />);
       await act(async () => {
         await vi.advanceTimersByTimeAsync(0);
       });
@@ -480,7 +480,7 @@ describe("BranchesView: a request that never settles", () => {
 
   it("aborts what is in flight when the view goes away", async () => {
     mockOverview.mockImplementationOnce(hangUntilAborted as never);
-    const { unmount } = render(<BranchesView cards={CARDS} onOpenCard={vi.fn()} />);
+    const { unmount } = render(<BranchesView cards={CARDS} onOpenChat={vi.fn()} />);
     const signal = mockOverview.mock.calls[0].at(-1) as AbortSignal;
     expect(signal.aborted).toBe(false);
     unmount();

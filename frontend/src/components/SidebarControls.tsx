@@ -1,5 +1,5 @@
 import { useNavigate, useLocation } from "react-router-dom";
-import { Settings, Bot, PanelLeftClose, PanelLeftOpen, AlertTriangle, Plus, LayoutGrid, type LucideIcon } from "lucide-react";
+import { Settings, Bot, PanelLeftClose, PanelLeftOpen, AlertTriangle, Plus, GitBranch, type LucideIcon } from "lucide-react";
 import type { CSSProperties } from "react";
 import { HEADER_BUTTON_STYLE, HEADER_ROW_GAP } from "./headerButtonStyle";
 
@@ -15,10 +15,10 @@ export interface SidebarNavItem {
  *
  * The one list both renderings of the sidebar read — the open header lays it
  * out as a row, the collapsed rail as a column. They used to be written out
- * twice, and the rail quietly lost Board; a link added here appears in both.
+ * twice, and the rail quietly lost a link; a link added here appears in both.
  */
 export const SIDEBAR_NAV_ITEMS: readonly SidebarNavItem[] = [
-  { title: "Board", icon: LayoutGrid, path: "/board", isActive: (p) => p === "/board" },
+  { title: "Git", icon: GitBranch, path: "/git", isActive: (p) => p === "/git" },
   { title: "Agents", icon: Bot, path: "/agents", isActive: (p) => p.startsWith("/agents") },
   { title: "Settings", icon: Settings, path: "/settings", isActive: (p) => p === "/settings" },
 ];

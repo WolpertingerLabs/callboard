@@ -2,19 +2,15 @@
  * The click/press/select contract of one selectable row, independent of what
  * it is a row OF.
  *
- * Lifted out of `components/board/cardFace.ts`, where it lived as
- * `useCardActivation`, when the sidebar's chat list grew a multi-select of its
- * own. Nothing in here was ever about cards: the only board-shaped thing it
- * touched was `card.title`, for the checkbox's accessible name, which is now
- * the `label` option. Two surfaces answering "what does a click mean while a
- * selection is live?" from two copies of these rules is the bug this file
- * exists to make impossible — the rules are subtle (a click left over from a
+ * Originally the board's card-face activation logic, lifted out when the
+ * sidebar's chat list grew a multi-select of its own; the board's Cards and
+ * List views have since been removed, and the chat list is what remains.
+ * Every surface answering "what does a click mean while a selection is live?"
+ * must answer it from here — the rules are subtle (a click left over from a
  * long press must not act; a modified click toggles instead of navigating; an
  * out-of-scope row is dead rather than merely dimmed) and a second copy would
- * drift on exactly those.
- *
- * `useCardActivation` remains as a thin wrapper so the board's two faces are
- * untouched — see cardFace.ts.
+ * drift on exactly those. The contract is asserted in
+ * `useSelectionActivation.test.tsx`.
  */
 
 import { useState } from "react";
@@ -22,8 +18,8 @@ import { useLongPress, type UseLongPressResult } from "./useLongPress";
 
 export interface UseSelectionActivationOptions {
   /**
-   * What the checkbox announces itself as selecting — a card's title, a chat's
-   * display name. The one thing this hook needs to know about the row's data.
+   * What the checkbox announces itself as selecting — a chat's display name.
+   * The one thing this hook needs to know about the row's data.
    */
   label: string;
   /** Every field below is optional: with none passed the row behaves exactly as it did before multi-select existed. */
@@ -40,10 +36,9 @@ export interface UseSelectionActivationResult {
   /**
    * The same contract with a different destination.
    *
-   * A board row's folder entry opens the drawer *filtered*, which is a
-   * different `open` from the row's — but every step in front of that decision
-   * is identical, and it is the steps in front that are easy to get wrong: a
-   * click left over from a long press must not act, and in selection mode a
+   * For a control inside the row whose `open` differs from the row's own.
+   * Every step in front of that decision is identical, and it is the steps in
+   * front that are easy to get wrong: a click left over from a long press must not act, and in selection mode a
    * click anywhere on the row toggles it rather than navigating away from a
    * selection in progress. `handleClick` is this with `onClick`.
    */

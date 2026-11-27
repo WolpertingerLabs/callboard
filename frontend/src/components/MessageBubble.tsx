@@ -318,7 +318,7 @@ const REWRITE_ACTIONS: { action: ChatRewriteAction; label: string; title: string
  * replaying a flattened transcript.
  *
  * The "This chat" section appears only when `onRewrite` or `onRerun` is
- * given: those actions replace the open chat in the sidebar and the board
+ * given: those actions replace the open chat in the sidebar
  * rather than adding a branch beside it, so the caller decides when they are on
  * offer.
  */

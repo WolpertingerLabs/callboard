@@ -469,10 +469,10 @@ describe("content search widens the scope", () => {
 
 /**
  * Hidden cards — the second half of "archived", and the reason the sidebar's
- * card fetch differs from the board's.
+ * card fetch asks for more than the default.
  *
- * `metadata.card.hidden` opts a card out of the BOARD, and `GET /api/cards`
- * omits hidden cards by default for exactly that reason. The list route counts
+ * `metadata.card.hidden` opts a card out of the cards listing, and
+ * `GET /api/cards` omits hidden cards by default. The list route counts
  * one as archived all the same: `cardLifecycle=unarchived` withholds its tree
  * just as it withholds a closed card's. So the sidebar has to ask for them, or
  * its dim would call those rows "not archived" — no card, no verdict — while
@@ -480,12 +480,11 @@ describe("content search widens the scope", () => {
  * prevent.
  *
  * Asking for them creates the second obligation tested here. `cards` feeds the
- * row menu as well as the dim, and the menu's one entry is a lifecycle toggle
- * whose labels are written about the board ("moves to the board's Archived
- * strip", "returns to the board"). A hidden card is on the board under neither
- * lifecycle, and flipping it would not even clear the fade the user is looking
- * at, because `hidden` stays set and no sidebar control can unset it. So the
- * menu reads the BOARD cards and the dim reads all of them.
+ * row menu as well as the dim, and the menu's one entry is a lifecycle toggle.
+ * Flipping a hidden card's lifecycle would not even clear the fade the user is
+ * looking at, because `hidden` stays set and no sidebar control can unset it.
+ * So the menu reads the LISTED (non-hidden) cards and the dim reads all of
+ * them.
  */
 describe("a hidden card", () => {
   const OPEN = makeChat("chat-1", { preview: "open chat", rootChatId: "chat-1" });
@@ -508,7 +507,7 @@ describe("a hidden card", () => {
    * reverting `listCards(true)` to `listCards()` is a plausible edit that
    * regresses production with every other test still green.
    */
-  it("asks the cards route for hidden cards, which the board never does", async () => {
+  it("asks the cards route for hidden cards, which the default listing leaves out", async () => {
     await renderList();
     expect(listCards).toHaveBeenCalledWith(true);
   });
@@ -523,7 +522,7 @@ describe("a hidden card", () => {
   });
 
   /**
-   * A hidden card is not a BOARD card, so `cardOf` still answers undefined for
+   * A hidden card is not a LISTED card, so `cardOf` still answers undefined for
    * it and the card PATCH — which would reopen the lifecycle and leave
    * `hidden`, and the dim, in place — is never offered. The row gets the
    * chat-level entry instead, whose route clears `hidden` on unarchive.
@@ -541,7 +540,7 @@ describe("a hidden card", () => {
     await waitFor(() => expect(screen.getByText("hidden chat").closest(".chatlist-item-dimmed")).toBeNull());
   });
 
-  it("still offers Archive on a board card's row", async () => {
+  it("still offers Archive on a listed card's row", async () => {
     await renderList();
     openRowMenu("open chat");
     expect(screen.getByText("Archive chat")).toBeTruthy();

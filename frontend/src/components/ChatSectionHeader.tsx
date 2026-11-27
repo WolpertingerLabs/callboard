@@ -3,8 +3,7 @@
  *
  * Typography and chevron are the sidebar's existing "Staging" header, down to
  * the count in parentheses — these are the same kind of control on the same
- * surface, so they should not read as two different ones. Deliberately not the
- * Board's `sectionHeader`, which belongs to a different surface.
+ * surface, so they should not read as two different ones.
  *
  * Where it does depart from Staging: a filled background. Staging is one
  * header pinned above a bordered block, while these sit *inside* the run of
@@ -22,8 +21,8 @@
  * sits beside it in one that never shrinks, and the full name is the tooltip.
  *
  * The running indicator — a dot and a number, shown only while at least one
- * chat in the section has a live session — is the Board's "Active" rollup
- * mark (7px `--status-active` dot with a glow of its own colour, number in the
+ * chat in the section has a live session — is the "Active" rollup mark
+ * (7px `--status-active` dot with a glow of its own colour, number in the
  * same colour) rather than a new look. Unlike the count it is CHATS, every
  * running member of every group: a tree with three agents working in it is
  * three running, which is the number the user wants when deciding whether a

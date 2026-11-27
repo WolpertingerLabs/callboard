@@ -932,7 +932,7 @@ export interface SendMessageOptions {
    * already know what the chat is (e.g. job-step sessions), where the
    * LLM title generation for manual chats is deliberately skipped —
    * without a stored title such chats render as "untitled" everywhere that
-   * reads chat records directly (card rollup, board). Only honored for new
+   * reads chat records directly (card rollup, Git page). Only honored for new
    * chats; the session can still overwrite it via set_chat_title.
    */
   chatTitle?: string;
@@ -1264,8 +1264,8 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
   // ── Reopen closed card on new message ─────────────────────
   // When any chat in a closed card's lineage tree receives a message —
   // whether from the UI, continue_chat, a job step, cron, or a spawned child
-  // — reopen the card automatically so the conversation returns to the
-  // board. The card lives on the lineage root's metadata.card: resolve the
+  // — reopen the card automatically so the conversation is unarchived. The
+  // card lives on the lineage root's metadata.card: resolve the
   // root, read the lifecycle, flip it open. A brand-new top-level chat is its
   // own root and has no card yet — nothing to reopen.
   //
@@ -1304,8 +1304,8 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
       sessionRegistry.notifyMetadata(reopenRootId, { cardEvent: "updated" });
       log.info(`Reopened card ${reopenRootId} ("${rootCard.title}") because chat ${opts.chatId || "(new)"} received a new message`);
     }
-    // `hidden` is deliberately left alone above: on a card it is the board
-    // opt-out — "keep this off the board" — which the user set on purpose and
+    // `hidden` is deliberately left alone above: on a card it is the listing
+    // opt-out (originally "keep this off the board") — which was set on purpose and
     // which new activity says nothing about, so a reply must not undo it (the
     // sidebar keeps treating the tree as archived until the user unhides it
     // or unarchives it there). A card-less tree has no such

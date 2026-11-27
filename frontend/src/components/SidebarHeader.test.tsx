@@ -15,7 +15,7 @@ describe("SidebarHeader", () => {
       </MemoryRouter>,
     );
 
-    const mainViewControls = [screen.getByTitle("Board"), screen.getByTitle("Agents"), screen.getByTitle("Settings")];
+    const mainViewControls = [screen.getByTitle("Git"), screen.getByTitle("Agents"), screen.getByTitle("Settings")];
     const requestedControls = [screen.getByTitle("New Chat")];
     const mainViewSize = {
       width: mainViewControls[0].style.width,

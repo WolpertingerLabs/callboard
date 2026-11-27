@@ -4,21 +4,23 @@ import type { BranchRepo, BranchRow, CardSummary, GitOverviewResponse } from "..
 import { getGitOverview } from "../../api";
 import { useIsMobile } from "../../hooks/useIsMobile";
 import { usePolling } from "../../hooks/usePolling";
-import { startTimedRequest, type TimedRequest } from "../git/timedRequest";
+import { startTimedRequest, type TimedRequest } from "./timedRequest";
 import { errorMessage } from "../../utils/errorMessage";
 import { formatShortAgo } from "../../utils/dateFormat";
-import { ROLLUP_COLORS } from "./cardFace";
+import { ROLLUP_COLORS } from "./rollupColors";
 import CardPathLabel from "./CardPathLabel";
-import PrBadge from "../git/PrBadge";
+import PrBadge from "./PrBadge";
 
 interface BranchesViewProps {
   /**
-   * The cards the board already holds. Rows carry only card ids; titles and
-   * status come from here, so this view never refetches cards — and a card
-   * the board is not showing (another space) is not shown as a chip either.
+   * The open cards (conversation trees) the Git page already holds. Rows
+   * carry only card ids; titles and status come from here, so this view never
+   * refetches cards — and a card the page is not showing (another space) is
+   * not shown as a chip either.
    */
   cards: CardSummary[];
-  onOpenCard: (cardId: string) => void;
+  /** Called with the card id, which is the conversation's root chat id. */
+  onOpenChat: (chatId: string) => void;
 }
 
 /** Chips shown on a row before the rest fold behind "+N more". */
@@ -38,11 +40,12 @@ function parentPrefix(repoPath: string): string {
 }
 
 /**
- * The Board's Branches view: one row per worktree that open cards are working
- * in, grouped by repository, with those cards attached as chips. Read-only —
- * selection, archiving and clean-up all live in the other two views.
+ * The Git page's branches overview: one row per worktree that unarchived
+ * conversations are working in, grouped by repository, with those
+ * conversations attached as chips. Read-only — a chip opens its root chat,
+ * and archiving lives in the sidebar.
  */
-export default function BranchesView({ cards, onOpenCard }: BranchesViewProps) {
+export default function BranchesView({ cards, onOpenChat }: BranchesViewProps) {
   const isMobile = useIsMobile();
   const [data, setData] = useState<GitOverviewResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -117,7 +120,7 @@ export default function BranchesView({ cards, onOpenCard }: BranchesViewProps) {
   const chipsOf = (row: BranchRow) => row.cardIds.map((id) => openCards.get(id)).filter((c): c is CardSummary => c !== undefined);
 
   // The daemon only sends worktrees with open cards in them; a row is shown
-  // when at least one of those is a card the board shows (not, say, one from
+  // when at least one of those is a card the page shows (not, say, one from
   // another space), and a repo when any of its rows is. Main checkout first.
   const repos = (data?.repos ?? [])
     .map((repo) => ({
@@ -162,7 +165,7 @@ export default function BranchesView({ cards, onOpenCard }: BranchesViewProps) {
         {shown.map((card) => (
           <button
             key={card.id}
-            onClick={() => onOpenCard(card.id)}
+            onClick={() => onOpenChat(card.id)}
             title={card.title}
             style={{
               display: "inline-flex",
@@ -316,7 +319,7 @@ export default function BranchesView({ cards, onOpenCard }: BranchesViewProps) {
       {data === null && !error ? (
         <div style={{ color: "var(--text-muted)", fontSize: 14 }}>Loading branches…</div>
       ) : (
-        data !== null && repos.length === 0 && <div style={{ color: "var(--text-muted)", fontSize: 14 }}>No open card is working in a git repository.</div>
+        data !== null && repos.length === 0 && <div style={{ color: "var(--text-muted)", fontSize: 14 }}>No active conversation is working in a git repository.</div>
       )}
 
       {repos.map(({ repo, rows }) => (

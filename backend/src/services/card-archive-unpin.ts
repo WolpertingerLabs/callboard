@@ -13,14 +13,15 @@
  * The enforcement therefore hangs off {@link patchCardFields}, the single write
  * that can flip a card's lifecycle, rather than off the web UI's archive button.
  * Everything that archives — `PATCH /api/cards/:id`, `POST
- * /api/cards/bulk-lifecycle`, the board, the sidebar's bulk bar, and any MCP
+ * /api/cards/bulk-lifecycle`, the sidebar's row menu and bulk bar, and any MCP
  * tool that later grows a lifecycle setter — funnels through there, so none of
  * them can archive a card and leave its pins standing.
  *
  * ## Archived means closed OR hidden
  *
- * `hidden` is counted as archiving here, deliberately. It reads like a
- * board-only concern ("opt this card out of the board"), but the sidebar — the
+ * `hidden` is counted as archiving here, deliberately. It reads like an
+ * opt-out from the cards listing (it began as "keep this off the board", a
+ * view since removed), but the sidebar — the
  * only place a pin has any effect at all — already treats the two as one state:
  * `GET /api/chats?cardLifecycle=unarchived` excludes the trees of closed *and*
  * hidden cards (see routes/chats.ts), which is exactly the set the sidebar dims
@@ -141,7 +142,7 @@ function isPinned(chat: { metadata?: string | null }): boolean {
  * record whose filename disagrees with its `session_id`, or whose `session_id`
  * is blank, fails the lookup and is logged and skipped, where the chat-id
  * spelling would have found the record by scanning and then written it back out
- * under a *different* name — a duplicate the board would see twice.
+ * under a *different* name — a duplicate every listing would see twice.
  */
 function indexPinnedByRoot(stored: Chat[]): Map<string, string[]> {
   const byRoot = new Map<string, string[]>();
@@ -206,14 +207,14 @@ export function createPinnedMemberLookup(stored?: Chat[]): PinnedMemberLookup {
  *
  * Writes are view-only (`touch: false`), for the reason card writes are: a pin
  * is a label on a conversation, not activity in it, so clearing one must not
- * bump `updated_at` and resurface a three-week-old chat at the top of the board
+ * bump `updated_at` and resurface a three-week-old chat at the top of the sidebar
  * wearing an unread dot — least of all as a side effect of archiving it.
  *
  * **Best-effort, and never throws.** The caller has already persisted the
  * archive by the time this runs, so an exception escaping here would report a
  * card that is closed on disk as a failed request: `PATCH /api/cards/:id` would
  * answer 500, and `bulk-lifecycle` would push the id into `failed[]` and skip
- * `replaceRoot`, repainting the board tile as open. `updateChatMetadata` catches
+ * `replaceRoot`, repainting the card as open. `updateChatMetadata` catches
  * its own write errors, but the `getChat` it opens with does not, and it touches
  * the filesystem — EMFILE and friends are real. Same shape, and the same
  * reasoning, as `clearRedirectedMemberCard` in routes/cards.ts. The per-chat

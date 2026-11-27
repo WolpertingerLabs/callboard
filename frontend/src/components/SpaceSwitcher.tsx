@@ -105,7 +105,7 @@ export default function SpaceSwitcher({ cards, compact = false, inset = 20 }: Sp
   const counts = useMemo(() => needsYouBySpace(cards), [cards]);
   // The badge is the sum of the rows the menu will show: live spaces other
   // than the one on screen. An archived space has no row, so its blocked
-  // cards are not counted here (they still surface on the board).
+  // cards are not counted here.
   const elsewhere = activeSpaceId === ALL_SPACES ? 0 : spaces.reduce((sum, space) => (space.id === activeSpaceId ? sum : sum + (counts.get(space.id) ?? 0)), 0);
 
   const close = (returnFocus: boolean) => {

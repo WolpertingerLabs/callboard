@@ -155,8 +155,8 @@ export default function SpacesSettings() {
           <h3 style={{ margin: 0, fontSize: 16 }}>Spaces</h3>
         </div>
         <div style={subtitleStyle}>
-          Separate areas of work — the sidebar, board, search and agents’ chat tools show one space at a time. A chat’s whole tree lives in one space; folders
-          can be used in several.
+          Separate areas of work — the sidebar, Git page, search and agents’ chat tools show one space at a time. A chat’s whole tree lives in one space;
+          folders can be used in several.
         </div>
 
         {error && (

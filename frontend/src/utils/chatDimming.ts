@@ -46,9 +46,9 @@ export type DimCard = Pick<CardSummary, "lifecycle" | "hidden">;
  * Archived is a property of the tree's root, stored one of two ways, and this
  * reads whichever applies:
  *
- *  - **the root is a card** → the card's state: closed, or hidden from the
- *    board. Read off the card index rather than the row because the index is
- *    the fresher of the two — archiving from the row menu or the bulk bar
+ *  - **the root is a card** → the card's state: closed, or hidden. Read off
+ *    the card index rather than the row because the index is the fresher of
+ *    the two — archiving from the row menu or the bulk bar
  *    patches `cards` on the spot, while the row's `archived` field waits for
  *    the next list fetch.
  *  - **the root is not a card** — a triggered chat, a job step, a session

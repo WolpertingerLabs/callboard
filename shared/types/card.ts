@@ -1,6 +1,7 @@
 import type { NativeCodexAgent } from "./chat.js";
 /**
- * Cards — the board-facing projection of a lineage tree.
+ * Cards — the listing-facing projection of a lineage tree (the sidebar's
+ * archive model and the Git page's chips; originally the board's).
  *
  * A card IS its root chat. Its identity is the root chat's id; its data is a
  * nested `card` object on that chat's metadata blob (see
@@ -33,7 +34,8 @@ export interface Card {
   lifecycle: CardLifecycle;
   /**
    * Optional free-form grouping label ({@link CARD_CATEGORY_MAX} chars max) —
-   * open cards on the board are grouped under it. Absent when uncategorized.
+   * the removed board grouped open cards under it; no UI reads it now.
+   * Absent when uncategorized.
    */
   category?: string;
   /**
@@ -45,7 +47,8 @@ export interface Card {
   /** Set when lifecycle === "closed"; cleared on reopen. */
   closedAt?: string;
   /**
-   * Board opt-out (replaces the old `createCard: false` stream flag). Hidden
+   * Listing opt-out (originally the board's; replaces the old
+   * `createCard: false` stream flag), counted as archived. Hidden
    * cards are omitted from GET /api/cards; absent means visible. Absent —
    * never `false` — is the default.
    */
@@ -87,7 +90,7 @@ export interface CardPatch {
   statusEmoji?: string | null;
   /** null (or blank) clears the category. */
   category?: string | null;
-  /** Toggle the board opt-out (replaces createCard: false). */
+  /** Toggle the listing opt-out (replaces createCard: false). */
   hidden?: boolean | null;
   lifecycle?: CardLifecycle;
   /**
@@ -111,7 +114,7 @@ export type CardRollupState = "needs_you" | "job_running" | "active" | "idle";
  */
 export type CardPendingKind = "permission" | "question" | "plan";
 
-/** Compact member-chat row for board tiles/drawer. */
+/** Compact member-chat row of a card. */
 export interface CardMemberChat {
   /**
    * Native lifecycle is evidence, not process liveness; controls remain
@@ -154,13 +157,13 @@ export interface CardMemberChat {
 }
 
 /**
- * The board's compact view of an in-flight activity — enough to label a tile
- * and drive a countdown, without the fields only the chat view uses.
+ * A card's compact view of an in-flight activity — enough to label it and
+ * drive a countdown, without the fields only the chat view uses.
  */
 export interface CardChatActivity {
   kind: string;
   label: string;
-  /** Epoch ms; the tile derives its countdown from this. */
+  /** Epoch ms; a client derives its countdown from this. */
   expiresAt?: number;
   /** The condition being polled, when this is a `wait(require_condition)`. */
   condition?: string;

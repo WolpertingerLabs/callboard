@@ -1077,11 +1077,11 @@ export default function GeneralSettings() {
             </label>
             <div id="unpinOnArchive-note" style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2, lineHeight: 1.5 }}>
               <div>
-                Archiving is a card action &mdash; it closes the whole conversation tree &mdash; so archiving anything on a card clears the pin on every pinned
-                chat in that tree. Hiding a card from the board counts as archiving it.
+                Archiving acts on the whole conversation tree &mdash; a top-level chat and every chat under it &mdash; so archiving any chat in a tree clears the
+                pin on every pinned chat in that tree.
               </div>
               <div style={{ marginTop: 6 }}>
-                Whichever way this is set, an archived card&rsquo;s chats leave the sidebar: it drops them from the list entirely unless the{" "}
+                Whichever way this is set, an archived conversation&rsquo;s chats leave the sidebar: it drops them from the list entirely unless the{" "}
                 <strong>Archived</strong> filter is on. What this setting decides is the state they are in when you next see them &mdash; with the Archived
                 filter on, while searching, or once you unarchive.
               </div>

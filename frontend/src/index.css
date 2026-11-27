@@ -227,30 +227,15 @@
   --chatlist-tree-line: var(--border);
   --chatlist-tree-group-bg: color-mix(in srgb, var(--accent) 4%, transparent);
 
-  /* Board (cards view) — derived from core vars so custom themes cascade */
-  --board-tile-bg: var(--surface);
-  --board-tile-border: var(--border);
-  --board-tile-title-text: var(--text);
-  --board-tile-meta-text: var(--text-muted);
+  /* Git page and conversation rollup dots — derived from core vars so custom
+     themes cascade. The board- prefix is historical (the Git page was the
+     board's Branches view); needs-you also tints the SpaceSwitcher badge. */
   --board-section-label-text: var(--text-muted);
-  /* Category sub-heading inside a status section. Two tokens rather than one
-     token dimmed by opacity: opacity composites against --bg and lands at a
-     different ratio per mode — the trap --chatlist-item-dimmed-opacity above
-     already documents — and --text at 0.55 measures 5.43:1 here but only
-     3.51:1 in light, under the 4.5:1 AA floor for 12px semibold. --text-muted
-     is the same quiet read and clears AA in both (6.15:1 / 6.38:1), which is
-     why these need no per-mode value. */
-  --board-group-label-text: var(--text);
-  --board-group-label-muted-text: var(--text-muted);
   --board-group-rule: var(--border);
   --board-rollup-needs-you: var(--warning);
   --board-rollup-job-running: var(--accent-text);
   --board-rollup-active: var(--status-active);
   --board-rollup-idle: var(--text-muted);
-  --board-unread-dot: var(--chatlist-unread-dot);
-  --board-drawer-bg: var(--bg);
-  --board-item-bg: var(--surface);
-  --board-item-border: var(--border);
 
   /* Space accents — the tint a space may pick (shared/types/space.ts
      SPACE_ACCENTS), shown as a stripe/dot beside its name. Derived from
@@ -464,25 +449,13 @@
   --chatlist-tree-line: var(--border);
   --chatlist-tree-group-bg: color-mix(in srgb, var(--accent) 4%, transparent);
 
-  /* Board (cards view) — derived from core vars so custom themes cascade */
-  --board-tile-bg: var(--surface);
-  --board-tile-border: var(--border);
-  --board-tile-title-text: var(--text);
-  --board-tile-meta-text: var(--text-muted);
+  /* Git page and conversation rollup dots — same derivation as dark. */
   --board-section-label-text: var(--text-muted);
-  /* Same derivation as dark, deliberately: carrying the dim in the token
-     instead of an opacity is what lets one value serve both modes. */
-  --board-group-label-text: var(--text);
-  --board-group-label-muted-text: var(--text-muted);
   --board-group-rule: var(--border);
   --board-rollup-needs-you: var(--warning);
   --board-rollup-job-running: var(--accent-text);
   --board-rollup-active: var(--status-active);
   --board-rollup-idle: var(--text-muted);
-  --board-unread-dot: var(--chatlist-unread-dot);
-  --board-drawer-bg: var(--bg);
-  --board-item-bg: var(--surface);
-  --board-item-border: var(--border);
 
   /* Space accents — same derivation as dark. */
   --space-accent-blue: var(--badge-info);

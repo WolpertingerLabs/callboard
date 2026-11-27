@@ -401,7 +401,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
   const newChatModelReview = routeState.modelReview;
   const newChatParentAnswers = routeState.parentAnswers;
   // Parentage-tree linkage for new chats spawned from an existing chat or
-  // card (e.g. the board's card drawer). Forwarded to the new-chat request so
+  // card. Forwarded to the new-chat request so
   // the backend stamps parentChatId/rootChatId.
   const newChatParentId = routeState.parentChatId;
   // The space a new chat goes into: the panel's pick, else this tab's active
@@ -1509,7 +1509,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
                 //
                 // The reachable ways to have walked off:
                 //   - Left the Chat pane entirely — the chat list on mobile,
-                //     the board/settings/agents anywhere. SplitLayout swaps
+                //     the Git page/settings/agents anywhere. SplitLayout swaps
                 //     this component out, and the slot empties with it.
                 //   - Opened a second compose screen (New Chat panel) for the
                 //     same folder. Still mounted, still /chat/new, same URL —
@@ -5697,7 +5697,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
           if (pending) void runContinueFrom(pending.timestamp);
         }}
         title="Continue from this message"
-        message="A new chat with the history up to and including this message takes this chat's place in the sidebar and on the board. This chat is kept, unchanged, as its child."
+        message="A new chat with the history up to and including this message takes this chat's place in the sidebar. This chat is kept, unchanged, as its child."
         confirmText="Continue from here"
       />
 
@@ -5711,8 +5711,8 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
         title="Rerun from here"
         message={
           pendingRerun?.role === "assistant"
-            ? "The prompt this reply answers is sent again, in a new chat with the history before that prompt. It takes this chat's place in the sidebar and on the board; this chat is kept, unchanged, as its child."
-            : "This message is sent again, in a new chat with the history before it. It takes this chat's place in the sidebar and on the board; this chat is kept, unchanged, as its child."
+            ? "The prompt this reply answers is sent again, in a new chat with the history before that prompt. It takes this chat's place in the sidebar; this chat is kept, unchanged, as its child."
+            : "This message is sent again, in a new chat with the history before it. It takes this chat's place in the sidebar; this chat is kept, unchanged, as its child."
         }
         confirmText="Rerun"
       />

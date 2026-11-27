@@ -139,16 +139,10 @@ interface LocalStorageData {
   // Folders/Jobs sidebar views), `folderMaxAgeDays` and `folderShowSizes`.
   // Stores written by older bundles still carry them; nothing reads them, so a
   // persisted `sidebarViewMode: "folders"` simply lands on the chat list.
-  /** Whether the board's Closed section is expanded. */
-  boardClosedExpanded?: boolean;
-  /** Board layout: full-width rows instead of the tile grid. Absent = "cards". */
-  boardViewMode?: "cards" | "list" | "branches";
+  // Likewise `boardClosedExpanded`, `boardViewMode`, `boardShowPaths` and
+  // `boardRowsExpanded`, from the removed Board's Cards and List views.
   /** Which half of a chat's git view shows. Global, not per chat. Absent = changes. */
   chatGitTab?: "changes" | "prs";
-  /** Whether card faces show the folders their chats live in. Absent = hidden. */
-  boardShowPaths?: boolean;
-  /** List view: whether rows rest expanded. Absent = collapsed. */
-  boardRowsExpanded?: boolean;
   /** User's last-selected provider in the New Chat panel — persisted so the
    * toggle remembers their choice across page reloads. */
   defaultProvider?: AgentProviderKind;
@@ -656,7 +650,7 @@ export function saveChatsShowArchived(value: boolean): void {
  * this value is parsed out of JSON, so a hand-edited or cross-version store
  * can hold anything, and the callers render `isExpanded(key) && rows`. A
  * stored `0` reaching that would put a literal "0" in the sidebar where the
- * rows belong. Matches `getBoardClosedExpanded`'s `=== true` next door.
+ * rows belong.
  */
 export function getChatSectionExpanded(key: ChatSectionKey): boolean {
   const data = getStorageData();
@@ -810,31 +804,6 @@ export function saveSidebarWidth(value: number): void {
   updateStorage({ sidebarWidth: Math.max(SIDEBAR_MIN_WIDTH, Math.round(value)) });
 }
 
-export function getBoardClosedExpanded(): boolean {
-  const data = getStorageData();
-  return data.boardClosedExpanded === true;
-}
-
-export function saveBoardClosedExpanded(expanded: boolean): void {
-  updateStorage({ boardClosedExpanded: expanded });
-}
-
-/** `branches` is the directory-organised view: worktrees by repo, with cards attached. */
-export type BoardViewMode = "cards" | "list" | "branches";
-
-const BOARD_VIEW_MODES: readonly BoardViewMode[] = ["cards", "list", "branches"];
-
-export function getBoardViewMode(): BoardViewMode {
-  // Matched against the known values rather than cast: the store is shared
-  // with bundles this one has never met, so an unrecognised mode has to fall
-  // back to the default rather than render a container that doesn't exist.
-  return readEnum(getStorageData().boardViewMode, BOARD_VIEW_MODES, "cards");
-}
-
-export function saveBoardViewMode(mode: BoardViewMode): void {
-  updateStorage({ boardViewMode: mode });
-}
-
 /** The two halves of a chat's git view: the working-tree diff, and the PRs. */
 export type ChatGitTab = "changes" | "prs";
 
@@ -846,30 +815,6 @@ export function getChatGitTab(): ChatGitTab {
 
 export function saveChatGitTab(tab: ChatGitTab): void {
   updateStorage({ chatGitTab: tab });
-}
-
-export function getBoardShowPaths(): boolean {
-  const data = getStorageData();
-  return data.boardShowPaths === true;
-}
-
-export function saveBoardShowPaths(show: boolean): void {
-  updateStorage({ boardShowPaths: show });
-}
-
-/**
- * The RESTING state of a list row's folder breakdown, not the state of any
- * particular row. Per-row overrides are deliberately ephemeral: an expansion
- * restored across a reload onto a card that has since collapsed to one folder
- * is a row that opens onto nothing.
- */
-export function getBoardRowsExpanded(): boolean {
-  const data = getStorageData();
-  return data.boardRowsExpanded === true;
-}
-
-export function saveBoardRowsExpanded(expanded: boolean): void {
-  updateStorage({ boardRowsExpanded: expanded });
 }
 
 export function getLastSpace(): string | null {
