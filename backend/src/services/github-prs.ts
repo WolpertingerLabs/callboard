@@ -73,8 +73,10 @@ export const PR_FORCE_WAIT_MS = 5_000;
  *   running daemon), 36 ms at 900 MB; `git` 1 / 11 / 34 ms. Six started in a
  *   row at 400 MB is one 110 ms stall. Concurrency does not change that cost,
  *   only how much of it lands at once — so {@link limited} starts at most one
- *   process per turn of the event loop, whatever this number is: the longest
- *   stall is a single spawn.
+ *   process per iteration of the event loop, whatever this number is: the
+ *   longest stall this module causes is a single spawn. (Another module's
+ *   spawn can still land next to one of these; that is not this limiter's to
+ *   prevent.)
  * - **Running** ones cost the daemon nothing, but GitHub answers each request
  *   slower the more run beside it (a listing: 0.45 s alone, ~1.1 s among
  *   four, ~1.7 s among eight) and its secondary rate limits count concurrent
@@ -371,28 +373,41 @@ const CLOSED_QUERY = `state=closed&sort=updated&direction=desc&per_page=${CLOSED
 
 const queue: Array<() => void> = [];
 let running = 0;
-/** Set while a process has been started in this turn of the event loop: the callback that ends the turn. */
-let turnEnd: NodeJS.Immediate | undefined;
+/** The one scheduled {@link step}, if any. */
+let scheduled: NodeJS.Immediate | undefined;
 
-/** Start the next queued task, unless one was started this turn or every slot is taken. */
-function admit(): void {
-  if (turnEnd !== undefined || running >= PR_FETCH_CONCURRENCY) return;
-  const start = queue.shift();
-  if (!start) return;
-  running++;
-  // The next one waits for the loop to come round: timers and I/O that queued
-  // up behind this spawn run before another is started.
-  turnEnd = setImmediate(() => {
-    turnEnd = undefined;
-    admit();
-  });
-  start();
+/** Have {@link step} run in the loop's next check phase, if there is anything it could start. */
+function schedule(): void {
+  if (scheduled === undefined && queue.length > 0 && running < PR_FETCH_CONCURRENCY) scheduled = setImmediate(step);
+}
+
+/**
+ * Start one queued task. Every start happens here and nowhere else — a new
+ * task and a slot freed by a finishing one both only {@link schedule} it — and
+ * the next step it schedules runs in the *next* iteration's check phase, after
+ * that iteration's timers and I/O. So no two processes are ever started
+ * without the loop coming round between them. Starting directly from wherever
+ * a slot was freed (a timer or an I/O callback) would put that start and this
+ * one in the same iteration, back to back.
+ */
+function step(): void {
+  scheduled = undefined;
+  if (running < PR_FETCH_CONCURRENCY) {
+    const start = queue.shift();
+    if (start) {
+      running++;
+      start();
+    }
+  }
+  schedule();
 }
 
 /**
  * Run `task` — one child process — once fewer than
- * {@link PR_FETCH_CONCURRENCY} are alive, and never in the same turn of the
- * event loop as another: see that constant for why both.
+ * {@link PR_FETCH_CONCURRENCY} are alive, and never in the same iteration of
+ * the event loop as another: see that constant for why both. The price is
+ * that even the first task waits for the check phase — well under a
+ * millisecond on an idle loop, against lookups that take hundreds.
  */
 function limited<T>(task: () => Promise<T>): Promise<T> {
   return new Promise<T>((resolvePromise, reject) => {
@@ -404,10 +419,10 @@ function limited<T>(task: () => Promise<T>): Promise<T> {
         .then(resolvePromise, reject)
         .finally(() => {
           running--;
-          admit();
+          schedule();
         });
     });
-    admit();
+    schedule();
   });
 }
 
@@ -606,12 +621,14 @@ interface KeyedCache<V> {
   entries: Map<string, Answered<V>>;
   /** Lookups in flight, by the same key — shared by every caller that arrives while they run. */
   pending: Map<string, Promise<void>>;
+  /** Repositories (lowercased `owner/repo`) whose last call threw, until one works. */
+  broken: Set<string>;
 }
 
 /** PRs asked about by number, by `owner/repo#number`: null for one GitHub does not have. */
-const numberCache: KeyedCache<PullSummary | null> = { entries: new Map(), pending: new Map() };
+const numberCache: KeyedCache<PullSummary | null> = { entries: new Map(), pending: new Map(), broken: new Set() };
 /** PRs asked about by head branch, by `owner/repo#branch`: every PR GitHub has with that head, `[]` for none. */
-const branchCache: KeyedCache<PullSummary[]> = { entries: new Map(), pending: new Map() };
+const branchCache: KeyedCache<PullSummary[]> = { entries: new Map(), pending: new Map(), broken: new Set() };
 
 /** What a request has to do about one key: nothing, refetch behind the response, or refetch and wait. */
 type LookupNeed = "none" | "background" | "wait";
@@ -717,8 +734,10 @@ async function awaitLookups<T, V>(
  * a repository this account cannot see) breaks the others, so it is not paid
  * for more often than it has to be: a batch not yet started when another
  * throws fails with it, unspawned; and when any of `keys` failed last time,
- * the first batch goes alone and the rest follow only if it worked — one
- * process per TTL for a lookup that keeps failing, however many keys.
+ * or the repository's last call here threw, the first batch goes alone and
+ * the rest follow only if it worked — one process per call of this function
+ * for a lookup that keeps failing, however many keys and however slowly it
+ * fails.
  */
 async function fetchIntoCache<K, V>(
   cache: KeyedCache<V>,
@@ -728,7 +747,8 @@ async function fetchIntoCache<K, V>(
   fetch: (batch: K[]) => Promise<Map<K, V | { error: string }>>,
   now: number,
 ): Promise<void> {
-  const keyOf = (k: K) => `${refKey(ref.owner, ref.repo)}#${k}`;
+  const repo = refKey(ref.owner, ref.repo);
+  const keyOf = (k: K) => `${repo}#${k}`;
   const failed = (k: K, error: string) => cache.entries.set(keyOf(k), { ...cache.entries.get(keyOf(k)), at: now, error });
   const isFailure = (answer: V | { error: string }): answer is { error: string } =>
     typeof answer === "object" && answer !== null && !Array.isArray(answer) && "error" in answer;
@@ -736,6 +756,7 @@ async function fetchIntoCache<K, V>(
   const run = async (batch: K[]) => {
     try {
       const fetched = await limited(() => (broken === undefined ? fetch(batch) : Promise.reject(new Error(broken))));
+      cache.broken.delete(repo);
       for (const k of batch) {
         const answer = fetched.get(k);
         if (answer === undefined) failed(k, "Unexpected response from GitHub");
@@ -746,12 +767,13 @@ async function fetchIntoCache<K, V>(
       const error = err instanceof Error ? err.message : String(err);
       if (broken === undefined) log.debug(`PR lookup failed for ${ref.owner}/${ref.repo}: ${error}`);
       broken ??= error;
+      cache.broken.add(repo);
       for (const k of batch) failed(k, error);
     }
   };
   const batches: K[][] = [];
   for (let i = 0; i < keys.length; i += batchSize) batches.push(keys.slice(i, i + batchSize));
-  const probe = keys.some((k) => cache.entries.get(keyOf(k))?.error !== undefined);
+  const probe = cache.broken.has(repo) || keys.some((k) => cache.entries.get(keyOf(k))?.error !== undefined);
   if (probe) await run(batches.shift()!);
   await Promise.all(batches.map(run));
 }
@@ -933,9 +955,9 @@ const BRANCH_BATCH = 50;
  */
 const BRANCH_PULLS = 10;
 /**
- * Branches newly asked about per repository per request — live rows' first,
- * then trail branches never asked about, then expired ones; the rest are
- * filled in by later polls. With {@link BRANCH_BATCH} this is the bound on
+ * Branches newly asked about per repository per request — live rows' never
+ * asked about, then live rows' expired, then trail branches never asked
+ * about, then trail branches expired; the rest are filled in by later polls. With {@link BRANCH_BATCH} this is the bound on
  * what one request can spawn for one repository's branches: 4 `gh` processes.
  */
 const BRANCH_ASK_MAX = 4 * BRANCH_BATCH;
@@ -1035,11 +1057,15 @@ export interface BranchAsk {
  *
  * **Cost.** Per repository per request, at most {@link BRANCH_ASK_MAX}
  * branches are newly asked about: 4 `gh` processes, alongside the listing's 2
- * (and its 2 `git`), each started in its own turn of the event loop. A
+ * (and its 2 `git`), each started in its own iteration of the event loop. A
  * repository with more unanswered branches than that fills in over the next
  * polls. In steady state that is one process per TTL for the live rows'
- * PR-less branches, plus one per 50 trail branches per hour; and while
- * GraphQL keeps failing, one per TTL in all (see {@link fetchIntoCache}).
+ * PR-less branches, plus one per 50 trail branches per hour. While GraphQL
+ * keeps failing, each request that has anything to ask starts one process (a
+ * probe, see {@link fetchIntoCache}) and the failure is cached for the TTL: one
+ * process per TTL for a repository with up to {@link BRANCH_ASK_MAX} unlisted
+ * branches, and one per {@link BRANCH_ASK_MAX} of them beyond that, spread
+ * over as many polls.
  *
  * **What is found** joins `byBranch` through {@link indexPullsByBranch} —
  * this owner's heads only, never the default branch — and `byNumber`. So
@@ -1084,9 +1110,15 @@ export async function resolveBranchPulls(
   /** Nothing in it that can change without the listing saying so first. */
   const settled = (branch: string) => !live.has(branch) && hitOf(branch)?.value?.some(isOpen) === false;
   let timedOut = false;
+  // Conservative when only the closed listing failed (`errorPartial` with
+  // fresh open PRs): GraphQL would likely work then, and cover the gap. A
+  // possible follow-up — it needs telling that case from a kept stale entry.
   if (pulls.error === undefined) {
-    // Live rows' branches (first in `wanted`), then what was never asked about, then the rest.
-    const rank = (branch: string) => (live.has(branch) ? 0 : hitOf(branch) ? 2 : 1);
+    // Under the cap, in this order: live rows' branches before trail-only
+    // ones, and within each, what was never asked about before what is only
+    // being refreshed — so no branch can be crowded out for good by others'
+    // refreshes, however many there are.
+    const rank = (branch: string) => (live.has(branch) ? 0 : 2) + (hitOf(branch) ? 1 : 0);
     timedOut = await awaitLookups(
       branchCache,
       [...unlisted].sort((a, b) => rank(a) - rank(b)),
@@ -1125,11 +1157,13 @@ export async function resolveBranchPulls(
  * have left its end-of-turn callback unfired.
  */
 export function clearRepoPullsCache(): void {
-  if (turnEnd !== undefined) clearImmediate(turnEnd);
-  turnEnd = undefined;
+  if (scheduled !== undefined) clearImmediate(scheduled);
+  scheduled = undefined;
+  schedule();
   cache.clear();
   for (const keyed of [numberCache, branchCache]) {
     keyed.entries.clear();
     keyed.pending.clear();
+    keyed.broken.clear();
   }
 }

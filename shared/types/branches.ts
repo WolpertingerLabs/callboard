@@ -64,14 +64,24 @@ export interface BranchRepo {
   name: string;
   rows: BranchRow[];
   /**
-   * Why PR data for this repo is missing or may be stale, when looking it up
-   * failed (no `gh`, not authenticated, network, rate limit): the repo's
-   * listing, or — when a row shows an `unknown` PR — the by-number lookup of a
-   * PR its chats' histories name. Absent when the lookups worked or were never
-   * attempted (no GitHub remote).
+   * Why PR data for this repo is missing, incomplete or may be stale, when
+   * looking it up failed (no `gh`, not authenticated, network, rate limit).
+   * The first of: the repo's listing (either half of it, or a refresh of
+   * it); the by-branch lookup of a row's or a git trail's branch whose PR is
+   * older than the listing reaches; or — when a row shows an `unknown` PR —
+   * the by-number lookup of a PR its chats' histories name. Absent when the
+   * lookups worked or were never attempted (no GitHub remote).
    */
   prError?: string;
-  /** Set with `prError` when the listing itself worked and only a by-number lookup failed: the rest of the repo's PR data is current. */
+  /**
+   * Set with `prError` whenever PR data from the repo's listing is shown all
+   * the same, so it reads "incomplete or out of date", not "unavailable":
+   * the listing half arrived (its open PRs, without the closed ones); an
+   * earlier listing is kept through a failed refresh; or the listing is
+   * whole and only a by-branch or by-number lookup failed. Absent when the
+   * listing failed and nothing of it is held — rows may then still carry
+   * PRs their chats' histories name.
+   */
   prErrorPartial?: true;
 }
 
@@ -131,10 +141,12 @@ export interface FolderPrs {
    * Why PR data is missing or may be stale. With `status: "error"` the
    * listing of this directory's repository failed and there is no PR. Beside
    * any other status, a lookup failed without changing that status: a refresh
-   * of the listing (the PRs shown are the last good answer), or the by-number
-   * lookup of a PR the chats' histories name (listed with state `unknown`, or
-   * as last known) — so it can accompany `not_git` or `no_pr` and an empty
-   * `prs` as well as `found`.
+   * of the listing or its closed half (the PRs shown are the last good
+   * answer, or the open ones only); the by-number lookup of a PR the chats'
+   * histories name (listed with state `unknown`, or as last known); or the
+   * by-branch lookup of a branch in this directory's repository whose PR is
+   * older than the listing reaches (such a PR may be missing) — so it can
+   * accompany `not_git` or `no_pr` and an empty `prs` as well as `found`.
    */
   prError?: string;
 }

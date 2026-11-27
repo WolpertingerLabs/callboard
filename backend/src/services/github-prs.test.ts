@@ -781,6 +781,51 @@ describe("the limiter — one process per turn of the event loop", () => {
   });
 });
 
+describe("the limiter — a finishing process does not let two start in one loop iteration", () => {
+  /**
+   * The regression: a slot freed in the timers or poll phase started the next
+   * task there and then, and the limiter's own end-of-turn callback started
+   * another in the check phase of the same iteration — two spawns back to
+   * back, nothing run between them. Deterministic: it counts starts between
+   * two points of the loop, it does not time anything.
+   */
+  it("starts one task, not two, in the iteration a slot is freed in", async () => {
+    const repo = (name: string): RepoPulls => ({ github: { owner: "acme", repo: name }, defaultBranch: "main", byBranch: new Map(), byNumber: new Map() });
+    let started = 0;
+    const releases: Array<() => void> = [];
+    const fetch = vi.fn((_ref: GitHubRepoRef, branches: string[]) => {
+      started++;
+      return new Promise<Map<string, BranchAnswer>>((resolvePromise) => releases.push(() => resolvePromise(new Map(branches.map((b) => [b, []])))));
+    });
+    const ask = (name: string) => resolveBranchPulls(repo(name), { live: ["feat/x"] }, { cwd: "/" }, { fetch, now: () => 0 });
+
+    // One task running, the limiter otherwise idle.
+    const first = ask("one");
+    await flush();
+    expect(started).toBe(1);
+
+    const startedByNextIteration = await new Promise<number>((resolvePromise) => {
+      // In the timers phase of some iteration: the running task finishes, and two more are queued.
+      setTimeout(() => {
+        // Queued ahead of anything the limiter schedules now: runs first in
+        // this iteration's check phase, and its own successor first in the next one's.
+        setImmediate(() => setImmediate(() => resolvePromise(started - 1)));
+        releases[0]();
+        void ask("two");
+        void ask("three");
+      }, 0);
+    });
+    // By the start of the next iteration's check phase, only one of the two has been started.
+    expect(startedByNextIteration).toBe(1);
+
+    await flush();
+    expect(started).toBe(3);
+    releases.forEach((release) => release());
+    await first;
+    await flush();
+  });
+});
+
 describe("getRepoPulls — an entry too old to serve", () => {
   it("waits for the refresh once the entry is older than PR_STALE_MAX_MS, forced or not", async () => {
     remoteUrl.mockResolvedValue("https://github.com/acme/app");
@@ -1658,6 +1703,95 @@ describe("resolveBranchPulls", () => {
       expect(new Set(fetch.mock.calls.flatMap(([, asked]) => asked)).size).toBe(452);
       await poll(3);
       expect(fetch).toHaveBeenCalledTimes(10);
+    });
+
+    /**
+     * Polls a TTL apart, more PR-less live rows than one request asks about:
+     * without never-asked first, each poll would re-ask the same 200 (expired
+     * by then) and the rest would never be reached.
+     */
+    it("asks every live branch within two polls when there are more than the cap, however far apart the polls", async () => {
+      const fetch = serving({ "live/249": [merged(5, "live/249", { headSha: "tip" })] });
+      const live = Array.from({ length: 250 }, (_, i) => `live/${i}`);
+      const poll = (now: number) => asTrail(listing([]), ["trail/a"], now, false, live, fetch);
+      await poll(0);
+      expect(new Set(fetch.mock.calls.flatMap(([, asked]) => asked)).size).toBe(200);
+
+      fetch.mockClear();
+      const second = await poll(PR_CACHE_TTL_MS);
+      await flush();
+      const asked = fetch.mock.calls.flatMap(([, branches]) => branches);
+      expect(asked).toHaveLength(200);
+      // The fifty never asked about come first, ahead of the refreshes — and are waited for.
+      expect(asked.slice(0, 50)).toEqual(live.slice(200));
+      expect(matchPull(second.byBranch.get("live/249"), "tip")?.number).toBe(5);
+      // The trail branch waits its turn behind every live one.
+      expect(asked).not.toContain("trail/a");
+      await poll(PR_CACHE_TTL_MS + 1);
+      await flush();
+      expect(fetch.mock.calls.flatMap(([, branches]) => branches)).toContain("trail/a");
+    });
+
+    it("asks every trail branch too: those never asked about go ahead of those only due a refresh", async () => {
+      const fetch = serving({});
+      const trail = Array.from({ length: 250 }, (_, i) => `t/${i}`);
+      const poll = (now: number) => asTrail(listing([]), trail, now, false, [], fetch);
+      await poll(0);
+      // An hour on, the first 200 are due a refresh and 50 have never been asked about.
+      fetch.mockClear();
+      await poll(BRANCH_SETTLED_TTL_MS);
+      await flush();
+      const asked = fetch.mock.calls.flatMap(([, branches]) => branches);
+      expect(asked).toHaveLength(200);
+      expect(asked.slice(0, 50)).toEqual(trail.slice(200));
+    });
+
+    /**
+     * A lookup that fails slowly — a timeout, a 502 after a second — has every
+     * batch running before the first fails, so "an unstarted batch fails with
+     * it" saves nothing. The probe does: once it has failed, the next ask
+     * starts one process and only goes on if that works.
+     */
+    it("probes a lookup that failed last time with one process, even when it fails too slowly to stop the others", async () => {
+      const down = { on: true };
+      const fetch = vi.fn<Fetch>(
+        (_ref, branches) =>
+          new Promise((resolvePromise, reject) =>
+            setTimeout(() => (down.on ? reject(new Error("gh timed out")) : resolvePromise(new Map(branches.map((b) => [b, []])))), 5),
+          ),
+      );
+      const branches = Array.from({ length: 120 }, (_, i) => `b/${i}`);
+      const poll = (now: number, force = false) => asTrail(listing([]), [], now, force, branches, fetch);
+      // First time, nothing is known: all three batches are started, and all fail.
+      expect((await poll(0)).branchError).toBe("gh timed out");
+      expect(fetch).toHaveBeenCalledTimes(3);
+
+      // Next time: one process, and the other two batches fail with it unspawned.
+      expect((await poll(PR_CACHE_TTL_MS, true)).branchError).toBe("gh timed out");
+      expect(fetch).toHaveBeenCalledTimes(4);
+      expect(fetch.mock.calls[3][1]).toHaveLength(50);
+
+      // Once the probe works, the rest follow.
+      down.on = false;
+      expect((await poll(2 * PR_CACHE_TTL_MS, true)).branchError).toBeUndefined();
+      expect(fetch).toHaveBeenCalledTimes(7);
+    });
+
+    it("probes a repository whose last lookup threw even for branches it has never asked about", async () => {
+      const fetch = vi.fn<Fetch>((_ref, _branches) => new Promise((_resolve, reject) => setTimeout(() => reject(new Error("gh timed out")), 5)));
+      await asTrail(listing([]), [], 0, false, ["first"], fetch);
+      expect(fetch).toHaveBeenCalledTimes(1);
+      // 120 new branches, none with a failure of its own: still one process, not three.
+      const more = await asTrail(
+        listing([]),
+        [],
+        1,
+        false,
+        Array.from({ length: 120 }, (_, i) => `new/${i}`),
+        fetch,
+      );
+      expect(more.branchError).toBe("gh timed out");
+      expect(fetch).toHaveBeenCalledTimes(2);
     });
 
     it("runs a repository's batches side by side, not one after the other", async () => {
