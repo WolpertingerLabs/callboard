@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { BrowserRouter, Routes, Route, matchPath } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, matchPath } from "react-router-dom";
 import SplitLayout from "./components/SplitLayout";
 import Login from "./pages/Login";
 import ArtifactPage from "./pages/ArtifactPage";
@@ -211,8 +211,10 @@ export default function App() {
               element={<SplitLayout onLogout={handleLogout} claudeLoggedIn={claudeLoggedIn} onShowClaudeModal={handleShowClaudeModal} />}
             />
 
-            {/* Cards board - rendered inside SplitLayout */}
-            <Route path="/board" element={<SplitLayout onLogout={handleLogout} claudeLoggedIn={claudeLoggedIn} onShowClaudeModal={handleShowClaudeModal} />} />
+            {/* Git branches overview - rendered inside SplitLayout */}
+            <Route path="/git" element={<SplitLayout onLogout={handleLogout} claudeLoggedIn={claudeLoggedIn} onShowClaudeModal={handleShowClaudeModal} />} />
+            {/* The old Board tab's address, kept so bookmarks land on its successor */}
+            <Route path="/board" element={<Navigate to="/git" replace />} />
 
             {/* Agent routes - rendered inside SplitLayout */}
             <Route path="/agents" element={<SplitLayout onLogout={handleLogout} claudeLoggedIn={claudeLoggedIn} onShowClaudeModal={handleShowClaudeModal} />} />

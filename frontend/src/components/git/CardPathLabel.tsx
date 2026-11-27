@@ -30,7 +30,7 @@ interface CardPathLabelProps {
  * The tail's priority is a *ratio*, not an absolute: `flex: 0 0 auto` gave it
  * an unbreakable width, so a parent+leaf longer than the whole label — real
  * paths reach 82 characters after the shared prefix comes off — spilled out of
- * a 260px tile instead of truncating. It shrinks last, not never.
+ * a narrow cell instead of truncating. It shrinks last, not never.
  */
 export default function CardPathLabel({ path, prefix, color, fontSize = 11 }: CardPathLabelProps) {
   const shown = stripPathPrefix(path, prefix);

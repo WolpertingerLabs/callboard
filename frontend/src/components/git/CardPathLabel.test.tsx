@@ -3,7 +3,7 @@
  * these assert the two things that survive without a layout engine: the split
  * point, and the flex rules that give the tail priority over the head. Getting
  * those wrong is what would silently turn middle truncation back into the
- * plain end-truncation everything else on the tile already does.
+ * plain end-truncation used everywhere else.
  */
 import { describe, expect, it, afterEach } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";

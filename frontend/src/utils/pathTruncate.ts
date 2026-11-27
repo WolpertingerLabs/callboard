@@ -1,5 +1,5 @@
 /**
- * Path presentation helpers for the board's folder labels.
+ * Path presentation helpers for the Git page's folder labels.
  *
  * Both functions are string-only and layout-free: the middle truncation they
  * feed is done by flexbox (see `CardPathLabel`), not by measurement, so these

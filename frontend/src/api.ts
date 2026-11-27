@@ -66,7 +66,6 @@ import type {
   JobRunListItem,
   JobRunStatus,
   CardPatch,
-  CardSummary,
   CardListResponse,
   CardResponse,
   EngineStatus,
@@ -516,11 +515,13 @@ export async function dismissSummon(id: string): Promise<Chat> {
   return request(`/chats/${seg(id)}/summon`, { method: "PATCH", json: { dismiss: true }, error: "Failed to dismiss summon" });
 }
 
-// ── Cards (board view) ──────────────────────────────────────────────
+// ── Cards (conversation trees) ──────────────────────────────────────
 
 /**
  * `includeHidden` is off by default because the board — the caller this was
- * written for — is exactly what a hidden card opted out of.
+ * written for, since removed — is exactly what a hidden card opted out of. The
+ * Git page leaves it off too: a hidden card is archived, and only open cards
+ * become its chips.
  *
  * The sidebar passes it, and not as a nicety: `utils/chatDimming` fades a chat
  * whose card is closed *or hidden*, which it can only do for cards it was
@@ -532,7 +533,7 @@ export async function listCards(
   includeHidden?: boolean,
   archive: { closedLimit?: number; closedSince?: string } = {},
   /**
-   * `space` scopes the board (an id, or "all"); `crossSpaceNeedsYou` keeps
+   * `space` scopes the listing (an id, or "all"); `crossSpaceNeedsYou` keeps
    * other spaces' blocked cards in the response so the Needs-you bucket
    * never hides one. Omitted = every space, as before.
    */
@@ -550,26 +551,6 @@ export async function listCards(
 
 export async function updateCard(id: string, patch: CardPatch): Promise<CardResponse> {
   return request(`/cards/${seg(id)}`, { method: "PATCH", json: patch, error: "Failed to update card" });
-}
-
-/**
- * Per-id outcome of a bulk lifecycle change. The endpoint is deliberately
- * partial rather than all-or-nothing: one card failing must not strand the
- * other six, so the caller retries exactly the ids named here.
- */
-export interface BulkLifecycleFailure {
-  id: string;
-  error: string;
-}
-
-export interface BulkLifecycleResponse {
-  updated: CardSummary[];
-  failed: BulkLifecycleFailure[];
-}
-
-/** Open or close many cards at once; see BulkLifecycleResponse on partial failure. */
-export async function bulkSetCardLifecycle(ids: string[], lifecycle: "open" | "closed"): Promise<BulkLifecycleResponse> {
-  return request("/cards/bulk-lifecycle", { method: "POST", json: { ids, lifecycle }, error: "Failed to update cards" });
 }
 
 // ── Spaces ──────────────────────────────────────────────────────────
@@ -1467,7 +1448,7 @@ export async function getChatPrs(folder: string, chatId?: string, refresh = fals
 
 /**
  * Worktrees, branches and PRs of every repo an unarchived card works in — the
- * Board's Branches view. `refresh` asks the daemon to refetch PR data its
+ * Git page. `refresh` asks the daemon to refetch PR data its
  * cache would otherwise serve.
  */
 export async function getGitOverview(refresh = false, signal?: AbortSignal): Promise<GitOverviewResponse> {
