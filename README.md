@@ -421,13 +421,13 @@ Stack: React 18, React Router 6, Express 5, TypeScript 5, Vite 5, Zod 4, Winston
 
 ### Releasing
 
-Callboard and drawlatch are published to npm separately and keep their own version numbers. Callboard pins drawlatch **exactly** (`"@wolpertingerlabs/drawlatch": "<version>"`, no `^`) in both `package.json` and `backend/package.json`, and that pin must equal `packages/drawlatch/package.json`'s `version`; `npm run deps:check` (in CI and `prepublishOnly`) fails otherwise. That way each callboard release names the exact drawlatch it was built and tested against. (npm links the workspace for any range the workspace version satisfies; the exact pin is about lockstep, not linking.) To bump drawlatch:
+Every package in the repo shares one version: the root `package.json`'s `version`. Drawlatch (`packages/drawlatch`) and computer-use (`packages/computer-use`, which ships inside callboard) carry the same number, and callboard pins drawlatch **exactly** at it (`"@wolpertingerlabs/drawlatch": "<version>"`, no `^`) in both `package.json` and `backend/package.json`, so each callboard release names the exact drawlatch it was built and tested against. `npm run deps:check` (in CI and `prepublishOnly`) fails if any package, pin or lockfile disagrees. To bump:
 
 ```bash
-npm version <version> -w @wolpertingerlabs/drawlatch --no-git-tag-version
-# set both pins to <version>
-npm install
+npm version <version>   # at the root; then commit and open a PR
 ```
+
+The root `version` script (`scripts/versions.mjs`) writes the new version everywhere else and refreshes the lockfile, and the root `.npmrc` stops npm from committing or tagging. If you edit the root version by hand, run `npm run version:sync`. Never use `-w` or `--workspaces` with `npm version`: they fail with ETARGET (the old pins are resolved against the registry), and `--workspaces` also adds a `version` to every private workspace.
 
 Both packages are published by the **Publish to npm** workflow (`.github/workflows/publish.yml`), never with `npm publish` from a checkout. drawlatch must be on npm before callboard, and the workflow publishes them in that order. Bump the version(s), merge to `main`, then in GitHub → Actions → **Publish to npm** → **Run workflow** on `main`:
 

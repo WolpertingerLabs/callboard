@@ -1,6 +1,6 @@
 {
   "name": "@wolpertingerlabs/computer-use",
-  "version": "0.1.0",
+  "version": "1.0.0-alpha.69",
   "description": "Provider-neutral, deny-by-default browser and native computer control service and MCP server",
   "type": "module",
   "license": "MIT",

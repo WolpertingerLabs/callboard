@@ -4,7 +4,7 @@ Drawlatch is an encrypted MCP proxy. A local stdio MCP server (`src/mcp/server.t
 
 ## Monorepo
 
-Drawlatch lives in the callboard repo at `packages/drawlatch`, as an npm workspace. There is no lockfile here: install from the callboard root (`npm install` there), then run commands from this directory or as `npm -w @wolpertingerlabs/drawlatch <cmd>` from the root. It is published to npm by callboard's publish workflow; don't publish from a checkout.
+Drawlatch lives in the callboard repo at `packages/drawlatch`, as an npm workspace. There is no lockfile here: install from the callboard root (`npm install` there), then run commands from this directory or as `npm -w @wolpertingerlabs/drawlatch <cmd>` from the root. It is published to npm by callboard's publish workflow; don't publish from a checkout. Its version is set from callboard's root `package.json` (`scripts/versions.mjs`). Don't run `npm version` here.
 
 ## Commands
 

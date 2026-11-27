@@ -1,4 +1,4 @@
-# @wolpertingerlabs/computer-use · 0.1.0
+# @wolpertingerlabs/computer-use
 
 A Node 22+ TypeScript library and MCP stdio server for agent-controlled browser and desktop sessions. It has no host-application imports. **Default deny, no targets configured, and nothing is installed automatically.** This is a preview; see [Tests and qualification](#tests-and-qualification) for what has and hasn't been verified.
 
@@ -12,10 +12,10 @@ npm test
 npm pack
 ```
 
-The package is not published to npm, and shipping inside Callboard doesn't publish it. To use it elsewhere, install the tarball that `npm pack` produced:
+The package is not published to npm, and shipping inside Callboard doesn't publish it. Its version follows Callboard's (set from Callboard's root `package.json` by `scripts/versions.mjs`). To use it elsewhere, install the tarball that `npm pack` produced:
 
 ```sh
-npm install /absolute/path/to/wolpertingerlabs-computer-use-0.1.0.tgz
+npm install /absolute/path/to/wolpertingerlabs-computer-use-<version>.tgz
 ```
 
 Playwright is an **optional** dependency, imported lazily. The core and the native driver work without it. Browser binaries must already be on the host; importing or probing never downloads them. The published files are the compiled JS, type declarations, the sandbox image's Docker context (`docker/`, `.dockerignore`), this README and the MIT licence.
