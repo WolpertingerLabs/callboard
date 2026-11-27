@@ -96,6 +96,8 @@
   .dl-vf-masked > textarea.is-hidden {
     color: transparent;
     text-shadow: 0 0 7px var(--text);
+    /* A transparent color takes the caret with it. */
+    caret-color: var(--text);
   }
 }
 
@@ -204,17 +206,10 @@
 }
 
 @media (max-width: 768px) {
-  /* The buttons beside a value grow to 44px tap targets; the field matches. */
+  /* The icon buttons beside a value are 44px on phones (index.css); the
+   * field matches. */
   .dl-vf-masked > input.input,
   .dl-vf-kv-head > .input {
-    min-height: 44px;
-  }
-
-  .dl-vf-masked > .btn-icon,
-  .dl-vf-kv-head > .btn-icon {
-    width: 44px;
-    min-width: 44px;
-    height: 44px;
     min-height: 44px;
   }
 

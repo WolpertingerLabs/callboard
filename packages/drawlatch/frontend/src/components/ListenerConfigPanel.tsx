@@ -48,6 +48,7 @@ import DaemonOffline from "./DaemonOffline";
 import EmptyState from "./EmptyState";
 import Modal from "./Modal";
 import { useToast } from "./Toast";
+import { usePolling } from "../hooks/usePolling";
 import { toolResult } from "../utils/toolResult";
 import "./ListenerConfigPanel.css";
 
@@ -235,22 +236,22 @@ export default function ListenerConfigPanel({
   }, [caller, connection, reloadKey, noteFailure]);
 
   // ── Poll ingestor statuses (~5s) ────────────────────────────────────────
-  const fetchIngestors = useCallback(async () => {
-    const res = await api.callerIngestors(caller);
-    if (!mounted.current) return;
-    if (isDaemonDown(res)) {
-      noteFailure(res);
-      return;
-    }
-    setOffline(false);
-    setIngestors(res.filter((i) => i.connection === connection));
-  }, [caller, connection, noteFailure]);
-
-  useEffect(() => {
-    void fetchIngestors();
-    const id = window.setInterval(() => void fetchIngestors(), 5000);
-    return () => window.clearInterval(id);
-  }, [fetchIngestors]);
+  // After an action, refresh() supersedes a poll in flight, so a status
+  // from before the action can't land after it.
+  const { refresh: fetchIngestors } = usePolling(
+    async (ctx) => {
+      const res = await api.callerIngestors(caller);
+      if (!ctx.active() || !mounted.current) return;
+      if (isDaemonDown(res)) {
+        noteFailure(res);
+        return;
+      }
+      setOffline(false);
+      setIngestors(res.filter((i) => i.connection === connection));
+    },
+    5000,
+    { key: `${caller}\u0000${connection}` },
+  );
 
   // ── Fetch instances (multi-instance) ────────────────────────────────────
   const fetchInstances = useCallback(async () => {

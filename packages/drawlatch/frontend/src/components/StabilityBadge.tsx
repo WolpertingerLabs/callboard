@@ -13,7 +13,7 @@ export default function StabilityBadge({
 }) {
   return (
     <span
-      className={`badge ${TONE[stability] ?? "badge-muted"} stability-badge stability-${stability}`}
+      className={`badge ${TONE[stability] ?? "badge-muted"}`}
     >
       {stability}
     </span>

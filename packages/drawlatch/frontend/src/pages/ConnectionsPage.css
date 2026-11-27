@@ -233,6 +233,14 @@
 .dl-conn-stability-btn:last-child {
   border-right: none;
 }
+
+/* Phones: these min-heights beat the 44px `button` rule (index.css). */
+@media (max-width: 768px) {
+  .dl-conn-needs-btn,
+  .dl-conn-stability-btn {
+    min-height: 44px;
+  }
+}
 .dl-conn-stability-btn:hover {
   color: var(--text);
 }

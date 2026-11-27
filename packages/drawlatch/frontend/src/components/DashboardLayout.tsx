@@ -18,6 +18,7 @@ import {
 import { api, isDaemonDown, VAULT_REQUESTS_CHANGED } from "../api";
 import { useDaemon } from "../contexts/DaemonContext";
 import { useIsMobile } from "../hooks/useIsMobile";
+import { usePolling } from "../hooks/usePolling";
 import { logout } from "../auth";
 
 interface NavItem {
@@ -41,27 +42,24 @@ const NAV_ITEMS: NavItem[] = [
 /** Pending vault access requests, for the nav badge (polled, and refreshed on change). */
 function usePendingVaultRequests(daemon: string): number {
   const [count, setCount] = useState(0);
-  useEffect(() => {
-    if (daemon !== "up") {
-      // A count from before the daemon went away is stale.
-      setCount(0);
-      return;
-    }
-    let live = true;
-    const load = async () => {
+  const up = daemon === "up";
+  const { refresh } = usePolling(
+    async (ctx) => {
       const res = await api.vaultStatus();
-      if (live && !isDaemonDown(res)) setCount(res.pendingRequests);
-    };
-    void load();
-    const timer = window.setInterval(() => void load(), 30_000);
-    const onChange = () => void load();
+      if (ctx.active() && !isDaemonDown(res)) setCount(res.pendingRequests);
+    },
+    30_000,
+    { enabled: up },
+  );
+  useEffect(() => {
+    // A count from before the daemon went away is stale.
+    if (!up) setCount(0);
+  }, [up]);
+  useEffect(() => {
+    const onChange = () => void refresh();
     window.addEventListener(VAULT_REQUESTS_CHANGED, onChange);
-    return () => {
-      live = false;
-      window.clearInterval(timer);
-      window.removeEventListener(VAULT_REQUESTS_CHANGED, onChange);
-    };
-  }, [daemon]);
+    return () => window.removeEventListener(VAULT_REQUESTS_CHANGED, onChange);
+  }, [refresh]);
   return count;
 }
 

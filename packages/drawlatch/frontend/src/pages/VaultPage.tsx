@@ -14,6 +14,7 @@ import EmptyState, { LoadingState } from "../components/EmptyState";
 import GrantsTab from "./vault/GrantsTab";
 import ItemsTab from "./vault/ItemsTab";
 import RequestsTab from "./vault/RequestsTab";
+import { usePolling } from "../hooks/usePolling";
 import "./Vault.css";
 
 interface TabDef {
@@ -38,23 +39,15 @@ export default function VaultPage() {
   const [error, setError] = useState<string | null>(null);
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
-  // Polls overlap with event-driven reloads; only the latest may write.
-  const statusSeq = useRef(0);
-  const loadStatus = useCallback(async () => {
-    const mine = ++statusSeq.current;
-    const res = await api.vaultStatus();
-    if (mine === statusSeq.current && !isDaemonDown(res)) setStatus(res);
-  }, []);
-
   const loadCallers = useCallback(async () => {
-    const [callersRes] = await Promise.all([api.callers(), loadStatus()]);
+    const callersRes = await api.callers();
     if (isDaemonDown(callersRes)) {
       setError(callersRes.error);
       return;
     }
     setError(null);
     setCallers(callersRes);
-  }, [loadStatus]);
+  }, []);
 
   useEffect(() => {
     // Offline: drop the pending count rather than show a stale one.
@@ -65,20 +58,29 @@ export default function VaultPage() {
 
   // Keep the Requests count fresh (agents file requests at any time), and
   // follow decisions made in this tab (the sidebar badge listens too).
+  // Polls overlap with those event-driven reloads; usePolling lets only the
+  // newest write.
+  const { refresh: loadStatus } = usePolling(
+    async (ctx) => {
+      const res = await api.vaultStatus();
+      if (ctx.active() && !isDaemonDown(res)) setStatus(res);
+    },
+    STATUS_POLL_MS,
+    { enabled: daemon === "up" },
+  );
+
   useEffect(() => {
-    if (daemon !== "up") return;
-    const timer = window.setInterval(() => {
-      if (document.visibilityState === "visible") void loadStatus();
-    }, STATUS_POLL_MS);
     const onChange = () => void loadStatus();
     window.addEventListener(VAULT_REQUESTS_CHANGED, onChange);
-    document.addEventListener("visibilitychange", onChange);
-    return () => {
-      window.clearInterval(timer);
-      window.removeEventListener(VAULT_REQUESTS_CHANGED, onChange);
-      document.removeEventListener("visibilitychange", onChange);
-    };
-  }, [daemon, loadStatus]);
+    return () => window.removeEventListener(VAULT_REQUESTS_CHANGED, onChange);
+  }, [loadStatus]);
+
+  // After a change: item counts live on the callers, the pending count on
+  // the status.
+  const reload = useCallback(() => {
+    void loadCallers();
+    void loadStatus();
+  }, [loadCallers, loadStatus]);
 
   const tab = TABS.some((t) => t.id === params.get("tab")) ? params.get("tab")! : "items";
   const requested = params.get("caller");
@@ -127,7 +129,7 @@ export default function VaultPage() {
         </div>
         {tab === "items" && callers && callers.length > 0 && (
           <label className="dl-vault-caller-select">
-            <span className="dl-vault-caller-label">Caller</span>
+            <span className="field-label dl-vault-caller-label">Caller</span>
             <select
               className="input"
               value={caller?.alias ?? ""}
@@ -211,13 +213,13 @@ export default function VaultPage() {
           />
         )}
         {tab === "items" && caller && (
-          <ItemsTab key={caller.alias} caller={caller} onChanged={() => void loadCallers()} />
+          <ItemsTab key={caller.alias} caller={caller} onChanged={reload} />
         )}
         {tab === "requests" && (daemon === "up" || callers !== null) && (
-          <RequestsTab onChanged={() => void loadCallers()} />
+          <RequestsTab onChanged={reload} />
         )}
         {tab === "grants" && (daemon === "up" || callers !== null) && (
-          <GrantsTab onChanged={() => void loadCallers()} />
+          <GrantsTab onChanged={reload} />
         )}
       </div>
     </>

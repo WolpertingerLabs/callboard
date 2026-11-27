@@ -73,7 +73,7 @@ export default function Login({ onLogin, serverError }: Props) {
 
         <button
           type="submit"
-          className="auth-submit"
+          className="btn btn-primary btn-block"
           disabled={disabled || loading || !password}
         >
           {loading ? "Signing in…" : "Sign in"}

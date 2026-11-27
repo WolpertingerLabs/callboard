@@ -12,13 +12,10 @@
   flex-shrink: 1;
 }
 
+/* Same label as the Events page's caller picker. */
 .dl-vault-caller-label {
   flex-shrink: 0;
-  color: var(--text-muted);
-  font-size: var(--fs-xs);
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.6px;
+  margin-bottom: 0;
 }
 
 /* A long "Name (alias) · N" must not stretch the header (or the phone). */
@@ -178,6 +175,15 @@
 .dl-vault-reason {
   max-width: 420px;
   min-width: 200px;
+}
+
+/* With the sidebar beside it the table has ~790px at 900px wide. A 200px
+ * floor on the reason pushed it ~30px past that, and the pinned actions
+ * column then sat over the reason's last words. */
+@media (max-width: 1024px) {
+  .dl-vault-reason {
+    min-width: 140px;
+  }
 }
 
 .dl-vault-reason-label {

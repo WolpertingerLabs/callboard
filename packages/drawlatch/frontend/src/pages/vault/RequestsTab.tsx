@@ -6,7 +6,7 @@
  * Polls every 10s while the browser tab is visible, so a request an agent
  * files while the page is open shows up without a reload.
  */
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import { Check, Inbox, X } from "lucide-react";
 import type { AdminVaultRequest } from "drawlatch-admin-types";
 import { api, isDaemonDown, notifyVaultRequestsChanged } from "../../api";
@@ -18,6 +18,7 @@ import {
 } from "../../components/vault/RequestModals";
 import { KIND_LABEL, ModeBadge, RequestStatusBadge } from "../../components/vault/labels";
 import { useIsMobile } from "../../hooks/useIsMobile";
+import { usePolling } from "../../hooks/usePolling";
 
 const POLL_MS = 10_000;
 
@@ -142,13 +143,12 @@ export default function RequestsTab({ onChanged }: { onChanged: () => void }) {
   const lastPending = useRef<number | null>(null);
 
   // Refreshes overlap (the 10s poll, a visibility change, a decision just
-  // made). Only the latest one may write: an older, slower answer would put
-  // a request you just granted back in the queue.
-  const seq = useRef(0);
-  const refresh = useCallback(async () => {
-    const mine = ++seq.current;
+  // made). usePolling lets only the newest run write: refresh() supersedes a
+  // poll in flight, whose older answer would put a request you just granted
+  // back in the queue.
+  const { refresh } = usePolling(async (ctx) => {
     const res = await api.vaultRequests();
-    if (mine !== seq.current) return;
+    if (!ctx.active()) return;
     if (isDaemonDown(res)) {
       // A failed poll keeps the list on screen; only the first load errors.
       setLoad((prev) => (prev.status === "ok" ? prev : { status: "error", message: res.error }));
@@ -161,22 +161,7 @@ export default function RequestsTab({ onChanged }: { onChanged: () => void }) {
       notifyVaultRequestsChanged();
     }
     lastPending.current = count;
-  }, []);
-
-  useEffect(() => {
-    void refresh();
-    const timer = window.setInterval(() => {
-      if (document.visibilityState === "visible") void refresh();
-    }, POLL_MS);
-    const onVisible = () => {
-      if (document.visibilityState === "visible") void refresh();
-    };
-    document.addEventListener("visibilitychange", onVisible);
-    return () => {
-      window.clearInterval(timer);
-      document.removeEventListener("visibilitychange", onVisible);
-    };
-  }, [refresh]);
+  }, POLL_MS);
 
   const done = () => {
     void refresh();

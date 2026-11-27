@@ -40,6 +40,7 @@ import ListenerConfigPanel from "../components/ListenerConfigPanel";
 import DaemonOffline from "../components/DaemonOffline";
 import EmptyState, { LoadingState } from "../components/EmptyState";
 import { useToast } from "../components/Toast";
+import { usePolling } from "../hooks/usePolling";
 import { TestResultView, toOutcome, type TestOutcome } from "../components/TestResult";
 import { GoogleBadges } from "../components/AuthSummary";
 import { toolResult } from "../utils/toolResult";
@@ -178,12 +179,6 @@ export default function ConnectionsPage() {
     setLoading(false);
   }, []);
 
-  const fetchIngestors = useCallback(async (caller: string) => {
-    const res = await api.callerIngestors(caller);
-    if (selectedCallerRef.current !== caller) return;
-    if (!isDaemonDown(res)) setIngestors(res);
-  }, []);
-
   // ── Load on mount + whenever caller changes ─────────────────────────────
   useEffect(() => {
     if (daemon !== "up") return;
@@ -195,40 +190,21 @@ export default function ConnectionsPage() {
     // A toggle still in flight belongs to the previous caller's list.
     setTogglingAlias(null);
     void refetch(caller);
-    void fetchIngestors(caller);
-  }, [daemon, selectedCaller, refetch, fetchIngestors]);
+  }, [daemon, selectedCaller, refetch]);
 
-  // ── Poll ingestor statuses every ~5s ────────────────────────────────────
-  useEffect(() => {
-    if (daemon !== "up") return;
-    const caller = selectedCaller;
-    let interval: ReturnType<typeof setInterval> | null = null;
-
-    const start = () => {
-      if (interval !== null) return;
-      interval = setInterval(() => void fetchIngestors(caller), INGESTOR_POLL_MS);
-    };
-    const stop = () => {
-      if (interval === null) return;
-      clearInterval(interval);
-      interval = null;
-    };
-
-    if (document.visibilityState === "visible") start();
-    const onVisibility = () => {
-      if (document.visibilityState === "visible") {
-        void fetchIngestors(caller);
-        start();
-      } else {
-        stop();
-      }
-    };
-    document.addEventListener("visibilitychange", onVisibility);
-    return () => {
-      stop();
-      document.removeEventListener("visibilitychange", onVisibility);
-    };
-  }, [daemon, selectedCaller, fetchIngestors]);
+  // ── Ingestor statuses: now, then every ~5s while the tab is visible ─────
+  // Restarts for a newly selected caller. After an action, refresh()
+  // supersedes a poll in flight, so a pre-action status can't land after it.
+  const { refresh: refreshIngestors } = usePolling(
+    async (ctx) => {
+      const caller = selectedCallerRef.current;
+      const res = await api.callerIngestors(caller);
+      if (!ctx.active() || selectedCallerRef.current !== caller) return;
+      if (!isDaemonDown(res)) setIngestors(res);
+    },
+    INGESTOR_POLL_MS,
+    { enabled: daemon === "up", key: selectedCaller },
+  );
 
   // If the selected caller is deleted on the /callers page, fall back to default.
   useEffect(() => {
@@ -262,13 +238,17 @@ export default function ConnectionsPage() {
       return;
     }
     toast.show(`${c.name} ${enabled ? "enabled" : "disabled"} for ${caller}`);
-    if (stillHere) void refetch(caller);
+    if (stillHere) {
+      void refetch(caller);
+      // Enabling can start a listener; disabling stops one.
+      void refreshIngestors();
+    }
   };
 
   const triggerRefetch = useCallback(() => {
     void refetch(selectedCallerRef.current);
-    void fetchIngestors(selectedCallerRef.current);
-  }, [refetch, fetchIngestors]);
+    void refreshIngestors();
+  }, [refetch, refreshIngestors]);
 
   // ── Derived: filter, sort, group ────────────────────────────────────────
   const ingestorsByConn = useMemo(() => groupIngestors(ingestors), [ingestors]);

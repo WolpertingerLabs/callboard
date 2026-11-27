@@ -123,7 +123,7 @@ export default function ChangePassword() {
         <div className="auth-actions">
           <button
             type="submit"
-            className="auth-submit"
+            className="btn btn-primary btn-block"
             disabled={
               loading ||
               !currentPassword ||

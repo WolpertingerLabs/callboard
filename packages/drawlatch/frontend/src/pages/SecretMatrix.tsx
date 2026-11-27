@@ -1,4 +1,4 @@
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, CheckCircle2, KeyRound } from "lucide-react";
 import type { AdminSecret } from "drawlatch-admin-types";
 import { api, isDaemonDown } from "../api";
@@ -240,11 +240,7 @@ function MatrixTable({ matrix, onlyMissing }: { matrix: Matrix; onlyMissing: boo
               Secret
             </th>
             {matrix.callers.map((alias) => (
-              <th key={alias} scope="col" className="dl-matrix-caller" title={alias}>
-                {/* Clamped to a few lines so one long alias can't make the
-                    header band tall; the full alias is the title. */}
-                <span className="mono dl-matrix-caller-name">{alias}</span>
-              </th>
+              <CallerHeader key={alias} alias={alias} />
             ))}
           </tr>
         </thead>
@@ -281,6 +277,50 @@ function MatrixTable({ matrix, onlyMissing }: { matrix: Matrix; onlyMissing: boo
         ))}
       </table>
     </div>
+  );
+}
+
+/** A caller column's header. The alias is clamped to a few lines so one long
+ *  alias can't make the header band tall. A clamped one becomes a button that
+ *  shows it in full: the title tooltip alone can't be reached on touch. */
+function CallerHeader({ alias }: { alias: string }) {
+  const thRef = useRef<HTMLTableCellElement>(null);
+  const [clamped, setClamped] = useState(false);
+  const [open, setOpen] = useState(false);
+
+  useLayoutEffect(() => {
+    const th = thRef.current;
+    if (!th || open) return;
+    // The name span is re-created when it moves into the button, so look it
+    // up at each measure; the cell itself is stable.
+    const measure = () => {
+      const el = th.querySelector<HTMLElement>(".dl-matrix-caller-name");
+      if (el) setClamped(el.scrollHeight > el.clientHeight + 1);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(th);
+    return () => ro.disconnect();
+  }, [alias, open]);
+
+  const name = (
+    <span className={`mono dl-matrix-caller-name${open ? " is-open" : ""}`}>{alias}</span>
+  );
+  return (
+    <th ref={thRef} scope="col" className="dl-matrix-caller" title={alias}>
+      {clamped || open ? (
+        <button
+          type="button"
+          className="dl-matrix-caller-toggle"
+          aria-expanded={open}
+          onClick={() => setOpen((x) => !x)}
+        >
+          {name}
+        </button>
+      ) : (
+        name
+      )}
+    </th>
   );
 }
 

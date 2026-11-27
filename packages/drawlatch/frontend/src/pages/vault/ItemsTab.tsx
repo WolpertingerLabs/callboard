@@ -280,9 +280,9 @@ export default function ItemsTab({
                         type="button"
                         className="btn btn-ghost btn-icon btn-sm dl-vault-icon-danger"
                         onClick={(e) => {
-                    returnFocusRef.current = e.currentTarget;
-                    open("delete", item);
-                  }}
+                          returnFocusRef.current = e.currentTarget;
+                          open("delete", item);
+                        }}
                         aria-label={`Delete ${item.name}`}
                         title="Delete"
                       >
