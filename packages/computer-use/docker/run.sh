@@ -26,11 +26,13 @@ if [ "${COMPUTER_USE_DESKTOP_REBUILD:-}" = 1 ] || ! docker image inspect "$image
     echo "run.sh: $here/dist is not built; run \`npm run build\` in $here first" >&2
     exit 1
   fi
-  # The same content label sandboxImageBuildArgs() sets (Callboard's `callboard
-  # sandbox build`), from the same function, so a host can tell whether this
-  # image is the build it ships.
+  # The same content and version labels sandboxImageBuildArgs() sets
+  # (Callboard's `callboard sandbox build`), from the same functions, so a host
+  # can tell whether this image is the build it ships.
   digest="$(node --input-type=module --eval 'const m = await import(process.argv[1]); console.log(m.sandboxContentDigest(process.argv[2]));' "$here/dist/remote/sandbox.js" "$here")"
-  docker build --label "dev.callboard.computer-use.content=$digest" -t "$image" -f "$here/docker/Dockerfile" "$here"
+  version="$(node --input-type=module --eval 'const m = await import(process.argv[1]); console.log(m.sandboxPackageVersion(process.argv[2]));' "$here/dist/remote/sandbox.js" "$here")"
+  docker build --label "dev.callboard.computer-use.content=$digest" --label "org.opencontainers.image.version=$version" \
+    -t "$image" -f "$here/docker/Dockerfile" "$here"
 fi
 
 # A bridge network with inter-container communication disabled, so nothing

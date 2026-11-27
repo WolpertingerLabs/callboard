@@ -14,6 +14,7 @@ import {
   ensureSandboxNetwork,
   sandboxContentDigest,
   sandboxImageBuildArgs,
+  sandboxPackageVersion,
   SANDBOX_SECURITY_FLOOR,
   sandboxNetworkCreateArgs,
   sandboxRunArgs,
@@ -118,7 +119,14 @@ test("sandbox networks are bridges with inter-container traffic off; a non-defau
 test("the image labels match package.json and the protocol", async () => {
   const dockerfile = await readFile(join(packageDir, "docker", "Dockerfile"), "utf8");
   const { version } = JSON.parse(await readFile(join(packageDir, "package.json"), "utf8"));
-  assert.ok(dockerfile.includes(`${SANDBOX_IMAGE_LABELS.version}="${version}"`), "image version label out of date");
+  // The version label comes from the build arguments, never the Dockerfile, so the Dockerfile (and the content digest) don't move with the version.
+  assert.ok(!dockerfile.includes(`${SANDBOX_IMAGE_LABELS.version}=`), "the Dockerfile must not set the version label");
+  assert.equal(sandboxPackageVersion(packageDir), version);
+  for (const target of [undefined, "builder"]) {
+    const args = sandboxImageBuildArgs({ context: packageDir, image: "callboard/test:x", target });
+    const at = args.indexOf(`${SANDBOX_IMAGE_LABELS.version}=${version}`);
+    assert.ok(at > 0 && args[at - 1] === "--label", `the ${target ?? "default"} build arguments carry the version label`);
+  }
   assert.equal(SANDBOX_PROTOCOL_LABEL_VALUE, `${PROTOCOL.major}.${PROTOCOL.minor}`);
   assert.ok(dockerfile.includes(`${SANDBOX_IMAGE_LABELS.protocol}="${SANDBOX_PROTOCOL_LABEL_VALUE}"`), "image protocol label out of date");
   // And the base image stays pinned by digest.
@@ -205,8 +213,18 @@ test("the image declares the security floor the package requires, and run.sh lab
   const script = await readFile(join(packageDir, "docker", "run.sh"), "utf8");
   assert.ok(script.includes(`--label "${SANDBOX_IMAGE_LABELS.content}=$digest"`), "run.sh must label its build with the content digest");
   assert.ok(script.includes("sandboxContentDigest"), "run.sh must compute the digest with the package's function");
+  assert.ok(script.includes(`--label "${SANDBOX_IMAGE_LABELS.version}=$version"`), "run.sh must label its build with the package version");
+  assert.ok(script.includes("sandboxPackageVersion"), "run.sh must read the version with the package's function");
   const args = sandboxImageBuildArgs({ context: packageDir, image: "callboard/test:x" });
-  assert.deepEqual(args.slice(0, 5), ["build", "--label", `${SANDBOX_IMAGE_LABELS.content}=${sandboxContentDigest(packageDir)}`, "-t", "callboard/test:x"]);
+  assert.deepEqual(args.slice(0, 7), [
+    "build",
+    "--label",
+    `${SANDBOX_IMAGE_LABELS.content}=${sandboxContentDigest(packageDir)}`,
+    "--label",
+    `${SANDBOX_IMAGE_LABELS.version}=${sandboxPackageVersion(packageDir)}`,
+    "-t",
+    "callboard/test:x",
+  ]);
   assert.match(sandboxContentDigest(packageDir), /^[0-9a-f]{64}$/);
   assert.throws(() => sandboxImageBuildArgs({ context: packageDir, image: "--evil" }), { code: "invalid_request" });
 });

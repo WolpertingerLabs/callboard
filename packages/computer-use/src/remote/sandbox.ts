@@ -45,6 +45,7 @@ export const SANDBOX_NETWORK_LABEL = "dev.callboard.sandbox-network";
  * (`"<major>.<minor>"`; compare the major with {@link PROTOCOL}).
  */
 export const SANDBOX_IMAGE_LABELS = Object.freeze({
+  /** This package's `version`, set by {@link sandboxImageBuildArgs} (and docker/run.sh), not the Dockerfile, so it stays out of {@link sandboxContentDigest}. */
   version: "org.opencontainers.image.version",
   protocol: "dev.callboard.computer-use.protocol",
   /** {@link sandboxContentDigest} of what the image was built from, set by {@link sandboxImageBuildArgs} (and docker/run.sh). */
@@ -290,6 +291,32 @@ function contentFiles(context: string): string[] {
     if (existsSync(join(context, file))) out.push(file);
   return out.sort();
 }
+/** Fields of the version-bearing JSON files that {@link sandboxContentDigest} ignores: npm writes them, and they say nothing about the image. */
+const VERSION_FIELDS: Record<string, (json: Record<string, unknown>) => void> = {
+  "package.json": (json) => {
+    delete json.version;
+    delete json.gitHead;
+  },
+  "docker/package-lock.json": (json) => {
+    delete json.version;
+    const root = (json.packages as Record<string, Record<string, unknown>> | undefined)?.[""];
+    if (root) delete root.version;
+  },
+};
+/** A content file's bytes for the digest: `package.json` and `docker/package-lock.json` without their version (JSON that doesn't parse is hashed as it is). */
+function contentBytes(file: string, bytes: Buffer): Buffer | string {
+  const strip = VERSION_FIELDS[file];
+  if (!strip) return bytes;
+  let json: unknown;
+  try {
+    json = JSON.parse(bytes.toString("utf8"));
+  } catch {
+    return bytes;
+  }
+  if (!json || typeof json !== "object" || Array.isArray(json)) return bytes;
+  strip(json as Record<string, unknown>);
+  return JSON.stringify(json);
+}
 const digestMemo = new Map<string, { stamp: string; digest: string }>();
 /**
  * A SHA-256 over the build context's content files (this package directory:
@@ -297,6 +324,10 @@ const digestMemo = new Map<string, { stamp: string; digest: string }>();
  * path and bytes in order: the same value for the same files, whatever the
  * mtimes. Memoized on sizes and mtimes, so a status poll does not re-read the
  * files, while a rebuilt `dist/` is noticed.
+ *
+ * The package version is left out (see {@link contentBytes}): it moves with
+ * every Callboard release, and an image built from the same files under
+ * another version number is the same image, not one to rebuild.
  */
 export function sandboxContentDigest(context: string): string {
   const files = contentFiles(context);
@@ -312,16 +343,27 @@ export function sandboxContentDigest(context: string): string {
   for (const file of files)
     hash
       .update(`${file}\0`)
-      .update(readFileSync(join(context, file)))
+      .update(contentBytes(file, readFileSync(join(context, file))))
       .update("\0");
   const digest = hash.digest("hex");
   digestMemo.set(context, { stamp, digest });
   return digest;
 }
 
+/** The `version` in a package directory's `package.json`, or `"unknown"`. */
+export function sandboxPackageVersion(context: string): string {
+  try {
+    const version = (JSON.parse(readFileSync(join(context, "package.json"), "utf8")) as { version?: unknown }).version;
+    return typeof version === "string" && version ? version : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
 /**
  * `docker build` arguments (everything after `docker`) for the image, from a
- * package directory, labelled with its {@link sandboxContentDigest}. Never
+ * package directory, labelled with its {@link sandboxContentDigest} and its
+ * `package.json` version. Never
  * pulls anything but the Dockerfile's pinned base. No `--progress`: the
  * legacy builder (Docker without buildx) rejects it.
  *
@@ -337,6 +379,8 @@ export function sandboxImageBuildArgs(options: { context: string; image?: string
     "build",
     "--label",
     `${SANDBOX_IMAGE_LABELS.content}=${sandboxContentDigest(options.context)}`,
+    "--label",
+    `${SANDBOX_IMAGE_LABELS.version}=${sandboxPackageVersion(options.context)}`,
     ...(options.target === "builder" ? ["--target", "builder"] : []),
     "-t",
     image,
