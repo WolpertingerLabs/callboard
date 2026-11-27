@@ -118,7 +118,7 @@ export interface CodexOptionsExtras {
    * native catalog then reads until its next refresh.
    */
   subscriptionViaOpenRouter?: boolean;
-  /** Default model, e.g. "gpt-5.5". Overrides a top-level `options.model`. */
+  /** Default model, e.g. "gpt-6.2-sol". Overrides a top-level `options.model`. */
   model?: string;
   /**
    * Explicit Codex sandbox tier from the `codexSandboxMode` setting. When set it
@@ -180,6 +180,14 @@ export interface CodexOptionsExtras {
  * model-catalog-driven `collaboration.*` tools (`multi_agent` is deprecated and
  * no longer gates them), `clock.sleep`, and `apply_patch` via code mode, which
  * the read-only sandbox blocks.
+ *
+ * Also checked on 0.172.0, and deliberately NOT disabled anywhere: the default-on
+ * `daemon_auto_start` and `worktrees` features. With a fresh `$CODEX_HOME`
+ * (both under /tmp and under $HOME), neither `codex exec` (what the SDK spawns)
+ * nor a stdio `codex app-server` session (the config probe in
+ * codex-execution-route.ts) left any process running, wrote
+ * `packages/app-server-daemon`, or created a git worktree. The managed daemon
+ * comes from interactive clients, not from the paths Callboard drives.
  */
 export const LOCKDOWN_FEATURES = [
   "shell_tool",

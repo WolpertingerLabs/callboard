@@ -1044,7 +1044,9 @@ export function buildCallboardToolsSpec(
           query: z
             .string()
             .optional()
-            .describe("Filter to models whose slug or display name matches this text as a subsequence (characters in order, e.g. 'g55' matches 'gpt-5.5')."),
+            .describe(
+              "Filter to models whose slug or display name matches this text as a subsequence (characters in order, e.g. 'g62s' matches 'gpt-6.2-sol').",
+            ),
           limit: z.number().optional().describe("Max models to return (default: all, or 50 when `query` is given)."),
         },
         async (args) => {

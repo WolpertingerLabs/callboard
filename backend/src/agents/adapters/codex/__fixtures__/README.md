@@ -80,7 +80,9 @@ writes up to that point.
 
 Edits: `base_instructions.text` redacted as above; `creator_user_id` and
 `creator_account_id` (new in 0.172.0, account identifiers) replaced with
-placeholders; and the new first `developer` message — the system prompt again,
+placeholders; in every `token_count` record, `rate_limits.credits.balance`
+set to `"0"` and `rate_limits.plan_type` to `"redacted"` (account metadata
+nothing here reads); and the new first `developer` message — the system prompt again,
 ~28 KB — cut to its opening line plus a redaction marker. The parser drops it
 by role, so only the lead matters.
 

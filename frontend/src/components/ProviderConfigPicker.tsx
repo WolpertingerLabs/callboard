@@ -30,7 +30,7 @@ interface ProviderConfigPickerProps {
   // server-side.
   claudeModel: string;
   onClaudeModelChange: (model: string) => void;
-  // Codex model (e.g. "gpt-5.5"). Empty string = "use global default from
+  // Codex model (e.g. "gpt-6.2-sol"). Empty string = "use global default from
   // Settings → API". Kept separate from `claudeModel` so toggling providers
   // restores each one's prior selection. Optional — callers that
   // don't surface a Codex per-chat model omit it (the selector then hides).

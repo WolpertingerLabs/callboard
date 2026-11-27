@@ -298,7 +298,7 @@ export async function getVisibleCodexModelsAsync(): Promise<CodexModelInfo[]> {
 }
 
 // Case-insensitive subsequence test: every char of `query` appears in `target`
-// in order (not necessarily contiguous). "g55" matches "gpt-5.5".
+// in order (not necessarily contiguous). "g62s" matches "gpt-6.2-sol".
 function isSubsequence(query: string, target: string): boolean {
   const q = query.toLowerCase();
   const t = target.toLowerCase();
