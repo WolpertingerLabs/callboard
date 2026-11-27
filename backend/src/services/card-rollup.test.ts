@@ -385,8 +385,8 @@ describe("in-flight activity", () => {
   });
 
   it("does not change the rollup state — a waiting chat is still active", () => {
-    // Deliberate: CardRollupState is a wire enum and the exhaustive Records in
-    // CardTile key off it. Activity refines the *label*, not the state.
+    // Deliberate: CardRollupState is a wire enum and the exhaustive
+    // ROLLUP_COLORS record (the Git page's chips) keys off it. Activity refines the *label*, not the state.
     const deps: RollupDeps = {
       ...IDLE_DEPS,
       isSessionActive: () => true,

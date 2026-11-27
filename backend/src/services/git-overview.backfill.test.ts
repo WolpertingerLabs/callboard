@@ -1,4 +1,4 @@
-/** The Board's overview queues backfills for open cards' chats that have not had one. */
+/** The Git page's overview queues backfills for open cards' chats that have not had one. */
 import { afterAll, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

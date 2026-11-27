@@ -310,7 +310,7 @@ describe("native caller boundaries with real storage and registry", () => {
     expect(nativeMetadata(file, CHILD, first).parentChatId).toBe("stored-root");
     expect(nativeMetadata(file, CHILD, { parentChatId: "explicit" }, false).parentChatId).toBe("explicit");
   });
-  it.each(["/:id/read", "/:id/bookmark"])("persists durable lineage through %s for stored-only board and MCP consumers", async (path) => {
+  it.each(["/:id/read", "/:id/bookmark"])("persists durable lineage through %s for stored-only card and MCP consumers", async (path) => {
     chatFileService.upsertChat("stored-root", scratch, ROOT, { metadata: '{"provider":"codex"}' });
     const file = rollout(CHILD, true);
     const mutation = await request(chatsRouter, path, "patch", CHILD, { bookmarked: true });

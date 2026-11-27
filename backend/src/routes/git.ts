@@ -209,8 +209,8 @@ gitRouter.post("/generate-branch-name", async (req, res) => {
 
 /**
  * Every worktree an unarchived card works in, grouped by repository, with the
- * cards attached to their directory and each branch's GitHub PR — the Board's
- * Branches view. Idle worktrees are not listed. PR data degrades to absent (with a per-repo `prError`) rather
+ * cards attached to their directory and each branch's GitHub PR — the Git
+ * page. Idle worktrees are not listed. PR data degrades to absent (with a per-repo `prError`) rather
  * than failing the response.
  */
 gitRouter.get("/overview", async (req, res) => {

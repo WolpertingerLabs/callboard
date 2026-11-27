@@ -1,5 +1,5 @@
 /**
- * The Board's Branches view: every worktree (main checkout included) that an
+ * The Git page: every worktree (main checkout included) that an
  * unarchived card is working in, grouped by repository, with those cards
  * attached and, where GitHub knows of one, the branch's pull request. Idle
  * worktrees are not listed — on a long-lived repo they outnumber the active
@@ -193,7 +193,7 @@ function defaultDeps(): OverviewDeps {
     if (!active) {
       active = activeCardData();
       // Open cards' chats that predate the live trail: backfill from history in
-      // the background; a later poll of the Board shows what it found.
+      // the background; a later poll of the Git page shows what it found.
       for (const chat of active.unbackfilled) requestBackfill({ chatId: chat.id, chat });
       // Their PR links are read from the transcripts once, in the background;
       // from then on each turn's end keeps them current.

@@ -1,5 +1,5 @@
 /**
- * Pull requests, for the Board's Branches view and the chat's PRs tab.
+ * Pull requests, for the Git page and the chat's PRs tab.
  *
  * Two `gh api` REST calls per repository — every open PR, and the most
  * recently updated closed ones — make one cache entry, kept per repo for
@@ -213,7 +213,7 @@ export function isLinkOf(link: Pick<ChatPrLink, "repo">, pr: Pick<PullSummary, "
  * found none. Held to what {@link indexPullsByBranch} holds a listed PR to —
  * headed by this owner's branch of that name, never the default branch — so
  * a fork's `feat/x` is not promoted onto ours. Open first, then most recently
- * updated: the one answer for the Board and the PRs tab alike.
+ * updated: the one answer for the Git page and the PRs tab alike.
  */
 export function recordedPullForBranch(recorded: PullSummary[], branch: string | null, pulls: RepoPulls | undefined): PullSummary | undefined {
   const here = pulls?.github;

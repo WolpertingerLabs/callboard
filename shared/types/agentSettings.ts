@@ -511,7 +511,7 @@ export interface AgentSettings {
    * after the card is reopened.
    *
    * Enforced server-side in `patchCardFields`, the single write that flips a
-   * card's lifecycle, so the web UI, the board, bulk archive and any future MCP
+   * card's lifecycle, so the sidebar, bulk archive and any future MCP
    * lifecycle setter all obey it. It fires on the *transition* into archived
    * (closed or hidden) and in that direction only: unarchiving does not restore
    * the pins, because the pin is a cleared boolean and not a remembered one.

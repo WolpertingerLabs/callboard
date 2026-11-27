@@ -5,8 +5,8 @@
  * beside the status of the chat's own live branch.
  *
  * "Which PR does this directory's branch have" is a question about the
- * directory, so it is answered per `cwd` through exactly the path the Board's
- * Branches view uses — {@link placeFolders} for directory → worktree → branch
+ * directory, so it is answered per `cwd` through exactly the path the Git page
+ * uses — {@link placeFolders} for directory → worktree → branch
  * and HEAD, {@link getRepoPulls} for the cached, stale-while-revalidate PR
  * listing and {@link matchPull} for the match. Card membership only decides
  * which directories are asked about (see "Workspace keying" in .claude/CLAUDE.md).
@@ -66,7 +66,7 @@ const trailOfRecord = (metadata: string | null | undefined): GitTrailEntry[] => 
 /**
  * The card `chatId` belongs to, or null when it is on none.
  *
- * Through the card context — the stat-gated chat snapshot the board's rollup
+ * Through the card context — the stat-gated chat snapshot the card rollup
  * reads — not `getChat`, whose miss path scans every record, and projecting
  * members for this one card only. Hidden and archived cards count: the chat
  * is still on them. Members' trails come from the same snapshot.
@@ -199,7 +199,7 @@ export async function buildChatPrs(opts: { folder: string; chatId?: string; forc
   // Chats that predate the live trail get theirs from their history, once, in
   // the background — never awaited here. The repositories already in view
   // help it match a Codex rollout's repository_url. The card on screen goes
-  // ahead of the Board's backlog, the chat itself (requested last) first.
+  // ahead of the Git page's backlog, the chat itself (requested last) first.
   if (opts.chatId && deps.requestBackfill) {
     const knownRepos = [...repoPaths];
     for (const member of others) deps.requestBackfill({ chatId: member.chatId, knownRepos, priority: true });
@@ -239,7 +239,7 @@ export async function buildChatPrs(opts: { folder: string; chatId?: string; forc
   const trailPulls = (entries: GitTrailEntry[]) => entries.flatMap((entry) => pullsForTrailEntry(pullsByRepo.get(entry.repoPath), entry));
 
   // The live branch's PR, when the SHA rule found none but the chat's own
-  // record did — chosen as the Board chooses it.
+  // record did — chosen as the Git page chooses it.
   if (currentPrs.status === "no_pr" && current?.kind === "placed") {
     const here = pullsByRepo.get(current.repo.repoPath);
     const ownLinked = opts.chatId ? linksOf(0).flatMap(({ link, pr }) => (isLinkOf(link, pr, here?.github) ? [pr] : [])) : [];

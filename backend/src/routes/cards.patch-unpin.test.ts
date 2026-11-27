@@ -67,7 +67,7 @@ describe("PATCH /api/cards/:id — pins on an archived card", () => {
     expect(isPinned(untouchedId)).toBe(true);
   });
 
-  it("clears them when the card is hidden, which is the archive the board uses", async () => {
+  it("clears them when the card is hidden, which also counts as archiving", async () => {
     const rootId = makeRoot(true);
     const memberId = makeMember(rootId, true);
 

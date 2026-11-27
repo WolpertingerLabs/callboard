@@ -1305,7 +1305,7 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
       log.info(`Reopened card ${reopenRootId} ("${rootCard.title}") because chat ${opts.chatId || "(new)"} received a new message`);
     }
     // `hidden` is deliberately left alone above: on a card it is the listing
-    // opt-out (originally "keep this off the board") — which was set on purpose and
+    // opt-out — which was set on purpose and
     // which new activity says nothing about, so a reply must not undo it (the
     // sidebar keeps treating the tree as archived until the user unhides it
     // or unarchives it there). A card-less tree has no such
@@ -2254,7 +2254,7 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
                 // New chat: create the chat record and migrate tracking from temp ID to real chat ID
                 chatRecordCreated = true;
                 // No card is created here — or anywhere. A card in the
-                // cards-as-metadata model is the board's projection of a
+                // cards-as-metadata model is a projection of a
                 // lineage root: it exists because this top-level chat exists,
                 // and its fields materialise lazily in metadata.card the
                 // first time someone edits them (see card-fields.ts). The

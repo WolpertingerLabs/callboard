@@ -1,5 +1,5 @@
 /**
- * Tests for the stat-gated chats snapshot — the lineage corpus the board
+ * Tests for the stat-gated chats snapshot — the lineage corpus the card
  * rollup reads.
  *
  * The interesting half is not "does it return the records" — a plain scan does
@@ -167,7 +167,7 @@ describe("listChatsSnapshot", () => {
     // The rule, asserted directly rather than inferred: a failed read is NOT
     // remembered, so the file is opened again on an otherwise-warm scan. This
     // is what stops a transient failure (EMFILE, a record caught mid-rewrite)
-    // latching a chat off the board until something happens to touch it —
+    // latching a chat out of the card rollup until something happens to touch it —
     // repairing the file would move its mtime and force a re-read either way,
     // so only the read count can tell the two designs apart.
     reads.length = 0;

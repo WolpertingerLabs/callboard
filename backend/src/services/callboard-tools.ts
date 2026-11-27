@@ -564,7 +564,7 @@ export function buildCallboardToolsSpec(
           "The spawned chat is automatically linked as a child of THIS chat in the chat parentage tree (see get_chat_tree); pass `role` to label its node, " +
           "or `independent` to spawn it as its own top-level chat instead. " +
           "The child never gets looser tool permissions than THIS chat: each category is the stricter of what you request (default allow) and this chat's own setting, and Browser Use, Computer Use and Sandbox desktop are always denied. " +
-          "Where this chat asks, the child asks too — its prompts wait for the user on the board — and the result's `permissions` shows what the child got. " +
+          "Where this chat asks, the child asks too — its prompts wait for the user in the dashboard — and the result's `permissions` shows what the child got. " +
           'To review a child\'s calls yourself, pass `permissions` with "ask" on a category THIS chat allows (e.g. {codeExecution: "ask"}) together with `parentAnswers: true`: ' +
           "the child's prompts in that category come to you (a wait you are in ends early) and you can approve or deny them with respond_to_request. " +
           "You can only approve categories this chat itself allows — prompts in a category where this chat asks or denies stay with the user. " +

@@ -1,5 +1,5 @@
 /**
- * How long the Branches view and the PRs tab wait on the daemon before giving
+ * How long the Git page and the PRs tab wait on the daemon before giving
  * a request up. The slowest honest answer is a repository's first PR lookup:
  * two `gh api` listings at up to 15s each (GH_TIMEOUT_MS in
  * backend/src/services/github-prs.ts), plus time queued behind the two-at-a-

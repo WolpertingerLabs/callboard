@@ -34,9 +34,8 @@ import type { HeldMessage } from "./held.js";
  * share. Activities are in-memory only (`chat-activity.ts`), so nothing is
  * still carrying the string — the member stays because deleting it buys
  * nothing, while re-adding it later would be a *new kind*, which costs exactly
- * what the section below describes. Keep its consumers (`ActivityDock`,
- * `pendingLabels`) for the same reason, even though the `await_chat` arm of
- * each is currently unreachable.
+ * what the section below describes. Keep its consumer (`ActivityDock`) for
+ * the same reason, even though its `await_chat` arm is currently unreachable.
  *
  * ## Adding a kind
  *

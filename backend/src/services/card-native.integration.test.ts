@@ -33,7 +33,6 @@ vi.mock("node:fs", async (original) => {
   return { ...fs, readSync: vi.fn(fs.readSync) };
 });
 const { cardsRouter } = await import("../routes/cards.js");
-const { createCardContext } = await import("./card-context.js");
 const { CodexSessionProvider } = await import("../agents/adapters/codex/CodexSessionProvider.js");
 const { clearCodexSessionMetaCache } = await import("../agents/adapters/codex/sessionParser.js");
 const { resetChatsSnapshot } = await import("./chats-snapshot.js");
@@ -537,10 +536,10 @@ describe("round-two durable aliases and returned-root replay budgets", () => {
     const scan = vi.spyOn(CodexSessionProvider.prototype, "nativeDiscoveryEvidence");
     clearCodexSessionMetaCache();
     vi.mocked(readSync).mockClear();
-    let result;
+    let cards: any[] = [];
     try {
-      // The lifecycle-filtered listing the Git overview reads (`summaries(..., "open")`).
-      result = createCardContext().summaries([], false, undefined, filter === "all" ? undefined : filter);
+      // GET /api/cards?lifecycle=open is the Git page's request.
+      cards = (await rest("get", "/", "", {}, filter === "all" ? {} : { lifecycle: filter })).cards;
       expect(scan).toHaveBeenCalledTimes(1);
     } finally {
       scan.mockRestore();
@@ -554,12 +553,12 @@ describe("round-two durable aliases and returned-root replay budgets", () => {
     expect(bytes).toHaveLength(2); // Not a fresh budget per returned card.
     expect(bytes).not.toContain(sizes[4]);
     expect(bytes).not.toContain(sizes[5]);
-    expect(result.map((c) => c.id).sort()).toEqual(
+    expect(cards.map((c) => c.id).sort()).toEqual(
       (filter === "all" ? [ROOT, "wanted-one", "wanted-two"] : ["wanted-one", "wanted-two"]).sort(),
     );
     if (filter !== "all") {
       expect(bytes.sort((a, b) => a - b)).toEqual([sizes[2], sizes[3]].sort((a, b) => a - b));
-      expect(result.every((c) => c.rollup === "active" && c.chatCount === 2 && c.lifecycle === wanted)).toBe(true);
+      expect(cards.every((c) => c.rollup === "active" && c.chatCount === 2 && c.lifecycle === wanted)).toBe(true);
     } else expect(bytes.every((n) => sizes.slice(0, 4).includes(n))).toBe(true);
     expect(disk()).toEqual(before);
     expect((await rest("get", "/:id", "wanted-one")).card.rollup).toBe("active");

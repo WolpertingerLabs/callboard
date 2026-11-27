@@ -1,5 +1,5 @@
 /**
- * `GET /api/git/overview` — the Board's Branches view.
+ * `GET /api/git/overview` — the Git page.
  *
  * Organised around **directories**, not cards: one row per worktree (checkout)
  * an unarchived card is working in, keyed on `cwd` (see "Workspace keying" in

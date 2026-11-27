@@ -470,7 +470,7 @@ try {
 }
 
 // Card fields stranded on a non-root chat by the first shipped migration are
-// invisible to the board (card-rollup only projects from lineage roots), and
+// invisible to the sidebar and the Git page (card-rollup only projects from lineage roots), and
 // the migration's marker means it will never revisit those installs. Runs on
 // every boot, separately from the marker, and is idempotent — same placement
 // rationale as the migration: before any request or run can read the half-

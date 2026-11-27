@@ -2241,7 +2241,7 @@ chatsRouter.get("/:id/tree", (req, res) => {
 chatsRouter.post("/:id/detach", (req, res) => {
   // #swagger.tags = ['Chats']
   // #swagger.summary = 'Split a child chat off its parent'
-  // #swagger.description = 'Removes the parent link from a child chat so it becomes a standalone, top-level chat with its own sidebar row and board card. Clears metadata parentChatId, forkedFrom, rootChatId, chatRole, forkedAt and stale card face fields; stamps spaceId with the space the tree was in (absent for the default space) and records detachedFrom. Chats under it by parent pointer are re-stamped onto it as their new root; chats tied to the old tree only by a rootChatId stamp (job steps) stay. Completion callbacks waiting on the chat are removed and an open prompt offered to its old parent is withdrawn. Repeating the call on a chat already split off is a no-op 200. Native Codex subagents are refused, because their parent is read from the Codex rollout. Does not bump updated_at.'
+  // #swagger.description = 'Removes the parent link from a child chat so it becomes a standalone, top-level chat with its own sidebar row and card. Clears metadata parentChatId, forkedFrom, rootChatId, chatRole, forkedAt and stale card face fields; stamps spaceId with the space the tree was in (absent for the default space) and records detachedFrom. Chats under it by parent pointer are re-stamped onto it as their new root; chats tied to the old tree only by a rootChatId stamp (job steps) stay. Completion callbacks waiting on the chat are removed and an open prompt offered to its old parent is withdrawn. Repeating the call on a chat already split off is a no-op 200. Native Codex subagents are refused, because their parent is read from the Codex rollout. Does not bump updated_at.'
   /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
   /* #swagger.responses[200] = { description: "The updated chat" } */
   /* #swagger.responses[400] = { description: "The chat has no parent and was never split off, or has no stored record" } */
@@ -2258,7 +2258,7 @@ chatsRouter.post("/:id/detach", (req, res) => {
       // Row membership changes for two trees at once, so every cached page is wrong.
       clearListCaches();
       // Two cards changed: the old tree lost a member (and its rollup), and a
-      // new card exists. The board, CardDrawer and other tabs refetch on these,
+      // new card exists. The sidebar, the Git page and other tabs refetch on these,
       // as they do for the other card-membership writes in this file. The old
       // parent is notified too, so an open parent drops its tree indicator and
       // inline fork marker.
@@ -3115,7 +3115,7 @@ chatsRouter.patch("/:id/read", (req, res) => {
 
 // (The old PATCH /:id/card assign/unassign endpoint is gone: card
 // membership is lineage, derived from the parentage tree, so there is
-// nothing to assign. Board membership edits go through PATCH /api/cards/:id
+// nothing to assign. Card edits go through PATCH /api/cards/:id
 // — the id is the root chat.)
 
 // Dismiss a summon on a chat

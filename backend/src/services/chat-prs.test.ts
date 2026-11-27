@@ -281,7 +281,7 @@ describe("buildChatPrs — one list", () => {
       expect(numbers(result)).toEqual([70]);
     });
 
-    it("picks, of two linked PRs on the live branch, the one the Board picks: the most recently updated", async () => {
+    it("picks, of two linked PRs on the live branch, the one the Git page picks: the most recently updated", async () => {
       const table = { 5: pull(5, "feat/b", "merged", "old5", "2026-01-10T00:00:00Z"), 9: pull(9, "feat/b", "merged", "old9", "2026-09-10T00:00:00Z") };
       // Recorded oldest first, as a transcript is read.
       const d = deps({ ...moved, linksOf: async () => [link(5), link(9)], linkedPulls: linkedPulls(table) });
