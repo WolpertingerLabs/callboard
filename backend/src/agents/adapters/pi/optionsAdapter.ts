@@ -1,4 +1,4 @@
-import { assertPiModelReasoningEffort } from "./modelCatalog.js";
+import { assertPiModelReasoningEffort, assertPiModelResolved } from "./modelCatalog.js";
 /**
  * Options adapter: callboard run options → pi's session construction inputs.
  *
@@ -342,13 +342,17 @@ export interface BuildPiSessionInput {
  */
 export function buildPiSessionOptions(input: BuildPiSessionInput): Omit<CreateAgentSessionFromServicesOptions, "services" | "sessionManager"> {
   const { pi, model, customTools, filters } = input;
+  // Before the effort check, which would otherwise report an unknown model as
+  // "no model resolved" for the effort rather than say what is wrong.
+  assertPiModelResolved(pi.providerId?.trim() || DEFAULT_PI_PROVIDER_ID, pi.model, model);
   assertPiModelReasoningEffort(model, pi.effort);
 
   if (!model) {
-    // Not thrown: pi resolves its own default when no model is given, and a hard
-    // failure here would make "start a chat before picking a model" impossible.
-    // Worth a line so a chat on an unexpected model is explicable.
-    log.debug(`no resolved model for provider "${pi.providerId ?? DEFAULT_PI_PROVIDER_ID}" — deferring to pi's default`);
+    // Only reached when no model is named (a named one that did not resolve threw
+    // above). Not thrown: pi resolves its own default when no model is given, and
+    // a hard failure here would make "start a chat before picking a model"
+    // impossible. Worth a line so a chat on pi's default is explicable.
+    log.debug(`no model named for provider "${pi.providerId ?? DEFAULT_PI_PROVIDER_ID}" — deferring to pi's default`);
   }
 
   return {

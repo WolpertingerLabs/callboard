@@ -176,3 +176,25 @@ describe("stored efforts on the execution path", () => {
     expect(mocks.probe).toHaveBeenCalledTimes(1);
   });
 });
+
+/**
+ * The pi adapter refuses a named model its catalog does not know, so an alias
+ * name must never reach it unresolved: what it sees is the alias's pi target,
+ * or the configured default when the alias has none.
+ */
+describe("pi model aliases resolve before the adapter's catalog check", () => {
+  beforeEach(() => {
+    mocks.settings.modelAliases = [
+      { name: "fast", targets: { pi: "gpt-6.2-sol", codex: "native" } },
+      { name: "codex-only", targets: { codex: "native" } },
+    ];
+  });
+
+  it("hands the adapter the alias's pi target", async () => {
+    expect((await resolveReasoningTarget({ provider: "pi", model: "fast" })).model).toBe("gpt-6.2-sol");
+  });
+
+  it("falls back to the configured pi default for an alias with no pi target", async () => {
+    expect((await resolveReasoningTarget({ provider: "pi", model: "codex-only" })).model).toBe("vendor/routed");
+  });
+});

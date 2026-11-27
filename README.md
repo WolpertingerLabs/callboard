@@ -69,7 +69,7 @@ pi runs inside the Callboard process, with no binary. Pick a provider and add it
 - On OpenRouter, a chat's cost is the amount OpenRouter reports it billed. Other providers show pi's estimate from its model catalog.
 - pi 1.5 no longer lets reasoning be turned off for `openai/o3`. A pi o3 chat saved with effort "none" is refused until you pick another effort or clear it.
 - pi 1.5 renamed its Azure OpenAI provider from `azure-openai-responses` to `azure`. If your pi provider is set to the old id, change it under Settings → API → pi.
-- pi 1.6 removed models their providers have retired, such as OpenAI's `o1`, `o3-mini`, `o4-mini` and `gpt-4` (also on `azure`), Mistral's Devstral models and Groq's Llama 3.x. A pi chat on one of them, with a provider other than OpenRouter, runs on pi's default model instead. Pick another model for it.
+- pi 1.6 removed models their providers have retired, such as OpenAI's `o1`, `o3-mini`, `o4-mini` and `gpt-4` (also on `azure`), Mistral's Devstral models and Groq's Llama 3.x. A pi chat that names a model pi's catalog doesn't know for its provider fails with an error naming the model and provider, rather than running on another model. This includes triggered, scheduled and job chats, which record it as an error. Pick a model from the pi model list, or an alias with a pi target. A chat with no model set still gets pi's default. On OpenRouter, a slug newer than pi's catalog still runs.
 
 The Cline engine has been removed. Chats that ran on it still appear (with a **CL** badge) when opened by link, but can't be continued or forked. Their transcripts are left untouched under `cline-sessions/` in the data directory.
 

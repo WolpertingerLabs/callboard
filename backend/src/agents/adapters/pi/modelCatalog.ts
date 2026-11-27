@@ -643,10 +643,10 @@ function synthesizeOpenRouterModel(runtime: ModelRuntime, modelId: string, metad
  *
  * For OpenRouter, an id the catalog doesn't carry is synthesized rather than
  * refused — see {@link synthesizeOpenRouterModel}. For every other provider a
- * slug pi does not know still returns `undefined`, and the caller lets pi pick
- * its own default rather than failing the turn: there is no equivalent of
+ * slug pi does not know still returns `undefined`: there is no equivalent of
  * OpenRouter's one-URL-routes-everything to synthesize against, so guessing a
- * transport would trade a wrong model for a broken one.
+ * transport would trade a wrong model for a broken one. The caller refuses the
+ * turn ({@link assertPiModelResolved}) rather than let pi pick its own default.
  */
 export function findPiModel(
   runtime: ModelRuntime,
@@ -668,7 +668,7 @@ export function findPiModel(
     }
   }
 
-  log.debug(`pi model "${provider}/${model}" is not in the catalog — deferring to pi's default`);
+  log.debug(`pi model "${provider}/${model}" is not in the catalog`);
   return undefined;
 }
 
@@ -855,6 +855,30 @@ export async function getPiModelReasoningEfforts(
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Refuse a turn whose chat names a model that did not resolve, rather than let
+ * pi run it on its own default.
+ *
+ * {@link findPiModel} returns `undefined` for a slug pi does not know on any
+ * provider but OpenRouter (where an unknown slug is synthesized, so this fires
+ * only if synthesis itself finds no template). With no model, pi picks its
+ * default, so the chat would quietly run, and bill, a model nobody chose. pi 1.6
+ * made that reachable for saved chats by removing retired models (OpenAI's
+ * `o1`/`o3-mini`/`o4-mini`/`gpt-4`, Mistral's Devstral, Groq's Llama 3.x); #614
+ * fixed the same silent wrong-model failure for Codex.
+ *
+ * `modelId` is alias-resolved already (`buildPiExtras`), and a blank one means
+ * "no model named", which keeps pi's default on purpose.
+ */
+export function assertPiModelResolved(provider: string, modelId: string | undefined, model: unknown): void {
+  const id = modelId?.trim();
+  if (!id || model) return;
+  throw new Error(
+    `pi model "${id}" is not in pi's model catalog for provider "${provider}"; it may have been retired in pi 1.6. ` +
+      `Pick a model from the pi model list (the model picker, or GET /api/pi/models) or a model alias with a pi target (list_model_aliases), then try again.`,
+  );
 }
 
 /** Reject before pi can clamp an explicit effort to a different SDK tier. */

@@ -525,6 +525,40 @@ describe("an OpenRouter model newer than pi's bundled catalog", () => {
   });
 });
 
+/**
+ * Against pi's real bundled catalog: a model pi 1.6 retired fails the turn
+ * before a session exists, instead of running on pi's default. The thrown error
+ * is what `services/claude.ts` turns into the run's `error` event, which is
+ * what #614's executor and job-runner hooks record for unattended chats.
+ */
+describe("a named model pi's catalog does not know", () => {
+  async function failure(pi: Record<string, unknown>): Promise<{ events: AgentEvent[]; error: unknown }> {
+    const events: AgentEvent[] = [];
+    try {
+      for await (const event of new PiAdapter().query({ prompt: "hi", options: { cwd: tmpRoot, pi } })) events.push(event);
+    } catch (error) {
+      return { events, error };
+    }
+    return { events, error: undefined };
+  }
+
+  it("refuses a model pi 1.6 retired, without building a session", async () => {
+    const session = new FakePiSession({ text: "should never run" });
+    nextSession = session;
+    const { error } = await failure({ providerId: "openai", model: "o4-mini" });
+    expect(String((error as Error | undefined)?.message)).toMatch(/pi model "o4-mini" is not in pi's model catalog for provider "openai"/);
+    expect(capturedSessionOptions).toBeNull();
+    expect(session.prompts).toHaveLength(0);
+  });
+
+  it("runs a model the 1.6 catalog added", async () => {
+    nextSession = new FakePiSession({ text: "ok" });
+    const { error } = await failure({ providerId: "openai", model: "gpt-6.2-sol" });
+    expect(error).toBeUndefined();
+    expect((capturedSessionOptions?.model as { id?: string } | undefined)?.id).toBe("gpt-6.2-sol");
+  });
+});
+
 describe("subscription is per-session", () => {
   /**
    * Unlike the retired Cline adapter's process-wide bus, which is why `messageAdapter` needs no
