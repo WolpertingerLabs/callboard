@@ -18,7 +18,10 @@ import { errorMessage } from "../utils/errorMessage";
 const CARD_CACHE_LIMIT = 16;
 const lastCards = new Map<string, CardSummary[]>();
 
-/** Forget every remembered card list (tests). */
+/**
+ * Forget every remembered card list. Called on logout: what one login saw
+ * must not be what the next one is shown first.
+ */
 export function clearGitPageCache(): void {
   lastCards.clear();
 }
@@ -41,17 +44,20 @@ export default function Git() {
   const [cards, setCards] = useState<CardSummary[]>(() => lastCards.get(spaceKey) ?? []);
   const [loaded, setLoaded] = useState(() => lastCards.has(spaceKey));
   const [error, setError] = useState<string | null>(null);
+  // Counts the card refetches a metadata change caused, once each has landed.
+  const [cardsRefetched, setCardsRefetched] = useState(0);
   // Polls and metadata refetches can overlap; only the newest may land.
   const requestSeq = useRef(0);
 
-  const loadCards = useCallback(async () => {
+  /** Resolves true when this request was still the newest as it settled. */
+  const loadCards = useCallback(async (): Promise<boolean> => {
     const seq = ++requestSeq.current;
     try {
       // Only open cards become chips, so ask for no archived ones at all.
       // Scoped to the active space: a chip from another space would open a
       // chat the sidebar is not showing.
       const res = await listCards(false, { ...(spacesEnabled && activeSpaceId && { space: activeSpaceId }), lifecycle: "open" });
-      if (seq !== requestSeq.current) return;
+      if (seq !== requestSeq.current) return false;
       // A daemon older than the `lifecycle` parameter returns archived cards
       // too; BranchesView only chips open ones, so that is harmless.
       setCards(res.cards);
@@ -60,11 +66,12 @@ export default function Git() {
       while (lastCards.size > CARD_CACHE_LIMIT) lastCards.delete(lastCards.keys().next().value as string);
       setError(null);
     } catch (err) {
-      if (seq !== requestSeq.current) return;
+      if (seq !== requestSeq.current) return false;
       setError(errorMessage(err, "Failed to load conversations"));
     } finally {
       if (seq === requestSeq.current) setLoaded(true);
     }
+    return true;
   }, [spacesEnabled, activeSpaceId, spaceKey]);
 
   useEffect(() => {
@@ -74,7 +81,14 @@ export default function Git() {
   // Refetch shortly after any chat/card metadata change (same debounce as the sidebar).
   useEffect(() => {
     if (metadataVersion === 0) return;
-    const timer = setTimeout(() => loadCards(), 300);
+    // The overview is asked again only once these cards have settled (even
+    // if they failed): told at the change itself, it would be asked once now
+    // and again when a changed card list landed.
+    const timer = setTimeout(() => {
+      void loadCards().then((newest) => {
+        if (newest) setCardsRefetched((n) => n + 1);
+      });
+    }, 300);
     return () => clearTimeout(timer);
   }, [metadataVersion, loadCards]);
 
@@ -129,7 +143,7 @@ export default function Git() {
 
         {/* Mounted at once, so the overview is asked for alongside the cards
             rather than after them. */}
-        <BranchesView cards={cards} cardsLoaded={loaded} reloadToken={metadataVersion} onOpenChat={(chatId) => navigate(`/chat/${chatId}`)} />
+        <BranchesView cards={cards} cardsLoaded={loaded} reloadToken={cardsRefetched} onOpenChat={(chatId) => navigate(`/chat/${chatId}`)} />
       </div>
     </div>
   );

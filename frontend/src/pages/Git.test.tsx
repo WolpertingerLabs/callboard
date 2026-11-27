@@ -5,6 +5,7 @@
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { StrictMode } from "react";
 import { MemoryRouter, Route, Routes, useParams } from "react-router-dom";
 import type { CardSummary } from "../api";
 import { getGitOverview, listCards } from "../api";
@@ -192,9 +193,13 @@ describe("the Git page: painting without waiting", () => {
           </Routes>
         </MemoryRouter>,
       );
-      // The cards refetch at 300ms; the overview follows, once.
+      // The cards refetch at 300ms; the overview follows once they land.
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(300 + RELOAD_DEBOUNCE_MS);
+        await vi.advanceTimersByTimeAsync(300);
+      });
+      expect(getGitOverview).toHaveBeenCalledTimes(2);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(RELOAD_DEBOUNCE_MS);
       });
       expect(listCards).toHaveBeenCalledTimes(2);
       expect(getGitOverview).toHaveBeenCalledTimes(3);
@@ -202,5 +207,250 @@ describe("the Git page: painting without waiting", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("the Git page: one side failing", () => {
+  const EMPTY = "No active conversation is working in a git repository.";
+
+  it("cards fail, overview answers: the cards' error, and no chips to hang rows on", async () => {
+    vi.mocked(listCards).mockRejectedValue(new Error("daemon down"));
+    mount();
+    expect(await screen.findByText("daemon down")).toBeDefined();
+    // As on main: with no cards there is no row to show.
+    expect(await screen.findByText(EMPTY)).toBeDefined();
+    expect(screen.queryAllByTestId("branch-row")).toHaveLength(0);
+    expect(screen.queryByText("Loading branches…")).toBeNull();
+    expect(getGitOverview).toHaveBeenCalled();
+  });
+
+  it("cards fail on a return visit: what was remembered stays on screen beside the error", async () => {
+    const first = mount();
+    await screen.findByRole("button", { name: "PR tracking" });
+    first.unmount();
+    vi.mocked(listCards).mockRejectedValue(new Error("daemon down"));
+    mount();
+    expect(await screen.findByText("daemon down")).toBeDefined();
+    expect(screen.getByRole("button", { name: "PR tracking" })).toBeDefined();
+  });
+
+  it("a failed card list is not remembered as an empty one", async () => {
+    vi.mocked(listCards).mockRejectedValue(new Error("daemon down"));
+    const first = mount();
+    await screen.findByText("daemon down");
+    first.unmount();
+    vi.mocked(listCards).mockReturnValue(new Promise(() => {}));
+    mount();
+    // Nothing remembered: the page waits for its cards rather than calling itself empty.
+    await act(async () => {});
+    expect(screen.getByText("Loading branches…")).toBeDefined();
+    expect(screen.queryByText(EMPTY)).toBeNull();
+  });
+
+  it("overview fails, cards answer: the overview's error alone", async () => {
+    vi.mocked(getGitOverview).mockRejectedValue(new Error("git broke"));
+    mount();
+    expect(await screen.findByText("git broke")).toBeDefined();
+    expect(screen.queryByText(EMPTY)).toBeNull();
+    expect(screen.queryByText("Loading branches…")).toBeNull();
+  });
+});
+
+describe("the Git page: switching space while it is open", () => {
+  const WORK_CARDS = [card("w1", "Work thing")];
+  const inSpace = (activeSpaceId: string) => (
+    <MemoryRouter initialEntries={["/git"]}>
+      <SpaceContext.Provider value={makeSpaceContext(SPACES, { activeSpaceId })}>
+        <Routes>
+          <Route path="/git" element={<Git />} />
+        </Routes>
+      </SpaceContext.Provider>
+    </MemoryRouter>
+  );
+
+  beforeEach(() => {
+    vi.mocked(getGitOverview).mockResolvedValue({
+      generatedAt: new Date().toISOString(),
+      repos: [
+        {
+          repoPath: "/src/app",
+          name: "app",
+          rows: [
+            { cwd: "/src/app", branch: "main", isMain: true, cardIds: ["c1"] },
+            { cwd: "/src/app.work", branch: "work", isMain: false, cardIds: ["w1"] },
+          ],
+        },
+      ],
+    });
+    vi.mocked(listCards).mockImplementation(async (_archived, options) => ({ cards: options?.space === "sp_work" ? WORK_CARDS : CARDS }));
+  });
+
+  it("asks for the new space's cards and swaps the chips when they land", async () => {
+    const view = render(inSpace("default"));
+    await screen.findByRole("button", { name: "PR tracking" });
+    expect(screen.queryByRole("button", { name: "Work thing" })).toBeNull();
+
+    let answer!: (value: { cards: CardSummary[] }) => void;
+    vi.mocked(listCards).mockReturnValueOnce(new Promise((resolve) => (answer = resolve)));
+    view.rerender(inSpace("sp_work"));
+    expect(listCards).toHaveBeenLastCalledWith(false, { space: "sp_work", lifecycle: "open" });
+    // Until they land the previous space's chips stay, as on main; the page never blanks.
+    expect(screen.getByRole("button", { name: "PR tracking" })).toBeDefined();
+    expect(screen.queryByText("Loading branches…")).toBeNull();
+
+    await act(async () => answer({ cards: WORK_CARDS }));
+    expect(screen.getByRole("button", { name: "Work thing" })).toBeDefined();
+    expect(screen.queryByRole("button", { name: "PR tracking" })).toBeNull();
+  });
+
+  it("drops the old space's answer if it lands after the switch", async () => {
+    let late!: (value: { cards: CardSummary[] }) => void;
+    vi.mocked(listCards).mockReturnValueOnce(new Promise((resolve) => (late = resolve)));
+    const view = render(inSpace("default"));
+    view.rerender(inSpace("sp_work"));
+    await screen.findByRole("button", { name: "Work thing" });
+    await act(async () => late({ cards: CARDS }));
+    expect(screen.getByRole("button", { name: "Work thing" })).toBeDefined();
+    expect(screen.queryByRole("button", { name: "PR tracking" })).toBeNull();
+  });
+
+  it("remembers each space's cards under its own key", async () => {
+    const view = render(inSpace("default"));
+    await screen.findByRole("button", { name: "PR tracking" });
+    view.rerender(inSpace("sp_work"));
+    await screen.findByRole("button", { name: "Work thing" });
+    view.unmount();
+
+    vi.mocked(listCards).mockReturnValue(new Promise(() => {}));
+    const work = render(inSpace("sp_work"));
+    expect(screen.getByRole("button", { name: "Work thing" })).toBeDefined();
+    expect(screen.queryByRole("button", { name: "PR tracking" })).toBeNull();
+    work.unmount();
+    render(inSpace("default"));
+    expect(screen.getByRole("button", { name: "PR tracking" })).toBeDefined();
+    expect(screen.queryByRole("button", { name: "Work thing" })).toBeNull();
+  });
+
+  it("asks the overview again, once, for the changed set of cards", async () => {
+    vi.useFakeTimers();
+    try {
+      const view = render(inSpace("default"));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(getGitOverview).toHaveBeenCalledTimes(2);
+      view.rerender(inSpace("sp_work"));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(RELOAD_DEBOUNCE_MS);
+      });
+      expect(getGitOverview).toHaveBeenCalledTimes(3);
+      expect(getGitOverview).toHaveBeenLastCalledWith(false, expect.any(AbortSignal));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("the Git page: one event, one overview reload", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+  const advance = (ms: number) =>
+    act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+    });
+  const page = () => (
+    <MemoryRouter initialEntries={["/git"]}>
+      <Routes>
+        <Route path="/git" element={<Git />} />
+      </Routes>
+    </MemoryRouter>
+  );
+  /** Answers `cards` after `ms`, like a slow daemon. */
+  const slowCards = (cards: CardSummary[], ms: number) => () => new Promise<{ cards: CardSummary[] }>((resolve) => setTimeout(() => resolve({ cards }), ms));
+
+  it("a slow card list that brings a new card makes one request, after it lands", async () => {
+    const view = render(page());
+    await advance(0);
+    expect(getGitOverview).toHaveBeenCalledTimes(2);
+
+    // Slower than the reload debounce: the overview must not be asked before the cards are in.
+    vi.mocked(listCards).mockImplementation(slowCards([...CARDS, card("c3", "New worktree chat")], 1_000));
+    session.metadataVersion = 1;
+    view.rerender(page());
+    await advance(300 + 999);
+    expect(getGitOverview).toHaveBeenCalledTimes(2);
+    await advance(1);
+    await advance(RELOAD_DEBOUNCE_MS - 1);
+    expect(getGitOverview).toHaveBeenCalledTimes(2);
+    await advance(1);
+    expect(getGitOverview).toHaveBeenCalledTimes(3);
+    expect(getGitOverview).toHaveBeenLastCalledWith(false, expect.any(AbortSignal));
+    // And nothing more follows.
+    await advance(5_000);
+    expect(getGitOverview).toHaveBeenCalledTimes(3);
+  });
+
+  it("a metadata change that leaves the cards as they were still makes one", async () => {
+    const view = render(page());
+    await advance(0);
+    session.metadataVersion = 1;
+    view.rerender(page());
+    await advance(300);
+    await advance(RELOAD_DEBOUNCE_MS);
+    await advance(5_000);
+    expect(getGitOverview).toHaveBeenCalledTimes(3);
+  });
+
+  it("a metadata change whose card refetch fails still asks the overview again", async () => {
+    const view = render(page());
+    await advance(0);
+    vi.mocked(listCards).mockRejectedValue(new Error("daemon down"));
+    session.metadataVersion = 1;
+    view.rerender(page());
+    await advance(300);
+    await advance(RELOAD_DEBOUNCE_MS);
+    expect(getGitOverview).toHaveBeenCalledTimes(3);
+  });
+
+  it("a burst of metadata changes makes one card refetch and one overview request", async () => {
+    const view = render(page());
+    await advance(0);
+    for (const version of [1, 2, 3]) {
+      session.metadataVersion = version;
+      view.rerender(page());
+      await advance(100);
+    }
+    await advance(300);
+    await advance(RELOAD_DEBOUNCE_MS);
+    expect(listCards).toHaveBeenCalledTimes(2);
+    expect(getGitOverview).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe("the Git page under StrictMode", () => {
+  it("paints its rows, ends idle, and leaves no error", async () => {
+    render(
+      <StrictMode>
+        <MemoryRouter initialEntries={["/git"]}>
+          <Routes>
+            <Route path="/git" element={<Git />} />
+          </Routes>
+        </MemoryRouter>
+      </StrictMode>,
+    );
+    expect(await screen.findByRole("button", { name: "PR tracking" })).toBeDefined();
+    const refresh = screen.getByRole("button", { name: "Refresh branches" }) as HTMLButtonElement;
+    await vi.waitFor(() => expect(refresh.disabled).toBe(false));
+    // Unforced (aborted with the discarded mount), unforced, forced — and no reload on top.
+    expect(vi.mocked(getGitOverview).mock.calls.map((c) => c[0])).toEqual([false, false, true]);
+    expect((vi.mocked(getGitOverview).mock.calls[0][1] as AbortSignal).aborted).toBe(true);
+    expect(screen.queryByText(/Failed|Timed out/)).toBeNull();
   });
 });

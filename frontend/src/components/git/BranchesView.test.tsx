@@ -665,3 +665,78 @@ describe("BranchesView: keeping in step with the cards", () => {
     expect(mockOverview).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("BranchesView: a remembered answer with nothing to show", () => {
+  const EMPTY = "No active conversation is working in a git repository.";
+  const settle = () => act(async () => {});
+  const NO_ROWS: GitOverviewResponse = { generatedAt: OVERVIEW.generatedAt, repos: [] };
+
+  /** Mount once with `first` answered, leave, and come back with `second` still out. */
+  async function comeBack(first: GitOverviewResponse, cards: CardSummary[] = CARDS) {
+    mockOverview.mockResolvedValue(first);
+    const one = render(<BranchesView cards={cards} onOpenChat={vi.fn()} />);
+    await settle();
+    one.unmount();
+    let answer!: (value: GitOverviewResponse) => void;
+    let fail!: (error: unknown) => void;
+    mockOverview.mockReset();
+    mockOverview.mockReturnValueOnce(
+      new Promise<GitOverviewResponse>((resolve, reject) => {
+        answer = resolve;
+        fail = reject;
+      }),
+    );
+    // The forced request that follows stays out.
+    mockOverview.mockReturnValue(new Promise(() => {}));
+    render(<BranchesView cards={cards} onOpenChat={vi.fn()} />);
+    return { answer, fail };
+  }
+
+  it("says the page is empty on the first visit once the answer lands", async () => {
+    mockOverview.mockResolvedValue(NO_ROWS);
+    render(<BranchesView cards={CARDS} onOpenChat={vi.fn()} />);
+    await settle();
+    expect(screen.getByText(EMPTY)).toBeDefined();
+  });
+
+  it("does not present a remembered empty overview as the current state: loading until an answer lands", async () => {
+    const { answer } = await comeBack(NO_ROWS);
+    // A chat may have started in a repo since: what was remembered cannot say.
+    expect(screen.queryByText(EMPTY)).toBeNull();
+    expect(screen.getByText("Loading branches…")).toBeDefined();
+    await act(async () => answer(OVERVIEW));
+    expect(screen.queryByText("Loading branches…")).toBeNull();
+    expect(screen.getAllByTestId("branch-row").length).toBeGreaterThan(0);
+  });
+
+  it("says empty again as soon as an answer of this mount confirms it", async () => {
+    const { answer } = await comeBack(NO_ROWS);
+    await act(async () => answer(NO_ROWS));
+    expect(screen.getByText(EMPTY)).toBeDefined();
+    expect(screen.queryByText("Loading branches…")).toBeNull();
+  });
+
+  it("treats remembered rows none of which joins a card the same way", async () => {
+    // Rows exist, but only for cards this page does not hold.
+    const { answer } = await comeBack(OVERVIEW, [card("elsewhere", "Not in the overview")]);
+    expect(screen.queryByText(EMPTY)).toBeNull();
+    expect(screen.getByText("Loading branches…")).toBeDefined();
+    await act(async () => answer(OVERVIEW));
+    expect(screen.getByText(EMPTY)).toBeDefined();
+  });
+
+  it("still paints remembered rows at once", async () => {
+    await comeBack(OVERVIEW);
+    expect(screen.queryByText("Loading branches…")).toBeNull();
+    expect(screen.getAllByTestId("branch-row").length).toBeGreaterThan(0);
+  });
+
+  it("shows the error alone, neither loading nor empty, when no answer can be had", async () => {
+    const { fail } = await comeBack(NO_ROWS);
+    mockOverview.mockRejectedValue(new Error("offline"));
+    await act(async () => fail(new Error("offline")));
+    expect(screen.getByText("offline")).toBeDefined();
+    expect(screen.queryByText(EMPTY)).toBeNull();
+    expect(screen.queryByText("Loading branches…")).toBeNull();
+  });
+});

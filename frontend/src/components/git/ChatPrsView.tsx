@@ -54,12 +54,16 @@ export default function ChatPrsView({ folder, chatId }: ChatPrsViewProps) {
   // key below is fixed for a mount, and what it remembers is that chat's alone.
   // Keyed on the folder and the chat both: the folder decides the live branch's
   // status, the chat which other PRs are listed.
-  const { data, error, refreshing, now, refresh } = useGitRequest<ChatPrsResponse>({
+  const { data: answer, landed, error, refreshing, now, refresh } = useGitRequest<ChatPrsResponse>({
     cacheKey: `prs\0${folder}\0${chatId ?? ""}`,
     fetch: (forced, signal) => getChatPrs(folder, chatId, forced, signal),
     timeoutMessage: "Timed out loading PRs — try refreshing.",
     failureMessage: "Failed to load PRs",
   });
+  // A remembered answer is painted for the PRs it lists. One that lists none
+  // is not shown as "No PR found…": a PR may have been opened since, so only
+  // an answer of this mount may say there is none.
+  const data = answer && (landed || answer.prs.length > 0) ? answer : null;
 
   const prCard = (pr: ChatPr) => {
     const opened = ago(pr.createdAt, now);

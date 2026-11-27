@@ -272,6 +272,7 @@ describe("ChatPrsView: refresh on load", () => {
   });
 
   it("paints what it showed last at once when it is mounted again, and still asks again", async () => {
+    mockPrs.mockResolvedValue(response({ status: "found", branch: "feat/a", pr: pr(7) }));
     const { unmount } = render(<ChatPrsView folder="/src/app.feat-a" chatId="c1" />);
     await settle();
     unmount();
@@ -281,7 +282,7 @@ describe("ChatPrsView: refresh on load", () => {
     render(<ChatPrsView folder="/src/app.feat-a" chatId="c1" />);
     // No request has answered, yet there is no loading state.
     expect(screen.queryByText("Loading PRs…")).toBeNull();
-    expect(screen.getByText(/^updated /)).toBeDefined();
+    expect(screen.getAllByTestId("pr-card")).toHaveLength(1);
     expect(button().getAttribute("aria-busy")).toBe("true");
     expect(mockPrs).toHaveBeenCalledTimes(1);
     expect(mockPrs).toHaveBeenCalledWith("/src/app.feat-a", "c1", false, expect.any(AbortSignal));
@@ -435,5 +436,66 @@ describe("ChatPrsView: what it remembers", () => {
     // The same card element, updated in place.
     expect(screen.getByTestId("pr-card")).toBe(before);
     expect(before.textContent).toContain("Renamed");
+  });
+});
+
+describe("ChatPrsView: a remembered answer with no PR in it", () => {
+  const settle = () => act(async () => {});
+  const view = () => render(<ChatPrsView folder="/src/app.feat-a" chatId="c1" />);
+  const NO_PR = response({ status: "no_pr", branch: "feat/a", prError: "gh timed out" });
+
+  async function comeBack(first: ChatPrsResponse) {
+    mockPrs.mockResolvedValue(first);
+    const one = view();
+    await settle();
+    one.unmount();
+    let answer!: (value: ChatPrsResponse) => void;
+    let fail!: (error: unknown) => void;
+    mockPrs.mockReset();
+    mockPrs.mockReturnValueOnce(
+      new Promise<ChatPrsResponse>((resolve, reject) => {
+        answer = resolve;
+        fail = reject;
+      }),
+    );
+    // The forced request that follows stays out.
+    mockPrs.mockReturnValue(new Promise(() => {}));
+    view();
+    return { answer, fail };
+  }
+
+  it("does not present a remembered \"No PR found\" as the current state: loading until an answer lands", async () => {
+    const { answer } = await comeBack(NO_PR);
+    // A PR may have been opened since.
+    expect(screen.queryByTestId("pr-empty")).toBeNull();
+    expect(screen.queryByTestId("pr-lookup-warning")).toBeNull();
+    expect(screen.getByText("Loading PRs…")).toBeDefined();
+    await act(async () => answer(response({ status: "found", branch: "feat/a", pr: pr(7) })));
+    expect(screen.queryByText("Loading PRs…")).toBeNull();
+    expect(screen.getAllByTestId("pr-card")).toHaveLength(1);
+  });
+
+  it("says so again as soon as an answer of this mount confirms it", async () => {
+    const { answer } = await comeBack(NO_PR);
+    await act(async () => answer(NO_PR));
+    expect(screen.getByTestId("pr-empty").textContent).toContain("No PR found for feat/a.");
+    expect(screen.getByTestId("pr-lookup-warning")).toBeDefined();
+    expect(screen.queryByText("Loading PRs…")).toBeNull();
+  });
+
+  it("still paints a remembered list at once, status line and all", async () => {
+    await comeBack(response({ status: "default_branch", branch: "main" }, [pr(7, { state: "merged" })]));
+    expect(screen.queryByText("Loading PRs…")).toBeNull();
+    expect(screen.getAllByTestId("pr-card")).toHaveLength(1);
+    expect(screen.getByTestId("pr-status-line")).toBeDefined();
+  });
+
+  it("shows the error alone when no answer can be had", async () => {
+    const { fail } = await comeBack(NO_PR);
+    mockPrs.mockRejectedValue(new Error("offline"));
+    await act(async () => fail(new Error("offline")));
+    expect(screen.getByText("offline")).toBeDefined();
+    expect(screen.queryByTestId("pr-empty")).toBeNull();
+    expect(screen.queryByText("Loading PRs…")).toBeNull();
   });
 });

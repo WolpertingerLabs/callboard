@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { PR_REQUEST_TIMEOUT_MS } from "./timedRequest";
@@ -291,23 +292,6 @@ describe("useGitRequest: timeouts and unmount", () => {
     expect(result.current.data).toEqual({ v: "forced" });
   });
 
-  it("gives a hung first request up and goes on to the forced one", async () => {
-    const answers = [
-      (signal: AbortSignal) =>
-        new Promise<Answer>((_resolve, reject) => signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")))),
-      () => Promise.resolve({ v: "forced" }),
-    ];
-    const fetch = vi.fn((_forced: boolean, signal: AbortSignal) => answers.shift()!(signal));
-    const { result } = mount(fetch);
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(PR_REQUEST_TIMEOUT_MS);
-    });
-    expect(fetch.mock.calls.map((c) => c[0])).toEqual([false, true]);
-    expect(result.current.data).toEqual({ v: "forced" });
-    expect(result.current.error).toBeNull();
-    expect(result.current.refreshing).toBe(false);
-  });
-
   it("aborts what is in flight on unmount, lets nothing land, and starts nothing more", async () => {
     const f = manualFetch();
     const { result, unmount } = mount(f.fetch);
@@ -333,5 +317,151 @@ describe("useGitRequest: timeouts and unmount", () => {
       await vi.advanceTimersByTimeAsync(10_000);
     });
     expect(result.current.now).toBe(before + 10_000);
+  });
+});
+
+describe("useGitRequest: the mount's two requests share one deadline", () => {
+  const hang = (signal: AbortSignal) =>
+    new Promise<Answer>((_resolve, reject) => signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))));
+  const advance = (ms: number) =>
+    act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+    });
+
+  it("a dead socket holds the button for one timeout, not two", async () => {
+    const fetch = vi.fn((_forced: boolean, signal: AbortSignal) => hang(signal));
+    const { result } = mount(fetch);
+    await advance(PR_REQUEST_TIMEOUT_MS - 1);
+    expect(result.current.refreshing).toBe(true);
+    await advance(1);
+    expect(result.current.refreshing).toBe(false);
+    expect(result.current.error).toBe("timed out");
+    // Nothing was chained behind the request that timed out.
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("the forced request gets what is left of the deadline when the unforced one answers late", async () => {
+    const f = manualFetch();
+    const { result } = mount(f.fetch);
+    await advance(30_000);
+    await act(async () => f.calls[0].resolve({ v: "unforced" }));
+    expect(f.calls.map((c) => c.forced)).toEqual([false, true]);
+    f.calls[1].signal.addEventListener("abort", () => f.calls[1].reject(new DOMException("aborted", "AbortError")));
+    await advance(PR_REQUEST_TIMEOUT_MS - 30_000 - 1);
+    expect(result.current.refreshing).toBe(true);
+    await advance(1);
+    expect(result.current.refreshing).toBe(false);
+    expect(result.current.error).toBe("timed out");
+    expect(result.current.data).toEqual({ v: "unforced" });
+  });
+
+  it("the forced request still goes out when the unforced one fails rather than times out", async () => {
+    const f = manualFetch();
+    const { result } = mount(f.fetch);
+    await advance(1_000);
+    await act(async () => f.calls[0].reject(new Error("offline")));
+    expect(f.calls.map((c) => c.forced)).toEqual([false, true]);
+    expect(result.current.refreshing).toBe(true);
+  });
+
+  it("polls resume after the mount gave up, and a later refresh has a full timeout of its own", async () => {
+    const answers: ((signal: AbortSignal) => Promise<Answer>)[] = [hang];
+    const fetch = vi.fn((_forced: boolean, signal: AbortSignal) => (answers.shift() ?? hang)(signal));
+    const { result } = mount(fetch);
+    await advance(PR_REQUEST_TIMEOUT_MS);
+    expect(result.current.refreshing).toBe(false);
+    answers.push(() => Promise.resolve({ v: "polled" }));
+    await advance(60_000);
+    expect(fetch.mock.calls.map((c) => c[0])).toEqual([false, false]);
+    expect(result.current.data).toEqual({ v: "polled" });
+
+    act(() => result.current.refresh());
+    await advance(PR_REQUEST_TIMEOUT_MS - 1);
+    expect(result.current.refreshing).toBe(true);
+    await advance(1);
+    expect(result.current.refreshing).toBe(false);
+  });
+});
+
+describe("useGitRequest: under StrictMode's double mount", () => {
+  const strict = (fetch: (forced: boolean, signal: AbortSignal) => Promise<Answer>) =>
+    renderHook(() => useGitRequest<Answer>({ cacheKey: "k", fetch, timeoutMessage: "timed out", failureMessage: "failed" }), { wrapper: StrictMode });
+
+  it("aborts the first mount's request and runs the sequence once: unforced, then forced, ending idle", async () => {
+    const f = manualFetch();
+    const { result } = strict(f.fetch);
+    // Mount, unmount, mount: the first request is aborted, the second is live.
+    expect(f.calls.map((c) => c.forced)).toEqual([false, false]);
+    expect(f.calls[0].signal.aborted).toBe(true);
+    expect(f.calls[1].signal.aborted).toBe(false);
+    // The aborted request settling changes nothing and chains nothing.
+    await act(async () => f.calls[0].reject(new DOMException("aborted", "AbortError")));
+    expect(f.calls).toHaveLength(2);
+    expect(result.current.error).toBeNull();
+    expect(result.current.refreshing).toBe(true);
+
+    await act(async () => f.calls[1].resolve({ v: "unforced" }));
+    expect(f.calls.map((c) => c.forced)).toEqual([false, false, true]);
+    expect(result.current.landed).toBe(true);
+    await act(async () => f.calls[2].resolve({ v: "forced" }));
+    expect(result.current.data).toEqual({ v: "forced" });
+    expect(result.current.refreshing).toBe(false);
+    expect(result.current.error).toBeNull();
+    expect(f.calls).toHaveLength(3);
+  });
+
+  it("does not let the first mount's request land even if it answers", async () => {
+    const f = manualFetch();
+    const { result } = strict(f.fetch);
+    await act(async () => f.calls[0].resolve({ v: "from the discarded mount" }));
+    expect(result.current.data).toBeNull();
+    expect(result.current.landed).toBe(false);
+    expect(f.calls).toHaveLength(2);
+  });
+
+  it("still polls and refreshes afterwards", async () => {
+    const f = manualFetch();
+    const { result } = strict(f.fetch);
+    await act(async () => f.calls[1].resolve({ v: "unforced" }));
+    await act(async () => f.calls[2].resolve({ v: "forced" }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(f.calls.map((c) => c.forced)).toEqual([false, false, true, false]);
+    await act(async () => f.calls[3].resolve({ v: "polled" }));
+    act(() => result.current.refresh());
+    expect(result.current.refreshing).toBe(true);
+    await act(async () => f.calls[4].resolve({ v: "refreshed" }));
+    expect(result.current.data).toEqual({ v: "refreshed" });
+    expect(result.current.refreshing).toBe(false);
+  });
+});
+
+describe("useGitRequest: landed", () => {
+  it("is false over a remembered answer until a request of this mount answers", async () => {
+    (await mountSettled(manualFetch())).unmount();
+    const f = manualFetch();
+    const { result } = mount(f.fetch);
+    expect(result.current.data).toEqual({ v: "forced" });
+    expect(result.current.landed).toBe(false);
+    await act(async () => f.calls[0].resolve({ v: "newer" }));
+    expect(result.current.landed).toBe(true);
+  });
+
+  it("stays false when the requests fail", async () => {
+    (await mountSettled(manualFetch())).unmount();
+    const f = manualFetch();
+    const { result } = mount(f.fetch);
+    await act(async () => f.calls[0].reject(new Error("offline")));
+    await act(async () => f.calls[1].reject(new Error("offline")));
+    expect(result.current.landed).toBe(false);
+  });
+
+  it("forgets everything when the cache is cleared, as logout does", async () => {
+    (await mountSettled(manualFetch(), "a")).unmount();
+    (await mountSettled(manualFetch(), "b")).unmount();
+    clearGitRequestCache();
+    expect(mount(manualFetch().fetch, "a").result.current.data).toBeNull();
+    expect(mount(manualFetch().fetch, "b").result.current.data).toBeNull();
   });
 });

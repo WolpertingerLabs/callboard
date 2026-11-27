@@ -25,8 +25,10 @@ interface BranchesViewProps {
    */
   cardsLoaded?: boolean;
   /**
-   * Bumped by the page when chat or card metadata changes (its
-   * `metadataVersion`): the overview is asked again shortly after.
+   * Bumped by the page once it has refetched the cards after a chat or card
+   * metadata change: the overview is asked again shortly after. After the
+   * cards rather than at the change itself, so the token and whatever the
+   * change did to the open cards arrive together and make one request.
    */
   reloadToken?: number;
   /** Called with the card id, which is the conversation's root chat id. */
@@ -36,8 +38,8 @@ interface BranchesViewProps {
 /** The overview is one request for the whole daemon: nothing keys it. */
 const OVERVIEW_CACHE_KEY = "overview";
 
-/** How long after the cards or metadata change the overview is asked again. */
-export const RELOAD_DEBOUNCE_MS = 500;
+/** How long after the cards change, or the reload token is bumped, the overview is asked again. */
+export const RELOAD_DEBOUNCE_MS = 200;
 
 /** Chips shown on a row before the rest fold behind "+N more". */
 const CHIP_LIMIT = 4;
@@ -63,7 +65,7 @@ function parentPrefix(repoPath: string): string {
  */
 export default function BranchesView({ cards, cardsLoaded = true, reloadToken = 0, onOpenChat }: BranchesViewProps) {
   const isMobile = useIsMobile();
-  const { data, error, refreshing, now, refresh, reload } = useGitRequest<GitOverviewResponse>({
+  const { data, landed, error, refreshing, now, refresh, reload } = useGitRequest<GitOverviewResponse>({
     cacheKey: OVERVIEW_CACHE_KEY,
     fetch: getGitOverview,
     timeoutMessage: "Timed out loading branches — try refreshing.",
@@ -74,9 +76,8 @@ export default function BranchesView({ cards, cardsLoaded = true, reloadToken = 
   // The overview's rows are the worktrees open cards work in, so a change in
   // which cards are open (a chat started in a new worktree, one archived) or
   // in any chat's metadata means the rows may have changed too. Ask again,
-  // unforced — the daemon answers that from its PR cache. Debounced a little
-  // longer than the page debounces its cards, so the metadata bump and the
-  // card list it produces make one request, not two.
+  // unforced — the daemon answers that from its PR cache. Debounced, so a
+  // burst of changes makes one request.
   const openIds = cards
     .filter((c) => c.lifecycle === "open")
     .map((c) => c.id)
@@ -295,11 +296,16 @@ export default function BranchesView({ cards, cardsLoaded = true, reloadToken = 
       )}
 
       {/* Without the cards no row can be shown yet, whatever the overview
-          holds: that is still loading, not an empty page. */}
-      {(data === null && !error) || (data !== null && !cardsLoaded) ? (
+          holds: that is still loading, not an empty page. Nor is a remembered
+          overview with nothing to show: a chat may have started in a
+          repository since, so the page is only called empty by an answer of
+          this mount. */}
+      {(data === null && !error) || (data !== null && !cardsLoaded) || (data !== null && repos.length === 0 && !landed && !error) ? (
         <div style={{ color: "var(--text-muted)", fontSize: 14 }}>Loading branches…</div>
       ) : (
-        data !== null && repos.length === 0 && <div style={{ color: "var(--text-muted)", fontSize: 14 }}>No active conversation is working in a git repository.</div>
+        data !== null &&
+        landed &&
+        repos.length === 0 && <div style={{ color: "var(--text-muted)", fontSize: 14 }}>No active conversation is working in a git repository.</div>
       )}
 
       {repos.map(({ repo, rows }) => (
