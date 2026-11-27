@@ -163,7 +163,7 @@ interface LocalStorageData {
    * models so toggling providers restores each one's prior selection.
    * Empty/absent means "use the global default from Settings → API". */
   defaultClaudeModel?: string;
-  /** User's last-selected Codex model (e.g. "gpt-5.5") for Codex chats in the
+  /** User's last-selected Codex model (e.g. "gpt-6.2-sol") for Codex chats in the
    * New Chat panel. Stored separately from the Claude model so toggling
    * providers restores each one's prior selection. Empty/absent means "use the
    * global default from Settings → API". */

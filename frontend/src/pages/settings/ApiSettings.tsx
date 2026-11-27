@@ -2276,7 +2276,7 @@ export default function ApiSettings() {
                   placeholder="openai/gpt-5.5-codex"
                 />
               ) : (
-                <CodexModelSelector id="codexModel" value={codexModel} onChange={bind("codexModel")} placeholder="gpt-5.5" />
+                <CodexModelSelector id="codexModel" value={codexModel} onChange={bind("codexModel")} placeholder="gpt-6.2-sol" />
               )}
               <div style={helpStyle}>
                 {codexCredentialMode === "openrouter"

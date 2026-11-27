@@ -69,6 +69,42 @@ word OK…`, `Now reply with exactly the word TWO.`) — every other opening
 literal above was confirmed present in the bundled `codex` binary with
 `grep -a -F`, in both 0.146.0 and 0.153.4.
 
+## `rollout-cli-0.172.0.jsonl` / `rollout-cli-0.172.0-resumed.jsonl`
+
+Captured on 2026-11-27 for the 0.153.4 → 0.172.0 bump, the same way as above
+(same flags, same two prompts, scratch `$CODEX_HOME` seeded only with
+`auth.json`) with this repo's bundled `codex-cli 0.172.0`. The SDK's default
+model there is `gpt-6.2-sol`. The single-turn file is the resumed one cut after
+the first `task_complete`, which is byte-identical to what a single-turn run
+writes up to that point.
+
+Edits: `base_instructions.text` redacted as above; `creator_user_id` and
+`creator_account_id` (new in 0.172.0, account identifiers) replaced with
+placeholders; in every `token_count` record, `rate_limits.credits.balance`
+set to `"0"` and `rate_limits.plan_type` to `"redacted"` (account metadata
+nothing here reads); and the new first `developer` message — the system prompt again,
+~28 KB — cut to its opening line plus a redaction marker. The parser drops it
+by role, so only the lead matters.
+
+What changed against 0.153.4:
+
+| | 0.153.4 | 0.172.0 |
+| --- | --- | --- |
+| first `response_item` | `message` (developer) | `additional_tools` (new payload type, skipped) |
+| developer #1 | `<skills_instructions>…<permissions instructions>…` | `You are Codex, an agent based on GPT-6…` (untagged) |
+| developer #2 | `<multi_agent_role>…` | `<skills_instructions>…` |
+| user #1 | `<recommended_plugins>…<environment_context>…` | `<environment_context>…` (`recommended_plugins` now off by default) |
+| resumed turn re-injects | developer lead | `<skills_instructions>` developer only |
+
+Tool calls in 0.172.0 rollouts (default model, no config) go through code
+mode: a `custom_tool_call` named `exec` whose `input` is JS calling
+`tools.exec_command(...)` / `tools.apply_patch(...)`, paired with
+`custom_tool_call_output`. Those are the same item types the parser already
+handles. The public `--experimental-json` stream is unchanged: a
+`command_execution` / `file_change` run on 0.172.0 emitted the same event and
+item keys as `stream-cli-0.153.4-file-change.jsonl`, so no new stream capture
+was committed.
+
 ## Live-stream captures (`stream-cli-0.153.4-*.jsonl`)
 
 The `rollout-*` files above are the **durable** format. These two are the

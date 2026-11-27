@@ -39,25 +39,33 @@ const require = createRequire(import.meta.url);
 
 const REFRESH_TIMEOUT_MS = 15_000;
 
+/**
+ * Last-resort guess, served only when `codex debug models` has never succeeded
+ * in this process. OpenAI serves a per-client-version (and per-account)
+ * catalog, so this can only ever approximate what the user's CLI accepts.
+ * Taken from `codex debug models` on the bundled codex-cli 0.172.0 (ChatGPT
+ * auth); refresh it whenever the bundled CLI moves, because a slug the client
+ * no longer sees fails with `model_not_found` rather than running.
+ */
 const STATIC_MODELS: CodexModelInfo[] = [
   {
-    id: "gpt-5.5",
-    name: "GPT-5.5",
-    description: "Latest GPT-5 agentic coding model",
+    id: "gpt-6.2-sol",
+    name: "GPT-6.2-Sol",
+    description: "Fast, go-to model for coding and everyday work.",
     visibility: "list",
     supportedInApi: true,
   },
   {
-    id: "gpt-5.4",
-    name: "GPT-5.4",
-    description: "GPT-5.4 agentic coding model",
+    id: "gpt-6.2-astra",
+    name: "GPT-6.2-Astra",
+    description: "Our most capable model for complex coding and professional work.",
     visibility: "list",
     supportedInApi: true,
   },
   {
-    id: "gpt-5.4-mini",
-    name: "GPT-5.4 Mini",
-    description: "Faster, lower-cost GPT-5.4 coding model",
+    id: "gpt-6-luna",
+    name: "GPT-6-Luna",
+    description: "Fast and affordable model for easier tasks.",
     visibility: "list",
     supportedInApi: true,
   },
@@ -290,7 +298,7 @@ export async function getVisibleCodexModelsAsync(): Promise<CodexModelInfo[]> {
 }
 
 // Case-insensitive subsequence test: every char of `query` appears in `target`
-// in order (not necessarily contiguous). "g55" matches "gpt-5.5".
+// in order (not necessarily contiguous). "g62s" matches "gpt-6.2-sol".
 function isSubsequence(query: string, target: string): boolean {
   const q = query.toLowerCase();
   const t = target.toLowerCase();

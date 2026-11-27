@@ -104,7 +104,7 @@ export default function ModelAliasesSettings() {
         </div>
         <div style={helpStyle}>
           Name a shortcut once and point it at a different model per harness — e.g. <code>planner</code> → <code>opus</code> on Claude Code,{" "}
-          <code>gpt-5.5</code> on Codex, <code>google/gemini-3.6-flash</code> on pi. Then set <code>model: &quot;planner&quot;</code> anywhere a model is
+          <code>gpt-6.2-sol</code> on Codex, <code>google/gemini-3.6-flash</code> on pi. Then set <code>model: &quot;planner&quot;</code> anywhere a model is
           configured (new chats, per-chat overrides, job steps, cron/trigger actions) and it resolves to the target for whichever harness runs the session.
           Leave a harness blank to fall back to that provider&rsquo;s configured default. Targets must be real model ids, never other alias names.
         </div>
@@ -175,7 +175,7 @@ export default function ModelAliasesSettings() {
                 </div>
                 <div style={{ minWidth: 0 }}>
                   <label style={colLabel}>Codex</label>
-                  <CodexModelSelector value={row.codex} onChange={(v) => update(i, { codex: v })} placeholder="gpt-5.5" />
+                  <CodexModelSelector value={row.codex} onChange={(v) => update(i, { codex: v })} placeholder="gpt-6.2-sol" />
                 </div>
                 {/* A real selector: pi's catalog is bundled with
                     the package and answered offline, so it is available here

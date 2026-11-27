@@ -87,8 +87,20 @@ const log = createLogger("codex-session-parser");
  * drift warning that exists to force exactly this re-check. Before bumping:
  * run the newly bundled binary, capture a rollout, and diff its `response_item`
  * `message` leads against `__fixtures__/rollout-*.jsonl`.
+ *
+ * ## The 0.172.0 bump (from 0.153.4)
+ *
+ * Re-checked per the above with fresh captures (`rollout-cli-0.172.0*.jsonl`).
+ * Every discriminant listed above is still emitted. What moved, none of which
+ * needs a parser change: a new untagged first `developer` message (the system
+ * prompt again, `You are Codex, an agent based on GPT-6…`), dropped by role; a
+ * new `response_item` type `additional_tools`, skipped as unknown; a resume now
+ * re-injects only `<skills_instructions>`; `turn_context` lost
+ * `current_date`/`timezone`/`workspace_roots`/`personality` and `session_meta`
+ * gained `account_scoped`/`creator_*`/`runtime_workspace_roots`, none of which
+ * this parser reads.
  */
-export const EXPECTED_CODEX_CLI_VERSION = "0.153.4";
+export const EXPECTED_CODEX_CLI_VERSION = "0.172.0";
 
 /**
  * Tag prefixes of the synthetic messages the Codex CLI injects into the **user**

@@ -113,8 +113,8 @@ export async function resolveCodexExecutionRoute(settings: AgentSettings, cwd?: 
     }
   }
   const baseUrlOverride = settings.codexAuthMode === "api-key" ? settings.codexBaseUrl?.trim() : undefined;
-  // Match SDK 0.153.4's baseUrl translation exactly (a CLI config override,
-  // not merely an environment variable). No API key is needed for config/read.
+  // Match the SDK's baseUrl translation exactly (a CLI config override, not
+  // merely an environment variable; unchanged from SDK 0.153.4 to 0.172.0). No API key is needed for config/read.
   const args = [...prefix, "app-server", ...(baseUrlOverride ? ["--config", `openai_base_url=${JSON.stringify(baseUrlOverride)}`] : [])];
   const key = JSON.stringify([command, env.CODEX_HOME, cwd, baseUrlOverride, env.OPENAI_BASE_URL, injectedOpenRouter, subscriptionViaOpenRouter]);
   let pending = inFlight.get(key);
