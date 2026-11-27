@@ -18,14 +18,16 @@ interface CodexModelOption {
 
 // Fallback suggestions used only when the backend cannot read the live Codex
 // catalog. Free text is always accepted, so this list never blocks newer slugs.
+// Mirrors the backend's last-resort `STATIC_MODELS` (services/codex-models.ts):
+// slugs the bundled codex-cli 0.172.0 catalog serves. Keep the two in step.
 const STATIC_MODELS: CodexModelOption[] = [
-  { value: "gpt-5.5", displayName: "GPT-5.5", description: "Latest GPT-5 agentic coding model" },
-  { value: "gpt-5.4", displayName: "GPT-5.4", description: "GPT-5.4 agentic coding model" },
-  { value: "gpt-5.4-mini", displayName: "GPT-5.4 Mini", description: "Faster, lower-cost GPT-5.4 coding model" },
+  { value: "gpt-6.2-sol", displayName: "GPT-6.2-Sol", description: "Fast, go-to model for coding and everyday work." },
+  { value: "gpt-6.2-astra", displayName: "GPT-6.2-Astra", description: "Our most capable model for complex coding and professional work." },
+  { value: "gpt-6-luna", displayName: "GPT-6-Luna", description: "Fast and affordable model for easier tasks." },
 ];
 
 // Case-insensitive subsequence test: every char of `query` appears in `target`
-// in order (not necessarily contiguous). "g55" matches "gpt-5.5".
+// in order (not necessarily contiguous). "g62s" matches "gpt-6.2-sol".
 function isSubsequence(query: string, target: string): boolean {
   const q = query.toLowerCase();
   const t = target.toLowerCase();

@@ -26,8 +26,18 @@ type FetchState =
     }
   | { status: "error"; message: string };
 
+/**
+ * Keyed by alias, so moving from one caller's page to another's (back/forward,
+ * an edited URL) starts from scratch. Otherwise B's page would begin with A's
+ * loaded state, and if loading B failed, the failed-refresh path would keep
+ * showing A while every action (delete, agent permissions) went to B.
+ */
 export default function CallerDetail() {
   const { alias } = useParams<{ alias: string }>();
+  return <CallerDetailPage key={alias} alias={alias} />;
+}
+
+function CallerDetailPage({ alias }: { alias: string | undefined }) {
   const { daemon } = useDaemon();
   const navigate = useNavigate();
   const toast = useToast();

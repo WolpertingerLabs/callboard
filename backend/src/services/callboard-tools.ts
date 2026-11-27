@@ -19,7 +19,7 @@ import { getActiveSession } from "./claude.js";
 import { readChatSessionMessages, findChat } from "../utils/chat-lookup.js";
 import { resolveBranch } from "../utils/git.js";
 import { getOpenRouterModelsAsync, searchOpenRouterModels, formatOpenRouterPrice } from "./openrouter-models.js";
-import { getVisibleCodexModelsAsync, searchCodexModels } from "./codex-models.js";
+import { cachedCodexCatalogWarning, getVisibleCodexModelsAsync, searchCodexModels } from "./codex-models.js";
 import { getSdkInfoAsync } from "./sdk-info.js";
 import { getUserContact } from "./user-contact.js";
 import { customSkillsService, slugifySkillName } from "./custom-skills-service.js";
@@ -774,6 +774,7 @@ export function buildCallboardToolsSpec(
               onComplete = { registered, ...(note && { note }) };
             }
 
+            const catalogWarning = providerModel.provider === "codex" ? cachedCodexCatalogWarning(providerModel.model) : null;
             return jsonResult({
               chatId,
               status: "started",
@@ -786,6 +787,9 @@ export function buildCallboardToolsSpec(
               ...(args.effort && { effort: args.effort as EffortLevel }),
               modelSource: providerModel.modelSource,
               ...(providerModel.inheritanceNote && { inheritanceNote: providerModel.inheritanceNote }),
+              // Advisory only — the session is already running. Speaks only
+              // from a live, already-cached catalog (never fetches here).
+              ...(catalogWarning && { warning: catalogWarning }),
               // Where the child landed in the tree. `independent: true`
               // is reported rather than just omitting parentChatId, so a
               // caller can tell a deliberate detach from the other way
@@ -841,7 +845,9 @@ export function buildCallboardToolsSpec(
           query: z
             .string()
             .optional()
-            .describe("Filter to models whose slug or display name matches this text as a subsequence (characters in order, e.g. 'g55' matches 'gpt-5.5')."),
+            .describe(
+              "Filter to models whose slug or display name matches this text as a subsequence (characters in order, e.g. 'g62s' matches 'gpt-6.2-sol').",
+            ),
           limit: z.number().optional().describe("Max models to return (default: all, or 50 when `query` is given)."),
         },
         async (args) => {

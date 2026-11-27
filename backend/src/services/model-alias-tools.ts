@@ -87,7 +87,7 @@ export function buildModelAliasTools(): AnyToolDefinition[] {
               "unless cleared. If the retired target is the alias's only one, clearing it would leave nothing to resolve to — use " +
               "delete_model_alias instead.",
           ),
-        codex: z.string().optional().describe('codex target — a Codex model slug, e.g. "gpt-5.5". Pass "" to clear.'),
+        codex: z.string().optional().describe('codex target — a Codex model slug, e.g. "gpt-6.2-sol". Pass "" to clear.'),
         // Same treatment as `openrouter` above, for the same reason.
         acp: z
           .literal("")

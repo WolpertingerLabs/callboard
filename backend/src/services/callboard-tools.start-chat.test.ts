@@ -32,6 +32,7 @@ vi.mock("./claude.js", () => ({ getActiveSession: () => undefined }));
 const { buildCallboardToolsSpec, setCallboardMessageSender } = await import("./callboard-tools.js");
 const { chatFileService } = await import("./chat-file-service.js");
 const { updateAgentSettings } = await import("./agent-settings.js");
+const { setCodexModelsCacheForTesting, resetCodexModelsCacheForTesting } = await import("./codex-models.js");
 import type { ToolDefinition } from "../agents/ports/tools.js";
 
 function writeCallerChat(metadata: Record<string, unknown>): void {
@@ -514,5 +515,79 @@ describe("start_chat_session — Codex under an explicit sandbox setting", () =>
     await startChat(CALLER_CHAT_ID, () => ASK_EXEC).handler({ prompt: "go", folder: "/tmp/project", provider: "claude-code" });
 
     expect(sender.calls).toHaveLength(1);
+  });
+});
+
+/**
+ * The advisory `warning` for a Codex model outside the live catalog. It must
+ * judge the model the child will actually run — an alias resolves first — and
+ * stay quiet on the OpenRouter route, whose ids (OR slugs) never appear in
+ * `codex debug models`.
+ */
+describe("start_chat_session — Codex catalog warning", () => {
+  function seedLiveCatalog(): void {
+    setCodexModelsCacheForTesting({ source: "live", fetchedAt: Date.now(), models: [{ id: "gpt-5.4", name: "GPT-5.4", visibility: "list" }] });
+  }
+
+  afterEach(() => {
+    resetCodexModelsCacheForTesting();
+    updateAgentSettings({ modelAliases: [], codexUseOpenRouter: false, codexOpenRouterApiKey: undefined });
+  });
+
+  it("warns for an explicit model the live catalog doesn't list", async () => {
+    writeCallerChat({});
+    seedLiveCatalog();
+    stubSender();
+    const result = payload(await startChat().handler({ prompt: "go", folder: "/tmp/project", provider: "codex", model: "gpt-9" }));
+    expect(result.status).toBe("started");
+    expect(result.warning).toContain('"gpt-9" is not in the model catalog');
+  });
+
+  it("stays quiet for a listed model", async () => {
+    writeCallerChat({});
+    seedLiveCatalog();
+    stubSender();
+    const result = payload(await startChat().handler({ prompt: "go", folder: "/tmp/project", provider: "codex", model: "gpt-5.4" }));
+    expect(result.warning).toBeUndefined();
+  });
+
+  it("resolves an alias (explicit or inherited) before checking", async () => {
+    updateAgentSettings({ modelAliases: [{ name: "smart", targets: { codex: "gpt-5.4" } }] });
+    seedLiveCatalog();
+    stubSender();
+
+    writeCallerChat({});
+    const explicit = payload(await startChat().handler({ prompt: "go", folder: "/tmp/project", provider: "codex", model: "smart" }));
+    expect(explicit.warning).toBeUndefined();
+
+    writeCallerChat({ model: "smart" });
+    const inherited = payload(await startChat().handler({ prompt: "go", folder: "/tmp/project" }));
+    expect(inherited.modelSource).toBe("inherited");
+    expect(inherited.warning).toBeUndefined();
+  });
+
+  it("warns on what the alias resolves to, and skips an alias with no codex target", async () => {
+    updateAgentSettings({
+      modelAliases: [
+        { name: "future", targets: { codex: "gpt-9" } },
+        { name: "claude-only", targets: { "claude-code": "opus" } },
+      ],
+    });
+    seedLiveCatalog();
+    stubSender();
+    writeCallerChat({});
+    const future = payload(await startChat().handler({ prompt: "go", folder: "/tmp/project", provider: "codex", model: "future" }));
+    expect(future.warning).toContain('"gpt-9"');
+    const claudeOnly = payload(await startChat().handler({ prompt: "go", folder: "/tmp/project", provider: "codex", model: "claude-only" }));
+    expect(claudeOnly.warning).toBeUndefined();
+  });
+
+  it("stays quiet when Codex is routed through OpenRouter", async () => {
+    updateAgentSettings({ codexUseOpenRouter: true, codexOpenRouterApiKey: "sk-or-test" });
+    seedLiveCatalog();
+    stubSender();
+    writeCallerChat({});
+    const result = payload(await startChat().handler({ prompt: "go", folder: "/tmp/project", provider: "codex", model: "openai/gpt-9" }));
+    expect(result.warning).toBeUndefined();
   });
 });
