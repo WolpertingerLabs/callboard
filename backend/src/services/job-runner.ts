@@ -119,6 +119,11 @@ const chatToStep = new Map<string, JobContext>();
  * dropped by handleStepSessionEnd: a step whose session errored without
  * reporting a result fails with this message, instead of being harvested as a
  * successful unstructured completion with an empty `_final`.
+ *
+ * In memory only, so this covers the live path alone. A session that errors
+ * while the daemon is down (or across a restart) is harvested by the
+ * restart/adoption paths with no error to read, and is still treated as an
+ * unstructured completion. That is the behaviour from before this map existed.
  */
 const sessionErrors = new Map<string, string>();
 /** runId → pending wake timer (poll interval, retry backoff, timeouts). */
@@ -137,6 +142,9 @@ export function initJobRunner(): void {
   sessionRegistry.on("change", (event: SessionEvent) => {
     if (event.event !== "session_stopped") return;
     const ctx = chatToStep.get(event.chatId);
+    // A session nobody will harvest (cancelled run, superseded attempt,
+    // advisory notifier) must not leave its captured error behind.
+    if (!ctx || ctx.advisory) sessionErrors.delete(event.chatId);
     if (!ctx) return;
     chatToStep.delete(event.chatId);
     if (ctx.advisory) return;
@@ -1152,7 +1160,8 @@ async function spawnStepSession(runId: string, stepId: string, prompt: string, o
 
   // Attached before awaiting chat_created so an error landing straight after it
   // (a Codex model_not_found arrives within the first second) is not missed.
-  captureSessionError(emitter);
+  // Advisory sessions never advance the run, so their errors have no reader.
+  if (!opts.advisory) captureSessionError(emitter);
 
   const chatId = await awaitChatCreated(emitter, {
     timeoutMs: 30_000,
@@ -1840,6 +1849,11 @@ function captureSessionError(emitter: EventEmitter): void {
     }
   };
   emitter.on("event", onEvent);
+}
+
+/** Test-only: how many captured session errors are waiting to be harvested. */
+export function sessionErrorCountForTesting(): number {
+  return sessionErrors.size;
 }
 
 function sessionErrorReason(error: string): string {

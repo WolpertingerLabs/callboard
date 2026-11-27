@@ -160,4 +160,39 @@ describe("step session that ends on a provider error", () => {
     expect(branchEntry?.result).toBe("error");
     expect(branchEntry?.detail).toContain(ACTIONABLE);
   });
+
+  it("doesn't keep the error of a session that will never be harvested (run cancelled first)", async () => {
+    const { runId, chatId } = await startRun([{ id: "s", type: "agent", prompt: "p" }]);
+    runner.cancelRun(runId);
+    failSession(chatId, ACTIONABLE);
+    await flush(() => true);
+    expect(runner.sessionErrorCountForTesting()).toBe(0);
+    expect(store.getRun(runId)!.status).toBe("cancelled");
+  });
+
+  it("records a poll checker's error in its not_yet detail and sleeps for the next check", async () => {
+    const { runId, chatId } = await startRun([{ id: "check", type: "poll", prompt: "is it done?", intervalMinutes: 60, maxAttempts: 3 }]);
+
+    failSession(chatId, ACTIONABLE);
+    await flush(() => store.getRun(runId)!.history.length === 1);
+
+    const run = store.getRun(runId)!;
+    expect(run.history[0].result).toBe("not_yet");
+    expect(run.history[0].detail).toBe(`checker session ended with an error: ${ACTIONABLE} — treating as not_yet`);
+    expect(run.status).toBe("sleeping");
+  });
+
+  it("records an errored notifier as an error, not 'notified', and still advances", async () => {
+    const { runId, chatId } = await startRun([
+      { id: "tell", type: "notify", message: "hello" },
+      { id: "after", type: "agent", prompt: "next" },
+    ]);
+
+    failSession(chatId, ACTIONABLE);
+    await flush(() => store.getRun(runId)!.currentStepId === "after");
+
+    const entry = store.getRun(runId)!.history.find((h) => h.stepId === "tell");
+    expect(entry?.result).toBe("error");
+    expect(entry?.detail).toContain(ACTIONABLE);
+  });
 });
