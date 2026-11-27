@@ -33,10 +33,11 @@
  *       version"); a dry run warns and only packs, so a rehearsal still works
  *       before the bump;
  *     - only one published (a partial release, and main has moved since):
- *       fail. Re-running the original run finishes it, since a re-run keeps
- *       that run's commit: "Re-run failed jobs" with the tarballs it packed
- *       (kept 7 days), "Re-run all jobs" by re-planning on the base. Otherwise
- *       bump the version. A dry run warns and only packs.
+ *       fail. Re-running the original run (GitHub allows that within 30
+ *       days) finishes it, since a re-run keeps that run's commit: "Re-run
+ *       failed jobs" with the tarballs it packed (kept 7 days), "Re-run all
+ *       jobs" by re-planning on the base. Otherwise bump the version. A dry
+ *       run warns and only packs.
  * - A package about to be published must not move the requested dist-tag
  *   backwards. `--tag latest`, which the workflow always passes, turns off
  *   npm's own check for that, so this one replaces it. Checked per package:
@@ -71,7 +72,7 @@ export const releaseTag = (version) => `v${version}`;
  */
 export function compareSemver(a, b) {
   const parse = (v) => {
-    const m = SEMVER_RE.exec(String(v).trim());
+    const m = SEMVER_RE.exec(String(v).trim().replace(/^v/, "")); // a registry or user "v1.2.3" still compares
     if (!m) throw new Error(`not a semver version: ${v}`);
     return { core: m.slice(1, 4).map(Number), pre: m[4] ? m[4].split(".") : [] };
   };
@@ -209,7 +210,7 @@ export function planRelease({ dryRun, head, distTag, version, versionErrors = []
       const problem =
         published.length === 2
           ? `${version} is already on npm (released from ${base}). Bump the version.`
-          : `${version} was partly released from ${base} (${published[0][0]} is on npm, ${packages.find(([, pkg]) => !pkg.published)[0]} is not), and main is now at ${head}. Finish it by re-running the original run ("Re-run failed jobs" reuses its tarballs, packed from ${base}; "Re-run all jobs" re-plans on ${base}), or bump the version.`;
+          : `${version} was partly released from ${base} (${published[0][0]} is on npm, ${packages.find(([, pkg]) => !pkg.published)[0]} is not), and main is now at ${head}. Finish it by re-running the original run within 30 days of it ("Re-run failed jobs" reuses its tarballs, packed from ${base}, for 7 days; "Re-run all jobs" re-plans on ${base}), or bump the version.`;
       if (dryRun) {
         dl.action = cb.action = "pack";
         warnings.push(`${problem} This dry run only packs; a real run would fail.`);
@@ -303,7 +304,13 @@ function main() {
   const distTag = process.env.DIST_TAG ?? "latest"; // not ||: an emptied input must fail, not become latest
   const run = runIn(ROOT);
   const git = repoGit(ROOT);
-  const state = readVersionState(ROOT);
+  let state;
+  try {
+    state = readVersionState(ROOT);
+  } catch (err) {
+    console.log(`::error::${err.message}`); // a missing or broken manifest, named
+    process.exit(1);
+  }
   const { version } = state;
   const head = run("git", ["rev-parse", "HEAD"]);
   const tag = releaseTag(version);

@@ -204,11 +204,13 @@ jobs:
       # installed from there. Always runs in a real run, including a re-run
       # whose Publish drawlatch step skipped; CALLBOARD_SKIP_REGISTRY_CHECK has
       # no effect on deps:check:registry. A fresh publish can 404 for a little
-      # while, so retry for about two minutes. A dry run that would publish
-      # drawlatch (every normal release) skips it, since drawlatch isn't on npm
-      # yet; one that only packs ("pack") or skips drawlatch runs it.
+      # while, so retry for about two minutes. A dry run checks only when
+      # drawlatch's action is "skip" (it is already on npm): one that would
+      # publish drawlatch (every normal release) can't, since drawlatch isn't
+      # on npm yet, and one that only packs ("pack") publishes nothing, and
+      # drawlatch may not be on npm then either.
       - name: Verify drawlatch is on npm
-        if: ${{ !inputs.dry_run || needs.build.outputs.drawlatch_action != 'publish' }}
+        if: ${{ !inputs.dry_run || needs.build.outputs.drawlatch_action == 'skip' }}
         run: |
           for i in $(seq 1 12); do
             if npm run --silent deps:check:registry; then exit 0; fi

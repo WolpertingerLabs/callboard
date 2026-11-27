@@ -443,7 +443,9 @@ What a run does, decided by `scripts/release-plan.mjs` and printed in the run su
 
 1. **Plan.**
    - Fails if any package, pin or lockfile disagrees with the root version (the same check as `deps:check`, run before the install).
-   - Neither package may be on npm at this version yet, or the run fails with "bump the version" (a dry run only warns). The exception is finishing a partial release of this same commit (see re-running, below).
+   - Neither package may be on npm at this version yet, or the run fails with "bump the version" (a dry run only warns). There are two exceptions:
+     - Finishing a partial release of this same commit (see re-running, below).
+     - Both packages already on npm from an **older** commit of `main`, with no `v<version>` tag (a run that failed only at tagging, then `main` moved). The run tags that older commit, publishes nothing, and goes green with a warning in the summary. To release the current commit, bump the version.
 2. **Gate.** `npm run prepublishOnly`: lint, a clean build, every test suite and `deps:check`, run once, before anything is published. It runs with `CALLBOARD_SKIP_REGISTRY_CHECK=1`, which makes `prepublishOnly` skip its registry check (that the pinned drawlatch is already on npm), because drawlatch isn't published until the publish job.
 3. **Pack.** Writes the commit into each `package.json` as `gitHead` (npm records it, and re-runs use it), then runs `npm pack` for both.
 4. **Publish drawlatch** (if needed).
@@ -461,7 +463,7 @@ What a run does, decided by `scripts/release-plan.mjs` and printed in the run su
   - A missing `v<version>` tag is created on the commit npm recorded for that version (`gitHead`).
   - A tag already on the right commit is left alone.
   - The run fails on a tag that disagrees with the commit npm recorded, on a tag at a different commit for a version that isn't on npm, and when the two packages were published from different commits.
-  - **If `main` has moved since a partial release** (drawlatch on npm, callboard not), a new dispatch fails, because it would pack callboard from a different commit than drawlatch. Re-run the original run instead ("Re-run all jobs", or "Re-run failed jobs" below), or bump the version.
+  - **If `main` has moved since a partial release** (drawlatch on npm, callboard not), a new dispatch fails, because it would pack callboard from a different commit than drawlatch. Re-run the original run instead, within 30 days of it ("Re-run all jobs", or "Re-run failed jobs" below), or bump the version.
 - **"Re-run failed jobs"**, when only the publish job failed, reuses the build job's plan and tarballs. This is safe too:
   - Each publish first checks npm. A version already published from this run's commit is skipped with a notice. One published from any other commit fails the step; start a new dispatch so the plan can say what to do.
   - A tag already on origin at the right commit is skipped.

@@ -135,6 +135,27 @@ describe("planRelease", () => {
     });
   });
 
+  describe("only callboard on npm, from an older commit (the reverse partial release)", () => {
+    it("a real run fails, naming the packages the right way round, with the remedy", () => {
+      const p = plan({ callboard: at(OLD) });
+      expect(p.errors).toEqual([
+        expect.stringMatching(
+          /partly released from b{40} \(@wolpertingerlabs\/callboard is on npm, @wolpertingerlabs\/drawlatch is not\), and main is now at a{40}\..*within 30 days.*or bump the version/,
+        ),
+      ]);
+      expect(p).toMatchObject({ ...both("skip"), tag: { commit: null } });
+    });
+
+    it("a dry run warns and only packs both", () => {
+      const p = plan({ dryRun: true, callboard: at(OLD) });
+      expect(p.errors).toEqual([]);
+      expect(p).toMatchObject({ ...both("pack"), tag: { commit: null } });
+      expect(p.warnings).toEqual([
+        expect.stringMatching(/@wolpertingerlabs\/callboard is on npm, @wolpertingerlabs\/drawlatch is not.*This dry run only packs/),
+      ]);
+    });
+  });
+
   describe("disagreements", () => {
     it("fails when v<version> and the commit npm recorded disagree, in a dry run too", () => {
       for (const dryRun of [false, true]) {
@@ -322,6 +343,7 @@ describe("compareSemver", () => {
 
   it("ignores build metadata and rejects garbage", () => {
     expect(compareSemver("1.0.0+abc", "1.0.0")).toBe(0);
+    expect(compareSemver("v1.0.0-alpha.70", "1.0.0-alpha.69")).toBeGreaterThan(0); // a leading v still compares
     expect(() => compareSemver("latest", "1.0.0")).toThrow(/not a semver/);
   });
 });
