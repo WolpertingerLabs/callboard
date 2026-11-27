@@ -8,11 +8,11 @@
  * older call that leaves every other test green.
  *
  *  - `listCards(true)` → `?includeHidden=true`. The route defaults it OFF,
- *    because the board must never see a card that opted out. The sidebar must:
- *    `utils/chatDimming` fades a chat whose card is closed OR hidden, and it
- *    can only do that for a card it was handed. Drop the argument — an easy
- *    edit, since `loadCards` reads as an ordinary board-style fetch — and the
- *    dim silently stops agreeing with `cardLifecycle=unarchived` on exactly the
+ *    because the default listing must never include a card that opted out.
+ *    The sidebar must ask: `utils/chatDimming` fades a chat whose card is
+ *    closed OR hidden, and it can only do that for a card it was handed. Drop
+ *    the argument — an easy edit, since `loadCards` reads as an ordinary
+ *    default-listing fetch — and the dim silently stops agreeing with `cardLifecycle=unarchived` on exactly the
  *    rows that scope withholds. The hidden path is covered at the route
  *    (cards.hidden-listing.test.ts) and at the predicate (chatDimming.test.ts);
  *    this one line is what makes those two meet.
@@ -53,7 +53,7 @@ describe("listCards", () => {
     expect(requestedUrl().searchParams.get("includeHidden")).toBe("true");
   });
 
-  it("sends no query at all otherwise, so the board's request is unchanged", async () => {
+  it("sends no query at all otherwise, so the default listing's request is unchanged", async () => {
     await listCards();
     const url = requestedUrl();
     expect(url.search).toBe("");
