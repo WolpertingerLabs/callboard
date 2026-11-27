@@ -174,6 +174,12 @@ export interface CodexOptionsExtras {
  * (`codex features list`); with these off a probe asking the model to run a
  * shell command got a refusal, without them it ran one. `unified_exec` is
  * listed although 0.153.4 keeps it on regardless — the sandbox is the backstop.
+ * Re-checked on codex-cli 0.172.0: every flag here still exists, and the same
+ * probe (gpt-6.2-sol) found no shell tool — `tools.exec_command` is absent from
+ * code mode. Not covered by any flag here, on 0.153.4 and 0.172.0 alike: the
+ * model-catalog-driven `collaboration.*` tools (`multi_agent` is deprecated and
+ * no longer gates them), `clock.sleep`, and `apply_patch` via code mode, which
+ * the read-only sandbox blocks.
  */
 export const LOCKDOWN_FEATURES = [
   "shell_tool",
