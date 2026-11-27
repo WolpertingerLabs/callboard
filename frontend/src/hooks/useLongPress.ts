@@ -58,7 +58,7 @@ export interface UseLongPressResult {
  * The `moveTolerance` check is a backstop for browsers slow to fire it.
  *
  * Consequently the pressable element must keep its default `touch-action`.
- * Setting `touch-action: none` to "own" the gesture breaks board scrolling
+ * Setting `touch-action: none` to "own" the gesture breaks list scrolling
  * *and* suppresses the very `pointercancel` this design leans on.
  */
 export function useLongPress({ onLongPress, delayMs = 500, moveTolerance = 10 }: UseLongPressOptions): UseLongPressResult {

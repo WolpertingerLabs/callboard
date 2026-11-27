@@ -25,8 +25,8 @@ interface SelectionBarProps {
   /**
    * How the bar attaches to the bottom of its surface.
    *
-   * `fixed` is the board's: it owns the whole viewport, so pinning to the
-   * viewport IS pinning to the board. `absolute` is for a surface that owns a
+   * `fixed` is for a surface that owns the whole viewport, where pinning to
+   * the viewport IS pinning to the surface. `absolute` is for a surface that owns a
    * column of it — the sidebar chat list — where a viewport-spanning bar would
    * lie across the chat pane beside it. The caller supplies the positioned
    * ancestor; on mobile that column is the whole screen, so the same
@@ -55,8 +55,8 @@ interface SelectionBarProps {
    * "Move to space…" and "Delete 1 chat" wrapped inside their buttons and the
    * last one ran off the edge. Compact renders Cancel and every action that
    * has an `icon` as a square icon button whose label is its accessible name
-   * and its tooltip, so nothing is lost but the visible words. Opt-in: the
-   * board's bar spans the viewport and has room to say what it does.
+   * and its tooltip, so nothing is lost but the visible words. Opt-in: a
+   * viewport-spanning bar has room to say what it does.
    */
   compact?: boolean;
 }
@@ -77,9 +77,9 @@ const ICON_BUTTON: CSSProperties = {
  * The bar that appears while a multi-select gesture is live.
  *
  * Generic in its actions since it was written, and now generic in its surface
- * too: the board wires archive-or-unarchive, the chat list wires that plus a
- * delete. That the *board* offers exactly one verb is a property of the board's
- * selection being scoped to one lifecycle — the bar never asks a user to work
+ * too: the chat list wires archive-or-unarchive plus a delete. That it offers
+ * exactly one archive verb is a property of its selection being scoped to one
+ * archive state — the bar never asks a user to work
  * out what "Archive 3 / Unarchive 2" would do to their five selected rows.
  *
  * Nothing here knows what is selected. `count` and every action label are the

@@ -45,9 +45,9 @@ import type { SpaceListItem } from "shared/types/space.js";
  *
  * The only entry is the archive toggle, and every row gets one. Archived is a
  * property of the chat's lineage root, so the toggle always acts on the whole
- * tree; what differs is how the row describes it. `card` is the resolved board
+ * tree; what differs is how the row describes it. `card` is the resolved
  * card when the root is one. `tree` describes a root that is not a card — a
- * triggered chat, a job step, a hidden card the board no longer lists — whose
+ * triggered chat, a job step, a hidden card the cards list leaves out — whose
  * archive is the server's chat-level flag. With neither (the cards have not
  * loaded) the entry is omitted rather than guessed. There is no
  * create/join/leave: membership is lineage, so a top-level chat is a card the
@@ -67,7 +67,7 @@ export interface ChatCardMenu {
      */
     chatCount: number;
   };
-  /** A root that is not a (board) card; read only when `card` is absent. */
+  /** A root that is not a (listed) card; read only when `card` is absent. */
   tree?: {
     archived: boolean;
     /** Chats in the tree as far as the list knows, the root included. */
@@ -164,8 +164,8 @@ interface Props {
   dimmed?: boolean;
   /**
    * Multi-select, wired by the list. Every field below is optional and named
-   * exactly as `CardTile`/`CardRow`'s are, because they answer one contract —
-   * `useSelectionActivation`. With none passed the row behaves precisely as it
+   * as `useSelectionActivation`'s options are, because that hook is the
+   * contract they answer. With none passed the row behaves precisely as it
    * did before multi-select existed.
    */
   selectionMode?: boolean;
@@ -197,8 +197,7 @@ interface Props {
  * Spread onto a control inside the row that owns its own click, so the row's
  * long press does not also fire on it.
  *
- * BOTH triggers, for the reason `CardRow` spells out at its own copy: the
- * held-pointer timer that `pointerdown` starts and the `contextmenu` Android
+ * BOTH triggers: the held-pointer timer that `pointerdown` starts and the `contextmenu` Android
  * Chrome fires are independent, and `contextmenu` bubbles on its own even when
  * the pointer event beneath it was stopped. Guarding only `pointerdown` leaves
  * the gesture live on exactly the platform the second trigger exists for.
@@ -227,16 +226,13 @@ const MENU_ROW_HEIGHT = 44;
  * nothing else on the row says the card has a tree under it.
  */
 function cardLifecycleTitle({ title, lifecycle, chatCount }: NonNullable<ChatCardMenu["card"]>): string {
-  if (lifecycle !== "open") return `Unarchive "${title}" — it returns to the board`;
-  return chatCount > 1
-    ? `Archive "${title}" — all ${chatCount} chats on this card move to the board's Archived strip`
-    : `Archive "${title}" — it moves to the board's Archived strip`;
+  if (lifecycle !== "open") return `Unarchive "${title}"`;
+  return chatCount > 1 ? `Archive "${title}" — all ${chatCount} chats in this conversation are archived` : `Archive "${title}"`;
 }
 
 /**
  * The same tooltip for a row whose root is not a card. Named by the row's own
- * title rather than a card's, and without the board: a card-less tree has no
- * tile to move to the Archived strip, only rows that fade or leave the list.
+ * title rather than a card's.
  */
 function treeArchiveTitle(title: string, { archived, chatCount, isRoot }: NonNullable<ChatCardMenu["tree"]>): string {
   if (archived) return `Unarchive "${title}"`;
@@ -419,8 +415,8 @@ export default function ChatListItem({
   const dotTone = waiting ? "waiting" : "running";
   const dotLabel = waiting ? WAITING_LABEL : sessionStatus ? activeSessionLabel(sessionStatus.type) : "";
 
-  // The same hook the board's two faces run on, so a click, a long press and a
-  // modified click mean here what they mean there. `displayName` is the label
+  // The shared selection hook, so a click, a long press and a modified click
+  // mean here what they mean on any other selectable surface. `displayName` is the label
   // because it is what the row says — a checkbox announcing the folder path of
   // a chat titled "Fix the rebase" names a control the user cannot see.
   const { handleClick, gestureProps, inert, showCheckbox, checkboxLabel, hoverProps, checkboxFocusProps } = useSelectionActivation({
@@ -450,11 +446,7 @@ export default function ChatListItem({
       }}
       {...gestureProps}
       /*
-       * No `role` and no `aria-pressed` on this element, deliberately, and
-       * that is a departure from `CardRow` — which carries
-       * `aria-pressed={selectionMode ? selected : undefined}` and can, because
-       * it IS a `<button>`: focusable, `onKeyDown`-driven, `disabled` when
-       * inert.
+       * No `role` and no `aria-pressed` on this element, deliberately.
        *
        * This row is a div with an onClick, and it cannot become a button — it
        * contains buttons (the kebab, the folder pill, the summon badge), and a
@@ -478,8 +470,8 @@ export default function ChatListItem({
         justifyContent: "space-between",
         cursor: inert ? "default" : "pointer",
         background: isActive ? "var(--chatlist-item-active-bg)" : "var(--chatlist-item-bg)",
-        // The selected row says so with the accent on the left bar and a ring,
-        // the same pair CardRow uses. The bar is 3px on every row, coloured or
+        // The selected row says so with the accent on the left bar and a ring.
+        // The bar is 3px on every row, coloured or
         // transparent, so selecting one never nudges the text beside it — and
         // the active chat keeps its own bar, since "selected" and "open" are
         // different facts that can both be true.
@@ -708,25 +700,21 @@ export default function ChatListItem({
         >
           {/*
            * The checkbox rides in the row's existing action cluster rather
-           * than taking a slot of its own on the left, and that is a
-           * deliberate departure from CardRow — worth stating, because the
-           * board's checkbox is left-aligned and always mounted.
+           * than taking a slot of its own on the left.
            *
-           * Left is not available: a card face opens with a fixed 18px emoji
-           * cell that the checkbox swaps over, and this row opens with a dense
-           * line of timestamp, branch and folder pills. There is nothing to
-           * swap, so a left-hand checkbox either overlaps that line or shifts
+           * Left is not available: this row opens with a dense line of
+           * timestamp, branch and folder pills. There is no fixed cell to
+           * swap the checkbox over, so a left-hand checkbox either overlaps that line or shifts
            * the whole row's text sideways on hover. The cluster on the right
            * already appears on hover (it always has — the kebab lives in it),
            * so putting the checkbox there adds no movement the row did not
            * already have.
            *
-           * MOUNTED ONLY WHEN SHOWN, which is the other departure and the one
-           * with a keyboard cost, stated plainly: `CardRow` keeps its checkbox
-           * mounted at `opacity: 0` so Tab can find it, and a sidebar of 50
-           * rows doing that is 50 tab stops between the filter bar and "Load
-           * next page" — 50 invisible ones at rest, since nothing reveals them
-           * except hover. So it is mounted when the row is hovered, when its
+           * MOUNTED ONLY WHEN SHOWN, which has a keyboard cost, stated
+           * plainly. Keeping the checkbox mounted at `opacity: 0` so Tab can
+           * find it would be, in a sidebar of 50 rows, 50 tab stops between
+           * the filter bar and "Load next page" — 50 invisible ones at rest,
+           * since nothing reveals them except hover. So it is mounted when the row is hovered, when its
            * checkbox holds focus, and on every in-scope row while a selection
            * is live. That means one new tab stop while pointing at a row, and
            * one per row during a selection (where they are visible and are the
@@ -746,10 +734,9 @@ export default function ChatListItem({
                 e.stopPropagation();
                 onToggleSelect?.(e);
               }}
-              // No `disabled={inert}` guard, unlike CardRow's: `showCheckbox`
-              // requires `selectable`, and `inert` is `selectionMode &&
-              // !selectable`, so an inert row has no checkbox for the guard to
-              // protect. CardRow needs one because it mounts its box always.
+              // No `disabled={inert}` guard: `showCheckbox` requires
+              // `selectable`, and `inert` is `selectionMode && !selectable`,
+              // so an inert row has no checkbox for the guard to protect.
               // The row's own inertness is enforced in the shared hook, which
               // returns before any handler runs.
               {...stopGesture}

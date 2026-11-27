@@ -89,7 +89,7 @@ interface ChatListProps {
  * those records and descendants promoted after a deleted ancestor.
  *
  * Takes the card list rather than reading one, because the sidebar keeps two:
- * board cards for the row menu and every card for the dim. See `boardCards`.
+ * listed cards for the row menu and every card for the dim. See `listedCards`.
  */
 function indexByChat(list: CardSummary[]): Map<string, CardSummary> {
   const byChat = new Map<string, CardSummary>();
@@ -105,7 +105,7 @@ function indexByChat(list: CardSummary[]): Map<string, CardSummary> {
  *
  * About archived-ness, not card-ness. Every row can be archived — a card root
  * by its card's lifecycle, a card-less root (a triggered chat, a job step, a
- * session nothing recorded, a card hidden from the board) by the chat-level
+ * session nothing recorded, a hidden card) by the chat-level
  * flag the server reports as `Chat.archived` — so every row is in exactly one
  * of these two, by the same verdict the dim uses. A selection is scoped to ONE
  * of them, which is what lets the bar offer a single verb, Archive or
@@ -261,7 +261,7 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
   // the right way round: nothing dims rather than everything.
   const [cardsLoaded, setCardsLoaded] = useState(false);
   const [isInitialLoading, setIsInitialLoading] = useState(true);
-  // Multi-select, mirroring the board's (see Board.tsx). Deliberately NOT
+  // Multi-select. Deliberately NOT
   // persisted and not keyed on anything: a stale selection restored across a
   // reload is a way to act on the wrong chats, and transient UI state belongs
   // to neither side of the cwd/workspaceId line — it is not stored at all.
@@ -292,7 +292,7 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
     try {
       // includeHidden: the dim counts a hidden card as archived, exactly as
       // `cardLifecycle=unarchived` does, and it cannot do that for a card the
-      // board's default rollup left out. See api.listCards.
+      // default cards listing leaves out. See api.listCards.
       const res = await listCards(true);
       setCards(res.cards);
       setCardsLoaded(true);
@@ -639,8 +639,8 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
   }, [activeSessions, load]);
 
   // Refetch when chat metadata changes (status, summon, title) via SSE. Card
-  // events ride the same signal, so the row menu's lifecycle labels follow a
-  // archive/unarchive done on the board.
+  // events ride the same signal, so the row menu's lifecycle labels follow an
+  // archive/unarchive done elsewhere (another tab, an agent, the API).
   useEffect(() => {
     if (metadataVersion === 0) return; // skip initial
     const timer = setTimeout(() => {
@@ -952,28 +952,26 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
    * has to fade a hidden card's tree to stay the exact complement of
    * `cardLifecycle=unarchived`. Only the dim wants that set.
    *
-   * Everything else here means BOARD cards, and always did: before hidden cards
-   * were fetched at all, `cardOf` simply never saw one. Restore that by
-   * splitting the index rather than by giving each consumer a `hidden` check to
-   * remember. The consumer this protects is the row menu, whose only entry is a
-   * lifecycle toggle: it is written for cards that are on the board ("moves to
-   * the board's Archived strip", "returns to the board"), a hidden card is on
-   * the board under no lifecycle, and flipping one would not even clear the dim
-   * the user is looking at — `hidden` stays set, and nothing in the sidebar can
+   * Everything else here means LISTED (non-hidden) cards, and always did:
+   * before hidden cards were fetched at all, `cardOf` simply never saw one.
+   * Restore that by splitting the index rather than by giving each consumer a
+   * `hidden` check to remember. The consumer this protects is the row menu,
+   * whose only entry is a lifecycle toggle: flipping a hidden card's lifecycle
+   * would not even clear the dim the user is looking at — `hidden` stays set, and nothing in the sidebar can
    * unset it. An action that cannot reach the state it appears to control is
    * not worth offering AS A CARD ACTION, so `cardOf` returns undefined and
    * the row falls through to the card-less archive entry, which goes through
    * `/api/chats/bulk-archive` — and that, on unarchive, clears `hidden` too.
    */
-  const boardCards = useMemo(() => cards.filter((card) => !card.hidden), [cards]);
-  const cardsById = useMemo(() => new Map(boardCards.map((c) => [c.id, c])), [boardCards]);
-  const cardsByChatId = useMemo(() => indexByChat(boardCards), [boardCards]);
+  const listedCards = useMemo(() => cards.filter((card) => !card.hidden), [cards]);
+  const cardsById = useMemo(() => new Map(listedCards.map((c) => [c.id, c])), [listedCards]);
+  const cardsByChatId = useMemo(() => indexByChat(listedCards), [listedCards]);
   /** The same index over EVERY card, hidden included. Read by the dim alone. */
   const dimCardsByChatId = useMemo(() => indexByChat(cards), [cards]);
 
   /**
-   * The board card a chat's lineage root is, when it is one and we've loaded
-   * it. A hidden card answers undefined — see {@link boardCards}.
+   * The listed card a chat's lineage root is, when it is one and we've loaded
+   * it. A hidden card answers undefined — see {@link listedCards}.
    */
   const cardOf = useCallback(
     (chat: Chat): CardSummary | undefined => {
@@ -1044,7 +1042,7 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
   };
 
   /**
-   * The row menu's archive toggle. A board card keeps its card PATCH — the
+   * The row menu's archive toggle. A listed card keeps its card PATCH — the
    * response is the card summary the index wants. Anything else goes through
    * the chat-level bulk route with one id, which resolves the root and picks
    * the representation server-side.
@@ -1162,8 +1160,7 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
   // ---------------------------------------------------------------------------
   // Multi-select.
   //
-  // The board's is the reference implementation (Board.tsx) and this is
-  // deliberately the same shape: the range order comes from the very array
+  // The shape, deliberately: the range order comes from the very array
   // that renders, the selected set is DERIVED and reconciled on every render
   // rather than repaired in an effect, and a selection is scoped so the bar
   // can offer one unambiguous verb. The gesture contract itself is shared code
@@ -1231,7 +1228,7 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
    * every filter change, and a selected chat can go three different ways
    * underneath that: deleted by another client, filtered out, or folded into a
    * lineage group that a different member now fronts. It can also LEAVE THE
-   * SCOPE without going anywhere, when someone archives its card on the board.
+   * SCOPE without going anywhere, when someone archives its card elsewhere.
    * Deriving the set means there is no second copy to fall out of step — the
    * dead id is gone the moment the response lands, and it can never reach a
    * bulk call.
@@ -1369,12 +1366,9 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
     const targetIndex = visibleOrderedIds.indexOf(chat.id);
     if (e.shiftKey && anchorIndex !== -1 && targetIndex !== -1) {
       const [lo, hi] = anchorIndex <= targetIndex ? [anchorIndex, targetIndex] : [targetIndex, anchorIndex];
-      // The slice IS filtered by scope here, unlike the board's — and the
-      // difference is in the data, not the intent. The board lists every open
-      // card before every closed one, so nothing out of scope can lie between
-      // two cards that are both in it. This list is ordered by recency within
-      // each section and mixes the scopes freely, so a range from one open row to another can
-      // step straight over an archived one. Both ENDS are
+      // The slice IS filtered by scope. This list is ordered by recency
+      // within each section and mixes the scopes freely, so a range from one
+      // open row to another can step straight over an archived one. Both ENDS are
       // still guaranteed in scope by the inert row: an out-of-scope row never
       // receives the click.
       const inRange = visibleOrderedIds.slice(lo, hi + 1).filter((id) => {
@@ -1418,8 +1412,7 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
 
   /**
    * The selection's keyboard shortcuts, bound to the LIST — not to the
-   * document, which is what the board does and what the board is entitled to
-   * do, being the whole viewport.
+   * document, which only a page that is the whole viewport is entitled to.
    *
    * The sidebar is one docked column with a transcript open beside it. A
    * document-level handler there turns any Cmd+A in the window into "select
@@ -1469,7 +1462,7 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
   const selectedInOrder = visibleOrderedIds.filter((id) => selectedIds.has(id));
 
   /**
-   * No confirmation and no undo, by the same decision the board made: archiving
+   * No confirmation and no undo, deliberately: archiving
    * is reversible, its inverse is one gesture away, and the "Archived" toggle
    * that brings the rows back is in view. A modal on a reversible bulk action
    * only trains people to dismiss modals.
@@ -1747,8 +1740,7 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
 
   return (
     // `position: relative` is what confines the selection bar to this column.
-    // The board's bar is `position: fixed` because the board owns the whole
-    // viewport; the sidebar owns one column of it, and a viewport-spanning bar
+    // The sidebar owns one column of the viewport, and a viewport-spanning bar
     // here would lie across the chat pane beside it. On mobile this column IS
     // the screen, so the same absolute bar reads as a bottom action bar there
     // with no second branch — see SelectionBar's `position` prop.
@@ -1865,8 +1857,8 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
         style={{
           flex: 1,
           overflow: "auto",
-          // Room for the bar while it is up, paid at the scroll container
-          // exactly as the board pays it at its own — but from the bar's
+          // Room for the bar while it is up, paid at the scroll container —
+          // from the bar's
           // MEASURED height, not a constant. The bar's labels are this page's
           // words and its row wraps at narrow widths, so its height is a
           // function of the sidebar's width and of what is selected; a

@@ -139,8 +139,7 @@ describe("ChatListItem card menu", () => {
       // The overwhelming majority of cards. "all 1 chats" would be noise about
       // a card whose blast radius is the row already under the pointer.
       const title = titleOf(renderWithCard({ title: "Ship it", lifecycle: "open", chatCount: 1 }), "Archive chat");
-      expect(title).not.toMatch(/\d/);
-      expect(title).toContain("Archived strip");
+      expect(title).toBe('Archive "Ship it"');
     });
 
     it("does not count on the way back — unarchiving takes nothing with it that archiving did not", () => {
@@ -162,16 +161,15 @@ describe("ChatListItem card menu", () => {
   });
 
   /**
-   * A row whose root is not a board card — a triggered chat, a job step, a
-   * card hidden from the board — is archivable all the same, through the
-   * chat-level flag. The menu is handed a `tree` instead of a `card`, and the
-   * tooltip names the row's own title, since there is no card title and no
-   * board strip to move to.
+   * A row whose root is not a listed card — a triggered chat, a job step, a
+   * hidden card — is archivable all the same, through the chat-level flag.
+   * The menu is handed a `tree` instead of a `card`, and the tooltip names the
+   * row's own title, since there is no card title.
    */
   describe("a card-less row", () => {
     const titleOf = (label: string) => screen.getByText(label).closest("button")!.getAttribute("title")!;
 
-    it("offers Archive chat, titled by the row and with no board in it", () => {
+    it("offers Archive chat, titled by the row", () => {
       const chat = makeChat({ metadata: JSON.stringify({ title: "Discord thread", triggered: true }) });
       const onToggleLifecycle = vi.fn();
       const { container } = render(

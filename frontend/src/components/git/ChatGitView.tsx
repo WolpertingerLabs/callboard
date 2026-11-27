@@ -32,8 +32,8 @@ export default function ChatGitView({ folder, chatId, folderGone }: ChatGitViewP
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
       <div style={{ padding: "10px 16px 0", flexShrink: 0 }}>
-        {/* Pressed toggles, as on the Board's layout switch, not radios: two
-            plain buttons in the tab order make no keyboard promise they break. */}
+        {/* Pressed toggles, not radios: two plain buttons in the tab order
+            make no keyboard promise they break. */}
         <div role="group" aria-label="Git view" style={{ display: "inline-flex", borderRadius: 6, overflow: "hidden", border: "1px solid var(--border)" }}>
           {TABS.map((option, i) => (
             <button

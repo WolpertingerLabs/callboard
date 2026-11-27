@@ -23,7 +23,7 @@ export function SpaceDot({ space, size = 8 }: { space: Pick<SpaceListItem, "colo
 
 /**
  * The chip a row carries when it is shown outside its own space — the "All"
- * view, and other spaces' blocked cards in the board's Needs-you bucket.
+ * view.
  * Text stays on the neutral surface; the accent is only the stripe.
  */
 export default function SpaceChip({ space, title }: { space: SpaceListItem | undefined; title?: string }) {

@@ -1534,7 +1534,7 @@ describe("sidebar folders", () => {
       makeChat("work-kid-1", { parentChatId: "work-root", rootChatId: "work-root" }),
       makeChat("work-kid-2", { parentChatId: "work-kid-1", rootChatId: "work-root" }),
       // Detached by hand: no parent, but its stale stamped root still folds it
-      // into work-root's row — one card on the Board, so one here too.
+      // into work-root's row — one card, so one row here too.
       makeChat("work-detached", { rootChatId: "work-root" }),
       makeChat("work-root", { sidebarFolder: "Work" }),
       makeChat("work-lone", { sidebarFolder: "Work" }),

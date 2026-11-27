@@ -2,7 +2,7 @@
  * The archived-chat dim.
  *
  * The rule under test: a row fades when its lineage root is an ARCHIVED card —
- * closed, or hidden from the board — and only then. A row on no card does not
+ * closed, or hidden — and only then. A row on no card does not
  * fade. That is the narrow reading, and the narrowing is the point: nothing
  * triggered or job-stepped can be a card (`isCardEligible`), so the wide
  * reading faded every such chat and, worse, its server-side twin withheld them
@@ -34,7 +34,7 @@ const LOADING: DimContext = { cardsLoaded: false };
 const CARDS: Cards = new Map([
   ["open-card", { lifecycle: "open" as const }],
   ["closed-card", { lifecycle: "closed" as const }],
-  // A card opted out of the board. Archived for this purpose whatever its
+  // A hidden card (opted out of the cards listing). Archived for this purpose whatever its
   // lifecycle says — `cardLifecycle=unarchived` withholds its tree, so a dim
   // that read only `lifecycle` would leave those rows unfaded under a search.
   ["hidden-card", { lifecycle: "open" as const, hidden: true }],
