@@ -11,9 +11,9 @@ import type { OpenRouterModelInfo } from "shared";
  *
  * pi needs neither workaround. `ModelRuntime.create({ allowModelNetwork: false })`
  * answers from a catalog shipped in the package — over a thousand models across
- * all providers and several hundred of them OpenRouter's (pi 1.5.2: 1,643 and
- * 403; 0.85.1: 1,354 and 366; the spike, on an older pi, counted 1,157 and
- * 307), with the network
+ * all providers and several hundred of them OpenRouter's (pi 1.6.1: 1,696 and
+ * 412; 1.5.2: 1,643 and 403; 0.85.1: 1,354 and 366; the spike, on an older pi,
+ * counted 1,157 and 307), with the network
  * explicitly disabled. A user who has never run a pi chat still gets a fully
  * populated picker, and no model lookup can hang on a provider being down.
  * (One lookup may *wait*, boundedly: a turn on an OpenRouter model newer than
@@ -486,7 +486,7 @@ function clampRates<T extends PiCostRates>(rates: T): T {
  * picks the model), so it is unknown, billed at 0 and warned about — the same
  * answer {@link isUsablePrice} gives a synthesized model.
  *
- * pi 1.5 ships both routers at 0 and bundles no negative price at all, so this
+ * pi 1.5 and 1.6 ship both routers at 0 and bundle no negative price at all, so this
  * is now a guard rather than a live fix. It stays: a found model's price can
  * also come from `models.json`, pi.dev's catalog or a key's `/models/user`
  * prices, none of which is checked, and a regression in pi's generator would
@@ -518,8 +518,8 @@ function withUsableCost<M extends PiModel>(model: M): M {
  * variants. Index 0 sorted to `anthropic/claude-3-haiku`, so every synthesized
  * Gemini, Llama or DeepSeek slug was being sent through OpenRouter's
  * Anthropic-compatible endpoint. pi 1.5.2 keeps the split (20 / 383, the 20
- * now including `~anthropic/…-latest` aliases) and index 0 is still an
- * `anthropic-messages` model.
+ * now including `~anthropic/…-latest` aliases), as does 1.6.1 (20 / 392), and
+ * index 0 is still an `anthropic-messages` model.
  *
  * pi ships no rule for this, only the generated per-model data, so the choice
  * is read off that data rather than hardcoded: the majority transport among

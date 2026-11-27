@@ -149,7 +149,7 @@ export const PI_CACHE_WARMING_MODE = "off" satisfies PiCacheWarmingMode;
  * so `"off"` is exact behaviour parity with the version this replaced.
  *
  * `applyOverrides({ cacheWarming: "off" })` looks like the tool for this and
- * **does not work**, measured against 1.5.2: `getCacheWarmingMode()` reads the
+ * **does not work**, measured against 1.5.2 and unchanged in 1.6.1: `getCacheWarmingMode()` reads the
  * *global* settings only ("because warming costs money"), never the merged
  * view overrides write to, and `reload()` rebuilds that merged view from disk
  * regardless. A `"cacheWarming": "idle"` in `<agentDir>/settings.json` — a

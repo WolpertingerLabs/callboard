@@ -24,7 +24,7 @@
  *
  * A pi session is an append-only **tree**: every entry carries `id` and
  * `parentId`, and the live conversation is the path from the current leaf back
- * to the root. Eleven entry types exist as of pi 1.5 (`message`,
+ * to the root. Eleven entry types exist as of pi 1.5, unchanged in 1.6 (`message`,
  * `thinking_level_change`, `model_change`, `usage`, `compaction`,
  * `branch_summary`, `custom`, `custom_message`, `context_edit`, `label`,
  * `session_info`), and pi injects several of its own into any session
