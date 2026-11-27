@@ -303,7 +303,14 @@ const VERSION_FIELDS: Record<string, (json: Record<string, unknown>) => void> = 
     if (root) delete root.version;
   },
 };
-/** A content file's bytes for the digest: `package.json` and `docker/package-lock.json` without their version (JSON that doesn't parse is hashed as it is). */
+/**
+ * A content file's bytes for the digest. Every file is hashed byte for byte,
+ * except `package.json` and `docker/package-lock.json`: those are hashed as
+ * parsed JSON (re-serialized, key order kept) minus their version fields, so a
+ * formatting-only edit (whitespace, `\u` escapes) doesn't change the digest
+ * either. That is what npm sees too, since it reads them with `JSON.parse`.
+ * JSON that doesn't parse, or isn't an object, is hashed as it is.
+ */
 function contentBytes(file: string, bytes: Buffer): Buffer | string {
   const strip = VERSION_FIELDS[file];
   if (!strip) return bytes;
@@ -325,9 +332,10 @@ const digestMemo = new Map<string, { stamp: string; digest: string }>();
  * mtimes. Memoized on sizes and mtimes, so a status poll does not re-read the
  * files, while a rebuilt `dist/` is noticed.
  *
- * The package version is left out (see {@link contentBytes}): it moves with
- * every Callboard release, and an image built from the same files under
- * another version number is the same image, not one to rebuild.
+ * Not quite byte for byte: `package.json` and `docker/package-lock.json` are
+ * compared as parsed JSON without their version (see {@link contentBytes}).
+ * The version moves with every Callboard release, and an image built from the
+ * same files under another version number is the same image, not one to rebuild.
  */
 export function sandboxContentDigest(context: string): string {
   const files = contentFiles(context);

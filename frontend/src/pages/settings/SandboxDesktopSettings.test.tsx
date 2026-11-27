@@ -98,7 +98,8 @@ describe("Settings → Sandbox desktop", () => {
     render(<SandboxDesktopSettings />);
     expect((await screen.findByTestId("sandbox-effective-mode")).textContent).toContain("Managed (local Docker) (automatic)");
     expect(screen.getByTestId("sandbox-diagnostic-docker").textContent).toContain("reachable (server 29.1.3)");
-    expect(screen.getByTestId("sandbox-diagnostic-image").textContent).toContain("protocol 2.0 (compatible)");
+    expect(screen.getByTestId("sandbox-diagnostic-image").textContent).toContain("protocol 2.0 (compatible), up to date, built at version 0.1.0");
+    expect(screen.getByTestId("sandbox-diagnostic-image").textContent).not.toContain("ships");
     expect(screen.getByTestId("sandbox-diagnostic-running").textContent).toContain("1 of 2 managed sandboxes");
     expect(screen.getByText("0123456789abcdef")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Rebuild image" })).toBeTruthy();
@@ -220,6 +221,16 @@ describe("Settings → Sandbox desktop", () => {
     } finally {
       confirm.mockRestore();
     }
+  });
+
+  it("says an up-to-date image built at an older version needs no rebuild (a version-only upgrade)", async () => {
+    const upgraded = status();
+    upgraded.diagnostics.image = { ...upgraded.diagnostics.image, version: "1.0.0-alpha.69", packageVersion: "1.0.0-alpha.70" };
+    vi.mocked(getSandboxDesktopStatus).mockResolvedValue(upgraded);
+    render(<SandboxDesktopSettings />);
+    expect((await screen.findByTestId("sandbox-diagnostic-image")).textContent).toContain(
+      "up to date, built at version 1.0.0-alpha.69 (this Callboard ships 1.0.0-alpha.70; the image's files are the same, so no rebuild is needed)",
+    );
   });
 
   it("reports an out-of-date image as a warning with a rebuild action", async () => {

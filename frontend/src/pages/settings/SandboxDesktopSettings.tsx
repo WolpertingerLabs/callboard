@@ -1002,7 +1002,11 @@ export default function SandboxDesktopSettings() {
                 ? `has a known security issue (security level ${d.image.securityFloor ?? "unlabelled"}, at least ${d.image.requiredSecurityFloor ?? 1} required): sandboxes are refused until you rebuild it below`
                 : d.image.current === false
                   ? `protocol ${d.image.protocol} (compatible), but out of date: not built from the files this Callboard ships, so it may lack driver-host fixes. Sandboxes still start; rebuild it below.`
-                  : `protocol ${d.image.protocol} (compatible), up to date, version ${d.image.version ?? "unknown"}`}
+                  : `protocol ${d.image.protocol} (compatible), up to date, built at version ${d.image.version ?? "unknown"}${
+                      d.image.version && d.image.version !== d.image.packageVersion
+                        ? ` (this Callboard ships ${d.image.packageVersion}; the image's files are the same, so no rebuild is needed)`
+                        : ""
+                    }`}
         </Diagnostic>
         <Diagnostic ok={d.docker.reachable ? d.network.state !== "misconfigured" : undefined} label="Network">
           <code style={codeStyle}>{d.network.name}</code> {d.network.internal ? "(internal, no internet)" : "(internet access)"}:{" "}
