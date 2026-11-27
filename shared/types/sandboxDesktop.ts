@@ -212,7 +212,7 @@ export interface SandboxDesktopDiagnostics {
     compatible: boolean;
     /** The protocol this Callboard speaks, `"<major>.<minor>"`. */
     expectedProtocol: string;
-    /** The computer-use package version this Callboard ships; an image built from another is worth rebuilding. */
+    /** The computer-use package version this Callboard ships. Informational: `current` (the content digest) decides whether the image is up to date, so an image built at another version with the same files needs no rebuild. */
     packageVersion: string;
     /** Its security level label, and whether it meets this Callboard's floor (below it, the image is refused). */
     securityFloor?: number;

@@ -431,7 +431,7 @@ The root `version` script (`scripts/versions.mjs`) writes the new version everyw
 
 Both packages are published by the **Publish to npm** workflow (`.github/workflows/publish.yml`), never with `npm publish` from a checkout. Every release publishes both, at the shared version and from one commit, and tags that commit `v<version>`. drawlatch must be on npm before callboard, and the workflow publishes them in that order. Every release publishes drawlatch, even when it hasn't changed, and a drawlatch fix reaches npm only through a callboard release. Bump the version, merge to `main`, then in GitHub → Actions → **Publish to npm** → **Run workflow** on `main`:
 
-- **`dry_run`** (on by default) runs everything except the publishes and the tag. That covers the release plan, the full `prepublishOnly` gate, packing both tarballs (the log lists their contents) and `npm publish --dry-run` of each tarball that would be published. It also covers the registry check (step 5 below), except when the run would publish drawlatch, which is every normal release: drawlatch isn't on npm yet then, so the check is skipped. Run a dry run first. npm still exchanges the job's OIDC token in a dry run, and the dry run fails if that exchange doesn't work, so it also checks the trusted-publisher setup below.
+- **`dry_run`** (on by default) runs everything except the publishes and the tag. That covers the release plan, the full `prepublishOnly` gate, packing both tarballs (the log lists their contents) and `npm publish --dry-run` of each tarball that would be published. It covers the registry check (step 5 below) only when drawlatch is already on npm at this version (finishing a partial release, or a tag-only run). In every normal release drawlatch isn't on npm yet, so a dry run skips that check. Run a dry run first. npm still exchanges the job's OIDC token in a dry run, and the dry run fails if that exchange doesn't work, so it also checks the trusted-publisher setup below.
 - **`dist_tag`** (default `latest`) is passed as `--tag`, which npm requires for prerelease versions. The run refuses an empty value, and any value npm would read as a semver range (`1.x`, `^1`, `v1`). It also refuses to move a dist-tag backwards, so a hotfix for an older version needs another dist-tag.
 
 The workflow has two jobs, so that dependencies' install scripts and the test suite never run where a credential is reachable:
@@ -452,7 +452,7 @@ What a run does, decided by `scripts/release-plan.mjs` and printed in the run su
 5. **Check that callboard's drawlatch pin is installable from npm** with `npm run deps:check:registry`, retried for about two minutes.
    - It always runs in a real run.
    - `CALLBOARD_SKIP_REGISTRY_CHECK` doesn't affect it.
-   - A dry run that would publish drawlatch skips it, since drawlatch isn't on npm yet.
+   - A dry run checks only when drawlatch is already on npm at this version, and skips it otherwise.
 6. **Publish callboard.** Both publishes use `--provenance --access public`.
 7. **Tag** `v<version>`, annotated and pushed by `github-actions[bot]`, after both publishes. It is the only tag a release gets.
 

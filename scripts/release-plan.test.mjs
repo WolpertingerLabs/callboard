@@ -17,12 +17,21 @@ const OTHER = "c".repeat(40);
 const OLDER = "d".repeat(40);
 const V = "1.0.0-alpha.69";
 
-function plan({ dryRun = false, distTag = "latest", versionErrors = [], drawlatch = {}, callboard = {}, tagCommit = null, ancestors = [OLD, OLDER] } = {}) {
+function plan({
+  dryRun = false,
+  distTag = "latest",
+  version = V,
+  versionErrors = [],
+  drawlatch = {},
+  callboard = {},
+  tagCommit = null,
+  ancestors = [OLD, OLDER],
+} = {}) {
   return planRelease({
     dryRun,
     head: HEAD,
     distTag,
-    version: V,
+    version,
     versionErrors,
     drawlatch: { published: false, gitHead: null, ...drawlatch },
     callboard: { published: false, gitHead: null, ...callboard },
@@ -206,6 +215,12 @@ describe("planRelease", () => {
       const p = plan({ distTag });
       expect(p.errors).toHaveLength(1);
       expect(p.errors[0]).toMatch(/^dist_tag /);
+    });
+
+    it("reports a version that isn't semver instead of throwing in the dist-tag check", () => {
+      const versionErrors = ['package.json: version "1.0" isn\'t a semver version.'];
+      const p = plan({ version: "1.0", versionErrors, drawlatch: { distTags: { latest: "1.0.0-alpha.68" } } });
+      expect(p.errors).toEqual(versionErrors);
     });
 
     it.each(["latest", "next", "beta", "hotfix-1", "alpha.1"])("accepts dist_tag %j", (distTag) => {

@@ -220,8 +220,10 @@ export function planRelease({ dryRun, head, distTag, version, versionErrors = []
 
   // Never move a dist-tag backwards (e.g. a hotfix for an older line under
   // `latest`). npm would refuse that for an implicit `latest`, but the
-  // workflow always passes --tag, which turns npm's check off.
-  if (!tagProblem)
+  // workflow always passes --tag, which turns npm's check off. Skipped when the
+  // dist_tag or the version is already an error: a version that isn't semver
+  // can't be compared, and the run fails on the reported error anyway.
+  if (!tagProblem && versionErrors.length === 0)
     for (const [name, pkg, plan] of packages) {
       const current = pkg.distTags?.[distTag];
       if (plan.action === "publish" && current && compareSemver(version, current) < 0)
