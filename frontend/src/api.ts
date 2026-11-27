@@ -65,6 +65,7 @@ import type {
   JobRun,
   JobRunListItem,
   JobRunStatus,
+  CardLifecycle,
   CardPatch,
   CardListResponse,
   CardResponse,
@@ -530,20 +531,18 @@ export async function dismissSummon(id: string): Promise<Chat> {
  */
 export async function listCards(
   includeHidden?: boolean,
-  archive: { closedLimit?: number; closedSince?: string } = {},
   /**
-   * `space` scopes the listing (an id, or "all"); `crossSpaceNeedsYou` keeps
-   * other spaces' blocked cards in the response so the Needs-you bucket
-   * never hides one. Omitted = every space, as before.
+   * `space` scopes the listing (an id, or "all"; omitted = every space).
+   * `lifecycle` keeps only open or only closed cards (omitted = both). A daemon
+   * older than the parameter ignores it and returns both, so a caller that
+   * asks for one lifecycle must not rely on getting only that one.
    */
-  scope: { space?: string; crossSpaceNeedsYou?: boolean } = {},
+  scope: { space?: string; lifecycle?: CardLifecycle } = {},
 ): Promise<CardListResponse> {
   const params = new URLSearchParams();
   if (includeHidden) params.set("includeHidden", "true");
   if (scope.space) params.set("space", scope.space);
-  if (scope.crossSpaceNeedsYou) params.set("crossSpaceNeedsYou", "true");
-  if (archive.closedLimit !== undefined) params.set("closedLimit", String(archive.closedLimit));
-  if (archive.closedSince !== undefined) params.set("closedSince", archive.closedSince);
+  if (scope.lifecycle) params.set("lifecycle", scope.lifecycle);
   const query = params.toString();
   return request(`/cards${query ? `?${query}` : ""}`, { error: "Failed to list cards" });
 }

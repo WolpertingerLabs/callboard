@@ -13,7 +13,7 @@
  * The enforcement therefore hangs off {@link patchCardFields}, the single write
  * that can flip a card's lifecycle, rather than off the web UI's archive button.
  * Everything that archives — `PATCH /api/cards/:id`, `POST
- * /api/cards/bulk-lifecycle`, the sidebar's row menu and bulk bar, and any MCP
+ * /api/chats/bulk-archive`, the sidebar's row menu and bulk bar, and any MCP
  * tool that later grows a lifecycle setter — funnels through there, so none of
  * them can archive a card and leave its pins standing.
  *
@@ -213,8 +213,8 @@ export function createPinnedMemberLookup(stored?: Chat[]): PinnedMemberLookup {
  * **Best-effort, and never throws.** The caller has already persisted the
  * archive by the time this runs, so an exception escaping here would report a
  * card that is closed on disk as a failed request: `PATCH /api/cards/:id` would
- * answer 500, and `bulk-lifecycle` would push the id into `failed[]` and skip
- * `replaceRoot`, repainting the card as open. `updateChatMetadata` catches
+ * answer 500, and a bulk route would push the id into `failed[]`, reporting
+ * an archived card as not archived. `updateChatMetadata` catches
  * its own write errors, but the `getChat` it opens with does not, and it touches
  * the filesystem — EMFILE and friends are real. Same shape, and the same
  * reasoning, as `clearRedirectedMemberCard` in routes/cards.ts. The per-chat

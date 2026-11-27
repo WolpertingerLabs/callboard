@@ -421,7 +421,7 @@ export interface BackfillRequest {
   knownRepos?: string[];
   /**
    * Run before everything already waiting — the chat the user is looking at,
-   * which should not sit behind the Board's backlog. A chat already waiting
+   * which should not sit behind the Git page's backlog. A chat already waiting
    * moves to the front; one already running is left alone.
    */
   priority?: boolean;

@@ -1125,7 +1125,7 @@ async function spawnStepSession(runId: string, stepId: string, prompt: string, o
   const promptIterable = toPromptIterable(prompt);
 
   // Deterministic chat title: triggered chats skip LLM title generation, so
-  // without this the step chats render as "untitled" on the card/board.
+  // without this the step chats render as "untitled" in card listings.
   const stepDisplay = (step && "name" in step && step.name) || stepId;
   const chatTitle = `${run.title || run.jobName} — ${stepDisplay}${opts.branchId ? ` (${opts.branchId})` : ""}`;
 

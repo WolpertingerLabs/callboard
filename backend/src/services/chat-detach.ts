@@ -14,7 +14,7 @@ const log = createLogger("chat-detach");
 
 /**
  * Split a child chat off its parentage tree so it becomes a root of its own —
- * its own sidebar row and its own board card.
+ * its own sidebar row and its own card.
  *
  * Parentage is otherwise stamped only at creation (see chat-lineage.ts), so
  * this is the one place that rewrites it, and it only ever REMOVES links: it
@@ -33,7 +33,7 @@ const log = createLogger("chat-detach");
  *     (see `clearCardFieldsOn`). Nothing read them while the chat was a
  *     member, so they are stale by construction; left in place, an old title
  *     or a `closed` lifecycle would become the new card's face and could file
- *     the chat straight into the board's Archived strip. Absent means "all
+ *     the chat straight into the sidebar's archive. Absent means "all
  *     defaults": an open card titled after the chat.
  *
  * What is written:

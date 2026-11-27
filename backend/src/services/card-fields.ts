@@ -20,7 +20,7 @@
  *     so REST routes and MCP tools share one implementation.
  *
  * Purity split: the *read* half (`cardFieldsFromChat`, `isCardEligible`,
- * `cardLifecycleOf`) is pure over a chat record — the board rollup works over
+ * `cardLifecycleOf`) is pure over a chat record — the card rollup works over
  * an injected snapshot of chats and must never reach back into
  * chatFileService, or its results could mix two points-in-time (see
  * card-rollup.ts and chats-snapshot.ts).  Only the *write* half
@@ -140,7 +140,7 @@ function defaultEmoji(id: string): string {
 }
 
 /**
- * Project a chat record into its {@link Card} — the board-facing view with
+ * Project a chat record into its {@link Card} — the listing-facing view with
  * every default applied. Pure: reads only the passed record. `id` is the chat
  * id (the card's identity), `createdAt` is the chat's creation, and
  * `updatedAt` is the card data's own timestamp (defaults to the chat's
@@ -225,7 +225,7 @@ function mergeCardMetadata(
 
 /**
  * Whether a card in this state is archived, for the sidebar's purposes: closed
- * or opted out of the board. The two are one state everywhere a pin can be
+ * or hidden (opted out of listings). The two are one state everywhere a pin can be
  * seen — see the header of card-archive-unpin.ts. `stranded` is whether a
  * stranded child-archive flag is (still) closing the card, as for
  * {@link effectiveLifecycle}.
@@ -329,7 +329,7 @@ export function patchCardFields(chatId: string, patch: CardPatch, deps?: { pinne
   if (patch.lifecycle !== undefined) {
     // `closedAt` describes the transition, not the most recent idempotent
     // PATCH. Re-sending { lifecycle: "closed" } must not make an old card look
-    // newly closed (or reorder the board's Archived strip).
+    // newly closed (or reorder the archive by closedAt).
     if (patch.lifecycle !== currentLifecycle) {
       existing.lifecycle = patch.lifecycle;
       if (patch.lifecycle === "closed") {
@@ -402,7 +402,7 @@ export function patchCardFields(chatId: string, patch: CardPatch, deps?: { pinne
  * there cannot be edited through the card and never goes away: a reopen
  * patches the root, returns the root's now-open summary, and leaves the member
  * still saying "closed" on disk. Anything reading that record — or a later
- * repair pass — then disagrees with the board about the same card, which is
+ * repair pass — then disagrees with the cards API about the same card, which is
  * the shape the "reopen does nothing" report took.
  *
  * View-only, like every other card write: no `updated_at` bump.

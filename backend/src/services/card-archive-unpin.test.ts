@@ -6,9 +6,9 @@
  * the pins go", so a test that only exercised `PATCH /api/cards/:id` would pass
  * just as happily if the rule lived in the route handler.
  *
- * `claude.js` and `session-registry.js` are stubbed for the same reason
- * cards.bulk-lifecycle.test.ts stubs them: the lineage module this reaches
- * through imports both, and neither has anything to say about a pin.
+ * `claude.js` and `session-registry.js` are stubbed for the same reason the
+ * cards route suites stub them: the lineage module this reaches through
+ * imports both, and neither has anything to say about a pin.
  */
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";

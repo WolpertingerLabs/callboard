@@ -1,5 +1,7 @@
 # Board view modes — card grid ↔ full-width list, folder summary, row expansion
 
+Status: **Superseded.** The Board's Cards and List views were removed in #613, leaving only the Branches view as the Git tab (`/git`); the board-only card tools and REST extras followed in #616.
+
 Three board preferences, all persisted, all independent:
 
 1. **View mode** — `cards` (today's `minmax(260px, 1fr)` grid) or `list` (one

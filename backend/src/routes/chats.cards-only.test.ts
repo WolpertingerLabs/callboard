@@ -130,7 +130,7 @@ beforeEach(() => {
     // A closed card's tree: admitted by neither lifecycle nor descent.
     chat("closed-root", { card: { lifecycle: "closed" } }),
     chat("closed-child", { parentChatId: "closed-root" }),
-    // A hidden card opted out of the board; the filter is the board's sibling.
+    // A hidden card opted out of listings, and the filter counts it as archived.
     chat("hidden-root", { card: { hidden: true } }),
     // Roots that are NOT cards: a triggered top-level chat and a job-step chat.
     chat("triggered-root", { triggered: true }),
@@ -404,7 +404,7 @@ describe("GET /api/chats?cardLifecycle=unarchived", () => {
     expect(idsOf(await listChats({ cardLifecycle: "unarchived", limit: "50" }))).toEqual(UNARCHIVED);
   });
 
-  it("hides a card's tree the moment it is hidden from the board", async () => {
+  it("hides a card's tree the moment the card is hidden", async () => {
     patchCardFields("plain-root", { hidden: true });
     const body = idsOf(await listChats({ cardLifecycle: "unarchived", limit: "50" }));
     expect(body).not.toContain("plain-root");

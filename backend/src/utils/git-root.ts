@@ -1,6 +1,6 @@
 /**
  * Where a directory's checkout is, answered from the filesystem alone — no
- * git process. Shared by the Board's Branches view, the chat PRs route and the
+ * git process. Shared by the Git page, the chat PRs route and the
  * per-turn git trail.
  */
 import { existsSync, realpathSync } from "fs";

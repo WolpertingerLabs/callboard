@@ -1,6 +1,7 @@
 /**
  * Card rollup — aggregates member chats and job runs into per-card
- * summaries for the /board view.
+ * summaries for the cards API (the sidebar, the space switcher and the Git
+ * page).
  *
  * In the cards-as-metadata model a card IS its lineage root chat.  The
  * rollup derives the card list from the chat corpus: every lineage root
@@ -33,14 +34,12 @@ import { listActivities } from "./chat-activity.js";
 import { listPendingForParent } from "./session-callbacks.js";
 
 /**
- * Space scoping for {@link buildCardBoard}. `normalize` maps a card's raw
+ * Space scoping for {@link buildCardSummaries}. `normalize` maps a card's raw
  * stamp to the space it means (unknown ids → default); `scope` is a space id
- * or "all"; `crossSpaceNeedsYou` keeps other spaces' open cards whose rollup
- * is needs_you, so the board's Needs-you bucket stays cross-space.
+ * or "all".
  */
 export interface CardSpaceScope {
   scope: string;
-  crossSpaceNeedsYou?: boolean;
   normalize: (raw: string | undefined) => string;
 }
 
@@ -59,7 +58,7 @@ export interface RollupDeps {
   /**
    * First-user-message preview for a chat whose metadata carries no title —
    * the same fallback the sidebar shows, so untitled chats never render as
-   * "Untitled chat" on the board. Null when the session log can't be found
+   * "Untitled chat" in a card listing. Null when the session log can't be found
    * or has no user message yet.
    */
   previewOf: (sessionId: string, metadata?: string | null) => string | null;
@@ -81,7 +80,7 @@ const PENDING_KIND_BY_EVENT: Record<string, CardPendingKind> = {
  * was removed, or whose log was deleted out from under its record — and each
  * of those costs a walk of all five providers, which for claude-code means an
  * `existsSync` per project directory. Uncached that is 823 ms of the 1,566 ms
- * rollup, re-paid on every request, and the board polls every 15 s per open
+ * rollup, re-paid on every request, and the Git page polls every 15 s per open
  * tab and refetches on every metadata change.
  *
  * A hit never goes stale (a session's first user message is immutable once
@@ -114,7 +113,7 @@ const previewCache = new Map<string, PreviewEntry>();
  * How long a "this session resolves to no log at all" verdict stands before
  * the provider walk is repeated.
  *
- * Long enough that neither the board's 15 s poll nor a burst of metadata-driven
+ * Long enough that neither the Git page's 15 s poll nor a burst of metadata-driven
  * refetches re-pays the walk, and short enough that a session whose log shows
  * up late (a chat spawned against a provider that writes its log on first turn)
  * gets its preview without waiting for a daemon restart.
@@ -181,7 +180,7 @@ function cachedPreviewOf(sessionId: string, metadata?: string | null, now: numbe
     try {
       preview = resolved.provider.getSessionPreview(resolved.logPath);
     } catch {
-      // A bad preview must not take down an entire board response.
+      // A bad preview must not take down an entire cards response.
       return null;
     }
     if (preview) {
@@ -261,10 +260,10 @@ function toMemberChat(chat: Chat, meta: ChatMeta, deps: RollupDeps): CardMemberC
   const title = typeof rawTitle === "string" ? rawTitle.replace(/\s+/g, " ").trim().slice(0, 120) : null;
   // A pending request outranks "ongoing": the session may still be
   // registered while it sits blocked on user input, and blocked-on-you is
-  // the state the board must surface.
+  // the state the rollup must surface.
   const pendingKind = nativeAgent ? undefined : deps.pendingKindOf(chat.id, chat.session_id);
   // A native child with no recent activity — terminal, errored or simply no
-  // evidence — is "stopped" for the board; `nativeAgent.lifecycle` carries the
+  // evidence — is "stopped" in the rollup; `nativeAgent.lifecycle` carries the
   // distinction for clients that want it (see CardMemberChat).
   const status = nativeAgent
     ? nativeAgent.lifecycle === "active"
@@ -337,7 +336,7 @@ function rollupState(chats: CardMemberChat[], runs: CardMemberRun[]): CardRollup
  * record (`cardFieldsFromChat`) — never a second store read. Chats are grouped
  * by their highest existing root; runs by `run.rootChatId` (falling back to a
  * surviving latest chat after root deletion). Hidden cards
- * (`metadata.card.hidden === true`) are omitted from the board view.
+ * (`metadata.card.hidden === true`) are omitted unless `includeHidden`.
  */
 export function buildCardSummaries(
   chats: Chat[],
@@ -345,60 +344,11 @@ export function buildCardSummaries(
   deps: RollupDeps = ROLLUP_DEPS,
   opts: { includeHidden?: boolean; lifecycle?: Card["lifecycle"]; space?: CardSpaceScope } = {},
 ): CardSummary[] {
-  return buildCardBoard(chats, allRuns, deps, opts).cards;
-}
-
-/** The order the board's archived strip reads in: most recently archived first. */
-const closedOrder = (card: Card): string => card.closedAt ?? card.updatedAt;
-
-/**
- * {@link buildCardSummaries}, plus what a client that asked for only part of
- * the archive needs to describe the rest.
- *
- * The archive is windowed BEFORE member projection — which is the point:
- * archived cards outnumber open ones by hundreds to one on a long-lived
- * install, and projecting every one of them was most of the board's response.
- * Measured on one: 861 closed vs 4 open, 734 KB per 15 s poll.
- *
- * - `closedLimit` keeps the newest N closed cards (by `closedAt ?? updatedAt`).
- * - `closedSince` (epoch ms) keeps every closed card whose key is at or after
- *   it, uncapped. It is the cursor a client refetches an already-loaded
- *   window with: a count would let each newly archived card push the oldest
- *   loaded one out from under an open drawer or a selection.
- * - Both: a card is kept if EITHER keeps it — the window never shrinks below
- *   the cursor, and the count can still reach past it ("show more").
- * - Neither: every closed card.
- *
- * `closedTotal` and `categories` are counted over every card the filters
- * admitted, trimmed or not: the strip's header reports the whole archive, and
- * the category autocomplete must not forget a category whose only cards sit
- * past the cut.
- */
-export function buildCardBoard(
-  chats: Chat[],
-  allRuns: JobRunListItem[],
-  deps: RollupDeps = ROLLUP_DEPS,
-  opts: {
-    includeHidden?: boolean;
-    lifecycle?: Card["lifecycle"];
-    closedLimit?: number;
-    closedSince?: number;
-    space?: CardSpaceScope;
-  } = {},
-): { cards: CardSummary[]; closedTotal: number; categories: string[] } {
   const { existingRootIdOf } = buildLineageIndex(chats);
-  // Cards from other spaces that are kept only as needs-you candidates. They
-  // are rolled up like any other card and dropped afterwards unless their
-  // rollup really is needs_you, and they never count toward closedTotal or
-  // categories — those describe the space being looked at.
-  const foreignRoots = new Set<string>();
-
   // Find every lineage root that qualifies as a card, with its projected
-  // fields. Hidden cards are opted out of the board (replacement for the
+  // fields. Hidden cards are opted out of listings (replacement for the
   // old createCard: false).
   const cardsByRoot = new Map<string, Card>();
-  const closedRoots: [string, Card][] = [];
-  const categories = new Set<string>();
   for (const chat of chats) {
     if (existingRootIdOf(chat.id) !== chat.id) continue;
     if (!isCardEligible(chat)) continue;
@@ -412,27 +362,9 @@ export function buildCardBoard(
     if (opts.space) {
       const stamp = parseChatMetadataRecord(chat.metadata).spaceId;
       card.spaceId = opts.space.normalize(typeof stamp === "string" ? stamp : undefined);
-      if (opts.space.scope !== "all" && card.spaceId !== opts.space.scope) {
-        // A blocked chat must not be hidden by separation: an OPEN card from
-        // another space stays a candidate for the needs-you bucket.
-        if (!opts.space.crossSpaceNeedsYou || card.lifecycle !== "open" || card.hidden) continue;
-        foreignRoots.add(chat.id);
-        cardsByRoot.set(chat.id, card);
-        continue;
-      }
+      if (opts.space.scope !== "all" && card.spaceId !== opts.space.scope) continue;
     }
-    if (card.category) categories.add(card.category);
-    if (card.lifecycle === "closed") closedRoots.push([chat.id, card]);
-    else cardsByRoot.set(chat.id, card);
-  }
-  const closedTotal = closedRoots.length;
-  const { closedLimit, closedSince } = opts;
-  if (closedLimit !== undefined) closedRoots.sort(([, a], [, b]) => closedOrder(b).localeCompare(closedOrder(a)));
-  const windowed = closedLimit !== undefined || closedSince !== undefined;
-  for (const [newestFirst, [rootId, card]] of closedRoots.entries()) {
-    const inCount = closedLimit !== undefined && newestFirst < closedLimit;
-    const inCursor = closedSince !== undefined && Date.parse(closedOrder(card)) >= closedSince;
-    if (!windowed || inCount || inCursor) cardsByRoot.set(rootId, card);
+    cardsByRoot.set(chat.id, card);
   }
 
   // Group chats by root.
@@ -468,7 +400,7 @@ export function buildCardBoard(
 
     // Card-data edits (updatedAt) count as activity too — a card whose chats
     // are quiet but was just retitled should not sink to the bottom of the
-    // board's recency ordering.
+    // recency ordering.
     let lastActivityAt = card.updatedAt;
     for (const chat of memberChats) {
       if (chat.updatedAt > lastActivityAt) lastActivityAt = chat.updatedAt;
@@ -479,7 +411,6 @@ export function buildCardBoard(
     }
 
     const rollup = rollupState(memberChats, memberRuns);
-    if (foreignRoots.has(rootId) && rollup !== "needs_you") continue;
     summaries.push({
       ...card,
       rollup,
@@ -491,9 +422,5 @@ export function buildCardBoard(
     });
   }
 
-  return {
-    cards: summaries.sort((a, b) => b.lastActivityAt.localeCompare(a.lastActivityAt)),
-    closedTotal,
-    categories: [...categories].sort((a, b) => a.localeCompare(b)),
-  };
+  return summaries.sort((a, b) => b.lastActivityAt.localeCompare(a.lastActivityAt));
 }

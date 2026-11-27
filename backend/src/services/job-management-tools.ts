@@ -283,7 +283,7 @@ function buildUnguardedJobTools(ctx: JobToolsContext): AnyToolDefinition[] {
 
     defineTool(
       "spawn_job",
-      "Spawn a run of a job: freezes the current definition and starts executing the first step. Returns the runId. The run proceeds autonomously — use get_job_run to check progress; approval steps notify the user and wait. Runs spawned from a chat are members of that chat's lineage root's card (the board groups them there automatically).",
+      "Spawn a run of a job: freezes the current definition and starts executing the first step. Returns the runId. The run proceeds autonomously — use get_job_run to check progress; approval steps notify the user and wait. Runs spawned from a chat are members of that chat's lineage root's card.",
       {
         jobId: z.string().describe("The job id to spawn"),
         inputs: z

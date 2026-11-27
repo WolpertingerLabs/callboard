@@ -2241,7 +2241,7 @@ chatsRouter.get("/:id/tree", (req, res) => {
 chatsRouter.post("/:id/detach", (req, res) => {
   // #swagger.tags = ['Chats']
   // #swagger.summary = 'Split a child chat off its parent'
-  // #swagger.description = 'Removes the parent link from a child chat so it becomes a standalone, top-level chat with its own sidebar row and board card. Clears metadata parentChatId, forkedFrom, rootChatId, chatRole, forkedAt and stale card face fields; stamps spaceId with the space the tree was in (absent for the default space) and records detachedFrom. Chats under it by parent pointer are re-stamped onto it as their new root; chats tied to the old tree only by a rootChatId stamp (job steps) stay. Completion callbacks waiting on the chat are removed and an open prompt offered to its old parent is withdrawn. Repeating the call on a chat already split off is a no-op 200. Native Codex subagents are refused, because their parent is read from the Codex rollout. Does not bump updated_at.'
+  // #swagger.description = 'Removes the parent link from a child chat so it becomes a standalone, top-level chat with its own sidebar row and card. Clears metadata parentChatId, forkedFrom, rootChatId, chatRole, forkedAt and stale card face fields; stamps spaceId with the space the tree was in (absent for the default space) and records detachedFrom. Chats under it by parent pointer are re-stamped onto it as their new root; chats tied to the old tree only by a rootChatId stamp (job steps) stay. Completion callbacks waiting on the chat are removed and an open prompt offered to its old parent is withdrawn. Repeating the call on a chat already split off is a no-op 200. Native Codex subagents are refused, because their parent is read from the Codex rollout. Does not bump updated_at.'
   /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
   /* #swagger.responses[200] = { description: "The updated chat" } */
   /* #swagger.responses[400] = { description: "The chat has no parent and was never split off, or has no stored record" } */
@@ -2258,7 +2258,7 @@ chatsRouter.post("/:id/detach", (req, res) => {
       // Row membership changes for two trees at once, so every cached page is wrong.
       clearListCaches();
       // Two cards changed: the old tree lost a member (and its rollup), and a
-      // new card exists. The board, CardDrawer and other tabs refetch on these,
+      // new card exists. The sidebar, the Git page and other tabs refetch on these,
       // as they do for the other card-membership writes in this file. The old
       // parent is notified too, so an open parent drops its tree indicator and
       // inline fork marker.
@@ -3115,7 +3115,7 @@ chatsRouter.patch("/:id/read", (req, res) => {
 
 // (The old PATCH /:id/card assign/unassign endpoint is gone: card
 // membership is lineage, derived from the parentage tree, so there is
-// nothing to assign. Board membership edits go through PATCH /api/cards/:id
+// nothing to assign. Card edits go through PATCH /api/cards/:id
 // — the id is the root chat.)
 
 // Dismiss a summon on a chat
@@ -3274,12 +3274,13 @@ const yieldToEventLoop = () => new Promise<void>((resolve) => setImmediate(resol
  *
  * Archived is a property of the lineage ROOT (see services/chat-archive.ts):
  * a card root is closed/reopened through `patchCardFields`, exactly as
- * `POST /api/cards/bulk-lifecycle` does, and any other root — a triggered
+ * `PATCH /api/cards/:id` does, and any other root — a triggered
  * chat, a job step — carries the chat-level `metadata.treeArchived` flag instead.
  * The caller sends the chat ids it selected and never has to know which kind
  * each tree is, or where its root is; that resolution is the server's.
  *
- * Shaped after bulk-lifecycle on purpose, including its reporting invariant:
+ * Shaped after the since-removed `POST /api/cards/bulk-lifecycle` on purpose,
+ * including its reporting invariant:
  * every root is resolved BEFORE any is written, two ids on one tree flip it
  * once, and every requested id is reported exactly once in `updated` or
  * `failed`. Partial success is a 200 with a populated `failed[]`.
@@ -3321,14 +3322,16 @@ chatsRouter.post("/bulk-archive", (req, res) => {
   }
   try {
     type Target = { rootChatId: string; isCard: boolean; writeKey?: string; materialize?: any };
-    // Resolve every root BEFORE writing any — see bulk-lifecycle for why there
-    // are two structures (flip-once order vs. what each id resolved to).
+    // Resolve every root BEFORE writing any, so a typo in the middle of the
+    // batch cannot half-apply. Two structures, because dedupe and reporting
+    // are different questions: `writeOrder` flips each root once, and
+    // `rootByRequestedId` remembers what every requested id resolved to,
+    // including the ones deduped away, so each id is still reported.
     const writeOrder: Target[] = [];
     const rootByRequestedId = new Map<string, Target>();
     const seenRoots = new Set<string>();
     const failed: { id: string; error: string }[] = [];
-    // One snapshot for lineage, for session-id resolution and for the pins, as
-    // bulk-lifecycle does.
+    // One snapshot for lineage, for session-id resolution and for the pins.
     const stored = listChatsSnapshot();
     const context = createCardContext(stored);
     /**
@@ -3464,8 +3467,7 @@ chatsRouter.post("/bulk-archive", (req, res) => {
 /**
  * Bulk delete for the sidebar's multi-select.
  *
- * POST, not `DELETE /bulk`, for the reason `POST /api/cards/bulk-lifecycle`
- * spells out: Express matches in registration order, so a `delete("/bulk")`
+ * POST, not `DELETE /bulk`, because Express matches in registration order, so a `delete("/bulk")`
  * sitting below `delete("/:id")` would resolve to the single-chat handler with
  * `id="bulk"` and answer 404 "Chat not found" — a routing bug wearing a data
  * bug's clothes. There is no `post("/:id")` on this router, so this path

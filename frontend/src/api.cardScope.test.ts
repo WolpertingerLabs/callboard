@@ -1,5 +1,5 @@
 /**
- * What the sidebar's two card-scope calls actually put on the wire.
+ * What the card-scope calls actually put on the wire.
  *
  * Same reasoning as api.workspaces.test.ts: every component test of this
  * surface mocks `../api` wholesale, which is right for testing a component and
@@ -16,6 +16,9 @@
  *    rows that scope withholds. The hidden path is covered at the route
  *    (cards.hidden-listing.test.ts) and at the predicate (chatDimming.test.ts);
  *    this one line is what makes those two meet.
+ *  - `listCards(false, { space, lifecycle: "open" })`, the Git page's call, puts
+ *    both on the query string. Lose `lifecycle` and every poll pays for the
+ *    whole archive again.
  *  - `listChats(..., "unarchived")` → `?cardLifecycle=unarchived`, and `"all"`
  *    → omitted, so the widest request stays byte-identical to what it was.
  *    `active` and `cardsOnly` are asserted too: they are published values older
@@ -58,6 +61,14 @@ describe("listCards", () => {
     const url = requestedUrl();
     expect(url.search).toBe("");
     expect(url.pathname.endsWith("/cards")).toBe(true);
+  });
+
+  it("sends the space and lifecycle scope the Git page asks for", async () => {
+    await listCards(false, { space: "sp_work", lifecycle: "open" });
+    const params = requestedUrl().searchParams;
+    expect(params.get("space")).toBe("sp_work");
+    expect(params.get("lifecycle")).toBe("open");
+    expect(params.get("includeHidden")).toBeNull();
   });
 });
 

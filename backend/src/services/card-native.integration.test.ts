@@ -1,4 +1,4 @@
-/** Real REST/MCP handlers + real scratch chat store and filesystem-only rollouts.
+/** Real REST handlers + real scratch chat store and filesystem-only rollouts.
  * No chat opening/adoption, transcript tools, controls, or live workspace actions.
  */
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -33,7 +33,6 @@ vi.mock("node:fs", async (original) => {
   return { ...fs, readSync: vi.fn(fs.readSync) };
 });
 const { cardsRouter } = await import("../routes/cards.js");
-const { buildCallboardToolsSpec } = await import("./callboard-tools.js");
 const { CodexSessionProvider } = await import("../agents/adapters/codex/CodexSessionProvider.js");
 const { clearCodexSessionMetaCache } = await import("../agents/adapters/codex/sessionParser.js");
 const { resetChatsSnapshot } = await import("./chats-snapshot.js");
@@ -104,12 +103,6 @@ async function rest(method: string, path: string, id = "", body = {}, query: Rec
   );
   return { code, ...payload };
 }
-async function mcp(name: string, args = {}) {
-  const spec = buildCallboardToolsSpec(() => IMPL, undefined, { includeJobTools: false });
-  const result = await spec.tools.find((tool) => tool.name === name)!.handler(args);
-  const text = result.content[0] as { text: string };
-  return result.isError ? { error: text.text } : JSON.parse(text.text);
-}
 function disk() {
   return Object.fromEntries(
     readdirSync(chatsDir)
@@ -132,7 +125,7 @@ beforeEach(() => {
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 
 describe("filesystem-only native card membership", () => {
-  it("fixes 7 vs 4 across board REST and MCP, direct child lookup, without persistence", async () => {
+  it("fixes 7 vs 4 across the card list and direct child lookup, without persistence", async () => {
     rollout(CHILD);
     rollout(SIBLING);
     rollout(LEAF);
@@ -141,37 +134,33 @@ describe("filesystem-only native card membership", () => {
     expect(board.cards).toHaveLength(1);
     expect(board.cards[0].chatCount).toBe(7);
     for (const id of [IMPL, CHILD, SIBLING, LEAF]) {
-      expect((await rest("get", "/:id", id)).card.id).toBe(ROOT);
-      const result = await mcp("get_card", { card_id: id });
-      expect(result.card.chatCount).toBe(7);
-      expect(new Set(result.memberChats.map((m: any) => m.chatId)).size).toBe(7);
-      expect(result.memberChats.find((m: any) => m.chatId === CHILD).nativeAgent).toMatchObject({ lifecycle: "complete", management: "read-only" });
+      const { card } = await rest("get", "/:id", id);
+      expect(card.id).toBe(ROOT);
+      expect(card.chatCount).toBe(7);
+      expect(new Set(card.memberChats.map((m: any) => m.chatId)).size).toBe(7);
+      expect(card.memberChats.find((m: any) => m.chatId === CHILD).nativeAgent).toMatchObject({ lifecycle: "complete", management: "read-only" });
     }
-    expect((await mcp("list_cards")).cards[0]).toMatchObject({ cardId: ROOT, chatCount: 7, rollup: "idle" });
+    expect(board.cards[0]).toMatchObject({ id: ROOT, chatCount: 7, rollup: "idle" });
     expect(disk()).toEqual(before);
   });
 
-  it("redirects REST patch/bulk and both explicit MCP setters only to the stored owning root", async () => {
+  it("redirects REST patches addressed to any native member only to the stored owning root", async () => {
     rollout(CHILD);
     rollout(SIBLING);
     rollout(LEAF, CHILD);
     const before = disk();
     expect((await rest("patch", "/:id", CHILD, { title: "REST", hidden: true })).card).toMatchObject({ id: ROOT, title: "REST", chatCount: 7 });
     expect((await rest("get", "/")).cards).toEqual([]);
-    expect((await mcp("get_card", { card_id: LEAF })).card.hidden).toBe(true);
-    expect((await mcp("update_card", { card_id: LEAF, title: "MCP" })).success).toBe(true);
-    expect((await mcp("set_card_metadata", { card_id: SIBLING, set: { issue: "416" } })).success).toBe(true);
-    const scan = vi.spyOn(CodexSessionProvider.prototype, "nativeDiscoveryEvidence");
-    const bulk = await rest("post", "/bulk-lifecycle", "", { ids: [CHILD, SIBLING, LEAF], lifecycle: "closed" });
-    expect(scan).toHaveBeenCalledTimes(1);
-    scan.mockRestore();
-    expect(bulk.failed).toEqual([]);
-    expect(bulk.updated).toHaveLength(3);
-    expect(bulk.updated.every((c: any) => c.id === ROOT && c.lifecycle === "closed" && c.chatCount === 7)).toBe(true);
+    expect((await rest("get", "/:id", LEAF)).card.hidden).toBe(true);
+    expect((await rest("patch", "/:id", LEAF, { title: "Leaf" })).card.id).toBe(ROOT);
+    expect((await rest("patch", "/:id", SIBLING, { metadata: { issue: "416" } })).card.id).toBe(ROOT);
+    for (const id of [CHILD, SIBLING, LEAF]) {
+      expect((await rest("patch", "/:id", id, { lifecycle: "closed" })).card).toMatchObject({ id: ROOT, lifecycle: "closed", chatCount: 7 });
+    }
     const after = disk();
     expect(Object.keys(after)).toEqual(Object.keys(before));
     for (const file of Object.keys(before).filter((file) => file !== `${ROOT}.json`)) expect(after[file]).toBe(before[file]);
-    expect(JSON.parse(JSON.parse(after[`${ROOT}.json`]).metadata).card).toMatchObject({ title: "MCP", metadata: { issue: "416" } });
+    expect(JSON.parse(JSON.parse(after[`${ROOT}.json`]).metadata).card).toMatchObject({ title: "Leaf", metadata: { issue: "416" } });
   });
 
   it("maps session parents, follows nested native chains, and deduplicates stored overlap with explicit parent precedence", async () => {
@@ -181,7 +170,7 @@ describe("filesystem-only native card membership", () => {
     rollout(SIBLING, CHILD);
     rollout(LEAF, SIBLING);
     chat("mapped-native", { card: { title: "stranded native metadata" } }, CHILD);
-    let card = (await mcp("get_card", { card_id: LEAF })).card;
+    let card = (await rest("get", "/:id", LEAF)).card;
     expect(card.chatCount).toBe(7);
     expect((await rest("get", "/:id", CHILD)).card.id).toBe(ROOT);
     const beforeNative = readFileSync(join(chatsDir, "mapped-native.json"), "utf8");
@@ -194,7 +183,7 @@ describe("filesystem-only native card membership", () => {
     card = (await rest("get", "/:id", LEAF)).card;
     expect(card.id).toBe("other-root");
     expect(card.chatCount).toBe(4);
-    expect((await mcp("get_card", { card_id: IMPL })).error).toBeDefined(); // Stored chat id, not an alias for mapped session id.
+    expect((await rest("get", "/:id", IMPL)).code).toBe(404); // Stored chat id, not an alias for mapped session id.
   });
 
   it("does not create synthetic cards or attach missing, mismatched, or duplicate rollout evidence", async () => {
@@ -206,7 +195,7 @@ describe("filesystem-only native card membership", () => {
     for (const id of [CHILD, SIBLING, LEAF]) {
       expect((await rest("get", "/:id", id)).code).toBe(404);
       expect((await rest("patch", "/:id", id, { title: "no" })).code).toBe(404);
-      expect((await mcp("set_card_metadata", { card_id: id, set: { x: "no" } })).error).toBeDefined();
+      expect((await rest("patch", "/:id", id, { metadata: { x: "no" } })).code).toBe(404);
     }
     expect((await rest("get", "/")).cards.map((c: any) => c.chatCount)).toEqual([4]);
     expect(disk()).toEqual(before);
@@ -220,7 +209,7 @@ describe("filesystem-only native card membership", () => {
     expect((await rest("get", "/")).cards.map((c: any) => c.chatCount)).toEqual([4]);
     for (const id of [CHILD, SIBLING, LEAF]) {
       expect((await rest("get", "/:id", id)).code).toBe(404);
-      expect((await mcp("update_card", { card_id: id, title: "no orphan" })).error).toBeDefined();
+      expect((await rest("patch", "/:id", id, { title: "no orphan" })).code).toBe(404);
     }
     expect(disk()).toEqual(before);
   });
@@ -234,7 +223,7 @@ describe("filesystem-only native card membership", () => {
     expect(card.memberChats.find((m: any) => m.chatId === CHILD).nativeAgent.lifecycle).toBe("active");
     const now = Date.now();
     const time = vi.spyOn(Date, "now").mockReturnValue(now + 31_000);
-    card = (await mcp("get_card", { card_id: CHILD })).card;
+    card = (await rest("get", "/:id", CHILD)).card;
     expect(card.rollup).toBe("idle");
     expect(card.memberChats.find((m: any) => m.chatId === CHILD).status).toBe("stopped");
     expect(card.memberChats.find((m: any) => m.chatId === CHILD).nativeAgent.lifecycle).toBe("unknown");
@@ -242,7 +231,7 @@ describe("filesystem-only native card membership", () => {
     appendFileSync(path, JSON.stringify({ type: "event_msg", payload: { type: "error" } }) + "\n");
     expect((await rest("get", "/:id", CHILD)).card.memberChats.find((m: any) => m.chatId === CHILD).nativeAgent.lifecycle).toBe("error");
     rollout(SIBLING, CHILD, "task_complete", { subagent_history_start_ordinal: undefined });
-    expect((await mcp("get_card", { card_id: SIBLING })).card.chatCount).toBe(6);
+    expect((await rest("get", "/:id", SIBLING)).card.chatCount).toBe(6);
     expect(disk()).toEqual(before);
   });
 
@@ -264,11 +253,11 @@ describe("filesystem-only native card membership", () => {
     vi.mocked(readSync).mockClear();
     expect((await rest("get", "/:id", "unrelated")).card.chatCount).toBe(1);
     expect(vi.mocked(readSync).mock.calls.every((args) => Number((args as unknown[])[3]) <= 8192)).toBe(true);
-    // Bulk responses also replay only the cards they actually return.
+    // Patch responses also replay only the card they actually return.
     rollout(LEAF, "unrelated", "task_complete", {}, 3 * 1024 * 1024);
     vi.mocked(readSync).mockClear();
-    const bulk = await rest("post", "/bulk-lifecycle", "", { ids: [CHILD], lifecycle: "closed" });
-    expect(bulk.updated[0].chatCount).toBe(6);
+    const patched = await rest("patch", "/:id", CHILD, { lifecycle: "closed" });
+    expect(patched.card.chatCount).toBe(6);
     const replayCount = vi.mocked(readSync).mock.calls.filter((args) => Number((args as unknown[])[3]) > 1024 * 1024).length;
     // At most the formerly budget-skipped member of the selected card; never LEAF.
     expect(replayCount).toBeLessThanOrEqual(1);
@@ -283,7 +272,7 @@ describe("filesystem-only native card membership", () => {
     rollout(LEAF, "triggered");
     const before = disk();
     expect((await rest("get", "/")).cards.map((c: any) => c.chatCount)).toEqual([4]);
-    expect((await mcp("get_card", { card_id: CHILD })).error).toBeDefined();
+    expect((await rest("get", "/:id", CHILD)).code).toBe(404);
     expect((await rest("patch", "/:id", LEAF, { title: "no" })).code).toBe(404);
     expect(disk()).toEqual(before);
     saveIgnoredProjectDirPrefixes([]);
@@ -294,7 +283,7 @@ describe("filesystem-only native card membership", () => {
     const result = await rest("get", "/:id", "foreign-root");
     expect(result.card.id).toBe("foreign-root");
     expect(result.card.memberChats[0].nativeAgent).toBeUndefined();
-    expect((await mcp("update_card", { card_id: "foreign-root", title: "Explicit owner" })).success).toBe(true);
+    expect((await rest("patch", "/:id", "foreign-root", { title: "Explicit owner" })).card.id).toBe("foreign-root");
   });
 
   it("refuses ambiguous mapped parents and bounds aggregate cold metadata reads", async () => {
@@ -345,17 +334,13 @@ describe("native classification, parent namespace and lifecycle identity obligat
       const targets = [...new Set([target, CHILD, SIBLING, LEAF])];
       const board = await rest("get", "/");
       expect(board.cards.flatMap((c: any) => c.memberChats.map((m: any) => m.chatId))).not.toEqual(expect.arrayContaining([target]));
-      expect((await mcp("list_cards")).cards.map((c: any) => c.cardId)).not.toContain(target);
+      expect(board.cards.map((c: any) => c.id)).not.toContain(target);
       for (const id of targets) {
         expect((await rest("get", "/:id", id)).code).toBe(404);
-        expect((await mcp("get_card", { card_id: id })).error).toBeDefined();
         expect((await rest("patch", "/:id", id, { title: "must not write" })).code).toBe(404);
-        expect((await mcp("update_card", { card_id: id, title: "must not write" })).error).toBeDefined();
-        expect((await mcp("set_card_metadata", { card_id: id, set: { denied: "yes" } })).error).toBeDefined();
+        expect((await rest("patch", "/:id", id, { metadata: { denied: "yes" } })).code).toBe(404);
+        expect((await rest("patch", "/:id", id, { lifecycle: "closed" })).code).toBe(404);
       }
-      const bulk = await rest("post", "/bulk-lifecycle", "", { ids: targets, lifecycle: "closed" });
-      expect(bulk.updated).toEqual([]);
-      expect(bulk.failed).toHaveLength(targets.length);
       expect(disk()).toEqual(before);
     },
   );
@@ -375,15 +360,12 @@ describe("native classification, parent namespace and lifecycle identity obligat
     const before = disk();
     for (const id of ["mapped-native", CHILD, SIBLING, LEAF]) {
       expect((await rest("get", "/:id", id)).card.id).toBe(ROOT);
-      expect((await mcp("get_card", { card_id: id })).card.id).toBe(ROOT);
     }
     expect(disk()).toEqual(before);
     expect((await rest("patch", "/:id", CHILD, { title: "explicit root" })).card.id).toBe(ROOT);
-    expect((await mcp("set_card_metadata", { card_id: LEAF, set: { explicit: "yes" } })).cardId).toBe(ROOT);
-    expect((await mcp("update_card", { card_id: SIBLING, title: "explicit root" })).cardId).toBe(ROOT);
-    const bulk = await rest("post", "/bulk-lifecycle", "", { ids: [CHILD, LEAF], lifecycle: "closed" });
-    expect(bulk.failed).toEqual([]);
-    expect(bulk.updated.every((c: any) => c.id === ROOT)).toBe(true);
+    expect((await rest("patch", "/:id", LEAF, { metadata: { explicit: "yes" } })).card.id).toBe(ROOT);
+    expect((await rest("patch", "/:id", SIBLING, { title: "explicit root" })).card.id).toBe(ROOT);
+    for (const id of [CHILD, LEAF]) expect((await rest("patch", "/:id", id, { lifecycle: "closed" })).card.id).toBe(ROOT);
     const after = disk();
     for (const file of Object.keys(before).filter((file) => file !== `${ROOT}.json`)) expect(after[file]).toBe(before[file]);
   });
@@ -396,24 +378,24 @@ describe("native classification, parent namespace and lifecycle identity obligat
     const card = (await rest("get", "/:id", CHILD)).card;
     expect(card.id).toBe(ROOT);
     expect(card.memberChats.find((m: any) => m.chatId === CHILD).nativeAgent.lifecycle).toBe("unknown");
-    expect((await mcp("get_card", { card_id: CHILD })).card.id).toBe(ROOT);
     expect(disk()).toEqual(before);
-    expect((await mcp("set_card_metadata", { card_id: CHILD, set: { durable: "yes" } })).cardId).toBe(ROOT);
+    expect((await rest("patch", "/:id", CHILD, { metadata: { durable: "yes" } })).card.id).toBe(ROOT);
     expect(disk()[`${CHILD}.json`]).toBe(before[`${CHILD}.json`]);
   });
 
-  it("preserves implicit root scope, ordinary orphan promotion, cycles and mixed bulk accounting", async () => {
+  it("preserves stored-root scope, ordinary orphan promotion and cycles", async () => {
     rollout(CHILD, SIBLING);
     rollout(SIBLING, CHILD);
     rollout(LEAF);
-    expect((await mcp("get_card")).card.id).toBe(ROOT);
-    expect((await mcp("update_card", { title: "implicit root" })).cardId).toBe(ROOT);
+    expect((await rest("get", "/:id", IMPL)).card.id).toBe(ROOT);
+    expect((await rest("patch", "/:id", IMPL, { title: "stored root" })).card.id).toBe(ROOT);
     chat("ordinary-orphan", { parentChatId: "deleted-parent" });
     expect((await rest("patch", "/:id", "ordinary-orphan", { title: "orphan" })).card.id).toBe("ordinary-orphan");
     const before = disk();
-    const bulk = await rest("post", "/bulk-lifecycle", "", { ids: [ROOT, LEAF, CHILD, "missing"], lifecycle: "closed" });
-    expect(bulk.updated).toHaveLength(2);
-    expect(bulk.failed).toHaveLength(2);
+    const codes = [];
+    for (const id of [ROOT, LEAF, CHILD, "missing"]) codes.push((await rest("patch", "/:id", id, { lifecycle: "closed" })).code);
+    // The cycle has no stored owner, so CHILD is no card's member.
+    expect(codes).toEqual([200, 200, 404, 404]);
     expect(Object.keys(disk())).toEqual(Object.keys(before));
     expect(disk()[`${IMPL}.json`]).toBe(before[`${IMPL}.json`]);
   });
@@ -442,13 +424,10 @@ describe("native classification, parent namespace and lifecycle identity obligat
       };
       assertUnknown((await rest("get", "/")).cards.find((c: any) => c.id === ROOT));
       assertUnknown((await rest("get", "/:id", CHILD)).card);
-      assertUnknown((await mcp("get_card", { card_id: CHILD })).card);
-      expect((await mcp("list_cards")).cards.find((c: any) => c.cardId === ROOT).rollup).toBe("idle");
       expect(disk()).toEqual(before);
       assertUnknown((await rest("patch", "/:id", CHILD, { title: "root edit" })).card);
-      assertUnknown((await rest("post", "/bulk-lifecycle", "", { ids: [CHILD], lifecycle: "closed" })).updated[0]);
-      expect((await mcp("update_card", { card_id: CHILD, title: "root edit" })).cardId).toBe(ROOT);
-      expect((await mcp("set_card_metadata", { card_id: CHILD, set: { identity: "checked" } })).cardId).toBe(ROOT);
+      assertUnknown((await rest("patch", "/:id", CHILD, { lifecycle: "closed" })).card);
+      expect((await rest("patch", "/:id", CHILD, { metadata: { identity: "checked" } })).card.id).toBe(ROOT);
       for (const file of Object.keys(before).filter((file) => file !== `${ROOT}.json`)) expect(disk()[file]).toBe(before[file]);
     },
   );
@@ -488,16 +467,12 @@ describe("round-two durable aliases and returned-root replay budgets", () => {
         expect(card.id).toBe(ROOT);
         expect(card.memberChats.find((m: any) => m.chatId === "mapped-child").status).toBe("stopped");
       }
-      expect((await cold(() => mcp("get_card", { card_id: CHILD }))).card.id).toBe(ROOT);
-      expect((await cold(() => mcp("get_card"))).card.id).toBe(ROOT); // Inherited implicit identity is unchanged.
       expect(disk()).toEqual(before);
       expect((await cold(() => rest("patch", "/:id", CHILD, { title: "durable alias" }))).card.id).toBe(ROOT);
-      expect((await cold(() => mcp("update_card", { card_id: CHILD, title: "durable alias" }))).cardId).toBe(ROOT);
-      expect((await cold(() => mcp("set_card_metadata", { card_id: CHILD, set: { durable: "alias" } }))).cardId).toBe(ROOT);
-      const bulk = await cold(() => rest("post", "/bulk-lifecycle", "", { ids: [CHILD, "mapped-child", LEAF], lifecycle: "closed" }));
-      expect(bulk.failed).toEqual([]);
-      expect(bulk.updated).toHaveLength(3);
-      expect(bulk.updated.every((c: any) => c.id === ROOT)).toBe(true);
+      expect((await cold(() => rest("patch", "/:id", CHILD, { metadata: { durable: "alias" } }))).card.id).toBe(ROOT);
+      for (const id of [CHILD, "mapped-child", LEAF]) {
+        expect((await cold(() => rest("patch", "/:id", id, { lifecycle: "closed" }))).card.id).toBe(ROOT);
+      }
       const after = disk();
       expect(Object.keys(after)).toEqual(Object.keys(before));
       for (const file of Object.keys(before).filter((f) => f !== `${ROOT}.json`)) expect(after[file]).toBe(before[file]);
@@ -511,7 +486,6 @@ describe("round-two durable aliases and returned-root replay budgets", () => {
     chat("mapped-child", { ...durable, ...(kind === "parent" ? { parentChatId: ROOT } : { forkedFrom: ROOT }) }, CHILD);
     const before = disk();
     expect((await rest("get", "/:id", CHILD)).card.id).toBe(ROOT);
-    expect((await mcp("get_card", { card_id: CHILD })).card.id).toBe(ROOT);
     expect((await rest("patch", "/:id", CHILD, { title: "explicit alias" })).card.id).toBe(ROOT);
     expect(disk()["mapped-child.json"]).toBe(before["mapped-child.json"]);
   });
@@ -527,15 +501,12 @@ describe("round-two durable aliases and returned-root replay budgets", () => {
     const before = disk();
     if (kind === "chat-collision") {
       expect((await rest("get", "/:id", CHILD)).card.id).toBe("other-root");
-      expect((await mcp("get_card", { card_id: CHILD })).card.id).toBe("other-root");
       expect((await rest("get", "/:id", "mapped-child")).card.id).toBe(ROOT);
     } else {
       expect((await rest("get", "/:id", CHILD)).code).toBe(404);
-      expect((await mcp("get_card", { card_id: CHILD })).error).toBeDefined();
       expect((await rest("patch", "/:id", CHILD, { title: "no alias" })).code).toBe(404);
-      expect((await mcp("update_card", { card_id: CHILD, title: "no alias" })).error).toBeDefined();
-      expect((await mcp("set_card_metadata", { card_id: CHILD, set: { invalid: "alias" } })).error).toBeDefined();
-      expect((await rest("post", "/bulk-lifecycle", "", { ids: [CHILD], lifecycle: "closed" })).updated).toEqual([]);
+      expect((await rest("patch", "/:id", CHILD, { metadata: { invalid: "alias" } })).code).toBe(404);
+      expect((await rest("patch", "/:id", CHILD, { lifecycle: "closed" })).code).toBe(404);
     }
     expect(disk()).toEqual(before);
   });
@@ -565,9 +536,10 @@ describe("round-two durable aliases and returned-root replay budgets", () => {
     const scan = vi.spyOn(CodexSessionProvider.prototype, "nativeDiscoveryEvidence");
     clearCodexSessionMetaCache();
     vi.mocked(readSync).mockClear();
-    let result;
+    let cards: any[] = [];
     try {
-      result = await mcp("list_cards", filter === "all" ? {} : { lifecycle: filter });
+      // GET /api/cards?lifecycle=open is the Git page's request.
+      cards = (await rest("get", "/", "", {}, filter === "all" ? {} : { lifecycle: filter })).cards;
       expect(scan).toHaveBeenCalledTimes(1);
     } finally {
       scan.mockRestore();
@@ -581,18 +553,16 @@ describe("round-two durable aliases and returned-root replay budgets", () => {
     expect(bytes).toHaveLength(2); // Not a fresh budget per returned card.
     expect(bytes).not.toContain(sizes[4]);
     expect(bytes).not.toContain(sizes[5]);
-    expect(result.cards.map((c: any) => c.cardId).sort()).toEqual(
+    expect(cards.map((c) => c.id).sort()).toEqual(
       (filter === "all" ? [ROOT, "wanted-one", "wanted-two"] : ["wanted-one", "wanted-two"]).sort(),
     );
     if (filter !== "all") {
       expect(bytes.sort((a, b) => a - b)).toEqual([sizes[2], sizes[3]].sort((a, b) => a - b));
-      expect(result.cards.every((c: any) => c.rollup === "active" && c.chatCount === 2 && c.lifecycle === wanted)).toBe(true);
+      expect(cards.every((c) => c.rollup === "active" && c.chatCount === 2 && c.lifecycle === wanted)).toBe(true);
     } else expect(bytes.every((n) => sizes.slice(0, 4).includes(n))).toBe(true);
     expect(disk()).toEqual(before);
-    expect((await mcp("get_card", { card_id: "wanted-one" })).card.rollup).toBe("active");
+    expect((await rest("get", "/:id", "wanted-one")).card.rollup).toBe("active");
     expect((await rest("get", "/:id", "hidden")).card.hidden).toBe(true);
-    const bulk = await rest("post", "/bulk-lifecycle", "", { ids: [ids[2]], lifecycle: omitted });
-    expect(bulk.failed).toEqual([]);
-    expect(bulk.updated[0]).toMatchObject({ id: "wanted-one", rollup: "active", chatCount: 2 });
+    expect((await rest("patch", "/:id", ids[2], { lifecycle: omitted })).card).toMatchObject({ id: "wanted-one", rollup: "active", chatCount: 2 });
   });
 });

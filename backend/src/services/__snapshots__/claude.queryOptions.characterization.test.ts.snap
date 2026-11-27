@@ -59,7 +59,7 @@ exports[`sendMessage queryOpts characterization > claude-code: agent session wit
       ],
       "mcpServers": {
         "callboard": "[ToolServer callboard: 35 tools]",
-        "callboard-tools": "[ToolServer callboard-tools: 50 tools]",
+        "callboard-tools": "[ToolServer callboard-tools: 46 tools]",
         "computer_use": "[ToolServer computer_use: 9 tools]",
         "fake-http": {
           "headers": {
@@ -140,7 +140,7 @@ exports[`sendMessage queryOpts characterization > claude-code: agent session wit
       ],
       "mcpServers": {
         "callboard": "[ToolServer callboard: 35 tools]",
-        "callboard-tools": "[ToolServer callboard-tools: 50 tools]",
+        "callboard-tools": "[ToolServer callboard-tools: 46 tools]",
         "computer_use": "[ToolServer computer_use: 9 tools]",
       },
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
@@ -186,7 +186,7 @@ exports[`sendMessage queryOpts characterization > claude-code: explicit completi
         "callboard-tools",
       ],
       "mcpServers": {
-        "callboard-tools": "[ToolServer callboard-tools: 64 tools]",
+        "callboard-tools": "[ToolServer callboard-tools: 60 tools]",
         "computer_use": "[ToolServer computer_use: 9 tools]",
       },
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
@@ -235,7 +235,7 @@ exports[`sendMessage queryOpts characterization > claude-code: explicit completi
         "job-tools",
       ],
       "mcpServers": {
-        "callboard-tools": "[ToolServer callboard-tools: 64 tools]",
+        "callboard-tools": "[ToolServer callboard-tools: 60 tools]",
         "computer_use": "[ToolServer computer_use: 9 tools]",
         "job-tools": "[ToolServer job-tools: 2 tools]",
       },
@@ -290,7 +290,7 @@ exports[`sendMessage queryOpts characterization > claude-code: explicit completi
         "objective-tools",
       ],
       "mcpServers": {
-        "callboard-tools": "[ToolServer callboard-tools: 64 tools]",
+        "callboard-tools": "[ToolServer callboard-tools: 60 tools]",
         "computer_use": "[ToolServer computer_use: 9 tools]",
         "objective-tools": "[ToolServer objective-tools: 1 tools]",
       },
@@ -342,7 +342,7 @@ exports[`sendMessage queryOpts characterization > claude-code: no claude binary 
         "callboard-tools",
       ],
       "mcpServers": {
-        "callboard-tools": "[ToolServer callboard-tools: 64 tools]",
+        "callboard-tools": "[ToolServer callboard-tools: 60 tools]",
         "computer_use": "[ToolServer computer_use: 9 tools]",
       },
       "settingSources": [
@@ -387,7 +387,7 @@ exports[`sendMessage queryOpts characterization > claude-code: plain new chat 1`
         "callboard-tools",
       ],
       "mcpServers": {
-        "callboard-tools": "[ToolServer callboard-tools: 64 tools]",
+        "callboard-tools": "[ToolServer callboard-tools: 60 tools]",
         "computer_use": "[ToolServer computer_use: 9 tools]",
       },
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
@@ -457,7 +457,7 @@ exports[`sendMessage queryOpts characterization > claude-code: plugins + MCP + h
         "mcp-proxy",
       ],
       "mcpServers": {
-        "callboard-tools": "[ToolServer callboard-tools: 64 tools]",
+        "callboard-tools": "[ToolServer callboard-tools: 60 tools]",
         "computer_use": "[ToolServer computer_use: 9 tools]",
         "fake-http": {
           "headers": {
@@ -548,7 +548,7 @@ exports[`sendMessage queryOpts characterization > claude-code: resume recovers a
       ],
       "mcpServers": {
         "callboard": "[ToolServer callboard: 35 tools]",
-        "callboard-tools": "[ToolServer callboard-tools: 50 tools]",
+        "callboard-tools": "[ToolServer callboard-tools: 46 tools]",
         "computer_use": "[ToolServer computer_use: 9 tools]",
         "mcp-proxy": "[ToolServer mcp-proxy: 21 tools]",
       },
@@ -607,7 +607,7 @@ exports[`sendMessage queryOpts characterization > codex: OpenRouter-injected rou
         "callboard-tools",
       ],
       "mcpServers": {
-        "callboard-tools": "[ToolServer callboard-tools: 64 tools]",
+        "callboard-tools": "[ToolServer callboard-tools: 60 tools]",
         "computer_use": "[ToolServer computer_use: 9 tools]",
       },
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
@@ -676,7 +676,7 @@ exports[`sendMessage queryOpts characterization > codex: api-key mode, direct-UI
         "callboard-tools",
       ],
       "mcpServers": {
-        "callboard-tools": "[ToolServer callboard-tools: 64 tools]",
+        "callboard-tools": "[ToolServer callboard-tools: 60 tools]",
         "computer_use": "[ToolServer computer_use: 9 tools]",
       },
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
@@ -740,7 +740,7 @@ exports[`sendMessage queryOpts characterization > codex: subscription, default r
         "callboard-tools",
       ],
       "mcpServers": {
-        "callboard-tools": "[ToolServer callboard-tools: 64 tools]",
+        "callboard-tools": "[ToolServer callboard-tools: 60 tools]",
         "computer_use": "[ToolServer computer_use: 9 tools]",
       },
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
@@ -793,7 +793,7 @@ exports[`sendMessage queryOpts characterization > codex: unknown route and resum
         "callboard-tools",
       ],
       "mcpServers": {
-        "callboard-tools": "[ToolServer callboard-tools: 64 tools]",
+        "callboard-tools": "[ToolServer callboard-tools: 60 tools]",
         "computer_use": "[ToolServer computer_use: 9 tools]",
       },
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
@@ -846,7 +846,7 @@ exports[`sendMessage queryOpts characterization > codex: unknown route and resum
         "callboard-tools",
       ],
       "mcpServers": {
-        "callboard-tools": "[ToolServer callboard-tools: 64 tools]",
+        "callboard-tools": "[ToolServer callboard-tools: 60 tools]",
         "computer_use": "[ToolServer computer_use: 9 tools]",
       },
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
@@ -894,7 +894,7 @@ exports[`sendMessage queryOpts characterization > pi: configured, new 1`] = `
         "callboard-tools",
       ],
       "mcpServers": {
-        "callboard-tools": "[ToolServer callboard-tools: 64 tools]",
+        "callboard-tools": "[ToolServer callboard-tools: 60 tools]",
         "computer_use": "[ToolServer computer_use: 9 tools]",
       },
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
@@ -950,7 +950,7 @@ exports[`sendMessage queryOpts characterization > pi: resume whose session file 
         "callboard-tools",
       ],
       "mcpServers": {
-        "callboard-tools": "[ToolServer callboard-tools: 64 tools]",
+        "callboard-tools": "[ToolServer callboard-tools: 60 tools]",
         "computer_use": "[ToolServer computer_use: 9 tools]",
       },
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
@@ -1001,7 +1001,7 @@ exports[`sendMessage queryOpts characterization > pi: resume with a resolvable s
         "callboard-tools",
       ],
       "mcpServers": {
-        "callboard-tools": "[ToolServer callboard-tools: 64 tools]",
+        "callboard-tools": "[ToolServer callboard-tools: 60 tools]",
         "computer_use": "[ToolServer computer_use: 9 tools]",
       },
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",

@@ -1,10 +1,10 @@
 /**
  * `GET /api/cards?includeHidden` — who gets to see a card that opted out of
- * the board.
+ * listings, and `?lifecycle`, which keeps only open or only closed cards.
  *
- * The board must not: `hidden: true` replaced the old `createCard: false` and
- * means precisely "keep this off the board", so the default has to stay
- * omission. The SIDEBAR must, and the reason is not cosmetic. Its archived dim
+ * `hidden: true` replaced the old `createCard: false` and means precisely
+ * "keep this out of listings", so the default has to stay omission. The
+ * SIDEBAR must see them, and the reason is not cosmetic. Its archived dim
  * (`utils/chatDimming`) and the list route's `cardLifecycle=unarchived` scope
  * are two implementations of one question and have to be exact complements:
  * the scope withholds a hidden card's tree, so the dim has to fade it, and it
@@ -58,7 +58,7 @@ beforeEach(() => {
 });
 
 describe("GET /api/cards includeHidden", () => {
-  it("omits hidden cards by default — the board's answer, unchanged", async () => {
+  it("omits hidden cards by default", async () => {
     expect(idsOf(await listCards())).toEqual([visibleId]);
   });
 
@@ -75,8 +75,32 @@ describe("GET /api/cards includeHidden", () => {
     expect(body.cards.find((c: any) => c.id === visibleId).hidden).toBeUndefined();
   });
 
-  it("treats any other value as false, so a stray param cannot leak the board", async () => {
+  it("treats any other value as false, so a stray param cannot leak hidden cards", async () => {
     expect(idsOf(await listCards({ includeHidden: "1" }))).toEqual([visibleId]);
     expect(idsOf(await listCards({ includeHidden: "false" }))).toEqual([visibleId]);
+  });
+});
+
+describe("GET /api/cards lifecycle", () => {
+  let closedId: string;
+  beforeEach(() => {
+    closedId = chatFileService.createChat("/tmp/proj", "closed", JSON.stringify({ title: "closed", card: { lifecycle: "closed" } })).id;
+  });
+
+  it("returns both lifecycles when omitted", async () => {
+    expect(idsOf(await listCards())).toEqual([closedId, visibleId].sort());
+  });
+
+  it("keeps only the requested lifecycle", async () => {
+    expect(idsOf(await listCards({ lifecycle: "open" }))).toEqual([visibleId]);
+    expect(idsOf(await listCards({ lifecycle: "closed" }))).toEqual([closedId]);
+  });
+
+  it("composes with includeHidden", async () => {
+    expect(idsOf(await listCards({ lifecycle: "open", includeHidden: "true" }))).toEqual([hiddenId, visibleId].sort());
+  });
+
+  it("rejects any other value", async () => {
+    expect(await listCards({ lifecycle: "archived" })).toEqual({ error: "lifecycle must be 'open' or 'closed'" });
   });
 });

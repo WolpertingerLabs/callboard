@@ -310,7 +310,7 @@ describe("native caller boundaries with real storage and registry", () => {
     expect(nativeMetadata(file, CHILD, first).parentChatId).toBe("stored-root");
     expect(nativeMetadata(file, CHILD, { parentChatId: "explicit" }, false).parentChatId).toBe("explicit");
   });
-  it.each(["/:id/read", "/:id/bookmark"])("persists durable lineage through %s for stored-only board and MCP consumers", async (path) => {
+  it.each(["/:id/read", "/:id/bookmark"])("persists durable lineage through %s for stored-only card and MCP consumers", async (path) => {
     chatFileService.upsertChat("stored-root", scratch, ROOT, { metadata: '{"provider":"codex"}' });
     const file = rollout(CHILD, true);
     const mutation = await request(chatsRouter, path, "patch", CHILD, { bookmarked: true });
@@ -335,12 +335,10 @@ describe("native caller boundaries with real storage and registry", () => {
       previewOf: () => null,
     });
     expect(cards.map((card) => card.id)).toEqual(["stored-root"]);
-    const { buildCallboardToolsSpec } = await import("./callboard-tools.js");
-    // Explicit target avoids implying that exec transports child-local MCP identity.
-    const result = await buildCallboardToolsSpec(() => ROOT)
-      .tools.find((tool) => tool.name === "set_card_metadata")!
-      .handler({ card_id: CHILD, set: { regression: "native-lineage" } });
-    expect(JSON.parse((result.content[0] as { text: string }).text).cardId).toBe("stored-root");
+    const { cardsRouter } = await import("../routes/cards.js");
+    // A card write addressed to the native child lands on its stored root.
+    const result = await request(cardsRouter, "/:id", "patch", CHILD, { metadata: { regression: "native-lineage" } });
+    expect(result.data.card.id).toBe("stored-root");
     expect(JSON.parse(chatFileService.getChat("stored-root")!.metadata).card.metadata.regression).toBe("native-lineage");
     expect(JSON.parse(chatFileService.getChat(CHILD)!.metadata).card).toBeUndefined();
   });

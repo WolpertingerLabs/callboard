@@ -145,7 +145,7 @@ function chatStatus(chat: Chat): "ongoing" | "waiting" | "stopped" {
   // The session registry keys by chat id (tracking id migrates to the real
   // chat UUID), while some legacy paths key by session id — check both.
   //
-  // A pending request outranks "ongoing", as on the board (card-rollup.ts):
+  // A pending request outranks "ongoing", as in the card rollup (card-rollup.ts):
   // a run blocked on a permission prompt or question is still registered, and
   // blocked-on-you is the state the tree must surface. Open (non-blocking)
   // approvals count too — the human still has something to answer.
@@ -292,7 +292,7 @@ export function buildLineageIndex<T extends { id: string; metadata?: string | nu
   // keys: a card id must name a chat record that can actually hold
   // metadata.card. This mirrors walkToRootId over the already-parsed snapshot.
   // In particular, deleting a root promotes its highest surviving descendants
-  // to roots rather than making their whole trees disappear from the board.
+  // to roots rather than making their whole trees disappear from the sidebar.
   const existingRootById = new Map<string, string>();
   const existingRootIdOf = (chatId: string): string => {
     const memoized = existingRootById.get(chatId);

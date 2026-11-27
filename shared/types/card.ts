@@ -19,8 +19,8 @@ import type { NativeCodexAgent } from "./chat.js";
 export type CardLifecycle = "open" | "closed";
 
 /**
- * Max length of {@link Card.category}. Lives here so the store, the routes,
- * the MCP tool schema, and every frontend input enforce one number.
+ * Max length of {@link Card.category}. Lives here so the store and the
+ * route enforce one number.
  */
 export const CARD_CATEGORY_MAX = 64;
 
@@ -54,7 +54,7 @@ export interface Card {
    */
   hidden?: boolean;
   pinned: boolean;
-  /** Agent-settable narrative status (update_card tool), max 160 chars. */
+  /** Narrative status, max 160 chars. Written only through `PATCH /api/cards/:id` now; no UI shows it. */
   status?: string;
   statusEmoji?: string;
   /**
@@ -206,14 +206,6 @@ export interface CardSummary extends Card {
 
 export interface CardListResponse {
   cards: CardSummary[];
-  /**
-   * Every archived (`lifecycle: "closed"`) card the listing admitted, including
-   * those a `closedLimit`/`closedSince` window left out of `cards`. Optional:
-   * older daemons omit it, and then `cards` is the whole archive.
-   */
-  closedTotal?: number;
-  /** Distinct categories across every admitted card, any archive window notwithstanding. Alphabetical. */
-  categories?: string[];
 }
 
 export interface CardResponse {

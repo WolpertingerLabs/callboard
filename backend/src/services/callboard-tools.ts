@@ -1,7 +1,7 @@
 import { buildChatQueryTools } from "./chat-query-tools.js";
 import type { ChatViewBinding } from "./chat-view.js";
 import { assertReasoningEffort } from "./reasoning-capabilities.js";
-import type { CardLifecycle, EffortLevel } from "shared";
+import type { EffortLevel } from "shared";
 import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { assertNativeAgentControllable, nativeAgentForChat, readNativeLifecycle, NATIVE_CONTROL_NOTE } from "./codex-native-agents.js";
 import { z } from "zod";
@@ -26,13 +26,9 @@ import { customSkillsService, slugifySkillName } from "./custom-skills-service.j
 import { providerModelSchema, resolveProviderModelArgs } from "./tool-provider-args.js";
 import { registerCompletionCallback, removeCallbacks } from "./session-callbacks.js";
 import { buildChatTree } from "./chat-lineage.js";
-import { patchCardFields, CARD_METADATA_VALUE_MAX, CARD_TITLE_MAX, CARD_STATUS_MAX } from "./card-fields.js";
-import { cardSpaceScope, createCardContext } from "./card-context.js";
 import { spaceOfChat } from "./space-service.js";
 import { getSpace } from "./space-store.js";
-import { listRuns } from "./job-store.js";
-import { buildMetadataPatch } from "./card-metadata-args.js";
-import { CARD_CATEGORY_MAX, CONTACT_CHANNEL_CONNECTIONS } from "shared";
+import { CONTACT_CHANNEL_CONNECTIONS } from "shared";
 import type { NotifiableChannel } from "shared";
 import { captureWorktreeWorkspace } from "./workspace-store.js";
 import { startActivity, endActivity, openOrContinueWatch, closeWatch, exhaustWatch } from "./chat-activity.js";
@@ -221,7 +217,7 @@ export function buildCallboardToolsSpec(
     getReviewSettings?: () => PermissionReviewSettings;
     /**
      * Live read of the calling chat's space. The default scope of the listing
-     * tools (list_cards, get_chat_tree, search_chats) and the space an
+     * tools (get_chat_tree, search_chats) and the space an
      * `independent` spawn is filed into. Absent means unscoped — every space.
      */
     getSpace?: () => string;
@@ -234,21 +230,6 @@ export function buildCallboardToolsSpec(
    */
   const scopeFor = (requested: string | undefined): string => requested ?? opts?.getSpace?.() ?? "all";
   const spaceLabel = (spaceId: string) => getSpace(spaceId)?.name ?? spaceId;
-  /**
-   * Resolve the target card for a setter: an explicit card_id (any chat id
-   * in a tree resolves to that tree's card — agents know member chat ids
-   * far more often than root ids) or, by default, the calling chat's
-   * lineage root.
-   */
-  const resolveCardTarget = (cardId: string | undefined, context = createCardContext()): { rootChatId?: string; error?: string } => {
-    const targetId = cardId ?? (getChatId ? getChatId() : undefined);
-    if (!targetId) return { error: "Chat context not available — pass card_id explicitly" };
-    return context.resolve(targetId) ?? { error: `Card "${targetId}" not found — its lineage root is missing or not a card root (triggered or job-step chat)` };
-  };
-
-  const cardSummaries = (includeHidden = false, context = createCardContext(), rootId?: string, lifecycle?: CardLifecycle) =>
-    context.summaries(listRuns({ withRoot: true }), includeHidden, rootId, lifecycle);
-
   return {
     name: "callboard-tools",
     version: "1.0.0",
@@ -468,190 +449,6 @@ export function buildCallboardToolsSpec(
         },
       ),
 
-      // ── Cards (tickets) ──────────────────────────────────────────────
-      // A card IS the lineage root chat of this conversation: the root
-      // chat's metadata.card holds the fields, and every chat/job run in
-      // the tree is a member by construction. Nothing is created and
-      // nothing is joined — "this chat's card" is always the root of its
-      // own lineage tree, which is why every setter below resolves the
-      // target as the calling chat's lineage root unless an explicit
-      // card_id names another tree.
-
-      defineTool(
-        "list_cards",
-        "List cards (tickets) with their lifecycle and narrative status. Includes archived cards by default — useful to check whether a topic was already handled. Filter with lifecycle: 'open' or 'closed' ('closed' is the stored value for what the UI calls archived). " +
-          'Scoped to THIS chat\'s space by default; pass space: "all" (or a space id) to look elsewhere. Each card reports its spaceId.',
-        {
-          lifecycle: z.enum(["open", "closed"]).optional().describe("Only cards in this lifecycle (default: all)"),
-          space: z.string().max(128).optional().describe('Space to list: a space id, or "all" for every space (default: this chat\'s space)'),
-        },
-        async (args) => {
-          const scope = scopeFor(args.space);
-          const cards = createCardContext()
-            .summaries(listRuns({ withRoot: true }), false, undefined, args.lifecycle, cardSpaceScope(scope))
-            .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-            .map((c) => ({
-              cardId: c.id,
-              ...(c.spaceId && { spaceId: c.spaceId }),
-              chatCount: c.chatCount,
-              rollup: c.rollup,
-              title: c.title,
-              emoji: c.emoji,
-              lifecycle: c.lifecycle,
-              ...(c.category && { category: c.category }),
-              ...(c.closedAt && { closedAt: c.closedAt }),
-              ...(c.status && { status: c.status }),
-              ...(c.statusEmoji && { statusEmoji: c.statusEmoji }),
-              ...(c.metadata && { metadata: c.metadata }),
-              ...(c.description && { description: c.description.length > 200 ? `${c.description.slice(0, 200)}…` : c.description }),
-              updatedAt: c.updatedAt,
-            }));
-          return jsonResult({ space: scope, cards });
-        },
-      ),
-
-      defineTool(
-        "get_card",
-        "Get a card (ticket) with its full description and member chats (id, title, live status). card_id is the card's root chat id; any member chat id of the tree resolves to the same card. Defaults to the current chat's card.",
-        {
-          card_id: z.string().optional().describe("The card id (default: the current chat's lineage root)"),
-        },
-        async (args) => {
-          const context = createCardContext();
-          const target = resolveCardTarget(args.card_id, context);
-          if (target.error || !target.rootChatId) return error(target.error ?? "Card not found");
-          const card = cardSummaries(true, context, target.rootChatId).find((c) => c.id === target.rootChatId);
-          if (!card) return error(`Card "${target.rootChatId}" not found`);
-          // memberChats come off the rollup, already newest-first — an agent
-          // reads memberChats[0] as "the chat this card is on right now",
-          // and any other ordering would make that an arbitrary member.
-          const memberChats = card.memberChats.map((m) => ({
-            chatId: m.chatId,
-            status: m.status,
-            ...(m.nativeAgent && { nativeAgent: m.nativeAgent }),
-            title: m.title,
-            ...(m.chatStatus && { chatStatus: m.chatStatus }),
-            ...(m.jobRunId && { jobRunId: m.jobRunId }),
-            updatedAt: m.updatedAt,
-          }));
-          const memberRuns = card.memberRuns.map((r) => ({
-            runId: r.runId,
-            jobId: r.jobId,
-            jobName: r.jobName,
-            status: r.status,
-            updatedAt: r.updatedAt,
-          }));
-          return jsonResult({ card, memberChats, memberRuns });
-        },
-      ),
-
-      defineTool(
-        "update_card",
-        "Amend the card (ticket) this conversation belongs to: its title, description, face emoji, narrative status, and category. Omitted fields are left untouched; every field except title can be cleared by passing an empty string (a blank title is rejected instead). The card is the board view of this conversation's lineage root — use set_card_metadata for arbitrary key→value cross-references. Defaults to the current chat's card.",
-        {
-          title: z.string().max(CARD_TITLE_MAX).optional().describe("New card title (blank titles are rejected)"),
-          description: z.string().optional().describe("Markdown description of the topic/goal"),
-          emoji: z.string().optional().describe("Single emoji shown on the card face"),
-          status: z
-            .string()
-            .max(CARD_STATUS_MAX)
-            .optional()
-            .describe(
-              `Short narrative status shown on the card face, e.g. 'waiting on CI for branch 3/4' (max ${CARD_STATUS_MAX} chars). Empty string clears it. ` +
-                "Changing the status does NOT reset status_emoji — an emoji an earlier call left there stays in front of your new status. " +
-                'Pass status_emoji too (or "" to drop it) whenever the old one would no longer fit.',
-            ),
-          status_emoji: z
-            .string()
-            .optional()
-            .describe(
-              "Single emoji prefix for the narrative status (e.g. '⏳', '🧪'). Empty string clears it. Not the card face emoji — that is `emoji`. " +
-                "It persists until you change it: it is not reset when `status` changes, and nothing in the UI lets the user clear it for you.",
-            ),
-          category: z
-            .string()
-            .max(CARD_CATEGORY_MAX)
-            .optional()
-            .describe(
-              `Free-form label the board groups open cards under — reuse an existing category from list_cards when one fits (max ${CARD_CATEGORY_MAX} chars). Empty string clears it.`,
-            ),
-          card_id: z.string().optional().describe("Target card id (default: the current chat's lineage root)"),
-        },
-        async (args) => {
-          const touchesStatus = args.status !== undefined || args.status_emoji !== undefined;
-          if (args.title === undefined && args.description === undefined && args.emoji === undefined && args.category === undefined && !touchesStatus) {
-            return error("Pass at least one of title, description, emoji, status, status_emoji, category");
-          }
-          const target = resolveCardTarget(args.card_id);
-          if (target.error || !target.rootChatId) return error(target.error ?? "Card not found");
-          let card;
-          try {
-            card = patchCardFields(target.rootChatId, {
-              ...(args.title !== undefined && { title: args.title }),
-              ...(args.description !== undefined && { description: args.description }),
-              ...(args.emoji !== undefined && { emoji: args.emoji }),
-              // `|| null` is what makes "" clear rather than write an empty
-              // value, matching the setters this tool absorbed. Blank titles
-              // stay a rejection (patchCardFields throws) — a card with no
-              // title has nothing to show on the board, a card with no status
-              // simply has no status.
-              ...(args.status !== undefined && { status: args.status || null }),
-              ...(args.status_emoji !== undefined && { statusEmoji: args.status_emoji || null }),
-              ...(args.category !== undefined && { category: args.category || null }),
-            });
-          } catch (err) {
-            return error(err instanceof Error ? err.message : "Failed to update card");
-          }
-          if (!card) return error(`Card "${target.rootChatId}" not found`);
-          // `cardEvent` currently has producers and no consumers: the client
-          // only watches the metadata version counter and refetches the board
-          // wholesale, so neither value changes what happens. Kept — and kept
-          // distinct — for continuity with the set_card_status event this tool
-          // absorbed, so a future consumer inherits the distinction rather than
-          // having to reconstruct it. A mixed call reports "status" as the
-          // strictly more specific of the two; a consumer that only knows
-          // "updated" still re-reads the card either way.
-          sessionRegistry.notifyMetadata(card.id, { cardEvent: touchesStatus ? "status" : "updated" });
-          return jsonResult({
-            success: true,
-            cardId: card.id,
-            title: card.title,
-            emoji: card.emoji,
-            status: card.status ?? null,
-            statusEmoji: card.statusEmoji ?? null,
-            category: card.category ?? null,
-          });
-        },
-      ),
-
-      defineTool(
-        "set_card_metadata",
-        "Attach arbitrary key→value cross-references to a card (ticket) — a GitHub PR URL, a Linear/Jira ticket id, a Slack thread link, an external session id, etc. Keys are arbitrary and chosen by you; prefer short stable slugs like 'github-pr' or 'linear'. Updates merge per key: keys you don't mention are left alone, so this is safe to call while the user or another agent is editing the same card. Defaults to the current chat's card.",
-        {
-          set: z
-            .record(z.string(), z.string().max(CARD_METADATA_VALUE_MAX))
-            .optional()
-            .describe('Keys to write or overwrite, e.g. { "github-pr": "https://github.com/org/repo/pull/42" }'),
-          remove: z.array(z.string()).optional().describe("Keys to delete from the card's metadata"),
-          card_id: z.string().optional().describe("Target card id (default: the current chat's lineage root)"),
-        },
-        async (args) => {
-          const patch = buildMetadataPatch(args.set, args.remove);
-          if (!patch.ok) return error(patch.error);
-          const target = resolveCardTarget(args.card_id);
-          if (target.error || !target.rootChatId) return error(target.error ?? "Card not found");
-          let card;
-          try {
-            card = patchCardFields(target.rootChatId, { metadata: patch.metadata });
-          } catch (err) {
-            return error(err instanceof Error ? err.message : "Failed to update card metadata");
-          }
-          if (!card) return error(`Card "${target.rootChatId}" not found`);
-          sessionRegistry.notifyMetadata(card.id, { cardEvent: "updated" });
-          return jsonResult({ success: true, cardId: card.id, metadata: card.metadata ?? {} });
-        },
-      ),
-
       defineTool(
         "summon_user",
         "Alert the user that their attention is needed in this chat. Creates a visible notification in the Callboard dashboard. Use this when you need human input, a decision, or want to flag something important. This is different from permission requests — it's an agent-initiated signal that doesn't block execution.",
@@ -767,7 +564,7 @@ export function buildCallboardToolsSpec(
           "The spawned chat is automatically linked as a child of THIS chat in the chat parentage tree (see get_chat_tree); pass `role` to label its node, " +
           "or `independent` to spawn it as its own top-level chat instead. " +
           "The child never gets looser tool permissions than THIS chat: each category is the stricter of what you request (default allow) and this chat's own setting, and Browser Use, Computer Use and Sandbox desktop are always denied. " +
-          "Where this chat asks, the child asks too — its prompts wait for the user on the board — and the result's `permissions` shows what the child got. " +
+          "Where this chat asks, the child asks too — its prompts wait for the user in the dashboard — and the result's `permissions` shows what the child got. " +
           'To review a child\'s calls yourself, pass `permissions` with "ask" on a category THIS chat allows (e.g. {codeExecution: "ask"}) together with `parentAnswers: true`: ' +
           "the child's prompts in that category come to you (a wait you are in ends early) and you can approve or deny them with respond_to_request. " +
           "You can only approve categories this chat itself allows — prompts in a category where this chat asks or denies stay with the user. " +

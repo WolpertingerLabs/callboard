@@ -1,8 +1,8 @@
 /**
- * Argument helpers for card `metadata` mutations, shared by the REST route
- * (`PATCH /api/cards/:id`) and the `set_card_metadata` MCP tool.
+ * Argument helper for card `metadata` mutations through the REST route
+ * (`PATCH /api/cards/:id`).
  *
- * These only translate and shape-check caller input. The authoritative limits
+ * It only shape-checks caller input. The authoritative limits
  * (key/value length, entry count) live in `card-fields.ts` and surface as
  * `CardFieldError`, so there is exactly one place to change them.
  */
@@ -23,40 +23,4 @@ export function validateMetadataPatch(value: unknown): string | null {
     }
   }
   return null;
-}
-
-export type MetadataPatchResult = { ok: true; metadata: Record<string, string | null> } | { ok: false; error: string };
-
-/**
- * Translate the tool's `set`/`remove` args into a {@link CardPatch} metadata
- * map: `set` entries pass through, `remove` keys become `null`. `remove` wins
- * on a key present in both, so "clear this" is never silently ignored.
- */
-export function buildMetadataPatch(set?: Record<string, string>, remove?: string[]): MetadataPatchResult {
-  const hasSet = set !== undefined && Object.keys(set).length > 0;
-  const hasRemove = Array.isArray(remove) && remove.length > 0;
-  if (!hasSet && !hasRemove) {
-    return { ok: false, error: "Pass at least one of `set` (keys to write) or `remove` (keys to delete)" };
-  }
-
-  const metadata: Record<string, string | null> = {};
-  if (hasSet) {
-    for (const [key, value] of Object.entries(set!)) {
-      if (!key.trim()) return { ok: false, error: "metadata keys must be non-empty" };
-      if (key.trim() === "__proto__") return { ok: false, error: '"__proto__" is not a valid metadata key' };
-      metadata[key] = value;
-    }
-  }
-  if (hasRemove) {
-    for (const key of remove!) {
-      if (typeof key !== "string" || !key.trim()) {
-        return { ok: false, error: "`remove` entries must be non-empty key strings" };
-      }
-      // Assigning it would set the patch object's prototype, not register a
-      // delete — the store would never see the removal.
-      if (key.trim() === "__proto__") return { ok: false, error: '"__proto__" is not a valid metadata key' };
-      metadata[key] = null;
-    }
-  }
-  return { ok: true, metadata };
 }

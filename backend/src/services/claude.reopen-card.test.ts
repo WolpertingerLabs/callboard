@@ -3,7 +3,7 @@
  *
  * When any chat in a closed card's lineage tree receives a message — whether
  * from the UI, continue_chat, a job step, cron, or a spawned child — the card
- * is automatically reopened so the conversation returns to the board.
+ * is automatically reopened so the conversation is unarchived in the sidebar.
  *
  * The card lives on the lineage ROOT's `metadata.card` now: sendMessage
  * resolves the chat's root (parent pointers for existing chats, the parent's

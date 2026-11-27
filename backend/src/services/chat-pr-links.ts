@@ -259,11 +259,11 @@ let backlog: Promise<unknown> = Promise.resolve();
 
 /**
  * Sync `chats` in the background, one at a time, each at most once per daemon
- * lifetime — for the Board, which lists every open card and must not wait on
+ * lifetime — for the Git page, which lists every open card and must not wait on
  * (or keep re-reading) their histories. Returns at once.
  *
  * The event loop gets a turn between chats: a sync only awaits when a
- * transcript has grown, so a backlog of up-to-date chats — the first Board
+ * transcript has grown, so a backlog of up-to-date chats — the first Git page
  * load after a restart — would otherwise run to its end as one microtask
  * chain, with every request waiting behind it.
  */

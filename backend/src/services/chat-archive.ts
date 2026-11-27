@@ -6,7 +6,7 @@
  * stored one of two ways:
  *
  *  - the root is a card → `metadata.card.lifecycle` (and `hidden`), written by
- *    `patchCardFields` exactly as the board does;
+ *    `patchCardFields` exactly as `PATCH /api/cards/:id` does;
  *  - the root is not a card (a triggered chat, a job step, a stored native
  *    Codex root) → `metadata.treeArchived: true` plus `treeArchivedAt`, on the root's
  *    own record. Never `metadata.card.*`: card-migration and the
