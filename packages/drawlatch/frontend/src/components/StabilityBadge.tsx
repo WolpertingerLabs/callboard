@@ -1,11 +1,21 @@
 import type { AdminConnectionTemplate } from "drawlatch-admin-types";
 
+const TONE: Record<string, string> = {
+  stable: "badge-success",
+  beta: "badge-warning",
+  dev: "badge-accent",
+};
+
 export default function StabilityBadge({
   stability,
 }: {
   stability: AdminConnectionTemplate["stability"];
 }) {
   return (
-    <span className={`stability-badge stability-${stability}`}>{stability}</span>
+    <span
+      className={`badge ${TONE[stability] ?? "badge-muted"} stability-badge stability-${stability}`}
+    >
+      {stability}
+    </span>
   );
 }
