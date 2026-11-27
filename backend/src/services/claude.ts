@@ -1694,7 +1694,7 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
           // Children inherit modelReview as a minimum (start_chat_session).
           getReviewSettings: reviewHooks.getSettings,
           // The caller's space: the default scope of the listing tools
-          // (search_chats, list_cards, get_chat_tree) and the space a spawned
+          // (search_chats, get_chat_tree) and the space a spawned
           // root inherits. A getter, because a tree can be moved mid-session.
           getSpace: getSpaceId,
         },

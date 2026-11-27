@@ -1,8 +1,7 @@
 /**
- * Space scoping on the card/tree MCP tools: `list_cards` and `get_chat_tree`
- * default to the calling chat's space and accept `space: "all"` (or an id)
- * from any chat. Same temp-dir + claude.js cycle break as
- * callboard-tools.card.test.ts.
+ * Space scoping on the tree MCP tool: `get_chat_tree` defaults to the calling
+ * chat's space and accepts `space: "all"` (or an id) from any chat. Temp data
+ * dir, with claude.js stubbed to break the callboard-tools ↔ claude cycle.
  */
 import { describe, it, expect, vi } from "vitest";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
@@ -47,27 +46,6 @@ const json = async (t: ToolDefinition<any>, args: Record<string, unknown>) => {
   const result = await t.handler(args);
   return { isError: (result as any).isError === true, body: (result.content[0] as { text: string }).text };
 };
-
-describe("list_cards", () => {
-  it("defaults to the calling chat's space and reports spaceId", async () => {
-    const { body } = await json(tool("list_cards", work.id), {});
-    const parsed = JSON.parse(body);
-    expect(parsed.space).toBe(work.id);
-    expect(parsed.cards.map((c: any) => [c.cardId, c.spaceId])).toEqual([["work-root", work.id]]);
-  });
-
-  it('widens with space: "all" and narrows to another space by id', async () => {
-    const all = JSON.parse((await json(tool("list_cards", work.id), { space: "all" })).body);
-    expect(all.cards.map((c: any) => c.cardId).sort()).toEqual(["general-root", "work-root"]);
-    const general = JSON.parse((await json(tool("list_cards", work.id), { space: "default" })).body);
-    expect(general.cards.map((c: any) => c.cardId)).toEqual(["general-root"]);
-  });
-
-  it("is unscoped for a caller with no space getter (agent servers, tests)", async () => {
-    const parsed = JSON.parse((await json(tool("list_cards"), {})).body);
-    expect(parsed.cards).toHaveLength(2);
-  });
-});
 
 describe("get_chat_tree", () => {
   it("reads a tree in the caller's own space and reports its spaceId", async () => {
