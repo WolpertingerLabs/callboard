@@ -409,7 +409,7 @@ backend/src/
   scaffold/          Files copied into new agent workspaces
 shared/              Types used by both ends
 packages/computer-use/  Browser/desktop control library and MCP server
-packages/drawlatch/  Drawlatch, the credential proxy (published separately as @wolpertingerlabs/drawlatch)
+packages/drawlatch/  Drawlatch, the credential proxy (published to npm as @wolpertingerlabs/drawlatch, at callboard's version)
 bin/                 The `callboard` CLI
 scripts/             Build and release helpers
 plans/               Design records
@@ -429,9 +429,9 @@ npm version <version>   # at the root; then commit and open a PR
 
 The root `version` script (`scripts/versions.mjs`) writes the new version everywhere else and refreshes the lockfile, and the root `.npmrc` stops npm from committing or tagging. If you edit the root version by hand, run `npm run version:sync`. Never use `-w` or `--workspaces` with `npm version`: they fail with ETARGET (the old pins are resolved against the registry), and `--workspaces` also adds a `version` to every private workspace.
 
-Both packages are published by the **Publish to npm** workflow (`.github/workflows/publish.yml`), never with `npm publish` from a checkout. drawlatch must be on npm before callboard, and the workflow publishes them in that order. Bump the version(s), merge to `main`, then in GitHub → Actions → **Publish to npm** → **Run workflow** on `main`:
+Both packages are published by the **Publish to npm** workflow (`.github/workflows/publish.yml`), never with `npm publish` from a checkout. Every release publishes both, at the shared version and from one commit, and tags that commit `v<version>`. drawlatch must be on npm before callboard, and the workflow publishes them in that order. Every release publishes drawlatch, even when it hasn't changed, and a drawlatch fix reaches npm only through a callboard release. Bump the version, merge to `main`, then in GitHub → Actions → **Publish to npm** → **Run workflow** on `main`:
 
-- **`dry_run`** (on by default) runs everything except the publishes and the tags. That covers the release plan, the full `prepublishOnly` gate, packing both tarballs (the log lists their contents) and `npm publish --dry-run` of each tarball that would be published. It also covers the registry check (step 4 below), except when the run would publish drawlatch: drawlatch isn't on npm yet then, so the check is skipped. Run a dry run first. npm still exchanges the job's OIDC token in a dry run, and the dry run fails if that exchange doesn't work, so it also checks the trusted-publisher setup below.
+- **`dry_run`** (on by default) runs everything except the publishes and the tag. That covers the release plan, the full `prepublishOnly` gate, packing both tarballs (the log lists their contents) and `npm publish --dry-run` of each tarball that would be published. It also covers the registry check (step 5 below), except when the run would publish drawlatch, which is every normal release: drawlatch isn't on npm yet then, so the check is skipped. Run a dry run first. npm still exchanges the job's OIDC token in a dry run, and the dry run fails if that exchange doesn't work, so it also checks the trusted-publisher setup below.
 - **`dist_tag`** (default `latest`) is passed as `--tag`, which npm requires for prerelease versions. The run refuses an empty value, and any value npm would read as a semver range (`1.x`, `^1`, `v1`). It also refuses to move a dist-tag backwards, so a hotfix for an older version needs another dist-tag.
 
 The workflow has two jobs, so that dependencies' install scripts and the test suite never run where a credential is reachable:
@@ -442,9 +442,8 @@ The workflow has two jobs, so that dependencies' install scripts and the test su
 What a run does, decided by `scripts/release-plan.mjs` and printed in the run summary:
 
 1. **Plan.**
-   - Fails if callboard's drawlatch pin isn't the workspace version.
-   - **drawlatch:** if its version isn't on npm, it will be published. If it is, nothing that ships may have changed under `packages/drawlatch` since the commit it was published from (its `drawlatch-v<version>` tag); otherwise the run fails with "bump drawlatch". Tests, JSON fixtures, lint/test config, `.gitignore`, `CLAUDE.md`, `plans/` and example configs don't count.
-   - **callboard:** its version must not be on npm yet, or the run fails with "bump callboard" (a dry run only warns).
+   - Fails if any package, pin or lockfile disagrees with the root version (the same check as `deps:check`, run before the install).
+   - Neither package may be on npm at this version yet, or the run fails with "bump the version" (a dry run only warns). The exception is finishing a partial release of this same commit (see re-running, below).
 2. **Gate.** `npm run prepublishOnly`: lint, a clean build, every test suite and `deps:check`, run once, before anything is published. It runs with `CALLBOARD_SKIP_REGISTRY_CHECK=1`, which makes `prepublishOnly` skip its registry check (that the pinned drawlatch is already on npm), because drawlatch isn't published until the publish job.
 3. **Pack.** Writes the commit into each `package.json` as `gitHead` (npm records it, and re-runs use it), then runs `npm pack` for both.
 4. **Publish drawlatch** (if needed).
@@ -453,25 +452,22 @@ What a run does, decided by `scripts/release-plan.mjs` and printed in the run su
    - `CALLBOARD_SKIP_REGISTRY_CHECK` doesn't affect it.
    - A dry run that would publish drawlatch skips it, since drawlatch isn't on npm yet.
 6. **Publish callboard.** Both publishes use `--provenance --access public`.
-7. **Tag** `drawlatch-v<version>` and `v<version>`, annotated and pushed by `github-actions[bot]`, after both publishes.
+7. **Tag** `v<version>`, annotated and pushed by `github-actions[bot]`, after both publishes. It is the only tag a release gets.
 
 **Re-running after a partial failure.** Use one of these:
 
-- **A new dispatch, or "Re-run all jobs"** re-plans from the registry and the tags, so it always picks up where the failed run stopped:
-  - A package already on npm isn't published again.
-  - A missing tag is created on the commit npm recorded for that version (`gitHead`).
+- **A new dispatch, or "Re-run all jobs"**, re-plans from the registry and the tag, so it picks up where the failed run stopped. A re-run keeps the original run's commit; a new dispatch takes `main`'s current one.
+  - A package already on npm isn't published again; the other one is.
+  - A missing `v<version>` tag is created on the commit npm recorded for that version (`gitHead`).
   - A tag already on the right commit is left alone.
-  - The run fails on a tag that disagrees with the commit npm recorded, or on a tag at a different commit for a version that isn't on npm.
+  - The run fails on a tag that disagrees with the commit npm recorded, on a tag at a different commit for a version that isn't on npm, and when the two packages were published from different commits.
+  - **If `main` has moved since a partial release** (drawlatch on npm, callboard not), a new dispatch fails, because it would pack callboard from a different commit than drawlatch. Re-run the original run instead ("Re-run all jobs", or "Re-run failed jobs" below), or bump the version.
 - **"Re-run failed jobs"**, when only the publish job failed, reuses the build job's plan and tarballs. This is safe too:
-  - Each publish first checks npm. A version already published from this run's commit is skipped with a notice. One published from any other commit fails the step; start a new dispatch so the plan can say what to bump.
+  - Each publish first checks npm. A version already published from this run's commit is skipped with a notice. One published from any other commit fails the step; start a new dispatch so the plan can say what to do.
   - A tag already on origin at the right commit is skipped.
   - The tarballs are kept for 7 days, so this only works within that window.
 
-If in doubt, start a new dispatch.
-
-Releasing only callboard is the common case: leave drawlatch's version alone and the run skips it, as long as drawlatch hasn't changed. Releasing a drawlatch change means bumping drawlatch (above) and callboard together, since callboard's pin moves.
-
-**The drift check only sees `packages/drawlatch`.** The root `package-lock.json` decides which versions of drawlatch's frontend dependencies (react, react-router-dom, lucide-react) and build toolchain (vite, typescript) are used. A lockfile change can therefore change what drawlatch's tarball would contain without touching `packages/drawlatch`. **Bump drawlatch's version if a lockfile change affects its frontend or build toolchain.**
+If in doubt, start a new dispatch: the plan says what to do.
 
 **One-time setup** (repository admin and npm package owner). Do it **in this order**:
 

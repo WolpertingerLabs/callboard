@@ -1,16 +1,21 @@
 name: Publish to npm
 
 # Releases @wolpertingerlabs/drawlatch (packages/drawlatch) and
-# @wolpertingerlabs/callboard from one commit of main, drawlatch first because
-# callboard pins it exactly. Run it from the Actions tab; see README → Releasing.
+# @wolpertingerlabs/callboard at the root version (every package shares it;
+# scripts/versions.mjs), from one commit of main, drawlatch first because
+# callboard pins it exactly, and tags that commit v<version>. Run it from the
+# Actions tab; see README → Releasing.
 #
 # scripts/release-plan.mjs decides what to do (and documents the rules); the
 # steps below only carry that plan out.
 #
 # Re-running after a partial failure (README → Releasing):
-# - A new dispatch, or "Re-run all jobs": re-plans from the registry and tags.
-#   Whatever is already published is skipped, and a missing tag is created on
-#   the commit npm recorded for it. Always safe.
+# - A new dispatch, or "Re-run all jobs": re-plans from the registry and the
+#   tag. Whatever is already published is skipped, and a missing tag is created
+#   on the commit npm recorded. Always safe. A re-run keeps the original run's
+#   commit; a new dispatch takes main's. If main has moved since a partial
+#   release, a new dispatch is refused (it would pack from the new commit):
+#   re-run the original run instead, or bump the version.
 # - "Re-run failed jobs" after the publish job failed: reuses the build job's
 #   plan and tarballs. scripts/publish-tarball.sh skips a version an earlier
 #   attempt already published from this commit, and scripts/push-release-tag.sh
@@ -60,15 +65,12 @@ jobs:
       contents: read
     outputs:
       head: ${{ steps.plan.outputs.head }}
-      drawlatch_version: ${{ steps.plan.outputs.drawlatch_version }}
+      version: ${{ steps.plan.outputs.version }}
+      tag: ${{ steps.plan.outputs.tag }}
+      tag_commit: ${{ steps.plan.outputs.tag_commit }}
       drawlatch_action: ${{ steps.plan.outputs.drawlatch_action }}
-      drawlatch_tag: ${{ steps.plan.outputs.drawlatch_tag }}
-      drawlatch_tag_commit: ${{ steps.plan.outputs.drawlatch_tag_commit }}
       drawlatch_tarball: ${{ steps.pack.outputs.drawlatch_tarball }}
-      callboard_version: ${{ steps.plan.outputs.callboard_version }}
       callboard_action: ${{ steps.plan.outputs.callboard_action }}
-      callboard_tag: ${{ steps.plan.outputs.callboard_tag }}
-      callboard_tag_commit: ${{ steps.plan.outputs.callboard_tag_commit }}
       callboard_tarball: ${{ steps.pack.outputs.callboard_tarball }}
     steps:
       # The npm environment's deployment-branch rule (a repository setting) is
@@ -79,8 +81,8 @@ jobs:
           echo "::error::publish must be dispatched from main (got $GITHUB_REF)"
           exit 1
 
-      # Full history and tags: the plan diffs packages/drawlatch against the
-      # commit drawlatch's current version was published from.
+      # Full history and tags: the plan checks that the commit npm recorded is
+      # an ancestor of HEAD (isPublishBase), and reads the release tag.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -98,7 +100,8 @@ jobs:
           npm install -g "npm@$NPM_VERSION"
           npm --version
 
-      # Before the install so a version that needs bumping fails in seconds.
+      # Before the install, so version drift or a version that needs bumping
+      # fails in seconds.
       - name: Plan
         id: plan
         run: node scripts/release-plan.mjs
@@ -110,7 +113,7 @@ jobs:
 
       # Callboard's prepublishOnly, run once: lint (callboard and drawlatch),
       # clean, build (drawlatch included), every test suite (drawlatch's
-      # included) and deps:check (lockstep pin). That is a superset of
+      # included) and deps:check (version lockstep). That is a superset of
       # drawlatch's own prepublishOnly (lint + test) and prepare (build). If
       # drawlatch's prepublishOnly ever grows a check callboard's doesn't run,
       # add it here.
@@ -202,9 +205,10 @@ jobs:
       # whose Publish drawlatch step skipped; CALLBOARD_SKIP_REGISTRY_CHECK has
       # no effect on deps:check:registry. A fresh publish can 404 for a little
       # while, so retry for about two minutes. A dry run that would publish
-      # drawlatch skips it, since drawlatch isn't on npm yet.
+      # drawlatch (every normal release) skips it, since drawlatch isn't on npm
+      # yet; one that only packs ("pack") or skips drawlatch runs it.
       - name: Verify drawlatch is on npm
-        if: ${{ !inputs.dry_run || needs.build.outputs.drawlatch_action == 'skip' }}
+        if: ${{ !inputs.dry_run || needs.build.outputs.drawlatch_action != 'publish' }}
         run: |
           for i in $(seq 1 12); do
             if npm run --silent deps:check:registry; then exit 0; fi
@@ -214,30 +218,23 @@ jobs:
           echo "::error::the drawlatch version callboard pins is still not installable from npm. Not publishing callboard."
           exit 1
 
-      # "pack" (a dry run of an already-published callboard version) needs
-      # nothing here: npm publish --dry-run would refuse it, and the build
-      # job's Pack step already listed the tarball.
+      # "pack" (a dry run the real run would refuse, e.g. an already-released
+      # version) needs nothing here: npm publish --dry-run would refuse a
+      # published version, and the build job's Pack step already listed both
+      # tarballs.
       - name: Publish callboard
         if: needs.build.outputs.callboard_action == 'publish'
         run: scripts/publish-tarball.sh "$RUNNER_TEMP/tarballs/$CB_TARBALL" "$HEAD_SHA"
 
-      # Tags go last, after both publishes. If anything above failed, a new
-      # dispatch sees the published version(s) without tags and tags the commit
-      # npm recorded (gitHead) for each. scripts/push-release-tag.sh leaves a
-      # tag already on origin at the right commit alone, so re-runs that reach
-      # here again pass.
-      - name: Tag drawlatch
-        if: ${{ !inputs.dry_run && needs.build.outputs.drawlatch_tag_commit != '' }}
+      # The tag goes last, after both publishes. If anything above failed, a
+      # new dispatch of the same commit sees what was published without a tag
+      # and tags the commit npm recorded (gitHead). scripts/push-release-tag.sh
+      # leaves a tag already on origin at the right commit alone, so re-runs
+      # that reach here again pass.
+      - name: Tag release
+        if: ${{ !inputs.dry_run && needs.build.outputs.tag_commit != '' }}
         run: scripts/push-release-tag.sh "$TAG" "$COMMIT" "$MESSAGE"
         env:
-          TAG: ${{ needs.build.outputs.drawlatch_tag }}
-          COMMIT: ${{ needs.build.outputs.drawlatch_tag_commit }}
-          MESSAGE: drawlatch v${{ needs.build.outputs.drawlatch_version }}
-
-      - name: Tag callboard
-        if: ${{ !inputs.dry_run && needs.build.outputs.callboard_tag_commit != '' }}
-        run: scripts/push-release-tag.sh "$TAG" "$COMMIT" "$MESSAGE"
-        env:
-          TAG: ${{ needs.build.outputs.callboard_tag }}
-          COMMIT: ${{ needs.build.outputs.callboard_tag_commit }}
-          MESSAGE: Release v${{ needs.build.outputs.callboard_version }}
+          TAG: ${{ needs.build.outputs.tag }}
+          COMMIT: ${{ needs.build.outputs.tag_commit }}
+          MESSAGE: Release v${{ needs.build.outputs.version }} (callboard + drawlatch)

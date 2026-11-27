@@ -1,49 +1,60 @@
 /**
  * Decides what the publish workflow (.github/workflows/publish.yml) does.
  *
- * Callboard and drawlatch (packages/drawlatch) are released from one commit of
- * this repo, drawlatch first because callboard pins it exactly. This script
- * looks at the registry and the tags and prints, as step outputs, one action
- * and one tag target per package. The workflow's later steps only carry those
- * out, so every decision lives here and is unit-tested
- * (release-plan.test.mjs).
+ * Every package in this repo shares one version, the root package.json's
+ * (scripts/versions.mjs). A release publishes both callboard and drawlatch
+ * (packages/drawlatch) at that version `V`, from one commit, drawlatch first
+ * because callboard pins it exactly, and tags that commit `v<V>`. This script
+ * looks at the registry and the tag and prints, as step outputs, one action per
+ * package and one tag target. The workflow's later steps only carry those out,
+ * so every decision lives here and is unit-tested (release-plan.test.mjs).
  *
- * The rules, per package:
+ * The rules:
  *
- * drawlatch
- * - Not on npm: publish it from HEAD and tag HEAD `drawlatch-v<version>`.
- * - On npm: don't publish. Find the commit it was published from (its tag, or
- *   failing that the manifest's `gitHead`) and fail if anything that ships has
- *   changed under packages/drawlatch since then: the workspace is what
- *   callboard was built and tested against, and the registry copy is what
- *   callboard's users install. The fix is to bump drawlatch.
- *
- * callboard
- * - Not on npm: publish it from HEAD and tag HEAD `v<version>`.
- * - On npm from this very commit (a previous run published it and then failed
- *   before tagging): don't publish; just tag.
- * - On npm from another commit: fail ("bump callboard"). A dry run warns
- *   instead and only packs, so a rehearsal still works before the bump.
- *
- * Both
+ * - Every package, pin and lockfile must agree on `V` (versionDriftErrors, the
+ *   same check deps:check runs), checked here before `npm ci` so drift fails
+ *   in seconds.
+ * - Neither package on npm at `V`: publish both from HEAD and tag HEAD `v<V>`.
+ *   A `v<V>` tag already at HEAD is fine (nothing to tag); one anywhere else
+ *   fails the run.
+ * - Either one on npm: find the commit it was published from, its "base":
+ *   npm's `gitHead` if that is HEAD or an ancestor with packages/drawlatch in it
+ *   (isPublishBase), or, when npm recorded no gitHead, the `v<V>` tag. Anything
+ *   else was published outside this workflow (the standalone drawlatch repo,
+ *   say) and fails the run. Both published from different bases, or a tag that
+ *   disagrees with the base, fails too.
+ *   - Base is HEAD (an earlier attempt of this commit got partway): publish
+ *     whichever isn't on npm yet, and tag HEAD if the tag is missing. All
+ *     published and tagged is a no-op success.
+ *   - Base is an older commit:
+ *     - both published, no tag: tag the base, publish nothing (and warn: to
+ *       release HEAD, bump the version);
+ *     - both published and tagged: fail, `V` is already released ("bump the
+ *       version"); a dry run warns and only packs, so a rehearsal still works
+ *       before the bump;
+ *     - only one published (a partial release, and main has moved since):
+ *       fail. Re-running the original run finishes it, since a re-run keeps
+ *       that run's commit: "Re-run failed jobs" with the tarballs it packed
+ *       (kept 7 days), "Re-run all jobs" by re-planning on the base. Otherwise
+ *       bump the version. A dry run warns and only packs.
  * - A package about to be published must not move the requested dist-tag
  *   backwards. `--tag latest`, which the workflow always passes, turns off
- *   npm's own check for that, so this one replaces it.
+ *   npm's own check for that, so this one replaces it. Checked per package:
+ *   the two can have different current dist-tags.
  *
- * These make a re-run after any partial failure safe: whatever was published
- * is skipped, whatever was not is published, and a missing tag is created on
- * the commit that was actually published. A tag that already points at the
- * right commit is left alone. A tag that points anywhere else fails the run, and
- * so does a tag that disagrees with the commit npm recorded.
+ * These make a re-run of the same commit after any partial failure safe:
+ * whatever was published is skipped, whatever was not is published, and a
+ * missing tag is created on the commit that was actually published.
  *
  * `gitHead` is the commit npm records for a published version. The workflow
  * publishes packed tarballs, which carry no gitHead of their own, so it writes
  * one into each package.json before packing (`npm pkg set gitHead=<sha>`).
  */
 import { execFileSync } from "node:child_process";
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { SEMVER_RE, readVersionState, versionDriftErrors } from "./versions.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -51,86 +62,8 @@ export const DRAWLATCH = "@wolpertingerlabs/drawlatch";
 export const CALLBOARD = "@wolpertingerlabs/callboard";
 export const DRAWLATCH_DIR = "packages/drawlatch";
 
-export const drawlatchTag = (version) => `drawlatch-v${version}`;
-export const callboardTag = (version) => `v${version}`;
-
-/**
- * Paths under packages/drawlatch that cannot change drawlatch's npm tarball,
- * so changing them does not require a drawlatch bump. Everything else counts.
- *
- * What ships is drawlatch's `files` list plus package.json and LICENSE:
- * `dist` (tsc output of src/, minus tests, plus a copy of src/connections),
- * `frontend/dist` (Vite build of frontend/), `bin`, and three markdown docs.
- * Their inputs are src/, frontend/, bin/, package.json, tsconfig.json and those
- * docs. This is a deny list rather than an allow list on purpose: a new file
- * nobody classified counts as drift, so the guard errs towards an unneeded
- * bump, never towards callboard depending on a registry copy that differs
- * from the workspace it was tested with.
- *
- * Patterns use git's `glob` pathspec magic, relative to packages/drawlatch.
- *
- * Not seen at all: shipping changes that start outside packages/drawlatch.
- * The root package-lock.json decides which versions of drawlatch's frontend
- * dependencies (react, react-router-dom, lucide-react) and build toolchain
- * (vite, typescript) the build uses. A lockfile change can therefore change
- * drawlatch's `frontend/dist` or `dist` without touching this directory. The
- * lockfile also changes for callboard-only reasons, so counting it would flag
- * nearly every release. When a lockfile change affects drawlatch's frontend or
- * build toolchain, bump drawlatch's version by hand.
- */
-export const DRAWLATCH_NON_SHIPPING = [
-  // Tests: tsconfig.json excludes them from dist, and Vite only bundles what
-  // frontend/src imports. Not `**/e2e/**`: src/remote/ingestors/e2e/setup.ts
-  // is not a test file, so tsc emits it into dist and it ships.
-  "**/*.test.ts",
-  "**/*.test.tsx",
-  // JSON test fixtures, which only tests import. Only JSON: a .ts file here
-  // would still be emitted into dist.
-  "**/__fixtures__/**/*.json",
-  // Test, lint and format config.
-  "vitest.config.ts",
-  "vitest.e2e.config.ts",
-  "eslint.config.js",
-  "tsconfig.eslint.json",
-  ".prettierrc",
-  ".prettierignore",
-  // With a `files` list, npm packs only what that list names; .gitignore
-  // can't add files to the tarball.
-  ".gitignore",
-  // Contributor docs, design records and editor/agent config. .claude-plugin
-  // is read from the GitHub repo by the Claude plugin marketplace, not npm.
-  "CLAUDE.md",
-  "plans/**",
-  ".claude/**",
-  ".claude-plugin/**",
-  ".vscode/**",
-  ".mcp.json",
-  // Example config for people running drawlatch from a checkout.
-  ".env.example",
-  ".env.e2e.example",
-  "*.example.json",
-];
-
-/**
- * Directories where every change counts, whatever DRAWLATCH_NON_SHIPPING says.
- * `build` copies src/connections into dist with `cp -r`, so a fixture or any
- * other file there ships. Test files there don't (`files` has
- * `!dist/**\/*.test.*`), but counting them too is deliberate: it can only cause
- * an unneeded bump, never a missed one.
- */
-export const DRAWLATCH_ALWAYS_SHIPS = ["src/connections"];
-
-/**
- * The `git diff` pathspec lists whose union is "everything under
- * packages/drawlatch that ships". It takes two lists because git can't
- * re-include a path once an exclude pattern has removed it.
- */
-export function drawlatchDriftPathspecs() {
-  return [
-    [DRAWLATCH_DIR, ...DRAWLATCH_NON_SHIPPING.map((p) => `:(glob,exclude)${DRAWLATCH_DIR}/${p}`)],
-    DRAWLATCH_ALWAYS_SHIPS.map((p) => `${DRAWLATCH_DIR}/${p}`),
-  ];
-}
+/** The one git tag a release gets. */
+export const releaseTag = (version) => `v${version}`;
 
 /**
  * Semver precedence, without a dependency: the plan runs before `npm ci`.
@@ -138,7 +71,7 @@ export function drawlatchDriftPathspecs() {
  */
 export function compareSemver(a, b) {
   const parse = (v) => {
-    const m = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(String(v).trim());
+    const m = SEMVER_RE.exec(String(v).trim());
     if (!m) throw new Error(`not a semver version: ${v}`);
     return { core: m.slice(1, 4).map(Number), pre: m[4] ? m[4].split(".") : [] };
   };
@@ -196,130 +129,107 @@ export function distTagError(distTag) {
 }
 
 /**
- * The pure decision. `drawlatch` and `callboard` are
- * `{ version, published, tagCommit, gitHead, distTags }`: `published` is
- * whether that version is on npm, `tagCommit` the commit its tag points at
- * (null if there is no tag), `gitHead` the commit npm recorded for the
- * published version (null if unpublished or not recorded) and `distTags` the
- * package's current dist-tags (`{ latest: "1.0.0" }`).
+ * The pure decision. `drawlatch` and `callboard` are `{ published, gitHead,
+ * distTags }` for the shared `version`: `published` is whether that version is
+ * on npm, `gitHead` the commit npm recorded for it (null if unpublished or not
+ * recorded) and `distTags` the package's current dist-tags (`{ latest: "1.0.0" }`).
+ * `tagCommit` is the commit `v<version>` points at, or null. `versionErrors`
+ * is versionDriftErrors' output for the checkout.
  *
- * `git` supplies the two repository questions: `isPublishBase(sha)` (sha is
- * HEAD or an ancestor of it and has packages/drawlatch in it, so it is a
- * monorepo commit, not one of the standalone repo's imported ones) and
- * `driftFiles(sha)` (the shipping drawlatch paths that differ between sha and
- * HEAD).
+ * `git.isPublishBase(sha)`: sha is HEAD or an ancestor of it and has
+ * packages/drawlatch in it, so it is a monorepo commit, not one of the
+ * standalone repo's imported ones.
  *
- * Returns `{ errors, warnings, drawlatch: { action, tagCommit, driftBase },
- * callboard: { action, tagCommit } }`. drawlatch's action is "publish" or
- * "skip"; callboard's is "publish", "pack" (dry run only: the version is
- * already on npm, so `npm publish --dry-run` would refuse it) or "skip". A
- * `tagCommit` of null means there is nothing to tag. When `errors` is non-empty
- * the run must stop before publishing anything.
+ * Returns `{ errors, warnings, drawlatch: { action }, callboard: { action },
+ * tag: { name, commit } }`. An action is "publish", "pack" (dry run only: the
+ * run would fail, so it only packs) or "skip". A `tag.commit` of null means
+ * there is nothing to tag. When `errors` is non-empty the run must stop before
+ * publishing anything.
  */
-export function planRelease({ dryRun, head, distTag, pins, drawlatch, callboard, git }) {
-  const errors = [];
+export function planRelease({ dryRun, head, distTag, version, versionErrors = [], drawlatch, callboard, tagCommit, git }) {
+  const errors = [...versionErrors];
   const warnings = [];
-
   const tagProblem = distTagError(distTag);
   if (tagProblem) errors.push(tagProblem);
 
-  // Lockstep: callboard's published dependency must be the workspace version.
-  // deps:check enforces this too, but it runs later, inside the gate.
-  for (const [where, pin] of Object.entries(pins)) {
-    if (pin !== drawlatch.version) {
-      errors.push(
-        `${where} pins ${DRAWLATCH} to ${JSON.stringify(pin)}, but ${DRAWLATCH_DIR} is ${drawlatch.version}. The pin must be exactly the workspace version.`,
-      );
-    }
-  }
+  const tag = { name: releaseTag(version), commit: null };
+  const dl = { action: "skip" };
+  const cb = { action: "skip" };
+  const packages = [
+    [DRAWLATCH, drawlatch, dl],
+    [CALLBOARD, callboard, cb],
+  ];
+  const result = () => ({ errors, warnings, drawlatch: dl, callboard: cb, tag });
+  const published = packages.filter(([, pkg]) => pkg.published);
 
-  // A tag only ever names the commit a version was published from. `tagCommit`
-  // below is the commit to tag, or null when there is nothing to tag.
-  const dl = { action: "skip", tagCommit: null, driftBase: null };
-  const dlTag = drawlatchTag(drawlatch.version);
-  if (!drawlatch.published) {
-    dl.action = "publish";
-    if (!drawlatch.tagCommit) dl.tagCommit = head;
-    else if (drawlatch.tagCommit !== head) errors.push(strayTag(dlTag, drawlatch.tagCommit, DRAWLATCH, drawlatch.version, "drawlatch"));
+  if (published.length === 0) {
+    dl.action = cb.action = "publish";
+    if (!tagCommit) tag.commit = head;
+    else if (tagCommit !== head)
+      errors.push(
+        `Tag ${tag.name} already exists at ${tagCommit}, but ${version} is not on npm. Bump the version, or delete the tag if nothing was published from it.`,
+      );
   } else {
-    let base = null;
-    const gitHeadIsBase = Boolean(drawlatch.gitHead) && git.isPublishBase(drawlatch.gitHead);
-    if (drawlatch.tagCommit) {
-      if (gitHeadIsBase && drawlatch.gitHead !== drawlatch.tagCommit) {
-        // This workflow tags the commit it published from, so it never leaves
-        // this state behind: someone moved the tag, or published by hand.
+    // The commit each published package came from.
+    const bases = [];
+    for (const [name, pkg] of published) {
+      if (pkg.gitHead && git.isPublishBase(pkg.gitHead)) bases.push([name, pkg.gitHead]);
+      else if (!pkg.gitHead && tagCommit) bases.push([name, tagCommit]);
+      else
         errors.push(
-          `npm records ${DRAWLATCH}@${drawlatch.version} as published from ${drawlatch.gitHead}, but ${dlTag} points at ${drawlatch.tagCommit}. Move the tag to the published commit, or bump drawlatch.`,
+          `${name}@${version} is on npm, but npm records it as published from ${pkg.gitHead ?? "no commit"}, which isn't a commit of this branch with ${DRAWLATCH_DIR} in it, so it was published outside this workflow (from the standalone drawlatch repo, say). Bump the version.`,
         );
-      } else {
-        base = drawlatch.tagCommit;
-      }
-    } else if (gitHeadIsBase) {
-      base = drawlatch.gitHead;
-      dl.tagCommit = base;
-      warnings.push(`${DRAWLATCH}@${drawlatch.version} is on npm but ${dlTag} is missing. Tagging ${base}, the commit npm recorded for it.`);
+    }
+    if (bases.length < published.length) return result();
+    if (bases.length === 2 && bases[0][1] !== bases[1][1]) {
+      errors.push(`${bases[0][0]}@${version} was published from ${bases[0][1]} and ${bases[1][0]}@${version} from ${bases[1][1]}. Bump the version.`);
+      return result();
+    }
+    const base = bases[0][1];
+    if (tagCommit && tagCommit !== base) {
+      // This workflow tags the commit it published from, so it never leaves
+      // this state behind: someone moved the tag, or published by hand.
+      errors.push(
+        `npm records ${version} as published from ${base}, but ${tag.name} points at ${tagCommit}. Move the tag to the published commit, or bump the version.`,
+      );
+      return result();
+    }
+
+    if (base === head) {
+      // A previous attempt of this commit got partway: finish it.
+      for (const [, pkg, plan] of packages) if (!pkg.published) plan.action = "publish";
+      if (!tagCommit) tag.commit = head;
+      if (published.length === 2 && !tagCommit) warnings.push(`${version} was already published from this commit. Only tagging it ${tag.name}.`);
+      if (callboard.published && !drawlatch.published)
+        warnings.push(`${CALLBOARD}@${version} is on npm but ${DRAWLATCH}@${version} isn't, so it couldn't be installed until now. Publishing drawlatch.`);
+    } else if (published.length === 2 && !tagCommit) {
+      tag.commit = base;
+      warnings.push(`${version} was already released from ${base}; tagging it ${tag.name}. Nothing was published. To release HEAD, bump the version.`);
     } else {
-      errors.push(
-        `${DRAWLATCH}@${drawlatch.version} is on npm, but there is no ${dlTag} tag and the commit npm records for it is not a commit of this branch with ${DRAWLATCH_DIR} in it, so it was published from outside this workflow (e.g. from the standalone drawlatch repo). Bump drawlatch.`,
-      );
+      const problem =
+        published.length === 2
+          ? `${version} is already on npm (released from ${base}). Bump the version.`
+          : `${version} was partly released from ${base} (${published[0][0]} is on npm, ${packages.find(([, pkg]) => !pkg.published)[0]} is not), and main is now at ${head}. Finish it by re-running the original run ("Re-run failed jobs" reuses its tarballs, packed from ${base}; "Re-run all jobs" re-plans on ${base}), or bump the version.`;
+      if (dryRun) {
+        dl.action = cb.action = "pack";
+        warnings.push(`${problem} This dry run only packs; a real run would fail.`);
+      } else errors.push(problem);
     }
-    if (base) {
-      dl.driftBase = base;
-      const changed = git.driftFiles(base);
-      if (changed.length > 0) {
-        const shown = changed.slice(0, 20).join(", ") + (changed.length > 20 ? `, and ${changed.length - 20} more` : "");
-        errors.push(
-          `${DRAWLATCH_DIR} changed since ${DRAWLATCH}@${drawlatch.version} was published (${base}), but its version was not bumped. Bump drawlatch (see README → Releasing). Changed: ${shown}`,
-        );
-      }
-    }
-  }
-
-  const cb = { action: "skip", tagCommit: null };
-  const cbTag = callboardTag(callboard.version);
-  const tagElsewhere = callboard.tagCommit !== null && callboard.tagCommit !== head;
-  if (callboard.published && callboard.tagCommit && callboard.gitHead && callboard.gitHead !== callboard.tagCommit) {
-    // As for drawlatch: this workflow tags the commit it published from.
-    errors.push(
-      `npm records ${CALLBOARD}@${callboard.version} as published from ${callboard.gitHead}, but ${cbTag} points at ${callboard.tagCommit}. Move the tag to the published commit, or bump callboard.`,
-    );
-  } else if (!callboard.published) {
-    cb.action = "publish";
-    if (!callboard.tagCommit) cb.tagCommit = head;
-    else if (tagElsewhere) errors.push(strayTag(cbTag, callboard.tagCommit, CALLBOARD, callboard.version, "callboard"));
-  } else if (!tagElsewhere && (callboard.tagCommit === head || callboard.gitHead === head)) {
-    // Published from this very commit: a previous run got as far as publishing.
-    if (!callboard.tagCommit) {
-      cb.tagCommit = head;
-      warnings.push(`${CALLBOARD}@${callboard.version} was already published from this commit. Only tagging it ${cbTag}.`);
-    }
-  } else if (dryRun) {
-    cb.action = "pack";
-    warnings.push(`${CALLBOARD}@${callboard.version} is already on npm. This dry run only packs it; a real run would fail. Bump callboard.`);
-  } else {
-    errors.push(`${CALLBOARD}@${callboard.version} is already on npm. Bump callboard.`);
   }
 
   // Never move a dist-tag backwards (e.g. a hotfix for an older line under
   // `latest`). npm would refuse that for an implicit `latest`, but the
   // workflow always passes --tag, which turns npm's check off.
-  for (const [name, pkg, action] of [
-    [DRAWLATCH, drawlatch, dl.action],
-    [CALLBOARD, callboard, cb.action],
-  ]) {
-    const current = pkg.distTags?.[distTag];
-    if (!tagProblem && action === "publish" && current && compareSemver(pkg.version, current) < 0) {
-      errors.push(
-        `${name}@${pkg.version} is lower than ${current}, which the "${distTag}" dist-tag already points at. Publishing would move "${distTag}" backwards; run with another dist_tag (e.g. a hotfix tag).`,
-      );
+  if (!tagProblem)
+    for (const [name, pkg, plan] of packages) {
+      const current = pkg.distTags?.[distTag];
+      if (plan.action === "publish" && current && compareSemver(version, current) < 0)
+        errors.push(
+          `${name}@${version} is lower than ${current}, which the "${distTag}" dist-tag already points at. Publishing would move "${distTag}" backwards; run with another dist_tag (e.g. a hotfix tag).`,
+        );
     }
-  }
 
-  return { errors, warnings, drawlatch: dl, callboard: cb };
-}
-
-function strayTag(tag, commit, name, version, bump) {
-  return `Tag ${tag} already exists at ${commit}, but ${name}@${version} is not on npm. Bump ${bump}, or delete the tag if nothing was published from it.`;
+  return result();
 }
 
 // ── I/O ─────────────────────────────────────────────────────────────────────
@@ -380,50 +290,33 @@ export function repoGit(cwd) {
     isPublishBase(sha) {
       return ok(["merge-base", "--is-ancestor", sha, "HEAD"]) && ok(["cat-file", "-e", `${sha}:${DRAWLATCH_DIR}/package.json`]);
     },
-    driftFiles(sha) {
-      const files = new Set();
-      for (const pathspec of drawlatchDriftPathspecs()) {
-        const out = run("git", ["diff", "--name-only", sha, "HEAD", "--", ...pathspec]);
-        if (out) for (const f of out.split("\n")) files.add(f);
-      }
-      return [...files].sort();
-    },
   };
 }
 
-function packageState(name, version, tag, run, git) {
+function packageState(name, version, run) {
   const published = publishedVersions(name, run).includes(version);
-  return {
-    version,
-    published,
-    tagCommit: git.tagCommit(tag),
-    gitHead: published ? gitHeadOf(name, version, run) : null,
-    distTags: distTagsOf(name, run),
-  };
+  return { published, gitHead: published ? gitHeadOf(name, version, run) : null, distTags: distTagsOf(name, run) };
 }
-
-const readJson = (rel) => JSON.parse(readFileSync(join(ROOT, rel), "utf8"));
 
 function main() {
   const dryRun = process.env.DRY_RUN !== "false";
   const distTag = process.env.DIST_TAG ?? "latest"; // not ||: an emptied input must fail, not become latest
   const run = runIn(ROOT);
   const git = repoGit(ROOT);
-  const rootPkg = readJson("package.json");
-  const backendPkg = readJson("backend/package.json");
-  const dlPkg = readJson(`${DRAWLATCH_DIR}/package.json`);
+  const state = readVersionState(ROOT);
+  const { version } = state;
   const head = run("git", ["rev-parse", "HEAD"]);
+  const tag = releaseTag(version);
 
   const plan = planRelease({
     dryRun,
     head,
     distTag,
-    pins: {
-      "package.json": rootPkg.dependencies?.[DRAWLATCH],
-      "backend/package.json": backendPkg.dependencies?.[DRAWLATCH],
-    },
-    drawlatch: packageState(DRAWLATCH, dlPkg.version, drawlatchTag(dlPkg.version), run, git),
-    callboard: packageState(CALLBOARD, rootPkg.version, callboardTag(rootPkg.version), run, git),
+    version,
+    versionErrors: versionDriftErrors(state),
+    drawlatch: packageState(DRAWLATCH, version, run),
+    callboard: packageState(CALLBOARD, version, run),
+    tagCommit: git.tagCommit(tag),
     git,
   });
 
@@ -432,28 +325,26 @@ function main() {
 
   const outputs = {
     head,
-    drawlatch_version: dlPkg.version,
+    version,
+    tag,
+    tag_commit: plan.tag.commit ?? "",
     drawlatch_action: plan.drawlatch.action,
-    drawlatch_tag: drawlatchTag(dlPkg.version),
-    drawlatch_tag_commit: plan.drawlatch.tagCommit ?? "",
-    callboard_version: rootPkg.version,
     callboard_action: plan.callboard.action,
-    callboard_tag: callboardTag(rootPkg.version),
-    callboard_tag_commit: plan.callboard.tagCommit ?? "",
   };
   const lines = Object.entries(outputs).map(([k, v]) => `${k}=${v}`);
   console.log(lines.join("\n"));
   if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, lines.join("\n") + "\n");
 
   if (process.env.GITHUB_STEP_SUMMARY) {
-    const tagCell = (tag, commit) => (commit ? `\`${tag}\` → \`${commit.slice(0, 12)}\`` : "—");
     const md = [
-      `## Release plan${dryRun ? " (dry run)" : ""}, dist-tag \`${distTag}\``,
+      `## Release plan${dryRun ? " (dry run)" : ""}: ${version}, dist-tag \`${distTag}\``,
       "",
-      "| Package | Version | Action | Tag |",
-      "| --- | --- | --- | --- |",
-      `| ${DRAWLATCH} | ${dlPkg.version} | ${plan.drawlatch.action} | ${tagCell(outputs.drawlatch_tag, outputs.drawlatch_tag_commit)} |`,
-      `| ${CALLBOARD} | ${rootPkg.version} | ${plan.callboard.action} | ${tagCell(outputs.callboard_tag, outputs.callboard_tag_commit)} |`,
+      "| Package | Version | Action |",
+      "| --- | --- | --- |",
+      `| ${DRAWLATCH} | ${version} | ${plan.drawlatch.action} |`,
+      `| ${CALLBOARD} | ${version} | ${plan.callboard.action} |`,
+      "",
+      `Tag: ${plan.tag.commit ? `\`${tag}\` → \`${plan.tag.commit.slice(0, 12)}\`` : "—"}`,
       "",
       ...plan.warnings.map((w) => `> [!WARNING]\n> ${w}\n`),
       ...plan.errors.map((e) => `> [!CAUTION]\n> ${e}\n`),
