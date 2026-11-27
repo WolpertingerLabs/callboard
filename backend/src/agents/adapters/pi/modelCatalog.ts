@@ -876,7 +876,7 @@ export function assertPiModelResolved(provider: string, modelId: string | undefi
   const id = modelId?.trim();
   if (!id || model) return;
   throw new Error(
-    `pi model "${id}" is not in pi's model catalog for provider "${provider}"; it may have been retired in pi 1.6. ` +
+    `pi model "${id}" is not in pi's model catalog for provider "${provider}"; it may be misspelled, belong to a different provider, or have been retired by pi. ` +
       `Pick a model from the pi model list (the model picker, or GET /api/pi/models) or a model alias with a pi target (list_model_aliases), then try again.`,
   );
 }

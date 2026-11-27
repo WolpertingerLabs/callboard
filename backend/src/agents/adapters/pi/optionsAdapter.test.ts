@@ -115,7 +115,8 @@ describe("a named model pi's catalog does not know", () => {
     expect(run).toThrow(/"o4-mini"/);
     expect(run).toThrow(/provider "openai"/);
     expect(run).toThrow(/not in pi's model catalog/);
-    expect(run).toThrow(/retired in pi 1\.6/);
+    expect(run).toThrow(/misspelled, belong to a different provider, or have been retired by pi\./);
+    expect(run).not.toThrow(/pi \d/);
     expect(run).toThrow(/list_model_aliases/);
   });
 
