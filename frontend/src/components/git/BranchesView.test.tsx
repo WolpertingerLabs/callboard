@@ -476,7 +476,7 @@ describe("BranchesView: a request that never settles", () => {
     });
   const button = () => screen.getByRole("button", { name: "Refresh branches" }) as HTMLButtonElement;
 
-  it("times out: the button is re-enabled, the timeout is shown as an error, and polls resume", async () => {
+  it("times out: the button is re-enabled and polls resume; a refresh from the button that times out says so", async () => {
     vi.useRealTimers();
     vi.useFakeTimers();
     try {
@@ -501,7 +501,9 @@ describe("BranchesView: a request that never settles", () => {
       });
       expect(button().disabled).toBe(false);
       expect(button().getAttribute("aria-busy")).toBe("false");
-      expect(screen.getByText("Timed out loading branches — try refreshing.")).toBeDefined();
+      // Given up without a banner: the unforced answer of this same mount is on screen.
+      expect(screen.queryByText("Timed out loading branches — try refreshing.")).toBeNull();
+      expect(screen.getByText(/^updated /)).toBeDefined();
 
       // The next poll tick goes out, unforced.
       await act(async () => {
@@ -509,6 +511,17 @@ describe("BranchesView: a request that never settles", () => {
       });
       expect(mockOverview.mock.calls.length).toBeGreaterThan(2);
       expect(mockOverview.mock.calls.at(-1)![0]).toBe(false);
+
+      // A refresh from the button that never answers is shown as timed out.
+      mockOverview.mockImplementationOnce(hangUntilAborted as never);
+      await act(async () => {
+        fireEvent.click(button());
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(PR_REQUEST_TIMEOUT_MS);
+      });
+      expect(button().disabled).toBe(false);
+      expect(screen.getByText("Timed out loading branches — try refreshing.")).toBeDefined();
     } finally {
       vi.useRealTimers();
     }

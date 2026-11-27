@@ -454,3 +454,145 @@ describe("the Git page under StrictMode", () => {
     expect(screen.queryByText(/Failed|Timed out/)).toBeNull();
   });
 });
+
+describe("the Git page: remembered cards are not a current answer", () => {
+  const EMPTY = "No active conversation is working in a git repository.";
+  const settle = () => act(async () => {});
+
+  /** Visit once with `cards`, leave, and come back with the card request still out. */
+  async function comeBack(cards: CardSummary[]) {
+    vi.mocked(listCards).mockResolvedValue({ cards });
+    const first = mount();
+    await settle();
+    first.unmount();
+    let answer!: (value: { cards: CardSummary[] }) => void;
+    vi.mocked(listCards).mockReturnValue(new Promise((resolve) => (answer = resolve)));
+    mount();
+    // The overview of this mount has answered; the cards have not.
+    await settle();
+    return answer;
+  }
+
+  it("a remembered empty card list does not call the page empty: loading until the cards land", async () => {
+    const answer = await comeBack([]);
+    expect(screen.queryByText(EMPTY)).toBeNull();
+    expect(screen.getByText("Loading branches…")).toBeDefined();
+    // A chat started in a repo since the last visit.
+    await act(async () => answer({ cards: CARDS }));
+    expect(screen.getByRole("button", { name: "PR tracking" })).toBeDefined();
+    expect(screen.queryByText("Loading branches…")).toBeNull();
+  });
+
+  it("nor do remembered cards none of which has a row", async () => {
+    const answer = await comeBack([card("elsewhere", "Not in a repo")]);
+    expect(screen.queryByText(EMPTY)).toBeNull();
+    expect(screen.getByText("Loading branches…")).toBeDefined();
+    await act(async () => answer({ cards: CARDS }));
+    expect(screen.getByRole("button", { name: "PR tracking" })).toBeDefined();
+  });
+
+  it("says empty once the cards of this mount confirm it", async () => {
+    const answer = await comeBack([]);
+    await act(async () => answer({ cards: [] }));
+    expect(screen.getByText(EMPTY)).toBeDefined();
+    expect(screen.queryByText("Loading branches…")).toBeNull();
+  });
+
+  it("says empty beside the cards' error when the cards of this mount fail", async () => {
+    vi.mocked(listCards).mockResolvedValue({ cards: [] });
+    const first = mount();
+    await settle();
+    first.unmount();
+    vi.mocked(listCards).mockRejectedValue(new Error("daemon down"));
+    mount();
+    expect(await screen.findByText("daemon down")).toBeDefined();
+    expect(screen.getByText(EMPTY)).toBeDefined();
+    expect(screen.queryByText("Loading branches…")).toBeNull();
+  });
+});
+
+describe("the Git page: a card answer that arrives after the page went away", () => {
+  const settle = () => act(async () => {});
+  const leaveWithCardsOut = async () => {
+    let late!: (value: { cards: CardSummary[] }) => void;
+    vi.mocked(listCards).mockReturnValue(new Promise((resolve) => (late = resolve)));
+    const page = mount();
+    await settle();
+    page.unmount();
+    return late;
+  };
+  const expectNothingRemembered = async () => {
+    vi.mocked(listCards).mockReturnValue(new Promise(() => {}));
+    mount();
+    await settle();
+    expect(screen.queryByRole("button", { name: "PR tracking" })).toBeNull();
+    expect(screen.getByText("Loading branches…")).toBeDefined();
+  };
+
+  it("is not remembered", async () => {
+    const late = await leaveWithCardsOut();
+    await act(async () => late({ cards: CARDS }));
+    await expectNothingRemembered();
+  });
+
+  it("cannot refill the memory a logout cleared", async () => {
+    const late = await leaveWithCardsOut();
+    clearGitRequestCache();
+    clearGitPageCache();
+    await act(async () => late({ cards: CARDS }));
+    await expectNothingRemembered();
+  });
+});
+
+describe("the Git page: the overview reload a metadata change owes", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+  const advance = (ms: number) =>
+    act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+    });
+  const page = () => (
+    <MemoryRouter initialEntries={["/git"]}>
+      <Routes>
+        <Route path="/git" element={<Git />} />
+      </Routes>
+    </MemoryRouter>
+  );
+
+  it("is paid by the poll that superseded the metadata refetch, with the card ids unchanged", async () => {
+    const view = render(page());
+    await advance(0);
+    expect(getGitOverview).toHaveBeenCalledTimes(2);
+
+    // A metadata change 310ms before the 15s card poll: its refetch goes out at 14.99s and hangs.
+    await advance(14_690);
+    let late!: (value: { cards: CardSummary[] }) => void;
+    vi.mocked(listCards).mockReturnValueOnce(new Promise((resolve) => (late = resolve)));
+    session.metadataVersion = 1;
+    view.rerender(page());
+    await advance(300);
+    expect(listCards).toHaveBeenCalledTimes(2);
+    // The poll supersedes it and answers at once, with the same cards.
+    await advance(10);
+    expect(listCards).toHaveBeenCalledTimes(3);
+    await act(async () => late({ cards: CARDS }));
+    await advance(RELOAD_DEBOUNCE_MS);
+    expect(getGitOverview).toHaveBeenCalledTimes(3);
+    expect(getGitOverview).toHaveBeenLastCalledWith(false, expect.any(AbortSignal));
+    // Once: the poll after that owes nothing.
+    await advance(15_000);
+    expect(getGitOverview).toHaveBeenCalledTimes(3);
+  });
+
+  it("is not paid by a card poll when no metadata changed", async () => {
+    render(page());
+    await advance(0);
+    await advance(15_000 + RELOAD_DEBOUNCE_MS);
+    expect(listCards).toHaveBeenCalledTimes(2);
+    expect(getGitOverview).toHaveBeenCalledTimes(2);
+  });
+});

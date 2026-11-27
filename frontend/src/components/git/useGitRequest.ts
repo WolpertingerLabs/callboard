@@ -99,7 +99,15 @@ interface Outcome<T> {
  * a callback of the hook's, because it calls itself (the handover, the owed
  * reload).
  */
-async function request<T>(m: Requests<T>, out: Outcome<T>, forced: boolean, leading = false, timeoutMs = PR_REQUEST_TIMEOUT_MS): Promise<void> {
+async function request<T>(
+  m: Requests<T>,
+  out: Outcome<T>,
+  forced: boolean,
+  leading = false,
+  timeoutMs = PR_REQUEST_TIMEOUT_MS,
+  /** The mount's forced request, behind an unforced one that answered: see the catch below. */
+  quietTimeout = false,
+): Promise<void> {
   const mine = ++m.seq;
   const holdsButton = forced || leading;
   if (holdsButton) {
@@ -111,16 +119,25 @@ async function request<T>(m: Requests<T>, out: Outcome<T>, forced: boolean, lead
   const startedAt = Date.now();
   const timed = startTimedRequest(timeoutMs);
   m.pending.add(timed);
+  let answered = false;
   try {
     const res = await m.options.fetch(forced, timed.signal);
     if (mine !== m.seq) return;
+    answered = true;
     remember(m.options.cacheKey, res);
     out.setData(res);
     out.setLanded(true);
     out.setError(null);
   } catch (err) {
     if (mine !== m.seq) return;
-    out.setError(timed.timedOut() ? m.options.timeoutMessage : errorMessage(err, m.options.failureMessage));
+    // The mount's forced request has only what its unforced one left of the
+    // deadline, so it can run out of time moments after that one painted. It
+    // is still given up and the button re-enabled, but "timed out" over an
+    // answer of this same mount would read as if nothing had loaded: say
+    // nothing. Any other failure, and any other request's timeout, is shown.
+    if (!(quietTimeout && timed.timedOut())) {
+      out.setError(timed.timedOut() ? m.options.timeoutMessage : errorMessage(err, m.options.failureMessage));
+    }
   } finally {
     timed.done();
     m.pending.delete(timed);
@@ -134,7 +151,7 @@ async function request<T>(m: Requests<T>, out: Outcome<T>, forced: boolean, lead
       if (leading && mine === m.seq && !timed.timedOut() && left > 0) {
         // Still the newest, so the view is still mounted: the forced request
         // takes the button over without it ever reading idle in between.
-        void request(m, out, true, false, left);
+        void request(m, out, true, false, left, answered);
       } else {
         // Only the newest refresh re-enables the button — a poll never does
         // (polls do not even start while a refresh is in flight).

@@ -25,6 +25,13 @@ interface BranchesViewProps {
    */
   cardsLoaded?: boolean;
   /**
+   * True once a card request of this mount has settled, false while `cards`
+   * is only what the page remembered. Remembered cards get their chips at
+   * once, but the page is not called empty on their word. Defaults to
+   * `cardsLoaded`.
+   */
+  cardsCurrent?: boolean;
+  /**
    * Bumped by the page once it has refetched the cards after a chat or card
    * metadata change: the overview is asked again shortly after. After the
    * cards rather than at the change itself, so the token and whatever the
@@ -63,7 +70,7 @@ function parentPrefix(repoPath: string): string {
  * conversations attached as chips. Read-only — a chip opens its root chat,
  * and archiving lives in the sidebar.
  */
-export default function BranchesView({ cards, cardsLoaded = true, reloadToken = 0, onOpenChat }: BranchesViewProps) {
+export default function BranchesView({ cards, cardsLoaded = true, cardsCurrent = cardsLoaded, reloadToken = 0, onOpenChat }: BranchesViewProps) {
   const isMobile = useIsMobile();
   const { data, landed, error, refreshing, now, refresh, reload } = useGitRequest<GitOverviewResponse>({
     cacheKey: OVERVIEW_CACHE_KEY,
@@ -263,6 +270,7 @@ export default function BranchesView({ cards, cardsLoaded = true, reloadToken = 
   };
 
   const generatedAt = data ? Date.parse(data.generatedAt) : NaN;
+  const loadingLine = <div style={{ color: "var(--text-muted)", fontSize: 14 }}>Loading branches…</div>;
 
   return (
     <div>
@@ -295,17 +303,19 @@ export default function BranchesView({ cards, cardsLoaded = true, reloadToken = 
         </div>
       )}
 
-      {/* Without the cards no row can be shown yet, whatever the overview
-          holds: that is still loading, not an empty page. Nor is a remembered
-          overview with nothing to show: a chat may have started in a
-          repository since, so the page is only called empty by an answer of
-          this mount. */}
-      {(data === null && !error) || (data !== null && !cardsLoaded) || (data !== null && repos.length === 0 && !landed && !error) ? (
-        <div style={{ color: "var(--text-muted)", fontSize: 14 }}>Loading branches…</div>
+      {/* Nothing to show is only an empty page when both halves of the join
+          say so now: an overview and a card list that answered during this
+          mount. Remembered ones paint what they hold at once, but a chat may
+          have started in a repository since, so with nothing to show they are
+          still loading. An error stands alone. */}
+      {data === null ? (
+        !error && loadingLine
+      ) : !cardsLoaded ? (
+        loadingLine
+      ) : repos.length > 0 ? null : landed && cardsCurrent ? (
+        <div style={{ color: "var(--text-muted)", fontSize: 14 }}>No active conversation is working in a git repository.</div>
       ) : (
-        data !== null &&
-        landed &&
-        repos.length === 0 && <div style={{ color: "var(--text-muted)", fontSize: 14 }}>No active conversation is working in a git repository.</div>
+        !error && loadingLine
       )}
 
       {repos.map(({ repo, rows }) => (

@@ -144,6 +144,17 @@ describe("useGitRequest: what the tab remembers", () => {
     expect(mount(manualFetch().fetch, "key2").result.current.data).toEqual({ v: "forced" });
   });
 
+  it("an answer that arrives after the view went away cannot refill a memory that was cleared", async () => {
+    const f = manualFetch();
+    const view = mount(f.fetch);
+    await act(async () => f.calls[0].resolve({ v: "unforced" }));
+    // The forced request is out when the view goes and logout clears the memory.
+    view.unmount();
+    clearGitRequestCache();
+    await act(async () => f.calls[1].resolve({ v: "late" }));
+    expect(mount(manualFetch().fetch).result.current.data).toBeNull();
+  });
+
   it("does not remember an answer that arrives after the view went away", async () => {
     const f = manualFetch();
     const view = mount(f.fetch);
@@ -349,10 +360,52 @@ describe("useGitRequest: the mount's two requests share one deadline", () => {
     f.calls[1].signal.addEventListener("abort", () => f.calls[1].reject(new DOMException("aborted", "AbortError")));
     await advance(PR_REQUEST_TIMEOUT_MS - 30_000 - 1);
     expect(result.current.refreshing).toBe(true);
+    expect(f.calls[1].signal.aborted).toBe(false);
     await advance(1);
+    // It did time out: aborted, and the button is back.
+    expect(f.calls[1].signal.aborted).toBe(true);
+    expect(result.current.refreshing).toBe(false);
+    expect(result.current.data).toEqual({ v: "unforced" });
+  });
+
+  it("that timeout is not shown as an error over the answer this mount just painted", async () => {
+    const f = manualFetch();
+    const { result } = mount(f.fetch);
+    await advance(30_000);
+    await act(async () => f.calls[0].resolve({ v: "unforced" }));
+    f.calls[1].signal.addEventListener("abort", () => f.calls[1].reject(new DOMException("aborted", "AbortError")));
+    await advance(PR_REQUEST_TIMEOUT_MS - 30_000);
+    expect(result.current.refreshing).toBe(false);
+    expect(result.current.error).toBeNull();
+    expect(result.current.landed).toBe(true);
+  });
+
+  it("but a forced request that fails outright after it is", async () => {
+    const f = manualFetch();
+    const { result } = mount(f.fetch);
+    await act(async () => f.calls[0].resolve({ v: "unforced" }));
+    await act(async () => f.calls[1].reject(new Error("gh down")));
+    expect(result.current.error).toBe("gh down");
+  });
+
+  it("and so is its timeout when the unforced request had failed: nothing of this mount is on screen", async () => {
+    const f = manualFetch();
+    const { result } = mount(f.fetch);
+    await advance(30_000);
+    await act(async () => f.calls[0].reject(new Error("offline")));
+    f.calls[1].signal.addEventListener("abort", () => f.calls[1].reject(new DOMException("aborted", "AbortError")));
+    await advance(PR_REQUEST_TIMEOUT_MS - 30_000);
     expect(result.current.refreshing).toBe(false);
     expect(result.current.error).toBe("timed out");
-    expect(result.current.data).toEqual({ v: "unforced" });
+  });
+
+  it("a refresh clicked later that times out is shown, whatever the mount painted", async () => {
+    const f = manualFetch();
+    const { result } = await mountSettled(f);
+    act(() => result.current.refresh());
+    f.calls[2].signal.addEventListener("abort", () => f.calls[2].reject(new DOMException("aborted", "AbortError")));
+    await advance(PR_REQUEST_TIMEOUT_MS);
+    expect(result.current.error).toBe("timed out");
   });
 
   it("the forced request still goes out when the unforced one fails rather than times out", async () => {

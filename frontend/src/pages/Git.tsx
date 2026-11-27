@@ -43,21 +43,38 @@ export default function Git() {
   const spaceKey = spacesEnabled && activeSpaceId ? activeSpaceId : "";
   const [cards, setCards] = useState<CardSummary[]>(() => lastCards.get(spaceKey) ?? []);
   const [loaded, setLoaded] = useState(() => lastCards.has(spaceKey));
+  // A card request of this mount has settled, so `cards` is the daemon's word
+  // and not a memory. Remembered cards are good for painting chips at once,
+  // but not for saying the page is empty: a chat may have started since.
+  const [settled, setSettled] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Counts the card refetches a metadata change caused, once each has landed.
+  // Bumped when the cards have been refetched after a metadata change: the
+  // overview is asked again then (see BranchesView's `reloadToken`).
   const [cardsRefetched, setCardsRefetched] = useState(0);
+  // A metadata change's refetch has gone out and no card request has landed
+  // since. Owed by whichever request lands next, not by that refetch alone: a
+  // poll that supersedes it would otherwise leave the overview unasked.
+  const reloadOwed = useRef(false);
   // Polls and metadata refetches can overlap; only the newest may land.
   const requestSeq = useRef(0);
 
-  /** Resolves true when this request was still the newest as it settled. */
-  const loadCards = useCallback(async (): Promise<boolean> => {
+  // Going away: nothing that answers later may land, here or in the memory —
+  // a logout may have cleared it in between.
+  useEffect(() => {
+    const seq = requestSeq;
+    return () => {
+      seq.current++;
+    };
+  }, []);
+
+  const loadCards = useCallback(async () => {
     const seq = ++requestSeq.current;
     try {
       // Only open cards become chips, so ask for no archived ones at all.
       // Scoped to the active space: a chip from another space would open a
       // chat the sidebar is not showing.
       const res = await listCards(false, { ...(spacesEnabled && activeSpaceId && { space: activeSpaceId }), lifecycle: "open" });
-      if (seq !== requestSeq.current) return false;
+      if (seq !== requestSeq.current) return;
       // A daemon older than the `lifecycle` parameter returns archived cards
       // too; BranchesView only chips open ones, so that is harmless.
       setCards(res.cards);
@@ -66,12 +83,19 @@ export default function Git() {
       while (lastCards.size > CARD_CACHE_LIMIT) lastCards.delete(lastCards.keys().next().value as string);
       setError(null);
     } catch (err) {
-      if (seq !== requestSeq.current) return false;
+      if (seq !== requestSeq.current) return;
       setError(errorMessage(err, "Failed to load conversations"));
     } finally {
-      if (seq === requestSeq.current) setLoaded(true);
+      // Settled as the newest, whether it answered or failed.
+      if (seq === requestSeq.current) {
+        setLoaded(true);
+        setSettled(true);
+        if (reloadOwed.current) {
+          reloadOwed.current = false;
+          setCardsRefetched((n) => n + 1);
+        }
+      }
     }
-    return true;
   }, [spacesEnabled, activeSpaceId, spaceKey]);
 
   useEffect(() => {
@@ -85,9 +109,8 @@ export default function Git() {
     // if they failed): told at the change itself, it would be asked once now
     // and again when a changed card list landed.
     const timer = setTimeout(() => {
-      void loadCards().then((newest) => {
-        if (newest) setCardsRefetched((n) => n + 1);
-      });
+      reloadOwed.current = true;
+      void loadCards();
     }, 300);
     return () => clearTimeout(timer);
   }, [metadataVersion, loadCards]);
@@ -143,7 +166,13 @@ export default function Git() {
 
         {/* Mounted at once, so the overview is asked for alongside the cards
             rather than after them. */}
-        <BranchesView cards={cards} cardsLoaded={loaded} reloadToken={cardsRefetched} onOpenChat={(chatId) => navigate(`/chat/${chatId}`)} />
+        <BranchesView
+          cards={cards}
+          cardsLoaded={loaded}
+          cardsCurrent={settled}
+          reloadToken={cardsRefetched}
+          onOpenChat={(chatId) => navigate(`/chat/${chatId}`)}
+        />
       </div>
     </div>
   );
