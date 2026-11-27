@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PR_REQUEST_TIMEOUT_MS } from "./timedRequest";
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { clearGitRequestCache } from "./useGitRequest";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ChatPr, ChatPrsResponse, FolderPrs } from "../../api";
 import { getChatPrs } from "../../api";
 import ChatPrsView from "./ChatPrsView";
@@ -42,6 +43,7 @@ async function mount({ chatId }: { chatId?: string } = { chatId: "c1" }) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  clearGitRequestCache();
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(NOW);
 });
@@ -173,15 +175,21 @@ describe("ChatPrsView", () => {
   it("asks for the folder alone for a new chat", async () => {
     mockPrs.mockResolvedValue(response({ status: "no_pr", branch: "feat/a" }));
     await mount({});
-    expect(mockPrs).toHaveBeenCalledWith("/src/app.feat-a", undefined, true, expect.any(AbortSignal));
+    expect(mockPrs).toHaveBeenCalledWith("/src/app.feat-a", undefined, false, expect.any(AbortSignal));
+    expect(mockPrs).toHaveBeenLastCalledWith("/src/app.feat-a", undefined, true, expect.any(AbortSignal));
   });
 
   it("refetches with refresh=true from the refresh button", async () => {
     mockPrs.mockResolvedValue(response({ status: "no_pr", branch: "feat/a" }));
     await mount();
+    // The mount's two requests have settled once the button is idle again.
+    const refresh = screen.getByRole("button", { name: "Refresh PRs" }) as HTMLButtonElement;
+    await waitFor(() => expect(refresh.disabled).toBe(false));
+    expect(mockPrs).toHaveBeenCalledTimes(2);
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Refresh PRs" }));
+      fireEvent.click(refresh);
     });
+    expect(mockPrs).toHaveBeenCalledTimes(3);
     expect(mockPrs).toHaveBeenLastCalledWith("/src/app.feat-a", "c1", true, expect.any(AbortSignal));
   });
 
@@ -200,11 +208,11 @@ describe("ChatPrsView", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
-    expect(mockPrs).toHaveBeenCalledTimes(1);
+    expect(mockPrs).toHaveBeenCalledTimes(2);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(60_000);
     });
-    expect(mockPrs).toHaveBeenCalledTimes(2);
+    expect(mockPrs).toHaveBeenCalledTimes(3);
   });
 });
 
@@ -226,28 +234,58 @@ describe("ChatPrsView: refresh on load", () => {
   const button = () => screen.getByRole("button", { name: "Refresh PRs" }) as HTMLButtonElement;
   const settle = () => act(async () => {});
 
-  it("makes exactly one request on mount, forced, with the button busy until it settles", async () => {
+  it("asks unforced on mount and paints that, then forced, with the button busy until the forced one settles", async () => {
     const first = deferred<Awaited<ReturnType<typeof mockPrs>>>();
-    mockPrs.mockReturnValueOnce(first.promise);
+    const second = deferred<Awaited<ReturnType<typeof mockPrs>>>();
+    mockPrs.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
     render(<ChatPrsView folder="/src/app.feat-a" chatId="c1" />);
     expect(mockPrs).toHaveBeenCalledTimes(1);
-    expect(mockPrs).toHaveBeenCalledWith("/src/app.feat-a", "c1", true, expect.any(AbortSignal));
+    expect(mockPrs).toHaveBeenCalledWith("/src/app.feat-a", "c1", false, expect.any(AbortSignal));
     expect(button().disabled).toBe(true);
     expect(button().getAttribute("aria-busy")).toBe("true");
+    expect(screen.getByText("Loading PRs…")).toBeDefined();
+
     await act(async () => first.resolve(response({ status: "no_pr", branch: "feat/a" })));
+    // Painted from the unforced answer; the forced one is now out.
+    expect(screen.queryByText("Loading PRs…")).toBeNull();
+    expect(mockPrs).toHaveBeenCalledTimes(2);
+    expect(mockPrs).toHaveBeenLastCalledWith("/src/app.feat-a", "c1", true, expect.any(AbortSignal));
+    expect(button().disabled).toBe(true);
+    expect(button().getAttribute("aria-busy")).toBe("true");
+
+    await act(async () => second.resolve(response({ status: "no_pr", branch: "feat/a" })));
     expect(button().disabled).toBe(false);
     expect(button().getAttribute("aria-busy")).toBe("false");
-    expect(mockPrs).toHaveBeenCalledTimes(1);
+    expect(mockPrs).toHaveBeenCalledTimes(2);
   });
 
-  it("re-enables the button when the forced request fails", async () => {
-    const first = deferred<Awaited<ReturnType<typeof mockPrs>>>();
-    mockPrs.mockReturnValueOnce(first.promise);
+  it("re-enables the button when the forced request fails, keeping what the unforced one painted", async () => {
+    const second = deferred<Awaited<ReturnType<typeof mockPrs>>>();
+    mockPrs.mockResolvedValueOnce(response({ status: "no_pr", branch: "feat/a" })).mockReturnValueOnce(second.promise);
     render(<ChatPrsView folder="/src/app.feat-a" chatId="c1" />);
+    await settle();
     expect(button().disabled).toBe(true);
-    await act(async () => first.reject(new Error("offline")));
+    await act(async () => second.reject(new Error("offline")));
     expect(screen.getByText("offline")).toBeDefined();
+    expect(screen.getByText(/^updated /)).toBeDefined();
     expect(button().disabled).toBe(false);
+  });
+
+  it("paints what it showed last at once when it is mounted again, and still asks again", async () => {
+    mockPrs.mockResolvedValue(response({ status: "found", branch: "feat/a", pr: pr(7) }));
+    const { unmount } = render(<ChatPrsView folder="/src/app.feat-a" chatId="c1" />);
+    await settle();
+    unmount();
+    const again = deferred<Awaited<ReturnType<typeof mockPrs>>>();
+    mockPrs.mockReturnValue(again.promise);
+    mockPrs.mockClear();
+    render(<ChatPrsView folder="/src/app.feat-a" chatId="c1" />);
+    // No request has answered, yet there is no loading state.
+    expect(screen.queryByText("Loading PRs…")).toBeNull();
+    expect(screen.getAllByTestId("pr-card")).toHaveLength(1);
+    expect(button().getAttribute("aria-busy")).toBe("true");
+    expect(mockPrs).toHaveBeenCalledTimes(1);
+    expect(mockPrs).toHaveBeenCalledWith("/src/app.feat-a", "c1", false, expect.any(AbortSignal));
   });
 
   it("keeps the button busy through a manual refresh as well", async () => {
@@ -272,11 +310,11 @@ describe("ChatPrsView: refresh on load", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
-    expect(mockPrs).toHaveBeenCalledTimes(1);
+    expect(mockPrs).toHaveBeenCalledTimes(2);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(60_000);
     });
-    expect(mockPrs).toHaveBeenCalledTimes(2);
+    expect(mockPrs).toHaveBeenCalledTimes(3);
     expect(mockPrs).toHaveBeenLastCalledWith("/src/app.feat-a", "c1", false, expect.any(AbortSignal));
 
     // A manual refresh that hangs: the next poll tick must not fire, nor
@@ -286,11 +324,11 @@ describe("ChatPrsView: refresh on load", () => {
     await act(async () => {
       fireEvent.click(button());
     });
-    expect(mockPrs).toHaveBeenCalledTimes(3);
+    expect(mockPrs).toHaveBeenCalledTimes(4);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(60_000);
     });
-    expect(mockPrs).toHaveBeenCalledTimes(3);
+    expect(mockPrs).toHaveBeenCalledTimes(4);
     expect(button().disabled).toBe(true);
     await act(async () => {
       manual.resolve(response({ status: "no_pr", branch: "feat/a" }));
@@ -310,10 +348,12 @@ describe("ChatPrsView: a request that never settles", () => {
     });
   const button = () => screen.getByRole("button", { name: "Refresh PRs" }) as HTMLButtonElement;
 
-  it("times out: the button is re-enabled, the timeout is shown as an error, and polls resume", async () => {
+  it("times out: the button is re-enabled and polls resume; a refresh from the button that times out says so", async () => {
     vi.useRealTimers();
     vi.useFakeTimers();
     try {
+      // The mount's unforced request answers; its forced one never does.
+      mockPrs.mockResolvedValueOnce(response({ status: "no_pr", branch: "feat/a" }));
       mockPrs.mockImplementationOnce(hangUntilAborted as never);
       mockPrs.mockResolvedValue(response({ status: "no_pr", branch: "feat/a" }));
       render(<ChatPrsView folder="/src/app.feat-a" chatId="c1" />);
@@ -325,7 +365,7 @@ describe("ChatPrsView: a request that never settles", () => {
       await act(async () => {
         await vi.advanceTimersByTimeAsync(PR_REQUEST_TIMEOUT_MS - 1);
       });
-      expect(mockPrs).toHaveBeenCalledTimes(1);
+      expect(mockPrs).toHaveBeenCalledTimes(2);
       expect(button().disabled).toBe(true);
 
       await act(async () => {
@@ -333,14 +373,27 @@ describe("ChatPrsView: a request that never settles", () => {
       });
       expect(button().disabled).toBe(false);
       expect(button().getAttribute("aria-busy")).toBe("false");
-      expect(screen.getByText("Timed out loading PRs — try refreshing.")).toBeDefined();
+      // Given up without a banner: the unforced answer of this same mount is on screen.
+      expect(screen.queryByText("Timed out loading PRs — try refreshing.")).toBeNull();
+      expect(screen.getByText(/^updated /)).toBeDefined();
 
       // The next poll tick goes out, unforced.
       await act(async () => {
         await vi.advanceTimersByTimeAsync(60_000);
       });
-      expect(mockPrs.mock.calls.length).toBeGreaterThan(1);
+      expect(mockPrs.mock.calls.length).toBeGreaterThan(2);
       expect(mockPrs.mock.calls.at(-1)![2]).toBe(false);
+
+      // A refresh from the button that never answers is shown as timed out.
+      mockPrs.mockImplementationOnce(hangUntilAborted as never);
+      await act(async () => {
+        fireEvent.click(button());
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(PR_REQUEST_TIMEOUT_MS);
+      });
+      expect(button().disabled).toBe(false);
+      expect(screen.getByText("Timed out loading PRs — try refreshing.")).toBeDefined();
     } finally {
       vi.useRealTimers();
     }
@@ -353,5 +406,109 @@ describe("ChatPrsView: a request that never settles", () => {
     expect(signal.aborted).toBe(false);
     unmount();
     expect(signal.aborted).toBe(true);
+  });
+});
+
+describe("ChatPrsView: what it remembers", () => {
+  const settle = () => act(async () => {});
+
+  it("remembers per chat and folder: another chat on the same folder starts from loading", async () => {
+    mockPrs.mockResolvedValue(response({ status: "found", branch: "feat/a", pr: pr(7) }));
+    const first = render(<ChatPrsView folder="/src/app.feat-a" chatId="c1" />);
+    await settle();
+    first.unmount();
+
+    mockPrs.mockReturnValue(new Promise(() => {}));
+    const other = render(<ChatPrsView folder="/src/app.feat-a" chatId="c2" />);
+    expect(screen.getByText("Loading PRs…")).toBeDefined();
+    expect(screen.queryAllByTestId("pr-card")).toHaveLength(0);
+    other.unmount();
+
+    const otherFolder = render(<ChatPrsView folder="/src/app.feat-b" chatId="c1" />);
+    expect(screen.getByText("Loading PRs…")).toBeDefined();
+    otherFolder.unmount();
+
+    render(<ChatPrsView folder="/src/app.feat-a" chatId="c1" />);
+    expect(screen.queryByText("Loading PRs…")).toBeNull();
+    expect(screen.getAllByTestId("pr-card")).toHaveLength(1);
+  });
+
+  it("replaces what it remembered with the newer answer without blanking the list", async () => {
+    mockPrs.mockResolvedValue(response({ status: "found", branch: "feat/a", pr: pr(7) }));
+    const first = render(<ChatPrsView folder="/src/app.feat-a" chatId="c1" />);
+    await settle();
+    first.unmount();
+
+    let answer!: (value: ChatPrsResponse) => void;
+    mockPrs.mockReset();
+    mockPrs.mockReturnValue(new Promise<ChatPrsResponse>((resolve) => (answer = resolve)));
+    render(<ChatPrsView folder="/src/app.feat-a" chatId="c1" />);
+    const before = screen.getByTestId("pr-card");
+    expect(before.textContent).toContain("PR 7");
+    await act(async () => answer(response({ status: "found", branch: "feat/a", pr: pr(7, { title: "Renamed" }) })));
+    // The same card element, updated in place.
+    expect(screen.getByTestId("pr-card")).toBe(before);
+    expect(before.textContent).toContain("Renamed");
+  });
+});
+
+describe("ChatPrsView: a remembered answer with no PR in it", () => {
+  const settle = () => act(async () => {});
+  const view = () => render(<ChatPrsView folder="/src/app.feat-a" chatId="c1" />);
+  const NO_PR = response({ status: "no_pr", branch: "feat/a", prError: "gh timed out" });
+
+  async function comeBack(first: ChatPrsResponse) {
+    mockPrs.mockResolvedValue(first);
+    const one = view();
+    await settle();
+    one.unmount();
+    let answer!: (value: ChatPrsResponse) => void;
+    let fail!: (error: unknown) => void;
+    mockPrs.mockReset();
+    mockPrs.mockReturnValueOnce(
+      new Promise<ChatPrsResponse>((resolve, reject) => {
+        answer = resolve;
+        fail = reject;
+      }),
+    );
+    // The forced request that follows stays out.
+    mockPrs.mockReturnValue(new Promise(() => {}));
+    view();
+    return { answer, fail };
+  }
+
+  it("does not present a remembered \"No PR found\" as the current state: loading until an answer lands", async () => {
+    const { answer } = await comeBack(NO_PR);
+    // A PR may have been opened since.
+    expect(screen.queryByTestId("pr-empty")).toBeNull();
+    expect(screen.queryByTestId("pr-lookup-warning")).toBeNull();
+    expect(screen.getByText("Loading PRs…")).toBeDefined();
+    await act(async () => answer(response({ status: "found", branch: "feat/a", pr: pr(7) })));
+    expect(screen.queryByText("Loading PRs…")).toBeNull();
+    expect(screen.getAllByTestId("pr-card")).toHaveLength(1);
+  });
+
+  it("says so again as soon as an answer of this mount confirms it", async () => {
+    const { answer } = await comeBack(NO_PR);
+    await act(async () => answer(NO_PR));
+    expect(screen.getByTestId("pr-empty").textContent).toContain("No PR found for feat/a.");
+    expect(screen.getByTestId("pr-lookup-warning")).toBeDefined();
+    expect(screen.queryByText("Loading PRs…")).toBeNull();
+  });
+
+  it("still paints a remembered list at once, status line and all", async () => {
+    await comeBack(response({ status: "default_branch", branch: "main" }, [pr(7, { state: "merged" })]));
+    expect(screen.queryByText("Loading PRs…")).toBeNull();
+    expect(screen.getAllByTestId("pr-card")).toHaveLength(1);
+    expect(screen.getByTestId("pr-status-line")).toBeDefined();
+  });
+
+  it("shows the error alone when no answer can be had", async () => {
+    const { fail } = await comeBack(NO_PR);
+    mockPrs.mockRejectedValue(new Error("offline"));
+    await act(async () => fail(new Error("offline")));
+    expect(screen.getByText("offline")).toBeDefined();
+    expect(screen.queryByTestId("pr-empty")).toBeNull();
+    expect(screen.queryByText("Loading PRs…")).toBeNull();
   });
 });

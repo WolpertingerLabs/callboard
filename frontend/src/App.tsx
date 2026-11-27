@@ -9,6 +9,8 @@ import StaleBundleBanner from "./components/StaleBundleBanner";
 import { SessionProvider } from "./contexts/SessionContext";
 import { SpaceProvider } from "./contexts/SpaceContext";
 import { useVisualViewportHeight } from "./hooks/useVisualViewportHeight";
+import { clearGitRequestCache } from "./components/git/useGitRequest";
+import { clearGitPageCache } from "./pages/Git";
 import { checkClaudeStatus, type ClaudeAuthStatus } from "./api";
 import { getThemeMode, getCustomThemeName } from "./utils/localStorage";
 import { getTheme } from "./api";
@@ -181,9 +183,14 @@ export default function App() {
   if (!authed) return <Login onLogin={() => setAuthed(true)} serverError={serverError} />;
 
   const handleLogout = () => {
-    fetch("/api/auth/logout", { method: "POST", credentials: "include" })
-      .then(() => setAuthed(false))
-      .catch(() => setAuthed(false));
+    // Logging out does not reload the page, so anything a module remembers
+    // for the tab would still be there for the next login: forget it here.
+    const signedOut = () => {
+      clearGitRequestCache();
+      clearGitPageCache();
+      setAuthed(false);
+    };
+    fetch("/api/auth/logout", { method: "POST", credentials: "include" }).then(signedOut).catch(signedOut);
   };
 
   return (

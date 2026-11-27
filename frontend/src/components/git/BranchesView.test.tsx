@@ -1,9 +1,10 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { PR_REQUEST_TIMEOUT_MS } from "./timedRequest";
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { clearGitRequestCache } from "./useGitRequest";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { CardSummary, GitOverviewResponse } from "../../api";
 import { getGitOverview } from "../../api";
-import BranchesView from "./BranchesView";
+import BranchesView, { RELOAD_DEBOUNCE_MS } from "./BranchesView";
 
 vi.mock("../../api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../api")>()),
@@ -90,6 +91,7 @@ const row = (cwd: string) => screen.getAllByTestId("branch-row").find((el) => el
 
 beforeEach(() => {
   vi.clearAllMocks();
+  clearGitRequestCache();
   mockOverview.mockResolvedValue(OVERVIEW);
   Object.defineProperty(window, "innerWidth", { configurable: true, value: 1024 });
 });
@@ -317,11 +319,14 @@ describe("BranchesView", () => {
 
   it("refetches with refresh=true from the refresh button", async () => {
     await mount();
-    expect(mockOverview).toHaveBeenCalledWith(true, expect.any(AbortSignal));
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Refresh branches" }));
-    });
+    // The mount's two requests have settled once the button is idle again.
+    const refresh = screen.getByRole("button", { name: "Refresh branches" }) as HTMLButtonElement;
+    await waitFor(() => expect(refresh.disabled).toBe(false));
     expect(mockOverview).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      fireEvent.click(refresh);
+    });
+    expect(mockOverview).toHaveBeenCalledTimes(3);
     expect(mockOverview).toHaveBeenLastCalledWith(true, expect.any(AbortSignal));
   });
 
@@ -358,28 +363,57 @@ describe("BranchesView: refresh on load", () => {
   const button = () => screen.getByRole("button", { name: "Refresh branches" }) as HTMLButtonElement;
   const settle = () => act(async () => {});
 
-  it("makes exactly one request on mount, forced, with the button busy until it settles", async () => {
+  it("asks unforced on mount and paints that, then forced, with the button busy until the forced one settles", async () => {
     const first = deferred<Awaited<ReturnType<typeof mockOverview>>>();
-    mockOverview.mockReturnValueOnce(first.promise);
+    const second = deferred<Awaited<ReturnType<typeof mockOverview>>>();
+    mockOverview.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
     render(<BranchesView cards={CARDS} onOpenChat={vi.fn()} />);
     expect(mockOverview).toHaveBeenCalledTimes(1);
-    expect(mockOverview).toHaveBeenCalledWith(true, expect.any(AbortSignal));
+    expect(mockOverview).toHaveBeenCalledWith(false, expect.any(AbortSignal));
     expect(button().disabled).toBe(true);
     expect(button().getAttribute("aria-busy")).toBe("true");
+    expect(screen.getByText("Loading branches…")).toBeDefined();
+
     await act(async () => first.resolve(OVERVIEW));
+    // Painted from the unforced answer; the forced one is now out.
+    expect(screen.queryByText("Loading branches…")).toBeNull();
+    expect(mockOverview).toHaveBeenCalledTimes(2);
+    expect(mockOverview).toHaveBeenLastCalledWith(true, expect.any(AbortSignal));
+    expect(button().disabled).toBe(true);
+    expect(button().getAttribute("aria-busy")).toBe("true");
+
+    await act(async () => second.resolve(OVERVIEW));
     expect(button().disabled).toBe(false);
     expect(button().getAttribute("aria-busy")).toBe("false");
-    expect(mockOverview).toHaveBeenCalledTimes(1);
+    expect(mockOverview).toHaveBeenCalledTimes(2);
   });
 
-  it("re-enables the button when the forced request fails", async () => {
-    const first = deferred<Awaited<ReturnType<typeof mockOverview>>>();
-    mockOverview.mockReturnValueOnce(first.promise);
+  it("re-enables the button when the forced request fails, keeping what the unforced one painted", async () => {
+    const second = deferred<Awaited<ReturnType<typeof mockOverview>>>();
+    mockOverview.mockResolvedValueOnce(OVERVIEW).mockReturnValueOnce(second.promise);
     render(<BranchesView cards={CARDS} onOpenChat={vi.fn()} />);
+    await settle();
     expect(button().disabled).toBe(true);
-    await act(async () => first.reject(new Error("offline")));
+    await act(async () => second.reject(new Error("offline")));
     expect(screen.getByText("offline")).toBeDefined();
+    expect(screen.getByText(/^updated /)).toBeDefined();
     expect(button().disabled).toBe(false);
+  });
+
+  it("paints what it showed last at once when it is mounted again, and still asks again", async () => {
+    const { unmount } = render(<BranchesView cards={CARDS} onOpenChat={vi.fn()} />);
+    await settle();
+    unmount();
+    const again = deferred<Awaited<ReturnType<typeof mockOverview>>>();
+    mockOverview.mockReturnValue(again.promise);
+    mockOverview.mockClear();
+    render(<BranchesView cards={CARDS} onOpenChat={vi.fn()} />);
+    // No request has answered, yet there is no loading state.
+    expect(screen.queryByText("Loading branches…")).toBeNull();
+    expect(screen.getByText(/^updated /)).toBeDefined();
+    expect(button().getAttribute("aria-busy")).toBe("true");
+    expect(mockOverview).toHaveBeenCalledTimes(1);
+    expect(mockOverview).toHaveBeenCalledWith(false, expect.any(AbortSignal));
   });
 
   it("keeps the button busy through a manual refresh as well", async () => {
@@ -404,11 +438,11 @@ describe("BranchesView: refresh on load", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
-    expect(mockOverview).toHaveBeenCalledTimes(1);
+    expect(mockOverview).toHaveBeenCalledTimes(2);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(60_000);
     });
-    expect(mockOverview).toHaveBeenCalledTimes(2);
+    expect(mockOverview).toHaveBeenCalledTimes(3);
     expect(mockOverview).toHaveBeenLastCalledWith(false, expect.any(AbortSignal));
 
     // A manual refresh that hangs: the next poll tick must not fire, nor
@@ -418,11 +452,11 @@ describe("BranchesView: refresh on load", () => {
     await act(async () => {
       fireEvent.click(button());
     });
-    expect(mockOverview).toHaveBeenCalledTimes(3);
+    expect(mockOverview).toHaveBeenCalledTimes(4);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(60_000);
     });
-    expect(mockOverview).toHaveBeenCalledTimes(3);
+    expect(mockOverview).toHaveBeenCalledTimes(4);
     expect(button().disabled).toBe(true);
     await act(async () => {
       manual.resolve(OVERVIEW);
@@ -442,10 +476,12 @@ describe("BranchesView: a request that never settles", () => {
     });
   const button = () => screen.getByRole("button", { name: "Refresh branches" }) as HTMLButtonElement;
 
-  it("times out: the button is re-enabled, the timeout is shown as an error, and polls resume", async () => {
+  it("times out: the button is re-enabled and polls resume; a refresh from the button that times out says so", async () => {
     vi.useRealTimers();
     vi.useFakeTimers();
     try {
+      // The mount's unforced request answers; its forced one never does.
+      mockOverview.mockResolvedValueOnce(OVERVIEW);
       mockOverview.mockImplementationOnce(hangUntilAborted as never);
       mockOverview.mockResolvedValue(OVERVIEW);
       render(<BranchesView cards={CARDS} onOpenChat={vi.fn()} />);
@@ -457,7 +493,7 @@ describe("BranchesView: a request that never settles", () => {
       await act(async () => {
         await vi.advanceTimersByTimeAsync(PR_REQUEST_TIMEOUT_MS - 1);
       });
-      expect(mockOverview).toHaveBeenCalledTimes(1);
+      expect(mockOverview).toHaveBeenCalledTimes(2);
       expect(button().disabled).toBe(true);
 
       await act(async () => {
@@ -465,14 +501,27 @@ describe("BranchesView: a request that never settles", () => {
       });
       expect(button().disabled).toBe(false);
       expect(button().getAttribute("aria-busy")).toBe("false");
-      expect(screen.getByText("Timed out loading branches — try refreshing.")).toBeDefined();
+      // Given up without a banner: the unforced answer of this same mount is on screen.
+      expect(screen.queryByText("Timed out loading branches — try refreshing.")).toBeNull();
+      expect(screen.getByText(/^updated /)).toBeDefined();
 
       // The next poll tick goes out, unforced.
       await act(async () => {
         await vi.advanceTimersByTimeAsync(60_000);
       });
-      expect(mockOverview.mock.calls.length).toBeGreaterThan(1);
+      expect(mockOverview.mock.calls.length).toBeGreaterThan(2);
       expect(mockOverview.mock.calls.at(-1)![0]).toBe(false);
+
+      // A refresh from the button that never answers is shown as timed out.
+      mockOverview.mockImplementationOnce(hangUntilAborted as never);
+      await act(async () => {
+        fireEvent.click(button());
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(PR_REQUEST_TIMEOUT_MS);
+      });
+      expect(button().disabled).toBe(false);
+      expect(screen.getByText("Timed out loading branches — try refreshing.")).toBeDefined();
     } finally {
       vi.useRealTimers();
     }
@@ -485,5 +534,222 @@ describe("BranchesView: a request that never settles", () => {
     expect(signal.aborted).toBe(false);
     unmount();
     expect(signal.aborted).toBe(true);
+  });
+});
+
+describe("BranchesView: before the cards arrive", () => {
+  const settle = () => act(async () => {});
+
+  it("asks for the overview without waiting for the cards", () => {
+    render(<BranchesView cards={[]} cardsLoaded={false} onOpenChat={vi.fn()} />);
+    expect(mockOverview).toHaveBeenCalledTimes(1);
+  });
+
+  it("stays on the loading line rather than calling the page empty, then joins the rows when the cards land", async () => {
+    const { rerender } = render(<BranchesView cards={[]} cardsLoaded={false} onOpenChat={vi.fn()} />);
+    await settle();
+    expect(screen.getByText("Loading branches…")).toBeDefined();
+    expect(screen.queryByText("No active conversation is working in a git repository.")).toBeNull();
+    expect(screen.queryAllByTestId("branch-row")).toHaveLength(0);
+
+    rerender(<BranchesView cards={CARDS} cardsLoaded onOpenChat={vi.fn()} />);
+    expect(screen.queryByText("Loading branches…")).toBeNull();
+    expect(screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent)).toEqual(["callboard", "drawlatch"]);
+  });
+
+  it("says the page is empty once the cards have loaded and none has a row", async () => {
+    const { rerender } = render(<BranchesView cards={[]} cardsLoaded={false} onOpenChat={vi.fn()} />);
+    await settle();
+    rerender(<BranchesView cards={[]} cardsLoaded onOpenChat={vi.fn()} />);
+    expect(screen.getByText("No active conversation is working in a git repository.")).toBeDefined();
+    expect(screen.queryByText("Loading branches…")).toBeNull();
+  });
+
+  it("shows an overview failure, not the loading line, while the cards are still out", async () => {
+    mockOverview.mockRejectedValue(new Error("boom"));
+    render(<BranchesView cards={[]} cardsLoaded={false} onOpenChat={vi.fn()} />);
+    expect(await screen.findByText("boom")).toBeDefined();
+    expect(screen.queryByText("Loading branches…")).toBeNull();
+  });
+});
+
+describe("BranchesView: keeping in step with the cards", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+  const flush = (ms = 0) =>
+    act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+    });
+  const view = (cards: CardSummary[], props: { cardsLoaded?: boolean; reloadToken?: number } = {}) => (
+    <BranchesView cards={cards} onOpenChat={vi.fn()} {...props} />
+  );
+
+  it("asks again, unforced and debounced, when a card opens", async () => {
+    const { rerender } = render(view(CARDS));
+    await flush();
+    expect(mockOverview).toHaveBeenCalledTimes(2);
+
+    rerender(view([...CARDS, card("c5", "New worktree chat")]));
+    await flush(RELOAD_DEBOUNCE_MS - 1);
+    expect(mockOverview).toHaveBeenCalledTimes(2);
+    await flush(1);
+    expect(mockOverview).toHaveBeenCalledTimes(3);
+    expect(mockOverview).toHaveBeenLastCalledWith(false, expect.any(AbortSignal));
+  });
+
+  it("shows the new card's row from that request", async () => {
+    const { rerender } = render(view(CARDS));
+    await flush();
+    mockOverview.mockResolvedValue({
+      ...OVERVIEW,
+      repos: [{ repoPath: "/home/u/new", name: "new", rows: [{ cwd: "/home/u/new.wt", branch: "feat/new", isMain: false, cardIds: ["c5"] }] }],
+    });
+    rerender(view([...CARDS, card("c5", "New worktree chat")]));
+    expect(screen.queryByRole("button", { name: "New worktree chat" })).toBeNull();
+    await flush(RELOAD_DEBOUNCE_MS);
+    expect(screen.getByRole("button", { name: "New worktree chat" })).toBeDefined();
+  });
+
+  it("asks again when a card closes, but not when the same open cards come back", async () => {
+    const { rerender } = render(view(CARDS));
+    await flush();
+    // The page's 15s card poll: new objects, another order, a changed rollup — the same open ids.
+    rerender(view([...CARDS].reverse().map((c) => ({ ...c, rollup: "active" as const }))));
+    await flush(RELOAD_DEBOUNCE_MS);
+    expect(mockOverview).toHaveBeenCalledTimes(2);
+
+    rerender(view(CARDS.map((c) => (c.id === "c1" ? { ...c, lifecycle: "closed" as const } : c))));
+    await flush(RELOAD_DEBOUNCE_MS);
+    expect(mockOverview).toHaveBeenCalledTimes(3);
+  });
+
+  it("asks again when the reload token is bumped, once for a burst", async () => {
+    const { rerender } = render(view(CARDS, { reloadToken: 1 }));
+    await flush();
+    rerender(view(CARDS, { reloadToken: 2 }));
+    await flush(RELOAD_DEBOUNCE_MS - 1);
+    // The card list the bump produced lands inside the debounce: still one request.
+    rerender(view([...CARDS, card("c5", "New")], { reloadToken: 3 }));
+    await flush(RELOAD_DEBOUNCE_MS - 1);
+    expect(mockOverview).toHaveBeenCalledTimes(2);
+    await flush(1);
+    expect(mockOverview).toHaveBeenCalledTimes(3);
+    expect(mockOverview).toHaveBeenLastCalledWith(false, expect.any(AbortSignal));
+  });
+
+  it("does not count the cards' first arrival as a change", async () => {
+    const { rerender } = render(view([], { cardsLoaded: false }));
+    await flush();
+    rerender(view(CARDS, { cardsLoaded: true }));
+    await flush(RELOAD_DEBOUNCE_MS);
+    expect(mockOverview).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not ask under a refresh in flight, but after it", async () => {
+    let release!: (value: GitOverviewResponse) => void;
+    const { rerender } = render(view(CARDS));
+    await flush();
+    mockOverview.mockReturnValueOnce(new Promise<GitOverviewResponse>((resolve) => (release = resolve)));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Refresh branches" }));
+    });
+    expect(mockOverview).toHaveBeenCalledTimes(3);
+    rerender(view([...CARDS, card("c5", "New")]));
+    await flush(RELOAD_DEBOUNCE_MS);
+    expect(mockOverview).toHaveBeenCalledTimes(3);
+    await act(async () => {
+      release(OVERVIEW);
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(mockOverview).toHaveBeenCalledTimes(4);
+    expect(mockOverview).toHaveBeenLastCalledWith(false, expect.any(AbortSignal));
+  });
+
+  it("drops a pending reload when the view goes away", async () => {
+    const { rerender, unmount } = render(view(CARDS));
+    await flush();
+    rerender(view([...CARDS, card("c5", "New")]));
+    unmount();
+    await flush(RELOAD_DEBOUNCE_MS);
+    expect(mockOverview).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("BranchesView: a remembered answer with nothing to show", () => {
+  const EMPTY = "No active conversation is working in a git repository.";
+  const settle = () => act(async () => {});
+  const NO_ROWS: GitOverviewResponse = { generatedAt: OVERVIEW.generatedAt, repos: [] };
+
+  /** Mount once with `first` answered, leave, and come back with `second` still out. */
+  async function comeBack(first: GitOverviewResponse, cards: CardSummary[] = CARDS) {
+    mockOverview.mockResolvedValue(first);
+    const one = render(<BranchesView cards={cards} onOpenChat={vi.fn()} />);
+    await settle();
+    one.unmount();
+    let answer!: (value: GitOverviewResponse) => void;
+    let fail!: (error: unknown) => void;
+    mockOverview.mockReset();
+    mockOverview.mockReturnValueOnce(
+      new Promise<GitOverviewResponse>((resolve, reject) => {
+        answer = resolve;
+        fail = reject;
+      }),
+    );
+    // The forced request that follows stays out.
+    mockOverview.mockReturnValue(new Promise(() => {}));
+    render(<BranchesView cards={cards} onOpenChat={vi.fn()} />);
+    return { answer, fail };
+  }
+
+  it("says the page is empty on the first visit once the answer lands", async () => {
+    mockOverview.mockResolvedValue(NO_ROWS);
+    render(<BranchesView cards={CARDS} onOpenChat={vi.fn()} />);
+    await settle();
+    expect(screen.getByText(EMPTY)).toBeDefined();
+  });
+
+  it("does not present a remembered empty overview as the current state: loading until an answer lands", async () => {
+    const { answer } = await comeBack(NO_ROWS);
+    // A chat may have started in a repo since: what was remembered cannot say.
+    expect(screen.queryByText(EMPTY)).toBeNull();
+    expect(screen.getByText("Loading branches…")).toBeDefined();
+    await act(async () => answer(OVERVIEW));
+    expect(screen.queryByText("Loading branches…")).toBeNull();
+    expect(screen.getAllByTestId("branch-row").length).toBeGreaterThan(0);
+  });
+
+  it("says empty again as soon as an answer of this mount confirms it", async () => {
+    const { answer } = await comeBack(NO_ROWS);
+    await act(async () => answer(NO_ROWS));
+    expect(screen.getByText(EMPTY)).toBeDefined();
+    expect(screen.queryByText("Loading branches…")).toBeNull();
+  });
+
+  it("treats remembered rows none of which joins a card the same way", async () => {
+    // Rows exist, but only for cards this page does not hold.
+    const { answer } = await comeBack(OVERVIEW, [card("elsewhere", "Not in the overview")]);
+    expect(screen.queryByText(EMPTY)).toBeNull();
+    expect(screen.getByText("Loading branches…")).toBeDefined();
+    await act(async () => answer(OVERVIEW));
+    expect(screen.getByText(EMPTY)).toBeDefined();
+  });
+
+  it("still paints remembered rows at once", async () => {
+    await comeBack(OVERVIEW);
+    expect(screen.queryByText("Loading branches…")).toBeNull();
+    expect(screen.getAllByTestId("branch-row").length).toBeGreaterThan(0);
+  });
+
+  it("shows the error alone, neither loading nor empty, when no answer can be had", async () => {
+    const { fail } = await comeBack(NO_ROWS);
+    mockOverview.mockRejectedValue(new Error("offline"));
+    await act(async () => fail(new Error("offline")));
+    expect(screen.getByText("offline")).toBeDefined();
+    expect(screen.queryByText(EMPTY)).toBeNull();
+    expect(screen.queryByText("Loading branches…")).toBeNull();
   });
 });
