@@ -1430,9 +1430,13 @@ export interface CheckedOutBranch {
  * `branches` arrives ordered for a picker: the current branch first, then the
  * rest most recently committed first. A daemon older than that sends them
  * alphabetically after the current one; either is shown as it comes.
+ *
+ * Rejects when git gave the daemon no answer (a 503): empty arrays in a
+ * resolved answer mean git answered, and are safe to show as "no branches".
+ * A daemon older than that distinction answers a timeout with empty arrays.
  */
-export async function getGitBranches(folder: string): Promise<{ branches: string[]; checkedOut?: CheckedOutBranch[] }> {
-  return request(`/git/branches?folder=${encodeURIComponent(folder)}`, { error: "Failed to list branches" });
+export async function getGitBranches(folder: string, signal?: AbortSignal): Promise<{ branches: string[]; checkedOut?: CheckedOutBranch[] }> {
+  return request(`/git/branches?folder=${encodeURIComponent(folder)}`, { error: "Failed to list branches", signal });
 }
 
 /**

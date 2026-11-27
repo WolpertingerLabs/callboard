@@ -7,6 +7,7 @@ import { useSpaces } from "../contexts/SpaceContext";
 import { updateSpace } from "../api";
 import { spaceHasOwnDefaults, writesBrowserFallback } from "../utils/spaceDefaults";
 import { useIsMobile } from "../hooks/useIsMobile";
+import { startTimedRequest, type TimedRequest } from "./git/timedRequest";
 
 /**
  * Validate a git branch name according to git-check-ref-format rules.
@@ -54,6 +55,15 @@ function basename(path: string): string {
 function Name({ children }: { children: ReactNode }) {
   return <span style={{ fontFamily: "monospace", color: "var(--text)" }}>{children}</span>;
 }
+
+/**
+ * How long the picker waits for `GET /git/branches` before giving the request
+ * up. The daemon's own worst case is two 5s git timeouts back to back (the
+ * dated listing refused, then its fallback timing out), so anything past this
+ * is a request that will never settle — a socket left dead by a laptop sleep —
+ * and would otherwise leave "Loading..." on screen for good.
+ */
+export const BRANCH_LISTING_TIMEOUT_MS = 20_000;
 
 interface BranchSelectorProps {
   folder: string;
@@ -165,26 +175,28 @@ export default function BranchSelector({ folder, spaceId, currentBranch, isDetac
   // time they alt-tab back. What they picked and typed is separate state and is
   // not touched.
   useEffect(() => {
-    let current = true;
-    // Requests are numbered so that only the newest one asked may answer: two
-    // in flight land in the order the server answers, not the order they were
-    // asked.
+    // One rule orders every request this effect makes: the newest one asked is
+    // the only one that may answer. Each `load` abandons the one before it —
+    // aborting it, and outranking it should its answer arrive anyway — so
+    // nothing is ever skipped because something else is in flight, and a
+    // request that never settles blocks nothing. Cleanup counts as asking:
+    // it retires the last request of the folder the user has left, whose
+    // listing would otherwise land on the repository they are now in.
     let asked = 0;
-    let inFlight = false;
+    let pending: TimedRequest | undefined;
     let haveListing = false;
     setListing(null);
     setError(null);
 
-    const load = (revalidating: boolean) => {
+    const load = () => {
       const mine = ++asked;
-      inFlight = true;
-      getGitBranches(folder)
+      pending?.abort();
+      const timed = startTimedRequest(BRANCH_LISTING_TIMEOUT_MS);
+      pending = timed;
+      getGitBranches(folder, timed.signal)
         .then((data) => {
-          // The folder-change half of the guard: the loser of two folder
-          // changes would overwrite the winner with another repository's
-          // listing.
-          if (!current || mine !== asked) return;
-          inFlight = false;
+          timed.done();
+          if (mine !== asked) return;
           haveListing = true;
           setListing({
             branches: data.branches,
@@ -194,39 +206,45 @@ export default function BranchSelector({ folder, spaceId, currentBranch, isDetac
             checkedOut: data.checkedOut ?? [],
           });
           setError(null);
-          // The one thing a refetch may take back: a picked base that has since
-          // been deleted. The `<select>` has no option for it any more and would
-          // *show* its first option while this state went on sending the dead
-          // name, so the pick returns to where it started. Only for a refetch:
-          // a first answer normally finds the pick on the checkout's own
-          // branch, which the backend resolves whether or not the listing
-          // carries it.
-          if (revalidating) setBaseBranch((picked) => (picked === "" || data.branches.includes(picked) ? picked : (onBranchRef.current ?? "")));
+          // A picked base this repository does not have goes back to where the
+          // picker starts. Two ways to get there: the branch was deleted while
+          // the launchpad stayed open, or the pick was made in the folder the
+          // user has since left and nothing else reset it (a folder change only
+          // resets the base when the current branch differs). Either way the
+          // `<select>` has no option for it and would *show* its first option
+          // while this state went on sending the name.
+          //
+          // The current branch is never taken back, listed or not: an unborn
+          // branch is in no listing, and it is the fallback itself. Nor is the
+          // empty pick, which is a detached HEAD's "no base".
+          setBaseBranch((picked) => (picked === "" || data.branches.includes(picked) ? picked : (onBranchRef.current ?? "")));
         })
         .catch((err) => {
-          if (!current || mine !== asked) return;
-          inFlight = false;
-          // A refetch that fails leaves a listing that was true a moment ago,
-          // which beats replacing the picker with an error about a blip. With
-          // no listing to keep, the error is the state.
-          if (!haveListing) setError(err.message);
+          timed.done();
+          if (mine !== asked) return;
+          // A refetch that fails — an error status, a dropped connection, the
+          // timeout above — leaves a listing that was true a moment ago, which
+          // beats replacing the picker with an error about a blip. With no
+          // listing to keep, the error is the state.
+          if (!haveListing) setError(timed.timedOut() ? "Timed out listing branches" : err.message);
         });
     };
-    load(false);
+    load();
 
     // Both events, because neither covers the other: switching tabs changes
     // visibility without necessarily moving focus, and switching windows moves
     // focus while the tab stays visible. Returning to a background tab fires
-    // both, so a request already in flight stands in for the second.
+    // both, and both ask: the first request is abandoned for the second, which
+    // costs the daemon two cheap listings and never serves a stale one.
     const revalidate = () => {
-      if (document.visibilityState !== "visible" || inFlight) return;
-      load(true);
+      if (document.visibilityState === "visible") load();
     };
     document.addEventListener("visibilitychange", revalidate);
     window.addEventListener("focus", revalidate);
 
     return () => {
-      current = false;
+      asked++;
+      pending?.abort();
       document.removeEventListener("visibilitychange", revalidate);
       window.removeEventListener("focus", revalidate);
     };

@@ -1,9 +1,9 @@
 import { isAbsolute } from "path";
 import { Router, type Response } from "express";
 import {
-  getGitBranchesAsync,
   getGitDiffStructured,
   getGitFileDiff,
+  tryGetGitBranchesAsync,
   tryGetGitWorktreesAsync,
   readRepoFile,
   validateFilename,
@@ -45,6 +45,10 @@ function validFilename(filename: string, res: Response): boolean {
  * knowing, and a bundle newer than its daemon gets the alphabetical list it
  * always did.
  *
+ * Empty arrays with a 200 mean git *answered*: not a repository, or no
+ * branches. When git gave no answer at all the route says so with a 503
+ * instead, for either half — see the handler.
+ *
  * `checkedOut` is an additive sibling of `branches`: which of them are occupied
  * by a worktree, and where. Picking such a branch runs the chat in *that*
  * directory rather than switching this one (`switchBranch` in `utils/git.ts`),
@@ -58,6 +62,7 @@ gitRouter.get("/branches", async (req, res) => {
   /* #swagger.parameters['folder'] = { in: 'query', required: true, type: 'string', description: 'Absolute path to the git repository' } */
   /* #swagger.responses[200] = { description: "Branch names, plus an optional checkedOut array of { branch, path, isMainWorktree } for the branches occupied by a worktree" } */
   /* #swagger.responses[400] = { description: "Missing or invalid folder" } */
+  /* #swagger.responses[503] = { description: "git gave no answer (it timed out, was killed or could not be run). Distinct from a 200 with empty arrays, which means git answered: not a repository, or no branches." } */
   const rawFolder = req.query.folder as string;
   if (!rawFolder) return res.status(400).json({ error: "folder query param is required" });
 
@@ -69,11 +74,18 @@ gitRouter.get("/branches", async (req, res) => {
     // `%(worktreepath)` could answer both, but not identically: it cannot say
     // which worktree is the main one, and it needs git 2.23. `worktree list`
     // stays the single source for `checkedOut`.
-    const [branches, worktrees] = await Promise.all([getGitBranchesAsync(folder), tryGetGitWorktreesAsync(folder)]);
+    const [branches, worktrees] = await Promise.all([tryGetGitBranchesAsync(folder), tryGetGitWorktreesAsync(folder)]);
+    // `null` is "no answer came" (a timeout, a kill, git not spawned), which is
+    // not "no branches": answering 200 with `[]` would have the picker replace
+    // a good listing with an empty one on a refetch and describe every branch
+    // as new. Either half missing fails the whole answer — a `branches` without
+    // its `checkedOut` would claim that nothing is checked out elsewhere.
+    if (branches === null || worktrees === null) {
+      return res.status(503).json({ error: "Failed to list branches", details: "git gave no answer" });
+    }
     // Detached-HEAD worktrees hold no branch, so there is nothing for a caller
     // to match a branch name against — drop them rather than emit a null.
-    // No verdict from git (`null`: a timeout) reads as none, as it always has.
-    const checkedOut = (worktrees ?? [])
+    const checkedOut = worktrees
       .filter((wt): wt is typeof wt & { branch: string } => wt.branch !== null)
       .map((wt) => ({ branch: wt.branch, path: wt.path, isMainWorktree: wt.isMainWorktree }));
     res.json({ branches, checkedOut });

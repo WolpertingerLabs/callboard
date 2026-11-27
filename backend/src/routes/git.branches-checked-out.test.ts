@@ -17,7 +17,7 @@
  * the router stack and is driven with a fake req/res against a real repo.
  */
 import { afterAll, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Request, Response } from "express";
@@ -194,5 +194,69 @@ describe("GET /api/git/branches", () => {
     const plain = join(gitRoot, "plain");
     mkdirSync(plain);
     expect(await listBranches(plain)).toEqual({ code: 200, body: { branches: [], checkedOut: [] } });
+  });
+
+  /**
+   * One ref naming a missing object fails git's dated listing outright. The
+   * answer degrades to names — every branch still there, the broken one too —
+   * instead of an empty `branches` beside a populated `checkedOut`.
+   */
+  it("still lists every branch when one of them points at a missing commit", async () => {
+    const broken = join(gitRoot, "broken");
+    execFileSync("git", ["init", "-q", "-b", "main", broken], { stdio: "pipe" });
+    commitAt("2020-01-01T00:00:00Z", broken);
+    git(["branch", "ok"], broken);
+    writeFileSync(join(broken, ".git", "refs", "heads", "dangling"), "1234567890123456789012345678901234567890\n");
+
+    expect(await listBranches(broken)).toEqual({
+      code: 200,
+      body: { branches: ["main", "dangling", "ok"], checkedOut: [{ branch: "main", path: broken, isMainWorktree: true }] },
+    });
+  });
+});
+
+/**
+ * Empty arrays are an answer; silence is not. A 200 with `[]` for a git that
+ * timed out went through the picker's success path on every refetch — a good
+ * listing replaced by an empty one, "Will create branch" for branches that
+ * exist, the picked base taken back. The error status is the one thing an
+ * older bundle and this one both already handle.
+ */
+describe("GET /api/git/branches when git gives no answer", () => {
+  const realGit = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
+  let shims = 0;
+  /** A `git` on PATH that misbehaves for one subcommand and is the real git otherwise. */
+  async function withGitShim<T>(subcommand: string, how: "die" | "hang", fn: () => Promise<T>): Promise<T> {
+    const dir = join(gitRoot, `shim-${shims++}`);
+    mkdirSync(dir);
+    const misbehave = how === "die" ? "kill -TERM $$" : "exec sleep 30";
+    writeFileSync(join(dir, "git"), `#!/bin/bash\nif [ "$1" = "${subcommand}" ]; then ${misbehave}; fi\nexec ${realGit} "$@"\n`);
+    chmodSync(join(dir, "git"), 0o755);
+    const path = process.env.PATH;
+    process.env.PATH = `${dir}:${path}`;
+    try {
+      return await fn();
+    } finally {
+      process.env.PATH = path;
+    }
+  }
+  const noAnswer = { code: 503, body: { error: "Failed to list branches", details: "git gave no answer" } };
+
+  it("answers 503, not an empty listing, when the branch listing times out", async () => {
+    expect(await withGitShim("for-each-ref", "hang", () => listBranches(repoDir))).toEqual(noAnswer);
+  }, 20_000);
+
+  it("answers 503 when the branch listing is killed", async () => {
+    expect(await withGitShim("for-each-ref", "die", () => listBranches(repoDir))).toEqual(noAnswer);
+  });
+
+  // The other half: `branches` without `checkedOut` would say nothing is
+  // checked out elsewhere, and the picker would promise a switch that redirects.
+  it("answers 503 when only the worktree listing got no answer", async () => {
+    expect(await withGitShim("worktree", "die", () => listBranches(repoDir))).toEqual(noAnswer);
+  });
+
+  it("answers normally again once git does", async () => {
+    expect((await listBranches(repoDir)).code).toBe(200);
   });
 });

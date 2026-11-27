@@ -20,7 +20,7 @@
  * fast path" from "used git".
  */
 import { afterAll, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync, mkdirSync, cpSync, renameSync, symlinkSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync, mkdirSync, cpSync, renameSync, symlinkSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -46,7 +46,7 @@ vi.mock("child_process", async (importOriginal) => {
 });
 
 const { execFileSync: realExecFileSync } = await vi.importActual<typeof import("node:child_process")>("node:child_process");
-const { getGitInfo, getGitBranches, getGitBranchesAsync } = await import("./git.js");
+const { getGitInfo, getGitBranches, tryGetGitBranchesAsync, uniqueBranchName } = await import("./git.js");
 
 const tmpRoot = realpathSync(mkdtempSync(join(tmpdir(), "callboard-git-branch-")));
 
@@ -465,71 +465,120 @@ describe("getGitInfo remembers where a nested directory's repository is", () => 
   });
 });
 
-describe("getGitBranches: current branch first, then most recently committed", () => {
-  /** One spawn answers the names, the dates and the current branch. */
-  function branchesCountingSpawns(dir: string): { branches: string[]; spawns: number } {
-    gitSpawns = 0;
-    spawnPassThrough = true;
-    try {
-      return { branches: getGitBranches(dir), spawns: gitSpawns };
-    } finally {
-      spawnPassThrough = false;
-    }
-  }
+/** An empty commit on the checked-out branch, committed (not authored) at `date`. */
+function commitAt(dir: string, date: string, authored = date): void {
+  realExecFileSync("git", ["-c", "user.email=test@example.com", "-c", "user.name=test", "commit", "-q", "--allow-empty", "-m", `at ${date}`], {
+    cwd: dir,
+    stdio: "pipe",
+    env: { ...process.env, GIT_COMMITTER_DATE: date, GIT_AUTHOR_DATE: authored },
+  });
+}
 
-  /** An empty commit on the checked-out branch, committed (not authored) at `date`. */
-  function commitAt(dir: string, date: string, authored = date): void {
-    realExecFileSync("git", ["-c", "user.email=test@example.com", "-c", "user.name=test", "commit", "-q", "--allow-empty", "-m", `at ${date}`], {
-      cwd: dir,
-      stdio: "pipe",
-      env: { ...process.env, GIT_COMMITTER_DATE: date, GIT_AUTHOR_DATE: authored },
-    });
-  }
+/** A branch off `main` with one commit of its own at `date`; leaves `main` checked out. */
+function branchCommittedAt(dir: string, name: string, date: string, authored = date): void {
+  git(["checkout", "-q", "-b", name, "main"], dir);
+  commitAt(dir, date, authored);
+  git(["checkout", "-q", "main"], dir);
+}
 
-  /** A branch off the current HEAD with one commit of its own at `date`; leaves `main` checked out. */
-  function branchCommittedAt(dir: string, name: string, date: string, authored = date): void {
-    git(["checkout", "-q", "-b", name, "main"], dir);
-    commitAt(dir, date, authored);
-    git(["checkout", "-q", "main"], dir);
-  }
+/**
+ * The fixture every ordering case below shares. Alphabetical order is
+ * `feat/new, main, middle, old/est, tie-a, tie-b` and recency order is not,
+ * so neither a missing sort nor a name sort can pass by accident.
+ */
+function recencyRepo(name: string): string {
+  const repo = initRepo(name);
+  commitAt(repo, "2020-01-01T00:00:00Z");
+  branchCommittedAt(repo, "old/est", "2021-01-01T00:00:00Z");
+  branchCommittedAt(repo, "tie-b", "2022-06-01T00:00:00Z");
+  branchCommittedAt(repo, "tie-a", "2022-06-01T00:00:00Z");
+  branchCommittedAt(repo, "middle", "2023-01-01T00:00:00Z");
+  branchCommittedAt(repo, "feat/new", "2024-01-01T00:00:00Z");
+  return repo;
+}
 
-  /**
-   * The fixture every ordering case below shares. Alphabetical order is
-   * `feat/new, main, middle, old/est, tie-a, tie-b` and recency order is not,
-   * so neither a missing sort nor a name sort can pass by accident.
-   */
-  function recencyRepo(name: string): string {
-    const repo = initRepo(name);
-    commitAt(repo, "2020-01-01T00:00:00Z");
-    branchCommittedAt(repo, "old/est", "2021-01-01T00:00:00Z");
-    branchCommittedAt(repo, "tie-b", "2022-06-01T00:00:00Z");
-    branchCommittedAt(repo, "tie-a", "2022-06-01T00:00:00Z");
-    branchCommittedAt(repo, "middle", "2023-01-01T00:00:00Z");
-    branchCommittedAt(repo, "feat/new", "2024-01-01T00:00:00Z");
-    return repo;
+/** The synchronous listing with its spawn allowed to run, and how many it took. */
+function branchesCountingSpawns(dir: string): { branches: string[]; spawns: number } {
+  gitSpawns = 0;
+  spawnPassThrough = true;
+  try {
+    return { branches: getGitBranches(dir), spawns: gitSpawns };
+  } finally {
+    spawnPassThrough = false;
   }
+}
 
-  it("orders by committer date, newest first, behind the current branch", () => {
+/** `uniqueBranchName` with its synchronous spawns allowed to run. */
+function uniqueName(dir: string, candidate: string): string {
+  spawnPassThrough = true;
+  try {
+    return uniqueBranchName(dir, candidate);
+  } finally {
+    spawnPassThrough = false;
+  }
+}
+
+/** A branch whose ref names a commit that is not in the object store. */
+function addBrokenBranch(dir: string, name: string): void {
+  mkdirSync(join(dir, ".git", "refs", "heads", name, ".."), { recursive: true });
+  writeFileSync(join(dir, ".git", "refs", "heads", name), "1234567890123456789012345678901234567890\n");
+}
+
+/**
+ * `count` extra branches on `main`'s commit, written straight into
+ * `packed-refs` — creating tens of thousands through git would take minutes.
+ * Returns their names, sorted.
+ */
+function addManyBranches(dir: string, count: number, stem: string): string[] {
+  const sha = git(["rev-parse", "HEAD"], dir).trim();
+  git(["pack-refs", "--all"], dir);
+  const names = Array.from({ length: count }, (_, i) => `${stem}-${String(i).padStart(8, "0")}`);
+  const refs = [...names, "main"].sort().map((name) => `${sha} refs/heads/${name}\n`);
+  writeFileSync(join(dir, ".git", "packed-refs"), "# pack-refs with: peeled fully-peeled sorted \n" + refs.join(""));
+  return names;
+}
+
+const realGit = realExecFileSync("which", ["git"], { encoding: "utf8" }).trim();
+let shims = 0;
+/**
+ * Run `fn` with a `git` on PATH that misbehaves for one subcommand and is the
+ * real git for every other: `"die"` is killed by a signal before it answers,
+ * and `"hang"` outlives the caller's timeout.
+ */
+async function withGitShim<T>(subcommand: string, how: "die" | "hang", fn: () => Promise<T>): Promise<T> {
+  const dir = join(tmpRoot, `shim-${shims++}`);
+  mkdirSync(dir);
+  const misbehave = how === "die" ? "kill -TERM $$" : "exec sleep 30";
+  writeFileSync(join(dir, "git"), `#!/bin/bash\nif [ "$1" = "${subcommand}" ]; then ${misbehave}; fi\nexec ${realGit} "$@"\n`);
+  chmodSync(join(dir, "git"), 0o755);
+  const path = process.env.PATH;
+  process.env.PATH = `${dir}:${path}`;
+  try {
+    return await fn();
+  } finally {
+    process.env.PATH = path;
+  }
+}
+
+describe("tryGetGitBranchesAsync: current branch first, then most recently committed", () => {
+  it("orders by committer date, newest first, behind the current branch", async () => {
     const repo = recencyRepo("branches-recency");
 
-    const { branches, spawns } = branchesCountingSpawns(repo);
-
     // `main` holds the oldest commit of all and still leads: it is checked out.
-    expect(branches).toEqual(["main", "feat/new", "middle", "tie-a", "tie-b", "old/est"]);
-    expect(spawns).toBe(1);
+    expect(await tryGetGitBranchesAsync(repo)).toEqual(["main", "feat/new", "middle", "tie-a", "tie-b", "old/est"]);
   });
 
-  it("breaks a tie on the date by name", () => {
+  it("breaks a tie on the date by name", async () => {
     const repo = initRepo("branches-tie");
     commitAt(repo, "2020-01-01T00:00:00Z");
     // Created in reverse, so creation order cannot be what sorts them.
     for (const name of ["zeta", "Beta", "alpha", "feat/x"]) git(["branch", name], repo);
 
     // Code-unit order, as the alphabetical listing always was: capitals first.
-    expect(branchesCountingSpawns(repo).branches).toEqual(["main", "Beta", "alpha", "feat/x", "zeta"]);
+    expect(await tryGetGitBranchesAsync(repo)).toEqual(["main", "Beta", "alpha", "feat/x", "zeta"]);
   });
 
-  it("reads the committer date, not the author date", () => {
+  it("reads the committer date, not the author date", async () => {
     // A rebase keeps the author date and refreshes the committer date; the
     // branch someone just rebased is the recent one.
     const repo = initRepo("branches-committer");
@@ -537,17 +586,17 @@ describe("getGitBranches: current branch first, then most recently committed", (
     branchCommittedAt(repo, "rebased-today", "2024-01-01T00:00:00Z", "2019-01-01T00:00:00Z");
     branchCommittedAt(repo, "written-recently", "2023-01-01T00:00:00Z", "2025-01-01T00:00:00Z");
 
-    expect(branchesCountingSpawns(repo).branches).toEqual(["main", "rebased-today", "written-recently"]);
+    expect(await tryGetGitBranchesAsync(repo)).toEqual(["main", "rebased-today", "written-recently"]);
   });
 
-  it("moves the checked-out branch to the front, whatever its date", () => {
+  it("moves the checked-out branch to the front, whatever its date", async () => {
     const repo = recencyRepo("branches-current");
     git(["checkout", "-q", "old/est"], repo);
 
-    expect(branchesCountingSpawns(repo).branches).toEqual(["old/est", "feat/new", "middle", "tie-a", "tie-b", "main"]);
+    expect(await tryGetGitBranchesAsync(repo)).toEqual(["old/est", "feat/new", "middle", "tie-a", "tie-b", "main"]);
   });
 
-  it("treats a detached HEAD as no current branch — not as main, and not as an entry", () => {
+  it("treats a detached HEAD as no current branch — not as main, and not as an entry", async () => {
     // getGitInfo reports a detached HEAD as "main" for historical reasons; that
     // fallback must not leak here, where it would hoist a branch that is not
     // checked out. And `git branch --list`, which this used to run, lists the
@@ -555,50 +604,30 @@ describe("getGitBranches: current branch first, then most recently committed", (
     const repo = recencyRepo("branches-detached");
     git(["checkout", "-q", "--detach", "middle"], repo);
 
-    const { branches, spawns } = branchesCountingSpawns(repo);
-
-    expect(branches).toEqual(["feat/new", "middle", "tie-a", "tie-b", "old/est", "main"]);
-    expect(spawns).toBe(1);
+    expect(await tryGetGitBranchesAsync(repo)).toEqual(["feat/new", "middle", "tie-a", "tie-b", "old/est", "main"]);
+    expect(branchesCountingSpawns(repo).branches).toEqual(["feat/new", "main", "middle", "old/est", "tie-a", "tie-b"]);
   });
 
-  it("uses a linked worktree's own branch, not the main checkout's", () => {
+  it("uses a linked worktree's own branch, not the main checkout's", async () => {
     const repo = recencyRepo("branches-wt-main");
     const wt = join(tmpRoot, "branches-wt-linked");
     git(["worktree", "add", "-q", wt, "old/est"], repo);
 
-    const linked = branchesCountingSpawns(wt);
-    const main = branchesCountingSpawns(repo);
-
     // Same repository, same dates: the two differ only in which branch leads.
-    expect(linked.branches).toEqual(["old/est", "feat/new", "middle", "tie-a", "tie-b", "main"]);
-    expect(linked.spawns).toBe(1);
-    expect(main.branches).toEqual(["main", "feat/new", "middle", "tie-a", "tie-b", "old/est"]);
-    expect(main.spawns).toBe(1);
+    expect(await tryGetGitBranchesAsync(wt)).toEqual(["old/est", "feat/new", "middle", "tie-a", "tie-b", "main"]);
+    expect(await tryGetGitBranchesAsync(repo)).toEqual(["main", "feat/new", "middle", "tie-a", "tie-b", "old/est"]);
   });
 
-  it("answers from a subdirectory as it does from the root, still in one spawn", () => {
+  it("answers from a subdirectory as it does from the root", async () => {
     const repo = recencyRepo("branches-nested");
     git(["checkout", "-q", "middle"], repo);
     const nested = join(repo, "sub", "deeper");
     mkdirSync(nested, { recursive: true });
 
-    const { branches, spawns } = branchesCountingSpawns(nested);
-
-    expect(branches).toEqual(["middle", "feat/new", "tie-a", "tie-b", "old/est", "main"]);
-    expect(branches).toEqual(getGitBranchesPassingThrough(repo));
-    expect(spawns).toBe(1);
+    expect(await tryGetGitBranchesAsync(nested)).toEqual(["middle", "feat/new", "tie-a", "tie-b", "old/est", "main"]);
   });
 
-  it("lists a branch whose name contains quotes verbatim", () => {
-    // The shell-string form needed a `'` strip that also mangled this name.
-    const repo = initRepo("branches-quotes");
-    git(["commit", "-q", "--allow-empty", "-m", "init"], repo);
-    git(["branch", "'quoted'"], repo);
-
-    expect(branchesCountingSpawns(repo).branches).toEqual(["main", "'quoted'"]);
-  });
-
-  it("names a branch that shares its name with a tag as the branch, not as heads/<name>", () => {
+  it("names a branch that shares its name with a tag as the branch, not as heads/<name>", async () => {
     // `%(refname:short)` disambiguates such a branch to `heads/feat/x`, which is
     // not its name: nothing the picker or uniqueBranchName compares would match.
     const repo = initRepo("branches-tag-clash");
@@ -607,46 +636,162 @@ describe("getGitBranches: current branch first, then most recently committed", (
     git(["tag", "feat/x"], repo);
     git(["tag", "main"], repo);
 
+    expect(await tryGetGitBranchesAsync(repo)).toEqual(["main", "feat/x"]);
     expect(branchesCountingSpawns(repo).branches).toEqual(["main", "feat/x"]);
   });
 
-  it("is empty for an unborn branch, a directory that is not a repository, and one that does not exist", () => {
-    expect(branchesCountingSpawns(initRepo("branches-unborn")).branches).toEqual([]);
-    const plain = join(tmpRoot, "branches-not-a-repo");
-    mkdirSync(plain, { recursive: true });
-    expect(branchesCountingSpawns(plain).branches).toEqual([]);
-    expect(branchesCountingSpawns(join(tmpRoot, "branches-missing")).branches).toEqual([]);
-  });
-
-  /**
-   * The route calls the async variant and `uniqueBranchName` the sync one. They
-   * share the command and the parser; this is what says so.
-   */
-  it("gives the same answer from getGitBranchesAsync, without a synchronous spawn", async () => {
+  it("makes no synchronous spawn", async () => {
     const repo = recencyRepo("branches-async");
-    const wt = join(tmpRoot, "branches-async-linked");
-    git(["worktree", "add", "-q", wt, "tie-a"], repo);
-    const nested = join(repo, "sub");
-    mkdirSync(nested, { recursive: true });
-    const plain = join(tmpRoot, "branches-async-not-a-repo");
-    mkdirSync(plain, { recursive: true });
-
-    for (const dir of [repo, wt, nested, plain, join(tmpRoot, "branches-async-missing")]) {
-      gitSpawns = 0;
-      const listed = await getGitBranchesAsync(dir);
-      expect(gitSpawns).toBe(0);
-      expect(listed).toEqual(getGitBranchesPassingThrough(dir));
-    }
-    expect(await getGitBranchesAsync(wt)).toEqual(["tie-a", "feat/new", "middle", "tie-b", "old/est", "main"]);
+    gitSpawns = 0;
+    await tryGetGitBranchesAsync(repo);
+    expect(gitSpawns).toBe(0);
   });
 });
 
-/** `getGitBranches` with its spawn allowed to run, for use as the reference answer. */
-function getGitBranchesPassingThrough(dir: string): string[] {
-  spawnPassThrough = true;
-  try {
-    return getGitBranches(dir);
-  } finally {
-    spawnPassThrough = false;
+/**
+ * `[]` is a verdict and `null` is the lack of one. The route shows the first as
+ * an empty repository and answers the second with an error, so each failure has
+ * to land on the right side.
+ */
+describe("tryGetGitBranchesAsync tells no branches from no answer", () => {
+  it("is [] where git answers that there is nothing: unborn, not a repository, missing", async () => {
+    expect(await tryGetGitBranchesAsync(initRepo("verdict-unborn"))).toEqual([]);
+    const plain = join(tmpRoot, "verdict-not-a-repo");
+    mkdirSync(plain, { recursive: true });
+    expect(await tryGetGitBranchesAsync(plain)).toEqual([]);
+    expect(await tryGetGitBranchesAsync(join(tmpRoot, "verdict-missing"))).toEqual([]);
+  });
+
+  it("is null when git is killed before it answers", async () => {
+    const repo = recencyRepo("verdict-killed");
+    expect(await withGitShim("for-each-ref", "die", () => tryGetGitBranchesAsync(repo))).toBeNull();
+  });
+
+  it("is null when git cannot be run at all", async () => {
+    const repo = recencyRepo("verdict-no-git");
+    const empty = join(tmpRoot, "verdict-empty-path");
+    mkdirSync(empty);
+    const path = process.env.PATH;
+    process.env.PATH = empty;
+    try {
+      expect(await tryGetGitBranchesAsync(repo)).toBeNull();
+    } finally {
+      process.env.PATH = path;
+    }
+  });
+
+  it("is null when git outlives the timeout, without trying the fallback", async () => {
+    const repo = recencyRepo("verdict-timeout");
+    const started = Date.now();
+    expect(await withGitShim("for-each-ref", "hang", () => tryGetGitBranchesAsync(repo))).toBeNull();
+    // One 5s timeout, not two: the names-only listing would wait on the same git.
+    expect(Date.now() - started).toBeLessThan(9000);
+  }, 20_000);
+});
+
+/**
+ * Printing a commit date makes git open every branch's commit, so one ref
+ * naming a missing object fails the whole dated listing with exit 128. The
+ * `git branch --list` this replaced never opened it and listed every branch.
+ */
+describe("a branch whose commit is missing", () => {
+  function brokenRepo(name: string): string {
+    const repo = recencyRepo(name);
+    addBrokenBranch(repo, "broken");
+    addBrokenBranch(repo, "feat/broken-too");
+    // The premise: the dated listing really does fail here.
+    expect(() => git(["for-each-ref", "--format=%(committerdate:unix) %(refname)", "refs/heads"], repo)).toThrow(/missing object/);
+    return repo;
   }
-}
+
+  it("still lists every branch, the broken ones included, by name behind the current one", async () => {
+    const repo = brokenRepo("broken-ref");
+
+    expect(await tryGetGitBranchesAsync(repo)).toEqual(["main", "broken", "feat/broken-too", "feat/new", "middle", "old/est", "tie-a", "tie-b"]);
+    expect(branchesCountingSpawns(repo)).toEqual({
+      branches: ["main", "broken", "feat/broken-too", "feat/new", "middle", "old/est", "tie-a", "tie-b"],
+      spawns: 1,
+    });
+  });
+
+  it("keeps uniqueBranchName's collision check against local branches", () => {
+    const repo = brokenRepo("broken-ref-unique");
+
+    expect(uniqueName(repo, "middle")).not.toBe("middle");
+    expect(uniqueName(repo, "broken")).not.toBe("broken");
+    expect(uniqueName(repo, "not-taken")).toBe("not-taken");
+  });
+});
+
+/**
+ * Past the output buffer a listing used to be `[]`: no branches at all, rather
+ * than fewer. The dated lines are the longer ones, so that listing overflows
+ * first — and must fall back, not vanish.
+ */
+describe("more branches than the output buffer holds", () => {
+  it("falls back to the names-only listing when the dated one overflows", async () => {
+    const repo = initRepo("overflow-dated");
+    commitAt(repo, "2020-01-01T00:00:00Z");
+    const names = addManyBranches(repo, 20_000, "branch-with-a-fairly-long-name");
+    // The premise: the dated listing is over the 1 MB default, the old command's was not.
+    expect(
+      realExecFileSync("git", ["for-each-ref", "--format=%(HEAD)%(committerdate:unix) %(refname)", "refs/heads"], { cwd: repo, maxBuffer: 1e8 }).length,
+    ).toBeGreaterThan(1024 * 1024);
+    expect(realExecFileSync("git", ["branch", "--list", "--format=%(refname:short)"], { cwd: repo, maxBuffer: 1e8 }).length).toBeLessThan(1024 * 1024);
+
+    expect(await tryGetGitBranchesAsync(repo)).toEqual(["main", ...names]);
+    expect(branchesCountingSpawns(repo).branches).toEqual(["main", ...names]);
+    expect(uniqueName(repo, names[12_345])).not.toBe(names[12_345]);
+  }, 30_000);
+
+  it("is no answer, not an empty repository, when even the names do not fit", async () => {
+    const repo = initRepo("overflow-names");
+    commitAt(repo, "2020-01-01T00:00:00Z");
+    addManyBranches(repo, 80_000, "a-branch-name-long-enough-to-fill-the-buffer-quickly");
+
+    expect(await tryGetGitBranchesAsync(repo)).toBeNull();
+  }, 30_000);
+});
+
+describe("getGitBranches lists names for uniqueBranchName in one spawn", () => {
+  it("puts the checked-out branch first and the rest in name order, whatever their dates", () => {
+    const repo = recencyRepo("names-plain");
+    git(["checkout", "-q", "old/est"], repo);
+
+    expect(branchesCountingSpawns(repo)).toEqual({ branches: ["old/est", "feat/new", "main", "middle", "tie-a", "tie-b"], spawns: 1 });
+  });
+
+  it("lists the same branches as the dated listing, from a linked worktree and a subdirectory too", async () => {
+    const repo = recencyRepo("names-same-set");
+    const wt = join(tmpRoot, "names-same-set-linked");
+    git(["worktree", "add", "-q", wt, "tie-a"], repo);
+    const nested = join(repo, "sub");
+    mkdirSync(nested, { recursive: true });
+
+    for (const dir of [repo, wt, nested]) {
+      const { branches, spawns } = branchesCountingSpawns(dir);
+      const dated = (await tryGetGitBranchesAsync(dir))!;
+      expect(spawns).toBe(1);
+      expect(branches[0]).toBe(dated[0]);
+      expect([...branches].sort()).toEqual([...dated].sort());
+    }
+    expect(branchesCountingSpawns(wt).branches[0]).toBe("tie-a");
+  });
+
+  it("lists a branch whose name contains quotes verbatim", () => {
+    // The shell-string form needed a `'` strip that also mangled this name.
+    const repo = initRepo("names-quotes");
+    git(["commit", "-q", "--allow-empty", "-m", "init"], repo);
+    git(["branch", "'quoted'"], repo);
+
+    expect(branchesCountingSpawns(repo).branches).toEqual(["main", "'quoted'"]);
+  });
+
+  it("is empty for an unborn branch, a directory that is not a repository, and one that does not exist", () => {
+    expect(branchesCountingSpawns(initRepo("names-unborn")).branches).toEqual([]);
+    const plain = join(tmpRoot, "names-not-a-repo");
+    mkdirSync(plain, { recursive: true });
+    expect(branchesCountingSpawns(plain).branches).toEqual([]);
+    expect(branchesCountingSpawns(join(tmpRoot, "names-missing")).branches).toEqual([]);
+  });
+});
