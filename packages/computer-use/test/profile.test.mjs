@@ -376,7 +376,7 @@ test("the base image decides GL from its own environment, and root never reads t
 
 test("build arguments: the builder target, the package build, and the offline, labelled profile build", () => {
   const base = sandboxImageBuildArgs({ context: packageDir, target: "builder" });
-  assert.deepEqual(base.slice(3, 7), ["--target", "builder", "-t", SANDBOX_BUILDER_IMAGE]);
+  assert.deepEqual(base.slice(5, 9), ["--target", "builder", "-t", SANDBOX_BUILDER_IMAGE]);
   const id = (c) => `sha256:${c.repeat(64)}`;
   assert.deepEqual(profilePackagesBuildArgs({ context: "/ctx/p", builderImage: id("a"), tag: "callboard/computer-use-profile:x-packages" }), [
     "build",

@@ -69,7 +69,6 @@ ENV COMPUTER_USE_DISPLAY=:99 \
     COMPUTER_USE_ACKNOWLEDGE_FULL_DESKTOP_ACCESS=1 \
     COMPUTER_USE_GL=none
 LABEL org.opencontainers.image.title="callboard-computer-use-desktop-builder" \
-      org.opencontainers.image.version="0.1.0" \
       org.opencontainers.image.source="https://github.com/WolpertingerLabs/callboard" \
       org.opencontainers.image.licenses="MIT" \
       dev.callboard.computer-use.protocol="2.0" \
@@ -145,9 +144,11 @@ ENV COMPUTER_USE_DISPLAY=:99 \
     COMPUTER_USE_GL=none
 
 # For a host to check before `docker run` (SANDBOX_IMAGE_LABELS in the package).
-# A unit test keeps these in step with package.json and PROTOCOL.
+# A unit test keeps these in step with PROTOCOL. The version label
+# (org.opencontainers.image.version) comes from the build arguments
+# (sandboxImageBuildArgs, run.sh), not from here, so this file doesn't change
+# with every release and the content digest stays the same.
 LABEL org.opencontainers.image.title="callboard-computer-use-desktop" \
-      org.opencontainers.image.version="0.1.0" \
       org.opencontainers.image.source="https://github.com/WolpertingerLabs/callboard" \
       org.opencontainers.image.licenses="MIT" \
       dev.callboard.computer-use.protocol="2.0" \

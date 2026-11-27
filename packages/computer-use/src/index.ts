@@ -22,6 +22,7 @@ export {
   ensureSandboxNetwork,
   sandboxContentDigest,
   sandboxImageBuildArgs,
+  sandboxPackageVersion,
   sandboxNetworkCreateArgs,
   sandboxRunArgs,
   SANDBOX_SECURITY_FLOOR,

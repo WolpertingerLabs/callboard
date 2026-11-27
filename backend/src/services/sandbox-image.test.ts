@@ -7,7 +7,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdtempSync, mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SANDBOX_CONTENT_LABEL, inspectSandboxImage, sandboxBuildContext, sandboxContentDigest, sandboxImageBuildArgs } from "./sandbox-image.js";
+import {
+  SANDBOX_CONTENT_LABEL,
+  inspectSandboxImage,
+  sandboxBuildContext,
+  sandboxContentDigest,
+  sandboxImageBuildArgs,
+  sandboxPackageVersion,
+} from "./sandbox-image.js";
 
 const dirs: string[] = [];
 afterEach(() => dirs.splice(0).forEach((dir) => rmSync(dir, { recursive: true, force: true })));
@@ -43,10 +50,38 @@ describe("sandboxContentDigest", () => {
     expect(sandboxContentDigest(dir)).not.toBe(first);
   });
 
+  it("ignores the package version (package.json, docker/package-lock.json), but nothing else in those files", () => {
+    const lock = (version: string, dep = "^1.0.0") =>
+      JSON.stringify({ name: "p", version, lockfileVersion: 3, packages: { "": { name: "p", version, dependencies: { a: dep } } } }, null, 2);
+    const dir = context();
+    writeFileSync(join(dir, "docker", "package-lock.json"), lock("0.1.0"));
+    const first = sandboxContentDigest(dir);
+    const bumped = context();
+    writeFileSync(join(bumped, "package.json"), '{\n  "version": "1.0.0-alpha.70",\n  "gitHead": "abc"\n}\n');
+    writeFileSync(join(bumped, "docker", "package-lock.json"), lock("1.0.0-alpha.70"));
+    expect(sandboxContentDigest(bumped)).toBe(first);
+    const changed = (file: string, text: string) => {
+      const other = context();
+      writeFileSync(join(other, "docker", "package-lock.json"), lock("0.1.0"));
+      writeFileSync(join(other, file), text);
+      return sandboxContentDigest(other);
+    };
+    expect(changed("package.json", '{"version":"0.1.0","main":"x.js"}')).not.toBe(first);
+    expect(changed("docker/package-lock.json", lock("0.1.0", "^2.0.0"))).not.toBe(first);
+    expect(changed("package.json", "not json")).not.toBe(first);
+  });
+
   it("is computed for the real shipped context, and every build carries it as a label", () => {
     const digest = sandboxContentDigest();
     const args = sandboxImageBuildArgs({ image: "callboard/test:x" });
-    expect(args.slice(0, 3)).toEqual(["build", "--label", `${SANDBOX_CONTENT_LABEL}=${digest}`]);
+    expect(args.slice(0, 5)).toEqual([
+      "build",
+      "--label",
+      `${SANDBOX_CONTENT_LABEL}=${digest}`,
+      "--label",
+      `org.opencontainers.image.version=${sandboxPackageVersion()}`,
+    ]);
+    expect(sandboxPackageVersion()).toMatch(/^\d+\.\d+\.\d+/);
     expect(args.at(-1)).toBe(sandboxBuildContext());
   });
 

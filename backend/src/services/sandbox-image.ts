@@ -10,7 +10,7 @@
 import { execFile, spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -22,6 +22,7 @@ import {
   SANDBOX_SECURITY_FLOOR,
   sandboxContentDigest as packageContentDigest,
   sandboxImageBuildArgs as packageImageBuildArgs,
+  sandboxPackageVersion as packageVersion,
 } from "@wolpertingerlabs/computer-use";
 
 /**
@@ -149,11 +150,7 @@ export async function imageId(docker: DockerRunner, image: string, signal?: Abor
 
 /** The computer-use package version this Callboard ships (the image's version label should match). */
 export function sandboxPackageVersion(context = sandboxBuildContext()): string {
-  try {
-    return String(JSON.parse(readFileSync(join(context, "package.json"), "utf8")).version ?? "unknown");
-  } catch {
-    return "unknown";
-  }
+  return packageVersion(context);
 }
 
 export interface SandboxImageInfo {
