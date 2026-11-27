@@ -11,12 +11,12 @@
 // Three checks:
 //   1. Every bare import in shipped runtime code is in root dependencies.
 //   2. Ranges shared with backend/package.json don't drift apart.
-//   3. drawlatch lockstep: root and backend pin @wolpertingerlabs/drawlatch
-//      to exactly packages/drawlatch's version, so a callboard release names
-//      the drawlatch it was built and tested against.
+//   3. Version lockstep: every versioned package, both exact drawlatch pins
+//      and both lockfiles carry the root version (scripts/versions.mjs), so a
+//      callboard release names the drawlatch it was built and tested against.
 //
 // `--registry` runs a separate, network-dependent check instead (never in
-// CI): the pinned drawlatch must already be on npm. The workspace links
+// CI): the pinned drawlatch (= this release's version) must already be on npm. The workspace links
 // drawlatch locally whether or not it is published, so nothing else notices;
 // publishing callboard ahead of it would make every
 // `npm install -g @wolpertingerlabs/callboard` fail with ETARGET.
@@ -38,6 +38,7 @@ import { readdirSync, statSync, readFileSync } from "node:fs";
 import { join, relative, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { builtinModules } from "node:module";
+import { readVersionState, versionDriftErrors } from "./versions.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -209,23 +210,23 @@ function collectImports() {
 const DRAWLATCH = "@wolpertingerlabs/drawlatch";
 
 /**
- * Lockstep errors for the drawlatch pin: callboard ships against the drawlatch
- * in packages/drawlatch, so both manifests must pin exactly that version — no
- * range, no stale number. Pure, so it is unit-tested without touching disk.
+ * Check 3: every way the repo disagrees with the root version (see
+ * scripts/versions.mjs, which owns the rules), labelled for this report.
+ * `state` is `readVersionState()`'s shape, so the wiring is unit-tested on fixtures.
  */
-export function drawlatchLockstepErrors(rootPkg, backendPkg, drawlatchPkg) {
-  const version = drawlatchPkg?.version;
-  if (!version) return [`packages/drawlatch/package.json has no "version"`];
-  const errors = [];
-  for (const [label, pkg] of [
-    ["package.json", rootPkg],
-    ["backend/package.json", backendPkg],
-  ]) {
-    const pin = pkg?.dependencies?.[DRAWLATCH];
-    if (pin === undefined) errors.push(`drawlatch lockstep: ${label} does not depend on ${DRAWLATCH} (expected "${version}")`);
-    else if (pin !== version) errors.push(`drawlatch lockstep: ${label} pins ${DRAWLATCH} "${pin}" but packages/drawlatch is "${version}" — pin it exactly`);
+export function lockstepErrors(state) {
+  return versionDriftErrors(state).map((error) => `version lockstep: ${error}`);
+}
+
+/** {@link lockstepErrors} for the repo at `root`; a file it can't read (a missing workspace manifest) is reported, not thrown. */
+export function repoLockstepErrors(root) {
+  let state;
+  try {
+    state = readVersionState(root);
+  } catch (err) {
+    return [`version lockstep: ${err.message}`];
   }
-  return errors;
+  return lockstepErrors(state);
 }
 
 /**
@@ -334,14 +335,15 @@ function main() {
     }
   }
 
-  // ── 3. drawlatch lockstep ────────────────────────────────────────────
-  const drawlatchPkg = JSON.parse(readFileSync(join(ROOT, "packages/drawlatch/package.json"), "utf-8"));
-  errors.push(...drawlatchLockstepErrors(rootPkg, backendPkg, drawlatchPkg));
+  // ── 3. Version lockstep ──────────────────────────────────────────────
+  const dependencyErrors = errors.length;
+  errors.push(...repoLockstepErrors(ROOT));
 
   if (errors.length > 0) {
     console.error(`\nPublished dependency check failed (${errors.length} problem${errors.length === 1 ? "" : "s"}):\n`);
     for (const error of errors) console.error(`  • ${error}\n`);
-    console.error("The tarball ships backend/dist without backend/package.json, so root\n" + '"dependencies" must list everything shipped code imports.\n');
+    if (dependencyErrors > 0)
+      console.error("The tarball ships backend/dist without backend/package.json, so root\n" + '"dependencies" must list everything shipped code imports.\n');
     process.exit(1);
   }
 

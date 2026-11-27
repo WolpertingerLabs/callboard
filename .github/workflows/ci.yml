@@ -45,8 +45,8 @@ jobs:
       - name: Format check drawlatch
         run: npm run format:drawlatch:check
 
-      # Published-dependency checks, including the drawlatch lockstep pin
-      # (callboard's exact pin must equal packages/drawlatch's version).
+      # Published deps + version lockstep (every versioned package, the
+      # drawlatch pins and both lockfiles equal the root version).
       - name: Published deps + lockstep
         run: npm run deps:check
 

@@ -1,6 +1,6 @@
 {
   "name": "@wolpertingerlabs/callboard",
-  "version": "1.0.0-alpha.67",
+  "version": "1.0.0-alpha.69",
   "description": "A web-based control panel for managing Claude Code sessions, autonomous agents, and multi-agent workflows",
   "license": "MIT",
   "type": "module",
@@ -92,6 +92,9 @@
     "prepublishOnly": "node scripts/check-published-deps.mjs --registry --prepublish && npm run lint:all && npm run lint:drawlatch && npm run clean && npm run build && npm test && npm run deps:check",
     "deps:check": "node scripts/check-published-deps.mjs",
     "deps:check:registry": "node scripts/check-published-deps.mjs --registry",
+    "version": "node scripts/versions.mjs",
+    "version:sync": "node scripts/versions.mjs",
+    "version:check": "node scripts/versions.mjs --check",
     "install:check": "node scripts/check-install-tree.cjs",
     "publish:dry-run": "npm_config_cache=\"${TMPDIR:-/tmp}/callboard-npm-cache\" npm publish --dry-run",
     "reload": "node scripts/reload.cjs",
