@@ -599,6 +599,8 @@ The daemon serves a web dashboard and its JSON API from the same port as the MCP
 
 The sidebar shows whether the daemon is running. If it stops, the dashboard says **Daemon offline** on every page within a few seconds and picks up again on its own once the daemon is back. If the auth check is rate limited (about 20 reloads or new tabs a minute), the dashboard waits and checks again instead of signing you out.
 
+**Connections.** Each card shows the connection's secret status (amber when an enabled connection is missing a required secret; **Needs secrets** filters to those) and, for connections with a listener, its live state. **Stop** is offered while a listener is connected, starting or reconnecting, **Start** while it is stopped or failed, and **Restart** always. The stability filter never hides an enabled connection. The configure and listener dialogs ask before discarding unsaved changes (Escape, ×, or Cancel; a click outside does nothing while there are edits).
+
 **Password.** The dashboard stays locked until a password is set. `drawlatch set-password` (alias `change-password`) prompts on a TTY or reads the password twice from stdin (`printf '%s\n%s\n' "$PW" "$PW" | drawlatch set-password`). It stores a scrypt hash and salt in `.env` as `AUTH_PASSWORD_HASH` / `AUTH_PASSWORD_SALT`. Restart the daemon after setting it from the CLI. Changing it from the dashboard (**Change password**, `/settings/password`) applies immediately and signs out every other session.
 
 **Security.**

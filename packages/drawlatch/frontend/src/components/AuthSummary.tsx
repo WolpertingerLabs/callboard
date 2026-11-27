@@ -1,7 +1,4 @@
-import type {
-  AdminConnectionAuth,
-  AdminConnectionTemplate,
-} from "drawlatch-admin-types";
+import type { AdminConnectionAuth, AdminConnectionTemplate } from "drawlatch-admin-types";
 
 /**
  * Read-only view of how drawlatch mints a connection's token: the grant and
@@ -24,17 +21,11 @@ const GOOGLE_SCOPE_PREFIX = "https://www.googleapis.com/auth/";
 
 /** `https://www.googleapis.com/auth/gmail.readonly` → `gmail.readonly`. */
 export function shortScope(scope: string): string {
-  return scope.startsWith(GOOGLE_SCOPE_PREFIX)
-    ? scope.slice(GOOGLE_SCOPE_PREFIX.length)
-    : scope;
+  return scope.startsWith(GOOGLE_SCOPE_PREFIX) ? scope.slice(GOOGLE_SCOPE_PREFIX.length) : scope;
 }
 
 /** The google connection's auth mode badge and `service · level` chips. */
-export function GoogleBadges({
-  callerAuth,
-}: {
-  callerAuth?: AdminConnectionAuth;
-}) {
+export function GoogleBadges({ callerAuth }: { callerAuth?: AdminConnectionAuth }) {
   const g = callerAuth?.google;
   if (!g) return null;
   const mode =
@@ -49,8 +40,10 @@ export function GoogleBadges({
         {mode}
       </span>
       {Object.entries(g.services).map(([svc, level]) => (
+        // Non-breaking spaces: in a narrow table column the chip wraps as a
+        // whole instead of one word per line.
         <span key={svc} className="dl-google-chip mono">
-          {svc} · {level}
+          {`${svc}\u00a0·\u00a0${level}`}
         </span>
       ))}
     </>
@@ -77,17 +70,13 @@ export function AuthSummary({
     return compact ? <span className="cell-muted">—</span> : null;
   }
   const scopes = callerAuth?.scopes ?? auth?.scopes ?? [];
-  const subjectRequired =
-    callerAuth?.subjectRequired ?? auth?.subjectRequired ?? false;
+  const subjectRequired = callerAuth?.subjectRequired ?? auth?.subjectRequired ?? false;
 
   return (
     <div className={compact ? "auth-summary is-compact" : "auth-summary"}>
       {grant && (
         <div className="auth-summary-line">
-          <span
-            className="tag"
-            title="drawlatch mints this connection's token"
-          >
+          <span className="tag" title="drawlatch mints this connection's token">
             oauth2
           </span>{" "}
           <span className="auth-summary-grant">{GRANT_LABELS[grant]}</span>
@@ -108,30 +97,24 @@ export function AuthSummary({
         </ul>
       )}
       {callerAuth?.narrowed && (
-        <div className="auth-summary-note">
-          narrowed by this caller&apos;s oauth2Overrides
-        </div>
+        <div className="auth-summary-note">Narrowed by this caller&apos;s oauth2Overrides</div>
       )}
       {callerAuth?.subject !== undefined && (
         <div className="auth-summary-note">
-          acts as <span className="mono">{callerAuth.subject}</span>
+          Acts as <span className="mono">{callerAuth.subject}</span>
         </div>
       )}
-      {subjectRequired &&
-        callerAuth?.subject === undefined &&
-        !problem &&
-        !compact && (
+      {subjectRequired && callerAuth?.subject === undefined && !problem && !compact && (
         <div className="auth-summary-note">
-          needs a subject: set <span className="mono">oauth2Overrides</span>
+          Needs a subject: set <span className="mono">oauth2Overrides</span>
           {" → "}
-          <span className="mono">subject</span> for the caller in
-          remote.config.json (for <span className="mono">google</span>, set
-          the subject in Connections → Google → Configure)
+          <span className="mono">subject</span> for the caller in remote.config.json (for{" "}
+          <span className="mono">google</span>, set the subject in Connections → Google → Configure)
         </div>
       )}
       {problem && (
         <div className="auth-summary-problem" role="status">
-          not loaded: {problem}
+          Not loaded: {problem}
         </div>
       )}
     </div>
