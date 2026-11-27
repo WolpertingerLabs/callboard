@@ -16,6 +16,8 @@
  *     `background_task`. Unlike the rules above this one is not a preserved
  *     behaviour: nothing consumed these before, and the query loop now depends
  *     on them to know when a session may safely end.
+ *   - system / session_writes_lost (transcript or config not saved) emits an
+ *     `adapter_specific` event with `kind: "session_writes_lost"`.
  *   - Per-turn content blocks are split into individual `text`, `thinking`,
  *     `tool_use`, and `tool_result` events.
  *
@@ -128,6 +130,23 @@ export async function* translateSdkMessages(source: AsyncIterable<unknown>): Asy
     // Conversation compaction boundary
     if (message.type === "system" && message.subtype === "compact_boundary") {
       yield { type: "compaction_boundary", content: message.content };
+    }
+
+    // The CLI could not save part of the session (disk full / over quota).
+    // Callboard's chat view and every later resume read that transcript, so
+    // the loss is worth a warning rather than a silent drop. Agent SDK ≥ 0.3.332.
+    if (message.type === "system" && message.subtype === "session_writes_lost") {
+      const m = message as { error_code?: unknown; lost?: unknown; transcript_session_ids?: unknown };
+      yield {
+        type: "adapter_specific",
+        adapter: "claude-code",
+        payload: {
+          kind: "session_writes_lost",
+          ...(typeof m.error_code === "string" && { errorCode: m.error_code }),
+          lost: Array.isArray(m.lost) ? m.lost.filter((x): x is string => typeof x === "string") : [],
+          ...(Array.isArray(m.transcript_session_ids) && { sessionIds: m.transcript_session_ids.filter((x): x is string => typeof x === "string") }),
+        },
+      };
     }
 
     // ── Background task lifecycle ──

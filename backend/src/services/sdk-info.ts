@@ -10,6 +10,7 @@ import { tmpdir } from "os";
 import { createLogger } from "../utils/logger.js";
 import { getApiEnvOverrides } from "./agent-settings.js";
 import { getClaudeCodeExecutablePath } from "./claude-binary.js";
+import { claudeExecutableOptions } from "./claude-executable-options.js";
 
 const log = createLogger("sdk-info");
 
@@ -74,7 +75,7 @@ async function fetchSdkInfo(): Promise<SdkInfoCache> {
       prompt: inputStream,
       options: {
         cwd: tmpdir(),
-        ...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
+        ...claudeExecutableOptions(claudeExecutable),
         tools: [],
         maxTurns: 1,
         persistSession: false,

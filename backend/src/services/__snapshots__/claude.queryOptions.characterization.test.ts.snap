@@ -85,7 +85,9 @@ exports[`sendMessage queryOpts characterization > claude-code: agent session wit
         },
         "mcp-proxy": "[ToolServer mcp-proxy: 21 tools]",
       },
+      "mcpServersDelivery": "argv",
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "permissionMode": "default",
       "plugins": [
         {
           "name": "fake-plugin",
@@ -143,7 +145,9 @@ exports[`sendMessage queryOpts characterization > claude-code: agent session wit
         "callboard-tools": "[ToolServer callboard-tools: 46 tools]",
         "computer_use": "[ToolServer computer_use: 9 tools]",
       },
+      "mcpServersDelivery": "argv",
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "permissionMode": "default",
       "settingSources": [
         "user",
         "project",
@@ -189,7 +193,9 @@ exports[`sendMessage queryOpts characterization > claude-code: explicit completi
         "callboard-tools": "[ToolServer callboard-tools: 60 tools]",
         "computer_use": "[ToolServer computer_use: 9 tools]",
       },
+      "mcpServersDelivery": "argv",
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "permissionMode": "default",
       "settingSources": [
         "user",
         "project",
@@ -239,7 +245,9 @@ exports[`sendMessage queryOpts characterization > claude-code: explicit completi
         "computer_use": "[ToolServer computer_use: 9 tools]",
         "job-tools": "[ToolServer job-tools: 2 tools]",
       },
+      "mcpServersDelivery": "argv",
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "permissionMode": "default",
       "settingSources": [
         "user",
         "project",
@@ -294,7 +302,9 @@ exports[`sendMessage queryOpts characterization > claude-code: explicit completi
         "computer_use": "[ToolServer computer_use: 9 tools]",
         "objective-tools": "[ToolServer objective-tools: 1 tools]",
       },
+      "mcpServersDelivery": "argv",
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "permissionMode": "default",
       "settingSources": [
         "user",
         "project",
@@ -345,6 +355,7 @@ exports[`sendMessage queryOpts characterization > claude-code: no claude binary 
         "callboard-tools": "[ToolServer callboard-tools: 60 tools]",
         "computer_use": "[ToolServer computer_use: 9 tools]",
       },
+      "permissionMode": "default",
       "settingSources": [
         "user",
         "project",
@@ -390,7 +401,9 @@ exports[`sendMessage queryOpts characterization > claude-code: plain new chat 1`
         "callboard-tools": "[ToolServer callboard-tools: 60 tools]",
         "computer_use": "[ToolServer computer_use: 9 tools]",
       },
+      "mcpServersDelivery": "argv",
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "permissionMode": "default",
       "settingSources": [
         "user",
         "project",
@@ -483,8 +496,10 @@ exports[`sendMessage queryOpts characterization > claude-code: plugins + MCP + h
         },
         "mcp-proxy": "[ToolServer mcp-proxy: 21 tools]",
       },
+      "mcpServersDelivery": "argv",
       "model": "opus",
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "permissionMode": "default",
       "plugins": [
         {
           "name": "fake-plugin",
@@ -552,8 +567,10 @@ exports[`sendMessage queryOpts characterization > claude-code: resume recovers a
         "computer_use": "[ToolServer computer_use: 9 tools]",
         "mcp-proxy": "[ToolServer mcp-proxy: 21 tools]",
       },
+      "mcpServersDelivery": "argv",
       "model": "sonnet",
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "permissionMode": "default",
       "resume": "<chat>",
       "settingSources": [
         "user",
@@ -610,7 +627,9 @@ exports[`sendMessage queryOpts characterization > codex: OpenRouter-injected rou
         "callboard-tools": "[ToolServer callboard-tools: 60 tools]",
         "computer_use": "[ToolServer computer_use: 9 tools]",
       },
+      "mcpServersDelivery": "argv",
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "permissionMode": "default",
       "settingSources": [
         "user",
         "project",
@@ -679,7 +698,9 @@ exports[`sendMessage queryOpts characterization > codex: api-key mode, direct-UI
         "callboard-tools": "[ToolServer callboard-tools: 60 tools]",
         "computer_use": "[ToolServer computer_use: 9 tools]",
       },
+      "mcpServersDelivery": "argv",
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "permissionMode": "default",
       "settingSources": [
         "user",
         "project",
@@ -743,7 +764,9 @@ exports[`sendMessage queryOpts characterization > codex: subscription, default r
         "callboard-tools": "[ToolServer callboard-tools: 60 tools]",
         "computer_use": "[ToolServer computer_use: 9 tools]",
       },
+      "mcpServersDelivery": "argv",
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "permissionMode": "default",
       "settingSources": [
         "user",
         "project",
@@ -796,7 +819,9 @@ exports[`sendMessage queryOpts characterization > codex: unknown route and resum
         "callboard-tools": "[ToolServer callboard-tools: 60 tools]",
         "computer_use": "[ToolServer computer_use: 9 tools]",
       },
+      "mcpServersDelivery": "argv",
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "permissionMode": "default",
       "settingSources": [
         "user",
         "project",
@@ -849,7 +874,9 @@ exports[`sendMessage queryOpts characterization > codex: unknown route and resum
         "callboard-tools": "[ToolServer callboard-tools: 60 tools]",
         "computer_use": "[ToolServer computer_use: 9 tools]",
       },
+      "mcpServersDelivery": "argv",
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "permissionMode": "default",
       "resume": "<chat>",
       "settingSources": [
         "user",
@@ -897,7 +924,9 @@ exports[`sendMessage queryOpts characterization > pi: configured, new 1`] = `
         "callboard-tools": "[ToolServer callboard-tools: 60 tools]",
         "computer_use": "[ToolServer computer_use: 9 tools]",
       },
+      "mcpServersDelivery": "argv",
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "permissionMode": "default",
       "pi": {
         "apiKey": "pi-key-7777",
         "baseUrl": "https://pi.example",
@@ -953,7 +982,9 @@ exports[`sendMessage queryOpts characterization > pi: resume whose session file 
         "callboard-tools": "[ToolServer callboard-tools: 60 tools]",
         "computer_use": "[ToolServer computer_use: 9 tools]",
       },
+      "mcpServersDelivery": "argv",
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "permissionMode": "default",
       "pi": {
         "getPermissions": "[Function]",
       },
@@ -1004,7 +1035,9 @@ exports[`sendMessage queryOpts characterization > pi: resume with a resolvable s
         "callboard-tools": "[ToolServer callboard-tools: 60 tools]",
         "computer_use": "[ToolServer computer_use: 9 tools]",
       },
+      "mcpServersDelivery": "argv",
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "permissionMode": "default",
       "pi": {
         "getPermissions": "[Function]",
         "resumeSessionPath": "/sessions/<chat>.jsonl",
@@ -1053,7 +1086,9 @@ exports[`sendMessage queryOpts characterization > tool servers that throw or com
       "mcpServers": {
         "computer_use": "[ToolServer computer_use: 9 tools]",
       },
+      "mcpServersDelivery": "argv",
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "permissionMode": "default",
       "settingSources": [
         "user",
         "project",
@@ -1105,7 +1140,9 @@ exports[`sendMessage queryOpts characterization > tool servers that throw or com
       "mcpServers": {
         "computer_use": "[ToolServer computer_use: 9 tools]",
       },
+      "mcpServersDelivery": "argv",
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "permissionMode": "default",
       "settingSources": [
         "user",
         "project",
@@ -1154,7 +1191,9 @@ exports[`sendMessage queryOpts characterization > tool servers that throw or com
       "mcpServers": {
         "computer_use": "[ToolServer computer_use: 9 tools]",
       },
+      "mcpServersDelivery": "argv",
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "permissionMode": "default",
       "settingSources": [
         "user",
         "project",
@@ -1197,7 +1236,9 @@ exports[`sendMessage queryOpts characterization > tool servers that throw or com
       "mcpServers": {
         "computer_use": "[ToolServer computer_use: 9 tools]",
       },
+      "mcpServersDelivery": "argv",
       "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "permissionMode": "default",
       "settingSources": [
         "user",
         "project",

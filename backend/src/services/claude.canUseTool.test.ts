@@ -105,6 +105,65 @@ describe("buildCanUseTool — auto-decide paths", () => {
   });
 });
 
+describe("buildCanUseTool — onInterruptingDeny", () => {
+  // An `interrupt: true` deny makes the CLI end the turn as
+  // error_during_execution with only an `[ede_diagnostic]` string in errors[].
+  // The run loop needs to know a deny caused it to say so in words.
+  it("reports an auto-deny that interrupts the turn", async () => {
+    const seen: Array<{ toolName: string; message: string; byUser?: boolean }> = [];
+    const fn = buildCanUseTool(
+      new EventEmitter(),
+      makePolicy(FULL_DENY),
+      () => "t-int-1",
+      undefined,
+      undefined,
+      (d) => seen.push(d),
+    );
+    await fn("Write", {}, unsignaled());
+    expect(seen).toEqual([{ toolName: "Write", message: "Auto-denied by default fileRead policy", byUser: false }]);
+  });
+
+  it("reports a human deny (which also interrupts)", async () => {
+    const seen: Array<{ toolName: string; message: string; byUser?: boolean }> = [];
+    const trackingId = `t-int-2-${Math.random().toString(36).slice(2)}`;
+    const fn = buildCanUseTool(
+      new EventEmitter(),
+      makePolicy(FULL_ASK),
+      () => trackingId,
+      undefined,
+      undefined,
+      (d) => seen.push(d),
+    );
+    const promise = fn("Write", { path: "/tmp/x" }, unsignaled());
+    expect(respondToPermission(trackingId, false).ok).toBe(true);
+    await promise;
+    expect(seen).toEqual([{ toolName: "Write", message: "User denied", byUser: true }]);
+  });
+
+  it("stays quiet for allows and for denies that let the model carry on", async () => {
+    const seen: unknown[] = [];
+    const allow = buildCanUseTool(
+      new EventEmitter(),
+      makePolicy(FULL_ALLOW),
+      () => "t-int-3",
+      undefined,
+      undefined,
+      (d) => seen.push(d),
+    );
+    await allow("Read", {}, unsignaled());
+    const cc = buildCanUseTool(
+      new EventEmitter(),
+      makePolicy({ ...FULL_ALLOW, browserControl: "deny", computerControl: "deny", sandboxControl: "deny" }, categorizeClaudeTool),
+      () => "t-int-4",
+      undefined,
+      undefined,
+      (d) => seen.push(d),
+    );
+    expect(await cc("mcp__computer_use__cu_observe", {}, unsignaled())).toMatchObject({ behavior: "deny", interrupt: false });
+    expect(seen).toEqual([]);
+  });
+});
+
 describe("buildCanUseTool — computerControl reaches the gate", () => {
   // `mcp__computer_use__*` is deliberately NOT in the SDK allow-list (see
   // claude.ts), so these calls do arrive here. Use the real Claude categorizer

@@ -38,6 +38,7 @@ import {
   MAX_STREAM_RECOVERIES,
   STREAM_CLOSED_TOOL_FAILURE_THRESHOLD,
 } from "./stream-recovery.js";
+import { describeDeniedTurnEnd, isRethrownTurnEndDiagnostic, isTurnEndDiagnosticOnly, type InterruptingDeny } from "./permission-turn-end.js";
 import { buildProxyToolsSpec } from "./proxy-tools.js";
 import { ensureCallerEnrolled, fetchProxyRoutes } from "./proxy-singleton.js";
 import {
@@ -48,6 +49,7 @@ import {
   resolveModelAlias,
 } from "./agent-settings.js";
 import { getClaudeCodeExecutablePath } from "./claude-binary.js";
+import { claudeExecutableOptions } from "./claude-executable-options.js";
 import { sanitizeInheritedAgentEnv } from "../agents/agentEnvPolicy.js";
 import { appendActivity } from "./agent-activity.js";
 import { getAgent } from "./agent-file-service.js";
@@ -57,7 +59,7 @@ import { archivedAfter, reopenArchivedRoot } from "./chat-archive.js";
 import { reopenArchivedChildChain } from "./child-archive.js";
 import { clearListCaches } from "./list-caches.js";
 import { sessionRegistry } from "./session-registry.js";
-import { pendingRequests, type PendingRequest } from "./pending-requests.js";
+import { pendingRequests, USER_DENIED_MESSAGE, type PendingRequest } from "./pending-requests.js";
 import { detectHardStop, isReviewableTool, reviewerNotesFor, reviewToolCall, type ReviewOptions, type ReviewRequest, type ReviewVerdict } from "./permission-review.js";
 import { startReviewAudit, type PermissionAuditHooks, type ReviewAuditResult, type ReviewAuditTrace } from "./permission-review-audit.js";
 import { redactToolInputForReview } from "./tool-input-redaction.js";
@@ -513,6 +515,35 @@ export const STRICT_REVIEW_FALLBACK: PermissionReviewSettings & { approveAllowed
  *   answerers: they are explicitly for the user.
  */
 export function buildCanUseTool(
+  emitter: EventEmitter,
+  toolPermissionPolicy: ToolPermissionPolicy,
+  getTrackingId: () => string,
+  hookAskOverride?: { reason: string },
+  review?: PermissionReviewHooks,
+  /**
+   * Called with every deny that carries `interrupt: true`, whichever path
+   * produced it (default policy or a human). Such a deny ends the CLI's turn
+   * as an `[ede_diagnostic]` error; the run loop uses this to say why
+   * (permission-turn-end.ts).
+   */
+  onInterruptingDeny?: (deny: InterruptingDeny) => void,
+) {
+  const decide = buildPermissionDecider(emitter, toolPermissionPolicy, getTrackingId, hookAskOverride, review);
+  if (!onInterruptingDeny) return decide;
+  return async (...args: Parameters<typeof decide>): Promise<PermissionResult> => {
+    const result = await decide(...args);
+    if (result.behavior === "deny" && result.interrupt === true) {
+      try {
+        onInterruptingDeny({ toolName: args[0], message: result.message, byUser: result.message === USER_DENIED_MESSAGE });
+      } catch (err) {
+        log.warn(`[PERM-DIAG] onInterruptingDeny threw for ${args[0]}: ${err}`);
+      }
+    }
+    return result;
+  };
+}
+
+function buildPermissionDecider(
   emitter: EventEmitter,
   toolPermissionPolicy: ToolPermissionPolicy,
   getTrackingId: () => string,
@@ -993,6 +1024,7 @@ type SessionQueryOptions = {
   pathToClaudeCodeExecutable?: string;
   model?: string;
   settingSources: string[];
+  permissionMode: "default";
   maxTurns: number;
   resume?: string;
   plugins?: PluginDescriptor[];
@@ -1604,6 +1636,13 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
   // the reason is stashed here so canUseTool can skip auto-approval and
   // prompt the user instead.
   const hookAskOverride: { reason: string } = { reason: "" };
+  // The latest deny that ended the CLI's turn (`interrupt: true`); cleared at
+  // each `result`. Lets that result's opaque `[ede_diagnostic]` error be told
+  // in words (permission-turn-end.ts).
+  let lastInterruptingDeny: InterruptingDeny | undefined;
+  // The readable error a deny-ended turn was given, for when the SDK then
+  // rethrows the same diagnostic as an exception (catch block below).
+  let deniedTurnEndDetail: string | undefined;
   const hookOpts = buildHookOptions(hookAskOverride);
 
   // Build MCP servers map: start with configured servers, add Callboard agent tools if this is an agent session
@@ -1867,9 +1906,17 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
     options: {
       abortController,
       cwd: folder,
-      ...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
+      ...claudeExecutableOptions(claudeExecutable),
       ...(claudeCodeModel ? { model: claudeCodeModel } : {}),
       settingSources: ["user", "project", "local"],
+      // Always explicit. Agent SDK ≥ 0.3.286 leaves an omitted mode to Claude
+      // Code, which then takes `permissions.defaultMode` from the settings
+      // loaded above: a repo committing `acceptEdits` ran Write/Edit without
+      // consulting canUseTool, `auto` handed decisions to the classifier, and
+      // `plan` started every chat in plan mode. callboard has no mode of its
+      // own — every decision goes through canUseTool — so "default" it is.
+      // See permissionMode.sdk.test.ts.
+      permissionMode: "default",
       maxTurns: opts.maxTurns ?? 200,
       ...(resumeSessionId ? { resume: resumeSessionId } : {}),
       ...(plugins.length > 0 ? { plugins } : {}),
@@ -1895,7 +1942,16 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
         // when the backend was started from within a Claude Code session
         CLAUDECODE: undefined,
       },
-      canUseTool: buildCanUseTool(emitter, toolPermissionPolicy, () => trackingId, hookAskOverride, reviewHooks),
+      canUseTool: buildCanUseTool(
+        emitter,
+        toolPermissionPolicy,
+        () => trackingId,
+        hookAskOverride,
+        reviewHooks,
+        (deny) => {
+          lastInterruptingDeny = deny;
+        },
+      ),
       stderr: (data: string) => {
         log.warn(`[SDK stderr] ${data.trimEnd()}`);
       },
@@ -2148,6 +2204,8 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
 
           switch (event.type) {
             case "result": {
+              // Set when this result is the one a deny ended (see below).
+              let endedByDeny = false;
               // Always the last yielded event: tells us why the conversation ended.
               if (event.status === "max_turns") {
                 endReason = "max_turns";
@@ -2161,11 +2219,24 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
                   // recoverable by stop-and-resume, not a real provider error.
                   streamRecoveryNeeded = true;
                   log.warn(`Session ${trackingId} result reported "${event.reason}" — attempting stream recovery`);
+                } else if (lastInterruptingDeny && isTurnEndDiagnosticOnly(event.reason)) {
+                  // Our own deny ended the turn; the CLI's only "error" is its
+                  // internal diagnostic. Still an error ending, in words.
+                  errorDetail = describeDeniedTurnEnd(lastInterruptingDeny);
+                  deniedTurnEndDetail = errorDetail;
+                  endedByDeny = true;
+                  log.warn(
+                    `Session ${trackingId} (provider=${providerKind}) ended by an interrupting deny of ${lastInterruptingDeny.toolName} — ${event.reason}`,
+                  );
                 } else {
                   errorDetail = event.reason || "The model provider returned an error response.";
                   log.error(`Session ${trackingId} (provider=${providerKind}) ended: execution error — ${event.reason || "unknown"}`);
                 }
               }
+              // Both describe this result only: a later turn's rethrown
+              // diagnostic must not inherit an earlier deny's text.
+              lastInterruptingDeny = undefined;
+              if (!endedByDeny) deniedTurnEndDetail = undefined;
               if (typeof event.usage?.costUsd === "number") {
                 lastCostUsd = event.usage.costUsd;
               }
@@ -2479,7 +2550,16 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
               // No `maxBudgetUsd` rides along: the field is a per-session spend
               // CAP, and the only harness that had one was OpenRouter's. It stays
               // on the wire type (published interface) with no producer today.
-              const payload = event.payload as { kind?: string; costUsd?: number } | null;
+              const payload = event.payload as { kind?: string; costUsd?: number; errorCode?: string; lost?: string[]; sessionIds?: string[] } | null;
+              if (payload?.kind === "session_writes_lost") {
+                // Claude Code could not save part of the session (ENOSPC /
+                // EDQUOT). The chat view and any resume read that transcript.
+                log.warn(
+                  `Session ${trackingId} (provider=${providerKind}): Claude Code lost writes (${payload.errorCode ?? "unknown error"}) — ` +
+                    `${(payload.lost ?? []).join(", ") || "unspecified"} not saved${payload.sessionIds?.length ? ` for ${payload.sessionIds.join(", ")}` : ""}; ` +
+                    `the transcript and a later resume may be missing part of the conversation`,
+                );
+              }
               if (payload?.kind === "turn_cost" && typeof payload.costUsd === "number") {
                 lastCostUsd = payload.costUsd;
                 emitter.emit("event", {
@@ -2654,6 +2734,11 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
         // A stop is the other ending most likely to leave shells running — the
         // user pressed it precisely because something was still going.
         emitter.emit("event", { type: "done", content: "", reason: "aborted", ...abandonedTaskFields() } as StreamEvent);
+      } else if (deniedTurnEndDetail && isRethrownTurnEndDiagnostic(err?.message)) {
+        // The CLI exited after a deny-ended turn and the SDK rethrew the
+        // result's diagnostic; the result branch already put it in words.
+        log.warn(`Session ${trackingId} (provider=${providerKind}) ended by an interrupting deny (SDK rethrew: ${err.message})`);
+        emitter.emit("event", { type: "error", content: deniedTurnEndDetail, ...abandonedTaskFields() } as StreamEvent);
       } else {
         log.error(`Session ${trackingId} (provider=${providerKind}) error: ${err.message}${err.stack ? `\n${err.stack}` : ""}`);
         emitter.emit("event", { type: "error", content: err.message, ...abandonedTaskFields() } as StreamEvent);

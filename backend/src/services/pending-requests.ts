@@ -35,6 +35,12 @@ import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("pending-requests");
 
+/**
+ * The deny message a person's "Deny" resolves with. Exported so the run loop
+ * can tell a human deny from a policy one (permission-turn-end.ts).
+ */
+export const USER_DENIED_MESSAGE = "User denied";
+
 export interface ApprovalCompletion {
   ok: boolean;
   error?: string;
@@ -242,7 +248,7 @@ export function respondToPermission(
       updatedPermissions: (pending.humanOnly ? undefined : updatedPermissions) as never,
     });
   } else {
-    pending.resolve({ behavior: "deny", message: "User denied", interrupt: true });
+    pending.resolve({ behavior: "deny", message: USER_DENIED_MESSAGE, interrupt: true });
   }
   return { ok: true, toolName };
 }

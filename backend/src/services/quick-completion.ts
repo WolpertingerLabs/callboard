@@ -33,6 +33,7 @@ import { tmpdir } from "os";
 import { createLogger } from "../utils/logger.js";
 import { getApiEnvOverrides } from "./agent-settings.js";
 import { getClaudeCodeExecutablePath } from "./claude-binary.js";
+import { claudeExecutableOptions } from "./claude-executable-options.js";
 import { isOpenRouterUtilityCompletionEnabled, resolveUtilityModel, runOpenRouterCompletion } from "./openrouter-completion.js";
 import type { CustomTheme, ThemeVariables, ThemeContrastFailure } from "shared/types/index.js";
 import type { Correction } from "./theme-contrast.js";
@@ -199,7 +200,7 @@ export async function quickCompletion(opts: QuickCompletionOptions): Promise<Qui
         model,
         abortController,
         cwd: tmpdir(), // Explicit throwaway cwd — no tools use it, but avoids polluting the project directory
-        ...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
+        ...claudeExecutableOptions(claudeExecutable),
         tools: [], // No built-in Claude Code tools
         allowedTools,
         mcpServers: { qc: mcpServer },

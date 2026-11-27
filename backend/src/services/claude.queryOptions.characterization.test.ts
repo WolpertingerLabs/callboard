@@ -391,6 +391,27 @@ describe("sendMessage queryOpts characterization", () => {
     expect(await turn({})).toMatchSnapshot();
   });
 
+  it("claude-code: permissionMode is always explicit, so a settings defaultMode cannot replace callboard's gate", async () => {
+    // Agent SDK ≥ 0.3.286 leaves an omitted permissionMode to Claude Code, and
+    // these chats load user/project/local settings — a repo committing
+    // `permissions.defaultMode: "acceptEdits"` (or `auto`, `plan`) would then
+    // decide Write/Edit without ever consulting canUseTool.
+    const variants: Record<string, unknown>[] = [
+      {},
+      { model: "opus", systemPrompt: "x", maxTurns: 7, defaultPermissions: PERMS },
+      { requireExplicitCompletion: true },
+      { jobContext: { runId: "run-pm", stepId: "step-pm" } },
+      { agentAlias: "keyed-agent" },
+    ];
+    for (const v of variants) {
+      const { request } = await turn(v);
+      expect((request as { options: { permissionMode?: string } }).options.permissionMode).toBe("default");
+    }
+    const first = await turn({ agentAlias: "keyed-agent" });
+    const resumed = await turn({ chatId: first.chatId, prompt: "again" });
+    expect((resumed.request as { options: { permissionMode?: string } }).options.permissionMode).toBe("default");
+  });
+
   it("claude-code: no claude binary resolved", async () => {
     // pathToClaudeCodeExecutable is omitted, not set to undefined/empty.
     claudeBinState.path = undefined;
