@@ -79,14 +79,47 @@ describe("formatCodexModelNotFound", () => {
 
   it("says the model came from config.toml when the chat set none", () => {
     const msg = formatCodexModelNotFound(found, { codexVersion: "0.153.4" });
-    expect(msg).toContain("no model set — Codex used the `model` from ~/.codex/config.toml (`gpt-5.5`)");
-    expect(msg).toContain("change `model` in ~/.codex/config.toml");
+    expect(msg).toContain("no model set — Codex used the `model` from its config ($CODEX_HOME/config.toml, default ~/.codex) (`gpt-5.5`)");
+    expect(msg).toContain("change `model` in $CODEX_HOME/config.toml");
+    expect(msg).not.toMatch(/from ~\/\.codex\/config\.toml/);
   });
 
   it("names the override binary instead of the bundled version", () => {
     const msg = formatCodexModelNotFound(found, { requestedModel: "gpt-5.5", codexVersion: "0.153.4", binaryOverride: "/opt/codex" });
     expect(msg).toContain("(override binary /opt/codex)");
     expect(msg).not.toContain("0.153.4");
+  });
+});
+
+/**
+ * A bare `model_not_found` (no catalog subreason) is what API-key auth returns
+ * for a mistyped or inaccessible model — "The model `x` does not exist or you
+ * do not have access to it." The client-version remedies would be wrong advice
+ * there.
+ */
+describe("formatCodexModelNotFound — bare model_not_found (no catalog subreason)", () => {
+  const BARE =
+    '{"error":{"message":"The model `gpt-5.5-typo` does not exist or you do not have access to it.","type":"invalid_request_error","code":"model_not_found"}}';
+  const found = detectCodexModelNotFound(BARE)!;
+
+  it("advises checking the name and access, not updating Callboard or swapping binaries", () => {
+    const msg = formatCodexModelNotFound(found, { requestedModel: "gpt-5.5-typo", codexVersion: "0.153.4" });
+    expect(msg.startsWith(CODEX_MODEL_NOT_FOUND_HEADLINE)).toBe(true);
+    expect(msg).toContain("`gpt-5.5-typo` was not found, or this account can't use it");
+    expect(msg).toContain("Check the model name");
+    expect(msg).toContain("has access to this model");
+    expect(msg).toContain("list_codex_models");
+    expect(msg).not.toContain("Update Callboard");
+    expect(msg).not.toContain("Codex Binary");
+    expect(msg).not.toContain("model catalog this Codex client");
+    expect(msg).toContain("OpenAI said: The model `gpt-5.5-typo` does not exist or you do not have access to it. (model_not_found)");
+  });
+
+  it("points at the config when the chat set no model", () => {
+    const msg = formatCodexModelNotFound(found, {});
+    expect(msg).toContain("no model set — Codex used the `model` from its config ($CODEX_HOME/config.toml, default ~/.codex) (`gpt-5.5-typo`)");
+    expect(msg).toContain("change `model` in $CODEX_HOME/config.toml");
+    expect(msg).not.toContain("Update Callboard");
   });
 });
 

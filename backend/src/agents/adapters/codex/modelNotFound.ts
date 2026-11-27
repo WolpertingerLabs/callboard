@@ -15,7 +15,7 @@
  * The CLI forwards that body verbatim as the `message` of its `error` and
  * `turn.failed` events. Before this module, the JSON reached the chat as-is. A
  * chat with no model set is the worst case: Codex then falls back to the
- * `model` in `~/.codex/config.toml`, so one stale default kills every
+ * `model` in `$CODEX_HOME/config.toml` (default `~/.codex`), so one stale default kills every
  * model-less Codex session (cron jobs included) and the error never names where
  * the model came from.
  *
@@ -74,25 +74,43 @@ export function detectCodexModelNotFound(text: string | undefined | null): Codex
   };
 }
 
-/** The actionable, multi-line message shown in the chat and recorded on job runs. */
+/** Where Codex's `model` default lives. `$CODEX_HOME` is what the CLI reads; profile/project layers can also set it. */
+const CODEX_CONFIG = "$CODEX_HOME/config.toml";
+
+/**
+ * The actionable, multi-line message shown in the chat and recorded on job runs.
+ *
+ * Two shapes, keyed on the subreason:
+ * - `model_not_in_accessible_catalog`: the model is real, but not in the
+ *   per-client-version catalog this Codex client is served (ChatGPT plan /
+ *   too-old CLI). Remedies: pick a listed model, update Callboard, or point at
+ *   a newer `codex` binary.
+ * - bare `model_not_found`: what API-key auth returns for a mistyped or
+ *   inaccessible model. Remedies: check the name and the account's access; a
+ *   newer client would not help, so it isn't suggested.
+ */
 export function formatCodexModelNotFound(found: CodexModelNotFound, ctx: CodexModelNotFoundContext): string {
-  const client = describeClient(ctx);
+  const catalog = found.subreason === NOT_IN_CATALOG_SUBREASON;
+  const problem = catalog ? `is not in the model catalog this Codex client (${describeClient(ctx)}) can access` : "was not found, or this account can't use it";
   const lines: string[] = [];
   if (ctx.requestedModel) {
-    lines.push(`${CODEX_MODEL_NOT_FOUND_HEADLINE}: \`${ctx.requestedModel}\` is not in the model catalog this Codex client (${client}) can access.`);
+    lines.push(`${CODEX_MODEL_NOT_FOUND_HEADLINE}: \`${ctx.requestedModel}\` ${problem}.`);
   } else {
     const which = found.model ? ` (\`${found.model}\`)` : "";
     lines.push(
-      `${CODEX_MODEL_NOT_FOUND_HEADLINE}: no model set — Codex used the \`model\` from ~/.codex/config.toml${which}, ` +
-        `and it is not in the model catalog this Codex client (${client}) can access.`,
+      `${CODEX_MODEL_NOT_FOUND_HEADLINE}: no model set — Codex used the \`model\` from its config (${CODEX_CONFIG}, default ~/.codex)${which}, ` +
+        `and it ${problem}.`,
     );
   }
   lines.push("");
   lines.push("To fix it, any one of:");
+  if (!catalog) lines.push("• Check the model name for typos, and that this account or API key has access to this model.");
   lines.push("• Pick a model from the Codex model list (the model picker, or the list_codex_models tool) and set it on this chat or job.");
-  if (!ctx.requestedModel) lines.push("• Or change `model` in ~/.codex/config.toml to one in that list.");
-  lines.push("• Update Callboard — its bundled Codex CLI may be too old to know this model.");
-  lines.push("• Or point Settings → API → Codex Binary at a newer `codex` install.");
+  if (!ctx.requestedModel) lines.push(`• Or change \`model\` in ${CODEX_CONFIG} (or the profile/project config that sets it) to one in that list.`);
+  if (catalog) {
+    lines.push("• Update Callboard — its bundled Codex CLI may be too old to know this model.");
+    lines.push("• Or point Settings → API → Codex Binary at a newer `codex` install.");
+  }
   lines.push("");
   const tags = [found.code, found.subreason].filter(Boolean).join(" / ");
   lines.push(`OpenAI said: ${found.openaiMessage}${tags ? ` (${tags})` : ""}`);
