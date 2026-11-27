@@ -2,13 +2,12 @@
  * Route-level tests for POST /api/chats/bulk-delete — the sidebar's
  * multi-select delete.
  *
- * Written against `POST /api/cards/bulk-lifecycle` as the reference (see
- * cards.bulk-lifecycle.test.ts): same partial-success contract, same tolerance
- * of ids that no longer exist, same one-notification-per-batch, and the same
- * routing test at the bottom — a bulk path that a `/:id` route can swallow is
+ * Modelled on the since-removed `POST /api/cards/bulk-lifecycle`: a
+ * partial-success contract, tolerance of ids that no longer exist,
+ * one notification per batch, and a routing test at the bottom — a bulk path that a `/:id` route can swallow is
  * a routing bug wearing a data bug's clothes.
  *
- * The one thing this suite has to pin that the cards one does not is that a
+ * The one thing this suite has to pin that the cards one did not is that a
  * bulk delete is exactly N single deletes and not a cascade: `DELETE
  * /api/chats/:id` has never deleted the chats forked from its target, and both
  * routes now run the same `deleteOneChat`, so the tests at the bottom hold the
@@ -389,9 +388,8 @@ describe("DELETE /api/chats/:id after the shared-helper refactor", () => {
 /**
  * The cost of a batch, which is the reason this route can be uncapped.
  *
- * `POST /api/cards/bulk-lifecycle` gets away with an uncapped batch because it
- * builds `createCardContext()` once and resolves every id off a Map. This route
- * had no such context: each id went through `findChat` → `chatFileService.getChat`,
+ * A batch route can stay uncapped only if it resolves every id off one
+ * prebuilt index (as `createCardContext()` does). This route had no such index: each id went through `findChat` → `chatFileService.getChat`,
  * whose miss path is a readdir + parse of the whole records directory (~45 ms
  * across 9.2k records, measured) — ~9 s of blocked event loop for 200 ids, and
  * the ids most likely to miss are the ones the client retries, since it keeps

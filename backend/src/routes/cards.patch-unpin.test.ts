@@ -1,11 +1,9 @@
 /**
- * PATCH /api/cards/:id — the archive gesture that is not the bulk one.
+ * PATCH /api/cards/:id — the sidebar row menu's archive gesture.
  *
- * Worth its own coverage rather than leaning on cards.bulk-lifecycle.test.ts:
- * archiving one card from the row menu or the board tile is the common gesture,
- * it is the path that carries `hidden` (bulk only ever sends `lifecycle`), and
- * it resolves the card through `context.resolve`, so patching a *member* chat id
- * has to unpin the whole tree rather than only the chat that was named.
+ * It is the path that carries `hidden` as well as `lifecycle`, and it resolves
+ * the card through `context.resolve`, so patching a *member* chat id has to
+ * unpin the whole tree rather than only the chat that was named.
  *
  * Same no-supertest style and the same stubs as cards.metadata.test.ts.
  */

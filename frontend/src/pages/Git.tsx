@@ -35,8 +35,10 @@ export default function Git() {
       // Only open cards become chips, so ask for no archived ones at all.
       // Scoped to the active space: a chip from another space would open a
       // chat the sidebar is not showing.
-      const res = await listCards(false, { closedLimit: 0 }, spacesEnabled && activeSpaceId ? { space: activeSpaceId } : {});
+      const res = await listCards(false, { ...(spacesEnabled && activeSpaceId && { space: activeSpaceId }), lifecycle: "open" });
       if (seq !== requestSeq.current) return;
+      // A daemon older than the `lifecycle` parameter returns archived cards
+      // too; BranchesView only chips open ones, so that is harmless.
       setCards(res.cards);
       setError(null);
     } catch (err) {

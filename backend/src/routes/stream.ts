@@ -95,7 +95,7 @@ streamRouter.post("/new/message", async (req, res) => {
             parentChatId: { type: "string", description: "Chat ID of the chat that spawned this one — links the new chat into the cross-engine chat parentage tree. Ignored when the parent has no stored record." },
             chatRole: { type: "string", description: "Free-form role label (max 40 chars) for the tree node of the new chat, e.g. subagent, monitor, engine-switch. Only used with parentChatId." },
             cardId: { type: "string", description: "Deprecated no-op. Cards are derived from the chat lineage tree — a top-level chat is a card automatically and every child joins its root. Accepted (and ignored) so older clients keep working." },
-            createCard: { type: "boolean", description: "Deprecated no-op. A top-level chat is a card automatically; use PATCH /api/cards/{rootChatId} with hidden:true to opt a card out of the board. Accepted (and ignored) so older clients keep working." },
+            createCard: { type: "boolean", description: "Deprecated no-op. A top-level chat is a card automatically; use PATCH /api/cards/{rootChatId} with hidden:true to opt a card out of listings. Accepted (and ignored) so older clients keep working." },
             cardCategory: { type: "string", description: "Deprecated no-op (was used with createCard). Use PATCH /api/cards/{rootChatId} to set the category. Accepted and ignored." },
             clientTrackingId: { type: "string", description: "Client-generated temporary session id (must match new-<alphanumeric/_/->, max 80 chars) used as the session key until the real chat id exists, so POST /api/chats/{clientTrackingId}/stop can cancel the run during startup. Ignored when malformed or already in use." },
             branchConfig: {

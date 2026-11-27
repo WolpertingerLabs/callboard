@@ -85,17 +85,17 @@ describe("the Git page", () => {
   it("asks only for open cards, across every space when spaces are off", async () => {
     mount();
     await screen.findByRole("heading", { level: 2, name: "app" });
-    expect(listCards).toHaveBeenCalledWith(false, { closedLimit: 0 }, {});
+    expect(listCards).toHaveBeenCalledWith(false, { lifecycle: "open" });
   });
 
-  it("scopes the cards to the active space, without the board's cross-space needs-you", async () => {
+  it("scopes the cards to the active space", async () => {
     mount(
       <SpaceContext.Provider value={makeSpaceContext(SPACES, { activeSpaceId: "sp_work" })}>
         <Git />
       </SpaceContext.Provider>,
     );
     await screen.findByRole("heading", { level: 2, name: "app" });
-    expect(listCards).toHaveBeenCalledWith(false, { closedLimit: 0 }, { space: "sp_work" });
+    expect(listCards).toHaveBeenCalledWith(false, { space: "sp_work", lifecycle: "open" });
   });
 
   it("opens the conversation's root chat from a chip", async () => {

@@ -25,7 +25,7 @@ const { chatFileService } = await import("../services/chat-file-service.js");
 const { buildChatTree } = await import("../services/chat-lineage.js");
 const { detachChatFromParent } = await import("../services/chat-detach.js");
 const { reopenArchivedChildChain } = await import("../services/child-archive.js");
-const { buildCardBoard } = await import("../services/card-rollup.js");
+const { buildCardSummaries } = await import("../services/card-rollup.js");
 const { patchCardFields } = await import("../services/card-fields.js");
 const { saveIgnoredProjectDirPrefixes } = await import("../utils/paths.js");
 saveIgnoredProjectDirPrefixes([]);
@@ -209,7 +209,7 @@ describe("reopenArchivedChildChain — a message brings an archived child back",
  * Deleting a chat never cascades, so deleting the parent of an archived child
  * leaves the child as the root of its own card — with the flag, and the
  * dangling parent pointer, still on it. The sidebar keeps hiding it and its
- * subtree, so the board must show that card as archived too.
+ * subtree, so its card must read as archived too.
  */
 describe("an archived child whose parent is deleted", () => {
   const IDLE = {
@@ -219,9 +219,9 @@ describe("an archived child whose parent is deleted", () => {
     awaitingChildrenOf: () => 0,
     previewOf: () => null,
   };
-  const boardOf = () => buildCardBoard(chatFileService.getAllChats(), [], IDLE);
+  const cardsOf = () => buildCardSummaries(chatFileService.getAllChats(), [], IDLE);
 
-  it("becomes a closed card on the board, and reopening it clears the flag", async () => {
+  it("becomes a closed card, and reopening it clears the flag", async () => {
     const root = makeChat({ title: "root" });
     const child = makeChat({ title: "child", parentChatId: root.id, rootChatId: root.id });
     const grandchild = makeChat({ title: "grandchild", parentChatId: child.id, rootChatId: root.id });
@@ -229,18 +229,18 @@ describe("an archived child whose parent is deleted", () => {
     const archivedAt = metaOf(child.id).childArchivedAt;
 
     // While the parent exists the child is a member of the root's open card.
-    expect(boardOf().cards.find((c) => c.id === root.id)?.lifecycle).toBe("open");
-    expect(boardOf().cards.find((c) => c.id === child.id)).toBeUndefined();
+    expect(cardsOf().find((c) => c.id === root.id)?.lifecycle).toBe("open");
+    expect(cardsOf().find((c) => c.id === child.id)).toBeUndefined();
 
     chatFileService.deleteChat(root.session_id);
 
-    const card = boardOf().cards.find((c) => c.id === child.id);
+    const card = cardsOf().find((c) => c.id === child.id);
     expect(card).toMatchObject({ lifecycle: "closed", closedAt: archivedAt });
     expect(card?.memberChats.map((m) => m.chatId).sort()).toEqual([child.id, grandchild.id].sort());
 
     patchCardFields(child.id, { lifecycle: "open" });
     expect(metaOf(child.id)).not.toHaveProperty("childArchived");
-    expect(boardOf().cards.find((c) => c.id === child.id)?.lifecycle).toBe("open");
+    expect(cardsOf().find((c) => c.id === child.id)?.lifecycle).toBe("open");
   });
 
   it("refuses to archive it through the child route, which would close the card without the card path", async () => {
@@ -253,7 +253,7 @@ describe("an archived child whose parent is deleted", () => {
     expect(res.status).toBe(400);
     expect(metaOf(child.id)).not.toHaveProperty("childArchived");
     expect(metaOf(child.id).pinned).toBe(true);
-    expect(boardOf().cards.find((c) => c.id === child.id)?.lifecycle).toBe("open");
+    expect(cardsOf().find((c) => c.id === child.id)?.lifecycle).toBe("open");
   });
 
   it("unarchives it through the child route by reopening its card", async () => {
@@ -269,7 +269,7 @@ describe("an archived child whose parent is deleted", () => {
     expect(metaOf(child.id)).not.toHaveProperty("childArchived");
     expect(metaOf(child.id)).not.toHaveProperty("childArchivedAt");
     expect(metaOf(child.id).card.lifecycle).toBe("open");
-    expect(boardOf().cards.find((c) => c.id === child.id)?.lifecycle).toBe("open");
+    expect(cardsOf().find((c) => c.id === child.id)?.lifecycle).toBe("open");
     expect(notifyMetadata).toHaveBeenCalledWith(child.id, { cardEvent: "updated" });
   });
 });

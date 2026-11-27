@@ -1,5 +1,6 @@
 /**
- * Cards REST API — the board's read/edit surface over cards-as-metadata.
+ * Cards REST API — the read/edit surface over cards-as-metadata, used by the
+ * sidebar (archive state, row menu), the space switcher and the Git page.
  *
  * A card IS a lineage root chat: `:id` params are root chat ids, and the
  * card's fields live in that chat's `metadata.card` (see card-fields.ts).
@@ -7,8 +8,8 @@
  * delete (deleting the chat deletes the card) — which is why this module is
  * read + patch only.
  *
- * A rollup is recomputed per request, and deliberately so: the board and the
- * sidebar both refetch ~300 ms after a mutation bumps metadataVersion, which
+ * A rollup is recomputed per request, and deliberately so: the Git page and
+ * the sidebar both refetch ~300 ms after a mutation bumps metadataVersion, which
  * is exactly when a response cache would serve stale data. That leaves the
  * cost of a recompute as the thing to hold down, and it is *blocked event
  * loop* — the handler is one synchronous block, so while it runs nothing else
@@ -44,7 +45,7 @@ const log = createLogger("cards");
 export const cardsRouter = Router();
 
 /**
- * Roll up the whole board from one snapshot: every chat record (stat-gated
+ * Roll up every card from one snapshot: every chat record (stat-gated
  * read, not a fresh parse of all ~8k files) plus every run that belongs to a
  * lineage root. The rollup itself derives which roots are cards, so there is
  * no card list to pre-filter here.
@@ -57,52 +58,25 @@ cardsRouter.get("/", (req: Request, res: Response) => {
   // #swagger.tags = ['Cards']
   // #swagger.summary = 'List all cards (lineage roots) with live rollups'
   // #swagger.description = 'Every non-triggered top-level chat is a card; its fields live on that chat\'s metadata. Hidden cards are omitted unless includeHidden=true.'
-  /* #swagger.parameters['includeHidden'] = { in: 'query', type: 'string', description: 'Include cards opted out of the board (metadata.card.hidden). Default false — the board never wants them. The sidebar does: its archived dim has to agree with GET /api/chats?cardLifecycle=unarchived, which counts a hidden card as archived, and a card the client cannot see reads as no card at all, and therefore as not archived.' } */
-  /* #swagger.parameters['closedLimit'] = { in: 'query', type: 'integer', description: 'Return only the N most recently archived (lifecycle "closed") cards, by closedAt (else updatedAt); open cards are never limited. closedTotal still counts every archived card and categories still covers them all. Omitted (with closedSince) = every card, as before.' } */
-  /* #swagger.parameters['closedSince'] = { in: 'query', type: 'string', description: 'ISO timestamp cursor: return every archived card whose closedAt (else updatedAt) is at or after it, uncapped. How a client refetches the window it already holds, so newly archived cards add on top instead of pushing older loaded ones out. With closedLimit, a card is returned if EITHER admits it.' } */
-  /* #swagger.parameters['space'] = { in: 'query', type: 'string', description: 'Only cards in this space (a space id), or all. closedTotal and categories describe the scoped set. Every card carries spaceId. Omitted = all.' } */
-  /* #swagger.parameters['crossSpaceNeedsYou'] = { in: 'query', type: 'string', description: "With space, also return OPEN cards from other spaces whose rollup is needs_you — separation must never hide a blocked chat. They carry their own spaceId so the board can chip them." } */
-  const rawLimit = req.query.closedLimit;
-  const closedLimit = typeof rawLimit === "string" && /^\d+$/.test(rawLimit) ? Number(rawLimit) : undefined;
-  if (rawLimit !== undefined && closedLimit === undefined) {
-    return res.status(400).json({ error: "closedLimit must be a non-negative integer" });
-  }
-  const rawSince = req.query.closedSince;
-  const closedSince = typeof rawSince === "string" ? Date.parse(rawSince) : undefined;
-  if (rawSince !== undefined && (closedSince === undefined || Number.isNaN(closedSince))) {
-    return res.status(400).json({ error: "closedSince must be a timestamp" });
+  /* #swagger.parameters['includeHidden'] = { in: 'query', type: 'string', description: 'Include hidden cards (metadata.card.hidden). Default false. The sidebar wants them: its archived dim has to agree with GET /api/chats?cardLifecycle=unarchived, which counts a hidden card as archived, and a card the client cannot see reads as no card at all, and therefore as not archived.' } */
+  /* #swagger.parameters['space'] = { in: 'query', type: 'string', description: 'Only cards in this space (a space id), or all. Every card carries spaceId. Omitted = all.' } */
+  /* #swagger.parameters['lifecycle'] = { in: 'query', type: 'string', description: 'Only cards in this lifecycle: open or closed. Selected before member projection, so asking for open cards never pays for the archive, which on a long-lived install outnumbers them by hundreds to one. Omitted = both.' } */
+  const lifecycle = req.query.lifecycle;
+  if (lifecycle !== undefined && lifecycle !== "open" && lifecycle !== "closed") {
+    return res.status(400).json({ error: "lifecycle must be 'open' or 'closed'" });
   }
   try {
     const space = typeof req.query.space === "string" && req.query.space ? req.query.space.slice(0, 128) : "all";
-    const { cards, closedTotal, categories } = createCardContext().board(
-      listRuns({ withRoot: true }),
-      req.query.includeHidden === "true",
-      { closedLimit, closedSince },
-      cardSpaceScope(space, req.query.crossSpaceNeedsYou === "true"),
-    );
+    const cards = createCardContext().summaries(listRuns({ withRoot: true }), req.query.includeHidden === "true", undefined, lifecycle, cardSpaceScope(space));
     // Pinned first, then most recent activity.
     cards.sort((a, b) => (a.pinned === b.pinned ? b.lastActivityAt.localeCompare(a.lastActivityAt) : a.pinned ? -1 : 1));
-    res.json({ cards, closedTotal, categories });
+    res.json({ cards });
   } catch (err: any) {
     log.error(`Error listing cards: ${err}`);
     res.status(500).json({ error: "Failed to list cards", details: err.message });
   }
 });
 
-/**
- * Bulk close/reopen for the board's multi-select.
- *
- * POST, not `PATCH /bulk`, and deliberately so: Express matches in
- * registration order, so a `patch("/bulk")` sitting below `patch("/:id")`
- * resolves to the single-card handler with `id="bulk"` and answers 404
- * "Card not found" — a routing bug wearing a data bug's clothes. There is no
- * `post("/:id")`, so this path cannot be shadowed no matter where it is
- * registered or how the file is later reordered.
- *
- * Partial success is a 200 with a populated `failed[]`, not an error status:
- * a missing id in the middle of a batch must not strand the rest, and the
- * client still needs `updated` to merge into its state.
- */
 /**
  * Drop a `metadata.card` object left on a member chat that this request just
  * redirected to its root.
@@ -113,7 +87,7 @@ cardsRouter.get("/", (req: Request, res: Response) => {
  * this fix — `PATCH child -> 200, returned lifecycle: open, child's own
  * card.lifecycle STILL: closed`. That stale copy is unreachable through any
  * card edit, so nothing ever clears it, and every reader of that chat record
- * keeps seeing a closed card the board says is open.
+ * keeps seeing a closed card the cards API says is open.
  *
  * Best-effort by design: the card write has already succeeded and the response
  * is correct without this, so a failure here is logged rather than turned into
@@ -130,117 +104,6 @@ function clearRedirectedMemberCard(requestedId: string, rootChatId: string): voi
   }
 }
 
-cardsRouter.post("/bulk-lifecycle", (req: Request, res: Response) => {
-  // #swagger.tags = ['Cards']
-  // #swagger.summary = 'Close or reopen many cards in one call; per-id failures are reported, not fatal'
-  // #swagger.description = 'ids are root chat ids. Per-id failures are reported in failed[], not fatal. Closing a card clears metadata.pinned on the chats in its tree unless agent settings set unpinChatsOnArchive to false; reopening never restores a pin.'
-  /* #swagger.responses[200] = { description: "Updated card summaries plus per-id failures" } */
-  const { ids, lifecycle } = req.body ?? {};
-  if (!Array.isArray(ids) || ids.length === 0 || ids.some((id: unknown) => typeof id !== "string")) {
-    return res.status(400).json({ error: "ids must be a non-empty array of strings" });
-  }
-  if (lifecycle !== "open" && lifecycle !== "closed") {
-    return res.status(400).json({ error: "lifecycle must be 'open' or 'closed'" });
-  }
-  try {
-    // Resolve every root BEFORE writing any, so a typo in the middle of the
-    // batch cannot half-apply: resolution is pure, writes are not.
-    //
-    // Two structures, because dedupe and reporting are different questions.
-    // `writeOrder` is the flip-once list; `rootByRequestedId` remembers what
-    // every requested id resolved to, including the ones deduped away. The
-    // previous version `continue`d on a duplicate root, so that id appeared in
-    // neither `updated[]` nor `failed[]` — and Board.tsx merges by
-    // `updatedById.get(c.id) ?? c`, so the tile silently kept its old
-    // lifecycle and the card visibly did not reopen. Measured with 10 real
-    // closed ids: requested 10, updated 9, failed 0. Since #394 removed the id
-    // cap, "Select all" over 804 cards makes it routine.
-    const writeOrder: { id: string; rootChatId: string }[] = [];
-    const rootByRequestedId = new Map<string, string>();
-    const failed: { id: string; error: string }[] = [];
-    const seenRoots = new Set<string>();
-    // Read once, handed to both consumers: the card context derives lineage and
-    // rollups from it, the pinned-member lookup derives card membership for the
-    // pins. Letting either read its own would double the corpus pass this route
-    // was built to hold to one.
-    const stored = listChatsSnapshot();
-    const context = createCardContext(stored);
-    for (const id of ids as string[]) {
-      const root = context.resolve(id);
-      if (!root) {
-        failed.push({ id, error: "Card not found" });
-        continue;
-      }
-      rootByRequestedId.set(id, root.rootChatId);
-      // Two member ids of one tree name the same card — flip it once rather
-      // than double-write (which would also double-notify). Reporting still
-      // covers both ids, via rootByRequestedId below.
-      if (seenRoots.has(root.rootChatId)) continue;
-      seenRoots.add(root.rootChatId);
-      writeOrder.push({ id, rootChatId: root.rootChatId });
-    }
-
-    const successfulRootIds = new Set<string>();
-    const failedRootIds = new Map<string, string>();
-    // One lookup for the whole batch: archiving unpins the chats on each card,
-    // and answering "which chats are pinned, and on which card" needs the whole
-    // corpus. Shared here, that is one index for an 800-card "Select all"
-    // instead of 800 — over the snapshot the context already read, so the pass
-    // itself is free. A batch that archives nothing never builds the index at
-    // all; one that archives anything builds it once, pinned chats or not.
-    const pinnedMembers = createPinnedMemberLookup(stored);
-    for (const { id, rootChatId } of writeOrder) {
-      try {
-        patchCardFields(rootChatId, { lifecycle }, { pinnedMembers });
-        const rootChat = chatFileService.getChat(rootChatId);
-        if (rootChat) context.replaceRoot(rootChat);
-        successfulRootIds.add(rootChatId);
-      } catch (err: any) {
-        log.error(`Error updating card ${rootChatId} in bulk lifecycle: ${err}`);
-        failedRootIds.set(rootChatId, err?.message ?? "Failed to update card");
-        failed.push({ id, error: err?.message ?? "Failed to update card" });
-      }
-    }
-
-    // Every requested id is now accounted for exactly once: a deduped id is
-    // reported with the summary of the root it named, and an id whose root's
-    // write threw is reported as failed even though a different id did the
-    // failing write. `updated.length + failed.length === ids.length` for any
-    // batch of distinct ids — the invariant Board.tsx's merge depends on.
-    const summaryByRootId = new Map(summarizeAll(true, context, successfulRootIds).map((c) => [c.id, c]));
-    const updated: CardSummary[] = [];
-    for (const [id, rootChatId] of rootByRequestedId) {
-      if (failedRootIds.has(rootChatId)) {
-        if (!failed.some((f) => f.id === id)) failed.push({ id, error: failedRootIds.get(rootChatId)! });
-        continue;
-      }
-      const summary = summaryByRootId.get(rootChatId);
-      if (!summary) {
-        // The root vanished between the write and the rollup (deleted
-        // concurrently). Reporting it as failed keeps the accounting total and
-        // leaves the id selected for a retry, which is the honest state.
-        failed.push({ id, error: "Card not found" });
-        continue;
-      }
-      updated.push(summary);
-      if (!context.isNativeTarget(id)) clearRedirectedMemberCard(id, rootChatId);
-    }
-    if (updated.length > 0) {
-      // Once for the batch, same reason as the single-card patch: a lifecycle
-      // flip moves which chats the sidebar's cards-only filter admits.
-      clearListCaches();
-      // Also once for the batch, not once per card. The board refetches its
-      // whole card list on any metadata bump (300ms debounce), so N
-      // notifications would be N SSE frames driving one identical refetch.
-      sessionRegistry.notifyMetadata(updated[0].id, { cardEvent: "updated" });
-    }
-    res.json({ updated, failed });
-  } catch (err: any) {
-    log.error(`Error in bulk lifecycle update: ${err}`);
-    res.status(500).json({ error: "Failed to update cards", details: err.message });
-  }
-});
-
 cardsRouter.get("/:id", (req, res) => {
   // #swagger.tags = ['Cards']
   // #swagger.summary = 'Get a card with live rollup'
@@ -250,7 +113,7 @@ cardsRouter.get("/:id", (req, res) => {
     const context = createCardContext();
     const root = context.resolve(req.params.id);
     if (!root) return res.status(404).json({ error: "Card not found" });
-    // Hidden is a board-listing concern, not deletion. A direct id remains
+    // Hidden is a listing concern, not deletion. A direct id remains
     // readable/editable so callers can inspect or unhide an opted-out card.
     const card = summarizeAll(true, context, root.rootChatId).find((c) => c.id === root.rootChatId);
     if (!card) return res.status(404).json({ error: "Card not found" });
@@ -313,8 +176,8 @@ cardsRouter.patch("/:id", (req, res) => {
     if (metadataError) return res.status(400).json({ error: metadataError });
   }
   try {
-    // Same shared read as bulk-lifecycle: one card here rather than many, but a
-    // second corpus pass for the pins would cost as much as the first.
+    // One shared read: a second corpus pass for the pins would cost as much as
+    // the first.
     const stored = listChatsSnapshot();
     const context = createCardContext(stored);
     const root = context.resolve(req.params.id);

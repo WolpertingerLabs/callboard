@@ -166,25 +166,21 @@ describe("moving trees", () => {
 });
 
 describe("GET /api/cards?space=", () => {
-  it("scopes the board and keeps other spaces' needs-you cards when asked", async () => {
+  it("returns only the space's cards, each stamped with its spaceId", async () => {
     const work = (await spaces("post", "/", { body: { name: "Work" } })).body.space;
     const mine = makeChat("/repos/x", { spaceId: work.id });
-    const otherQuiet = makeChat("/repos/y");
+    makeChat("/repos/y");
     const otherBlocked = makeChat("/repos/z");
     waiting.add(otherBlocked.id);
 
+    // A blocked chat in another space is not pulled in: the scope is the scope.
     const scoped = await cards("get", "/", { query: { space: work.id } as any });
     expect(scoped.body.cards.map((c: any) => c.id)).toEqual([mine.id]);
-
-    const withNeedsYou = await cards("get", "/", { query: { space: work.id, crossSpaceNeedsYou: "true" } as any });
-    const ids = withNeedsYou.body.cards.map((c: any) => c.id);
-    expect(ids).toContain(mine.id);
-    expect(ids).toContain(otherBlocked.id);
-    expect(ids).not.toContain(otherQuiet.id);
-    expect(withNeedsYou.body.cards.find((c: any) => c.id === otherBlocked.id)).toMatchObject({ rollup: "needs_you", spaceId: "default" });
+    expect(scoped.body.cards[0]).toMatchObject({ spaceId: work.id });
 
     const all = await cards("get", "/", { query: {} as any });
     expect(all.body.cards).toHaveLength(3);
+    expect(all.body.cards.find((c: any) => c.id === otherBlocked.id)).toMatchObject({ rollup: "needs_you", spaceId: "default" });
   });
 });
 

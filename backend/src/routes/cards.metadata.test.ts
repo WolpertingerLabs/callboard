@@ -25,7 +25,7 @@ const clearListCaches = vi.fn();
 vi.mock("../services/claude.js", () => ({ getActiveSession: () => null, getPendingRequest: () => null }));
 vi.mock("../services/list-caches.js", () => ({ clearListCaches: () => clearListCaches() }));
 // sessionRegistry.has is the rollup's liveness probe; notifyMetadata is a
-// no-op here (the bulk-lifecycle suite owns the notification-count contract).
+// no-op here.
 vi.mock("../services/session-registry.js", () => ({ sessionRegistry: { has: () => false, notifyMetadata: () => {} } }));
 
 const { cardsRouter } = await import("./cards.js");
