@@ -1,196 +1,213 @@
 /**
  * The publish workflow's decisions. The cases that matter most are the re-runs
- * after a partial failure (drawlatch published but callboard not; callboard
- * published but not tagged): a re-run must finish the release, never publish
- * twice, and never fail a run that is otherwise fine.
+ * after a partial failure (drawlatch published but callboard not; both
+ * published but not tagged): a re-run of the same commit must finish the
+ * release, never publish twice, and never fail a run that is otherwise fine.
  */
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { compareSemver, distTagError, distTagsOf, isSemverRange, planRelease, publishedVersions, repoGit } from "./release-plan.mjs";
+import { compareSemver, distTagError, distTagsOf, isSemverRange, planRelease, publishedVersions, releaseTag, repoGit } from "./release-plan.mjs";
 
 const HEAD = "a".repeat(40);
 const OLD = "b".repeat(40);
 const OTHER = "c".repeat(40);
+const OLDER = "d".repeat(40);
 const V = "1.0.0-alpha.69";
-const CB = "1.0.0-alpha.67";
 
-function plan({ dryRun = false, distTag = "latest", pins, drawlatch = {}, callboard = {}, ancestors = [OLD], drift = [] } = {}) {
-  const driftCalls = [];
-  const result = planRelease({
+function plan({
+  dryRun = false,
+  distTag = "latest",
+  version = V,
+  versionErrors = [],
+  drawlatch = {},
+  callboard = {},
+  tagCommit = null,
+  ancestors = [OLD, OLDER],
+} = {}) {
+  return planRelease({
     dryRun,
     head: HEAD,
     distTag,
-    pins: pins ?? { "package.json": V, "backend/package.json": V },
-    drawlatch: { version: V, published: false, tagCommit: null, gitHead: null, ...drawlatch },
-    callboard: { version: CB, published: false, tagCommit: null, gitHead: null, ...callboard },
-    git: {
-      isPublishBase: (sha) => sha === HEAD || ancestors.includes(sha),
-      driftFiles: (sha) => {
-        driftCalls.push(sha);
-        return drift;
-      },
-    },
+    version,
+    versionErrors,
+    drawlatch: { published: false, gitHead: null, ...drawlatch },
+    callboard: { published: false, gitHead: null, ...callboard },
+    tagCommit,
+    git: { isPublishBase: (sha) => sha === HEAD || ancestors.includes(sha) },
   });
-  return { ...result, driftCalls };
 }
+const both = (action) => ({ drawlatch: { action }, callboard: { action } });
+const at = (gitHead) => ({ published: true, gitHead });
 
 describe("planRelease", () => {
-  it("first release: publishes and tags both from HEAD", () => {
+  it("first release: publishes both from HEAD and tags HEAD v<version>", () => {
     const p = plan();
     expect(p.errors).toEqual([]);
-    expect(p.drawlatch).toMatchObject({ action: "publish", tagCommit: HEAD });
-    expect(p.callboard).toEqual({ action: "publish", tagCommit: HEAD });
-    expect(p.driftCalls).toEqual([]);
+    expect(p.warnings).toEqual([]);
+    expect(p).toMatchObject({ ...both("publish"), tag: { name: "v1.0.0-alpha.69", commit: HEAD } });
   });
 
   it("a dry run plans the same actions (the workflow adds --dry-run and skips tagging)", () => {
     const p = plan({ dryRun: true });
     expect(p.errors).toEqual([]);
-    expect(p.drawlatch.action).toBe("publish");
-    expect(p.callboard.action).toBe("publish");
+    expect(p).toMatchObject({ ...both("publish"), tag: { commit: HEAD } });
   });
 
-  describe("lockstep", () => {
-    it("fails when a pin is a range", () => {
-      const p = plan({ pins: { "package.json": `^${V}`, "backend/package.json": V } });
-      expect(p.errors).toHaveLength(1);
-      expect(p.errors[0]).toMatch(/package\.json pins .* to "\^1\.0\.0-alpha\.69"/);
+  it("passes version drift through as errors, which stop the run", () => {
+    const p = plan({
+      versionErrors: ['packages/drawlatch/package.json "version" is "1.0.0-alpha.70", but the root version is "1.0.0-alpha.69". Run `npm run version:sync`.'],
     });
-
-    it("fails when the backend pin is missing", () => {
-      const p = plan({ pins: { "package.json": V, "backend/package.json": undefined } });
-      expect(p.errors).toHaveLength(1);
-      expect(p.errors[0]).toMatch(/^backend\/package\.json pins/);
-    });
+    expect(p.errors).toEqual([expect.stringMatching(/^packages\/drawlatch\/package.json "version"/)]);
   });
 
-  describe("drawlatch already published (callboard-only release)", () => {
-    it("skips drawlatch when nothing that ships changed since its tag", () => {
-      const p = plan({ drawlatch: { published: true, tagCommit: OLD, gitHead: OLD } });
+  describe("neither published", () => {
+    it("publishes both without re-tagging when v<version> already points at HEAD", () => {
+      const p = plan({ tagCommit: HEAD });
       expect(p.errors).toEqual([]);
-      expect(p.drawlatch).toEqual({ action: "skip", tagCommit: null, driftBase: OLD });
-      expect(p.driftCalls).toEqual([OLD]);
-      expect(p.callboard.action).toBe("publish");
-    });
-
-    it("fails with 'bump drawlatch' when shipping files changed since its tag", () => {
-      const p = plan({ drawlatch: { published: true, tagCommit: OLD }, drift: ["packages/drawlatch/src/remote/server.ts"] });
-      expect(p.errors).toHaveLength(1);
-      expect(p.errors[0]).toMatch(/Bump drawlatch/);
-      expect(p.errors[0]).toMatch(/src\/remote\/server\.ts/);
-    });
-
-    it("fails on drift in a dry run too: that is what the rehearsal is for", () => {
-      const p = plan({ dryRun: true, drawlatch: { published: true, tagCommit: OLD }, drift: ["packages/drawlatch/package.json"] });
-      expect(p.errors).toHaveLength(1);
-    });
-
-    it("truncates a long list of changed files", () => {
-      const drift = Array.from({ length: 25 }, (_, i) => `packages/drawlatch/src/f${i}.ts`);
-      const p = plan({ drawlatch: { published: true, tagCommit: OLD }, drift });
-      expect(p.errors[0]).toMatch(/and 5 more$/);
-    });
-
-    it("re-run after drawlatch published but its tag push failed: tags the commit npm recorded", () => {
-      const p = plan({ drawlatch: { published: true, tagCommit: null, gitHead: OLD } });
-      expect(p.errors).toEqual([]);
-      expect(p.drawlatch).toEqual({ action: "skip", tagCommit: OLD, driftBase: OLD });
-      expect(p.warnings.join("\n")).toMatch(/drawlatch-v1\.0\.0-alpha\.69 is missing/);
-    });
-
-    it("fails when it was published from outside this branch (no tag, gitHead not a monorepo ancestor)", () => {
-      const p = plan({ drawlatch: { published: true, tagCommit: null, gitHead: OTHER } });
-      expect(p.errors).toHaveLength(1);
-      expect(p.errors[0]).toMatch(/published from outside this workflow .*Bump drawlatch/);
-      expect(p.driftCalls).toEqual([]);
-    });
-
-    it("fails when it was published with no gitHead and no tag", () => {
-      expect(plan({ drawlatch: { published: true } }).errors).toHaveLength(1);
-    });
-
-    it("fails when the tag and the commit npm recorded disagree", () => {
-      const OLDER = "d".repeat(40);
-      const p = plan({ drawlatch: { published: true, tagCommit: OLD, gitHead: OLDER }, ancestors: [OLD, OLDER] });
-      expect(p.errors).toHaveLength(1);
-      expect(p.errors[0]).toMatch(/published from d{40}, but drawlatch-v1\.0\.0-alpha\.69 points at b{40}/);
-      expect(p.driftCalls).toEqual([]);
-    });
-
-    it("trusts the tag when npm's gitHead isn't a monorepo commit (or is missing)", () => {
-      for (const gitHead of [OTHER, null]) {
-        const p = plan({ drawlatch: { published: true, tagCommit: OLD, gitHead } });
-        expect(p.errors).toEqual([]);
-        expect(p.driftCalls).toEqual([OLD]);
-      }
-    });
-  });
-
-  describe("drawlatch not published", () => {
-    it("publishes without re-tagging when its tag already points at HEAD", () => {
-      const p = plan({ drawlatch: { tagCommit: HEAD } });
-      expect(p.errors).toEqual([]);
-      expect(p.drawlatch).toMatchObject({ action: "publish", tagCommit: null });
+      expect(p).toMatchObject({ ...both("publish"), tag: { commit: null } });
     });
 
     it("fails on a stray tag at another commit", () => {
-      const p = plan({ drawlatch: { tagCommit: OTHER } });
-      expect(p.errors).toHaveLength(1);
-      expect(p.errors[0]).toMatch(/Tag drawlatch-v1\.0\.0-alpha\.69 already exists/);
+      const p = plan({ tagCommit: OTHER });
+      expect(p.errors).toEqual([expect.stringMatching(/^Tag v1\.0\.0-alpha\.69 already exists at c{40}, but 1\.0\.0-alpha\.69 is not on npm/)]);
     });
   });
 
-  describe("callboard already published", () => {
-    it("fails a real run: bump callboard", () => {
-      const p = plan({ callboard: { published: true, tagCommit: OLD, gitHead: OLD } });
-      expect(p.errors).toEqual(["@wolpertingerlabs/callboard@1.0.0-alpha.67 is already on npm. Bump callboard."]);
-      expect(p.callboard).toEqual({ action: "skip", tagCommit: null });
-    });
-
-    it("a dry run warns and only packs (npm publish --dry-run refuses a published version)", () => {
-      const p = plan({ dryRun: true, callboard: { published: true, gitHead: OLD } });
+  describe("re-run of the same commit (base is HEAD)", () => {
+    it("drawlatch published, callboard not: skips drawlatch, publishes callboard, tags HEAD", () => {
+      const p = plan({ drawlatch: at(HEAD) });
       expect(p.errors).toEqual([]);
-      expect(p.callboard).toEqual({ action: "pack", tagCommit: null });
-      expect(p.warnings.join("\n")).toMatch(/a real run would fail/);
+      expect(p).toMatchObject({ drawlatch: { action: "skip" }, callboard: { action: "publish" }, tag: { commit: HEAD } });
     });
 
-    it("re-run after callboard published but its tag push failed: tags HEAD, publishes nothing", () => {
-      const p = plan({ drawlatch: { published: true, tagCommit: HEAD, gitHead: HEAD }, callboard: { published: true, gitHead: HEAD } });
+    it("both published, no tag: publishes nothing, tags HEAD, with a warning", () => {
+      const p = plan({ drawlatch: at(HEAD), callboard: at(HEAD) });
       expect(p.errors).toEqual([]);
-      expect(p.drawlatch).toEqual({ action: "skip", tagCommit: null, driftBase: HEAD });
-      expect(p.callboard).toEqual({ action: "skip", tagCommit: HEAD });
+      expect(p).toMatchObject({ ...both("skip"), tag: { commit: HEAD } });
+      expect(p.warnings).toEqual([expect.stringMatching(/already published from this commit\. Only tagging it v1\.0\.0-alpha\.69/)]);
     });
 
-    it("re-run of a fully finished release from the same commit is a no-op, not a failure", () => {
-      const p = plan({ drawlatch: { published: true, tagCommit: HEAD, gitHead: HEAD }, callboard: { published: true, tagCommit: HEAD, gitHead: HEAD } });
+    it("both published and tagged at HEAD: a no-op, not a failure", () => {
+      const p = plan({ drawlatch: at(HEAD), callboard: at(HEAD), tagCommit: HEAD });
       expect(p.errors).toEqual([]);
-      expect(p.drawlatch).toEqual({ action: "skip", tagCommit: null, driftBase: HEAD });
-      expect(p.callboard).toEqual({ action: "skip", tagCommit: null });
+      expect(p.warnings).toEqual([]);
+      expect(p).toMatchObject({ ...both("skip"), tag: { commit: null } });
     });
 
+    it("callboard published, drawlatch not (impossible through the workflow): publishes drawlatch, with a warning", () => {
+      const p = plan({ callboard: at(HEAD) });
+      expect(p.errors).toEqual([]);
+      expect(p).toMatchObject({ drawlatch: { action: "publish" }, callboard: { action: "skip" }, tag: { commit: HEAD } });
+      expect(p.warnings).toEqual([expect.stringMatching(/couldn't be installed until now/)]);
+    });
+
+    it("trusts the tag when npm recorded no gitHead", () => {
+      const p = plan({ drawlatch: at(null), tagCommit: HEAD });
+      expect(p.errors).toEqual([]);
+      expect(p).toMatchObject({ drawlatch: { action: "skip" }, callboard: { action: "publish" }, tag: { commit: null } });
+    });
+  });
+
+  describe("released from an older commit (base is not HEAD)", () => {
+    it("both published, untagged: tags the base, publishes nothing, warns", () => {
+      const p = plan({ drawlatch: at(OLD), callboard: at(OLD) });
+      expect(p.errors).toEqual([]);
+      expect(p).toMatchObject({ ...both("skip"), tag: { commit: OLD } });
+      expect(p.warnings).toEqual([expect.stringMatching(/already released from b{40}; tagging it.*bump the version/)]);
+    });
+
+    it("both published and tagged: a real run fails, a dry run warns and only packs", () => {
+      const real = plan({ drawlatch: at(OLD), callboard: at(OLD), tagCommit: OLD });
+      expect(real.errors).toEqual([expect.stringMatching(/already on npm \(released from b{40}\)\. Bump the version/)]);
+      expect(real).toMatchObject({ ...both("skip"), tag: { commit: null } });
+      const dry = plan({ dryRun: true, drawlatch: at(OLD), callboard: at(OLD), tagCommit: OLD });
+      expect(dry.errors).toEqual([]);
+      expect(dry).toMatchObject({ ...both("pack"), tag: { commit: null } });
+      expect(dry.warnings).toEqual([expect.stringMatching(/Bump the version\. This dry run only packs; a real run would fail/)]);
+    });
+
+    it("only drawlatch published (a partial release, and main moved on): a real run fails with the remedy, a dry run packs", () => {
+      const real = plan({ drawlatch: at(OLD) });
+      expect(real.errors).toEqual([
+        expect.stringMatching(
+          /partly released from b{40} \(@wolpertingerlabs\/drawlatch is on npm, @wolpertingerlabs\/callboard is not\).*Re-run failed jobs.*Re-run all jobs.*or bump the version/,
+        ),
+      ]);
+      expect(real).toMatchObject({ ...both("skip"), tag: { commit: null } });
+      const dry = plan({ dryRun: true, drawlatch: at(OLD) });
+      expect(dry.errors).toEqual([]);
+      expect(dry).toMatchObject(both("pack"));
+      expect(dry.warnings).toEqual([expect.stringMatching(/partly released/)]);
+    });
+  });
+
+  describe("only callboard on npm, from an older commit (the reverse partial release)", () => {
+    it("a real run fails, naming the packages the right way round, with the remedy", () => {
+      const p = plan({ callboard: at(OLD) });
+      expect(p.errors).toEqual([
+        expect.stringMatching(
+          /partly released from b{40} \(@wolpertingerlabs\/callboard is on npm, @wolpertingerlabs\/drawlatch is not\), and main is now at a{40}\..*within 30 days.*or bump the version/,
+        ),
+      ]);
+      expect(p).toMatchObject({ ...both("skip"), tag: { commit: null } });
+    });
+
+    it("a dry run warns and only packs both", () => {
+      const p = plan({ dryRun: true, callboard: at(OLD) });
+      expect(p.errors).toEqual([]);
+      expect(p).toMatchObject({ ...both("pack"), tag: { commit: null } });
+      expect(p.warnings).toEqual([
+        expect.stringMatching(/@wolpertingerlabs\/callboard is on npm, @wolpertingerlabs\/drawlatch is not.*This dry run only packs/),
+      ]);
+    });
+  });
+
+  describe("disagreements", () => {
     it("fails when v<version> and the commit npm recorded disagree, in a dry run too", () => {
       for (const dryRun of [false, true]) {
-        const p = plan({ dryRun, callboard: { published: true, tagCommit: OLD, gitHead: OTHER } });
-        expect(p.errors).toHaveLength(1);
-        expect(p.errors[0]).toMatch(/published from c{40}, but v1\.0\.0-alpha\.67 points at b{40}/);
-        expect(p.callboard).toEqual({ action: "skip", tagCommit: null });
+        const p = plan({ dryRun, drawlatch: at(OLDER), callboard: at(OLDER), tagCommit: OLD });
+        expect(p.errors).toEqual([expect.stringMatching(/published from d{40}, but v1\.0\.0-alpha\.69 points at b{40}/)]);
+        expect(p).toMatchObject({ ...both("skip"), tag: { commit: null } });
       }
     });
 
     it("published from this commit but tagged elsewhere is a conflict", () => {
-      const p = plan({ callboard: { published: true, tagCommit: OTHER, gitHead: HEAD } });
-      expect(p.errors).toHaveLength(1);
+      expect(plan({ callboard: at(HEAD), drawlatch: at(HEAD), tagCommit: OTHER }).errors).toEqual([expect.stringMatching(/points at c{40}/)]);
     });
-  });
 
-  it("re-run after drawlatch published but callboard failed: skips drawlatch, publishes callboard", () => {
-    const p = plan({ drawlatch: { published: true, tagCommit: HEAD, gitHead: HEAD } });
-    expect(p.errors).toEqual([]);
-    expect(p.drawlatch.action).toBe("skip");
-    expect(p.callboard).toEqual({ action: "publish", tagCommit: HEAD });
+    it("fails when the two packages were published from different commits", () => {
+      const p = plan({ drawlatch: at(OLD), callboard: at(OLDER) });
+      expect(p.errors).toEqual([
+        expect.stringMatching(
+          /drawlatch@1\.0\.0-alpha\.69 was published from b{40} and @wolpertingerlabs\/callboard@1\.0\.0-alpha\.69 from d{40}\. Bump the version/,
+        ),
+      ]);
+      expect(p).toMatchObject(both("skip"));
+    });
+
+    it.each([
+      ["drawlatch", { drawlatch: at(OTHER) }, /^@wolpertingerlabs\/drawlatch@.* published from c{40}.*published outside this workflow/],
+      ["callboard", { callboard: at(OTHER), drawlatch: at(HEAD) }, /^@wolpertingerlabs\/callboard@.* published from c{40}.*published outside this workflow/],
+      ["drawlatch, with no gitHead and no tag", { drawlatch: at(null) }, /published from no commit/],
+    ])("fails when %s was published from outside this workflow", (_, packages, pattern) => {
+      const p = plan(packages);
+      expect(p.errors).toEqual([expect.stringMatching(pattern)]);
+      expect(p).toMatchObject({ ...both("skip"), tag: { commit: null } });
+    });
+
+    it("a gitHead that isn't a monorepo commit fails even when a tag exists (a standalone-repo publish)", () => {
+      expect(plan({ drawlatch: at(OTHER), tagCommit: OLD }).errors).toEqual([expect.stringMatching(/published outside this workflow/)]);
+    });
+
+    it("trusts the tag for a package npm recorded no gitHead for", () => {
+      const p = plan({ drawlatch: at(null), callboard: at(OLD) });
+      expect(p.errors).toEqual([expect.stringMatching(/published from no commit/)]);
+      const tagged = plan({ drawlatch: at(null), callboard: at(OLD), tagCommit: OLD });
+      expect(tagged.errors).toEqual([expect.stringMatching(/already on npm \(released from b{40}\)/)]);
+    });
   });
 
   describe("dist-tag", () => {
@@ -200,44 +217,45 @@ describe("planRelease", () => {
       expect(p.errors[0]).toMatch(/^dist_tag /);
     });
 
+    it("reports a version that isn't semver instead of throwing in the dist-tag check", () => {
+      const versionErrors = ['package.json: version "1.0" isn\'t a semver version.'];
+      const p = plan({ version: "1.0", versionErrors, drawlatch: { distTags: { latest: "1.0.0-alpha.68" } } });
+      expect(p.errors).toEqual(versionErrors);
+    });
+
     it.each(["latest", "next", "beta", "hotfix-1", "alpha.1"])("accepts dist_tag %j", (distTag) => {
       expect(plan({ distTag }).errors).toEqual([]);
     });
 
-    it("refuses to move the dist-tag backwards", () => {
+    it("refuses to move the dist-tag backwards, per package", () => {
       const p = plan({ drawlatch: { distTags: { latest: "1.0.0-alpha.70" } }, callboard: { distTags: { latest: "1.0.0" } } });
       expect(p.errors).toHaveLength(2);
       expect(p.errors[0]).toMatch(/drawlatch@1\.0\.0-alpha\.69 is lower than 1\.0\.0-alpha\.70, which the "latest" dist-tag/);
-      expect(p.errors[1]).toMatch(/callboard@1\.0\.0-alpha\.67 is lower than 1\.0\.0/);
+      expect(p.errors[1]).toMatch(/callboard@1\.0\.0-alpha\.69 is lower than 1\.0\.0/);
     });
 
-    it("allows moving it forwards, a different dist-tag, or a tag that doesn't exist yet", () => {
-      expect(plan({ drawlatch: { distTags: { latest: "1.0.0-alpha.68" } }, callboard: { distTags: { latest: "1.0.0-alpha.9" } } }).errors).toEqual([]);
+    it("allows the first one-version release: drawlatch latest alpha.68 and callboard latest alpha.66", () => {
+      expect(plan({ drawlatch: { distTags: { latest: "1.0.0-alpha.68" } }, callboard: { distTags: { latest: "1.0.0-alpha.66" } } }).errors).toEqual([]);
+    });
+
+    it("allows a different dist-tag, or one that doesn't exist yet", () => {
       expect(plan({ distTag: "hotfix", drawlatch: { distTags: { latest: "2.0.0" } } }).errors).toEqual([]);
       expect(plan({ drawlatch: { distTags: {} } }).errors).toEqual([]);
     });
 
     it("only checks packages it is about to publish", () => {
-      const p = plan({ drawlatch: { published: true, tagCommit: OLD, distTags: { latest: "9.0.0" } } });
+      const p = plan({ drawlatch: { ...at(HEAD), distTags: { latest: "9.0.0" } } });
       expect(p.errors).toEqual([]);
     });
   });
 
-  describe("callboard not published", () => {
-    it("publishes without re-tagging when v<version> already points at HEAD", () => {
-      expect(plan({ callboard: { tagCommit: HEAD } }).callboard).toEqual({ action: "publish", tagCommit: null });
-    });
-
-    it("fails on a stray tag at another commit", () => {
-      const p = plan({ callboard: { tagCommit: OTHER } });
-      expect(p.errors).toHaveLength(1);
-      expect(p.errors[0]).toMatch(/Tag v1\.0\.0-alpha\.67 already exists/);
-    });
+  it("releaseTag is v<version>", () => {
+    expect(releaseTag(V)).toBe("v1.0.0-alpha.69");
   });
 });
 
-// The I/O layer against a real repository: which files count as "ships",
-// which commits can be a drift base, and tag lookup.
+// The I/O layer against a real repository: which commits can be a publish
+// base, and tag lookup.
 describe("repoGit", () => {
   let repo;
   const git = (...args) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.invalid", ...args], { cwd: repo, encoding: "utf8" }).trim();
@@ -250,50 +268,6 @@ describe("repoGit", () => {
     git("commit", "-qm", msg);
     return git("rev-parse", "HEAD");
   };
-  const changedAfterTouching = (rel) => {
-    const base = git("rev-parse", "HEAD");
-    write(rel, `changed ${Math.random()}\n`);
-    commit(rel);
-    return repoGit(repo).driftFiles(base);
-  };
-
-  const SHIPS = [
-    "packages/drawlatch/src/remote/server.ts",
-    "packages/drawlatch/src/remote/ingestors/e2e/setup.ts",
-    "packages/drawlatch/src/remote/__fixtures__/helper.ts",
-    "packages/drawlatch/src/connections/ai/openai.json",
-    "packages/drawlatch/src/connections/ai/__fixtures__/sample.json",
-    "packages/drawlatch/src/connections/ai/openai.test.ts",
-    "packages/drawlatch/frontend/src/App.tsx",
-    "packages/drawlatch/frontend/vite.config.ts",
-    "packages/drawlatch/frontend/package.json",
-    "packages/drawlatch/bin/drawlatch.js",
-    "packages/drawlatch/package.json",
-    "packages/drawlatch/tsconfig.json",
-    "packages/drawlatch/README.md",
-    "packages/drawlatch/CONNECTIONS.md",
-    "packages/drawlatch/LICENSE",
-    "packages/drawlatch/some-new-unclassified-file.txt",
-    "packages/drawlatch/src/remote/x.example.json",
-  ];
-  const DOES_NOT_SHIP = [
-    "packages/drawlatch/src/remote/server.test.ts",
-    "packages/drawlatch/src/remote/ingestors/e2e/github.e2e.test.ts",
-    "packages/drawlatch/frontend/src/App.test.tsx",
-    "packages/drawlatch/src/remote/__fixtures__/suite.json",
-    "packages/drawlatch/plans/vault.md",
-    "packages/drawlatch/CLAUDE.md",
-    "packages/drawlatch/.gitignore",
-    "packages/drawlatch/.claude/commands/gsr.md",
-    "packages/drawlatch/.claude-plugin/plugin.json",
-    "packages/drawlatch/eslint.config.js",
-    "packages/drawlatch/vitest.e2e.config.ts",
-    "packages/drawlatch/tsconfig.eslint.json",
-    "packages/drawlatch/remote.config.example.json",
-    "packages/drawlatch/.env.e2e.example",
-    "backend/src/index.ts",
-    "package-lock.json", // the documented gap: see DRAWLATCH_NON_SHIPPING
-  ];
 
   let standalone, monorepoBase, sideBranch;
   beforeAll(() => {
@@ -304,24 +278,16 @@ describe("repoGit", () => {
     // subtree import merge.
     write("package.json", "{}\n");
     standalone = commit("standalone drawlatch");
-    for (const rel of [...SHIPS, ...DOES_NOT_SHIP]) write(rel);
+    write("packages/drawlatch/package.json", "{}\n");
     monorepoBase = commit("monorepo base");
     git("checkout", "-q", "-b", "side");
     write("side.txt");
     sideBranch = commit("side");
     git("checkout", "-q", "main");
+    write("README.md");
+    commit("main moves on");
   });
   afterAll(() => rmSync(repo, { recursive: true, force: true }));
-
-  describe("driftFiles", () => {
-    it.each(SHIPS)("counts %s as drift", (rel) => {
-      expect(changedAfterTouching(rel)).toEqual([rel]);
-    });
-
-    it.each(DOES_NOT_SHIP)("ignores %s", (rel) => {
-      expect(changedAfterTouching(rel)).toEqual([]);
-    });
-  });
 
   describe("isPublishBase", () => {
     it("accepts HEAD and its monorepo ancestors", () => {
@@ -341,9 +307,9 @@ describe("repoGit", () => {
   });
 
   it("tagCommit peels an annotated tag to its commit, and is null for a missing tag", () => {
-    git("tag", "-a", "drawlatch-v9.9.9", "-m", "t", monorepoBase);
-    expect(repoGit(repo).tagCommit("drawlatch-v9.9.9")).toBe(monorepoBase);
-    expect(repoGit(repo).tagCommit("drawlatch-v0.0.0")).toBe(null);
+    git("tag", "-a", "v9.9.9", "-m", "t", monorepoBase);
+    expect(repoGit(repo).tagCommit("v9.9.9")).toBe(monorepoBase);
+    expect(repoGit(repo).tagCommit("v0.0.0")).toBe(null);
   });
 });
 
@@ -392,6 +358,7 @@ describe("compareSemver", () => {
 
   it("ignores build metadata and rejects garbage", () => {
     expect(compareSemver("1.0.0+abc", "1.0.0")).toBe(0);
+    expect(compareSemver("v1.0.0-alpha.70", "1.0.0-alpha.69")).toBeGreaterThan(0); // a leading v still compares
     expect(() => compareSemver("latest", "1.0.0")).toThrow(/not a semver/);
   });
 });
