@@ -519,10 +519,9 @@ export async function dismissSummon(id: string): Promise<Chat> {
 // ── Cards (conversation trees) ──────────────────────────────────────
 
 /**
- * `includeHidden` is off by default because the board — the caller this was
- * written for, since removed — is exactly what a hidden card opted out of. The
- * Git page leaves it off too: a hidden card is archived, and only open cards
- * become its chips.
+ * `includeHidden` is off by default: a hidden card has opted out of the
+ * default cards listing, and counts as archived. The Git page leaves it off,
+ * since only open cards become its chips.
  *
  * The sidebar passes it, and not as a nicety: `utils/chatDimming` fades a chat
  * whose card is closed *or hidden*, which it can only do for cards it was
@@ -992,8 +991,7 @@ export async function deleteChat(id: string): Promise<void> {
 }
 
 /**
- * Per-id outcome of a bulk delete, shaped exactly like
- * {@link BulkLifecycleFailure} — same field names, same reason: the endpoint is
+ * Per-id outcome of a bulk delete: the id that failed and why. The endpoint is
  * deliberately partial rather than all-or-nothing, so one chat failing must not
  * strand the other six, and the caller retries exactly the ids named here.
  */

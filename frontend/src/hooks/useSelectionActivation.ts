@@ -18,7 +18,8 @@ import { useLongPress, type UseLongPressResult } from "./useLongPress";
 
 export interface UseSelectionActivationOptions {
   /**
-   * What the checkbox announces itself as selecting — a chat's display name. The one thing this hook needs to know about the row's data.
+   * What the checkbox announces itself as selecting — a chat's display name.
+   * The one thing this hook needs to know about the row's data.
    */
   label: string;
   /** Every field below is optional: with none passed the row behaves exactly as it did before multi-select existed. */
