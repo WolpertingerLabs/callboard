@@ -21,12 +21,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { BranchConfig, CheckedOutBranch } from "../api";
-import BranchSelector from "./BranchSelector";
+import BranchSelector, { BRANCH_LISTING_TIMEOUT_MS } from "./BranchSelector";
 
 const getGitBranches = vi.fn();
 
 vi.mock("../api", () => ({
-  getGitBranches: (folder: string) => getGitBranches(folder),
+  getGitBranches: (folder: string, signal?: AbortSignal) => getGitBranches(folder, signal),
 }));
 
 const REPO = "/home/cybil/callboard";
@@ -340,6 +340,344 @@ describe("a branch listing that has not arrived, or never will", () => {
 
     type("feat/y");
     expect(summary()).toBe("Still loading this repository's branches — cannot say yet whether feat/y exists, or where the chat will run.");
+  });
+});
+
+/**
+ * The listing used to be read once, at mount. The launchpad stays open while
+ * branches and worktrees are made elsewhere, so the sentence went on stating
+ * what had been true: "Will create branch `feat/z`" for a branch that now
+ * exists, "will switch this checkout" for one a worktree has since taken.
+ *
+ * Coming back to the window re-reads it — and must do so without the things a
+ * folder change does on purpose: no "Loading...", no hedged sentence, and
+ * nothing the user picked or typed taken back.
+ */
+describe("a listing that changes while the launchpad stays open", () => {
+  const refocus = () => act(async () => void window.dispatchEvent(new Event("focus")));
+  const setVisibility = (state: "visible" | "hidden") =>
+    act(async () => {
+      Object.defineProperty(document, "visibilityState", { configurable: true, get: () => state });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+  afterEach(() => {
+    delete (document as unknown as Record<string, unknown>).visibilityState;
+  });
+
+  const options = () => Array.from(baseSelect().options).map((o) => o.textContent);
+
+  it("shows the branches in the order the daemon sent them, not re-sorted", async () => {
+    stubBranches({ branches: ["main", "zeta/newest", "feat/y", "alpha/oldest"] });
+    await open();
+
+    expect(options()).toEqual(["main (current)", "zeta/newest", "feat/y", "alpha/oldest"]);
+  });
+
+  it("re-reads the listing when the window regains focus, and the sentence follows", async () => {
+    await open();
+    type("feat/z");
+    expect(summary()).toBe("Will create branch feat/z off main in this checkout.");
+
+    // Meanwhile, in a terminal: `git worktree add ../callboard.feat-z -b feat/z`.
+    stubBranches({
+      branches: ["main", "feat/z", "feat/y", "feat/a"],
+      checkedOut: [
+        { branch: "main", path: REPO, isMainWorktree: true },
+        { branch: "feat/z", path: "/home/cybil/callboard.feat-z", isMainWorktree: false },
+      ],
+    });
+    await refocus();
+
+    expect(getGitBranches).toHaveBeenCalledTimes(2);
+    expect(getGitBranches).toHaveBeenLastCalledWith(REPO, expect.any(AbortSignal));
+    expect(summary()).toBe("feat/z is checked out at callboard.feat-z — the chat will run there. This checkout is untouched.");
+    expect(options()).toEqual(["main (current)", "feat/z", "feat/y", "feat/a"]);
+  });
+
+  it("re-reads when the tab becomes visible, and not when it is hidden", async () => {
+    await open();
+
+    await setVisibility("hidden");
+    expect(getGitBranches).toHaveBeenCalledTimes(1);
+    // Focus events reach a hidden document too (devtools, another window of the
+    // same browser); nobody is looking at the answer.
+    await refocus();
+    expect(getGitBranches).toHaveBeenCalledTimes(1);
+
+    await setVisibility("visible");
+    expect(getGitBranches).toHaveBeenCalledTimes(2);
+  });
+
+  /**
+   * The whole difference from a folder change. While the refetch is in flight
+   * the picker is still a picker, the sentence still answers from the listing
+   * it has, and the base and the typed name are where the user left them —
+   * during the request and after it lands.
+   */
+  it("keeps the picker, the selection and the typed name while the refetch runs and after it lands", async () => {
+    stubBranches({
+      checkedOut: [
+        { branch: "main", path: REPO, isMainWorktree: true },
+        { branch: "feat/y", path: "/home/cybil/callboard.feat-y", isMainWorktree: false },
+      ],
+    });
+    const { onChange } = await open();
+    pickBase("feat/a");
+    type("feat/y");
+    const before = summary();
+    expect(before).toBe("feat/y is checked out at callboard.feat-y — the chat will run there. This checkout is untouched.");
+
+    let answer: (value: { branches: string[]; checkedOut: CheckedOutBranch[] }) => void = () => {};
+    getGitBranches.mockReturnValueOnce(new Promise((resolve) => (answer = resolve)));
+    onChange.mockClear();
+    await refocus();
+
+    expect(screen.queryByText("Loading...")).toBeNull();
+    expect(baseSelect().value).toBe("feat/a");
+    expect(nameField().value).toBe("feat/y");
+    expect(summary()).toBe(before);
+
+    // The worktree on feat/y was removed in the meantime; the branch stays.
+    await act(async () => answer({ branches: ["main", "feat/a", "feat/y"], checkedOut: [{ branch: "main", path: REPO, isMainWorktree: true }] }));
+
+    expect(baseSelect().value).toBe("feat/a");
+    expect(nameField().value).toBe("feat/y");
+    expect(summary()).toBe("feat/y already exists — will switch this checkout to it.");
+    // Nothing the user chose changed, so nothing new was told to the parent.
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  /**
+   * No request is skipped because another is in flight: the repository can
+   * change after the earlier one was served, and the focus that would have
+   * noticed must not be the one that gets dropped. The newest request asked is
+   * the only one allowed to answer, whatever order they come back in.
+   */
+  it("asks again on a focus that arrives mid-request, and only the newer answer lands", async () => {
+    await open();
+    type("feat/z");
+    type Answer = { branches: string[]; checkedOut: CheckedOutBranch[] };
+    let answerOlder: (value: Answer) => void = () => {};
+    let answerNewer: (value: Answer) => void = () => {};
+    getGitBranches.mockReturnValueOnce(new Promise((resolve) => (answerOlder = resolve)));
+    getGitBranches.mockReturnValueOnce(new Promise((resolve) => (answerNewer = resolve)));
+
+    await refocus();
+    // `git branch feat/z` happens here, after the first refetch was served.
+    await refocus();
+    expect(getGitBranches).toHaveBeenCalledTimes(3);
+    // The superseded request is abandoned rather than left to run.
+    expect((getGitBranches.mock.calls[1][1] as AbortSignal).aborted).toBe(true);
+    expect((getGitBranches.mock.calls[2][1] as AbortSignal).aborted).toBe(false);
+
+    const here = [{ branch: "main", path: REPO, isMainWorktree: true }];
+    await act(async () => answerNewer({ branches: ["main", "feat/z"], checkedOut: here }));
+    expect(summary()).toBe("feat/z already exists — will switch this checkout to it.");
+
+    // The older answer, from before the branch existed, arrives last and is ignored.
+    await act(async () => answerOlder({ branches: ["main"], checkedOut: here }));
+    expect(summary()).toBe("feat/z already exists — will switch this checkout to it.");
+  });
+
+  describe("a request that never settles", () => {
+    /** What `fetch` does with an aborted signal, which a bare pending promise would not. */
+    const hang = (_folder: string, signal?: AbortSignal) =>
+      new Promise((_resolve, reject) => signal?.addEventListener("abort", () => reject(new DOMException("The operation was aborted.", "AbortError"))));
+
+    beforeEach(() => void vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] }));
+    afterEach(() => void vi.useRealTimers());
+
+    it("gives up a first load with an error instead of loading forever, and the next focus recovers", async () => {
+      getGitBranches.mockImplementationOnce(hang);
+      render(<BranchSelector folder={REPO} currentBranch="main" onChange={vi.fn()} />);
+      type("feat/y");
+      expect(screen.getByText("Loading...")).toBeTruthy();
+
+      await act(async () => void vi.advanceTimersByTime(BRANCH_LISTING_TIMEOUT_MS - 1));
+      expect(screen.getByText("Loading...")).toBeTruthy();
+      await act(async () => void vi.advanceTimersByTime(1));
+
+      expect(screen.queryByText("Loading...")).toBeNull();
+      expect(screen.getByText("Timed out listing branches")).toBeTruthy();
+      expect(summary()).toBe("Could not load this repository's branches — cannot say whether feat/y exists, or where the chat will run.");
+
+      await refocus();
+      expect(options()).toEqual(["main (current)", "feat/y", "feat/a"]);
+    });
+
+    it("keeps the listing when a refetch hangs, and a later focus is not blocked by it", async () => {
+      await act(async () => void render(<BranchSelector folder={REPO} currentBranch="main" onChange={vi.fn()} />));
+      pickBase("feat/y");
+
+      getGitBranches.mockImplementationOnce(hang);
+      await refocus();
+      await act(async () => void vi.advanceTimersByTime(BRANCH_LISTING_TIMEOUT_MS));
+
+      expect(screen.queryByText("Timed out listing branches")).toBeNull();
+      expect(baseSelect().value).toBe("feat/y");
+
+      getGitBranches.mockImplementationOnce(hang);
+      await refocus();
+      stubBranches({ branches: ["main", "feat/y", "feat/new"] });
+      await refocus();
+      expect(options()).toEqual(["main (current)", "feat/y", "feat/new"]);
+    });
+  });
+
+  /**
+   * What the daemon answers when git gave no verdict (a timeout, say): an error
+   * status, not an empty listing. An empty 200 would go through the success
+   * path — every branch "does not exist", and the picked base is taken back.
+   */
+  it("keeps the listing, the base and the sentence when a refetch fails", async () => {
+    const { onChange } = await open();
+    pickBase("feat/a");
+    type("feat/y");
+    onChange.mockClear();
+    expect(summary()).toBe("feat/y already exists — will switch this checkout to it.");
+
+    getGitBranches.mockRejectedValueOnce(new Error("Failed to list branches"));
+    await refocus();
+
+    expect(screen.queryByText("Failed to list branches")).toBeNull();
+    expect(baseSelect().value).toBe("feat/a");
+    expect(summary()).toBe("feat/y already exists — will switch this checkout to it.");
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("recovers from a failed first load on the next refetch", async () => {
+    getGitBranches.mockRejectedValueOnce(new Error("Failed to list branches"));
+    render(<BranchSelector folder={REPO} currentBranch="main" onChange={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText("Failed to list branches")).toBeTruthy());
+
+    await refocus();
+
+    expect(screen.queryByText("Failed to list branches")).toBeNull();
+    expect(options()).toEqual(["main (current)", "feat/y", "feat/a"]);
+  });
+
+  /**
+   * The one thing a refetch takes back. A `<select>` whose value matches no
+   * option *displays* its first option, so the box would show `main (current)`
+   * while emitting `baseBranch: "feat/y"` for a branch that is gone.
+   */
+  it("returns the base to the current branch when the picked one was deleted", async () => {
+    const { onChange } = await open();
+    pickBase("feat/y");
+    expect(onChange).toHaveBeenLastCalledWith({ baseBranch: "feat/y" });
+
+    stubBranches({ branches: ["main", "feat/a"] });
+    await refocus();
+
+    expect(baseSelect().value).toBe("main");
+    expect(onChange).toHaveBeenLastCalledWith({});
+    expect(summary()).toBe("Runs here on main. No branch or worktree change.");
+  });
+
+  /**
+   * A refetch for the folder the user has left must not land on the one they
+   * are in, and the listeners of the old folder must be gone with it.
+   */
+  it("ignores a refetch that answers after the folder has moved on", async () => {
+    const view = render(<BranchSelector folder={REPO} currentBranch="main" onChange={vi.fn()} />);
+    await screen.findByLabelText("Base branch");
+
+    let answerRefetch: (value: { branches: string[]; checkedOut: CheckedOutBranch[] }) => void = () => {};
+    getGitBranches.mockReturnValueOnce(new Promise((resolve) => (answerRefetch = resolve)));
+    await refocus();
+
+    getGitBranches.mockReturnValue(new Promise(() => {}));
+    view.rerender(<BranchSelector folder="/home/cybil/other-repo" currentBranch="main" onChange={vi.fn()} />);
+    await act(async () => answerRefetch({ branches: ["main", "feat/y"], checkedOut: [] }));
+
+    type("feat/y");
+    expect(summary()).toBe("Still loading this repository's branches — cannot say yet whether feat/y exists, or where the chat will run.");
+
+    // The old folder's refetch was abandoned with the folder, and its listener
+    // is gone: a refocus asks once, about the folder the user is in.
+    expect((getGitBranches.mock.calls[1][1] as AbortSignal).aborted).toBe(true);
+    const calls = getGitBranches.mock.calls.length;
+    await refocus();
+    expect(getGitBranches.mock.calls.length).toBe(calls + 1);
+    expect(getGitBranches).toHaveBeenLastCalledWith("/home/cybil/other-repo", expect.any(AbortSignal));
+    expect(getGitBranches.mock.calls.filter(([folder]) => folder === REPO)).toHaveLength(2);
+  });
+
+  /**
+   * `folder` is not a remount key, so the pick outlives the repository it was
+   * made in. When the new repository is on the same branch, nothing else resets
+   * it: the `<select>` displayed its first option while `baseBranch: "feat/y"`
+   * was still sent, for a branch the new repository may not have.
+   */
+  describe("a base picked in the repository the user has left", () => {
+    const moveTo = async (
+      view: ReturnType<typeof render>,
+      onChange: (config: BranchConfig | null) => void,
+      over: { branches: string[]; isDetached?: boolean },
+    ) => {
+      stubBranches({ branches: over.branches, checkedOut: [] });
+      await act(async () =>
+        view.rerender(<BranchSelector folder="/home/cybil/other-repo" currentBranch="main" isDetached={over.isDetached} onChange={onChange} />),
+      );
+    };
+    const start = async (isDetached?: boolean) => {
+      const onChange = vi.fn<(config: BranchConfig | null) => void>();
+      const view = render(<BranchSelector folder={REPO} currentBranch="main" isDetached={isDetached} onChange={onChange} />);
+      await screen.findByLabelText("Base branch");
+      pickBase("feat/y");
+      return { view, onChange };
+    };
+
+    it("returns to the current branch on the new repository's first answer", async () => {
+      const { view, onChange } = await start();
+      expect(emitted(onChange)).toEqual({ baseBranch: "feat/y" });
+
+      await moveTo(view, onChange, { branches: ["main", "develop"] });
+
+      expect(baseSelect().value).toBe("main");
+      expect(emitted(onChange)).toEqual({});
+      expect(summary()).toBe("Runs here on main. No branch or worktree change.");
+    });
+
+    it("is kept when the new repository has that branch too", async () => {
+      const { view, onChange } = await start();
+
+      await moveTo(view, onChange, { branches: ["main", "feat/y"] });
+
+      expect(baseSelect().value).toBe("feat/y");
+      expect(emitted(onChange)).toEqual({ baseBranch: "feat/y" });
+    });
+
+    it("returns to no base on a detached HEAD", async () => {
+      const { view, onChange } = await start(true);
+
+      await moveTo(view, onChange, { branches: ["main", "develop"], isDetached: true });
+
+      expect(baseSelect().value).toBe("");
+      expect(emitted(onChange)).toEqual({});
+      expect(summary()).toBe("Runs here. This checkout is on no branch, and nothing here changes that.");
+    });
+
+    /** An unborn branch is current and in no listing; it must not be "reset" to anything else. */
+    it("stays on an unborn current branch, which the listing never carries", async () => {
+      const { view, onChange } = await start();
+
+      await moveTo(view, onChange, { branches: [] });
+
+      expect(emitted(onChange)).toEqual({});
+      expect(summary()).toBe("Runs here on main. No branch or worktree change.");
+    });
+  });
+
+  it("stops listening once unmounted", async () => {
+    const view = render(<BranchSelector folder={REPO} currentBranch="main" onChange={vi.fn()} />);
+    await screen.findByLabelText("Base branch");
+    view.unmount();
+
+    await refocus();
+    await setVisibility("visible");
+
+    expect(getGitBranches).toHaveBeenCalledTimes(1);
   });
 });
 

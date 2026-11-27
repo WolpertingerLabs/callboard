@@ -19,13 +19,13 @@ const GIT_MAX_BUFFER = 1024 * 1024;
  * paths reach git exactly as given. Whether a failure is swallowed into a
  * default or surfaced is each caller's decision, not this helper's.
  */
-function git(directory: string, args: string[], opts: { timeout?: number; input?: string } = {}): string {
+function git(directory: string, args: string[], opts: { timeout?: number; input?: string; maxBuffer?: number } = {}): string {
   return execFileSync("git", args, {
     cwd: directory,
     encoding: "utf8",
     stdio: "pipe",
     timeout: opts.timeout ?? 10000,
-    maxBuffer: GIT_MAX_BUFFER,
+    maxBuffer: opts.maxBuffer ?? GIT_MAX_BUFFER,
     ...(opts.input !== undefined && { input: opts.input }),
   });
 }
@@ -35,12 +35,12 @@ function git(directory: string, args: string[], opts: { timeout?: number; input?
  * with the repo (one spawn per untracked file, say). Same argv form, defaults
  * and failure shape: rejects on a non-zero exit with stdout/stderr on the error.
  */
-async function gitAsync(directory: string, args: string[], opts: { timeout?: number } = {}): Promise<string> {
+async function gitAsync(directory: string, args: string[], opts: { timeout?: number; maxBuffer?: number } = {}): Promise<string> {
   const pending = execFileAsync("git", args, {
     cwd: directory,
     encoding: "utf8",
     timeout: opts.timeout ?? 10000,
-    maxBuffer: GIT_MAX_BUFFER,
+    maxBuffer: opts.maxBuffer ?? GIT_MAX_BUFFER,
   });
   // execFileSync hands git a closed stdin; execFile would leave the pipe open.
   pending.child.stdin?.end();
@@ -727,8 +727,102 @@ export function resolveWorktreeToMainRepoCached(folder: string): WorktreeResolut
 }
 
 /**
- * List local branch names for a git repository.
- * Returns branches sorted alphabetically with the current branch first.
+ * The two listings of local branches. One line per branch, `%(HEAD)` (`*` for
+ * the branch checked out in the directory git ran in, a space otherwise)
+ * directly followed by the full refname — and, in the dated one, the commit's
+ * committer date between them.
+ *
+ * `for-each-ref refs/heads` rather than `git branch --list`, for three reasons:
+ *
+ *  - it lists refs and nothing else. `git branch --list` adds a pseudo-entry on
+ *    a detached HEAD (`(HEAD detached at 1a2b3c4)`), which is not a branch and
+ *    was nonetheless offered as one;
+ *  - the full refname is unambiguous. `%(refname:short)` spells a branch that
+ *    shares its name with a tag as `heads/<name>`, which is not the branch's
+ *    name and matches nothing a caller compares it against;
+ *  - `%(HEAD)` marks a linked worktree's own branch, and a subdirectory's, so
+ *    the current branch costs no second spawn and no reading of HEAD.
+ *
+ * They are two commands because the date is not free. To print it git opens
+ * every branch's commit, so a single ref pointing at a missing object fails the
+ * whole command (`fatal: missing object`, exit 128), and each line is longer,
+ * so the output buffer fills sooner. The names-only listing reads refs and
+ * opens nothing: it is what anything that only needs names runs, and what the
+ * dated listing falls back to.
+ *
+ * A space is a safe separator: git allows none in a ref name. None of the atoms
+ * is recent — all three were in git by 2.13, long before the `%(worktreepath)`
+ * (2.23) that would be needed to fold the worktree listing into this command.
+ */
+const BRANCH_NAMES_ARGS = ["for-each-ref", "--format=%(HEAD)%(refname)", "refs/heads"];
+const BRANCH_DATED_ARGS = ["for-each-ref", "--format=%(HEAD)%(committerdate:unix) %(refname)", "refs/heads"];
+
+/**
+ * Room for the names-only listing. Its lines are a dozen bytes longer than
+ * those of the `git branch --list --format=%(refname:short)` it replaced, and
+ * running out means no branches at all rather than fewer — so it gets more room
+ * than the default instead of a lower ceiling than before. The dated listing
+ * keeps the default: when it overflows, this is what it falls back to.
+ */
+const BRANCH_NAMES_MAX_BUFFER = 4 * GIT_MAX_BUFFER;
+
+/**
+ * Either listing's output as branch names: the current branch first, then the
+ * rest by most recent commit (committer date, newest first), names in code-unit
+ * order breaking ties — which, for the names-only listing, is every tie: it
+ * comes out current first and alphabetical. Sorted here rather than with
+ * `--sort` so the order does not depend on which git version breaks a tie how.
+ *
+ * Committer date, not author date: it is when the commit landed on the branch
+ * — a rebase or an amend refreshes it — which is what "recently worked on"
+ * means to someone choosing a base.
+ */
+function parseBranchListing(output: string): string[] {
+  let current: string | undefined;
+  const rows: { name: string; committed: number }[] = [];
+  for (const line of output.split("\n")) {
+    const match = /^(.)(?:(\d*) )?refs\/heads\/(.+)$/.exec(line);
+    if (!match) continue;
+    const [, head, date, name] = match;
+    if (head === "*") current = name;
+    else rows.push({ name, committed: Number(date ?? 0) });
+  }
+  rows.sort((a, b) => b.committed - a.committed || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  const names = rows.map((row) => row.name);
+  return current === undefined ? names : [current, ...names];
+}
+
+/**
+ * What a failed git says about itself, in the three ways the callers below need
+ * told apart:
+ *
+ *  - `refused`: git ran to the end and exited non-zero. A verdict — "not a
+ *    repository", or "I cannot do that here".
+ *  - `overflow`: git was answering and the output outgrew the buffer. Not a
+ *    verdict on the repository, but a failure of *this command's* output, so a
+ *    command that prints less may still succeed.
+ *  - `silent`: no answer came — a timeout, a kill, or git could not be spawned.
+ *    Nothing is known, and asking again in another form would only wait again.
+ *
+ * For {@link gitAsync} failures: `execFile` reports an overflow as
+ * `ERR_CHILD_PROCESS_STDIO_MAXBUFFER` and kills the child, so the overflow has
+ * to be recognised before the kill is read as silence.
+ */
+function gitAsyncFailure(err: unknown): "refused" | "overflow" | "silent" {
+  const { code, killed, signal } = err as { code?: unknown; killed?: boolean; signal?: unknown };
+  if (code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") return "overflow";
+  return typeof code === "number" && !killed && !signal ? "refused" : "silent";
+}
+
+/**
+ * Local branch names for a git repository, for a caller that needs the *set*:
+ * the names-only listing, so a ref pointing at a missing object is still
+ * listed and nothing depends on reading a commit. Current branch first, the
+ * rest alphabetical. `[]` for anything that is not a repository, and when git
+ * fails.
+ *
+ * Synchronous, for {@link uniqueBranchName}. A request handler, and anything
+ * that wants the branches by recency, uses {@link tryGetGitBranchesAsync}.
  */
 export function getGitBranches(directory: string): string[] {
   if (!directory || !existsSync(directory)) {
@@ -736,39 +830,46 @@ export function getGitBranches(directory: string): string[] {
   }
 
   try {
-    // argv, not a shell string: the format reaches git verbatim, so no quote
-    // characters come back to strip. (The shell-string form needed a strip of
-    // surrounding `'` — for shells that pass them through — which also mangled
-    // a branch legitimately named with quotes; git allows `'` in ref names.)
-    const output = git(directory, ["branch", "--list", "--format=%(refname:short)"], { timeout: 5000 }).trim();
-
-    if (!output) return [];
-
-    const branches = output
-      .split("\n")
-      .map((b) => b.trim())
-      .filter(Boolean)
-      .sort();
-
-    // Move current branch to front. Read from HEAD where possible (see
-    // getGitInfo); `null` is a detached HEAD — no current branch, so nothing
-    // moves. Only an undecodable HEAD (or a subdirectory, with no .git of its
-    // own) spawns.
-    const headHome = resolveHeadHome(directory);
-    const fromHead = headHome ? branchFromHead(headHome) : undefined;
-    const currentBranch = fromHead !== undefined ? (fromHead ?? "") : git(directory, ["branch", "--show-current"], { timeout: 5000 }).trim();
-
-    if (currentBranch) {
-      const idx = branches.indexOf(currentBranch);
-      if (idx > 0) {
-        branches.splice(idx, 1);
-        branches.unshift(currentBranch);
-      }
-    }
-
-    return branches;
+    return parseBranchListing(git(directory, BRANCH_NAMES_ARGS, { timeout: 5000, maxBuffer: BRANCH_NAMES_MAX_BUFFER }));
   } catch {
     return [];
+  }
+}
+
+/**
+ * Local branch names without blocking the event loop: the current branch
+ * first, then the rest most recently committed first (see
+ * {@link parseBranchListing}). On a detached HEAD there is no current branch
+ * and nothing is hoisted.
+ *
+ * Like {@link tryGetGitWorktreesAsync}, it tells "git said no" from "no answer
+ * came": `[]` when git ran and refused the directory (not a repository) or it
+ * has no branches, `null` when there was no verdict at all — a timeout, a
+ * kill, git could not be spawned, or a listing too large to read. A caller must
+ * not show a `null` as an empty repository.
+ *
+ * The dated listing degrades rather than vanishes. When git refuses it (one
+ * ref pointing at a missing object is enough) or its output overflows, the
+ * names-only listing answers instead: every branch still listed, the broken
+ * one included, in alphabetical order behind the current one. Only when that
+ * is refused too is the directory taken to have no branches. A timeout is not
+ * retried: the fallback would wait on the same disk.
+ */
+export async function tryGetGitBranchesAsync(directory: string): Promise<string[] | null> {
+  if (!directory || !existsSync(directory)) {
+    return [];
+  }
+
+  try {
+    return parseBranchListing(await gitAsync(directory, BRANCH_DATED_ARGS, { timeout: 5000 }));
+  } catch (err) {
+    if (gitAsyncFailure(err) === "silent") return null;
+  }
+
+  try {
+    return parseBranchListing(await gitAsync(directory, BRANCH_NAMES_ARGS, { timeout: 5000, maxBuffer: BRANCH_NAMES_MAX_BUFFER }));
+  } catch (err) {
+    return gitAsyncFailure(err) === "refused" ? [] : null;
   }
 }
 
