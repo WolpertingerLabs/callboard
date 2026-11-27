@@ -32,9 +32,12 @@
  * request (~3 ms), at most {@link LISTING_CONCURRENCY} at a time, plus its PR
  * lookup: two concurrent `gh api` listings per `PR_CACHE_TTL_MS`, and one
  * batched call for the branches and one for the linked PRs those listings do
- * not hold. All three are cached and refreshed behind the response, so a
- * poll waits on GitHub only for what it has never been told — see
- * github-prs.ts.
+ * not hold. All three are cached and refreshed behind the response. A poll
+ * waits on GitHub — never longer than `PR_FORCE_WAIT_MS` — only for what it
+ * has never been told, for an answer older than `PR_STALE_MAX_MS` (the page
+ * opened for the first time in a while), for a linked PR whose every earlier
+ * ask failed, and when forced. What one request can spawn is bounded per
+ * repository; the count is on `resolveBranchPulls` in github-prs.ts.
  */
 import { existsSync } from "fs";
 import { homedir } from "os";
@@ -55,6 +58,7 @@ import {
   resolveBranchPulls,
   resolveLinkedPulls,
   toBranchPr,
+  type BranchAsk,
   type LinkedPulls,
   type PullSummary,
   type RepoPulls,
@@ -122,7 +126,15 @@ function isWithin(dir: string, root: string): boolean {
   return dir === root || dir.startsWith(root.endsWith(sep) ? root : root + sep);
 }
 
-/** Spawning more git processes than this at once measurably stalls the daemon's event loop. */
+/**
+ * `git worktree list` processes alive at once. Starting a process blocks the
+ * event loop, for longer the more memory the daemon holds: measured ~1 ms per
+ * `git` in a 100 MB process, ~11 ms at 400 MB (a running daemon), ~34 ms at
+ * 900 MB. Started back to back the stalls add up — 24 listings at 400 MB:
+ * longest stall 21 ms at 2 at a time, 40 ms at 4, 77–92 ms at 8, for a total
+ * that only fell from 0.36 s to 0.30 s. So this stays small: the listings are
+ * 3 ms each, and nothing is waiting on them the way it waits on GitHub.
+ */
 export const LISTING_CONCURRENCY = 2;
 
 /** `fn` over `items`, at most `limit` in flight, results in input order. */
@@ -174,7 +186,7 @@ export interface OverviewDeps extends PlacementDeps {
    * `pulls` with the PRs of `branches` its listing is too short to hold; see
    * {@link resolveBranchPulls}. Absent = the listing alone.
    */
-  branchPulls?: (repoPath: string, pulls: RepoPulls, branches: string[], force: boolean) => Promise<RepoPulls>;
+  branchPulls?: (repoPath: string, pulls: RepoPulls, branches: BranchAsk, force: boolean) => Promise<RepoPulls>;
 }
 
 export const DEFAULT_PLACEMENT_DEPS: PlacementDeps = {
@@ -359,25 +371,29 @@ export async function buildGitOverview(opts: { force?: boolean } = {}, deps: Ove
   // their and the removed rows' trail entries' — for the PRs older than its
   // listing reaches. Started here and joined below, beside the linked PRs:
   // both are GitHub, and neither needs the other's answer.
-  const branchesByRepo = new Map<string, Set<string>>();
-  const wantBranch = (repoPath: string, branch: string | null) => {
-    if (branch) branchesByRepo.set(repoPath, (branchesByRepo.get(repoPath) ?? new Set<string>()).add(branch));
+  const branchesByRepo = new Map<string, { live: Set<string>; trail: Set<string> }>();
+  const wantBranch = (repoPath: string, kind: "live" | "trail", branch: string | null) => {
+    if (!branch) return;
+    const asked = branchesByRepo.get(repoPath) ?? { live: new Set<string>(), trail: new Set<string>() };
+    asked[kind].add(branch);
+    branchesByRepo.set(repoPath, asked);
   };
   for (const repo of listings) {
     for (const wt of repo.worktrees) {
-      wantBranch(repo.repoPath, wt.branch);
-      for (const entry of trailByCwd.get(wt.normPath) ?? []) wantBranch(repo.repoPath, entry.branch);
+      wantBranch(repo.repoPath, "live", wt.branch);
+      for (const entry of trailByCwd.get(wt.normPath) ?? []) wantBranch(repo.repoPath, "trail", entry.branch);
     }
   }
   for (const [repoPath, byCwd] of removedByRepo) {
-    for (const removed of byCwd.values()) for (const entry of removed.entries) wantBranch(repoPath, entry.branch);
+    for (const removed of byCwd.values()) for (const entry of removed.entries) wantBranch(repoPath, "trail", entry.branch);
   }
   const branchLookups = Promise.all(
     [...branchesByRepo].map(async ([repoPath, branches]) => {
       const listed = pulls.get(repoPath)!;
       // Never fatal: a lookup that throws leaves the listing as it was.
       try {
-        return [repoPath, (await deps.branchPulls?.(repoPath, listed, [...branches], opts.force === true)) ?? listed] as const;
+        const asked = { live: [...branches.live], trail: [...branches.trail] };
+        return [repoPath, (await deps.branchPulls?.(repoPath, listed, asked, opts.force === true)) ?? listed] as const;
       } catch {
         return [repoPath, listed] as const;
       }
@@ -506,7 +522,11 @@ export async function buildGitOverview(opts: { force?: boolean } = {}, deps: Ove
         (a.branch ?? "\uffff").localeCompare(b.branch ?? "\uffff") ||
         a.cwd.localeCompare(b.cwd),
     );
-    out.push({ repoPath, name: basename(repoPath), rows, ...(prError && { prError }), ...(prError && !repoPulls.error && { prErrorPartial: true as const }) });
+    // Partial: PR data is shown all the same — a listing that half arrived
+    // or is kept from before a failed refresh, or a whole one beside a
+    // by-branch or by-number lookup that failed. Not partial: there is none.
+    const partial = repoPulls.error === undefined || repoPulls.errorPartial === true;
+    out.push({ repoPath, name: basename(repoPath), rows, ...(prError && { prError }), ...(prError && partial && { prErrorPartial: true as const }) });
   }
   out.sort((a, b) => a.name.localeCompare(b.name) || a.repoPath.localeCompare(b.repoPath));
 

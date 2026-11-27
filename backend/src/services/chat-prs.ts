@@ -50,6 +50,7 @@ import {
   resolveBranchPulls,
   resolveLinkedPulls,
   toChatPr,
+  type BranchAsk,
   type LinkedPulls,
   type PullSummary,
   type RepoPulls,
@@ -124,7 +125,7 @@ export interface ChatPrsDeps extends PlacementDeps {
    * `pulls` with the PRs of `branches` its listing is too short to hold; see
    * {@link resolveBranchPulls}. Defaults to the listing alone.
    */
-  branchPulls?: (repoPath: string, pulls: RepoPulls, branches: string[], force: boolean) => Promise<RepoPulls>;
+  branchPulls?: (repoPath: string, pulls: RepoPulls, branches: BranchAsk, force: boolean) => Promise<RepoPulls>;
 }
 
 /** Production deps: the card and the trail share one chat snapshot per request, taken only if needed. */
@@ -219,13 +220,16 @@ export async function buildChatPrs(opts: { folder: string; chatId?: string; forc
   // trails' — for the PRs older than its listing reaches; and the linked PRs,
   // from those listings where they hold them. Both at once: both are GitHub,
   // and neither needs the other's answer.
-  const branchesByRepo = new Map<string, Set<string>>();
-  const wantBranch = (repoPath: string, branch: string | null) => {
-    if (branch) branchesByRepo.set(repoPath, (branchesByRepo.get(repoPath) ?? new Set<string>()).add(branch));
+  const branchesByRepo = new Map<string, { live: Set<string>; trail: Set<string> }>();
+  const wantBranch = (repoPath: string, kind: "live" | "trail", branch: string | null) => {
+    if (!branch) return;
+    const asked = branchesByRepo.get(repoPath) ?? { live: new Set<string>(), trail: new Set<string>() };
+    asked[kind].add(branch);
+    branchesByRepo.set(repoPath, asked);
   };
-  if (current?.kind === "placed") wantBranch(current.repo.repoPath, current.worktree.branch);
-  for (const { placement } of elsewhere) wantBranch(placement.repo.repoPath, placement.worktree.branch);
-  for (const entry of [...ownEntries, ...memberEntries]) wantBranch(entry.repoPath, entry.branch);
+  if (current?.kind === "placed") wantBranch(current.repo.repoPath, "live", current.worktree.branch);
+  for (const { placement } of elsewhere) wantBranch(placement.repo.repoPath, "live", placement.worktree.branch);
+  for (const entry of [...ownEntries, ...memberEntries]) wantBranch(entry.repoPath, "trail", entry.branch);
   const links = linkLists.flat();
   const [branchFound, linked] = await Promise.all([
     Promise.all(
@@ -233,7 +237,8 @@ export async function buildChatPrs(opts: { folder: string; chatId?: string; forc
         const listed = pullsByRepo.get(repoPath)!;
         // Never fatal: a lookup that throws leaves the listing as it was.
         try {
-          return [repoPath, (await deps.branchPulls?.(repoPath, listed, [...branches], force)) ?? listed] as const;
+          const asked = { live: [...branches.live], trail: [...branches.trail] };
+          return [repoPath, (await deps.branchPulls?.(repoPath, listed, asked, force)) ?? listed] as const;
         } catch {
           return [repoPath, listed] as const;
         }

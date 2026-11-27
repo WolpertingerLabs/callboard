@@ -32,6 +32,13 @@
  * {@link PR_STALE_MAX_MS}, and a forced request wait, and never for longer
  * than {@link PR_FORCE_WAIT_MS}.
  *
+ * Every lookup is a child process, and starting one blocks the event loop
+ * for longer the more memory the daemon holds (~18 ms per `gh` at 400 MB).
+ * So they all go through one limiter ({@link limited}), which starts at most
+ * one per turn of the event loop and keeps at most
+ * {@link PR_FETCH_CONCURRENCY} alive; and the number a request can start is
+ * bounded per repository — see {@link resolveBranchPulls} for the count.
+ *
  * Every failure — no `gh`, not authenticated, offline, rate limited, a remote
  * that is not GitHub — degrades to "no PR data" for that repo. Nothing here may
  * fail the overview it feeds.
@@ -55,18 +62,24 @@ export const PR_FORCE_MIN_AGE_MS = 10_000;
 /** How long a forced refresh waits for `gh` before serving the stale entry. */
 export const PR_FORCE_WAIT_MS = 5_000;
 /**
- * `gh` processes alive at once, over every repository and every kind of
- * lookup — a repository's two listings are two.
+ * Child processes this module has alive at once, over every repository and
+ * every kind of lookup — a repository's two listings are two.
  *
- * Not there to protect the event loop: these are async `execFile`s, and with
- * 1 to 12 listings in flight its delay stayed at the timer's own resolution
- * (max 2.3 ms, `monitorEventLoopDelay` in a 400 MB process). It bounds what
- * one cold request with many repositories asks of GitHub at once: each
- * listing is itself slower the more run beside it (0.45 s alone, ~1.1 s among
- * four, ~1.7 s among eight), and GitHub's secondary rate limits count
- * concurrent requests. Measured on a cold three-repository overview: 2.3 s at
- * 2 (no better than one repository after another), 1.5 s at 4, 1.45 s at 6,
- * 1.45 s at 12 — past a handful, more processes buy nothing.
+ * Two different costs are bounded here, and only the second by this number:
+ *
+ * - **Starting** a process blocks the event loop: `execFile` returns only
+ *   once the child exists, and that takes longer the more memory the daemon
+ *   holds — measured 1.5 ms per `gh` in a 100 MB process, 18 ms at 400 MB (a
+ *   running daemon), 36 ms at 900 MB; `git` 1 / 11 / 34 ms. Six started in a
+ *   row at 400 MB is one 110 ms stall. Concurrency does not change that cost,
+ *   only how much of it lands at once — so {@link limited} starts at most one
+ *   process per turn of the event loop, whatever this number is: the longest
+ *   stall is a single spawn.
+ * - **Running** ones cost the daemon nothing, but GitHub answers each request
+ *   slower the more run beside it (a listing: 0.45 s alone, ~1.1 s among
+ *   four, ~1.7 s among eight) and its secondary rate limits count concurrent
+ *   requests. A cold three-repository overview took 2.3 s at 2, 1.5 s at 4,
+ *   1.45 s at 6 and 1.45 s at 12: past a handful, more buy nothing.
  */
 export const PR_FETCH_CONCURRENCY = 6;
 const GH_TIMEOUT_MS = 15_000;
@@ -280,16 +293,27 @@ export interface RepoPulls {
    */
   defaultBranch?: string;
   /**
-   * Set when the lookup failed. `byBranch` then holds whatever did arrive:
-   * the open PRs when only the closed listing failed, the closed ones when
-   * only the open listing did, nothing when both did, or — for a failed
-   * background refresh — the entry it was meant to replace.
+   * Set when the lookup failed. What the rest then holds depends on which
+   * listing did:
+   *
+   * - the open one (whatever the closed one did): nothing from this fetch. A
+   *   closed PR is a branch's PR only while no open one exists, and without
+   *   the open listing that cannot be known — so closed PRs alone are never
+   *   matched against. With an earlier entry, that entry is kept whole.
+   * - only the closed one: the open PRs, fresh; and with an earlier entry,
+   *   the closed PRs it held.
    */
   error?: string;
   /**
+   * Set with `error` when PR data is held nonetheless — fresh open PRs
+   * without the closed listing, or an earlier entry kept through a failed
+   * refresh: incomplete or out of date, not absent.
+   */
+  errorPartial?: true;
+  /**
    * Set by {@link resolveBranchPulls} when a branch the listing has no PR for
    * could not be asked about: the listing itself is whole, but a PR older
-   * than it reaches may be missing.
+   * than it reaches may be missing. Never set together with `error`.
    */
   branchError?: string;
 }
@@ -347,12 +371,32 @@ const CLOSED_QUERY = `state=closed&sort=updated&direction=desc&per_page=${CLOSED
 
 const queue: Array<() => void> = [];
 let running = 0;
+/** Set while a process has been started in this turn of the event loop: the callback that ends the turn. */
+let turnEnd: NodeJS.Immediate | undefined;
 
-/** Admit `task` — one `gh` process — once fewer than {@link PR_FETCH_CONCURRENCY} are running. */
+/** Start the next queued task, unless one was started this turn or every slot is taken. */
+function admit(): void {
+  if (turnEnd !== undefined || running >= PR_FETCH_CONCURRENCY) return;
+  const start = queue.shift();
+  if (!start) return;
+  running++;
+  // The next one waits for the loop to come round: timers and I/O that queued
+  // up behind this spawn run before another is started.
+  turnEnd = setImmediate(() => {
+    turnEnd = undefined;
+    admit();
+  });
+  start();
+}
+
+/**
+ * Run `task` — one child process — once fewer than
+ * {@link PR_FETCH_CONCURRENCY} are alive, and never in the same turn of the
+ * event loop as another: see that constant for why both.
+ */
 function limited<T>(task: () => Promise<T>): Promise<T> {
   return new Promise<T>((resolvePromise, reject) => {
-    const start = () => {
-      running++;
+    queue.push(() => {
       // Called inside the chain, so a task that throws before returning a
       // promise still releases its slot.
       Promise.resolve()
@@ -360,11 +404,10 @@ function limited<T>(task: () => Promise<T>): Promise<T> {
         .then(resolvePromise, reject)
         .finally(() => {
           running--;
-          queue.shift()?.();
+          admit();
         });
-    };
-    if (running < PR_FETCH_CONCURRENCY) start();
-    else queue.push(start);
+    });
+    admit();
   });
 }
 
@@ -377,16 +420,22 @@ function limited<T>(task: () => Promise<T>): Promise<T> {
  * most needs.
  *
  * The two run at the same time, each its own {@link PR_FETCH_CONCURRENCY}
- * slot, which halves the wait: one is not a precondition of the other, and
- * whichever arrives is kept when the other fails. What the same failure
- * would cost twice (no `gh`, no auth, offline) is still not paid twice where
- * it can be told in advance: a closed listing still queued when the open one
- * fails is dropped, and with `probe` — set by the cache for a repo whose last
- * lookup failed — the open listing goes first and alone, the closed one
- * following only if it worked.
+ * slot, which halves the wait. They are not equals, though: the closed PRs
+ * are only usable beside the open ones (see {@link RepoPulls.error}), so a
+ * failed open listing leaves nothing, while a failed closed one leaves the
+ * open PRs. What the same failure would cost twice (no `gh`, no auth,
+ * offline) is not paid twice where it can be told in advance: a closed
+ * listing still queued when the open one fails is dropped, and with `probe` —
+ * set by the cache for a repo whose last lookup failed — the open listing
+ * goes first and alone, the closed one following only if it worked.
+ *
+ * The two `git` calls (`remote get-url` before, `symbolic-ref` after, and
+ * only for a repo with no PRs) go through {@link limited} as well: a cold
+ * request for N repositories would otherwise start N of them in one turn of
+ * the event loop.
  */
 export async function fetchRepoPulls(repoPath: string, opts: { probe?: boolean } = {}): Promise<RepoPulls> {
-  const remote = await getRemoteUrlAsync(repoPath);
+  const remote = await limited(() => getRemoteUrlAsync(repoPath));
   const ref = remote ? parseGitHubRemote(remote) : null;
   // Not on GitHub is not an error — there is simply nothing to look up.
   if (!ref) return EMPTY;
@@ -397,35 +446,70 @@ export async function fetchRepoPulls(repoPath: string, opts: { probe?: boolean }
     return { error };
   };
   let openFailed = false;
-  const open = limited(() => listPulls(ref, repoPath, OPEN_QUERY)).catch((err) => {
+  const openListing = limited(() => listPulls(ref, repoPath, OPEN_QUERY)).catch((err) => {
     openFailed = true;
     return failure(OPEN_QUERY)(err);
   });
-  if (opts.probe) await open;
+  if (opts.probe) await openListing;
   // Null: not asked, because whatever broke the open listing breaks this one.
-  const closed = limited<Listed | null>(() => (openFailed ? Promise.resolve(null) : listPulls(ref, repoPath, CLOSED_QUERY))).catch(failure(CLOSED_QUERY));
-  const pulls: PullSummary[] = [];
-  let defaultBranch: string | null = null;
+  const closedListing = limited<Listed | null>(() => (openFailed ? Promise.resolve(null) : listPulls(ref, repoPath, CLOSED_QUERY))).catch(
+    failure(CLOSED_QUERY),
+  );
+  const [open, closed] = await Promise.all([openListing, closedListing]);
+  const closedPulls = closed !== null && !("error" in closed) ? closed : undefined;
+  let pulls: PullSummary[] = [];
   let error: string | undefined;
-  for (const listed of await Promise.all([open, closed])) {
-    if (listed === null) continue;
-    if ("error" in listed) {
-      error ??= listed.error;
-      continue;
+  let errorPartial = false;
+  if ("error" in open) {
+    // Closed PRs without the open ones are not offered for matching.
+    error = open.error;
+  } else {
+    pulls = [...open.pulls, ...(closedPulls?.pulls ?? [])];
+    if (closed !== null && "error" in closed) {
+      error = closed.error;
+      errorPartial = true;
     }
-    pulls.push(...listed.pulls);
-    defaultBranch ??= listed.defaultBranch;
   }
-  // A repo with no PRs at all says nothing about its default branch; the
-  // remote-tracking HEAD is the cheap local answer, and it is cached with the
-  // rest of the entry.
-  defaultBranch ??= await getDefaultBranchAsync(repoPath);
+  // Which branch is the default is true whichever listing said so. A repo
+  // with no PRs at all says nothing about it; the remote-tracking HEAD is the
+  // cheap local answer, and it is cached with the rest of the entry.
+  const defaultBranch = ("error" in open ? null : open.defaultBranch) ?? closedPulls?.defaultBranch ?? (await limited(() => getDefaultBranchAsync(repoPath)));
   return {
     byBranch: indexPullsByBranch(pulls, ref.owner, defaultBranch),
     byNumber: new Map(pulls.map((pr) => [pr.number, pr])),
     github: ref,
     ...(defaultBranch !== null && { defaultBranch }),
     ...(error !== undefined && { error }),
+    ...(errorPartial && { errorPartial: true as const }),
+  };
+}
+
+/**
+ * What the cache keeps when a fetch came back with an error and there is an
+ * earlier entry — so that neither a failure wipes badges that were right a
+ * minute ago, nor a listing that keeps failing freezes the one that works.
+ *
+ * - The open listing failed: nothing arrived, and the earlier entry stays,
+ *   whole, with the error beside it.
+ * - Only the closed listing failed: the open PRs are fresh and are what a
+ *   live worktree most needs, so they replace the earlier ones. The earlier
+ *   closed PRs stay (they rarely change) unless the fresh listing has the PR
+ *   open again. A PR that was open before and is in neither is dropped — it
+ *   has closed or merged, and "open" is the one thing it no longer is.
+ */
+function mergeFailedRefresh(previous: RepoPulls, fresh: RepoPulls): RepoPulls {
+  // Out of date, not absent — unless the earlier entry was itself a failure that held nothing.
+  if (!fresh.errorPartial || !fresh.github) return { ...previous, error: fresh.error, ...(previous.error === undefined && { errorPartial: true as const }) };
+  const open = [...(fresh.byNumber?.values() ?? [])];
+  const reopened = new Set(open.map((pr) => pr.number));
+  const closed = [...(previous.byNumber?.values() ?? [])].filter((pr) => !isOpen(pr) && !reopened.has(pr.number));
+  const defaultBranch = fresh.defaultBranch ?? previous.defaultBranch;
+  const pulls = [...open, ...closed];
+  return {
+    ...fresh,
+    byBranch: indexPullsByBranch(pulls, fresh.github.owner, defaultBranch ?? null),
+    byNumber: new Map(pulls.map((pr) => [pr.number, pr])),
+    ...(defaultBranch !== undefined && { defaultBranch }),
   };
 }
 
@@ -446,12 +530,11 @@ function refresh(repoPath: string, entry: CacheEntry, now: number): Promise<Repo
   const pending = fetchRepoPulls(repoPath, { probe: entry.value?.error !== undefined })
     .then((value) => {
       // A failed refresh (gh logged out, offline, rate limited) must not wipe
-      // badges that were right a minute ago: keep the last good PRs and carry
-      // the error alongside them. Stamped either way, so the failure is not
-      // retried before the TTL.
+      // badges that were right a minute ago: see mergeFailedRefresh. Stamped
+      // either way, so the failure is not retried before the TTL.
       const previous = entry.value;
       entry.at = now;
-      entry.value = value.error !== undefined && previous ? { ...previous, error: value.error } : value;
+      entry.value = value.error !== undefined && previous ? mergeFailedRefresh(previous, value) : value;
       return entry.value;
     })
     // In a finally, so even a throw cannot leave the entry holding a rejected
@@ -513,6 +596,8 @@ interface Answered<V> {
   at: number;
   /** The last answer. Absent while no ask has succeeded. */
   value?: V;
+  /** When `value` was given — earlier than `at` once a later ask has failed. */
+  valueAt?: number;
   /** Why the last ask failed. Kept beside the last good `value`, like a failed listing refresh. */
   error?: string;
 }
@@ -536,17 +621,25 @@ type LookupNeed = "none" | "background" | "wait";
  * is the answer — a failure included, so what cannot be resolved is not a
  * `gh` spawn on every poll. Past it, the entry is served and refreshed behind
  * the response. Waited for: a key never asked about, an entry too old to
- * pass off as today's ({@link PR_STALE_MAX_MS}), `force` past
+ * pass off as today's (the listing's {@link PR_STALE_MAX_MS}: as long past
+ * its TTL as a listing that old would be), `force` past
  * {@link PR_FORCE_MIN_AGE_MS}, and — unless `staleFailures` — an expired
  * entry that never held an answer, since there is nothing to serve meanwhile.
- * `final` marks an answer that cannot change, which is never asked for again.
+ * `final` marks an answer that cannot change, which is never asked for again;
+ * `ttl` replaces {@link PR_CACHE_TTL_MS} for one that changes slowly.
  */
-function lookupNeed(hit: Answered<unknown> | undefined, now: number, force: boolean, opts: { final?: boolean; staleFailures?: boolean } = {}): LookupNeed {
+function lookupNeed(
+  hit: Answered<unknown> | undefined,
+  now: number,
+  force: boolean,
+  opts: { final?: boolean; staleFailures?: boolean; ttl?: number } = {},
+): LookupNeed {
   if (!hit) return "wait";
   if (opts.final) return "none";
+  const ttl = opts.ttl ?? PR_CACHE_TTL_MS;
   const age = now - hit.at;
-  if (age < PR_CACHE_TTL_MS) return force && age >= PR_FORCE_MIN_AGE_MS ? "wait" : "none";
-  if (force || age >= PR_STALE_MAX_MS) return "wait";
+  if (age < ttl) return force && age >= PR_FORCE_MIN_AGE_MS ? "wait" : "none";
+  if (force || age >= ttl + (PR_STALE_MAX_MS - PR_CACHE_TTL_MS)) return "wait";
   return hit.value === undefined && !opts.staleFailures ? "wait" : "background";
 }
 
@@ -554,25 +647,36 @@ function lookupNeed(hit: Answered<unknown> | undefined, now: number, force: bool
  * Start the fetches `items` need — one per group, less whatever is already in
  * flight — and wait, for at most {@link PR_FORCE_WAIT_MS}, for those a
  * response cannot be given without. Resolves true when the cap passed first;
- * the fetches land in the cache for the next poll either way.
+ * the fetches land in the cache for the next poll either way. With `limit`,
+ * at most that many keys are newly asked about, in the order given; the rest
+ * are left for a later call.
  */
 async function awaitLookups<T, V>(
   cache: KeyedCache<V>,
   items: Iterable<T>,
-  on: { key: (item: T) => string; group: (item: T) => string; need: (hit: Answered<V> | undefined) => LookupNeed; fetch: (group: T[]) => Promise<void> },
+  on: {
+    key: (item: T) => string;
+    group: (item: T) => string;
+    need: (hit: Answered<V> | undefined, item: T) => LookupNeed;
+    fetch: (group: T[]) => Promise<void>;
+    limit?: number;
+  },
 ): Promise<boolean> {
   const groups = new Map<string, { items: Map<string, T>; wait: boolean }>();
   const waits = new Set<Promise<void>>();
+  let asked = 0;
   for (const item of items) {
     const key = on.key(item);
-    const need = on.need(cache.entries.get(key));
+    const need = on.need(cache.entries.get(key), item);
     if (need === "none") continue;
     const pending = cache.pending.get(key);
     if (pending) {
       if (need === "wait") waits.add(pending);
       continue;
     }
+    if (asked >= (on.limit ?? Infinity)) continue;
     const group = groups.get(on.group(item)) ?? { items: new Map<string, T>(), wait: false };
+    if (!group.items.has(key)) asked++;
     group.items.set(key, item);
     group.wait ||= need === "wait";
     groups.set(on.group(item), group);
@@ -603,9 +707,18 @@ async function awaitLookups<T, V>(
 }
 
 /**
- * Ask about `keys` of one repository, a batch (one `gh` process) at a time,
- * into `cache`. Never rejects: a failure is stamped like an answer, so it is
- * not re-asked before the TTL, and the last good answer stays beside it.
+ * Ask about `keys` of one repository into `cache`, a batch — one `gh`
+ * process — per `batchSize` of them, the batches side by side (through
+ * {@link limited}, like everything else). Never rejects: a failure is stamped
+ * like an answer, so it is not re-asked before the TTL, and the last good
+ * answer stays beside it.
+ *
+ * Whatever makes one batch throw (no `gh`, offline, a token GraphQL refuses,
+ * a repository this account cannot see) breaks the others, so it is not paid
+ * for more often than it has to be: a batch not yet started when another
+ * throws fails with it, unspawned; and when any of `keys` failed last time,
+ * the first batch goes alone and the rest follow only if it worked — one
+ * process per TTL for a lookup that keeps failing, however many keys.
  */
 async function fetchIntoCache<K, V>(
   cache: KeyedCache<V>,
@@ -619,25 +732,28 @@ async function fetchIntoCache<K, V>(
   const failed = (k: K, error: string) => cache.entries.set(keyOf(k), { ...cache.entries.get(keyOf(k)), at: now, error });
   const isFailure = (answer: V | { error: string }): answer is { error: string } =>
     typeof answer === "object" && answer !== null && !Array.isArray(answer) && "error" in answer;
-  for (let i = 0; i < keys.length; i += batchSize) {
-    const batch = keys.slice(i, i + batchSize);
+  let broken: string | undefined;
+  const run = async (batch: K[]) => {
     try {
-      const fetched = await limited(() => fetch(batch));
+      const fetched = await limited(() => (broken === undefined ? fetch(batch) : Promise.reject(new Error(broken))));
       for (const k of batch) {
         const answer = fetched.get(k);
         if (answer === undefined) failed(k, "Unexpected response from GitHub");
         else if (isFailure(answer)) failed(k, answer.error);
-        else cache.entries.set(keyOf(k), { at: now, value: answer });
+        else cache.entries.set(keyOf(k), { at: now, value: answer, valueAt: now });
       }
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
-      log.debug(`PR lookup failed for ${ref.owner}/${ref.repo}: ${error}`);
-      // Whatever broke this batch (no gh, offline, a repository this account
-      // cannot see) breaks the rest.
-      for (const k of keys.slice(i)) failed(k, error);
-      return;
+      if (broken === undefined) log.debug(`PR lookup failed for ${ref.owner}/${ref.repo}: ${error}`);
+      broken ??= error;
+      for (const k of batch) failed(k, error);
     }
-  }
+  };
+  const batches: K[][] = [];
+  for (let i = 0; i < keys.length; i += batchSize) batches.push(keys.slice(i, i + batchSize));
+  const probe = keys.some((k) => cache.entries.get(keyOf(k))?.error !== undefined);
+  if (probe) await run(batches.shift()!);
+  await Promise.all(batches.map(run));
 }
 
 // ── PRs by number ────────────────────────────────────────────────────
@@ -810,10 +926,27 @@ export async function resolveLinkedPulls(
 const BRANCH_BATCH = 50;
 /**
  * PRs taken per branch, most recently updated first. A name is rarely reused
- * this often; forks' PRs with the same head name count against it too, and
- * are dropped afterwards.
+ * this often — but forks' PRs with the same head name count against it too,
+ * before they are dropped, so on a repository with many fork PRs from a
+ * generic name (`patch-1`, `dev`) this owner's old one can be crowded out.
+ * That loses an answer; it cannot produce a wrong one.
  */
 const BRANCH_PULLS = 10;
+/**
+ * Branches newly asked about per repository per request — live rows' first,
+ * then trail branches never asked about, then expired ones; the rest are
+ * filled in by later polls. With {@link BRANCH_BATCH} this is the bound on
+ * what one request can spawn for one repository's branches: 4 `gh` processes.
+ */
+const BRANCH_ASK_MAX = 4 * BRANCH_BATCH;
+/**
+ * How long an answer without an open PR is kept for a branch that is not a
+ * live row's — a git trail's branch from days or weeks ago. A PR opened on it
+ * since would be in the listing, which is asked every {@link PR_CACHE_TTL_MS}
+ * and takes the branch over; what this answer can miss in an hour is nothing
+ * a trail needs. A live row's branch keeps the short TTL.
+ */
+export const BRANCH_SETTLED_TTL_MS = 60 * 60_000;
 
 /** One branch's answer: every PR GitHub has with that head (`[]` for none), or why it could not say. */
 export type BranchAnswer = PullSummary[] | { error: string };
@@ -869,33 +1002,57 @@ export interface BranchPullDeps {
   now: () => number;
 }
 
+/** The branches a caller needs PRs for: those checked out in its rows, and those its chats' git trails recorded. */
+export interface BranchAsk {
+  live: Iterable<string | null | undefined>;
+  trail?: Iterable<string | null | undefined>;
+}
+
 /**
  * `pulls` — one repository's listing — with the PRs of `branches` that it is
  * too short to hold: a PR merged or closed longer ago than the
  * {@link CLOSED_PAGE} most recently updated, which no chat's transcript
  * happens to name either.
  *
- * Asked about: each of `branches` the listing has no PR for, never the
- * default branch — one GraphQL call per {@link BRANCH_BATCH} of them
- * ({@link fetchPullsByBranch}), however many there are, which `cwd` only
- * gives a directory to run in. Cached per branch like the PRs asked about by
- * number, "no PR" included, so a repository full of branches that never had
- * one costs one call per TTL, not one per branch per poll; callers arriving
- * together share the fetch. An ordinary poll waits (at most
- * {@link PR_FORCE_WAIT_MS}) only for a branch never asked about before;
- * afterwards the cache answers and is refreshed behind the response, a failed
- * ask included. `force` waits as it does for the listing. Nothing is asked
- * while the listing itself is failing: whatever broke it breaks this.
+ * **Asked about**: each branch the listing has no PR for, never the default
+ * branch, in one GraphQL call per {@link BRANCH_BATCH} of them
+ * ({@link fetchPullsByBranch}), which `cwd` only gives a directory to run in.
+ * Only those: a branch the listing holds a PR for is the listing's, and an
+ * older PR on that reused name is not looked for. Nothing is asked while the
+ * listing itself is failing: whatever broke it breaks this.
  *
- * What is found joins `byBranch` through {@link indexPullsByBranch} — this
- * owner's heads only, never the default branch — beside whatever the listing
- * holds for that name, and `byNumber`; the listing's own copy of a PR wins.
- * So every caller's rule applies to it unchanged: a closed PR is a live
- * branch's only at that exact commit ({@link matchPull}), a trail entry's only
- * if it was not closed before the chat got there ({@link pullsForTrailEntry}).
- * An answer once cached stays in the result when the listing later gains a PR
- * for the branch (a new PR on a reused name), though it is then no longer
- * refreshed — a closed PR that is reopened is in the listing, which wins.
+ * **Cached** per branch like the PRs asked about by number ({@link lookupNeed}),
+ * "no PR" and a failure included; callers arriving together share the fetch.
+ * A live row's branch is fresh for {@link PR_CACHE_TTL_MS}; a trail-only
+ * branch whose answer holds no open PR for {@link BRANCH_SETTLED_TTL_MS}, and
+ * `force` does not re-ask about it sooner.
+ *
+ * **Waited for**, never longer than {@link PR_FORCE_WAIT_MS}: a branch never
+ * asked about; an answer older than {@link PR_STALE_MAX_MS} past its TTL (a
+ * view opened for the first time in hours); and, for a live branch, `force`.
+ * Everything else — a failed ask too — is served from the cache and refreshed
+ * behind the response.
+ *
+ * **Cost.** Per repository per request, at most {@link BRANCH_ASK_MAX}
+ * branches are newly asked about: 4 `gh` processes, alongside the listing's 2
+ * (and its 2 `git`), each started in its own turn of the event loop. A
+ * repository with more unanswered branches than that fills in over the next
+ * polls. In steady state that is one process per TTL for the live rows'
+ * PR-less branches, plus one per 50 trail branches per hour; and while
+ * GraphQL keeps failing, one per TTL in all (see {@link fetchIntoCache}).
+ *
+ * **What is found** joins `byBranch` through {@link indexPullsByBranch} —
+ * this owner's heads only, never the default branch — and `byNumber`. So
+ * every caller's rule applies to it unchanged: a closed PR is a live branch's
+ * only at that exact commit ({@link matchPull}), a trail entry's only if it
+ * was not closed before the chat got there ({@link pullsForTrailEntry}). At
+ * most {@link BRANCH_PULLS} PRs per branch are known.
+ *
+ * **An open PR is never served stale.** Once the listing holds a PR for a
+ * branch, the branch's cached answer is dropped, not merged: were the listing
+ * to lose it again, the branch is asked afresh. And an answer's open PRs are
+ * left out once the answer is older than {@link PR_STALE_MAX_MS} — which only
+ * a run of failed refreshes can make it.
  *
  * A branch that could not be asked about sets `branchError`; the listing's
  * PRs are returned regardless. Returns `pulls` itself when there is nothing
@@ -903,49 +1060,73 @@ export interface BranchPullDeps {
  */
 export async function resolveBranchPulls(
   pulls: RepoPulls,
-  branches: Iterable<string | null | undefined>,
+  branches: BranchAsk,
   opts: { cwd: string; force?: boolean },
   deps: BranchPullDeps = { fetch: fetchPullsByBranch, now: Date.now },
 ): Promise<RepoPulls> {
   const ref = pulls.github;
   if (!ref) return pulls;
-  const wanted = [...new Set(branches)].filter((branch): branch is string => typeof branch === "string" && branch !== "" && branch !== pulls.defaultBranch);
-  if (wanted.length === 0) return pulls;
+  const usable = (branch: string | null | undefined): branch is string => typeof branch === "string" && branch !== "" && branch !== pulls.defaultBranch;
+  const live = new Set([...branches.live].filter(usable));
+  const wanted = new Set([...live, ...[...(branches.trail ?? [])].filter(usable)]);
+  if (wanted.size === 0) return pulls;
   const now = deps.now();
   const keyOf = (branch: string) => `${refKey(ref.owner, ref.repo)}#${branch}`;
-  const unlisted = wanted.filter((branch) => !pulls.byBranch.has(branch));
+  const hitOf = (branch: string) => branchCache.entries.get(keyOf(branch));
+  const unlisted: string[] = [];
+  for (const branch of wanted) {
+    // The listing has taken the branch over.
+    if (pulls.byBranch.has(branch)) branchCache.entries.delete(keyOf(branch));
+    else unlisted.push(branch);
+  }
+  if (unlisted.length === 0) return pulls;
 
+  /** Nothing in it that can change without the listing saying so first. */
+  const settled = (branch: string) => !live.has(branch) && hitOf(branch)?.value?.some(isOpen) === false;
   let timedOut = false;
   if (pulls.error === undefined) {
-    timedOut = await awaitLookups(branchCache, unlisted, {
-      key: keyOf,
-      group: () => "",
-      need: (hit) => lookupNeed(hit, now, opts.force === true, { staleFailures: true }),
-      fetch: (group) => fetchIntoCache(branchCache, ref, group, BRANCH_BATCH, (batch) => deps.fetch(ref, batch, opts.cwd), now),
-    });
+    // Live rows' branches (first in `wanted`), then what was never asked about, then the rest.
+    const rank = (branch: string) => (live.has(branch) ? 0 : hitOf(branch) ? 2 : 1);
+    timedOut = await awaitLookups(
+      branchCache,
+      [...unlisted].sort((a, b) => rank(a) - rank(b)),
+      {
+        key: keyOf,
+        group: () => "",
+        need: (hit, branch) =>
+          settled(branch)
+            ? lookupNeed(hit, now, false, { staleFailures: true, ttl: BRANCH_SETTLED_TTL_MS })
+            : lookupNeed(hit, now, opts.force === true, { staleFailures: true }),
+        fetch: (group) => fetchIntoCache(branchCache, ref, group, BRANCH_BATCH, (batch) => deps.fetch(ref, batch, opts.cwd), now),
+        limit: BRANCH_ASK_MAX,
+      },
+    );
   }
 
   let branchError: string | undefined;
-  for (const branch of unlisted) {
-    const cached = branchCache.entries.get(keyOf(branch));
-    branchError ??= cached?.error ?? (!cached && timedOut ? "GitHub did not answer in time" : undefined);
-  }
   const listed = pulls.byNumber ?? new Map<number, PullSummary>();
   const found = new Map<number, PullSummary>();
-  for (const branch of wanted) {
-    for (const pr of branchCache.entries.get(keyOf(branch))?.value ?? []) if (!listed.has(pr.number)) found.set(pr.number, pr);
+  for (const branch of unlisted) {
+    const cached = hitOf(branch);
+    if (pulls.error === undefined) branchError ??= cached?.error ?? (!cached && timedOut ? "GitHub did not answer in time" : undefined);
+    const fresh = now - (cached?.valueAt ?? 0) < PR_STALE_MAX_MS;
+    for (const pr of cached?.value ?? []) if (!listed.has(pr.number) && (fresh || !isOpen(pr))) found.set(pr.number, pr);
   }
   if (found.size === 0) return branchError === undefined ? pulls : { ...pulls, branchError };
 
   const byBranch = new Map(pulls.byBranch);
-  for (const [branch, extra] of indexPullsByBranch([...found.values()], ref.owner, pulls.defaultBranch ?? null)) {
-    byBranch.set(branch, [...(byBranch.get(branch) ?? []), ...extra].sort(byOpenThenUpdated));
-  }
+  for (const [branch, extra] of indexPullsByBranch([...found.values()], ref.owner, pulls.defaultBranch ?? null)) byBranch.set(branch, extra);
   return { ...pulls, byBranch, byNumber: new Map([...found, ...listed]), ...(branchError !== undefined && { branchError }) };
 }
 
-/** Drop every cached lookup. For tests; production never needs it. */
+/**
+ * Drop every cached lookup. For tests; production never needs it. Also lets
+ * the limiter start a process at once — a test that ended on fake timers may
+ * have left its end-of-turn callback unfired.
+ */
 export function clearRepoPullsCache(): void {
+  if (turnEnd !== undefined) clearImmediate(turnEnd);
+  turnEnd = undefined;
   cache.clear();
   for (const keyed of [numberCache, branchCache]) {
     keyed.entries.clear();

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorktreeInfo } from "../utils/git.js";
-import { clearRepoPullsCache, resolveBranchPulls, type BranchAnswer, type PullSummary, type RepoPulls } from "./github-prs.js";
+import { clearRepoPullsCache, resolveBranchPulls, type BranchAnswer, type BranchAsk, type PullSummary, type RepoPulls } from "./github-prs.js";
 import { buildChatPrs, type ChatCard, type ChatPrsDeps } from "./chat-prs.js";
 
 const wt = (path: string, branch: string | null, isMainWorktree = false, head?: string): WorktreeInfo => ({
@@ -451,7 +451,7 @@ describe("buildChatPrs — PRs older than the listing reaches, by head branch", 
   };
   function byBranch(table: Record<string, PullSummary[]>, overrides: Partial<ChatPrsDeps> = {}, card: ChatCard | null = null) {
     const fetch = vi.fn(async (_ref: unknown, branches: string[]) => new Map<string, BranchAnswer>(branches.map((b) => [b, table[b] ?? []])));
-    const branchPulls = vi.fn((repoPath: string, pulls: RepoPulls, branches: string[], force: boolean) =>
+    const branchPulls = vi.fn((repoPath: string, pulls: RepoPulls, branches: BranchAsk, force: boolean) =>
       resolveBranchPulls(pulls, branches, { cwd: repoPath, force }, { fetch, now: () => 0 }),
     );
     return { fetch, d: deps({ pullsFor: vi.fn(async () => LISTED), branchPulls, ...overrides }, card) };
@@ -512,6 +512,25 @@ describe("buildChatPrs — PRs older than the listing reaches, by head branch", 
     expect(fetch).toHaveBeenCalledTimes(1);
     expect([...fetch.mock.calls[0][1]].sort()).toEqual(["feat/b", "feat/theirs"]);
     expect((d.branchPulls as ReturnType<typeof vi.fn>).mock.calls[0][3]).toBe(true);
+  });
+
+  /**
+   * Another chat of the card works in another worktree, on a branch nothing
+   * recorded: only its being checked out there says to ask about it.
+   */
+  it("asks about the branch another member's worktree is on, as a live one, and lists its old PR", async () => {
+    const card: ChatCard = { members: [member("c", "/src/app.feat-a"), member("other", "/src/app.feat-b")] };
+    const { fetch, d } = byBranch({ "feat/b": [old(11, "feat/b", "b1")] }, {}, card);
+    const result = await buildChatPrs({ folder: "/src/app.feat-a", chatId: "c" }, d);
+    expect(numbers(result)).toEqual([10, 11]);
+    expect(fetch.mock.calls.map(([, branches]) => branches)).toEqual([["feat/b"]]);
+    expect((d.branchPulls as ReturnType<typeof vi.fn>).mock.calls[0][2]).toEqual({ live: ["feat/a", "feat/b"], trail: [] });
+  });
+
+  it("tells live branches from trail branches when it asks", async () => {
+    const { d } = byBranch({}, { trailOf: () => [entry("/src/app.feat-b", "feat/earlier"), entry("/src/app.feat-b", "feat/b")] });
+    await buildChatPrs({ folder: "/src/app.feat-b", chatId: "c" }, d);
+    expect((d.branchPulls as ReturnType<typeof vi.fn>).mock.calls[0][2]).toEqual({ live: ["feat/b"], trail: ["feat/earlier", "feat/b"] });
   });
 
   it("reports a failed branch lookup beside the status, never instead of it", async () => {

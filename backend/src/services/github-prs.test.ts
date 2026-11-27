@@ -11,6 +11,7 @@ const defaultBranch = vi.fn<(dir: string) => Promise<string | null>>();
 vi.mock("../utils/git.js", () => ({ getRemoteUrlAsync: (dir: string) => remoteUrl(dir), getDefaultBranchAsync: (dir: string) => defaultBranch(dir) }));
 
 import {
+  BRANCH_SETTLED_TTL_MS,
   clearRepoPullsCache,
   fetchPullsByBranch,
   fetchPullsByNumber,
@@ -320,7 +321,7 @@ describe("fetchRepoPulls", () => {
     expect(execFileMock).not.toHaveBeenCalled();
   });
 
-  it("degrades to no data when gh is missing, and reports the open listing's failure", async () => {
+  it("degrades to no data when gh is missing, without starting the second listing", async () => {
     remoteUrl.mockResolvedValue("https://github.com/acme/app");
     const missing = Object.assign(new Error("spawn gh ENOENT"), { code: "ENOENT" });
     ghServes({ open: missing, closed: missing });
@@ -330,8 +331,9 @@ describe("fetchRepoPulls", () => {
       github: { owner: "acme", repo: "app" },
       error: "gh is not installed",
     });
-    // Both listings were already running: neither waits on the other.
-    expect(execFileMock).toHaveBeenCalledTimes(2);
+    // One process is started per turn of the event loop, and a spawn that
+    // cannot happen fails within the turn: the closed listing never starts.
+    expect(execFileMock).toHaveBeenCalledTimes(1);
   });
 
   it("probes with the open listing alone, and skips the closed one when that fails", async () => {
@@ -370,17 +372,41 @@ describe("fetchRepoPulls", () => {
     expect(result.defaultBranch).toBe("main");
   });
 
-  it("keeps the closed PRs when only the open listing fails, with its error", async () => {
+  /**
+   * The open-first rule: a closed PR is a branch's PR only while no open one
+   * exists. With the open listing failed that cannot be known, so the closed
+   * PRs that did arrive are not offered — `feat/x` has open #20 here, and its
+   * earlier closed #10 must not be shown as the branch's PR in its place.
+   */
+  it("offers no closed PRs when the open listing fails, though the closed one arrived", async () => {
     remoteUrl.mockResolvedValue("https://github.com/acme/app");
-    ghServes({
-      open: Object.assign(new Error("exit 1"), { code: 1 as unknown as string }),
-      closed: [rawPull(4, "fix/y", { state: "closed", merged: true })],
-      stderr: "gh: HTTP 502",
+    const answers = new Map<string, (err: Error | null, out: string, stderr: string) => void>();
+    execFileMock.mockImplementation((_c: string, args: string[], _o: unknown, cb: (e: Error | null, out: string, err: string) => void) => {
+      answers.set(args[1].includes("state=open") ? "open" : "closed", cb);
+      return { stdin: { end() {} } };
     });
-    const result = await fetchRepoPulls("/r");
-    expect(result.byBranch.has("fix/y")).toBe(true);
-    expect(result.defaultBranch).toBe("main");
+    const fetching = fetchRepoPulls("/r");
+    for (let i = 0; i < 5; i++) await flush();
+    // Both are running; the closed one answers, then the open one fails.
+    answers.get("closed")!(null, JSON.stringify([rawPull(10, "feat/x", { state: "closed", sha: "local-tip" })]), "");
+    await flush();
+    answers.get("open")!(Object.assign(new Error("exit 1"), { code: 1 as unknown as string }), "", "gh: HTTP 502");
+    const result = await fetching;
     expect(result.error).toBe("gh: HTTP 502");
+    expect(result.errorPartial).toBeUndefined();
+    expect(result.byBranch.size).toBe(0);
+    expect(result.byNumber!.size).toBe(0);
+    expect(matchPull(result.byBranch.get("feat/x"), "local-tip")).toBeUndefined();
+    // Which branch is the default is true whichever listing said so.
+    expect(result.defaultBranch).toBe("main");
+  });
+
+  it("marks a failed closed listing as partial: the open PRs are whole", async () => {
+    remoteUrl.mockResolvedValue("https://github.com/acme/app");
+    ghServes({ open: [rawPull(1, "feat/x")], closed: Object.assign(new Error("exit 1"), { code: 1 as unknown as string }), stderr: "gh: HTTP 502" });
+    const result = await fetchRepoPulls("/r");
+    expect(result).toMatchObject({ error: "gh: HTTP 502", errorPartial: true });
+    expect(result.byBranch.get("feat/x")?.map((p) => p.number)).toEqual([1]);
   });
 
   it("drops a closed listing still queued when its open listing fails", async () => {
@@ -433,8 +459,14 @@ describe("fetchRepoPulls", () => {
   });
 });
 
-/** Settle every queued microtask and zero-delay timer. */
-const flush = () => new Promise((r) => setTimeout(r, 0));
+/**
+ * Settle every queued microtask and zero-delay timer, and let the event loop
+ * come round a few times: the limiter starts one process per turn, so a fetch
+ * (git remote, then two listings) needs several before it is fully under way.
+ */
+const flush = async () => {
+  for (let turn = 0; turn < 4; turn++) await new Promise((r) => setTimeout(() => setImmediate(r), 0));
+};
 
 describe("getRepoPulls", () => {
   it("serves one fetch per repo within the TTL", async () => {
@@ -489,8 +521,10 @@ describe("getRepoPulls", () => {
     const after = await getRepoPulls("/r", false, PR_CACHE_TTL_MS + 1);
     expect(after.byBranch.has("feat/a")).toBe(true);
     expect(after.error).toBe("gh: To get started with GitHub CLI, please run: gh auth login");
+    // Out of date, not absent.
+    expect(after.errorPartial).toBe(true);
     // Stamped as a fresh entry: the failure is not retried before the TTL…
-    expect(execFileMock).toHaveBeenCalledTimes(4);
+    expect(execFileMock).toHaveBeenCalledTimes(3);
     // …and the in-flight slot was released, so the next expiry refreshes again.
     ghServes({ open: [rawPull(2, "feat/b")] });
     await getRepoPulls("/r", false, 2 * PR_CACHE_TTL_MS);
@@ -504,24 +538,37 @@ describe("getRepoPulls", () => {
     remoteUrl.mockResolvedValue("https://github.com/acme/app");
     const missing = Object.assign(new Error("spawn gh ENOENT"), { code: "ENOENT" });
     ghServes({ open: missing, closed: missing });
-    await getRepoPulls("/r", false, 0);
+    const first = await getRepoPulls("/r", false, 0);
     await getRepoPulls("/r", false, 5000);
-    expect(execFileMock).toHaveBeenCalledTimes(2);
+    expect(execFileMock).toHaveBeenCalledTimes(1);
+    // Nothing is held: this is "unavailable", not "incomplete".
+    expect(first.errorPartial).toBeUndefined();
   });
 
   it("probes a repo whose last lookup failed with one listing, then goes back to two at once when it works", async () => {
     remoteUrl.mockResolvedValue("https://github.com/acme/app");
-    const missing = Object.assign(new Error("spawn gh ENOENT"), { code: "ENOENT" });
-    ghServes({ open: missing, closed: missing });
-    await getRepoPulls("/r", false, 0);
+    const down = Object.assign(new Error("exit 1"), { code: 1 as unknown as string });
+    // Both listings fail, slowly enough that both were started.
+    const answers: Array<() => void> = [];
+    execFileMock.mockImplementation((_c: string, _a: string[], _o: unknown, cb: (e: Error | null, out: string, err: string) => void) => {
+      answers.push(() => cb(down, "", "gh: HTTP 503"));
+      return { stdin: { end() {} } };
+    });
+    const first = getRepoPulls("/r", false, 0);
+    for (let i = 0; i < 5; i++) await flush();
     expect(execFileMock).toHaveBeenCalledTimes(2);
+    answers.splice(0).forEach((answer) => answer());
+    expect((await first).error).toBe("gh: HTTP 503");
 
-    // Still missing a TTL later: one spawn finds out, not two.
+    // Still down a TTL later: one process finds out, not two — however slowly it fails.
     await getRepoPulls("/r", false, PR_CACHE_TTL_MS);
     for (let i = 0; i < 5; i++) await flush();
     expect(execFileMock).toHaveBeenCalledTimes(3);
+    answers.splice(0).forEach((answer) => answer());
+    for (let i = 0; i < 5; i++) await flush();
+    expect(execFileMock).toHaveBeenCalledTimes(3);
 
-    // gh is back: the probe is followed by the closed listing.
+    // GitHub is back: the probe is followed by the closed listing.
     ghServes({ open: [rawPull(1, "feat/a")], closed: [] });
     await getRepoPulls("/r", false, 2 * PR_CACHE_TTL_MS);
     for (let i = 0; i < 5; i++) await flush();
@@ -529,6 +576,85 @@ describe("getRepoPulls", () => {
     const recovered = await getRepoPulls("/r", false, 2 * PR_CACHE_TTL_MS + 1);
     expect(recovered.byBranch.has("feat/a")).toBe(true);
     expect(recovered.error).toBeUndefined();
+  });
+
+  /**
+   * The first entry is an open-failed one — nothing held, though the closed
+   * listing had arrived. The refresh that works replaces it whole.
+   */
+  it("replaces an open-failed first entry, which held nothing, with the refresh that works", async () => {
+    remoteUrl.mockResolvedValue("https://github.com/acme/app");
+    const answers = new Map<string, (err: Error | null, out: string, stderr: string) => void>();
+    execFileMock.mockImplementation((_c: string, args: string[], _o: unknown, cb: (e: Error | null, out: string, err: string) => void) => {
+      answers.set(args[1].includes("state=open") ? "open" : "closed", cb);
+      return { stdin: { end() {} } };
+    });
+    const fetching = getRepoPulls("/r", false, 0);
+    for (let i = 0; i < 5; i++) await flush();
+    answers.get("closed")!(null, JSON.stringify([rawPull(10, "feat/x", { state: "closed", sha: "tip" })]), "");
+    answers.get("open")!(Object.assign(new Error("exit 1"), { code: 1 as unknown as string }), "", "gh: HTTP 502");
+    const first = await fetching;
+    expect(first).toMatchObject({ error: "gh: HTTP 502", byBranch: new Map() });
+    expect(first.errorPartial).toBeUndefined();
+
+    ghServes({ open: [rawPull(20, "feat/x")], closed: [rawPull(10, "feat/x", { state: "closed", sha: "tip" })] });
+    expect(await getRepoPulls("/r", false, PR_CACHE_TTL_MS)).toBe(first); // served, refreshed behind
+    for (let i = 0; i < 8; i++) await flush();
+    const fresh = await getRepoPulls("/r", false, PR_CACHE_TTL_MS + 1);
+    expect(fresh.error).toBeUndefined();
+    expect(fresh.errorPartial).toBeUndefined();
+    // Open first: #20 is the branch's PR even at #10's commit.
+    expect(matchPull(fresh.byBranch.get("feat/x"), "tip")?.number).toBe(20);
+  });
+
+  /**
+   * The regression: any refresh carrying an error lost to the entry before
+   * it, so a closed listing that kept failing froze the open PRs at whatever
+   * they were when it started.
+   */
+  it("keeps the open PRs fresh while the closed listing keeps failing, beside the closed PRs it had", async () => {
+    remoteUrl.mockResolvedValue("https://github.com/acme/app");
+    const down = Object.assign(new Error("exit 1"), { code: 1 as unknown as string });
+    ghServes({
+      open: [rawPull(1, "feat/a"), rawPull(2, "feat/b")],
+      closed: [rawPull(9, "feat/done", { state: "closed", merged: true }), rawPull(8, "feat/back", { state: "closed" })],
+    });
+    await getRepoPulls("/r", false, 0);
+
+    // #1 has since merged (in neither listing now), #3 is new, #8 was reopened.
+    ghServes({ open: [rawPull(2, "feat/b"), rawPull(3, "feat/c"), rawPull(8, "feat/back")], closed: down, stderr: "gh: HTTP 502" });
+    await getRepoPulls("/r", false, PR_CACHE_TTL_MS);
+    for (let i = 0; i < 8; i++) await flush();
+    const merged = await getRepoPulls("/r", false, PR_CACHE_TTL_MS + 1);
+    expect(merged).toMatchObject({ error: "gh: HTTP 502", errorPartial: true, defaultBranch: "main" });
+    expect([...merged.byNumber!.keys()].sort()).toEqual([2, 3, 8, 9]);
+    expect(merged.byBranch.get("feat/c")?.map((p) => [p.number, p.state])).toEqual([[3, "open"]]);
+    // The earlier closed PRs stay; one that is open again is the open one, once.
+    expect(merged.byBranch.get("feat/done")?.map((p) => [p.number, p.state])).toEqual([[9, "merged"]]);
+    expect(merged.byBranch.get("feat/back")?.map((p) => [p.number, p.state])).toEqual([[8, "open"]]);
+    // What was open and no longer is, is not kept as open.
+    expect(merged.byBranch.has("feat/a")).toBe(false);
+
+    // Still failing a TTL later: the open PRs move again, they are not frozen.
+    ghServes({ open: [rawPull(4, "feat/d")], closed: down, stderr: "gh: HTTP 502" });
+    await getRepoPulls("/r", false, 2 * PR_CACHE_TTL_MS);
+    for (let i = 0; i < 8; i++) await flush();
+    const later = await getRepoPulls("/r", false, 2 * PR_CACHE_TTL_MS + 1);
+    expect([...later.byNumber!.keys()].sort()).toEqual([4, 9]);
+    expect(later.errorPartial).toBe(true);
+  });
+
+  it("keeps the whole earlier entry when the open listing fails, and says it is out of date rather than absent", async () => {
+    remoteUrl.mockResolvedValue("https://github.com/acme/app");
+    const down = Object.assign(new Error("exit 1"), { code: 1 as unknown as string });
+    ghServes({ open: [rawPull(1, "feat/a")], closed: [rawPull(9, "feat/done", { state: "closed", merged: true })] });
+    await getRepoPulls("/r", false, 0);
+    ghServes({ open: down, closed: [rawPull(7, "feat/other", { state: "closed" })], stderr: "gh: HTTP 500" });
+    await getRepoPulls("/r", false, PR_CACHE_TTL_MS);
+    for (let i = 0; i < 8; i++) await flush();
+    const kept = await getRepoPulls("/r", false, PR_CACHE_TTL_MS + 1);
+    expect(kept).toMatchObject({ error: "gh: HTTP 500", errorPartial: true });
+    expect([...kept.byNumber!.keys()].sort()).toEqual([1, 9]);
   });
 
   it("lets a forced refresh through only past the minimum age, and waits for it", async () => {
@@ -612,6 +738,46 @@ describe("getRepoPulls", () => {
     await all;
     expect(execFileMock).toHaveBeenCalledTimes(repos.length * 2);
     expect(peak).toBe(PR_FETCH_CONCURRENCY);
+  });
+});
+
+describe("the limiter — one process per turn of the event loop", () => {
+  /**
+   * Starting a process blocks the loop (~18 ms per gh in a 400 MB daemon), so
+   * six started back to back are one 110 ms stall. However many are admitted,
+   * no two are started in the same turn.
+   */
+  it("never starts two processes in the same turn, git and gh alike", async () => {
+    // A turn counter: an immediate that re-queues itself runs first in every check phase.
+    let turn = 0;
+    let ticking = true;
+    const tick = () => {
+      turn++;
+      if (ticking) setImmediate(tick);
+    };
+    setImmediate(tick);
+    const startedIn: number[] = [];
+    remoteUrl.mockImplementation(async () => {
+      startedIn.push(turn);
+      return "https://github.com/acme/app";
+    });
+    execFileMock.mockImplementation((_c: string, _a: string[], _o: unknown, cb: (e: null, out: string, err: string) => void) => {
+      startedIn.push(turn);
+      setTimeout(() => cb(null, "[]", ""), 5);
+      return { stdin: { end() {} } };
+    });
+    defaultBranch.mockImplementation(async () => {
+      startedIn.push(turn);
+      return null;
+    });
+    try {
+      await Promise.all(["/a", "/b", "/c", "/d"].map((repo) => getRepoPulls(repo, false, 0)));
+    } finally {
+      ticking = false;
+    }
+    // Per repo: git remote, two listings, git symbolic-ref (no PRs came back).
+    expect(startedIn).toHaveLength(16);
+    expect(new Set(startedIn).size).toBe(16);
   });
 });
 
@@ -824,6 +990,7 @@ describe("resolveLinkedPulls", () => {
     await resolveLinkedPulls([link(20)], [], { cwd: "/" }, { fetch, now: () => PR_CACHE_TTL_MS - 1 });
     expect(fetch).toHaveBeenCalledTimes(1);
     await resolveLinkedPulls([link(20)], [], { cwd: "/" }, { fetch, now: () => PR_CACHE_TTL_MS });
+    await flush();
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
@@ -1111,6 +1278,61 @@ describe("fetchPullsByBranch", () => {
     expect(query).not.toContain("we");
   });
 
+  /**
+   * A branch name is anything git allows. Each must reach GitHub as the value
+   * of a GraphQL variable: not part of the query, not a `gh` flag, and — `-f`
+   * being gh's raw-string field, unlike `-F` — not read as a file or a typed
+   * literal.
+   */
+  it("passes awkward branch names as raw `-f` variables, each in one argument, none of it in the query", async () => {
+    const awkward = [
+      'quo"te',
+      "sing'le",
+      "back\\slash",
+      "dol$lar",
+      "$owner",
+      "ünï/côdé-分支-🌿",
+      "-f",
+      "--jq",
+      "-leading-dash",
+      "@file",
+      "@/etc/passwd",
+      "has=equals",
+      "key[sub]",
+      "true",
+      "null",
+      "123",
+      "with space",
+      "}) { viewer { login } } #",
+    ];
+    ghAnswers({ stdout: JSON.stringify({ data: { repository: Object.fromEntries(awkward.map((name, i) => [`b${i}`, { nodes: [node(100 + i, name)] }])) } }) });
+    const found = await fetchPullsByBranch({ owner: "acme", repo: "app" }, awkward, "/");
+    // Each answer maps back to the exact name it was asked under.
+    expect(awkward.map((name) => (found.get(name) as PullSummary[]).map((p) => [p.number, p.headRef]))).toEqual(awkward.map((name, i) => [[100 + i, name]]));
+
+    const args: string[] = execFileMock.mock.calls[0][1];
+    expect(args.slice(0, 2)).toEqual(["api", "graphql"]);
+    const pairs = args.slice(2);
+    // Strictly `-f`, `key=value` pairs — so no value, whatever it starts with, sits where gh looks for a flag.
+    expect(pairs.filter((_, i) => i % 2 === 0).every((flag) => flag === "-f")).toBe(true);
+    const values = pairs.filter((_, i) => i % 2 === 1);
+    expect(values.slice(2, -1)).toEqual(awkward.map((name, i) => `b${i}=${name}`));
+    const query = values[values.length - 1];
+    expect(query.startsWith("query=query(")).toBe(true);
+    // (`$owner`, `-f`, `true`… are in any query; the equality below covers those.)
+    for (const name of awkward.filter((n) => !["$owner", "-f", "true", "null", "123"].includes(n))) expect(query, name).not.toContain(name);
+    // The query is a function of how many branches there are, nothing else.
+    execFileMock.mockClear();
+    ghAnswers({ stdout: JSON.stringify({ data: { repository: {} } }) });
+    await fetchPullsByBranch(
+      { owner: "acme", repo: "app" },
+      awkward.map((_, i) => `plain-${i}`),
+      "/",
+    );
+    const plain: string[] = execFileMock.mock.calls[0][1];
+    expect(plain[plain.length - 1]).toBe(query);
+  });
+
   it("makes a branch whose field came back without a list an error, not a branch with no PR", async () => {
     ghAnswers({
       error: Object.assign(new Error("exit 1"), { code: 1 as unknown as string }),
@@ -1146,17 +1368,15 @@ describe("resolveBranchPulls", () => {
     pr({ number, headRef, state: "merged", closedAt: "2026-03-01T00:00:00Z", mergedAt: "2026-03-01T00:00:00Z", updatedAt: "2026-03-01T00:00:00Z", ...over });
   type Fetch = (ref: GitHubRepoRef, branches: string[], cwd: string) => Promise<Map<string, BranchAnswer>>;
   /** Answers each branch from `table`; a branch not in it has no PR. */
+  /** Every branch asked about as a live row's — the short TTL, and `force` applies. */
+  const ask = (pulls: RepoPulls, live: Array<string | null | undefined>, opts: { cwd: string; force?: boolean }, deps: { fetch: Fetch; now: () => number }) =>
+    resolveBranchPulls(pulls, { live }, opts, deps);
   const serving = (table: Record<string, PullSummary[]>) => vi.fn<Fetch>(async (_ref, branches) => new Map(branches.map((b) => [b, table[b] ?? []])));
 
   it("asks, in one call, only about the branches the listing has no PR for — never the default branch", async () => {
     const fetch = serving({ "feat/old": [merged(5, "feat/old")] });
     const base = listing([pr({ number: 1, headRef: "feat/live" })]);
-    const found = await resolveBranchPulls(
-      base,
-      ["feat/live", "feat/old", "main", "feat/none", null, "feat/old", undefined, ""],
-      { cwd: "/r" },
-      { fetch, now: () => 0 },
-    );
+    const found = await ask(base, ["feat/live", "feat/old", "main", "feat/none", null, "feat/old", undefined, ""], { cwd: "/r" }, { fetch, now: () => 0 });
     expect(fetch.mock.calls).toEqual([[GITHUB, ["feat/old", "feat/none"], "/r"]]);
     expect(found.byBranch.get("feat/old")?.map((p) => p.number)).toEqual([5]);
     expect(found.byBranch.get("feat/live")?.map((p) => p.number)).toEqual([1]);
@@ -1171,19 +1391,19 @@ describe("resolveBranchPulls", () => {
   it("returns the listing itself when there is nothing to ask or nothing was found", async () => {
     const fetch = serving({});
     const base = listing([pr({ number: 1, headRef: "feat/live" })]);
-    expect(await resolveBranchPulls(base, ["feat/live", "main"], { cwd: "/" }, { fetch, now: () => 0 })).toBe(base);
+    expect(await ask(base, ["feat/live", "main"], { cwd: "/" }, { fetch, now: () => 0 })).toBe(base);
     expect(fetch).not.toHaveBeenCalled();
-    expect(await resolveBranchPulls(base, ["feat/none"], { cwd: "/" }, { fetch, now: () => 0 })).toBe(base);
+    expect(await ask(base, ["feat/none"], { cwd: "/" }, { fetch, now: () => 0 })).toBe(base);
     const offGitHub: RepoPulls = { byBranch: new Map() };
-    expect(await resolveBranchPulls(offGitHub, ["feat/x"], { cwd: "/" }, { fetch, now: () => 0 })).toBe(offGitHub);
+    expect(await ask(offGitHub, ["feat/x"], { cwd: "/" }, { fetch, now: () => 0 })).toBe(offGitHub);
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it("caches a branch with no PR like an answer: within the TTL nothing is asked again", async () => {
     const fetch = serving({});
     const branches = Array.from({ length: 30 }, (_, i) => `stale/${i}`);
-    await resolveBranchPulls(listing([]), branches, { cwd: "/" }, { fetch, now: () => 0 });
-    await resolveBranchPulls(listing([]), branches, { cwd: "/" }, { fetch, now: () => PR_CACHE_TTL_MS - 1 });
+    await ask(listing([]), branches, { cwd: "/" }, { fetch, now: () => 0 });
+    await ask(listing([]), branches, { cwd: "/" }, { fetch, now: () => PR_CACHE_TTL_MS - 1 });
     // Thirty PR-less branches, two polls: one gh process.
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(fetch.mock.calls[0][1]).toHaveLength(30);
@@ -1192,7 +1412,7 @@ describe("resolveBranchPulls", () => {
   it("asks about more branches than one call holds a call at a time, not a process per branch", async () => {
     const fetch = serving({});
     const branches = Array.from({ length: 120 }, (_, i) => `b/${i}`);
-    await resolveBranchPulls(listing([]), branches, { cwd: "/" }, { fetch, now: () => 0 });
+    await ask(listing([]), branches, { cwd: "/" }, { fetch, now: () => 0 });
     expect(fetch.mock.calls.map(([, asked]) => asked.length)).toEqual([50, 50, 20]);
   });
 
@@ -1206,21 +1426,21 @@ describe("resolveBranchPulls", () => {
       return first ? Promise.resolve(answer) : new Promise((resolvePromise) => held.push(() => resolvePromise(answer)));
     });
     const asked = ["feat/old", "feat/none"];
-    await resolveBranchPulls(listing([]), asked, { cwd: "/" }, { fetch, now: () => 0 });
+    await ask(listing([]), asked, { cwd: "/" }, { fetch, now: () => 0 });
 
     // GitHub now hangs. Real timers: were this waited for, the test would time out.
-    const stale = await resolveBranchPulls(listing([]), asked, { cwd: "/" }, { fetch, now: () => PR_CACHE_TTL_MS });
+    const stale = await ask(listing([]), asked, { cwd: "/" }, { fetch, now: () => PR_CACHE_TTL_MS });
     expect(stale.byBranch.get("feat/old")?.[0].title).toBe("first");
     await flush();
     expect(fetch).toHaveBeenCalledTimes(2);
     // The negative answer is refreshed in that same call, and a poll meanwhile shares it.
     expect(fetch.mock.calls[1][1]).toEqual(asked);
-    await resolveBranchPulls(listing([]), asked, { cwd: "/" }, { fetch, now: () => PR_CACHE_TTL_MS + 1 });
+    await ask(listing([]), asked, { cwd: "/" }, { fetch, now: () => PR_CACHE_TTL_MS + 1 });
     expect(fetch).toHaveBeenCalledTimes(2);
 
     held.splice(0).forEach((release) => release());
     for (let i = 0; i < 5; i++) await flush();
-    const fresh = await resolveBranchPulls(listing([]), asked, { cwd: "/" }, { fetch, now: () => PR_CACHE_TTL_MS + 2 });
+    const fresh = await ask(listing([]), asked, { cwd: "/" }, { fetch, now: () => PR_CACHE_TTL_MS + 2 });
     expect(fresh.byBranch.get("feat/old")?.[0].title).toBe("refreshed");
     expect(fetch).toHaveBeenCalledTimes(2);
   });
@@ -1233,14 +1453,14 @@ describe("resolveBranchPulls", () => {
     const base = listing([pr({ number: 1, headRef: "feat/live" })]);
     vi.useFakeTimers();
     try {
-      const first = resolveBranchPulls(base, ["feat/old"], { cwd: "/" }, { fetch, now: () => 0 });
+      const first = ask(base, ["feat/old"], { cwd: "/" }, { fetch, now: () => 0 });
       await vi.advanceTimersByTimeAsync(PR_FORCE_WAIT_MS);
       const capped = await first;
       expect(capped.branchError).toBe("GitHub did not answer in time");
       // The listing's own PRs are there regardless.
       expect(capped.byBranch.get("feat/live")?.map((p) => p.number)).toEqual([1]);
       // A poll arriving while it still runs joins it rather than spawning another.
-      const second = resolveBranchPulls(base, ["feat/old"], { cwd: "/" }, { fetch, now: () => 6_000 });
+      const second = ask(base, ["feat/old"], { cwd: "/" }, { fetch, now: () => 6_000 });
       answer();
       expect((await second).byBranch.get("feat/old")?.map((p) => p.number)).toEqual([5]);
     } finally {
@@ -1254,11 +1474,11 @@ describe("resolveBranchPulls", () => {
       throw new Error("gh: HTTP 502");
     });
     const base = listing([pr({ number: 1, headRef: "feat/live" })]);
-    const failed = await resolveBranchPulls(base, ["feat/old"], { cwd: "/" }, { fetch, now: () => 0 });
+    const failed = await ask(base, ["feat/old"], { cwd: "/" }, { fetch, now: () => 0 });
     expect(failed.branchError).toBe("gh: HTTP 502");
     expect(failed.error).toBeUndefined();
     expect(failed.byBranch).toBe(base.byBranch);
-    await resolveBranchPulls(base, ["feat/old"], { cwd: "/" }, { fetch, now: () => PR_CACHE_TTL_MS - 1 });
+    await ask(base, ["feat/old"], { cwd: "/" }, { fetch, now: () => PR_CACHE_TTL_MS - 1 });
     expect(fetch).toHaveBeenCalledTimes(1);
 
     // Past the TTL the retry runs behind the response — here, one that hangs.
@@ -1266,22 +1486,22 @@ describe("resolveBranchPulls", () => {
     fetch.mockImplementation(
       (_ref, branches) => new Promise((resolvePromise) => (answer = () => resolvePromise(new Map(branches.map((b) => [b, [merged(5, b)]]))))),
     );
-    const retrying = await resolveBranchPulls(base, ["feat/old"], { cwd: "/" }, { fetch, now: () => PR_CACHE_TTL_MS });
+    const retrying = await ask(base, ["feat/old"], { cwd: "/" }, { fetch, now: () => PR_CACHE_TTL_MS });
     expect(retrying.branchError).toBe("gh: HTTP 502");
     await flush();
     answer();
     for (let i = 0; i < 5; i++) await flush();
-    const recovered = await resolveBranchPulls(base, ["feat/old"], { cwd: "/" }, { fetch, now: () => PR_CACHE_TTL_MS + 1 });
+    const recovered = await ask(base, ["feat/old"], { cwd: "/" }, { fetch, now: () => PR_CACHE_TTL_MS + 1 });
     expect(recovered.branchError).toBeUndefined();
     expect(recovered.byBranch.get("feat/old")?.map((p) => p.number)).toEqual([5]);
   });
 
   it("keeps the last good answer beside the error when one branch of a call fails", async () => {
     const fetch = serving({ "feat/old": [merged(5, "feat/old")] });
-    await resolveBranchPulls(listing([]), ["feat/old"], { cwd: "/" }, { fetch, now: () => 0 });
+    await ask(listing([]), ["feat/old"], { cwd: "/" }, { fetch, now: () => 0 });
     fetch.mockImplementation(async (_ref, branches) => new Map(branches.map((b) => [b, { error: "Something went wrong" }])));
-    await resolveBranchPulls(listing([]), ["feat/old"], { cwd: "/", force: true }, { fetch, now: () => PR_CACHE_TTL_MS });
-    const after = await resolveBranchPulls(listing([]), ["feat/old"], { cwd: "/" }, { fetch, now: () => PR_CACHE_TTL_MS + 1 });
+    await ask(listing([]), ["feat/old"], { cwd: "/", force: true }, { fetch, now: () => PR_CACHE_TTL_MS });
+    const after = await ask(listing([]), ["feat/old"], { cwd: "/" }, { fetch, now: () => PR_CACHE_TTL_MS + 1 });
     expect(after.byBranch.get("feat/old")?.map((p) => p.number)).toEqual([5]);
     expect(after.branchError).toBe("Something went wrong");
   });
@@ -1291,7 +1511,7 @@ describe("resolveBranchPulls", () => {
       async (_ref, branches) => new Map(branches.map((b) => [b, [merged(5, b, { title: `ask ${fetch.mock.calls.length}` })]])),
     );
     const title = async (force: boolean, now: number) =>
-      (await resolveBranchPulls(listing([]), ["feat/old"], { cwd: "/", force }, { fetch, now: () => now })).byBranch.get("feat/old")?.[0].title;
+      (await ask(listing([]), ["feat/old"], { cwd: "/", force }, { fetch, now: () => now })).byBranch.get("feat/old")?.[0].title;
     expect(await title(false, 0)).toBe("ask 1");
     expect(await title(true, PR_FORCE_MIN_AGE_MS - 1)).toBe("ask 1");
     expect(await title(true, PR_FORCE_MIN_AGE_MS)).toBe("ask 2");
@@ -1300,7 +1520,7 @@ describe("resolveBranchPulls", () => {
 
   it("shares one fetch between requests that arrive together", async () => {
     const fetch = serving({ "feat/old": [merged(5, "feat/old")] });
-    const all = await Promise.all([1, 2, 3].map(() => resolveBranchPulls(listing([]), ["feat/old"], { cwd: "/" }, { fetch, now: () => 0 })));
+    const all = await Promise.all([1, 2, 3].map(() => ask(listing([]), ["feat/old"], { cwd: "/" }, { fetch, now: () => 0 })));
     expect(all.map((found) => found.byBranch.get("feat/old")?.[0].number)).toEqual([5, 5, 5]);
     expect(fetch).toHaveBeenCalledTimes(1);
   });
@@ -1308,31 +1528,225 @@ describe("resolveBranchPulls", () => {
   it("asks nothing while the listing itself is failing, but still applies what is cached", async () => {
     const fetch = serving({ "feat/old": [merged(5, "feat/old")] });
     const broken = listing([], { error: "gh is not installed" });
-    expect(await resolveBranchPulls(broken, ["feat/old"], { cwd: "/" }, { fetch, now: () => 0 })).toBe(broken);
+    expect(await ask(broken, ["feat/old"], { cwd: "/" }, { fetch, now: () => 0 })).toBe(broken);
     expect(fetch).not.toHaveBeenCalled();
 
-    await resolveBranchPulls(listing([]), ["feat/old"], { cwd: "/" }, { fetch, now: () => 0 });
-    const later = await resolveBranchPulls(broken, ["feat/old"], { cwd: "/" }, { fetch, now: () => 2 * PR_CACHE_TTL_MS });
+    await ask(listing([]), ["feat/old"], { cwd: "/" }, { fetch, now: () => 0 });
+    const later = await ask(broken, ["feat/old"], { cwd: "/" }, { fetch, now: () => 2 * PR_CACHE_TTL_MS });
     expect(later.byBranch.get("feat/old")?.map((p) => p.number)).toEqual([5]);
     expect(later.error).toBe("gh is not installed");
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps an answer cached for a branch after the listing gains a PR for it, without asking again", async () => {
-    const fetch = serving({ "feat/reused": [merged(5, "feat/reused")] });
-    await resolveBranchPulls(listing([]), ["feat/reused"], { cwd: "/" }, { fetch, now: () => 0 });
-    const withNew = listing([pr({ number: 50, headRef: "feat/reused" })]);
-    const found = await resolveBranchPulls(withNew, ["feat/reused"], { cwd: "/" }, { fetch, now: () => 2 * PR_CACHE_TTL_MS });
-    // Open first, then the older merged one.
-    expect(found.byBranch.get("feat/reused")?.map((p) => p.number)).toEqual([50, 5]);
+  /**
+   * The listing holds the branch: the listing is the answer, and what was
+   * cached by branch is dropped rather than merged — a cached "open" that
+   * nothing refreshes any more could otherwise outlive the PR's closing.
+   */
+  it("drops a branch's cached answer once the listing holds the branch, and asks afresh if it loses it again", async () => {
+    const fetch = serving({ "feat/reused": [pr({ number: 5, headRef: "feat/reused" })] });
+    const first = await ask(listing([]), ["feat/reused"], { cwd: "/" }, { fetch, now: () => 0 });
+    expect(first.byBranch.get("feat/reused")?.map((p) => [p.number, p.state])).toEqual([[5, "open"]]);
+
+    const taken = listing([pr({ number: 50, headRef: "feat/reused" })]);
+    expect(await ask(taken, ["feat/reused"], { cwd: "/" }, { fetch, now: () => 1 })).toBe(taken);
     expect(fetch).toHaveBeenCalledTimes(1);
+
+    // #5 has merged meanwhile. The listing loses the branch: not the cached "open", a fresh ask.
+    fetch.mockImplementation(async (_ref, branches) => new Map(branches.map((b) => [b, [merged(5, b)]])));
+    const again = await ask(listing([]), ["feat/reused"], { cwd: "/" }, { fetch, now: () => 2 });
+    expect(again.byBranch.get("feat/reused")?.map((p) => [p.number, p.state])).toEqual([[5, "merged"]]);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("stops serving an answer's open PR once refreshes have failed for longer than PR_STALE_MAX_MS, and keeps its closed ones", async () => {
+    const fetch = serving({ "feat/x": [pr({ number: 6, headRef: "feat/x" }), merged(5, "feat/x")] });
+    await ask(listing([]), ["feat/x"], { cwd: "/" }, { fetch, now: () => 0 });
+    fetch.mockImplementation(async () => {
+      throw new Error("gh: HTTP 502");
+    });
+    let last: RepoPulls | undefined;
+    for (let now = PR_CACHE_TTL_MS; now <= PR_STALE_MAX_MS + PR_CACHE_TTL_MS; now += PR_CACHE_TTL_MS) {
+      last = await ask(listing([]), ["feat/x"], { cwd: "/" }, { fetch, now: () => now });
+      for (let i = 0; i < 3; i++) await flush();
+      if (now < PR_STALE_MAX_MS) expect(last.byBranch.get("feat/x")?.map((p) => p.number)).toEqual([6, 5]);
+    }
+    expect(last!.byBranch.get("feat/x")?.map((p) => [p.number, p.state])).toEqual([[5, "merged"]]);
+    expect(last!.branchError).toBe("gh: HTTP 502");
   });
 
   it("lets the listing's own copy of a PR win over the one found by branch", async () => {
     const fetch = serving({ "feat/x": [merged(5, "feat/x", { title: "by branch" })] });
-    await resolveBranchPulls(listing([]), ["feat/x"], { cwd: "/" }, { fetch, now: () => 0 });
+    await ask(listing([]), ["feat/x"], { cwd: "/" }, { fetch, now: () => 0 });
     const relisted = listing([merged(5, "feat/x", { title: "listed" })]);
-    expect(await resolveBranchPulls(relisted, ["feat/x"], { cwd: "/" }, { fetch, now: () => 1 })).toBe(relisted);
+    expect(await ask(relisted, ["feat/x"], { cwd: "/" }, { fetch, now: () => 1 })).toBe(relisted);
+  });
+
+  describe("cost: trail branches, the cap, and failures", () => {
+    const asTrail = (pulls: RepoPulls, trail: string[], now: number, force = false, live: string[] = [], fetch?: Fetch) =>
+      resolveBranchPulls(pulls, { live, trail }, { cwd: "/", force }, { fetch: fetch!, now: () => now });
+
+    it("keeps a trail branch's settled answer for an hour, where a live row's is re-asked every TTL", async () => {
+      const fetch = serving({ "trail/merged": [merged(5, "trail/merged")] });
+      const poll = (now: number, force = false) => asTrail(listing([]), ["trail/none", "trail/merged"], now, force, ["live/none"], fetch);
+      await poll(0);
+      expect(fetch.mock.calls.map(([, asked]) => asked)).toEqual([["live/none", "trail/none", "trail/merged"]]);
+
+      // A TTL later: only the live row's branch — it may have gained a PR.
+      await poll(PR_CACHE_TTL_MS);
+      await flush();
+      expect(fetch.mock.calls.slice(1).map(([, asked]) => asked)).toEqual([["live/none"]]);
+
+      // The refresh button means the live rows, not weeks-old trail branches.
+      await poll(2 * PR_CACHE_TTL_MS, true);
+      expect(fetch.mock.calls.slice(2).map(([, asked]) => asked)).toEqual([["live/none"]]);
+
+      // An hour on, the trail branches are refreshed too — behind the response.
+      fetch.mockClear();
+      const found = await poll(BRANCH_SETTLED_TTL_MS);
+      expect(found.byBranch.get("trail/merged")?.map((p) => p.number)).toEqual([5]);
+      await flush();
+      expect(fetch.mock.calls.map(([, asked]) => [...asked].sort())).toEqual([["live/none", "trail/merged", "trail/none"]]);
+    });
+
+    it("keeps a trail branch on the short TTL while its answer holds an open PR, and a branch that is also a live row's", async () => {
+      const fetch = serving({ "trail/open": [pr({ number: 6, headRef: "trail/open" })] });
+      const poll = (now: number) => asTrail(listing([]), ["trail/open", "both"], now, false, ["both"], fetch);
+      await poll(0);
+      await poll(PR_CACHE_TTL_MS);
+      await flush();
+      expect(fetch.mock.calls.map(([, asked]) => [...asked].sort())).toEqual([
+        ["both", "trail/open"],
+        ["both", "trail/open"],
+      ]);
+    });
+
+    it("waits for a settled trail answer only once it is as stale as a listing would have to be", async () => {
+      const held: Array<() => void> = [];
+      const fetch: ReturnType<typeof vi.fn<Fetch>> = vi.fn<Fetch>((_ref, branches) => {
+        const answer = new Map<string, BranchAnswer>(branches.map((b) => [b, [merged(5, b, { title: `ask ${fetch.mock.calls.length}` })]]));
+        return fetch.mock.calls.length === 2 ? new Promise((resolvePromise) => held.push(() => resolvePromise(answer))) : Promise.resolve(answer);
+      });
+      const title = async (now: number) => (await asTrail(listing([]), ["trail/x"], now, false, [], fetch)).byBranch.get("trail/x")?.[0].title;
+      expect(await title(0)).toBe("ask 1");
+      // Expired: served, the refresh (which hangs) runs behind.
+      expect(await title(BRANCH_SETTLED_TTL_MS)).toBe("ask 1");
+      await flush();
+      held.splice(0).forEach((release) => release());
+      for (let i = 0; i < 5; i++) await flush();
+      // Days later: waited for.
+      expect(await title(3 * BRANCH_SETTLED_TTL_MS)).toBe("ask 3");
+    });
+
+    it("asks about at most 200 branches per request — live rows' first — and fills the rest in on later polls", async () => {
+      const fetch = serving({ "t/449": [merged(5, "t/449")] });
+      const trail = Array.from({ length: 450 }, (_, i) => `t/${i}`);
+      const poll = (now: number) => asTrail(listing([]), trail, now, false, ["live/a", "live/b"], fetch);
+      const first = await poll(0);
+      // Four processes, not ten; what was not asked about is not an error.
+      expect(fetch.mock.calls.map(([, asked]) => asked.length)).toEqual([50, 50, 50, 50]);
+      expect(fetch.mock.calls[0][1].slice(0, 2)).toEqual(["live/a", "live/b"]);
+      expect(first.branchError).toBeUndefined();
+      expect(first.byBranch.has("t/449")).toBe(false);
+
+      await poll(1);
+      expect(fetch).toHaveBeenCalledTimes(8);
+      const third = await poll(2);
+      expect(fetch.mock.calls.slice(8).map(([, asked]) => asked.length)).toEqual([50, 2]);
+      expect(third.byBranch.get("t/449")?.map((p) => p.number)).toEqual([5]);
+      // Every branch asked about exactly once, and nothing more within the TTL.
+      expect(new Set(fetch.mock.calls.flatMap(([, asked]) => asked)).size).toBe(452);
+      await poll(3);
+      expect(fetch).toHaveBeenCalledTimes(10);
+    });
+
+    it("runs a repository's batches side by side, not one after the other", async () => {
+      const held: Array<() => void> = [];
+      const fetch = vi.fn<Fetch>((_ref, branches) => new Promise((resolvePromise) => held.push(() => resolvePromise(new Map(branches.map((b) => [b, []]))))));
+      const asking = asTrail(
+        listing([]),
+        Array.from({ length: 120 }, (_, i) => `b/${i}`),
+        0,
+        false,
+        [],
+        fetch,
+      );
+      for (let i = 0; i < 8; i++) await flush();
+      // All three are in flight before any has answered.
+      expect(fetch).toHaveBeenCalledTimes(3);
+      held.splice(0).forEach((release) => release());
+      await asking;
+    });
+
+    it("fails only the batch that failed: the batches around it are answered, and it alone is retried", async () => {
+      const failing = { on: true };
+      const fetch = vi.fn<Fetch>(
+        (_ref, branches) =>
+          // Answered a few turns later, so all three batches are already running.
+          new Promise((resolvePromise, reject) =>
+            setTimeout(() => {
+              if (failing.on && branches.includes("b/50")) reject(new Error("gh: HTTP 502"));
+              else resolvePromise(new Map(branches.map((b) => [b, b === "b/0" || b === "b/119" ? [merged(Number(b.slice(2)) + 1, b)] : []])));
+            }, 5),
+          ),
+      );
+      const branches = Array.from({ length: 120 }, (_, i) => `b/${i}`);
+      const first = await asTrail(listing([]), [], 0, false, branches, fetch);
+      expect(fetch.mock.calls.map(([, asked]) => asked.length)).toEqual([50, 50, 20]);
+      expect(first.branchError).toBe("gh: HTTP 502");
+      // The first and the last batch's answers are there.
+      expect(first.byBranch.get("b/0")?.map((p) => p.number)).toEqual([1]);
+      expect(first.byBranch.get("b/119")?.map((p) => p.number)).toEqual([120]);
+
+      // Within the TTL nothing is asked again; past it, only the fifty that failed.
+      await asTrail(listing([]), [], PR_CACHE_TTL_MS - 1, false, branches, fetch);
+      expect(fetch).toHaveBeenCalledTimes(3);
+      failing.on = false;
+      fetch.mockClear();
+      const retried = await asTrail(listing([]), [], PR_CACHE_TTL_MS, true, branches, fetch);
+      expect(retried.branchError).toBeUndefined();
+      // Forced, so everything is re-asked — the batch that failed last time first and alone, as a probe.
+      expect(fetch.mock.calls[0][1]).toHaveLength(50);
+      expect(fetch.mock.calls.flatMap(([, asked]) => asked)).toHaveLength(120);
+    });
+
+    /**
+     * A `gh` that can list over REST but is refused by GraphQL. The listing
+     * is untouched, the failure is marked as the partial one it is, and it
+     * costs one process per repository per TTL — not one per batch, and not
+     * one per poll.
+     */
+    it("costs one process per TTL while GraphQL keeps failing, however many branches, and leaves the listing whole", async () => {
+      const fetch = vi.fn<Fetch>(async () => {
+        throw new Error("Resource not accessible by personal access token");
+      });
+      const base = listing([pr({ number: 1, headRef: "feat/live" })]);
+      const branches = ["feat/live", ...Array.from({ length: 120 }, (_, i) => `b/${i}`)];
+      const poll = (now: number, force = false) => asTrail(base, [], now, force, branches, fetch);
+
+      const first = await poll(0);
+      expect(first).toMatchObject({ branchError: "Resource not accessible by personal access token" });
+      expect(first.error).toBeUndefined();
+      expect(first.byBranch).toBe(base.byBranch);
+      expect(first.byNumber).toBe(base.byNumber);
+      // The first batch failed before the others were started: one process, not three.
+      expect(fetch).toHaveBeenCalledTimes(1);
+
+      // Polls inside the TTL: nothing.
+      for (const now of [1_000, 30_000, PR_CACHE_TTL_MS - 1]) await poll(now);
+      expect(fetch).toHaveBeenCalledTimes(1);
+
+      // Each TTL after: one probe, behind the response.
+      for (let n = 1; n <= 3; n++) {
+        const again = await poll(n * PR_CACHE_TTL_MS);
+        expect(again.branchError).toBe("Resource not accessible by personal access token");
+        for (let i = 0; i < 8; i++) await flush();
+        expect(fetch).toHaveBeenCalledTimes(1 + n);
+      }
+      // The refresh button: one more, waited for.
+      await poll(3 * PR_CACHE_TTL_MS + PR_FORCE_MIN_AGE_MS, true);
+      expect(fetch).toHaveBeenCalledTimes(5);
+    });
   });
 
   describe("what counts as a branch's PR is not loosened", () => {
@@ -1340,7 +1754,7 @@ describe("resolveBranchPulls", () => {
       const fetch = serving({
         "feat/x": [merged(8, "feat/x", { headOwner: "fork" }), merged(9, "feat/x", { headOwner: null }), merged(5, "feat/x", { headOwner: "ACME" })],
       });
-      const found = await resolveBranchPulls(listing([]), ["feat/x"], { cwd: "/" }, { fetch, now: () => 0 });
+      const found = await ask(listing([]), ["feat/x"], { cwd: "/" }, { fetch, now: () => 0 });
       expect(found.byBranch.get("feat/x")?.map((p) => p.number)).toEqual([5]);
       // Still reachable by number, as a listed fork's PR is.
       expect([...found.byNumber!.keys()].sort()).toEqual([5, 8, 9]);
@@ -1349,14 +1763,14 @@ describe("resolveBranchPulls", () => {
     it("never indexes the default branch, even when the listing did not know it when asked", async () => {
       const fetch = serving({ trunk: [merged(5, "trunk")] });
       const unknownDefault = listing([], { defaultBranch: undefined });
-      expect((await resolveBranchPulls(unknownDefault, ["trunk"], { cwd: "/" }, { fetch, now: () => 0 })).byBranch.has("trunk")).toBe(true);
+      expect((await ask(unknownDefault, ["trunk"], { cwd: "/" }, { fetch, now: () => 0 })).byBranch.has("trunk")).toBe(true);
       const knownDefault = listing([], { defaultBranch: "trunk" });
-      expect((await resolveBranchPulls(knownDefault, ["trunk"], { cwd: "/" }, { fetch, now: () => 1 })).byBranch.has("trunk")).toBe(false);
+      expect((await ask(knownDefault, ["trunk"], { cwd: "/" }, { fetch, now: () => 1 })).byBranch.has("trunk")).toBe(false);
     });
 
     it("gives a live branch a closed PR found by name only at that exact commit (matchPull)", async () => {
       const fetch = serving({ "fix/scroll": [merged(5, "fix/scroll", { headSha: "old-tip" })] });
-      const found = await resolveBranchPulls(listing([]), ["fix/scroll"], { cwd: "/" }, { fetch, now: () => 0 });
+      const found = await ask(listing([]), ["fix/scroll"], { cwd: "/" }, { fetch, now: () => 0 });
       // The name was reused: today's `fix/scroll` is at another commit.
       expect(matchPull(found.byBranch.get("fix/scroll"), "new-tip")).toBeUndefined();
       expect(matchPull(found.byBranch.get("fix/scroll"), "old-tip")?.number).toBe(5);
@@ -1364,7 +1778,7 @@ describe("resolveBranchPulls", () => {
 
     it("gives a trail entry a PR found by name only if it was not closed before the chat got there (pullsForTrailEntry)", async () => {
       const fetch = serving({ "fix/scroll": [merged(5, "fix/scroll")] });
-      const found = await resolveBranchPulls(listing([]), ["fix/scroll"], { cwd: "/" }, { fetch, now: () => 0 });
+      const found = await ask(listing([]), ["fix/scroll"], { cwd: "/" }, { fetch, now: () => 0 });
       expect(pullsForTrailEntry(found, { branch: "fix/scroll", firstSeen: "2026-02-01T00:00:00Z" }).map((p) => p.number)).toEqual([5]);
       expect(pullsForTrailEntry(found, { branch: "fix/scroll", firstSeen: "2026-04-01T00:00:00Z" })).toEqual([]);
     });

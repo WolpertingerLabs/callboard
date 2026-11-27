@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { WorktreeInfo } from "../utils/git.js";
-import { clearRepoPullsCache, resolveBranchPulls, type BranchAnswer, type PullSummary, type RepoPulls } from "./github-prs.js";
+import { clearRepoPullsCache, resolveBranchPulls, type BranchAnswer, type BranchAsk, type PullSummary, type RepoPulls } from "./github-prs.js";
 import { buildGitOverview, findGitRoot, normalizeDir, type OverviewDeps } from "./git-overview.js";
 
 const wt = (path: string, branch: string | null, isMainWorktree = false, head?: string): WorktreeInfo => ({
@@ -634,7 +634,7 @@ describe("buildGitOverview — PRs older than the listing reaches, by head branc
   /** `branchPulls` over what GitHub has for each head branch. */
   function byBranch(table: Record<string, PullSummary[]>) {
     const fetch = vi.fn(async (_ref: unknown, branches: string[]) => new Map<string, BranchAnswer>(branches.map((b) => [b, table[b] ?? []])));
-    const branchPulls = vi.fn((repoPath: string, pulls: RepoPulls, branches: string[], force: boolean) =>
+    const branchPulls = vi.fn((repoPath: string, pulls: RepoPulls, branches: BranchAsk, force: boolean) =>
       resolveBranchPulls(pulls, branches, { cwd: repoPath, force }, { fetch, now: () => 0 }),
     );
     return { fetch, branchPulls };
@@ -682,7 +682,9 @@ describe("buildGitOverview — PRs older than the listing reaches, by head branc
     const { branchPulls } = byBranch({});
     const trails = [{ cardId: "elsewhere", entry: entry("/src/app.feat-x", "feat/not-this-cards") }];
     await buildGitOverview({ force: true }, deps({ "/src/app.feat-x": ["c1"] }, { pullsFor, branchPulls, trails: () => trails }));
-    expect(branchPulls.mock.calls.map(([repoPath, , branches, force]) => [repoPath, branches, force])).toEqual([["/src/app", ["feat/x"], true]]);
+    expect(branchPulls.mock.calls.map(([repoPath, , branches, force]) => [repoPath, branches, force])).toEqual([
+      ["/src/app", { live: ["feat/x"], trail: [] }, true],
+    ]);
   });
 
   it("says so, as a partial failure, when the branches could not be asked about — and keeps the listing's PRs", async () => {
@@ -696,6 +698,41 @@ describe("buildGitOverview — PRs older than the listing reaches, by head branc
     const failed = await buildGitOverview({}, deps({ "/src/app.feat-x": ["c1"] }, { pullsFor: failing, branchPulls, trails: () => trails }));
     expect(failed.repos[0].prError).toBe("gh: rate limited");
     expect(failed.repos[0].prErrorPartial).toBeUndefined();
+  });
+
+  it("tells live rows' branches from trail branches when it asks", async () => {
+    const { branchPulls } = byBranch({});
+    const trails = [
+      { cardId: "c1", entry: entry("/src/app.feat-x", "feat/earlier") },
+      { cardId: "c2", entry: entry("/src/app.gone", "feat/gone") },
+    ];
+    await buildGitOverview({}, deps({ "/src/app.feat-x": ["c1"], "/src/app.old": ["c3"] }, { pullsFor, branchPulls, trails: () => trails, exists: gone }));
+    expect(branchPulls.mock.calls.map(([, , branches]) => branches)).toEqual([{ live: ["feat/x", "old"], trail: ["feat/earlier", "feat/gone"] }]);
+  });
+
+  /**
+   * What the repository's marker says has to match what its rows show:
+   * "PR data unavailable" only when there is none; "may be incomplete or out
+   * of date" whenever PRs are shown beside a failure.
+   */
+  it("words the failure by what is shown: partial whenever PR data is held, unavailable only when none is", async () => {
+    const trails = [{ cardId: "c1", entry: entry("/src/app.feat-x", "feat/listed") }];
+    const marker = async (pulls: RepoPulls, branchPulls?: OverviewDeps["branchPulls"]) => {
+      const { repos } = await buildGitOverview({}, deps({ "/src/app.feat-x": ["c1"] }, { pullsFor: async () => pulls, branchPulls, trails: () => trails }));
+      return [repos[0].prError, repos[0].prErrorPartial, rowOf(repos, "/src/app.feat-x")!.prs?.map((p) => p.number)];
+    };
+    // Nothing held: the first lookup's open listing failed.
+    expect(await marker({ github: LISTED.github, defaultBranch: "main", byBranch: new Map(), byNumber: new Map(), error: "gh: HTTP 502" })).toEqual([
+      "gh: HTTP 502",
+      undefined,
+      undefined,
+    ]);
+    // Open PRs without the closed listing, or an earlier entry kept through a failed refresh.
+    expect(await marker({ ...LISTED, error: "gh: HTTP 502", errorPartial: true })).toEqual(["gh: HTTP 502", true, [40]]);
+    // A whole listing beside a by-branch lookup that failed.
+    expect(await marker(LISTED, async (_repoPath, pulls) => ({ ...pulls, branchError: "GraphQL refused" }))).toEqual(["GraphQL refused", true, [40]]);
+    // No failure, no marker.
+    expect(await marker(LISTED)).toEqual([undefined, undefined, [40]]);
   });
 
   it("is the overview without it when the lookup throws", async () => {
