@@ -143,6 +143,26 @@ export async function executeAgent(opts: ExecuteAgentOptions): Promise<ExecuteAg
       },
     });
 
+    // An unattended run that dies after starting (a provider error) would
+    // otherwise leave only "session started" behind — the nightly Codex cron
+    // that failed on a model outside the client's catalog did exactly that for
+    // weeks. Put its error in the same activity feed. Detaches on the run's end.
+    const onEvent = (event: { type?: string; content?: string }) => {
+      if (event.type === "error") {
+        emitter.off("event", onEvent);
+        const error = event.content || "The session ended with an error.";
+        log.warn(`[${triggeredBy}] Session ${chatId} for agent ${agentAlias} failed: ${error}`);
+        appendActivity(agentAlias, {
+          type: activityType,
+          message: `${triggeredBy} session failed: ${error}`,
+          metadata: { chatId, triggeredBy, error, ...metadata },
+        });
+      } else if (event.type === "done") {
+        emitter.off("event", onEvent);
+      }
+    };
+    emitter.on("event", onEvent);
+
     return { chatId };
   } catch (err: any) {
     log.error(`[${triggeredBy}] Failed to execute agent ${agentAlias}: ${err.message}`);

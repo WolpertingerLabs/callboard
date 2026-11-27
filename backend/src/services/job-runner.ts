@@ -113,6 +113,14 @@ function deps(): JobRunnerDeps {
 
 /** chatId → which run/step that session belongs to. */
 const chatToStep = new Map<string, JobContext>();
+/**
+ * chatId → the `error` its session ended on, captured off the run's emitter
+ * (claude.ts emits it just before the registry's session_stopped). Read and
+ * dropped by handleStepSessionEnd: a step whose session errored without
+ * reporting a result fails with this message, instead of being harvested as a
+ * successful unstructured completion with an empty `_final`.
+ */
+const sessionErrors = new Map<string, string>();
 /** runId → pending wake timer (poll interval, retry backoff, timeouts). */
 const timers = new Map<string, NodeJS.Timeout>();
 /** Per-run queues serialize concurrent branch/session completions without dropping events. */
@@ -1142,6 +1150,10 @@ async function spawnStepSession(runId: string, stepId: string, prompt: string, o
     chatTitle: chatTitle.slice(0, 120),
   });
 
+  // Attached before awaiting chat_created so an error landing straight after it
+  // (a Codex model_not_found arrives within the first second) is not missed.
+  captureSessionError(emitter);
+
   const chatId = await awaitChatCreated(emitter, {
     timeoutMs: 30_000,
     timeoutMessage: "Timed out waiting for step session to start",
@@ -1288,11 +1300,13 @@ function markParallelBranchSpawnFailure(runId: string, stepId: string, branchId:
 // ── Step completion handling ────────────────────────────────────────
 
 async function handleStepSessionEnd(runId: string, stepId: string, chatId: string, branchId?: string): Promise<void> {
+  const sessionError = sessionErrors.get(chatId);
+  sessionErrors.delete(chatId);
   const run = getRun(runId);
   if (!run || TERMINAL_JOB_RUN_STATUSES.has(run.status) || run.status === "paused") return;
 
   if (branchId) {
-    await handleParallelBranchSessionEnd(runId, stepId, branchId, chatId);
+    await handleParallelBranchSessionEnd(runId, stepId, branchId, chatId, sessionError);
     return;
   }
 
@@ -1312,8 +1326,11 @@ async function handleStepSessionEnd(runId: string, stepId: string, chatId: strin
     case "agent": {
       const outputs = result?.outputs;
       const missing = (step.outputs ?? []).filter((key) => outputs?.[key] === undefined);
-      if (missing.length > 0 || (step.outputs?.length && !outputs)) {
-        const reason = `did not report required output(s): ${missing.join(", ") || step.outputs!.join(", ")}`;
+      // A result the session reported before erroring still stands; an error
+      // with nothing reported is the session failing, whatever outputs it owed.
+      const errored = sessionError !== undefined && !result;
+      if (errored || missing.length > 0 || (step.outputs?.length && !outputs)) {
+        const reason = errored ? sessionErrorReason(sessionError) : `did not report required output(s): ${missing.join(", ") || step.outputs!.join(", ")}`;
         if (step.retry && attempt < step.retry.attempts) {
           scheduleRetry(run, step, attempt, reason);
         } else {
@@ -1378,7 +1395,12 @@ async function handleStepSessionEnd(runId: string, stepId: string, chatId: strin
         chatId,
         result: "not_yet",
         ...(result?.summary && { detail: result.summary }),
-        ...(!verdict && { detail: "checker did not call complete_job_step — treating as not_yet" }),
+        ...(!verdict && {
+          detail:
+            sessionError !== undefined
+              ? `checker ${sessionErrorReason(sessionError)} — treating as not_yet`
+              : "checker did not call complete_job_step — treating as not_yet",
+        }),
       });
       if (attempt >= step.maxAttempts) {
         routeTimeout(run, step, `Poll step "${stepId}" exhausted maxAttempts (${step.maxAttempts})`);
@@ -1401,8 +1423,11 @@ async function handleStepSessionEnd(runId: string, stepId: string, chatId: strin
         startedAt,
         endedAt: new Date().toISOString(),
         chatId,
-        result: "notified",
-        ...(result?.summary && { detail: result.summary }),
+        // A notifier that errored before reporting anything most likely never
+        // delivered — record that rather than "notified". Non-blocking either way.
+        ...(sessionError !== undefined && !result
+          ? { result: "error" as const, detail: sessionErrorReason(sessionError) }
+          : { result: "notified" as const, ...(result?.summary && { detail: result.summary }) }),
       });
       enterStep(run, resolveNext(run, step), 0);
       return;
@@ -1413,7 +1438,7 @@ async function handleStepSessionEnd(runId: string, stepId: string, chatId: strin
   }
 }
 
-async function handleParallelBranchSessionEnd(runId: string, stepId: string, branchId: string, chatId: string): Promise<void> {
+async function handleParallelBranchSessionEnd(runId: string, stepId: string, branchId: string, chatId: string, sessionError?: string): Promise<void> {
   const run = getRun(runId);
   if (!run || TERMINAL_JOB_RUN_STATUSES.has(run.status) || run.status === "paused") return;
   if (run.activeStep?.stepId !== stepId) return;
@@ -1428,8 +1453,9 @@ async function handleParallelBranchSessionEnd(runId: string, stepId: string, bra
   const outputs = result?.outputs;
   const missing = (branchDef.outputs ?? []).filter((key) => outputs?.[key] === undefined);
   const endedAt = new Date().toISOString();
-  if (missing.length > 0 || (branchDef.outputs?.length && !outputs)) {
-    const reason = `did not report required output(s): ${missing.join(", ") || branchDef.outputs!.join(", ")}`;
+  const errored = sessionError !== undefined && !result;
+  if (errored || missing.length > 0 || (branchDef.outputs?.length && !outputs)) {
+    const reason = errored ? sessionErrorReason(sessionError) : `did not report required output(s): ${missing.join(", ") || branchDef.outputs!.join(", ")}`;
     activeBranch.status = "failed";
     activeBranch.endedAt = endedAt;
     activeBranch.detail = reason;
@@ -1794,6 +1820,31 @@ function failRun(run: JobRun, error: string): void {
 }
 
 // ── Helpers
+
+/**
+ * Remember the `error` a step session ends on (see {@link sessionErrors}). The
+ * chat id is only known once `chat_created` arrives; an error before that
+ * already rejects the spawn through awaitChatCreated. Detaches on the run's
+ * terminal event so the listener doesn't outlive the session.
+ */
+function captureSessionError(emitter: EventEmitter): void {
+  let chatId: string | undefined;
+  const onEvent = (event: { type?: string; chatId?: string; content?: string }) => {
+    if (event.type === "chat_created" && event.chatId) {
+      chatId = event.chatId;
+    } else if (event.type === "error") {
+      if (chatId) sessionErrors.set(chatId, event.content || "The session ended with an error.");
+      emitter.off("event", onEvent);
+    } else if (event.type === "done") {
+      emitter.off("event", onEvent);
+    }
+  };
+  emitter.on("event", onEvent);
+}
+
+function sessionErrorReason(error: string): string {
+  return `session ended with an error: ${error}`;
+}
 
 function enqueueRun(runId: string, work: () => void | Promise<void>): Promise<void> {
   const previous = runQueues.get(runId) ?? Promise.resolve();

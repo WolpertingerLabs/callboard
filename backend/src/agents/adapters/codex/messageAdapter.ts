@@ -52,6 +52,7 @@ import type {
 } from "@openai/codex-sdk";
 import type { AgentEvent, TokenUsage } from "../../ports/events.js";
 import { createLogger } from "../../../utils/logger.js";
+import { codexModelNotFoundMessage, type CodexModelNotFoundContext } from "./modelNotFound.js";
 
 const log = createLogger("codex-events");
 
@@ -65,16 +66,32 @@ const log = createLogger("codex-events");
  * iterates the *real* event stream rather than poking SDK callbacks, so the
  * translation is exercised exactly as it runs in production.
  */
-export async function* translateCodexEvents(
-  events: AsyncIterable<ThreadEvent>,
-): AsyncIterable<AgentEvent> {
+export async function* translateCodexEvents(events: AsyncIterable<ThreadEvent>, errorContext: CodexModelNotFoundContext = {}): AsyncIterable<AgentEvent> {
   log.debug("translateCodexEvents start");
   let eventCount = 0;
+  // The raw message of the last fatal error already reported as a result. The
+  // CLI reports one failure twice — an `error` event, then a `turn.failed`
+  // carrying the same message — and then exits non-zero, which the SDK throws
+  // as "Codex Exec exited with code 1: <stderr>". Only the first says anything.
+  let reportedFatal: string | null = null;
   try {
     for await (const event of events) {
       eventCount++;
+      const fatal = fatalMessage(event);
+      if (fatal !== null && fatal === reportedFatal) {
+        log.debug(`event ${event.type} — repeats the fatal error already reported; dropped`);
+        continue;
+      }
       logEvent(event);
       const translated = translateCodexEvent(event);
+      if (fatal !== null) {
+        reportedFatal = fatal;
+        const actionable = codexModelNotFoundMessage(fatal, errorContext);
+        if (actionable) {
+          yield { type: "result", status: "error", reason: actionable };
+          continue;
+        }
+      }
       if (Array.isArray(translated)) {
         yield* translated;
       } else if (translated) {
@@ -87,12 +104,41 @@ export async function* translateCodexEvents(
     // process spawn — see CodexAgentQuery.close). Re-throw so the service
     // layer's existing abort handling runs; lower-level abort detection
     // (signal.aborted) short-circuits before this in the query loop.
-    log.error(
-      `Codex event stream threw after ${eventCount} events: ${err instanceof Error ? `${err.message}\n${err.stack ?? ""}` : String(err)}`,
-    );
+    const message = err instanceof Error ? err.message : String(err);
+    const isAbort = err instanceof Error && err.name === "AbortError";
+    if (!isAbort && isExecExit(message)) {
+      // The CLI exiting non-zero *because* of a fatal error it already
+      // reported is that error's echo, not a second failure — re-throwing it
+      // would replace the real reason in the chat with "Reading prompt from
+      // stdin...". Its stderr can still carry the only copy of a
+      // model_not_found (no event before it), so check that first.
+      const actionable = codexModelNotFoundMessage(message, errorContext);
+      if (actionable && reportedFatal === null) {
+        log.error(`Codex exited after ${eventCount} events with a model_not_found in stderr — ${message.trim()}`);
+        yield { type: "result", status: "error", reason: actionable };
+        return;
+      }
+      if (reportedFatal !== null) {
+        log.warn(`Codex exited non-zero after its fatal error was reported (${eventCount} events): ${message.trim()}`);
+        return;
+      }
+    }
+    log.error(`Codex event stream threw after ${eventCount} events: ${err instanceof Error ? `${err.message}\n${err.stack ?? ""}` : String(err)}`);
     throw err;
   }
   log.debug(`translateCodexEvents end — eventCount=${eventCount}`);
+}
+
+/** The message of a stream-fatal event (`error` / `turn.failed`), else `null`. */
+function fatalMessage(event: ThreadEvent): string | null {
+  if (event.type === "error") return event.message;
+  if (event.type === "turn.failed") return event.error.message;
+  return null;
+}
+
+/** The SDK's throw when the `codex exec` child exits non-zero (`CodexExec.run`). */
+function isExecExit(message: string): boolean {
+  return message.startsWith("Codex Exec exited with ");
 }
 
 /**
@@ -378,9 +424,7 @@ function logEvent(event: ThreadEvent): void {
       log.debug("event turn.started");
       break;
     case "turn.completed":
-      log.debug(
-        `event turn.completed — inputTokens=${event.usage?.input_tokens ?? "n/a"}, outputTokens=${event.usage?.output_tokens ?? "n/a"}`,
-      );
+      log.debug(`event turn.completed — inputTokens=${event.usage?.input_tokens ?? "n/a"}, outputTokens=${event.usage?.output_tokens ?? "n/a"}`);
       break;
     case "turn.failed":
       log.error(`event turn.failed — ${event.error.message}`);
