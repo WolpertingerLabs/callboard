@@ -10,7 +10,7 @@
  * written under.
  */
 import type { AgentSettings, DefaultPermissions, EffortLevel } from "shared/types/index.js";
-import type { CodexOptionsExtras } from "../agents/adapters/codex/optionsAdapter.js";
+import { codexAllowsExternalMcp, withheldMcpServersNote, type CodexOptionsExtras } from "../agents/adapters/codex/optionsAdapter.js";
 import type { PiAdapterOptions } from "../agents/adapters/pi/PiAdapter.js";
 import { getSessionProvider } from "../agents/factory.js";
 import { detectCodexOpenRouterEnv } from "../agents/adapters/codex/codexAuth.js";
@@ -41,6 +41,12 @@ export interface ProviderOptionsContext {
    * never through `model_instructions_file`, which replaces Codex's base prompt.
    */
   additionalInstructions?: string;
+  /**
+   * Names of the enabled third-party MCP servers (not Callboard's own). Codex
+   * leaves them out unless the chat allows code execution, and the model is
+   * told which ones and why (`withheldMcpServersNote`).
+   */
+  externalMcpServerNames?: readonly string[];
 }
 
 // For Codex chats, surface the per-provider settings the Codex adapter's
@@ -100,6 +106,11 @@ export async function buildCodexExtras(ctx: ProviderOptionsContext & { codexRout
   // start (Codex has no per-call canUseTool hook). Surface them so the
   // optionsAdapter can derive the sandbox tier when no explicit one is set.
   const permissions = getDefaultPermissions() ?? undefined;
+  // Third-party MCP servers are left out of the thread unless this same
+  // snapshot allows code execution (translateCodexOptions decides from
+  // `codex.permissions` below); say which, so the model can tell the user.
+  const withheldNote = codexAllowsExternalMcp(permissions) ? undefined : withheldMcpServersNote(ctx.externalMcpServerNames ?? []);
+  const addition = [ctx.additionalInstructions, withheldNote].filter(Boolean).join("\n\n") || undefined;
   // Which `codex` binary this chat spawns. `undefined` — the answer for every
   // chat before Phase 4, and still the default — leaves the SDK to resolve the
   // platform binary nested under `@openai/codex-sdk`. A configured override
@@ -126,7 +137,7 @@ export async function buildCodexExtras(ctx: ProviderOptionsContext & { codexRout
     }),
     reasoningRoute: reasoningTarget.route === "openrouter" ? "openrouter" : reasoningTarget.route === "codex" ? "native" : "unknown",
     ...(permissions && { permissions }),
-    ...(ctx.additionalInstructions && codexDeveloperInstructionsFor(codexRoute, ctx.additionalInstructions, trackingId)),
+    ...(addition && codexDeveloperInstructionsFor(codexRoute, addition, trackingId)),
   };
   log.info(
     `Codex chat config — trackingId=${trackingId}, authMode=${useOpenRouter ? "openrouter" : subscriptionViaOpenRouter ? "subscription+openrouter" : authMode}, ` +
@@ -188,7 +199,9 @@ export const CODEX_DEVELOPER_INSTRUCTIONS_MAX_BYTES = 100 * 1024;
 // chat's history gone, so the id is resolved to a path here and travels in its
 // own explicitly named field. `PiAdapter.assertPiResumePath` throws if a value
 // that is not an absolute `.jsonl` path ever reaches it.
-export async function buildPiExtras(ctx: ProviderOptionsContext & { resumeSessionId: string | undefined; chatId: string | undefined }): Promise<PiAdapterOptions> {
+export async function buildPiExtras(
+  ctx: ProviderOptionsContext & { resumeSessionId: string | undefined; chatId: string | undefined },
+): Promise<PiAdapterOptions> {
   const { agentSettings, chatModel, getDefaultPermissions, trackingId, resumeSessionId } = ctx;
   const piModel = (await resolveReasoningTarget({ provider: "pi", model: chatModel }, agentSettings)).model;
   const chatEffort = ctx.chatEffort;

@@ -2113,6 +2113,8 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
     getDefaultPermissions,
     trackingId,
     ...(asideInstruction && { additionalInstructions: asideInstruction }),
+    // Enabled third-party servers (Callboard's reserved keys are its own).
+    externalMcpServerNames: Object.keys(mcpOpts?.mcpServers ?? {}).filter((name) => !RESERVED_TOOL_SERVER_KEYS.includes(name)),
   };
   if (providerKind === "codex") queryOpts.options.codex = await buildCodexExtras({ ...providerCtx, codexRoute });
   if (providerKind === "pi") queryOpts.options.pi = await buildPiExtras({ ...providerCtx, resumeSessionId, chatId: opts.chatId });

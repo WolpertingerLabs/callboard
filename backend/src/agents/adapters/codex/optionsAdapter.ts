@@ -365,6 +365,25 @@ export function collectCodexMcpServers(
   return { ...(Object.keys(config).length > 0 ? { config } : {}), handles };
 }
 
+/** Whether a Codex chat under `permissions` is given third-party MCP servers — see {@link withholdExternalMcpServers}. */
+export function codexAllowsExternalMcp(permissions: DefaultPermissions | null | undefined): boolean {
+  return permissions?.codeExecution === "allow";
+}
+
+/**
+ * The developer-instruction line telling the model which enabled MCP servers
+ * it was not given, and why — so it can tell the user rather than just report
+ * that a tool does not exist. `undefined` when none were left out.
+ */
+export function withheldMcpServersNote(withheld: readonly string[]): string | undefined {
+  if (withheld.length === 0) return undefined;
+  return (
+    `These MCP servers are enabled in Callboard but are not available in this chat: ${withheld.join(", ")}. ` +
+    "Callboard cannot ask before each of their tool calls on Codex, so it only offers them when the chat's Code execution permission is Allow. " +
+    "If the user asks for one of them, tell them that."
+  );
+}
+
 /**
  * Leave third-party MCP servers out of a Codex chat that does not allow
  * `codeExecution`.
@@ -379,12 +398,15 @@ export function collectCodexMcpServers(
  * their handlers check the policy (`guardSpecByPolicy`).
  *
  * `null`/absent permissions read as "ask" on every axis — left out.
+ *
+ * Decided once per turn, when the thread's options are built: a permission
+ * change applies to these servers from the next turn, not the next call.
  */
 export function withholdExternalMcpServers(
   mcpServers: ClaudeShapedOptions["mcpServers"],
   permissions: DefaultPermissions | null | undefined,
 ): { mcpServers: ClaudeShapedOptions["mcpServers"]; withheld: string[] } {
-  if (!mcpServers || permissions?.codeExecution === "allow") return { mcpServers, withheld: [] };
+  if (!mcpServers || codexAllowsExternalMcp(permissions)) return { mcpServers, withheld: [] };
   const kept: Record<string, unknown> = {};
   const withheld: string[] = [];
   for (const [name, value] of Object.entries(mcpServers)) {
@@ -607,7 +629,7 @@ export function translateCodexOptions(options: Record<string, unknown>): CodexTr
     extras.reasoningRoute !== "openrouter";
   const { mcpServers: gatedMcpServers, withheld } = withholdExternalMcpServers(opts.mcpServers, extras.permissions);
   if (withheld.length > 0) {
-    log.info(`translateCodexOptions — third-party MCP servers left out (this chat does not allow codeExecution): ${withheld.join(", ")}`);
+    log.warn(`translateCodexOptions — third-party MCP servers left out (this chat does not allow codeExecution): ${withheld.join(", ")}`);
   }
   const { config: mcpServersConfig, handles: toolServerHandles } = collectCodexMcpServers(gatedMcpServers, directUi);
   if (mcpServersConfig) {
