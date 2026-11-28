@@ -366,6 +366,35 @@ export function collectCodexMcpServers(
 }
 
 /**
+ * Leave third-party MCP servers out of a Codex chat that does not allow
+ * `codeExecution`.
+ *
+ * Codex connects to an external server itself and calls its tools with no
+ * per-call hook callboard can see, so the chat's policy cannot be checked call
+ * by call. A server chooses its own tool names, so there is nothing to
+ * categorize them by either: what one can do is whatever its author built, the
+ * reach of `codeExecution`. On Claude Code such calls are gated at
+ * `codeExecution` per call; on Codex the only gate available is whether the
+ * server is there at all. Callboard's own in-process handles always stay —
+ * their handlers check the policy (`guardSpecByPolicy`).
+ *
+ * `null`/absent permissions read as "ask" on every axis — left out.
+ */
+export function withholdExternalMcpServers(
+  mcpServers: ClaudeShapedOptions["mcpServers"],
+  permissions: DefaultPermissions | null | undefined,
+): { mcpServers: ClaudeShapedOptions["mcpServers"]; withheld: string[] } {
+  if (!mcpServers || permissions?.codeExecution === "allow") return { mcpServers, withheld: [] };
+  const kept: Record<string, unknown> = {};
+  const withheld: string[] = [];
+  for (const [name, value] of Object.entries(mcpServers)) {
+    if (isCodexToolServerHandle(value)) kept[name] = value;
+    else withheld.push(name);
+  }
+  return { mcpServers: kept as ClaudeShapedOptions["mcpServers"], withheld };
+}
+
+/**
  * Resolve Claude's `systemPrompt` (string OR `{ type: "preset", append }`) into
  * the instruction text Codex should run with, or `undefined` when there is
  * nothing to write.
@@ -576,7 +605,11 @@ export function translateCodexOptions(options: Record<string, unknown>): CodexTr
     // the second guard, so a caller that passes them anyway still gets no split.
     !extras.subscriptionViaOpenRouter &&
     extras.reasoningRoute !== "openrouter";
-  const { config: mcpServersConfig, handles: toolServerHandles } = collectCodexMcpServers(opts.mcpServers, directUi);
+  const { mcpServers: gatedMcpServers, withheld } = withholdExternalMcpServers(opts.mcpServers, extras.permissions);
+  if (withheld.length > 0) {
+    log.info(`translateCodexOptions — third-party MCP servers left out (this chat does not allow codeExecution): ${withheld.join(", ")}`);
+  }
+  const { config: mcpServersConfig, handles: toolServerHandles } = collectCodexMcpServers(gatedMcpServers, directUi);
   if (mcpServersConfig) {
     codexOpts.config = { ...codexOpts.config, mcp_servers: mcpServersConfig };
   }
@@ -631,7 +664,9 @@ export function translateCodexOptions(options: Record<string, unknown>): CodexTr
   if (extras.lockdown) {
     const unaddressable = extras.lockdown.mcpServerNames.filter((name) => !BARE_TOML_KEY.test(name));
     if (unaddressable.length > 0) {
-      throw new Error(`Cannot disable Codex MCP server(s) ${unaddressable.map((n) => JSON.stringify(n)).join(", ")} for a tool-less run; no Codex turn was started.`);
+      throw new Error(
+        `Cannot disable Codex MCP server(s) ${unaddressable.map((n) => JSON.stringify(n)).join(", ")} for a tool-less run; no Codex turn was started.`,
+      );
     }
     codexOpts.config = {
       ...codexOpts.config,
@@ -644,7 +679,9 @@ export function translateCodexOptions(options: Record<string, unknown>): CodexTr
   // ── thread options (cwd, model, sandbox/approval) ────────────────
   // `skipGitRepoCheck` is always on so Codex runs in non-repo dirs like the
   // other providers (spike §2.1: it's a ThreadOption, not a CodexOption).
-  const { sandboxMode, approvalPolicy } = extras.lockdown ? { sandboxMode: "read-only" as const, approvalPolicy: "never" as const } : resolveSandboxAndApproval(extras);
+  const { sandboxMode, approvalPolicy } = extras.lockdown
+    ? { sandboxMode: "read-only" as const, approvalPolicy: "never" as const }
+    : resolveSandboxAndApproval(extras);
   // `none` isn't a Codex effort tier (it only governs summary visibility above);
   // every other EffortLevel maps 1:1 onto Codex's ModelReasoningEffort.
   const modelReasoningEffort = reasoningEffort && reasoningEffort !== "none" ? (reasoningEffort as ModelReasoningEffort) : undefined;

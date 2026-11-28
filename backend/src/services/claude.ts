@@ -625,6 +625,14 @@ function buildPermissionDecider(
               message: `Auto-denied: ${toolName} needs the ${category} permission, which is set to deny for this chat. Ask the user to allow ${category} for this chat, or to do this themselves.`,
               interrupt: false,
             };
+          // A third-party MCP tool likewise: denying one is not a reason to end
+          // the turn (permissionAdapter gates them all at codeExecution).
+          if (toolName.startsWith("mcp__"))
+            return {
+              behavior: "deny",
+              message: `Auto-denied: ${toolName} is a third-party MCP tool, which needs the ${category} permission, and that is set to deny for this chat. Ask the user to allow ${category} for this chat, or to do this themselves.`,
+              interrupt: false,
+            };
           return { behavior: "deny", message: `Auto-denied by default ${category} policy`, interrupt: true };
         }
         // "ask" — fall through to the user-prompt path
@@ -1718,7 +1726,10 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
 
   // Build MCP servers map: start with configured servers, add Callboard agent tools if this is an agent session
   const mcpServers: Record<string, McpServerEntry> = mcpOpts ? { ...mcpOpts.mcpServers } : {};
-  const allowedTools: string[] = mcpOpts ? [...mcpOpts.allowedTools] : [];
+  // Pre-approved by the SDK before `canUseTool` runs, so only Callboard's own
+  // always-ungated tools go here (see `inject`). Third-party servers get no
+  // entry (buildMcpServerOptions).
+  const allowedTools: string[] = [];
   const endComputerUseTurn = beginComputerUseTurn(() => trackingId, abortController.signal);
   // All harnesses proxy these tools through the same package MCP service.
   // Importing/registering the surface does not start a browser or desktop.

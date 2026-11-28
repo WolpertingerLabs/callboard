@@ -18,6 +18,7 @@ import {
   buildCodexEnv,
   CODEX_OPENROUTER_SUBSCRIPTION_PROVIDER,
   collectCodexMcpServers,
+  withholdExternalMcpServers,
   resolveCodexInstructions,
   resolveSandboxAndApproval,
   translateCodexOptions,
@@ -476,6 +477,35 @@ describe("collectCodexMcpServers — tool handles → mcp_servers config", () =>
     });
     // Only the in-process bundle yields a lifecycle handle.
     expect(handles).toEqual([a]);
+  });
+});
+
+describe("third-party MCP servers on Codex: only when the chat allows codeExecution (H-01)", () => {
+  const base = { fileRead: "allow", fileWrite: "allow", webAccess: "allow", browserControl: "deny", computerControl: "deny", sandboxControl: "deny" } as const;
+  const servers = (a: ReturnType<typeof fakeHandle>) => ({ "callboard-tools": a, github: { command: "uvx", args: ["gh-mcp"] } });
+  const presence = { "callboard-ui": false, callboard_ui: false };
+
+  it.each(["ask", "deny"] as const)("codeExecution %s: the external server is left out, Callboard's handle stays", (level) => {
+    const a = fakeHandle("callboard-tools", "/tmp/a/s.sock");
+    const { codexOpts, toolServerHandles } = translateCodexOptions({
+      codex: { uiAliasPresence: presence, permissions: { ...base, codeExecution: level } },
+      mcpServers: servers(a),
+    });
+    expect(codexOpts.config?.mcp_servers).toEqual({ "callboard-tools": { command: "node", args: ["/shim.js", "/tmp/a/s.sock"] } });
+    expect(toolServerHandles).toEqual([a]);
+  });
+
+  it("no permissions at all reads as ask: left out", () => {
+    expect(withholdExternalMcpServers({ github: { command: "x" } }, null)).toEqual({ mcpServers: {}, withheld: ["github"] });
+  });
+
+  it("codeExecution allow: the external server is bridged as before", () => {
+    const a = fakeHandle("callboard-tools", "/tmp/a/s.sock");
+    const { codexOpts } = translateCodexOptions({
+      codex: { uiAliasPresence: presence, permissions: { ...base, codeExecution: "allow" } },
+      mcpServers: servers(a),
+    });
+    expect(codexOpts.config?.mcp_servers).toMatchObject({ github: { command: "uvx", args: ["gh-mcp"] } });
   });
 });
 
