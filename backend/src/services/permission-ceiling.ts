@@ -13,8 +13,8 @@
  *    branch arguments). A call on a denied axis is refused before its handler
  *    runs, on every engine. On Claude Code and pi the engine's per-call gate
  *    (`canUseTool` / pi `tool_call`) has already asked the user by the time
- *    the handler runs. Codex has no such gate: there the guard holds deny,
- *    and an "ask" still runs unprompted, as before (see `PolicyAskMode`).
+ *    the handler runs. Codex has no such gate, so there the guard asks
+ *    itself, through the same prompt chain (`codexAsk` in claude.ts).
  * 2. **Authority it would hand on** (the rest of this file) — for tools that
  *    start, continue or approve work in another session.
  *

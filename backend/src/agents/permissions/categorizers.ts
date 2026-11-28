@@ -44,7 +44,9 @@
  *    escalation path but the whole permission surface.
  *  - **claude-code** — one pass. The SDK calls `canUseTool`; nothing else
  *    decides.
- *  - **codex** — no passes at all; see below.
+ *  - **codex** — no harness pass; see below. Callboard's own tools are decided
+ *    in their handlers instead (`guardSpecByPolicy`), which ask through the
+ *    same chain `buildCanUseTool` uses, so there is one decision per call.
  *  - **mock** — no passes; it is a scripted event emitter.
  *
  * (The retired ACP harness was the first two-pass adapter, and the rule was
@@ -83,7 +85,8 @@ const gateEverything: ToolCategorizer = (name) => (isComputerControlToolName(nam
  * a single pass with nothing to disagree with. `services/claude.ts` builds a
  * `ToolPermissionPolicy` unconditionally, so this entry exists and is
  * unreachable; writing a Codex tool table would imply a gate that does not
- * exist. Changing Codex's permission path is explicitly out of scope.
+ * exist. (Callboard's own tools on Codex are gated in their handlers, from the
+ * shared table in `callboardToolPolicy.ts` — not through this registry.)
  *
  * `mock` gets Claude's map because the mock provider stands in for the
  * Claude-shaped SDK in tests. It never invokes `canUseTool` either.
@@ -114,7 +117,8 @@ export function getToolCategorizer(kind: AgentProviderKind): ToolCategorizer {
  * - `pi` sees Callboard's `customTools` bare. Both of pi's passes run this
  *   same resolver over the same `(toolName, input)`.
  * - `codex` has no per-call harness gate: its Callboard tools are decided by
- *   the handler-side guard (`guardSpecByPolicy`), so nothing reaches here.
+ *   the handler-side guard (`guardSpecByPolicy`), which asks through
+ *   `buildAskChain` itself, so nothing reaches here.
  */
 export const CALLBOARD_GATE_RESOLVERS: Record<AgentProviderKind, CallboardGateResolver> = {
   "claude-code": claudeCallboardGate,

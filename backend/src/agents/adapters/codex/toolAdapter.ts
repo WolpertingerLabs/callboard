@@ -86,6 +86,19 @@ export type CodexMcpServerConfig = {
 export const CALLBOARD_TOOL_TIMEOUT_SEC = 600;
 
 /**
+ * How long a Codex call of a gated callboard tool waits for the user to
+ * answer its permission prompt, in milliseconds.
+ *
+ * Codex has no per-call permission hook, so a callboard tool whose gate says
+ * "ask" (`guardSpecByPolicy`, services/permission-ceiling.ts) holds the tool
+ * call open while the prompt is up. A minute under
+ * {@link CALLBOARD_TOOL_TIMEOUT_SEC}, so callboard withdraws the prompt and
+ * answers the call before Codex abandons it — a prompt whose call has already
+ * timed out could otherwise be approved and run with nobody waiting for it.
+ */
+export const CODEX_ASK_DEADLINE_MS = (CALLBOARD_TOOL_TIMEOUT_SEC - 60) * 1000;
+
+/**
  * The stdio specialization callboard's own bundles always use: the relay shim is
  * spawned, so `command` + `args` are guaranteed present (narrower than the
  * general {@link CodexMcpServerConfig}, which also covers the HTTP transport).
