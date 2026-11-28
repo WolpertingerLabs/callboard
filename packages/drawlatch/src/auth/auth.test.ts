@@ -8,6 +8,7 @@ import {
   mkdirSync,
   readdirSync,
   chmodSync,
+  utimesSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -405,6 +406,60 @@ describe('a malformed sessions.json loads as an empty store', () => {
       expect(rewritten.metadata.version).toBe(1);
     });
   }
+
+  // chmod 000 doesn't stop root from reading, so this can only run unprivileged.
+  it.skipIf(process.getuid?.() === 0)(
+    'a non-ENOENT read error throws and never overwrites the store',
+    async () => {
+      await configurePassword('hunter2!!');
+      const a = createSession(Date.now() + 60_000);
+      const b = createSession(Date.now() + 60_000);
+      const before = readFileSync(sessionsFile());
+      chmodSync(sessionsFile(), 0o000);
+      try {
+        expect(() => getSession(a)).toThrow(/EACCES/);
+        expect(() => extendSession(a, Date.now() + 99_999)).toThrow(/EACCES/);
+        expect(() => cleanupExpiredSessions()).toThrow(/EACCES/);
+        expect(() => createSession(Date.now() + 60_000)).toThrow(/EACCES/);
+        // requireAuth throws too; Express turns that into a 500.
+        expect(() =>
+          requireAuth(
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            mockReq({ cookies: { [SESSION_COOKIE_NAME]: a } }) as any,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            mockRes() as any,
+            () => undefined,
+          ),
+        ).toThrow(/EACCES/);
+        await expect(
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          loginHandler(mockReq({ body: { password: 'hunter2!!' } }) as any, mockRes() as any),
+        ).rejects.toThrow(/EACCES/);
+        expect(warn).not.toHaveBeenCalled();
+      } finally {
+        chmodSync(sessionsFile(), 0o600);
+      }
+      expect(readFileSync(sessionsFile()).equals(before)).toBe(true);
+      expect(getSession(a)).toBeDefined();
+      expect(getSession(b)).toBeDefined();
+    },
+  );
+
+  it('removes stale temp files from a dead save, but not recent or unrelated ones', () => {
+    createSession(Date.now() + 60_000);
+    const dataDir = join(tmpDataDir, 'data');
+    const stale = join(dataDir, 'sessions.json.4242.0123456789ab.tmp');
+    const recent = join(dataDir, 'sessions.json.4243.0123456789ab.tmp');
+    const unrelated = join(dataDir, 'sessions.json.old.tmp');
+    for (const f of [stale, recent, unrelated]) writeFileSync(f, '{}');
+    const old = new Date(Date.now() - 10 * 60_000);
+    utimesSync(stale, old, old);
+    utimesSync(unrelated, old, old);
+    createSession(Date.now() + 60_000);
+    expect(readdirSync(dataDir).sort()).toEqual(
+      ['sessions.json', 'sessions.json.4243.0123456789ab.tmp', 'sessions.json.old.tmp'].sort(),
+    );
+  });
 
   it('saves atomically: no temp files left behind and the store stays 0600', () => {
     for (let i = 0; i < 5; i++) createSession(Date.now() + 60_000);

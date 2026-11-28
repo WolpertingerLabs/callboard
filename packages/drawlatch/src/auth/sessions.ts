@@ -2,11 +2,12 @@ import { randomBytes } from 'node:crypto';
 import {
   readFileSync,
   writeFileSync,
-  existsSync,
   mkdirSync,
   chmodSync,
   renameSync,
   rmSync,
+  readdirSync,
+  statSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 
@@ -62,22 +63,30 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Never throws on a bad file: an unreadable, unparseable or wrong-shape `sessions.json` loads as a
- * fresh empty store (logged at warn), so a truncated file can't 500 every request, login included.
- * This fails closed: an empty store holds no session, and the next save replaces the bad file.
+ * A missing file starts a fresh store. Any other read error (EACCES, EMFILE, EIO…) is rethrown, so
+ * the request fails with a 500 and nothing overwrites a store that is only briefly unreadable. A
+ * file that reads but doesn't parse, or has the wrong shape, loads as a fresh empty store (logged
+ * at warn), so a truncated file can't 500 every request, login included. Both fail closed: an empty
+ * store holds no session, and only a save (which needs a login) replaces the bad file.
  */
 function loadSessions(): SessionsFile {
   const file = getSessionsFile();
-  if (!existsSync(file)) {
+  let raw: string;
+  try {
+    raw = readFileSync(file, 'utf-8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
     const initial = freshStore();
     saveSessions(initial);
     return initial;
   }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(readFileSync(file, 'utf-8'));
+    parsed = JSON.parse(raw);
   } catch (err) {
-    console.warn(`[auth] ${file} is unreadable (${(err as Error).message}); using an empty store`);
+    console.warn(
+      `[auth] ${file} is not valid JSON (${(err as Error).message}); using an empty store`,
+    );
     return freshStore();
   }
   if (
@@ -96,10 +105,37 @@ function loadSessions(): SessionsFile {
   };
 }
 
-/** Atomic: writes a 0600 temp file in the same directory, then renames it over the store. */
+/** `<store>.<pid>.<12 hex>.tmp`, the exact name saveSessions gives its temp files. */
+const TEMP_NAME_RE = /^sessions\.json\.\d+\.[0-9a-f]{12}\.tmp$/;
+/** Older than this, a temp file is from a save that died before its rename, not one in flight. */
+const STALE_TEMP_MS = 60_000;
+
+/** Best effort: remove temp files left by a process that died between write and rename. */
+function removeStaleTemps(dir: string): void {
+  try {
+    const cutoff = Date.now() - STALE_TEMP_MS;
+    for (const name of readdirSync(dir)) {
+      if (!TEMP_NAME_RE.test(name)) continue;
+      const path = join(dir, name);
+      try {
+        if (statSync(path).mtimeMs < cutoff) rmSync(path, { force: true });
+      } catch {
+        // gone already, or not ours to remove
+      }
+    }
+  } catch {
+    // best effort
+  }
+}
+
+/**
+ * Atomic: writes a 0600 temp file in the same directory, then renames it over the store. (A
+ * symlinked `sessions.json` is replaced by a regular file rather than written through.)
+ */
 function saveSessions(data: SessionsFile): void {
   const file = getSessionsFile();
-  mkdirSync(dirname(file), { recursive: true });
+  const dir = dirname(file);
+  mkdirSync(dir, { recursive: true });
   const tmp = `${file}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
   try {
     writeFileSync(tmp, JSON.stringify(data, null, 2), { mode: 0o600, flag: 'wx' });
@@ -115,6 +151,7 @@ function saveSessions(data: SessionsFile): void {
   } catch {
     // best effort
   }
+  removeStaleTemps(dir);
 }
 
 /** The stored entry for a well-formed token, or undefined. Never reads an inherited member. */
